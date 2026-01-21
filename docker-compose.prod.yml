@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  web:
+    image: ghcr.io/keyurgolani/keyurgolani.photography:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./public/assets/photos:/app/public/assets/photos # Expects photos dir on host relative to compose file
+    restart: always
+    environment:
+      - NODE_ENV=production

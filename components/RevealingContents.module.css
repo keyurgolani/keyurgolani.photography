@@ -1,0 +1,47 @@
+.container {
+  position: relative;
+  width: 100%;
+  height: 100vh;
+  z-index: 100;
+  pointer-events: none; /* Allow clicks to pass through to carousel */
+  transition: opacity var(--transition-duration) var(--transition-ease);
+}
+
+.trigger {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  /* No background, just for hover detection */
+  pointer-events: auto; /* Capture hovers */
+  display: flex;
+  align-items: flex-end; /* Bottom align content */
+  justify-content: center;
+}
+
+/* 
+  Nested structure to detect hover depth. 
+  The Next.js implementation might be simpler with JS, 
+  but mimicking original nested structure:
+*/
+
+.triggerLayer {
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
+
+.content {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  pointer-events: auto;
+  opacity: 0; /* Controlled by JS or CSS */
+  transition: opacity 0.5s ease;
+  z-index: 200;
+}

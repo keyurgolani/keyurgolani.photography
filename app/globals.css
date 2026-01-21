@@ -1,0 +1,552 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+    /* Fonts */
+    --font-primary: var(--font-montserrat), sans-serif;
+    --font-secondary: var(--font-inter), sans-serif;
+
+    /* Light theme (Premium Clean) */
+    --background-color: #FAFAFA; /* Off-white for less harshness */
+    --background-color-rgb: 250, 250, 250;
+    --primary-color: #121212; /* Off-black for text */
+    --primary-color-rgb: 18, 18, 18;
+    
+    --tooltip-bg: rgba(255, 255, 255, 0.95);
+    --tooltip-border: rgba(0, 0, 0, 0.05);
+    --tooltip-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+    
+    --container-padding: 6px;
+    --toggle-icon-padding: 0.1em;
+    --toggle-background-rgb: 255, 255, 255;
+    --toggle-shadow-rgb: 0, 0, 0;
+
+    --transition-duration: 0.4s; /* Slightly slower for luxury feel */
+    --transition-ease: cubic-bezier(0.22, 1, 0.36, 1); /* Custom ease-out */
+
+    --overlay-bg-color: rgba(250, 250, 250, 0.3);
+    --caption-bg-color: rgba(250, 250, 250, 0.85);
+
+    --button-color: rgba(18, 18, 18, 0.7);
+    --button-hover-color: rgba(18, 18, 18, 1);
+    
+    --secondary-color: #2D2D2D;
+    --secondary-color-rgb: 45, 45, 45;
+}
+
+[data-theme="dark"] {
+    /* Dark theme (Premium Dark) */
+    --background-color: #050505; /* Deep off-black */
+    --background-color-rgb: 5, 5, 5;
+    --primary-color: #F0F0F0; /* Off-white for text */
+    --primary-color-rgb: 240, 240, 240;
+
+    --tooltip-bg: rgba(20, 20, 20, 0.95);
+    --tooltip-border: rgba(255, 255, 255, 0.08);
+    --tooltip-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+
+    --overlay-bg-color: rgba(5, 5, 5, 0.7);
+    --caption-bg-color: rgba(5, 5, 5, 0.85);
+}
+
+body {
+    background-color: var(--background-color);
+    color: var(--primary-color);
+    font-family: var(--font-secondary); /* Body font */
+    transition: background-color var(--transition-duration) ease, color var(--transition-duration) ease;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    line-height: 1.6;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-primary);
+    font-weight: 600;
+    letter-spacing: -0.02em;
+}
+
+/* Tooltip Styles */
+[data-tooltip] {
+  position: relative;
+  cursor: pointer;
+}
+
+[data-tooltip]:before {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 50%;
+  /*transform: translateX(-50%);*/
+  padding: 0.20rem 0.4rem;
+  background: rgba(var(--primary-color-rgb), 1);
+  color: var(--background-color);
+  border: 1px solid var(--background-color);
+  border-radius: 6px;
+  font-size: 0.7rem;
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 1px 5px rgba(var(--primary-color-rgb), 0.6);
+  z-index: 1000;
+  pointer-events: none;
+  letter-spacing: 0.05rem;
+}
+
+[data-tooltip]:hover:before {
+  opacity: 0.7;
+  visibility: visible;
+  transform: translateX(30%) translateY(28px) scale(1);
+}
+
+[data-tooltip]:before {
+  transform: translateX(25%) translateY(28px) scale(0.95);
+}
+
+/* Prevent tooltip from showing on touch devices */
+@media (hover: none) {
+  [data-tooltip]:before {
+    display: none;
+  }
+}
+
+/* Theme toggle specific positioning */
+.toggle-container [data-tooltip]:before {
+  bottom: 130%;
+}
+
+/* Global Styles */
+.nav-button {
+    position: fixed;
+    display: inline;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--button-color);
+    background: transparent;
+    border: none;
+    font-size: 2.5rem;
+    cursor: pointer;
+    transition: color var(--transition-duration) ease, transform var(--transition-duration) ease;
+    z-index: 300;
+    user-select: none;
+}
+
+.nav-button:hover {
+    color: var(--button-hover-color);
+    transform: translateY(-50%) scale(1.3);
+}
+
+.prev-button {
+    left: 5%;
+}
+
+.next-button {
+    right: 5%;
+}
+
+.close-button {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: transparent;
+    color: var(--button-color);
+    border: none;
+    font-size: 26px;
+    cursor: pointer;
+    transition: color var(--transition-duration) ease, transform var(--transition-duration) ease;
+    z-index: 300;
+}
+
+.close-button:hover {
+    color: var(--button-hover-color);
+    transform: scale(1.3);
+}
+
+.card-container {
+    border-radius: 8px;
+    overflow: hidden;
+    position: relative;
+    transition: transform var(--transition-duration) ease, box-shadow var(--transition-duration) ease;
+    transform-style: preserve-3d;
+}
+
+.card-content {
+
+}
+
+.card-container:hover {
+    transform: scale(1.05);
+    box-shadow: 0 10px 20px rgba(var(--primary-color-rgb), 0.2);
+}
+
+.card-caption-container {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    padding: 1em 0;
+    background-color: var(--caption-bg-color);
+    color: var(--primary-color);
+    text-align: center;
+    opacity: 0;
+    transition: opacity var(--transition-duration) ease, transform var(--transition-duration) ease;
+}
+
+.card-container:hover .card-caption-container {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+body {
+    background-color: var(--background-color);
+    color: var(--primary-color);
+    transition: background-color var(--transition-duration) ease, color var(--transition-duration) ease;
+}
+
+/* ============================================
+   Lightbox Premium Glassmorphism Overrides
+   ============================================ */
+
+/* Main Container - Frosted glass backdrop */
+.yarl__container {
+    background: linear-gradient(
+        135deg,
+        rgba(240, 240, 240, 0.85) 0%,
+        rgba(255, 255, 255, 0.9) 50%,
+        rgba(240, 240, 240, 0.85) 100%
+    ) !important;
+    backdrop-filter: blur(24px) saturate(180%) !important;
+    -webkit-backdrop-filter: blur(24px) saturate(180%) !important;
+}
+
+[data-theme="dark"] .yarl__container {
+    background: linear-gradient(
+        135deg,
+        rgba(0, 0, 0, 0.92) 0%,
+        rgba(10, 10, 10, 0.95) 50%,
+        rgba(0, 0, 0, 0.92) 100%
+    ) !important;
+}
+
+/* Vignette overlay for depth */
+.yarl__container::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(
+        ellipse at center,
+        transparent 40%,
+        rgba(0, 0, 0, 0.15) 100%
+    );
+    pointer-events: none;
+    z-index: 1;
+}
+
+[data-theme="dark"] .yarl__container::before {
+    background: radial-gradient(
+        ellipse at center,
+        transparent 30%,
+        rgba(0, 0, 0, 0.4) 100%
+    );
+}
+
+/* Main Image - Premium shadow and subtle border */
+.yarl__slide_image {
+    box-shadow: 
+        0 25px 60px rgba(0, 0, 0, 0.25),
+        0 10px 20px rgba(0, 0, 0, 0.15),
+        0 0 0 1px rgba(255, 255, 255, 0.1) !important;
+    border-radius: 6px !important;
+    transition: box-shadow 0.4s ease !important;
+}
+
+[data-theme="dark"] .yarl__slide_image {
+    box-shadow: 
+        0 25px 60px rgba(0, 0, 0, 0.5),
+        0 10px 20px rgba(0, 0, 0, 0.3),
+        0 0 0 1px rgba(255, 255, 255, 0.05) !important;
+}
+
+/* ============================================
+   Thumbnails Bar - Premium Glass Effect
+   ============================================ */
+.yarl__thumbnails {
+    background: linear-gradient(
+        to top,
+        rgba(255, 255, 255, 0.7) 0%,
+        rgba(255, 255, 255, 0.5) 100%
+    ) !important;
+    backdrop-filter: blur(16px) saturate(150%) !important;
+    -webkit-backdrop-filter: blur(16px) saturate(150%) !important;
+    border-top: 1px solid rgba(255, 255, 255, 0.4) !important;
+    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.08) !important;
+    padding: 12px 0 !important;
+}
+
+[data-theme="dark"] .yarl__thumbnails {
+    background: linear-gradient(
+        to top,
+        rgba(0, 0, 0, 0.7) 0%,
+        rgba(0, 0, 0, 0.5) 100%
+    ) !important;
+    border-top: 1px solid rgba(255, 255, 255, 0.08) !important;
+    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.3) !important;
+}
+
+/* Individual Thumbnails - Glass cards */
+.yarl__thumbnails_thumbnail {
+    background: rgba(255, 255, 255, 0.3) !important;
+    backdrop-filter: blur(8px) !important;
+    border: 1px solid rgba(255, 255, 255, 0.4) !important;
+    border-radius: 8px !important;
+    padding: 4px !important;
+    margin: 0 6px !important;
+    width: auto !important;
+    min-width: auto !important;
+    flex: 0 0 auto !important;
+    opacity: 0.7;
+    transition: all 0.3s cubic-bezier(0.22, 1, 0.36, 1) !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08) !important;
+}
+
+[data-theme="dark"] .yarl__thumbnails_thumbnail {
+    background: rgba(255, 255, 255, 0.08) !important;
+    border: 1px solid rgba(255, 255, 255, 0.12) !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3) !important;
+}
+
+.yarl__thumbnails_thumbnail:hover {
+    opacity: 0.9;
+    transform: translateY(-2px) scale(1.02);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12) !important;
+}
+
+.yarl__thumbnails_thumbnail_image {
+    object-fit: cover !important;
+    width: auto !important;
+    height: 56px !important;
+    aspect-ratio: auto !important;
+    border-radius: 5px !important;
+    transition: all 0.3s ease !important;
+}
+
+/* Active Thumbnail State */
+.yarl__thumbnails_thumbnail_active {
+    opacity: 1 !important;
+    transform: translateY(-3px) scale(1.05);
+    border-color: transparent !important;
+    background: linear-gradient(135deg, rgba(255,255,255,0.5), rgba(255,255,255,0.2)) !important;
+    box-shadow: 
+        0 8px 20px rgba(0, 0, 0, 0.15),
+        0 0 0 2px rgba(18, 18, 18, 0.8),
+        inset 0 1px 0 rgba(255,255,255,0.5) !important;
+}
+
+[data-theme="dark"] .yarl__thumbnails_thumbnail_active {
+    background: linear-gradient(135deg, rgba(255,255,255,0.15), rgba(255,255,255,0.05)) !important;
+    box-shadow: 
+        0 8px 20px rgba(0, 0, 0, 0.4),
+        0 0 0 2px rgba(255, 255, 255, 0.7),
+        inset 0 1px 0 rgba(255,255,255,0.2) !important;
+}
+
+.yarl__thumbnails_thumbnail_active .yarl__thumbnails_thumbnail_image {
+    box-shadow: none !important;
+}
+
+/* Hide default vignette */
+.yarl__thumbnails_vignette {
+    display: none !important;
+}
+
+/* ============================================
+   Control Buttons - Premium Glass Design
+   ============================================ */
+.yarl__button {
+    background: linear-gradient(
+        135deg,
+        rgba(255, 255, 255, 0.2) 0%,
+        rgba(255, 255, 255, 0.1) 100%
+    ) !important;
+    backdrop-filter: blur(12px) saturate(150%) !important;
+    -webkit-backdrop-filter: blur(12px) saturate(150%) !important;
+    border: 1px solid rgba(255, 255, 255, 0.2) !important;
+    border-radius: 50% !important;
+    padding: 10px !important;
+    margin: 0 5px !important;
+    width: 44px !important;
+    height: 44px !important;
+    transition: all 0.3s cubic-bezier(0.22, 1, 0.36, 1) !important;
+    color: rgba(255, 255, 255, 0.95) !important;
+    box-shadow: 
+        0 4px 12px rgba(0, 0, 0, 0.15),
+        inset 0 1px 0 rgba(255, 255, 255, 0.3) !important;
+    filter: none !important;
+}
+
+.yarl__button:hover {
+    background: linear-gradient(
+        135deg,
+        rgba(255, 255, 255, 0.35) 0%,
+        rgba(255, 255, 255, 0.2) 100%
+    ) !important;
+    border-color: rgba(255, 255, 255, 0.35) !important;
+    box-shadow: 
+        0 6px 16px rgba(0, 0, 0, 0.18),
+        0 0 12px rgba(255, 255, 255, 0.1),
+        inset 0 1px 0 rgba(255, 255, 255, 0.4) !important;
+}
+
+.yarl__button:active {
+    opacity: 0.85;
+}
+
+.yarl__icon {
+    width: 22px !important;
+    height: 22px !important;
+    filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.2)) !important;
+}
+
+/* ============================================
+   Navigation Chevrons - Premium Minimal Design
+   ============================================ */
+
+/* Reset navigation container positioning */
+.yarl__navigation_prev,
+.yarl__navigation_next {
+    padding: 0 !important;
+    margin: 0 32px !important; /* Proper spacing from edges */
+}
+
+/* Navigation button - Clean pill/rounded-rect design */
+.yarl__navigation_prev .yarl__button,
+.yarl__navigation_next .yarl__button {
+    /* Size and shape */
+    width: 48px !important;
+    height: 48px !important;
+    border-radius: 14px !important; /* Rounded rectangle, not circle */
+    
+    /* Reset and center content */
+    padding: 0 !important;
+    margin: 0 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    
+    /* Clean glass background */
+    background: rgba(255, 255, 255, 0.12) !important;
+    backdrop-filter: blur(20px) saturate(180%) !important;
+    -webkit-backdrop-filter: blur(20px) saturate(180%) !important;
+    
+    /* Subtle border */
+    border: 1px solid rgba(255, 255, 255, 0.18) !important;
+    
+    /* Clean shadow */
+    box-shadow: 
+        0 4px 16px rgba(0, 0, 0, 0.12),
+        inset 0 0.5px 0 rgba(255, 255, 255, 0.2) !important;
+    
+    /* Icon color */
+    color: rgba(255, 255, 255, 0.9) !important;
+    
+    /* Smooth transition */
+    transition: all 0.2s ease !important;
+    filter: none !important;
+}
+
+/* Navigation icon - Properly sized and centered */
+.yarl__navigation_prev .yarl__icon,
+.yarl__navigation_next .yarl__icon {
+    width: 24px !important;
+    height: 24px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    stroke-width: 2 !important;
+    filter: none !important;
+}
+
+/* Hover state - Subtle brightness increase */
+.yarl__navigation_prev .yarl__button:hover,
+.yarl__navigation_next .yarl__button:hover {
+    background: rgba(255, 255, 255, 0.2) !important;
+    border-color: rgba(255, 255, 255, 0.28) !important;
+    box-shadow: 
+        0 6px 20px rgba(0, 0, 0, 0.15),
+        inset 0 0.5px 0 rgba(255, 255, 255, 0.3) !important;
+    color: rgba(255, 255, 255, 1) !important;
+}
+
+/* Active/pressed state */
+.yarl__navigation_prev .yarl__button:active,
+.yarl__navigation_next .yarl__button:active {
+    background: rgba(255, 255, 255, 0.25) !important;
+    box-shadow: 
+        0 2px 8px rgba(0, 0, 0, 0.1),
+        inset 0 1px 2px rgba(0, 0, 0, 0.08) !important;
+}
+
+/* Light mode navigation overrides */
+[data-theme="light"] .yarl__navigation_prev .yarl__button,
+[data-theme="light"] .yarl__navigation_next .yarl__button {
+    background: rgba(0, 0, 0, 0.06) !important;
+    border: 1px solid rgba(0, 0, 0, 0.08) !important;
+    color: rgba(0, 0, 0, 0.75) !important;
+    box-shadow: 
+        0 4px 16px rgba(0, 0, 0, 0.06),
+        inset 0 0.5px 0 rgba(255, 255, 255, 0.7) !important;
+}
+
+[data-theme="light"] .yarl__navigation_prev .yarl__button:hover,
+[data-theme="light"] .yarl__navigation_next .yarl__button:hover {
+    background: rgba(0, 0, 0, 0.1) !important;
+    border-color: rgba(0, 0, 0, 0.12) !important;
+    color: rgba(0, 0, 0, 0.9) !important;
+    box-shadow: 
+        0 6px 20px rgba(0, 0, 0, 0.08),
+        inset 0 0.5px 0 rgba(255, 255, 255, 0.8) !important;
+}
+
+[data-theme="light"] .yarl__navigation_prev .yarl__button:active,
+[data-theme="light"] .yarl__navigation_next .yarl__button:active {
+    background: rgba(0, 0, 0, 0.14) !important;
+    box-shadow: 
+        0 2px 8px rgba(0, 0, 0, 0.05),
+        inset 0 1px 2px rgba(0, 0, 0, 0.05) !important;
+}
+
+/* Light Mode Button Overrides */
+[data-theme="light"] .yarl__button {
+    background: linear-gradient(
+        135deg,
+        rgba(0, 0, 0, 0.08) 0%,
+        rgba(0, 0, 0, 0.04) 100%
+    ) !important;
+    border: 1px solid rgba(0, 0, 0, 0.08) !important;
+    color: rgba(18, 18, 18, 0.9) !important;
+    box-shadow: 
+        0 4px 12px rgba(0, 0, 0, 0.08),
+        inset 0 1px 0 rgba(255, 255, 255, 0.6) !important;
+}
+
+[data-theme="light"] .yarl__button:hover {
+    background: linear-gradient(
+        135deg,
+        rgba(0, 0, 0, 0.12) 0%,
+        rgba(0, 0, 0, 0.06) 100%
+    ) !important;
+    border-color: rgba(0, 0, 0, 0.12) !important;
+    box-shadow: 
+        0 8px 24px rgba(0, 0, 0, 0.1),
+        inset 0 1px 0 rgba(255, 255, 255, 0.7) !important;
+}
+
+[data-theme="light"] .yarl__icon {
+    filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.1)) !important;
+}
+
+/* Toolbar positioning */
+.yarl__toolbar {
+    padding: 16px !important;
+    gap: 8px !important;
+}
+
