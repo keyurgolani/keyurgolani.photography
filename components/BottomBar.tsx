@@ -18,7 +18,7 @@ const BottomBar: React.FC<BottomBarProps> = ({ children }) => {
       <div className="flex flex-col items-center justify-end w-full h-screen pb-8 pointer-events-none">
         
          {/* Children content area (e.g. Profile Picture) - Allow interactions */}
-        <div className="mb-12 pointer-events-auto transition-all duration-500 ease-out transform hover:scale-105">
+        <div className="mb-12 pointer-events-auto transition-all duration-500 ease-out transform hover:scale-105 overflow-visible">
           {children}
         </div>
 

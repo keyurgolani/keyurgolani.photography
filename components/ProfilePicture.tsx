@@ -16,7 +16,7 @@ const ProfilePicture: React.FC<ProfilePictureProps> = ({
   className = '',
 }) => {
   return (
-    <div className={`w-64 h-64 md:w-80 md:h-80 relative rounded-full overflow-hidden ${className}`}>
+    <div className={`w-64 h-64 md:w-80 md:h-80 relative ${className}`}>
       <ParallaxCard
         cardOffset={50}
         baseLayerOffset={40}
