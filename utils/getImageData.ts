@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import sharp from 'sharp';
 import exifFromBuffer from 'exif-reader';
+import { unstable_noStore as noStore } from 'next/cache';
 
 export interface ImageItem {
     id: number;
@@ -13,6 +14,7 @@ export interface ImageItem {
 }
 
 export async function getGalleryImages(): Promise<ImageItem[]> {
+    noStore(); // Opt out of data caching for dynamic filesystem reads
     const photosDir = path.join(process.cwd(), 'public/assets/photos');
     
     if (!fs.existsSync(photosDir)) {
