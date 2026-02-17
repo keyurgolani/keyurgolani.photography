@@ -10,3 +10,22 @@ services:
     restart: always
     environment:
       - NODE_ENV=production
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/photos"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Image optimization watcher - processes new photos automatically
+  image-watcher:
+    image: ghcr.io/keyurgolani/keyurgolani.photography:latest
+    volumes:
+      - ./public/assets/photos:/app/public/assets/photos # Same volume mount as web
+    restart: always
+    environment:
+      - NODE_ENV=production
+    command: ["npx", "tsx", "scripts/imageWatcher.ts", "--watch"]
+    depends_on:
+      web:
+        condition: service_healthy

@@ -15,3 +15,26 @@ services:
       - ./public/assets/photos:/app/public/assets/photos # Bind mount for photos
     environment:
       - NODE_ENV=development
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/photos"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Image optimization watcher - processes new photos automatically
+  image-watcher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: deps
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - ./public/assets/photos:/app/public/assets/photos # Same volume mount as web
+    environment:
+      - NODE_ENV=development
+    command: npx tsx scripts/imageWatcher.ts --watch
+    depends_on:
+      web:
+        condition: service_healthy
