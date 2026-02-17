@@ -21,6 +21,10 @@ export interface ProcessedImagePaths {
  * Ensure thumbnail and optimized directories exist
  */
 export function ensureDirectories(): void {
+    // First ensure the parent photos directory exists
+    if (!fs.existsSync(PHOTOS_DIR)) {
+        fs.mkdirSync(PHOTOS_DIR, { recursive: true });
+    }
     if (!fs.existsSync(THUMBNAILS_DIR)) {
         fs.mkdirSync(THUMBNAILS_DIR, { recursive: true });
     }

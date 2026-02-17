@@ -18,12 +18,21 @@ export interface ImageItem {
 
 export async function getGalleryImages(): Promise<ImageItem[]> {
     noStore(); // Opt out of data caching for dynamic filesystem reads
-    ensureDirectories();
     
     const photosDir = path.join(process.cwd(), 'public/assets/photos');
     
+    // Return empty if photos directory doesn't exist
     if (!fs.existsSync(photosDir)) {
         return [];
+    }
+    
+    // Try to ensure subdirectories exist, but don't fail if we can't create them
+    // (they may be on a mounted volume with different permissions)
+    try {
+        ensureDirectories();
+    } catch (error) {
+        console.warn('Could not create thumbnail/optimized directories:', error);
+        // Continue anyway - thumbnails might already exist or will be created by watcher
     }
 
     const files = fs.readdirSync(photosDir).filter(file => 
