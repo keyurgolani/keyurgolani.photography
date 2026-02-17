@@ -3,10 +3,13 @@ import path from 'path';
 import sharp from 'sharp';
 import exifFromBuffer from 'exif-reader';
 import { unstable_noStore as noStore } from 'next/cache';
+import { getImagePaths, ensureDirectories } from './imageOptimizer';
 
 export interface ImageItem {
     id: number;
     src: string;
+    thumbnail: string;
+    optimized: string;
     width: number;
     height: number;
     caption?: string;
@@ -15,6 +18,8 @@ export interface ImageItem {
 
 export async function getGalleryImages(): Promise<ImageItem[]> {
     noStore(); // Opt out of data caching for dynamic filesystem reads
+    ensureDirectories();
+    
     const photosDir = path.join(process.cwd(), 'public/assets/photos');
     
     if (!fs.existsSync(photosDir)) {
@@ -22,13 +27,17 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
     }
 
     const files = fs.readdirSync(photosDir).filter(file => 
-        /\.(jpg|jpeg|png|webp)$/i.test(file)
+        /\.(jpg|jpeg|png|webp)$/i.test(file) &&
+        !fs.statSync(path.join(photosDir, file)).isDirectory()
     );
 
     const images = await Promise.all(files.map(async (file, index) => {
         const filePath = path.join(photosDir, file);
         const buffer = fs.readFileSync(filePath);
         const metadata = await sharp(buffer).metadata();
+        
+        // Get paths for thumbnail and optimized versions
+        const imagePaths = getImagePaths(file);
         
         let exifData: any = {};
         if (metadata.exif) {
@@ -38,7 +47,6 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
                 console.error(`Error parsing EXIF for ${file}`, e);
             }
         }
-
 
         // Extract relevant fields
         // Date: Try Photo.DateTimeOriginal, then Image.ModifyDate
@@ -79,9 +87,14 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
         // Fallback if empty
         if (!caption) caption = '';
 
+        // Use optimized image if available, otherwise fall back to original
+        const src = imagePaths.hasOptimized ? imagePaths.optimized : imagePaths.original;
+        
         return {
             id: index,
-            src: `/assets/photos/${encodeURIComponent(file)}`,
+            src: src,
+            thumbnail: imagePaths.hasThumbnail ? imagePaths.thumbnail : imagePaths.original,
+            optimized: imagePaths.hasOptimized ? imagePaths.optimized : imagePaths.original,
             width: metadata.width || 800,
             height: metadata.height || 600,
             caption: caption,

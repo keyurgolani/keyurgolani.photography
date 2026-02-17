@@ -32,3 +32,7 @@ build/
 public/assets/photos/*
 !public/assets/photos/.gitkeep
 !public/assets/photos/README.md
+
+# Generated image variants (thumbnails/optimized)
+public/assets/photos/thumbnails/
+public/assets/photos/optimized/
