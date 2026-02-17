@@ -27,3 +27,8 @@ build/
 *.njsproj
 *.sln
 *.sw?
+
+# Photo assets - ignore images but keep directory structure
+public/assets/photos/*
+!public/assets/photos/.gitkeep
+!public/assets/photos/README.md
