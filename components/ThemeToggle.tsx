@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { usePathname } from 'next/navigation';
 import { Sun, Moon } from 'lucide-react';
 import { useTheme } from './ThemeContext';
 
@@ -12,19 +13,31 @@ const AUTO_HIDE_TIMEOUT = parseInt(
 
 export default function ThemeToggle() {
   const { theme, toggleTheme } = useTheme();
-  const [isVisible, setIsVisible] = useState(false); // Hidden by default
+  const pathname = usePathname();
+  const isHomePage = pathname === '/';
+  
+  // On home page: hidden by default with auto-hide behavior
+  // On other pages: always visible
+  const [isVisible, setIsVisible] = useState(!isHomePage);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastMousePos = useRef<{ x: number, y: number } | null>(null);
 
   const resetTimer = useCallback(() => {
+    if (!isHomePage) return; // No auto-hide on non-home pages
     setIsVisible(true);
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
     }
     timeoutRef.current = setTimeout(() => setIsVisible(false), AUTO_HIDE_TIMEOUT);
-  }, []);
+  }, [isHomePage]);
 
   useEffect(() => {
+    // Only set up activity listeners on home page
+    if (!isHomePage) {
+      setIsVisible(true);
+      return;
+    }
+
     const handleActivity = () => {
       resetTimer();
     };
@@ -64,7 +77,7 @@ export default function ThemeToggle() {
       window.removeEventListener('keydown', handleActivity);
       window.removeEventListener('scroll', handleActivity);
     };
-  }, [resetTimer]);
+  }, [isHomePage, resetTimer]);
 
   const handleToggle = () => {
     toggleTheme();
