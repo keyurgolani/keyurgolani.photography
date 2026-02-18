@@ -2,12 +2,28 @@ import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import sharp from 'sharp';
-import { PHOTOS_DIR, CACHE_DIR } from '@/utils/imageOptimizer';
+import { 
+    PHOTOS_DIR, 
+    THUMBNAILS_DIR, 
+    MEDIUM_DIR, 
+    OPTIMIZED_DIR,
+    CACHE_DIR,
+    THUMBNAIL_WIDTH,
+    MEDIUM_WIDTH,
+    OPTIMIZED_WIDTH
+} from '@/utils/imageOptimizer';
 
 const DYNAMIC_CACHE_DIR = path.join(CACHE_DIR, 'dynamic');
 
-const ALLOWED_WIDTHS = [400, 800, 1200, 1920];
+const ALLOWED_WIDTHS = [THUMBNAIL_WIDTH, MEDIUM_WIDTH, 1200, OPTIMIZED_WIDTH];
 const DEFAULT_QUALITY = { webp: 85, avif: 60, jpeg: 85 };
+
+// Map width to directory for pre-optimized files
+const WIDTH_TO_DIR: Record<number, { webp: string; avif: string }> = {
+    [THUMBNAIL_WIDTH]: { webp: THUMBNAILS_DIR, avif: path.join(PHOTOS_DIR, 'thumbnails-avif') },
+    [MEDIUM_WIDTH]: { webp: MEDIUM_DIR, avif: path.join(PHOTOS_DIR, 'medium-avif') },
+    [OPTIMIZED_WIDTH]: { webp: OPTIMIZED_DIR, avif: path.join(PHOTOS_DIR, 'optimized-avif') },
+};
 
 export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
@@ -21,12 +37,8 @@ export async function GET(request: NextRequest) {
 
     // Extract filename from src (handle both full paths and bare filenames)
     const srcFilename = path.basename(src);
-
-    // Security: resolve and validate the path stays within PHOTOS_DIR
-    const sourcePath = path.resolve(PHOTOS_DIR, srcFilename);
-    if (!sourcePath.startsWith(PHOTOS_DIR) || !fs.existsSync(sourcePath)) {
-        return NextResponse.json({ error: 'Image not found' }, { status: 404 });
-    }
+    const ext = path.extname(srcFilename);
+    const baseName = path.basename(srcFilename, ext);
 
     // Negotiate format from Accept header
     const accept = request.headers.get('accept') || '';
@@ -40,8 +52,6 @@ export async function GET(request: NextRequest) {
     );
 
     const quality = requestedQuality || DEFAULT_QUALITY[format];
-    const ext = path.extname(srcFilename);
-    const baseName = path.basename(srcFilename, ext);
     const cacheKey = `${baseName}-${width}-${quality}.${format}`;
     const cachePath = path.join(DYNAMIC_CACHE_DIR, cacheKey);
 
@@ -71,6 +81,54 @@ export async function GET(request: NextRequest) {
                 'X-Cache': 'HIT',
             },
         });
+    }
+
+    // Try to serve from pre-optimized directories first
+    const dirConfig = WIDTH_TO_DIR[width];
+    if (dirConfig) {
+        const formatDir = format === 'avif' ? dirConfig.avif : dirConfig.webp;
+        const preoptimizedPath = path.join(formatDir, `${baseName}.${format}`);
+        
+        if (fs.existsSync(preoptimizedPath)) {
+            const buffer = fs.readFileSync(preoptimizedPath);
+            return new Response(buffer, {
+                headers: {
+                    'Content-Type': `image/${format}`,
+                    'Cache-Control': 'public, max-age=31536000, immutable',
+                    'ETag': etag,
+                    'X-Cache': 'PREOPTIMIZED',
+                },
+            });
+        }
+        
+        // If requesting AVIF but only WebP exists, serve WebP
+        if (format === 'avif') {
+            const webpPath = path.join(dirConfig.webp, `${baseName}.webp`);
+            if (fs.existsSync(webpPath)) {
+                const buffer = fs.readFileSync(webpPath);
+                return new Response(buffer, {
+                    headers: {
+                        'Content-Type': 'image/webp',
+                        'Cache-Control': 'public, max-age=31536000, immutable',
+                        'ETag': etag,
+                        'X-Cache': 'PREOPTIMIZED-WEBP',
+                    },
+                });
+            }
+        }
+    }
+
+    // Fall back to processing from source file
+    const sourcePath = path.resolve(PHOTOS_DIR, srcFilename);
+    
+    // Security check: ensure path stays within PHOTOS_DIR
+    if (!sourcePath.startsWith(PHOTOS_DIR)) {
+        return NextResponse.json({ error: 'Invalid path' }, { status: 400 });
+    }
+    
+    if (!fs.existsSync(sourcePath)) {
+        console.error(`Source image not found: ${sourcePath}`);
+        return NextResponse.json({ error: 'Image not found' }, { status: 404 });
     }
 
     // Generate and cache
