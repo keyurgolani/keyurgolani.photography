@@ -1,10 +1,14 @@
 import { NextResponse } from 'next/server';
 import { getGalleryImages } from '@/utils/getImageData';
 
-export const dynamic = 'force-dynamic';
-export const revalidate = 0;
+// Revalidate every 60 seconds (ISR)
+export const revalidate = 60;
 
 export async function GET() {
     const images = await getGalleryImages();
-    return NextResponse.json(images);
+    return NextResponse.json(images, {
+        headers: {
+            'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=300',
+        },
+    });
 }

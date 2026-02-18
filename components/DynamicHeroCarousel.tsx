@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import HeroCarousel from './HeroCarousel';
 import { ImageItem } from '@/utils/getImageData';
 import styles from './DynamicHeroCarousel.module.css';
@@ -24,6 +24,27 @@ const DynamicHeroCarousel: React.FC<DynamicHeroCarouselProps> = ({
     const [isLoading, setIsLoading] = useState(true);
     const [isExiting, setIsExiting] = useState(false);
 
+    // Preload first image for LCP
+    const preloadFirstImage = useCallback((optimized: string) => {
+        if (typeof document === 'undefined') return;
+        
+        const link = document.createElement('link');
+        link.rel = 'preload';
+        link.as = 'image';
+        link.href = optimized;
+        link.setAttribute('fetchpriority', 'high');
+        document.head.appendChild(link);
+        
+        // Cleanup after a reasonable time
+        setTimeout(() => {
+            try {
+                document.head.removeChild(link);
+            } catch {
+                // Link may have been removed already
+            }
+        }, 10000);
+    }, []);
+
     useEffect(() => {
         const fetchImages = async () => {
             try {
@@ -32,11 +53,18 @@ const DynamicHeroCarousel: React.FC<DynamicHeroCarouselProps> = ({
                     throw new Error('Failed to fetch images');
                 }
                 const data: ImageItem[] = await response.json();
-                setImages(data.map(img => ({
-                    thumbnail: img.thumbnail,
-                    optimized: img.optimized,
+                // Route through /api/image for format negotiation (AVIF/WebP)
+                const carouselImages = data.map(img => ({
+                    thumbnail: `/api/image?src=${encodeURIComponent(img.src)}&width=400`,
+                    optimized: `/api/image?src=${encodeURIComponent(img.src)}&width=1920`,
                     src: img.src,
-                })));
+                }));
+                setImages(carouselImages);
+                
+                // Preload first image for better LCP
+                if (carouselImages.length > 0) {
+                    preloadFirstImage(carouselImages[0].optimized);
+                }
                 
                 // If no images, stop loading immediately
                 if (data.length === 0) {

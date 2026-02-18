@@ -36,3 +36,6 @@ public/assets/photos/*
 # Generated image variants (thumbnails/optimized)
 public/assets/photos/thumbnails/
 public/assets/photos/optimized/
+
+# TypeScript build info
+*.tsbuildinfo
