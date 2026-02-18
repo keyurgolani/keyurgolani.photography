@@ -12,6 +12,7 @@ import Image from 'next/image';
 interface ImageItem {
     id: number;
     src: string;
+    thumbnail?: string;
     width: number;
     height: number;
     caption?: string;
@@ -107,11 +108,10 @@ function LazyGalleryTile({
 export default function Gallery({ images, className = '' }: GalleryProps) {
     const [index, setIndex] = useState(-1);
 
-    // Filter valid images & prepare for Lightbox
-    // Route through /api/image for format negotiation (AVIF/WebP)
+    // Use pre-optimized image paths directly (already WebP format)
     const photos = images.map(img => ({
-        src: `/api/image?src=${encodeURIComponent(img.src)}&width=1920`,
-        thumbnail: `/api/image?src=${encodeURIComponent(img.src)}&width=400`,
+        src: img.src,  // Pre-optimized 1920px WebP
+        thumbnail: img.thumbnail || img.src,  // Pre-optimized 400px WebP
         width: img.width,
         height: img.height,
     }));
