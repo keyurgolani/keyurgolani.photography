@@ -12,6 +12,7 @@ services:
     environment:
       - NODE_ENV=production
       - NEXT_PUBLIC_CAROUSEL_INTERVAL=12000  # Carousel slide interval in ms (default: 12000)
+      - NEXT_PUBLIC_UI_AUTO_HIDE_TIMEOUT=3000  # UI elements auto-hide timeout in ms (default: 3000)
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/photos"]
       interval: 30s
