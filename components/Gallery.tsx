@@ -91,7 +91,7 @@ function LazyGalleryTile({
                     className="object-cover transition-transform duration-700 group-hover:scale-110"
                 />
             ) : (
-                <div className="absolute inset-0 bg-white/10 animate-pulse" />
+                <div className="absolute inset-0 bg-neutral-200/50 dark:bg-white/10 animate-pulse" />
             )}
             {/* Overlay with details */}
             {isVisible && (
