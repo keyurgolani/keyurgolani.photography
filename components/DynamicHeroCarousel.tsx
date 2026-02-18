@@ -19,6 +19,16 @@ interface DynamicHeroCarouselProps {
 // Get carousel interval from env variable (in milliseconds), default 12000ms (12 seconds)
 const CAROUSEL_INTERVAL = parseInt(process.env.NEXT_PUBLIC_CAROUSEL_INTERVAL || '12000', 10);
 
+// Fisher-Yates shuffle algorithm for randomizing array order
+function shuffleArray<T>(array: T[]): T[] {
+    const shuffled = [...array];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled;
+}
+
 const DynamicHeroCarousel: React.FC<DynamicHeroCarouselProps> = ({
     autoScroll = true,
     interval = CAROUSEL_INTERVAL,
@@ -62,7 +72,8 @@ const DynamicHeroCarousel: React.FC<DynamicHeroCarouselProps> = ({
                     optimized: `/api/image?src=${encodeURIComponent(img.src)}&width=1920`,
                     src: img.src,
                 }));
-                setImages(carouselImages);
+                // Randomize the order so users see different photos each visit
+                setImages(shuffleArray(carouselImages));
                 
                 // Preload first 2 high-quality images for better LCP
                 if (carouselImages.length > 0) {
