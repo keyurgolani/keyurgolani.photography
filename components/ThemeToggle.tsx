@@ -8,7 +8,7 @@ const INACTIVITY_TIMEOUT = 3 * 60 * 1000; // 3 minutes
 
 export default function ThemeToggle() {
   const { theme, toggleTheme } = useTheme();
-  const [isVisible, setIsVisible] = useState(true);
+  const [isVisible, setIsVisible] = useState(false); // Hidden by default
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const resetTimer = useCallback(() => {
@@ -20,10 +20,7 @@ export default function ThemeToggle() {
   }, []);
 
   useEffect(() => {
-    // Start the timer on mount
-    resetTimer();
-
-    // Activity events to show the button
+    // Activity events to show the button (hidden by default, shows on first interaction)
     const events = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'];
     
     events.forEach(event => {
