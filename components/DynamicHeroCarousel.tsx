@@ -68,10 +68,11 @@ const DynamicHeroCarousel: React.FC<DynamicHeroCarouselProps> = ({
                     throw new Error('Failed to fetch images');
                 }
                 const data: ImageItem[] = await response.json();
-                // Route through /api/image for format negotiation (AVIF/WebP)
+                // Use pre-optimized image paths directly (already WebP format)
+                // The /api/image route will serve these if they exist, but direct paths are faster
                 const carouselImages = data.map(img => ({
-                    thumbnail: `/api/image?src=${encodeURIComponent(img.src)}&width=400`,
-                    optimized: `/api/image?src=${encodeURIComponent(img.src)}&width=1920`,
+                    thumbnail: img.thumbnail,  // Pre-generated 400px WebP
+                    optimized: img.optimized, // Pre-generated 1920px WebP
                     src: img.src,
                 }));
                 // Randomize the order so users see different photos each visit
