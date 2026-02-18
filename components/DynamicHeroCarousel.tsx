@@ -18,31 +18,31 @@ interface DynamicHeroCarouselProps {
 
 const DynamicHeroCarousel: React.FC<DynamicHeroCarouselProps> = ({
     autoScroll = true,
-    interval = 6000,
+    interval = 18000, // 3x the original 6000ms
 }) => {
     const [images, setImages] = useState<CarouselImage[]>([]);
-    const [isLoading, setIsLoading] = useState(true);
-    const [isExiting, setIsExiting] = useState(false);
 
-    // Preload first image for LCP
-    const preloadFirstImage = useCallback((optimized: string) => {
+    // Preload multiple high-quality images for LCP
+    const preloadImages = useCallback((imageUrls: string[]) => {
         if (typeof document === 'undefined') return;
         
-        const link = document.createElement('link');
-        link.rel = 'preload';
-        link.as = 'image';
-        link.href = optimized;
-        link.setAttribute('fetchpriority', 'high');
-        document.head.appendChild(link);
-        
-        // Cleanup after a reasonable time
-        setTimeout(() => {
-            try {
-                document.head.removeChild(link);
-            } catch {
-                // Link may have been removed already
-            }
-        }, 10000);
+        imageUrls.slice(0, 2).forEach((url, index) => {
+            const link = document.createElement('link');
+            link.rel = 'preload';
+            link.as = 'image';
+            link.href = url;
+            link.setAttribute('fetchpriority', index === 0 ? 'high' : 'auto');
+            document.head.appendChild(link);
+            
+            // Cleanup after a reasonable time
+            setTimeout(() => {
+                try {
+                    document.head.removeChild(link);
+                } catch {
+                    // Link may have been removed already
+                }
+            }, 15000);
+        });
     }, []);
 
     useEffect(() => {
@@ -61,69 +61,30 @@ const DynamicHeroCarousel: React.FC<DynamicHeroCarouselProps> = ({
                 }));
                 setImages(carouselImages);
                 
-                // Preload first image for better LCP
+                // Preload first 2 high-quality images for better LCP
                 if (carouselImages.length > 0) {
-                    preloadFirstImage(carouselImages[0].optimized);
-                }
-                
-                // If no images, stop loading immediately
-                if (data.length === 0) {
-                    setIsLoading(false);
+                    preloadImages(carouselImages.map(img => img.optimized));
                 }
             } catch (error) {
                 console.error('Error fetching gallery images:', error);
                 setImages([]);
-                setIsLoading(false);
             }
         };
 
         fetchImages();
-    }, []);
+    }, [preloadImages]);
 
-    const handleFirstImageLoaded = () => {
-        // Start exit animation
-        setIsExiting(true);
-        
-        // Remove loading screen after animation completes
-        setTimeout(() => {
-            setIsLoading(false);
-        }, 800); // Match animation duration
-    };
-
-    if (images.length === 0 && !isLoading) {
+    if (images.length === 0) {
         return null;
     }
 
     return (
-        <>
-            {/* Loading splash screen with animation - rendered on top of carousel */}
-            {isLoading && (
-                <div className={`${styles.loadingScreen} ${isExiting ? styles.exiting : ''}`}>
-                    <div className={styles.loadingContent}>
-                        <div className={styles.logoContainer}>
-                            <div className={styles.logoRing}>
-                                <div className={styles.logoRingInner}></div>
-                            </div>
-                            <span className={styles.logoText}>KG</span>
-                        </div>
-                        <div className={styles.loadingBar}>
-                            <div className={styles.loadingProgress}></div>
-                        </div>
-                        <p className={styles.loadingText}>Loading Experience</p>
-                    </div>
-                </div>
-            )}
-            
-            {/* Carousel rendered behind loader so images can start loading */}
-            {images.length > 0 && (
-                <HeroCarousel 
-                    images={images} 
-                    autoScroll={autoScroll} 
-                    interval={interval}
-                    onFirstImageLoaded={handleFirstImageLoaded}
-                />
-            )}
-        </>
+        <HeroCarousel 
+            images={images} 
+            autoScroll={autoScroll} 
+            interval={interval}
+            preloadImages={preloadImages}
+        />
     );
 };
 

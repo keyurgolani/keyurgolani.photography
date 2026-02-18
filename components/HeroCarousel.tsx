@@ -14,20 +14,19 @@ interface HeroCarouselProps {
   images: CarouselImage[];
   autoScroll?: boolean;
   interval?: number;
-  onFirstImageLoaded?: () => void;
+  preloadImages?: (urls: string[]) => void;
 }
 
 const HeroCarousel: React.FC<HeroCarouselProps> = ({
   images,
   autoScroll = true,
-  interval = 6000,
-  onFirstImageLoaded,
+  interval = 18000,
+  preloadImages,
 }) => {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [loadedImages, setLoadedImages] = useState<Set<number>>(new Set());
   const [optimizedImages, setOptimizedImages] = useState<Set<number>>(new Set());
   const [preloadedImages, setPreloadedImages] = useState<Set<number>>(new Set());
-  const firstImageRef = useRef(false);
 
   const nextSlide = useCallback(() => {
     setCurrentIndex((prev) => (prev === images.length - 1 ? 0 : prev + 1));
@@ -47,32 +46,44 @@ const HeroCarousel: React.FC<HeroCarouselProps> = ({
     } else {
         setLoadedImages(prev => new Set(prev).add(index));
     }
-    
-    // Notify parent when first image thumbnail is loaded
-    if (index === 0 && !firstImageRef.current && !isOptimized) {
-      firstImageRef.current = true;
-      onFirstImageLoaded?.();
-    }
   };
 
-  // Preload next/previous images when current slide changes
+  // Preload next 3 high-quality images when current slide changes
   useEffect(() => {
     if (images.length === 0) return;
     
-    const nextIndex = (currentIndex + 1) % images.length;
-    const prevIndex = (currentIndex - 1 + images.length) % images.length;
+    // Get next 3 indices (wrapping around)
+    const nextIndices = [1, 2, 3].map(offset => 
+      (currentIndex + offset) % images.length
+    );
     
-    // Preload adjacent images
-    [nextIndex, prevIndex].forEach(idx => {
-      if (!preloadedImages.has(idx)) {
-        // Preload both thumbnail and optimized for adjacent slides
+    // Use preloadImages callback for high-quality preloading
+    if (preloadImages) {
+      const nextOptimizedUrls = nextIndices
+        .filter(idx => !preloadedImages.has(idx))
+        .map(idx => images[idx].optimized);
+      
+      if (nextOptimizedUrls.length > 0) {
+        // Create Image objects to cache them
+        nextOptimizedUrls.forEach(url => {
+          const img = new Image();
+          img.src = url;
+        });
+        
+        // Mark as preloaded
+        setPreloadedImages(prev => {
+          const newSet = new Set(prev);
+          nextIndices.forEach(idx => newSet.add(idx));
+          return newSet;
+        });
+      }
+    }
+    
+    // Also ensure thumbnails are loaded for adjacent slides
+    nextIndices.slice(0, 2).forEach(idx => {
+      if (!loadedImages.has(idx)) {
         const thumbImg = new Image();
         thumbImg.src = images[idx].thumbnail;
-        
-        const optImg = new Image();
-        optImg.src = images[idx].optimized;
-        
-        setPreloadedImages(prev => new Set(prev).add(idx));
       }
     });
     
@@ -81,7 +92,7 @@ const HeroCarousel: React.FC<HeroCarouselProps> = ({
         const optImg = new Image();
         optImg.src = images[currentIndex].optimized;
     }
-  }, [currentIndex, images, preloadedImages, loadedImages, optimizedImages]);
+  }, [currentIndex, images, preloadedImages, loadedImages, optimizedImages, preloadImages]);
 
   useEffect(() => {
     if (!autoScroll) return;
@@ -153,16 +164,6 @@ const HeroCarousel: React.FC<HeroCarouselProps> = ({
         <ChevronRight size={24} />
       </button>
 
-      <div className={styles.indicators}>
-        {images.map((_, index) => (
-          <button
-            key={index}
-            className={`${styles.indicator} ${index === currentIndex ? styles.active : ''}`}
-            onClick={() => goToSlide(index)}
-            aria-label={`Go to slide ${index + 1}`}
-          />
-        ))}
-      </div>
     </div>
   );
 };
