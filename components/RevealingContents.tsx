@@ -6,6 +6,12 @@ interface RevealingContentsProps {
   children: React.ReactNode;
 }
 
+// Get auto-hide timeout from env, default to 3000ms (3 seconds)
+const AUTO_HIDE_TIMEOUT = parseInt(
+  process.env.NEXT_PUBLIC_UI_AUTO_HIDE_TIMEOUT || '3000',
+  10
+);
+
 const RevealingContents: React.FC<RevealingContentsProps> = ({ children }) => {
   const [isVisible, setIsVisible] = useState(false);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -15,7 +21,7 @@ const RevealingContents: React.FC<RevealingContentsProps> = ({ children }) => {
     const handleActivity = () => {
       setIsVisible(true);
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
-      timeoutRef.current = setTimeout(() => setIsVisible(false), 3000);
+      timeoutRef.current = setTimeout(() => setIsVisible(false), AUTO_HIDE_TIMEOUT);
     };
 
     const handleMouseMove = (e: MouseEvent) => {
