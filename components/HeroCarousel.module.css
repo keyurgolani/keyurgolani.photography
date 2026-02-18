@@ -69,20 +69,22 @@
   position: absolute;
   top: 50%;
   transform: translateY(-50%);
-  background: rgba(0, 0, 0, 0.2); /* Glassmorphism base */
-  backdrop-filter: blur(8px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: #fff;
-  width: 48px;
-  height: 48px;
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.8);
+  width: 52px;
+  height: 52px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   z-index: 10;
-  transition: all 0.3s ease;
-  opacity: 0; /* Hidden by default for cleaner look, shown on hover */
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  opacity: 0;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
 }
 
 .carousel:hover .navButton {
@@ -90,18 +92,30 @@
 }
 
 .navButton:hover {
-  background: rgba(255, 255, 255, 0.3);
-  transform: translateY(-50%); /* No scale - stable position */
+  background: rgba(255, 255, 255, 0.18);
   border-color: rgba(255, 255, 255, 0.25);
-  box-shadow: 0 0 12px rgba(255, 255, 255, 0.15);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.1);
+  transform: translateY(-50%) scale(1.05);
+  color: #fff;
+}
+
+.navButton:active {
+  transform: translateY(-50%) scale(0.98);
+  background: rgba(255, 255, 255, 0.22);
 }
 
 .prev {
-  left: 20px;
+  left: 24px;
 }
 
 .next {
-  right: 20px;
+  right: 24px;
+}
+
+/* Subtle arrow animation on hover */
+.navButton:hover svg {
+  transform: scale(1.1);
+  transition: transform 0.3s ease;
 }
 
 /* Indicators */
