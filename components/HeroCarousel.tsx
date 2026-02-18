@@ -46,15 +46,36 @@ const HeroCarousel: React.FC<HeroCarouselProps> = ({
   const handleImageLoad = (index: number, isOptimized: boolean = false) => {
     if (isOptimized) {
         setOptimizedImages(prev => new Set(prev).add(index));
-        // Notify parent when first optimized image is loaded
-        if (index === 0 && !hasNotifiedLoaded.current && onFirstImageLoaded) {
-          hasNotifiedLoaded.current = true;
-          onFirstImageLoaded();
-        }
     } else {
         setLoadedImages(prev => new Set(prev).add(index));
     }
+    
+    // Notify parent when first image is loaded (thumbnail or optimized)
+    if (index === 0 && !hasNotifiedLoaded.current && onFirstImageLoaded) {
+      hasNotifiedLoaded.current = true;
+      onFirstImageLoaded();
+    }
   };
+
+  // Fallback: Notify loaded after first image renders (in case onLoad doesn't fire for cached images)
+  useEffect(() => {
+    if (images.length === 0 || hasNotifiedLoaded.current) return;
+    
+    // Small delay to allow images to start loading
+    const fallbackTimer = setTimeout(() => {
+      if (!hasNotifiedLoaded.current && onFirstImageLoaded) {
+        // Check if first image might already be cached/loaded
+        const img = new Image();
+        img.src = images[0].optimized;
+        if (img.complete) {
+          hasNotifiedLoaded.current = true;
+          onFirstImageLoaded();
+        }
+      }
+    }, 500);
+
+    return () => clearTimeout(fallbackTimer);
+  }, [images, onFirstImageLoaded]);
 
   // Preload next 3 high-quality images when current slide changes
   useEffect(() => {

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import DynamicHeroCarousel from '../components/DynamicHeroCarousel';
 import RevealingContents from '../components/RevealingContents';
 import BottomBar from '../components/BottomBar';
@@ -11,10 +11,26 @@ import profileFront from '../public/assets/profile/front.png';
 
 export default function Home() {
     const [isLoading, setIsLoading] = useState(true);
+    const hasLoadedRef = useRef(false);
 
     const handleFirstImageLoaded = () => {
-        setIsLoading(false);
+        if (!hasLoadedRef.current) {
+            hasLoadedRef.current = true;
+            setIsLoading(false);
+        }
     };
+
+    // Safety timeout - ensure loading animation exits after max 5 seconds
+    useEffect(() => {
+        const safetyTimeout = setTimeout(() => {
+            if (!hasLoadedRef.current) {
+                hasLoadedRef.current = true;
+                setIsLoading(false);
+            }
+        }, 5000);
+
+        return () => clearTimeout(safetyTimeout);
+    }, []);
 
     return (
         <main className="relative w-full h-screen bg-black overflow-hidden">
