@@ -7,6 +7,7 @@ import { ImageItem } from '@/utils/getImageData';
 interface GalleryImage {
     id: number;
     src: string;
+    thumbnail?: string;
     width: number;
     height: number;
     caption?: string;
@@ -27,7 +28,8 @@ export default function DynamicGallery() {
                 const data: ImageItem[] = await response.json();
                 setImages(data.map((img, index) => ({
                     id: index,
-                    src: img.src,
+                    src: img.optimized,  // Use pre-optimized 1920px WebP
+                    thumbnail: img.thumbnail,  // Pre-optimized 400px WebP
                     width: img.width,
                     height: img.height,
                     caption: img.caption || undefined,
