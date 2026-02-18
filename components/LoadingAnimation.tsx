@@ -6,8 +6,11 @@ import { motion, AnimatePresence } from 'framer-motion';
 const phrases = ['Capturing moments', 'That last forever'];
 const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 
-export default function QuadComboLoader() {
-    const [isLoading, setIsLoading] = useState(true);
+interface LoadingAnimationProps {
+    isLoading: boolean;
+}
+
+export default function LoadingAnimation({ isLoading }: LoadingAnimationProps) {
     const [displayText, setDisplayText] = useState('');
     const [currentPhraseIndex, setCurrentPhraseIndex] = useState(0);
     const [showDrawing, setShowDrawing] = useState(false);
@@ -38,11 +41,8 @@ export default function QuadComboLoader() {
             iteration += 1;
         }, 50);
 
-        const timer = setTimeout(() => setIsLoading(false), 4000);
-
         return () => {
             clearInterval(interval);
-            clearTimeout(timer);
             clearTimeout(drawingTimer);
         };
     }, [currentPhraseIndex]);
@@ -83,8 +83,6 @@ export default function QuadComboLoader() {
                     {/* Layer 2: Split Blinds with Line Drawing inside each */}
                     <motion.div
                         className="absolute inset-0 flex"
-                        exit={{ opacity: 0 }}
-                        transition={{ duration: 0.5 }}
                     >
                         {Array.from({ length: blinds }).map((_, i) => (
                             <motion.div

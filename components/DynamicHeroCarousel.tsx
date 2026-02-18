@@ -14,6 +14,7 @@ interface CarouselImage {
 interface DynamicHeroCarouselProps {
     autoScroll?: boolean;
     interval?: number;
+    onFirstImageLoaded?: () => void;
 }
 
 // Get carousel interval from env variable (in milliseconds), default 12000ms (12 seconds)
@@ -32,6 +33,7 @@ function shuffleArray<T>(array: T[]): T[] {
 const DynamicHeroCarousel: React.FC<DynamicHeroCarouselProps> = ({
     autoScroll = true,
     interval = CAROUSEL_INTERVAL,
+    onFirstImageLoaded,
 }) => {
     const [images, setImages] = useState<CarouselImage[]>([]);
 
@@ -98,6 +100,7 @@ const DynamicHeroCarousel: React.FC<DynamicHeroCarouselProps> = ({
             autoScroll={autoScroll} 
             interval={interval}
             preloadImages={preloadImages}
+            onFirstImageLoaded={onFirstImageLoaded}
         />
     );
 };

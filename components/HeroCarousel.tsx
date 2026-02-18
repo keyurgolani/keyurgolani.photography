@@ -15,6 +15,7 @@ interface HeroCarouselProps {
   autoScroll?: boolean;
   interval?: number;
   preloadImages?: (urls: string[]) => void;
+  onFirstImageLoaded?: () => void;
 }
 
 const HeroCarousel: React.FC<HeroCarouselProps> = ({
@@ -22,11 +23,13 @@ const HeroCarousel: React.FC<HeroCarouselProps> = ({
   autoScroll = true,
   interval = 18000,
   preloadImages,
+  onFirstImageLoaded,
 }) => {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [loadedImages, setLoadedImages] = useState<Set<number>>(new Set());
   const [optimizedImages, setOptimizedImages] = useState<Set<number>>(new Set());
   const [preloadedImages, setPreloadedImages] = useState<Set<number>>(new Set());
+  const hasNotifiedLoaded = useRef(false);
 
   const nextSlide = useCallback(() => {
     setCurrentIndex((prev) => (prev === images.length - 1 ? 0 : prev + 1));
@@ -43,6 +46,11 @@ const HeroCarousel: React.FC<HeroCarouselProps> = ({
   const handleImageLoad = (index: number, isOptimized: boolean = false) => {
     if (isOptimized) {
         setOptimizedImages(prev => new Set(prev).add(index));
+        // Notify parent when first optimized image is loaded
+        if (index === 0 && !hasNotifiedLoaded.current && onFirstImageLoaded) {
+          hasNotifiedLoaded.current = true;
+          onFirstImageLoaded();
+        }
     } else {
         setLoadedImages(prev => new Set(prev).add(index));
     }
