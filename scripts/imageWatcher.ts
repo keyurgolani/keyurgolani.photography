@@ -3,7 +3,7 @@
  * Image Watcher Script
  * 
  * Watches the photos directory for changes and processes new images automatically.
- * Can also be run in one-shot mode for periodic processing.
+ * Uses chokidar for reliable file watching in Docker bind-mount scenarios.
  * 
  * Usage:
  *   # Watch mode (continuous)
@@ -16,12 +16,32 @@
  *   npx tsx scripts/imageWatcher.ts --once
  */
 
-import fs from 'fs';
 import path from 'path';
-import { processImage, getUnprocessedFiles, processAllImages, ensureDirectories, PHOTOS_DIR } from '../utils/imageOptimizer';
+import chokidar from 'chokidar';
+import { 
+    processImage, 
+    reprocessImage, 
+    getUnprocessedFiles, 
+    processAllImages, 
+    ensureDirectories,
+    cleanupOrphaned,
+    PHOTOS_DIR 
+} from '../utils/imageOptimizer';
 
 const WATCH_MODE = process.argv.includes('--watch');
 const ONCE_MODE = process.argv.includes('--once') || !WATCH_MODE;
+
+// Directories to skip when watching
+const SKIP_DIRS = [
+    'thumbnails',
+    'medium',
+    'optimized',
+    'thumbnails-avif',
+    'medium-avif',
+    'optimized-avif',
+    'lqip',
+    'cache',
+];
 
 async function processUnprocessedImages(): Promise<void> {
     console.log('[ImageWatcher] Checking for unprocessed images...');
@@ -51,64 +71,100 @@ async function processUnprocessedImages(): Promise<void> {
 function startWatcher(): void {
     ensureDirectories();
     
-    if (!fs.existsSync(PHOTOS_DIR)) {
-        console.log(`[ImageWatcher] Photos directory does not exist: ${PHOTOS_DIR}`);
-        console.log('[ImageWatcher] Creating directory...');
-        fs.mkdirSync(PHOTOS_DIR, { recursive: true });
-    }
-    
-    console.log(`[ImageWatcher] Watching directory: ${PHOTOS_DIR}`);
+    console.log(`[ImageWatcher] Starting chokidar watcher for: ${PHOTOS_DIR}`);
     
     // Initial processing
     processUnprocessedImages().catch(console.error);
     
-    // Set up watcher
-    const watcher = fs.watch(PHOTOS_DIR, { persistent: true, recursive: false }, async (eventType, filename) => {
-        if (!filename) return;
+    // Also clean up orphaned files on startup
+    const cleaned = cleanupOrphaned();
+    if (cleaned.length > 0) {
+        console.log(`[ImageWatcher] Cleaned up ${cleaned.length} orphaned files`);
+    }
+    
+    // Set up chokidar watcher with Docker-friendly options
+    const watcher = chokidar.watch(PHOTOS_DIR, {
+        persistent: true,
+        ignoreInitial: true, // Don't fire events for existing files on startup
+        usePolling: true, // Reliable in Docker bind mounts
+        interval: 2000, // Poll every 2 seconds
+        binaryInterval: 3000, // Poll binary files every 3 seconds
+        alwaysStat: true, // Always provide stats
+        depth: 0, // Only watch the top level (not subdirectories)
+        ignored: (watchedPath: string) => {
+            // Skip processing directories
+            return SKIP_DIRS.some(dir => {
+                const normalizedPath = watchedPath.replace(/\\/g, '/');
+                return normalizedPath.includes(`/${dir}`) || normalizedPath.endsWith(`/${dir}`);
+            });
+        },
+        awaitWriteFinish: {
+            stabilityThreshold: 3000, // Wait until file size is stable for 3 seconds
+            pollInterval: 500, // Check size every 500ms
+        },
+    });
+    
+    // Handle new/changed files
+    watcher.on('add', async (filePath: string, stats) => {
+        const ext = path.extname(filePath).toLowerCase();
+        if (!['.jpg', '.jpeg', '.png', '.webp'].includes(ext)) return;
         
-        // Only process image files
-        if (!/\.(jpg|jpeg|png|webp)$/i.test(filename)) return;
+        const filename = path.basename(filePath);
+        console.log(`[ImageWatcher] New file detected: ${filename}`);
         
-        // Skip thumbnails and optimized directories
-        if (filename.includes('thumbnails') || filename.includes('optimized')) return;
+        try {
+            await processImage(filename);
+            console.log(`[ImageWatcher] Processed: ${filename}`);
+        } catch (error) {
+            console.error(`[ImageWatcher] Error processing ${filename}:`, error);
+        }
+    });
+    
+    // Handle file changes (reprocess if source is updated)
+    watcher.on('change', async (filePath: string, stats) => {
+        const ext = path.extname(filePath).toLowerCase();
+        if (!['.jpg', '.jpeg', '.png', '.webp'].includes(ext)) return;
         
-        const filePath = path.join(PHOTOS_DIR, filename);
+        const filename = path.basename(filePath);
+        console.log(`[ImageWatcher] File changed, reprocessing: ${filename}`);
         
-        // Wait a moment for file to be fully written
-        setTimeout(async () => {
-            try {
-                // Check if file still exists (might have been deleted)
-                if (!fs.existsSync(filePath)) return;
-                
-                // Check if it's a file, not a directory
-                const stats = fs.statSync(filePath);
-                if (stats.isDirectory()) return;
-                
-                console.log(`[ImageWatcher] New/modified file detected: ${filename}`);
-                await processImage(filename);
-                console.log(`[ImageWatcher] Processed: ${filename}`);
-            } catch (error) {
-                console.error(`[ImageWatcher] Error processing ${filename}:`, error);
-            }
-        }, 1000);
+        try {
+            await reprocessImage(filename);
+            console.log(`[ImageWatcher] Reprocessed: ${filename}`);
+        } catch (error) {
+            console.error(`[ImageWatcher] Error reprocessing ${filename}:`, error);
+        }
+    });
+    
+    // Handle file unlinking
+    watcher.on('unlink', (filePath: string) => {
+        console.log(`[ImageWatcher] File removed: ${path.basename(filePath)}`);
+        // Clean up orphaned processed files
+        cleanupOrphaned();
     });
     
     watcher.on('error', (error) => {
         console.error('[ImageWatcher] Watcher error:', error);
     });
     
-    // Handle graceful shutdown
-    process.on('SIGINT', () => {
-        console.log('\n[ImageWatcher] Shutting down...');
-        watcher.close();
-        process.exit(0);
+    watcher.on('ready', () => {
+        console.log('[ImageWatcher] Initial scan complete. Watching for changes...');
     });
     
-    process.on('SIGTERM', () => {
+    // Handle graceful shutdown
+    const shutdown = () => {
         console.log('\n[ImageWatcher] Shutting down...');
-        watcher.close();
-        process.exit(0);
-    });
+        watcher.close().then(() => {
+            console.log('[ImageWatcher] Watcher closed.');
+            process.exit(0);
+        }).catch((err) => {
+            console.error('[ImageWatcher] Error closing watcher:', err);
+            process.exit(1);
+        });
+    };
+    
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
     
     console.log('[ImageWatcher] Watching for changes. Press Ctrl+C to exit.');
 }
@@ -118,6 +174,11 @@ if (ONCE_MODE) {
     console.log('[ImageWatcher] Running in one-shot mode...');
     processUnprocessedImages()
         .then(() => {
+            // Also clean up orphaned files
+            const cleaned = cleanupOrphaned();
+            if (cleaned.length > 0) {
+                console.log(`[ImageWatcher] Cleaned up ${cleaned.length} orphaned files`);
+            }
             console.log('[ImageWatcher] Done.');
             process.exit(0);
         })

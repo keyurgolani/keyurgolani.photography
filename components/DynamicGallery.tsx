@@ -10,6 +10,7 @@ interface GalleryImage {
     width: number;
     height: number;
     caption?: string;
+    lqip?: string;
 }
 
 export default function DynamicGallery() {
@@ -29,7 +30,8 @@ export default function DynamicGallery() {
                     src: img.src,
                     width: img.width,
                     height: img.height,
-                    caption: img.caption || undefined
+                    caption: img.caption || undefined,
+                    lqip: img.lqip,
                 })));
             } catch (error) {
                 console.error('Error fetching gallery images:', error);

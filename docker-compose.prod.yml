@@ -6,7 +6,8 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - ./public/assets/photos:/app/public/assets/photos # Expects photos dir on host relative to compose file
+      - ./public/assets/photos:/app/public/assets/photos
+      - ./.next-images-cache:/app/.next/cache/images
     restart: always
     environment:
       - NODE_ENV=production
@@ -18,10 +19,13 @@ services:
       start_period: 10s
 
   # Image optimization watcher - processes new photos automatically
+  # Note: Ensure photos directory is writable by uid 1001 (nextjs user)
+  # Run on host: chown -R 1001:1001 ./public/assets/photos
   image-watcher:
     image: ghcr.io/keyurgolani/keyurgolani.photography:latest
+    user: "1001:1001"
     volumes:
-      - ./public/assets/photos:/app/public/assets/photos # Same volume mount as web
+      - ./public/assets/photos:/app/public/assets/photos
     restart: always
     environment:
       - NODE_ENV=production

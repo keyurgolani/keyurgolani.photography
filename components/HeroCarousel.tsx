@@ -113,6 +113,7 @@ const HeroCarousel: React.FC<HeroCarouselProps> = ({
                   alt={`Slide ${index + 1}`}
                   className={`${styles.slideImage} ${styles.thumbnailLayer}`}
                   loading={index === 0 ? 'eager' : 'lazy'}
+                  fetchPriority={index === 0 ? 'high' : 'auto'}
                   onLoad={() => handleImageLoad(index, false)}
                   style={{ opacity: isLoaded && !hasOptimized ? 1 : hasOptimized ? 0 : 0 }}
                 />
@@ -122,6 +123,7 @@ const HeroCarousel: React.FC<HeroCarouselProps> = ({
                   alt={`Slide ${index + 1}`}
                   className={`${styles.slideImage} ${styles.optimizedLayer}`}
                   loading={index === 0 ? 'eager' : 'lazy'}
+                  fetchPriority={index === 0 ? 'high' : 'auto'}
                   onLoad={() => handleImageLoad(index, true)}
                   style={{ opacity: hasOptimized ? 1 : 0 }}
                 />
