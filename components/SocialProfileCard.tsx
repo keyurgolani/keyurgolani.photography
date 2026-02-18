@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useRef, useState, useCallback } from 'react';
 
 interface SocialProfileCardProps {
     platform: 'instagram' | '500px' | 'flickr';
@@ -77,13 +77,62 @@ function FlickrLogo({ className }: { className?: string }) {
 
 export default function SocialProfileCard({ platform, handle, url, style, className = '' }: SocialProfileCardProps) {
     const config = platformConfig[platform];
+    const cardRef = useRef<HTMLAnchorElement>(null);
+    const [transform, setTransform] = useState({ rotateX: 0, rotateY: 0, scale: 1 });
+    const [parallax, setParallax] = useState({ x: 0, y: 0 });
+    const [glarePosition, setGlarePosition] = useState({ x: 50, y: 50 });
+
+    const handleMouseMove = useCallback((e: React.MouseEvent<HTMLAnchorElement>) => {
+        if (!cardRef.current) return;
+        
+        const rect = cardRef.current.getBoundingClientRect();
+        const centerX = rect.left + rect.width / 2;
+        const centerY = rect.top + rect.height / 2;
+        
+        const mouseX = e.clientX;
+        const mouseY = e.clientY;
+        
+        // Calculate rotation (max 15 degrees)
+        const rotateY = ((mouseX - centerX) / (rect.width / 2)) * 12;
+        const rotateX = -((mouseY - centerY) / (rect.height / 2)) * 12;
+        
+        // Calculate parallax offset for inner elements
+        const parallaxX = ((mouseX - centerX) / (rect.width / 2)) * 15;
+        const parallaxY = ((mouseY - centerY) / (rect.height / 2)) * 15;
+        
+        // Calculate glare position
+        const glareX = ((mouseX - rect.left) / rect.width) * 100;
+        const glareY = ((mouseY - rect.top) / rect.height) * 100;
+        
+        setTransform({ rotateX, rotateY, scale: 1.05 });
+        setParallax({ x: parallaxX, y: parallaxY });
+        setGlarePosition({ x: glareX, y: glareY });
+    }, []);
+
+    const handleMouseEnter = useCallback(() => {
+        setTransform(prev => ({ ...prev, scale: 1.05 }));
+    }, []);
+
+    const handleMouseLeave = useCallback(() => {
+        setTransform({ rotateX: 0, rotateY: 0, scale: 1 });
+        setParallax({ x: 0, y: 0 });
+    }, []);
 
     return (
         <a
+            ref={cardRef}
             href={url}
             target="_blank"
             rel="noopener noreferrer"
-            style={style}
+            style={{
+                ...style,
+                transform: `perspective(1000px) rotateX(${transform.rotateX}deg) rotateY(${transform.rotateY}deg) scale(${transform.scale})`,
+                transition: 'transform 0.15s ease-out',
+                transformStyle: 'preserve-3d',
+            }}
+            onMouseMove={handleMouseMove}
+            onMouseEnter={handleMouseEnter}
+            onMouseLeave={handleMouseLeave}
             className={`group absolute block 
                 w-36 h-52 
                 sm:w-44 sm:h-64 
@@ -93,12 +142,25 @@ export default function SocialProfileCard({ platform, handle, url, style, classN
                 2xl:w-96 2xl:h-[36rem]
                 3xl:w-[26rem] 3xl:h-[40rem]
                 4xl:w-[30rem] 4xl:h-[46rem]
-                transition-all duration-500 hover:z-50 hover:scale-105 ${className}`}
+                hover:z-50 ${className}`}
         >
             {/* Card with shadow and border */}
-            <div className={`relative w-full h-full rounded-xl overflow-hidden bg-neutral-900 border border-white/10 shadow-2xl ${config.shadowColor} hover:shadow-3xl transition-shadow duration-300`}>
+            <div 
+                className={`relative w-full h-full rounded-xl overflow-hidden bg-neutral-900 border border-white/10 shadow-2xl ${config.shadowColor} transition-shadow duration-300`}
+                style={{ 
+                    transform: `translateZ(20px)`,
+                    boxShadow: transform.scale > 1 
+                        ? `0 25px 50px -12px rgba(0, 0, 0, 0.5), 0 0 60px ${config.accentColor}30` 
+                        : undefined
+                }}
+            >
                 {/* Gradient header bar */}
-                <div className={`absolute top-0 left-0 right-0 h-6 sm:h-7 md:h-8 bg-gradient-to-r ${config.headerGradient} flex items-center px-2 sm:px-3 gap-1 sm:gap-2`}>
+                <div 
+                    className={`absolute top-0 left-0 right-0 h-6 sm:h-7 md:h-8 bg-gradient-to-r ${config.headerGradient} flex items-center px-2 sm:px-3 gap-1 sm:gap-2`}
+                    style={{ 
+                        transform: `translateZ(30px) translateX(${parallax.x * 0.3}px) translateY(${parallax.y * 0.3}px)` 
+                    }}
+                >
                     <div className="flex gap-1 sm:gap-1.5">
                         <div className="w-1.5 h-1.5 sm:w-2 sm:h-2 md:w-2.5 md:h-2.5 rounded-full bg-white/30" />
                         <div className="w-1.5 h-1.5 sm:w-2 sm:h-2 md:w-2.5 md:h-2.5 rounded-full bg-white/30" />
@@ -108,9 +170,19 @@ export default function SocialProfileCard({ platform, handle, url, style, classN
                 </div>
                 
                 {/* Static branded preview */}
-                <div className={`absolute top-6 sm:top-7 md:top-8 left-0 right-0 bottom-0 bg-gradient-to-br ${config.bgColor} flex flex-col items-center justify-center p-4`}>
+                <div 
+                    className={`absolute top-6 sm:top-7 md:top-8 left-0 right-0 bottom-0 bg-gradient-to-br ${config.bgColor} flex flex-col items-center justify-center p-4`}
+                    style={{ 
+                        transform: `translateZ(10px) translateX(${parallax.x * 0.5}px) translateY(${parallax.y * 0.5}px)` 
+                    }}
+                >
                     {/* Platform-specific logo */}
-                    <div className="mb-4 sm:mb-6">
+                    <div 
+                        className="mb-4 sm:mb-6"
+                        style={{ 
+                            transform: `translateZ(40px) translateX(${parallax.x * 0.8}px) translateY(${parallax.y * 0.8}px)` 
+                        }}
+                    >
                         {platform === 'instagram' && (
                             <InstagramLogo className="w-12 h-12 sm:w-16 sm:h-16 md:w-20 md:h-20 lg:w-24 lg:h-24" />
                         )}
@@ -123,18 +195,49 @@ export default function SocialProfileCard({ platform, handle, url, style, classN
                     </div>
                     
                     {/* Handle */}
-                    <p className="text-white/90 text-sm sm:text-base md:text-lg lg:text-xl font-semibold mb-1">@{handle}</p>
-                    <p className="text-white/50 text-xs sm:text-sm mb-4 sm:mb-6 text-center">Photography Portfolio</p>
+                    <p 
+                        className="text-white/90 text-sm sm:text-base md:text-lg lg:text-xl font-semibold mb-1"
+                        style={{ 
+                            transform: `translateZ(25px) translateX(${parallax.x * 0.4}px) translateY(${parallax.y * 0.4}px)` 
+                        }}
+                    >
+                        @{handle}
+                    </p>
+                    <p 
+                        className="text-white/50 text-xs sm:text-sm mb-4 sm:mb-6 text-center"
+                        style={{ 
+                            transform: `translateZ(20px) translateX(${parallax.x * 0.3}px) translateY(${parallax.y * 0.3}px)` 
+                        }}
+                    >
+                        Photography Portfolio
+                    </p>
                     
                     {/* CTA Button */}
-                    <div className={`px-3 py-1.5 sm:px-4 sm:py-2 md:px-5 md:py-2.5 rounded-full bg-gradient-to-r ${config.gradient} text-white text-xs sm:text-sm font-medium shadow-lg`}>
+                    <div 
+                        className={`px-3 py-1.5 sm:px-4 sm:py-2 md:px-5 md:py-2.5 rounded-full bg-gradient-to-r ${config.gradient} text-white text-xs sm:text-sm font-medium shadow-lg transition-transform duration-200`}
+                        style={{ 
+                            transform: `translateZ(35px) translateX(${parallax.x * 0.6}px) translateY(${parallax.y * 0.6}px)`,
+                            boxShadow: transform.scale > 1 ? '0 10px 30px rgba(0,0,0,0.3)' : undefined
+                        }}
+                    >
                         {config.buttonText}
                     </div>
                 </div>
                 
+                {/* Glare effect */}
+                <div 
+                    className="absolute inset-0 pointer-events-none opacity-0 group-hover:opacity-30 transition-opacity duration-300"
+                    style={{
+                        background: `radial-gradient(circle at ${glarePosition.x}% ${glarePosition.y}%, rgba(255,255,255,0.4) 0%, transparent 50%)`,
+                    }}
+                />
+                
                 {/* Hover overlay */}
-                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors duration-300 flex items-center justify-center opacity-0 group-hover:opacity-100">
-                    <span className="px-3 py-1.5 sm:px-4 sm:py-2 bg-white/90 text-black text-xs sm:text-sm font-medium rounded-full shadow-lg">
+                <div 
+                    className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors duration-300 flex items-center justify-center opacity-0 group-hover:opacity-100"
+                    style={{ transform: 'translateZ(15px)' }}
+                >
+                    <span className="px-3 py-1.5 sm:px-4 sm:py-2 bg-white/90 text-black text-xs sm:text-sm font-medium rounded-full shadow-lg backdrop-blur-sm">
                         Visit Profile →
                     </span>
                 </div>
