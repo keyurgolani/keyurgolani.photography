@@ -16,9 +16,12 @@ interface DynamicHeroCarouselProps {
     interval?: number;
 }
 
+// Get carousel interval from env variable (in milliseconds), default 12000ms (12 seconds)
+const CAROUSEL_INTERVAL = parseInt(process.env.NEXT_PUBLIC_CAROUSEL_INTERVAL || '12000', 10);
+
 const DynamicHeroCarousel: React.FC<DynamicHeroCarouselProps> = ({
     autoScroll = true,
-    interval = 18000, // 3x the original 6000ms
+    interval = CAROUSEL_INTERVAL,
 }) => {
     const [images, setImages] = useState<CarouselImage[]>([]);
 
