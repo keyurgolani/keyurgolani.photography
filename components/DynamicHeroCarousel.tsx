@@ -3,7 +3,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import HeroCarousel from './HeroCarousel';
 import { ImageItem } from '@/utils/getImageData';
-import styles from './DynamicHeroCarousel.module.css';
 
 interface CarouselImage {
     thumbnail: string;
@@ -13,6 +12,7 @@ interface CarouselImage {
 
 interface DynamicHeroCarouselProps {
     autoScroll?: boolean;
+    autoScrollEnabled?: boolean;
     interval?: number;
     onFirstImageLoaded?: () => void;
 }
@@ -32,6 +32,7 @@ function shuffleArray<T>(array: T[]): T[] {
 
 const DynamicHeroCarousel: React.FC<DynamicHeroCarouselProps> = ({
     autoScroll = true,
+    autoScrollEnabled = true,
     interval = CAROUSEL_INTERVAL,
     onFirstImageLoaded,
 }) => {
@@ -96,9 +97,10 @@ const DynamicHeroCarousel: React.FC<DynamicHeroCarouselProps> = ({
     }
 
     return (
-        <HeroCarousel 
-            images={images} 
-            autoScroll={autoScroll} 
+        <HeroCarousel
+            images={images}
+            autoScroll={autoScroll}
+            autoScrollEnabled={autoScrollEnabled}
             interval={interval}
             preloadImages={preloadImages}
             onFirstImageLoaded={onFirstImageLoaded}

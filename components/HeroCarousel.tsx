@@ -13,6 +13,7 @@ interface CarouselImage {
 interface HeroCarouselProps {
   images: CarouselImage[];
   autoScroll?: boolean;
+  autoScrollEnabled?: boolean;
   interval?: number;
   preloadImages?: (urls: string[]) => void;
   onFirstImageLoaded?: () => void;
@@ -21,6 +22,7 @@ interface HeroCarouselProps {
 const HeroCarousel: React.FC<HeroCarouselProps> = ({
   images,
   autoScroll = true,
+  autoScrollEnabled = true,
   interval = 18000,
   preloadImages,
   onFirstImageLoaded,
@@ -38,10 +40,6 @@ const HeroCarousel: React.FC<HeroCarouselProps> = ({
   const prevSlide = useCallback(() => {
     setCurrentIndex((prev) => (prev === 0 ? images.length - 1 : prev - 1));
   }, [images.length]);
-
-  const goToSlide = (index: number) => {
-    setCurrentIndex(index);
-  };
 
   const handleImageLoad = (index: number, isOptimized: boolean = false) => {
     if (isOptimized) {
@@ -124,10 +122,10 @@ const HeroCarousel: React.FC<HeroCarouselProps> = ({
   }, [currentIndex, images, preloadedImages, loadedImages, optimizedImages, preloadImages]);
 
   useEffect(() => {
-    if (!autoScroll) return;
+    if (!autoScroll || !autoScrollEnabled) return;
     const slideInterval = setInterval(nextSlide, interval);
     return () => clearInterval(slideInterval);
-  }, [autoScroll, interval, nextSlide]);
+  }, [autoScroll, autoScrollEnabled, interval, nextSlide]);
 
   if (!images || images.length === 0) return null;
 

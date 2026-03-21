@@ -105,7 +105,7 @@ function startWatcher(): void {
     });
     
     // Handle new/changed files
-    watcher.on('add', async (filePath: string, stats) => {
+    watcher.on('add', async (filePath: string) => {
         const ext = path.extname(filePath).toLowerCase();
         if (!['.jpg', '.jpeg', '.png', '.webp'].includes(ext)) return;
         
@@ -121,7 +121,7 @@ function startWatcher(): void {
     });
     
     // Handle file changes (reprocess if source is updated)
-    watcher.on('change', async (filePath: string, stats) => {
+    watcher.on('change', async (filePath: string) => {
         const ext = path.extname(filePath).toLowerCase();
         if (!['.jpg', '.jpeg', '.png', '.webp'].includes(ext)) return;
         

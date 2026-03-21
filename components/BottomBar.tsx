@@ -3,14 +3,27 @@
 import React from 'react';
 import Link from 'next/link';
 import { Images, Home, UserRound } from 'lucide-react';
+import { motion } from 'framer-motion';
 
 interface BottomBarProps {
   children?: React.ReactNode;
+  visible?: boolean;
 }
 
-const BottomBar: React.FC<BottomBarProps> = ({ children }) => {
+const BottomBar: React.FC<BottomBarProps> = ({ children, visible = true }) => {
   return (
-    <div className="fixed bottom-0 left-0 w-full z-50 pointer-events-none">
+    <motion.div
+      className="fixed bottom-0 left-0 w-full z-50 pointer-events-none"
+      initial={false}
+      animate={{
+        y: visible ? 0 : '100%',
+        opacity: visible ? 1 : 0,
+      }}
+      transition={{
+        duration: 0.8,
+        ease: [0.22, 1, 0.36, 1],
+      }}
+    >
        {/* Use pointer-events-none for container so clicks pass through to background when not on UI elements */}
        {/* But we don't want the container to block interactions, so flex layout handles positioning */}
       <div className="flex flex-col items-center justify-end w-full h-screen pb-8 pointer-events-none">
@@ -45,7 +58,7 @@ const BottomBar: React.FC<BottomBarProps> = ({ children }) => {
             </div>
         </div>
       </div>
-    </div>
+    </motion.div>
   );
 };
 

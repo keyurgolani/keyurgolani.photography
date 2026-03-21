@@ -13,9 +13,10 @@ dist-ssr
 *.local
 
 # Next.js
-.next/
+.next*/
 out/
 build/
+next-env.d.ts
 
 # Editor directories and files
 .vscode/*
@@ -39,3 +40,10 @@ public/assets/photos/optimized/
 
 # TypeScript build info
 *.tsbuildinfo
+
+# Workflow and planning artifacts
+.superpowers/
+docs/plans/
+docs/specs/
+docs/superpowers/
+OPTIMIZATION_PLAN*.md

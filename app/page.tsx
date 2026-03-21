@@ -1,16 +1,15 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import DynamicHeroCarousel from '../components/DynamicHeroCarousel';
 import RevealingContents from '../components/RevealingContents';
 import BottomBar from '../components/BottomBar';
-import ProfilePicture from '../components/ProfilePicture';
-import LoadingAnimation from '../components/LoadingAnimation';
-import profileBack from '../public/assets/profile/back.png';
-import profileFront from '../public/assets/profile/front.png';
+import HeroReveal from '../components/HeroReveal';
 
 export default function Home() {
     const [isLoading, setIsLoading] = useState(true);
+    const [isSettled, setIsSettled] = useState(false);
+    const [carouselAutoScroll, setCarouselAutoScroll] = useState(false);
     const hasLoadedRef = useRef(false);
 
     const handleFirstImageLoaded = () => {
@@ -19,6 +18,21 @@ export default function Home() {
             setIsLoading(false);
         }
     };
+
+    const handleSettled = useCallback(() => {
+        setIsSettled(true);
+    }, []);
+
+    // After settle, wait 2.5s then enable carousel auto-scroll
+    // Also trigger RevealingContents visibility so BottomBar slide-up is visible
+    useEffect(() => {
+        if (!isSettled) return;
+        // Dispatch a synthetic click to trigger RevealingContents' activity handler,
+        // making it visible for its auto-hide timeout period
+        window.dispatchEvent(new MouseEvent('click'));
+        const timer = setTimeout(() => setCarouselAutoScroll(true), 2500);
+        return () => clearTimeout(timer);
+    }, [isSettled]);
 
     // Safety timeout - ensure loading animation exits after max 5 seconds
     useEffect(() => {
@@ -34,25 +48,21 @@ export default function Home() {
 
     return (
         <main className="relative w-full h-screen bg-black overflow-hidden">
-            {/* Loading Animation Overlay */}
-            <LoadingAnimation isLoading={isLoading} />
-            
-            {/* Full Screen Carousel as background/hero - fetches images dynamically */}
+            {/* HeroReveal — grain overlay, ripples, profile photo animation */}
+            <HeroReveal isLoading={isLoading} onSettled={handleSettled} />
+
+            {/* Full Screen Carousel as background/hero */}
             <div className="absolute inset-0 z-0">
-                <DynamicHeroCarousel onFirstImageLoaded={handleFirstImageLoaded} />
+                <DynamicHeroCarousel
+                    onFirstImageLoaded={handleFirstImageLoaded}
+                    autoScrollEnabled={carouselAutoScroll}
+                />
             </div>
 
             {/* Revealing Content Overlay - Controls visibility of children */}
             <RevealingContents>
                 <div className="flex flex-col items-center justify-end h-full pb-8">
-                    <BottomBar>
-                        <div className="transform transition-transform hover:scale-105 duration-500">
-                            <ProfilePicture 
-                                profileBack={profileBack} 
-                                profileFront={profileFront} 
-                            />
-                        </div>
-                    </BottomBar>
+                    <BottomBar visible={isSettled} />
                 </div>
             </RevealingContents>
         </main>

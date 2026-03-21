@@ -1,0 +1,28 @@
+/* Grain overlay — covers viewport during loading, revealed via mask-image */
+.grainOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  pointer-events: none;
+}
+
+/* Solid themed background */
+.grainBackground {
+  position: absolute;
+  inset: 0;
+  background-color: var(--background-color);
+}
+
+/* Grain texture layer on top of solid background */
+.grainTexture {
+  position: absolute;
+  inset: 0;
+  filter: url(#grain-filter);
+  /* Light mode: subtle grain */
+  opacity: 0.12;
+}
+
+/* Dark mode: softer grain to avoid noisy speckles */
+[data-theme="dark"] .grainTexture {
+  opacity: 0.06;
+}

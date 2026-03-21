@@ -29,7 +29,7 @@ const ProfilePicture: React.FC<ProfilePictureProps> = ({
             alt="Profile Background"
             width={320}
             height={320}
-            className="rounded-full object-cover shadow-lg ring-4 ring-white/30 dark:ring-white/10"
+            className="rounded-full object-cover shadow-lg ring-4 ring-white/30 dark:ring-white/10 h-auto w-auto"
             priority
             />
         </div>
@@ -39,7 +39,7 @@ const ProfilePicture: React.FC<ProfilePictureProps> = ({
                 alt="Profile Front"
                 width={320}
                 height={320}
-                className="rounded-full object-cover drop-shadow-2xl ring-4 ring-white/30 dark:ring-white/10"
+                className="rounded-full object-cover drop-shadow-2xl ring-4 ring-white/30 dark:ring-white/10 h-auto w-auto"
                 priority
             />
         </div>
