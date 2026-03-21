@@ -34,18 +34,6 @@ export default function Home() {
         return () => clearTimeout(timer);
     }, [isSettled]);
 
-    // Safety timeout - ensure loading animation exits after max 5 seconds
-    useEffect(() => {
-        const safetyTimeout = setTimeout(() => {
-            if (!hasLoadedRef.current) {
-                hasLoadedRef.current = true;
-                setIsLoading(false);
-            }
-        }, 5000);
-
-        return () => clearTimeout(safetyTimeout);
-    }, []);
-
     return (
         <main className="relative w-full h-screen bg-black overflow-hidden">
             {/* HeroReveal — grain overlay, ripples, profile photo animation */}

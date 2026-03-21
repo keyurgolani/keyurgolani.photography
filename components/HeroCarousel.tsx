@@ -48,8 +48,8 @@ const HeroCarousel: React.FC<HeroCarouselProps> = ({
         setLoadedImages(prev => new Set(prev).add(index));
     }
     
-    // Notify parent when first image is loaded (thumbnail or optimized)
-    if (index === 0 && !hasNotifiedLoaded.current && onFirstImageLoaded) {
+    // The intro reveal should only end once the first full-quality hero image is ready.
+    if (index === 0 && isOptimized && !hasNotifiedLoaded.current && onFirstImageLoaded) {
       hasNotifiedLoaded.current = true;
       onFirstImageLoaded();
     }
