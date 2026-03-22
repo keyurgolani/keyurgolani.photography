@@ -44,3 +44,12 @@ public/assets/photos/optimized/
 
 # TypeScript build info
 *.tsbuildinfo
+
+# Temporary SDLC / planning artifacts
+.superpowers/
+docs/plans/
+docs/specs/
+OPTIMIZATION_PLAN*
+task_plan.md
+findings.md
+progress.md

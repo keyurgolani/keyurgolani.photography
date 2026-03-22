@@ -5,19 +5,25 @@ import DynamicHeroCarousel from '../components/DynamicHeroCarousel';
 import RevealingContents from '../components/RevealingContents';
 import BottomBar from '../components/BottomBar';
 import HeroReveal from '../components/HeroReveal';
+import {
+    hasCompletedHomeHeroIntro,
+    markHomeHeroIntroCompleted,
+} from '../utils/homeHeroCache';
 
 export default function Home() {
-    const [isLoading, setIsLoading] = useState(true);
-    const [isSettled, setIsSettled] = useState(false);
-    const [carouselAutoScroll, setCarouselAutoScroll] = useState(false);
-    const hasLoadedRef = useRef(false);
+    const hasCompletedIntro = hasCompletedHomeHeroIntro();
+    const [isLoading, setIsLoading] = useState(!hasCompletedIntro);
+    const [isSettled, setIsSettled] = useState(hasCompletedIntro);
+    const [carouselAutoScroll, setCarouselAutoScroll] = useState(hasCompletedIntro);
+    const hasLoadedRef = useRef(hasCompletedIntro);
 
-    const handleFirstImageLoaded = () => {
+    const handleFirstImageLoaded = useCallback(() => {
         if (!hasLoadedRef.current) {
             hasLoadedRef.current = true;
+            markHomeHeroIntroCompleted();
             setIsLoading(false);
         }
-    };
+    }, []);
 
     const handleSettled = useCallback(() => {
         setIsSettled(true);
@@ -27,12 +33,18 @@ export default function Home() {
     // Also trigger RevealingContents visibility so BottomBar slide-up is visible
     useEffect(() => {
         if (!isSettled) return;
+
         // Dispatch a synthetic click to trigger RevealingContents' activity handler,
         // making it visible for its auto-hide timeout period
         window.dispatchEvent(new MouseEvent('click'));
+
+        if (carouselAutoScroll) {
+            return;
+        }
+
         const timer = setTimeout(() => setCarouselAutoScroll(true), 2500);
         return () => clearTimeout(timer);
-    }, [isSettled]);
+    }, [carouselAutoScroll, isSettled]);
 
     return (
         <main className="relative w-full h-screen bg-black overflow-hidden">

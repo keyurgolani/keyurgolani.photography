@@ -3,12 +3,11 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import HeroCarousel from './HeroCarousel';
 import { ImageItem } from '@/utils/getImageData';
-
-interface CarouselImage {
-    thumbnail: string;
-    optimized: string;
-    src: string;
-}
+import {
+    getCachedHomeHeroImages,
+    HeroCarouselImage,
+    setCachedHomeHeroImages,
+} from '@/utils/homeHeroCache';
 
 interface DynamicHeroCarouselProps {
     autoScroll?: boolean;
@@ -30,13 +29,33 @@ function shuffleArray<T>(array: T[]): T[] {
     return shuffled;
 }
 
+function mergeCarouselImages(
+    existingImages: HeroCarouselImage[],
+    latestImages: HeroCarouselImage[]
+) {
+    if (existingImages.length === 0) {
+        return shuffleArray(latestImages);
+    }
+
+    const latestImagesBySrc = new Map(latestImages.map((image) => [image.src, image]));
+    const retainedImages = existingImages
+        .filter((image) => latestImagesBySrc.has(image.src))
+        .map((image) => latestImagesBySrc.get(image.src)!);
+    const retainedSrcs = new Set(retainedImages.map((image) => image.src));
+    const newImages = latestImages.filter((image) => !retainedSrcs.has(image.src));
+
+    return newImages.length > 0
+        ? [...retainedImages, ...shuffleArray(newImages)]
+        : retainedImages;
+}
+
 const DynamicHeroCarousel: React.FC<DynamicHeroCarouselProps> = ({
     autoScroll = true,
     autoScrollEnabled = true,
     interval = CAROUSEL_INTERVAL,
     onFirstImageLoaded,
 }) => {
-    const [images, setImages] = useState<CarouselImage[]>([]);
+    const [images, setImages] = useState<HeroCarouselImage[]>(() => getCachedHomeHeroImages());
 
     // Preload multiple high-quality images for LCP
     const preloadImages = useCallback((imageUrls: string[]) => {
@@ -76,16 +95,19 @@ const DynamicHeroCarousel: React.FC<DynamicHeroCarouselProps> = ({
                     optimized: img.optimized, // Pre-generated 1920px WebP
                     src: img.src,
                 }));
-                // Randomize the order so users see different photos each visit
-                setImages(shuffleArray(carouselImages));
+                const nextImages = mergeCarouselImages(getCachedHomeHeroImages(), carouselImages);
+                setCachedHomeHeroImages(nextImages);
+                setImages(nextImages);
                 
                 // Preload first 2 high-quality images for better LCP
-                if (carouselImages.length > 0) {
-                    preloadImages(carouselImages.map(img => img.optimized));
+                if (nextImages.length > 0) {
+                    preloadImages(nextImages.map(img => img.optimized));
                 }
             } catch (error) {
                 console.error('Error fetching gallery images:', error);
-                setImages([]);
+                if (getCachedHomeHeroImages().length === 0) {
+                    setImages([]);
+                }
             }
         };
 

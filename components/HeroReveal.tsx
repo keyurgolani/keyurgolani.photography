@@ -24,7 +24,7 @@ const AUTO_HIDE_TIMEOUT = parseInt(
 );
 
 export default function HeroReveal({ isLoading, onSettled }: HeroRevealProps) {
-  const [phase, setPhase] = useState<Phase>('loading');
+  const [phase, setPhase] = useState<Phase>(() => (isLoading ? 'loading' : 'settled'));
   const [ripples, setRipples] = useState<number[]>([]);
   const [ripplesExiting, setRipplesExiting] = useState(false);
   const [profileRadius, setProfileRadius] = useState(160);
@@ -36,7 +36,7 @@ export default function HeroReveal({ isLoading, onSettled }: HeroRevealProps) {
   const rippleWaitRef = useRef<NodeJS.Timeout | null>(null);
   const revealTimeout1Ref = useRef<NodeJS.Timeout | null>(null);
   const revealTimeout2Ref = useRef<NodeJS.Timeout | null>(null);
-  const revealInitiatedRef = useRef(false);
+  const revealInitiatedRef = useRef(!isLoading);
   const mountTimeRef = useRef(Date.now());
   const profileControls = useAnimationControls();
 
@@ -58,13 +58,23 @@ export default function HeroReveal({ isLoading, onSettled }: HeroRevealProps) {
     setMaxRadius(Math.ceil(Math.sqrt(window.innerWidth ** 2 + window.innerHeight ** 2)));
     setReducedMotion(window.matchMedia('(prefers-reduced-motion: reduce)').matches);
 
-    // Convert initial centering position from percentages to pixels
-    // so profileControls.start() can interpolate to pixel targets later
+    if (isLoading) {
+      // Convert initial centering position from percentages to pixels
+      // so profileControls.start() can interpolate to pixel targets later
+      profileControls.set({
+        top: window.innerHeight / 2,
+        left: window.innerWidth / 2,
+        scale: 1,
+      });
+      return;
+    }
+
     profileControls.set({
-      top: window.innerHeight / 2,
+      top: window.innerHeight - 280,
       left: window.innerWidth / 2,
+      scale: 0.85,
     });
-  }, [profileControls]);
+  }, [isLoading, profileControls]);
 
   // If reduced motion, skip to settled immediately
   useEffect(() => {
