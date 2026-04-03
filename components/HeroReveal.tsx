@@ -38,6 +38,7 @@ export default function HeroReveal({ isLoading, onSettled }: HeroRevealProps) {
   const revealTimeout2Ref = useRef<NodeJS.Timeout | null>(null);
   const revealInitiatedRef = useRef(!isLoading);
   const mountTimeRef = useRef(Date.now());
+  const wasLoadingRef = useRef(isLoading);
   const profileControls = useAnimationControls();
 
   // Motion value for reveal progress: 0 = fully covered, 1 = fully revealed
@@ -66,14 +67,20 @@ export default function HeroReveal({ isLoading, onSettled }: HeroRevealProps) {
         left: window.innerWidth / 2,
         scale: 1,
       });
+      wasLoadingRef.current = true;
       return;
     }
 
-    profileControls.set({
-      top: window.innerHeight - 280,
-      left: window.innerWidth / 2,
-      scale: 0.85,
-    });
+    // Only set bottom position if we were never in loading state
+    // (i.e., returning visitor with completed intro). If we transitioned
+    // from loading to not loading, the reveal animation handles the position.
+    if (!wasLoadingRef.current) {
+      profileControls.set({
+        top: window.innerHeight - 280,
+        left: window.innerWidth / 2,
+        scale: 0.85,
+      });
+    }
   }, [isLoading, profileControls]);
 
   // If reduced motion, skip to settled immediately
