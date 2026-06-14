@@ -9,6 +9,16 @@ A modern, high-performance photography portfolio website built with Next.js 16, 
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
+> A self-hostable photography portfolio with a glassmorphism UI, masonry gallery, full-featured lightbox, dark/light theming, and an automatic Sharp-powered image pipeline (AVIF/WebP, EXIF captions).
+
+<p align="center">
+  <img src="docs/screenshots/gallery-dark.png" alt="Masonry photo gallery" width="49%" />
+  <img src="docs/screenshots/about.png" alt="About page with social profiles" width="49%" />
+</p>
+
+<p align="center"><em>Immersive hero carousel, masonry gallery, and lightbox viewer.</em><br/>
+👉 <strong><a href="SHOWCASE.md">See the full visual showcase »</a></strong></p>
+
 ## ✨ Features
 
 ### 🎨 Design
