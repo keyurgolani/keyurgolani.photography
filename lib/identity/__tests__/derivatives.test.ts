@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { withExifOrientation } from '../../../test/fixtures/makeLibrary';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempLibrary';
@@ -36,6 +36,7 @@ beforeAll(async () => {
 });
 
 afterEach(async () => {
+    vi.unstubAllEnvs();
     for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
@@ -332,6 +333,26 @@ describe('buildDerivativeSet', () => {
         cleanups.push(() => other.cleanup());
         expect(await s.build(job)).toEqual({ status: 'skipped', reason: 'data-root' });
         expect(fs.existsSync(path.join(other.root, 'assets'))).toBe(false);
+    });
+
+    it('does nothing when PHOTOGRAPHY_DATA_DIR is unset in production', async () => {
+        const s = await setup();
+        const job = await s.job('landscape.jpg');
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', '');
+        vi.stubEnv('NODE_ENV', 'production');
+        expect(await s.build(job)).toEqual({ status: 'skipped', reason: 'data-root' });
+        vi.unstubAllEnvs();
+        expect(fs.existsSync(path.join(s.data.root, 'assets'))).toBe(false);
+        expect(profileOf(await readRegistry(s.data.root), job)).toEqual({ state: 'pending', attempts: 0 });
+    });
+
+    it.skipIf(process.getuid?.() === 0)('does nothing against an unwritable data root', async () => {
+        const s = await setup();
+        const job = await s.job('landscape.jpg');
+        fs.chmodSync(s.data.root, 0o555);
+        expect(await s.build(job)).toEqual({ status: 'skipped', reason: 'data-root' });
+        expect(fs.existsSync(path.join(s.data.root, 'assets'))).toBe(false);
+        expect(fs.existsSync(stagingRoot(s.data.root))).toBe(false);
     });
 });
 
