@@ -19,16 +19,35 @@ async function focusAndMeasure(target: Locator): Promise<Measurement> {
     return measured;
 }
 
-/** Properties whose transition would fade the ring or its element in. */
-const RING_PROPERTIES = new Set(['outline-width', 'outline-offset', 'outline-color', 'box-shadow', 'opacity']);
+/** Properties whose transition would fade the ring or its element in. `all` covers every one of them. */
+const RING_PROPERTY = /^(all|outline(-[a-z]+)?|box-shadow|opacity)$/;
+
+/** A computed time list such as "0.3s, 60s" or "150ms", in seconds. */
+const seconds = (list: string) =>
+    list.split(',').map((time) => (time.trim().endsWith('ms') ? parseFloat(time) / 1000 : parseFloat(time)) || 0);
+
+/**
+ * Ring properties the focused element transitions, from its computed style,
+ * with their duration plus delay. This catches a fade even when nothing is
+ * mid-transition at the moment it's measured.
+ */
+function declaredFades({ property, duration, delay }: Measurement['transition']): string[] {
+    const durations = seconds(duration);
+    const delays = seconds(delay);
+    return property.split(',').flatMap((name, index) => {
+        const total = durations[index % durations.length] + delays[index % delays.length];
+        return RING_PROPERTY.test(name.trim()) && total > 0 ? [`${name.trim()} has a ${Number(total.toFixed(3))}s transition under focus`] : [];
+    });
+}
 
 /**
  * Contract rule 4: an outline of at least 3 px, at full opacity all the way
- * up the tree, and no fade: a ring that transitions in reads as its start
- * value, so it fails here rather than passing by luck.
+ * up the tree, and no fade. A ring that transitions in reads as its start
+ * value, so a running transition fails here, and so does one the computed
+ * style declares for the ring or opacity.
  */
 export async function expectFocusRingVisible(target: Locator): Promise<void> {
-    const { outline, faded, transitions } = await focusAndMeasure(target);
+    const { outline, faded, transitions, transition } = await focusAndMeasure(target);
     const problems: string[] = [];
     if (outline.style === 'none') {
         problems.push('outline-style is none');
@@ -37,8 +56,9 @@ export async function expectFocusRingVisible(target: Locator): Promise<void> {
         if (outline.alpha === 0) problems.push('outline color is transparent');
     }
     for (const { label, opacity } of faded) problems.push(`${label} has opacity ${opacity}`);
-    const fading = transitions.filter((property) => RING_PROPERTIES.has(property));
+    const fading = transitions.filter((property) => RING_PROPERTY.test(property));
     if (fading.length > 0) problems.push(`the ring transitions in (${fading.join(', ')}), so it needs transition: none`);
+    problems.push(...declaredFades(transition).map((fade) => `${fade}, so it needs transition: none`));
     expect(problems, `Focus ring on ${target} must be visible`).toEqual([]);
 }
 
@@ -107,13 +127,14 @@ function perimeter({ left, top, right, bottom }: Box): { x: number; y: number }[
 /**
  * Contract rule 4 and WCAG 2.4.11: fixed chrome never entirely hides the
  * focus ring, and leaves it fully clear when the element fits between the
- * root scroll paddings. Samples the middle of the ring band.
+ * root scroll paddings. Samples the middle of the ring band, and for the
+ * fully clear case the ring's outer edge too.
  */
 export async function expectNotObscured(target: Locator, chrome: Locator | readonly Locator[]): Promise<void> {
     const { box, ring, viewport } = await focusAndMeasure(target);
     const covers = await chromeBoxes(target, [chrome].flat());
     const band = (box.left - ring.left) / 2;
-    const samples = perimeter({ left: box.left - band, top: box.top - band, right: box.right + band, bottom: box.bottom + band });
+    const middle = perimeter({ left: box.left - band, top: box.top - band, right: box.right + band, bottom: box.bottom + band });
     const hiddenBy = ({ x, y }: { x: number; y: number }) => {
         if (x < 0 || x > viewport.width || y < 0 || y > viewport.height) return 'outside the viewport';
         const cover = covers.find((c) => x > c.box.left && x < c.box.right && y > c.box.top && y < c.box.bottom);
@@ -122,6 +143,7 @@ export async function expectNotObscured(target: Locator, chrome: Locator | reado
 
     const room = viewport.height - viewport.scrollPaddingTop - viewport.scrollPaddingBottom;
     if (box.bottom - box.top <= room) {
+        const samples = [...middle, ...perimeter(ring)];
         const hidden = new Map<string, number>();
         for (const sample of samples) {
             const reason = hiddenBy(sample);
@@ -132,7 +154,7 @@ export async function expectNotObscured(target: Locator, chrome: Locator | reado
             `${target} fits between the scroll paddings, so its focus ring must be fully clear`,
         ).toEqual([]);
     } else {
-        const visible = samples.filter((sample) => !hiddenBy(sample)).length;
+        const visible = middle.filter((sample) => !hiddenBy(sample)).length;
         expect(
             visible,
             `${target} is taller than the space between the scroll paddings, so chrome may cover part of its focus ring but not hide it entirely`,

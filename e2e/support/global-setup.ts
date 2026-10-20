@@ -26,7 +26,7 @@ function render({ width, height, colors }: PhotoFixture) {
  * Writes the photo fixtures to a fresh temp directory and exports it as
  * E2E_FIXTURE_DIR, which the workers inherit. Sharp writes no metadata unless
  * asked, so the JPEGs carry no EXIF. The returned teardown deletes the
- * directory, and the empty library playwright.config.ts made for the server.
+ * directory. playwright.config.ts removes the empty library it made.
  */
 export default async function globalSetup(): Promise<() => Promise<void>> {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-fixtures-'));
@@ -37,10 +37,5 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
 
     return async () => {
         await fs.promises.rm(dir, { recursive: true, force: true });
-        const library = process.env.E2E_EMPTY_LIBRARY;
-        // Only a library this harness made: a direct child of the temp dir named e2e-library-*.
-        if (library && path.dirname(library) === os.tmpdir() && path.basename(library).startsWith('e2e-library-')) {
-            await fs.promises.rm(library, { recursive: true, force: true });
-        }
     };
 }

@@ -27,6 +27,8 @@ export interface Measurement {
     faded: { label: string; opacity: number }[];
     /** Properties with a CSS transition running on the element. */
     transitions: string[];
+    /** The computed transition-property, transition-duration, and transition-delay lists. */
+    transition: { property: string; duration: string; delay: string };
     focused: boolean;
     focusVisible: boolean;
     /** Ancestors whose overflow clips the element, innermost first. */
@@ -101,6 +103,7 @@ export function measure(target: Locator): Promise<Measurement> {
                 .getAnimations()
                 .filter((animation): animation is CSSTransition => animation instanceof CSSTransition && animation.playState === 'running')
                 .map((transition) => transition.transitionProperty),
+            transition: { property: style.transitionProperty, duration: style.transitionDuration, delay: style.transitionDelay },
             focused: element === document.activeElement,
             focusVisible: element.matches(':focus-visible'),
             clips,

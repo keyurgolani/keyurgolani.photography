@@ -23,9 +23,11 @@ export interface Surface {
  */
 export async function checkSurface(page: Page, { entries, controls = [], chrome = [] }: Surface): Promise<void> {
     await waitForHydration(page);
+    const groups = entries ? [entries, ...controls] : [...controls];
+    // Entries can arrive after hydration, as the gallery's do once /api/photos answers, so axe waits for every group.
+    for (const group of groups) await group.first().waitFor({ state: 'attached' });
     await expectNoA11yViolations(page);
     if (entries) await expectTabOrderMatchesVisualOrder(page, entries);
-    const groups = entries ? [entries, ...controls] : [...controls];
     for (const group of groups) await expectMinTargetSize(group, 44);
     for (const group of groups) {
         for (const element of await group.all()) {

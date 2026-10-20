@@ -25,6 +25,23 @@ async function load(page: Page, body: string, style = ''): Promise<void> {
 </html>`);
 }
 
+test.describe('waitForHydration', () => {
+    test('holds the helpers until html[data-hydrated] appears', async ({ page }) => {
+        // No marker at load. After 300 ms the page gets a nameless button and the marker together.
+        await page.setContent(`<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Helper self-test</title></head>
+<body><main></main><script>
+    setTimeout(() => {
+        document.querySelector('main').innerHTML = '<button type="button"></button>';
+        document.documentElement.dataset.hydrated = 'true';
+    }, 300);
+</script></body>
+</html>`);
+        await expect(expectNoA11yViolations(page)).rejects.toThrow(/button-name/);
+    });
+});
+
 test.describe('expectNoA11yViolations', () => {
     test('passes named controls', async ({ page }) => {
         await load(page, '<button type="button">Open</button>');
@@ -66,8 +83,14 @@ test.describe('expectFocusRingVisible', () => {
     });
 
     test('fails a ring that transitions in', async ({ page }) => {
-        await load(page, '<button type="button">Ring</button>', 'button { transition: all 300ms; }');
-        await expect(expectFocusRingVisible(page.getByRole('button'))).rejects.toThrow(/the ring transitions in/);
+        await load(page, '<button type="button">Ring</button>', 'button { transition: all 60s; }');
+        await expect(expectFocusRingVisible(page.getByRole('button'))).rejects.toThrow(/all has a 60s transition under focus/);
+    });
+
+    test('fails a declared fade even when nothing is mid-transition', async ({ page }) => {
+        // Opacity doesn't change on focus, so only the computed style shows the fade.
+        await load(page, '<button type="button">Ring</button>', 'button { transition: opacity 60s; }');
+        await expect(expectFocusRingVisible(page.getByRole('button'))).rejects.toThrow(/opacity has a 60s transition under focus/);
     });
 
     test('fails under an opacity: 0.5 parent', async ({ page }) => {
@@ -112,6 +135,12 @@ test.describe('expectNotObscured', () => {
 
     test('fails a short element whose ring a fixed bar partly covers', async ({ page }) => {
         await load(page, `${bottomBar}<button type="button" style="position: absolute; top: 740px; left: 100px">Covered</button>`);
+        await expect(expectNotObscured(page.getByRole('button'), page.locator('#bar'))).rejects.toThrow(/fits between the scroll paddings, so its focus ring must be fully clear/);
+    });
+
+    test('fails a short element when a fixed bar covers only the outer 2 px of its ring', async ({ page }) => {
+        // The ring reaches 6 px above the button's top edge at 100 px, to 94 px, and the bar ends at 96 px.
+        await load(page, `${topBar(96)}<button type="button" style="position: absolute; top: 100px; left: 100px">Covered</button>`);
         await expect(expectNotObscured(page.getByRole('button'), page.locator('#bar'))).rejects.toThrow(/fits between the scroll paddings, so its focus ring must be fully clear/);
     });
 
@@ -211,6 +240,15 @@ test.describe('expectContrastOverImage', () => {
         await expect(expectContrastOverImage(page.locator('#caption'), { min: 4.5 })).rejects.toThrow(/Worst contrast/);
     });
 
+    test('measures the settled state of a parent that is still fading in', async ({ page }) => {
+        await load(page, '<div id="wrap" style="padding: 8px; background: #000; opacity: 0.2; transition: opacity 60s"><p id="caption" style="margin: 0; color: #fff">Caption</p></div>');
+        // Starts a 60 s fade to full opacity. Read before the screenshot, the opacity would still be about 0.2.
+        await page.locator('#wrap').evaluate((el: HTMLElement) => {
+            el.style.opacity = '1';
+        });
+        expect(await expectContrastOverImage(page.locator('#caption'), { min: 4.5 })).toBeCloseTo(21, 1);
+    });
+
     test('fails white text at opacity 0.3 on black, so it counts opacity', async ({ page }) => {
         await load(page, '<div style="padding: 8px; background: #000"><p id="caption" style="margin: 0; color: #fff; opacity: 0.3">Caption</p></div>');
         await expect(expectContrastOverImage(page.locator('#caption'), { min: 4.5 })).rejects.toThrow(/Worst contrast/);
@@ -280,6 +318,14 @@ test.describe('checkSurface', () => {
 
     test('passes a surface that meets every rule', async ({ page }) => {
         await checkSurface(page, await loadSurface(page));
+    });
+
+    test('waits for entries that arrive after hydration before it runs axe', async ({ page }) => {
+        // Like the gallery's tiles, which mount once /api/photos answers. These carry an img with no alt.
+        const image = '<img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">';
+        const late = NAMES.map((name) => `<button type="button" aria-label="${name}">${image}</button>`).join('');
+        await load(page, `<div class="entries"></div><script>setTimeout(() => { document.querySelector('.entries').innerHTML = '${late}'; }, 300);</script>`, SURFACE_STYLE);
+        await expect(checkSurface(page, { entries: page.locator('.entries > button') })).rejects.toThrow(/image-alt/);
     });
 
     const broken: { title: string; names?: string[]; style?: string; error: RegExp }[] = [
