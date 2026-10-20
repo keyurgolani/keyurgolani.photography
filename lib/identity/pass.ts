@@ -45,9 +45,32 @@ export interface ObservedLibrary {
     statCache: StatCache;
 }
 
+type Signature = Pick<StatCacheEntry, 'size' | 'mtimeMs' | 'ctimeMs' | 'ino'>;
+
+/** Whether two stats describe the same version of a file, by the signature the stat cache keys on. */
+function sameSignature(a: Signature, b: Signature): boolean {
+    return a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs && a.ino === b.ino;
+}
+
 /**
- * Scan the library, read the files whose size, mtime, or inode changed since
- * the stat cache saw them, and reconcile. Writes nothing.
+ * `latest`'s readings with `committed`'s record of reported failures: what
+ * observeLibrary() should start from when it observes again without having
+ * committed anything, as the dry run does while it waits for changing files.
+ * Each file keeps the failures `committed` recorded for that same version of
+ * it, and none for a version it never saw.
+ */
+export function withReportedFailures(latest: StatCache, committed: StatCache): StatCache {
+    const entries: Record<string, StatCacheEntry> = {};
+    for (const [relativePath, entry] of Object.entries(latest.entries)) {
+        const before = committed.entries[relativePath];
+        entries[relativePath] = { ...entry, emitted: before && sameSignature(before, entry) ? [...before.emitted] : [] };
+    }
+    return { ...latest, entries };
+}
+
+/**
+ * Scan the library, read the files whose size, mtime, ctime, or inode
+ * changed since the stat cache saw them, and reconcile. Writes nothing.
  */
 export async function observeLibrary(
     { root, registry, statCache = emptyStatCache(), deps = {} }: { root: string; registry: Registry; statCache?: StatCache; deps?: PassDeps },
@@ -60,8 +83,7 @@ export async function observeLibrary(
     const entries: Record<string, StatCacheEntry> = {};
     for (const entry of scan.entries) {
         const cached = statCache.entries[entry.path];
-        const unchanged = cached !== undefined && cached.size === entry.size && cached.mtimeMs === entry.mtimeMs &&
-            cached.ctimeMs === entry.ctimeMs && cached.ino === entry.ino && (cached.inspection.kind === 'image') === (entry.kind === 'source');
+        const unchanged = cached !== undefined && sameSignature(cached, entry) && (cached.inspection.kind === 'image') === (entry.kind === 'source');
         if (isStillChanging(entry, scan.observedAt)) {
             // Too fresh to read. reconcile() skips it, and its cache entry carries over.
             if (unchanged) entries[entry.path] = cached;

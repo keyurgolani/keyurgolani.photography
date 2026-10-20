@@ -9,7 +9,7 @@ import { runTsx } from '../../../test/helpers/runTsx';
 import { createTempDataRoot, writeDataRootMarker, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempLibrary';
 import { UnsupportedSchemaError } from '../../storage/document';
-import { PHOTO_ID_RE } from '../ids';
+import { PHOTO_ID_RE, sha256, type Hasher } from '../ids';
 import { DryRunRefusedError, migrateDryRun, REPORT_SECTIONS, type DryRunOptions } from '../migration';
 import { runReconcilePass } from '../pass';
 import { identityPaths } from '../registry';
@@ -227,6 +227,7 @@ describe('photos:migrate --dry-run', () => {
 
     it.skipIf(isRoot)('lists a folder it cannot list in the plan and the Unreadable section', async () => {
         const lib = await library({ 'landscape.jpg': fixture('landscape.jpg'), 'series/a.jpg': fixture('portrait.png') });
+        dataRoot('missing');
         fs.chmodSync(lib.file('series'), 0o000);
         try {
             const result = await migrateDryRun(options({ outDir: tempOut() }));
@@ -239,8 +240,48 @@ describe('photos:migrate --dry-run', () => {
         }
     });
 
+    it('keeps the failures it found while it waited for a file still being written', async () => {
+        const lib = await library({
+            'raw.dng': 'not a real dng',
+            'landscape.jpg': fixture('landscape.jpg'),
+            'portrait.png': fixture('portrait.png'),
+            'incoming.jpg': fixture('landscape-edited.jpg'),
+        });
+        dataRoot('missing');
+        // portrait.png's bytes get landscape.jpg's digest, though their sizes differ.
+        const real = (name: string) => sha256([fixture(name)]);
+        const hasher: Hasher = (chunks) => {
+            const digest = sha256(chunks);
+            return chunks.length === 1 && digest === real('portrait.png') ? real('landscape.jpg') : digest;
+        };
+        let now = Date.now() + 60_000;
+        fs.utimesSync(lib.file('incoming.jpg'), new Date(now), new Date(now));
+        const sleeps: number[] = [];
+        const result = await migrateDryRun({
+            outDir: tempOut(),
+            idGen: sequentialIds(),
+            hasher,
+            clock: () => now,
+            sleep: async (ms) => {
+                sleeps.push(ms);
+                now += ms + 1_000;
+            },
+        });
+
+        expect(sleeps).toEqual([5_000]);
+        expect(result.plan.facts.map((fact) => [fact.type, fact.reason ?? '', fact.path].join(' ')).sort()).toEqual([
+            'new  incoming.jpg',
+            'processing-failed digest-collision landscape.jpg',
+            'processing-failed digest-collision portrait.png',
+            'processing-failed unsupported-format raw.dng',
+        ]);
+        expect(result.report).toContain('| processing-failed | 3 |');
+        expect(result.report.split('## Files still changing\n')[1]).toContain('None.');
+    });
+
     it('waits a bounded time for files still being written, then reports them', async () => {
         await library({ 'incoming.jpg': fixture('landscape.jpg') });
+        dataRoot('missing');
         const sleeps: number[] = [];
         const result = await migrateDryRun({
             outDir: tempOut(),
@@ -285,7 +326,7 @@ describe('scripts/photos.ts', { timeout: 120_000 }, () => {
     it('exits 1 without writing anything when the library root is missing', async () => {
         const out = tempOut();
         const run = await runTsx('scripts/photos.ts', ['migrate', '--dry-run', '--out', out], {
-            env: { PHOTOGRAPHY_LIBRARY_DIR: path.join(out, '..', 'not-mounted') },
+            env: { PHOTOGRAPHY_LIBRARY_DIR: path.join(out, '..', 'not-mounted'), PHOTOGRAPHY_DATA_DIR: path.join(out, '..', 'no-data-root') },
         });
         expect(run.code).toBe(1);
         expect(run.stderr).toContain('Library root not found');

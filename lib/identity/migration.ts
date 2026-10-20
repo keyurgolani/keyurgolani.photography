@@ -4,7 +4,7 @@ import path from 'node:path';
 import { atomicWriteFile, atomicWriteJson } from '../storage/atomicWrite';
 import { dataRootStatus, libraryRoot, type DataRootState } from '../storage/config';
 import { PRIVATE_DIR_MODE } from '../storage/fsx';
-import { observeLibrary, type ObservedLibrary, type PassDeps } from './pass';
+import { observeLibrary, withReportedFailures, type ObservedLibrary, type PassDeps } from './pass';
 import { currentProfileId } from './profile';
 import { STABILITY_MS, type FactDraft } from './reconcile';
 import { emptyStatCache, identityPaths, readRegistry, readStatCache, type StatCache } from './registry';
@@ -253,8 +253,9 @@ export async function migrateDryRun(options: DryRunOptions = {}): Promise<DryRun
     let observed = await observeLibrary({ root: library, registry, statCache, deps });
     for (let waited = 0; observed.retryAfterMs !== null && waited + STABILITY_MS <= settleMs; waited += STABILITY_MS) {
         await sleep(STABILITY_MS);
-        // Reuse what the last attempt read, so only files that changed since are read again.
-        observed = await observeLibrary({ root: library, registry, statCache: observed.statCache, deps });
+        // Reuse what the last attempt read, so only files that changed since are read again. A dry run
+        // reports nothing, so the failures that attempt found must still count as unreported.
+        observed = await observeLibrary({ root: library, registry, statCache: withReportedFailures(observed.statCache, statCache), deps });
     }
 
     const createdAt = new Date(clock()).toISOString();
