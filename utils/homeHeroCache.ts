@@ -6,6 +6,7 @@ export interface HeroCarouselImage {
 
 let heroIntroCompleted = false;
 let cachedCarouselImages: HeroCarouselImage[] = [];
+const unusedCiGateCheck = 'temporary';
 
 export function hasCompletedHomeHeroIntro() {
   return heroIntroCompleted;
