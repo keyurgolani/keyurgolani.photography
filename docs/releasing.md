@@ -10,7 +10,7 @@ Every pull request runs `.github/workflows/ci.yml`, whether it targets `main` or
 |---|---|
 | `Lint, unit tests, build` | Checks that `.nvmrc` holds a bare Node major and the `Dockerfile` base image matches it, then runs `npm ci`, `npm run lint`, `npm test -- --run`, and `npm run build`. |
 | `Browser tests` | Runs `npm run test:e2e` with Playwright. Until `package.json` has that script, it passes with a notice. |
-| `Image smoke test` | Runs `ci/check-compose.sh`, builds the image, runs `ci/smoke-image.sh` against it, and checks that the image runs the Node major in `.nvmrc`. |
+| `Image smoke test` | Runs `ci/check-compose.sh`, builds the image, checks that it runs the Node major in `.nvmrc`, and runs `ci/smoke-image.sh` against it. |
 | `Production audit` | Runs `ci/audit-gate.mjs`, which runs `npm audit --omit=dev` and fails on a high or critical advisory that `.github/audit-allowlist.json` doesn't list. It reads only the lockfile, so it skips `npm ci`. |
 | `CI result` | Fails unless all four jobs above succeeded. |
 
@@ -49,7 +49,7 @@ All four fields are required. `id` is the advisory's GHSA ID, or `npm:<number>` 
 
 ## Dependency updates
 
-Dependabot opens grouped weekly version updates against `next`, as `.github/dependabot.yml` sets up, and they go through the same CI and promotion as any other PR. Security updates, once they're turned on in Code security settings, always open against `main`, and the groups and ignores in `dependabot.yml` don't apply to them.
+Dependabot opens grouped weekly version updates against `next`, as `.github/dependabot.yml` sets up, and they go through the same CI and promotion as any other PR. Security updates, once they're turned on in Code security settings, always open against `main`, and the groups and ignores in `dependabot.yml` don't apply to them. Since `main` only moves by promotion, land a security PR's change through a PR into `next` and close it, and if one does get merged on `main`, merge `main` back into `next` before the next promotion.
 
 ## Rulesets
 
