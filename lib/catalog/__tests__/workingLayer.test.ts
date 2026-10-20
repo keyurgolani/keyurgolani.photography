@@ -240,7 +240,13 @@ function importGraph(entry: string): Set<string> {
 }
 
 describe('the read path', () => {
-    it.each(['lib/catalog/working-layer.ts', 'lib/catalog/reader.ts', 'lib/catalog/request.ts'])('never reaches the writer from %s', (entry) => {
+    it.each([
+        'lib/catalog/working-layer.ts',
+        'lib/catalog/reader.ts',
+        'lib/catalog/request.ts',
+        'lib/catalog/rules.ts',
+        'lib/catalog/references.ts',
+    ])('never reaches the writer from %s', (entry) => {
         const graph = [...importGraph(path.join(REPO_ROOT, entry))].map((file) => path.relative(REPO_ROOT, file));
         expect(graph).toContain(entry);
         expect(graph.filter((file) => file.includes('working-layer-writer'))).toEqual([]);
