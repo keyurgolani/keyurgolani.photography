@@ -119,6 +119,18 @@ jobs:
       - name: Smoke test the image
         run: ci/smoke-image.sh ci-smoke
 
+      # The Dockerfile pins its base by tag and digest, so a Node bump that
+      # updates the tag but not the digest would still build the old Node.
+      - name: Check the image runs the Node major in .nvmrc
+        run: |
+          node_major=$(cat .nvmrc)
+          version=$(docker run --rm --pull never ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke node --version)
+          echo "The image runs Node $version."
+          if [[ $version != "v${node_major}."* ]]; then
+            echo "::error file=Dockerfile::The image runs Node $version, but .nvmrc says ${node_major}. Check the base image digest."
+            exit 1
+          fi
+
   # Fails on a high or critical advisory in a production dependency unless
   # .github/audit-allowlist.json lists it. npm audit reads only the lockfile,
   # so the job skips npm ci.
