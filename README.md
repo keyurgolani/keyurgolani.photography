@@ -51,7 +51,7 @@ A modern, high-performance photography portfolio website built with Next.js 16, 
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Node.js 18+ 
+- Node.js 20 (see `.nvmrc`)
 - npm or yarn
 - Docker (optional, for containerized deployment)
 
@@ -76,7 +76,7 @@ Open [http://localhost:3000](http://localhost:3000) to view the site.
 Both containers run one pinned release tag. Set it in a `.env` next to `docker-compose.prod.yml`:
 
 ```bash
-PHOTOGRAPHY_IMAGE_TAG=v1.1.0
+PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z
 ```
 
 Then pull and start:
@@ -144,7 +144,7 @@ The production setup uses two containers:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `PHOTOGRAPHY_IMAGE_TAG` | Image tag both containers run, such as `v1.1.0`. Set it in the `.env` next to `docker-compose.prod.yml`. | None. Compose refuses to start without it. |
+| `PHOTOGRAPHY_IMAGE_TAG` | Release tag both containers run, such as `vX.Y.Z`. Set it in the `.env` next to `docker-compose.prod.yml`. | None. Compose refuses to start without it. |
 
 See `docker-compose.prod.yml` for full configuration.
 

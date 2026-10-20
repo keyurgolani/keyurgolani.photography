@@ -1,6 +1,6 @@
 name: CI
 
-# The pull request gate. deploy.yml calls this same workflow on every main
+# The pull request gate. publish.yml calls this same workflow on every main
 # push, so an image is only published after these jobs pass in that run.
 # No paths filters: a required check that never runs blocks the merge.
 on:
@@ -36,8 +36,13 @@ jobs:
 
       - name: Check the Dockerfile matches .nvmrc
         run: |
-          if ! grep -Eq "^FROM node:$(cat .nvmrc)-" Dockerfile; then
-            echo "::error file=Dockerfile::The Dockerfile must build FROM node:$(cat .nvmrc)-*, the Node major in .nvmrc."
+          node_major=$(cat .nvmrc)
+          if [[ ! $node_major =~ ^[0-9]+$ ]]; then
+            echo "::error file=.nvmrc::.nvmrc must hold a bare Node major such as 20, not '$node_major'."
+            exit 1
+          fi
+          if ! grep -Eq "^FROM node:${node_major}-" Dockerfile; then
+            echo "::error file=Dockerfile::The Dockerfile must build FROM node:${node_major}-*, the Node major in .nvmrc."
             exit 1
           fi
 
@@ -107,7 +112,8 @@ jobs:
           push: false
           tags: ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # A failed cache export doesn't turn a PR red. main stays strict.
+          cache-to: type=gha,mode=max,ignore-error=${{ github.event_name == 'pull_request' }}
 
       - name: Smoke test the image
         run: ci/smoke-image.sh ci-smoke

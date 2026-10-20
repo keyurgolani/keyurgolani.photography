@@ -43,10 +43,10 @@ describe('planRelease', () => {
     expect(planRelease({ tag: 'v1.1.0', packageVersion: '1.1.0', tags }).latest).toBe(false);
   });
 
-  it('refuses a tag that does not match package.json', () => {
-    expect(() => planRelease({ tag: 'v1.1.0', packageVersion: '1.0.0', tags: TAGS_TODAY })).toThrow(
-      'v1.1.0 does not match version 1.0.0 in package.json',
-    );
+  it('refuses a tag that does not match package.json, and says to delete it', () => {
+    const refuse = () => planRelease({ tag: 'v1.1.0', packageVersion: '1.0.0', tags: TAGS_TODAY });
+    expect(refuse).toThrow('v1.1.0 does not match version 1.0.0 in package.json');
+    expect(refuse).toThrow('Delete the v1.1.0 tag, because every vX.Y.Z tag counts when deciding latest.');
   });
 
   it.each(['v1.2', 'v1.2.0-rc.1', '1.2.0'])('refuses %s, which is not vX.Y.Z', (tag) => {
@@ -73,20 +73,49 @@ describe('planRelease', () => {
 describe('release-plan.mjs run directly', () => {
   const script = fileURLToPath(new URL('./release-plan.mjs', import.meta.url));
   const packageVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
-  let dir;
+  const tag = `v${packageVersion}`;
+  // Keep the throwaway repositories clear of the user's git config.
+  const gitEnv = {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_AUTHOR_NAME: 'release-plan test',
+    GIT_AUTHOR_EMAIL: 'release-plan@example.invalid',
+    GIT_COMMITTER_NAME: 'release-plan test',
+    GIT_COMMITTER_EMAIL: 'release-plan@example.invalid',
+  };
+  const dirs = [];
 
   afterEach(() => {
-    if (dir) rmSync(dir, { recursive: true, force: true });
-    dir = undefined;
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
-  function run(tag) {
-    dir = mkdtempSync(path.join(tmpdir(), 'release-plan-'));
-    const output = path.join(dir, 'github-output');
+  function tempDir() {
+    const dir = mkdtempSync(path.join(tmpdir(), 'release-plan-'));
+    dirs.push(dir);
+    return dir;
+  }
+
+  // A repository with one empty commit carrying `tags`. Plumbing commands
+  // only, so no hooks or signing settings get involved.
+  function repoWithTags(tags) {
+    const repo = tempDir();
+    const git = (args, input) =>
+      execFileSync('git', args, { cwd: repo, env: gitEnv, encoding: 'utf8', input }).trim();
+    git(['-c', 'init.defaultBranch=main', 'init', '-q']);
+    const tree = git(['mktree'], '');
+    const commit = git(['commit-tree', '--no-gpg-sign', '-m', 'fixture', tree]);
+    for (const name of tags) git(['update-ref', `refs/tags/${name}`, commit]);
+    return repo;
+  }
+
+  function run(refName, cwd) {
+    const output = path.join(tempDir(), 'github-output');
     try {
       const stdout = execFileSync(process.execPath, [script], {
+        cwd,
         encoding: 'utf8',
-        env: { ...process.env, GITHUB_REF_NAME: tag, GITHUB_OUTPUT: output },
+        env: { ...process.env, GITHUB_REF_NAME: refName, GITHUB_OUTPUT: output },
       });
       return { status: 0, stdout, outputs: readFileSync(output, 'utf8') };
     } catch (error) {
@@ -94,14 +123,20 @@ describe('release-plan.mjs run directly', () => {
     }
   }
 
-  it('writes version and latest to GITHUB_OUTPUT for the package.json version', () => {
-    const result = run(`v${packageVersion}`);
+  it('moves latest when the tag is the highest in the repository', () => {
+    const result = run(tag, repoWithTags(['v0.0.1', 'v1.2.0-rc.1', tag]));
     expect(result.status).toBe(0);
-    expect(result.outputs).toMatch(new RegExp(`^version=v${packageVersion.replaceAll('.', '\\.')}\nlatest=(true|false)\n$`));
+    expect(result.outputs).toBe(`version=${tag}\nlatest=true\n`);
+  });
+
+  it('keeps latest when a higher release tag exists', () => {
+    const result = run(tag, repoWithTags([tag, 'v999.0.0']));
+    expect(result.status).toBe(0);
+    expect(result.outputs).toBe(`version=${tag}\nlatest=false\n`);
   });
 
   it('exits 1 with the reason for a tag that is not a release tag', () => {
-    const result = run('v1.2.0-rc.1');
+    const result = run('v1.2.0-rc.1', repoWithTags(['v1.2.0-rc.1']));
     expect(result.status).toBe(1);
     expect(result.stdout).toContain('::error::v1.2.0-rc.1 is not a release tag');
   });

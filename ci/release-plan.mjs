@@ -46,7 +46,8 @@ export function planRelease({ tag, packageVersion, tags }) {
   if (tag.slice(1) !== packageVersion) {
     throw new Error(
       `${tag} does not match version ${packageVersion} in package.json. ` +
-        'Bump the version in a PR, merge it, and tag the merge commit.',
+        `Delete the ${tag} tag, because every vX.Y.Z tag counts when deciding latest. ` +
+        'Then tag a main commit whose package.json has the version you want to release.',
     );
   }
   return { version: tag, latest: isHighestRelease(tag, tags) };

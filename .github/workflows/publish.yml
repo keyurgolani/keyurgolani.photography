@@ -1,0 +1,169 @@
+name: Publish image
+
+# Every main push runs CI, then pushes the image by digest, smoke tests that
+# exact digest, and only then tags it sha-<commit> on GHCR and mirrors it to
+# Docker Hub. Only release.yml writes vX.Y.Z and latest. Retry a failed
+# publish with "Re-run failed jobs".
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+# One publish at a time, in push order. queue: max keeps every waiting run
+# instead of dropping all but the newest.
+concurrency:
+  group: publish-main
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  publish-ghcr:
+    name: Publish to GHCR
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.existing.outputs.digest || steps.build.outputs.digest }}
+      tag: ${{ steps.existing.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # A sha- tag only ever exists for an image that passed the smoke test
+      # below, so a run that finds this commit's tag reuses it.
+      - name: Look for this commit's sha- image
+        id: existing
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          tag="sha-${GITHUB_SHA::7}"
+          {
+            echo "image=$image"
+            echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
+
+          if ! manifest=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$image:$tag" 2>"$RUNNER_TEMP/inspect.err"); then
+            if grep -qiE 'not found|manifest unknown|no such manifest|name unknown' "$RUNNER_TEMP/inspect.err"; then
+              echo "$image:$tag does not exist yet, so this run builds it."
+              exit 0
+            fi
+            cat "$RUNNER_TEMP/inspect.err"
+            echo "::error::Could not check whether $image:$tag exists."
+            exit 1
+          fi
+          digest=$(jq -r '.digest // empty' <<<"$manifest")
+          if [[ ! $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Could not read the digest of $image:$tag."
+            exit 1
+          fi
+          if ! revision=$(docker buildx imagetools inspect --format '{{json .Image}}' "$image@$digest" |
+              jq -r '[.. | .Labels? | objects | .["org.opencontainers.image.revision"] // empty] | unique | .[]'); then
+            echo "::error::Could not read the revision label of $image@$digest."
+            exit 1
+          fi
+          if [ "$revision" != "$GITHUB_SHA" ]; then
+            echo "::error::$image:$tag already exists, built from ${revision:-an unknown commit}, not $GITHUB_SHA."
+            exit 1
+          fi
+          echo "$image:$tag already exists for this commit, so this run reuses $digest."
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - if: steps.existing.outputs.digest == ''
+        uses: docker/setup-buildx-action@v4
+
+      - if: steps.existing.outputs.digest == ''
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.existing.outputs.image }}
+          tags: type=sha
+
+      # Pushed by digest only. The sha- tag waits for the smoke test.
+      - if: steps.existing.outputs.digest == ''
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ steps.existing.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha
+
+      - if: steps.existing.outputs.digest == ''
+        name: Smoke test the pushed image
+        env:
+          IMAGE: ${{ steps.existing.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          docker pull "$IMAGE@$DIGEST"
+          docker tag "$IMAGE@$DIGEST" ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke
+          ci/smoke-image.sh ci-smoke
+
+      - if: steps.existing.outputs.digest == ''
+        name: Tag the smoke-tested image
+        env:
+          IMAGE: ${{ steps.existing.outputs.image }}
+          TAG: ${{ steps.existing.outputs.tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          docker buildx imagetools create --prefer-index=false --tag "$IMAGE:$TAG" "$IMAGE@$DIGEST"
+          if ! got=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$IMAGE:$TAG" | jq -r '.digest // empty'); then
+            echo "::error::Could not read $IMAGE:$TAG back."
+            exit 1
+          fi
+          if [ "$got" != "$DIGEST" ]; then
+            echo "::error::$IMAGE:$TAG has digest ${got:-none}, expected $DIGEST."
+            exit 1
+          fi
+          echo "$IMAGE:$TAG is $DIGEST"
+
+      - name: Write the job summary
+        env:
+          IMAGE: ${{ steps.existing.outputs.image }}
+          TAG: ${{ steps.existing.outputs.tag }}
+          DIGEST: ${{ steps.existing.outputs.digest || steps.build.outputs.digest }}
+          REUSED: ${{ steps.existing.outputs.digest != '' }}
+        run: |
+          {
+            if [ "$REUSED" = true ]; then
+              echo "### Reused \`$IMAGE:$TAG\`"
+              echo
+              echo "This commit's image already passed the smoke test, so nothing was rebuilt."
+            else
+              echo "### Published \`$IMAGE:$TAG\`"
+            fi
+            echo
+            echo "Digest: \`$DIGEST\`"
+            echo
+            echo "To run this build on the host, set this in its \`.env\`:"
+            echo
+            echo '```'
+            echo "PHOTOGRAPHY_IMAGE_TAG=$TAG"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  mirror:
+    needs: publish-ghcr
+    uses: ./.github/workflows/mirror-dockerhub.yml
+    with:
+      digest: ${{ needs.publish-ghcr.outputs.digest }}
+      tags: ${{ needs.publish-ghcr.outputs.tag }}
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: read
