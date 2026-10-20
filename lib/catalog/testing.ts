@@ -14,7 +14,6 @@ import { mediaUrl } from '../media/url';
 import { DATA_ROOT_FILE, DATA_ROOT_SCHEMA_VERSION } from '../storage/config';
 import { isInside, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, realpathLoose } from '../storage/fsx';
 import { createCatalogReader, type CatalogReader, type ReaderMeta } from './reader';
-import { registerRule } from './rules';
 import { parseAuthoredRecord, revisionIdOf, type AuthoredKind } from './schema';
 import type {
     AuthoredAlt,
@@ -149,29 +148,6 @@ export interface TestCatalog {
     context(overrides?: Partial<RuleContext>): Promise<RuleContext>;
     /** Removes the root, unless the caller named it. */
     cleanup(): Promise<void>;
-}
-
-/** #8's order rules, which #13's first activation needs registered. */
-export const ORDER_RULE_IDS = [
-    'order.duplicate-photo',
-    'order.unknown-photo',
-    'order.unpublishable-member',
-    'order.cover',
-    'order.opening',
-    'order.chapter-anchor',
-    'order.empty-series',
-] as const;
-
-/**
- * Register stand-ins for #8's order rules, each reporting nothing, with the
- * gate and severity #8 gives the real one. Call it once per test file. A
- * second call throws on the duplicate ID, and so will #8's real rules, so the
- * stand-ins have to go when #8 lands.
- */
-export function registerOrderRuleStandIns(): void {
-    for (const id of ORDER_RULE_IDS) {
-        registerRule({ id, version: 1, severity: 'error', rollbackClass: 'integrity', gate: id === 'order.empty-series' ? 'publish' : 'render', check: () => [] });
-    }
 }
 
 /** mulberry32: a small seeded PRNG, so IDs repeat for a seed. */
