@@ -26,6 +26,10 @@ export interface LockContext {
     signal: AbortSignal;
     /** Set when this holder replaced an expired lease. */
     takeover: LockTakeover | null;
+    /** The lock's name, so code handed this hold can check it is the one it needs. */
+    name: string;
+    /** The data root whose `locks/` holds it. */
+    root: string;
 }
 
 export interface LockHooks {
@@ -361,7 +365,7 @@ export async function withLock<T>(name: string, options: LockOptions, fn: (conte
     }, Math.max(1, Math.floor(leaseMs / 4)));
 
     try {
-        return await fn({ signal: controller.signal, takeover });
+        return await fn({ signal: controller.signal, takeover, name, root });
     } finally {
         clearInterval(timer);
         await renewing;
