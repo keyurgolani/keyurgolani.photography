@@ -297,6 +297,25 @@ describe('runReconcilePass', () => {
         fs.chmodSync(lib.file('locked.jpg'), 0o644);
     });
 
+    it.skipIf(isRoot)('skips and logs a folder it cannot list, and keeps the photos bound under it', async () => {
+        await setup({ files: ['landscape.jpg'] });
+        put('series/a.jpg', 'portrait.png');
+        const { options } = harness();
+        const first = committed(await runReconcilePass(options()));
+        expect(first.facts.map((fact) => `${fact.type} ${fact.path}`)).toEqual(['new landscape.jpg', 'new series/a.jpg']);
+
+        fs.chmodSync(lib.file('series'), 0o000);
+        const warnings: string[] = [];
+        try {
+            const second = committed(await runReconcilePass(options({ logger: { log: () => undefined, warn: (line: string) => warnings.push(line), error: () => undefined } })));
+            expect(second.facts).toEqual([]);
+            expect(Object.values(second.registry.photos).map((photo) => photo.sourceHealth)).toEqual(['present', 'present']);
+        } finally {
+            fs.chmodSync(lib.file('series'), 0o755);
+        }
+        expect(warnings).toEqual(["[identity] Skipped folder series: it can't be listed."]);
+    });
+
     it('records an undecodable file by its bytes, with a failed profile', async () => {
         await setup({ files: ['corrupt.jpg'] });
         const pass = committed(await runReconcilePass(harness().options()));

@@ -172,6 +172,7 @@ export async function runReconcilePass(options: PassOptions = {}): Promise<PassO
             const observed = await observeLibrary({ root: libraryRoot(), registry: before, statCache: await readStatCache(root), deps: options });
             signal.throwIfAborted();
             for (const skipped of observed.report.unreadable) logger.warn(`[identity] Skipped ${skipped}: it can't be read.`);
+            for (const folder of observed.scan.unreadableDirs) logger.warn(`[identity] Skipped folder ${folder}: it can't be listed.`);
 
             const facts: IdentityFact[] = observed.facts.map((draft) => ({ ...draft, factId: idGen() }));
             await faults?.beforeRegistryWrite?.();

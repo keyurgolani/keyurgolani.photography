@@ -225,6 +225,20 @@ describe('photos:migrate --dry-run', () => {
         expect(result.report).toContain('| ambiguous | 1 |');
     });
 
+    it.skipIf(isRoot)('lists a folder it cannot list in the plan and the Unreadable section', async () => {
+        const lib = await library({ 'landscape.jpg': fixture('landscape.jpg'), 'series/a.jpg': fixture('portrait.png') });
+        fs.chmodSync(lib.file('series'), 0o000);
+        try {
+            const result = await migrateDryRun(options({ outDir: tempOut() }));
+            expect(result.plan.unreadableFolders).toEqual(['series']);
+            expect(result.plan.sources.map((source) => source.path)).toEqual(['landscape.jpg']);
+            expect(result.report.split('## Unreadable files\n')[1].split('\n## ')[0])
+                .toContain("- `series/`: this folder can't be listed, so none of its files are in this plan.");
+        } finally {
+            fs.chmodSync(lib.file('series'), 0o755);
+        }
+    });
+
     it('waits a bounded time for files still being written, then reports them', async () => {
         await library({ 'incoming.jpg': fixture('landscape.jpg') });
         const sleeps: number[] = [];

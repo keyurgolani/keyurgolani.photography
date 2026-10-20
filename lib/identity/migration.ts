@@ -55,6 +55,8 @@ export interface MigrationPlan {
     registryVersion: number;
     profileId: string;
     sources: PlannedSource[];
+    /** Folders the scan couldn't list. None of their files are in `sources`, which doesn't mean they are gone. */
+    unreadableFolders: string[];
     photos: PlannedPhoto[];
     holds: Hold[];
     facts: FactDraft[];
@@ -127,6 +129,7 @@ export function buildPlan(
             const readable = inspection?.kind === 'image' || inspection?.kind === 'unsupported';
             return { path: entry.path, size: entry.size, assetRevision: readable ? inspection.assetRevision : null };
         }),
+        unreadableFolders: observed.scan.unreadableDirs,
         photos: Object.values(observed.registry.photos)
             .map((photo): PlannedPhoto => ({
                 photoId: photo.photoId,
@@ -192,7 +195,10 @@ export function renderReport(plan: MigrationPlan, observed: ObservedLibrary): st
         ...sharedBase.map((group) => `- ${group.map((source) => code(source.path)).join(', ')}`),
     ]);
 
-    section('Unreadable files', bullets(report.unreadable.map(code)));
+    section('Unreadable files', bullets([
+        ...report.unreadable.map(code),
+        ...plan.unreadableFolders.map((folder) => `${code(`${folder}/`)}: this folder can't be listed, so none of its files are in this plan.`),
+    ]));
     section('Unsupported files', bullets(report.unsupported.map(code)));
 
     const oriented = images.flatMap((source) => {

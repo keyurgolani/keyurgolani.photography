@@ -55,6 +55,10 @@ async function migrate(args: string[]): Promise<number> {
     for (const fact of result.plan.facts) counts.set(fact.type, (counts.get(fact.type) ?? 0) + 1);
     const summary = [...counts.entries()].map(([type, count]) => `${type} ${count}`).join(', ') || 'no facts';
     console.log(`[photos] Dry run over ${result.plan.sources.length} files: ${summary}.`);
+    const { unreadableFolders } = result.plan;
+    if (unreadableFolders.length > 0) {
+        console.warn(`[photos] These folders can't be listed, so their files aren't in the plan: ${unreadableFolders.join(', ')}`);
+    }
     console.log(`Plan: ${result.planPath}`);
     console.log(`Report: ${result.reportPath}`);
     return 0;
