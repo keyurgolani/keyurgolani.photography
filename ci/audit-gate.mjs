@@ -37,7 +37,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const GHSA_ID = /^GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}$/i;
 const NPM_ID = /^npm:\d+$/;
-// Only a plain https URL becomes a link in the step summary.
+// The step summary links an advisory ID to its URL only when the URL is a
+// plain https URL with no spaces or parentheses.
 const SAFE_URL = /^https:\/\/[A-Za-z0-9._~:/?#@!$&*+,;=%-]+$/;
 // npm gives up on a request after 2 minutes, and the script stops waiting for
 // npm after 3, so a stalled registry fails inside the job's 5-minute timeout.
@@ -52,10 +53,10 @@ function isObject(value) {
 }
 
 // Text from the report or the allowlist, with control characters, line breaks
-// included, turned into spaces, so it can't split a log line or a workflow
-// command.
+// and bidi controls included, turned into spaces, so it can't split a log line
+// or a workflow command, or change the order the text displays in.
 function clean(value) {
-  return String(value).replace(/[\p{Cc}\u2028\u2029]+/gu, ' ');
+  return String(value).replace(/[\p{Cc}\p{Bidi_Control}\u2028\u2029]+/gu, ' ');
 }
 
 // Days since 1970-01-01 for a YYYY-MM-DD date, or null when it isn't a real
@@ -116,17 +117,18 @@ function checkAllowlist(allowlist, today) {
       failures.push(`${label} has the id "${clean(id)}", which is neither a GHSA ID nor npm:<number>.`);
       return;
     }
-    const expires = dayNumber(entry.expires);
+    const expiresText = entry.expires.trim();
+    const expires = dayNumber(expiresText);
     if (expires === null) {
-      failures.push(`${label} expires "${clean(entry.expires)}", which is not a YYYY-MM-DD date.`);
+      failures.push(`${label} expires "${clean(expiresText)}", which is not a YYYY-MM-DD date.`);
     } else if (expires < today) {
       failures.push(
-        `${label} expired on ${entry.expires}. Fix the advisory or renew the entry with a current reason, ` +
+        `${label} expired on ${expiresText}. Fix the advisory or renew the entry with a current reason, ` +
           'or delete the entry if it no longer matches anything.',
       );
     } else if (expires - today > MAX_ALLOWLIST_DAYS) {
       failures.push(
-        `${label} expires ${entry.expires}, more than ${MAX_ALLOWLIST_DAYS} days out. ` +
+        `${label} expires ${expiresText}, more than ${MAX_ALLOWLIST_DAYS} days out. ` +
           `Pick ${dateFromDayNumber(today + MAX_ALLOWLIST_DAYS)} or earlier.`,
       );
     } else {
@@ -281,8 +283,12 @@ export function evaluateAudit({ report, allowlist, today }) {
     }
     return { ...finding, allowlisted: matches.length > 0 };
   });
-  for (const entry of entries) {
-    if (!entry.used) warnings.push(`${entry.label} matches no high or critical advisory, so it can be deleted.`);
+  // A report with read failures may have skipped the advisory an entry
+  // covers, so only a clean report can call an entry unused.
+  if (read.failures.length === 0) {
+    for (const entry of entries) {
+      if (!entry.used) warnings.push(`${entry.label} matches no high or critical advisory, so it can be deleted.`);
+    }
   }
   return { findings, failures, warnings };
 }
@@ -293,14 +299,16 @@ function escapeCommand(message) {
   return message.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
 }
 
-// Text from the report or the allowlist, escaped for the step summary so it
-// can't end a table cell, add HTML, or turn into a link.
+// Text from the report or the allowlist, escaped for the step summary. It
+// can't end a table cell, add HTML, open a code span, or form a Markdown link
+// or image. GitHub still autolinks a bare URL in it. Backticks are escaped
+// because Markdown ignores escapes and entities inside a code span.
 function markdownText(value) {
   return clean(value)
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
-    .replace(/[\\|[\]]/g, '\\$&');
+    .replace(/[\\|[\]`]/g, '\\$&');
 }
 
 function summaryMarkdown({ findings, failures, warnings }) {

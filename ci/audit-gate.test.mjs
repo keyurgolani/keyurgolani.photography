@@ -161,6 +161,15 @@ describe('evaluateAudit', () => {
     expect(evaluate({ allowlist: [entry({ expires: TODAY })] }).failures).toEqual([]);
   });
 
+  it('trims expires before reading it', () => {
+    const result = evaluate({ allowlist: [entry({ expires: ' 2026-11-19\n' })] });
+    expect(result.failures).toEqual([]);
+    expect(result.findings).toMatchObject([{ allowlisted: true }]);
+    expect(evaluate({ allowlist: [entry({ expires: '\t2026-10-19 ' })] }).failures[0]).toContain(
+      'expired on 2026-10-19. ',
+    );
+  });
+
   it('fails an entry that expired yesterday, and no longer covers its advisory', () => {
     const result = evaluate({ allowlist: [entry({ expires: '2026-10-19' })] });
     expect(result.failures).toEqual([
@@ -288,6 +297,17 @@ describe('evaluateAudit', () => {
     });
   });
 
+  it('strips bidi controls from report text', () => {
+    // Right-to-left override, pop directional formatting, left-to-right
+    // isolate, pop directional isolate, right-to-left mark, Arabic letter mark.
+    const [rlo, pdf, lri, pdi, rlm, alm] = [0x202e, 0x202c, 0x2066, 0x2069, 0x200f, 0x061c].map((code) =>
+      String.fromCodePoint(code),
+    );
+    const title = `Safe${rlo}egaugnal${pdf}fix${lri}in${pdi}place${rlm}${alm}end`;
+    const report = auditReport(['sharp', [advisory('sharp', 'GHSA-aaaa-bbbb-cccc', 'high', { title })]]);
+    expect(evaluate({ report }).findings[0].title).toBe('Safe egaugnal fix in place end');
+  });
+
   it.each(['', 'npm error code ENOTFOUND', '{"vulnerabilities": {'])('fails a report that is not JSON: %j', (report) => {
     expect(evaluate({ report })).toEqual({
       findings: [],
@@ -413,9 +433,23 @@ describe('evaluateAudit', () => {
     [undefined, 'no severity'],
   ])('fails an advisory with the severity %j, which it does not know', (severity, text) => {
     const report = auditReport(['sharp', [advisory('sharp', 'GHSA-aaaa-bbbb-cccc', 'high', { severity })]]);
-    expect(evaluate({ report, allowlist: [entry()] }).failures).toEqual([
+    const result = evaluate({ report, allowlist: [entry()] });
+    expect(result.failures).toEqual([
       `npm audit printed advisory GHSA-aaaa-bbbb-cccc in sharp with ${text}, so the gate can't tell whether it blocks.`,
     ]);
+    // The skipped advisory may be the one the entry covers.
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('calls an entry unused only when the whole report was read', () => {
+    const report = JSON.stringify({
+      auditReportVersion: 2,
+      vulnerabilities: { sharp: { name: 'sharp', severity: 'high' }, next: { name: 'next', via: [NEXT_CRITICAL] } },
+    });
+    const result = evaluate({ report, allowlist: [entry(), entry({ id: 'GHSA-dddd-eeee-ffff', package: 'next' })] });
+    expect(result.failures).toEqual([expect.stringContaining('no via list for sharp')]);
+    expect(result.findings).toMatchObject([{ id: 'GHSA-dddd-eeee-ffff', allowlisted: true }]);
+    expect(result.warnings).toEqual([]);
   });
 
   it('still checks the allowlist, but warns about nothing, when the report is unreadable', () => {
@@ -481,7 +515,9 @@ describe('audit-gate.mjs run directly', () => {
     );
   });
 
-  it('keeps report text from adding log lines, workflow commands, table cells, HTML, or links', () => {
+  // GitHub still autolinks the bare https://example.com, which the escaping
+  // can't prevent.
+  it('keeps report text from adding log lines, workflow commands, table cells, HTML, or Markdown links', () => {
     const title = 'Bad | title <img src=x> \\ [click](https://example.com)\r\n::error::injected';
     const result = run({ report: auditReport(['sharp', [advisory('sharp', 'GHSA-aaaa-bbbb-cccc', 'high', { title })]]) });
     expect(result.status).toBe(1);
@@ -494,6 +530,18 @@ describe('audit-gate.mjs run directly', () => {
     );
     expect(result.summary).toContain(
       '- high advisory GHSA-aaaa-bbbb-cccc in sharp is not allowlisted: Bad \\| title &lt;img src=x&gt; \\\\ \\[click\\]',
+    );
+  });
+
+  // Markdown ignores escapes and entities inside a code span, so a backticked
+  // title would show &amp; and \| as typed unless its backticks are escaped.
+  it('escapes the backticks in a title, so the rest of its escaping still renders', () => {
+    const title = '`server.fs.deny` is bypassed when using `?import&raw`';
+    const result = run({ report: auditReport(['sharp', [advisory('sharp', 'GHSA-aaaa-bbbb-cccc', 'high', { title })]]) });
+    expect(result.stdout).toContain(`high sharp GHSA-aaaa-bbbb-cccc ${title} (not allowlisted)\n`);
+    expect(result.summary).toContain('| \\`server.fs.deny\\` is bypassed when using \\`?import&amp;raw\\` | no |');
+    expect(result.summary).toContain(
+      '- high advisory GHSA-aaaa-bbbb-cccc in sharp is not allowlisted: \\`server.fs.deny\\` is bypassed when using \\`?import&amp;raw\\`.',
     );
   });
 
