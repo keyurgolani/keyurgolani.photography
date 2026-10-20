@@ -6,8 +6,9 @@
 #
 #   IMAGE=ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke ci/smoke-watcher-once.sh
 #
-# $IMAGE must already exist locally. Run `npm ci` first: the library comes
-# from test/fixtures/makeLibrary.ts, so no fixture binaries are committed.
+# $IMAGE must already exist locally, since nothing pulls here. Run `npm ci`
+# first: the library comes from test/fixtures/makeLibrary.ts, so no fixture
+# binaries are committed.
 # WATCHER_CMD overrides the watcher command. Binds a random port on 127.0.0.1.
 set -euo pipefail
 
@@ -42,15 +43,16 @@ cleanup() {
     fi
     docker rm -f "$WEB" >/dev/null
   fi
-  # The watcher creates the derivative folders as uid 1001.
-  docker run --rm -v "$TMP:/t" alpine rm -rf /t/library
+  # The watcher creates the derivative folders as uid 1001. Remove them with
+  # the image under test, so cleanup never pulls anything.
+  docker run --rm --pull never --user 0 --entrypoint rm -v "$TMP:/t" "$IMAGE" -rf /t/library
   rm -rf "$TMP"
   exit "$status"
 }
 trap cleanup EXIT
 
 run_once() {
-  docker run --rm -e PHOTOGRAPHY_LIBRARY_DIR=/library -v "$LIB:/library" "$IMAGE" "${WATCHER[@]}" --once
+  docker run --rm --pull never -e PHOTOGRAPHY_LIBRARY_DIR=/library -v "$LIB:/library" "$IMAGE" "${WATCHER[@]}" --once
 }
 
 # Fails unless all seven derivatives of <base> exist and are non-empty.
@@ -85,7 +87,7 @@ echo "--once kept landscape's derivatives after landscape.jpg was removed."
 
 # 4. A missing library root exits 1 instead of being recreated.
 set +e
-docker run --rm -e PHOTOGRAPHY_LIBRARY_DIR=/tmp/missing-library "$IMAGE" "${WATCHER[@]}" --once
+docker run --rm --pull never -e PHOTOGRAPHY_LIBRARY_DIR=/tmp/missing-library "$IMAGE" "${WATCHER[@]}" --once
 code=$?
 set -e
 [ "$code" -eq 1 ] || fail "--once exited $code on a missing library root, expected 1."
@@ -93,7 +95,7 @@ echo "--once exited 1 on a missing library root."
 
 # 5. The web server, with the library at its default path. Next serves only
 #    public/ files present at startup, so it starts after the derivatives exist.
-docker run -d --name "$WEB" -p 127.0.0.1::3000 -v "$LIB:/app/public/assets/photos" "$IMAGE" >/dev/null
+docker run -d --pull never --name "$WEB" -p 127.0.0.1::3000 -v "$LIB:/app/public/assets/photos" "$IMAGE" >/dev/null
 WEB_STARTED=true
 address=$(docker port "$WEB" 3000/tcp)
 address=${address%%$'\n'*}
