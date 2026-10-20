@@ -1,4 +1,5 @@
 import { render } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../ProfilePicture', () => ({
   default: () => <div data-testid="profile-picture" />,

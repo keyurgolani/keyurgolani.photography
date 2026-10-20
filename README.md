@@ -51,7 +51,7 @@ A modern, high-performance photography portfolio website built with Next.js 16, 
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Node.js 20 (see `.nvmrc`)
+- Node.js 24 LTS (see `.nvmrc`)
 - npm or yarn
 - Docker (optional, for containerized deployment)
 
