@@ -74,16 +74,29 @@ describe('release-plan.mjs run directly', () => {
   const script = fileURLToPath(new URL('./release-plan.mjs', import.meta.url));
   const packageVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
   const tag = `v${packageVersion}`;
-  // Keep the throwaway repositories clear of the user's git config.
-  const gitEnv = {
-    ...process.env,
+  // These point git at some other repository, such as the one a git hook runs
+  // in. Dropping them keeps every git call on the throwaway repository.
+  const gitLocationVars = [
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_COMMON_DIR',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  ];
+  const isolatedEnv = (extra) =>
+    Object.fromEntries(
+      Object.entries({ ...process.env, ...extra }).filter(([name]) => !gitLocationVars.includes(name)),
+    );
+  // Also keep the throwaway repositories clear of the user's git config.
+  const gitEnv = isolatedEnv({
     GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_AUTHOR_NAME: 'release-plan test',
     GIT_AUTHOR_EMAIL: 'release-plan@example.invalid',
     GIT_COMMITTER_NAME: 'release-plan test',
     GIT_COMMITTER_EMAIL: 'release-plan@example.invalid',
-  };
+  });
   const dirs = [];
 
   afterEach(() => {
@@ -109,13 +122,13 @@ describe('release-plan.mjs run directly', () => {
     return repo;
   }
 
-  function run(refName, cwd) {
+  function run(refName, cwd, extraEnv = {}) {
     const output = path.join(tempDir(), 'github-output');
     try {
       const stdout = execFileSync(process.execPath, [script], {
         cwd,
         encoding: 'utf8',
-        env: { ...process.env, GITHUB_REF_NAME: refName, GITHUB_OUTPUT: output },
+        env: isolatedEnv({ ...extraEnv, GITHUB_REF_NAME: refName, GITHUB_OUTPUT: output }),
       });
       return { status: 0, stdout, outputs: readFileSync(output, 'utf8') };
     } catch (error) {
@@ -139,5 +152,12 @@ describe('release-plan.mjs run directly', () => {
     const result = run('v1.2.0-rc.1', repoWithTags(['v1.2.0-rc.1']));
     expect(result.status).toBe(1);
     expect(result.stdout).toContain('::error::v1.2.0-rc.1 is not a release tag');
+  });
+
+  it("reads the tags of its own repository even when the caller sets GIT_DIR", () => {
+    const elsewhere = repoWithTags([tag, 'v999.0.0']);
+    const result = run(tag, repoWithTags([tag]), { GIT_DIR: path.join(elsewhere, '.git') });
+    expect(result.status).toBe(0);
+    expect(result.outputs).toBe(`version=${tag}\nlatest=true\n`);
   });
 });

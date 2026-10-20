@@ -6,7 +6,8 @@
 //
 // Run directly, it reads GITHUB_REF_NAME, package.json, and `git tag -l 'v*'`,
 // then writes `version` and `latest` to $GITHUB_OUTPUT, or exits 1 with the
-// reason.
+// reason. That `latest` reflects the tags at checkout. The promote step in
+// release.yml reads the tags again before anything moves.
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -70,9 +71,10 @@ function main() {
   process.stdout.write(outputs);
   console.log(
     plan.latest
-      ? `${plan.version} is the highest release tag, so latest moves to it.`
-      : `${plan.version} is not the highest release tag, so latest stays where it is.`,
+      ? `Going by the tags at checkout, ${plan.version} is the highest release tag.`
+      : `Going by the tags at checkout, a release tag higher than ${plan.version} exists.`,
   );
+  console.log('The promote step reads the tags again and decides whether latest moves.');
 }
 
 function runDirectly() {

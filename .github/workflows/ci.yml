@@ -112,8 +112,9 @@ jobs:
           push: false
           tags: ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke
           cache-from: type=gha
-          # A failed cache export doesn't turn a PR red. main stays strict.
-          cache-to: type=gha,mode=max,ignore-error=${{ github.event_name == 'pull_request' }}
+          # A failed cache export never fails the job. Publish to GHCR smoke
+          # tests the digest it pushes, so main doesn't depend on this cache.
+          cache-to: type=gha,mode=max,ignore-error=true
 
       - name: Smoke test the image
         run: ci/smoke-image.sh ci-smoke

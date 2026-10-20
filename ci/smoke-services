@@ -1,0 +1,6 @@
+# The services ci/smoke-image.sh starts and checks, one per line.
+# ci/check-compose.sh fails unless these are exactly the services
+# docker-compose.prod.yml starts by default, so a PR that adds a service
+# lists it here and extends the smoke test to check it.
+image-watcher
+web

@@ -15,7 +15,7 @@ Every pull request runs `.github/workflows/ci.yml`, whether it targets `main` or
 
 `CI result` is the only required check. A new push to a PR cancels its running CI. `next build` downloads Inter and Montserrat from Google Fonts, so a Google Fonts outage turns CI red until the fonts are self-hosted.
 
-`ci/check-compose.sh` checks that every image line in `docker-compose.prod.yml` is exactly `ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?...}`, that Compose resolves every service to that one tag and refuses the file when the variable is unset, that the file has no `:latest`, and that the services Compose starts by default are the ones `ci/smoke-image.sh` starts. A PR that adds a service extends the smoke test.
+`ci/check-compose.sh` checks that every image line in `docker-compose.prod.yml` is exactly `ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?...}`, that Compose resolves every service to that one tag and refuses the file when the variable is unset, that the file has no `:latest`, and that the services Compose starts by default are exactly the ones in `ci/smoke-services`, the list `ci/smoke-image.sh` starts. A PR that adds a service lists it there and extends the smoke test to check it.
 
 `ci/smoke-image.sh` starts `web` and `image-watcher` from `docker-compose.prod.yml` on the image under test, with the two photos in `ci/fixtures/library/` as the library. It checks that `/` returns HTML, `/api/photos` returns a JSON array, and the watcher writes all seven derivatives for each photo, picks up a photo added while it runs, and never restarts. CI runs it on the image the PR built, and `Publish to GHCR` runs it again on the exact digest it pushed. To run it locally you need Docker and a free port 3000:
 

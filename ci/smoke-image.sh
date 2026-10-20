@@ -20,6 +20,9 @@ ROOT=$PWD
 export PHOTOGRAPHY_IMAGE_TAG=$1
 
 IMAGE=ghcr.io/keyurgolani/keyurgolani.photography:$PHOTOGRAPHY_IMAGE_TAG
+# The services to start. ci/check-compose.sh holds the Compose file to the
+# same list.
+SERVICES_FILE=ci/smoke-services
 BASE_URL=http://127.0.0.1:3000
 OUTPUT_TIMEOUT=120
 # One Compose project per run, so concurrent runs never share containers.
@@ -98,9 +101,15 @@ for fixture in ci/fixtures/library/*.jpg; do
   fixtures+=("$(basename "$fixture" .jpg)")
 done
 
-# 2. The watcher starts once the web healthcheck passes. Naming the services
-#    keeps any later ones out until their own smoke covers them.
-compose up -d --pull never --wait --wait-timeout 180 web image-watcher
+# 2. Start the services in ci/smoke-services. The watcher starts once the web
+#    healthcheck passes.
+[ -f "$SERVICES_FILE" ] || fail "$SERVICES_FILE is missing."
+services=()
+while read -r service; do
+  services+=("$service")
+done < <(awk '{ sub(/#.*/, ""); for (i = 1; i <= NF; i++) print $i }' "$SERVICES_FILE")
+[ "${#services[@]}" -gt 0 ] || fail "$SERVICES_FILE lists no services."
+compose up -d --pull never --wait --wait-timeout 180 "${services[@]}"
 
 # 3. The home page is HTML with a <title>. Its content renders client-side,
 #    so assert nothing more.

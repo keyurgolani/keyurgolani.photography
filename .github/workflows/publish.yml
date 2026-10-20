@@ -121,6 +121,19 @@ jobs:
           TAG: ${{ steps.existing.outputs.tag }}
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
+          # The tag may have shown up while this run built. Never move it.
+          if manifest=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$IMAGE:$TAG" 2>"$RUNNER_TEMP/inspect.err"); then
+            existing=$(jq -r '.digest // empty' <<<"$manifest")
+            if [ "$existing" != "$DIGEST" ]; then
+              echo "::error::$IMAGE:$TAG appeared while this run built and points at ${existing:-an unknown digest}, not $DIGEST. Leaving it alone."
+              exit 1
+            fi
+            echo "$IMAGE:$TAG already points at $DIGEST."
+          elif ! grep -qiE 'not found|manifest unknown|no such manifest|name unknown' "$RUNNER_TEMP/inspect.err"; then
+            cat "$RUNNER_TEMP/inspect.err"
+            echo "::error::Could not check whether $IMAGE:$TAG exists."
+            exit 1
+          fi
           docker buildx imagetools create --prefer-index=false --tag "$IMAGE:$TAG" "$IMAGE@$DIGEST"
           if ! got=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$IMAGE:$TAG" | jq -r '.digest // empty'); then
             echo "::error::Could not read $IMAGE:$TAG back."

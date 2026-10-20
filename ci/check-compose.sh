@@ -10,8 +10,8 @@ unset COMPOSE_PROFILES
 
 FILE=docker-compose.prod.yml
 IMAGE=ghcr.io/keyurgolani/keyurgolani.photography
-# The services ci/smoke-image.sh starts, sorted.
-SMOKE_SERVICES="image-watcher web"
+# The services ci/smoke-image.sh starts.
+SERVICES_FILE=ci/smoke-services
 PROJECT_DIR=$(mktemp -d)
 trap 'rm -rf "$PROJECT_DIR"' EXIT
 
@@ -51,11 +51,18 @@ if ! PHOTOGRAPHY_IMAGE_TAG=v9.9.9 compose config --format json \
 fi
 echo "Every service runs $IMAGE:\${PHOTOGRAPHY_IMAGE_TAG}."
 
-# 3. Without PHOTOGRAPHY_IMAGE_TAG, Compose refuses the file instead of
-#    falling back to a default tag.
+# 3. Without PHOTOGRAPHY_IMAGE_TAG, Compose refuses the file because of it,
+#    instead of falling back to a default tag.
 if reason=$(unset PHOTOGRAPHY_IMAGE_TAG; compose config 2>&1 >/dev/null); then
   fail "docker compose config passed with PHOTOGRAPHY_IMAGE_TAG unset. Use \${PHOTOGRAPHY_IMAGE_TAG:?...} with no default."
 fi
+case $reason in
+  *PHOTOGRAPHY_IMAGE_TAG*) ;;
+  *)
+    echo "$reason"
+    fail "docker compose config failed with PHOTOGRAPHY_IMAGE_TAG unset, but its error doesn't name PHOTOGRAPHY_IMAGE_TAG."
+    ;;
+esac
 echo "Unset PHOTOGRAPHY_IMAGE_TAG is refused: $reason"
 
 # 4. Nothing pulls a moving tag.
@@ -64,13 +71,19 @@ if grep -n ':latest' "$FILE"; then
 fi
 echo "$FILE has no :latest."
 
-# 5. The smoke test starts every service that starts by default.
+# 5. ci/smoke-image.sh starts exactly the services Compose starts by default,
+#    since both read the list from ci/smoke-services.
 if ! services=$(PHOTOGRAPHY_IMAGE_TAG=v9.9.9 compose_default config --services); then
   fail "docker compose config --services failed."
 fi
 services=$(LC_ALL=C sort <<<"$services" | tr '\n' ' ')
 services=${services% }
-if [ "$services" != "$SMOKE_SERVICES" ]; then
-  fail "$FILE starts '$services' by default, but ci/smoke-image.sh starts '$SMOKE_SERVICES'. A PR that adds a service extends ci/smoke-image.sh to start and check it, then updates SMOKE_SERVICES in ci/check-compose.sh."
+if ! smoke=$(awk '{ sub(/#.*/, ""); for (i = 1; i <= NF; i++) print $i }' "$SERVICES_FILE"); then
+  fail "Could not read $SERVICES_FILE."
+fi
+smoke=$(LC_ALL=C sort <<<"$smoke" | tr '\n' ' ')
+smoke=${smoke% }
+if [ "$services" != "$smoke" ]; then
+  fail "$FILE starts '$services' by default, but $SERVICES_FILE lists '$smoke'. A PR that adds a service lists it in $SERVICES_FILE and extends ci/smoke-image.sh to check it."
 fi
 echo "ci/smoke-image.sh starts every default service: $services."
