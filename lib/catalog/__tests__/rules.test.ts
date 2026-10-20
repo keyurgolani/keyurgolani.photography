@@ -4,8 +4,9 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { REPO_ROOT } from '../../../test/helpers/runTsx';
 import { cameraSettingsCaption } from '../legacy-photos';
+import { ORDER_RULES } from '../order-rules';
 import { BAND_COLORS, registeredRules, registerRule, runRules, rulesetVersion } from '../rules';
-import { createTestCatalog, ORDER_RULE_IDS, registerOrderRuleStandIns, type TestCatalog } from '../testing';
+import { createTestCatalog, type TestCatalog } from '../testing';
 import type { Issue, RuleContext } from '../types';
 
 let catalog: TestCatalog;
@@ -156,8 +157,9 @@ describe('the slice A rules', () => {
         expect(runRules(clean)).toEqual([]);
     });
 
-    it('have one row here per issue code, and no other rule is registered', () => {
-        expect(registeredRules().map((rule) => rule.id)).toEqual(rows.map((row) => row.code).sort());
+    it('have one row here per issue code, and the only other rules registered are #8\'s order rules', () => {
+        const orderIds = ORDER_RULES.map((rule) => rule.id);
+        expect(registeredRules().map((rule) => rule.id)).toEqual([...rows.map((row) => row.code), ...orderIds].sort());
     });
 
     it.each(rows)('$code: reports the broken record and field, and only that', (row) => {
@@ -356,12 +358,10 @@ describe('the rule registry', () => {
         expect(() => registerRule(rule as Parameters<typeof registerRule>[0])).toThrow(TypeError);
     });
 
-    it('takes #8\'s order rules as stand-ins once, so the real ones fail loudly until the stand-ins go', () => {
+    it('changes the ruleset version when a rule is added', () => {
         const before = rulesetVersion();
-        registerOrderRuleStandIns();
-        expect(registeredRules().filter((rule) => rule.id.startsWith('order.')).map((rule) => rule.id)).toEqual([...ORDER_RULE_IDS].sort());
+        registerRule({ id: 'fixture.added', version: 1, severity: 'warning', rollbackClass: 'editorial', gate: 'publish', check: () => [] });
         expect(rulesetVersion()).not.toBe(before);
-        expect(() => registerOrderRuleStandIns()).toThrow(/already registered/);
         expect(runRules(context())).toEqual([]);
     });
 

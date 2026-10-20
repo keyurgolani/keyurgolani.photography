@@ -5,14 +5,16 @@ import { ASSET_REVISION_RE, canonicalJson, PHOTO_ID_RE, PROFILE_ID_RE } from '..
 import type { TechnicalKey } from '../identity/metadata';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../identity/variants';
 import { cameraSettingsCaption } from './legacy-photos';
+import { ORDER_RULES } from './order-rules';
 import { MAX_SLUG_LENGTH, RESERVED_SLUGS, SERIES_ID_RE, SLUG_RE } from './schema';
 import type { Gate, Issue, IssueRecord, Rule, RuleContext, RuleFinding } from './types';
 
 /**
- * The validation rule registry and this issue's rules. One rule per check,
- * named under its group, and each rule's ID is the code of the issues it
- * reports. Other issues register their own (#5's route.*, #8's order.*, #15,
- * #16), and registerRule() throws on an ID that is already taken.
+ * The validation rule registry, #13's rules, and #8's order rules from
+ * order-rules.ts. One rule per check, named under its group, and each rule's
+ * ID is the code of the issues it reports. Other issues register their own
+ * (#5's route.*, #15, #16), and registerRule() throws on an ID that is
+ * already taken.
  */
 
 const RULE_ID_RE = /^[a-z]+\.[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -731,3 +733,5 @@ const SLICE_A_RULES: RuleDefinition[] = [
 ];
 
 for (const definition of SLICE_A_RULES) registerRule({ version: 1, rollbackClass: 'integrity', ...definition });
+// #8's sequence rules. A stand-in registered under one of these IDs now throws.
+for (const orderRule of ORDER_RULES) registerRule(orderRule);
