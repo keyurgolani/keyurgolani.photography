@@ -14,7 +14,8 @@
  *   # Delete exactly what that dry run listed, re-checking each path first
  *   npm run images:cleanup -- --apply --plan <hash>
  *
- *   # Limit both steps to one photo's exact base name, for a takedown
+ *   # Limit both steps to one photo's set, for a takedown. --only=<name> also
+ *   # takes a name that starts with a dash.
  *   npm run images:cleanup -- --only <name>
  *
  *   # In production
@@ -26,12 +27,11 @@
  */
 
 import fs from 'fs';
-import path from 'path';
 import { fileURLToPath } from 'url';
+import { parseArgs } from 'util';
 import {
     applyOrphanCleanup,
     CleanupRefusedError,
-    isSourceFile,
     planOrphanCleanup,
     STALE_TEMP_FILE_MS,
     type OrphanCleanupPlan,
@@ -39,7 +39,7 @@ import {
 } from '../utils/imageOptimizer';
 
 export const USAGE =
-    'Usage: npm run images:cleanup -- [--only <name>] [--allow-empty-library] [--apply --plan <hash>]';
+    'Usage: npm run images:cleanup -- [--only=<name>] [--allow-empty-library] [--apply --plan <hash>]';
 
 interface Output {
     log(line: string): void;
@@ -47,6 +47,7 @@ interface Output {
 }
 
 interface Options {
+    help: boolean;
     apply: boolean;
     plan: string | null;
     only: string | null;
@@ -70,31 +71,37 @@ function summarize(entries: OrphanEntry[]): string {
     return `${entries.length} ${entries.length === 1 ? 'file' : 'files'}, ${formatBytes(bytes)}`;
 }
 
-/** A photo's base name. Accepts `landscape` or `landscape.jpg`. */
-function parseOnly(value: string | undefined): string | null {
-    if (!value || value.startsWith('-') || /[/\\]/.test(value) || value === '.' || value === '..') return null;
-    return isSourceFile(value) ? path.basename(value, path.extname(value)) : value;
-}
+/** Strict, so a mistyped flag exits 2. A photo name that starts with a dash goes in as `--only=<name>`. */
+function readOptions(argv: string[]): Options | string {
+    let values: { apply?: boolean; plan?: string; only?: string; 'allow-empty-library'?: boolean; help?: boolean };
+    try {
+        ({ values } = parseArgs({
+            args: argv,
+            options: {
+                apply: { type: 'boolean' },
+                plan: { type: 'string' },
+                only: { type: 'string' },
+                'allow-empty-library': { type: 'boolean' },
+                help: { type: 'boolean', short: 'h' },
+            },
+            strict: true,
+        }));
+    } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+    }
 
-function parseArgs(argv: string[]): Options | string {
-    const options: Options = { apply: false, plan: null, only: null, allowEmptyLibrary: false };
-    for (let i = 0; i < argv.length; i++) {
-        const arg = argv[i];
-        if (arg === '--apply') {
-            options.apply = true;
-        } else if (arg === '--allow-empty-library') {
-            options.allowEmptyLibrary = true;
-        } else if (arg === '--plan') {
-            const value = argv[++i];
-            if (!value || !/^[0-9a-f]{12}$/.test(value)) return '--plan needs the 12-character hash a dry run printed.';
-            options.plan = value;
-        } else if (arg === '--only') {
-            const only = parseOnly(argv[++i]);
-            if (only === null) return '--only needs a photo name, such as landscape or landscape.jpg.';
-            options.only = only;
-        } else {
-            return `Unknown option: ${arg}`;
-        }
+    const options: Options = {
+        help: values.help ?? false,
+        apply: values.apply ?? false,
+        plan: values.plan ?? null,
+        only: values.only ?? null,
+        allowEmptyLibrary: values['allow-empty-library'] ?? false,
+    };
+    if (options.plan !== null && !/^[0-9a-f]{12}$/.test(options.plan)) {
+        return '--plan needs the 12-character hash a dry run printed.';
+    }
+    if (options.only !== null && (options.only === '' || /[/\\]/.test(options.only) || options.only === '.' || options.only === '..')) {
+        return '--only needs a photo name, such as landscape or landscape.jpg.';
     }
     if (options.apply && options.plan === null) {
         return '--apply needs --plan <hash> from a dry run, so it deletes only what you reviewed.';
@@ -103,21 +110,27 @@ function parseArgs(argv: string[]): Options | string {
     return options;
 }
 
-/** Quote a value for a POSIX shell, so the printed command can be pasted as is. */
+/**
+ * Quote a value for a POSIX shell, so the printed command can be pasted as is.
+ * A leading `=` gets quoted too, since zsh expands `=word`.
+ */
 function shellQuote(value: string): string {
-    return /^[\w.,:+=@%-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+    return /^[\w.,:+@%-][\w.,:+=@%-]*$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-/** The flags that reproduce this plan, for the dry run's next-step line. */
+/** The flags that reproduce this plan, for the dry run's next-step commands. */
 function planFlags(plan: OrphanCleanupPlan): string {
     return [
-        plan.only === null ? '' : ` --only ${shellQuote(plan.only)}`,
-        plan.allowEmptyLibrary ? ' --allow-empty-library' : '',
-        ` --apply --plan ${plan.hash}`,
+        plan.only === null ? '' : `--only=${shellQuote(plan.only)} `,
+        plan.allowEmptyLibrary ? '--allow-empty-library ' : '',
+        `--apply --plan ${plan.hash}`,
     ].join('');
 }
 
 function reportSkips(plan: OrphanCleanupPlan, output: Output): void {
+    for (const { name, code } of plan.unreadableSources) {
+        output.log(`Kept the set for ${name}, a source that can't be read (${code}).`);
+    }
     if (plan.onlyVariants.length > 0) {
         output.log(
             `No file is named exactly ${plan.only}, but ${plan.onlyVariants.map(shellQuote).join(', ')} ` +
@@ -138,15 +151,15 @@ function reportSkips(plan: OrphanCleanupPlan, output: Output): void {
 
 /** Runs the cleanup CLI and returns its exit code: 0 done, 1 a deletion failed, 2 refused. */
 export function runImageCleanup(argv: string[], output: Output = console): number {
-    if (argv.includes('--help') || argv.includes('-h')) {
-        output.log(USAGE);
-        return 0;
-    }
-    const options = parseArgs(argv);
+    const options = readOptions(argv);
     if (typeof options === 'string') {
         output.error(options);
         output.error(USAGE);
         return 2;
+    }
+    if (options.help) {
+        output.log(USAGE);
+        return 0;
     }
 
     let plan: OrphanCleanupPlan;
@@ -168,11 +181,19 @@ export function runImageCleanup(argv: string[], output: Output = console): numbe
             output.log(`Would delete ${entry.relativePath} (${entry.reason})`);
         }
         reportSkips(plan, output);
+        if (plan.otherOrphans.length > 0) {
+            output.log(
+                `Other sets with no source, which may be earlier names of this photo: ${plan.otherOrphans.map(shellQuote).join(', ')}. ` +
+                'The dry run without --only lists their files.',
+            );
+        }
         if (plan.entries.length === 0) {
             output.log('Nothing to delete.');
         } else {
             output.log(`Would delete ${summarize(plan.entries)}. This was a dry run.`);
-            output.log(`Plan ${plan.hash}. To delete exactly these files, re-run with${planFlags(plan)}`);
+            output.log(`Plan ${plan.hash}. To delete exactly these files, run one of:`);
+            output.log(`  npm run images:cleanup -- ${planFlags(plan)}`);
+            output.log(`  npx tsx scripts/imageCleanup.ts ${planFlags(plan)}`);
         }
         return 0;
     }

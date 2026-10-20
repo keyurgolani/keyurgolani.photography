@@ -111,9 +111,13 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
             `Would delete ${STALE_TEMP} (stale temp file)`,
         ].sort());
         expect(out).toContainEqual(expect.stringMatching(/^Would delete 9 files, \d+ bytes.*\. This was a dry run\.$/));
-        expect(out).toContainEqual(expect.stringMatching(
-            /^Plan ([0-9a-f]{12})\. To delete exactly these files, re-run with --apply --plan \1$/,
-        ));
+        const planLine = out.findIndex((line) => /^Plan [0-9a-f]{12}\. To delete exactly these files, run one of:$/.test(line));
+        expect(planLine, out.join('\n')).toBeGreaterThan(-1);
+        const hash = out[planLine].slice('Plan '.length, 'Plan '.length + 12);
+        expect(out.slice(planLine + 1, planLine + 3)).toEqual([
+            `  npm run images:cleanup -- --apply --plan ${hash}`,
+            `  npx tsx scripts/imageCleanup.ts --apply --plan ${hash}`,
+        ]);
         expect(out).toContain('Kept 1 temp file under 10 minutes old, since a running job may still own them.');
         expect(lib.hashes(Object.keys(before))).toEqual(before);
     });
@@ -274,7 +278,8 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
         const planned = planOrphanCleanup().entries.filter((entry) => entry.relativePath.includes('landscape'));
 
         if (caseInsensitive(lib)) {
-            // As on macOS: the server finds thumbnails/Landscape.webp at thumbnails/landscape.webp
+            // As on macOS: both names are one file here, so the set stays until the
+            // watcher regenerates it under the new spelling, Landscape.*
             expect(planned).toEqual([]);
         } else {
             // As on Linux: Landscape.JPG gets its own Landscape.* set, so no source needs landscape.*
@@ -319,7 +324,7 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
         expect(exact.out.some((line) => line.startsWith('No file is named exactly'))).toBe(false);
     });
 
-    it('quotes the --only name in the printed command, so it survives the shell', async () => {
+    it('quotes the --only name in the printed commands, so it survives the shell', async () => {
         const lib = await newLibrary({ fixtures: 'basic' });
         const name = "it's $HOME";
         fs.copyFileSync(lib.file('landscape.jpg'), lib.file(`${name}.jpg`));
@@ -328,11 +333,114 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
 
         const { out, output } = capture();
         expect(runImageCleanup(['--only', name], output)).toBe(0);
-        const quoted = out.find((line) => line.startsWith('Plan '))?.match(/ --only (.+) --apply --plan [0-9a-f]{12}$/)?.[1];
-        expect(quoted).toBeDefined();
+        const npmLine = out.find((line) => line.startsWith('  npm run images:cleanup -- '));
+        const quoted = npmLine?.match(/ --only=(.+) --apply --plan [0-9a-f]{12}$/)?.[1];
+        expect(quoted, out.join('\n')).toBeDefined();
 
         const echoed = spawnSync('sh', ['-c', `printf '%s' ${quoted}`], { encoding: 'utf8' });
         expect(echoed.stdout).toBe(name);
+    });
+
+    it('quotes a name that starts with =, and takes one that starts with a dash as --only=<name>', async () => {
+        const lib = await newLibrary({ fixtures: 'basic' });
+        for (const name of ['=odd', '-dash']) {
+            fs.copyFileSync(lib.file('landscape.jpg'), lib.file(`${name}.jpg`));
+            await processImage(`${name}.jpg`);
+            fs.unlinkSync(lib.file(`${name}.jpg`));
+        }
+
+        const equals = capture();
+        expect(runImageCleanup(['--only', '=odd'], equals.output)).toBe(0);
+        expect(equals.out).toContainEqual(expect.stringMatching(/^ {2}npm run images:cleanup -- --only='=odd' --apply --plan [0-9a-f]{12}$/));
+
+        const dash = capture();
+        expect(runImageCleanup(['--only=-dash'], dash.output)).toBe(0);
+        expect(dash.out.filter((line) => PER_PATH.test(line))).toHaveLength(7);
+        expect(dash.out).toContainEqual(expect.stringMatching(/^ {2}npx tsx scripts\/imageCleanup\.ts --only=-dash --apply --plan [0-9a-f]{12}$/));
+    });
+
+    it('--only matches an exact base name first, then one without a source extension', async () => {
+        const lib = await newLibrary({ fixtures: 'basic' });
+        // notes.jpg.png has the base notes.jpg, and notes.png the base notes
+        for (const name of ['notes.jpg.png', 'notes.png']) {
+            fs.copyFileSync(lib.file('portrait.png'), lib.file(name));
+            await processImage(name);
+            fs.unlinkSync(lib.file(name));
+        }
+
+        const exact = capture();
+        expect(runImageCleanup(['--only', 'notes.jpg'], exact.output)).toBe(0);
+        expect(exact.out).toContain('Only files for: notes.jpg');
+        expect(exact.out.filter((line) => PER_PATH.test(line)).sort()).toEqual(
+            derivativePaths('notes.jpg').map((relativePath) => `Would delete ${relativePath} (no source named notes.jpg.*)`).sort(),
+        );
+
+        const stripped = capture();
+        expect(runImageCleanup(['--only', 'notes.png'], stripped.output)).toBe(0);
+        expect(stripped.out).toContain('Only files for: notes');
+        expect(stripped.out.filter((line) => PER_PATH.test(line)).sort()).toEqual(
+            derivativePaths('notes').map((relativePath) => `Would delete ${relativePath} (no source named notes.*)`).sort(),
+        );
+    });
+
+    it('--only plans a set a sibling shares, and says the watcher rebuilds it from the sibling', async () => {
+        const lib = await newLibrary({ fixtures: 'basic' });
+        // a.jpg is taken down, and a.png, a different photo with the same base, stays
+        fs.copyFileSync(lib.file('landscape.jpg'), lib.file('a.jpg'));
+        await processImage('a.jpg');
+        fs.unlinkSync(lib.file('a.jpg'));
+        fs.copyFileSync(lib.file('portrait.png'), lib.file('a.png'));
+        expect(planOrphanCleanup().entries.filter((entry) => entry.relativePath.includes('/a.'))).toEqual([]);
+
+        const { out, output } = capture();
+        expect(runImageCleanup(['--only', 'a'], output)).toBe(0);
+        expect(out.filter((line) => PER_PATH.test(line)).sort()).toEqual(
+            derivativePaths('a').map((relativePath) => `Would delete ${relativePath} (rebuilt from a.png when the watcher starts)`).sort(),
+        );
+
+        const hash = dryRunHash(['--only', 'a']);
+        expect(runImageCleanup(['--only', 'a', '--apply', '--plan', hash], capture().output)).toBe(0);
+        expect(lib.hashes(derivativePaths('a'))).toEqual({});
+        expect(fs.existsSync(lib.file('a.png'))).toBe(true);
+    });
+
+    it('--only names the other sets with no source, which may be earlier names of the photo', async () => {
+        const lib = await libraryWithOrphans();
+        fs.unlinkSync(lib.file('portrait.png'));
+
+        const { out, output } = capture();
+        expect(runImageCleanup(['--only', 'portrait'], output)).toBe(0);
+
+        expect(out).toContain(
+            'Other sets with no source, which may be earlier names of this photo: square. The dry run without --only lists their files.',
+        );
+    });
+
+    it("keeps the set of a source it can see but can't read, and lists that source", async () => {
+        const lib = await libraryWithOrphans();
+        // A dangling symlink: lstat sees it, stat can't follow it
+        fs.unlinkSync(lib.file('portrait.png'));
+        fs.symlinkSync(lib.file('missing-target.png'), lib.file('portrait.png'));
+
+        const { out, output } = capture();
+        expect(runImageCleanup([], output)).toBe(0);
+
+        expect(out.filter((line) => PER_PATH.test(line) && line.includes('portrait'))).toEqual([]);
+        expect(out).toContain("Kept the set for portrait.png, a source that can't be read (ENOENT).");
+        expect(Object.keys(lib.hashes(derivativePaths('portrait')))).toHaveLength(7);
+    });
+
+    it("keeps a set when lstat can't tell whether two spellings are one file", async () => {
+        const lib = await libraryWithCaseRename();
+        const realLstatSync = fs.lstatSync;
+        vi.spyOn(fs, 'lstatSync').mockImplementation(((target: fs.PathLike, options?: fs.StatSyncOptions) => {
+            if (String(target) === lib.file('landscape.JPG')) {
+                throw Object.assign(new Error(`EACCES: permission denied, lstat '${String(target)}'`), { code: 'EACCES' });
+            }
+            return realLstatSync(target, options);
+        }) as unknown as typeof fs.lstatSync);
+
+        expect(planOrphanCleanup().entries.filter((entry) => entry.relativePath.includes('landscape'))).toEqual([]);
     });
 
     it('refuses a missing library root, even with --allow-empty-library', async () => {
@@ -373,10 +481,10 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
     it('rejects bad options with exit code 2', async () => {
         await newLibrary({ fixtures: 'basic' });
         for (const [args, message] of [
-            [['--force'], 'Unknown option: --force'],
+            [['--force'], "Unknown option '--force'"],
             [['--plan', '000000000000'], '--plan goes with --apply.'],
             [['--apply', '--plan', 'short'], '--plan needs the 12-character hash a dry run printed.'],
-            [['--only'], '--only needs a photo name, such as landscape or landscape.jpg.'],
+            [['--only'], "Option '--only <value>' argument missing"],
             [['--only', '../landscape'], '--only needs a photo name, such as landscape or landscape.jpg.'],
         ] as const) {
             const { err, output } = capture();
