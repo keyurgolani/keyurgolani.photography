@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fsyncDirectory } from './fsx';
+import { fsyncDirectory, PRIVATE_FILE_MODE } from './fsx';
 
 /** Test hooks. Each runs at its point in the write and may throw to simulate a fault there. */
 export interface AtomicWriteFaults {
@@ -24,13 +24,14 @@ export function tempPathFor(file: string): string {
  * Replace `file` so a reader sees the old bytes or the new ones, never a mix:
  * write a temp file in the same directory, fsync it, rename it over the
  * target, then fsync the directory. The directory must exist. On failure the
- * temp file is removed and the target keeps its old contents.
+ * temp file is removed and the target keeps its old contents. The new file
+ * is readable by its owner only.
  */
 export async function atomicWriteFile(file: string, data: string | Uint8Array, { faults }: AtomicWriteOptions = {}): Promise<void> {
     const temp = tempPathFor(file);
     let renamed = false;
     try {
-        const handle = await fs.promises.open(temp, 'wx');
+        const handle = await fs.promises.open(temp, 'wx', PRIVATE_FILE_MODE);
         try {
             await handle.writeFile(data);
             await handle.sync();

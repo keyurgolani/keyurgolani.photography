@@ -122,6 +122,11 @@ describe('runReconcilePass', () => {
         expect(data.files()).toEqual(['data-root.json', 'identity/registry.json', 'identity/stat-cache.json']);
         const landscape = Object.values(registry.photos).find((photo) => photo.source.path === 'landscape.jpg');
         expect(landscape?.revisions[landscape.source.observedRevision]).toMatchObject({ width: 960, height: 640, sourceFormat: 'jpeg', orientation: null });
+
+        // The registry and stat cache hold curator-only metadata, so only their owner can read them.
+        const mode = (file: string) => fs.statSync(file).mode & 0o777;
+        const paths = identityPaths(data.root);
+        expect([mode(paths.dir), mode(paths.registry), mode(paths.statCache), mode(data.file('locks'))]).toEqual([0o700, 0o600, 0o600, 0o700]);
     });
 
     it('re-delivers facts committed before a crash, leftovers first, so each factId is seen once', async () => {

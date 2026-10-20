@@ -67,6 +67,14 @@ describe('withLock', () => {
         expect(lockDirEntries()).toEqual([]);
     });
 
+    it('creates locks/ and the lock file for their owner only', async () => {
+        const modes = await withLock('registry', { root: data.root }, async () => ({
+            dir: fs.statSync(path.dirname(lockPath)).mode & 0o777,
+            file: fs.statSync(lockPath).mode & 0o777,
+        }));
+        expect(modes).toEqual({ dir: 0o700, file: 0o600 });
+    });
+
     it('releases the lock when fn throws', async () => {
         await expect(withLock('registry', { root: data.root }, async () => {
             throw new Error('fn failed');

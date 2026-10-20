@@ -1,6 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+/**
+ * Modes for what the data root code creates. Identity state holds
+ * curator-only metadata such as GPS, so only the owning user can read it, and
+ * whatever serves or writes the data root must run as that user.
+ */
+export const PRIVATE_FILE_MODE = 0o600;
+export const PRIVATE_DIR_MODE = 0o700;
+
 /** True when `error` is a Node errno error carrying one of `codes`. */
 export function hasErrorCode(error: unknown, ...codes: string[]): boolean {
     if (typeof error !== 'object' || error === null) return false;

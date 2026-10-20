@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { dataRoot } from './config';
-import { hasErrorCode } from './fsx';
+import { hasErrorCode, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE } from './fsx';
 
 /** The contents of `locks/<name>.lock`. */
 export interface LockRecord {
@@ -166,7 +166,7 @@ export async function withLock<T>(name: string, options: LockOptions, fn: (conte
     const lockPath = path.join(lockDir, `${name}.lock`);
     try {
         // Never create the data root itself: a missing one is an unmounted volume, not an empty one.
-        await fs.promises.mkdir(lockDir);
+        await fs.promises.mkdir(lockDir, { mode: PRIVATE_DIR_MODE });
     } catch (error) {
         if (!hasErrorCode(error, 'EEXIST')) throw error;
     }
@@ -215,7 +215,7 @@ export async function withLock<T>(name: string, options: LockOptions, fn: (conte
     async function tryCreate(): Promise<{ handle: fs.promises.FileHandle; record: LockRecord } | null> {
         let created: fs.promises.FileHandle;
         try {
-            created = await fs.promises.open(lockPath, 'wx');
+            created = await fs.promises.open(lockPath, 'wx', PRIVATE_FILE_MODE);
         } catch (error) {
             if (hasErrorCode(error, 'EEXIST')) return null;
             throw error;

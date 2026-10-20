@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fsyncDirectory, hasErrorCode } from './fsx';
+import { fsyncDirectory, hasErrorCode, PRIVATE_DIR_MODE } from './fsx';
 
 export const MANIFEST_FILE = 'manifest.json';
 
@@ -166,7 +166,7 @@ export async function publishDirectory(stagingDir: string, finalDir: string): Pr
     await syncDirectory(stagingDir, staged);
 
     const parent = path.dirname(finalDir);
-    await fs.promises.mkdir(parent, { recursive: true });
+    await fs.promises.mkdir(parent, { recursive: true, mode: PRIVATE_DIR_MODE });
     if (!fs.existsSync(finalDir)) {
         try {
             await fs.promises.rename(stagingDir, finalDir);

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteFile, atomicWriteJson } from '../storage/atomicWrite';
 import { dataRootStatus, libraryRoot, type DataRootState } from '../storage/config';
+import { PRIVATE_DIR_MODE } from '../storage/fsx';
 import { observeLibrary, type ObservedLibrary, type PassDeps } from './pass';
 import { currentProfileId } from './profile';
 import { STABILITY_MS, type FactDraft } from './reconcile';
@@ -262,7 +263,7 @@ export async function migrateDryRun(options: DryRunOptions = {}): Promise<DryRun
     });
     const report = renderReport(plan, observed);
 
-    await fs.promises.mkdir(outDir, { recursive: true });
+    await fs.promises.mkdir(outDir, { recursive: true, mode: PRIVATE_DIR_MODE });
     const stamp = timestampOf(createdAt);
     const planPath = path.join(outDir, `plan-${stamp}.json`);
     const reportPath = path.join(outDir, `report-${stamp}.md`);

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteJson, type AtomicWriteFaults } from '../storage/atomicWrite';
 import { checkSchemaVersion, CorruptDocumentError, isRecord, readJsonFile, writeVersionedDocument } from '../storage/document';
-import { hasErrorCode } from '../storage/fsx';
+import { hasErrorCode, PRIVATE_DIR_MODE } from '../storage/fsx';
 import { ASSET_REVISION_RE, PHOTO_ID_RE } from './ids';
 import type { ImageInspection, UnsupportedInspection } from './inspect';
 import { EXTRACTOR_VERSION } from './metadata';
@@ -77,7 +77,7 @@ export async function readRegistry(root: string): Promise<Registry> {
 
 async function ensureIdentityDir(root: string): Promise<void> {
     try {
-        await fs.promises.mkdir(identityPaths(root).dir);
+        await fs.promises.mkdir(identityPaths(root).dir, { mode: PRIVATE_DIR_MODE });
     } catch (error) {
         if (!hasErrorCode(error, 'EEXIST')) throw error;
     }

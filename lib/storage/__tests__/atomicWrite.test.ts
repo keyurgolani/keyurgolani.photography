@@ -26,6 +26,15 @@ describe('atomicWriteJson', () => {
         expect(data.files()).toEqual(['doc.json']);
     });
 
+    it('leaves the file readable by its owner only, even when it replaces a wider one', async () => {
+        const file = data.file('doc.json');
+        await atomicWriteJson(file, { a: 1 });
+        expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+        fs.chmodSync(file, 0o644);
+        await atomicWriteJson(file, { a: 2 });
+        expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    });
+
     it('keeps the old contents and removes its temp file when a fault hits before the rename', async () => {
         const file = data.file('doc.json');
         await atomicWriteJson(file, { generation: 1 });

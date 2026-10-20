@@ -105,6 +105,9 @@ describe('photos:migrate --dry-run', () => {
         expect(path.basename(result.reportPath)).toBe(path.basename(result.planPath).replace(/^plan-(.*)\.json$/, 'report-$1.md'));
         expect(fs.readFileSync(result.reportPath, 'utf8')).toBe(result.report);
         expect(JSON.parse(fs.readFileSync(result.planPath, 'utf8'))).toEqual(result.plan);
+        // Both name every library path, so only their owner can read them.
+        const mode = (file: string) => fs.statSync(file).mode & 0o777;
+        expect([mode(out), mode(result.planPath), mode(result.reportPath)]).toEqual([0o700, 0o600, 0o600]);
 
         const headings = result.report.split('\n').filter((line) => line.startsWith('## ')).map((line) => line.slice(3));
         expect(headings).toEqual([...REPORT_SECTIONS]);
