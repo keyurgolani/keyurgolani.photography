@@ -14,6 +14,7 @@
     "lint": "eslint .",
     "images:watch": "npx tsx scripts/imageWatcher.ts --watch",
     "images:process": "npx tsx scripts/imageWatcher.ts --once",
+    "images:optimize": "npm run images:process --",
     "images:cleanup": "npx tsx scripts/imageCleanup.ts"
   },
   "dependencies": {

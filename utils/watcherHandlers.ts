@@ -1,5 +1,12 @@
 import path from 'path';
-import { filesToProcess, isSourceFile, refreshImage, reprocessImage } from './imageOptimizer';
+import {
+    filesToProcess,
+    generatedFolderNames,
+    isSourceFile,
+    markStale,
+    refreshImage,
+    reprocessImage,
+} from './imageOptimizer';
 
 type Logger = Pick<Console, 'log' | 'error'>;
 
@@ -13,12 +20,19 @@ export interface WatcherHandlers {
     onAdd(filePath: string): Promise<void>;
     /** Regenerate all seven outputs for a changed source, including a save-by-rename. */
     onChange(filePath: string): Promise<void>;
-    /** Log only. Removing a source never deletes its derivatives. */
-    onUnlink(filePath: string): void;
-    /** Queue every unprocessed source on the job chain, using processAllImages()'s overwrite rule. */
+    /**
+     * Keep the derivatives, but mark them stale, so a different file that later
+     * arrives under the same name is regenerated whatever its mtime.
+     */
+    onUnlink(filePath: string): Promise<void>;
+    /** Queue every unprocessed source, using the overwrite rule in refreshImage(). */
     queueStartupBatch(options?: { force?: boolean }): Promise<StartupBatchResult>;
+    /** Stop taking events. Jobs already queued still run. */
+    stop(): void;
     /** Resolve once every queued job has finished. */
     idle(): Promise<void>;
+    /** Wait up to `timeoutMs` for queued jobs. Resolves false if some were still running. */
+    drain(timeoutMs: number): Promise<boolean>;
 }
 
 /** `a.jpg` and `a.png` write the same outputs, so jobs are keyed by basename without extension. */
@@ -26,61 +40,103 @@ export function jobKey(filename: string): string {
     return path.basename(filename, path.extname(filename));
 }
 
-/** Runs at most `max` jobs at once, handing a freed slot straight to the next waiter. */
-function createLimiter(max: number) {
-    let active = 0;
-    const waiting: (() => void)[] = [];
-
-    return async function limit<T>(job: () => Promise<T>): Promise<T> {
-        if (active < max) {
-            active++;
-        } else {
-            await new Promise<void>((resolve) => waiting.push(resolve));
+/**
+ * The chokidar `ignored` filter: skip the generated folders directly under the
+ * root, matched by exact name on the first path segment, never by substring,
+ * so a root like `/srv/cache/photos` or a photo named `thumbnails-beach.jpg`
+ * is still watched.
+ */
+export function createIgnoreFilter(root: string): (watchedPath: string) => boolean {
+    const generated = new Set(generatedFolderNames());
+    const resolvedRoot = path.resolve(root);
+    return (watchedPath) => {
+        const relative = path.relative(resolvedRoot, path.resolve(watchedPath));
+        if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+            return false;
         }
-        try {
-            return await job();
-        } finally {
-            const next = waiting.shift();
-            if (next) next();
-            else active--;
-        }
+        return generated.has(relative.split(path.sep)[0]);
     };
+}
+
+interface Job {
+    key: string;
+    live: boolean;
+    label: string;
+    run: () => Promise<unknown>;
+    settle: (succeeded: boolean) => void;
 }
 
 export function createWatcherHandlers(
     { logger = console, maxConcurrentJobs = 1 }: { logger?: Logger; maxConcurrentJobs?: number } = {},
 ): WatcherHandlers {
-    // Jobs for one basename run in turn, so two quick edits, or an edit racing
-    // the startup batch, never interleave their writes. The limiter bounds memory
-    // when many files arrive at once, since each job holds its source in memory.
-    const chains = new Map<string, Promise<void>>();
-    const limit = createLimiter(maxConcurrentJobs);
+    // One queue, in arrival order. A job starts only when no job for its basename
+    // is running or queued ahead of it, so one source's jobs run in turn and never
+    // at once. Each job holds its source in memory, so at most maxConcurrentJobs
+    // run. A free slot goes first to a basename with a live event waiting, so a
+    // photo added after start doesn't wait behind the whole startup backlog.
+    const queue: Job[] = [];
+    const running = new Set<string>();
+    let idleWaiters: (() => void)[] = [];
+    let stopped = false;
 
-    function enqueue(filename: string, job: () => Promise<unknown>): Promise<boolean> {
-        const key = jobKey(filename);
-        let succeeded = false;
-        const run = (chains.get(key) ?? Promise.resolve())
-            .then(() => limit(job))
-            .then(
-                () => {
-                    succeeded = true;
-                },
-                (error: unknown) => {
-                    logger.error(`[ImageWatcher] Error processing ${filename}:`, error);
-                },
-            );
-        chains.set(key, run);
-        void run.then(() => {
-            if (chains.get(key) === run) chains.delete(key);
+    function pick(): Job | undefined {
+        const liveKeys = new Set(queue.filter((job) => job.live).map((job) => job.key));
+        const seen = new Set<string>();
+        let firstReady: Job | undefined;
+        for (const job of queue) {
+            const ready = !running.has(job.key) && !seen.has(job.key);
+            seen.add(job.key);
+            if (!ready) continue;
+            if (liveKeys.has(job.key)) return job;
+            firstReady ??= job;
+        }
+        return firstReady;
+    }
+
+    function pump(): void {
+        while (running.size < maxConcurrentJobs) {
+            const job = pick();
+            if (!job) break;
+            queue.splice(queue.indexOf(job), 1);
+            running.add(job.key);
+            Promise.resolve()
+                .then(job.run)
+                .then(
+                    () => job.settle(true),
+                    (error: unknown) => {
+                        logger.error(`[ImageWatcher] Error processing ${job.label}:`, error);
+                        job.settle(false);
+                    },
+                )
+                .finally(() => {
+                    running.delete(job.key);
+                    pump();
+                });
+        }
+        if (running.size === 0 && queue.length === 0) {
+            const waiters = idleWaiters;
+            idleWaiters = [];
+            waiters.forEach((resolve) => resolve());
+        }
+    }
+
+    function enqueue(filename: string, live: boolean, run: () => Promise<unknown>): Promise<boolean> {
+        return new Promise((settle) => {
+            queue.push({ key: jobKey(filename), live, label: filename, run, settle });
+            pump();
         });
-        return run.then(() => succeeded);
+    }
+
+    function idle(): Promise<void> {
+        if (running.size === 0 && queue.length === 0) return Promise.resolve();
+        return new Promise((resolve) => idleWaiters.push(resolve));
     }
 
     async function regenerate(filePath: string, detected: string, done: string): Promise<void> {
-        if (!isSourceFile(filePath)) return;
+        if (stopped || !isSourceFile(filePath)) return;
         const filename = path.basename(filePath);
         logger.log(`[ImageWatcher] ${detected}: ${filename}`);
-        if (await enqueue(filename, () => reprocessImage(filename))) {
+        if (await enqueue(filename, true, () => reprocessImage(filename))) {
             logger.log(`[ImageWatcher] ${done}: ${filename}`);
         }
     }
@@ -90,14 +146,20 @@ export function createWatcherHandlers(
 
         onChange: (filePath) => regenerate(filePath, 'File changed, reprocessing', 'Reprocessed'),
 
-        onUnlink(filePath) {
-            if (!isSourceFile(filePath)) return;
-            logger.log(
-                `[ImageWatcher] Source removed: ${path.basename(filePath)}. Derivatives kept. See npm run images:cleanup.`,
-            );
+        async onUnlink(filePath) {
+            if (stopped || !isSourceFile(filePath)) return;
+            const filename = path.basename(filePath);
+            logger.log(`[ImageWatcher] Source removed: ${filename}. Derivatives kept. See npm run images:cleanup.`);
+            // Queued like any job, so it lands after a swap still running for this name
+            await enqueue(filename, true, async () => {
+                if (!markStale(filename)) {
+                    logger.log(`[ImageWatcher] Could not mark ${filename}'s derivatives stale. A later file under this name may need --force.`);
+                }
+            });
         },
 
         async queueStartupBatch({ force = false } = {}) {
+            if (stopped) return { processed: [], errors: [] };
             logger.log('[ImageWatcher] Checking for unprocessed images...');
             const files = filesToProcess({ force });
             if (files.length === 0) {
@@ -106,7 +168,7 @@ export function createWatcherHandlers(
             }
 
             logger.log(`[ImageWatcher] Found ${files.length} unprocessed images.`);
-            const outcomes = await Promise.all(files.map((file, index) => enqueue(file, async () => {
+            const outcomes = await Promise.all(files.map((file, index) => enqueue(file, false, async () => {
                 logger.log(`[ImageWatcher] Processing ${index + 1}/${files.length}: ${file}`);
                 await refreshImage(file, { force });
             })));
@@ -117,9 +179,21 @@ export function createWatcherHandlers(
             return { processed, errors };
         },
 
-        async idle() {
-            while (chains.size > 0) {
-                await Promise.all(chains.values());
+        stop() {
+            stopped = true;
+        },
+
+        idle,
+
+        async drain(timeoutMs) {
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const timedOut = new Promise<boolean>((resolve) => {
+                timer = setTimeout(() => resolve(false), timeoutMs);
+            });
+            try {
+                return await Promise.race([idle().then(() => true), timedOut]);
+            } finally {
+                clearTimeout(timer);
             }
         },
     };

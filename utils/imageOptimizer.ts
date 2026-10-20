@@ -1,4 +1,4 @@
-import { randomBytes } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import sharp from 'sharp';
@@ -48,8 +48,15 @@ export const STALE_TEMP_FILE_MS = 10 * 60 * 1000;
 
 const SOURCE_FILE = /\.(jpg|jpeg|png|webp)$/i;
 
-/** Matches the `.<base>.<pid>.<random>.tmp` files writeVariants() stages beside each output. */
-const TEMP_FILE = /^\..+\.\d+\.[0-9a-f]+\.tmp$/;
+/**
+ * Matches the `.<base hash>.<pid>.<random>.tmp` files writeVariants() stages
+ * beside each output. Hashing the base name keeps the length fixed, so a long
+ * but valid photo name never makes the temp name too long.
+ */
+const TEMP_FILE = /^\.[0-9a-f]{16}\.\d+\.[0-9a-f]{8}\.tmp$/;
+
+/** isSourceNewer() reads a thumbnail dated at the epoch as stale. See markStale(). */
+const STALE_TIME = new Date(0);
 
 export interface ProcessedImagePaths {
     original: string;
@@ -71,15 +78,50 @@ export interface ProcessedImagePaths {
 
 type DerivativeDir = Exclude<keyof LibraryPaths, 'root' | 'dynamicCache'>;
 
-const DERIVATIVE_DIRS: readonly DerivativeDir[] = [
-    'thumbnails',
-    'medium',
-    'optimized',
-    'lqip',
-    'thumbnailsAvif',
-    'mediumAvif',
-    'optimizedAvif',
+interface Variant {
+    dir: DerivativeDir;
+    ext: '.webp' | '.avif' | '.txt';
+    encode(input: Buffer): Promise<Buffer | string>;
+}
+
+function resized(input: Buffer, width: number) {
+    return sharp(input).resize(width, undefined, {
+        fit: 'inside',
+        withoutEnlargement: true,
+    });
+}
+
+// The seven outputs and their encoder settings, in the order they are written.
+const VARIANTS: readonly Variant[] = [
+    { dir: 'thumbnails', ext: '.webp', encode: (input) => resized(input, THUMBNAIL_WIDTH).webp({ quality: 80 }).toBuffer() },
+    { dir: 'medium', ext: '.webp', encode: (input) => resized(input, MEDIUM_WIDTH).webp({ quality: 85 }).toBuffer() },
+    { dir: 'optimized', ext: '.webp', encode: (input) => resized(input, OPTIMIZED_WIDTH).webp({ quality: 85 }).toBuffer() },
+    { dir: 'thumbnailsAvif', ext: '.avif', encode: (input) => resized(input, THUMBNAIL_WIDTH).avif({ quality: 60, effort: 4 }).toBuffer() },
+    { dir: 'mediumAvif', ext: '.avif', encode: (input) => resized(input, MEDIUM_WIDTH).avif({ quality: 60, effort: 4 }).toBuffer() },
+    { dir: 'optimizedAvif', ext: '.avif', encode: (input) => resized(input, OPTIMIZED_WIDTH).avif({ quality: 60, effort: 4 }).toBuffer() },
+    {
+        dir: 'lqip',
+        ext: '.txt',
+        // Low Quality Image Placeholder, stored as a data URL
+        encode: async (input) => {
+            const lqipBuffer = await sharp(input)
+                .resize(LQIP_SIZE, LQIP_SIZE, { fit: 'inside' })
+                .webp({ quality: 20 })
+                .toBuffer();
+            return `data:image/webp;base64,${lqipBuffer.toString('base64')}`;
+        },
+    },
 ];
+
+/** The seven derivative folders, taken from VARIANTS so the two never drift apart. */
+const DERIVATIVE_DIRS: readonly DerivativeDir[] = VARIANTS.map((variant) => variant.dir);
+
+/** Folder names directly under the library root that hold generated files, never sources. */
+export function generatedFolderNames(): string[] {
+    const paths = libraryPaths();
+    return [...DERIVATIVE_DIRS.map((dir) => paths[dir]), path.dirname(paths.dynamicCache)]
+        .map((folder) => path.relative(paths.root, folder));
+}
 
 export class LibraryRootMissingError extends Error {
     readonly root: string;
@@ -99,8 +141,10 @@ export function libraryRootExists(root: string = libraryPaths().root): boolean {
     }
 }
 
+/** A photo the pipeline processes. Dot-files, such as macOS `._*` AppleDouble files, never count. */
 export function isSourceFile(filename: string): boolean {
-    return SOURCE_FILE.test(filename);
+    const name = path.basename(filename);
+    return !name.startsWith('.') && SOURCE_FILE.test(name);
 }
 
 function baseNameOf(filename: string): string {
@@ -121,7 +165,7 @@ export function ensureDirectories(): void {
     if (!libraryRootExists(paths.root)) {
         throw new LibraryRootMissingError(paths.root);
     }
-
+    
     for (const dir of DERIVATIVE_DIRS) {
         try {
             fs.mkdirSync(paths[dir]);
@@ -159,44 +203,30 @@ export function getImagePaths(filename: string): ProcessedImagePaths {
     };
 }
 
-interface Variant {
-    dir: DerivativeDir;
-    ext: '.webp' | '.avif' | '.txt';
-    encode(input: Buffer): Promise<Buffer | string>;
+/** The start of every temp file name writeVariants() uses for `baseName`. */
+export function tempFilePrefix(baseName: string): string {
+    return `.${createHash('sha256').update(baseName).digest('hex').slice(0, 16)}.`;
 }
-
-function resized(input: Buffer, width: number) {
-    return sharp(input).resize(width, undefined, {
-        fit: 'inside',
-        withoutEnlargement: true,
-    });
-}
-
-// The seven outputs and their encoder settings, in the order they are written.
-const VARIANTS: readonly Variant[] = [
-    { dir: 'thumbnails', ext: '.webp', encode: (input) => resized(input, THUMBNAIL_WIDTH).webp({ quality: 80 }).toBuffer() },
-    { dir: 'medium', ext: '.webp', encode: (input) => resized(input, MEDIUM_WIDTH).webp({ quality: 85 }).toBuffer() },
-    { dir: 'optimized', ext: '.webp', encode: (input) => resized(input, OPTIMIZED_WIDTH).webp({ quality: 85 }).toBuffer() },
-    { dir: 'thumbnailsAvif', ext: '.avif', encode: (input) => resized(input, THUMBNAIL_WIDTH).avif({ quality: 60, effort: 4 }).toBuffer() },
-    { dir: 'mediumAvif', ext: '.avif', encode: (input) => resized(input, MEDIUM_WIDTH).avif({ quality: 60, effort: 4 }).toBuffer() },
-    { dir: 'optimizedAvif', ext: '.avif', encode: (input) => resized(input, OPTIMIZED_WIDTH).avif({ quality: 60, effort: 4 }).toBuffer() },
-    {
-        dir: 'lqip',
-        ext: '.txt',
-        // Low Quality Image Placeholder, stored as a data URL
-        encode: async (input) => {
-            const lqipBuffer = await sharp(input)
-                .resize(LQIP_SIZE, LQIP_SIZE, { fit: 'inside' })
-                .webp({ quality: 20 })
-                .toBuffer();
-            return `data:image/webp;base64,${lqipBuffer.toString('base64')}`;
-        },
-    },
-];
 
 function tempPathFor(target: string, baseName: string): string {
-    const name = `.${baseName}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+    const name = `${tempFilePrefix(baseName)}${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
     return path.join(path.dirname(target), name);
+}
+
+/**
+ * Mark a source's derivatives stale by dating its thumbnail at the epoch, so the
+ * next run regenerates them from whatever source then has that name, whatever
+ * its mtime. Best effort: setting a file's times needs its owner, so this returns
+ * false instead of throwing when it can't.
+ */
+export function markStale(filename: string): boolean {
+    const thumbnail = path.join(libraryPaths().thumbnails, `${baseNameOf(filename)}.webp`);
+    try {
+        fs.utimesSync(thumbnail, STALE_TIME, STALE_TIME);
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 async function removeQuietly(files: string[]): Promise<void> {
@@ -224,13 +254,13 @@ export async function writeVariants(filename: string, { overwrite }: { overwrite
 
     const input = await fs.promises.readFile(path.join(paths.root, filename));
 
-    const staged: { temp: string; target: string }[] = [];
+    const staged: { temp: string; target: string; dir: DerivativeDir }[] = [];
     try {
         for (const { variant, target } of needed) {
             const data = await variant.encode(input);
             const temp = tempPathFor(target, baseName);
             const handle = await fs.promises.open(temp, 'wx');
-            staged.push({ temp, target });
+            staged.push({ temp, target, dir: variant.dir });
             try {
                 await handle.writeFile(data);
                 await handle.sync();
@@ -243,22 +273,30 @@ export async function writeVariants(filename: string, { overwrite }: { overwrite
         throw error;
     }
 
+    // isSourceNewer() compares the source with the thumbnail, so mark the old one
+    // stale and rename it last. An interrupted swap then gets redone on the next run.
+    const order = [
+        ...staged.filter(({ dir }) => dir !== 'thumbnails'),
+        ...staged.filter(({ dir }) => dir === 'thumbnails'),
+    ];
+    if (order.length > 0 && order[order.length - 1].dir === 'thumbnails') markStale(filename);
+
     let renamed = 0;
     try {
-        for (const { temp, target } of staged) {
+        for (const { temp, target } of order) {
             await fs.promises.rename(temp, target);
             renamed++;
         }
     } catch (error) {
-        await removeQuietly(staged.slice(renamed).map(({ temp }) => temp));
+        await removeQuietly(order.slice(renamed).map(({ temp }) => temp));
         console.error(
-            `[imageOptimizer] Renaming ${filename}'s new outputs failed after replacing ${renamed} of ${staged.length}.` +
+            `[imageOptimizer] Renaming ${filename}'s new outputs failed after replacing ${renamed} of ${order.length}.` +
             (renamed > 0 ? ' Its derivatives may mix old and new versions until it is processed again.' : ''),
         );
         throw error;
     }
 
-    return staged.map(({ target }) => target);
+    return order.map(({ target }) => target);
 }
 
 /**
@@ -277,7 +315,7 @@ export function getPhotoFiles(): string[] {
     if (!libraryRootExists(root)) {
         return [];
     }
-
+    
     return fs.readdirSync(root).filter((file) => {
         if (!isSourceFile(file)) return false;
         try {
@@ -295,17 +333,22 @@ function isSourceNewer(filename: string): boolean {
     const paths = libraryPaths();
     const sourcePath = path.join(paths.root, filename);
     const baseName = baseNameOf(filename);
-    
-    if (!fs.existsSync(sourcePath)) return false;
-    
-    const sourceMtime = fs.statSync(sourcePath).mtimeMs;
-    
-    // Check against thumbnail as representative of all processed files
     const thumbnailPath = path.join(paths.thumbnails, `${baseName}.webp`);
-    if (!fs.existsSync(thumbnailPath)) return true;
     
-    const thumbMtime = fs.statSync(thumbnailPath).mtimeMs;
-    return sourceMtime > thumbMtime;
+    // A file removed mid-check counts as missing instead of throwing
+    const source = fs.statSync(sourcePath, { throwIfNoEntry: false });
+    if (!source) return false;
+    const thumbnail = fs.statSync(thumbnailPath, { throwIfNoEntry: false });
+    if (!thumbnail) return true;
+    
+    // Marked stale on unlink, or before a swap that may not have finished
+    if (thumbnail.mtimeMs <= STALE_TIME.getTime()) return true;
+    
+    // A source dated in the future would look newer on every start, so once its
+    // outputs exist, only a stale mark or a live event regenerates them
+    if (source.mtimeMs > Date.now()) return false;
+    
+    return source.mtimeMs > thumbnail.mtimeMs;
 }
 
 /**
@@ -342,44 +385,19 @@ export async function reprocessImage(filename: string): Promise<ProcessedImagePa
     await writeVariants(filename, { overwrite: true });
     return getImagePaths(filename);
 }
-
-/** The sources processAllImages() works on: every source with `force`, else the unprocessed ones. */
+    
+/** The sources the watcher's startup batch works on: every source with `force`, else the unprocessed ones. */
 export function filesToProcess({ force = false }: { force?: boolean } = {}): string[] {
     return force ? getPhotoFiles() : getUnprocessedFiles();
 }
 
 /**
- * processAllImages()'s overwrite rule for one source: regenerate all seven
+ * The startup batch's overwrite rule for one source: regenerate all seven
  * outputs when forced or when the source is newer than its outputs, and
  * otherwise only fill in missing ones.
  */
 export function refreshImage(filename: string, { force = false }: { force?: boolean } = {}): Promise<string[]> {
     return writeVariants(filename, { overwrite: force || isSourceNewer(filename) });
-}
-
-/**
- * Process all unprocessed images. `force` regenerates every source.
- */
-export async function processAllImages(progressCallback?: (current: number, total: number, file: string) => void, { force = false }: { force?: boolean } = {}): Promise<{
-    processed: string[];
-    errors: { file: string; error: Error }[];
-}> {
-    const files = filesToProcess({ force });
-    const processed: string[] = [];
-    const errors: { file: string; error: Error }[] = [];
-    
-    for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        try {
-            progressCallback?.(i + 1, files.length, file);
-            await refreshImage(file, { force });
-            processed.push(file);
-        } catch (error) {
-            errors.push({ file, error: error as Error });
-        }
-    }
-    
-    return { processed, errors };
 }
 
 export type OrphanReason =
@@ -395,12 +413,25 @@ export interface OrphanEntry {
     bytes: number;
 }
 
+export interface OrphanCleanupOptions {
+    /** Plan a library with no sources, where every derivative counts as an orphan. */
+    allowEmptyLibrary?: boolean;
+    /** Limit the plan to one photo's base name, for a takedown. */
+    only?: string | null;
+    now?: number;
+}
+
 export interface OrphanCleanupPlan {
     root: string;
     allowEmptyLibrary: boolean;
+    only: string | null;
     entries: OrphanEntry[];
     /** Temp files kept because a running job may still own them */
     youngTempFiles: string[];
+    /** Folders cleanup didn't enter because they are symlinks or not folders */
+    skippedFolders: string[];
+    /** Short hash of what the plan deletes. `images:cleanup --apply` needs it, so only a reviewed plan runs. */
+    hash: string;
 }
 
 export interface OrphanCleanupResult {
@@ -424,46 +455,57 @@ type Verdict =
 
 const KEEP: Verdict = { kind: 'keep' };
 
-/** Answers whether the library holds any source, and one named `<base>.*`. */
-type SourceLookup = (base: string) => { any: boolean; forBase: boolean };
+/** `/api/image` cached files as `<base>-<width>-<quality>.<format>`. */
+const DYNAMIC_CACHE_FILE = /^(.+)-\d+-\d+\.(avif|webp|jpeg)$/;
 
-function sourceSet(bases: Set<string>): SourceLookup {
-    return (base) => ({ any: bases.size > 0, forBase: bases.has(base) });
+/**
+ * Compares base names the way a case-insensitive disk does, so a case-only
+ * rename keeps a live photo's derivatives instead of orphaning them.
+ */
+function sourceKey(base: string): string {
+    return base.normalize('NFC').toLowerCase();
 }
 
-/** Lists the root on every call, so a re-check sees sources restored since the plan. */
-function freshSources(root: string): SourceLookup {
-    return (base) => {
-        let names: string[];
-        try {
-            names = fs.readdirSync(root);
-        } catch {
-            return { any: false, forBase: false };
-        }
+interface SourceSet {
+    any: boolean;
+    has(base: string): boolean;
+}
 
-        let any = false;
-        for (const name of names) {
-            if (!isSourceFile(name)) continue;
-            const matchesBase = baseNameOf(name) === base;
-            if (any && !matchesBase) continue;
-            try {
-                if (fs.statSync(path.join(root, name)).isDirectory()) continue;
-            } catch {
-                continue;
-            }
-            any = true;
-            if (matchesBase) return { any, forBase: true };
-        }
-        return { any, forBase: false };
-    };
+function sourceSet(sourceFiles: string[]): SourceSet {
+    const keys = new Set(sourceFiles.map((file) => sourceKey(baseNameOf(file))));
+    return { any: keys.size > 0, has: (base) => keys.has(sourceKey(base)) };
+}
+
+/** The folders cleanup reads, each with the folders that must be real directories before it enters. */
+function scannedFolders(paths: LibraryPaths): { dir: string; guards: string[] }[] {
+    return [
+        ...DERIVATIVE_DIRS.map((key) => ({ dir: paths[key], guards: [paths[key]] })),
+        { dir: paths.dynamicCache, guards: [path.dirname(paths.dynamicCache), paths.dynamicCache] },
+    ];
+}
+    
+/** lstat, so a symlink never counts as a folder and cleanup never follows one out of the library. */
+function folderState(dir: string): 'ok' | 'missing' | 'unsafe' {
+    try {
+        return fs.lstatSync(dir).isDirectory() ? 'ok' : 'unsafe';
+    } catch (error) {
+        return hasErrorCode(error, 'ENOENT') ? 'missing' : 'unsafe';
+    }
+}
+
+function guardState(guards: string[]): { state: 'ok' | 'missing' | 'unsafe'; at: string } {
+    for (const guard of guards) {
+        const state = folderState(guard);
+        if (state !== 'ok') return { state, at: guard };
+    }
+    return { state: 'ok', at: '' };
 }
 
 function classify(
     file: string,
     paths: LibraryPaths,
-    sources: SourceLookup,
-    allowEmptyLibrary: boolean,
-    now: number,
+    sources: SourceSet,
+    { allowEmptyLibrary, only, now }: { allowEmptyLibrary: boolean; only: string | null; now: number },
 ): Verdict {
     if (!libraryRootExists(paths.root)) return KEEP;
 
@@ -477,19 +519,22 @@ function classify(
 
     const name = path.basename(file);
     if (path.dirname(file) === paths.dynamicCache) {
+        const cached = DYNAMIC_CACHE_FILE.exec(name);
+        if (only !== null && (!cached || sourceKey(cached[1]) !== sourceKey(only))) return KEEP;
         return { kind: 'delete', reason: 'unused since /api/image was removed', bytes: stat.size };
     }
     if (TEMP_FILE.test(name)) {
+        if (only !== null && !name.startsWith(tempFilePrefix(only))) return KEEP;
         return now - stat.mtimeMs >= STALE_TEMP_FILE_MS
             ? { kind: 'delete', reason: 'stale temp file', bytes: stat.size }
             : { kind: 'young-temp' };
     }
 
     const base = baseNameOf(name);
-    const found = sources(base);
-    if (found.forBase) return KEEP;
+    if (only !== null && sourceKey(base) !== sourceKey(only)) return KEEP;
+    if (sources.has(base)) return KEEP;
     // A library that lost every source is more likely unmounted or mid-sync than retired.
-    if (!found.any && !allowEmptyLibrary) return KEEP;
+    if (!sources.any && !allowEmptyLibrary) return KEEP;
     return { kind: 'delete', reason: `no source named ${base}.*`, bytes: stat.size };
 }
 
@@ -501,13 +546,27 @@ function listFiles(dir: string): string[] {
     }
 }
 
+function relativeTo(root: string, file: string): string {
+    return path.relative(root, file).split(path.sep).join('/');
+}
+
+function planHash(root: string, allowEmptyLibrary: boolean, only: string | null, entries: OrphanEntry[]): string {
+    const canonical = JSON.stringify({
+        root,
+        allowEmptyLibrary,
+        only,
+        entries: entries.map(({ relativePath, reason, bytes }) => [relativePath, reason, bytes]),
+    });
+    return createHash('sha256').update(canonical).digest('hex').slice(0, 12);
+}
+
 /**
  * Plan which derivatives no source needs anymore, without touching anything.
  * Refuses a missing root, and a root with no sources unless
  * `allowEmptyLibrary`, because either would make every derivative look orphaned.
  */
 export function planOrphanCleanup(
-    { allowEmptyLibrary = false, now = Date.now() }: { allowEmptyLibrary?: boolean; now?: number } = {},
+    { allowEmptyLibrary = false, only = null, now = Date.now() }: OrphanCleanupOptions = {},
 ): OrphanCleanupPlan {
     const paths = libraryPaths();
     if (!libraryRootExists(paths.root)) {
@@ -523,14 +582,20 @@ export function planOrphanCleanup(
         );
     }
 
-    const sources = sourceSet(new Set(sourceFiles.map(baseNameOf)));
+    const sources = sourceSet(sourceFiles);
+    const options = { allowEmptyLibrary, only, now };
     const entries: OrphanEntry[] = [];
     const youngTempFiles: string[] = [];
-    for (const dir of [...DERIVATIVE_DIRS.map((key) => paths[key]), paths.dynamicCache]) {
+    const skippedFolders: string[] = [];
+    for (const { dir, guards } of scannedFolders(paths)) {
+        const guard = guardState(guards);
+        if (guard.state === 'unsafe') skippedFolders.push(relativeTo(paths.root, guard.at));
+        if (guard.state !== 'ok') continue;
+
         for (const name of listFiles(dir)) {
             const file = path.join(dir, name);
-            const relativePath = path.relative(paths.root, file).split(path.sep).join('/');
-            const verdict = classify(file, paths, sources, allowEmptyLibrary, now);
+            const relativePath = relativeTo(paths.root, file);
+            const verdict = classify(file, paths, sources, options);
             if (verdict.kind === 'delete') {
                 entries.push({ path: file, relativePath, reason: verdict.reason, bytes: verdict.bytes });
             } else if (verdict.kind === 'young-temp') {
@@ -538,14 +603,23 @@ export function planOrphanCleanup(
             }
         }
     }
-
-    return { root: paths.root, allowEmptyLibrary, entries, youngTempFiles };
+    
+    return {
+        root: paths.root,
+        allowEmptyLibrary,
+        only,
+        entries,
+        youngTempFiles,
+        skippedFolders,
+        hash: planHash(paths.root, allowEmptyLibrary, only, entries),
+    };
 }
 
 /**
  * Delete a plan's entries, re-checking each one right before deleting it.
- * An entry that no longer qualifies for the same reason (its source came
- * back, the library emptied, a temp file was touched) is skipped.
+ * Lists the sources once, fresh, and keeps everything if it can't. An entry
+ * that no longer qualifies for the same reason (its source came back, its
+ * folder became a symlink, a temp file was touched) is skipped.
  */
 export function applyOrphanCleanup(
     plan: OrphanCleanupPlan,
@@ -555,11 +629,23 @@ export function applyOrphanCleanup(
     if (paths.root !== plan.root) {
         throw new CleanupRefusedError(`the plan is for ${plan.root}, but the library root is now ${paths.root}.`);
     }
-
-    const sources = freshSources(paths.root);
+    
     const result: OrphanCleanupResult = { deleted: [], skipped: [], failed: [] };
+    let sources: SourceSet;
+    try {
+        sources = sourceSet(getPhotoFiles());
+    } catch {
+        result.skipped.push(...plan.entries);
+        return result;
+    }
+
+    const options = { allowEmptyLibrary: plan.allowEmptyLibrary, only: plan.only, now };
+    const folders = scannedFolders(paths);
     for (const entry of plan.entries) {
-        const verdict = classify(entry.path, paths, sources, plan.allowEmptyLibrary, now);
+        const folder = folders.find(({ dir }) => dir === path.dirname(entry.path));
+        const verdict = folder && guardState(folder.guards).state === 'ok'
+            ? classify(entry.path, paths, sources, options)
+            : KEEP;
         if (verdict.kind !== 'delete' || verdict.reason !== entry.reason) {
             result.skipped.push(entry);
             continue;

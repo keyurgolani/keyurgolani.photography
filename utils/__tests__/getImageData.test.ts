@@ -1,4 +1,5 @@
 // @vitest-environment node
+import fs from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GET } from '../../app/api/photos/route';
 import { createTempLibrary, type TempLibrary } from '../../test/helpers/tempLibrary';
@@ -11,6 +12,8 @@ let errors: ReturnType<typeof vi.spyOn>;
 
 beforeEach(async () => {
     lib = await createTempLibrary({ fixtures: 'extras' });
+    // A macOS AppleDouble file next to a photo is not a photo
+    fs.writeFileSync(lib.file('._landscape.jpg'), 'AppleDouble metadata');
     errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 });
 
@@ -25,6 +28,7 @@ describe('getGalleryImages', () => {
 
         expect(images.map((image) => image.src.replace('/assets/photos/', '')).sort()).toEqual(DECODABLE);
         expect(errors).toHaveBeenCalledWith(expect.stringMatching(/^\[getGalleryImages\] Skipping corrupt\.jpg: /));
+        expect(errors).toHaveBeenCalledTimes(1);
         expect(images.find((image) => image.src.endsWith('/landscape.jpg'))).toMatchObject({
             src: '/assets/photos/landscape.jpg',
             width: 960,

@@ -135,14 +135,21 @@ docker compose -f docker-compose.prod.yml up -d
 
 ### Replacing and Removing Photos
 - **Replace** a photo by saving over it under the same name. The watcher regenerates its derivatives from the new file and swaps them in only once all seven are written, so a failed run keeps the old ones.
-- **Delete** a photo to hide it. It drops out of the gallery, but its derivatives stay, so restoring the file brings it back.
-- **Review leftovers** with `npm run images:cleanup`. It lists each derivative no photo needs anymore, with the reason, and deletes nothing until you add `-- --apply`. In production, run it in the watcher container:
+- **Delete** a photo to hide it from the gallery. Its derivative files stay reachable at their URLs until `images:cleanup` deletes them. Restoring the file brings the photo back in the gallery after `web` restarts, since Next serves only the `public/` files that existed when it started.
+- **Review leftovers** with `npm run images:cleanup`. It lists each derivative no photo needs anymore, with the reason, and prints a plan hash. Re-run it with `-- --apply --plan <hash>` to delete exactly that list. It refuses if anything changed since the dry run. In production, run both steps in the watcher container:
 
   ```bash
   docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts
-  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts --apply
+  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts --apply --plan <hash>
   ```
-- **Regenerate everything** with `npm run images:process -- --force`, for example after copying in files that kept an older modification time.
+- **Take a photo down** by deleting it, then running `images:cleanup` with `--only <name>`, where `<name>` is the photo's name such as `landscape`, and again with `--only <name> --apply --plan <hash>`. Then stop `web`, run `rm -rf ./.next-images-cache/*`, and start `web`, so Next's image cache drops its copies too.
+- **Regenerate everything** with `npm run images:process -- --force`, for example after copying in files that kept an older modification time. In production, stop `image-watcher` first so the two never write at once:
+
+  ```bash
+  docker compose -f docker-compose.prod.yml stop image-watcher
+  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageWatcher.ts --once --force
+  docker compose -f docker-compose.prod.yml start image-watcher
+  ```
 
 ### Supported Formats
 - JPEG (.jpg, .jpeg)

@@ -10,7 +10,6 @@ README.md
 dist
 .github
 ci
-test
 docs
 SHOWCASE.md
 docker-compose.prod.yml

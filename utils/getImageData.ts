@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import sharp from 'sharp';
 import exifFromBuffer from 'exif-reader';
-import { getImagePaths, ensureDirectories, getLqipBase64, libraryPaths, libraryRootExists } from './imageOptimizer';
+import { getImagePaths, ensureDirectories, getLqipBase64, getPhotoFiles, libraryPaths, libraryRootExists } from './imageOptimizer';
 
 export interface ImageItem {
     id: number;
@@ -37,16 +37,11 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
         // Continue anyway - thumbnails might already exist or will be created by watcher
     }
 
-    const files = fs.readdirSync(photosDir).filter(file => 
-        /\.(jpg|jpeg|png|webp)$/i.test(file)
-    );
+    // The same source list the watcher and images:cleanup use, so dot-files never count
+    const files = getPhotoFiles();
 
-    const readItem = async (file: string, index: number): Promise<ImageItem | null> => {
+    const readItem = async (file: string, index: number): Promise<ImageItem> => {
         const filePath = path.join(photosDir, file);
-        if (fs.statSync(filePath).isDirectory()) {
-            return null;
-        }
-
         // Use sharp with file path to avoid reading full buffer into memory
         const metadata = await sharp(filePath).metadata();
         
@@ -117,7 +112,7 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
         // Fallback if empty
         if (!caption) caption = '';
 
-        // `src` is the original source path. Clients pick the pre-generated WebP/AVIF derivatives below.
+        // `src` is the original source path. The gallery and carousel load the pre-generated `optimized` and `thumbnail` WebP files.
         const src = imagePaths.original;
         
         return {

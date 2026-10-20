@@ -7,20 +7,26 @@ import { dominantChannel, fixtureFiles, type Channel } from '../../test/fixtures
 import { createTempLibrary, derivativePaths, type TempLibrary } from '../../test/helpers/tempLibrary';
 import {
     ensureDirectories,
+    filesToProcess,
     getImagePaths,
+    getPhotoFiles,
     getUnprocessedFiles,
+    isSourceFile,
     libraryPaths,
     LibraryRootMissingError,
-    processAllImages,
     processImage,
+    refreshImage,
     reprocessImage,
+    tempFilePrefix,
 } from '../imageOptimizer';
+import { createWatcherHandlers } from '../watcherHandlers';
 
 // Counts encodes so a test can fail the Nth one. Everything else passes through to Sharp.
 const encodes = vi.hoisted(() => ({ count: 0, failAt: 0 }));
 
 vi.mock('sharp', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('sharp')>();
+    // sharp is CommonJS, so its function arrives as the namespace's default
+    const actual = await importOriginal<{ default: typeof import('sharp') }>();
     const realSharp = actual.default as unknown as (...args: unknown[]) => Sharp;
     const wrapped = (...args: unknown[]) => {
         const instance = realSharp(...args);
@@ -39,6 +45,7 @@ vi.mock('sharp', async (importOriginal) => {
 
 const LANDSCAPE = derivativePaths('landscape');
 const SEVEN = [1, 2, 3, 4, 5, 6, 7];
+const quiet = { log: () => undefined, error: () => undefined };
 
 let fixtures: Map<string, Buffer>;
 let lib: TempLibrary;
@@ -78,6 +85,10 @@ async function outputChannels(base: string): Promise<Channel[]> {
 function setMtime(relativePath: string, mtimeMs: number): void {
     const time = new Date(mtimeMs);
     fs.utimesSync(lib.file(relativePath), time, time);
+}
+
+function relativeToLibrary(target: fs.PathLike): string {
+    return path.relative(lib.root, String(target)).split(path.sep).join('/');
 }
 
 /** Fail the Nth temp file write partway through, the way a full disk does. */
@@ -128,6 +139,19 @@ describe('ensureDirectories', () => {
         await newLibrary({ missingRoot: true });
         expect(() => ensureDirectories()).toThrow(LibraryRootMissingError);
         expect(fs.existsSync(lib.root)).toBe(false);
+    });
+});
+
+describe('source files', () => {
+    it('never counts a dot-file, such as a macOS AppleDouble file, as a photo', async () => {
+        await newLibrary({ fixtures: 'basic' });
+        fs.writeFileSync(lib.file('._landscape.jpg'), 'AppleDouble metadata');
+        fs.writeFileSync(lib.file('.hidden.png'), fixture('portrait.png'));
+
+        expect(getPhotoFiles().sort()).toEqual(['landscape.jpg', 'portrait.png', 'square.webp']);
+        expect(isSourceFile('._landscape.jpg')).toBe(false);
+        expect(isSourceFile(lib.file('._landscape.jpg'))).toBe(false);
+        expect(isSourceFile('landscape.JPG')).toBe(true);
     });
 });
 
@@ -182,13 +206,35 @@ describe('writeVariants', { timeout: 60_000 }, () => {
         expect(errors).toHaveBeenCalledWith(expect.stringContaining('failed after replacing 2 of 7'));
         expect(lib.tempFiles()).toEqual([]);
     });
+
+    it('renames the thumbnail last, so a swap interrupted before it is redone on the next run', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        // An older mtime than the outputs, so only the stale mark can trigger the redo
+        setMtime('landscape.jpg', Date.parse('2001-01-01T00:00:00Z'));
+        const renamed: string[] = [];
+        const realRename = fs.promises.rename.bind(fs.promises);
+        const renameSpy = vi.spyOn(fs.promises, 'rename').mockImplementation(async (...args: Parameters<typeof fs.promises.rename>) => {
+            renamed.push(relativeToLibrary(args[1]));
+            if (renamed.length === 7) throw Object.assign(new Error('EIO: i/o error, rename'), { code: 'EIO' });
+            return realRename(...args);
+        });
+
+        await expect(reprocessImage('landscape.jpg')).rejects.toMatchObject({ code: 'EIO' });
+        expect(renamed[6]).toBe('thumbnails/landscape.webp');
+        renameSpy.mockRestore();
+
+        expect(getUnprocessedFiles()).toContain('landscape.jpg');
+        await refreshImage('landscape.jpg');
+        expect(await outputChannels('landscape')).toEqual(Array(7).fill('blue'));
+    });
 });
 
-describe('leftover temp files', () => {
+describe('temp files', { timeout: 30_000 }, () => {
     it('never count as an output', async () => {
         await newLibrary({ fixtures: 'basic' });
         ensureDirectories();
-        const leftovers = LANDSCAPE.map((relativePath) => path.join(path.dirname(relativePath), '.landscape.4242.0a1b2c3d.tmp'));
+        const leftovers = LANDSCAPE.map((relativePath) =>
+            path.join(path.dirname(relativePath), `${tempFilePrefix('landscape')}4242.0a1b2c3d.tmp`));
         for (const leftover of leftovers) fs.writeFileSync(lib.file(leftover), 'partial');
 
         const paths = getImagePaths('landscape.jpg');
@@ -201,13 +247,50 @@ describe('leftover temp files', () => {
         await processImage('landscape.jpg');
         expect(Object.keys(lib.hashes(LANDSCAPE))).toHaveLength(7);
         expect(lib.tempFiles()).toEqual(leftovers.sort());
+    });
+
+    it('keep a fixed length, so a long but valid photo name still processes', async () => {
+        await newLibrary();
+        const base = 'a'.repeat(240);
+        fs.writeFileSync(lib.file(`${base}.jpg`), fixture('landscape.jpg'));
+        const temps: string[] = [];
+        const realOpen = fs.promises.open.bind(fs.promises);
+        vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
+            if (String(args[0]).endsWith('.tmp')) temps.push(path.basename(String(args[0])));
+            return realOpen(...args);
+        });
+
+        await processImage(`${base}.jpg`);
+
+        expect(Object.keys(lib.hashes(derivativePaths(base)))).toHaveLength(7);
+        expect(temps).toHaveLength(7);
+        expect(temps.every((name) => name.length === temps[0].length && name.length < 64)).toBe(true);
+    });
+});
+
+describe('isSourceNewer', () => {
+    it('treats a thumbnail removed mid-check as missing instead of throwing', async () => {
+        await newLibrary({ fixtures: 'basic' });
+        await processImage('landscape.jpg');
+        const thumbnail = lib.file('thumbnails/landscape.webp');
+        const realStatSync = fs.statSync;
+        vi.spyOn(fs, 'statSync').mockImplementation(((target: fs.PathLike, options?: fs.StatSyncOptions) => {
+            if (String(target) === thumbnail) {
+                // Gone by the time it is stat'ed, after existsSync() saw it
+                if (options?.throwIfNoEntry === false) return undefined;
+                throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${thumbnail}'`), { code: 'ENOENT' });
+            }
+            return realStatSync(target, options);
+        }) as unknown as typeof fs.statSync);
+
+        expect(getUnprocessedFiles()).toContain('landscape.jpg');
     }, 30_000);
 });
 
-describe('processAllImages', { timeout: 60_000 }, () => {
+describe('startup batch overwrite rule', { timeout: 60_000 }, () => {
     beforeEach(async () => {
         await newLibrary({ fixtures: 'basic' });
-        const first = await processAllImages();
+        const first = await createWatcherHandlers({ logger: quiet }).queueStartupBatch();
         expect(first.errors).toEqual([]);
         expect(first.processed.sort()).toEqual(['landscape.jpg', 'portrait.png', 'square.webp']);
     });
@@ -215,9 +298,11 @@ describe('processAllImages', { timeout: 60_000 }, () => {
     it('regenerates a source newer than its outputs', async () => {
         const others = lib.hashes([...derivativePaths('portrait'), ...derivativePaths('square')]);
         fs.writeFileSync(lib.file('landscape.jpg'), fixture('landscape-edited.jpg'));
-        setMtime('landscape.jpg', fs.statSync(lib.file('thumbnails/landscape.webp')).mtimeMs + 60_000);
+        // Newer than the outputs but not in the future, which the next test covers
+        setMtime('thumbnails/landscape.webp', Date.now() - 60 * 60 * 1000);
+        setMtime('landscape.jpg', Date.now() - 60 * 1000);
 
-        const result = await processAllImages();
+        const result = await createWatcherHandlers({ logger: quiet }).queueStartupBatch();
         expect(result).toEqual({ processed: ['landscape.jpg'], errors: [] });
         expect(await outputChannels('landscape')).toEqual(Array(7).fill('blue'));
         expect(lib.hashes(Object.keys(others))).toEqual(others);
@@ -228,12 +313,21 @@ describe('processAllImages', { timeout: 60_000 }, () => {
         fs.writeFileSync(lib.file('landscape.jpg'), fixture('landscape-edited.jpg'));
         setMtime('landscape.jpg', Date.parse('2001-01-01T00:00:00Z'));
 
-        expect(await processAllImages()).toEqual({ processed: [], errors: [] });
+        expect(await createWatcherHandlers({ logger: quiet }).queueStartupBatch()).toEqual({ processed: [], errors: [] });
         expect(lib.hashes(LANDSCAPE)).toEqual(before);
 
-        const forced = await processAllImages(undefined, { force: true });
+        const forced = await createWatcherHandlers({ logger: quiet }).queueStartupBatch({ force: true });
         expect(forced.errors).toEqual([]);
         expect(forced.processed.sort()).toEqual(['landscape.jpg', 'portrait.png', 'square.webp']);
         expect(await outputChannels('landscape')).toEqual(Array(7).fill('blue'));
+    });
+
+    it('does not re-encode a source dated in the future on every start', async () => {
+        const before = lib.hashes(LANDSCAPE);
+        setMtime('landscape.jpg', Date.now() + 24 * 60 * 60 * 1000);
+
+        expect(filesToProcess()).not.toContain('landscape.jpg');
+        expect(await createWatcherHandlers({ logger: quiet }).queueStartupBatch()).toEqual({ processed: [], errors: [] });
+        expect(lib.hashes(LANDSCAPE)).toEqual(before);
     });
 });
