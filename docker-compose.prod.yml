@@ -31,7 +31,7 @@ services:
     restart: always
     environment:
       - NODE_ENV=production
-    command: ["npx", "tsx", "scripts/imageWatcher.ts", "--watch"]
+    command: ["npx", "tsx", "scripts/missingWatcher.ts", "--watch"]
     depends_on:
       web:
         condition: service_healthy
