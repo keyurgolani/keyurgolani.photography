@@ -7,8 +7,10 @@ import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempL
 import { StaleVersionError } from '../../storage/document';
 import { withLock } from '../../storage/lock';
 import { PHOTO_ID_RE, sha256, type Hasher } from '../ids';
+import { inspectEntry } from '../inspect';
 import { jsonLogSink, runReconcilePass, type PassOptions, type PassOutcome } from '../pass';
 import { identityPaths, readRegistry } from '../registry';
+import { scanLibrary } from '../scan';
 import type { IdentityFact } from '../types';
 import { sequentialIds } from './reconcileFixtures';
 
@@ -302,5 +304,26 @@ describe('runReconcilePass', () => {
         const [photo] = Object.values(pass.registry.photos);
         expect(photo.revisions[photo.source.observedRevision]).toMatchObject({ pixelDigest: null, width: null, height: null, orientation: null });
         expect(pass.jobs).toEqual([]);
+    });
+});
+
+describe('inspectEntry', () => {
+    it('reports a file rewritten in place after the scan as changed, even with its size, inode, and mtime kept', async () => {
+        await setup({ files: [] });
+        const landscape = fixtures.get('landscape.jpg') as Buffer;
+        fs.writeFileSync(lib.file('a.jpg'), withExifOrientation(landscape, 1));
+        fs.utimesSync(lib.file('a.jpg'), 1_700_000_000, 1_700_000_000);
+        const [entry] = (await scanLibrary(lib.root)).entries;
+        expect((await inspectEntry(lib.root, entry, { hasher: sha256 })).kind).toBe('image');
+
+        // Like an editor that rewrites in place and preserves the modification time, while the read runs.
+        const handle = fs.openSync(lib.file('a.jpg'), 'r+');
+        fs.writeSync(handle, withExifOrientation(landscape, 3), 0, entry.size, 0);
+        fs.closeSync(handle);
+        fs.utimesSync(lib.file('a.jpg'), 1_700_000_000, 1_700_000_000);
+        const after = fs.statSync(lib.file('a.jpg'));
+        expect([after.size, after.ino, after.mtimeMs]).toEqual([entry.size, entry.ino, entry.mtimeMs]);
+
+        expect(await inspectEntry(lib.root, entry, { hasher: sha256 })).toEqual({ kind: 'changed' });
     });
 });

@@ -61,8 +61,10 @@ export async function inspectEntry(root: string, entry: ScanEntry, { hasher = sh
         return { kind: 'unreadable', error: errorText(error) };
     }
     try {
+        // The stat cache's signature. ctime catches an in-place rewrite that kept the size and restored the mtime.
         const after = await fs.promises.lstat(absolute);
-        if (bytes.length !== entry.size || after.size !== entry.size || after.mtimeMs !== entry.mtimeMs || after.ino !== entry.ino) {
+        if (bytes.length !== entry.size || after.size !== entry.size || after.mtimeMs !== entry.mtimeMs ||
+            after.ctimeMs !== entry.ctimeMs || after.ino !== entry.ino) {
             return { kind: 'changed' };
         }
     } catch {
