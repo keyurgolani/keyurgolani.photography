@@ -9,7 +9,8 @@
  *
  * The library root is PHOTOGRAPHY_LIBRARY_DIR, or public/assets/photos under
  * the working directory. Both modes exit 1 if the root is missing, and watch
- * mode also exits 1 if the root disappears while it runs.
+ * mode also exits 1 if the root disappears while it runs. An unknown flag
+ * exits 2.
  * 
  * Usage:
  *   # Watch mode (continuous)
@@ -18,21 +19,49 @@
  *   # One-shot mode (process once and exit)
  *   npx tsx scripts/imageWatcher.ts
  *   
- *   # Process and exit. Exits 1 if any photo failed.
+ *   # Process and exit. Exits 1 if any photo failed or changed while it was processed.
  *   npx tsx scripts/imageWatcher.ts --once
  *
  *   # Regenerate every derivative, not only missing or outdated ones
  *   npx tsx scripts/imageWatcher.ts --once --force
  */
 
-import path from 'path';
+import { parseArgs } from 'node:util';
 import chokidar from 'chokidar';
 import { ensureDirectories, libraryPaths, libraryRootExists } from '../utils/imageOptimizer';
-import { createIgnoreFilter, createWatcherHandlers } from '../utils/watcherHandlers';
+import { attachWatcher, createIgnoreFilter, createWatcherHandlers, processOnce } from '../utils/watcherHandlers';
 
-const WATCH_MODE = process.argv.includes('--watch');
-const ONCE_MODE = process.argv.includes('--once') || !WATCH_MODE;
-const FORCE = process.argv.includes('--force');
+const USAGE = 'Usage: npx tsx scripts/imageWatcher.ts [--watch | --once] [--force]';
+
+/** Strict, so a mistyped flag such as --froce exits 2 instead of being ignored. */
+function readFlags(): { once: boolean; force: boolean } {
+    let values: { watch?: boolean; once?: boolean; force?: boolean; help?: boolean };
+    try {
+        ({ values } = parseArgs({
+            args: process.argv.slice(2),
+            options: {
+                watch: { type: 'boolean' },
+                once: { type: 'boolean' },
+                force: { type: 'boolean' },
+                help: { type: 'boolean', short: 'h' },
+            },
+            strict: true,
+        }));
+    } catch (error) {
+        console.error(`[ImageWatcher] ${error instanceof Error ? error.message : String(error)}`);
+        console.error(USAGE);
+        process.exit(2);
+    }
+    if (values.help) {
+        console.log(USAGE);
+        process.exit(0);
+    }
+    return { once: Boolean(values.once) || !values.watch, force: Boolean(values.force) };
+}
+
+const FLAGS = readFlags();
+const ONCE_MODE = FLAGS.once;
+const FORCE = FLAGS.force;
 
 /** Docker kills a container 10 s after SIGTERM, so queued jobs get this long to finish. */
 const SHUTDOWN_GRACE_MS = 8000;
@@ -60,11 +89,6 @@ function startWatcher(): void {
     
     const handlers = createWatcherHandlers();
     
-    // Queue offline changes first. Live events still jump ahead of this backlog.
-    handlers.queueStartupBatch({ force: FORCE }).catch((error) => {
-        console.error('[ImageWatcher] Startup batch failed:', error);
-    });
-    
     // Set up chokidar watcher with Docker-friendly options
     const watcher = chokidar.watch(root, {
         persistent: true,
@@ -81,31 +105,11 @@ function startWatcher(): void {
         },
     });
     
-    // New files, including one copied back after a delete, regenerate in place
-    watcher.on('add', (filePath: string) => {
-        void handlers.onAdd(filePath);
-    });
-    
-    // Changed files, including a save-by-rename, regenerate in place
-    watcher.on('change', (filePath: string) => {
-        void handlers.onChange(filePath);
-    });
-    
-    // Removing a source keeps its derivatives, marked stale
-    watcher.on('unlink', (filePath: string) => {
-        void handlers.onUnlink(filePath);
-    });
-
-    watcher.on('unlinkDir', (dirPath: string) => {
-        if (path.resolve(dirPath) === root) void shutdown(1, `Library root removed: ${root}`);
-    });
-    
-    watcher.on('error', (error) => {
-        console.error('[ImageWatcher] Watcher error:', error);
-    });
-    
-    watcher.on('ready', () => {
-        console.log('[ImageWatcher] Initial scan complete. Watching for changes...');
+    // Events, and the startup batch once the initial scan is ready. Live events still jump ahead of that backlog.
+    attachWatcher(watcher, handlers, {
+        root,
+        force: FORCE,
+        onRootRemoved: () => void shutdown(1, `Library root removed: ${root}`),
     });
     
     // Polling may not report the root itself going away, so check it directly too
@@ -140,22 +144,18 @@ function startWatcher(): void {
     console.log('[ImageWatcher] Watching for changes. Press Ctrl+C to exit.');
 }
 
-/** The same startup batch watch mode runs, then exit. Returns 1 if any photo failed. */
+/** The same startup batch watch mode runs, then exit. Returns 1 if any photo failed or changed meanwhile. */
 async function runOnce(): Promise<number> {
     console.log('[ImageWatcher] Running in one-shot mode...');
     requireLibraryRoot();
     ensureDirectories();
-    const handlers = createWatcherHandlers();
-    const result = await handlers.queueStartupBatch({ force: FORCE });
-    await handlers.idle();
-    return result.errors.length > 0 ? 1 : 0;
+    return processOnce(createWatcherHandlers(), { force: FORCE });
 }
 
 // Main execution
 if (ONCE_MODE) {
     runOnce()
         .then((code) => {
-            console.log(code === 0 ? '[ImageWatcher] Done.' : '[ImageWatcher] Done, but some photos failed.');
             process.exit(code);
         })
         .catch((error) => {

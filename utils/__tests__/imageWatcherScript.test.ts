@@ -106,6 +106,15 @@ describe('imageWatcher --once', { timeout: 120_000 }, () => {
         expect(fs.existsSync(lib.root)).toBe(false);
     });
 
+    it('exits 2 on a mistyped flag and processes nothing', async () => {
+        lib = await createTempLibrary({ fixtures: 'basic' });
+        const run = await runOnce(lib.root, '--froce');
+
+        expect(run.code, run.output).toBe(2);
+        expect(run.output).toContain("Unknown option '--froce'");
+        expect(fs.readdirSync(lib.root).sort()).toEqual(['landscape.jpg', 'portrait.png', 'square.webp']);
+    });
+
     it('exits 1 when a photo fails, after processing the others', async () => {
         lib = await createTempLibrary({ fixtures: 'extras' });
         const run = await runOnce(lib.root);

@@ -2,7 +2,16 @@ import fs from 'fs';
 import path from 'path';
 import sharp from 'sharp';
 import exifFromBuffer from 'exif-reader';
-import { getImagePaths, ensureDirectories, getLqipBase64, getPhotoFiles, libraryPaths, libraryRootExists } from './imageOptimizer';
+import {
+    encodeLqip,
+    ensureDirectories,
+    getImagePaths,
+    getLqipBase64,
+    getPhotoFiles,
+    isMarkedStale,
+    libraryPaths,
+    libraryRootExists,
+} from './imageOptimizer';
 
 export interface ImageItem {
     id: number;
@@ -21,7 +30,8 @@ export interface ImageItem {
 }
 
 export async function getGalleryImages(): Promise<ImageItem[]> {
-    const photosDir = libraryPaths().root;
+    const paths = libraryPaths();
+    const photosDir = paths.root;
     
     // Return empty if photos directory doesn't exist
     if (!libraryRootExists(photosDir)) {
@@ -31,14 +41,14 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
     // Try to ensure subdirectories exist, but don't fail if we can't create them
     // (they may be on a mounted volume with different permissions)
     try {
-        ensureDirectories();
+        ensureDirectories(paths);
     } catch (error) {
         console.warn('Could not create thumbnail/optimized directories:', error);
         // Continue anyway - thumbnails might already exist or will be created by watcher
     }
 
     // The same source list the watcher and images:cleanup use, so dot-files never count
-    const files = getPhotoFiles();
+    const files = getPhotoFiles(photosDir);
 
     const readItem = async (file: string, index: number): Promise<ImageItem> => {
         const filePath = path.join(photosDir, file);
@@ -46,18 +56,17 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
         const metadata = await sharp(filePath).metadata();
         
         // Get paths for all image versions
-        const imagePaths = getImagePaths(file);
+        const imagePaths = getImagePaths(file, paths);
+        // A stale mark means no current set. The derivatives may show a deleted
+        // photo that had this name, so serve the original until they are redone.
+        const current = !isMarkedStale(file, paths);
         
         // Get LQIP base64
-        let lqip = getLqipBase64(file);
+        let lqip = current ? getLqipBase64(file, paths) : null;
         if (!lqip) {
             // Generate on-the-fly if not available (using filePath, not buffer)
             try {
-                const lqipBuffer = await sharp(filePath)
-                    .resize(20, 20, { fit: 'inside' })
-                    .webp({ quality: 20 })
-                    .toBuffer();
-                lqip = `data:image/webp;base64,${lqipBuffer.toString('base64')}`;
+                lqip = await encodeLqip(filePath);
             } catch {
                 // Fallback to empty placeholder
                 lqip = 'data:image/webp;base64,UklGRlYAAABXRUJQVlA4IEoAAADQAQCdASoKAAoAAUAmJYgCdAEO9ACA/v9P9f96f1AAAAAAfQ==';
@@ -118,12 +127,12 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
         return {
             id: index,
             src: src,
-            thumbnail: imagePaths.hasThumbnail ? imagePaths.thumbnail : imagePaths.original,
-            medium: imagePaths.hasMedium ? imagePaths.medium : src,
-            optimized: imagePaths.hasOptimized ? imagePaths.optimized : imagePaths.original,
-            thumbnailAvif: imagePaths.hasThumbnailAvif ? imagePaths.thumbnailAvif : undefined,
-            mediumAvif: imagePaths.hasMediumAvif ? imagePaths.mediumAvif : undefined,
-            optimizedAvif: imagePaths.hasOptimizedAvif ? imagePaths.optimizedAvif : undefined,
+            thumbnail: current && imagePaths.hasThumbnail ? imagePaths.thumbnail : imagePaths.original,
+            medium: current && imagePaths.hasMedium ? imagePaths.medium : src,
+            optimized: current && imagePaths.hasOptimized ? imagePaths.optimized : imagePaths.original,
+            thumbnailAvif: current && imagePaths.hasThumbnailAvif ? imagePaths.thumbnailAvif : undefined,
+            mediumAvif: current && imagePaths.hasMediumAvif ? imagePaths.mediumAvif : undefined,
+            optimizedAvif: current && imagePaths.hasOptimizedAvif ? imagePaths.optimizedAvif : undefined,
             width: metadata.width || 800,
             height: metadata.height || 600,
             caption: caption,
@@ -142,8 +151,13 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
         }
     }));
 
+    // If every photo failed, throw instead of returning an empty list, so the
+    // ISR cache keeps serving the last good one
+    const listed = images.filter((image): image is ImageItem => image !== null);
+    if (files.length > 0 && listed.length === 0) {
+        throw new Error(`Could not read any of the photos in ${photosDir} (${files.length} found).`);
+    }
+
     // Sort: Newest First
-    return images
-        .filter((image): image is ImageItem => image !== null)
-        .sort((a, b) => b.date - a.date);
+    return listed.sort((a, b) => b.date - a.date);
 }

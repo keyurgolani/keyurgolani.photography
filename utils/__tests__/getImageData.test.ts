@@ -2,8 +2,10 @@
 import fs from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GET } from '../../app/api/photos/route';
+import { dominantChannel } from '../../test/fixtures/makeLibrary';
 import { createTempLibrary, type TempLibrary } from '../../test/helpers/tempLibrary';
 import { getGalleryImages, type ImageItem } from '../getImageData';
+import { markStale, processImage } from '../imageOptimizer';
 
 const DECODABLE = ['landscape-edited.jpg', 'landscape-rot6.jpg', 'landscape.jpg', 'portrait.png', 'square.webp'];
 
@@ -42,4 +44,38 @@ describe('getGalleryImages', () => {
         const body = (await response.json()) as ImageItem[];
         expect(body.map((image) => image.src.replace('/assets/photos/', '')).sort()).toEqual(DECODABLE);
     }, 30_000);
+
+    it('serves the original, not stale derivatives, for a new photo under a deleted photo\'s name', async () => {
+        await processImage('landscape.jpg');
+        // landscape.jpg is deleted, which marks its derivatives stale, and another photo
+        // arrives under its name that the watcher hasn't processed yet
+        markStale('landscape.jpg');
+        fs.copyFileSync(lib.file('landscape-edited.jpg'), lib.file('landscape.jpg'));
+
+        const item = (await getGalleryImages()).find((image) => image.src === '/assets/photos/landscape.jpg');
+
+        expect(item).toMatchObject({
+            thumbnail: '/assets/photos/landscape.jpg',
+            medium: '/assets/photos/landscape.jpg',
+            optimized: '/assets/photos/landscape.jpg',
+            thumbnailAvif: undefined,
+            mediumAvif: undefined,
+            optimizedAvif: undefined,
+        });
+        const lqip = Buffer.from((item as ImageItem).lqip.replace(/^data:image\/webp;base64,/, ''), 'base64');
+        expect(await dominantChannel(lqip)).toBe('blue');
+    }, 30_000);
+
+    it('throws when every photo fails, so the cache keeps the last good list', async () => {
+        for (const name of DECODABLE) fs.unlinkSync(lib.file(name));
+
+        await expect(getGalleryImages()).rejects.toThrow(`Could not read any of the photos in ${lib.root} (1 found).`);
+        await expect(GET()).rejects.toThrow('Could not read any of the photos');
+    }, 30_000);
+
+    it('returns an empty list for a library with no photos', async () => {
+        for (const name of [...DECODABLE, 'corrupt.jpg']) fs.unlinkSync(lib.file(name));
+
+        expect(await getGalleryImages()).toEqual([]);
+    });
 });

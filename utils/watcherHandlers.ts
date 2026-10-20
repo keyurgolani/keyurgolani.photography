@@ -1,4 +1,6 @@
+import type { EventEmitter } from 'events';
 import path from 'path';
+import type { FSWatcherEventMap } from 'chokidar';
 import {
     filesToProcess,
     generatedFolderNames,
@@ -6,12 +8,15 @@ import {
     markStale,
     refreshImage,
     reprocessImage,
+    SOURCE_CHANGED,
 } from './imageOptimizer';
 
 type Logger = Pick<Console, 'log' | 'error'>;
 
 export interface StartupBatchResult {
     processed: string[];
+    /** Changed or removed while processed, superseded by a live event, or dropped by stop() */
+    skipped: string[];
     errors: string[];
 }
 
@@ -27,7 +32,10 @@ export interface WatcherHandlers {
     onUnlink(filePath: string): Promise<void>;
     /** Queue every unprocessed source, using the overwrite rule in refreshImage(). */
     queueStartupBatch(options?: { force?: boolean }): Promise<StartupBatchResult>;
-    /** Stop taking events. Jobs already queued still run. */
+    /**
+     * Stop taking events and drop the queued startup jobs, which the next start
+     * finds again on disk. Queued live jobs still run.
+     */
     stop(): void;
     /** Resolve once every queued job has finished. */
     idle(): Promise<void>;
@@ -58,12 +66,18 @@ export function createIgnoreFilter(root: string): (watchedPath: string) => boole
     };
 }
 
+type Outcome = 'done' | 'skipped' | 'failed';
+
 interface Job {
     key: string;
     live: boolean;
     label: string;
     run: () => Promise<unknown>;
-    settle: (succeeded: boolean) => void;
+    settle: (outcome: Outcome) => void;
+}
+
+function hasCode(error: unknown, code: string): boolean {
+    return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === code;
 }
 
 export function createWatcherHandlers(
@@ -102,10 +116,15 @@ export function createWatcherHandlers(
             Promise.resolve()
                 .then(job.run)
                 .then(
-                    () => job.settle(true),
+                    () => job.settle('done'),
                     (error: unknown) => {
-                        logger.error(`[ImageWatcher] Error processing ${job.label}:`, error);
-                        job.settle(false);
+                        if (hasCode(error, SOURCE_CHANGED)) {
+                            logger.log(`[ImageWatcher] Skipped ${job.label}: it changed or was removed while it was processed.`);
+                            job.settle('skipped');
+                        } else {
+                            logger.error(`[ImageWatcher] Error processing ${job.label}:`, error);
+                            job.settle('failed');
+                        }
                     },
                 )
                 .finally(() => {
@@ -120,9 +139,20 @@ export function createWatcherHandlers(
         }
     }
 
-    function enqueue(filename: string, live: boolean, run: () => Promise<unknown>): Promise<boolean> {
+    /** Settle the queued, not yet started startup jobs that match, as skipped. */
+    function dropStartupJobs(matches: (job: Job) => boolean): void {
+        for (const job of queue.filter((queued) => !queued.live && matches(queued))) {
+            queue.splice(queue.indexOf(job), 1);
+            job.settle('skipped');
+        }
+    }
+
+    function enqueue(filename: string, live: boolean, run: () => Promise<unknown>): Promise<Outcome> {
         return new Promise((settle) => {
-            queue.push({ key: jobKey(filename), live, label: filename, run, settle });
+            const key = jobKey(filename);
+            // A live job for this photo regenerates it anyway, so a startup job still waiting is redundant
+            if (live) dropStartupJobs((job) => job.key === key);
+            queue.push({ key, live, label: filename, run, settle });
             pump();
         });
     }
@@ -132,11 +162,27 @@ export function createWatcherHandlers(
         return new Promise((resolve) => idleWaiters.push(resolve));
     }
 
+    /**
+     * Mark a source's derivatives stale when its event is queued, not when the
+     * job runs, so a restart still redoes a job that never ran. The job's new
+     * thumbnail clears the mark.
+     */
+    function markQueued(filename: string): void {
+        const failure = markStale(filename);
+        if (failure) {
+            logger.error(
+                `[ImageWatcher] Could not mark ${filename}'s derivatives stale: ${failure.message}. ` +
+                'If a different photo replaces it with an older mtime, touch that file.',
+            );
+        }
+    }
+
     async function regenerate(filePath: string, detected: string, done: string): Promise<void> {
         if (stopped || !isSourceFile(filePath)) return;
         const filename = path.basename(filePath);
         logger.log(`[ImageWatcher] ${detected}: ${filename}`);
-        if (await enqueue(filename, true, () => reprocessImage(filename))) {
+        markQueued(filename);
+        if (await enqueue(filename, true, () => reprocessImage(filename)) === 'done') {
             logger.log(`[ImageWatcher] ${done}: ${filename}`);
         }
     }
@@ -150,21 +196,19 @@ export function createWatcherHandlers(
             if (stopped || !isSourceFile(filePath)) return;
             const filename = path.basename(filePath);
             logger.log(`[ImageWatcher] Source removed: ${filename}. Derivatives kept. See npm run images:cleanup.`);
-            // Queued like any job, so it lands after a swap still running for this name
-            await enqueue(filename, true, async () => {
-                if (!markStale(filename)) {
-                    logger.log(`[ImageWatcher] Could not mark ${filename}'s derivatives stale. A later file under this name may need --force.`);
-                }
-            });
+            markQueued(filename);
+            // Again once any swap still running for this name is done, since its new thumbnail clears the mark
+            await enqueue(filename, true, async () => markQueued(filename));
         },
 
         async queueStartupBatch({ force = false } = {}) {
-            if (stopped) return { processed: [], errors: [] };
+            const result: StartupBatchResult = { processed: [], skipped: [], errors: [] };
+            if (stopped) return result;
             logger.log('[ImageWatcher] Checking for unprocessed images...');
             const files = filesToProcess({ force });
             if (files.length === 0) {
                 logger.log('[ImageWatcher] All images are processed.');
-                return { processed: [], errors: [] };
+                return result;
             }
 
             logger.log(`[ImageWatcher] Found ${files.length} unprocessed images.`);
@@ -173,14 +217,19 @@ export function createWatcherHandlers(
                 await refreshImage(file, { force });
             })));
 
-            const processed = files.filter((_, index) => outcomes[index]);
-            const errors = files.filter((_, index) => !outcomes[index]);
-            logger.log(`[ImageWatcher] Completed: ${processed.length} processed, ${errors.length} errors`);
-            return { processed, errors };
+            const lists: Record<Outcome, string[]> = { done: result.processed, skipped: result.skipped, failed: result.errors };
+            files.forEach((file, index) => lists[outcomes[index]].push(file));
+            logger.log(
+                `[ImageWatcher] Completed: ${result.processed.length} processed, ` +
+                `${result.skipped.length} skipped, ${result.errors.length} errors`,
+            );
+            return result;
         },
 
         stop() {
             stopped = true;
+            dropStartupJobs(() => true);
+            pump();
         },
 
         idle,
@@ -197,4 +246,77 @@ export function createWatcherHandlers(
             }
         },
     };
+}
+
+/**
+ * `--once`: queue the startup batch watch mode runs, wait for it, and return
+ * the exit status, 1 if any photo failed or changed while it was processed,
+ * since that one still needs a run.
+ */
+export async function processOnce(
+    handlers: WatcherHandlers,
+    { force = false, logger = console }: { force?: boolean; logger?: Logger } = {},
+): Promise<number> {
+    const result = await handlers.queueStartupBatch({ force });
+    await handlers.idle();
+    if (result.errors.length > 0) {
+        logger.log('[ImageWatcher] Done, but some photos failed.');
+        return 1;
+    }
+    if (result.skipped.length > 0) {
+        logger.log('[ImageWatcher] Done, but some photos changed while they were processed. Run it again.');
+        return 1;
+    }
+    logger.log('[ImageWatcher] Done.');
+    return 0;
+}
+
+export interface AttachOptions {
+    root: string;
+    force?: boolean;
+    logger?: Logger;
+    /** Called when chokidar reports the library root itself removed. */
+    onRootRemoved: () => void;
+}
+
+/**
+ * Wire chokidar's events to the handlers. The startup batch is queued on
+ * `ready`, once chokidar has its baseline: it reports no event for a file it
+ * finds during the initial scan, so only a batch that lists the library after
+ * that scan catches a file saved before it finished.
+ */
+export function attachWatcher(
+    watcher: Pick<EventEmitter<FSWatcherEventMap>, 'on'>,
+    handlers: WatcherHandlers,
+    { root, force = false, logger = console, onRootRemoved }: AttachOptions,
+): void {
+    // New files, including one copied back after a delete, regenerate in place
+    watcher.on('add', (filePath: string) => {
+        void handlers.onAdd(filePath);
+    });
+
+    // Changed files, including a save-by-rename, regenerate in place
+    watcher.on('change', (filePath: string) => {
+        void handlers.onChange(filePath);
+    });
+
+    // Removing a source keeps its derivatives, marked stale
+    watcher.on('unlink', (filePath: string) => {
+        void handlers.onUnlink(filePath);
+    });
+
+    watcher.on('unlinkDir', (dirPath: string) => {
+        if (path.resolve(dirPath) === path.resolve(root)) onRootRemoved();
+    });
+
+    watcher.on('error', (error) => {
+        logger.error('[ImageWatcher] Watcher error:', error);
+    });
+
+    watcher.on('ready', () => {
+        logger.log('[ImageWatcher] Initial scan complete. Watching for changes...');
+        handlers.queueStartupBatch({ force }).catch((error: unknown) => {
+            logger.error('[ImageWatcher] Startup batch failed:', error);
+        });
+    });
 }

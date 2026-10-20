@@ -11,18 +11,20 @@ import {
     getImagePaths,
     getPhotoFiles,
     getUnprocessedFiles,
+    isMarkedStale,
     isSourceFile,
     libraryPaths,
-    LibraryRootMissingError,
+    libraryRootExists,
     processImage,
     refreshImage,
     reprocessImage,
+    SOURCE_CHANGED,
     tempFilePrefix,
 } from '../imageOptimizer';
 import { createWatcherHandlers } from '../watcherHandlers';
 
-// Counts encodes so a test can fail the Nth one. Everything else passes through to Sharp.
-const encodes = vi.hoisted(() => ({ count: 0, failAt: 0 }));
+// Counts encodes so a test can fail the Nth one, or act at it. Everything else passes through to Sharp.
+const encodes = vi.hoisted(() => ({ count: 0, failAt: 0, onEncode: null as ((count: number) => void) | null }));
 
 vi.mock('sharp', async (importOriginal) => {
     // sharp is CommonJS, so its function arrives as the namespace's default
@@ -34,6 +36,7 @@ vi.mock('sharp', async (importOriginal) => {
         Object.defineProperty(instance, 'toBuffer', {
             value: async () => {
                 encodes.count += 1;
+                encodes.onEncode?.(encodes.count);
                 if (encodes.count === encodes.failAt) throw new Error(`injected encode failure at ${encodes.count}`);
                 return toBuffer();
             },
@@ -63,6 +66,7 @@ beforeAll(async () => {
 afterEach(async () => {
     encodes.count = 0;
     encodes.failAt = 0;
+    encodes.onEncode = null;
     vi.restoreAllMocks();
     for (const library of libraries.splice(0).reverse()) await library.cleanup();
 });
@@ -137,8 +141,22 @@ describe('ensureDirectories', () => {
 
     it('throws on a missing root instead of recreating it', async () => {
         await newLibrary({ missingRoot: true });
-        expect(() => ensureDirectories()).toThrow(LibraryRootMissingError);
+        expect(() => ensureDirectories()).toThrow(`Library root not found: ${lib.root}`);
         expect(fs.existsSync(lib.root)).toBe(false);
+    });
+
+    it('treats a root with no links left as missing, as a host folder deleted under a bind mount stats', async () => {
+        await newLibrary();
+        const realStatSync = fs.statSync;
+        vi.spyOn(fs, 'statSync').mockImplementation(((target: fs.PathLike, options?: fs.StatSyncOptions) => {
+            const stat = realStatSync(target, options);
+            if (String(target) !== lib.root || !stat) return stat;
+            return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { nlink: 0 });
+        }) as unknown as typeof fs.statSync);
+
+        expect(libraryRootExists()).toBe(false);
+        expect(() => ensureDirectories()).toThrow(`Library root not found: ${lib.root}`);
+        expect(fs.readdirSync(lib.root)).toEqual([]);
     });
 });
 
@@ -207,6 +225,36 @@ describe('writeVariants', { timeout: 60_000 }, () => {
         expect(lib.tempFiles()).toEqual([]);
     });
 
+    it.each([
+        ['removed', () => fs.unlinkSync(lib.file('landscape.jpg'))],
+        ['saved over again', () => fs.writeFileSync(lib.file('landscape.jpg'), fixture('landscape.jpg'))],
+    ])('discards the new outputs when the source is %s mid-job, so a takedown sticks', async (_, change) => {
+        encodes.onEncode = (count) => {
+            if (count === 3) change();
+        };
+        await expect(reprocessImage('landscape.jpg')).rejects.toMatchObject({ code: SOURCE_CHANGED });
+        expect(lib.hashes(LANDSCAPE)).toEqual(before);
+        expect(lib.tempFiles()).toEqual([]);
+    });
+
+    it('logs when it cannot mark the old thumbnail stale before the swap', async () => {
+        const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        const realUtimesSync = fs.utimesSync;
+        vi.spyOn(fs, 'utimesSync').mockImplementation(((target: fs.PathLike, ...times: [fs.TimeLike, fs.TimeLike]) => {
+            if (String(target) === lib.file('thumbnails/landscape.webp')) {
+                throw Object.assign(new Error('EPERM: operation not permitted, utime'), { code: 'EPERM' });
+            }
+            return realUtimesSync(target, ...times);
+        }) as typeof fs.utimesSync);
+
+        await reprocessImage('landscape.jpg');
+
+        expect(errors).toHaveBeenCalledWith(expect.stringContaining(
+            "Could not mark landscape.jpg's old thumbnail stale before replacing it: EPERM",
+        ));
+        expect(await outputChannels('landscape')).toEqual(Array(7).fill('blue'));
+    });
+
     it('renames the thumbnail last, so a swap interrupted before it is redone on the next run', async () => {
         vi.spyOn(console, 'error').mockImplementation(() => undefined);
         // An older mtime than the outputs, so only the stale mark can trigger the redo
@@ -268,6 +316,19 @@ describe('temp files', { timeout: 30_000 }, () => {
     });
 });
 
+describe('stale marks', () => {
+    it('count a thumbnail dated before 1980-01-02, where FAT and exFAT store the epoch', async () => {
+        await newLibrary({ fixtures: 'basic' });
+        await processImage('landscape.jpg');
+        // These disks can't store 1970, so a mark lands on 1980-01-01, the same time as the source here
+        setMtime('thumbnails/landscape.webp', Date.UTC(1980, 0, 1));
+        setMtime('landscape.jpg', Date.UTC(1980, 0, 1));
+
+        expect(isMarkedStale('landscape.jpg')).toBe(true);
+        expect(filesToProcess()).toContain('landscape.jpg');
+    }, 30_000);
+});
+
 describe('isSourceNewer', () => {
     it('treats a thumbnail removed mid-check as missing instead of throwing', async () => {
         await newLibrary({ fixtures: 'basic' });
@@ -303,9 +364,20 @@ describe('startup batch overwrite rule', { timeout: 60_000 }, () => {
         setMtime('landscape.jpg', Date.now() - 60 * 1000);
 
         const result = await createWatcherHandlers({ logger: quiet }).queueStartupBatch();
-        expect(result).toEqual({ processed: ['landscape.jpg'], errors: [] });
+        expect(result).toEqual({ processed: ['landscape.jpg'], skipped: [], errors: [] });
         expect(await outputChannels('landscape')).toEqual(Array(7).fill('blue'));
         expect(lib.hashes(Object.keys(others))).toEqual(others);
+    });
+
+    it('regenerates all seven when one is missing, not just the gap', async () => {
+        fs.rmSync(lib.file('medium/landscape.webp'));
+        // A replacement with an older mtime, so only the missing output starts the job
+        fs.writeFileSync(lib.file('landscape.jpg'), fixture('landscape-edited.jpg'));
+        setMtime('landscape.jpg', Date.parse('2001-01-01T00:00:00Z'));
+
+        const result = await createWatcherHandlers({ logger: quiet }).queueStartupBatch();
+        expect(result).toEqual({ processed: ['landscape.jpg'], skipped: [], errors: [] });
+        expect(await outputChannels('landscape')).toEqual(Array(7).fill('blue'));
     });
 
     it('leaves a replacement with an older mtime for --force', async () => {
@@ -313,7 +385,7 @@ describe('startup batch overwrite rule', { timeout: 60_000 }, () => {
         fs.writeFileSync(lib.file('landscape.jpg'), fixture('landscape-edited.jpg'));
         setMtime('landscape.jpg', Date.parse('2001-01-01T00:00:00Z'));
 
-        expect(await createWatcherHandlers({ logger: quiet }).queueStartupBatch()).toEqual({ processed: [], errors: [] });
+        expect(await createWatcherHandlers({ logger: quiet }).queueStartupBatch()).toEqual({ processed: [], skipped: [], errors: [] });
         expect(lib.hashes(LANDSCAPE)).toEqual(before);
 
         const forced = await createWatcherHandlers({ logger: quiet }).queueStartupBatch({ force: true });
@@ -322,12 +394,18 @@ describe('startup batch overwrite rule', { timeout: 60_000 }, () => {
         expect(await outputChannels('landscape')).toEqual(Array(7).fill('blue'));
     });
 
-    it('does not re-encode a source dated in the future on every start', async () => {
-        const before = lib.hashes(LANDSCAPE);
+    it('regenerates a future-dated replacement made while stopped once, not on every start', async () => {
+        // From a camera whose clock runs a day ahead
+        fs.writeFileSync(lib.file('landscape.jpg'), fixture('landscape-edited.jpg'));
         setMtime('landscape.jpg', Date.now() + 24 * 60 * 60 * 1000);
 
+        const first = await createWatcherHandlers({ logger: quiet }).queueStartupBatch();
+        expect(first).toEqual({ processed: ['landscape.jpg'], skipped: [], errors: [] });
+        expect(await outputChannels('landscape')).toEqual(Array(7).fill('blue'));
+
+        const after = lib.hashes(LANDSCAPE);
         expect(filesToProcess()).not.toContain('landscape.jpg');
-        expect(await createWatcherHandlers({ logger: quiet }).queueStartupBatch()).toEqual({ processed: [], errors: [] });
-        expect(lib.hashes(LANDSCAPE)).toEqual(before);
+        expect(await createWatcherHandlers({ logger: quiet }).queueStartupBatch()).toEqual({ processed: [], skipped: [], errors: [] });
+        expect(lib.hashes(LANDSCAPE)).toEqual(after);
     });
 });

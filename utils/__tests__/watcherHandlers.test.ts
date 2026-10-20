@@ -1,12 +1,21 @@
 // @vitest-environment node
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { FSWatcherEventMap } from 'chokidar';
 import sharp, { type Sharp } from 'sharp';
 import { dominantChannel, fixtureFiles, type Channel } from '../../test/fixtures/makeLibrary';
 import { createTempLibrary, derivativePaths, type TempLibrary } from '../../test/helpers/tempLibrary';
-import { processImage } from '../imageOptimizer';
-import { createIgnoreFilter, createWatcherHandlers, jobKey, type WatcherHandlers } from '../watcherHandlers';
+import { filesToProcess, isMarkedStale, processImage } from '../imageOptimizer';
+import {
+    attachWatcher,
+    createIgnoreFilter,
+    createWatcherHandlers,
+    jobKey,
+    processOnce,
+    type WatcherHandlers,
+} from '../watcherHandlers';
 
 // When armed, holds the next encode until the test releases it, so a test can
 // queue more jobs while the first is mid-flight. It also tracks how many encodes
@@ -68,6 +77,7 @@ vi.mock('sharp', async (importOriginal) => {
 });
 
 const LANDSCAPE = derivativePaths('landscape');
+const BASIC = ['landscape.jpg', 'portrait.png', 'square.webp'];
 
 let edited: Buffer; // blue-dominant re-export of landscape.jpg
 let green: Buffer; // a third version
@@ -212,6 +222,9 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
         await Promise.all([first, second]);
         expect(await outputChannels('landscape')).toEqual(Array(7).fill('green'));
         expect(lib.tempFiles()).toEqual([]);
+        // The first job saw its source change before its swap, so it threw its outputs away
+        expect(logs).toContain('[ImageWatcher] Skipped landscape.jpg: it changed or was removed while it was processed.');
+        expect(logs.some((line) => line.startsWith('[ImageWatcher] Error processing'))).toBe(false);
     });
 
     it('the startup batch racing an onChange leaves seven outputs from the newest source version', async () => {
@@ -228,8 +241,31 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
         expect(lib.hashes(LANDSCAPE)).toEqual({});
 
         held.release();
-        expect(await startup).toEqual({ processed: ['landscape.jpg'], errors: [] });
+        // The startup job read the old bytes, so it discards its outputs instead of swapping them in
+        expect(await startup).toEqual({ processed: [], skipped: ['landscape.jpg'], errors: [] });
         await change;
+        expect(await outputChannels('landscape')).toEqual(Array(7).fill('blue'));
+    });
+
+    it('marks a queued change stale right away, so a restart redoes it if the job never runs', async () => {
+        handlers = createWatcherHandlers({ logger });
+        await processImage('landscape.jpg');
+        // A replacement with an older mtime, so only the mark tells a restart to redo it
+        fs.writeFileSync(lib.file('landscape.jpg'), edited);
+        const old = new Date('2001-01-01T00:00:00Z');
+        fs.utimesSync(lib.file('landscape.jpg'), old, old);
+
+        const held = gate.arm();
+        const busy = handlers.onAdd(lib.file('portrait.png'));
+        await held.reached; // The one job slot is busy, so the change waits in the queue
+        const change = handlers.onChange(lib.file('landscape.jpg'));
+
+        expect(isMarkedStale('landscape.jpg')).toBe(true);
+        expect(filesToProcess()).toContain('landscape.jpg');
+
+        held.release();
+        await Promise.all([busy, change]);
+        expect(isMarkedStale('landscape.jpg')).toBe(false);
         expect(await outputChannels('landscape')).toEqual(Array(7).fill('blue'));
     });
 
@@ -269,6 +305,47 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
         expect(reads[1]).toBe('added.jpg');
     });
 
+    it('a live event drops the queued startup job for the same photo, so it is encoded once', async () => {
+        handlers = createWatcherHandlers({ logger });
+        const reads = recordSourceReads();
+        const held = gate.arm();
+        const startup = handlers.queueStartupBatch();
+        await held.reached; // One startup job is mid-encode, two more are queued
+        const waiting = BASIC.filter((name) => name !== reads[0]);
+
+        const change = handlers.onChange(lib.file(waiting[0]));
+        held.release();
+        const result = await startup;
+        await change;
+
+        expect(result.skipped).toEqual([waiting[0]]);
+        expect(result.processed.sort()).toEqual([reads[0], waiting[1]].sort());
+        expect(reads.filter((name) => name === waiting[0])).toHaveLength(1);
+        expect(Object.keys(lib.hashes(BASIC.map(jobKey).flatMap(derivativePaths)))).toHaveLength(21);
+    });
+
+    it('stop() drops queued startup jobs as skipped and still runs queued live ones', async () => {
+        handlers = createWatcherHandlers({ logger });
+        const reads = recordSourceReads();
+        const held = gate.arm();
+        const startup = handlers.queueStartupBatch();
+        await held.reached; // One startup job is mid-encode, two more are queued
+        fs.writeFileSync(lib.file('added.jpg'), edited);
+        const added = handlers.onAdd(lib.file('added.jpg'));
+
+        handlers.stop();
+        held.release();
+
+        const result = await startup;
+        expect(result.processed).toEqual([reads[0]]);
+        expect(result.skipped.sort()).toEqual(BASIC.filter((name) => name !== reads[0]).sort());
+        expect(result.errors).toEqual([]);
+        await added;
+        expect(await handlers.drain(30_000)).toBe(true);
+        expect(Object.keys(lib.hashes(derivativePaths('added')))).toHaveLength(7);
+        for (const name of result.skipped) expect(lib.hashes(derivativePaths(jobKey(name))), name).toEqual({});
+    });
+
     it('stop() ignores new events and drain() waits for queued jobs, within its bound', async () => {
         handlers = createWatcherHandlers({ logger });
         const held = gate.arm();
@@ -295,6 +372,46 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
             await handlers.onUnlink(lib.file(name));
         }
         expect(logs).toEqual([]);
+    });
+});
+
+describe('processOnce', { timeout: 60_000 }, () => {
+    it('returns 1 when a photo changed while it was processed, since it still needs a run', async () => {
+        await processImage('portrait.png');
+        await processImage('square.webp');
+        const held = gate.arm();
+        const once = processOnce(handlers, { logger });
+        await held.reached; // landscape.jpg is the one photo to process, and it is mid-encode
+
+        fs.writeFileSync(lib.file('landscape.jpg'), edited);
+        held.release();
+
+        expect(await once).toBe(1);
+        expect(logs).toContain('[ImageWatcher] Done, but some photos changed while they were processed. Run it again.');
+        expect(lib.hashes(LANDSCAPE)).toEqual({});
+    });
+});
+
+describe('attachWatcher', { timeout: 60_000 }, () => {
+    it('queues the startup batch only once chokidar is ready', async () => {
+        const watcher = new EventEmitter<FSWatcherEventMap>();
+        const batch = vi.spyOn(handlers, 'queueStartupBatch');
+        const onRootRemoved = vi.fn();
+        attachWatcher(watcher, handlers, { root: lib.root, logger, onRootRemoved });
+
+        // Saved during chokidar's initial scan, which reports no event for it
+        fs.writeFileSync(lib.file('added.jpg'), edited);
+        expect(batch).not.toHaveBeenCalled();
+
+        watcher.emit('ready');
+        expect(batch).toHaveBeenCalledTimes(1);
+        await batch.mock.results[0].value;
+        expect(Object.keys(lib.hashes(derivativePaths('added')))).toHaveLength(7);
+
+        watcher.emit('unlinkDir', lib.file('thumbnails'));
+        expect(onRootRemoved).not.toHaveBeenCalled();
+        watcher.emit('unlinkDir', lib.root);
+        expect(onRootRemoved).toHaveBeenCalledTimes(1);
     });
 });
 
