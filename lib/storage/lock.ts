@@ -33,6 +33,8 @@ export interface LockHooks {
     beforeRenew?(): void | Promise<void>;
     /** Runs after a waiter reads an expired lease and before it renames it away. */
     beforeBreak?(lockPath: string): void | Promise<void>;
+    /** Runs after a releasing holder finds the lock still its own and before it renames it away. */
+    beforeRelease?(lockPath: string): void | Promise<void>;
 }
 
 export interface LockOptions {
@@ -52,6 +54,11 @@ export interface LockOptions {
 export const DEFAULT_LEASE_MS = 60_000;
 export const DEFAULT_WAIT_MS = 10_000;
 export const LOCK_POLL_MS = 250;
+/**
+ * The longest lease a holder may take or a record may claim. A record asking
+ * for more is judged by this, so a bad record can't hold the lock forever.
+ */
+export const MAX_LEASE_MS = 10 * 60_000;
 
 const LOCK_NAME = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -143,11 +150,12 @@ async function writeRecord(handle: fs.promises.FileHandle, record: LockRecord): 
  * The lock file is created with O_EXCL and holds the holder's record, which
  * is renewed every `leaseMs / 4`. A waiter polls every 250 ms and throws
  * LockTimeoutError with the holder's record after `waitMs`. A lease whose
- * heartbeat is older than its `leaseMs` is renamed to
- * `<name>.lock.stale-<uuid>` and re-read: if it changed in the meantime it is
- * linked back and the waiter keeps waiting, otherwise the waiter replaces it
- * and gets `takeover`. A holder whose renewal finds another owner aborts `fn`
- * through `signal`. There are no PID checks, so this works across hosts.
+ * heartbeat is older than its `leaseMs`, capped at MAX_LEASE_MS, or that far
+ * ahead of the waiter's clock, is renamed to `<name>.lock.stale-<uuid>` and
+ * re-read: if it changed in the meantime it is linked back and the waiter
+ * keeps waiting, otherwise the waiter replaces it and gets `takeover`. A
+ * holder whose renewal finds another owner aborts `fn` through `signal`.
+ * There are no PID checks, so this works across hosts.
  */
 export async function withLock<T>(name: string, options: LockOptions, fn: (context: LockContext) => Promise<T>): Promise<T> {
     if (!LOCK_NAME.test(name)) throw new TypeError(`Invalid lock name: ${name}`);
@@ -159,6 +167,7 @@ export async function withLock<T>(name: string, options: LockOptions, fn: (conte
         sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
         hooks,
     } = options;
+    if (!(leaseMs > 0 && leaseMs <= MAX_LEASE_MS)) throw new RangeError(`leaseMs must be above 0 and at most ${MAX_LEASE_MS}, got ${leaseMs}`);
     const root = options.root ?? dataRoot();
     if (root === null) throw new Error(`Can't take the ${name} lock: PHOTOGRAPHY_DATA_DIR is not set.`);
 
@@ -174,10 +183,14 @@ export async function withLock<T>(name: string, options: LockOptions, fn: (conte
     const iso = (ms: number) => new Date(ms).toISOString();
 
     function isExpired(observed: Observed, now: number): boolean {
-        if (!observed.record) return now - observed.mtimeMs > leaseMs; // A holder crashed mid-write, or one is writing now
-        const heartbeat = Date.parse(observed.record.heartbeatAt);
-        const lease = typeof observed.record.leaseMs === 'number' && observed.record.leaseMs > 0 ? observed.record.leaseMs : leaseMs;
-        return Number.isNaN(heartbeat) ? now - observed.mtimeMs > lease : now - heartbeat > lease;
+        // An unparseable record is a holder that crashed mid-write, or one writing now, so it is judged by its mtime.
+        const claimed = observed.record?.leaseMs;
+        const lease = typeof claimed === 'number' && claimed > 0 ? Math.min(claimed, MAX_LEASE_MS) : leaseMs;
+        const heartbeat = observed.record ? Date.parse(observed.record.heartbeatAt) : Number.NaN;
+        const age = now - (Number.isNaN(heartbeat) ? observed.mtimeMs : heartbeat);
+        // A live holder renews with its current time, so a heartbeat more than a lease ahead means the
+        // clock stepped back. Without this, a crashed holder's lock would stay held until the clock caught up.
+        return age > lease || age < -lease;
     }
 
     /** Move an expired lease aside. Returns what it replaced, or null if it changed and was put back. */
@@ -301,6 +314,34 @@ export async function withLock<T>(name: string, options: LockOptions, fn: (conte
         }
     }
 
+    /**
+     * Remove the lock file only if it is still ours. Deleting by path after the
+     * check would delete a lock that replaced ours in between, so this renames
+     * the file to a unique name first, checks that what it moved is ours, and
+     * deletes only that. Anything else is linked back, as breakExpired() does.
+     */
+    async function release(): Promise<void> {
+        // A lost lock now belongs to someone else.
+        if (!(await stillOurs())) return;
+        await hooks?.beforeRelease?.(lockPath);
+        const releasing = `${lockPath}.release-${randomUUID()}`;
+        try {
+            await fs.promises.rename(lockPath, releasing);
+        } catch (error) {
+            if (hasErrorCode(error, 'ENOENT')) return; // Broken and removed by a waiter just now
+            throw error;
+        }
+        const moved = await fs.promises.stat(releasing);
+        if (moved.ino !== ownStat.ino || moved.dev !== ownStat.dev) {
+            try {
+                await fs.promises.link(releasing, lockPath);
+            } catch (error) {
+                if (!hasErrorCode(error, 'EEXIST')) throw error;
+            }
+        }
+        await fs.promises.rm(releasing, { force: true });
+    }
+
     const timer = setInterval(() => {
         if (renewing || controller.signal.aborted) return;
         renewing = renew().finally(() => {
@@ -314,8 +355,7 @@ export async function withLock<T>(name: string, options: LockOptions, fn: (conte
         clearInterval(timer);
         await renewing;
         try {
-            // A lost lock now belongs to someone else, so only remove the file if it is still ours.
-            if (await stillOurs()) await fs.promises.rm(lockPath, { force: true });
+            await release();
         } finally {
             await held.close();
         }

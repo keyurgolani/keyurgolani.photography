@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runTsx } from '../../../test/helpers/runTsx';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
-import { LockLostError, LockTimeoutError, withLock, type LockRecord } from '../lock';
+import { LockLostError, LockTimeoutError, MAX_LEASE_MS, withLock, type LockRecord } from '../lock';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -150,6 +150,48 @@ describe('withLock', () => {
         await expect(withLock('registry', { root: data.root, leaseMs: 1_000, waitMs: 0 }, async () => 'never'))
             .rejects.toBeInstanceOf(LockTimeoutError);
         expect(readRecord().owner).toBe('crashed-owner');
+    });
+
+    it('caps the lease a record can claim, so a huge leaseMs still expires', async () => {
+        const stale = writeStaleRecord({ heartbeatAt: new Date(Date.now() - MAX_LEASE_MS - 1_000).toISOString(), leaseMs: Number.MAX_SAFE_INTEGER });
+        const takeover = await withLock('registry', { root: data.root, waitMs: 0 }, async (context) => context.takeover);
+        expect(takeover).toEqual({ previousOwner: 'crashed-owner', previousAcquiredAt: stale.acquiredAt });
+    });
+
+    it('breaks a lease whose heartbeat is more than a lease ahead, as after the clock stepped back, and keeps one less ahead', async () => {
+        writeStaleRecord({ heartbeatAt: new Date(Date.now() + 30_000).toISOString(), leaseMs: 60_000 });
+        await expect(withLock('registry', { root: data.root, waitMs: 0 }, async () => 'never')).rejects.toBeInstanceOf(LockTimeoutError);
+
+        writeStaleRecord({ heartbeatAt: new Date(Date.now() + 2 * 60_000).toISOString(), leaseMs: 60_000 });
+        const takeover = await withLock('registry', { root: data.root, waitMs: 0 }, async (context) => context.takeover);
+        expect(takeover?.previousOwner).toBe('crashed-owner');
+    });
+
+    it('refuses a lease of 0 or one above MAX_LEASE_MS', async () => {
+        for (const leaseMs of [0, -1, MAX_LEASE_MS + 1, Number.NaN]) {
+            await expect(withLock('registry', { root: data.root, leaseMs }, async () => 'never'), String(leaseMs)).rejects.toThrow(RangeError);
+        }
+        expect(lockDirEntries()).toEqual([]);
+    });
+
+    it('releases by moving its own file aside first, so a lock that replaced it after the check survives', async () => {
+        const replacement: LockRecord = {
+            owner: 'next-holder', hostname: 'other-host', pid: 4242, acquiredAt: new Date().toISOString(), heartbeatAt: new Date().toISOString(), leaseMs: 60_000,
+        };
+        await withLock('registry', {
+            root: data.root,
+            hooks: {
+                beforeRelease(target) {
+                    // A waiter takes over between the holder's ownership check and its removal of the file.
+                    const temp = `${target}.replacement`;
+                    fs.writeFileSync(temp, `${JSON.stringify(replacement)}\n`);
+                    fs.renameSync(temp, target);
+                },
+            },
+        }, async () => 'done');
+
+        expect(readRecord()).toEqual(replacement);
+        expect(lockDirEntries()).toEqual(['registry.lock']);
     });
 
     it('replaces an expired lease and reports the takeover, leaving no stale file', async () => {
