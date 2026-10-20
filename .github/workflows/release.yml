@@ -1,0 +1,201 @@
+name: Release
+
+# A vX.Y.Z tag promotes the sha- image that main already published for the
+# tagged commit. Nothing is rebuilt: vX.Y.Z, and latest when it moves, get the
+# same digest as sha-<commit>. See docs/releasing.md.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  actions: read
+  packages: write
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Promote release
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      latest: ${{ steps.promote.outputs.latest }}
+      digest: ${{ steps.digest.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      - name: Check the tag
+        id: plan
+        run: node ci/release-plan.mjs
+
+      - name: Wait for the main publish of this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          giving_up="Tag a commit whose \`main\` publish run went green."
+          deadline=$((SECONDS + 40 * 60))
+          while :; do
+            run=$(gh run list --workflow deploy.yml --commit "$GITHUB_SHA" --event push --limit 1 \
+              --json databaseId,status,url --jq '.[0] // empty')
+            if [ -n "$run" ]; then
+              run_id=$(jq -r .databaseId <<<"$run")
+              run_status=$(jq -r .status <<<"$run")
+              run_url=$(jq -r .url <<<"$run")
+              job=$(gh run view "$run_id" --json jobs \
+                --jq '[.jobs[] | select(.name == "Publish to GHCR")] | first // empty')
+              job_status=$(jq -r '.status // empty' <<<"$job")
+              job_conclusion=$(jq -r '.conclusion // empty' <<<"$job")
+              if [ "$job_status" = completed ]; then
+                if [ "$job_conclusion" = success ]; then
+                  echo "Publish to GHCR succeeded in $run_url"
+                  break
+                fi
+                echo "::error::Publish to GHCR finished with ${job_conclusion:-no conclusion} in $run_url. $giving_up"
+                exit 1
+              fi
+              if [ "$run_status" = completed ]; then
+                echo "::error::$run_url finished without a Publish to GHCR result. $giving_up"
+                exit 1
+              fi
+              echo "Waiting for Publish to GHCR in $run_url (run $run_status, job ${job_status:-not started})."
+            else
+              echo "Waiting for a Publish image run for $GITHUB_SHA to start."
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::No successful Publish to GHCR job for $GITHUB_SHA within 40 minutes. $giving_up"
+              exit 1
+            fi
+            sleep 30
+          done
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve the published digest
+        id: digest
+        run: |
+          source="ghcr.io/${GITHUB_REPOSITORY,,}:sha-${GITHUB_SHA::7}"
+          digest=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$source" | jq -r .digest)
+          if [[ ! $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Could not resolve the digest of $source."
+            exit 1
+          fi
+          echo "$source is $digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Check the version is not taken
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          target="ghcr.io/${GITHUB_REPOSITORY,,}:$VERSION"
+          if manifest=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$target" 2>"$RUNNER_TEMP/inspect.err"); then
+            existing=$(jq -r .digest <<<"$manifest")
+            if [ "$existing" != "$DIGEST" ]; then
+              echo "::error::$target already exists with digest $existing, not $DIGEST. A release version is never reused."
+              exit 1
+            fi
+            echo "$target already points at $DIGEST, so this is a re-run."
+          elif grep -qi 'not found' "$RUNNER_TEMP/inspect.err"; then
+            echo "$target does not exist yet."
+          else
+            cat "$RUNNER_TEMP/inspect.err"
+            echo "::error::Could not check whether $target exists."
+            exit 1
+          fi
+
+      - name: Promote the image
+        id: promote
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          LATEST: ${{ steps.plan.outputs.latest }}
+          DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          if [ "$LATEST" = true ]; then
+            # A higher release may have been tagged while this one waited.
+            LATEST=$(git ls-remote --tags --refs origin 'refs/tags/v*' | sed 's#^.*refs/tags/##' |
+              node --input-type=module -e '
+                import { readFileSync } from "node:fs";
+                import { isHighestRelease } from "./ci/release-plan.mjs";
+                const tags = readFileSync(0, "utf8").split("\n").filter(Boolean);
+                console.log(isHighestRelease(process.env.VERSION, tags));
+              ')
+            if [ "$LATEST" != true ]; then
+              echo "A release higher than $VERSION was tagged meanwhile, so latest stays where it is."
+            fi
+          fi
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+
+          tags=("$VERSION")
+          if [ "$LATEST" = true ]; then
+            tags+=(latest)
+          fi
+          args=()
+          for tag in "${tags[@]}"; do
+            args+=(--tag "$image:$tag")
+          done
+          docker buildx imagetools create --prefer-index=false "${args[@]}" "$image@$DIGEST"
+
+          for tag in "${tags[@]}"; do
+            got=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$image:$tag" | jq -r .digest)
+            if [ "$got" != "$DIGEST" ]; then
+              echo "::error::$image:$tag has digest $got, expected $DIGEST."
+              exit 1
+            fi
+            echo "$image:$tag is $DIGEST"
+          done
+
+      - name: Write the job summary
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          LATEST: ${{ steps.promote.outputs.latest }}
+          DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          if [ "$LATEST" = true ]; then
+            moved="yes"
+          else
+            moved="no, a higher release tag exists"
+          fi
+          {
+            echo "### Released \`$VERSION\`"
+            echo
+            echo "- Image: \`ghcr.io/${GITHUB_REPOSITORY,,}:$VERSION\`"
+            echo "- Digest: \`$DIGEST\`, the same as \`sha-${GITHUB_SHA::7}\`"
+            echo "- \`latest\` moved: $moved"
+            echo
+            echo "To deploy it, set this in the host's \`.env\`:"
+            echo
+            echo '```'
+            echo "PHOTOGRAPHY_IMAGE_TAG=$VERSION"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  mirror:
+    needs: release
+    uses: ./.github/workflows/mirror-dockerhub.yml
+    with:
+      digest: ${{ needs.release.outputs.digest }}
+      tags: ${{ needs.release.outputs.latest == 'true' && format('{0} latest', needs.release.outputs.version) || needs.release.outputs.version }}
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: read

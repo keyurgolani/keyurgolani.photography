@@ -73,13 +73,20 @@ Open [http://localhost:3000](http://localhost:3000) to view the site.
 
 ### Production with Docker
 
-```bash
-# Build and run with Docker Compose
-docker-compose -f docker-compose.prod.yml up -d
+Both containers run one pinned release tag. Set it in a `.env` next to `docker-compose.prod.yml`:
 
-# Or use the pre-built image
-docker pull ghcr.io/keyurgolani/keyurgolani.photography:latest
+```bash
+PHOTOGRAPHY_IMAGE_TAG=v1.1.0
 ```
+
+Then pull and start:
+
+```bash
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d
+```
+
+[docs/releasing.md](docs/releasing.md) covers cutting a release, deploying, rollback, and telling what's running.
 
 ## 📁 Project Structure
 
@@ -134,6 +141,10 @@ docker pull ghcr.io/keyurgolani/keyurgolani.photography:latest
 The production setup uses two containers:
 - **web** - Next.js application server
 - **image-watcher** - Background photo processor
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `PHOTOGRAPHY_IMAGE_TAG` | Image tag both containers run, such as `v1.1.0`. Set it in the `.env` next to `docker-compose.prod.yml`. | None. Compose refuses to start without it. |
 
 See `docker-compose.prod.yml` for full configuration.
 

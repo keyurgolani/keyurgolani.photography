@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   web:
-    image: ghcr.io/keyurgolani/keyurgolani.photography:latest
+    image: ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?Set PHOTOGRAPHY_IMAGE_TAG to a release tag, for example v1.1.0}
     ports:
       - "3000:3000"
     volumes:
@@ -24,7 +24,7 @@ services:
   # Note: Ensure photos directory is writable by uid 1001 (nextjs user)
   # Run on host: chown -R 1001:1001 ./public/assets/photos
   image-watcher:
-    image: ghcr.io/keyurgolani/keyurgolani.photography:latest
+    image: ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?Set PHOTOGRAPHY_IMAGE_TAG to a release tag, for example v1.1.0}
     user: "1001:1001"
     volumes:
       - ./public/assets/photos:/app/public/assets/photos
