@@ -1,0 +1,25 @@
+name: Queue probe
+
+# Temporary: publish.yml's shape, a queued workflow-level concurrency group
+# around a call to ci.yml. It fires on PR edits only. On pushes to the PR the
+# called ci.yml would join the PR's own ci-pr-<number> group and one of the
+# two runs would cancel the other.
+on:
+  pull_request:
+    types: [edited]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: queue-probe-publish-shape
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
