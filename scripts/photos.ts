@@ -8,6 +8,14 @@
  *     data root, or to --out, which is required when the data root is unset,
  *     unavailable, or unwritable. Prints both paths.
  *
+ *   npx tsx scripts/photos.ts migrate --apply --plan <file>
+ *     Commit a dry run's plan: write the registry with exactly its photo IDs,
+ *     data-root.json if there is none, and applied-<ts>.json mapping each
+ *     source path and legacy URL to its photo. Refuses if the library or the
+ *     registry changed since the dry run, or if it runs in a container whose
+ *     data root is not a mounted volume. Builds no derivatives. Exits 0 when
+ *     applied or already applied, 1 when refused, and 2 on a usage error.
+ *
  *   npx tsx scripts/photos.ts identity status [--json]
  *     Counts by source health, holds, failed profiles, pending jobs, the data
  *     root's state, and the watcher's heartbeat age. Exits 1 unless the data
@@ -31,6 +39,7 @@
 
 import path from 'node:path';
 import { parseArgs } from 'node:util';
+import { ApplyRefusedError, migrateApply } from '../lib/identity/apply';
 import { createDecision, decisionFileName, isLibraryPath, writeDecision, type DecisionInput } from '../lib/identity/decisions';
 import { ASSET_REVISION_RE, PHOTO_ID_RE } from '../lib/identity/ids';
 import { DryRunRefusedError, migrateDryRun } from '../lib/identity/migration';
@@ -43,6 +52,7 @@ import { isInside } from '../lib/storage/fsx';
 
 const USAGE = `Usage:
   npx tsx scripts/photos.ts migrate --dry-run [--out <dir>]
+  npx tsx scripts/photos.ts migrate --apply --plan <file>
   npx tsx scripts/photos.ts identity status [--json]
   npx tsx scripts/photos.ts identity bind <path> <photoId> [--reason <text>]
   npx tsx scripts/photos.ts identity new <path> [--reason <text>]
@@ -76,8 +86,27 @@ function photoIdArg(arg: string): string {
 }
 
 async function migrate(args: string[]): Promise<number> {
-    const { values } = strictly(() => parseArgs({ args, options: { 'dry-run': { type: 'boolean' }, out: { type: 'string' } }, strict: true }));
-    if (!values['dry-run']) throw new UsageError('photos migrate runs only with --dry-run for now.');
+    const { values } = strictly(() => parseArgs({
+        args,
+        options: { 'dry-run': { type: 'boolean' }, apply: { type: 'boolean' }, out: { type: 'string' }, plan: { type: 'string' } },
+        strict: true,
+    }));
+    if (values['dry-run'] && values.apply) throw new UsageError("--dry-run and --apply don't go together.");
+    if (values.apply) {
+        if (!values.plan) throw new UsageError('--apply needs --plan <file>.');
+        if (values.out !== undefined) throw new UsageError('--out goes with --dry-run.');
+        const result = await migrateApply({ planPath: values.plan });
+        if (result.status === 'already-applied') {
+            console.log(`[photos] Plan ${result.planId} is already applied.`);
+            console.log(`Mapping: ${result.mappingPath}`);
+            return 0;
+        }
+        console.log(`[photos] Applied plan ${result.planId}: ${result.photos} ${result.photos === 1 ? 'photo' : 'photos'}. The watcher builds the derivatives.`);
+        console.log(`Mapping: ${result.mappingPath}`);
+        return 0;
+    }
+    if (!values['dry-run']) throw new UsageError('photos migrate needs --dry-run or --apply.');
+    if (values.plan !== undefined) throw new UsageError('--plan goes with --apply.');
     if (values.out === '') throw new UsageError('--out needs a value.');
     const result = await migrateDryRun({ outDir: values.out });
     const counts = new Map<string, number>();
@@ -189,7 +218,7 @@ async function main(argv: string[]): Promise<number> {
             console.error(`[photos] ${error.message}\n${USAGE}`);
             return 2;
         }
-        if (error instanceof DryRunRefusedError) {
+        if (error instanceof DryRunRefusedError || error instanceof ApplyRefusedError) {
             console.error(`[photos] ${error.message}`);
             return error.exitCode;
         }
