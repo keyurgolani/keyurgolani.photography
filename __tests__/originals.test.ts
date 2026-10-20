@@ -116,6 +116,12 @@ describe('proxy.ts on /assets/photos', () => {
     });
 });
 
+describe('outputFileTracingExcludes', () => {
+    it('keeps the default data root and the library out of .next/standalone for every route', () => {
+        expect(nextConfig.outputFileTracingExcludes?.['*']).toEqual(expect.arrayContaining(['./portfolio-data/**/*', './public/assets/photos/**/*']));
+    });
+});
+
 describe('images.localPatterns', () => {
     const allows = (url: string) => hasLocalMatch(nextConfig.images?.localPatterns, url);
 

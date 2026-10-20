@@ -2,6 +2,12 @@
 const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
+  // The file access in lib/storage/config.ts makes the build trace the whole
+  // project into .next/standalone. Keep out the default data root, whose
+  // registry holds curator-only metadata, and the library's original photos.
+  outputFileTracingExcludes: {
+    '*': ['./portfolio-data/**/*', './public/assets/photos/**/*'],
+  },
   images: {
     formats: ['image/avif', 'image/webp'],
     minimumCacheTTL: 86400, // 1 day
