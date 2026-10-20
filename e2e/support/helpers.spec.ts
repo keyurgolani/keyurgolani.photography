@@ -65,6 +65,11 @@ test.describe('expectFocusRingVisible', () => {
         await expect(expectFocusRingVisible(page.getByRole('button'))).rejects.toThrow(/outline is 1px wide, under 3px/);
     });
 
+    test('fails a ring that transitions in', async ({ page }) => {
+        await load(page, '<button type="button">Ring</button>', 'button { transition: all 300ms; }');
+        await expect(expectFocusRingVisible(page.getByRole('button'))).rejects.toThrow(/the ring transitions in/);
+    });
+
     test('fails under an opacity: 0.5 parent', async ({ page }) => {
         await load(page, '<div id="faded" style="opacity: 0.5"><button type="button">Ring</button></div>');
         await expect(expectFocusRingVisible(page.getByRole('button'))).rejects.toThrow(/div#faded has opacity 0\.5/);

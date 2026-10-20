@@ -25,6 +25,8 @@ export interface Measurement {
     outline: { style: string; width: number; alpha: number };
     /** The element and each ancestor with an opacity under 1. */
     faded: { label: string; opacity: number }[];
+    /** Properties with a CSS transition running on the element. */
+    transitions: string[];
     focused: boolean;
     focusVisible: boolean;
     /** Ancestors whose overflow clips the element, innermost first. */
@@ -95,6 +97,10 @@ export function measure(target: Locator): Promise<Measurement> {
             ring: { left: rect.left - extent, top: rect.top - extent, right: rect.right + extent, bottom: rect.bottom + extent },
             outline: { style: style.outlineStyle, width: outlineWidth, alpha: alphaOf(style.outlineColor) },
             faded,
+            transitions: element
+                .getAnimations()
+                .filter((animation): animation is CSSTransition => animation instanceof CSSTransition && animation.playState === 'running')
+                .map((transition) => transition.transitionProperty),
             focused: element === document.activeElement,
             focusVisible: element.matches(':focus-visible'),
             clips,

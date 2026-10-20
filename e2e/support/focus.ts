@@ -19,9 +19,16 @@ async function focusAndMeasure(target: Locator): Promise<Measurement> {
     return measured;
 }
 
-/** Contract rule 4: an outline of at least 3 px, at full opacity all the way up the tree. */
+/** Properties whose transition would fade the ring or its element in. */
+const RING_PROPERTIES = new Set(['outline-width', 'outline-offset', 'outline-color', 'box-shadow', 'opacity']);
+
+/**
+ * Contract rule 4: an outline of at least 3 px, at full opacity all the way
+ * up the tree, and no fade: a ring that transitions in reads as its start
+ * value, so it fails here rather than passing by luck.
+ */
 export async function expectFocusRingVisible(target: Locator): Promise<void> {
-    const { outline, faded } = await focusAndMeasure(target);
+    const { outline, faded, transitions } = await focusAndMeasure(target);
     const problems: string[] = [];
     if (outline.style === 'none') {
         problems.push('outline-style is none');
@@ -30,6 +37,8 @@ export async function expectFocusRingVisible(target: Locator): Promise<void> {
         if (outline.alpha === 0) problems.push('outline color is transparent');
     }
     for (const { label, opacity } of faded) problems.push(`${label} has opacity ${opacity}`);
+    const fading = transitions.filter((property) => RING_PROPERTIES.has(property));
+    if (fading.length > 0) problems.push(`the ring transitions in (${fading.join(', ')}), so it needs transition: none`);
     expect(problems, `Focus ring on ${target} must be visible`).toEqual([]);
 }
 
