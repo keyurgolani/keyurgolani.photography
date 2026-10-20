@@ -84,7 +84,9 @@ count=$(find "$LIB/optimized" -maxdepth 1 -name '*.webp' | wc -l | tr -d ' ')
 echo "--once wrote all seven derivatives for each fixture."
 
 # 3. With a source gone, another --once run keeps its derivatives.
-rm "$LIB/landscape.jpg"
+# The image wrote it as uid 1001, so force the removal and check it took.
+rm -f "$LIB/landscape.jpg"
+[ ! -e "$LIB/landscape.jpg" ] || fail "Could not remove landscape.jpg from the fixture library."
 run_once || fail "The second --once run exited non-zero."
 require_outputs landscape "After removing landscape.jpg"
 echo "--once kept landscape's derivatives after landscape.jpg was removed."
