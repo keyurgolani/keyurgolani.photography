@@ -36,3 +36,12 @@ export type AuthoredRecord = AuthoredSite | AuthoredSeries | AuthoredPhoto;
 export type Conflict = NonNullable<AuthoredSite['conflicts']>[number];
 export type Visibility = AuthoredSeries['visibility'];
 export type PublicationPolicy = AuthoredSeries['publicationPolicy'];
+
+/** The fields the writer owns: it sets them on every write, whatever a caller passes. */
+export type ManagedField = 'schemaVersion' | 'version' | 'baseRevisionId';
+type Writable<T> = Omit<T, ManagedField> & Partial<Record<ManagedField, unknown>>;
+/** What a caller hands writeAuthoredRecord(): a record as read or newly built, before defaults. */
+export type AuthoredSiteInput = Writable<z.input<typeof schema.authoredSiteSchema>>;
+export type AuthoredSeriesInput = Writable<z.input<typeof schema.authoredSeriesSchema>>;
+export type AuthoredPhotoInput = Writable<z.input<typeof schema.authoredPhotoSchema>>;
+export type AuthoredRecordInput = AuthoredSiteInput | AuthoredSeriesInput | AuthoredPhotoInput;

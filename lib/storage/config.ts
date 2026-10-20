@@ -122,12 +122,12 @@ function checkMarker(root: string): MarkerCheck {
 }
 
 /**
- * Classify the data root. With `write`, a root this process can't write is
- * `unwritable`; without it, the check is read-only, which is all the web
- * process needs.
+ * Classify the data root, or `root` when a caller names one. With `write`, a
+ * root this process can't write is `unwritable`; without it, the check is
+ * read-only, which is all the web process needs.
  */
-export function dataRootStatus({ write = false }: { write?: boolean } = {}): DataRootStatus {
-    const root = dataRoot();
+export function dataRootStatus({ write = false, root: named }: { write?: boolean; root?: string } = {}): DataRootStatus {
+    const root = named === undefined ? dataRoot() : path.resolve(/*turbopackIgnore: true*/ named);
     if (root === null) return { state: 'unset', root, detail: 'PHOTOGRAPHY_DATA_DIR is not set' };
 
     let stat: fs.Stats;
