@@ -58,32 +58,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Passes with a notice until package.json has a test:e2e script.
-      - name: Check for the e2e harness
-        id: harness
-        run: |
-          present=$(jq -r '.scripts["test:e2e"] != null' package.json)
-          echo "present=$present" >> "$GITHUB_OUTPUT"
-          if [ "$present" != true ]; then
-            echo "::notice::No test:e2e script yet."
-          fi
-
-      - if: steps.harness.outputs.present == 'true'
-        uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: npm
 
-      - if: steps.harness.outputs.present == 'true'
-        run: npm ci
+      - run: npm ci
 
-      - if: steps.harness.outputs.present == 'true'
-        run: npx playwright install --with-deps chromium
+      - run: npx playwright install --with-deps chromium
 
-      - if: steps.harness.outputs.present == 'true'
-        run: npm run test:e2e
+      - run: npm run test:e2e
 
-      - if: failure() && steps.harness.outputs.present == 'true'
+      - if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: playwright-report
