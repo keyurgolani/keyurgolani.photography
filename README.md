@@ -168,6 +168,7 @@ docker compose -f docker-compose.prod.yml up -d
   docker compose -f docker-compose.prod.yml start image-watcher
   ```
 - **Restore the library folder** if it was deleted. The watcher exits 1 when its folder disappears, and since Compose no longer creates a missing photos folder, neither container can start until it's back. Stop the stack, copy the folder back into place rather than moving it with `mv`, then start the stack.
+- **Preview stable photo IDs** with `npm run photos:migrate -- --dry-run`. It proposes an ID for every photo and writes only a plan and a report, to `identity/migration/` in the data root or to `--out <dir>`. Nothing uses the IDs yet.
 
 ### Supported Formats
 - JPEG (.jpg, .jpeg)
@@ -183,6 +184,7 @@ docker compose -f docker-compose.prod.yml up -d
 | `NEXT_PUBLIC_CAROUSEL_INTERVAL` | Hero carousel slide duration (ms) | 12000 |
 | `NEXT_PUBLIC_UI_AUTO_HIDE_TIMEOUT` | UI auto-hide timeout on home page (ms) | 3000 |
 | `PHOTOGRAPHY_LIBRARY_DIR` | Photo library folder for the watcher, `images:cleanup`, and `/api/photos`. The site serves photos only from `public/assets/photos`, so leave it unset outside tests. | `public/assets/photos` |
+| `PHOTOGRAPHY_DATA_DIR` | Private data root for photo identity state. It must sit outside `public/` and the library. Only `photos:migrate --dry-run` and `photos:identity status` read it so far. | `portfolio-data`, none in production |
 
 ### Docker Configuration
 

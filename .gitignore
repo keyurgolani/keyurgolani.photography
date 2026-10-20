@@ -61,3 +61,6 @@ OPTIMIZATION_PLAN*
 task_plan.md
 findings.md
 progress.md
+
+# Private identity state, the default data root outside production
+/portfolio-data/
