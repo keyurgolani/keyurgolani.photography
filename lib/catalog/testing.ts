@@ -14,6 +14,7 @@ import { mediaUrl } from '../media/url';
 import { DATA_ROOT_FILE, DATA_ROOT_SCHEMA_VERSION } from '../storage/config';
 import { isInside, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, realpathLoose } from '../storage/fsx';
 import { createCatalogReader, type CatalogReader, type ReaderMeta } from './reader';
+import { registerRule } from './rules';
 import { parseAuthoredRecord, revisionIdOf, type AuthoredKind } from './schema';
 import type {
     AuthoredAlt,
@@ -26,10 +27,11 @@ import type {
     Crop,
     FocalPoint,
     PublicationPolicy,
+    RuleContext,
     SeriesRecord,
     Visibility,
 } from './types';
-import { authoredPaths, authoredRecordFile } from './working-layer';
+import { authoredPaths, authoredRecordFile, readWorkingLayer } from './working-layer';
 
 /**
  * Test catalogs: a data root with a working layer, #10's registry, and
@@ -139,8 +141,37 @@ export interface TestCatalog {
     revisionId: string;
     /** A reader over `content`, with no revision number, as for a candidate. */
     reader(meta?: Partial<ReaderMeta>): CatalogReader<CandidatePhotoRecord>;
+    /**
+     * A rule context for a candidate: a copy of `content`, the working layer
+     * as read from disk, a copy of the registry, no active revision, and the
+     * root as the data root.
+     */
+    context(overrides?: Partial<RuleContext>): Promise<RuleContext>;
     /** Removes the root, unless the caller named it. */
     cleanup(): Promise<void>;
+}
+
+/** #8's order rules, which #13's first activation needs registered. */
+export const ORDER_RULE_IDS = [
+    'order.duplicate-photo',
+    'order.unknown-photo',
+    'order.unpublishable-member',
+    'order.cover',
+    'order.opening',
+    'order.chapter-anchor',
+    'order.empty-series',
+] as const;
+
+/**
+ * Register stand-ins for #8's order rules, each reporting nothing, with the
+ * gate and severity #8 gives the real one. Call it once per test file. A
+ * second call throws on the duplicate ID, and so will #8's real rules, so the
+ * stand-ins have to go when #8 lands.
+ */
+export function registerOrderRuleStandIns(): void {
+    for (const id of ORDER_RULE_IDS) {
+        registerRule({ id, version: 1, severity: 'error', rollbackClass: 'integrity', gate: id === 'order.empty-series' ? 'publish' : 'render', check: () => [] });
+    }
 }
 
 /** mulberry32: a small seeded PRNG, so IDs repeat for a seed. */
@@ -515,6 +546,14 @@ export async function createTestCatalog(options: TestCatalogOptions = {}): Promi
         content,
         revisionId,
         reader: (meta = {}) => createCatalogReader(content, { revisionId, revisionNumber: null, ...meta }),
+        context: async (overrides = {}) => ({
+            candidate: structuredClone(content),
+            authored: await readWorkingLayer(root),
+            active: null,
+            registry: structuredClone(written),
+            roots: { dataRoot: root, libraryRoot: null },
+            ...overrides,
+        }),
         cleanup: async () => {
             if (created) await fs.promises.rm(created, { recursive: true, force: true });
         },
