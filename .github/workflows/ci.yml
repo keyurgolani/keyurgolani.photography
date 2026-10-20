@@ -132,15 +132,6 @@ jobs:
       - name: Smoke test the image
         run: ci/smoke-image.sh ci-smoke
 
-      # The watcher smoke generates its fixture library with
-      # test/fixtures/makeLibrary.ts, so it needs Node and Sharp on the runner.
-      - uses: actions/setup-node@v7
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-
-      - run: npm ci
-
       - name: Smoke test the watcher's --once mode
         env:
           IMAGE: ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke
