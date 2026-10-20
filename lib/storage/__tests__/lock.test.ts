@@ -122,20 +122,48 @@ describe('withLock', () => {
     });
 
     it('never breaks a live lease: a waiter times out while the holder keeps renewing', async () => {
+        // One clock for both, and only the waiter moves it. Each time the
+        // waiter sleeps, it moves the clock on by its poll interval and then
+        // waits for the holder's next renewal, so however late a loaded
+        // machine runs the renewal timer, the waiter judges a lease the holder
+        // is keeping alive.
+        let now = Date.now();
+        const clock = () => now;
+        const heartbeat = () => {
+            try {
+                return Date.parse(readRecord().heartbeatAt);
+            } catch {
+                return Number.NaN; // Read mid-renewal
+            }
+        };
+        const renewedSince = async (ms: number) => {
+            while (!(heartbeat() >= ms)) await sleep(5);
+        };
         const entered = deferred();
+        const done = deferred();
         let aborted = false;
-        const holder = withLock('registry', { root: data.root, leaseMs: 200 }, async ({ signal }) => {
+        const holder = withLock('registry', { root: data.root, leaseMs: 200, clock }, async ({ signal }) => {
             entered.resolve();
-            await sleep(1_000);
+            await done.promise;
             aborted = signal.aborted;
         });
         await entered.promise;
         const before = readRecord();
 
-        // The wait outlasts the holder's lease several times over.
-        const error = await withLock('registry', { root: data.root, leaseMs: 200, waitMs: 700, pollMs: 20 }, async () => 'never')
-            .catch((caught: unknown) => caught);
+        // The wait outlasts the holder's lease three times over.
+        const error = await withLock('registry', {
+            root: data.root,
+            leaseMs: 200,
+            waitMs: 600,
+            pollMs: 50,
+            clock,
+            sleep: async (ms) => {
+                now += ms;
+                await renewedSince(now);
+            },
+        }, async () => 'never').catch((caught: unknown) => caught);
         const after = readRecord();
+        done.resolve();
         await holder;
 
         expect(error).toBeInstanceOf(LockTimeoutError);
