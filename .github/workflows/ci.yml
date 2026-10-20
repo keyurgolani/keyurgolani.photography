@@ -119,6 +119,22 @@ jobs:
       - name: Smoke test the image
         run: ci/smoke-image.sh ci-smoke
 
+  # Fails on a high or critical advisory in a production dependency unless
+  # .github/audit-allowlist.json lists it. npm audit reads only the lockfile,
+  # so the job skips npm ci.
+  audit:
+    name: Production audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      - run: node ci/audit-gate.mjs
+
   # The one required check. always() matters: without it a failed job skips
   # this one, and GitHub counts a skipped required check as passing. The
   # ruleset requires "CI result" by name, so a rename changes the ruleset in
@@ -126,7 +142,7 @@ jobs:
   result:
     name: CI result
     if: always()
-    needs: [verify, e2e, image]
+    needs: [verify, e2e, image, audit]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
