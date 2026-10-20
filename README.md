@@ -71,6 +71,16 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000) to view the site.
 
+### Development with Docker
+
+`docker-compose.yml` runs `next dev` and the photo watcher against your checkout:
+
+```bash
+docker compose up
+```
+
+After a dependency change, rebuild with `docker compose up --build -V`. Without `-V`, the anonymous `node_modules` volume keeps the old install.
+
 ### Production with Docker
 
 Both containers run one pinned release tag. Set it in a `.env` next to `docker-compose.prod.yml`:
