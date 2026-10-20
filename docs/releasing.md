@@ -139,17 +139,17 @@ docker compose -f docker-compose.prod.yml up -d
 
 Both services switch together. Every `docker compose -f docker-compose.prod.yml` command needs `PHOTOGRAPHY_IMAGE_TAG`, not just `up`, so `pull`, `ps`, `logs`, and `down` refuse to run without it too. A `PHOTOGRAPHY_IMAGE_TAG` exported in your shell overrides `.env`. Nothing pulls `:latest` anymore, so every release needs this `.env` edit.
 
-The first release with Phase 0 of [replacement and missing files (#17)](https://github.com/keyurgolani/keyurgolani.photography/issues/17) needs one more step. Before it, derivative URLs were marked `immutable` for a year, and `./.next-images-cache` holds `/_next/image` copies made under that header. Clear it once while `web` is stopped:
+The first release with Phase 0 of [replacement and missing files (#17)](https://github.com/keyurgolani/keyurgolani.photography/issues/17) needs one more step. Before it, derivative URLs were marked `immutable` for a year, and `./.next-images-cache` holds `/_next/image` copies made under that header. Clear it once while `web` is stopped. The cache files belong to the container's uid 1001, and a host user's `rm` can fail on them, so this runs `rm` inside the `web` image:
 
 ```bash
 docker compose -f docker-compose.prod.yml stop web
-rm -rf ./.next-images-cache/*
+docker compose -f docker-compose.prod.yml run --rm --no-deps web sh -c 'rm -rf /app/.next/cache/images/*'
 docker compose -f docker-compose.prod.yml start web
 ```
 
 ## Rollback
 
-Before changing `.env`, note the tag the host runs now. To roll back, set `PHOTOGRAPHY_IMAGE_TAG` back to that tag and run the same two commands. That swaps the code, not the photo library. Whether an older release can read data a newer one wrote is part of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10).
+Before changing `.env`, note the tag the host runs now. To roll back, set `PHOTOGRAPHY_IMAGE_TAG` back to that tag and run the same two commands. That swaps the code, not the photo library. Rolling back to a release before Phase 0 of #17 brings back the watcher's startup cleanup, which deletes the derivative sets this release keeps for removed photos. Whether an older release can read data a newer one wrote is part of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10).
 
 Never roll back to `v1.0.0`. That image, on GHCR and on Docker Hub, is the initial commit and can't run under this compose file.
 

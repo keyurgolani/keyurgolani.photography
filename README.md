@@ -134,22 +134,34 @@ docker compose -f docker-compose.prod.yml up -d
 3. **Gallery updates** automatically on next page load
 
 ### Replacing and Removing Photos
-- **Replace** a photo by saving over it under the same name. The watcher regenerates its derivatives from the new file and swaps them in only once all seven are written, so a failed run keeps the old ones.
+- **Replace** a photo by saving over it under the same name. The watcher regenerates its derivatives from the new file and swaps them in only once all seven are written, so a failed run keeps the old ones. Until then the gallery shows the original file. Visitors can still see the old version: `/_next/image` can serve its copy for up to a day, and a browser that cached it under the old `immutable` header may keep it for up to a year.
+- **Touch a copied-in replacement** that kept an older modification time, as `cp -p` and `rsync -a` do. Copied in while the watcher is stopped, it looks unchanged at the next start.
 - **Delete** a photo to hide it from the gallery. Its derivative files stay reachable at their URLs until `images:cleanup` deletes them. Restoring the file brings the photo back in the gallery after `web` restarts, since Next serves only the `public/` files that existed when it started.
-- **Review leftovers** with `npm run images:cleanup`. It lists each derivative no photo needs anymore, with the reason, and prints a plan hash. Re-run it with `-- --apply --plan <hash>` to delete exactly that list. It refuses if anything changed since the dry run. In production, run both steps in the watcher container:
+- **Review leftovers** with `npm run images:cleanup`. It lists each derivative no photo needs anymore, with the reason, and prints a plan hash. Re-run it with `-- --apply --plan <hash>` to delete exactly that list. It refuses if the list changed since the dry run. In production, run both steps in the watcher container:
 
   ```bash
   docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts
   docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts --apply --plan <hash>
   ```
-- **Take a photo down** by deleting it, then running `images:cleanup` with `--only <name>`, where `<name>` is the photo's name such as `landscape`, and again with `--only <name> --apply --plan <hash>`. Then stop `web`, run `rm -rf ./.next-images-cache/*`, and start `web`, so Next's image cache drops its copies too.
-- **Regenerate everything** with `npm run images:process -- --force`, for example after copying in files that kept an older modification time. In production, stop `image-watcher` first so the two never write at once:
+- **Take a photo down** with `image-watcher` stopped, so a job already running can't write its derivatives back. `<name>` is the photo's exact name, such as `landscape`. The cache purge runs inside the `web` image, since the cache files belong to its uid 1001 and a host user's `rm` can fail:
+
+  ```bash
+  docker compose -f docker-compose.prod.yml stop image-watcher
+  # Delete the photo, then:
+  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts --only <name>
+  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts --only <name> --apply --plan <hash>
+  docker compose -f docker-compose.prod.yml stop web
+  docker compose -f docker-compose.prod.yml run --rm --no-deps web sh -c 'rm -rf /app/.next/cache/images/*'
+  docker compose -f docker-compose.prod.yml start web image-watcher
+  ```
+- **Regenerate everything** with `npm run images:process -- --force`. In production, stop `image-watcher` first so the two never write at once:
 
   ```bash
   docker compose -f docker-compose.prod.yml stop image-watcher
   docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageWatcher.ts --once --force
   docker compose -f docker-compose.prod.yml start image-watcher
   ```
+- **Restore the library folder** if it was deleted or moved. The watcher exits 1 when its folder disappears. Once the folder is back, run `docker compose -f docker-compose.prod.yml restart web image-watcher`, since each container keeps the old folder mounted until it restarts.
 
 ### Supported Formats
 - JPEG (.jpg, .jpeg)
