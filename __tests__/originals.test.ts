@@ -5,6 +5,7 @@ import { unstable_doesMiddlewareMatch } from 'next/experimental/testing/server';
 import { describe, expect, it } from 'vitest';
 import nextConfig from '../next.config.mjs';
 import { config, proxy } from '../proxy';
+import { resolvedPathname } from '../utils/publicDerivatives';
 
 // The function /_next/image uses to check `url` against images.localPatterns. Next ships no types for it.
 const { hasLocalMatch } = createRequire(import.meta.url)('next/dist/shared/lib/match-local-pattern') as {
@@ -71,6 +72,15 @@ describe('proxy.ts on /assets/photos', () => {
         ['an encoded prefix letter', '/assets/photo%73/landscape.jpg'],
         ['a long s that folds to s', '/assets/photo%C5%BF/landscape.jpg'],
         ['a derivative under a capitalized prefix', '/Assets/photos/optimized/landscape.webp'],
+        ['an encoded traversal from a sibling folder', '/assets/profile/..%2Fphotos%2Flandscape.jpg'],
+        ['a lowercase encoded traversal from a sibling folder', '/assets/profile/..%2fphotos%2flandscape.jpg'],
+        ['an encoded backslash traversal from a sibling folder', '/assets/profile/..%5Cphotos%5Clandscape.jpg'],
+        ['an encoded traversal from another top-level folder', '/foo/..%2Fassets%2Fphotos%2Flandscape.jpg'],
+        ["an encoded traversal from Next's static folder", '/_next/static/..%2F..%2Fassets/photos/landscape.jpg'],
+        ['a dot-dot traversal from a sibling folder', '/assets/profile/../photos/landscape.jpg'],
+        ['an encoded dot-dot segment in a sibling folder', '/assets/profile/%2e%2e/photos/landscape.jpg'],
+        ['a nested original reached through a sibling folder', '/assets/profile/%2E%2E/photos/series/x.jpg'],
+        ['an encoded slash outside /assets/photos', '/gallery%2Fx'],
     ])('404s %s', (_label, pathname) => {
         const response = respond(pathname);
         expect(response.status).toBe(404);
@@ -78,15 +88,26 @@ describe('proxy.ts on /assets/photos', () => {
         expect(response.headers.get('cache-control')).toBe('no-store');
     });
 
-    it.each(['/', '/gallery', '/about', '/api/photos', '/assets/profile/front.png', '/favicon.ico', '/assets/photosets/x.jpg'])(
-        'passes %s, outside /assets/photos', (pathname) => {
-            expect(passes(pathname)).toBe(true);
-        },
-    );
+    it.each([
+        '/', '/gallery', '/about', '/api/photos', '/assets/profile/front.png', '/favicon.ico', '/assets/photosets/x.jpg',
+        '/assets/photos/../profile/front.png', '/_next/static/chunks/%5Broot-of-the-server%5D__0a1b2c._.js',
+    ])('passes %s, outside /assets/photos', (pathname) => {
+        expect(passes(pathname)).toBe(true);
+    });
 
-    it("runs on every request but Next's own assets, so case variants of the prefix reach it", () => {
+    it('resolves a pathname the way next dev does before it looks for a file', () => {
+        expect(resolvedPathname('/assets//photos/./optimized/../x.jpg')).toBe('/assets/photos/x.jpg');
+        expect(resolvedPathname('/../../assets/photos')).toBe('/assets/photos');
+        expect(resolvedPathname('/assets/profile/..%5Cphotos%5Cx.jpg')).toBe('/assets/photos/x.jpg');
+        expect(resolvedPathname('/assets/photos/50%off.jpg')).toBe('/assets/photos/50%off.jpg');
+    });
+
+    it("runs on every request but Next's own assets, and on those too once they carry a percent sign", () => {
         const matches = (url: string) => unstable_doesMiddlewareMatch({ config, url });
-        for (const url of ['/', '/gallery', '/api/photos', '/assets/photos', '/assets/photos/series/x.jpg', '/Assets/Photos/x.jpg', '/assets/profile/front.png']) {
+        for (const url of [
+            '/', '/gallery', '/api/photos', '/assets/photos', '/assets/photos/series/x.jpg', '/Assets/Photos/x.jpg', '/assets/profile/front.png',
+            '/_next/static/..%2F..%2Fassets/photos/x.jpg', '/_next/static/chunks/%5Broot%5D.js', '/_next/image%2F..%2F..%2Fassets/photos/x.jpg',
+        ]) {
             expect(matches(url), url).toBe(true);
         }
         for (const url of ['/_next/static/chunks/main.js', '/_next/image?url=%2Fassets%2Fphotos%2Fx.jpg&w=400&q=75']) {
@@ -98,7 +119,7 @@ describe('proxy.ts on /assets/photos', () => {
 describe('images.localPatterns', () => {
     const allows = (url: string) => hasLocalMatch(nextConfig.images?.localPatterns, url);
 
-    it('lets /_next/image optimize the legacy derivatives and the profile portraits', () => {
+    it('lets /_next/image optimize the legacy derivatives', () => {
         for (const url of [
             '/assets/photos/thumbnails/landscape.webp',
             '/assets/photos/medium/landscape.webp',
@@ -106,14 +127,12 @@ describe('images.localPatterns', () => {
             '/assets/photos/thumbnails-avif/landscape.avif',
             '/assets/photos/medium-avif/landscape.avif',
             '/assets/photos/optimized-avif/landscape.avif',
-            '/assets/profile/front.png',
-            '/assets/profile/back.png',
         ]) {
             expect(allows(url), url).toBe(true);
         }
     });
 
-    it('refuses every original, so /_next/image answers 400 for one', () => {
+    it('refuses every original and every other public file, so /_next/image answers 400 for one', () => {
         for (const url of [
             '/assets/photos/series/x.jpg',
             '/assets/photos/landscape.jpg',
@@ -125,6 +144,9 @@ describe('images.localPatterns', () => {
             '/assets/photos/lqip/landscape.txt',
             '/assets/photos/optimized/landscape.webp?v=2',
             '/public/assets/photos/landscape.jpg',
+            // The portraits are static imports, which /_next/image gets from /_next/static/media.
+            '/assets/profile/front.png',
+            '/assets/profile/..%2Fphotos%2Flandscape.jpg',
         ]) {
             expect(allows(url), url).toBe(false);
         }
