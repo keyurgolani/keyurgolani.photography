@@ -148,6 +148,13 @@ export async function readWorkingLayer(root: string): Promise<WorkingLayer> {
     return { site, series, photos, problems };
 }
 
+/** Every authored series, sorted by ID, without reading the photo records. Unusable files are listed in `problems`. */
+export async function readAuthoredSeries(root: string): Promise<{ series: AuthoredSeries[]; problems: RecordProblem[] }> {
+    const problems: RecordProblem[] = [];
+    const series = await loadFolder(authoredPaths(root).seriesDir, 'series', problems);
+    return { series, problems };
+}
+
 /** Read one record, or null when it doesn't exist. Throws when it exists but can't be used. */
 export async function readAuthoredRecord<K extends AuthoredKind>(root: string, kind: K, id: string): Promise<RecordOf<K> | null> {
     if (!isRecordId(kind, id)) return null;
