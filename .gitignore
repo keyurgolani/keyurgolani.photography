@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Host settings for docker-compose.prod.yml, such as PHOTOGRAPHY_IMAGE_TAG
+.env
+
 # Next.js
 .next*/
 out/

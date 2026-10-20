@@ -1,0 +1,254 @@
+name: Release
+
+# A vX.Y.Z tag on a main commit promotes the sha- image that main already
+# published and smoke tested for that commit. Nothing is rebuilt: vX.Y.Z, and
+# latest when it moves, get the same digest as sha-<commit>. See
+# docs/releasing.md.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  actions: read
+  packages: write
+
+defaults:
+  run:
+    shell: bash
+
+# One release at a time. queue: max keeps every waiting release instead of
+# dropping all but the newest.
+concurrency:
+  group: release
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  release:
+    name: Promote release
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      latest: ${{ steps.promote.outputs.latest }}
+      tags: ${{ steps.promote.outputs.tags }}
+      digest: ${{ steps.digest.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      - name: Check the tag
+        id: plan
+        run: node ci/release-plan.mjs
+
+      - name: Check the commit is on main
+        run: |
+          if ! git rev-parse --verify --quiet origin/main >/dev/null; then
+            echo "::error::The checkout has no origin/main to compare against."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_SHA is not on main. Releases come from main only, so tag a main commit whose Publish to GHCR job succeeded."
+            exit 1
+          fi
+          echo "$GITHUB_SHA is on main."
+
+      - name: Wait for the main publish of this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          giving_up="Tag a main commit whose Publish to GHCR job succeeded."
+          started=$SECONDS
+          while :; do
+            if ! run=$(gh run list --workflow publish.yml --commit "$GITHUB_SHA" --event push --limit 1 \
+                --json databaseId,status,url --jq '.[0] // empty' 2>"$RUNNER_TEMP/gh.err"); then
+              echo "::warning::Could not list Publish image runs, trying again: $(tr '\n' ' ' <"$RUNNER_TEMP/gh.err")"
+            elif [ -z "$run" ]; then
+              if [ $((SECONDS - started)) -ge 300 ]; then
+                echo "::error::No Publish image run for $GITHUB_SHA after 5 minutes. A commit that reached main inside a merge never gets its own run. $giving_up"
+                exit 1
+              fi
+              echo "Waiting for a Publish image run for $GITHUB_SHA to start."
+            else
+              run_id=$(jq -r .databaseId <<<"$run")
+              run_status=$(jq -r .status <<<"$run")
+              run_url=$(jq -r .url <<<"$run")
+              if ! job=$(gh run view "$run_id" --json jobs \
+                  --jq '[.jobs[] | select(.name == "Publish to GHCR")] | first // empty' 2>"$RUNNER_TEMP/gh.err"); then
+                echo "::warning::Could not read the jobs of $run_url, trying again: $(tr '\n' ' ' <"$RUNNER_TEMP/gh.err")"
+              else
+                job_status=$(jq -r '.status // empty' <<<"$job")
+                job_conclusion=$(jq -r '.conclusion // empty' <<<"$job")
+                if [ "$job_status" = completed ]; then
+                  if [ "$job_conclusion" = success ]; then
+                    echo "Publish to GHCR succeeded in $run_url"
+                    break
+                  fi
+                  echo "::error::Publish to GHCR finished with ${job_conclusion:-no conclusion} in $run_url. $giving_up"
+                  exit 1
+                fi
+                if [ "$run_status" = completed ]; then
+                  echo "::error::$run_url finished without a Publish to GHCR result. $giving_up"
+                  exit 1
+                fi
+                echo "Waiting for Publish to GHCR in $run_url (run $run_status, job ${job_status:-not started})."
+              fi
+            fi
+            if [ $((SECONDS - started)) -ge $((40 * 60)) ]; then
+              echo "::error::No successful Publish to GHCR job for $GITHUB_SHA within 40 minutes. $giving_up"
+              exit 1
+            fi
+            sleep 30
+          done
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve the published digest
+        id: digest
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          source="$image:sha-${GITHUB_SHA::7}"
+          if ! digest=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$source" | jq -r '.digest // empty'); then
+            echo "::error::Could not read $source."
+            exit 1
+          fi
+          if [[ ! $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Could not resolve the digest of $source."
+            exit 1
+          fi
+          # Seven characters can collide, so make sure this commit built it.
+          if ! revision=$(docker buildx imagetools inspect --format '{{json .Image}}' "$image@$digest" |
+              jq -r '[.. | .Labels? | objects | .["org.opencontainers.image.revision"] // empty] | unique | .[]'); then
+            echo "::error::Could not read the revision label of $image@$digest."
+            exit 1
+          fi
+          if [ "$revision" != "$GITHUB_SHA" ]; then
+            echo "::error::$source was built from ${revision:-an unknown commit}, not $GITHUB_SHA."
+            exit 1
+          fi
+          echo "$source is $digest, built from $GITHUB_SHA"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Check the version is not taken
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          target="ghcr.io/${GITHUB_REPOSITORY,,}:$VERSION"
+          if manifest=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$target" 2>"$RUNNER_TEMP/inspect.err"); then
+            existing=$(jq -r '.digest // empty' <<<"$manifest")
+            if [ "$existing" != "$DIGEST" ]; then
+              echo "::error::$target already exists with digest ${existing:-unknown}, not $DIGEST. A release version is never reused."
+              exit 1
+            fi
+            echo "$target already points at $DIGEST, so this is a re-run."
+          elif grep -qiE 'not found|manifest unknown|no such manifest' "$RUNNER_TEMP/inspect.err"; then
+            echo "$target does not exist yet."
+          else
+            cat "$RUNNER_TEMP/inspect.err"
+            echo "::error::Could not check whether $target exists."
+            exit 1
+          fi
+
+      - name: Promote the image
+        id: promote
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          # Decide latest from the tags on origin right now. A higher release
+          # may have been tagged, or a tag deleted, since this run started.
+          if ! remote=$(git ls-remote --tags --refs origin 'refs/tags/v*'); then
+            echo "::error::Could not list the release tags on origin."
+            exit 1
+          fi
+          if ! latest=$(node --input-type=module -e '
+                import { readFileSync } from "node:fs";
+                import { isHighestRelease } from "./ci/release-plan.mjs";
+                const tags = readFileSync(0, "utf8").split("\n")
+                  .map((line) => line.split("refs/tags/")[1])
+                  .filter(Boolean);
+                console.log(isHighestRelease(process.env.VERSION, tags));
+              ' <<<"$remote"); then
+            echo "::error::Could not decide whether latest moves."
+            exit 1
+          fi
+
+          tags=("$VERSION")
+          if [ "$latest" = true ]; then
+            tags+=(latest)
+            echo "$VERSION is the highest release tag on origin, so latest moves to it."
+          else
+            echo "A release tag higher than $VERSION is on origin, so latest stays where it is."
+          fi
+
+          args=()
+          for tag in "${tags[@]}"; do
+            args+=(--tag "$image:$tag")
+          done
+          docker buildx imagetools create --prefer-index=false "${args[@]}" "$image@$DIGEST"
+
+          for tag in "${tags[@]}"; do
+            if ! got=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$image:$tag" | jq -r '.digest // empty'); then
+              echo "::error::Could not read $image:$tag back."
+              exit 1
+            fi
+            if [ "$got" != "$DIGEST" ]; then
+              echo "::error::$image:$tag has digest ${got:-none}, expected $DIGEST."
+              exit 1
+            fi
+            echo "$image:$tag is $DIGEST"
+          done
+
+          {
+            echo "latest=$latest"
+            echo "tags=${tags[*]}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Write the job summary
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          LATEST: ${{ steps.promote.outputs.latest }}
+          DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          if [ "$LATEST" = true ]; then
+            moved="yes"
+          else
+            moved="no, a higher release tag exists"
+          fi
+          {
+            echo "### Released \`$VERSION\`"
+            echo
+            echo "- Image: \`ghcr.io/${GITHUB_REPOSITORY,,}:$VERSION\`"
+            echo "- Digest: \`$DIGEST\`, the same as \`sha-${GITHUB_SHA::7}\`"
+            echo "- \`latest\` moved: $moved"
+            echo
+            echo "To deploy it, set this in the host's \`.env\`:"
+            echo
+            echo '```'
+            echo "PHOTOGRAPHY_IMAGE_TAG=$VERSION"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  mirror:
+    needs: release
+    uses: ./.github/workflows/mirror-dockerhub.yml
+    with:
+      digest: ${{ needs.release.outputs.digest }}
+      tags: ${{ needs.release.outputs.tags }}
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: read

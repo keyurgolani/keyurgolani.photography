@@ -1,0 +1,116 @@
+name: Mirror to Docker Hub
+
+# Copies a published GHCR image to Docker Hub by digest, so both registries
+# serve the same bytes. Called by publish.yml and release.yml. Without Docker
+# Hub secrets it warns and succeeds, and a Docker Hub failure fails only this
+# job, never the GHCR publish or a release.
+on:
+  workflow_call:
+    inputs:
+      digest:
+        description: Digest of the GHCR image to copy, such as sha256:...
+        required: true
+        type: string
+      tags:
+        description: Space-separated Docker Hub tags to write, such as "v1.1.0 latest".
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  DOCKERHUB_IMAGE: docker.io/keyurgolani/keyurgolani.photography
+
+jobs:
+  mirror:
+    name: Mirror to Docker Hub
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check for Docker Hub secrets
+        id: secrets
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::warning::Docker Hub secrets are not set. Skipping the mirror."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.secrets.outputs.present == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - if: steps.secrets.outputs.present == 'true'
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - if: steps.secrets.outputs.present == 'true'
+        name: Copy the image by digest
+        env:
+          DIGEST: ${{ inputs.digest }}
+          TAGS: ${{ inputs.tags }}
+        run: |
+          if [[ ! $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::'$DIGEST' is not an image digest."
+            exit 1
+          fi
+          read -r -a requested <<<"$TAGS"
+          if [ "${#requested[@]}" -eq 0 ]; then
+            echo "::error::No tags to write."
+            exit 1
+          fi
+
+          source_image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          tags=()
+          for tag in "${requested[@]}"; do
+            # Re-running an old release's mirror must not move Docker Hub
+            # latest back, so follow GHCR latest.
+            if [ "$tag" = latest ]; then
+              if ! ghcr_latest=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$source_image:latest" | jq -r '.digest // empty'); then
+                echo "::error::Could not read $source_image:latest."
+                exit 1
+              fi
+              if [ "$ghcr_latest" != "$DIGEST" ]; then
+                echo "::warning::GHCR latest is ${ghcr_latest:-missing}, not $DIGEST, so Docker Hub latest stays where it is."
+                continue
+              fi
+            fi
+            tags+=("$tag")
+          done
+          if [ "${#tags[@]}" -eq 0 ]; then
+            echo "Nothing left to mirror."
+            exit 0
+          fi
+
+          args=()
+          for tag in "${tags[@]}"; do
+            args+=(--tag "$DOCKERHUB_IMAGE:$tag")
+          done
+          docker buildx imagetools create --prefer-index=false "${args[@]}" "$source_image@$DIGEST"
+
+          for tag in "${tags[@]}"; do
+            if ! got=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$DOCKERHUB_IMAGE:$tag" | jq -r '.digest // empty'); then
+              echo "::error::Could not read $DOCKERHUB_IMAGE:$tag back."
+              exit 1
+            fi
+            if [ "$got" != "$DIGEST" ]; then
+              echo "::error::$DOCKERHUB_IMAGE:$tag has digest ${got:-none}, expected $DIGEST."
+              exit 1
+            fi
+            echo "$DOCKERHUB_IMAGE:$tag is $DIGEST"
+          done

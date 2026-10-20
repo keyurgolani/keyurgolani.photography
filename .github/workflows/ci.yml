@@ -1,0 +1,150 @@
+name: CI
+
+# The pull request gate. publish.yml calls this same workflow on every main
+# push, so an image is only published after these jobs pass in that run.
+# No paths filters: a required check that never runs blocks the merge.
+on:
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+# In a called workflow github.event_name is the caller's (push), so main runs
+# get a group of their own and only pull requests cancel superseded runs.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-run-{0}', github.run_id) }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Lint, unit tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Check the Dockerfile matches .nvmrc
+        run: |
+          node_major=$(cat .nvmrc)
+          if [[ ! $node_major =~ ^[0-9]+$ ]]; then
+            echo "::error file=.nvmrc::.nvmrc must hold a bare Node major such as 20, not '$node_major'."
+            exit 1
+          fi
+          if ! grep -Eq "^FROM node:${node_major}-" Dockerfile; then
+            echo "::error file=Dockerfile::The Dockerfile must build FROM node:${node_major}-*, the Node major in .nvmrc."
+            exit 1
+          fi
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test -- --run
+      - run: npm run build
+
+  e2e:
+    name: Browser tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      # Passes with a notice until package.json has a test:e2e script.
+      - name: Check for the e2e harness
+        id: harness
+        run: |
+          present=$(jq -r '.scripts["test:e2e"] != null' package.json)
+          echo "present=$present" >> "$GITHUB_OUTPUT"
+          if [ "$present" != true ]; then
+            echo "::notice::No test:e2e script yet."
+          fi
+
+      - if: steps.harness.outputs.present == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - if: steps.harness.outputs.present == 'true'
+        run: npm ci
+
+      - if: steps.harness.outputs.present == 'true'
+        run: npx playwright install --with-deps chromium
+
+      - if: steps.harness.outputs.present == 'true'
+        run: npm run test:e2e
+
+      - if: failure() && steps.harness.outputs.present == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+
+  image:
+    name: Image smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check docker-compose.prod.yml
+        run: ci/check-compose.sh
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build the image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          push: false
+          tags: ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke
+          cache-from: type=gha
+          # A failed cache export never fails the job. Publish to GHCR smoke
+          # tests the digest it pushes, so main doesn't depend on this cache.
+          cache-to: type=gha,mode=max,ignore-error=true
+
+      - name: Smoke test the image
+        run: ci/smoke-image.sh ci-smoke
+
+  # The one required check. always() matters: without it a failed job skips
+  # this one, and GitHub counts a skipped required check as passing. The
+  # ruleset requires "CI result" by name, so a rename changes the ruleset in
+  # the same PR. A new job joins `needs` here and is checked automatically.
+  result:
+    name: CI result
+    if: always()
+    needs: [verify, e2e, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every job to succeed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          results=$(jq -r 'to_entries[] | "\(.key) \(.value.result)"' <<<"$NEEDS")
+          if [ -z "$results" ]; then
+            echo "::error::No job results to check."
+            exit 1
+          fi
+          failed=0
+          while read -r job result; do
+            echo "$job: $result"
+            if [ "$result" != success ]; then
+              echo "::error::$job finished with $result."
+              failed=1
+            fi
+          done <<<"$results"
+          exit "$failed"
