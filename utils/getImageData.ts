@@ -3,6 +3,7 @@ import path from 'path';
 import sharp from 'sharp';
 import exifFromBuffer from 'exif-reader';
 import {
+    baseNameOf,
     encodeLqip,
     ensureDirectories,
     getImagePaths,
@@ -51,6 +52,22 @@ async function placeholderFor(filePath: string): Promise<string> {
     }
 }
 
+/**
+ * Sources sharing a base name, such as IMG_1.jpg and IMG_1.png, share one set
+ * of legacy derivatives, so only the first by path is listed and the others
+ * are logged. The migration dry run's "Basename collisions" section lists them.
+ */
+function onePerBaseName(files: string[]): string[] {
+    const kept = new Map<string, string>();
+    for (const file of [...files].sort()) {
+        const base = baseNameOf(file);
+        const first = kept.get(base);
+        if (first === undefined) kept.set(base, file);
+        else console.warn(`[getGalleryImages] Skipping ${file}: it shares its derivatives with ${first}.`);
+    }
+    return [...kept.values()];
+}
+
 export async function getGalleryImages(): Promise<ImageItem[]> {
     const paths = libraryPaths();
     const photosDir = paths.root;
@@ -70,7 +87,7 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
     }
 
     // The same source list the watcher and images:cleanup use, so dot-files never count
-    const files = getPhotoFiles(photosDir);
+    const files = onePerBaseName(getPhotoFiles(photosDir));
     // Each derivative folder read once, so a set counts only under its exact name
     const derivatives = readDerivativeIndex(paths);
 

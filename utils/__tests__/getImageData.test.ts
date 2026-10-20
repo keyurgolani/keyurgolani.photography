@@ -84,6 +84,17 @@ describe('getGalleryImages', () => {
         expect(height).toBeGreaterThan(width);
     });
 
+    it('lists sources that share derivatives once, by the first path, and warns naming both', async () => {
+        // landscape.png would get landscape.jpg's derivatives, since both have the base name landscape.
+        fs.copyFileSync(lib.file('portrait.png'), lib.file('landscape.png'));
+        const warnings = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const images = await getGalleryImages();
+
+        expect(bases(images)).toEqual([...DECODABLE].sort());
+        expect(images.find((image) => image.src === '/assets/photos/optimized/landscape.webp')).toMatchObject({ width: 960, height: 640 });
+        expect(warnings).toHaveBeenCalledWith('[getGalleryImages] Skipping landscape.png: it shares its derivatives with landscape.jpg.');
+    });
+
     it('logs an undecodable source, leaves it out, and still returns the others', async () => {
         // A macOS AppleDouble file next to a photo is not a photo
         fs.writeFileSync(lib.file('._landscape.jpg'), 'AppleDouble metadata');
