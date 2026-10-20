@@ -55,6 +55,11 @@ jobs:
     name: Browser tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Temporary: checks that GitHub accepts concurrency queue: max.
+    concurrency:
+      group: queue-probe-${{ github.run_id }}
+      cancel-in-progress: false
+      queue: max
     steps:
       - uses: actions/checkout@v7
 
