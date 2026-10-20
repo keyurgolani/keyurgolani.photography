@@ -56,6 +56,20 @@ export function dataRoot(): string | null {
     return path.join(process.cwd(), 'portfolio-data');
 }
 
+/**
+ * The library or public/ folder `target` resolves inside, or null. Identity
+ * state and migration reports name library paths, and the registry holds
+ * curator-only facts such as GPS, so none of them may sit where Next serves
+ * files or where the library scan would walk into them.
+ */
+export function servedFolderContaining(target: string): string | null {
+    const realTarget = realpathLoose(target);
+    for (const served of [libraryRoot(), path.join(process.cwd(), 'public')]) {
+        if (isInside(realTarget, realpathLoose(served))) return served;
+    }
+    return null;
+}
+
 function canAccess(target: string, mode: number): boolean {
     try {
         fs.accessSync(target, mode);
@@ -119,14 +133,8 @@ export function dataRootStatus({ write = false }: { write?: boolean } = {}): Dat
     }
     if (!stat.isDirectory()) return { state: 'unavailable', root, cause: 'not-a-directory', detail: 'it is not a directory' };
 
-    // Identity state includes curator-only facts such as GPS, so it must never sit where Next serves
-    // files, and the library scan must never walk into it.
-    const realRoot = realpathLoose(root);
-    for (const served of [libraryRoot(), path.join(process.cwd(), 'public')]) {
-        if (isInside(realRoot, realpathLoose(served))) {
-            return { state: 'unavailable', root, cause: 'inside-served-folder', detail: `it is inside ${served}` };
-        }
-    }
+    const served = servedFolderContaining(root);
+    if (served !== null) return { state: 'unavailable', root, cause: 'inside-served-folder', detail: `it is inside ${served}` };
 
     if (!canAccess(root, fs.constants.R_OK | fs.constants.X_OK)) {
         return { state: 'unavailable', root, cause: 'not-readable', detail: 'it is not readable' };

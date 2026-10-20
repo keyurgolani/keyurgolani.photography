@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteFile, atomicWriteJson } from '../storage/atomicWrite';
-import { dataRootStatus, libraryRoot, type DataRootState } from '../storage/config';
+import { dataRootStatus, libraryRoot, servedFolderContaining, type DataRootState } from '../storage/config';
 import { PRIVATE_DIR_MODE } from '../storage/fsx';
 import { observeLibrary, withReportedFailures, type ObservedLibrary, type PassDeps } from './pass';
 import { currentProfileId } from './profile';
@@ -242,6 +242,10 @@ export async function migrateDryRun(options: DryRunOptions = {}): Promise<DryRun
         throw new DryRunRefusedError(`--out <dir> is required because the data root is ${status.state}${status.detail ? ` (${status.detail})` : ''}.`, 2);
     }
     const outDir = options.outDir ? path.resolve(options.outDir) : identityPaths(status.root as string).migration;
+    const served = options.outDir ? servedFolderContaining(outDir) : null;
+    if (served !== null) {
+        throw new DryRunRefusedError(`--out ${outDir} is inside ${served}, and the report names every library path. Choose a folder outside it.`, 2);
+    }
 
     // Read any registry that exists, even beside a missing data-root.json, so its IDs are kept, not re-minted.
     const unreadable = status.root === null || status.cause === 'missing' || status.cause === 'not-a-directory' || status.cause === 'not-readable';

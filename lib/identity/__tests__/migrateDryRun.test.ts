@@ -174,6 +174,27 @@ describe('photos:migrate --dry-run', () => {
         expect(data.files()).toEqual(['data-root.json']);
     });
 
+    it('refuses an --out inside the library or public/, and writes nothing', async () => {
+        const lib = await library({ 'landscape.jpg': fixture('landscape.jpg') });
+        dataRoot('missing');
+        const libraryBefore = tree(lib.root);
+        for (const out of [lib.file('reports'), lib.root]) {
+            const error = await migrateDryRun(options({ outDir: out })).catch((caught: unknown) => caught);
+            expect(error).toBeInstanceOf(DryRunRefusedError);
+            expect(error).toMatchObject({ exitCode: 2, message: expect.stringContaining(`is inside ${lib.root}`) });
+        }
+        expect(tree(lib.root)).toEqual(libraryBefore);
+
+        // public/ under a temp working directory, so the repository's own public/ is never touched.
+        const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'photography-cwd-'));
+        cleanups.push(() => fs.promises.rm(cwd, { recursive: true, force: true }));
+        const spy = vi.spyOn(process, 'cwd').mockReturnValue(cwd);
+        cleanups.push(async () => spy.mockRestore());
+        const error = await migrateDryRun(options({ outDir: path.join(cwd, 'public', 'reports') })).catch((caught: unknown) => caught);
+        expect(error).toMatchObject({ name: 'DryRunRefusedError', exitCode: 2, message: expect.stringContaining(`is inside ${path.join(cwd, 'public')}`) });
+        expect(fs.readdirSync(cwd)).toEqual([]);
+    });
+
     it('refuses, even with --out, a data root or registry written by a newer build', async () => {
         await library({ 'landscape.jpg': fixture('landscape.jpg') });
         const data = dataRoot();
