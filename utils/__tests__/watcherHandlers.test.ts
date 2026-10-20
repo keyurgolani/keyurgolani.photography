@@ -7,12 +7,12 @@ import type { FSWatcherEventMap } from 'chokidar';
 import sharp, { type Sharp } from 'sharp';
 import { dominantChannel, fixtureFiles, type Channel } from '../../test/fixtures/makeLibrary';
 import { createTempLibrary, derivativePaths, type TempLibrary } from '../../test/helpers/tempLibrary';
-import { filesToProcess, isMarkedStale, processImage } from '../imageOptimizer';
+import { baseNameOf, processImage } from '../imageOptimizer';
 import {
     attachWatcher,
     createIgnoreFilter,
     createWatcherHandlers,
-    jobKey,
+    drainOrReport,
     processOnce,
     type WatcherHandlers,
 } from '../watcherHandlers';
@@ -84,11 +84,19 @@ let green: Buffer; // a third version
 let lib: TempLibrary;
 let logs: string[];
 let handlers: WatcherHandlers;
+const handlerSets: WatcherHandlers[] = [];
 
 const logger = {
     log: (...args: unknown[]) => { logs.push(args.map(String).join(' ')); },
     error: (...args: unknown[]) => { logs.push(args.map(String).join(' ')); },
 };
+
+/** A handler set that afterEach waits on, so no job outlives its test. */
+function newHandlers(options: { maxConcurrentJobs?: number } = {}): WatcherHandlers {
+    const created = createWatcherHandlers({ logger, ...options });
+    handlerSets.push(created);
+    return created;
+}
 
 beforeAll(async () => {
     edited = (await fixtureFiles({ extras: true })).get('landscape-edited.jpg') as Buffer;
@@ -102,13 +110,13 @@ beforeEach(async () => {
     logs = [];
     gate.reset();
     // Several jobs may run at once here, so only the per-basename ordering keeps one source's jobs in turn
-    handlers = createWatcherHandlers({ logger, maxConcurrentJobs: 4 });
+    handlers = newHandlers({ maxConcurrentJobs: 4 });
 });
 
 afterEach(async () => {
     gate.reset();
     vi.restoreAllMocks();
-    await handlers.idle();
+    await Promise.all(handlerSets.splice(0).map((set) => set.idle()));
     await lib.cleanup();
 });
 
@@ -123,33 +131,39 @@ async function outputChannels(base: string): Promise<Channel[]> {
 /** Give a job that isn't ordered behind the held one a chance to run before the test looks. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 750));
 
-/** Records the order jobs read their sources in, which is the order they start. */
+/** Records the order jobs open their sources in, which is the order they start encoding. */
 function recordSourceReads(): string[] {
     const reads: string[] = [];
-    const realReadFile = fs.promises.readFile.bind(fs.promises);
-    vi.spyOn(fs.promises, 'readFile').mockImplementation(((...args: Parameters<typeof fs.promises.readFile>) => {
-        reads.push(path.basename(String(args[0])));
-        return realReadFile(...args);
-    }) as typeof fs.promises.readFile);
+    const realOpen = fs.promises.open.bind(fs.promises);
+    vi.spyOn(fs.promises, 'open').mockImplementation(((...args: Parameters<typeof fs.promises.open>) => {
+        if (args[1] === 'r') reads.push(path.basename(String(args[0])));
+        return realOpen(...args);
+    }) as typeof fs.promises.open);
     return reads;
 }
 
+function setMtime(relativePath: string, mtimeMs: number): void {
+    const time = new Date(mtimeMs);
+    fs.utimesSync(lib.file(relativePath), time, time);
+}
+
 describe('watcher handlers', { timeout: 60_000 }, () => {
-    it('onUnlink deletes nothing, marks the set stale, and points at images:cleanup', async () => {
+    it('onUnlink deletes nothing, leaves the set as it was, and points at images:cleanup', async () => {
         await handlers.onAdd(lib.file('landscape.jpg'));
         const before = lib.hashes(LANDSCAPE);
+        const thumbnail = fs.statSync(lib.file('thumbnails/landscape.webp'));
         expect(Object.keys(before)).toHaveLength(7);
 
         fs.unlinkSync(lib.file('landscape.jpg'));
         await handlers.onUnlink(lib.file('landscape.jpg'));
 
         expect(lib.hashes(LANDSCAPE)).toEqual(before);
-        expect(fs.statSync(lib.file('thumbnails/landscape.webp')).mtimeMs).toBe(0);
+        expect(fs.statSync(lib.file('thumbnails/landscape.webp')).mtimeMs).toBe(thumbnail.mtimeMs);
         expect(fs.readdirSync(lib.root).filter((name) => name.includes('.')).sort()).toEqual(['portrait.png', 'square.webp']);
         expect(logs).toContain('[ImageWatcher] Source removed: landscape.jpg. Derivatives kept. See npm run images:cleanup.');
     });
 
-    it('regenerates at the next start when a different, older file replaces one deleted while running', async () => {
+    it('keeps the old set for a different, older file under a deleted name until it is touched', async () => {
         await handlers.onAdd(lib.file('landscape.jpg'));
         fs.unlinkSync(lib.file('landscape.jpg'));
         await handlers.onUnlink(lib.file('landscape.jpg'));
@@ -157,12 +171,17 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
 
         // While the watcher is stopped, a different photo arrives under the same name, dated long ago
         fs.writeFileSync(lib.file('landscape.jpg'), edited);
-        const old = new Date('2001-01-01T00:00:00Z');
-        fs.utimesSync(lib.file('landscape.jpg'), old, old);
+        setMtime('landscape.jpg', Date.parse('2001-01-01T00:00:00Z'));
 
-        const result = await createWatcherHandlers({ logger }).queueStartupBatch();
-        expect(result.errors).toEqual([]);
-        expect(result.processed.sort()).toEqual(['landscape.jpg', 'portrait.png', 'square.webp']);
+        const result = await newHandlers().queueStartupBatch();
+        expect(result).toMatchObject({ skipped: [], errors: [] });
+        expect(result.processed.sort()).toEqual(['portrait.png', 'square.webp']);
+        expect(await outputChannels('landscape')).toEqual(Array(7).fill('red'));
+
+        // The accepted risk, and its fix: touch the file
+        const now = new Date();
+        fs.utimesSync(lib.file('landscape.jpg'), now, now);
+        expect(await newHandlers().queueStartupBatch()).toEqual({ processed: ['landscape.jpg'], skipped: [], errors: [] });
         expect(await outputChannels('landscape')).toEqual(Array(7).fill('blue'));
     });
 
@@ -178,23 +197,40 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
         expect(lib.hashes(LANDSCAPE)).toEqual(before);
     });
 
-    it('onAdd after an unlink regenerates stale outputs from the new bytes', async () => {
+    it('onAdd of an unchanged file that a sync tool removed and copied back regenerates nothing', async () => {
+        await handlers.onAdd(lib.file('landscape.jpg'));
+        const thumbnail = fs.statSync(lib.file('thumbnails/landscape.webp'));
+        const original = fs.readFileSync(lib.file('landscape.jpg'));
+        const { mtime } = fs.statSync(lib.file('landscape.jpg'));
+
+        fs.unlinkSync(lib.file('landscape.jpg'));
+        await handlers.onUnlink(lib.file('landscape.jpg'));
+        fs.writeFileSync(lib.file('landscape.jpg'), original);
+        fs.utimesSync(lib.file('landscape.jpg'), mtime, mtime);
+        const reads = recordSourceReads();
+        await handlers.onAdd(lib.file('landscape.jpg'));
+
+        expect(reads).toEqual([]);
+        expect(fs.statSync(lib.file('thumbnails/landscape.webp')).ino).toBe(thumbnail.ino);
+        expect(logs).toContain('[ImageWatcher] Already up to date: landscape.jpg');
+    });
+
+    it('onAdd regenerates a file copied back in that is newer than its set', async () => {
         await handlers.onAdd(lib.file('landscape.jpg'));
         expect(await outputChannels('landscape')).toEqual(Array(7).fill('red'));
 
-        // Delete, then copy a re-export back in with an old mtime, as `cp -p` would
         fs.unlinkSync(lib.file('landscape.jpg'));
         await handlers.onUnlink(lib.file('landscape.jpg'));
+        setMtime('thumbnails/landscape.webp', Date.now() - 60 * 60 * 1000);
         fs.writeFileSync(lib.file('landscape.jpg'), edited);
-        const old = new Date('2001-01-01T00:00:00Z');
-        fs.utimesSync(lib.file('landscape.jpg'), old, old);
         await handlers.onAdd(lib.file('landscape.jpg'));
 
         expect(await outputChannels('landscape')).toEqual(Array(7).fill('blue'));
+        expect(logs).toContain('[ImageWatcher] Processed: landscape.jpg');
         expect(lib.tempFiles()).toEqual([]);
     });
 
-    it('onChange after a save-by-rename regenerates stale outputs from the new bytes', async () => {
+    it('onChange after a save-by-rename regenerates the outputs from the new bytes', async () => {
         await handlers.onAdd(lib.file('landscape.jpg'));
 
         fs.writeFileSync(lib.file('.landscape.jpg.saving'), edited);
@@ -247,26 +283,12 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
         expect(await outputChannels('landscape')).toEqual(Array(7).fill('blue'));
     });
 
-    it('marks a queued change stale right away, so a restart redoes it if the job never runs', async () => {
-        handlers = createWatcherHandlers({ logger });
-        await processImage('landscape.jpg');
-        // A replacement with an older mtime, so only the mark tells a restart to redo it
-        fs.writeFileSync(lib.file('landscape.jpg'), edited);
-        const old = new Date('2001-01-01T00:00:00Z');
-        fs.utimesSync(lib.file('landscape.jpg'), old, old);
+    it('skips a job whose source is gone before it starts, without an error', async () => {
+        fs.unlinkSync(lib.file('landscape.jpg'));
+        await handlers.onChange(lib.file('landscape.jpg'));
 
-        const held = gate.arm();
-        const busy = handlers.onAdd(lib.file('portrait.png'));
-        await held.reached; // The one job slot is busy, so the change waits in the queue
-        const change = handlers.onChange(lib.file('landscape.jpg'));
-
-        expect(isMarkedStale('landscape.jpg')).toBe(true);
-        expect(filesToProcess()).toContain('landscape.jpg');
-
-        held.release();
-        await Promise.all([busy, change]);
-        expect(isMarkedStale('landscape.jpg')).toBe(false);
-        expect(await outputChannels('landscape')).toEqual(Array(7).fill('blue'));
+        expect(logs).toContain('[ImageWatcher] Skipped landscape.jpg: it changed or was removed while it was processed.');
+        expect(logs.some((line) => line.startsWith('[ImageWatcher] Error processing'))).toBe(false);
     });
 
     it('logs a failed job and still runs the next one for that basename', async () => {
@@ -282,15 +304,15 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
     });
 
     it('runs one job at a time by default, so a burst of new files is bounded', async () => {
-        handlers = createWatcherHandlers({ logger });
-        await Promise.all(['landscape.jpg', 'portrait.png', 'square.webp'].map((name) => handlers.onAdd(lib.file(name))));
+        handlers = newHandlers();
+        await Promise.all(BASIC.map((name) => handlers.onAdd(lib.file(name))));
 
         expect(gate.maxInFlight).toBe(1);
         expect(Object.keys(lib.hashes(['landscape', 'portrait', 'square'].flatMap(derivativePaths)))).toHaveLength(21);
     });
 
     it('runs a live event ahead of the queued startup backlog', async () => {
-        handlers = createWatcherHandlers({ logger });
+        handlers = newHandlers();
         const reads = recordSourceReads();
         const held = gate.arm();
         const startup = handlers.queueStartupBatch();
@@ -305,8 +327,8 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
         expect(reads[1]).toBe('added.jpg');
     });
 
-    it('a live event drops the queued startup job for the same photo, so it is encoded once', async () => {
-        handlers = createWatcherHandlers({ logger });
+    it('a live change drops the queued startup job for the same photo, so it is encoded once', async () => {
+        handlers = newHandlers();
         const reads = recordSourceReads();
         const held = gate.arm();
         const startup = handlers.queueStartupBatch();
@@ -321,11 +343,30 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
         expect(result.skipped).toEqual([waiting[0]]);
         expect(result.processed.sort()).toEqual([reads[0], waiting[1]].sort());
         expect(reads.filter((name) => name === waiting[0])).toHaveLength(1);
-        expect(Object.keys(lib.hashes(BASIC.map(jobKey).flatMap(derivativePaths)))).toHaveLength(21);
+        expect(Object.keys(lib.hashes(BASIC.map(baseNameOf).flatMap(derivativePaths)))).toHaveLength(21);
+    });
+
+    it('a live add keeps the queued startup job, which may regenerate, and encodes nothing twice', async () => {
+        handlers = newHandlers();
+        const reads = recordSourceReads();
+        const held = gate.arm();
+        const startup = handlers.queueStartupBatch();
+        await held.reached;
+        const waiting = BASIC.filter((name) => name !== reads[0]);
+
+        const added = handlers.onAdd(lib.file(waiting[0]));
+        held.release();
+        const result = await startup;
+        await added;
+
+        expect(result).toMatchObject({ skipped: [], errors: [] });
+        expect(result.processed.sort()).toEqual([...BASIC].sort());
+        expect(reads.filter((name) => name === waiting[0])).toHaveLength(1);
+        expect(logs).toContain(`[ImageWatcher] Already up to date: ${waiting[0]}`);
     });
 
     it('stop() drops queued startup jobs as skipped and still runs queued live ones', async () => {
-        handlers = createWatcherHandlers({ logger });
+        handlers = newHandlers();
         const reads = recordSourceReads();
         const held = gate.arm();
         const startup = handlers.queueStartupBatch();
@@ -343,11 +384,11 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
         await added;
         expect(await handlers.drain(30_000)).toBe(true);
         expect(Object.keys(lib.hashes(derivativePaths('added')))).toHaveLength(7);
-        for (const name of result.skipped) expect(lib.hashes(derivativePaths(jobKey(name))), name).toEqual({});
+        for (const name of result.skipped) expect(lib.hashes(derivativePaths(baseNameOf(name))), name).toEqual({});
     });
 
     it('stop() ignores new events and drain() waits for queued jobs, within its bound', async () => {
-        handlers = createWatcherHandlers({ logger });
+        handlers = newHandlers();
         const held = gate.arm();
         const running = handlers.onAdd(lib.file('landscape.jpg'));
         await held.reached;
@@ -361,6 +402,24 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
         await running;
         expect(Object.keys(lib.hashes(LANDSCAPE))).toHaveLength(7);
         expect(lib.hashes(derivativePaths('portrait'))).toEqual({});
+    });
+
+    it('names the photos still unfinished when the drain gives up', async () => {
+        handlers = newHandlers();
+        const held = gate.arm();
+        const running = handlers.onChange(lib.file('landscape.jpg'));
+        await held.reached;
+        const queued = handlers.onChange(lib.file('portrait.png'));
+        handlers.stop();
+
+        expect(await drainOrReport(handlers, 50, logger)).toBe(false);
+        expect(logs).toContain(
+            '[ImageWatcher] Jobs still running after 0.05s. Exiting anyway. Not finished: landscape.jpg, portrait.png. ' +
+            'Touch them, or run --once --force, to process them.',
+        );
+
+        held.release();
+        await Promise.all([running, queued]);
     });
 
     it('ignores files that are not photos, including dot-files', async () => {
@@ -413,13 +472,21 @@ describe('attachWatcher', { timeout: 60_000 }, () => {
         watcher.emit('unlinkDir', lib.root);
         expect(onRootRemoved).toHaveBeenCalledTimes(1);
     });
-});
 
-describe('jobKey', () => {
-    it('keys a.jpg and a.png to one queue position, since they share outputs', () => {
-        expect(jobKey('a.jpg')).toBe('a');
-        expect(jobKey('a.png')).toBe('a');
-        expect(jobKey('my.photo.webp')).toBe('my.photo');
+    it('routes add, change, and unlink to their handlers', () => {
+        const watcher = new EventEmitter<FSWatcherEventMap>();
+        const onAdd = vi.spyOn(handlers, 'onAdd').mockResolvedValue(undefined);
+        const onChange = vi.spyOn(handlers, 'onChange').mockResolvedValue(undefined);
+        const onUnlink = vi.spyOn(handlers, 'onUnlink').mockResolvedValue(undefined);
+        attachWatcher(watcher, handlers, { root: lib.root, logger, onRootRemoved: () => undefined });
+
+        watcher.emit('add', lib.file('a.jpg'));
+        watcher.emit('change', lib.file('b.jpg'));
+        watcher.emit('unlink', lib.file('c.jpg'));
+
+        expect(onAdd.mock.calls).toEqual([[lib.file('a.jpg')]]);
+        expect(onChange.mock.calls).toEqual([[lib.file('b.jpg')]]);
+        expect(onUnlink.mock.calls).toEqual([[lib.file('c.jpg')]]);
     });
 });
 

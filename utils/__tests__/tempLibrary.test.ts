@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { assertOutsidePublic, createTempLibrary, setLibraryDir } from '../../test/helpers/tempLibrary';
 
 const PUBLIC_DIR = fileURLToPath(new URL('../../public', import.meta.url));
@@ -38,5 +38,23 @@ describe('tempLibrary', () => {
         await lib.cleanup();
         expect(process.env.PHOTOGRAPHY_LIBRARY_DIR).toBe(before);
         expect(fs.existsSync(lib.root)).toBe(false);
+    });
+
+    it('keeps PHOTOGRAPHY_LIBRARY_DIR on the temp root until the delete is done', async () => {
+        const lib = await createTempLibrary();
+        const seen: (string | undefined)[] = [];
+        const realRm = fs.promises.rm.bind(fs.promises);
+        const rm = vi.spyOn(fs.promises, 'rm').mockImplementation(async (...args: Parameters<typeof fs.promises.rm>) => {
+            seen.push(process.env.PHOTOGRAPHY_LIBRARY_DIR);
+            return realRm(...args);
+        });
+
+        try {
+            await lib.cleanup();
+        } finally {
+            rm.mockRestore();
+        }
+
+        expect(seen).toEqual([lib.root]);
     });
 });

@@ -2,10 +2,11 @@ import type { EventEmitter } from 'events';
 import path from 'path';
 import type { FSWatcherEventMap } from 'chokidar';
 import {
+    baseNameOf,
     filesToProcess,
     generatedFolderNames,
+    hasErrorCode,
     isSourceFile,
-    markStale,
     refreshImage,
     reprocessImage,
     SOURCE_CHANGED,
@@ -15,20 +16,21 @@ type Logger = Pick<Console, 'log' | 'error'>;
 
 export interface StartupBatchResult {
     processed: string[];
-    /** Changed or removed while processed, superseded by a live event, or dropped by stop() */
+    /** Changed or removed while processed, superseded by a live change, or dropped by stop() */
     skipped: string[];
     errors: string[];
 }
 
 export interface WatcherHandlers {
-    /** Regenerate all seven outputs for a new source, including one re-added after an unlink. */
+    /**
+     * Regenerate a new source's outputs when its set is incomplete or older than
+     * it, the same rule as the startup batch, so an unchanged file a sync tool
+     * removed and copied back costs nothing.
+     */
     onAdd(filePath: string): Promise<void>;
     /** Regenerate all seven outputs for a changed source, including a save-by-rename. */
     onChange(filePath: string): Promise<void>;
-    /**
-     * Keep the derivatives, but mark them stale, so a different file that later
-     * arrives under the same name is regenerated whatever its mtime.
-     */
+    /** Keep the derivatives, and point at images:cleanup. */
     onUnlink(filePath: string): Promise<void>;
     /** Queue every unprocessed source, using the overwrite rule in refreshImage(). */
     queueStartupBatch(options?: { force?: boolean }): Promise<StartupBatchResult>;
@@ -41,11 +43,8 @@ export interface WatcherHandlers {
     idle(): Promise<void>;
     /** Wait up to `timeoutMs` for queued jobs. Resolves false if some were still running. */
     drain(timeoutMs: number): Promise<boolean>;
-}
-
-/** `a.jpg` and `a.png` write the same outputs, so jobs are keyed by basename without extension. */
-export function jobKey(filename: string): string {
-    return path.basename(filename, path.extname(filename));
+    /** The photos with a job running or queued. */
+    unfinished(): string[];
 }
 
 /**
@@ -76,10 +75,6 @@ interface Job {
     settle: (outcome: Outcome) => void;
 }
 
-function hasCode(error: unknown, code: string): boolean {
-    return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === code;
-}
-
 export function createWatcherHandlers(
     { logger = console, maxConcurrentJobs = 1 }: { logger?: Logger; maxConcurrentJobs?: number } = {},
 ): WatcherHandlers {
@@ -89,19 +84,26 @@ export function createWatcherHandlers(
     // run. A free slot goes first to a basename with a live event waiting, so a
     // photo added after start doesn't wait behind the whole startup backlog.
     const queue: Job[] = [];
-    const running = new Set<string>();
+    const running = new Map<string, Job>();
+    // Live jobs in the queue, so pick() skips looking for them when there are none
+    let liveQueued = 0;
     let idleWaiters: (() => void)[] = [];
     let stopped = false;
 
+    function unqueue(job: Job): void {
+        queue.splice(queue.indexOf(job), 1);
+        if (job.live) liveQueued--;
+    }
+
     function pick(): Job | undefined {
-        const liveKeys = new Set(queue.filter((job) => job.live).map((job) => job.key));
+        const liveKeys = liveQueued > 0 ? new Set(queue.filter((job) => job.live).map((job) => job.key)) : null;
         const seen = new Set<string>();
         let firstReady: Job | undefined;
         for (const job of queue) {
             const ready = !running.has(job.key) && !seen.has(job.key);
             seen.add(job.key);
             if (!ready) continue;
-            if (liveKeys.has(job.key)) return job;
+            if (!liveKeys || liveKeys.has(job.key)) return job;
             firstReady ??= job;
         }
         return firstReady;
@@ -111,14 +113,14 @@ export function createWatcherHandlers(
         while (running.size < maxConcurrentJobs) {
             const job = pick();
             if (!job) break;
-            queue.splice(queue.indexOf(job), 1);
-            running.add(job.key);
+            unqueue(job);
+            running.set(job.key, job);
             Promise.resolve()
                 .then(job.run)
                 .then(
                     () => job.settle('done'),
                     (error: unknown) => {
-                        if (hasCode(error, SOURCE_CHANGED)) {
+                        if (hasErrorCode(error, SOURCE_CHANGED)) {
                             logger.log(`[ImageWatcher] Skipped ${job.label}: it changed or was removed while it was processed.`);
                             job.settle('skipped');
                         } else {
@@ -142,17 +144,15 @@ export function createWatcherHandlers(
     /** Settle the queued, not yet started startup jobs that match, as skipped. */
     function dropStartupJobs(matches: (job: Job) => boolean): void {
         for (const job of queue.filter((queued) => !queued.live && matches(queued))) {
-            queue.splice(queue.indexOf(job), 1);
+            unqueue(job);
             job.settle('skipped');
         }
     }
 
     function enqueue(filename: string, live: boolean, run: () => Promise<unknown>): Promise<Outcome> {
         return new Promise((settle) => {
-            const key = jobKey(filename);
-            // A live job for this photo regenerates it anyway, so a startup job still waiting is redundant
-            if (live) dropStartupJobs((job) => job.key === key);
-            queue.push({ key, live, label: filename, run, settle });
+            queue.push({ key: baseNameOf(filename), live, label: filename, run, settle });
+            if (live) liveQueued++;
             pump();
         });
     }
@@ -162,43 +162,35 @@ export function createWatcherHandlers(
         return new Promise((resolve) => idleWaiters.push(resolve));
     }
 
-    /**
-     * Mark a source's derivatives stale when its event is queued, not when the
-     * job runs, so a restart still redoes a job that never ran. The job's new
-     * thumbnail clears the mark.
-     */
-    function markQueued(filename: string): void {
-        const failure = markStale(filename);
-        if (failure) {
-            logger.error(
-                `[ImageWatcher] Could not mark ${filename}'s derivatives stale: ${failure.message}. ` +
-                'If a different photo replaces it with an older mtime, touch that file.',
-            );
-        }
-    }
-
-    async function regenerate(filePath: string, detected: string, done: string): Promise<void> {
-        if (stopped || !isSourceFile(filePath)) return;
-        const filename = path.basename(filePath);
-        logger.log(`[ImageWatcher] ${detected}: ${filename}`);
-        markQueued(filename);
-        if (await enqueue(filename, true, () => reprocessImage(filename)) === 'done') {
-            logger.log(`[ImageWatcher] ${done}: ${filename}`);
-        }
-    }
-
     return {
-        onAdd: (filePath) => regenerate(filePath, 'New file detected', 'Processed'),
+        async onAdd(filePath) {
+            if (stopped || !isSourceFile(filePath)) return;
+            const filename = path.basename(filePath);
+            logger.log(`[ImageWatcher] New file detected: ${filename}`);
+            let written: string[] = [];
+            const outcome = await enqueue(filename, true, async () => {
+                written = await refreshImage(filename);
+            });
+            if (outcome === 'done') {
+                logger.log(`[ImageWatcher] ${written.length > 0 ? 'Processed' : 'Already up to date'}: ${filename}`);
+            }
+        },
 
-        onChange: (filePath) => regenerate(filePath, 'File changed, reprocessing', 'Reprocessed'),
+        async onChange(filePath) {
+            if (stopped || !isSourceFile(filePath)) return;
+            const filename = path.basename(filePath);
+            logger.log(`[ImageWatcher] File changed, reprocessing: ${filename}`);
+            // This job always regenerates, so a startup job still waiting for the photo is redundant
+            const key = baseNameOf(filename);
+            dropStartupJobs((job) => job.key === key);
+            if (await enqueue(filename, true, () => reprocessImage(filename)) === 'done') {
+                logger.log(`[ImageWatcher] Reprocessed: ${filename}`);
+            }
+        },
 
         async onUnlink(filePath) {
             if (stopped || !isSourceFile(filePath)) return;
-            const filename = path.basename(filePath);
-            logger.log(`[ImageWatcher] Source removed: ${filename}. Derivatives kept. See npm run images:cleanup.`);
-            markQueued(filename);
-            // Again once any swap still running for this name is done, since its new thumbnail clears the mark
-            await enqueue(filename, true, async () => markQueued(filename));
+            logger.log(`[ImageWatcher] Source removed: ${path.basename(filePath)}. Derivatives kept. See npm run images:cleanup.`);
         },
 
         async queueStartupBatch({ force = false } = {}) {
@@ -245,7 +237,23 @@ export function createWatcherHandlers(
                 clearTimeout(timer);
             }
         },
+
+        unfinished: () => [...running.values(), ...queue].map((job) => job.label),
     };
+}
+
+/**
+ * Wait up to `timeoutMs` for queued jobs. If some are still unfinished, name
+ * them: a restart redoes only a photo whose source is newer than its set.
+ */
+export async function drainOrReport(handlers: WatcherHandlers, timeoutMs: number, logger: Logger = console): Promise<boolean> {
+    if (await handlers.drain(timeoutMs)) return true;
+    const names = handlers.unfinished();
+    logger.error(
+        `[ImageWatcher] Jobs still running after ${timeoutMs / 1000}s. Exiting anyway.` +
+        (names.length > 0 ? ` Not finished: ${names.join(', ')}. Touch them, or run --once --force, to process them.` : ''),
+    );
+    return false;
 }
 
 /**
@@ -290,7 +298,7 @@ export function attachWatcher(
     handlers: WatcherHandlers,
     { root, force = false, logger = console, onRootRemoved }: AttachOptions,
 ): void {
-    // New files, including one copied back after a delete, regenerate in place
+    // New files regenerate only when their set is incomplete or older than them
     watcher.on('add', (filePath: string) => {
         void handlers.onAdd(filePath);
     });
@@ -300,7 +308,7 @@ export function attachWatcher(
         void handlers.onChange(filePath);
     });
 
-    // Removing a source keeps its derivatives, marked stale
+    // Removing a source keeps its derivatives
     watcher.on('unlink', (filePath: string) => {
         void handlers.onUnlink(filePath);
     });

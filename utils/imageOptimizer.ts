@@ -43,6 +43,13 @@ const MEDIUM_WIDTH = 800;
 const OPTIMIZED_WIDTH = 1920;
 const LQIP_SIZE = 20;
 
+/**
+ * WebP can't encode a side over 16383 px, and AVIF (HEIF) one over 16384, so
+ * every resize fits inside 16383 on both sides. A tall panorama still gets its
+ * seven outputs.
+ */
+const MAX_SIDE = 16383;
+
 /** `images:cleanup` deletes a leftover temp file only once it is this old, so it never races a running job. */
 export const STALE_TEMP_FILE_MS = 10 * 60 * 1000;
 
@@ -55,14 +62,8 @@ const SOURCE_FILE = /\.(jpg|jpeg|png|webp)$/i;
  */
 const TEMP_FILE = /^\.[0-9a-f]{16}\.\d+\.[0-9a-f]{8}\.tmp$/;
 
-/** markStale() dates a thumbnail at the epoch. */
-const STALE_TIME = new Date(0);
-
-/**
- * A thumbnail dated before this counts as marked stale. FAT and exFAT can't
- * store 1970, so the epoch lands on 1980-01-01 there.
- */
-const STALE_BEFORE_MS = Date.UTC(1980, 0, 2);
+/** `/api/image` cached files as `<base>-<width>-<quality>.<format>`. */
+const DYNAMIC_CACHE_FILE = /^(.+)-\d+-\d+\.(avif|webp|jpeg)$/;
 
 /** The `code` writeVariants() throws with when its source changed or went away mid-job. */
 export const SOURCE_CHANGED = 'SOURCE_CHANGED';
@@ -94,7 +95,7 @@ interface Variant {
 }
 
 function resized(input: Buffer, width: number) {
-    return sharp(input).resize(width, undefined, {
+    return sharp(input).resize(Math.min(width, MAX_SIDE), MAX_SIDE, {
         fit: 'inside',
         withoutEnlargement: true,
     });
@@ -146,11 +147,12 @@ export function isSourceFile(filename: string): boolean {
     return !name.startsWith('.') && SOURCE_FILE.test(name);
 }
 
-function baseNameOf(filename: string): string {
+/** A source's name without its extension. Its derivatives share it, so `a.jpg` and `a.png` share one set. */
+export function baseNameOf(filename: string): string {
     return path.basename(filename, path.extname(filename));
 }
 
-function hasErrorCode(error: unknown, code: string): boolean {
+export function hasErrorCode(error: unknown, code: string): boolean {
     return typeof error === 'object' && error !== null && (error as NodeJS.ErrnoException).code === code;
 }
 
@@ -173,13 +175,37 @@ export function ensureDirectories(paths: LibraryPaths = libraryPaths()): void {
     }
 }
 
+function listNames(dir: string): string[] {
+    try {
+        return fs.readdirSync(dir);
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * The names in each derivative folder, read once. Lookups match names exactly,
+ * even on a case-insensitive disk, where `existsSync('Beach.webp')` finds
+ * `beach.webp` but the public file lookup in production doesn't.
+ */
+export type DerivativeIndex = ReadonlyMap<DerivativeDir, ReadonlySet<string>>;
+
+export function readDerivativeIndex(paths: LibraryPaths = libraryPaths()): DerivativeIndex {
+    return new Map(DERIVATIVE_DIRS.map((dir) => [dir, new Set(listNames(paths[dir]))]));
+}
+
 /**
  * Get file paths for all versions of an image
  */
-export function getImagePaths(filename: string, paths: LibraryPaths = libraryPaths()): ProcessedImagePaths {
+export function getImagePaths(
+    filename: string,
+    paths: LibraryPaths = libraryPaths(),
+    index: DerivativeIndex = readDerivativeIndex(paths),
+): ProcessedImagePaths {
     const baseName = baseNameOf(filename);
     const webpExt = '.webp';
     const avifExt = '.avif';
+    const has = (dir: DerivativeDir, ext: string) => index.get(dir)?.has(`${baseName}${ext}`) ?? false;
     
     return {
         original: `/assets/photos/${filename}`,
@@ -190,28 +216,20 @@ export function getImagePaths(filename: string, paths: LibraryPaths = libraryPat
         mediumAvif: `/assets/photos/medium-avif/${baseName}${avifExt}`,
         optimizedAvif: `/assets/photos/optimized-avif/${baseName}${avifExt}`,
         lqip: `/assets/photos/lqip/${baseName}.txt`,
-        hasThumbnail: fs.existsSync(path.join(paths.thumbnails, `${baseName}${webpExt}`)),
-        hasMedium: fs.existsSync(path.join(paths.medium, `${baseName}${webpExt}`)),
-        hasOptimized: fs.existsSync(path.join(paths.optimized, `${baseName}${webpExt}`)),
-        hasThumbnailAvif: fs.existsSync(path.join(paths.thumbnailsAvif, `${baseName}${avifExt}`)),
-        hasMediumAvif: fs.existsSync(path.join(paths.mediumAvif, `${baseName}${avifExt}`)),
-        hasOptimizedAvif: fs.existsSync(path.join(paths.optimizedAvif, `${baseName}${avifExt}`)),
-        hasLqip: fs.existsSync(path.join(paths.lqip, `${baseName}.txt`)),
+        hasThumbnail: has('thumbnails', webpExt),
+        hasMedium: has('medium', webpExt),
+        hasOptimized: has('optimized', webpExt),
+        hasThumbnailAvif: has('thumbnailsAvif', avifExt),
+        hasMediumAvif: has('mediumAvif', avifExt),
+        hasOptimizedAvif: has('optimizedAvif', avifExt),
+        hasLqip: has('lqip', '.txt'),
     };
 }
 
-/**
- * Whether a source's derivatives are marked stale: they may show another file
- * that had this name, or a swap that never finished. Also true when the
- * thumbnail can't be checked, so nothing unverified is served as current.
- */
-export function isMarkedStale(filename: string, paths: LibraryPaths = libraryPaths()): boolean {
-    try {
-        const thumbnail = fs.statSync(path.join(paths.thumbnails, `${baseNameOf(filename)}.webp`), { throwIfNoEntry: false });
-        return thumbnail !== undefined && thumbnail.mtimeMs < STALE_BEFORE_MS;
-    } catch {
-        return true;
-    }
+/** Whether all seven outputs exist under the source's exact base name. */
+export function isCompleteSet(outputs: ProcessedImagePaths): boolean {
+    return outputs.hasThumbnail && outputs.hasMedium && outputs.hasOptimized &&
+        outputs.hasThumbnailAvif && outputs.hasMediumAvif && outputs.hasOptimizedAvif && outputs.hasLqip;
 }
 
 /** The start of every temp file name writeVariants() uses for `baseName`. */
@@ -222,22 +240,6 @@ export function tempFilePrefix(baseName: string): string {
 function tempPathFor(target: string, baseName: string): string {
     const name = `${tempFilePrefix(baseName)}${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
     return path.join(path.dirname(target), name);
-}
-
-/**
- * Mark a source's derivatives stale by dating its thumbnail at the epoch, so the
- * next run regenerates them from whatever source then has that name, whatever
- * its mtime. Setting a file's times needs its owner, so this returns the error
- * instead of throwing. Returns null when it marked the set or there was none.
- */
-export function markStale(filename: string): Error | null {
-    const thumbnail = path.join(libraryPaths().thumbnails, `${baseNameOf(filename)}.webp`);
-    try {
-        fs.utimesSync(thumbnail, STALE_TIME, STALE_TIME);
-        return null;
-    } catch (error) {
-        return hasErrorCode(error, 'ENOENT') ? null : (error as Error);
-    }
 }
 
 async function removeQuietly(files: string[]): Promise<void> {
@@ -252,34 +254,89 @@ function sameFileVersion(before: fs.Stats, after: fs.Stats | undefined): boolean
         after.mtimeMs === before.mtimeMs;
 }
 
+function sourceChanged(filename: string): Error {
+    return Object.assign(
+        new Error(`${filename} changed or was removed while it was processed, so its new outputs were discarded.`),
+        { code: SOURCE_CHANGED },
+    );
+}
+
+/** Folds case and Unicode form, the way a case-insensitive disk compares names. */
+function foldName(name: string): string {
+    return name.normalize('NFC').toLowerCase();
+}
+
+/**
+ * Whether two paths are one file, as when a case-insensitive disk resolves two
+ * spellings of a name to one entry. Null when lstat fails for a reason other
+ * than a missing entry, since then it can't tell.
+ */
+function sameFile(a: string, b: string): boolean | null {
+    try {
+        const first = fs.lstatSync(a, { throwIfNoEntry: false });
+        const second = fs.lstatSync(b, { throwIfNoEntry: false });
+        return first !== undefined && second !== undefined && first.dev === second.dev && first.ino === second.ino;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Give an existing output that differs from `target` only in case or Unicode
+ * form the target's exact name, when the disk resolves both names to that one
+ * file. Renaming the new output over it could keep the old spelling, and the
+ * public file lookup in production matches names exactly. On a case-sensitive
+ * disk the other name is a different photo's output, so it stays.
+ */
+async function matchSpelling(target: string, names: ReadonlySet<string> | undefined): Promise<void> {
+    const name = path.basename(target);
+    if (!names || names.has(name)) return;
+    for (const existing of names) {
+        if (foldName(existing) !== foldName(name)) continue;
+        const other = path.join(path.dirname(target), existing);
+        if (sameFile(other, target) === true) await fs.promises.rename(other, target);
+    }
+}
+
 /**
  * Generate an image's derivatives without exposing a partial set. Reads the
  * source once, encodes each needed output (all seven with `overwrite`, else
  * only the missing ones), writes it to a temp file beside its target with
  * fsync, and renames the temp files over the targets only after every one is
  * written. On failure it removes this attempt's temp files and rethrows, so
- * the previous outputs stay as they were. If the source changed or went away
- * while it encoded, as in a takedown, it discards the attempt the same way and
- * throws an error with `code` SOURCE_CHANGED.
+ * the previous outputs stay as they were. If the source changed or went away,
+ * as in a takedown, it discards the attempt the same way and throws an error
+ * with `code` SOURCE_CHANGED. After a full regeneration it also deletes the
+ * photo's `/api/image` cache files, which would still serve the old version.
  *
  * Returns the paths it replaced or created.
  */
-export async function writeVariants(filename: string, { overwrite }: { overwrite: boolean }): Promise<string[]> {
-    const paths = libraryPaths();
+export async function writeVariants(
+    filename: string,
+    { overwrite, paths = libraryPaths() }: { overwrite: boolean; paths?: LibraryPaths },
+): Promise<string[]> {
     ensureDirectories(paths);
     const baseName = baseNameOf(filename);
     const sourcePath = path.join(paths.root, filename);
+    const index = readDerivativeIndex(paths);
     const needed = VARIANTS
-        .map((variant) => ({ variant, target: path.join(paths[variant.dir], `${baseName}${variant.ext}`) }))
-        .filter(({ target }) => overwrite || !fs.existsSync(target));
+        .filter((variant) => overwrite || !index.get(variant.dir)?.has(`${baseName}${variant.ext}`))
+        .map((variant) => ({ variant, target: path.join(paths[variant.dir], `${baseName}${variant.ext}`) }));
     if (needed.length === 0) return [];
 
-    // Checked before the read and again before the swap, so a change in between is caught
-    const before = await fs.promises.stat(sourcePath);
-    const input = await fs.promises.readFile(sourcePath);
+    // Held open from the read until after the second check, so a disk that numbers
+    // files as it goes, such as FAT or CIFS, can't hand this inode to another file
+    let source: fs.promises.FileHandle;
+    try {
+        source = await fs.promises.open(sourcePath, 'r');
+    } catch (error) {
+        throw hasErrorCode(error, 'ENOENT') ? sourceChanged(filename) : error;
+    }
 
     const staged: { temp: string; target: string; dir: DerivativeDir }[] = [];
     try {
+        const before = await source.stat();
+        const input = await source.readFile();
         for (const { variant, target } of needed) {
             const data = await variant.encode(input);
             const temp = tempPathFor(target, baseName);
@@ -293,47 +350,27 @@ export async function writeVariants(filename: string, { overwrite }: { overwrite
             }
         }
 
-        // Dated no earlier than its source, so the next start doesn't take a source
-        // dated in the future for a newer one and encode it again. The extra
-        // millisecond covers utimes() rounding down.
-        const thumbnail = staged.find(({ dir }) => dir === 'thumbnails');
-        if (thumbnail) {
-            const time = new Date(Math.max(Date.now(), Math.ceil(before.mtimeMs) + 1));
-            await fs.promises.utimes(thumbnail.temp, time, time);
-        }
-
         // A takedown or a newer save may have landed while this job encoded
         const after = await fs.promises.stat(sourcePath).catch(() => undefined);
-        if (!sameFileVersion(before, after)) {
-            throw Object.assign(
-                new Error(`${filename} changed or was removed while it was processed, so its new outputs were discarded.`),
-                { code: SOURCE_CHANGED },
-            );
-        }
+        if (!sameFileVersion(before, after)) throw sourceChanged(filename);
     } catch (error) {
         await removeQuietly(staged.map(({ temp }) => temp));
         throw error;
+    } finally {
+        await source.close();
     }
 
-    // isSourceNewer() compares the source with the thumbnail, so mark the old one
-    // stale and rename it last. An interrupted swap then gets redone on the next run.
+    // The thumbnail goes last. isSourceNewer() compares the source with it, so a
+    // swap interrupted before it leaves the old one, and the next run redoes the set.
     const order = [
         ...staged.filter(({ dir }) => dir !== 'thumbnails'),
         ...staged.filter(({ dir }) => dir === 'thumbnails'),
     ];
-    if (order.length > 0 && order[order.length - 1].dir === 'thumbnails') {
-        const failure = markStale(filename);
-        if (failure) {
-            console.error(
-                `[imageOptimizer] Could not mark ${filename}'s old thumbnail stale before replacing it: ${failure.message}. ` +
-                'If this swap is interrupted, the next run may not redo it.',
-            );
-        }
-    }
 
     let renamed = 0;
     try {
-        for (const { temp, target } of order) {
+        for (const { temp, target, dir } of order) {
+            await matchSpelling(target, index.get(dir));
             await fs.promises.rename(temp, target);
             renamed++;
         }
@@ -346,7 +383,26 @@ export async function writeVariants(filename: string, { overwrite }: { overwrite
         throw error;
     }
 
+    if (overwrite) purgeDynamicCache(baseName, paths);
     return order.map(({ target }) => target);
+}
+
+/**
+ * Delete `/api/image`'s cached copies of one photo, which still serve its
+ * previous version as static files. Matches the cached file's base exactly, so
+ * `landscape` leaves `landscape-edited` alone, and never follows a symlinked
+ * cache folder out of the library.
+ */
+function purgeDynamicCache(baseName: string, paths: LibraryPaths): void {
+    if (guardState([path.dirname(paths.dynamicCache), paths.dynamicCache]).state !== 'ok') return;
+    for (const name of listNames(paths.dynamicCache)) {
+        if (DYNAMIC_CACHE_FILE.exec(name)?.[1] !== baseName) continue;
+        try {
+            fs.unlinkSync(path.join(paths.dynamicCache, name));
+        } catch {
+            // Gone already, or not removable. images:cleanup lists what's left.
+        }
+    }
 }
 
 /**
@@ -378,8 +434,7 @@ export function getPhotoFiles(root: string = libraryPaths().root): string[] {
 /**
  * Check if source file is newer than processed versions (for cache-busting)
  */
-function isSourceNewer(filename: string): boolean {
-    const paths = libraryPaths();
+function isSourceNewer(filename: string, paths: LibraryPaths): boolean {
     const sourcePath = path.join(paths.root, filename);
     const baseName = baseNameOf(filename);
     const thumbnailPath = path.join(paths.thumbnails, `${baseName}.webp`);
@@ -390,36 +445,29 @@ function isSourceNewer(filename: string): boolean {
     const thumbnail = fs.statSync(thumbnailPath, { throwIfNoEntry: false });
     if (!thumbnail) return true;
     
-    // Marked stale when an event was queued, on unlink, or before a swap that may not have finished
-    if (thumbnail.mtimeMs < STALE_BEFORE_MS) return true;
-    
     return source.mtimeMs > thumbnail.mtimeMs;
+}
+    
+/**
+ * Whether a source's outputs need regenerating: when any of the seven is
+ * missing by exact name, or when the source is newer than its thumbnail.
+ */
+export function needsRefresh(
+    filename: string,
+    paths: LibraryPaths = libraryPaths(),
+    index: DerivativeIndex = readDerivativeIndex(paths),
+): boolean {
+    return !isCompleteSet(getImagePaths(filename, paths, index)) || isSourceNewer(filename, paths);
 }
 
 /**
  * Get list of files that need processing
  */
 export function getUnprocessedFiles(): string[] {
-    ensureDirectories();
-    const files = getPhotoFiles();
-    
-    return files.filter(file => {
-        const paths = getImagePaths(file);
-        
-        // Check if any version is missing
-        const needsProcessing = !paths.hasThumbnail || 
-            !paths.hasMedium || 
-            !paths.hasOptimized ||
-            !paths.hasThumbnailAvif || 
-            !paths.hasMediumAvif || 
-            !paths.hasOptimizedAvif ||
-            !paths.hasLqip;
-        
-        if (needsProcessing) return true;
-        
-        // Check if source is newer (cache-bust)
-        return isSourceNewer(file);
-    });
+    const paths = libraryPaths();
+    ensureDirectories(paths);
+    const index = readDerivativeIndex(paths);
+    return getPhotoFiles(paths.root).filter((file) => needsRefresh(file, paths, index));
 }
 
 /**
@@ -427,26 +475,34 @@ export function getUnprocessedFiles(): string[] {
  * keep serving until every new one is written.
  */
 export async function reprocessImage(filename: string): Promise<ProcessedImagePaths> {
-    await writeVariants(filename, { overwrite: true });
-    return getImagePaths(filename);
-}
-    
-/** The sources the watcher's startup batch works on: every source with `force`, else the unprocessed ones. */
-export function filesToProcess({ force = false }: { force?: boolean } = {}): string[] {
-    return force ? getPhotoFiles() : getUnprocessedFiles();
+    const paths = libraryPaths();
+    await writeVariants(filename, { overwrite: true, paths });
+    return getImagePaths(filename, paths);
 }
 
 /**
- * The startup batch's overwrite rule for one source: regenerate all seven
- * outputs when forced, when any of them is missing, or when the source is
- * newer than them. A missing one next to existing ones may come from a
- * different version, so filling in only the gap could leave a mixed set.
+ * The sources the watcher's startup batch works on: every source with `force`,
+ * else the unprocessed ones. Both throw on a missing root.
  */
-export function refreshImage(filename: string, { force = false }: { force?: boolean } = {}): Promise<string[]> {
-    const outputs = getImagePaths(filename);
-    const complete = outputs.hasThumbnail && outputs.hasMedium && outputs.hasOptimized &&
-        outputs.hasThumbnailAvif && outputs.hasMediumAvif && outputs.hasOptimizedAvif && outputs.hasLqip;
-    return writeVariants(filename, { overwrite: force || !complete || isSourceNewer(filename) });
+export function filesToProcess({ force = false }: { force?: boolean } = {}): string[] {
+    if (!force) return getUnprocessedFiles();
+    const paths = libraryPaths();
+    ensureDirectories(paths);
+    return getPhotoFiles(paths.root);
+}
+
+/**
+ * The overwrite rule the startup batch and a live `add` use: regenerate all
+ * seven outputs when forced or when needsRefresh() says so, and otherwise do
+ * nothing. A missing one next to existing ones may come from a different
+ * version, so filling in only the gap could leave a mixed set.
+ *
+ * Returns the paths it replaced, none when the set was already current.
+ */
+export async function refreshImage(filename: string, { force = false }: { force?: boolean } = {}): Promise<string[]> {
+    const paths = libraryPaths();
+    if (!force && !needsRefresh(filename, paths)) return [];
+    return writeVariants(filename, { overwrite: true, paths });
 }
 
 export type OrphanReason =
@@ -504,21 +560,6 @@ type Verdict =
     | { kind: 'keep' };
 
 const KEEP: Verdict = { kind: 'keep' };
-
-/** `/api/image` cached files as `<base>-<width>-<quality>.<format>`. */
-const DYNAMIC_CACHE_FILE = /^(.+)-\d+-\d+\.(avif|webp|jpeg)$/;
-
-/** Folds case and Unicode form, the way a case-insensitive disk compares names. */
-function foldName(name: string): string {
-    return name.normalize('NFC').toLowerCase();
-}
-
-/** Whether two paths are the same file on disk, the way a case-insensitive disk resolves both names to one. */
-function sameFile(a: string, b: string): boolean {
-    const first = fs.lstatSync(a, { throwIfNoEntry: false });
-    const second = fs.lstatSync(b, { throwIfNoEntry: false });
-    return first !== undefined && second !== undefined && first.dev === second.dev && first.ino === second.ino;
-}
 
 interface SourceSet {
     any: boolean;

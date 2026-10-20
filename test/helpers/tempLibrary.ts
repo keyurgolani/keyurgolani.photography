@@ -74,7 +74,7 @@ export interface TempLibrary {
     hashes(relativePaths: string[]): Record<string, string>;
     /** Every `.tmp` file under the root, relative to it. */
     tempFiles(): string[];
-    /** Restore PHOTOGRAPHY_LIBRARY_DIR and delete the temp root. */
+    /** Delete the temp root, then restore PHOTOGRAPHY_LIBRARY_DIR. */
     cleanup(): Promise<void>;
 }
 
@@ -123,8 +123,13 @@ export async function createTempLibrary({ fixtures = 'none', missingRoot = false
                 .sort();
         },
         async cleanup() {
-            restore();
-            await fs.promises.rm(parent, { recursive: true, force: true });
+            // Restored only after the delete, so a job still running meanwhile never
+            // resolves the default library under public/
+            try {
+                await fs.promises.rm(parent, { recursive: true, force: true });
+            } finally {
+                restore();
+            }
         },
     };
 }

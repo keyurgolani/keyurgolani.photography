@@ -8,9 +8,10 @@ import {
     getImagePaths,
     getLqipBase64,
     getPhotoFiles,
-    isMarkedStale,
+    isCompleteSet,
     libraryPaths,
     libraryRootExists,
+    readDerivativeIndex,
 } from './imageOptimizer';
 
 export interface ImageItem {
@@ -27,6 +28,27 @@ export interface ImageItem {
     caption?: string;
     date: number;
     lqip: string;
+}
+
+const EMPTY_LQIP = 'data:image/webp;base64,UklGRlYAAABXRUJQVlA4IEoAAADQAQCdASoKAAoAAUAmJYgCdAEO9ACA/v9P9f96f1AAAAAAfQ==';
+
+/** On-the-fly placeholders by source path, reused while the file keeps its inode, size, and mtime. */
+const placeholders = new Map<string, { version: string; lqip: string }>();
+
+async function placeholderFor(filePath: string): Promise<string> {
+    try {
+        const { ino, size, mtimeMs } = fs.statSync(filePath);
+        const version = `${ino}:${size}:${mtimeMs}`;
+        const cached = placeholders.get(filePath);
+        if (cached?.version === version) return cached.lqip;
+        // Generate on-the-fly (using filePath, not buffer)
+        const lqip = await encodeLqip(filePath);
+        placeholders.set(filePath, { version, lqip });
+        return lqip;
+    } catch {
+        // Fallback to empty placeholder
+        return EMPTY_LQIP;
+    }
 }
 
 export async function getGalleryImages(): Promise<ImageItem[]> {
@@ -49,6 +71,8 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
 
     // The same source list the watcher and images:cleanup use, so dot-files never count
     const files = getPhotoFiles(photosDir);
+    // Each derivative folder read once, so a set counts only under its exact name
+    const derivatives = readDerivativeIndex(paths);
 
     const readItem = async (file: string, index: number): Promise<ImageItem> => {
         const filePath = path.join(photosDir, file);
@@ -56,22 +80,13 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
         const metadata = await sharp(filePath).metadata();
         
         // Get paths for all image versions
-        const imagePaths = getImagePaths(file, paths);
-        // A stale mark means no current set. The derivatives may show a deleted
-        // photo that had this name, so serve the original until they are redone.
-        const current = !isMarkedStale(file, paths);
+        const imagePaths = getImagePaths(file, paths, derivatives);
+        // Derivatives only for a complete set, all seven by exact name. Anything
+        // less, such as a set cleanup only partly removed, gets the original.
+        const set = isCompleteSet(imagePaths) ? imagePaths : null;
         
         // Get LQIP base64
-        let lqip = current ? getLqipBase64(file, paths) : null;
-        if (!lqip) {
-            // Generate on-the-fly if not available (using filePath, not buffer)
-            try {
-                lqip = await encodeLqip(filePath);
-            } catch {
-                // Fallback to empty placeholder
-                lqip = 'data:image/webp;base64,UklGRlYAAABXRUJQVlA4IEoAAADQAQCdASoKAAoAAUAmJYgCdAEO9ACA/v9P9f96f1AAAAAAfQ==';
-            }
-        }
+        const lqip = (set && getLqipBase64(file, paths)) || await placeholderFor(filePath);
         
         let exifData: Record<string, unknown> = {};
         if (metadata.exif) {
@@ -127,12 +142,12 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
         return {
             id: index,
             src: src,
-            thumbnail: current && imagePaths.hasThumbnail ? imagePaths.thumbnail : imagePaths.original,
-            medium: current && imagePaths.hasMedium ? imagePaths.medium : src,
-            optimized: current && imagePaths.hasOptimized ? imagePaths.optimized : imagePaths.original,
-            thumbnailAvif: current && imagePaths.hasThumbnailAvif ? imagePaths.thumbnailAvif : undefined,
-            mediumAvif: current && imagePaths.hasMediumAvif ? imagePaths.mediumAvif : undefined,
-            optimizedAvif: current && imagePaths.hasOptimizedAvif ? imagePaths.optimizedAvif : undefined,
+            thumbnail: set ? set.thumbnail : src,
+            medium: set ? set.medium : src,
+            optimized: set ? set.optimized : src,
+            thumbnailAvif: set?.thumbnailAvif,
+            mediumAvif: set?.mediumAvif,
+            optimizedAvif: set?.optimizedAvif,
             width: metadata.width || 800,
             height: metadata.height || 600,
             caption: caption,

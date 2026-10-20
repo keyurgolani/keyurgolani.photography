@@ -29,7 +29,7 @@
 import { parseArgs } from 'node:util';
 import chokidar from 'chokidar';
 import { ensureDirectories, libraryPaths, libraryRootExists } from '../utils/imageOptimizer';
-import { attachWatcher, createIgnoreFilter, createWatcherHandlers, processOnce } from '../utils/watcherHandlers';
+import { attachWatcher, createIgnoreFilter, createWatcherHandlers, drainOrReport, processOnce } from '../utils/watcherHandlers';
 
 const USAGE = 'Usage: npx tsx scripts/imageWatcher.ts [--watch | --once] [--force]';
 
@@ -131,9 +131,7 @@ function startWatcher(): void {
             console.error('[ImageWatcher] Error closing watcher:', err);
             code = 1;
         }
-        if (!(await handlers.drain(SHUTDOWN_GRACE_MS))) {
-            console.error(`[ImageWatcher] Jobs still running after ${SHUTDOWN_GRACE_MS / 1000}s. Exiting anyway.`);
-        }
+        await drainOrReport(handlers, SHUTDOWN_GRACE_MS);
         console.log('[ImageWatcher] Watcher closed.');
         process.exit(code);
     }
