@@ -30,7 +30,7 @@ import type {
     SeriesRecord,
     Visibility,
 } from './types';
-import { authoredPaths, authoredRecordFile, readWorkingLayer } from './working-layer';
+import { authoredPaths, authoredRecordFile, catalogPaths, readWorkingLayer } from './working-layer';
 
 /**
  * Test catalogs: a data root with a working layer, #10's registry, and
@@ -534,4 +534,46 @@ export async function createTestCatalog(options: TestCatalogOptions = {}): Promi
             if (created) await fs.promises.rm(created, { recursive: true, force: true });
         },
     };
+}
+
+/** One thing an ingestion path does, for assertOrderUntouched(). */
+export interface OrderStep {
+    name: string;
+    run(): unknown;
+}
+
+/** The SHA-256 of every file under `catalog/` and `authored/`, by data-root-relative path. */
+function orderFiles(dataRoot: string): Map<string, string> {
+    const files = new Map<string, string>();
+    for (const dir of [catalogPaths(dataRoot).dir, authoredPaths(dataRoot).dir]) {
+        if (!fs.existsSync(dir)) continue;
+        for (const name of fs.readdirSync(dir, { recursive: true, encoding: 'utf8' })) {
+            const file = path.join(dir, name);
+            if (!fs.statSync(file).isFile()) continue;
+            files.set(path.relative(dataRoot, file).split(path.sep).join('/'), createHash('sha256').update(fs.readFileSync(file)).digest('hex'));
+        }
+    }
+    return files;
+}
+
+/**
+ * Run `steps` in order and throw if any of them changes, adds, or removes a
+ * file under `catalog/` or `authored/`, naming the step and the files. This
+ * is how the tests show that no ingestion path authors order: the reconcile
+ * fact types, the sinks, and the watcher all go through it, and #14 and #17
+ * add rows for their sinks.
+ */
+export async function assertOrderUntouched(dataRoot: string, steps: readonly OrderStep[]): Promise<void> {
+    const before = orderFiles(dataRoot);
+    if (before.size === 0) throw new Error('catalog/ and authored/ hold no files, so there is nothing to compare.');
+    for (const step of steps) {
+        await step.run();
+        const after = orderFiles(dataRoot);
+        const changes = [
+            ...[...before].filter(([file, digest]) => after.has(file) && after.get(file) !== digest).map(([file]) => `changed ${file}`),
+            ...[...after.keys()].filter((file) => !before.has(file)).map((file) => `added ${file}`),
+            ...[...before.keys()].filter((file) => !after.has(file)).map((file) => `removed ${file}`),
+        ];
+        if (changes.length > 0) throw new Error(`The step "${step.name}" touched authored order: ${changes.join(', ')}.`);
+    }
 }
