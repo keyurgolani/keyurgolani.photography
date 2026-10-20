@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { expectNoA11yViolations } from './a11y';
 import { expectContrastOverImage } from './contrast';
 import { expectFocusRingVisible, expectNotObscured, expectRingNotClipped } from './focus';
+import { expectHoverRulesGated } from './hover';
 import { expectReachableWithin, expectTabOrderMatchesVisualOrder } from './keyboard';
 import { expectReflow } from './reflow';
 import { checkSurface, expectUniqueNames } from './surface';
@@ -295,6 +296,36 @@ test.describe('expectReflow', () => {
             <button type="button" style="position: fixed; top: 8px; left: 8px; width: 120px">A</button>
             <button type="button" style="position: fixed; top: 8px; left: 60px; width: 120px">B</button>`);
         await expect(expectReflow(page.getByRole('button'))).rejects.toThrow(/overlaps/);
+    });
+});
+
+test.describe('expectHoverRulesGated', () => {
+    const tile = '<button type="button" class="tile">Photo</button>';
+    const gated = (rule: string) => `@media (hover: hover) and (pointer: fine) { ${rule} }`;
+
+    test('passes a hover rule inside the gate', async ({ page }) => {
+        await load(page, tile, gated('.tile:hover { transform: scale(1.1); }'));
+        await expectHoverRulesGated(page);
+    });
+
+    test('ignores an ungated hover rule that matches nothing on the page', async ({ page }) => {
+        await load(page, tile, '.ghost:hover { transform: scale(1.1); }');
+        await expectHoverRulesGated(page);
+    });
+
+    test("ignores YARL's own hover rule", async ({ page }) => {
+        await load(page, '<button type="button" class="yarl__button">Next</button>', '@media (hover:hover){.yarl__button:focus-visible:hover,.yarl__button:focus:hover,.yarl__button:hover{color:#fff}}');
+        await expectHoverRulesGated(page);
+    });
+
+    test('fails an ungated hover rule that matches markup', async ({ page }) => {
+        await load(page, tile, '.tile:hover { transform: scale(1.1); }');
+        await expect(expectHoverRulesGated(page)).rejects.toThrow(/\.tile:hover/);
+    });
+
+    test('fails a hover rule gated by (hover: hover) alone', async ({ page }) => {
+        await load(page, tile, '@media (hover: hover) { .tile:hover { transform: scale(1.1); } }');
+        await expect(expectHoverRulesGated(page)).rejects.toThrow(/\.tile:hover/);
     });
 });
 

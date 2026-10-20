@@ -296,9 +296,11 @@ body {
     box-shadow: none !important;
 }
 
-.yarl__thumbnails_thumbnail:hover {
-    opacity: 0.8;
-    transform: scale(1.05);
+@media (hover: hover) and (pointer: fine) {
+    .yarl__thumbnails_thumbnail:hover {
+        opacity: 0.8;
+        transform: scale(1.05);
+    }
 }
 
 .yarl__thumbnails_thumbnail_image {
@@ -364,12 +366,14 @@ body {
 }
 
 /* Hover state */
-.yarl__navigation_prev .yarl__button:hover,
-.yarl__navigation_next .yarl__button:hover {
-    background: rgba(255, 255, 255, 0.15) !important;
-    border-color: rgba(255, 255, 255, 0.3) !important;
-    color: rgba(255, 255, 255, 1) !important;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 20px rgba(255, 255, 255, 0.1) !important;
+@media (hover: hover) and (pointer: fine) {
+    .yarl__navigation_prev .yarl__button:hover,
+    .yarl__navigation_next .yarl__button:hover {
+        background: rgba(255, 255, 255, 0.15) !important;
+        border-color: rgba(255, 255, 255, 0.3) !important;
+        color: rgba(255, 255, 255, 1) !important;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 20px rgba(255, 255, 255, 0.1) !important;
+    }
 }
 
 /* Active state */
@@ -387,12 +391,14 @@ body {
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08) !important;
 }
 
-[data-theme="light"] .yarl__navigation_prev .yarl__button:hover,
-[data-theme="light"] .yarl__navigation_next .yarl__button:hover {
-    background: rgba(0, 0, 0, 0.1) !important;
-    border-color: rgba(0, 0, 0, 0.15) !important;
-    color: rgba(0, 0, 0, 0.9) !important;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12) !important;
+@media (hover: hover) and (pointer: fine) {
+    [data-theme="light"] .yarl__navigation_prev .yarl__button:hover,
+    [data-theme="light"] .yarl__navigation_next .yarl__button:hover {
+        background: rgba(0, 0, 0, 0.1) !important;
+        border-color: rgba(0, 0, 0, 0.15) !important;
+        color: rgba(0, 0, 0, 0.9) !important;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12) !important;
+    }
 }
 
 /* ============================================
@@ -410,8 +416,8 @@ body {
     border-radius: 8px !important;
     padding: 8px !important;
     margin: 0 2px !important;
-    width: 40px !important;
-    height: 40px !important;
+    width: 44px !important;
+    height: 44px !important;
     
     color: rgba(255, 255, 255, 0.6) !important;
     transition: all 0.2s ease !important;
@@ -419,15 +425,23 @@ body {
     filter: none !important;
 }
 
-.yarl__button:hover {
-    background: rgba(255, 255, 255, 0.1) !important;
-    color: rgba(255, 255, 255, 1) !important;
-    transform: scale(1.08);
+@media (hover: hover) and (pointer: fine) {
+    .yarl__button:hover {
+        background: rgba(255, 255, 255, 0.1) !important;
+        color: rgba(255, 255, 255, 1) !important;
+        transform: scale(1.08);
+    }
 }
 
 .yarl__button:active {
     transform: scale(0.95);
     background: rgba(255, 255, 255, 0.15) !important;
+}
+
+/* At .yarl__button's 2 px margin, .yarl__container's overflow: hidden cut 4 px off the arrows' focus ring */
+:root .yarl__navigation_prev,
+:root .yarl__navigation_next {
+    margin: 0 16px !important;
 }
 
 /* Button icons */
@@ -442,9 +456,11 @@ body {
     color: rgba(0, 0, 0, 0.5) !important;
 }
 
-[data-theme="light"] .yarl__button:hover {
-    background: rgba(0, 0, 0, 0.06) !important;
-    color: rgba(0, 0, 0, 0.9) !important;
+@media (hover: hover) and (pointer: fine) {
+    [data-theme="light"] .yarl__button:hover {
+        background: rgba(0, 0, 0, 0.06) !important;
+        color: rgba(0, 0, 0, 0.9) !important;
+    }
 }
 
 [data-theme="light"] .yarl__button:active {
@@ -459,26 +475,34 @@ body {
     border-radius: 50% !important;
 }
 
-.yarl__close_button .yarl__button:hover {
-    background: rgba(255, 255, 255, 0.12) !important;
+@media (hover: hover) and (pointer: fine) {
+    .yarl__close_button .yarl__button:hover {
+        background: rgba(255, 255, 255, 0.12) !important;
+    }
 }
 
 [data-theme="light"] .yarl__close_button .yarl__button {
     background: rgba(0, 0, 0, 0.03) !important;
 }
 
-[data-theme="light"] .yarl__close_button .yarl__button:hover {
-    background: rgba(0, 0, 0, 0.08) !important;
+@media (hover: hover) and (pointer: fine) {
+    [data-theme="light"] .yarl__close_button .yarl__button:hover {
+        background: rgba(0, 0, 0, 0.08) !important;
+    }
 }
 
 /* Slideshow play button - accent highlight */
-.yarl__slideshow_button .yarl__button:hover {
-    color: #10b981 !important;
+@media (hover: hover) and (pointer: fine) {
+    .yarl__slideshow_button .yarl__button:hover {
+        color: #10b981 !important;
+    }
 }
 
 /* Zoom button */
-.yarl__zoom_button .yarl__button:hover {
-    color: #3b82f6 !important;
+@media (hover: hover) and (pointer: fine) {
+    .yarl__zoom_button .yarl__button:hover {
+        color: #3b82f6 !important;
+    }
 }
 
 /* Counter text styling */
