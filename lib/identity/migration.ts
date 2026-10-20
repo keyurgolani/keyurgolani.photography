@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteFile, atomicWriteJson } from '../storage/atomicWrite';
 import { dataRootStatus, libraryRoot, servedFolderContaining, type DataRootState } from '../storage/config';
-import { PRIVATE_DIR_MODE } from '../storage/fsx';
+import { PRIVATE_DIR_MODE, timestampOf } from '../storage/fsx';
 import { observeLibrary, withReportedFailures, type ObservedLibrary, type PassDeps } from './pass';
 import { currentProfileId } from './profile';
 import { STABILITY_MS, type FactDraft } from './reconcile';
@@ -87,11 +87,6 @@ export class DryRunRefusedError extends Error {
         this.name = 'DryRunRefusedError';
         this.exitCode = exitCode;
     }
-}
-
-/** A filesystem-safe form of an ISO timestamp, such as 2026-10-20T06-34-12-123Z. */
-export function timestampOf(iso: string): string {
-    return iso.replace(/[:.]/g, '-');
 }
 
 function code(text: string): string {
