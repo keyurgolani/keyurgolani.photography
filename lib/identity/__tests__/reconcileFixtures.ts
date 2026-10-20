@@ -5,6 +5,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { createDecision, decisionFileName, type DecisionFile, type DecisionInput, type IdentityDecision } from '../decisions';
 import { emptyTiers } from '../metadata';
 import type { ImageInspection, Inspection } from '../inspect';
 import { reconcile, type ReconcileResult } from '../reconcile';
@@ -120,11 +121,26 @@ export class Reconciler {
     registry: Registry = emptyRegistry();
     readonly ids = sequentialIds();
     last!: ReconcileResult;
+    private decisions: DecisionFile[] = [];
+    private readonly decisionIds = sequentialIds(9_000);
 
     constructor(readonly library = new FakeLibrary()) {}
 
+    /** Queue a decision for the next pass, the way photos:identity writes one. */
+    decide(input: Omit<DecisionInput, 'actor'>): IdentityDecision {
+        const decision = createDecision({ actor: 'test', ...input }, { idGen: this.decisionIds, clock: () => NOW });
+        this.decisions.push({ name: decisionFileName(decision), decision, raw: JSON.stringify(decision) });
+        return decision;
+    }
+
+    /** Queue a decision file as found on disk, valid or not. */
+    queueFile(file: DecisionFile): void {
+        this.decisions.push(file);
+    }
+
     pass(): ReconcileResult {
-        this.last = reconcile(this.library.scan(), this.registry, this.library.lookup, { idGen: this.ids, profileId: PROFILE });
+        const decisions = this.decisions.splice(0);
+        this.last = reconcile(this.library.scan(), this.registry, this.library.lookup, { idGen: this.ids, profileId: PROFILE, decisions });
         this.registry = { ...this.last.registry, version: this.registry.version + 1 };
         return this.last;
     }

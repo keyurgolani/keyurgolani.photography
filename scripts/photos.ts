@@ -13,19 +13,42 @@
  *     root's state, and the watcher's heartbeat age. Exits 1 unless the data
  *     root is ready.
  *
+ *   npx tsx scripts/photos.ts identity bind <path> <photoId> [--reason <text>]
+ *   npx tsx scripts/photos.ts identity new <path> [--reason <text>]
+ *   npx tsx scripts/photos.ts identity archive <photoId> [--reason <text>]
+ *   npx tsx scripts/photos.ts identity retry <photoId> [<assetRevision>] [--reason <text>]
+ *   npx tsx scripts/photos.ts identity reprofile (<photoId> | --all) [--reason <text>]
+ *     Write an identity decision to identity/decisions/ and run a pass that
+ *     applies it. If the registry is busy, the decision stays saved and the
+ *     watcher applies it on its next pass. Exits 0 when applied or saved, 1
+ *     when refused or the data root isn't ready, and 2 on a usage error.
+ *     <path> is relative to the library, or an absolute path inside it.
+ *
  * The library is PHOTOGRAPHY_LIBRARY_DIR, or public/assets/photos under the
  * working directory. The data root is PHOTOGRAPHY_DATA_DIR, or portfolio-data
  * under the working directory outside production.
  */
 
+import path from 'node:path';
 import { parseArgs } from 'node:util';
+import { createDecision, decisionFileName, isLibraryPath, writeDecision, type DecisionInput } from '../lib/identity/decisions';
+import { ASSET_REVISION_RE, PHOTO_ID_RE } from '../lib/identity/ids';
 import { DryRunRefusedError, migrateDryRun } from '../lib/identity/migration';
+import { jsonLogSink, runReconcilePass } from '../lib/identity/pass';
+import { identityPaths } from '../lib/identity/registry';
 import { LibraryRootMissingError } from '../lib/identity/scan';
 import { formatStatus, identityStatus } from '../lib/identity/status';
+import { dataRootStatus, libraryRoot } from '../lib/storage/config';
+import { isInside } from '../lib/storage/fsx';
 
 const USAGE = `Usage:
   npx tsx scripts/photos.ts migrate --dry-run [--out <dir>]
-  npx tsx scripts/photos.ts identity status [--json]`;
+  npx tsx scripts/photos.ts identity status [--json]
+  npx tsx scripts/photos.ts identity bind <path> <photoId> [--reason <text>]
+  npx tsx scripts/photos.ts identity new <path> [--reason <text>]
+  npx tsx scripts/photos.ts identity archive <photoId> [--reason <text>]
+  npx tsx scripts/photos.ts identity retry <photoId> [<assetRevision>] [--reason <text>]
+  npx tsx scripts/photos.ts identity reprofile (<photoId> | --all) [--reason <text>]`;
 
 class UsageError extends Error {}
 
@@ -36,6 +59,20 @@ function strictly<T>(parse: () => T): T {
     } catch (error) {
         throw new UsageError(error instanceof Error ? error.message : String(error));
     }
+}
+
+/** A path argument as a library-relative POSIX path. */
+function libraryPath(arg: string): string {
+    const library = libraryRoot();
+    const relative = path.isAbsolute(arg) ? (isInside(arg, library) ? path.relative(library, arg) : '..') : arg;
+    const posix = path.posix.normalize(relative.split(path.sep).join('/')).replace(/^(\.\/)+/, '');
+    if (!isLibraryPath(posix)) throw new UsageError(`${arg} is not inside the library.`);
+    return posix;
+}
+
+function photoIdArg(arg: string): string {
+    if (!PHOTO_ID_RE.test(arg)) throw new UsageError(`${arg} is not a photo ID.`);
+    return arg;
 }
 
 async function migrate(args: string[]): Promise<number> {
@@ -56,8 +93,84 @@ async function migrate(args: string[]): Promise<number> {
     return 0;
 }
 
+const DECISION_COMMANDS: readonly DecisionInput['type'][] = ['bind', 'new', 'archive', 'retry', 'reprofile'];
+
+function decisionInput(type: DecisionInput['type'], positionals: string[], values: { reason?: string; all?: boolean }): DecisionInput {
+    const base = { actor: 'cli', reason: values.reason ?? '' };
+    switch (type) {
+        case 'bind':
+            if (positionals.length !== 2) throw new UsageError('identity bind needs a path and a photo ID.');
+            return { ...base, type, path: libraryPath(positionals[0]), photoId: photoIdArg(positionals[1]) };
+        case 'new':
+            if (positionals.length !== 1) throw new UsageError('identity new needs a path.');
+            return { ...base, type, path: libraryPath(positionals[0]) };
+        case 'archive':
+            if (positionals.length !== 1) throw new UsageError('identity archive needs a photo ID.');
+            return { ...base, type, photoId: photoIdArg(positionals[0]) };
+        case 'retry': {
+            if (positionals.length < 1 || positionals.length > 2) throw new UsageError('identity retry needs a photo ID and takes at most one asset revision.');
+            const [photoId, assetRevision] = positionals;
+            if (assetRevision !== undefined && !ASSET_REVISION_RE.test(assetRevision)) throw new UsageError(`${assetRevision} is not an asset revision.`);
+            return { ...base, type, photoId: photoIdArg(photoId), ...(assetRevision === undefined ? {} : { assetRevision }) };
+        }
+        case 'reprofile': {
+            const all = values.all === true;
+            if (all && positionals.length > 0) throw new UsageError('identity reprofile takes a photo ID or --all, not both.');
+            if (!all && positionals.length !== 1) throw new UsageError('identity reprofile needs a photo ID or --all.');
+            return { ...base, type, ...(all ? {} : { photoId: photoIdArg(positionals[0]) }) };
+        }
+    }
+}
+
+/** Write a decision and run a pass that applies it, or leave it for the watcher when the registry is busy. */
+async function decide(type: DecisionInput['type'], args: string[]): Promise<number> {
+    const { values, positionals } = strictly(() => parseArgs({
+        args,
+        options: { reason: { type: 'string' }, all: { type: 'boolean' } },
+        allowPositionals: true,
+        strict: true,
+    }));
+    if (values.all !== undefined && type !== 'reprofile') throw new UsageError('--all goes with identity reprofile.');
+    const input = decisionInput(type, positionals, values);
+    const status = dataRootStatus({ write: true });
+    if (status.state !== 'ready' || status.root === null) {
+        console.error(`[photos] The data root is ${status.state}${status.detail ? `: ${status.detail}` : ''}. Nothing was written.`);
+        return 1;
+    }
+    const decision = createDecision(input);
+    const file = await writeDecision(status.root, decision);
+    const outcome = await runReconcilePass({ lock: { waitMs: 0 }, sinks: [jsonLogSink()] });
+    if (outcome.status === 'skipped') {
+        if (outcome.reason === 'locked') {
+            console.log(`[photos] Saved ${file}. The registry is busy, so the watcher applies it on its next pass.`);
+            return 0;
+        }
+        console.error(`[photos] The data root is ${outcome.state}${outcome.detail ? `: ${outcome.detail}` : ''}. The decision is saved in ${file}.`);
+        return 1;
+    }
+    const result = outcome.decisions.find((entry) => entry.decisionId === decision.decisionId);
+    if (result === undefined) {
+        console.error(`[photos] The pass didn't find ${file}, so the decision wasn't applied.`);
+        return 1;
+    }
+    if (result.status === 'applied') {
+        console.log(`[photos] Applied: ${result.detail}.`);
+        if (decision.type === 'new') console.log(`Photo ID: ${decision.photoId}`);
+        return 0;
+    }
+    if (result.status === 'deferred') {
+        console.log(`[photos] Saved ${file}. It waits because ${result.reason}, and a later pass applies it.`);
+        return 0;
+    }
+    const record = path.join(identityPaths(status.root).decisions, 'rejected', decisionFileName(decision));
+    console.error(`[photos] Rejected: ${result.reason}. The record is in ${record}.`);
+    return 1;
+}
+
 async function identity(args: string[]): Promise<number> {
     const [subcommand, ...rest] = args;
+    const decisionType = DECISION_COMMANDS.find((type) => type === subcommand);
+    if (decisionType !== undefined) return decide(decisionType, rest);
     if (subcommand !== 'status') throw new UsageError(subcommand ? `Unknown identity command: ${subcommand}` : 'photos identity needs a command.');
     const { values } = strictly(() => parseArgs({ args: rest, options: { json: { type: 'boolean' } }, strict: true }));
     const status = await identityStatus();
