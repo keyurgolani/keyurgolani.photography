@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# Runs the built image's watcher with --once against a generated fixture
+# library and checks that it never deletes a derivative, then starts the web
+# server on that library and checks that the removed image endpoints return
+# 404 and legacy derivatives no longer send `immutable`.
+#
+#   IMAGE=ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke ci/smoke-watcher-once.sh
+#
+# $IMAGE must already exist locally. Run `npm ci` first: the library comes
+# from test/fixtures/makeLibrary.ts, so no fixture binaries are committed.
+# WATCHER_CMD overrides the watcher command. Binds a random port on 127.0.0.1.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+IMAGE=${IMAGE:-ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke}
+WATCHER_CMD=${WATCHER_CMD:-npx tsx scripts/imageWatcher.ts}
+read -r -a WATCHER <<<"$WATCHER_CMD"
+
+TMP=$(mktemp -d)
+LIB=$TMP/library
+WEB=photography-smoke-watcher-$$
+WEB_STARTED=false
+OUTPUTS=(
+  thumbnails/%s.webp medium/%s.webp optimized/%s.webp
+  thumbnails-avif/%s.avif medium-avif/%s.avif optimized-avif/%s.avif
+  lqip/%s.txt
+)
+
+fail() {
+  echo "::error::$1"
+  exit 1
+}
+
+cleanup() {
+  status=$?
+  set +e
+  if [ "$WEB_STARTED" = true ]; then
+    if [ "$status" -ne 0 ]; then
+      echo "Smoke test failed. Web container logs:"
+      docker logs "$WEB"
+    fi
+    docker rm -f "$WEB" >/dev/null
+  fi
+  # The watcher creates the derivative folders as uid 1001.
+  docker run --rm -v "$TMP:/t" alpine rm -rf /t/library
+  rm -rf "$TMP"
+  exit "$status"
+}
+trap cleanup EXIT
+
+run_once() {
+  docker run --rm -e PHOTOGRAPHY_LIBRARY_DIR=/library -v "$LIB:/library" "$IMAGE" "${WATCHER[@]}" --once
+}
+
+# Fails unless all seven derivatives of <base> exist and are non-empty.
+require_outputs() {
+  local base=$1 context=$2 pattern output
+  for pattern in "${OUTPUTS[@]}"; do
+    # shellcheck disable=SC2059 # the pattern is ours, with one %s
+    output=$(printf "$pattern" "$base")
+    [ -s "$LIB/$output" ] || fail "$context: $output is missing or empty."
+  done
+}
+
+# 1. A generated library the container's uid 1001 can write into.
+npx tsx test/fixtures/makeLibrary.ts "$LIB"
+chmod 777 "$LIB"
+
+# 2. --once writes all seven derivatives for each fixture.
+echo "Running ${WATCHER_CMD} --once in $IMAGE."
+run_once || fail "The first --once run exited non-zero."
+for base in landscape portrait square; do
+  require_outputs "$base" "After the first --once run"
+done
+count=$(find "$LIB/optimized" -maxdepth 1 -name '*.webp' | wc -l | tr -d ' ')
+[ "$count" -eq 3 ] || fail "Expected 3 optimized/*.webp after the first --once run, found $count."
+echo "--once wrote all seven derivatives for each fixture."
+
+# 3. With a source gone, another --once run keeps its derivatives.
+rm "$LIB/landscape.jpg"
+run_once || fail "The second --once run exited non-zero."
+require_outputs landscape "After removing landscape.jpg"
+echo "--once kept landscape's derivatives after landscape.jpg was removed."
+
+# 4. A missing library root exits 1 instead of being recreated.
+set +e
+docker run --rm -e PHOTOGRAPHY_LIBRARY_DIR=/tmp/missing-library "$IMAGE" "${WATCHER[@]}" --once
+code=$?
+set -e
+[ "$code" -eq 1 ] || fail "--once exited $code on a missing library root, expected 1."
+echo "--once exited 1 on a missing library root."
+
+# 5. The web server, with the library at its default path. Next serves only
+#    public/ files present at startup, so it starts after the derivatives exist.
+docker run -d --name "$WEB" -p 127.0.0.1::3000 -v "$LIB:/app/public/assets/photos" "$IMAGE" >/dev/null
+WEB_STARTED=true
+address=$(docker port "$WEB" 3000/tcp)
+address=${address%%$'\n'*}
+BASE_URL=http://127.0.0.1:${address##*:}
+
+deadline=$((SECONDS + 60))
+until [ "$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "$BASE_URL/")" = 200 ]; do
+  [ "$SECONDS" -lt "$deadline" ] || fail "GET / did not return 200 within 60s."
+  sleep 1
+done
+echo "GET / returned 200."
+
+code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/api/photos/optimize") ||
+  fail "POST /api/photos/optimize failed."
+[ "$code" = 404 ] || fail "POST /api/photos/optimize returned $code, expected 404."
+code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$BASE_URL/api/image?src=portrait.png") ||
+  fail "GET /api/image failed."
+[ "$code" = 404 ] || fail "GET /api/image?src=portrait.png returned $code, expected 404."
+echo "The removed image endpoints return 404."
+
+code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' \
+  "$BASE_URL/assets/photos/optimized/portrait.webp") || fail "GET optimized/portrait.webp failed."
+[ "$code" = 200 ] || fail "GET optimized/portrait.webp returned $code, expected 200."
+cache_control=$(tr -d '\r' <"$TMP/headers.txt" | grep -i '^cache-control:' || true)
+case $cache_control in
+  *immutable*) fail "optimized/portrait.webp still sends immutable ($cache_control)." ;;
+esac
+echo "optimized/portrait.webp returned 200 with ${cache_control:-no Cache-Control header}."

@@ -89,7 +89,6 @@ const DynamicHeroCarousel: React.FC<DynamicHeroCarouselProps> = ({
                 }
                 const data: ImageItem[] = await response.json();
                 // Use pre-optimized image paths directly (already WebP format)
-                // The /api/image route will serve these if they exist, but direct paths are faster
                 const carouselImages = data.map(img => ({
                     thumbnail: img.thumbnail,  // Pre-generated 400px WebP
                     optimized: img.optimized, // Pre-generated 1920px WebP

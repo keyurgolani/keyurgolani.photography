@@ -4,6 +4,11 @@
  * 
  * Watches the photos directory for changes and processes new images automatically.
  * Uses chokidar for reliable file watching in Docker bind-mount scenarios.
+ * It never deletes a source or a derivative. Removing a source keeps its
+ * derivatives, and `npm run images:cleanup` reviews the leftovers.
+ *
+ * The library root is PHOTOGRAPHY_LIBRARY_DIR, or public/assets/photos under
+ * the working directory. Both modes exit 1 if the root is missing.
  * 
  * Usage:
  *   # Watch mode (continuous)
@@ -14,22 +19,24 @@
  *   
  *   # Process and exit
  *   npx tsx scripts/imageWatcher.ts --once
+ *
+ *   # Regenerate every derivative, not only missing or outdated ones
+ *   npx tsx scripts/imageWatcher.ts --once --force
  */
 
-import path from 'path';
 import chokidar from 'chokidar';
-import { 
-    processImage, 
-    reprocessImage, 
-    getUnprocessedFiles, 
-    processAllImages, 
+import {
     ensureDirectories,
-    cleanupOrphaned,
-    PHOTOS_DIR 
+    filesToProcess,
+    libraryPaths,
+    libraryRootExists,
+    processAllImages,
 } from '../utils/imageOptimizer';
+import { createWatcherHandlers } from '../utils/watcherHandlers';
 
 const WATCH_MODE = process.argv.includes('--watch');
 const ONCE_MODE = process.argv.includes('--once') || !WATCH_MODE;
+const FORCE = process.argv.includes('--force');
 
 // Directories to skip when watching
 const SKIP_DIRS = [
@@ -43,10 +50,22 @@ const SKIP_DIRS = [
     'cache',
 ];
 
+/** Exit 1 instead of recreating a missing root, which would hide an unmounted library. */
+function requireLibraryRoot(): string {
+    const { root } = libraryPaths();
+    if (!libraryRootExists(root)) {
+        console.error(
+            `[ImageWatcher] Library root not found: ${root}. Check the mount or PHOTOGRAPHY_LIBRARY_DIR. Nothing was processed.`,
+        );
+        process.exit(1);
+    }
+    return root;
+}
+
 async function processUnprocessedImages(): Promise<void> {
     console.log('[ImageWatcher] Checking for unprocessed images...');
     
-    const unprocessed = getUnprocessedFiles();
+    const unprocessed = filesToProcess({ force: FORCE });
     
     if (unprocessed.length === 0) {
         console.log('[ImageWatcher] All images are processed.');
@@ -57,7 +76,7 @@ async function processUnprocessedImages(): Promise<void> {
     
     const result = await processAllImages((current, total, file) => {
         console.log(`[ImageWatcher] Processing ${current}/${total}: ${file}`);
-    });
+    }, { force: FORCE });
     
     console.log(`[ImageWatcher] Completed: ${result.processed.length} processed, ${result.errors.length} errors`);
     
@@ -69,21 +88,20 @@ async function processUnprocessedImages(): Promise<void> {
 }
 
 function startWatcher(): void {
+    const root = requireLibraryRoot();
     ensureDirectories();
     
-    console.log(`[ImageWatcher] Starting chokidar watcher for: ${PHOTOS_DIR}`);
+    console.log(`[ImageWatcher] Starting chokidar watcher for: ${root}`);
     
-    // Initial processing
-    processUnprocessedImages().catch(console.error);
+    const handlers = createWatcherHandlers();
     
-    // Also clean up orphaned files on startup
-    const cleaned = cleanupOrphaned();
-    if (cleaned.length > 0) {
-        console.log(`[ImageWatcher] Cleaned up ${cleaned.length} orphaned files`);
-    }
+    // Queue offline changes before live events, so each source's startup job runs first
+    handlers.queueStartupBatch({ force: FORCE }).catch((error) => {
+        console.error('[ImageWatcher] Startup batch failed:', error);
+    });
     
     // Set up chokidar watcher with Docker-friendly options
-    const watcher = chokidar.watch(PHOTOS_DIR, {
+    const watcher = chokidar.watch(root, {
         persistent: true,
         ignoreInitial: true, // Don't fire events for existing files on startup
         usePolling: true, // Reliable in Docker bind mounts
@@ -104,43 +122,19 @@ function startWatcher(): void {
         },
     });
     
-    // Handle new/changed files
-    watcher.on('add', async (filePath: string) => {
-        const ext = path.extname(filePath).toLowerCase();
-        if (!['.jpg', '.jpeg', '.png', '.webp'].includes(ext)) return;
-        
-        const filename = path.basename(filePath);
-        console.log(`[ImageWatcher] New file detected: ${filename}`);
-        
-        try {
-            await processImage(filename);
-            console.log(`[ImageWatcher] Processed: ${filename}`);
-        } catch (error) {
-            console.error(`[ImageWatcher] Error processing ${filename}:`, error);
-        }
+    // New files, including one copied back after a delete, regenerate in place
+    watcher.on('add', (filePath: string) => {
+        void handlers.onAdd(filePath);
     });
     
-    // Handle file changes (reprocess if source is updated)
-    watcher.on('change', async (filePath: string) => {
-        const ext = path.extname(filePath).toLowerCase();
-        if (!['.jpg', '.jpeg', '.png', '.webp'].includes(ext)) return;
-        
-        const filename = path.basename(filePath);
-        console.log(`[ImageWatcher] File changed, reprocessing: ${filename}`);
-        
-        try {
-            await reprocessImage(filename);
-            console.log(`[ImageWatcher] Reprocessed: ${filename}`);
-        } catch (error) {
-            console.error(`[ImageWatcher] Error reprocessing ${filename}:`, error);
-        }
+    // Changed files, including a save-by-rename, regenerate in place
+    watcher.on('change', (filePath: string) => {
+        void handlers.onChange(filePath);
     });
     
-    // Handle file unlinking
+    // Removing a source keeps its derivatives
     watcher.on('unlink', (filePath: string) => {
-        console.log(`[ImageWatcher] File removed: ${path.basename(filePath)}`);
-        // Clean up orphaned processed files
-        cleanupOrphaned();
+        handlers.onUnlink(filePath);
     });
     
     watcher.on('error', (error) => {
@@ -169,16 +163,17 @@ function startWatcher(): void {
     console.log('[ImageWatcher] Watching for changes. Press Ctrl+C to exit.');
 }
 
+async function runOnce(): Promise<void> {
+    console.log('[ImageWatcher] Running in one-shot mode...');
+    requireLibraryRoot();
+    ensureDirectories();
+    await processUnprocessedImages();
+}
+
 // Main execution
 if (ONCE_MODE) {
-    console.log('[ImageWatcher] Running in one-shot mode...');
-    processUnprocessedImages()
+    runOnce()
         .then(() => {
-            // Also clean up orphaned files
-            const cleaned = cleanupOrphaned();
-            if (cleaned.length > 0) {
-                console.log(`[ImageWatcher] Cleaned up ${cleaned.length} orphaned files`);
-            }
             console.log('[ImageWatcher] Done.');
             process.exit(0);
         })

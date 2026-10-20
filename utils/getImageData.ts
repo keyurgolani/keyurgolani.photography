@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import sharp from 'sharp';
 import exifFromBuffer from 'exif-reader';
-import { getImagePaths, ensureDirectories, getLqipBase64, PHOTOS_DIR } from './imageOptimizer';
+import { getImagePaths, ensureDirectories, getLqipBase64, libraryPaths, libraryRootExists } from './imageOptimizer';
 
 export interface ImageItem {
     id: number;
@@ -21,10 +21,10 @@ export interface ImageItem {
 }
 
 export async function getGalleryImages(): Promise<ImageItem[]> {
-    const photosDir = PHOTOS_DIR;
+    const photosDir = libraryPaths().root;
     
     // Return empty if photos directory doesn't exist
-    if (!fs.existsSync(photosDir)) {
+    if (!libraryRootExists(photosDir)) {
         return [];
     }
     
@@ -38,12 +38,15 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
     }
 
     const files = fs.readdirSync(photosDir).filter(file => 
-        /\.(jpg|jpeg|png|webp)$/i.test(file) &&
-        !fs.statSync(path.join(photosDir, file)).isDirectory()
+        /\.(jpg|jpeg|png|webp)$/i.test(file)
     );
 
-    const images = await Promise.all(files.map(async (file, index) => {
+    const readItem = async (file: string, index: number): Promise<ImageItem | null> => {
         const filePath = path.join(photosDir, file);
+        if (fs.statSync(filePath).isDirectory()) {
+            return null;
+        }
+
         // Use sharp with file path to avoid reading full buffer into memory
         const metadata = await sharp(filePath).metadata();
         
@@ -114,7 +117,7 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
         // Fallback if empty
         if (!caption) caption = '';
 
-        // Always use original source path - /api/image handles format negotiation (AVIF/WebP)
+        // `src` is the original source path. Clients pick the pre-generated WebP/AVIF derivatives below.
         const src = imagePaths.original;
         
         return {
@@ -132,8 +135,20 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
             date: dateTaken.getTime(),
             lqip: lqip,
         };
+    };
+
+    // One undecodable or vanished file is logged and left out, so the others still list
+    const images = await Promise.all(files.map(async (file, index) => {
+        try {
+            return await readItem(file, index);
+        } catch (error) {
+            console.error(`[getGalleryImages] Skipping ${file}: ${error instanceof Error ? error.message : String(error)}`);
+            return null;
+        }
     }));
 
     // Sort: Newest First
-    return images.sort((a, b) => b.date - a.date);
+    return images
+        .filter((image): image is ImageItem => image !== null)
+        .sort((a, b) => b.date - a.date);
 }

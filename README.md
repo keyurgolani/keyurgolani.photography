@@ -38,7 +38,6 @@ A modern, high-performance photography portfolio website built with Next.js 16, 
 ### ⚡ Performance
 - **Next.js Image Optimization** - Automatic AVIF/WebP format negotiation
 - **Multi-size Image Pipeline** - Pre-generated thumbnails (400px), medium (800px), and full (1920px)
-- **Dynamic Image API** - On-demand image resizing with disk caching
 - **ISR Caching** - Incremental Static Regeneration for fast API responses
 - **Docker Ready** - Production-optimized containerized deployment
 
@@ -102,7 +101,7 @@ docker compose -f docker-compose.prod.yml up -d
 
 ```
 ├── app/                    # Next.js App Router pages
-│   ├── api/               # API routes (photos, image optimization)
+│   ├── api/               # API route for the photo list
 │   ├── gallery/           # Gallery page
 │   ├── about/             # About page
 │   └── page.tsx           # Home page
@@ -113,8 +112,10 @@ docker compose -f docker-compose.prod.yml up -d
 │   └── LoadingAnimation.tsx # Loading screen animation
 ├── utils/                 # Utility functions
 │   ├── getImageData.ts    # Image metadata extraction
-│   └── imageOptimizer.ts  # Sharp-based image processing
+│   ├── imageOptimizer.ts  # Sharp-based image processing
+│   └── watcherHandlers.ts # Watcher event handlers and job queue
 ├── scripts/               # Background scripts
+│   ├── imageCleanup.ts    # Reviews and deletes leftover derivatives
 │   └── imageWatcher.ts    # File watcher for new photos
 ├── public/                # Static assets
 │   └── assets/photos/     # Photo storage directory
@@ -132,6 +133,17 @@ docker compose -f docker-compose.prod.yml up -d
    - Creates LQIP placeholders
 3. **Gallery updates** automatically on next page load
 
+### Replacing and Removing Photos
+- **Replace** a photo by saving over it under the same name. The watcher regenerates its derivatives from the new file and swaps them in only once all seven are written, so a failed run keeps the old ones.
+- **Delete** a photo to hide it. It drops out of the gallery, but its derivatives stay, so restoring the file brings it back.
+- **Review leftovers** with `npm run images:cleanup`. It lists each derivative no photo needs anymore, with the reason, and deletes nothing until you add `-- --apply`. In production, run it in the watcher container:
+
+  ```bash
+  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts
+  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts --apply
+  ```
+- **Regenerate everything** with `npm run images:process -- --force`, for example after copying in files that kept an older modification time.
+
 ### Supported Formats
 - JPEG (.jpg, .jpeg)
 - PNG (.png)
@@ -145,6 +157,7 @@ docker compose -f docker-compose.prod.yml up -d
 |----------|-------------|---------|
 | `NEXT_PUBLIC_CAROUSEL_INTERVAL` | Hero carousel slide duration (ms) | 12000 |
 | `NEXT_PUBLIC_UI_AUTO_HIDE_TIMEOUT` | UI auto-hide timeout on home page (ms) | 3000 |
+| `PHOTOGRAPHY_LIBRARY_DIR` | Photo library folder for the watcher, `images:cleanup`, and `/api/photos`. The site serves photos only from `public/assets/photos`, so leave it unset outside tests. | `public/assets/photos` |
 
 ### Docker Configuration
 
