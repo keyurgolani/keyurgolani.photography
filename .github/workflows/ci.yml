@@ -132,6 +132,11 @@ jobs:
       - name: Smoke test the image
         run: ci/smoke-image.sh ci-smoke
 
+      - name: Smoke test the watcher's --once mode
+        env:
+          IMAGE: ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke
+        run: bash ci/smoke-watcher-once.sh
+
   # Fails on a high or critical advisory in a production dependency unless
   # .github/audit-allowlist.json lists it. npm audit reads only the lockfile,
   # so the job skips npm ci.

@@ -14,7 +14,8 @@
     "lint": "eslint .",
     "images:watch": "npx tsx scripts/imageWatcher.ts --watch",
     "images:process": "npx tsx scripts/imageWatcher.ts --once",
-    "images:optimize": "curl -X POST http://localhost:3000/api/photos/optimize"
+    "images:optimize": "npm run images:process --",
+    "images:cleanup": "npx tsx scripts/imageCleanup.ts"
   },
   "dependencies": {
     "chokidar": "^5.0.0",

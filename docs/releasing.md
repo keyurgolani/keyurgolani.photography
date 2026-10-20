@@ -10,7 +10,7 @@ Every pull request runs `.github/workflows/ci.yml`, whether it targets `main` or
 |---|---|
 | `Lint, unit tests, build` | Checks that `.nvmrc` holds a bare Node major and the `Dockerfile` base image matches it, then runs `npm ci`, `npm run lint`, `npm test -- --run`, and `npm run build`. |
 | `Browser tests` | Runs `npm run test:e2e` with Playwright. Until `package.json` has that script, it passes with a notice. |
-| `Image smoke test` | Runs `ci/check-compose.sh`, builds the image, checks that it runs the Node major in `.nvmrc`, and runs `ci/smoke-image.sh` against it. |
+| `Image smoke test` | Runs `ci/check-compose.sh`, builds the image, checks that it runs the Node major in `.nvmrc`, and runs `ci/smoke-image.sh` against it. Then it runs `ci/smoke-watcher-once.sh`, which has the image generate a fixture library from the checkout's `test/fixtures`, runs the image's watcher with `--once` on it, checks that it deletes nothing after a photo is removed and exits 1 on a missing library, and checks the web server's image routes. |
 | `Production audit` | Runs `ci/audit-gate.mjs`, which runs `npm audit --omit=dev` and fails on a high or critical advisory that `.github/audit-allowlist.json` doesn't list. It reads only the lockfile, so it skips `npm ci`. |
 | `CI result` | Fails unless all four jobs above succeeded. |
 
@@ -139,9 +139,24 @@ docker compose -f docker-compose.prod.yml up -d
 
 Both services switch together. Every `docker compose -f docker-compose.prod.yml` command needs `PHOTOGRAPHY_IMAGE_TAG`, not just `up`, so `pull`, `ps`, `logs`, and `down` refuse to run without it too. A `PHOTOGRAPHY_IMAGE_TAG` exported in your shell overrides `.env`. Nothing pulls `:latest` anymore, so every release needs this `.env` edit.
 
+The first release with Phase 0 of [replacement and missing files (#17)](https://github.com/keyurgolani/keyurgolani.photography/issues/17) needs one more step. Before it, derivative URLs were marked `immutable` for a year, and `./.next-images-cache` holds `/_next/image` copies made under that header. Clear it once while `web` is stopped. The cache files belong to the container's uid 1001, and a host user's `rm` can fail on them, so this runs `rm` inside the `web` image:
+
+```bash
+docker compose -f docker-compose.prod.yml stop web
+docker compose -f docker-compose.prod.yml run --rm --no-deps web sh -c 'rm -rf /app/.next/cache/images/*'
+docker compose -f docker-compose.prod.yml start web
+```
+
+Then run `images:cleanup` once. Its dry run lists what the old pipeline left behind, including every `cache/dynamic` file from the removed `/api/image` route, and the second command deletes exactly that list:
+
+```bash
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts --apply --plan <hash>
+```
+
 ## Rollback
 
-Before changing `.env`, note the tag the host runs now. To roll back, set `PHOTOGRAPHY_IMAGE_TAG` back to that tag and run the same two commands. That swaps the code, not the photo library. Whether an older release can read data a newer one wrote is part of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10).
+Before changing `.env`, note the tag the host runs now. To roll back, set `PHOTOGRAPHY_IMAGE_TAG` back to that tag and run the same two commands. That swaps the code, not the photo library. Rolling back to a release before Phase 0 of #17 brings back the watcher's startup cleanup, which deletes the derivative sets this release keeps for removed photos. Whether an older release can read data a newer one wrote is part of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10).
 
 Never roll back to `v1.0.0`. That image, on GHCR and on Docker Hub, is the initial commit and can't run under this compose file.
 
