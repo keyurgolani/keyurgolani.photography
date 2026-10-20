@@ -466,7 +466,8 @@ describe('scripts/photos.ts', { timeout: 120_000 }, () => {
         [['migrate', '--dry-run', 'extra'], /Unexpected argument 'extra'/],
         [['identity', 'status', '--verbose'], /Unknown option '--verbose'/],
         [['identity', 'status', 'extra'], /Unexpected argument 'extra'/],
-        [['identity', 'bind'], /Unknown identity command/],
+        [['identity', 'merge'], /Unknown identity command: merge/],
+        [['identity', 'bind'], /identity bind needs a path and a photo ID/],
         [[], /No command given/],
     ])('exits 2 with usage for %j', async (args, message) => {
         const run = await runTsx('scripts/photos.ts', args);
