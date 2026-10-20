@@ -6,6 +6,15 @@ import type { AssetRevisionRecord, DerivativeJob, Hold, IdentityFact, PhotoRecor
 /** A file changed this recently waits for the next pass. */
 export const STABILITY_MS = 5_000;
 
+/**
+ * Whether a file changed within STABILITY_MS of `observedAt`, either way, so
+ * it may still be being written or moved. Uses the later of mtime and ctime,
+ * since a rename or copy changes only the ctime.
+ */
+export function isStillChanging(entry: Pick<ScanEntry, 'mtimeMs' | 'ctimeMs'>, observedAt: number): boolean {
+    return Math.abs(observedAt - Math.max(entry.mtimeMs, entry.ctimeMs)) < STABILITY_MS;
+}
+
 /** A fact before it is committed. The pass that commits it mints its factId. */
 export type FactDraft = Omit<IdentityFact, 'factId'>;
 
@@ -120,8 +129,7 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
     // 1. Observe every scanned file. Fresh, changing, and unreadable files are not classified.
     const seen: Seen[] = [];
     for (const entry of scan.entries) {
-        const fresh = Math.abs(scan.observedAt - Math.max(entry.mtimeMs, entry.ctimeMs)) < STABILITY_MS;
-        const inspection = fresh ? undefined : inspect(entry);
+        const inspection = isStillChanging(entry, scan.observedAt) ? undefined : inspect(entry);
         if (entry.kind === 'unsupported') {
             if (!inspection || inspection.kind === 'changed') report.unstable.push(entry.path);
             else if (inspection.kind === 'unreadable') report.unreadable.push(entry.path);

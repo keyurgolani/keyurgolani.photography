@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import sharp from 'sharp';
 import { libraryRoot } from '../lib/storage/config';
+import { hasErrorCode } from '../lib/storage/fsx';
 
 export interface LibraryPaths {
     root: string;
@@ -151,9 +152,8 @@ export function baseNameOf(filename: string): string {
     return path.basename(filename, path.extname(filename));
 }
 
-export function hasErrorCode(error: unknown, code: string): boolean {
-    return typeof error === 'object' && error !== null && (error as NodeJS.ErrnoException).code === code;
-}
+/** The shared errno check, re-exported for callers of the image pipeline. */
+export { hasErrorCode };
 
 /**
  * Create the derivative folders inside an existing library root. Never creates

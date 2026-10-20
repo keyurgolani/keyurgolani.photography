@@ -6,7 +6,7 @@ import { LockTimeoutError, withLock, type LockRecord } from '../storage/lock';
 import { sha256, type Hasher } from './ids';
 import { inspectEntry, type Inspection } from './inspect';
 import { currentProfileId } from './profile';
-import { reconcile, STABILITY_MS, type FactDraft, type ReconcileReport } from './reconcile';
+import { isStillChanging, reconcile, type FactDraft, type ReconcileReport } from './reconcile';
 import { emptyStatCache, readRegistry, readStatCache, writeRegistry, writeStatCache, type StatCache, type StatCacheEntry } from './registry';
 import { scanLibrary, type LibraryScan } from './scan';
 import type { DerivativeJob, IdentityFact, Registry } from './types';
@@ -62,7 +62,7 @@ export async function observeLibrary(
         const cached = statCache.entries[entry.path];
         const unchanged = cached !== undefined && cached.size === entry.size && cached.mtimeMs === entry.mtimeMs &&
             cached.ctimeMs === entry.ctimeMs && cached.ino === entry.ino && (cached.inspection.kind === 'image') === (entry.kind === 'source');
-        if (Math.abs(scan.observedAt - Math.max(entry.mtimeMs, entry.ctimeMs)) < STABILITY_MS) {
+        if (isStillChanging(entry, scan.observedAt)) {
             // Too fresh to read. reconcile() skips it, and its cache entry carries over.
             if (unchanged) entries[entry.path] = cached;
             continue;

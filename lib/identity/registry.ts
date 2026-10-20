@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteJson, type AtomicWriteFaults } from '../storage/atomicWrite';
-import { checkSchemaVersion, CorruptDocumentError, readJsonFile, writeVersionedDocument } from '../storage/document';
+import { checkSchemaVersion, CorruptDocumentError, isRecord, readJsonFile, writeVersionedDocument } from '../storage/document';
 import { hasErrorCode } from '../storage/fsx';
 import { ASSET_REVISION_RE, PHOTO_ID_RE } from './ids';
 import type { ImageInspection, UnsupportedInspection } from './inspect';
@@ -20,10 +20,6 @@ export function identityPaths(root: string) {
         decisions: path.join(dir, 'decisions'),
         migration: path.join(dir, 'migration'),
     };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 const HEALTH = new Set(['present', 'missing', 'ambiguous', 'archived']);

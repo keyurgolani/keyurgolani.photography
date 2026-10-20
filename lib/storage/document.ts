@@ -76,7 +76,8 @@ export async function readJsonFile(file: string): Promise<unknown | null> {
     }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+/** A parsed JSON object: not null and not an array. */
+export function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
