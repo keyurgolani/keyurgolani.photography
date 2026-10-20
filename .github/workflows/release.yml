@@ -92,13 +92,21 @@ jobs:
       - name: Resolve the published digest
         id: digest
         run: |
-          source="ghcr.io/${GITHUB_REPOSITORY,,}:sha-${GITHUB_SHA::7}"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          source="$image:sha-${GITHUB_SHA::7}"
           digest=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$source" | jq -r .digest)
           if [[ ! $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
             echo "::error::Could not resolve the digest of $source."
             exit 1
           fi
-          echo "$source is $digest"
+          # Seven characters can collide, so make sure this commit built it.
+          revision=$(docker buildx imagetools inspect --format '{{json .Image}}' "$image@$digest" |
+            jq -r '[.. | .Labels? | objects | .["org.opencontainers.image.revision"]] | unique | .[]')
+          if [ "$revision" != "$GITHUB_SHA" ]; then
+            echo "::error::$source was built from ${revision:-an unknown commit}, not $GITHUB_SHA."
+            exit 1
+          fi
+          echo "$source is $digest, built from $GITHUB_SHA"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Check the version is not taken
@@ -114,7 +122,7 @@ jobs:
               exit 1
             fi
             echo "$target already points at $DIGEST, so this is a re-run."
-          elif grep -qi 'not found' "$RUNNER_TEMP/inspect.err"; then
+          elif grep -qiE 'not found|manifest unknown|no such manifest' "$RUNNER_TEMP/inspect.err"; then
             echo "$target does not exist yet."
           else
             cat "$RUNNER_TEMP/inspect.err"

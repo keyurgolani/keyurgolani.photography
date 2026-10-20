@@ -78,9 +78,10 @@ The tag starts `Release` (`.github/workflows/release.yml`). Its `Promote release
 
 1. Runs `ci/release-plan.mjs`, which fails unless the tag is `vX.Y.Z` and matches `version` in `package.json` at the tagged commit. Pre-release tags such as `v1.2.0-rc.1` fail too. To try a build on the host before releasing it, pin its `sha-` tag.
 2. Waits up to 40 minutes for that commit's `Publish to GHCR` job. If the job failed, was skipped, or never ran, the release fails without publishing anything.
-3. Fails if GHCR already has `vX.Y.Z` with a different digest. The same digest means a re-run, which succeeds and changes nothing.
-4. Copies `sha-<commit>` to `vX.Y.Z`, and to `latest` when `vX.Y.Z` is the highest `vX.Y.Z` tag in the repository, then checks that every new tag has the same digest. Versions compare as numbers, so `v0.10.0` beats `v0.9.0`, and pushing an old tag again never moves `latest` back.
-5. Mirrors the same tags to Docker Hub by digest.
+3. Looks up the digest of `sha-<commit>` and checks that its `org.opencontainers.image.revision` label is the tagged commit, since seven characters can collide.
+4. Fails if GHCR already has `vX.Y.Z` with a different digest. The same digest means a re-run, which succeeds and changes nothing.
+5. Copies `sha-<commit>` to `vX.Y.Z`, and to `latest` when `vX.Y.Z` is the highest `vX.Y.Z` tag in the repository, then checks that every new tag has the same digest. Versions compare as numbers, so `v0.10.0` beats `v0.9.0`, and pushing an old tag again never moves `latest` back.
+6. Mirrors the same tags to Docker Hub by digest.
 
 The job summary shows the version, the digest, whether `latest` moved, and the `PHOTOGRAPHY_IMAGE_TAG=` line for the host.
 
