@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { ASSET_REVISION_RE, PHOTO_ID_RE, PROFILE_ID_RE } from '../identity/ids';
-import { VARIANT_FORMATS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth } from '../identity/variants';
+import { VARIANT_FILE_RE, VARIANT_FORMATS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth } from '../identity/variants';
 import { dataRoot } from '../storage/config';
 import { isInside } from '../storage/fsx';
 import type { AssetRef } from './url';
@@ -11,8 +11,8 @@ import type { AssetRef } from './url';
  * checked against its ID pattern, so no path built here can leave the store.
  */
 
-/** The last segment of a media URL: `w400.avif` and so on. */
-export const VARIANT_FILE_RE = /^w(400|800|1200|1920)\.(avif|webp)$/;
+/** The last segment of a media URL: `w400.avif` and so on. One pattern, defined beside the variants. */
+export { VARIANT_FILE_RE };
 
 export class MediaPathError extends Error {
     constructor(message: string) {
