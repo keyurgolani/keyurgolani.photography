@@ -14,3 +14,4 @@ docs
 SHOWCASE.md
 docker-compose.prod.yml
 .nvmrc
+.next

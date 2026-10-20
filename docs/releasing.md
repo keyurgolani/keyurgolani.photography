@@ -10,10 +10,13 @@ Every pull request runs `.github/workflows/ci.yml`, whether it targets `main` or
 |---|---|
 | `Lint, unit tests, build` | Checks that `.nvmrc` holds a bare Node major and the `Dockerfile` base image matches it, then runs `npm ci`, `npm run lint`, `npm test -- --run`, and `npm run build`. |
 | `Browser tests` | Runs `npm run test:e2e` with Playwright. Until `package.json` has that script, it passes with a notice. |
-| `Image smoke test` | Runs `ci/check-compose.sh`, builds the image, and runs `ci/smoke-image.sh` against it. |
-| `CI result` | Fails unless all three jobs above succeeded. |
+| `Image smoke test` | Runs `ci/check-compose.sh`, builds the image, checks that it runs the Node major in `.nvmrc`, and runs `ci/smoke-image.sh` against it. |
+| `Production audit` | Runs `ci/audit-gate.mjs`, which runs `npm audit --omit=dev` and fails on a high or critical advisory that `.github/audit-allowlist.json` doesn't list. It reads only the lockfile, so it skips `npm ci`. |
+| `CI result` | Fails unless all four jobs above succeeded. |
 
 `CI result` is the only required check. A new push to a PR cancels its running CI. `next build` downloads Inter and Montserrat from Google Fonts, so a Google Fonts outage turns CI red until the fonts are self-hosted.
+
+`Production audit` can also turn CI red with no code change. That happens when the npm advisory service is unreachable, when a new high or critical advisory lands on a production dependency, or when an allowlist entry expires. Each of these also fails the `ci` job of a `main` publish, so nothing publishes and no release can be cut until it's fixed. [When the audit blocks `main`](#when-the-audit-blocks-main) covers the recovery.
 
 `ci/check-compose.sh` checks that every image line in `docker-compose.prod.yml` is exactly `ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?...}`, that Compose resolves every service to that one tag and refuses the file when the variable is unset, that the file has no `:latest`, and that the services Compose starts by default are exactly the ones in `ci/smoke-services`, the list `ci/smoke-image.sh` starts. A PR that adds a service lists it there and extends the smoke test to check it.
 
@@ -25,7 +28,28 @@ ci/check-compose.sh
 ci/smoke-image.sh ci-smoke
 ```
 
-A PR runs its own copy of `ci.yml` and `ci/`, so a PR that edits `.github/workflows/` or `ci/` can weaken the check that gates it. Read those diffs by hand.
+A PR runs its own copy of `ci.yml` and `ci/`, so a PR that edits `.github/workflows/`, `ci/`, or `.github/audit-allowlist.json` can weaken the check that gates it. Read those diffs by hand.
+
+## The audit allowlist
+
+`.github/audit-allowlist.json` is a JSON array, empty by default. Each entry lets one advisory through until it expires:
+
+```json
+[
+  {
+    "id": "GHSA-xxxx-xxxx-xxxx",
+    "package": "next",
+    "reason": "Why the advisory doesn't reach this site.",
+    "expires": "YYYY-MM-DD"
+  }
+]
+```
+
+All four fields are required. `id` is the advisory's GHSA ID, or `npm:<number>` for an advisory without one, and `package` is the vulnerable package as `npm audit` names it. The entry covers that advisory through its `expires` date in UTC, which can be at most 90 days out, and the audit fails from the next day. Add one only when no release of the package, or of the parent that pins it, fixes the advisory, and try an npm `overrides` pin first. An entry that matches nothing only warns, so the PR that fixes the advisory stays green. Delete the entry in that PR or the next one.
+
+## Dependency updates
+
+Dependabot opens grouped weekly version updates against `next`, as `.github/dependabot.yml` sets up, and they go through the same CI and promotion as any other PR. Security updates, once they're turned on in Code security settings, always open against `main`, and the groups and ignores in `dependabot.yml` don't apply to them. Since `main` only moves by promotion, land a security PR's change through a PR into `next` and close it, and if one does get merged on `main`, merge `main` back into `next` before the next promotion.
 
 ## Rulesets
 
@@ -56,6 +80,20 @@ Every push to `main` runs `Publish image` (`.github/workflows/publish.yml`):
 `main` never writes `latest` or a version tag. Publishes run one at a time, in push order, and waiting runs queue instead of being dropped. To retry a failed one, use Re-run failed jobs.
 
 The mirror needs the `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` secrets. Without them it warns and succeeds. A Docker Hub failure fails only the mirror job, never the GHCR publish or a release.
+
+### When the audit blocks `main`
+
+When `Production audit` fails in a `main` publish, that commit never gets a `sha-` tag, so it can't be released. Re-run failed jobs only helps when the advisory service was unreachable. For a new advisory or an expired allowlist entry:
+
+1. Land a fix, or a dated allowlist entry, through a PR into `next`.
+2. Promote `next` to `main` again, and wait for that merge's `Publish to GHCR` job to succeed.
+3. If a release tag was already pushed on the blocked commit, delete it with the admin bypass on the tag ruleset, since every `vX.Y.Z` tag counts when deciding `latest`:
+
+   ```bash
+   git push origin --delete vX.Y.Z
+   ```
+
+4. Tag the new `main` commit.
 
 ## Cutting a release
 

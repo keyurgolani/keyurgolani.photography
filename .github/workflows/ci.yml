@@ -116,8 +116,37 @@ jobs:
           # tests the digest it pushes, so main doesn't depend on this cache.
           cache-to: type=gha,mode=max,ignore-error=true
 
+      # The Dockerfile pins its base by tag and digest, so a Node bump that
+      # updates the tag but not the digest would still build the old Node.
+      # This runs before the smoke test, so a wrong runtime fails fast.
+      - name: Check the image runs the Node major in .nvmrc
+        run: |
+          node_major=$(cat .nvmrc)
+          version=$(docker run --rm --pull never ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke node --version)
+          echo "The image runs Node $version."
+          if [[ $version != "v${node_major}."* ]]; then
+            echo "::error file=Dockerfile::The image runs Node $version, but .nvmrc says ${node_major}. Check the base image digest."
+            exit 1
+          fi
+
       - name: Smoke test the image
         run: ci/smoke-image.sh ci-smoke
+
+  # Fails on a high or critical advisory in a production dependency unless
+  # .github/audit-allowlist.json lists it. npm audit reads only the lockfile,
+  # so the job skips npm ci.
+  audit:
+    name: Production audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      - run: node ci/audit-gate.mjs
 
   # The one required check. always() matters: without it a failed job skips
   # this one, and GitHub counts a skipped required check as passing. The
@@ -126,7 +155,7 @@ jobs:
   result:
     name: CI result
     if: always()
-    needs: [verify, e2e, image]
+    needs: [verify, e2e, image, audit]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
