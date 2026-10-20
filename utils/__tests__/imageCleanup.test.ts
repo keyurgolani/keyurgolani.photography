@@ -72,6 +72,25 @@ async function libraryWithOrphans(): Promise<TempLibrary> {
     return lib;
 }
 
+/** landscape.jpg processed, then renamed to Landscape.JPG, a name that differs only in case. */
+async function libraryWithCaseRename(): Promise<TempLibrary> {
+    const lib = await newLibrary({ fixtures: 'basic' });
+    await processImage('landscape.jpg');
+    fs.renameSync(lib.file('landscape.jpg'), lib.file('tmp-rename.jpg'));
+    fs.renameSync(lib.file('tmp-rename.jpg'), lib.file('Landscape.JPG'));
+    return lib;
+}
+
+/** Whether the disk under `lib` treats names that differ only in case as one file, as macOS does by default. */
+function caseInsensitive(lib: TempLibrary): boolean {
+    fs.writeFileSync(lib.file('Case-Probe'), '');
+    try {
+        return fs.existsSync(lib.file('case-probe'));
+    } finally {
+        fs.unlinkSync(lib.file('Case-Probe'));
+    }
+}
+
 const SQUARE = derivativePaths('square');
 const KEPT = [...derivativePaths('landscape'), ...derivativePaths('portrait'), YOUNG_TEMP, 'landscape.png', 'portrait.png'];
 const PER_PATH = /^(Would delete|Deleted) \S+ \(/;
@@ -126,16 +145,31 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
 
         const wrongPlan = capture();
         expect(runImageCleanup(['--apply', '--plan', '000000000000'], wrongPlan.output)).toBe(2);
-        expect(wrongPlan.err[0]).toMatch(/^Refusing to clean up: the library changed since the dry run that printed plan 000000000000/);
+        expect(wrongPlan.err[0]).toBe(
+            `Refusing to clean up: this run plans ${hash}, not 000000000000. Files may have changed since that dry run, ` +
+            'or temp files passed the 10-minute mark. Run the dry run again with the same flags and review it.',
+        );
 
         // Another photo goes away after the review, so its derivatives would be new deletions
         fs.unlinkSync(lib.file('portrait.png'));
         const changed = capture();
         expect(runImageCleanup(['--apply', '--plan', hash], changed.output)).toBe(2);
-        expect(changed.err[0]).toContain(`plan ${hash}`);
+        expect(changed.err[0]).toMatch(new RegExp(`^Refusing to clean up: this run plans [0-9a-f]{12}, not ${hash}\\.`));
 
         expect(lib.hashes(Object.keys(before))).toEqual(before);
         expect(Object.keys(lib.hashes(derivativePaths('portrait')))).toHaveLength(7);
+    });
+
+    it('--apply refuses once a kept temp file passes the age limit, and says that can be why', async () => {
+        const lib = await libraryWithOrphans();
+        const hash = dryRunHash();
+        // The young temp file from the dry run is now old enough to delete, so the plan grew
+        fs.utimesSync(lib.file(YOUNG_TEMP), new Date(Date.now() - STALE_TEMP_FILE_MS - 60_000), new Date(Date.now() - STALE_TEMP_FILE_MS - 60_000));
+
+        const { err, output } = capture();
+        expect(runImageCleanup(['--apply', '--plan', hash], output)).toBe(2);
+        expect(err[0]).toContain('or temp files passed the 10-minute mark. Run the dry run again');
+        expect(fs.existsSync(lib.file(YOUNG_TEMP))).toBe(true);
     });
 
     it('--only limits the plan and the deletion to one photo', async () => {
@@ -234,15 +268,71 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
         expect(fs.existsSync(path.join(outside, 'cache-target', 'square-400-80.webp'))).toBe(true);
     });
 
-    it('matches sources without regard to case, so a case-only rename keeps the derivatives', async () => {
+    it('keeps derivatives for a name that differs only in case when this disk resolves both names to one file', async () => {
+        const lib = await libraryWithCaseRename();
+
+        const planned = planOrphanCleanup().entries.filter((entry) => entry.relativePath.includes('landscape'));
+
+        if (caseInsensitive(lib)) {
+            // As on macOS: the server finds thumbnails/Landscape.webp at thumbnails/landscape.webp
+            expect(planned).toEqual([]);
+        } else {
+            // As on Linux: Landscape.JPG gets its own Landscape.* set, so no source needs landscape.*
+            expect(planned.map((entry) => entry.relativePath).sort()).toEqual([...derivativePaths('landscape')].sort());
+        }
+    });
+
+    it('treats a name that differs only in case as another photo on a case-sensitive disk', async () => {
+        const lib = await libraryWithCaseRename();
+        // The lowercase name finds nothing, as on a case-sensitive disk, whatever disk this runs on
+        const realLstatSync = fs.lstatSync;
+        vi.spyOn(fs, 'lstatSync').mockImplementation(((target: fs.PathLike, options?: fs.StatSyncOptions) => {
+            if (String(target) === lib.file('landscape.JPG')) {
+                if (options?.throwIfNoEntry === false) return undefined;
+                throw Object.assign(new Error(`ENOENT: no such file or directory, lstat '${String(target)}'`), { code: 'ENOENT' });
+            }
+            return realLstatSync(target, options);
+        }) as unknown as typeof fs.lstatSync);
+
+        const planned = planOrphanCleanup().entries.filter((entry) => entry.relativePath.includes('landscape'));
+
+        expect(planned.map((entry) => entry.relativePath).sort()).toEqual([...derivativePaths('landscape')].sort());
+        expect(planned.every((entry) => entry.reason === 'no source named landscape.*')).toBe(true);
+    });
+
+    it('--only matches the exact name and hints at names that differ only in case', async () => {
         const lib = await newLibrary({ fixtures: 'basic' });
         await processImage('landscape.jpg');
-        fs.renameSync(lib.file('landscape.jpg'), lib.file('tmp-rename.jpg'));
-        fs.renameSync(lib.file('tmp-rename.jpg'), lib.file('Landscape.JPG'));
+        fs.unlinkSync(lib.file('landscape.jpg'));
 
-        const plan = planOrphanCleanup();
+        const variant = capture();
+        expect(runImageCleanup(['--only', 'Landscape'], variant.output)).toBe(0);
+        expect(variant.out.filter((line) => PER_PATH.test(line))).toEqual([]);
+        expect(variant.out).toContain(
+            'No file is named exactly Landscape, but landscape differs only in case or Unicode form. --only matches the exact name.',
+        );
+        expect(variant.out).toContain('Nothing to delete.');
 
-        expect(plan.entries.filter((entry) => entry.relativePath.includes('landscape'))).toEqual([]);
+        const exact = capture();
+        expect(runImageCleanup(['--only', 'landscape'], exact.output)).toBe(0);
+        expect(exact.out.filter((line) => PER_PATH.test(line))).toHaveLength(7);
+        expect(exact.out.some((line) => line.startsWith('No file is named exactly'))).toBe(false);
+    });
+
+    it('quotes the --only name in the printed command, so it survives the shell', async () => {
+        const lib = await newLibrary({ fixtures: 'basic' });
+        const name = "it's $HOME";
+        fs.copyFileSync(lib.file('landscape.jpg'), lib.file(`${name}.jpg`));
+        await processImage(`${name}.jpg`);
+        fs.unlinkSync(lib.file(`${name}.jpg`));
+
+        const { out, output } = capture();
+        expect(runImageCleanup(['--only', name], output)).toBe(0);
+        const quoted = out.find((line) => line.startsWith('Plan '))?.match(/ --only (.+) --apply --plan [0-9a-f]{12}$/)?.[1];
+        expect(quoted).toBeDefined();
+
+        const echoed = spawnSync('sh', ['-c', `printf '%s' ${quoted}`], { encoding: 'utf8' });
+        expect(echoed.stdout).toBe(name);
     });
 
     it('refuses a missing library root, even with --allow-empty-library', async () => {

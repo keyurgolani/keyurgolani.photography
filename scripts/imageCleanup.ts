@@ -14,7 +14,7 @@
  *   # Delete exactly what that dry run listed, re-checking each path first
  *   npm run images:cleanup -- --apply --plan <hash>
  *
- *   # Limit both steps to one photo's base name, for a takedown
+ *   # Limit both steps to one photo's exact base name, for a takedown
  *   npm run images:cleanup -- --only <name>
  *
  *   # In production
@@ -103,16 +103,27 @@ function parseArgs(argv: string[]): Options | string {
     return options;
 }
 
+/** Quote a value for a POSIX shell, so the printed command can be pasted as is. */
+function shellQuote(value: string): string {
+    return /^[\w.,:+=@%-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 /** The flags that reproduce this plan, for the dry run's next-step line. */
 function planFlags(plan: OrphanCleanupPlan): string {
     return [
-        plan.only === null ? '' : ` --only ${plan.only}`,
+        plan.only === null ? '' : ` --only ${shellQuote(plan.only)}`,
         plan.allowEmptyLibrary ? ' --allow-empty-library' : '',
         ` --apply --plan ${plan.hash}`,
     ].join('');
 }
 
 function reportSkips(plan: OrphanCleanupPlan, output: Output): void {
+    if (plan.onlyVariants.length > 0) {
+        output.log(
+            `No file is named exactly ${plan.only}, but ${plan.onlyVariants.map(shellQuote).join(', ')} ` +
+            `${plan.onlyVariants.length === 1 ? 'differs' : 'differ'} only in case or Unicode form. --only matches the exact name.`,
+        );
+    }
     for (const folder of plan.skippedFolders) {
         output.log(`Skipped ${folder}/, which is a symlink or not a folder, so cleanup stays inside the library.`);
     }
@@ -168,8 +179,9 @@ export function runImageCleanup(argv: string[], output: Output = console): numbe
 
     if (plan.hash !== options.plan) {
         output.error(
-            `Refusing to clean up: the library changed since the dry run that printed plan ${options.plan} ` +
-            `(it is plan ${plan.hash} now). Run the dry run again and review it.`,
+            `Refusing to clean up: this run plans ${plan.hash}, not ${options.plan}. Files may have changed since ` +
+            `that dry run, or temp files passed the ${STALE_TEMP_FILE_MS / (60 * 1000)}-minute mark. ` +
+            'Run the dry run again with the same flags and review it.',
         );
         return 2;
     }

@@ -465,9 +465,8 @@ export interface OrphanEntry {
 export interface OrphanCleanupOptions {
     /** Plan a library with no sources, where every derivative counts as an orphan. */
     allowEmptyLibrary?: boolean;
-    /** Limit the plan to one photo's base name, for a takedown. */
+    /** Limit the plan to one photo's exact base name, for a takedown. */
     only?: string | null;
-    now?: number;
 }
 
 export interface OrphanCleanupPlan {
@@ -479,6 +478,8 @@ export interface OrphanCleanupPlan {
     youngTempFiles: string[];
     /** Folders cleanup didn't enter because they are symlinks or not folders */
     skippedFolders: string[];
+    /** With `only` and no file under that exact name, the names that differ from it only in case or Unicode form */
+    onlyVariants: string[];
     /** Short hash of what the plan deletes. `images:cleanup --apply` needs it, so only a reviewed plan runs. */
     hash: string;
 }
@@ -507,12 +508,16 @@ const KEEP: Verdict = { kind: 'keep' };
 /** `/api/image` cached files as `<base>-<width>-<quality>.<format>`. */
 const DYNAMIC_CACHE_FILE = /^(.+)-\d+-\d+\.(avif|webp|jpeg)$/;
 
-/**
- * Compares base names the way a case-insensitive disk does, so a case-only
- * rename keeps a live photo's derivatives instead of orphaning them.
- */
-function sourceKey(base: string): string {
-    return base.normalize('NFC').toLowerCase();
+/** Folds case and Unicode form, the way a case-insensitive disk compares names. */
+function foldName(name: string): string {
+    return name.normalize('NFC').toLowerCase();
+}
+
+/** Whether two paths are the same file on disk, the way a case-insensitive disk resolves both names to one. */
+function sameFile(a: string, b: string): boolean {
+    const first = fs.lstatSync(a, { throwIfNoEntry: false });
+    const second = fs.lstatSync(b, { throwIfNoEntry: false });
+    return first !== undefined && second !== undefined && first.dev === second.dev && first.ino === second.ino;
 }
 
 interface SourceSet {
@@ -520,9 +525,24 @@ interface SourceSet {
     has(base: string): boolean;
 }
 
-function sourceSet(sourceFiles: string[]): SourceSet {
-    const keys = new Set(sourceFiles.map((file) => sourceKey(baseNameOf(file))));
-    return { any: keys.size > 0, has: (base) => keys.has(sourceKey(base)) };
+/**
+ * Sources by base name. A derivative belongs to a source with exactly its base
+ * name. On a case-sensitive disk `Beach.jpg` and `beach.jpg` are different
+ * photos, so a name that differs in case or Unicode form counts only when the
+ * disk resolves both names to the same file.
+ */
+function sourceSet(root: string, sourceFiles: string[]): SourceSet {
+    const exact = new Set(sourceFiles.map(baseNameOf));
+    const folded = new Map<string, string[]>();
+    for (const file of sourceFiles) {
+        const key = foldName(baseNameOf(file));
+        folded.set(key, [...(folded.get(key) ?? []), file]);
+    }
+    return {
+        any: sourceFiles.length > 0,
+        has: (base) => exact.has(base) || (folded.get(foldName(base)) ?? []).some((file) =>
+            sameFile(path.join(root, file), path.join(root, `${base}${path.extname(file)}`))),
+    };
 }
 
 /** The folders cleanup reads, each with the folders that must be real directories before it enters. */
@@ -550,26 +570,30 @@ function guardState(guards: string[]): { state: 'ok' | 'missing' | 'unsafe'; at:
     return { state: 'ok', at: '' };
 }
 
+/** The base name a derivative or `/api/image` cache file belongs to. Null for a temp file or an unrecognized cache file. */
+function ownerBase(file: string, paths: LibraryPaths): string | null {
+    const name = path.basename(file);
+    if (path.dirname(file) === paths.dynamicCache) return DYNAMIC_CACHE_FILE.exec(name)?.[1] ?? null;
+    return TEMP_FILE.test(name) ? null : baseNameOf(name);
+}
+
 function classify(
     file: string,
     paths: LibraryPaths,
     sources: SourceSet,
     { allowEmptyLibrary, only, now }: { allowEmptyLibrary: boolean; only: string | null; now: number },
 ): Verdict {
-    if (!libraryRootExists(paths.root)) return KEEP;
-
     let stat: fs.Stats;
     try {
         stat = fs.lstatSync(file);
     } catch {
-        return KEEP; // Already gone
+        return KEEP; // Already gone, or the library is
     }
     if (!stat.isFile()) return KEEP;
 
     const name = path.basename(file);
     if (path.dirname(file) === paths.dynamicCache) {
-        const cached = DYNAMIC_CACHE_FILE.exec(name);
-        if (only !== null && (!cached || sourceKey(cached[1]) !== sourceKey(only))) return KEEP;
+        if (only !== null && ownerBase(file, paths) !== only) return KEEP;
         return { kind: 'delete', reason: 'unused since /api/image was removed', bytes: stat.size };
     }
     if (TEMP_FILE.test(name)) {
@@ -580,7 +604,7 @@ function classify(
     }
 
     const base = baseNameOf(name);
-    if (only !== null && sourceKey(base) !== sourceKey(only)) return KEEP;
+    if (only !== null && base !== only) return KEEP;
     if (sources.has(base)) return KEEP;
     // A library that lost every source is more likely unmounted or mid-sync than retired.
     if (!sources.any && !allowEmptyLibrary) return KEEP;
@@ -615,7 +639,7 @@ function planHash(root: string, allowEmptyLibrary: boolean, only: string | null,
  * `allowEmptyLibrary`, because either would make every derivative look orphaned.
  */
 export function planOrphanCleanup(
-    { allowEmptyLibrary = false, only = null, now = Date.now() }: OrphanCleanupOptions = {},
+    { allowEmptyLibrary = false, only = null }: OrphanCleanupOptions = {},
 ): OrphanCleanupPlan {
     const paths = libraryPaths();
     if (!libraryRootExists(paths.root)) {
@@ -623,7 +647,7 @@ export function planOrphanCleanup(
             `library root not found: ${paths.root}. Check the mount or PHOTOGRAPHY_LIBRARY_DIR.`,
         );
     }
-    const sourceFiles = getPhotoFiles();
+    const sourceFiles = getPhotoFiles(paths.root);
     if (sourceFiles.length === 0 && !allowEmptyLibrary) {
         throw new CleanupRefusedError(
             `${paths.root} has no source photos, so every derivative would count as an orphan. ` +
@@ -631,11 +655,13 @@ export function planOrphanCleanup(
         );
     }
 
-    const sources = sourceSet(sourceFiles);
-    const options = { allowEmptyLibrary, only, now };
+    const sources = sourceSet(paths.root, sourceFiles);
+    const options = { allowEmptyLibrary, only, now: Date.now() };
     const entries: OrphanEntry[] = [];
     const youngTempFiles: string[] = [];
     const skippedFolders: string[] = [];
+    let onlyMatched = false;
+    const onlyVariants = new Set<string>();
     for (const { dir, guards } of scannedFolders(paths)) {
         const guard = guardState(guards);
         if (guard.state === 'unsafe') skippedFolders.push(relativeTo(paths.root, guard.at));
@@ -650,6 +676,13 @@ export function planOrphanCleanup(
             } else if (verdict.kind === 'young-temp') {
                 youngTempFiles.push(relativePath);
             }
+            if (only === null) continue;
+            const owner = ownerBase(file, paths);
+            if (owner === only || (TEMP_FILE.test(name) && name.startsWith(tempFilePrefix(only)))) {
+                onlyMatched = true;
+            } else if (owner !== null && foldName(owner) === foldName(only)) {
+                onlyVariants.add(owner);
+            }
         }
     }
     
@@ -660,6 +693,7 @@ export function planOrphanCleanup(
         entries,
         youngTempFiles,
         skippedFolders,
+        onlyVariants: onlyMatched ? [] : [...onlyVariants].sort(),
         hash: planHash(paths.root, allowEmptyLibrary, only, entries),
     };
 }
@@ -670,10 +704,7 @@ export function planOrphanCleanup(
  * that no longer qualifies for the same reason (its source came back, its
  * folder became a symlink, a temp file was touched) is skipped.
  */
-export function applyOrphanCleanup(
-    plan: OrphanCleanupPlan,
-    { now = Date.now() }: { now?: number } = {},
-): OrphanCleanupResult {
+export function applyOrphanCleanup(plan: OrphanCleanupPlan): OrphanCleanupResult {
     const paths = libraryPaths();
     if (paths.root !== plan.root) {
         throw new CleanupRefusedError(`the plan is for ${plan.root}, but the library root is now ${paths.root}.`);
@@ -682,13 +713,13 @@ export function applyOrphanCleanup(
     const result: OrphanCleanupResult = { deleted: [], skipped: [], failed: [] };
     let sources: SourceSet;
     try {
-        sources = sourceSet(getPhotoFiles());
+        sources = sourceSet(paths.root, getPhotoFiles(paths.root));
     } catch {
         result.skipped.push(...plan.entries);
         return result;
     }
 
-    const options = { allowEmptyLibrary: plan.allowEmptyLibrary, only: plan.only, now };
+    const options = { allowEmptyLibrary: plan.allowEmptyLibrary, only: plan.only, now: Date.now() };
     const folders = scannedFolders(paths);
     for (const entry of plan.entries) {
         const folder = folders.find(({ dir }) => dir === path.dirname(entry.path));
