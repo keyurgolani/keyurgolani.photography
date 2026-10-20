@@ -131,7 +131,7 @@ docker compose -f docker-compose.prod.yml up -d
    - Optimizes full size (1920px)
    - Extracts EXIF data for captions
    - Creates LQIP placeholders
-3. **Gallery updates** automatically on next page load. A photo shows up once all seven of its derivatives exist, and the original file is never served.
+3. **Gallery updates** on the next page load once all seven of a photo's derivatives exist, and the original file is never served. The production server serves only the `public/` files that existed when it started, so restart `web` for photos added since to load there.
 
 ### Replacing and Removing Photos
 - **Replace** a photo by saving over it under the same name. The watcher regenerates its derivatives from the new file and swaps them in only once all seven are written, so a failed run keeps the old ones. Visitors can still see the old version for a while: `/_next/image` can serve its copy for up to a day, and a browser that cached it under the old `immutable` header may keep it for up to a year.
