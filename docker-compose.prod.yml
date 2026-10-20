@@ -6,7 +6,13 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - ./public/assets/photos:/app/public/assets/photos
+      # Never created when missing, so a lost photos folder keeps the container
+      # from starting instead of serving an empty library
+      - type: bind
+        source: ./public/assets/photos
+        target: /app/public/assets/photos
+        bind:
+          create_host_path: false
       - ./.next-images-cache:/app/.next/cache/images
     restart: always
     environment:
@@ -27,7 +33,11 @@ services:
     image: ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?Set PHOTOGRAPHY_IMAGE_TAG to a release tag, for example v1.1.0}
     user: "1001:1001"
     volumes:
-      - ./public/assets/photos:/app/public/assets/photos
+      - type: bind
+        source: ./public/assets/photos
+        target: /app/public/assets/photos
+        bind:
+          create_host_path: false
     restart: always
     environment:
       - NODE_ENV=production
