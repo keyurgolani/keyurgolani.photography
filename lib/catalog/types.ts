@@ -1,7 +1,6 @@
 import type { z } from 'zod';
 import type { Registry } from '../identity/types';
 import type * as schema from './schema';
-import type { WorkingLayer } from './working-layer';
 
 /**
  * Catalog types, inferred from the schema so the two never drift. Type-only,
@@ -47,6 +46,28 @@ export type AuthoredSiteInput = Writable<z.input<typeof schema.authoredSiteSchem
 export type AuthoredSeriesInput = Writable<z.input<typeof schema.authoredSeriesSchema>>;
 export type AuthoredPhotoInput = Writable<z.input<typeof schema.authoredPhotoSchema>>;
 export type AuthoredRecordInput = AuthoredSiteInput | AuthoredSeriesInput | AuthoredPhotoInput;
+
+export type RecordProblemReason = 'unreadable' | 'invalid-json' | 'unknown-schema-version' | 'invalid' | 'file-name' | 'edited-in-place';
+
+/** A working-layer record that isn't usable. It names the record, never a path. */
+export interface RecordProblem {
+    kind: schema.AuthoredKind;
+    /** The record ID its folder name gives, or `site`. */
+    id: string;
+    reason: RecordProblemReason;
+    issues: schema.SchemaIssue[];
+}
+
+/** One snapshot of the working layer, as working-layer.ts reads it. Unusable records are left out and listed in `problems`. */
+export interface WorkingLayer {
+    site: AuthoredSite | null;
+    /** Sorted by ID. */
+    series: AuthoredSeries[];
+    /** Sorted by ID. */
+    photos: AuthoredPhoto[];
+    /** Sorted by kind, then ID. */
+    problems: RecordProblem[];
+}
 
 export type Severity = 'error' | 'warning';
 /** `render` rules block a preview and a publish; `publish` rules block only a publish. */

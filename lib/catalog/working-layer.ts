@@ -3,8 +3,8 @@ import path from 'node:path';
 import { PHOTO_ID_RE } from '../identity/ids';
 import { CorruptDocumentError, EditedInPlaceError, MisnamedVersionError, readVersionedDocument } from '../storage/document';
 import { hasErrorCode } from '../storage/fsx';
-import { parseActivePointer, parseAuthoredRecord, SERIES_ID_RE, type AuthoredKind, type SchemaIssue } from './schema';
-import type { ActivePointer, AuthoredPhoto, AuthoredSeries, AuthoredSite } from './types';
+import { parseActivePointer, parseAuthoredRecord, SERIES_ID_RE, type AuthoredKind } from './schema';
+import type { ActivePointer, AuthoredPhoto, AuthoredSeries, AuthoredSite, RecordProblem, WorkingLayer } from './types';
 
 /**
  * Read-only access to the authored working layer and the active pointer. Each
@@ -47,27 +47,7 @@ export function authoredRecordDir(root: string, kind: AuthoredKind, id: string):
     return path.join(kind === 'series' ? paths.seriesDir : paths.photosDir, id);
 }
 
-export type RecordProblemReason = 'unreadable' | 'invalid-json' | 'unknown-schema-version' | 'invalid' | 'file-name' | 'edited-in-place';
-
-/** A working-layer record that isn't usable. It names the record, never a path. */
-export interface RecordProblem {
-    kind: AuthoredKind;
-    /** The record ID its folder name gives, or `site`. */
-    id: string;
-    reason: RecordProblemReason;
-    issues: SchemaIssue[];
-}
-
-/** One snapshot of the working layer. Unusable records are left out and listed in `problems`. */
-export interface WorkingLayer {
-    site: AuthoredSite | null;
-    /** Sorted by ID. */
-    series: AuthoredSeries[];
-    /** Sorted by ID. */
-    photos: AuthoredPhoto[];
-    /** Sorted by kind, then ID. */
-    problems: RecordProblem[];
-}
+export type { RecordProblem, RecordProblemReason, WorkingLayer } from './types';
 
 type RecordOf<K extends AuthoredKind> = K extends 'site' ? AuthoredSite : K extends 'series' ? AuthoredSeries : AuthoredPhoto;
 

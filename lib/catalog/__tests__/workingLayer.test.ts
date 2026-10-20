@@ -2,8 +2,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { importGraph } from '../../../test/helpers/importGraph';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
-import { REPO_ROOT } from '../../../test/helpers/runTsx';
 import { withLock } from '../../storage/lock';
 import type { AuthoredPhoto, AuthoredSeries } from '../types';
 import { authoredPaths, catalogPaths, readActivePointer, readAuthoredRecord, readWorkingLayer } from '../working-layer';
@@ -318,23 +318,6 @@ describe('writeAuthoredRecord', () => {
     });
 });
 
-/** Every module `entry` reaches through relative imports. */
-function importGraph(entry: string): Set<string> {
-    const seen = new Set<string>();
-    const visit = (file: string) => {
-        if (seen.has(file)) return;
-        seen.add(file);
-        const source = fs.readFileSync(file, 'utf8');
-        for (const match of source.matchAll(/(?:from|import)\s*['"](\.{1,2}\/[^'"]+)['"]/g)) {
-            const base = path.resolve(path.dirname(file), match[1]);
-            const resolved = [`${base}.ts`, `${base}.tsx`, path.join(base, 'index.ts')].find((candidate) => fs.existsSync(candidate));
-            if (resolved) visit(resolved);
-        }
-    };
-    visit(entry);
-    return seen;
-}
-
 describe('the read path', () => {
     it.each([
         'lib/catalog/working-layer.ts',
@@ -342,9 +325,10 @@ describe('the read path', () => {
         'lib/catalog/request.ts',
         'lib/catalog/rules.ts',
         'lib/catalog/references.ts',
+        'lib/catalog/order.ts',
     ])('never reaches the writer from %s', (entry) => {
-        const graph = [...importGraph(path.join(REPO_ROOT, entry))].map((file) => path.relative(REPO_ROOT, file));
-        expect(graph).toContain(entry);
-        expect(graph.filter((file) => file.includes('working-layer-writer'))).toEqual([]);
+        const { files } = importGraph(entry);
+        expect(files).toContain(entry);
+        expect(files.filter((file) => file.includes('working-layer-writer'))).toEqual([]);
     });
 });
