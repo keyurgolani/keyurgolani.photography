@@ -1,8 +1,1 @@
-[
-  {
-    "id": "GHSA-0000-0000-0000",
-    "package": "next",
-    "reason": "Temporary entry to check that an expired entry fails the audit job. Reverted in the next commit.",
-    "expires": "2026-10-01"
-  }
-]
+[]
