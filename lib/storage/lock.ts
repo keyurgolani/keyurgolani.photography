@@ -1,0 +1,323 @@
+import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { dataRoot } from './config';
+import { hasErrorCode } from './fsx';
+
+/** The contents of `locks/<name>.lock`. */
+export interface LockRecord {
+    owner: string;
+    hostname: string;
+    pid: number;
+    acquiredAt: string;
+    heartbeatAt: string;
+    /** The holder's lease, so a waiter with a shorter one never breaks it early. */
+    leaseMs: number;
+}
+
+export interface LockTakeover {
+    previousOwner: string;
+    previousAcquiredAt: string;
+}
+
+export interface LockContext {
+    /** Aborted when a renewal finds the lock gone or held by another owner. */
+    signal: AbortSignal;
+    /** Set when this holder replaced an expired lease. */
+    takeover: LockTakeover | null;
+}
+
+export interface LockHooks {
+    /** Runs before each renewal. A test can hold it to simulate a paused holder. */
+    beforeRenew?(): void | Promise<void>;
+    /** Runs after a waiter reads an expired lease and before it renames it away. */
+    beforeBreak?(lockPath: string): void | Promise<void>;
+}
+
+export interface LockOptions {
+    /** How long a heartbeat stays valid. Renewed every leaseMs / 4. */
+    leaseMs?: number;
+    /** How long to wait for a live holder. 0 tries once. */
+    waitMs?: number;
+    /** How often a waiter checks again. */
+    pollMs?: number;
+    /** The data root holding `locks/`. Defaults to dataRoot(). */
+    root?: string;
+    clock?: () => number;
+    sleep?: (ms: number) => Promise<void>;
+    hooks?: LockHooks;
+}
+
+export const DEFAULT_LEASE_MS = 60_000;
+export const DEFAULT_WAIT_MS = 10_000;
+export const LOCK_POLL_MS = 250;
+
+const LOCK_NAME = /^[a-z0-9][a-z0-9-]*$/;
+
+export class LockTimeoutError extends Error {
+    readonly lockName: string;
+    /** The holder's record when the wait ended, or null if it couldn't be read. */
+    readonly holder: LockRecord | null;
+
+    constructor(lockName: string, holder: LockRecord | null, waitedMs: number) {
+        const who = holder ? `${holder.owner} (pid ${holder.pid} on ${holder.hostname}, since ${holder.acquiredAt})` : 'another process';
+        super(`The ${lockName} lock is held by ${who}. Gave up after ${waitedMs} ms.`);
+        this.name = 'LockTimeoutError';
+        this.lockName = lockName;
+        this.holder = holder;
+    }
+}
+
+export class LockLostError extends Error {
+    readonly lockName: string;
+    /** Whoever holds the lock now, if anyone. */
+    readonly current: LockRecord | null;
+
+    constructor(lockName: string, current: LockRecord | null) {
+        super(
+            current
+                ? `The ${lockName} lock was taken over by ${current.owner} (pid ${current.pid} on ${current.hostname}).`
+                : `The ${lockName} lock file disappeared while it was held.`,
+        );
+        this.name = 'LockLostError';
+        this.lockName = lockName;
+        this.current = current;
+    }
+}
+
+interface Observed {
+    raw: string;
+    record: LockRecord | null;
+    ino: number;
+    dev: number;
+    mtimeMs: number;
+}
+
+function parseRecord(raw: string): LockRecord | null {
+    try {
+        const value = JSON.parse(raw) as Partial<LockRecord>;
+        if (
+            typeof value.owner !== 'string' ||
+            typeof value.hostname !== 'string' ||
+            typeof value.pid !== 'number' ||
+            typeof value.acquiredAt !== 'string' ||
+            typeof value.heartbeatAt !== 'string'
+        ) {
+            return null;
+        }
+        return value as LockRecord;
+    } catch {
+        return null;
+    }
+}
+
+/** Read a lock file and the inode it came from. Null when there is none. */
+async function observe(file: string): Promise<Observed | null> {
+    let handle: fs.promises.FileHandle;
+    try {
+        handle = await fs.promises.open(file, 'r');
+    } catch (error) {
+        if (hasErrorCode(error, 'ENOENT')) return null;
+        throw error;
+    }
+    try {
+        const stat = await handle.stat();
+        const raw = await handle.readFile('utf8');
+        return { raw, record: parseRecord(raw), ino: stat.ino, dev: stat.dev, mtimeMs: stat.mtimeMs };
+    } finally {
+        await handle.close();
+    }
+}
+
+async function writeRecord(handle: fs.promises.FileHandle, record: LockRecord): Promise<void> {
+    const data = Buffer.from(`${JSON.stringify(record)}\n`);
+    await handle.write(data, 0, data.length, 0);
+    await handle.truncate(data.length);
+    await handle.sync();
+}
+
+/**
+ * Run `fn` while holding `locks/<name>.lock` in the data root.
+ *
+ * The lock file is created with O_EXCL and holds the holder's record, which
+ * is renewed every `leaseMs / 4`. A waiter polls every 250 ms and throws
+ * LockTimeoutError with the holder's record after `waitMs`. A lease whose
+ * heartbeat is older than its `leaseMs` is renamed to
+ * `<name>.lock.stale-<uuid>` and re-read: if it changed in the meantime it is
+ * linked back and the waiter keeps waiting, otherwise the waiter replaces it
+ * and gets `takeover`. A holder whose renewal finds another owner aborts `fn`
+ * through `signal`. There are no PID checks, so this works across hosts.
+ */
+export async function withLock<T>(name: string, options: LockOptions, fn: (context: LockContext) => Promise<T>): Promise<T> {
+    if (!LOCK_NAME.test(name)) throw new TypeError(`Invalid lock name: ${name}`);
+    const {
+        leaseMs = DEFAULT_LEASE_MS,
+        waitMs = DEFAULT_WAIT_MS,
+        pollMs = LOCK_POLL_MS,
+        clock = Date.now,
+        sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+        hooks,
+    } = options;
+    const root = options.root ?? dataRoot();
+    if (root === null) throw new Error(`Can't take the ${name} lock: PHOTOGRAPHY_DATA_DIR is not set.`);
+
+    const lockDir = path.join(root, 'locks');
+    const lockPath = path.join(lockDir, `${name}.lock`);
+    try {
+        // Never create the data root itself: a missing one is an unmounted volume, not an empty one.
+        await fs.promises.mkdir(lockDir);
+    } catch (error) {
+        if (!hasErrorCode(error, 'EEXIST')) throw error;
+    }
+
+    const iso = (ms: number) => new Date(ms).toISOString();
+
+    function isExpired(observed: Observed, now: number): boolean {
+        if (!observed.record) return now - observed.mtimeMs > leaseMs; // A holder crashed mid-write, or one is writing now
+        const heartbeat = Date.parse(observed.record.heartbeatAt);
+        const lease = typeof observed.record.leaseMs === 'number' && observed.record.leaseMs > 0 ? observed.record.leaseMs : leaseMs;
+        return Number.isNaN(heartbeat) ? now - observed.mtimeMs > lease : now - heartbeat > lease;
+    }
+
+    /** Move an expired lease aside. Returns what it replaced, or null if it changed and was put back. */
+    async function breakExpired(observed: Observed): Promise<LockTakeover | null> {
+        await hooks?.beforeBreak?.(lockPath);
+        const stalePath = `${lockPath}.stale-${randomUUID()}`;
+        try {
+            await fs.promises.rename(lockPath, stalePath);
+        } catch (error) {
+            if (hasErrorCode(error, 'ENOENT')) return null; // Released or broken by someone else
+            throw error;
+        }
+        const moved = await observe(stalePath);
+        if (!moved || moved.raw !== observed.raw || moved.ino !== observed.ino || moved.dev !== observed.dev) {
+            // It was renewed or replaced after we read it, so it isn't ours to break. Put it back.
+            // link() never overwrites. If a third process created a lock in this gap, that one stands,
+            // and the holder we displaced aborts at its next renewal. Until then the registry's
+            // compare-and-swap version still stops a second writer.
+            try {
+                await fs.promises.link(stalePath, lockPath);
+            } catch (error) {
+                if (!hasErrorCode(error, 'EEXIST')) throw error;
+            }
+            await fs.promises.rm(stalePath, { force: true });
+            return null;
+        }
+        await fs.promises.rm(stalePath, { force: true });
+        return {
+            previousOwner: observed.record?.owner ?? 'unknown',
+            previousAcquiredAt: observed.record?.acquiredAt ?? iso(observed.mtimeMs),
+        };
+    }
+
+    /** Create the lock file with O_EXCL. Null when it already exists. */
+    async function tryCreate(): Promise<{ handle: fs.promises.FileHandle; record: LockRecord } | null> {
+        let created: fs.promises.FileHandle;
+        try {
+            created = await fs.promises.open(lockPath, 'wx');
+        } catch (error) {
+            if (hasErrorCode(error, 'EEXIST')) return null;
+            throw error;
+        }
+        const now = iso(clock());
+        const fresh: LockRecord = { owner: randomUUID(), hostname: os.hostname(), pid: process.pid, acquiredAt: now, heartbeatAt: now, leaseMs };
+        try {
+            await writeRecord(created, fresh);
+        } catch (error) {
+            await created.close();
+            await fs.promises.rm(lockPath, { force: true });
+            throw error;
+        }
+        return { handle: created, record: fresh };
+    }
+
+    const started = clock();
+    let brokeLease: LockTakeover | null = null;
+    let acquired: { handle: fs.promises.FileHandle; record: LockRecord } | null = null;
+    for (;;) {
+        acquired = await tryCreate();
+        if (acquired) break;
+
+        const observed = await observe(lockPath);
+        if (!observed) continue; // Released between our open and our read
+        if (isExpired(observed, clock())) {
+            const replaced = await breakExpired(observed);
+            if (replaced) {
+                // Create it again right away. Another waiter may still win, and then we wait on that one.
+                brokeLease = replaced;
+                continue;
+            }
+        }
+        brokeLease = null;
+        const waited = clock() - started;
+        if (waited >= waitMs) throw new LockTimeoutError(name, observed.record, waited);
+        await sleep(Math.min(pollMs, Math.max(0, waitMs - waited)));
+    }
+
+    const takeover = brokeLease;
+    const { handle: held, record: ownRecord } = acquired;
+    const ownStat = await held.stat();
+    const controller = new AbortController();
+    let renewing: Promise<void> | null = null;
+
+    async function ownership(): Promise<'ours' | 'missing' | 'other'> {
+        try {
+            const stat = await fs.promises.stat(lockPath);
+            return stat.ino === ownStat.ino && stat.dev === ownStat.dev ? 'ours' : 'other';
+        } catch (error) {
+            if (hasErrorCode(error, 'ENOENT')) return 'missing';
+            throw error;
+        }
+    }
+
+    /**
+     * A waiter that misjudged our lease renames the file away for a moment
+     * before linking it back, so a missing file is checked a few more times
+     * before it counts as lost.
+     */
+    async function stillOurs(): Promise<boolean> {
+        for (let attempt = 1; ; attempt++) {
+            const state = await ownership();
+            if (state !== 'missing' || attempt === 4) return state === 'ours';
+            await sleep(10 * attempt);
+        }
+    }
+
+    async function renew(): Promise<void> {
+        try {
+            await hooks?.beforeRenew?.();
+            if (controller.signal.aborted) return;
+            if (!(await stillOurs())) {
+                const current = await observe(lockPath);
+                controller.abort(new LockLostError(name, current?.record ?? null));
+                return;
+            }
+            ownRecord.heartbeatAt = iso(clock());
+            await writeRecord(held, ownRecord);
+        } catch (error) {
+            // A heartbeat we can't write is a lease we can't keep.
+            if (!controller.signal.aborted) controller.abort(error);
+        }
+    }
+
+    const timer = setInterval(() => {
+        if (renewing || controller.signal.aborted) return;
+        renewing = renew().finally(() => {
+            renewing = null;
+        });
+    }, Math.max(1, Math.floor(leaseMs / 4)));
+
+    try {
+        return await fn({ signal: controller.signal, takeover });
+    } finally {
+        clearInterval(timer);
+        await renewing;
+        try {
+            // A lost lock now belongs to someone else, so only remove the file if it is still ours.
+            if (await stillOurs()) await fs.promises.rm(lockPath, { force: true });
+        } finally {
+            await held.close();
+        }
+    }
+}

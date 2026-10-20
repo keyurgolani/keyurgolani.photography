@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import sharp from 'sharp';
+import { libraryRoot } from '../lib/storage/config';
 
 export interface LibraryPaths {
     root: string;
@@ -17,14 +18,12 @@ export interface LibraryPaths {
 }
 
 /**
- * Resolve the library root and its derivative folders. Reads
+ * Resolve the library root and its derivative folders. libraryRoot() reads
  * PHOTOGRAPHY_LIBRARY_DIR on every call, so tests and tools can point the
  * pipeline at another root without reloading this module.
  */
 export function libraryPaths(): LibraryPaths {
-    const root = path.resolve(
-        process.env.PHOTOGRAPHY_LIBRARY_DIR || path.join(process.cwd(), 'public/assets/photos'),
-    );
+    const root = libraryRoot();
     return {
         root,
         thumbnails: path.join(root, 'thumbnails'),

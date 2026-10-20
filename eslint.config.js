@@ -64,4 +64,23 @@ export default tseslint.config(
       'react-hooks/exhaustive-deps': 'off',
     },
   },
+  {
+    // Storage and identity code runs in the watcher and CLI too, so it must
+    // not depend on Next or on server-only's bundler check.
+    files: ['lib/storage/**', 'lib/identity/**'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            { name: 'next', message: 'lib/storage and lib/identity run outside Next. Keep Next imports in app/ or proxy.ts.' },
+            { name: 'server-only', message: 'lib/storage and lib/identity run under plain Node, where server-only throws.' },
+          ],
+          patterns: [
+            { group: ['next/*'], message: 'lib/storage and lib/identity run outside Next. Keep Next imports in app/ or proxy.ts.' },
+          ],
+        },
+      ],
+    },
+  },
 )
