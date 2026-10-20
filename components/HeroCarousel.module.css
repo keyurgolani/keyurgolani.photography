@@ -69,11 +69,11 @@
   position: absolute;
   top: 50%;
   transform: translateY(-50%);
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.8);
+  color: #fff;
   width: 52px;
   height: 52px;
   border-radius: 50%;
@@ -87,21 +87,39 @@
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
 }
 
-.carousel:hover .navButton {
+/* Keyboard focus shows both arrows, the focused one at full opacity with no fade */
+.navButton:focus-visible,
+.carousel:focus-within .navButton {
   opacity: 1;
 }
 
-.navButton:hover {
-  background: rgba(255, 255, 255, 0.18);
-  border-color: rgba(255, 255, 255, 0.25);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.1);
-  transform: translateY(-50%) scale(1.05);
-  color: #fff;
+.navButton:focus-visible {
+  transition: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .carousel:hover .navButton {
+    opacity: 1;
+  }
+
+  .navButton:hover {
+    background: rgba(0, 0, 0, 0.65);
+    border-color: rgba(255, 255, 255, 0.25);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.1);
+    transform: translateY(-50%) scale(1.05);
+    color: #fff;
+  }
+
+  /* Subtle arrow animation on hover */
+  .navButton:hover svg {
+    transform: scale(1.1);
+    transition: transform 0.3s ease;
+  }
 }
 
 .navButton:active {
   transform: translateY(-50%) scale(0.98);
-  background: rgba(255, 255, 255, 0.22);
+  background: rgba(0, 0, 0, 0.65);
 }
 
 .prev {
@@ -110,12 +128,6 @@
 
 .next {
   right: 24px;
-}
-
-/* Subtle arrow animation on hover */
-.navButton:hover svg {
-  transform: scale(1.1);
-  transition: transform 0.3s ease;
 }
 
 /* Indicators */
