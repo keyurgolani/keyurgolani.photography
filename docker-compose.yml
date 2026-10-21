@@ -16,10 +16,12 @@ services:
       - .:/app
       - /app/node_modules
       - ./public/assets/photos:/app/public/assets/photos # Bind mount for photos
+      - ./portfolio-data:/data/portfolio:ro # The private data root, which only the watcher writes
     environment:
       - NODE_ENV=development
+      - PHOTOGRAPHY_DATA_DIR=/data/portfolio
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/photos"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -35,9 +37,12 @@ services:
       - .:/app
       - /app/node_modules
       - ./public/assets/photos:/app/public/assets/photos # Same volume mount as web
+      - ./portfolio-data:/data/portfolio
     environment:
       - NODE_ENV=development
+      - PHOTOGRAPHY_DATA_DIR=/data/portfolio
     command: npx tsx scripts/imageWatcher.ts --watch
+    # The watcher doesn't need web to serve anything, so it starts alongside it.
     depends_on:
       web:
-        condition: service_healthy
+        condition: service_started

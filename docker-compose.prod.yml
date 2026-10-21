@@ -13,21 +13,34 @@ services:
         target: /app/public/assets/photos
         bind:
           create_host_path: false
+      # The private data root: photo identity state and the /media sets. Only
+      # the watcher writes it. Never created when missing either, since an
+      # empty one beside a library that had photo IDs would mint new ones.
+      # docs/data-root.md covers backing it up with the library.
+      - type: bind
+        source: ./portfolio-data
+        target: /data/portfolio
+        read_only: true
+        bind:
+          create_host_path: false
       - ./.next-images-cache:/app/.next/cache/images
     restart: always
     environment:
       - NODE_ENV=production
+      - PHOTOGRAPHY_DATA_DIR=/data/portfolio
       - SITE_URL=https://keyurgolani.photography  # Public origin for share links, read at runtime
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/photos"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
 
   # Image optimization watcher - processes new photos automatically
-  # Note: Ensure photos directory is writable by uid 1001 (nextjs user)
-  # Run on host: chown -R 1001:1001 ./public/assets/photos
+  # Note: Ensure the photos directory and the data root are writable by uid
+  # 1001 (nextjs user). Run on host:
+  #   mkdir -p ./portfolio-data
+  #   chown -R 1001:1001 ./public/assets/photos ./portfolio-data
   image-watcher:
     image: ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?Set PHOTOGRAPHY_IMAGE_TAG to a release tag, for example v1.1.0}
     user: "1001:1001"
@@ -37,10 +50,26 @@ services:
         target: /app/public/assets/photos
         bind:
           create_host_path: false
+      - type: bind
+        source: ./portfolio-data
+        target: /data/portfolio
+        bind:
+          create_host_path: false
     restart: always
     environment:
       - NODE_ENV=production
-    command: ["npx", "tsx", "scripts/imageWatcher.ts", "--watch"]
+      - PHOTOGRAPHY_DATA_DIR=/data/portfolio
+    command: ["node", "dist/scripts/imageWatcher.mjs", "--watch"]
+    # Healthy while status/watcher.json in the data root is at most 120 s old.
+    # The watcher rewrites it every 30 s, so a stuck watcher, or a data root it
+    # can't write, turns unhealthy.
+    healthcheck:
+      test: ["CMD", "node", "dist/scripts/watcherHealth.mjs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    # The watcher doesn't need web to serve anything, so it starts alongside it.
     depends_on:
       web:
-        condition: service_healthy
+        condition: service_started
