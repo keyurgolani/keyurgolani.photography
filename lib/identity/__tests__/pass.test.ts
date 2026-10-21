@@ -28,6 +28,7 @@ beforeAll(async () => {
 
 afterEach(async () => {
     vi.unstubAllEnvs();
+    vi.restoreAllMocks();
     for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
@@ -88,6 +89,25 @@ describe('runReconcilePass', () => {
         await setup();
         fs.chmodSync(data.root, 0o555);
         expect(await runReconcilePass(harness().options())).toMatchObject({ status: 'skipped', state: 'unwritable' });
+    });
+
+    it("does nothing, and writes nothing, against a data root whose filesystem can't hold hard links", async () => {
+        await setup();
+        // As on exFAT, where every link() fails
+        const unsupported = (): never => {
+            throw Object.assign(new Error('ENOTSUP: operation not supported, link'), { code: 'ENOTSUP' });
+        };
+        vi.spyOn(fs, 'linkSync').mockImplementation(unsupported);
+        vi.spyOn(fs.promises, 'link').mockImplementation(async () => unsupported());
+        const { seen, options } = harness();
+        expect(await runReconcilePass(options())).toMatchObject({
+            status: 'skipped',
+            reason: 'data-root',
+            state: 'unwritable',
+            detail: expect.stringContaining("can't hold hard links"),
+        });
+        expect(data.files()).toEqual(['data-root.json']);
+        expect(seen).toEqual([]);
     });
 
     it('does nothing and writes nothing when the registry comes from a newer build', async () => {
