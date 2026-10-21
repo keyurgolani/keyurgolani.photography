@@ -40,14 +40,35 @@ function declaredFades({ property, duration, delay }: Measurement['transition'])
     });
 }
 
+/** A spread-only shadow layer as getComputedStyle serializes it: color, 0px 0px 0px, spread, and no inset. */
+const BAND = /^(rgba?\([^)]*\)) 0px 0px 0px (\d+(?:\.\d+)?)px(?:,|$)/;
+
 /**
- * Contract rule 4: an outline of at least 3 px, at full opacity all the way
- * up the tree, and no fade. A ring that transitions in reads as its start
- * value, so a running transition fails here, and so does one the computed
- * style declares for the ring or opacity.
+ * The token's band: the first box-shadow layer is --focus-ring-dark, spread
+ * at least as far as the outline offset so it fills the gap. A shadow rule
+ * that lands after the token, such as a Tailwind dark: or hover: variant,
+ * replaces the whole list and drops it.
+ */
+function bandProblems({ boxShadow, bandColor, outline }: Measurement): string[] {
+    if (!bandColor) return ['no --focus-ring-dark is in scope, so the focus token is missing'];
+    const band = BAND.exec(boxShadow);
+    if (!band) return [`box-shadow is "${boxShadow}", which doesn't start with the token's ${bandColor} band`];
+    const [, color, spread] = band;
+    const problems: string[] = [];
+    if (color !== bandColor) problems.push(`the band is ${color}, not the token's ${bandColor}`);
+    if (parseFloat(spread) < outline.offset) problems.push(`the band spreads ${spread}px, short of the ${outline.offset}px outline offset`);
+    return problems;
+}
+
+/**
+ * Contract rule 4: an outline of at least 3 px over the token's dark band, at
+ * full opacity all the way up the tree, and no fade. A ring that transitions
+ * in reads as its start value, so a running transition fails here, and so
+ * does one the computed style declares for the ring or opacity.
  */
 export async function expectFocusRingVisible(target: Locator): Promise<void> {
-    const { outline, faded, transitions, transition } = await focusAndMeasure(target);
+    const measured = await focusAndMeasure(target);
+    const { outline, faded, transitions, transition } = measured;
     const problems: string[] = [];
     if (outline.style === 'none') {
         problems.push('outline-style is none');
@@ -55,6 +76,7 @@ export async function expectFocusRingVisible(target: Locator): Promise<void> {
         if (outline.width < 3) problems.push(`outline is ${outline.width}px wide, under 3px`);
         if (outline.alpha === 0) problems.push('outline color is transparent');
     }
+    problems.push(...bandProblems(measured));
     for (const { label, opacity } of faded) problems.push(`${label} has opacity ${opacity}`);
     const fading = transitions.filter((property) => RING_PROPERTY.test(property));
     if (fading.length > 0) problems.push(`the ring transitions in (${fading.join(', ')}), so it needs transition: none`);

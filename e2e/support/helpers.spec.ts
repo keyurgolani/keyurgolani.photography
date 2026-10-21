@@ -12,9 +12,10 @@ import { expectSingleTapActivates } from './touch';
 // the reason it names. The pages set html[data-hydrated], which helpers wait on.
 
 const BASE_STYLE = `
+    :root { --focus-ring-light: #fff; --focus-ring-dark: #000; }
     body { margin: 0; font: 16px/1.5 sans-serif; color: #111; background: #fff; }
     button { min-width: 44px; min-height: 44px; }
-    :focus-visible { outline: 3px solid #fff; outline-offset: 3px; box-shadow: 0 0 0 3px #000; }
+    :focus-visible { outline: 3px solid var(--focus-ring-light); outline-offset: 3px; box-shadow: 0 0 0 3px var(--focus-ring-dark); }
 `;
 
 async function load(page: Page, body: string, style = ''): Promise<void> {
@@ -80,6 +81,27 @@ test.describe('expectFocusRingVisible', () => {
     test("fails the browser's default 1 px ring", async ({ page }) => {
         await load(page, '<button type="button">Ring</button>', 'button:focus-visible { outline: revert; box-shadow: none; }');
         await expect(expectFocusRingVisible(page.getByRole('button'))).rejects.toThrow(/outline is 1px wide, under 3px/);
+    });
+
+    test('fails when a later shadow rule replaces the band', async ({ page }) => {
+        // Like a Tailwind dark: or hover: shadow variant, which lands after the token at the same specificity.
+        await load(page, '<button type="button" class="lifted">Ring</button>', '.lifted { box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5); }');
+        await expect(expectFocusRingVisible(page.getByRole('button'))).rejects.toThrow(/doesn't start with the token's rgb\(0, 0, 0\) band/);
+    });
+
+    test('fails a band in another color', async ({ page }) => {
+        await load(page, '<button type="button">Ring</button>', 'button:focus-visible { box-shadow: 0 0 0 3px #777; }');
+        await expect(expectFocusRingVisible(page.getByRole('button'))).rejects.toThrow(/the band is rgb\(119, 119, 119\), not the token's rgb\(0, 0, 0\)/);
+    });
+
+    test('fails a band that leaves a gap under the outline', async ({ page }) => {
+        await load(page, '<button type="button">Ring</button>', 'button:focus-visible { box-shadow: 0 0 0 1px var(--focus-ring-dark); }');
+        await expect(expectFocusRingVisible(page.getByRole('button'))).rejects.toThrow(/the band spreads 1px, short of the 3px outline offset/);
+    });
+
+    test('fails a page without the focus token', async ({ page }) => {
+        await load(page, '<button type="button">Ring</button>', ':root { --focus-ring-dark: initial; }');
+        await expect(expectFocusRingVisible(page.getByRole('button'))).rejects.toThrow(/no --focus-ring-dark is in scope/);
     });
 
     test('fails a ring that transitions in', async ({ page }) => {

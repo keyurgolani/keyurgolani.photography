@@ -4,19 +4,14 @@
 
 /* Focus token, contract rule 4 in docs/accessibility-contract.md. A dark band
    fills the offset with a light outline outside it, which survives forced
-   colors. Keep the two colors at least 9:1 apart, so one of them reaches 3:1
-   on any background. It sits after the utilities so it wins ties with them. */
-:root {
-    --focus-ring-light: #ffffff;
-    --focus-ring-dark: #000000;
-    --focus-ring-width: 3px;
-    --focus-ring-offset: 3px;
-}
-
+   colors. The --focus-ring-* values live in :root below. Tailwind appends its
+   variants, such as dark: and hover:, to the end of this file, where a shadow
+   variant would replace the band. So box-shadow is !important, and
+   --tw-shadow keeps the element's own shadow under the band. */
 :root :focus-visible {
     outline: var(--focus-ring-width) solid var(--focus-ring-light);
     outline-offset: var(--focus-ring-offset);
-    box-shadow: 0 0 0 var(--focus-ring-offset) var(--focus-ring-dark), var(--tw-shadow, 0 0 #0000);
+    box-shadow: 0 0 0 var(--focus-ring-offset) var(--focus-ring-dark), var(--tw-shadow, 0 0 #0000) !important;
     transition: none;
 }
 
@@ -27,6 +22,13 @@ html {
 }
 
 :root {
+    /* Focus token. Keep the two colors at least 9:1 apart, so one of them
+       reaches 3:1 on any background. */
+    --focus-ring-light: #ffffff;
+    --focus-ring-dark: #000000;
+    --focus-ring-width: 3px;
+    --focus-ring-offset: 3px;
+
     /* Fonts */
     --font-primary: var(--font-montserrat), sans-serif;
     --font-secondary: var(--font-inter), sans-serif;
@@ -492,18 +494,31 @@ body {
     color: rgba(0, 0, 0, 0.4) !important;
 }
 
-/* The focus token for the lightbox. YARL's outline: none and the !important
-   rules above beat a plain :focus-visible, so these restate it. */
+/* The focus token for the lightbox. Its outline already beats YARL's
+   outline: none, but the app's own !important box-shadow and transition rules
+   above beat the token, so these restate the band and drop the transition.
+   They also lift inactive thumbnails from opacity 0.5. */
 :root .yarl__button:focus-visible,
 :root .yarl__thumbnails_thumbnail:focus-visible {
-    outline: var(--focus-ring-width) solid var(--focus-ring-light) !important;
-    outline-offset: var(--focus-ring-offset) !important;
     box-shadow: 0 0 0 var(--focus-ring-offset) var(--focus-ring-dark) !important;
     transition: none !important;
+    opacity: 1 !important;
 }
 
-/* Inactive thumbnails sit at opacity 0.5. */
-:root .yarl__thumbnails_thumbnail:focus-visible {
-    opacity: 1 !important;
+/* YARL focuses its container to take arrow keys, and the thumbnail track when
+   a focused thumbnail scrolls out of it. Neither is a control, so neither
+   gets a ring. In a focused track the active thumbnail draws the token
+   instead, so keyboard users still see their place. */
+:root .yarl__container:focus-visible,
+:root .yarl__thumbnails_track:focus-visible {
+    outline: none !important;
+    box-shadow: none !important;
+}
+
+:root .yarl__thumbnails_track:focus-visible .yarl__thumbnails_thumbnail_active {
+    outline: var(--focus-ring-width) solid var(--focus-ring-light);
+    outline-offset: var(--focus-ring-offset);
+    box-shadow: 0 0 0 var(--focus-ring-offset) var(--focus-ring-dark) !important;
+    transition: none !important;
 }
 

@@ -22,7 +22,11 @@ export interface Measurement {
     box: Box;
     /** The border box grown by outline-offset plus outline-width, where the focus ring paints. */
     ring: Box;
-    outline: { style: string; width: number; alpha: number };
+    outline: { style: string; width: number; offset: number; alpha: number };
+    /** The computed box-shadow list. Under focus, its first layer is the focus token's band. */
+    boxShadow: string;
+    /** --focus-ring-dark as an rgb() or rgba() color, or null when the focus token isn't in scope. */
+    bandColor: string | null;
     /** The element and each ancestor with an opacity under 1. */
     faded: { label: string; opacity: number }[];
     /** Properties with a CSS transition running on the element. */
@@ -44,21 +48,29 @@ export function measure(target: Locator): Promise<Measurement> {
             const classes = typeof el.className === 'string' ? el.className.split(/\s+/).filter(Boolean).slice(0, 3) : [];
             return el.tagName.toLowerCase() + (el.id ? `#${el.id}` : '') + classes.map((cls) => `.${cls}`).join('') + (name ? `[aria-label="${name}"]` : '');
         };
-        const alphaOf = (color: string) => {
+        const rgbaOf = (color: string) => {
             const canvas = document.createElement('canvas');
             canvas.width = canvas.height = 1;
             const context = canvas.getContext('2d', { willReadFrequently: true });
-            if (!context) return 1;
+            if (!context) return [0, 0, 0, 1] as const;
             context.fillStyle = color;
             context.fillRect(0, 0, 1, 1);
-            return context.getImageData(0, 0, 1, 1).data[3] / 255;
+            const [r, g, b, a] = context.getImageData(0, 0, 1, 1).data;
+            return [r, g, b, a / 255] as const;
+        };
+        /** The color as getComputedStyle serializes it inside box-shadow. */
+        const serialize = (color: string) => {
+            const [r, g, b, a] = rgbaOf(color);
+            return a === 1 ? `rgb(${r}, ${g}, ${b})` : `rgba(${r}, ${g}, ${b}, ${Number(a.toFixed(2))})`;
         };
         const length = (value: string, basis: number) => (value.endsWith('%') ? (parseFloat(value) / 100) * basis : parseFloat(value) || 0);
 
         const style = getComputedStyle(element);
         const rect = element.getBoundingClientRect();
         const outlineWidth = style.outlineStyle === 'none' ? 0 : parseFloat(style.outlineWidth) || 0;
-        const extent = Math.max(0, (parseFloat(style.outlineOffset) || 0) + outlineWidth);
+        const outlineOffset = parseFloat(style.outlineOffset) || 0;
+        const extent = Math.max(0, outlineOffset + outlineWidth);
+        const dark = style.getPropertyValue('--focus-ring-dark').trim();
 
         const faded: Measurement['faded'] = [];
         for (let node: Element | null = element; node; node = node.parentElement) {
@@ -97,7 +109,9 @@ export function measure(target: Locator): Promise<Measurement> {
         return {
             box: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
             ring: { left: rect.left - extent, top: rect.top - extent, right: rect.right + extent, bottom: rect.bottom + extent },
-            outline: { style: style.outlineStyle, width: outlineWidth, alpha: alphaOf(style.outlineColor) },
+            outline: { style: style.outlineStyle, width: outlineWidth, offset: outlineOffset, alpha: rgbaOf(style.outlineColor)[3] },
+            boxShadow: style.boxShadow,
+            bandColor: dark ? serialize(dark) : null,
             faded,
             transitions: element
                 .getAnimations()
