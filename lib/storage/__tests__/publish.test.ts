@@ -90,6 +90,29 @@ describe('publishDirectory', () => {
         expect(snapshot(staging())).toEqual(staged);
     });
 
+    it.each([
+        ['fewer', 'final', ['lists no w400.avif, which the staged set has']],
+        ['more', 'staging', ["lists w400.avif, which the staged set doesn't"]],
+    ] as const)('throws IntegrityError over a set that checks out but lists %s variants than the staged one, and keeps both', async (_label, trimmed, problems) => {
+        writeSet(final(), { seed: 'first build' });
+        writeSet(staging(), { seed: 'second build' });
+        // One side loses w400.avif from its folder and its manifest alike, so it still checks out against itself.
+        const dir = trimmed === 'final' ? final() : staging();
+        const manifest = JSON.parse(fs.readFileSync(path.join(dir, MANIFEST_FILE), 'utf8')) as DirectoryManifest;
+        delete manifest.variants.w400.avif;
+        fs.writeFileSync(path.join(dir, MANIFEST_FILE), JSON.stringify(manifest));
+        fs.rmSync(path.join(dir, 'w400.avif'));
+        expect(await verifyDirectory(dir, IDENTITY)).toEqual([]);
+        const [finalBefore, stagedBefore] = [snapshot(final()), snapshot(staging())];
+
+        const error = await publishDirectory(staging(), final()).catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(IntegrityError);
+        expect((error as IntegrityError).problems).toEqual(problems);
+        expect(snapshot(final())).toEqual(finalBefore);
+        expect(snapshot(staging())).toEqual(stagedBefore);
+    });
+
     it('throws IntegrityError over a valid set that belongs to another photo, revision, or profile', async () => {
         for (const field of ['photoId', 'assetRevision', 'profileId'] as const) {
             const other = { ...IDENTITY, [field]: field === 'photoId' ? 'ph_00000000-0000-4000-8000-000000000000' : field === 'assetRevision' ? `sha256-${'b'.repeat(64)}` : 'p_fedcba9876543210' };

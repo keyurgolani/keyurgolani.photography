@@ -133,6 +133,16 @@ export async function verifyDirectory(dir: string, identity: AssetIdentity): Pro
     return problems;
 }
 
+/** How an existing set's file list differs from the staged one's. Empty when they list the same files. */
+function listDifferences(existing: DirectoryManifest, staged: DirectoryManifest): string[] {
+    const have = new Set(manifestFiles(existing).map((file) => file.name));
+    const want = new Set(manifestFiles(staged).map((file) => file.name));
+    return [
+        ...[...want].filter((name) => !have.has(name)).sort().map((name) => `lists no ${name}, which the staged set has`),
+        ...[...have].filter((name) => !want.has(name)).sort().map((name) => `lists ${name}, which the staged set doesn't`),
+    ];
+}
+
 /** fsync every file the manifest lists, the manifest, and the directory itself. */
 async function syncDirectory(dir: string, manifest: DirectoryManifest): Promise<void> {
     for (const name of [...manifestFiles(manifest).map((file) => file.name), MANIFEST_FILE]) {
@@ -150,10 +160,10 @@ async function syncDirectory(dir: string, manifest: DirectoryManifest): Promise<
  * Move a fully written staging directory to its final path with one rename,
  * after checking it against its own manifest and syncing it to disk, so a torn
  * set can never become a final one. If the final directory already exists and
- * is a valid set for the same photo, revision, and profile, it is kept and the
- * staging copy is discarded, so a rebuild after a crash is a no-op. Any other
- * existing directory throws IntegrityError and is left untouched, as is the
- * staging directory.
+ * is a valid set for the same photo, revision, and profile that lists the same
+ * files as the staged one, it is kept and the staging copy is discarded, so a
+ * rebuild after a crash is a no-op. Any other existing directory throws
+ * IntegrityError and is left untouched, as is the staging directory.
  *
  * Returns whether this call published the staging directory.
  */
@@ -179,6 +189,11 @@ export async function publishDirectory(stagingDir: string, finalDir: string): Pr
     }
 
     const problems = await verifyDirectory(finalDir, identity);
+    if (problems.length === 0) {
+        // Checking out against its own manifest isn't enough: it has to list the files this build staged.
+        const existing = await readDirectoryManifest(finalDir);
+        problems.push(...(existing ? listDifferences(existing, staged) : ['no manifest']));
+    }
     if (problems.length > 0) throw new IntegrityError(finalDir, problems);
     await fs.promises.rm(stagingDir, { recursive: true, force: true });
     return { published: false };
