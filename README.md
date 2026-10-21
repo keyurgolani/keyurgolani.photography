@@ -66,9 +66,12 @@ npm install
 
 # Start development server
 npm run dev
+
+# In a second terminal, build the photos' derivatives, then keep watching for new ones
+npm run images:watch
 ```
 
-Open [http://localhost:3000](http://localhost:3000) to view the site.
+Open [http://localhost:3000](http://localhost:3000) to view the site. `npm run dev` alone builds no derivatives, and the Gallery lists a photo only once all seven of its derivatives exist, so it stays empty until the watcher has run. `npm run images:process` builds them once and exits.
 
 ### Development with Docker
 
