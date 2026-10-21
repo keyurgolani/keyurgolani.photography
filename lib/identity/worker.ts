@@ -4,7 +4,7 @@ import { dataRootStatus, type DataRootState } from '../storage/config';
 import { UnsupportedSchemaError } from '../storage/document';
 import { PRIVATE_DIR_MODE } from '../storage/fsx';
 import { LockTimeoutError, withLock, type LockRecord } from '../storage/lock';
-import { buildDerivativeSet, stagingRoot, type BuildOptions, type BuildOutcome, type WriterFaults } from './derivatives';
+import { buildDerivativeSet, removeAbandonedStaging, stagingRoot, type BuildOptions, type BuildOutcome, type WriterFaults } from './derivatives';
 import type { Hasher } from './ids';
 import { currentProfileId } from './profile';
 import { readRegistry, writeRegistry } from './registry';
@@ -14,7 +14,8 @@ import type { DerivativeJob, Registry } from './types';
  * The derivative worker: one in-process queue that builds the current
  * profile's sets one at a time, for the watcher. At start it moves pending
  * and failed entries from older profiles to the current one, puts failed
- * entries back to pending once, and queues every pending entry. After each
+ * entries back to pending once, removes the staging folders killed builds
+ * left, and queues every pending entry. After each
  * pass the watcher calls enqueuePending() to queue what the pass left
  * pending. Revisions moved to another photo (`reassignedTo`) are never built.
  */
@@ -74,7 +75,8 @@ export class WorkerStartError extends Error {
 export interface DerivativeWorker {
     /**
      * Check the data root, move older profiles' entries, retry failed ones
-     * once, and queue every pending entry. Until it returns `started`, the
+     * once, remove the staging folders no live build holds, and queue every
+     * pending entry. Until it returns `started`, the
      * worker builds nothing, and the watcher can call it again later. Throws
      * WorkerStartError when staging and the asset store are on different devices.
      */
@@ -258,6 +260,14 @@ export function createWorker(options: WorkerOptions = {}): DerivativeWorker {
         }
         // Stopped while the start-up bookkeeping was being written: queue nothing.
         if (registry === null || state !== 'new') return { started: false, reason: 'stopped' };
+        try {
+            for (const name of await removeAbandonedStaging(dataRoot, { leaseMs: options.lock?.leaseMs, logger })) {
+                logger.log(`[derivatives] Removed staging/${name}, which a build stopped before publishing left.`);
+            }
+        } catch (error) {
+            logger.warn(`[derivatives] Could not look for staging folders killed builds left: ${errorText(error)}`);
+        }
+        if (state !== 'new') return { started: false, reason: 'stopped' };
         root = dataRoot;
         state = 'running';
         return { started: true, queued: enqueue(pendingJobs(registry, profileId)) };

@@ -1,12 +1,13 @@
 // @vitest-environment node
 import fs from 'node:fs';
+import path from 'node:path';
 import sharp from 'sharp';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempLibrary';
 import { resolveAsset } from '../../media/manifest';
 import { withLock } from '../../storage/lock';
-import { buildDerivativeSet, stagingRoot, type BuildOutcome } from '../derivatives';
+import { buildDerivativeSet, stagingLockName, stagingRoot, type BuildOutcome } from '../derivatives';
 import { sha256, type Hasher } from '../ids';
 import { runReconcilePass } from '../pass';
 import { currentProfileId } from '../profile';
@@ -362,6 +363,61 @@ describe('the derivative worker', () => {
         const ref = { photoId: s.ids[0], assetRevision: registry.photos[s.ids[0]].source.observedRevision, profileId: currentProfileId() };
         expect((await resolveAsset(ref, { root: s.data.root })).state).toBe('ready');
         expect(fs.readdirSync(otherData.root)).toEqual([]);
+    }, 60_000);
+
+    it('removes the staging folders killed builds left when it starts, and keeps any a live build may still hold', async () => {
+        const s = await setup(1);
+        const staging = stagingRoot(s.data.root);
+        const leave = (name: string) => {
+            fs.mkdirSync(path.join(staging, name), { recursive: true });
+            fs.writeFileSync(path.join(staging, name, 'w400.webp'), 'half a set');
+        };
+        // The lock record a killed build leaves, last renewed at `heartbeat`.
+        const lease = (name: string, heartbeat: number) => {
+            const at = new Date(heartbeat).toISOString();
+            fs.mkdirSync(s.data.file('locks'), { recursive: true });
+            fs.writeFileSync(s.data.file('locks', `${stagingLockName(name)}.lock`),
+                JSON.stringify({ owner: `killed ${name}`, hostname: 'elsewhere', pid: 1, acquiredAt: at, heartbeatAt: at, leaseMs: 60_000 }));
+        };
+        const buildLocks = () => fs.readdirSync(s.data.file('locks')).filter((name) => name.startsWith(stagingLockName(''))).sort();
+        leave('killed-long-ago');
+        lease('killed-long-ago', Date.now() - 10 * 60_000);
+        leave('never-locked');
+        // Killed a moment ago, or still building on another host: its lease still runs.
+        leave('killed-just-now');
+        lease('killed-just-now', Date.now());
+        // Not what a build stages: a folder no build would name, and a file.
+        leave('Not-A-Build');
+        fs.writeFileSync(path.join(staging, 'notes'), 'kept');
+
+        const logs: string[] = [];
+        const warnings: string[] = [];
+        await withLock(stagingLockName('building-now'), { root: s.data.root }, async () => {
+            leave('building-now');
+            const worker = s.worker({ logger: { ...quiet, log: (line: string) => { logs.push(line); }, warn: (line: string) => { warnings.push(line); } } });
+            const started = Date.now();
+            expect(await worker.start()).toEqual({ started: true, queued: 1 });
+            // A held lock is tried once, not waited on.
+            expect(Date.now() - started).toBeLessThan(5_000);
+            await worker.idle();
+            expect(statuses(worker.results)).toEqual(['ready']);
+            expect(fs.readdirSync(staging).sort()).toEqual(['Not-A-Build', 'building-now', 'killed-just-now', 'notes']);
+        });
+        expect(logs.filter((line) => line.includes('staging/'))).toEqual([
+            '[derivatives] Removed staging/killed-long-ago, which a build stopped before publishing left.',
+            '[derivatives] Removed staging/never-locked, which a build stopped before publishing left.',
+        ]);
+        expect(warnings).toEqual([]);
+        // The removed folders' locks went with them.
+        expect(buildLocks()).toEqual([`${stagingLockName('killed-just-now')}.lock`]);
+
+        // Once its lease runs out, and with the live build's lock let go, the next start removes both.
+        lease('killed-just-now', Date.now() - 10 * 60_000);
+        const next = s.worker();
+        await next.start();
+        await next.idle();
+        expect(fs.readdirSync(staging).sort()).toEqual(['Not-A-Build', 'notes']);
+        expect(buildLocks()).toEqual([]);
     }, 60_000);
 
     it('refuses to start, changing nothing, when staging and the asset store are on different devices', async () => {
