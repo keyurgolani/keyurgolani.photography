@@ -1,9 +1,9 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import { PHOTO_ID_RE } from '../ids';
-import { reconcile, STABILITY_MS } from '../reconcile';
+import { isStillChanging, reconcile, STABILITY_MS } from '../reconcile';
 import { emptyRegistry } from '../types';
-import { FakeLibrary, image, PROFILE, Reconciler, revisionOf, sequentialIds } from './reconcileFixtures';
+import { FakeLibrary, image, NOW, PROFILE, Reconciler, revisionOf, sequentialIds } from './reconcileFixtures';
 
 /** A reconciler whose first pass bound each `path: bytes` pair to a new photo. */
 function seeded(files: Record<string, string>): Reconciler {
@@ -373,6 +373,31 @@ describe('reconcile: renames, copies, swaps, and unstable files', () => {
         r.pass();
         expect(r.last.facts).toMatchObject([{ type: 'renamed', photoId: id, path: '2026/a.jpg' }]);
         expect(Object.keys(r.registry.photos)).toEqual([id]);
+    });
+
+    it('a copy that kept a future mtime still waits on its fresh ctime, so a copy then delete is a rename', () => {
+        const r = seeded({ 'a.jpg': 'A' });
+        const id = r.photoAt('a.jpg').photoId;
+        // Copied a moment ago with the source's mtime, set a minute ahead by a camera or another host's clock.
+        r.library.put('2026/a.jpg', image('A'), { fresh: true, mtimeMs: NOW + 60_000 });
+        r.pass();
+        expect(r.last.facts).toEqual([]);
+        expect(r.last.report.unstable).toEqual(['2026/a.jpg']);
+        r.library.remove('a.jpg').settle();
+        r.pass();
+        expect(r.last.facts).toMatchObject([{ type: 'renamed', photoId: id, path: '2026/a.jpg' }]);
+        expect(Object.keys(r.registry.photos)).toEqual([id]);
+    });
+
+    it('judges mtime and ctime each on its own, within STABILITY_MS either way', () => {
+        const changing = (mtimeMs: number, ctimeMs: number) => isStillChanging({ mtimeMs, ctimeMs }, NOW);
+        expect(changing(NOW + 60_000, NOW - 1_000)).toBe(true);
+        expect(changing(NOW - 1_000, NOW - 60_000)).toBe(true);
+        expect(changing(NOW + 1_000, NOW - 60_000)).toBe(true);
+        expect(changing(NOW - 60_000, NOW + 1_000)).toBe(true);
+        expect(changing(NOW + 60_000, NOW - 60_000)).toBe(false);
+        expect(changing(NOW - 60_000, NOW - 60_000)).toBe(false);
+        expect(changing(NOW - STABILITY_MS, NOW - STABILITY_MS)).toBe(false);
     });
 
     it('a rename made while stopped is one renamed fact and no missing one', () => {

@@ -8,11 +8,13 @@ export const STABILITY_MS = 5_000;
 
 /**
  * Whether a file changed within STABILITY_MS of `observedAt`, either way, so
- * it may still be being written or moved. Uses the later of mtime and ctime,
- * since a rename or copy changes only the ctime.
+ * it may still be being written or moved. Each timestamp counts on its own: a
+ * rename or copy changes only the ctime, and a copy that keeps its source's
+ * mtime can bring one from any time, even the future, which must not hide a
+ * ctime from a moment ago.
  */
 export function isStillChanging(entry: Pick<ScanEntry, 'mtimeMs' | 'ctimeMs'>, observedAt: number): boolean {
-    return Math.abs(observedAt - Math.max(entry.mtimeMs, entry.ctimeMs)) < STABILITY_MS;
+    return Math.abs(observedAt - entry.mtimeMs) < STABILITY_MS || Math.abs(observedAt - entry.ctimeMs) < STABILITY_MS;
 }
 
 /** A fact before it is committed. The pass that commits it mints its factId. */

@@ -60,10 +60,17 @@ export class FakeLibrary {
     readonly unreadableDirs: string[] = [];
     readonly inspected: string[] = [];
 
-    /** Put a file at `path`. `fresh` makes it look modified, renamed, or copied a moment ago. */
-    put(path: string, inspection: Inspection, { fresh = false, kind = 'source' }: { fresh?: boolean; kind?: ScanEntry['kind'] } = {}): this {
+    /**
+     * Put a file at `path`. `fresh` makes it look modified, renamed, or copied
+     * a moment ago. `mtimeMs` stands for a copy that kept its source's mtime.
+     */
+    put(
+        path: string,
+        inspection: Inspection,
+        { fresh = false, kind = 'source', mtimeMs = NOW - 60_000 }: { fresh?: boolean; kind?: ScanEntry['kind']; mtimeMs?: number } = {},
+    ): this {
         const changed = fresh ? NOW - 1_000 : NOW - 60_000;
-        this.files.set(path, { inspection, kind, mtimeMs: NOW - 60_000, ctimeMs: changed, ino: this.nextIno++ });
+        this.files.set(path, { inspection, kind, mtimeMs, ctimeMs: changed, ino: this.nextIno++ });
         return this;
     }
 
