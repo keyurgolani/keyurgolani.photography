@@ -88,6 +88,13 @@ test('Tab reaches the theme toggle, the Primary links, then each photo in order,
     expect(back).toEqual(stops.slice(0, -1).reverse());
 });
 
+test('the Primary navigation sits outside main, and the theme toggle is a plain button', async ({ page }) => {
+    await openGallery(page);
+    await expect(primary(page)).toHaveCount(1);
+    await expect(page.locator('main nav')).toHaveCount(0);
+    await expect(themeToggle(page)).toHaveAttribute('type', 'button');
+});
+
 test('the Primary navigation is within 3 Tab presses of page load', async ({ page }) => {
     await openGallery(page);
     await expectReachableWithin(page, primary(page), 3);
