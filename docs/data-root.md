@@ -16,7 +16,11 @@ The registry in it names every photo by its path in the library and by the SHA-2
 | `assets/<photoId>/<assetRevision>/<profileId>/` | One `/media` set: its WebP and AVIF files and `manifest.json`. A set never changes once it's written. | The watcher |
 | `staging/` | Sets still being built | The watcher |
 | `status/watcher.json` | The watcher's heartbeat, which its healthcheck reads | The watcher, every 30 s |
-| `locks/` | The lock every writer takes on the registry | The watcher and `photos.mjs` |
+| `authored/` | The authored catalog records: the site, each series, and each photo's copy | Hand edits for now, and `photos.mjs publish` when it rebases them |
+| `catalog/revisions/` | Every published revision, which never changes once it's written | `photos.mjs publish` |
+| `catalog/activations/`, `catalog/active.json` | Each activation, and the pointer to the active revision | `photos.mjs publish` |
+| `catalog/candidates/`, `catalog/diagnostics/` | The last compile of each candidate, its issues, and how the last publish ended | `photos.mjs publish` |
+| `locks/` | The locks writers take on the registry, the authored records, and the catalog | The watcher and `photos.mjs` |
 
 Everything in it belongs to uid 1001, the user both containers run as, and only that user can read it, since the registry keeps curator-only details such as GPS. To read a file, go through the container instead of `sudo`:
 
