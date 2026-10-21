@@ -94,11 +94,15 @@ function addTo<K, V>(map: Map<K, Set<V>>, key: K, value: V): void {
  * A hold on paths that differ only by case or Unicode form also ends once one
  * of them is left, and that one is classified as a plain rename would be.
  *
- * One departure from the table: a photo whose bound path holds another
+ * Two departures from the table. A photo whose bound path holds another
  * photo's bytes (row 6) may have moved, so rows 7 and 9 count it as
- * sourceless. Once rows 7 or 10 rebind it, the hold on its old path ends and
+ * sourceless, in the pass that finds it and for as long as the hold on that
+ * path lasts. Once rows 7 or 10 rebind it, the hold on its old path ends and
  * that path is classified as an unbound one, so a renumbered series, such as
- * `mv 3 4; mv 2 3; mv 1 2`, resolves as renames.
+ * `mv 3 4; mv 2 3; mv 1 2`, resolves as renames. And a file with the bytes or
+ * pixels of a photo whose bound path is still changing may be that photo
+ * moving, so rows 8, 11, and 12 make no new photo of it until that path
+ * settles, which a series renumbered while a pass runs needs.
  */
 export function reconcile(scan: LibraryScan, registry: Registry, inspect: InspectLookup, context: ReconcileContext): ReconcileResult {
     const now = new Date(scan.observedAt).toISOString();
@@ -320,6 +324,11 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
     // Photos whose bound path holds another photo's bytes (row 6), with that path's file. Each may have
     // moved away, as when a series is renumbered, so rows 7 and 9 count it as sourceless.
     const displaced = new Map<string, ImageSeen>();
+    // Photos whose bound path is still changing. One may be moving, so rows 8, 11, and 12 make no new photo
+    // from its bytes or pixels until the path settles.
+    const unsettled = new Set<string>();
+    const othersOwning = (assetRevision: string, id: string) =>
+        [...(ownersBefore.get(assetRevision) ?? [])].filter((owner) => owner !== id && !isRetired(photos[owner]));
     for (const id of originalIds) {
         const photo = photos[id];
         if (!photo.source.present || isRetired(photo) || boundByKey.get(photo.source.key) !== id) continue;
@@ -330,7 +339,17 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
         }
         if (collidingKeys.has(photo.source.key)) continue; // A key collision. The binding stays, and the photo is a hold candidate.
         const [item] = group;
-        if (isHeld(item) || !isImage(item)) continue; // Held, fresh, unreadable, or colliding: unchanged for now.
+        if (!isImage(item)) {
+            // Fresh, unreadable, or colliding: unchanged for now.
+            if (item.state === 'unstable') unsettled.add(id);
+            continue;
+        }
+        if (isHeld(item)) {
+            // Held, and unchanged for now. While the path still holds another photo's bytes, as row 6 found it, the
+            // photo stays displaced, so a later pass that finds its bytes elsewhere rebinds it.
+            if (othersOwning(item.inspection.assetRevision, id).length > 0) displaced.set(id, item);
+            continue;
+        }
         if (item.entry.path !== photo.source.path) photo.source.path = item.entry.path; // A case-only or Unicode-only rename.
 
         const { assetRevision, pixelDigest } = item.inspection;
@@ -348,7 +367,7 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
             continue;
         }
         // 6. P holds Y's bytes.
-        const others = [...(ownersBefore.get(assetRevision) ?? [])].filter((owner) => owner !== id && !isRetired(photos[owner]));
+        const others = othersOwning(assetRevision, id);
         if (others.length > 0) {
             hold(item, [id, ...others]);
             displaced.set(id, item);
@@ -511,6 +530,8 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
         const { assetRevision, pixelDigest } = item.inspection;
         const byBytes = byteOwners.get(assetRevision);
         const byPixels = pixelDigest !== null ? pixelOwners.get(pixelDigest) : undefined;
+        // It may be a photo whose path is still changing, moving here. The next pass, once that path settles, tells.
+        if ([...(byBytes ?? []), ...(byPixels ?? [])].some((owner) => unsettled.has(owner))) continue;
         const duplicateOf = byBytes?.size ? original(byBytes) : byPixels?.size ? original(byPixels) : null;
         const samePathAs = duplicateOf === null ? missingAt(item.entry.key) : undefined;
 

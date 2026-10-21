@@ -500,6 +500,40 @@ describe('reconcile: renames, copies, swaps, and unstable files', () => {
         expect(r.last.facts).toEqual([]);
     });
 
+    it('resolves a renumbered series as renames when a pass sees it before every path settles', () => {
+        const r = seeded({ '1.jpg': 'A', '2.jpg': 'B', '3.jpg': 'C' });
+        const [x1, x2, x3] = ['1.jpg', '2.jpg', '3.jpg'].map((path) => r.photoAt(path).photoId);
+        // 4.jpg has settled, and 3.jpg and 2.jpg were moved just now.
+        r.library.move('3.jpg', '4.jpg').move('2.jpg', '3.jpg', { fresh: true }).move('1.jpg', '2.jpg', { fresh: true });
+        r.pass();
+        // 4.jpg holds 3.jpg's photo's bytes, and 3.jpg is still changing, so it may be that photo moving: no new photo yet.
+        expect(r.last.facts).toEqual([]);
+        expect(Object.keys(r.registry.photos)).toHaveLength(3);
+        expect(r.last.retryAfterMs).toBe(STABILITY_MS);
+
+        r.library.settle();
+        r.pass();
+        expect(r.factSummary()).toEqual(['renamed 2.jpg', 'renamed 3.jpg', 'renamed 4.jpg']);
+        expect([x1, x2, x3].map((id) => r.photo(id).source.path)).toEqual(['2.jpg', '3.jpg', '4.jpg']);
+        expect(r.registry.holds).toEqual([]);
+    });
+
+    it('rebinds a photo whose path another photo\'s bytes took in an earlier pass, once its own bytes turn up', () => {
+        const r = seeded({ 'a.jpg': 'A', 'b.jpg': 'B' });
+        const [x, y] = [r.photoAt('a.jpg').photoId, r.photoAt('b.jpg').photoId];
+        r.library.put('a.jpg', image('B'));
+        r.pass();
+        expect(r.factSummary()).toEqual(['ambiguous a.jpg']);
+
+        // a.jpg's old bytes come back as c.jpg in a later pass: its photo moved there.
+        r.library.put('c.jpg', image('A'));
+        r.pass();
+        expect(r.factSummary()).toEqual(['new a.jpg', 'renamed c.jpg']);
+        expect(r.photo(x).source).toMatchObject({ path: 'c.jpg', present: true });
+        expect(r.photoAt('a.jpg')).toMatchObject({ duplicateOf: y, sourceHealth: 'present' });
+        expect(r.registry.holds).toEqual([]);
+    });
+
     it('resolves a longer renumbered series in a folder the same way', () => {
         const files = Object.fromEntries([1, 2, 3, 4, 5].map((n) => [`trip/${n}.jpg`, `P${n}`]));
         const r = seeded(files);
