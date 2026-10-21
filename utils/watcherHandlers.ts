@@ -11,6 +11,8 @@ import {
     refreshImage,
     reprocessImage,
     setKeyOf,
+    setMembers,
+    sharesSet,
     SOURCE_CHANGED,
 } from './imageOptimizer';
 
@@ -172,12 +174,17 @@ export function createWatcherHandlers(
             logger.log(`[ImageWatcher] New file detected: ${filename}`);
             let written: string[] = [];
             let owner = filename;
+            let tookOver = false;
             const outcome = await enqueue(filename, true, async () => {
                 owner = await ownerOf(filename);
-                if (owner === filename) written = await refreshImage(filename);
+                if (owner !== filename) return;
+                // Another source built the set it now owns, so its mtime says nothing about the set.
+                tookOver = setMembers(filename).length > 1;
+                written = await refreshImage(filename, { force: tookOver });
             });
             if (outcome !== 'done') return;
             if (owner !== filename) logger.log(`[ImageWatcher] Skipping ${filename}: it shares its derivatives with ${owner}.`);
+            else if (tookOver) logger.log(`[ImageWatcher] Rebuilt the set ${filename} now owns from it.`);
             else logger.log(`[ImageWatcher] ${written.length > 0 ? 'Processed' : 'Already up to date'}: ${filename}`);
         },
 
@@ -185,17 +192,22 @@ export function createWatcherHandlers(
             if (stopped || !isSourceFile(filePath)) return;
             const filename = path.basename(filePath);
             logger.log(`[ImageWatcher] File changed, reprocessing: ${filename}`);
-            // This job always regenerates, so a startup job still waiting for the photo is redundant
+            // This job rebuilds or refreshes the set, so a startup job still waiting for it is redundant
             const key = setKeyOf(filename);
-            dropStartupJobs((job) => job.key === key);
+            dropStartupJobs((job) => job.key === key && sharesSet(job.label, filename));
             let owner = filename;
             const outcome = await enqueue(filename, true, async () => {
                 owner = await ownerOf(filename);
                 if (owner === filename) await reprocessImage(filename);
+                // It owned the set until this change, as when it no longer decodes, so the set may show its old pixels
+                else if (filename < owner) await reprocessImage(owner);
+                // The owner's startup job may have just been dropped
+                else await refreshImage(owner);
             });
             if (outcome !== 'done') return;
-            if (owner !== filename) logger.log(`[ImageWatcher] Skipping ${filename}: it shares its derivatives with ${owner}.`);
-            else logger.log(`[ImageWatcher] Reprocessed: ${filename}`);
+            if (owner === filename) logger.log(`[ImageWatcher] Reprocessed: ${filename}`);
+            else if (filename < owner) logger.log(`[ImageWatcher] Rebuilt the set ${filename} shared from ${owner}, which owns it now.`);
+            else logger.log(`[ImageWatcher] Skipping ${filename}: it shares its derivatives with ${owner}.`);
         },
 
         async onUnlink(filePath) {

@@ -6,8 +6,9 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import type { FSWatcherEventMap } from 'chokidar';
 import sharp, { type Sharp } from 'sharp';
 import { dominantChannel, fixtureFiles, type Channel } from '../../test/fixtures/makeLibrary';
+import { fakeCaseInsensitiveDisk, fakeCaseSensitiveDisk } from '../../test/helpers/caseDisk';
 import { createTempLibrary, derivativePaths, type TempLibrary } from '../../test/helpers/tempLibrary';
-import { baseNameOf, processImage } from '../imageOptimizer';
+import { baseNameOf, ownerOf, processImage } from '../imageOptimizer';
 import {
     attachWatcher,
     createIgnoreFilter,
@@ -174,7 +175,8 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
             expect(logs).toContain('[ImageWatcher] Skipping landscape.png: it shares its derivatives with landscape.jpg.');
         });
 
-        it('treats base names that differ only by case or Unicode form as one set', async () => {
+        it('treats base names that differ only by case or Unicode form as one set on a disk that resolves them to one file', async () => {
+            fakeCaseInsensitiveDisk();
             fs.copyFileSync(lib.file('portrait.png'), lib.file('Landscape.png'));
             expect(await processOnce(handlers, { force: true, logger })).toBe(0);
             // Landscape.png comes first by path, so its set is the one written, under its own spelling.
@@ -182,11 +184,67 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
             expect(logs).toContain('[ImageWatcher] Skipping landscape.jpg: it shares its derivatives with Landscape.png.');
         });
 
+        it('builds a set for each of two base names that differ only by case on a disk that keeps them apart', async () => {
+            fakeCaseSensitiveDisk();
+            fs.copyFileSync(lib.file('portrait.png'), lib.file('Landscape.png'));
+            const result = await handlers.queueStartupBatch({ force: true });
+            expect(result).toMatchObject({ skipped: [], errors: [] });
+            expect(result.processed.sort()).toEqual(['Landscape.png', ...BASIC]);
+            expect(logs.filter((line) => line.includes('Skipping'))).toEqual([]);
+        });
+
         it('falls back to the next source when the first by path does not decode', async () => {
             fs.writeFileSync(lib.file('landscape.jpeg'), corrupt);
             expect(await processOnce(handlers, { force: true, logger })).toBe(0);
             expect(await outputChannels('landscape')).toEqual(Array(7).fill('red'));
             expect(logs).toContain("[ImageWatcher] Skipping landscape.jpeg: it can't be decoded, so landscape.jpg has the derivatives they share.");
+        });
+
+        it('passes over a truncated source whose header is intact', async () => {
+            const whole = fs.readFileSync(lib.file('landscape.jpg'));
+            const truncated = whole.subarray(0, Math.floor(whole.length * 0.6));
+            await expect(sharp(truncated).metadata()).resolves.toMatchObject({ width: 960 });
+            fs.writeFileSync(lib.file('landscape.jpeg'), truncated);
+            expect(await processOnce(handlers, { force: true, logger })).toBe(0);
+            expect(await outputChannels('landscape')).toEqual(Array(7).fill('red'));
+            expect(logs).toContain("[ImageWatcher] Skipping landscape.jpeg: it can't be decoded, so landscape.jpg has the derivatives they share.");
+        });
+
+        it('still builds the owner when a change to another source of its set drops its startup job', async () => {
+            fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+            const single = newHandlers();
+            // Decode the portrait sources now, so the gate holds landscape.jpg's first encode and not the owner check.
+            expect(await ownerOf('portrait.png')).toBe('portrait.jpg');
+            const held = gate.arm();
+            const batch = single.queueStartupBatch();
+            await held.reached;
+            const change = single.onChange(lib.file('portrait.png'));
+            held.release();
+
+            expect(await batch).toEqual({ processed: ['landscape.jpg', 'square.webp'], skipped: ['portrait.jpg'], errors: [] });
+            await change;
+            expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
+        });
+
+        it('rebuilds the set from a new file that takes it over, whatever its mtime', async () => {
+            await handlers.onAdd(lib.file('portrait.png'));
+            expect(await outputChannels('portrait')).toEqual(Array(7).fill('green'));
+            // As cp -p or a Finder copy leaves it: older than the set it now owns
+            fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+            setMtime('portrait.jpg', Date.parse('2001-01-01T00:00:00Z'));
+            await handlers.onAdd(lib.file('portrait.jpg'));
+            expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
+            expect(logs).toContain('[ImageWatcher] Rebuilt the set portrait.jpg now owns from it.');
+        });
+
+        it('rebuilds the set from the next source when a change leaves its owner undecodable', async () => {
+            fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+            await handlers.onAdd(lib.file('portrait.jpg'));
+            expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
+            fs.writeFileSync(lib.file('portrait.jpg'), corrupt);
+            await handlers.onChange(lib.file('portrait.jpg'));
+            expect(await outputChannels('portrait')).toEqual(Array(7).fill('green'));
+            expect(logs).toContain('[ImageWatcher] Rebuilt the set portrait.jpg shared from portrait.png, which owns it now.');
         });
 
         it('writes nothing for an add or a change of a source whose set another owns', async () => {
