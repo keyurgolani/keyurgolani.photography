@@ -321,6 +321,40 @@ test('Previous and Next stay centered on their spot on hover, while pressed, and
     }
 });
 
+test('the thumbnail strip moves by exactly one thumbnail, with no snap at the start', async ({ page }) => {
+    await openLightbox(page, { position: 2 });
+    // Centers, since the active thumbnail is scaled up around its own.
+    const center = async (name: string) => {
+        const box = await control(page, name).boundingBox();
+        return box ? box.x + box.width / 2 : NaN;
+    };
+    const pitch = (await center('3 of 12')) - (await center('2 of 12'));
+    expect(pitch, 'the rendered pitch, 64 px wide, 3 px padding each side, and a 16 px gap').toBeCloseTo(86, 0);
+    const before = await center('2 of 12');
+
+    // Hold the strip's next animation at its first frame. YARL starts it offset by its own idea of the
+    // pitch, so a thumbnail that hasn't moved yet only stays put when that matches the rendered one.
+    await page.evaluate(() => {
+        const animate = Element.prototype.animate;
+        Element.prototype.animate = function (this: Element, ...args: Parameters<typeof animate>) {
+            const animation = animate.apply(this, args);
+            if (this.classList.contains('yarl__thumbnails_track')) {
+                animation.pause();
+                animation.currentTime = 0;
+                (window as unknown as { __track?: Animation }).__track = animation;
+            }
+            return animation;
+        };
+    });
+    await page.keyboard.press('ArrowRight');
+    await expect.poll(() => page.evaluate(() => Boolean((window as unknown as { __track?: Animation }).__track))).toBe(true);
+    expect(Math.abs((await center('2 of 12')) - before), 'the strip jumps as the move starts').toBeLessThan(0.5);
+
+    await page.evaluate(() => (window as unknown as { __track: Animation }).__track.finish());
+    await expect(currentThumbnail(page)).toHaveAccessibleName('3 of 12');
+    expect(Math.abs((await center('2 of 12')) - (before - pitch)), 'the strip ends one thumbnail over').toBeLessThan(0.5);
+});
+
 test('the lightbox controls drop their focus ring at once on blur', async ({ page }) => {
     await openLightbox(page);
     for (const name of ['Close', 'Next', '2 of 12']) await expectNoFadeOnBlur(control(page, name));

@@ -284,13 +284,11 @@ body {
     border-top: 1px solid rgba(0, 0, 0, 0.05) !important;
 }
 
-/* Individual Thumbnails */
+/* Individual Thumbnails. Their border, padding, and gap come through the thumbnails
+   prop in Gallery.tsx, since YARL's strip math reads them from there. */
 .yarl__thumbnails_thumbnail {
     background: transparent !important;
-    border: none !important;
     border-radius: 6px !important;
-    padding: 3px !important;
-    margin: 0 4px !important;
     opacity: 0.5;
     /* Not all, which would fade the focus band out on blur */
     transition: opacity 0.25s ease, transform 0.25s ease !important;

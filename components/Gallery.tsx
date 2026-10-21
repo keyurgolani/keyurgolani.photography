@@ -204,7 +204,8 @@ export default function Gallery({ images, className = '' }: GalleryProps) {
                 plugins={[Zoom, Slideshow, Thumbnails]}
                 zoom={{ maxZoomPixelRatio: 3 }}
                 carousel={{ preload: 1 }}
-                thumbnails={{ width: 64, height: 48, gap: 8 }}
+                // YARL moves the strip by width + 2 * (border + padding) + gap, so these match the rendered 86 px pitch
+                thumbnails={{ width: 64, height: 48, border: 0, padding: 3, gap: 16 }}
                 // exiting fires as the close starts and YARL lifts inert, so a reader who moves on during the fade keeps their place.
                 // YARL has just focused the opener the plain way, which scrolls a tile that's partly out of view, so undo that scroll.
                 on={{
