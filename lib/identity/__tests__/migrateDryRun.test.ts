@@ -360,10 +360,25 @@ describe('scripts/photos.ts', { timeout: 120_000 }, () => {
         expect(run.stdout).toContain('new 2');
     });
 
+    it('migrate --dry-run takes --out=<dir> too', async () => {
+        const lib = await library({ 'landscape.jpg': fixture('landscape.jpg') });
+        const out = tempOut();
+        const run = await runTsx('scripts/photos.ts', ['migrate', '--dry-run', `--out=${out}`], {
+            env: { PHOTOGRAPHY_LIBRARY_DIR: lib.root, PHOTOGRAPHY_DATA_DIR: path.join(out, '..', 'no-data-root') },
+        });
+        expect(run.code, run.stderr).toBe(0);
+        expect(run.stdout).toContain(`Plan: ${out}`);
+    });
+
     it.each([
         [['migrate'], /only with --dry-run/],
-        [['migrate', '--dry-run', '--out'], /--out needs a value/],
-        [['migrate', '--dry-run', '--apply'], /Unknown argument: --apply/],
+        [['migrate', '--dry-run', '--out'], /Option '--out <value>' argument missing/],
+        [['migrate', '--dry-run', '--out='], /--out needs a value/],
+        [['migrate', '--dry-run', '--out', '--json'], /Option '--out' argument is ambiguous/],
+        [['migrate', '--dry-run', '--apply'], /Unknown option '--apply'/],
+        [['migrate', '--dry-run', 'extra'], /Unexpected argument 'extra'/],
+        [['identity', 'status', '--verbose'], /Unknown option '--verbose'/],
+        [['identity', 'status', 'extra'], /Unexpected argument 'extra'/],
         [['identity', 'bind'], /Unknown identity command/],
         [[], /No command given/],
     ])('exits 2 with usage for %j', async (args, message) => {

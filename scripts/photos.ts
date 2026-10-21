@@ -18,6 +18,7 @@
  * under the working directory outside production.
  */
 
+import { parseArgs } from 'node:util';
 import { DryRunRefusedError, migrateDryRun } from '../lib/identity/migration';
 import { LibraryRootMissingError } from '../lib/identity/scan';
 import { formatStatus, identityStatus } from '../lib/identity/status';
@@ -28,29 +29,20 @@ const USAGE = `Usage:
 
 class UsageError extends Error {}
 
-function parseFlags(args: string[], known: { boolean: string[]; value: string[] }): Map<string, string | true> {
-    const flags = new Map<string, string | true>();
-    for (let i = 0; i < args.length; i++) {
-        const arg = args[i];
-        if (known.boolean.includes(arg)) {
-            flags.set(arg, true);
-        } else if (known.value.includes(arg)) {
-            const value = args[i + 1];
-            if (value === undefined || value.startsWith('--')) throw new UsageError(`${arg} needs a value.`);
-            flags.set(arg, value);
-            i++;
-        } else {
-            throw new UsageError(`Unknown argument: ${arg}`);
-        }
+/** Parse flags strictly, as images:cleanup does: an unknown flag, a stray argument, or a missing value is a usage error. */
+function strictly<T>(parse: () => T): T {
+    try {
+        return parse();
+    } catch (error) {
+        throw new UsageError(error instanceof Error ? error.message : String(error));
     }
-    return flags;
 }
 
 async function migrate(args: string[]): Promise<number> {
-    const flags = parseFlags(args, { boolean: ['--dry-run'], value: ['--out'] });
-    if (!flags.has('--dry-run')) throw new UsageError('photos migrate runs only with --dry-run for now.');
-    const out = flags.get('--out');
-    const result = await migrateDryRun({ outDir: typeof out === 'string' ? out : undefined });
+    const { values } = strictly(() => parseArgs({ args, options: { 'dry-run': { type: 'boolean' }, out: { type: 'string' } }, strict: true }));
+    if (!values['dry-run']) throw new UsageError('photos migrate runs only with --dry-run for now.');
+    if (values.out === '') throw new UsageError('--out needs a value.');
+    const result = await migrateDryRun({ outDir: values.out });
     const counts = new Map<string, number>();
     for (const fact of result.plan.facts) counts.set(fact.type, (counts.get(fact.type) ?? 0) + 1);
     const summary = [...counts.entries()].map(([type, count]) => `${type} ${count}`).join(', ') || 'no facts';
@@ -67,9 +59,9 @@ async function migrate(args: string[]): Promise<number> {
 async function identity(args: string[]): Promise<number> {
     const [subcommand, ...rest] = args;
     if (subcommand !== 'status') throw new UsageError(subcommand ? `Unknown identity command: ${subcommand}` : 'photos identity needs a command.');
-    const flags = parseFlags(rest, { boolean: ['--json'], value: [] });
+    const { values } = strictly(() => parseArgs({ args: rest, options: { json: { type: 'boolean' } }, strict: true }));
     const status = await identityStatus();
-    process.stdout.write(flags.has('--json') ? `${JSON.stringify(status, null, 2)}\n` : formatStatus(status));
+    process.stdout.write(values.json ? `${JSON.stringify(status, null, 2)}\n` : formatStatus(status));
     return status.dataRoot.state === 'ready' && !status.registryError ? 0 : 1;
 }
 
