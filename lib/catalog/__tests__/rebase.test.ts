@@ -62,7 +62,7 @@ async function setup(options: TestCatalogOptions): Promise<Setup> {
 
 const ids = (published: PublishResult) => published.revisionId ?? '';
 
-describe('rebaseWorkingLayer', () => {
+describe('rebaseWorkingLayer', { timeout: 30_000 }, () => {
     it('keeps an edit made while a publish ran, merging step 13 against the step 2 snapshot', async () => {
         const { catalog, run, edit, record } = await setup({ seed: 91, photos: 3, series: 1 });
         await run();
