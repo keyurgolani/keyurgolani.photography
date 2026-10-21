@@ -186,6 +186,19 @@ jobs:
             exit 1
           fi
 
+          # The tag may have been deleted or moved since this run started, for
+          # example to stop a release. Never publish one whose tag no longer names this commit.
+          if ! tagged=$(git ls-remote origin "refs/tags/$VERSION" "refs/tags/$VERSION^{}"); then
+            echo "::error::Could not read $VERSION on origin."
+            exit 1
+          fi
+          commit=$(awk -v ref="refs/tags/$VERSION^{}" '$2 == ref { print $1 }' <<<"$tagged")
+          [ -n "$commit" ] || commit=$(awk -v ref="refs/tags/$VERSION" '$2 == ref { print $1 }' <<<"$tagged")
+          if [ "$commit" != "$GITHUB_SHA" ]; then
+            echo "::error::$VERSION on origin now names ${commit:-no commit}, not $GITHUB_SHA, so this run publishes nothing."
+            exit 1
+          fi
+
           tags=("$VERSION")
           if [ "$latest" = true ]; then
             tags+=(latest)
