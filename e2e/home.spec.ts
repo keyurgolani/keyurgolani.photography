@@ -179,22 +179,33 @@ test('every app hover rule on the page waits for a fine pointer', async ({ page 
     await expectHoverRulesGated(page);
 });
 
-// #18 (Home immersive mode) owns these, and e2e/home-immersive.spec.ts replaces them.
+// The controls sit in the chrome layer, so a click or tap reaches them, and keyboard focus in the chrome holds it.
+test('a click on Previous or Next changes the photo', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === 'mobile', 'Mouse clicks run on the desktop project.');
+    await openHome(page);
+    await next(page).click();
+    await expect(currentPhoto(page)).toHaveAttribute('alt', 'Photograph 2 of 3');
+});
+
+test('a tap on Previous or Next changes the photo', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'mobile', 'Taps run on the touch project.');
+    await openHome(page);
+    await next(page).tap();
+    await expect(currentPhoto(page)).toHaveAttribute('alt', 'Photograph 2 of 3');
+});
+
+test('focus inside the controls holds them visible past the idle timeout', async ({ page }) => {
+    await openHome(page);
+    const gallery = primary(page).getByRole('link', { name: 'Gallery', exact: true });
+    await gallery.focus();
+    // The chrome hides 3 s after the intro's synthetic click and then fades for 1 s, so 7 s waits on the
+    // behavior itself, not on readiness.
+    await page.waitForTimeout(7_000);
+    expect(await effectiveOpacity(gallery)).toBe(1);
+});
+
+// #18 (Home immersive mode) owns this, and e2e/home-immersive.spec.ts replaces it.
 test.describe('#18', () => {
-    test.fixme('a click on Previous or Next changes the photo', async ({ page }, testInfo) => {
-        test.skip(testInfo.project.name === 'mobile', 'Mouse clicks run on the desktop project.');
-        await openHome(page);
-        await next(page).click();
-        await expect(currentPhoto(page)).toHaveAttribute('alt', 'Photograph 2 of 3');
-    });
-
-    test.fixme('a tap on Previous or Next changes the photo', async ({ page }, testInfo) => {
-        test.skip(testInfo.project.name !== 'mobile', 'Taps run on the touch project.');
-        await openHome(page);
-        await next(page).tap();
-        await expect(currentPhoto(page)).toHaveAttribute('alt', 'Photograph 2 of 3');
-    });
-
     test.fixme('the first tap on idle Home reveals the controls without navigating', async ({ page }, testInfo) => {
         test.skip(testInfo.project.name !== 'mobile', 'Taps run on the touch project.');
         await openHome(page);
@@ -202,15 +213,5 @@ test.describe('#18', () => {
         await primary(page).getByRole('link', { name: 'Gallery', exact: true }).tap();
         await expect(page).toHaveURL('/');
         await expect.poll(() => effectiveOpacity(primary(page))).toBe(1);
-    });
-
-    test.fixme('focus inside the controls holds them visible past the idle timeout', async ({ page }) => {
-        await openHome(page);
-        const gallery = primary(page).getByRole('link', { name: 'Gallery', exact: true });
-        await gallery.focus();
-        // The chrome hides 3 s after the intro's synthetic click and then fades for 1 s, so 7 s waits on the
-        // behavior itself, not on readiness.
-        await page.waitForTimeout(7_000);
-        expect(await effectiveOpacity(gallery)).toBe(1);
     });
 });
