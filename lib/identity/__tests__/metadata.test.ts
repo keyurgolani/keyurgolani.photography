@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import exifReader from 'exif-reader';
 import sharp from 'sharp';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { KEPT_VALUES, leakyJpeg, PRIVATE_VALUES } from '../../../test/fixtures/exif';
+import { buildExif, KEPT_VALUES, leakyJpeg, PRIVATE_VALUES } from '../../../test/fixtures/exif';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempLibrary';
 import { inspectEntry, type ImageInspection } from '../inspect';
@@ -107,14 +107,66 @@ describe('metadata tiers', () => {
 
     it('drop a GPS position missing its hemisphere and a zeroed capture date', () => {
         const tiers = tiersFromParsedExif({
-            // What exif-reader makes of "0000:00:00 00:00:00".
-            Photo: { DateTimeOriginal: new Date(Date.UTC(0, -1, 0, 0, 0, 0)) },
+            Photo: { DateTimeOriginal: '0000:00:00 00:00:00' },
             GPSInfo: { GPSLatitude: [37, 46, 29.64], GPSLongitude: [122, 25, 9.84], GPSLongitudeRef: 'W' },
         });
         expect(tiers.derived.capturedDate).toBeNull();
         expect(tiers.curatorOnly).toEqual({ extractorVersion: 1 });
     });
+
+    it("read the capture date from the tag's own text, since exif-reader rolls a bad field over", async () => {
+        const exif = await exifWithDate('2024:00:00 00:00:00', 'little-endian');
+        expect(exifReader(exif).Photo?.DateTimeOriginal).toEqual(new Date('2023-11-30T00:00:00.000Z'));
+        expect(extractMetadataTiers(exif).derived.capturedDate).toBeNull();
+        // A Date handed over already parsed may have rolled over the same way, so it isn't trusted either.
+        expect(tiersFromParsedExif({ Photo: { DateTimeOriginal: new Date('2024-05-01T14:30:00.000Z') } }).derived.capturedDate).toBeNull();
+    });
+
+    it('read the capture date from a block without the Exif prefix, and only from an ASCII tag', () => {
+        const date = '2024:05:01 14:30:00';
+        const bare = buildExif({ ifd0: {}, exif: { 0x9003: { type: 'ascii', value: date } }, gps: {}, thumbnail: Buffer.alloc(0) }).subarray(6);
+        expect(extractMetadataTiers(bare).derived.capturedDate).toEqual({ value: '2024-05-01', source: 'exif:Photo.DateTimeOriginal' });
+        const untyped = buildExif({ ifd0: {}, exif: { 0x9003: { type: 'undefined', value: Buffer.from(`${date}\0`, 'latin1') } }, gps: {}, thumbnail: Buffer.alloc(0) });
+        expect(extractMetadataTiers(untyped).derived.capturedDate).toBeNull();
+    });
+
+    describe.each(['little-endian', 'big-endian'] as const)('in %s EXIF', (order) => {
+        it.each([
+            ['month and day 00', '2024:00:00 00:00:00'],
+            ['a day the month lacks', '2024:02:30 10:00:00'],
+            ['February 29 outside a leap year', '2023:02:29 10:00:00'],
+            ['month 13', '2024:13:01 10:00:00'],
+            ['hour 24', '2024:05:01 24:00:00'],
+            ['minute 60', '2024:05:01 14:60:00'],
+            ['second 60', '2024:05:01 14:30:60'],
+            ['a year before 1900', '1899:12:31 23:59:59'],
+            ['every field zero', '0000:00:00 00:00:00'],
+            ['every field blank', '    :  :     :  :  '],
+        ])('drop a capture date with %s (%s)', async (_label, value) => {
+            const tiers = extractMetadataTiers(await exifWithDate(value, order));
+            expect(tiers.derived.capturedDate).toBeNull();
+            expect(tiers.curatorOnly.dateTimeOriginal).toBeUndefined();
+        });
+
+        it('keep a capture date whose fields are all in range', async () => {
+            const tiers = extractMetadataTiers(await exifWithDate('2024:02:29 23:59:59', order));
+            expect(tiers.derived.capturedDate).toEqual({ value: '2024-02-29', source: 'exif:Photo.DateTimeOriginal' });
+            expect(tiers.curatorOnly.dateTimeOriginal).toEqual({ value: '2024-02-29T23:59:59', source: 'exif:Photo.DateTimeOriginal' });
+        });
+    });
 });
+
+/** An EXIF block whose DateTimeOriginal is `value`, little-endian as Sharp writes it, or big-endian. */
+async function exifWithDate(value: string, order: 'little-endian' | 'big-endian'): Promise<Buffer> {
+    if (order === 'big-endian') return buildExif({ ifd0: {}, exif: { 0x9003: { type: 'ascii', value } }, gps: {}, thumbnail: Buffer.alloc(0) });
+    const jpeg = await sharp({ create: { width: 8, height: 8, channels: 3, background: { r: 1, g: 2, b: 3 } } })
+        .withExif({ IFD2: { DateTimeOriginal: value } })
+        .jpeg()
+        .toBuffer();
+    const exif = (await sharp(jpeg).metadata()).exif as Buffer;
+    expect(exif.subarray(6, 8).toString('latin1')).toBe('II');
+    return exif;
+}
 
 describe('stored and public metadata from a real file', () => {
     let lib: TempLibrary;

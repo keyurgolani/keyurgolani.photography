@@ -112,13 +112,52 @@ function exposureTime(seconds: number): string {
     return Math.abs(1 / seconds - reciprocal) / reciprocal < 0.02 ? `1/${reciprocal}` : decimal(seconds);
 }
 
-/** exif-reader turns `YYYY:MM:DD HH:MM:SS` into a Date holding that wall-clock time as UTC. */
+/**
+ * `YYYY:MM:DD HH:MM:SS` as `YYYY-MM-DDTHH:MM:SS`, or undefined unless every
+ * field is in range for a real date and time. Only the tag's own text counts:
+ * exif-reader's Date comes from Date.UTC, which rolls a bad field over, so
+ * "2024:00:00 00:00:00" would read as 2023-11-30.
+ */
 function wallClock(value: unknown): string | undefined {
-    if (!(value instanceof Date) || Number.isNaN(value.getTime())) return undefined;
-    // A zeroed "0000:00:00 00:00:00", which some cameras write, parses as 1899-11-30.
-    const year = value.getUTCFullYear();
+    const match = typeof value === 'string' ? /^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(value) : null;
+    if (!match) return undefined;
+    const [year, month, day, hour, minute, second] = match.slice(1).map(Number);
     if (year < 1900 || year > 2200) return undefined;
-    return value.toISOString().slice(0, 19);
+    const written = `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}`;
+    // A field out of range rolls over into the next one, so the date doesn't come back as written.
+    return new Date(Date.UTC(year, month - 1, day, hour, minute, second)).toISOString().slice(0, 19) === written ? written : undefined;
+}
+
+/** DateTimeOriginal's tag number in the Exif IFD. */
+const DATE_TIME_ORIGINAL = 0x9003;
+
+/**
+ * The text of an ASCII tag in the Exif IFD, read from the block itself, for
+ * the date tags exif-reader hands over only as a Date. Undefined when the tag
+ * is missing, not ASCII, or runs past the block.
+ */
+function exifIfdText(exif: Buffer, parsed: ParsedExif, tag: number): string | undefined {
+    const ifd = parsed.Image?.ExifTag;
+    if (typeof ifd !== 'number' || !Number.isInteger(ifd) || ifd <= 0) return undefined;
+    // The TIFF header starts the block or follows "Exif\0\0", as exif-reader finds it.
+    const base = ['MM\0', 'II*'].includes(exif.toString('latin1', 0, 3)) ? 0 : 6;
+    const bigEndian = exif[base] === 0x4d;
+    const u16 = (at: number) => (bigEndian ? exif.readUInt16BE(at) : exif.readUInt16LE(at));
+    const u32 = (at: number) => (bigEndian ? exif.readUInt32BE(at) : exif.readUInt32LE(at));
+    const start = base + ifd;
+    if (exif.length < start + 2) return undefined;
+    const count = u16(start);
+    for (let i = 0; i < count; i++) {
+        const entry = start + 2 + i * 12;
+        if (exif.length < entry + 12) return undefined;
+        if (u16(entry) !== tag) continue;
+        const length = u32(entry + 4);
+        // Four bytes or fewer sit in the entry itself; longer values sit at an offset from the header.
+        const at = length <= 4 ? entry + 8 : base + u32(entry + 8);
+        const ascii = u16(entry + 2) === 2;
+        return ascii && at + length <= exif.length ? exif.toString('latin1', at, at + length).replace(/\0+$/, '') : undefined;
+    }
+    return undefined;
 }
 
 function dmsToDegrees(dms: unknown, ref: unknown, positiveRef: string, negativeRef: string, max: number): number | undefined {
@@ -144,7 +183,11 @@ function gpsPosition(gps: Record<string, unknown>): GpsPosition | undefined {
     return position;
 }
 
-/** Sort parsed EXIF into the public and curator-only tiers. Exported for parsed-EXIF fixtures. */
+/**
+ * Sort parsed EXIF into the public and curator-only tiers. `parsed` is what
+ * exif-reader returns, except that `Photo.DateTimeOriginal` holds the tag's
+ * text. Exported for parsed-EXIF fixtures.
+ */
 export function tiersFromParsedExif(parsed: ParsedExif | null): MetadataTiers {
     const tiers = emptyTiers();
     if (!parsed) return tiers;
@@ -191,12 +234,14 @@ export function tiersFromParsedExif(parsed: ParsedExif | null): MetadataTiers {
 /** Extract the tiers from a raw EXIF block, as Sharp's metadata() returns it. Unparseable EXIF yields empty tiers. */
 export function extractMetadataTiers(exif: Uint8Array | undefined | null): MetadataTiers {
     if (!exif || exif.length === 0) return emptyTiers();
+    const block = Buffer.from(exif);
     let parsed: ParsedExif;
     try {
-        parsed = exifReader(Buffer.from(exif)) as ParsedExif;
+        parsed = exifReader(block) as ParsedExif;
     } catch {
         return emptyTiers();
     }
+    if (parsed.Photo) parsed.Photo = { ...parsed.Photo, DateTimeOriginal: exifIfdText(block, parsed, DATE_TIME_ORIGINAL) };
     return tiersFromParsedExif(parsed);
 }
 
