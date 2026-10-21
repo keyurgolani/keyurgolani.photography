@@ -10,6 +10,8 @@ const images = Array.from({ length: 10 }, (_, index) => ({
     src: `/assets/photos/photo-${index + 1}.jpg`,
     width: 1200,
     height: 800,
+    optimizedWidth: 1200,
+    optimizedHeight: 800,
     caption: index % 2 === 0 ? CAPTION : undefined,
 }));
 

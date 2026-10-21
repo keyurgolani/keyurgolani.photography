@@ -253,7 +253,7 @@ test('the caption keeps 4.5:1 over the white photo once focus reveals it', async
 test('the caption keeps 4.5:1 over the white photo on a 3-row tile, where the scrim has the least room', async ({ page }) => {
     // A captioned 4:1 record gets the shortest tile, 3 rows of 50 px and 2 gaps of 12 px.
     const src = '/assets/photos/white.jpg';
-    const record: ImageItem = { id: 0, src, thumbnail: src, medium: src, optimized: src, width: 2000, height: 500, caption: FIXTURE_CAPTION, date: Date.UTC(2024, 0, 1), lqip: '' };
+    const record: ImageItem = { id: 0, src, thumbnail: src, medium: src, optimized: src, width: 2000, height: 500, optimizedWidth: 2000, optimizedHeight: 500, caption: FIXTURE_CAPTION, date: Date.UTC(2024, 0, 1), lqip: '' };
     await page.route('**/api/photos', (route) => route.fulfill({ json: [record] }));
     await page.goto('/gallery');
     await waitForHydration(page);
