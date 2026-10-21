@@ -11,7 +11,7 @@ import type { MigrationPlan, PlannedPhoto, PlannedSource } from './migration';
 import { observeLibrary } from './pass';
 import { currentProfileId } from './profile';
 import { identityPaths, readRegistry, readStatCache, writeRegistry, writeStatCache } from './registry';
-import { LibraryRootMissingError } from './scan';
+import { keyOf, LibraryRootMissingError } from './scan';
 import type { IdentityFact, Registry } from './types';
 
 /**
@@ -59,7 +59,10 @@ export interface AppliedMapping {
     paths: Record<string, { photoId: string; assetRevision: string }>;
     /** Each legacy URL that belongs to one photo. */
     urls: Record<string, { photoId: string; assetRevision: string }>;
-    /** Legacy URLs two or more sources share, such as the derivatives of x.jpg and x.png, with the paths sharing them. */
+    /**
+     * Legacy URLs two or more sources share, such as the derivatives of x.jpg and x.png, with the paths sharing
+     * them. URLs that differ only by case or Unicode form count as one, since a case-insensitive disk serves one file.
+     */
     unmappable: Record<string, string[]>;
 }
 
@@ -74,21 +77,23 @@ export class ApplyRefusedError extends Error {
 /**
  * The URLs the legacy site served for a source, as getImagePaths() names
  * them: the original, and for a top-level file the derivatives named by its
- * base name. Nested files never had derivatives.
+ * base name. Nested files never had derivatives. Each path segment is
+ * encoded, as the site wrote it, so a `%` or `#` in a name stays part of it.
  */
 export function legacyUrls(sourcePath: string): string[] {
-    const original = `/assets/photos/${sourcePath}`;
+    const url = (...segments: string[]) => `/assets/photos/${segments.map(encodeURIComponent).join('/')}`;
+    const original = url(...sourcePath.split('/'));
     if (sourcePath.includes('/')) return [original];
     const base = path.posix.basename(sourcePath, path.posix.extname(sourcePath));
     return [
         original,
-        `/assets/photos/thumbnails/${base}.webp`,
-        `/assets/photos/medium/${base}.webp`,
-        `/assets/photos/optimized/${base}.webp`,
-        `/assets/photos/thumbnails-avif/${base}.avif`,
-        `/assets/photos/medium-avif/${base}.avif`,
-        `/assets/photos/optimized-avif/${base}.avif`,
-        `/assets/photos/lqip/${base}.txt`,
+        url('thumbnails', `${base}.webp`),
+        url('medium', `${base}.webp`),
+        url('optimized', `${base}.webp`),
+        url('thumbnails-avif', `${base}.avif`),
+        url('medium-avif', `${base}.avif`),
+        url('optimized-avif', `${base}.avif`),
+        url('lqip', `${base}.txt`),
     ];
 }
 
@@ -177,14 +182,21 @@ function buildMapping(registry: Registry, planId: string, appliedAt: string): Ap
         // Archiving and merging unbind a photo, so present ones are exactly the bound ones.
         .filter((photo) => photo.source.present)
         .sort((a, b) => (a.source.path < b.source.path ? -1 : a.source.path > b.source.path ? 1 : 0));
+    // By URL folded as the scan folds paths: on a case-insensitive disk, URLs that differ only
+    // by case or Unicode form serve one file, so each of their sources may be behind any of them.
+    const folded = (url: string) => keyOf(decodeURIComponent(url));
+    const served = new Set<string>();
     for (const photo of bound) {
         paths[photo.source.path] = { photoId: photo.photoId, assetRevision: photo.source.observedRevision };
-        for (const url of legacyUrls(photo.source.path)) owners.set(url, [...(owners.get(url) ?? []), photo.source.path]);
+        for (const url of legacyUrls(photo.source.path)) {
+            served.add(url);
+            owners.set(folded(url), [...(owners.get(folded(url)) ?? []), photo.source.path]);
+        }
     }
     const urls: AppliedMapping['urls'] = {};
     const unmappable: AppliedMapping['unmappable'] = {};
-    for (const url of [...owners.keys()].sort()) {
-        const sharing = owners.get(url) as string[];
+    for (const url of [...served].sort()) {
+        const sharing = owners.get(folded(url)) as string[];
         if (sharing.length === 1) urls[url] = paths[sharing[0]];
         else unmappable[url] = sharing;
     }
