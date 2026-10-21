@@ -76,6 +76,8 @@ export interface Hold {
     assetRevision: string;
     candidates: string[];
     since: string;
+    /** Set when the hold is for another present path with the same key. It also ends once the key has one path again. */
+    keyCollision?: true;
 }
 
 export type IdentityFactType =

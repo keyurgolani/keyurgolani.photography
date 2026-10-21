@@ -91,6 +91,8 @@ function addTo<K, V>(map: Map<K, Set<V>>, key: K, value: V): void {
  * matches a revision of a different size, is checked before everything.
  * Ambiguous evidence binds and merges nothing: it becomes a hold, which ends
  * only with a decision, a byte change at the held path, or the path vanishing.
+ * A hold on paths that differ only by case or Unicode form also ends once one
+ * of them is left, and that one is classified as a plain rename would be.
  */
 export function reconcile(scan: LibraryScan, registry: Registry, inspect: InspectLookup, context: ReconcileContext): ReconcileResult {
     const now = new Date(scan.observedAt).toISOString();
@@ -187,7 +189,7 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
     const nextHolds = new Map<string, Hold>();
     const newHolds = new Set<string>();
 
-    function hold(item: ImageSeen, candidates: string[]): void {
+    function hold(item: ImageSeen, candidates: string[], keyCollision = false): void {
         const existing = nextHolds.get(item.entry.path);
         if (existing) {
             existing.candidates = [...new Set([...existing.candidates, ...candidates])].sort();
@@ -198,13 +200,31 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
             assetRevision: item.inspection.assetRevision,
             candidates: [...new Set(candidates)].sort(),
             since: now,
+            ...(keyCollision ? { keyCollision: true as const } : {}),
         });
         newHolds.add(item.entry.path);
+    }
+
+    // Keys two or more present paths share. A key-collision hold whose folder can't be listed right now
+    // counts as one of them, since its file may still be there.
+    const collidingKeys = new Set([...byKey].filter(([, group]) => group.length > 1).map(([key]) => key));
+    for (const existing of registry.holds) {
+        if (existing.keyCollision === true && underUnreadableDir(existing.path)) collidingKeys.add(keyOf(existing.path));
     }
 
     // Existing holds persist while their path holds the same bytes, or can't be read right now.
     for (const existing of registry.holds) {
         const group = byKey.get(keyOf(existing.path)) ?? [];
+        if (existing.keyCollision === true) {
+            // A key-collision hold also lasts only as long as the collision, and stays at its own path. Once the
+            // key has one path again, that path is classified afresh below, as a plain rename would be.
+            const own = group.find((item) => item.entry.path === existing.path);
+            const lasts = own
+                ? collidingKeys.has(own.entry.key) && (!isImage(own) || own.inspection.assetRevision === existing.assetRevision)
+                : underUnreadableDir(existing.path);
+            if (lasts) nextHolds.set(existing.path, { ...existing });
+            continue;
+        }
         const match = group.find((item) => item.entry.path === existing.path) ?? (group.length === 1 ? group[0] : undefined);
         if (!match) {
             if (underUnreadableDir(existing.path)) nextHolds.set(existing.path, { ...existing });
@@ -219,12 +239,12 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
     // Two present files that differ only by case or Unicode form are ambiguous.
     const inKeyCollision = new Set<string>();
     for (const [key, group] of byKey) {
-        if (group.length < 2) continue;
-        report.keyCollisions.push(group.map((item) => item.entry.path));
+        if (!collidingKeys.has(key)) continue;
+        if (group.length > 1) report.keyCollisions.push(group.map((item) => item.entry.path));
         const bound = boundByKey.get(key);
         for (const item of group) {
             inKeyCollision.add(item.entry.path);
-            if (!nextHolds.has(item.entry.path) && isImage(item)) hold(item, bound ? [bound] : []);
+            if (!nextHolds.has(item.entry.path) && isImage(item)) hold(item, bound ? [bound] : [], true);
         }
     }
 
@@ -299,7 +319,7 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
             if (!underUnreadableDir(photo.source.path)) sourceless.add(id);
             continue;
         }
-        if (group.length > 1) continue; // A key collision. The binding stays, and the photo is a hold candidate.
+        if (collidingKeys.has(photo.source.key)) continue; // A key collision. The binding stays, and the photo is a hold candidate.
         const [item] = group;
         if (isHeld(item) || !isImage(item)) continue; // Held, fresh, unreadable, or colliding: unchanged for now.
         if (item.entry.path !== photo.source.path) photo.source.path = item.entry.path; // A case-only or Unicode-only rename.

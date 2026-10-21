@@ -489,6 +489,88 @@ describe('reconcile: case and Unicode', () => {
         expect(r.photo(id).source).toMatchObject({ path: 'img.JPG', key: 'img.jpg', present: true });
     });
 
+    it('keeps a key-collision hold while both paths are there, without repeating facts, and renews it for new bytes', () => {
+        const r = seeded({ 'IMG.jpg': 'A' });
+        r.library.put('img.jpg', image('B'));
+        r.pass();
+        const holds = r.registry.holds;
+        r.pass();
+        expect(r.last.facts).toEqual([]);
+        expect(r.registry.holds).toEqual(holds);
+
+        // img.jpg is being written, so it can't be read yet.
+        r.library.put('img.jpg', image('C'), { fresh: true });
+        r.pass();
+        expect(r.last.facts).toEqual([]);
+        expect(r.registry.holds).toEqual(holds);
+
+        r.library.settle();
+        r.pass();
+        expect(r.factSummary()).toEqual(['ambiguous img.jpg']);
+        expect(r.registry.holds.map((held) => [held.path, held.assetRevision])).toEqual([['IMG.jpg', revisionOf('A')], ['img.jpg', revisionOf('C')]]);
+    });
+
+    it('ends a key-collision hold once its key has one path again, so a case-only rename done as copy then delete matches a plain one', () => {
+        const plain = seeded({ 'beach.jpg': 'A' });
+        plain.library.move('beach.jpg', 'Beach.jpg');
+        plain.pass();
+
+        const r = seeded({ 'beach.jpg': 'A' });
+        const id = r.photoAt('beach.jpg').photoId;
+        r.library.put('Beach.jpg', image('A'));
+        r.pass();
+        expect(r.factSummary()).toEqual(['ambiguous Beach.jpg', 'ambiguous beach.jpg']);
+        expect(r.photo(id).sourceHealth).toBe('ambiguous');
+
+        r.library.remove('beach.jpg');
+        r.pass();
+        expect(r.last.facts).toEqual([]);
+        expect(r.last.jobs).toEqual([]);
+        expect(r.registry.holds).toEqual([]);
+        expect(r.photo(id)).toMatchObject({ sourceHealth: 'present', source: { path: 'Beach.jpg', present: true } });
+        expect(r.photo(id)).toEqual(plain.photo(id));
+    });
+
+    it('gives the file left a photo once two new files that differ only by case are down to one', () => {
+        const r = new Reconciler();
+        r.library.put('a.jpg', image('A')).put('A.jpg', image('B'));
+        r.pass();
+        expect(r.factSummary()).toEqual(['ambiguous A.jpg', 'ambiguous a.jpg']);
+        expect(r.registry.holds.map((held) => held.candidates)).toEqual([[], []]);
+        expect(r.registry.photos).toEqual({});
+
+        r.library.remove('A.jpg');
+        r.pass();
+        expect(r.factSummary()).toEqual(['new a.jpg']);
+        expect(r.registry.holds).toEqual([]);
+        expect(r.photoAt('a.jpg')).toMatchObject({ sourceHealth: 'present', source: { present: true, observedRevision: revisionOf('A') } });
+        expect(r.last.jobs).toHaveLength(1);
+    });
+
+    it("keeps a key-collision hold while the other path's folder can't be listed", () => {
+        const r = seeded({ 'trip/a.jpg': 'A' });
+        const id = r.photoAt('trip/a.jpg').photoId;
+        r.library.put('Trip/a.jpg', image('B'));
+        r.pass();
+        expect(r.factSummary()).toEqual(['ambiguous Trip/a.jpg', 'ambiguous trip/a.jpg']);
+
+        // trip/ can't be listed, so its file may still be there. Meanwhile it is deleted.
+        r.library.remove('trip/a.jpg');
+        r.library.unreadableDirs.push('trip');
+        r.pass();
+        expect(r.last.facts).toEqual([]);
+        expect(r.last.report.keyCollisions).toEqual([]);
+        expect(r.registry.holds.map((held) => held.path)).toEqual(['Trip/a.jpg', 'trip/a.jpg']);
+        expect(r.photo(id)).toMatchObject({ sourceHealth: 'ambiguous', source: { path: 'trip/a.jpg', present: true, observedRevision: revisionOf('A') } });
+
+        // Once it can be listed, Trip/a.jpg is classified like a case-only rename with new bytes.
+        r.library.unreadableDirs.length = 0;
+        r.pass();
+        expect(r.factSummary()).toEqual(['replaced Trip/a.jpg']);
+        expect(r.registry.holds).toEqual([]);
+        expect(r.photo(id)).toMatchObject({ sourceHealth: 'present', source: { path: 'Trip/a.jpg', present: true, observedRevision: revisionOf('B') } });
+    });
+
     it('an NFD name built from the stored NFC path rebinds by key and stores the NFD path', () => {
         const nfc = 'café/crème.jpg';
         const r = seeded({ [nfc]: 'A' });
