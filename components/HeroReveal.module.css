@@ -27,6 +27,19 @@
   opacity: 0.06;
 }
 
+/* Only the painted images take the pointer, and only while HeroReveal marks
+   the portrait data-pointer. ParallaxCard's layers are squares wider than the
+   photograph, and they'd catch a click meant for the slideshow controls. The
+   tilt still reads the pointer off the images. */
+.portrait,
+.portrait * {
+  pointer-events: none;
+}
+
+.portrait[data-pointer] img {
+  pointer-events: auto;
+}
+
 /* .ripples wraps the ripple glows, and .portrait the portrait, which HeroReveal
    marks data-placed once it sits at rest. */
 @media (prefers-reduced-motion: reduce) {

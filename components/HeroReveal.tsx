@@ -335,9 +335,11 @@ export default function HeroReveal({ isLoading, onSettled }: HeroRevealProps) {
       )}
 
       {/* Profile Photo — same element across all phases to preserve animation state */}
+      {/* data-pointer lets the painted images take the pointer. Under reduced motion they take none, which also keeps ParallaxCard's tilt off Home. */}
       <motion.div
         className={styles.portrait}
         data-placed={placed ? '' : undefined}
+        data-pointer={reducedMotion || (phase === 'settled' && !profileVisible) ? undefined : ''}
         animate={profileControls}
         initial={{
           position: 'fixed',
@@ -352,8 +354,6 @@ export default function HeroReveal({ isLoading, onSettled }: HeroRevealProps) {
           zIndex: 42,
           opacity: phase === 'settled' ? (profileVisible ? 1 : 0) : 1,
           transition: phase === 'settled' ? 'opacity 1s ease-in-out' : undefined,
-          // Under reduced motion the portrait takes no pointer, which also keeps ParallaxCard's tilt off Home.
-          pointerEvents: reducedMotion || (phase === 'settled' && !profileVisible) ? 'none' : 'auto',
         }}
       >
         <ProfilePicture

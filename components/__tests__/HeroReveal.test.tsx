@@ -111,7 +111,22 @@ describe('HeroReveal', () => {
     setPrefersReducedMotion(true);
     const { portrait } = renderReveal(false);
 
-    expect(portrait()).toHaveStyle({ pointerEvents: 'none' });
+    expect(portrait()).not.toHaveAttribute('data-pointer');
+  });
+
+  it('with motion, the settled portrait takes the pointer until it hides, and again on activity', () => {
+    const { portrait } = renderReveal(false);
+    expect(portrait()).toHaveAttribute('data-pointer');
+
+    act(() => {
+      vi.advanceTimersByTime(3000);
+    });
+    expect(portrait()).not.toHaveAttribute('data-pointer');
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown'));
+    });
+    expect(portrait()).toHaveAttribute('data-pointer');
   });
 
   it('turning reduce off after settling replays nothing', async () => {

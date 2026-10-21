@@ -13,6 +13,15 @@ interface BottomBarProps {
 }
 
 /**
+ * On a short screen Home's slideshow controls sit just above the pill, so a
+ * label shows under its icon instead, clear of the link's focus ring, and its
+ * bridge reaches up. The query is the one HomeSequenceControls moves the
+ * controls under.
+ */
+const LABEL_BELOW_ON_SHORT_SCREENS =
+  '[@media(max-width:849px)_and_(max-height:519px)]:top-[calc(100%+0.5rem)] [@media(max-width:849px)_and_(max-height:519px)]:after:top-auto [@media(max-width:849px)_and_(max-height:519px)]:after:bottom-full [@media(max-width:849px)_and_(max-height:519px)]:after:h-2';
+
+/**
  * A Primary link with a label that hover or keyboard focus shows. The label
  * takes the pointer only while shown, so a hidden one never catches a tap
  * meant for the page under it, and Escape hides it. Its ::after bridges the
@@ -24,7 +33,7 @@ const NavLink: React.FC<{ href: string; label: string; icon: LucideIcon }> = ({ 
   return (
     <Link href={href} aria-label={label} className="group relative p-3 rounded-full hover:bg-black/5 dark:hover:bg-white/10 transition-colors duration-300" {...handlers}>
       <Icon size={24} strokeWidth={1.5} className="text-black/70 dark:text-white/70 group-hover:text-black dark:group-hover:text-white transition-colors" />
-      <span className="absolute -top-12 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-white dark:bg-black/80 text-black dark:text-white text-xs font-medium rounded-full opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-visible:opacity-100 group-focus-visible:pointer-events-auto transition-opacity whitespace-nowrap border border-black/10 dark:border-white/10 backdrop-blur-md shadow-lg after:absolute after:inset-x-0 after:top-full after:h-5" style={dismissed ? DISMISSED_LABEL_STYLE : undefined}>{label}</span>
+      <span className={`absolute -top-12 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-white dark:bg-black/80 text-black dark:text-white text-xs font-medium rounded-full opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-visible:opacity-100 group-focus-visible:pointer-events-auto transition-opacity whitespace-nowrap border border-black/10 dark:border-white/10 backdrop-blur-md shadow-lg after:absolute after:inset-x-0 after:top-full after:h-5 ${LABEL_BELOW_ON_SHORT_SCREENS}`} style={dismissed ? DISMISSED_LABEL_STYLE : undefined}>{label}</span>
     </Link>
   );
 };
