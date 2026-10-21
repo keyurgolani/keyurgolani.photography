@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { CACHE_FOLDER, DERIVATIVE_FOLDERS } from '../derivativeFolders.mjs';
 import { hasErrorCode } from '../storage/fsx';
 
 /** Extensions the pipeline reads, in any case. */
@@ -9,7 +10,7 @@ export const SOURCE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp'] as const;
 export const UNSUPPORTED_EXTENSIONS = ['.heic', '.heif', '.tif', '.tiff', '.dng', '.cr2', '.cr3', '.nef', '.arw', '.raf'] as const;
 
 /** Root-level folders the legacy pipeline writes, skipped by exact name. Nested folders with these names are scanned. */
-export const LEGACY_OUTPUT_DIRS = ['thumbnails', 'medium', 'optimized', 'thumbnails-avif', 'medium-avif', 'optimized-avif', 'lqip', 'cache'] as const;
+export const LEGACY_OUTPUT_DIRS: readonly string[] = [...Object.keys(DERIVATIVE_FOLDERS), CACHE_FOLDER];
 
 export interface ScanEntry {
     /** Library-relative POSIX path, exactly as on disk. */
@@ -96,7 +97,7 @@ export async function scanLibrary(root: string, { clock = Date.now }: { clock?: 
         }
         for (const name of names) {
             if (name.startsWith('.')) continue;
-            if (relativeDir === '' && (LEGACY_OUTPUT_DIRS as readonly string[]).includes(name)) continue;
+            if (relativeDir === '' && LEGACY_OUTPUT_DIRS.includes(name)) continue;
             const relativePath = relativeDir === '' ? name : `${relativeDir}/${name}`;
             let stat: fs.Stats;
             try {

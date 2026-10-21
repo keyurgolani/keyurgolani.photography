@@ -2,21 +2,30 @@ import { createHash, randomBytes } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import sharp from 'sharp';
+import { CACHE_FOLDER, DERIVATIVE_FOLDERS } from '../lib/derivativeFolders.mjs';
 import { libraryRoot } from '../lib/storage/config';
 import { hasErrorCode } from '../lib/storage/fsx';
 
-export interface LibraryPaths {
-    root: string;
-    thumbnails: string;
-    medium: string;
-    optimized: string;
-    thumbnailsAvif: string;
-    mediumAvif: string;
-    optimizedAvif: string;
-    lqip: string;
+/** A derivative folder's name under the library root, such as `thumbnails-avif`. */
+type DerivativeFolder = keyof typeof DERIVATIVE_FOLDERS;
+
+/** `thumbnails-avif` as `thumbnailsAvif`: a folder's key in LibraryPaths. */
+type KeyOf<Folder extends string> = Folder extends `${infer Head}-${infer Tail}` ? `${Head}${Capitalize<KeyOf<Tail>>}` : Folder;
+
+type DerivativeDir = KeyOf<DerivativeFolder>;
+
+/** The derivative folders in the order the pipeline writes them. */
+const FOLDERS = Object.keys(DERIVATIVE_FOLDERS) as DerivativeFolder[];
+
+const keyOfFolder = (folder: DerivativeFolder) => folder.replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase()) as DerivativeDir;
+
+/** Each derivative folder's name, by its key. */
+const FOLDER_OF = Object.fromEntries(FOLDERS.map((folder) => [keyOfFolder(folder), folder])) as Record<DerivativeDir, DerivativeFolder>;
+
+export type LibraryPaths = { root: string } & Record<DerivativeDir, string> & {
     /** Written only by the removed `/api/image` route. Nothing reads it now. */
     dynamicCache: string;
-}
+};
 
 /**
  * Resolve the library root and its derivative folders. libraryRoot() reads
@@ -25,17 +34,8 @@ export interface LibraryPaths {
  */
 export function libraryPaths(): LibraryPaths {
     const root = libraryRoot();
-    return {
-        root,
-        thumbnails: path.join(root, 'thumbnails'),
-        medium: path.join(root, 'medium'),
-        optimized: path.join(root, 'optimized'),
-        thumbnailsAvif: path.join(root, 'thumbnails-avif'),
-        mediumAvif: path.join(root, 'medium-avif'),
-        optimizedAvif: path.join(root, 'optimized-avif'),
-        lqip: path.join(root, 'lqip'),
-        dynamicCache: path.join(root, 'cache', 'dynamic'),
-    };
+    const folders = Object.fromEntries(FOLDERS.map((folder) => [keyOfFolder(folder), path.join(root, folder)])) as Record<DerivativeDir, string>;
+    return { root, ...folders, dynamicCache: path.join(root, CACHE_FOLDER, 'dynamic') };
 }
 
 const THUMBNAIL_WIDTH = 400;
@@ -86,12 +86,12 @@ export interface ProcessedImagePaths {
     hasLqip: boolean;
 }
 
-type DerivativeDir = Exclude<keyof LibraryPaths, 'root' | 'dynamicCache'>;
+type Encoder = (input: Buffer) => Promise<Buffer | string>;
 
 interface Variant {
     dir: DerivativeDir;
-    ext: '.webp' | '.avif' | '.txt';
-    encode(input: Buffer): Promise<Buffer | string>;
+    ext: (typeof DERIVATIVE_FOLDERS)[DerivativeFolder];
+    encode: Encoder;
 }
 
 /**
@@ -120,19 +120,25 @@ export async function encodeLqip(input: Buffer | string): Promise<string> {
     return `data:image/webp;base64,${lqipBuffer.toString('base64')}`;
 }
 
-// The seven outputs and their encoder settings, in the order they are written.
-const VARIANTS: readonly Variant[] = [
-    { dir: 'thumbnails', ext: '.webp', encode: (input) => resized(input, THUMBNAIL_WIDTH).webp({ quality: 80 }).toBuffer() },
-    { dir: 'medium', ext: '.webp', encode: (input) => resized(input, MEDIUM_WIDTH).webp({ quality: 85 }).toBuffer() },
-    { dir: 'optimized', ext: '.webp', encode: (input) => resized(input, OPTIMIZED_WIDTH).webp({ quality: 85 }).toBuffer() },
-    { dir: 'thumbnailsAvif', ext: '.avif', encode: (input) => resized(input, THUMBNAIL_WIDTH).avif({ quality: 60, effort: 4 }).toBuffer() },
-    { dir: 'mediumAvif', ext: '.avif', encode: (input) => resized(input, MEDIUM_WIDTH).avif({ quality: 60, effort: 4 }).toBuffer() },
-    { dir: 'optimizedAvif', ext: '.avif', encode: (input) => resized(input, OPTIMIZED_WIDTH).avif({ quality: 60, effort: 4 }).toBuffer() },
-    { dir: 'lqip', ext: '.txt', encode: encodeLqip },
-];
+/** Each derivative folder's encoder settings. Typed by the shared list, so a folder can't be missing or extra. */
+const ENCODERS: Record<DerivativeFolder, Encoder> = {
+    thumbnails: (input) => resized(input, THUMBNAIL_WIDTH).webp({ quality: 80 }).toBuffer(),
+    medium: (input) => resized(input, MEDIUM_WIDTH).webp({ quality: 85 }).toBuffer(),
+    optimized: (input) => resized(input, OPTIMIZED_WIDTH).webp({ quality: 85 }).toBuffer(),
+    'thumbnails-avif': (input) => resized(input, THUMBNAIL_WIDTH).avif({ quality: 60, effort: 4 }).toBuffer(),
+    'medium-avif': (input) => resized(input, MEDIUM_WIDTH).avif({ quality: 60, effort: 4 }).toBuffer(),
+    'optimized-avif': (input) => resized(input, OPTIMIZED_WIDTH).avif({ quality: 60, effort: 4 }).toBuffer(),
+    lqip: encodeLqip,
+};
 
-/** The seven derivative folders, taken from VARIANTS so the two never drift apart. */
+// The seven outputs and their encoder settings, in the order they are written.
+const VARIANTS: readonly Variant[] = FOLDERS.map((folder) => ({ dir: keyOfFolder(folder), ext: DERIVATIVE_FOLDERS[folder], encode: ENCODERS[folder] }));
+
+/** The seven derivative folders' keys. */
 const DERIVATIVE_DIRS: readonly DerivativeDir[] = VARIANTS.map((variant) => variant.dir);
+
+/** A derivative's file name for a base name, such as `IMG_1.webp` in thumbnails. */
+const outputName = (dir: DerivativeDir, baseName: string) => `${baseName}${DERIVATIVE_FOLDERS[FOLDER_OF[dir]]}`;
 
 /** Folder names directly under the library root that hold generated files, never sources. */
 export function generatedFolderNames(): string[] {
@@ -218,28 +224,26 @@ export function getImagePaths(
     index: DerivativeIndex = readDerivativeIndex(paths),
 ): ProcessedImagePaths {
     const baseName = baseNameOf(filename);
-    const webpExt = '.webp';
-    const avifExt = '.avif';
-    const has = (dir: DerivativeDir, ext: string) => index.get(dir)?.has(`${baseName}${ext}`) ?? false;
+    const has = (dir: DerivativeDir) => index.get(dir)?.has(outputName(dir, baseName)) ?? false;
     // The file name is one encoded path segment, so a % or # in it reaches the file instead of breaking the URL.
-    const url = (folder: string, name: string) => `/assets/photos/${folder}${encodeURIComponent(name)}`;
+    const url = (dir: DerivativeDir) => `/assets/photos/${FOLDER_OF[dir]}/${encodeURIComponent(outputName(dir, baseName))}`;
 
     return {
-        original: url('', filename),
-        thumbnail: url('thumbnails/', `${baseName}${webpExt}`),
-        medium: url('medium/', `${baseName}${webpExt}`),
-        optimized: url('optimized/', `${baseName}${webpExt}`),
-        thumbnailAvif: url('thumbnails-avif/', `${baseName}${avifExt}`),
-        mediumAvif: url('medium-avif/', `${baseName}${avifExt}`),
-        optimizedAvif: url('optimized-avif/', `${baseName}${avifExt}`),
-        lqip: url('lqip/', `${baseName}.txt`),
-        hasThumbnail: has('thumbnails', webpExt),
-        hasMedium: has('medium', webpExt),
-        hasOptimized: has('optimized', webpExt),
-        hasThumbnailAvif: has('thumbnailsAvif', avifExt),
-        hasMediumAvif: has('mediumAvif', avifExt),
-        hasOptimizedAvif: has('optimizedAvif', avifExt),
-        hasLqip: has('lqip', '.txt'),
+        original: `/assets/photos/${encodeURIComponent(filename)}`,
+        thumbnail: url('thumbnails'),
+        medium: url('medium'),
+        optimized: url('optimized'),
+        thumbnailAvif: url('thumbnailsAvif'),
+        mediumAvif: url('mediumAvif'),
+        optimizedAvif: url('optimizedAvif'),
+        lqip: url('lqip'),
+        hasThumbnail: has('thumbnails'),
+        hasMedium: has('medium'),
+        hasOptimized: has('optimized'),
+        hasThumbnailAvif: has('thumbnailsAvif'),
+        hasMediumAvif: has('mediumAvif'),
+        hasOptimizedAvif: has('optimizedAvif'),
+        hasLqip: has('lqip'),
     };
 }
 
@@ -891,7 +895,7 @@ export function applyOrphanCleanup(plan: OrphanCleanupPlan): OrphanCleanupResult
  * Get LQIP base64 string for an image
  */
 export function getLqipBase64(filename: string, paths: LibraryPaths = libraryPaths()): string | null {
-    const lqipPath = path.join(paths.lqip, `${baseNameOf(filename)}.txt`);
+    const lqipPath = path.join(paths.lqip, outputName('lqip', baseNameOf(filename)));
     
     if (fs.existsSync(lqipPath)) {
         return fs.readFileSync(lqipPath, 'utf-8');

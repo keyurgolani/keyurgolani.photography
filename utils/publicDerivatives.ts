@@ -1,17 +1,11 @@
+import { DERIVATIVE_FOLDERS } from '../lib/derivativeFolders.mjs';
+
 /**
  * The legacy derivative files the site may serve from /assets/photos: top-level
  * files in these folders with these extensions. Every other path under
  * /assets/photos, original sources at any depth included, is private.
  */
-export const PUBLIC_DERIVATIVE_FOLDERS: Readonly<Record<string, string>> = {
-    thumbnails: '.webp',
-    medium: '.webp',
-    optimized: '.webp',
-    'thumbnails-avif': '.avif',
-    'medium-avif': '.avif',
-    'optimized-avif': '.avif',
-    lqip: '.txt',
-};
+export const PUBLIC_DERIVATIVE_FOLDERS: Readonly<Record<string, string>> = DERIVATIVE_FOLDERS;
 
 const PHOTOS_PREFIX = '/assets/photos/';
 
