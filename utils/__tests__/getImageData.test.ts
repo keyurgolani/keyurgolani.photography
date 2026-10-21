@@ -180,6 +180,8 @@ describe('getGalleryImages', () => {
     });
 
     it('falls back to the next source of a set when the first by path does not decode', async () => {
+        // Square.jpg shares square.webp's set only on a disk that resolves both spellings to one file.
+        fakeCaseInsensitiveDisk();
         fs.copyFileSync(lib.file('corrupt.jpg'), lib.file('landscape.jpeg'));
         fs.copyFileSync(lib.file('corrupt.jpg'), lib.file('Square.jpg'));
         const warnings = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
