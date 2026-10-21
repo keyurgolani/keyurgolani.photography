@@ -15,7 +15,7 @@
     transition: none;
 }
 
-/* A focused element that fits between these scrolls clear of ThemeToggle and BottomBar. */
+/* A focused element that fits between these scrolls into view with room around it. */
 html {
     scroll-padding-top: 6rem;
     scroll-padding-bottom: 8rem;
@@ -29,9 +29,9 @@ html {
     --focus-ring-width: 3px;
     --focus-ring-offset: 3px;
 
-    /* Fonts */
-    --font-primary: var(--font-montserrat), sans-serif;
-    --font-secondary: var(--font-inter), sans-serif;
+    /* Fonts, from app/fonts.ts */
+    --font-primary: var(--font-serif), serif;
+    --font-secondary: var(--font-sans), sans-serif;
 
     /* Light theme (Premium Clean) */
     --background-color: #FAFAFA; /* Off-white for less harshness */
@@ -86,9 +86,10 @@ body {
     line-height: 1.6;
 }
 
+/* The serif at its one weight. The legacy font-bold h1 on /gallery and /about keeps 700 until #3 and #12. */
 h1, h2, h3, h4, h5, h6 {
     font-family: var(--font-primary);
-    font-weight: 600;
+    font-weight: 400;
     letter-spacing: -0.02em;
 }
 

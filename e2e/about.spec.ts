@@ -14,7 +14,7 @@ const themeToggle = (page: Page) => page.getByRole('button', { name: /^Switch to
 const cards = (page: Page) => page.getByRole('link', { name: /@iserialclicker/ });
 const source = (page: Page) => page.getByRole('link', { name: 'View source on GitHub', exact: true });
 
-/** Stops with an aria-label report it, and the social cards their href. */
+/** Stops with an aria-label report it, and the links without one, SiteNav's and the social cards, their href. */
 const focusedStop = (page: Page) =>
     page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.getAttribute('href') ?? document.activeElement?.tagName);
 
@@ -29,16 +29,17 @@ test('passes axe', async ({ page }) => {
     await expectNoA11yViolations(page);
 });
 
-test('Tab reaches the theme toggle, the social cards, the Primary links, then the source link, and Shift+Tab walks back', async ({ page }) => {
+test('Tab goes through SiteNav, its toggle last, then the social cards and the source link, and Shift+Tab walks back', async ({ page }) => {
     await openAbout(page);
     const stops = [
+        'KG, Keyur Golani',
+        '/',
+        '/gallery',
+        '/about',
         'Switch to light mode',
         'https://www.instagram.com/iserialclicker',
         'https://500px.com/p/iserialclicker',
         'https://www.flickr.com/photos/iserialclicker',
-        'Gallery',
-        'Home',
-        'About',
         'View source on GitHub',
     ];
     const forward: (string | undefined)[] = [];
@@ -65,7 +66,7 @@ test('Enter and Space on the theme toggle flip the theme', async ({ page }) => {
     await expect(html).toHaveAttribute('data-theme', 'dark');
 });
 
-for (const [name, path] of [['Gallery', '/gallery'], ['Home', '/']] as const) {
+for (const [name, path] of [['Work', '/gallery'], ['Home', '/']] as const) {
     test(`Enter on the ${name} link goes to ${path}`, async ({ page }) => {
         await openAbout(page);
         await primary(page).getByRole('link', { name, exact: true }).focus();

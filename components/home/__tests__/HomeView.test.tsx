@@ -28,8 +28,8 @@ vi.mock('@/components/RevealingContents', () => ({
   },
 }));
 
-vi.mock('@/components/BottomBar', () => ({
-  default: () => <div data-testid="bottom-bar" />,
+vi.mock('@/components/site/SiteNav', () => ({
+  default: () => <nav aria-label="Primary" />,
 }));
 
 const photo = (n: number, total: number): HomePhoto => ({
@@ -150,6 +150,25 @@ describe('HomeView', () => {
     fireEvent.click(play);
     expect(button('Pause slideshow')).toBe(pause);
     expect(playback()).toBe('advancing');
+  });
+
+  it('keeps SiteNav in the DOM, hidden and out of the pointer\'s way, until the intro settles', async () => {
+    const { becomeReady } = await renderHome();
+    const wrapper = () => screen.getByRole('navigation', { name: 'Primary' }).parentElement;
+    expect(wrapper()).toHaveClass('opacity-0', 'pointer-events-none');
+
+    becomeReady();
+    expect(wrapper()).not.toHaveClass('opacity-0');
+    expect(wrapper()).not.toHaveClass('pointer-events-none');
+  });
+
+  it('puts SiteNav ahead of the slideshow controls, inside the focus hold', async () => {
+    const { becomeReady } = await renderHome();
+    becomeReady();
+    const nav = screen.getByRole('navigation', { name: 'Primary' });
+    const group = screen.getByRole('group', { name: 'Slideshow' });
+    expect(nav.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByTestId('chrome')).toContainElement(nav);
   });
 
   it('makes the arrows plain buttons, so they never submit a form around them', async () => {

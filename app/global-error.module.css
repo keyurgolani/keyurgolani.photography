@@ -1,0 +1,33 @@
+.header {
+  display: flex;
+  min-height: var(--site-nav-height);
+  align-items: center;
+  padding-inline: var(--site-gutter);
+  border-bottom: 1px solid var(--gah-rule);
+  background: var(--gah-ground);
+  color: var(--gah-ink);
+}
+
+.wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin: 0;
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-label);
+  font-weight: 500;
+  letter-spacing: var(--gah-label-tracking);
+}
+
+.monogram {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid var(--gah-rule-strong);
+  border-radius: 50%;
+  font-family: var(--gah-font-serif);
+  letter-spacing: 0;
+  line-height: 1;
+}

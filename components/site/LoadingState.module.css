@@ -1,0 +1,22 @@
+.state {
+  display: grid;
+  min-height: 100%;
+  place-items: center;
+  background: var(--gah-ground);
+  color: var(--gah-ink-muted);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-label);
+  letter-spacing: var(--gah-label-tracking);
+}
+
+/* A zero-length animation flips the label visible after 1 s, with nothing in between. */
+.label {
+  visibility: hidden;
+  animation: reveal 0s linear 1s forwards;
+}
+
+@keyframes reveal {
+  to {
+    visibility: visible;
+  }
+}

@@ -29,16 +29,25 @@ const effectiveOpacity = (target: Locator) =>
         return opacity;
     });
 
-/** Every stop on this page is named by its aria-label. */
-const focusedLabel = (page: Page) => page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.tagName);
+/** The name of whatever has focus: its aria-label, or for SiteNav's text links, their text. */
+const focusedLabel = (page: Page) =>
+    page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.textContent?.trim());
 
-/** BottomBar's own opacity, apart from the chrome layer's, which reaches 1 once it has slid up after the intro. */
-const bottomBarOpacity = (page: Page) =>
-    primary(page).evaluate((el) => parseFloat(getComputedStyle(el.closest('.fixed.bottom-0') ?? el).opacity));
+/** The opacity of SiteNav's wrapper alone, apart from the chrome layer's. It reaches 1 once the intro settles. */
+const navOpacity = (page: Page) => primary(page).evaluate((el) => parseFloat(getComputedStyle(el.parentElement ?? el).opacity));
+
+/** Presses Tab until `target` has focus, so the focus is keyboard focus. */
+async function tabTo(page: Page, target: Locator, limit = 10) {
+    for (let press = 0; press < limit; press++) {
+        if (await target.evaluate((el) => el === document.activeElement)) return;
+        await page.keyboard.press('Tab');
+    }
+    await expect(target).toBeFocused();
+}
 
 /**
  * Opens Home on `photos`, which it shuffles, in `theme`, and waits out the
- * intro: the grain overlay gone and BottomBar slid up. It doesn't wait on the
+ * intro: the grain overlay gone and SiteNav's wrapper shown. It doesn't wait on the
  * chrome layer, which shows for 3 s after the intro and hides 3 s after the
  * last activity, so a slow run can't miss that window. No test here needs the
  * chrome shown before it acts.
@@ -49,7 +58,7 @@ async function openHome(page: Page, { photos = ['white', 'gray', 'black'], theme
     await page.goto('/');
     await waitForHydration(page);
     await expect(page.locator('[class*="grainOverlay"]')).toHaveCount(0, { timeout: 15_000 });
-    await expect.poll(() => bottomBarOpacity(page), { timeout: 10_000 }).toBe(1);
+    await expect.poll(() => navOpacity(page), { timeout: 10_000 }).toBe(1);
 }
 
 for (const viewport of [undefined, { width: 640, height: 400 }]) {
@@ -64,11 +73,10 @@ for (const viewport of [undefined, { width: 640, height: 400 }]) {
                 await expectUniqueNames([themeToggle(page), sequenceControls(page), navLinks(page)]);
             });
 
-            test(`Tab shows the theme toggle with its focus ring inside the 3 s idle window in the ${theme} theme`, async ({ page }) => {
+            test(`Tab reaches the theme toggle in SiteNav with its focus ring in the ${theme} theme`, async ({ page }) => {
                 await openHome(page, { theme });
-                await page.keyboard.press('Tab');
                 const toggle = themeToggle(page);
-                await expect(toggle).toBeFocused();
+                await tabTo(page, toggle);
                 await expect(toggle).toHaveCSS('opacity', '1');
                 await expectFocusRingVisible(toggle);
                 await expectRingNotClipped(toggle);
@@ -78,9 +86,9 @@ for (const viewport of [undefined, { width: 640, height: 400 }]) {
     });
 }
 
-test('Tab goes from the theme toggle to both arrows and Pause, then the Primary links, and Shift+Tab walks back', async ({ page }) => {
+test('Tab goes through SiteNav, its toggle last, then both arrows and Pause, and Shift+Tab walks back', async ({ page }) => {
     await openHome(page);
-    const stops = ['Switch to light mode', 'Previous photograph', 'Next photograph', 'Pause slideshow', 'Gallery', 'Home', 'About'];
+    const stops = ['KG, Keyur Golani', 'Home', 'Work', 'About', 'Switch to light mode', 'Previous photograph', 'Next photograph', 'Pause slideshow'];
     const forward: (string | undefined)[] = [];
     for (let press = 0; press < stops.length; press++) {
         await page.keyboard.press('Tab');
@@ -97,9 +105,7 @@ test('Tab goes from the theme toggle to both arrows and Pause, then the Primary 
 
 test('keyboard focus on an arrow shows both arrows at full opacity', async ({ page }) => {
     await openHome(page);
-    await page.keyboard.press('Tab');
-    await page.keyboard.press('Tab');
-    await expect(previous(page)).toBeFocused();
+    await tabTo(page, previous(page));
     expect(await effectiveOpacity(previous(page))).toBe(1);
     await expect(next(page)).toHaveCSS('opacity', '1');
 });
@@ -128,15 +134,14 @@ test('Enter and Space on the arrows change the photo', async ({ page }) => {
 test('Enter and Space on the theme toggle flip the theme', async ({ page }) => {
     await openHome(page);
     const html = page.locator('html');
-    await page.keyboard.press('Tab');
-    await expect(themeToggle(page)).toBeFocused();
+    await tabTo(page, themeToggle(page));
     await page.keyboard.press('Enter');
     await expect(html).toHaveAttribute('data-theme', 'light');
     await page.keyboard.press('Space');
     await expect(html).toHaveAttribute('data-theme', 'dark');
 });
 
-for (const [name, path] of [['Gallery', '/gallery'], ['About', '/about']] as const) {
+for (const [name, path] of [['Work', '/gallery'], ['About', '/about']] as const) {
     test(`Enter on the ${name} link goes to ${path}`, async ({ page }) => {
         await openHome(page);
         await primary(page).getByRole('link', { name, exact: true }).focus();
@@ -199,12 +204,12 @@ test('a tap on Previous or Next changes the photo', async ({ page }, testInfo) =
 
 test('focus inside the controls holds them visible past the idle timeout', async ({ page }) => {
     await openHome(page);
-    const gallery = primary(page).getByRole('link', { name: 'Gallery', exact: true });
-    await gallery.focus();
+    const work = primary(page).getByRole('link', { name: 'Work', exact: true });
+    await work.focus();
     // The chrome hides 3 s after the intro's synthetic click and then fades for 1 s, so 7 s waits on the
     // behavior itself, not on readiness.
     await page.waitForTimeout(7_000);
-    expect(await effectiveOpacity(gallery)).toBe(1);
+    expect(await effectiveOpacity(work)).toBe(1);
 });
 
 // #18 (Home immersive mode) owns this, and e2e/home-immersive.spec.ts replaces it.
@@ -213,7 +218,7 @@ test.describe('#18', () => {
         test.skip(testInfo.project.name !== 'mobile', 'Taps run on the touch project.');
         await openHome(page);
         await expect.poll(() => effectiveOpacity(primary(page)), { timeout: 10_000 }).toBe(0);
-        await primary(page).getByRole('link', { name: 'Gallery', exact: true }).tap();
+        await primary(page).getByRole('link', { name: 'Work', exact: true }).tap();
         await expect(page).toHaveURL('/');
         await expect.poll(() => effectiveOpacity(primary(page))).toBe(1);
     });

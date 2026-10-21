@@ -1,0 +1,73 @@
+.page {
+  display: flex;
+  min-height: calc(100svh - var(--site-nav-height));
+  align-items: center;
+  padding: 3rem var(--site-gutter);
+  background: var(--gah-ground);
+  color: var(--gah-ink);
+}
+
+.body {
+  max-width: 34rem;
+}
+
+/* The serif and its weight come from the global heading rule. */
+.heading {
+  margin: 0;
+  font-size: var(--gah-type-display);
+  line-height: var(--gah-display-leading);
+  letter-spacing: var(--gah-display-tracking);
+}
+
+.text {
+  margin: 1.25rem 0 0;
+  color: var(--gah-ink-soft);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-statement);
+  line-height: 1.5;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 2rem;
+}
+
+/* Every action, link or button, gets the same plain treatment. */
+.actions > a,
+.actions > button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 1.125rem;
+  border: 1px solid var(--gah-rule-strong);
+  border-radius: var(--gah-radius);
+  background: none;
+  color: var(--gah-ink);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-ui);
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
+}
+
+.actions > :first-child {
+  border-color: var(--gah-action);
+  background: var(--gah-action);
+  color: var(--gah-action-ink);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .actions > a:hover,
+  .actions > button:hover {
+    background: var(--gah-surface);
+    color: var(--gah-ink);
+  }
+
+  .actions > :first-child:hover {
+    background: var(--gah-ink);
+    color: var(--gah-action-ink);
+  }
+}

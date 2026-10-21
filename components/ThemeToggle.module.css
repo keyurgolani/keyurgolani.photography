@@ -1,0 +1,37 @@
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--gah-ink-muted);
+  cursor: pointer;
+  transition: color var(--motion-fast) var(--ease-standard);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .toggle:hover {
+    color: var(--gah-ink);
+  }
+}
+
+/* The dark theme shows the sun, the way to light, and the light theme the moon. */
+:global(html[data-theme='light']) .sun,
+:global(html:not([data-theme='light'])) .moon {
+  display: none;
+}
+
+/* SiteNav's paper variant. */
+:global([data-surface='about']) .toggle {
+  color: var(--lts-ink-soft);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  :global([data-surface='about']) .toggle:hover {
+    color: var(--lts-ink);
+  }
+}

@@ -14,6 +14,8 @@ export interface Surface {
     controls?: readonly Locator[];
     /** Fixed chrome that can paint over a focused element. */
     chrome?: readonly Locator[];
+    /** Limits the axe run to this selector. */
+    include?: string;
 }
 
 /**
@@ -21,12 +23,12 @@ export interface Surface {
  * entry order, 44 px targets, a visible and unclipped focus ring that `chrome`
  * doesn't obscure on every entry and control, and unique names.
  */
-export async function checkSurface(page: Page, { entries, controls = [], chrome = [] }: Surface): Promise<void> {
+export async function checkSurface(page: Page, { entries, controls = [], chrome = [], include }: Surface): Promise<void> {
     await waitForHydration(page);
     const groups = entries ? [entries, ...controls] : [...controls];
     // Entries can arrive after hydration, as the gallery's do once /api/photos answers, so axe waits for every group.
     for (const group of groups) await group.first().waitFor({ state: 'attached' });
-    await expectNoA11yViolations(page);
+    await expectNoA11yViolations(page, { include });
     if (entries) await expectTabOrderMatchesVisualOrder(page, entries);
     for (const group of groups) await expectMinTargetSize(group, 44);
     for (const group of groups) {
