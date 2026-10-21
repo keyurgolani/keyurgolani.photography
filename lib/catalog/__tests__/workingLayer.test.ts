@@ -181,6 +181,34 @@ describe('writeAuthoredRecord', () => {
         expect(written).toMatchObject({ version: 2, title: 'Fixture title' });
     });
 
+    it('stores only one of two writes that read one version, even when both think they hold the lock', async () => {
+        const data = dataRoot();
+        const first = await writeAuthoredRecord(photo(PHOTO_A), { expectedVersion: 0, root: data.root });
+        // Two writers on one hold, as when one is past its lease and hasn't noticed: the second writes between
+        // the first one's read and its claim.
+        const { stale, fresh } = await withLock('authored', { root: data.root }, async (hold) => {
+            let other: Promise<AuthoredPhoto> | undefined;
+            const error = await rejection(writeAuthoredRecord({ ...first, title: 'Stale' }, {
+                expectedVersion: first.version,
+                root: data.root,
+                lock: hold,
+                hooks: {
+                    beforeClaim: async () => {
+                        other = writeAuthoredRecord({ ...first, title: 'Fresh' }, { expectedVersion: first.version, root: data.root, lock: hold });
+                        await other;
+                    },
+                },
+            }));
+            return { stale: error, fresh: await other };
+        });
+
+        expect(stale).toMatchObject({ code: 'VERSION_CONFLICT', expectedVersion: 1, foundVersion: 2 });
+        expect(fresh).toMatchObject({ version: 2, title: 'Fresh' });
+        expect(await readAuthoredRecord(data.root, 'photo', PHOTO_A)).toMatchObject({ version: 2, title: 'Fresh' });
+        // No version claim is left beside the record
+        expect(fs.readdirSync(authoredPaths(data.root).photosDir)).toEqual([`${PHOTO_A}.json`]);
+    });
+
     it('refuses a hold that is not this data root\'s authored lock, or that was lost', async () => {
         const data = dataRoot();
         const other = dataRoot();
