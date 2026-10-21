@@ -95,6 +95,36 @@ describe('getGalleryImages', () => {
         expect(warnings).toHaveBeenCalledWith('[getGalleryImages] Skipping landscape.png: it shares its derivatives with landscape.jpg.');
     });
 
+    it('warns about base names that differ only by case or Unicode form, which share one set on a case-insensitive disk', async () => {
+        fs.copyFileSync(lib.file('portrait.png'), lib.file('Landscape.png'));
+        // crème in NFC, then in NFD.
+        fs.copyFileSync(lib.file('portrait.png'), lib.file('crème.png'));
+        fs.copyFileSync(lib.file('landscape.jpg'), lib.file('cre\u0300me.jpg'));
+        const warnings = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const images = await getGalleryImages();
+
+        // None of the new files has a set under its own name, so the listing is as it was.
+        expect(bases(images)).toEqual([...DECODABLE].sort());
+        const shared = (a: string, b: string) =>
+            `[getGalleryImages] ${a} and ${b} share one set of derivatives on a case-insensitive disk, since their base names differ only by case or Unicode form.`;
+        expect(warnings).toHaveBeenCalledWith(shared('Landscape.png', 'landscape.jpg'));
+        expect(warnings).toHaveBeenCalledWith(shared('cre\u0300me.jpg', 'crème.png'));
+        expect(warnings).toHaveBeenCalledTimes(2);
+    });
+
+    it('still lists both when each has a set under its own name, as on a case-sensitive disk', async () => {
+        fs.copyFileSync(lib.file('portrait.png'), lib.file('Landscape.png'));
+        // A case-sensitive disk holds a Landscape.* set beside the landscape.* one.
+        const realReaddirSync = fs.readdirSync;
+        vi.spyOn(fs, 'readdirSync').mockImplementation(((dir: fs.PathLike, options?: never) => {
+            const names = realReaddirSync(dir, options) as string[];
+            return [...names, ...names.filter((name) => /^landscape\.(webp|avif|txt)$/.test(name)).map((name) => `L${name.slice(1)}`)];
+        }) as typeof fs.readdirSync);
+        vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+        expect(bases(await getGalleryImages())).toEqual(['Landscape', ...DECODABLE].sort());
+    });
+
     it('logs an undecodable source, leaves it out, and still returns the others', async () => {
         // A macOS AppleDouble file next to a photo is not a photo
         fs.writeFileSync(lib.file('._landscape.jpg'), 'AppleDouble metadata');

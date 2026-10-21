@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import sharp from 'sharp';
 import exifFromBuffer from 'exif-reader';
+import { keyOf } from '../lib/identity/scan';
 import {
     baseNameOf,
     encodeLqip,
@@ -55,15 +56,27 @@ async function placeholderFor(filePath: string): Promise<string> {
 /**
  * Sources sharing a base name, such as IMG_1.jpg and IMG_1.png, share one set
  * of legacy derivatives, so only the first by path is listed and the others
- * are logged. The migration dry run's "Basename collisions" section lists them.
+ * are logged. Base names that differ only by case or Unicode form, such as
+ * Beach.jpg and beach.png, share one set on a case-insensitive disk, so those
+ * are logged too. Both stay listed: each is shown only with a complete set
+ * under its own name, which on such a disk only the one written last has. The
+ * migration dry run's "Basename collisions" section lists both kinds.
  */
 function onePerBaseName(files: string[]): string[] {
     const kept = new Map<string, string>();
+    const folded = new Map<string, string>();
     for (const file of [...files].sort()) {
         const base = baseNameOf(file);
         const first = kept.get(base);
-        if (first === undefined) kept.set(base, file);
-        else console.warn(`[getGalleryImages] Skipping ${file}: it shares its derivatives with ${first}.`);
+        if (first !== undefined) {
+            console.warn(`[getGalleryImages] Skipping ${file}: it shares its derivatives with ${first}.`);
+            continue;
+        }
+        kept.set(base, file);
+        // The key the identity scan folds paths by, so both name the same collisions.
+        const other = folded.get(keyOf(base));
+        if (other === undefined) folded.set(keyOf(base), file);
+        else console.warn(`[getGalleryImages] ${other} and ${file} share one set of derivatives on a case-insensitive disk, since their base names differ only by case or Unicode form.`);
     }
     return [...kept.values()];
 }

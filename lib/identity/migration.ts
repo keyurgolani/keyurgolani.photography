@@ -8,6 +8,7 @@ import { observeLibrary, withReportedFailures, type ObservedLibrary, type PassDe
 import { currentProfileId } from './profile';
 import { STABILITY_MS, type FactDraft } from './reconcile';
 import { emptyStatCache, identityPaths, readRegistry, readStatCache, type StatCache } from './registry';
+import { keyOf } from './scan';
 import { emptyRegistry, type Hold, type IdentityFactType, type Registry, type SourceHealth } from './types';
 
 /** The migration report's sections. Every one is always present, in this order, so a missing category shows. */
@@ -192,10 +193,11 @@ export function renderReport(plan: MigrationPlan, observed: ObservedLibrary): st
     ]);
 
     const topLevel = images.filter((source) => !source.path.includes('/'));
-    const sharedBase = [...groupBy(topLevel, (source) => path.posix.basename(source.path, path.posix.extname(source.path))).values()]
+    // Folded as the scan folds paths, since base names that differ only by case or Unicode form share one set on a case-insensitive disk.
+    const sharedBase = [...groupBy(topLevel, (source) => keyOf(path.posix.basename(source.path, path.posix.extname(source.path)))).values()]
         .filter((group) => group.length > 1);
     section('Basename collisions', sharedBase.length === 0 ? ['None.'] : [
-        "These top-level files share one set of legacy derivative URLs, so those URLs can't be mapped to a single photo.",
+        "These top-level files share one set of legacy derivative URLs, or would on a case-insensitive disk, so those URLs can't be mapped to a single photo.",
         '',
         ...sharedBase.map((group) => `- ${group.map((source) => code(source.path)).join(', ')}`),
     ]);

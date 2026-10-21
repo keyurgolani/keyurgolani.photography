@@ -80,6 +80,24 @@ const options = (extra: DryRunOptions = {}): DryRunOptions => ({
 });
 
 describe('photos:migrate --dry-run', () => {
+    it('lists top-level base names that differ only by case or Unicode form as basename collisions', async () => {
+        await library({
+            'Beach.jpg': fixture('landscape.jpg'),
+            'beach.png': fixture('portrait.png'),
+            // café in NFC, then in NFD.
+            'café.jpg': fixture('landscape-edited.jpg'),
+            'cafe\u0301.webp': fixture('square.webp'),
+            'series/Beach.webp': fixture('landscape-rot6.jpg'),
+        });
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', '');
+
+        const { report } = await migrateDryRun(options({ outDir: tempOut() }));
+        const lines = report.split('## Basename collisions\n')[1].split('\n## ')[0].split('\n').filter((line) => line.startsWith('- '));
+        expect(lines).toHaveLength(2);
+        expect(lines).toContain('- `Beach.jpg`, `beach.png`');
+        expect(lines.find((line) => line.includes('`café.jpg`'))).toContain('`cafe\u0301.webp`');
+    });
+
     it('writes only its plan and report to --out, and the report lists every migration category', async () => {
         const lib = await library({
             'landscape.jpg': fixture('landscape.jpg'),
