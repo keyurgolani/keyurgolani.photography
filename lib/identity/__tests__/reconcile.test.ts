@@ -482,6 +482,83 @@ describe('reconcile: renames, copies, swaps, and unstable files', () => {
         expect(r.registry.holds.map((held) => held.path)).toEqual(['a.jpg']);
     });
 
+    it('resolves a renumbered series as renames: mv 3 4, mv 2 3, mv 1 2', () => {
+        const r = seeded({ '1.jpg': 'A', '2.jpg': 'B', '3.jpg': 'C' });
+        const [x1, x2, x3] = ['1.jpg', '2.jpg', '3.jpg'].map((path) => r.photoAt(path).photoId);
+        r.library.move('3.jpg', '4.jpg').move('2.jpg', '3.jpg').move('1.jpg', '2.jpg');
+        r.pass();
+        expect(r.factSummary()).toEqual(['renamed 2.jpg', 'renamed 3.jpg', 'renamed 4.jpg']);
+        expect(r.last.facts).toEqual(expect.arrayContaining([
+            expect.objectContaining({ type: 'renamed', photoId: x1, path: '2.jpg', fromPath: '1.jpg' }),
+            expect.objectContaining({ type: 'renamed', photoId: x2, path: '3.jpg', fromPath: '2.jpg' }),
+            expect.objectContaining({ type: 'renamed', photoId: x3, path: '4.jpg', fromPath: '3.jpg' }),
+        ]));
+        expect(r.registry.holds).toEqual([]);
+        expect(Object.keys(r.registry.photos)).toHaveLength(3);
+        expect([x1, x2, x3].map((id) => [r.photo(id).source.path, r.photo(id).sourceHealth])).toEqual([['2.jpg', 'present'], ['3.jpg', 'present'], ['4.jpg', 'present']]);
+        r.pass();
+        expect(r.last.facts).toEqual([]);
+    });
+
+    it('resolves a longer renumbered series in a folder the same way', () => {
+        const files = Object.fromEntries([1, 2, 3, 4, 5].map((n) => [`trip/${n}.jpg`, `P${n}`]));
+        const r = seeded(files);
+        const ids = [1, 2, 3, 4, 5].map((n) => r.photoAt(`trip/${n}.jpg`).photoId);
+        for (const n of [5, 4, 3, 2, 1]) r.library.move(`trip/${n}.jpg`, `trip/${n + 1}.jpg`);
+        r.pass();
+        expect(r.factSummary()).toEqual([2, 3, 4, 5, 6].map((n) => `renamed trip/${n}.jpg`));
+        expect(r.registry.holds).toEqual([]);
+        expect(ids.map((id) => r.photo(id).source.path)).toEqual([2, 3, 4, 5, 6].map((n) => `trip/${n}.jpg`));
+    });
+
+    it('never moves a photo twice in one pass, so a copy freed by a later rename is a new duplicate', () => {
+        const r = seeded({ '1.jpg': 'A', '2.jpg': 'B', '6.jpg': 'F', '7.jpg': 'G' });
+        const [x1, x2, x6, x7] = ['1.jpg', '2.jpg', '6.jpg', '7.jpg'].map((path) => r.photoAt(path).photoId);
+        // Two renumberings, and a copy of 1.jpg's bytes lands where 6.jpg's photo left.
+        r.library.move('2.jpg', '3.jpg').move('1.jpg', '2.jpg').move('7.jpg', '9.jpg').move('6.jpg', '7.jpg').put('6.jpg', image('A'));
+        r.pass();
+        expect(r.factSummary()).toEqual(['new 6.jpg', 'renamed 2.jpg', 'renamed 3.jpg', 'renamed 7.jpg', 'renamed 9.jpg']);
+        expect([x1, x2, x6, x7].map((id) => r.photo(id).source.path)).toEqual(['2.jpg', '3.jpg', '7.jpg', '9.jpg']);
+        expect(r.photoAt('6.jpg').duplicateOf).toBe(x1);
+        expect(r.registry.holds).toEqual([]);
+    });
+
+    it('holds freed paths that share pixels with each other, as row 7 holds unbound ones', () => {
+        const r = new Reconciler();
+        r.library.put('a.jpg', image('A1', { pixels: 'P' })).put('b.jpg', image('A2', { pixels: 'P' })).put('c.jpg', image('C')).put('d.jpg', image('D'));
+        r.pass();
+        const [x1, x2] = [r.photoAt('a.jpg').photoId, r.photoAt('b.jpg').photoId];
+        // c.jpg and d.jpg move on, and copies of a.jpg's and b.jpg's bytes, the same pixels, take their places.
+        r.library.remove('a.jpg', 'b.jpg').move('c.jpg', 'e.jpg').move('d.jpg', 'f.jpg')
+            .put('c.jpg', image('A1', { pixels: 'P' })).put('d.jpg', image('A2', { pixels: 'P' }));
+        r.pass();
+        expect(r.factSummary()).toEqual(['ambiguous c.jpg', 'ambiguous d.jpg', 'renamed e.jpg', 'renamed f.jpg']);
+        expect(r.registry.holds).toMatchObject([{ path: 'c.jpg', candidates: [x1] }, { path: 'd.jpg', candidates: [x2] }]);
+    });
+
+    it('reads a move with another photo copied over the old path as a rename and a new duplicate', () => {
+        const r = seeded({ 'a.jpg': 'A', 'b.jpg': 'B' });
+        const [x, y] = [r.photoAt('a.jpg').photoId, r.photoAt('b.jpg').photoId];
+        r.library.move('a.jpg', 'c.jpg').put('a.jpg', image('B'));
+        r.pass();
+        expect(r.factSummary()).toEqual(['new a.jpg', 'renamed c.jpg']);
+        expect(r.photo(x).source).toMatchObject({ path: 'c.jpg', present: true });
+        expect(r.photo(y).source).toMatchObject({ path: 'b.jpg', present: true });
+        expect(r.photoAt('a.jpg')).toMatchObject({ duplicateOf: y, sourceHealth: 'present' });
+        expect(r.registry.holds).toEqual([]);
+    });
+
+    it("never moves a photo off its unchanged path because a copy of its bytes sits on another photo's path", () => {
+        const r = seeded({ 'a.jpg': 'A', 'b.jpg': 'B' });
+        const [x, y] = [r.photoAt('a.jpg').photoId, r.photoAt('b.jpg').photoId];
+        r.library.put('a.jpg', image('B')).put('c.jpg', image('B'));
+        r.pass();
+        expect(r.factSummary()).toEqual(['ambiguous a.jpg', 'new c.jpg']);
+        expect(r.photo(y).source).toMatchObject({ path: 'b.jpg', present: true });
+        expect(r.photoAt('c.jpg').duplicateOf).toBe(y);
+        expect(r.registry.holds).toMatchObject([{ path: 'a.jpg', candidates: [x, y].sort() }]);
+    });
+
     it('swapping two photos holds both paths', () => {
         const r = seeded({ 'a.jpg': 'A', 'b.jpg': 'B' });
         const [x, y] = [r.photoAt('a.jpg').photoId, r.photoAt('b.jpg').photoId];

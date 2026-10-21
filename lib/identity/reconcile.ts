@@ -93,6 +93,12 @@ function addTo<K, V>(map: Map<K, Set<V>>, key: K, value: V): void {
  * only with a decision, a byte change at the held path, or the path vanishing.
  * A hold on paths that differ only by case or Unicode form also ends once one
  * of them is left, and that one is classified as a plain rename would be.
+ *
+ * One departure from the table: a photo whose bound path holds another
+ * photo's bytes (row 6) may have moved, so rows 7 and 9 count it as
+ * sourceless. Once rows 7 or 10 rebind it, the hold on its old path ends and
+ * that path is classified as an unbound one, so a renumbered series, such as
+ * `mv 3 4; mv 2 3; mv 1 2`, resolves as renames.
  */
 export function reconcile(scan: LibraryScan, registry: Registry, inspect: InspectLookup, context: ReconcileContext): ReconcileResult {
     const now = new Date(scan.observedAt).toISOString();
@@ -311,6 +317,9 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
 
     // 2. Bound paths, rows 1 to 6.
     const sourceless = new Set<string>();
+    // Photos whose bound path holds another photo's bytes (row 6), with that path's file. Each may have
+    // moved away, as when a series is renumbered, so rows 7 and 9 count it as sourceless.
+    const displaced = new Map<string, ImageSeen>();
     for (const id of originalIds) {
         const photo = photos[id];
         if (!photo.source.present || isRetired(photo) || boundByKey.get(photo.source.key) !== id) continue;
@@ -342,6 +351,7 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
         const others = [...(ownersBefore.get(assetRevision) ?? [])].filter((owner) => owner !== id && !isRetired(photos[owner]));
         if (others.length > 0) {
             hold(item, [id, ...others]);
+            displaced.set(id, item);
             continue;
         }
         // 3. New bytes, same pixels: a metadata edit.
@@ -373,81 +383,99 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
             if (revision.pixelDigest !== null) addTo(pixelOwners, revision.pixelDigest, id);
         }
     }
-    const isSourceless = (id: string) => !isRetired(photos[id]) && (!photos[id].source.present || sourceless.has(id));
-    const unbound = unboundAtStart.filter((item) => !isHeld(item));
+    const rebound = new Set<string>();
+    // A displaced photo counts too. One rebound this pass has a path again, so a later round can't move it.
+    const isSourceless = (id: string) => !isRetired(photos[id]) && !rebound.has(id) && (!photos[id].source.present || sourceless.has(id) || displaced.has(id));
     // How many unbound paths, held ones included, show each byte and pixel digest, for row 7's uniqueness
     // check. A bound path doesn't count, even held: row 7 asks only that no other U shares the evidence.
     const bytesSeen = new Map<string, number>();
     const pixelsSeen = new Map<string, number>();
-    for (const item of seen) {
-        if (!isImage(item) || inKeyCollision.has(item.entry.path) || boundByKey.has(item.entry.key)) continue;
+    const countSeen = (item: ImageSeen) => {
         bytesSeen.set(item.inspection.assetRevision, (bytesSeen.get(item.inspection.assetRevision) ?? 0) + 1);
         if (item.inspection.pixelDigest !== null) pixelsSeen.set(item.inspection.pixelDigest, (pixelsSeen.get(item.inspection.pixelDigest) ?? 0) + 1);
+    };
+    for (const item of seen) {
+        if (isImage(item) && !inKeyCollision.has(item.entry.path) && !boundByKey.has(item.entry.key)) countSeen(item);
     }
 
     interface Claim { item: ImageSeen; photoId: string; by: 'bytes' | 'pixels' }
-    const claims: Claim[] = [];
     const fresh: ImageSeen[] = [];
-    for (const item of unbound) {
-        const { assetRevision, pixelDigest } = item.inspection;
-        const owners = [...(byteOwners.get(assetRevision) ?? [])];
-        if (owners.length > 0) {
-            const loose = owners.filter(isSourceless).sort();
-            if (loose.length === 1) claims.push({ item, photoId: loose[0], by: 'bytes' }); // 7, if unique
-            else if (loose.length > 1) hold(item, loose); // 9
-            else fresh.push(item); // 8
-            continue;
-        }
-        if (pixelDigest !== null) {
-            const loose = [...(pixelOwners.get(pixelDigest) ?? [])].filter(isSourceless).sort();
-            if (loose.length === 1) {
-                claims.push({ item, photoId: loose[0], by: 'pixels' }); // 10, if unique
+    // In rounds. Rebinding a displaced photo frees its old path: that path's hold ends, and the next round
+    // classifies it as an unbound path, so a renumbered series resolves one rename at a time.
+    let round = unboundAtStart.filter((item) => !isHeld(item));
+    while (round.length > 0) {
+        const claims: Claim[] = [];
+        for (const item of round) {
+            const { assetRevision, pixelDigest } = item.inspection;
+            const owners = [...(byteOwners.get(assetRevision) ?? [])];
+            if (owners.length > 0) {
+                const loose = owners.filter(isSourceless).sort();
+                if (loose.length === 1) claims.push({ item, photoId: loose[0], by: 'bytes' }); // 7, if unique
+                else if (loose.length > 1) hold(item, loose); // 9
+                else fresh.push(item); // 8
                 continue;
             }
-            if (loose.length > 1) {
-                hold(item, loose); // 9
-                continue;
+            if (pixelDigest !== null) {
+                const loose = [...(pixelOwners.get(pixelDigest) ?? [])].filter(isSourceless).sort();
+                if (loose.length === 1) {
+                    claims.push({ item, photoId: loose[0], by: 'pixels' }); // 10, if unique
+                    continue;
+                }
+                if (loose.length > 1) {
+                    hold(item, loose); // 9
+                    continue;
+                }
             }
+            fresh.push(item); // 11 or 12
         }
-        fresh.push(item); // 11 or 12
-    }
 
-    const claimsPerPhoto = new Map<string, number>();
-    for (const claim of claims) claimsPerPhoto.set(claim.photoId, (claimsPerPhoto.get(claim.photoId) ?? 0) + 1);
-    const rebound = new Set<string>();
-    for (const claim of claims) {
-        const { assetRevision, pixelDigest } = claim.item.inspection;
-        const sharesEvidence = (bytesSeen.get(assetRevision) ?? 0) > 1 || (pixelDigest !== null && (pixelsSeen.get(pixelDigest) ?? 0) > 1);
-        const contested = (claimsPerPhoto.get(claim.photoId) ?? 0) > 1;
-        if (sharesEvidence || contested) {
-            hold(claim.item, [claim.photoId]); // 9: fails row 7's uniqueness
-            continue;
+        const claimsPerPhoto = new Map<string, number>();
+        for (const claim of claims) claimsPerPhoto.set(claim.photoId, (claimsPerPhoto.get(claim.photoId) ?? 0) + 1);
+        const freed: ImageSeen[] = [];
+        for (const claim of claims) {
+            const { assetRevision, pixelDigest } = claim.item.inspection;
+            const sharesEvidence = (bytesSeen.get(assetRevision) ?? 0) > 1 || (pixelDigest !== null && (pixelsSeen.get(pixelDigest) ?? 0) > 1);
+            const contested = (claimsPerPhoto.get(claim.photoId) ?? 0) > 1;
+            if (sharesEvidence || contested) {
+                hold(claim.item, [claim.photoId]); // 9: fails row 7's uniqueness
+                continue;
+            }
+            const photo = photos[claim.photoId];
+            const lastPath = photo.source.path;
+            const lastKey = photo.source.key;
+            const lastRevision = photo.source.observedRevision;
+            rebound.add(claim.photoId);
+            if (claim.by === 'bytes') {
+                // 7. Rebind X. `reappeared` at X's last path, else `renamed`.
+                bindTo(photo, claim.item, assetRevision);
+                if (assetRevision !== lastRevision) requeueIfNeeded(photo, assetRevision, claim.item.entry.path);
+                const reappeared = lastKey === claim.item.entry.key;
+                fact({
+                    type: reappeared ? 'reappeared' : 'renamed',
+                    photoId: photo.photoId,
+                    assetRevision,
+                    path: claim.item.entry.path,
+                    ...(reappeared ? {} : { fromPath: lastPath }),
+                    ...(assetRevision !== lastRevision ? { revert: true } : {}),
+                });
+            } else {
+                // 10. Rebind X with a new revision.
+                addRevision(photo, claim.item);
+                fact({ type: 'metadata-changed', photoId: photo.photoId, assetRevision, path: claim.item.entry.path, fromPath: lastPath });
+            }
+            addTo(byteOwners, assetRevision, photo.photoId);
+            if (pixelDigest !== null) addTo(pixelOwners, pixelDigest, photo.photoId);
+            const left = displaced.get(claim.photoId);
+            if (left) {
+                // Its old path holds another photo's bytes, and with this photo gone from it, nothing is bound there.
+                displaced.delete(claim.photoId);
+                nextHolds.delete(left.entry.path);
+                newHolds.delete(left.entry.path);
+                freed.push(left);
+            }
         }
-        const photo = photos[claim.photoId];
-        const lastPath = photo.source.path;
-        const lastKey = photo.source.key;
-        const lastRevision = photo.source.observedRevision;
-        rebound.add(claim.photoId);
-        if (claim.by === 'bytes') {
-            // 7. Rebind X. `reappeared` at X's last path, else `renamed`.
-            bindTo(photo, claim.item, assetRevision);
-            if (assetRevision !== lastRevision) requeueIfNeeded(photo, assetRevision, claim.item.entry.path);
-            const reappeared = lastKey === claim.item.entry.key;
-            fact({
-                type: reappeared ? 'reappeared' : 'renamed',
-                photoId: photo.photoId,
-                assetRevision,
-                path: claim.item.entry.path,
-                ...(reappeared ? {} : { fromPath: lastPath }),
-                ...(assetRevision !== lastRevision ? { revert: true } : {}),
-            });
-        } else {
-            // 10. Rebind X with a new revision.
-            addRevision(photo, claim.item);
-            fact({ type: 'metadata-changed', photoId: photo.photoId, assetRevision, path: claim.item.entry.path, fromPath: lastPath });
-        }
-        addTo(byteOwners, assetRevision, photo.photoId);
-        if (pixelDigest !== null) addTo(pixelOwners, pixelDigest, photo.photoId);
+        for (const item of freed) countSeen(item);
+        round = freed;
     }
 
     /** The path a photo was first seen at: that of its earliest revision. */
