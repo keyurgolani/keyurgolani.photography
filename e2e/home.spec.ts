@@ -1,6 +1,6 @@
 import type { Locator, Page } from '@playwright/test';
 import { expectContrastOverImage } from './support/contrast';
-import { expectFocusRingVisible, expectNotObscured, expectRingNotClipped } from './support/focus';
+import { expectFocusRingVisible, expectNoFadeOnBlur, expectNotObscured, expectRingNotClipped } from './support/focus';
 import { expectHoverRulesGated } from './support/hover';
 import { waitForHydration } from './support/hydration';
 import { checkSurface, expectUniqueNames } from './support/surface';
@@ -81,6 +81,11 @@ test('keyboard focus on an arrow shows both arrows at full opacity', async ({ pa
     await expect(previous(page)).toBeFocused();
     expect(await effectiveOpacity(previous(page))).toBe(1);
     await expect(next(page)).toHaveCSS('opacity', '1');
+});
+
+test('the arrows drop their focus ring at once on blur', async ({ page }) => {
+    await openHome(page);
+    for (const arrow of [previous(page), next(page)]) await expectNoFadeOnBlur(arrow);
 });
 
 test('Enter and Space on the arrows change the photo', async ({ page }) => {

@@ -82,7 +82,9 @@
   justify-content: center;
   cursor: pointer;
   z-index: 10;
-  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  /* Not all, which would fade the focus band out on blur. The hover shadow changes at once. */
+  transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.4s cubic-bezier(0.4, 0, 0.2, 1),
+    border-color 0.4s cubic-bezier(0.4, 0, 0.2, 1), transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
   opacity: 0;
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
 }
