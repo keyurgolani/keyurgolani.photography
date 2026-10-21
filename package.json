@@ -20,6 +20,7 @@
     "images:process": "npx tsx scripts/imageWatcher.ts --once",
     "images:optimize": "npm run images:process --",
     "images:cleanup": "npx tsx scripts/imageCleanup.ts",
+    "photos": "tsx scripts/photos.ts",
     "photos:migrate": "npx tsx scripts/photos.ts migrate",
     "photos:identity": "npx tsx scripts/photos.ts identity"
   },
