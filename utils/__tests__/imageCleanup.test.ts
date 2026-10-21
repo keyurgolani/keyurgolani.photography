@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { runImageCleanup } from '../../scripts/imageCleanup';
+import { rerunCommands, runImageCleanup } from '../../scripts/imageCleanup';
 import { createTempLibrary, derivativePaths, type TempLibrary } from '../../test/helpers/tempLibrary';
 import {
     applyOrphanCleanup,
@@ -122,6 +122,27 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
         ]);
         expect(out).toContain('Kept 1 temp file under 10 minutes old, since a running job may still own them.');
         expect(lib.hashes(Object.keys(before))).toEqual(before);
+    });
+
+    it('run as the bundle the image ships, prints only the bundle command, the one the image can run', async () => {
+        await libraryWithOrphans();
+        expect(rerunCommands('/checkout/scripts/imageCleanup.ts')).toEqual(['npm run images:cleanup --', 'npx tsx scripts/imageCleanup.ts']);
+        const bundle = rerunCommands('/app/dist/scripts/imageCleanup.mjs');
+        expect(bundle).toEqual(['node dist/scripts/imageCleanup.mjs']);
+
+        const { out, output } = capture();
+        expect(runImageCleanup([], output, bundle)).toBe(0);
+        const planLine = out.findIndex((line) => /^Plan [0-9a-f]{12}\. To delete exactly these files, run:$/.test(line));
+        expect(planLine, out.join('\n')).toBeGreaterThan(-1);
+        const hash = out[planLine].slice('Plan '.length, 'Plan '.length + 12);
+        expect(out.slice(planLine + 1)).toEqual([`  node dist/scripts/imageCleanup.mjs --apply --plan ${hash}`]);
+
+        const help = capture();
+        expect(runImageCleanup(['--help'], help.output, bundle)).toBe(0);
+        expect(help.out).toEqual(['Usage: node dist/scripts/imageCleanup.mjs [--only=<name>] [--allow-empty-library] [--apply --plan <hash>]']);
+        const typo = capture();
+        expect(runImageCleanup(['--froce'], typo.output, bundle)).toBe(2);
+        expect(typo.err.at(-1)).toBe(help.out[0]);
     });
 
     it('--apply --plan deletes what that dry run listed and nothing else', async () => {

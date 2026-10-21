@@ -35,8 +35,12 @@
  *
  *   # Regenerate every legacy derivative, not only missing or outdated ones
  *   npx tsx scripts/imageWatcher.ts --once --force
+ *
+ * The image has no tsx, so it runs the bundle `npm run build:scripts` writes,
+ * with the same flags: node dist/scripts/imageWatcher.mjs --watch.
  */
 
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import chokidar from 'chokidar';
 import { scanKind } from '../lib/identity/scan';
@@ -44,7 +48,9 @@ import { createIdentityStep, runIdentityOnce, watchIdentity, type IdentityWatch 
 import { ensureDirectories, libraryPaths, libraryRootExists } from '../utils/imageOptimizer';
 import { attachWatcher, createIgnoreFilter, createWatcherHandlers, drainOrReport, processOnce, type LibraryChange } from '../utils/watcherHandlers';
 
-const USAGE = 'Usage: npx tsx scripts/imageWatcher.ts [--watch | --once] [--force]';
+/** This script the way it was started: the bundle in the image, or the source under tsx. */
+const PROGRAM = fileURLToPath(import.meta.url).endsWith('.mjs') ? 'node dist/scripts/imageWatcher.mjs' : 'npx tsx scripts/imageWatcher.ts';
+const USAGE = `Usage: ${PROGRAM} [--watch | --once] [--force]`;
 
 /** Strict, so a mistyped flag such as --froce exits 2 instead of being ignored. */
 function readFlags(): { once: boolean; force: boolean } {

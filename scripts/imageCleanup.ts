@@ -18,8 +18,8 @@
  *   # takes a name that starts with a dash.
  *   npm run images:cleanup -- --only <name>
  *
- *   # In production
- *   docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts
+ *   # In production, where the image runs the bundled copy
+ *   docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/imageCleanup.mjs
  *
  * Refuses, with exit code 2, a missing library root, a library with no
  * sources (unless --allow-empty-library is passed), a plan hash that no
@@ -38,8 +38,18 @@ import {
     type OrphanEntry,
 } from '../utils/imageOptimizer';
 
-export const USAGE =
-    'Usage: npm run images:cleanup -- [--only=<name>] [--allow-empty-library] [--apply --plan <hash>]';
+/**
+ * The commands that run this script again, for its usage line and the dry
+ * run's next step: the npm script and tsx in a checkout, and the bundle
+ * `npm run build:scripts` writes, which is all the image has.
+ */
+export function rerunCommands(moduleFile = fileURLToPath(import.meta.url)): string[] {
+    return moduleFile.endsWith('.mjs') ? ['node dist/scripts/imageCleanup.mjs'] : ['npm run images:cleanup --', 'npx tsx scripts/imageCleanup.ts'];
+}
+
+function usage(commands: string[]): string {
+    return `Usage: ${commands[0]} [--only=<name>] [--allow-empty-library] [--apply --plan <hash>]`;
+}
 
 interface Output {
     log(line: string): void;
@@ -149,16 +159,19 @@ function reportSkips(plan: OrphanCleanupPlan, output: Output): void {
     }
 }
 
-/** Runs the cleanup CLI and returns its exit code: 0 done, 1 a deletion failed, 2 refused. */
-export function runImageCleanup(argv: string[], output: Output = console): number {
+/**
+ * Runs the cleanup CLI and returns its exit code: 0 done, 1 a deletion failed, 2 refused.
+ * `commands` are the ones it prints for running it again.
+ */
+export function runImageCleanup(argv: string[], output: Output = console, commands: string[] = rerunCommands()): number {
     const options = readOptions(argv);
     if (typeof options === 'string') {
         output.error(options);
-        output.error(USAGE);
+        output.error(usage(commands));
         return 2;
     }
     if (options.help) {
-        output.log(USAGE);
+        output.log(usage(commands));
         return 0;
     }
 
@@ -191,9 +204,8 @@ export function runImageCleanup(argv: string[], output: Output = console): numbe
             output.log('Nothing to delete.');
         } else {
             output.log(`Would delete ${summarize(plan.entries)}. This was a dry run.`);
-            output.log(`Plan ${plan.hash}. To delete exactly these files, run one of:`);
-            output.log(`  npm run images:cleanup -- ${planFlags(plan)}`);
-            output.log(`  npx tsx scripts/imageCleanup.ts ${planFlags(plan)}`);
+            output.log(`Plan ${plan.hash}. To delete exactly these files, run${commands.length > 1 ? ' one of' : ''}:`);
+            for (const command of commands) output.log(`  ${command} ${planFlags(plan)}`);
         }
         return 0;
     }
