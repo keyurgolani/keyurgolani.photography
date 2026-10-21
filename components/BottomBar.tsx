@@ -14,14 +14,16 @@ interface BottomBarProps {
 /**
  * A Primary link with a label that hover or keyboard focus shows. The label
  * takes the pointer only while shown, so a hidden one never catches a tap
- * meant for the page under it, and Escape hides it.
+ * meant for the page under it, and Escape hides it. Its ::after bridges the
+ * gap down to the link, so the pointer can cross onto it without the link
+ * losing :hover.
  */
 const NavLink: React.FC<{ href: string; label: string; icon: LucideIcon }> = ({ href, label, icon: Icon }) => {
   const { dismissed, handlers } = useDismissibleLabel();
   return (
     <Link href={href} aria-label={label} className="group relative p-3 rounded-full hover:bg-black/5 dark:hover:bg-white/10 transition-colors duration-300" {...handlers}>
       <Icon size={24} strokeWidth={1.5} className="text-black/70 dark:text-white/70 group-hover:text-black dark:group-hover:text-white transition-colors" />
-      <span className="absolute -top-12 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-white dark:bg-black/80 text-black dark:text-white text-xs font-medium rounded-full opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-visible:opacity-100 group-focus-visible:pointer-events-auto transition-opacity whitespace-nowrap border border-black/10 dark:border-white/10 backdrop-blur-md shadow-lg" style={dismissed ? DISMISSED_LABEL_STYLE : undefined}>{label}</span>
+      <span className="absolute -top-12 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-white dark:bg-black/80 text-black dark:text-white text-xs font-medium rounded-full opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-visible:opacity-100 group-focus-visible:pointer-events-auto transition-opacity whitespace-nowrap border border-black/10 dark:border-white/10 backdrop-blur-md shadow-lg after:absolute after:inset-x-0 after:top-full after:h-5" style={dismissed ? DISMISSED_LABEL_STYLE : undefined}>{label}</span>
     </Link>
   );
 };

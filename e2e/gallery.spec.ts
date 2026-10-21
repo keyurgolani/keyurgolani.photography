@@ -44,6 +44,22 @@ const hitsLabel = (label: Locator) =>
         return hit !== null && el.contains(hit);
     });
 
+/** The middle of the gap between a control and its label, where the label's bridge sits. */
+async function gapOf(host: Locator, label: Locator) {
+    const [control, tip] = [await host.boundingBox(), await label.boundingBox()];
+    if (!control || !tip) throw new Error(`${label} or its control has no box`);
+    const above = tip.y + tip.height <= control.y;
+    const y = above ? (tip.y + tip.height + control.y) / 2 : (control.y + control.height + tip.y) / 2;
+    return { x: tip.x + tip.width / 2, y };
+}
+
+/** Whether a click or tap at `point` would hit the label, its bridge included. */
+const hitsLabelAt = (label: Locator, { x, y }: { x: number; y: number }) =>
+    label.evaluate((el, [px, py]) => {
+        const hit = document.elementFromPoint(px, py);
+        return hit !== null && el.contains(hit);
+    }, [x, y] as const);
+
 async function openGallery(page: Page, theme: 'dark' | 'light' = 'dark') {
     if (theme === 'light') await page.addInitScript(() => localStorage.setItem('theme', 'light'));
     await page.goto('/gallery');
@@ -144,15 +160,18 @@ test('a hidden label lets clicks and taps through to the page, and a shown one s
     await openGallery(page);
     for (const { name, host, label } of labels(page)) {
         await expect(label, `${name}'s label starts hidden`).toHaveCSS('opacity', '0');
+        const gap = await gapOf(host, label);
         expect(await hitsLabel(label), `${name}'s hidden label takes no pointer`).toBe(false);
+        expect(await hitsLabelAt(label, gap), `${name}'s hidden label's bridge takes no pointer`).toBe(false);
         // Hover styles only apply to fine pointers.
         if (isMobile) continue;
         await host.hover();
         await expect(label).toHaveCSS('opacity', '1');
         expect(await hitsLabel(label), `${name}'s shown label takes the pointer`).toBe(true);
-        // WCAG 1.4.13: the pointer can move onto the label without it going away.
+        expect(await hitsLabelAt(label, gap), `${name}'s shown label bridges the gap to its control`).toBe(true);
+        // WCAG 1.4.13: the pointer can cross the gap onto the label without it going away.
         const { x, y } = await centerOf(label);
-        await page.mouse.move(x, y);
+        await page.mouse.move(x, y, { steps: 10 });
         await expect(label).toHaveCSS('opacity', '1');
     }
 });
@@ -183,6 +202,7 @@ test('Escape hides a label shown on hover until the pointer leaves', async ({ pa
         await page.keyboard.press('Escape');
         await expect(label, `${name}'s label hides on Escape`).toHaveCSS('opacity', '0');
         expect(await hitsLabel(label), `${name}'s dismissed label takes no pointer`).toBe(false);
+        expect(await hitsLabelAt(label, await gapOf(host, label)), `${name}'s dismissed label's bridge takes no pointer`).toBe(false);
         // Off the control and back, in the page's side padding.
         await page.mouse.move(5, 300);
         await host.hover();
