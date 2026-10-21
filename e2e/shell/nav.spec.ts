@@ -1,4 +1,5 @@
 import type { Locator, Page } from '@playwright/test';
+import { expectNotObscured } from '../support/focus';
 import { waitForHydration } from '../support/hydration';
 import { expectTabOrderMatchesVisualOrder } from '../support/keyboard';
 import { expectReflow } from '../support/reflow';
@@ -8,7 +9,7 @@ import { expect, test } from '../support/test';
 // SiteNav on both #1 projects: order, names, and the current page per route,
 // the #1 surface checks, reflow, normal flow outside Home, and no motion
 // under reduce. On Home, its place inside the chrome next to the slideshow
-// controls.
+// controls, over the settled portrait.
 
 const primary = (page: Page) => page.getByRole('navigation', { name: 'Primary' });
 const navControls = (page: Page) => primary(page).locator('a, button');
@@ -121,6 +122,57 @@ for (const width of [320, 1280]) {
         await expect(toggles(page)).toHaveCount(1);
     });
 }
+
+test.describe('on / over the settled portrait', () => {
+    // On these screens the settled portrait reaches up behind SiteNav, and before the chrome sat over it, it took the hit at every link's centre.
+    const SHORT_SCREENS = [[640, 400], [667, 375], [568, 320], [740, 360], [736, 414], [768, 400]] as const;
+    const portrait = (page: Page) => page.locator('[class*="portrait"]');
+    /** The portrait as painted: its rounded images, which reach past the wrapper's box at the bottom. */
+    const paintedPortrait = (page: Page) => portrait(page).locator('img');
+    const navOpacity = (page: Page) => primary(page).evaluate((nav) => parseFloat(getComputedStyle(nav.parentElement ?? nav).opacity));
+
+    /** Whether a click or tap at the centre of `target` lands on it. */
+    const takesItsCentre = (target: Locator) =>
+        target.evaluate((el) => {
+            const { left, top, width, height } = el.getBoundingClientRect();
+            const hit = document.elementFromPoint(left + width / 2, top + height / 2);
+            return hit !== null && el.contains(hit);
+        });
+
+    /** A key press is activity, which shows the chrome and brings the portrait back from its idle hide. Waits until it's fully shown. */
+    async function showPortrait(page: Page) {
+        await page.keyboard.press('Shift');
+        await expect.poll(() => portrait(page).evaluate((el) => parseFloat(getComputedStyle(el).opacity))).toBe(1);
+    }
+
+    for (const [width, height] of SHORT_SCREENS) {
+        test(`at ${width} by ${height} the links keep their rings clear of the portrait and take a click or tap`, async ({ page }, testInfo) => {
+            await page.setViewportSize({ width, height });
+            await open(page, '/');
+            await expect(page.locator('[class*="grainOverlay"]')).toHaveCount(0, { timeout: 15_000 });
+            await expect.poll(() => navOpacity(page), { timeout: 10_000 }).toBe(1);
+
+            for (const name of ['Home', 'Work', 'About']) {
+                await showPortrait(page);
+                await expectNotObscured(primary(page).getByRole('link', { name, exact: true }), [paintedPortrait(page)]);
+            }
+
+            for (const [name, path] of [['Home', '/'], ['Work', '/gallery'], ['About', '/about']] as const) {
+                await showPortrait(page);
+                const link = primary(page).getByRole('link', { name, exact: true });
+                expect(await takesItsCentre(link), `${name} is the element at its own centre`).toBe(true);
+                if (testInfo.project.name === 'mobile') await link.tap();
+                else await link.click();
+                await expect(page).toHaveURL(path);
+                if (path === '/') continue;
+                // Back on Home the intro is done, so the portrait is settled at once.
+                await page.goBack();
+                await expect(page).toHaveURL('/');
+                await expect.poll(() => navOpacity(page)).toBe(1);
+            }
+        });
+    }
+});
 
 test.describe('under reduced motion', () => {
     test.beforeEach(async ({ page }) => {
