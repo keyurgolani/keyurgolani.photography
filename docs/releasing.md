@@ -178,6 +178,8 @@ The commit a container was built from:
 docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' <container>
 ```
 
+The `org.opencontainers.image.version` label is the `package.json` version the image was built with. Every `main` build carries it, released or not, so only a `vX.Y.Z` tag on GHCR shows that a digest is that release.
+
 ## Rollout
 
 PRs merge into `next`, and `main` only moves when the owner promotes `next` to it through a PR. The one-time move from `:latest` to pinned tags, with `next` already at version `1.1.0`:
