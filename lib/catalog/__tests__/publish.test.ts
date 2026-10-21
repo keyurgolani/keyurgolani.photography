@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { withLock, type LockContext, type LockRecord } from '../../storage/lock';
 import { activateRevision, publish, PUBLISH_EXIT_CODES, rebaseWorkingLayer, recover, type ActivateOptions, type PublishOptions, type PublishResult } from '../publish';
+import { references } from '../references';
 import { CATALOG_LOCK, listActivations, readRevisionFile, revisionFilePath } from '../repository';
 import { createTestCatalog, type TestCatalog, type TestCatalogOptions } from '../testing';
 import type { AuthoredPhoto } from '../types';
@@ -159,6 +160,16 @@ describe('the first publish', () => {
         expect(events.map((entry) => entry.event)).toEqual(['catalog.publish.started', 'catalog.publish.validated', 'catalog.publish.activated']);
         const summary = JSON.parse(fs.readFileSync(path.join(catalogPaths(root).diagnosticsDir, 'last-publish.json'), 'utf8')) as Record<string, unknown>;
         expect(summary).toMatchObject({ outcome: 'PUBLISHED', actor: 'test', revisionId: catalog.revisionId, revisionNumber: 1 });
+    });
+
+    it('writes the revision and the candidate where references() finds them, so cleanup keeps their assets', async () => {
+        const { catalog, root, run } = await setup({ seed: 60, photos: 2, series: 1 });
+        await run();
+        const found = await references(root);
+        const of = (source: string) => found.filter((reference) => reference.source === source).map(({ holder, photoId, assetRevision, profileId }) => ({ holder, photoId, assetRevision, profileId }));
+        const assets = catalog.content.photos.map(({ id, assetRevision, profileId }) => ({ holder: catalog.revisionId, photoId: id, assetRevision, profileId }));
+        expect(of('active-revision')).toEqual(assets);
+        expect(of('candidate')).toEqual(assets);
     });
 
     it('stops with LAUNCH_RULES_MISSING, naming the rules that aren\'t registered', async () => {
