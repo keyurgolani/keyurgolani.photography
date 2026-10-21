@@ -89,7 +89,7 @@ It listens on `127.0.0.1:3000` only. Open [http://localhost:3000](http://localho
 ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:3000:127.0.0.1:3000 <host>
 ```
 
-After a dependency change, rebuild with `docker compose up --build -V`. Without `-V`, the anonymous `node_modules` volume keeps the old install.
+After a dependency change, rebuild with `docker compose up --build -V`. Without `-V`, the anonymous `node_modules` volume keeps the old install. Both containers use `./portfolio-data` in your checkout as the data root, the same folder the npm scripts use by default.
 
 ### Production with Docker
 
@@ -98,6 +98,15 @@ Both containers run one pinned release tag. Set it in a `.env` next to `docker-c
 ```bash
 PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z
 ```
+
+Both also mount the private data root, `./portfolio-data`, which has to exist and belong to uid 1001 before the first start, like the photos folder:
+
+```bash
+mkdir -p portfolio-data
+sudo chown -R 1001:1001 public/assets/photos portfolio-data
+```
+
+[docs/data-root.md](docs/data-root.md) covers what it holds, backing it up with the library, restoring it, and the one-time migration that gives every photo its ID.
 
 Then pull and start:
 
@@ -125,9 +134,11 @@ docker compose -f docker-compose.prod.yml up -d
 │   ├── getImageData.ts    # Image metadata extraction
 │   ├── imageOptimizer.ts  # Sharp-based image processing
 │   └── watcherHandlers.ts # Watcher event handlers and job queue
-├── scripts/               # Background scripts
+├── scripts/               # Background scripts, bundled into dist/scripts for the image
 │   ├── imageCleanup.ts    # Reviews and deletes leftover derivatives
-│   └── imageWatcher.ts    # File watcher for new photos
+│   ├── imageWatcher.ts    # File watcher for new photos
+│   ├── photos.ts          # Photo ID migration and identity commands
+│   └── watcherHealth.ts   # The watcher container's healthcheck
 ├── public/                # Static assets
 │   └── assets/photos/     # Photo storage directory
 └── docker-compose.prod.yml # Production Docker configuration
@@ -148,11 +159,11 @@ docker compose -f docker-compose.prod.yml up -d
 - **Replace** a photo by saving over it under the same name. The watcher regenerates its derivatives from the new file and swaps them in only once all seven are written, so a failed run keeps the old ones. Visitors can still see the old version for a while: `/_next/image` can serve its copy for up to a day, and a browser that cached it under the old `immutable` header may keep it for up to a year.
 - **Accepted risk:** a different photo saved under a removed photo's name, with an older modification time, shows the old images until you `touch` it or run `--force`. Copy tools that keep modification times, such as `cp -p` and `rsync -a`, do this. With the watcher stopped, run `images:cleanup` before reusing a name. A photo that takes over a set another photo built, such as `IMG_1.jpg` added next to `IMG_1.png`, doesn't have this problem. Each set records the source it was built from, so the watcher rebuilds it when the file arrives, or at its next start if it was stopped.
 - **Delete** a photo to hide it from the gallery. Its derivative files stay reachable at their URLs until `images:cleanup` deletes them. Restoring the file brings the photo back in the gallery after `web` restarts, since Next serves only the `public/` files that existed when it started.
-- **Review leftovers** with `npm run images:cleanup`. It lists each derivative no photo needs anymore, and the watcher's record of which source that set was built from, with the reason, and prints a plan hash. Re-run it with `-- --apply --plan <hash>` to delete exactly that list. It refuses if the list changed since the dry run. In production, run both steps in the watcher container:
+- **Review leftovers** with `npm run images:cleanup`. It lists each derivative no photo needs anymore, and the watcher's record of which source that set was built from, with the reason, and prints a plan hash. Re-run it with `-- --apply --plan <hash>` to delete exactly that list. It refuses if the list changed since the dry run. In production, run both steps in the watcher container, which has the bundled script instead of tsx:
 
   ```bash
-  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts
-  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts --apply --plan <hash>
+  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/imageCleanup.mjs
+  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/imageCleanup.mjs --apply --plan <hash>
   ```
 - **Take a photo down** with the watcher stopped, so a job already running can't write its derivatives back:
   1. Stop `image-watcher`, then delete the photo.
@@ -164,9 +175,9 @@ docker compose -f docker-compose.prod.yml up -d
   ```bash
   docker compose -f docker-compose.prod.yml stop image-watcher
   # Delete the photo, then:
-  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts
-  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts --only <name>
-  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts --only <name> --apply --plan <hash>
+  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/imageCleanup.mjs
+  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/imageCleanup.mjs --only <name>
+  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/imageCleanup.mjs --only <name> --apply --plan <hash>
   docker compose -f docker-compose.prod.yml stop web
   docker compose -f docker-compose.prod.yml run --rm --no-deps web sh -c 'rm -rf /app/.next/cache/images/*'
   docker compose -f docker-compose.prod.yml start web image-watcher
@@ -175,11 +186,11 @@ docker compose -f docker-compose.prod.yml up -d
 
   ```bash
   docker compose -f docker-compose.prod.yml stop image-watcher
-  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageWatcher.ts --once --force
+  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/imageWatcher.mjs --once --force
   docker compose -f docker-compose.prod.yml start image-watcher
   ```
 - **Restore the library folder** if it was deleted. The watcher exits 1 when its folder disappears, and since Compose no longer creates a missing photos folder, neither container can start until it's back. Stop the stack, copy the folder back into place rather than moving it with `mv`, then start the stack.
-- **Preview stable photo IDs** with `npm run photos:migrate -- --dry-run`. It proposes an ID for every photo and writes only a plan and a report, to `identity/migration/` in the data root or to `--out <dir>`. Applying the plan with `-- --apply --plan <file>` initializes the data root, and from then on the watcher keeps the IDs current, nested folders included, and builds each photo's `/media` set. Nothing on the site uses them yet.
+- **Preview stable photo IDs** with `npm run photos:migrate -- --dry-run`. It proposes an ID for every photo and writes only a plan and a report, to `identity/migration/` in the data root or to `--out <dir>`. Applying the plan with `-- --apply --plan <file>` initializes the data root, and from then on the watcher keeps the IDs current, nested folders included, and builds each photo's `/media` set. Nothing on the site uses them yet. In production, follow the runbook in [docs/data-root.md](docs/data-root.md), which backs up the library and the data root first and runs the same steps in the watcher container.
 
 ### Supported Formats
 - JPEG (.jpg, .jpeg)
@@ -194,7 +205,7 @@ docker compose -f docker-compose.prod.yml up -d
 |----------|-------------|---------|
 | `SITE_URL` | The site's public origin, like `https://keyurgolani.photography`, for share links and the share image URL. Read on every request, never at build time. Unset or invalid, share links point at `http://localhost:3000`, and a production server logs one warning at startup that names the reason, never the value. | none |
 | `PHOTOGRAPHY_LIBRARY_DIR` | Photo library folder for the watcher, `images:cleanup`, and `/api/photos`. The site serves photos only from `public/assets/photos`, so leave it unset outside tests. | `public/assets/photos` |
-| `PHOTOGRAPHY_DATA_DIR` | Private data root for photo identity state and the `/media` sets. It must sit outside `public/` and the library, on a filesystem that supports hard links (not exFAT or FAT), since each version of its documents is written with `link()`. The watcher's identity step runs only once `photos:migrate --apply` has initialized it, and until then the watcher logs why once. Outside production it defaults to `./portfolio-data`, so `npm run images:watch` and the dev compose watch with identity on (every depth, polled) even when it's unset. In production nothing changes until it's set. To edit a document there by hand, copy its newest version to the next number as root, keeping its owner and mode (`sudo cp -n -p`), edit the copy, and do it only while no command runs. Never edit a version in place. [`docs/data-root.md`](docs/data-root.md) has the steps. | `portfolio-data`, none in production |
+| `PHOTOGRAPHY_DATA_DIR` | Private data root for photo identity state and the `/media` sets. It must sit outside `public/` and the library, on a filesystem that supports hard links (not exFAT or FAT), since each version of its documents is written with `link()`. The watcher's identity step runs only once `photos:migrate --apply` has initialized it, and until then the watcher logs why once. Outside production it defaults to `./portfolio-data`, so `npm run images:watch` and the dev compose watch with identity on (every depth, polled) even when it's unset. In production nothing changes until it's set. Both compose files set it to `/data/portfolio` and mount `./portfolio-data` there. To edit a document there by hand, copy its newest version to the next number with `cp -n`, edit the copy, and do it only while no command runs. Never edit a version in place. [`docs/data-root.md`](docs/data-root.md) has the steps. | `portfolio-data`, none in production |
 | `PHOTOGRAPHY_MEDIA_ACCESS` | Who `/media` serves sets to: `deny` serves none, and `all` serves every set to anyone. Any other value denies. The web server reads it at each request. Leave it unset in production until the catalog decides which photos are public. | `deny` |
 
 The Home slideshow interval isn't configurable. It's `HOME_AUTO_ADVANCE_MS` (12000 ms) in `components/home/homePlayback.ts`.
@@ -203,9 +214,9 @@ Neither is how long Home's chrome stays up after the last activity. It's `HOME_C
 
 ### Docker Configuration
 
-The production setup uses two containers:
-- **web** - Next.js application server
-- **image-watcher** - Background photo processor
+The production setup uses two containers, which both mount the photos folder and the data root, `./portfolio-data`, and never create either one:
+- **web** - Next.js application server. Its healthcheck calls `/api/health`, which answers 200 with the data root's state.
+- **image-watcher** - Background photo processor, run from the bundled `dist/scripts/imageWatcher.mjs`. Its healthcheck passes while the heartbeat it writes to the data root every 30 s is under 120 s old.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
