@@ -70,14 +70,8 @@ const RevealingContents: React.FC<RevealingContentsProps> = ({ children, onVisib
     <div 
       className={`fixed inset-0 z-10 flex flex-col justify-between pointer-events-none transition-opacity duration-1000 ease-in-out has-[:focus-visible]:opacity-100 has-[:focus-visible]:transition-none ${isVisible ? 'opacity-100' : 'opacity-0'}`}
     >
-      {/* 
-         We use pointer-events-auto on the children so they are clickable 
-         when visible, but the container itself lets clicks pass through to the background if needed 
-         (though here background is just visual). 
-         
-         The actual content is rendered here. When opacity is 0, it's invisible.
-      */}
-      <div className="w-full h-full pointer-events-auto flex flex-col justify-end">
+      {/* The layer lets the pointer through to what's under it, like Home's settled portrait, so each piece of chrome takes it back with pointer-events-auto. */}
+      <div className="w-full h-full flex flex-col justify-end">
           {children}
       </div>
     </div>

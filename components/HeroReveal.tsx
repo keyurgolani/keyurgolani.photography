@@ -347,11 +347,12 @@ export default function HeroReveal({ isLoading, onSettled }: HeroRevealProps) {
           left: '50%',
           x: '-50%',
           y: '-50%',
-          zIndex: 42,
         }}
         style={{
           position: 'fixed',
-          zIndex: 42,
+          // Over the grain and the ripples through the intro. Settled, it sits just over the photograph and under
+          // Home's chrome at z-10, so the chrome stays on top at any size. It stays out of `initial`, which would win.
+          zIndex: phase === 'settled' ? 1 : 42,
           opacity: phase === 'settled' ? (profileVisible ? 1 : 0) : 1,
           transition: phase === 'settled' ? 'opacity 1s ease-in-out' : undefined,
         }}

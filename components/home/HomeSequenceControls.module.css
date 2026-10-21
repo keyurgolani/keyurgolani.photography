@@ -1,11 +1,13 @@
 /* Bottom right, under SiteNav at the top of the chrome and clear of the
    portrait at the bottom center, until #18 settles the Home layout. One scrim
-   keeps the white text and icons legible over any photograph, white included. */
+   keeps the white text and icons legible over any photograph, white included.
+   The chrome layer lets the pointer through, so the controls take it back. */
 .controls {
   position: absolute;
   right: 1.5rem;
   bottom: 1.5rem;
   z-index: 20;
+  pointer-events: auto;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
