@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { DERIVATIVE_FOLDERS } from '../derivativeFolders.mjs';
 import { atomicWriteJson } from '../storage/atomicWrite';
 import { DATA_ROOT_FILE, DATA_ROOT_SCHEMA_VERSION, dataRootStatus, libraryRoot } from '../storage/config';
 import { isRecord, readJsonFile, UnsupportedSchemaError } from '../storage/document';
@@ -85,16 +86,7 @@ export function legacyUrls(sourcePath: string): string[] {
     const original = url(...sourcePath.split('/'));
     if (sourcePath.includes('/')) return [original];
     const base = path.posix.basename(sourcePath, path.posix.extname(sourcePath));
-    return [
-        original,
-        url('thumbnails', `${base}.webp`),
-        url('medium', `${base}.webp`),
-        url('optimized', `${base}.webp`),
-        url('thumbnails-avif', `${base}.avif`),
-        url('medium-avif', `${base}.avif`),
-        url('optimized-avif', `${base}.avif`),
-        url('lqip', `${base}.txt`),
-    ];
+    return [original, ...Object.entries(DERIVATIVE_FOLDERS).map(([folder, extension]) => url(folder, `${base}${extension}`))];
 }
 
 /** Enough of the plan's shape to trust it. Returns why it isn't a plan, or null. */
