@@ -178,7 +178,7 @@ The commit a container was built from:
 docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' <container>
 ```
 
-The `org.opencontainers.image.version` label is the `package.json` version the image was built with. Every `main` build carries it, released or not, so only a `vX.Y.Z` tag on GHCR shows that a digest is that release.
+From the first `sha-` build on, the `org.opencontainers.image.version` label is `v` plus the `package.json` version the image was built with, for example `v1.1.0`. Every `main` build carries it, released or not, so only a `vX.Y.Z` tag on GHCR shows that a digest is that release. Images from the old `deploy.yml`, including the one the host runs before the rollout, say `latest` there instead.
 
 ## Rollout
 
