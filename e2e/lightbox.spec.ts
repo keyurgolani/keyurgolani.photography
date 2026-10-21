@@ -1,4 +1,6 @@
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+import sharp from 'sharp';
+import { expectNoFadeOnBlur } from './support/focus';
 import { expectHoverRulesGated } from './support/hover';
 import { waitForHydration } from './support/hydration';
 import { checkSurface } from './support/surface';
@@ -160,6 +162,26 @@ test('Close returns focus to the photo a tap opened', async ({ page }, testInfo)
     await expect(entries(page).nth(3)).toBeFocused();
 });
 
+test('Escape returns focus to a photo whose click never focused it', async ({ page }) => {
+    await openGallery(page, 'dark');
+    // The click handler runs but focus stays put, as in Safari, which doesn't focus a button on click.
+    await entries(page).nth(2).dispatchEvent('click');
+    await settle(page);
+    await page.keyboard.press('Escape');
+    await expect(lightbox(page)).toBeHidden();
+    await expect(entries(page).nth(2)).toBeFocused();
+});
+
+test('closing leaves focus where the reader moved it while the lightbox fades out', async ({ page }) => {
+    await openLightbox(page, { position: 2 });
+    await page.keyboard.press('Escape');
+    // YARL lifts inert as soon as the close starts, then fades out for 250 ms.
+    const home = page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Home', exact: true });
+    await home.focus();
+    await expect(lightbox(page)).toBeHidden();
+    await expect(home).toBeFocused();
+});
+
 test('one tap on a toolbar button activates it and leaves it untransformed', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'mobile', 'Taps run on the touch project.');
     await openGallery(page, 'dark');
@@ -167,8 +189,65 @@ test('one tap on a toolbar button activates it and leaves it untransformed', asy
     await settle(page);
     await expectSingleTapActivates(control(page, 'Play'), () => expect(control(page, 'Pause')).toBeVisible());
     // :active scales the button during the press. A sticky hover style would never settle back to none.
-    await expect.poll(() => control(page, 'Pause').evaluate((el) => getComputedStyle(el).transform)).toBe('none');
+    await expect
+        .poll(() => control(page, 'Pause').evaluate((el) => `${getComputedStyle(el).transform} ${getComputedStyle(el).scale}`))
+        .toBe('none none');
 });
+
+test("a tap on Previous or Next keeps YARL's translateY(-50%) through the press", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'mobile', 'Taps run on the touch project.');
+    await openGallery(page, 'dark');
+    await entries(page).first().tap();
+    await settle(page);
+    // Playwright's tap() presses and releases at once, so hold a 1 s touch tap through CDP to see :active.
+    const touch = await page.context().newCDPSession(page);
+    for (const name of ['Next', 'Previous']) {
+        const button = control(page, name);
+        const transform = () => button.evaluate((el) => getComputedStyle(el).transform);
+        const resting = await transform();
+        expect(resting, `${name} rests at translateY(-50%)`).toMatch(/^matrix\(1, 0, 0, 1, 0, -\d+(\.\d+)?\)$/);
+        const box = await button.boundingBox();
+        if (!box) throw new Error(`${name} has no box`);
+        const press = touch.send('Input.synthesizeTapGesture', { x: box.x + box.width / 2, y: box.y + box.height / 2, duration: 1000, tapCount: 1, gestureSourceType: 'touch' });
+        await expect.poll(() => button.evaluate((el) => el.matches(':active')), { message: `${name} should be :active while pressed` }).toBe(true);
+        expect(await transform(), `${name} keeps translateY(-50%) while pressed`).toBe(resting);
+        await press;
+        await expect.poll(() => button.evaluate((el) => `${getComputedStyle(el).transform} ${getComputedStyle(el).scale}`)).toBe(`${resting} none`);
+    }
+});
+
+test('the lightbox controls drop their focus ring at once on blur', async ({ page }) => {
+    await openLightbox(page);
+    for (const name of ['Close', 'Next', '2 of 12']) await expectNoFadeOnBlur(control(page, name));
+});
+
+/** Contrast between a control's lightest and darkest pixels. Over a flat white backdrop, that's its icon or halo against the white. */
+async function iconContrast(target: Locator): Promise<number> {
+    const png = await target.screenshot({ animations: 'disabled' });
+    const { data, info } = await sharp(png).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    const linear = (c: number) => (c / 255 <= 0.04045 ? c / 255 / 12.92 : ((c / 255 + 0.055) / 1.055) ** 2.4);
+    let darkest = 1;
+    let lightest = 0;
+    for (let i = 0; i < data.length; i += info.channels) {
+        const luminance = 0.2126 * linear(data[i]) + 0.7152 * linear(data[i + 1]) + 0.0722 * linear(data[i + 2]);
+        darkest = Math.min(darkest, luminance);
+        lightest = Math.max(lightest, luminance);
+    }
+    return (lightest + 0.05) / (darkest + 0.05);
+}
+
+for (const theme of ['dark', 'light'] as const) {
+    test(`the lightbox icons keep 3:1 over a white photo in the ${theme} theme`, async ({ page }) => {
+        await openLightbox(page, { theme });
+        // The worst case, a white photo right behind every icon.
+        await page.addStyleTag({
+            content: '.yarl__container, .yarl__toolbar { background: #fff !important; backdrop-filter: none !important; } .yarl__container::before, .yarl__slide { visibility: hidden !important; }',
+        });
+        for (const name of ['Play', 'Zoom in', 'Close', 'Previous', 'Next']) {
+            expect(await iconContrast(control(page, name)), `${name}'s icon over white`).toBeGreaterThanOrEqual(3);
+        }
+    });
+}
 
 test('every app hover rule in the lightbox waits for a fine pointer', async ({ page }) => {
     await openLightbox(page);

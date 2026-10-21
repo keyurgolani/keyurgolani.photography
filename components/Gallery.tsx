@@ -82,7 +82,7 @@ function LazyGalleryTile({
             ref={ref}
             type="button"
             style={{ gridColumn: `span ${colSpan}`, gridRow: `span ${rows}` }}
-            className="relative group cursor-pointer overflow-hidden rounded-xl shadow-lg border border-white/20 dark:border-white/10 transition-all duration-500 hover:shadow-2xl hover:scale-[1.01] hover:z-10 block w-full h-full p-0 text-left focus-visible:z-10"
+            className="relative group cursor-pointer overflow-hidden rounded-xl shadow-lg border border-white/20 dark:border-white/10 transition-transform duration-500 hover:shadow-2xl hover:scale-[1.01] hover:z-10 block w-full h-full p-0 text-left focus-visible:z-10"
             onClick={onClick}
             aria-label={photoEntryName({ position: index + 1, total })}
             aria-describedby={img.caption ? captionId : undefined}
@@ -200,7 +200,8 @@ export default function Gallery({ images, className = '' }: GalleryProps) {
                 zoom={{ maxZoomPixelRatio: 3 }}
                 carousel={{ preload: 1 }}
                 thumbnails={{ width: 64, height: 48, gap: 8 }}
-                on={{ exited: () => openerRef.current?.focus() }}
+                // exiting fires as the close starts and YARL lifts inert, so a reader who moves on during the fade keeps their place
+                on={{ exiting: () => openerRef.current?.focus() }}
             />
         </div>
     );

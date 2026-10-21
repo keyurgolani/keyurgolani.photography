@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test';
 import { expectContrastOverImage } from './support/contrast';
 import { FIXTURE_CAPTION } from './support/fixtures';
+import { expectNoFadeOnBlur } from './support/focus';
 import { expectHoverRulesGated } from './support/hover';
 import { waitForHydration } from './support/hydration';
 import { expectReachableWithin } from './support/keyboard';
@@ -136,6 +137,11 @@ test('the caption keeps 4.5:1 over the white photo once focus reveals it', async
     const caption = tile.getByText(FIXTURE_CAPTION);
     await expect(caption.locator('xpath=..')).toHaveCSS('opacity', '1');
     await expectContrastOverImage(caption, { min: 4.5 });
+});
+
+test('a photo, the theme toggle, and the Primary links drop their focus ring at once on blur', async ({ page }) => {
+    await openGallery(page);
+    for (const target of [entries(page).first(), themeToggle(page), ...(await navLinks(page).all())]) await expectNoFadeOnBlur(target);
 });
 
 test('ThemeToggle and the Primary links reflow at 320 px with 200% text', async ({ page }) => {

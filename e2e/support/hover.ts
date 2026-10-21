@@ -56,10 +56,12 @@ export async function expectHoverRulesGated(page: Page): Promise<void> {
             }
             return [...parts, list.slice(start)];
         };
+        // The :hover pseudo-class, not the escaped \:hover inside a class name such as Tailwind's dark\:hover\:shadow-lg
+        const hover = /(?<!\\):hover/g;
         // A hover selector matches markup when the page has an element it would style once hovered
         const matchesMarkup = (list: string) => split(list).some((selector) => {
-            if (!selector.includes(':hover')) return false;
-            const base = selector.replace(/:hover/g, '').replace(/::?(before|after|placeholder|marker|selection|backdrop|first-line|first-letter)\b/g, '').trim();
+            if (!selector.match(hover)) return false;
+            const base = selector.replace(hover, '').replace(/::?(before|after|placeholder|marker|selection|backdrop|first-line|first-letter)\b/g, '').trim();
             try {
                 return document.querySelector(base || '*') !== null;
             } catch {
@@ -72,7 +74,7 @@ export async function expectHoverRulesGated(page: Page): Promise<void> {
                 if (rule instanceof CSSMediaRule) {
                     visit(rule.cssRules, gated || rule.media.mediaText.replace(/\s+/g, '').includes(squashed));
                 } else if (rule instanceof CSSStyleRule) {
-                    if (!gated && rule.selectorText.includes(':hover') && matchesMarkup(rule.selectorText)) found.push(rule.selectorText);
+                    if (!gated && matchesMarkup(rule.selectorText)) found.push(rule.selectorText);
                     if (rule.cssRules.length > 0) visit(rule.cssRules, gated);
                 } else if (rule instanceof CSSGroupingRule) {
                     visit(rule.cssRules, gated);

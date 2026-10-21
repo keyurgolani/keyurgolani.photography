@@ -292,7 +292,8 @@ body {
     padding: 3px !important;
     margin: 0 4px !important;
     opacity: 0.5;
-    transition: all 0.25s ease !important;
+    /* Not all, which would fade the focus band out on blur */
+    transition: opacity 0.25s ease, transform 0.25s ease !important;
     box-shadow: none !important;
 }
 
@@ -420,21 +421,25 @@ body {
     height: 44px !important;
     
     color: rgba(255, 255, 255, 0.6) !important;
-    transition: all 0.2s ease !important;
+    /* Not all, which would fade the focus band out on blur */
+    transition: background-color 0.2s ease, color 0.2s ease, scale 0.2s ease !important;
     box-shadow: none !important;
-    filter: none !important;
+    /* A tight black halo keeps the white icons at 3:1 over a white photo. YARL's
+       softer 2 px drop shadow reaches only about 1.5:1 to 2.4:1 there. */
+    filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000) !important;
 }
 
+/* scale, not transform, so Previous and Next keep YARL's translateY(-50%) */
 @media (hover: hover) and (pointer: fine) {
     .yarl__button:hover {
         background: rgba(255, 255, 255, 0.1) !important;
         color: rgba(255, 255, 255, 1) !important;
-        transform: scale(1.08);
+        scale: 1.08;
     }
 }
 
 .yarl__button:active {
-    transform: scale(0.95);
+    scale: 0.95;
     background: rgba(255, 255, 255, 0.15) !important;
 }
 
@@ -454,6 +459,8 @@ body {
 /* Light mode toolbar buttons */
 [data-theme="light"] .yarl__button {
     color: rgba(0, 0, 0, 0.5) !important;
+    /* Dark icons already keep 4:1 over a white photo */
+    filter: none !important;
 }
 
 @media (hover: hover) and (pointer: fine) {

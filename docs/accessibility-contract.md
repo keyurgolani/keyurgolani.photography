@@ -76,7 +76,7 @@ Playwright builds the site and serves it on port 3100, or on `E2E_PORT` when tha
 |---|---|
 | 1 and 2 | `expectNoA11yViolations()`, `expectUniqueNames()` |
 | 3 | `expectHoverRulesGated()` |
-| 4 | `expectFocusRingVisible()`, `expectRingNotClipped()`, `expectNotObscured()` |
+| 4 | `expectFocusRingVisible()`, `expectNoFadeOnBlur()`, `expectRingNotClipped()`, `expectNotObscured()` |
 | 5 | `expectMinTargetSize()` |
 | 6 | `expectTabOrderMatchesVisualOrder()`, `expectReachableWithin()` |
 | 7 | `expectSingleTapActivates()` |

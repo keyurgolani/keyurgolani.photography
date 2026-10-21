@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { expectNoA11yViolations } from './a11y';
 import { expectContrastOverImage } from './contrast';
-import { expectFocusRingVisible, expectNotObscured, expectRingNotClipped } from './focus';
+import { expectFocusRingVisible, expectNoFadeOnBlur, expectNotObscured, expectRingNotClipped } from './focus';
 import { expectHoverRulesGated } from './hover';
 import { expectReachableWithin, expectTabOrderMatchesVisualOrder } from './keyboard';
 import { expectReflow } from './reflow';
@@ -119,6 +119,19 @@ test.describe('expectFocusRingVisible', () => {
     test('fails under an opacity: 0.5 parent', async ({ page }) => {
         await load(page, '<div id="faded" style="opacity: 0.5"><button type="button">Ring</button></div>');
         await expect(expectFocusRingVisible(page.getByRole('button'))).rejects.toThrow(/div#faded has opacity 0\.5/);
+    });
+});
+
+test.describe('expectNoFadeOnBlur', () => {
+    test('passes a control that only transitions its colors', async ({ page }) => {
+        await load(page, '<button type="button">Ring</button>', 'button { transition: background-color 60s, color 60s; } :focus-visible { transition: none; }');
+        await expectNoFadeOnBlur(page.getByRole('button'));
+    });
+
+    test('fails a band that fades out under transition: all', async ({ page }) => {
+        // Like transition-all, which the token's transition: none only covers while focus lasts.
+        await load(page, '<button type="button">Ring</button>', 'button { transition: all 60s; } :focus-visible { transition: none; }');
+        await expect(expectNoFadeOnBlur(page.getByRole('button'))).rejects.toThrow(/box-shadow/);
     });
 });
 
@@ -326,6 +339,12 @@ test.describe('expectHoverRulesGated', () => {
     test('fails a hover rule gated by (hover: hover) alone', async ({ page }) => {
         await load(page, tile, '@media (hover: hover) { .tile:hover { transform: scale(1.1); } }');
         await expect(expectHoverRulesGated(page)).rejects.toThrow(/\.tile:hover/);
+    });
+
+    test('fails an ungated rule whose class name escapes :hover, like a dark:hover: utility', async ({ page }) => {
+        // Stripping every :hover would also cut the escaped one and leave .dark\\:lift, which matches nothing.
+        await load(page, '<button type="button" class="dark:hover:lift">Photo</button>', '.dark\\:hover\\:lift:hover { transform: scale(1.1); }');
+        await expect(expectHoverRulesGated(page)).rejects.toThrow(/dark\\+:hover\\+:lift:hover/);
     });
 });
 

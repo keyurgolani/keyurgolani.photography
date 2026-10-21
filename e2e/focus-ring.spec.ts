@@ -10,7 +10,13 @@ import { expect, test } from './support/test';
 
 const toggle = (page: Page) => page.getByRole('button', { name: /^Switch to (dark|light) mode$/ });
 const source = (page: Page) => page.getByRole('link', { name: 'View source on GitHub', exact: true });
-const firstPhoto = (page: Page) => page.locator('img[src*="white.jpg"]').first();
+const firstPhoto = (page: Page) => page.getByRole('button', { name: 'Photograph 1 of 12', exact: true });
+
+/** Opens the lightbox with Enter, so the focus YARL moves matches :focus-visible. A click on a button tile doesn't. */
+async function openLightbox(page: Page) {
+    await firstPhoto(page).focus();
+    await page.keyboard.press('Enter');
+}
 
 /** Outline style and box-shadow, which are both none when an element draws no ring. */
 async function ringOf(target: Locator) {
@@ -55,10 +61,9 @@ for (const theme of ['dark', 'light'] as const) {
             });
         }
 
-        test('the lightbox container YARL focuses on open draws no ring', async ({ page }, testInfo) => {
+        test('the lightbox container YARL focuses on open draws no ring', async ({ page }) => {
             await open(page, '/gallery');
-            if (testInfo.project.name === 'mobile') await firstPhoto(page).tap();
-            else await firstPhoto(page).click();
+            await openLightbox(page);
             const container = page.locator('.yarl__container');
             await expect(container).toBeFocused();
             expect(await ringOf(container)).toEqual({ focused: true, focusVisible: true, outline: 'none', boxShadow: 'none' });
@@ -66,7 +71,7 @@ for (const theme of ['dark', 'light'] as const) {
 
         test('the thumbnail track YARL focuses draws no ring, and its active thumbnail draws the token', async ({ page }) => {
             await open(page, '/gallery');
-            await firstPhoto(page).click();
+            await openLightbox(page);
             // The leftmost thumbnail leaves the track on ArrowRight, so YARL moves focus to the track.
             await page.locator('.yarl__thumbnails_thumbnail').first().focus();
             await page.keyboard.press('ArrowRight');
