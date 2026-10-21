@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import sharp, { type Sharp } from 'sharp';
 import { dominantChannel, fixtureFiles, withExifOrientation, type Channel } from '../../test/fixtures/makeLibrary';
+import { fakeCaseInsensitiveDisk, fakeCaseSensitiveDisk } from '../../test/helpers/caseDisk';
 import { createTempLibrary, derivativePaths, type TempLibrary } from '../../test/helpers/tempLibrary';
 import {
     baseNameOf,
@@ -15,9 +16,14 @@ import {
     isSourceFile,
     libraryPaths,
     libraryRootExists,
+    ownerOf,
+    pickOwner,
+    planSources,
     processImage,
     refreshImage,
     reprocessImage,
+    setGroups,
+    sharesSet,
     SOURCE_CHANGED,
     tempFilePrefix,
     writeVariants,
@@ -111,31 +117,6 @@ function renameSource(from: string, to: string): void {
     fs.renameSync(lib.file('tmp-rename'), lib.file(to));
 }
 
-/** The entry in `target`'s folder whose name differs from it only in case, if any. */
-function caseVariantOf(target: string): string | undefined {
-    const name = path.basename(target).toLowerCase();
-    try {
-        const match = fs.readdirSync(path.dirname(target)).find((entry) => entry.toLowerCase() === name);
-        return match === undefined ? undefined : path.join(path.dirname(target), match);
-    } catch {
-        return undefined;
-    }
-}
-
-/**
- * Make existsSync and lstatSync resolve names the way a case-insensitive disk
- * does, whatever disk this runs on. readdir still lists names as stored.
- */
-function fakeCaseInsensitiveDisk(): void {
-    const realExistsSync = fs.existsSync;
-    const realLstatSync = fs.lstatSync;
-    vi.spyOn(fs, 'existsSync').mockImplementation(((target: fs.PathLike) =>
-        realExistsSync(target) || caseVariantOf(String(target)) !== undefined) as typeof fs.existsSync);
-    vi.spyOn(fs, 'lstatSync').mockImplementation(((target: fs.PathLike, options?: fs.StatSyncOptions) =>
-        realLstatSync(realExistsSync(target) ? target : caseVariantOf(String(target)) ?? target, options)
-    ) as unknown as typeof fs.lstatSync);
-}
-
 /** Fail the Nth temp file write partway through, the way a full disk does. */
 function failTempWrite(at: number) {
     const realOpen = fs.promises.open.bind(fs.promises);
@@ -217,6 +198,54 @@ describe('source files', () => {
         expect(baseNameOf('a.jpg')).toBe('a');
         expect(baseNameOf('a.png')).toBe('a');
         expect(baseNameOf('my.photo.webp')).toBe('my.photo');
+    });
+});
+
+describe('sources sharing one set', { timeout: 60_000 }, () => {
+    beforeEach(async () => {
+        await newLibrary({ fixtures: 'basic' });
+        fs.copyFileSync(lib.file('portrait.png'), lib.file('Landscape.png'));
+    });
+
+    it('share a set when their base names match exactly, on any disk', () => {
+        fakeCaseSensitiveDisk();
+        expect(sharesSet('landscape.jpg', 'landscape.png')).toBe(true);
+        expect(sharesSet('landscape.jpg', 'landscape-edited.png')).toBe(false);
+    });
+
+    it('share a set across case only where the disk resolves both spellings to one file', async () => {
+        fakeCaseSensitiveDisk();
+        expect(sharesSet('landscape.jpg', 'Landscape.png')).toBe(false);
+        expect(setGroups(getPhotoFiles())).toEqual([['Landscape.png'], ['landscape.jpg'], ['portrait.png'], ['square.webp']]);
+        expect(await planSources({ force: true })).toEqual({ files: ['Landscape.png', 'landscape.jpg', 'portrait.png', 'square.webp'], shared: [] });
+        expect(await ownerOf('landscape.jpg')).toBe('landscape.jpg');
+        vi.restoreAllMocks();
+
+        fakeCaseInsensitiveDisk();
+        expect(sharesSet('landscape.jpg', 'Landscape.png')).toBe(true);
+        expect(setGroups(getPhotoFiles())).toEqual([['Landscape.png', 'landscape.jpg'], ['portrait.png'], ['square.webp']]);
+        expect(await planSources({ force: true })).toEqual({
+            files: ['Landscape.png', 'portrait.png', 'square.webp'],
+            shared: [{ file: 'landscape.jpg', owner: 'Landscape.png', undecodable: false }],
+        });
+        expect(await ownerOf('landscape.jpg')).toBe('Landscape.png');
+    });
+
+    it('pass over a truncated source whose header is intact, and decode it again once it changes', async () => {
+        const whole = fixture('landscape.jpg');
+        const truncated = whole.subarray(0, Math.floor(whole.length * 0.6));
+        // The header still reads, so only a real decode tells.
+        await expect(sharp(truncated).metadata()).resolves.toMatchObject({ width: 960, height: 640 });
+        fs.writeFileSync(lib.file('landscape.jpeg'), truncated);
+        expect(await pickOwner(['landscape.jpeg', 'landscape.jpg'])).toEqual({ owner: 'landscape.jpg', undecodable: ['landscape.jpeg'] });
+
+        // Both results are kept while the files stay as they are.
+        const reads = vi.spyOn(fs.promises, 'readFile');
+        await pickOwner(['landscape.jpeg', 'landscape.jpg']);
+        expect(reads).not.toHaveBeenCalled();
+
+        fs.writeFileSync(lib.file('landscape.jpeg'), whole);
+        expect(await pickOwner(['landscape.jpeg', 'landscape.jpg'])).toEqual({ owner: 'landscape.jpeg', undecodable: [] });
     });
 });
 

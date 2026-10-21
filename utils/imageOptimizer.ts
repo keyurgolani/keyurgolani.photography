@@ -499,29 +499,81 @@ export function getUnprocessedFiles(): string[] {
 }
 
 /**
- * The key of the derivative set a source writes: its base name, folded as the
- * identity scan folds paths. Sources sharing one, such as IMG_1.jpg and
- * IMG_1.png, or Beach.jpg and beach.png, write one set of files on a
- * case-insensitive disk.
+ * A source's base name, folded as the identity scan folds paths. Sources that
+ * may write one set of derivatives share it, so the watcher runs their jobs in
+ * turn. Whether they do share one is sharesSet()'s call.
  */
 export function setKeyOf(filename: string): string {
     return keyOf(baseNameOf(filename));
 }
 
-/** Sources grouped by setKeyOf(), each group in path order. */
-export function setGroups(files: string[]): string[][] {
-    const groups = new Map<string, string[]>();
-    for (const file of [...files].sort()) groups.set(setKeyOf(file), [...(groups.get(setKeyOf(file)) ?? []), file]);
-    return [...groups.values()];
+/**
+ * Whether two sources write one set of derivatives: when their base names
+ * match, such as IMG_1.jpg and IMG_1.png, or differ only in case or Unicode
+ * form and the disk resolves both spellings to one file, as a case-insensitive
+ * disk does with Beach.jpg and beach.png. On a case-sensitive disk those two
+ * have a set each. The rule sourceSet() uses for cleanup: when lstat can't
+ * tell, they count as one.
+ */
+export function sharesSet(a: string, b: string, root: string = libraryPaths().root): boolean {
+    const baseA = baseNameOf(a);
+    const baseB = baseNameOf(b);
+    if (baseA === baseB) return true;
+    if (setKeyOf(a) !== setKeyOf(b)) return false;
+    return sameFile(path.join(root, b), path.join(root, `${baseA}${path.extname(b)}`)) !== false;
 }
 
+/** Sources grouped by the set they write, each group in path order. */
+export function setGroups(files: string[], root: string = libraryPaths().root): string[][] {
+    const groups: string[][] = [];
+    const byKey = new Map<string, string[][]>();
+    for (const file of [...files].sort()) {
+        const candidates = byKey.get(setKeyOf(file)) ?? [];
+        const group = candidates.find((members) => sharesSet(members[0], file, root));
+        if (group) {
+            group.push(file);
+            continue;
+        }
+        const created = [file];
+        byKey.set(setKeyOf(file), [...candidates, created]);
+        groups.push(created);
+    }
+    return groups;
+}
+
+/** The library's sources that write `filename`'s set, in path order, `filename` among them while it exists. */
+export function setMembers(filename: string, paths: LibraryPaths = libraryPaths()): string[] {
+    return getPhotoFiles(paths.root).filter((file) => sharesSet(filename, file, paths.root)).sort();
+}
+
+/** What decodes() found for each path, kept while the file keeps its inode, size, and times. */
+const decoded = new Map<string, { version: string; ok: boolean }>();
+
+/**
+ * Whether a source decodes whole. The header alone isn't enough: a truncated
+ * file can keep an intact one, and then every encode fails. Reads the bytes
+ * itself, since libvips caches what it loads by file name.
+ */
 async function decodes(file: string, paths: LibraryPaths): Promise<boolean> {
+    const filePath = path.join(paths.root, file);
+    let version: string;
     try {
-        await sharp(path.join(paths.root, file)).metadata();
-        return true;
+        const { dev, ino, size, mtimeMs, ctimeMs } = await fs.promises.stat(filePath);
+        version = `${dev}:${ino}:${size}:${mtimeMs}:${ctimeMs}`;
     } catch {
         return false;
     }
+    const cached = decoded.get(filePath);
+    if (cached?.version === version) return cached.ok;
+    let ok: boolean;
+    try {
+        await sharp(await fs.promises.readFile(filePath)).resize(8).toBuffer();
+        ok = true;
+    } catch {
+        ok = false;
+    }
+    decoded.set(filePath, { version, ok });
+    return ok;
 }
 
 /**
@@ -545,7 +597,7 @@ export async function pickOwner(group: string[], paths: LibraryPaths = libraryPa
  * set and the removed one came before it by path. Null otherwise.
  */
 export async function ownerAfterRemoval(removed: string, paths: LibraryPaths = libraryPaths()): Promise<string | null> {
-    const group = getPhotoFiles(paths.root).filter((file) => file !== removed && setKeyOf(file) === setKeyOf(removed)).sort();
+    const group = setMembers(removed, paths).filter((file) => file !== removed);
     if (group.length === 0) return null;
     const { owner } = await pickOwner(group, paths);
     return removed < owner ? owner : null;
@@ -553,8 +605,8 @@ export async function ownerAfterRemoval(removed: string, paths: LibraryPaths = l
 
 /** The source that owns `filename`'s set among the library's sources now, or `filename` when it is the only one. */
 export async function ownerOf(filename: string, paths: LibraryPaths = libraryPaths()): Promise<string> {
-    const group = getPhotoFiles(paths.root).filter((file) => setKeyOf(file) === setKeyOf(filename));
-    return group.includes(filename) ? (await pickOwner(group.sort(), paths)).owner : filename;
+    const group = setMembers(filename, paths);
+    return group.includes(filename) ? (await pickOwner(group, paths)).owner : filename;
 }
 
 /**
@@ -581,7 +633,7 @@ export async function planSources({ force = false }: { force?: boolean } = {}): 
     ensureDirectories(paths);
     const plan: SourcePlan = { files: [], shared: [] };
     const index = force ? null : readDerivativeIndex(paths);
-    for (const group of setGroups(getPhotoFiles(paths.root))) {
+    for (const group of setGroups(getPhotoFiles(paths.root), paths.root)) {
         const { owner, undecodable } = await pickOwner(group, paths);
         for (const file of group) if (file !== owner) plan.shared.push({ file, owner, undecodable: undecodable.includes(file) });
         if (index === null || needsRefresh(owner, paths, index)) plan.files.push(owner);

@@ -4,6 +4,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GET } from '../../app/api/photos/route';
+import { fakeCaseInsensitiveDisk, fakeCaseSensitiveDisk } from '../../test/helpers/caseDisk';
 import { createTempLibrary, derivativePaths, type TempLibrary } from '../../test/helpers/tempLibrary';
 import { getGalleryImages, type ImageItem } from '../getImageData';
 import { encodeLqip, getPhotoFiles, processImage, refreshImage } from '../imageOptimizer';
@@ -128,7 +129,20 @@ describe('getGalleryImages', () => {
         expect(warnings).toHaveBeenCalledWith('[getGalleryImages] Skipping landscape.png: it shares its derivatives with landscape.jpg.');
     });
 
-    it('lists one source for base names that differ only by case or Unicode form: the first by path, which the watcher builds from', async () => {
+    it('keeps base names that differ only by case apart, with no warning, on a disk that keeps them apart', async () => {
+        fakeCaseSensitiveDisk();
+        fs.copyFileSync(lib.file('portrait.png'), lib.file('Landscape.png'));
+        const warnings = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const images = await getGalleryImages();
+
+        // Landscape.png waits for a set of its own, instead of hiding behind landscape.jpg's.
+        expect(bases(images)).toEqual([...DECODABLE].sort());
+        expect(images.find((image) => image.optimized === '/assets/photos/optimized/landscape.webp')).toMatchObject({ width: 960, height: 640 });
+        expect(warnings).not.toHaveBeenCalled();
+    });
+
+    it('lists one source for base names that differ only by case or Unicode form on a disk that resolves them to one file: the first by path, which the watcher builds from', async () => {
+        fakeCaseInsensitiveDisk();
         fs.copyFileSync(lib.file('portrait.png'), lib.file('Landscape.png'));
         // crème in NFC, then in NFD.
         fs.copyFileSync(lib.file('portrait.png'), lib.file('crème.png'));

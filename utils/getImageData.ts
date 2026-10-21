@@ -62,15 +62,15 @@ async function placeholderFor(filePath: string): Promise<string> {
 
 /**
  * Sources that share one set of legacy derivatives, such as IMG_1.jpg and
- * IMG_1.png, or Beach.jpg and beach.png, which write the same files on a
- * case-insensitive disk, are listed once: by the source that owns the set,
- * the first by path that decodes, which is the one the watcher builds it
- * from. The others are logged. The migration dry run's "Basename collisions"
- * section lists them.
+ * IMG_1.png, or Beach.jpg and beach.png on a disk that resolves both names to
+ * one file, are listed once: by the source that owns the set, the first by
+ * path that decodes, which is the one the watcher builds it from. The others
+ * are logged. The migration dry run's "Basename collisions" section lists
+ * them.
  */
 async function setOwners(files: string[], paths: LibraryPaths): Promise<string[]> {
     const owners: string[] = [];
-    for (const group of setGroups(files)) {
+    for (const group of setGroups(files, paths.root)) {
         const { owner, undecodable } = await pickOwner(group, paths);
         owners.push(owner);
         for (const file of group) {
