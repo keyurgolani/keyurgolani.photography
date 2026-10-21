@@ -187,6 +187,7 @@ function logEvent(logger: CatalogLogger, event: string, fields: Record<string, u
 }
 
 const iso = (ms: number) => new Date(ms).toISOString();
+const photographs = (count: number) => `${count} ${count === 1 ? 'photograph' : 'photographs'}`;
 const digestOf = (issues: readonly Issue[]) => createHash('sha256').update(canonicalJson(issues)).digest('hex');
 const countOf = (issues: readonly Issue[], severity: Issue['severity']) => issues.filter((issue) => issue.severity === severity).length;
 
@@ -413,7 +414,7 @@ export async function validateWorkingLayer(options: { dataRoot: string; reprofil
         const counts = `${errors} ${errors === 1 ? 'error' : 'errors'} and ${warnings} ${warnings === 1 ? 'warning' : 'warnings'}`;
         return {
             outcome: errors > 0 ? 'VALIDATION_FAILED' : 'VALID',
-            message: errors > 0 ? `${counts} in ${snapshot.compiled.candidateId}.` : `${snapshot.compiled.candidateId} passes, with ${counts}.`,
+            message: errors > 0 ? `The working layer has ${counts}.` : `The working layer passes, with ${counts}.`,
             candidateId: snapshot.compiled.candidateId,
             issues,
             errors,
@@ -460,6 +461,7 @@ export async function activateRevision(options: ActivateOptions): Promise<Activa
     const root = path.resolve(options.dataRoot);
     const { lock, clock = Date.now } = options;
     assertCatalogHold(lock, root);
+    assertActorAndReason(options.actor, options.reason);
     const pointer = await readActivePointer(root);
     if (pointer === null || lastCommitted(await listActivations(root)) === null) {
         return { outcome: 'NOTHING_ACTIVE', message: 'Nothing is active yet, so there is nothing to roll back from. Publish first.', activation: null };
@@ -499,11 +501,18 @@ function launchImpact(registry: Registry, published: number, publishedIds: Reado
     return { published, gone };
 }
 
+/** Who and why, which every activation records. Blank ones are a caller's bug. */
+function assertActorAndReason(actor: string, reason: string): void {
+    if (!/\S/.test(actor)) throw new TypeError('An activation needs an actor.');
+    if (!/\S/.test(reason)) throw new TypeError('An activation needs a reason.');
+}
+
 /** Publish the working layer. Never throws for an expected stop; see PublishOutcome. */
 export async function publish(options: PublishOptions): Promise<PublishResult> {
     const root = path.resolve(options.dataRoot);
     const { actor, confirmLaunch = false, dryRun = false, hooks = {}, logger = jsonLogger, clock = Date.now } = options;
     const reason = options.reason ?? 'publish';
+    assertActorAndReason(actor, reason);
     const result: PublishResult = { outcome: 'STORAGE_ERROR', message: '', candidateId: null, revisionId: null, revisionNumber: null, activationId: null, issues: [], errors: 0, warnings: 0 };
     const finish = async (outcome: PublishOutcome, message: string, details: Partial<PublishResult> = {}): Promise<PublishResult> => {
         Object.assign(result, details, { outcome, message });
@@ -598,7 +607,9 @@ export async function publish(options: PublishOptions): Promise<PublishResult> {
                 if (missingRules.length > 0) throw new Stop('LAUNCH_RULES_MISSING', `The first publish needs these rules registered: ${missingRules.join(', ')}.`, { missingRules });
                 result.launch = launchImpact(registry, compiled.content.photos.length, new Set(compiled.content.photos.map((photo) => photo.id)));
                 if (!confirmLaunch && !dryRun) {
-                    throw new Stop('LAUNCH_CONFIRMATION_REQUIRED', `This is the first publish. It replaces the legacy Home and Gallery with ${result.launch.published} photographs, and ${result.launch.gone} the library has leave the site. Confirm the launch to go ahead.`);
+                    const { published, gone } = result.launch;
+                    const leaving = gone > 0 ? `, and ${photographs(gone)} in the library ${gone === 1 ? 'leaves' : 'leave'} the site` : '';
+                    throw new Stop('LAUNCH_CONFIRMATION_REQUIRED', `This is the first publish: ${photographs(published)} ${published === 1 ? 'replaces' : 'replace'} the legacy Home and Gallery${leaving}. Confirm the launch to go ahead.`);
                 }
             }
             await step(7);

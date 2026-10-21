@@ -129,8 +129,14 @@ export async function listActivations(root: string): Promise<Activation[]> {
     return activations.sort((a, b) => a.sequence - b.sequence);
 }
 
-/** Create or replace an activation record. Only its status and committedAt ever change after it is first written. */
+/**
+ * Create or replace an activation record. Only its status and committedAt
+ * ever change after it is first written. Refuses a record listActivations()
+ * would refuse, since one such file stops every later publish.
+ */
 export async function writeActivation(root: string, activation: Activation, faults?: AtomicWriteFaults): Promise<void> {
+    const parsed = parseActivation(activation);
+    if (!parsed.ok) throw new Error(`Refusing to write an invalid activation: ${parsed.error.issues.slice(0, 3).map((issue) => `${issue.path}: ${issue.message}`).join('; ')}.`);
     const dir = catalogPaths(root).activationsDir;
     await ensureDir(dir);
     await atomicWriteJson(path.join(dir, activationFileName(activation)), activation, { faults });
