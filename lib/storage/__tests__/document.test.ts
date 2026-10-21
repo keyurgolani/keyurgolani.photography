@@ -12,6 +12,7 @@ import {
     versionClaimPath,
     writeVersionedDocument,
 } from '../document';
+import { MAX_LEASE_MS } from '../lock';
 
 interface Counter {
     schemaVersion: number;
@@ -133,32 +134,99 @@ describe('writeVersionedDocument', () => {
         expect(claims()).toEqual([]);
     });
 
-    it('waits out a claim left by a writer that died before its rename, then breaks it once it is stale', async () => {
+    it('keeps a writer paused between its claim and its rename the only one to store its version, so nothing goes back', async () => {
         const file = data.file('counter.json');
         const base = await writeVersionedDocument<Counter>(file, { schemaVersion: 1, version: 0, count: 0 }, 0);
-        const left = versionClaimPath(file, 2);
-        fs.writeFileSync(left, '');
+        // Past the 60 s a claim used to last, but well inside a lock's lease
+        const soon = () => Date.now() + 61_000;
+        const others: unknown[] = [];
 
-        await expect(writeVersionedDocument<Counter>(file, { ...base, count: 10 }, base.version)).rejects.toMatchObject({ name: 'StaleVersionError', expected: 1, found: 2 });
+        const first = await writeVersionedDocument<Counter>(file, { ...base, count: 10 }, base.version, {
+            faults: {
+                async beforeRename() {
+                    others.push(await writeVersionedDocument<Counter>(file, { ...base, count: 20 }, 1, { clock: soon }).catch((caught: unknown) => caught));
+                    others.push(await writeVersionedDocument<Counter>(file, { ...base, version: 2, count: 30 }, 2, { clock: soon }).catch((caught: unknown) => caught));
+                },
+            },
+        });
 
-        const old = new Date(Date.now() - VERSION_CLAIM_STALE_MS - 1_000);
-        fs.utimesSync(left, old, old);
-        expect(await writeVersionedDocument<Counter>(file, { ...base, count: 10 }, base.version)).toMatchObject({ version: 2, count: 10 });
+        expect(first).toMatchObject({ version: 2, count: 10 });
+        expect(others).toEqual([
+            expect.objectContaining({ name: 'StaleVersionError', expected: 1, found: 2 }),
+            expect.objectContaining({ name: 'StaleVersionError', expected: 2, found: 1 }),
+        ]);
+        expect(await readJsonFile(file)).toEqual({ schemaVersion: 1, version: 2, count: 10 });
         expect(claims()).toEqual([]);
     });
 
-    it("puts back a fresh claim that took a stale one's place between its look and its break", async () => {
+    it('keeps the stale age of a claim above any lock lease, so a writer that still holds its lock is never taken for dead', () => {
+        expect(VERSION_CLAIM_STALE_MS).toBeGreaterThan(MAX_LEASE_MS);
+    });
+
+    it('waits out a claim a writer that died before its rename left, then installs it once it is stale', async () => {
+        const file = data.file('counter.json');
+        const base = await writeVersionedDocument<Counter>(file, { schemaVersion: 1, version: 0, count: 0 }, 0);
+        // A claim holds its writer's whole document from the moment it is linked.
+        fs.writeFileSync(versionClaimPath(file, 2), `${JSON.stringify({ schemaVersion: 1, version: 2, count: 7 }, null, 2)}\n`);
+
+        await expect(writeVersionedDocument<Counter>(file, { ...base, count: 10 }, base.version)).rejects.toMatchObject({ name: 'StaleVersionError', expected: 1, found: 2 });
+        expect(await readJsonFile(file)).toEqual(base);
+
+        const later = () => Date.now() + VERSION_CLAIM_STALE_MS + 1_000;
+        await expect(writeVersionedDocument<Counter>(file, { ...base, count: 10 }, base.version, { clock: later }))
+            .rejects.toMatchObject({ name: 'StaleVersionError', expected: 1, found: 2 });
+        expect(await readJsonFile(file)).toEqual({ schemaVersion: 1, version: 2, count: 7 });
+        expect(claims()).toEqual([]);
+        // From the version it installed, the next write goes through.
+        expect(await writeVersionedDocument<Counter>(file, { ...base, count: 10 }, 2)).toMatchObject({ version: 3, count: 10 });
+    });
+
+    it('installs the claim of a writer paused past the stale age, which then reports its write done, though the file moved on', async () => {
+        const file = data.file('counter.json');
+        const base = await writeVersionedDocument<Counter>(file, { schemaVersion: 1, version: 0, count: 0 }, 0);
+        const later = () => Date.now() + VERSION_CLAIM_STALE_MS + 1_000;
+        let third: Counter | undefined;
+
+        const first = await writeVersionedDocument<Counter>(file, { ...base, count: 10 }, base.version, {
+            hooks: {
+                async beforeInstall() {
+                    // Taken for dead: the next writer installs this claim, and another stores version 3 on top of it.
+                    await expect(writeVersionedDocument<Counter>(file, { ...base, count: 20 }, 1, { clock: later })).rejects.toMatchObject({ found: 2 });
+                    expect(await readJsonFile(file)).toEqual({ schemaVersion: 1, version: 2, count: 10 });
+                    third = await writeVersionedDocument<Counter>(file, { schemaVersion: 1, version: 2, count: 30 }, 2);
+                },
+            },
+        });
+
+        expect(first).toMatchObject({ version: 2, count: 10 });
+        expect(third).toMatchObject({ version: 3, count: 30 });
+        expect(await readJsonFile(file)).toEqual({ schemaVersion: 1, version: 3, count: 30 });
+        expect(claims()).toEqual([]);
+    });
+
+    it('frees a stale claim that holds no document, and writes', async () => {
+        const file = data.file('counter.json');
+        const base = await writeVersionedDocument<Counter>(file, { schemaVersion: 1, version: 0, count: 0 }, 0);
+        fs.writeFileSync(versionClaimPath(file, 2), '');
+
+        await expect(writeVersionedDocument<Counter>(file, { ...base, count: 10 }, base.version)).rejects.toMatchObject({ name: 'StaleVersionError', found: 2 });
+        const later = () => Date.now() + VERSION_CLAIM_STALE_MS + 1_000;
+        expect(await writeVersionedDocument<Counter>(file, { ...base, count: 10 }, base.version, { clock: later })).toMatchObject({ version: 2, count: 10 });
+        expect(claims()).toEqual([]);
+    });
+
+    it("leaves a claim that took a stale one's place between its look and its settling", async () => {
         const file = data.file('counter.json');
         const base = await writeVersionedDocument<Counter>(file, { schemaVersion: 1, version: 0, count: 0 }, 0);
         const left = versionClaimPath(file, 2);
         fs.writeFileSync(left, '');
-        const old = new Date(Date.now() - VERSION_CLAIM_STALE_MS - 1_000);
-        fs.utimesSync(left, old, old);
+        const later = () => Date.now() + VERSION_CLAIM_STALE_MS + 1_000;
 
         const error = await writeVersionedDocument<Counter>(file, { ...base, count: 10 }, base.version, {
+            clock: later,
             hooks: {
-                beforeBreak(claimPath) {
-                    // Another writer broke the stale claim first and holds a fresh one now.
+                beforeRollForward(claimPath) {
+                    // Another writer settled the stale claim first and holds a fresh one now.
                     fs.rmSync(claimPath);
                     fs.writeFileSync(claimPath, 'fresh');
                 },

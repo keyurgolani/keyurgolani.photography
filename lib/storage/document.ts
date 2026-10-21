@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { atomicWriteJson, type AtomicWriteFaults } from './atomicWrite';
-import { hasErrorCode, PRIVATE_FILE_MODE } from './fsx';
+import { tempPathFor, type AtomicWriteFaults } from './atomicWrite';
+import { fsyncDirectory, hasErrorCode, PRIVATE_FILE_MODE } from './fsx';
+import { MAX_LEASE_MS } from './lock';
 
 /** Every document in the data root carries these two fields. */
 export interface VersionedDocument {
@@ -110,15 +111,23 @@ export function versionOf(file: string, value: unknown | null): number {
     return value.version;
 }
 
-/** A version claim this old was left by a writer that died between its claim and its rename. */
-export const VERSION_CLAIM_STALE_MS = 60_000;
+/**
+ * How old an uninstalled claim must be before another writer takes its
+ * writer for dead and installs it. Above MAX_LEASE_MS, so a writer that still
+ * holds its lock, however slowly it runs, is never taken for dead.
+ */
+export const VERSION_CLAIM_STALE_MS = MAX_LEASE_MS + 60_000;
 
-/** `<file>.claim-<version>`, held by the one writer that may store `version`, from its claim until its rename. */
+/**
+ * `<file>.claim-<version>`: the one writer that stores `version` links its
+ * staged content here, and removes the link once that content is the file.
+ */
 export function versionClaimPath(file: string, version: number): string {
     return `${file}.claim-${version}`;
 }
 
 export interface VersionedWriteOptions {
+    /** `beforeRename` runs once the content is claimed and checked, before it moves into place. */
     faults?: AtomicWriteFaults;
     /** Judges a claim's age. */
     clock?: () => number;
@@ -126,83 +135,68 @@ export interface VersionedWriteOptions {
     hooks?: {
         /** After the first version check, before the claim. */
         beforeClaim?(): void | Promise<void>;
-        /** After a claim is judged stale, before it is moved aside. */
-        beforeBreak?(claimPath: string): void | Promise<void>;
+        /** After the claim and its version check, before the last check and the rename. */
+        beforeInstall?(): void | Promise<void>;
+        /** After another writer's claim is judged abandoned, before it is installed. */
+        beforeRollForward?(claimPath: string): void | Promise<void>;
     };
 }
 
-/**
- * Which claim file this is. The mtime counts too, since a disk can give a
- * new file the inode of one just deleted, and a rename never changes it.
- */
 interface FileId {
     ino: number;
     dev: number;
-    mtimeMs: number;
 }
 
-const sameFile = (a: FileId, b: FileId) => a.ino === b.ino && a.dev === b.dev && a.mtimeMs === b.mtimeMs;
-
-/** Create a claim with O_EXCL. Null when another writer holds it. */
-async function tryClaim(claimPath: string): Promise<FileId | null> {
-    let handle: fs.promises.FileHandle;
+async function idOf(file: string): Promise<FileId | null> {
     try {
-        handle = await fs.promises.open(claimPath, 'wx', PRIVATE_FILE_MODE);
+        const { ino, dev } = await fs.promises.stat(file);
+        return { ino, dev };
     } catch (error) {
-        if (hasErrorCode(error, 'EEXIST')) return null;
+        if (hasErrorCode(error, 'ENOENT')) return null;
         throw error;
     }
+}
+
+const sameId = (a: FileId | null, b: FileId | null) => a !== null && b !== null && a.ino === b.ino && a.dev === b.dev;
+
+/** Stage `value` beside `file` as an fsynced temp file, readable by its owner only. */
+async function stage(file: string, value: unknown): Promise<string> {
+    const temp = tempPathFor(file);
+    const handle = await fs.promises.open(temp, 'wx', PRIVATE_FILE_MODE);
     try {
-        const { ino, dev, mtimeMs } = await handle.stat();
-        return { ino, dev, mtimeMs };
+        await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`);
+        await handle.sync();
     } finally {
         await handle.close();
     }
+    return temp;
 }
 
-/**
- * Delete the claim at `claimPath` only if it is still the file `id` names.
- * Deleting by path could delete a claim that took its place, so this moves it
- * to a unique name, checks what moved, and deletes only that. Anything else
- * is linked back. Returns whether the claim `id` names is gone.
- */
-async function removeClaim(claimPath: string, id: FileId): Promise<boolean> {
+/** link() `from` to `to`, which never replaces a file. False when `to` exists. */
+async function linkExclusive(from: string, to: string): Promise<boolean> {
+    try {
+        await fs.promises.link(from, to);
+        return true;
+    } catch (error) {
+        if (hasErrorCode(error, 'EEXIST')) return false;
+        throw error;
+    }
+}
+
+/** Remove `claimPath` only while it is still the file `id` names. */
+async function dropClaim(claimPath: string, id: FileId): Promise<void> {
     const aside = `${claimPath}.${randomUUID()}`;
     try {
         await fs.promises.rename(claimPath, aside);
     } catch (error) {
-        if (hasErrorCode(error, 'ENOENT')) return true;
+        if (hasErrorCode(error, 'ENOENT')) return;
         throw error;
     }
-    const moved = await fs.promises.stat(aside);
-    if (!sameFile(moved, id)) {
-        try {
-            await fs.promises.link(aside, claimPath);
-        } catch (error) {
-            if (!hasErrorCode(error, 'EEXIST')) throw error;
-        }
-        await fs.promises.rm(aside, { force: true });
-        return false;
-    }
+    if (!sameId(await idOf(aside), id)) await linkExclusive(aside, claimPath);
     await fs.promises.rm(aside, { force: true });
-    return true;
 }
 
-/** Break a claim older than VERSION_CLAIM_STALE_MS. Returns whether its path is free to claim. */
-async function breakStaleClaim(claimPath: string, now: number, hooks: VersionedWriteOptions['hooks']): Promise<boolean> {
-    let stat: fs.Stats;
-    try {
-        stat = await fs.promises.stat(claimPath);
-    } catch (error) {
-        if (hasErrorCode(error, 'ENOENT')) return true; // Let go since the create failed
-        throw error;
-    }
-    if (now - stat.mtimeMs < VERSION_CLAIM_STALE_MS) return false;
-    await hooks?.beforeBreak?.(claimPath);
-    return removeClaim(claimPath, stat);
-}
-
-/** Delete claims for versions below `version`, which a crash after its rename left and no write can still hold. */
+/** Delete the claims for versions below `version`, which no write can still need. */
 async function pruneClaims(file: string, version: number): Promise<void> {
     const prefix = `${path.basename(file)}.claim-`;
     for (const name of await fs.promises.readdir(path.dirname(file))) {
@@ -213,17 +207,69 @@ async function pruneClaims(file: string, version: number): Promise<void> {
 }
 
 /**
+ * Settle a claim another writer holds on `version` when its writer is taken
+ * for dead: the claim was linked more than VERSION_CLAIM_STALE_MS ago, by its
+ * ctime, which the link sets, and the file is still at the version before.
+ * Its content is complete, since a claim is linked only once its content is
+ * fsynced, so it is installed. A claim that isn't that version's document is
+ * removed instead, which frees the version. Anything else is left as it is.
+ */
+async function settleClaim(file: string, claimPath: string, version: number, now: number, hooks: VersionedWriteOptions['hooks']): Promise<'held' | 'installed' | 'removed'> {
+    let stat: fs.Stats;
+    try {
+        stat = await fs.promises.stat(claimPath);
+    } catch (error) {
+        if (hasErrorCode(error, 'ENOENT')) return 'removed';
+        throw error;
+    }
+    if (now - stat.ctimeMs < VERSION_CLAIM_STALE_MS) return 'held';
+    await hooks?.beforeRollForward?.(claimPath);
+    let claimed: number | null = null;
+    try {
+        claimed = versionOf(claimPath, await readJsonFile(claimPath));
+    } catch {
+        // Not a document, so nothing to install
+    }
+    // Something took its place since it was judged stale
+    if (!sameId(await idOf(claimPath), stat)) return 'held';
+    if (claimed !== version) {
+        await dropClaim(claimPath, stat);
+        return 'removed';
+    }
+    if (versionOf(file, await readJsonFile(file)) !== version - 1) return 'held';
+    const staged = tempPathFor(file);
+    if (!(await linkExclusive(claimPath, staged))) return 'held';
+    try {
+        await fs.promises.rename(staged, file);
+        await fsyncDirectory(path.dirname(file));
+    } finally {
+        await fs.promises.rm(staged, { force: true }).catch(() => undefined);
+    }
+    await pruneClaims(file, version + 1).catch(() => undefined);
+    return 'installed';
+}
+
+/**
  * Write `next` only if the file is still at `expectedVersion`, storing it as
  * `expectedVersion + 1`. Throws StaleVersionError otherwise and leaves the
- * file alone. Callers hold the document's lock, so this catches writers that
- * lost their lock or never took it.
+ * file alone. Callers hold the document's lock, and this is what stops a
+ * writer that lost its lock, or never took it, from losing an update.
  *
- * Reading the version and then renaming isn't atomic, so the writer first
- * claims the version it stores with an exclusive create of
- * versionClaimPath(), checks the version again, renames, and lets the claim
- * go. Of two writers at one version, only the one holding the claim gets to
- * the rename. A claim older than VERSION_CLAIM_STALE_MS is one a writer left
- * when it died, and the next writer breaks it.
+ * The content is staged first and claimed by link()ing it to
+ * versionClaimPath(), which never replaces a file, so of the writers that
+ * read one version only the one whose link lands can store the next. That
+ * writer checks the version again and renames its content over the file. A
+ * writer whose link lands after the file has moved on lets it go and fails.
+ *
+ * Until a claim is installed no other writer gets past it, so the file never
+ * goes back to an older version while the claim's writer runs. A writer that
+ * died between its link and its rename leaves a claim that blocks the next
+ * version until it is VERSION_CLAIM_STALE_MS old. Then the next writer
+ * installs it, and the claim's writer, if it was only paused, finds the file
+ * past what it read and reports its write done, since only its content could
+ * have taken the file there. The one gap left is a writer paused for longer
+ * than that between its last check and its rename: it can still put its
+ * version back over a newer one.
  */
 export async function writeVersionedDocument<T extends VersionedDocument>(
     file: string,
@@ -233,24 +279,40 @@ export async function writeVersionedDocument<T extends VersionedDocument>(
 ): Promise<T> {
     const found = versionOf(file, await readJsonFile(file));
     if (found !== expectedVersion) throw new StaleVersionError(file, expectedVersion, found);
-    await hooks?.beforeClaim?.();
 
     const version = expectedVersion + 1;
     const claimPath = versionClaimPath(file, version);
-    let claim = await tryClaim(claimPath);
-    if (!claim && (await breakStaleClaim(claimPath, clock(), hooks))) claim = await tryClaim(claimPath);
-    // Another writer holds the claim and is storing this version now.
-    if (!claim) throw new StaleVersionError(file, expectedVersion, version);
+    const written = { ...next, version };
+    const temp = await stage(file, written);
+    let id: FileId | null = null;
+    let claimed = false;
     try {
-        // A writer that read this version before another one moved the file on can still win the claim once that one let it go.
+        id = await idOf(temp);
+        if (!id) throw new Error(`${temp} disappeared while it was staged.`);
+        await hooks?.beforeClaim?.();
+        claimed = await linkExclusive(temp, claimPath);
+        // Another writer holds this version. One that died before installing it is settled for them, and an empty claim freed.
+        if (!claimed && (await settleClaim(file, claimPath, version, clock(), hooks)) === 'removed') claimed = await linkExclusive(temp, claimPath);
+        if (!claimed) throw new StaleVersionError(file, expectedVersion, Math.max(version, versionOf(file, await readJsonFile(file))));
+
+        // Checked right after the link: a file that moved on means the link landed late, as for a writer that read long ago.
         const current = versionOf(file, await readJsonFile(file));
         if (current !== expectedVersion) throw new StaleVersionError(file, expectedVersion, current);
-        const written = { ...next, version };
-        await atomicWriteJson(file, written, { faults });
-        await pruneClaims(file, version).catch(() => undefined);
+        await hooks?.beforeInstall?.();
+        // No writer can store this version but through this claim, so a file past what this write read holds its content,
+        // installed by a writer that took this one for dead, maybe with newer versions after it.
+        const now = versionOf(file, await readJsonFile(file));
+        if (now >= version) return written;
+        if (now !== expectedVersion) throw new StaleVersionError(file, expectedVersion, now);
+        await faults?.beforeRename?.(temp);
+        await fs.promises.rename(temp, file);
+        await faults?.afterRename?.();
+        await fsyncDirectory(path.dirname(file));
+        await pruneClaims(file, version + 1).catch(() => undefined);
         return written;
     } finally {
-        // A claim that can't be removed here goes stale, and the next writer breaks it.
-        await removeClaim(claimPath, claim).catch(() => undefined);
+        // A write that fails while it runs lets its claim go. Only one whose process died leaves it, for settleClaim().
+        if (claimed && id) await dropClaim(claimPath, id).catch(() => undefined);
+        await fs.promises.rm(temp, { force: true }).catch(() => undefined);
     }
 }

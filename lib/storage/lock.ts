@@ -211,7 +211,7 @@ export async function withLock<T>(name: string, options: LockOptions, fn: (conte
             // link() never overwrites. If a third process created a lock in this gap, that one stands,
             // and the holder we displaced aborts at its next renewal. Until then the registry's
             // compare-and-swap still stops a second writer: writeVersionedDocument() claims each
-            // version with an exclusive create, so only one of two writers at a version stores it.
+            // version with a link() that never replaces a file, so only one of two writers at a version stores it.
             try {
                 await fs.promises.link(stalePath, lockPath);
             } catch (error) {
