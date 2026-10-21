@@ -172,6 +172,18 @@ describe('getGalleryImages', () => {
         await expect(GET()).rejects.toThrow('Could not read any of the photos');
     });
 
+    it.each(['EACCES', 'EIO', 'EMFILE'])("throws when a derivative folder can't be listed (%s), instead of listing no photos", async (code) => {
+        const thumbnails = lib.file('thumbnails');
+        const realReaddirSync = fs.readdirSync;
+        vi.spyOn(fs, 'readdirSync').mockImplementation(((dir: fs.PathLike, options?: unknown) => {
+            if (path.resolve(String(dir)) === thumbnails) throw Object.assign(new Error(`${code}: scandir '${thumbnails}'`), { code });
+            return (realReaddirSync as (dir: fs.PathLike, options?: unknown) => unknown)(dir, options);
+        }) as typeof fs.readdirSync);
+
+        await expect(getGalleryImages()).rejects.toMatchObject({ code });
+        await expect(GET()).rejects.toMatchObject({ code });
+    });
+
     it('returns an empty list for a library with no photos', async () => {
         for (const name of [...DECODABLE_FILES, 'corrupt.jpg']) fs.unlinkSync(lib.file(name));
 

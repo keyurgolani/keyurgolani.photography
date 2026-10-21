@@ -352,6 +352,23 @@ describe('writeVariants', { timeout: 60_000 }, () => {
 
         expect(fs.readdirSync(lib.file('cache/dynamic')).sort()).toEqual(['landscape-edited-800-85.webp', 'portrait-800-85.webp']);
     });
+
+    it("still regenerates when the /api/image cache folder can't be listed, since purging it is best effort", async () => {
+        fs.mkdirSync(lib.file('cache/dynamic'), { recursive: true });
+        fs.writeFileSync(lib.file('cache/dynamic', 'landscape-800-85.webp'), 'cached');
+        const dynamic = lib.file('cache/dynamic');
+        const realReaddirSync = fs.readdirSync;
+        vi.spyOn(fs, 'readdirSync').mockImplementation(((dir: fs.PathLike, options?: unknown) => {
+            if (path.resolve(String(dir)) === dynamic) throw Object.assign(new Error(`EACCES: scandir '${dynamic}'`), { code: 'EACCES' });
+            return (realReaddirSync as (dir: fs.PathLike, options?: unknown) => unknown)(dir, options);
+        }) as typeof fs.readdirSync);
+        fs.writeFileSync(lib.file('landscape.jpg'), fixtures.get('landscape-edited.jpg') as Buffer);
+
+        await reprocessImage('landscape.jpg');
+
+        expect(await outputChannels('landscape')).toEqual(Array(7).fill('blue'));
+        expect(realReaddirSync(dynamic)).toEqual(['landscape-800-85.webp']);
+    });
 });
 
 describe('exact names', { timeout: 60_000 }, () => {

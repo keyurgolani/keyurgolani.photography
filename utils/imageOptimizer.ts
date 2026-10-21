@@ -184,11 +184,17 @@ export function ensureDirectories(paths: LibraryPaths = libraryPaths()): void {
     }
 }
 
+/**
+ * The names in `dir`, or none when it doesn't exist. Any other error throws:
+ * read as empty, a folder that can't be listed would make every photo's set
+ * look incomplete, and the Gallery would cache an empty list.
+ */
 function listNames(dir: string): string[] {
     try {
         return fs.readdirSync(dir);
-    } catch {
-        return [];
+    } catch (error) {
+        if (hasErrorCode(error, 'ENOENT')) return [];
+        throw error;
     }
 }
 
@@ -404,7 +410,13 @@ export async function writeVariants(
  */
 function purgeDynamicCache(baseName: string, paths: LibraryPaths): void {
     if (guardState([path.dirname(paths.dynamicCache), paths.dynamicCache]).state !== 'ok') return;
-    for (const name of listNames(paths.dynamicCache)) {
+    let names: string[];
+    try {
+        names = listNames(paths.dynamicCache);
+    } catch {
+        return; // Best effort, after the new set is in place. images:cleanup lists what's left.
+    }
+    for (const name of names) {
         if (DYNAMIC_CACHE_FILE.exec(name)?.[1] !== baseName) continue;
         try {
             fs.unlinkSync(path.join(paths.dynamicCache, name));
