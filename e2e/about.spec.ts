@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 import { expectNoA11yViolations } from './support/a11y';
-import { expectFocusRingVisible, expectRingNotClipped } from './support/focus';
+import { expectFocusRingVisible, expectNoFadeOnBlur, expectRingNotClipped } from './support/focus';
 import { waitForHydration } from './support/hydration';
 import { expectReflow } from './support/reflow';
 import { expect, test } from './support/test';
@@ -106,5 +106,10 @@ test.describe('#11', () => {
         }
         await source(page).focus();
         await expect(source(page).getByText('View Source')).toHaveCSS('opacity', '1');
+    });
+
+    test.fixme('the source link drops its focus ring at once on blur', async ({ page }) => {
+        await openAbout(page);
+        await expectNoFadeOnBlur(source(page));
     });
 });
