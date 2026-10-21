@@ -1,6 +1,9 @@
+import type { Metadata } from 'next';
 import React from 'react';
 import DynamicGallery from '../../components/DynamicGallery';
 import SiteNav from '../../components/site/SiteNav';
+
+export const metadata: Metadata = { title: 'Gallery' };
 
 export default function GalleryPage() {
     return (

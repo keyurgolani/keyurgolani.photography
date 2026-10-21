@@ -23,7 +23,7 @@ A modern, high-performance photography portfolio website built with Next.js 16, 
 
 ### 🎨 Design
 - **Glassmorphism UI** - Modern frosted glass effects with backdrop blur
-- **Dark/Light Theme** - Seamless theme switching with system preference detection
+- **Dark/Light Theme** - Dark by default, with a light theme the site remembers once you pick it
 - **Responsive Design** - Optimized for all screen sizes from mobile to desktop
 - **Smooth Animations** - Framer Motion powered transitions and micro-interactions
 - **Auto-hiding UI** - Clean immersive viewing with context-aware UI visibility
@@ -190,6 +190,7 @@ docker compose -f docker-compose.prod.yml up -d
 
 | Variable | Description | Default |
 |----------|-------------|---------|
+| `SITE_URL` | The site's public origin, like `https://keyurgolani.photography`, for share links and the share image URL. Read when the server starts, not at build time. Unset or invalid, share links point at `http://localhost:3000` and the server logs one warning. | none |
 | `NEXT_PUBLIC_UI_AUTO_HIDE_TIMEOUT` | UI auto-hide timeout on home page (ms) | 3000 |
 | `PHOTOGRAPHY_LIBRARY_DIR` | Photo library folder for the watcher, `images:cleanup`, and `/api/photos`. The site serves photos only from `public/assets/photos`, so leave it unset outside tests. | `public/assets/photos` |
 | `PHOTOGRAPHY_DATA_DIR` | Private data root for photo identity state. It must sit outside `public/` and the library. Only `photos:migrate --dry-run` and `photos:identity status` read it so far. | `portfolio-data`, none in production |

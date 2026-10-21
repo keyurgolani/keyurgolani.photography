@@ -1,9 +1,12 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
 import SiteNav from '@/components/site/SiteNav';
 import StatusPage from '@/components/site/StatusPage';
 import { NAV_ITEMS } from '@/components/site/nav';
 
 const work = NAV_ITEMS.find((item) => item.section === 'work');
+
+export const metadata: Metadata = { title: 'Page not found' };
 
 export default function NotFound() {
   return (
