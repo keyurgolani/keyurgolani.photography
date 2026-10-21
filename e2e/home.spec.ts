@@ -33,8 +33,8 @@ const bottomBarOpacity = (page: Page) =>
 /**
  * Opens Home on `photos`, which it shuffles, and waits out the intro: the
  * grain overlay gone and BottomBar slid up. It doesn't wait on the chrome
- * layer, which shows for 3 s after the intro and hides 3 s after the last
- * activity, so a slow run can't miss that window. No test here needs the
+ * layer, which shows for about 5.5 s after the intro and hides 3 s after the
+ * last activity, so a slow run can't miss that window. No test here needs the
  * chrome shown before it acts.
  */
 async function openHome(page: Page, photos: readonly string[] = ['white', 'gray', 'black']) {
@@ -185,8 +185,10 @@ test.describe('#18', () => {
         await openHome(page);
         const gallery = primary(page).getByRole('link', { name: 'Gallery', exact: true });
         await gallery.focus();
-        // The idle timeout is 3 s and the fade 1 s, so this waits on the behavior itself, not on readiness.
-        await page.waitForTimeout(4_500);
+        // The chrome hides 3 s after the last activity and then fades for 1 s, and app/page.tsx's synthetic click
+        // when autoplay turns on, 2.5 s after the intro, restarts that timer. So 7 s waits on the behavior itself,
+        // not on readiness.
+        await page.waitForTimeout(7_000);
         expect(await effectiveOpacity(gallery)).toBe(1);
     });
 });
