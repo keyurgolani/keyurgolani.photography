@@ -1,6 +1,6 @@
 import { render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { artist, type ExternalDestination } from '@/data/artist';
+import { artist, EXTERNAL_DESTINATION_ICONS, type ExternalDestination } from '@/data/artist';
 import ExternalLinks from '../ExternalLinks';
 
 const profile = (id: string, label: string, overrides: Partial<ExternalDestination> = {}): ExternalDestination => ({
@@ -92,6 +92,11 @@ describe('ExternalLinks', () => {
     expect(email).toHaveTextContent(/^someone@example\.com$/);
   });
 
+  it("names each link's brand for its light, and gives a contact entry none", () => {
+    render(<ExternalLinks destinations={[profile('one', 'One'), profile('two', 'Two', { kind: 'repository', icon: 'github' }), contact]} />);
+    expect(screen.getAllByRole('link').map((link) => link.getAttribute('data-brand'))).toEqual(['instagram', 'github', null]);
+  });
+
   it('draws one brand mark on each enabled link in the authored data', () => {
     render(<ExternalLinks destinations={artist.destinations} />);
     const enabled = artist.destinations.filter((destination) => destination.enabled);
@@ -102,5 +107,17 @@ describe('ExternalLinks', () => {
       expect(marks).toHaveLength(1);
       expect(marks[0]).toHaveAttribute('data-icon', enabled[index].icon);
     });
+  });
+
+  it.each(EXTERNAL_DESTINATION_ICONS)('draws the %s mark from its Simple Icons path', (icon) => {
+    const { container } = render(<ExternalLinks destinations={[profile('one', 'One', { icon })]} />);
+    const mark = container.querySelector(`svg[data-icon="${icon}"]`);
+    const paths = mark?.querySelectorAll('path') ?? [];
+    expect(paths).toHaveLength(1);
+    expect(paths[0].getAttribute('d')).toMatch(/^M[\d.\s,-]/);
+    const [, , width, height] = (mark?.getAttribute('viewBox') ?? '').split(' ').map(Number);
+    // 500px's wordmark crops to its band so it can render wide. The rest keep the square grid.
+    if (icon === '500px') expect(width / height).toBeGreaterThan(3);
+    else expect([width, height]).toEqual([24, 24]);
   });
 });
