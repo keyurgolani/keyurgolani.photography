@@ -1,6 +1,7 @@
 import type { EventEmitter } from 'events';
 import path from 'path';
 import type { FSWatcherEventMap } from 'chokidar';
+import { isScanExcluded } from '../lib/identity/scan';
 import {
     generatedFolderNames,
     hasErrorCode,
@@ -52,10 +53,11 @@ export interface WatcherHandlers {
 }
 
 /**
- * The chokidar `ignored` filter: skip the generated folders directly under the
- * root, matched by exact name on the first path segment, never by substring,
- * so a root like `/srv/cache/photos` or a photo named `thumbnails-beach.jpg`
- * is still watched.
+ * The chokidar `ignored` filter, the identity scan's own: skip dot-entries at
+ * any depth and the generated folders directly under the root. Folders match
+ * by exact name on the first path segment, never by substring, so a root like
+ * `/srv/cache/photos`, a photo named `thumbnails-beach.jpg`, and a nested
+ * `trips/thumbnails/` folder are still watched.
  */
 export function createIgnoreFilter(root: string): (watchedPath: string) => boolean {
     const generated = new Set(generatedFolderNames());
@@ -65,8 +67,14 @@ export function createIgnoreFilter(root: string): (watchedPath: string) => boole
         if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
             return false;
         }
-        return generated.has(relative.split(path.sep)[0]);
+        const posix = relative.split(path.sep).join('/');
+        return generated.has(posix.split('/')[0]) || isScanExcluded(posix);
     };
+}
+
+/** Whether `filePath` sits directly in the library root, the only folder the legacy step reads sources from. */
+function inRoot(root: string, filePath: string): boolean {
+    return path.dirname(path.resolve(filePath)) === path.resolve(root);
 }
 
 type Outcome = 'done' | 'skipped' | 'failed';
@@ -312,42 +320,60 @@ export async function processOnce(
     return 0;
 }
 
+/** A chokidar event under the library root. */
+export type LibraryChange = 'add' | 'change' | 'unlink' | 'addDir' | 'unlinkDir';
+
 export interface AttachOptions {
     root: string;
     force?: boolean;
     logger?: Logger;
     /** Called when chokidar reports the library root itself removed. */
     onRootRemoved: () => void;
+    /** Called for every file or folder change in the library, at any depth. The identity step schedules a pass here. */
+    onLibraryChange?: (event: LibraryChange, changedPath: string) => void;
+    /** Called on `ready`, after the startup batch is queued. */
+    onReady?: () => void;
 }
 
 /**
- * Wire chokidar's events to the handlers. The startup batch is queued on
- * `ready`, once chokidar has its baseline: it reports no event for a file it
- * finds during the initial scan, so only a batch that lists the library after
- * that scan catches a file saved before it finished.
+ * Wire chokidar's events to the handlers. Only files directly in the root
+ * reach them, since the legacy step reads sources from there alone, and
+ * every change, nested ones included, goes to `onLibraryChange`. The
+ * startup batch is queued on `ready`, once chokidar has its baseline: it
+ * reports no event for a file it finds during the initial scan, so only a
+ * batch that lists the library after that scan catches a file saved before
+ * it finished.
  */
 export function attachWatcher(
     watcher: Pick<EventEmitter<FSWatcherEventMap>, 'on'>,
     handlers: WatcherHandlers,
-    { root, force = false, logger = console, onRootRemoved }: AttachOptions,
+    { root, force = false, logger = console, onRootRemoved, onLibraryChange, onReady }: AttachOptions,
 ): void {
     // New files regenerate only when their set is incomplete or older than them
     watcher.on('add', (filePath: string) => {
-        void handlers.onAdd(filePath);
+        onLibraryChange?.('add', filePath);
+        if (inRoot(root, filePath)) void handlers.onAdd(filePath);
     });
 
     // Changed files, including a save-by-rename, regenerate in place
     watcher.on('change', (filePath: string) => {
-        void handlers.onChange(filePath);
+        onLibraryChange?.('change', filePath);
+        if (inRoot(root, filePath)) void handlers.onChange(filePath);
     });
 
     // Removing a source keeps its derivatives
     watcher.on('unlink', (filePath: string) => {
-        void handlers.onUnlink(filePath);
+        onLibraryChange?.('unlink', filePath);
+        if (inRoot(root, filePath)) void handlers.onUnlink(filePath);
+    });
+
+    watcher.on('addDir', (dirPath: string) => {
+        if (path.resolve(dirPath) !== path.resolve(root)) onLibraryChange?.('addDir', dirPath);
     });
 
     watcher.on('unlinkDir', (dirPath: string) => {
         if (path.resolve(dirPath) === path.resolve(root)) onRootRemoved();
+        else onLibraryChange?.('unlinkDir', dirPath);
     });
 
     watcher.on('error', (error) => {
@@ -359,5 +385,6 @@ export function attachWatcher(
         handlers.queueStartupBatch({ force }).catch((error: unknown) => {
             logger.error('[ImageWatcher] Startup batch failed:', error);
         });
+        onReady?.();
     });
 }
