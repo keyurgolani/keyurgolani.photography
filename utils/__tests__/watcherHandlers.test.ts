@@ -378,6 +378,51 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
             expect(lib.hashes(LANDSCAPE)).toEqual(before);
             expect(logs.filter((line) => line.includes('Rebuilt'))).toEqual([]);
         });
+
+        it('rebuilds at startup a set whose owner was removed while the watcher was down', async () => {
+            fs.copyFileSync(lib.file('portrait.png'), lib.file('landscape.png'));
+            expect(await processOnce(handlers, { force: true, logger })).toBe(0);
+            handlers.stop();
+
+            // No unlink event: the watcher is down. landscape.png is older than the set, which looks current.
+            fs.unlinkSync(lib.file('landscape.jpg'));
+            expect(await newHandlers().queueStartupBatch()).toEqual({ processed: ['landscape.png'], skipped: [], errors: [] });
+            expect(await outputChannels('landscape')).toEqual(Array(7).fill('green'));
+            expect(logs).toContain("[ImageWatcher] Rebuilding landscape.png's set, which was last built from landscape.jpg.");
+
+            expect(await newHandlers().queueStartupBatch()).toEqual({ processed: [], skipped: [], errors: [] });
+        });
+
+        it('rebuilds at startup a set that a source sorting first took over while the watcher was down, whatever its mtime', async () => {
+            expect(await processOnce(handlers, { force: true, logger })).toBe(0);
+            handlers.stop();
+
+            fs.copyFileSync(lib.file('portrait.png'), lib.file('landscape.jpeg'));
+            setMtime('landscape.jpeg', Date.parse('2001-01-01T00:00:00Z'));
+            expect(await newHandlers().queueStartupBatch()).toEqual({ processed: ['landscape.jpeg'], skipped: [], errors: [] });
+            expect(await outputChannels('landscape')).toEqual(Array(7).fill('green'));
+        });
+
+        it('rebuilds a set a source sorting first takes over live, whatever its mtime', async () => {
+            await handlers.onAdd(lib.file('landscape.jpg'));
+            fs.copyFileSync(lib.file('portrait.png'), lib.file('landscape.jpeg'));
+            setMtime('landscape.jpeg', Date.parse('2001-01-01T00:00:00Z'));
+
+            await handlers.onAdd(lib.file('landscape.jpeg'));
+            expect(await outputChannels('landscape')).toEqual(Array(7).fill('green'));
+        });
+
+        it('rebuilds once a shared set nothing records the source of, and leaves a set with one source alone', async () => {
+            fs.copyFileSync(lib.file('portrait.png'), lib.file('landscape.png'));
+            expect(await processOnce(handlers, { force: true, logger })).toBe(0);
+            // As a set written before the record was kept
+            fs.rmSync(lib.file('cache', 'set-sources'), { recursive: true });
+
+            expect(await newHandlers().queueStartupBatch()).toEqual({ processed: ['landscape.jpg'], skipped: [], errors: [] });
+            expect(logs).toContain("[ImageWatcher] Rebuilding landscape.jpg's set, which it shares, since nothing records which source it was built from.");
+            expect(await outputChannels('landscape')).toEqual(Array(7).fill('red'));
+            expect(await newHandlers().queueStartupBatch()).toEqual({ processed: [], skipped: [], errors: [] });
+        });
     });
 
     it('keeps the old set for a different, older file under a deleted name until it is touched', async () => {
@@ -738,12 +783,16 @@ describe('the one-time rebuild of orientation-tagged photos', { timeout: 60_000 
 
     it('logs a record it could not write, and still rebuilds', async () => {
         await oldLibrary();
+        fs.rmSync(lib.file('cache'), { recursive: true, force: true });
         fs.writeFileSync(lib.file('cache'), 'a file where the cache folder goes');
+        // The set's own record can't be written either, and that is logged too
+        const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
         expect(await handlers.queueStartupBatch()).toEqual({ processed: ['turned.jpg'], skipped: [], errors: [] });
         expect(await optimizedSize('turned.jpg')).toEqual(UPRIGHT);
         expect(logs.some((line) => line.startsWith(`[ImageWatcher] Could not write ${marker()}: `) && line.endsWith('The next start rebuilds the orientation-tagged photos again.'))).toBe(true);
         expect(logs.some((line) => line.startsWith('[ImageWatcher] Rebuilt the sets'))).toBe(false);
+        expect(errors).toHaveBeenCalledWith(expect.stringMatching(/^\[imageOptimizer\] Couldn't record that turned\.jpg's set was built from it: /));
     });
 });
 
