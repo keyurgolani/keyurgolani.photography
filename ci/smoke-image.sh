@@ -20,7 +20,8 @@
 # ghcr.io/keyurgolani/keyurgolani.photography:<tag> must already exist
 # locally, since nothing pulls here. web serves every /media set here, through
 # PHOTOGRAPHY_MEDIA_ACCESS=all, on 127.0.0.1 port SMOKE_IMAGE_PORT, 3000 by
-# default. Those are the only changes to docker-compose.prod.yml.
+# default. Those are the only changes to docker-compose.prod.yml, made with an
+# override that needs Docker Compose 2.24.4 or later for its !override tag.
 set -euo pipefail
 
 if [ "$#" -ne 1 ] || [ -z "$1" ]; then
