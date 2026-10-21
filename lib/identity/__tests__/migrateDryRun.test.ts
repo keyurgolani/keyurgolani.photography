@@ -89,7 +89,9 @@ describe('photos:migrate --dry-run', () => {
             'cafe\u0301.webp': fixture('square.webp'),
             'series/Beach.webp': fixture('landscape-rot6.jpg'),
         });
+        // Unset in production, so the dry run reads no data root, not <cwd>/portfolio-data.
         vi.stubEnv('PHOTOGRAPHY_DATA_DIR', '');
+        vi.stubEnv('NODE_ENV', 'production');
 
         const { report } = await migrateDryRun(options({ outDir: tempOut() }));
         const lines = report.split('## Basename collisions\n')[1].split('\n## ')[0].split('\n').filter((line) => line.startsWith('- '));
