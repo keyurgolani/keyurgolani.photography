@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { atomicWriteJson } from '../storage/atomicWrite';
 import { dataRoot, dataRootStatus } from '../storage/config';
+import { StaleVersionError, writeVersionedDocument, type VersionedWriteOptions } from '../storage/document';
 import { hasErrorCode, PRIVATE_DIR_MODE, realpathLoose } from '../storage/fsx';
 import { LockTimeoutError, withLock, type LockContext, type LockRecord } from '../storage/lock';
 import { CATALOG_SCHEMA_VERSION, parseAuthoredRecord, type AuthoredKind, type SchemaIssue } from './schema';
@@ -62,6 +62,8 @@ export interface WriteAuthoredOptions {
     root?: string;
     /** How long to wait for the lock when not reusing one. */
     waitMs?: number;
+    /** Test hooks, passed to writeVersionedDocument(). */
+    hooks?: VersionedWriteOptions['hooks'];
 }
 
 const MANAGED = new Set(['schemaVersion', 'version', 'baseRevisionId']);
@@ -78,7 +80,13 @@ async function ensureFolder(dir: string): Promise<void> {
     }
 }
 
-async function commit(root: string, record: AuthoredRecordInput, ref: { kind: AuthoredKind; id: string }, expectedVersion: number): Promise<AuthoredRecord> {
+async function commit(
+    root: string,
+    record: AuthoredRecordInput,
+    ref: { kind: AuthoredKind; id: string },
+    expectedVersion: number,
+    hooks: WriteAuthoredOptions['hooks'],
+): Promise<AuthoredRecord> {
     const file = authoredRecordFile(root, ref.kind, ref.id);
     let existingText: string | null = null;
     try {
@@ -115,15 +123,26 @@ async function commit(root: string, record: AuthoredRecordInput, ref: { kind: Au
     const paths = authoredPaths(root);
     await ensureFolder(paths.dir);
     if (ref.kind !== 'site') await ensureFolder(path.dirname(file));
-    await atomicWriteJson(file, parsed.value);
-    return parsed.value;
+    // The lock keeps writers apart only while it holds. One past its lease may still be between its read and its
+    // rename, so the version it stores is claimed first, and of two writers at one version only one gets through.
+    try {
+        return await writeVersionedDocument(file, parsed.value, expectedVersion, { hooks });
+    } catch (error) {
+        if (!(error instanceof StaleVersionError)) throw error;
+        throw new AuthoredWriteError('VERSION_CONFLICT', ref, `The ${ref.kind} record ${ref.id} is at version ${error.found}, not ${expectedVersion}.`, {
+            expectedVersion,
+            foundVersion: error.found,
+        });
+    }
 }
 
 /**
  * Write one authored record with compare-and-swap on `version`. Takes
  * `withLock('authored', {leaseMs: 10_000})`, or reuses `lock` when the caller
  * already holds it. Fails with VERSION_CONFLICT unless the stored record is at
- * `expectedVersion` (0 for none), and writes it at the next version. An
+ * `expectedVersion` (0 for none), and writes it at the next version, claimed
+ * as writeVersionedDocument() claims it, so of two writers that read one
+ * version only one stores the next, even when one of them lost the lock. An
  * existing record keeps its `baseRevisionId`; a new one takes the active
  * revision, or null before the first activation.
  */
@@ -131,7 +150,7 @@ export function writeAuthoredRecord(record: AuthoredSiteInput, options: WriteAut
 export function writeAuthoredRecord(record: AuthoredSeriesInput, options: WriteAuthoredOptions): Promise<AuthoredSeries>;
 export function writeAuthoredRecord(record: AuthoredPhotoInput, options: WriteAuthoredOptions): Promise<AuthoredPhoto>;
 export async function writeAuthoredRecord(record: AuthoredRecordInput, options: WriteAuthoredOptions): Promise<AuthoredRecord> {
-    const { expectedVersion, lock, waitMs = AUTHORED_WAIT_MS } = options;
+    const { expectedVersion, lock, waitMs = AUTHORED_WAIT_MS, hooks } = options;
     const kind = record.kind as AuthoredKind;
     const id = kind === 'site' ? 'site' : String((record as { id?: unknown }).id);
     const ref = { kind, id };
@@ -155,12 +174,12 @@ export async function writeAuthoredRecord(record: AuthoredRecordInput, options: 
         if (lock.name !== AUTHORED_LOCK || realpathLoose(lock.root) !== realpathLoose(root) || lock.signal.aborted) {
             throw new AuthoredWriteError('LOCK_NOT_HELD', ref, 'The lock passed in is not a live hold on this data root\'s authored lock.');
         }
-        return commit(root, record, ref, expectedVersion);
+        return commit(root, record, ref, expectedVersion, hooks);
     }
     try {
         return await withLock(AUTHORED_LOCK, { root, leaseMs: AUTHORED_LEASE_MS, waitMs }, async ({ signal }) => {
             signal.throwIfAborted();
-            return commit(root, record, ref, expectedVersion);
+            return commit(root, record, ref, expectedVersion, hooks);
         });
     } catch (error) {
         if (error instanceof LockTimeoutError) throw new AuthoredWriteError('AUTHORED_LOCKED', ref, error.message, { holder: error.holder });
