@@ -280,7 +280,7 @@ test('the lightbox controls drop their focus ring at once on blur', async ({ pag
     for (const name of ['Close', 'Next', '2 of 12']) await expectNoFadeOnBlur(control(page, name));
 });
 
-/** Contrast between a control's lightest and darkest pixels. Over a flat white backdrop, that's its icon or halo against the white. */
+/** Contrast between a control's lightest and darkest pixels. Over a flat backdrop, that's its icon or halo against the backdrop. */
 async function iconContrast(target: Locator): Promise<number> {
     const png = await target.screenshot({ animations: 'disabled' });
     const { data, info } = await sharp(png).removeAlpha().raw().toBuffer({ resolveWithObject: true });
@@ -296,16 +296,21 @@ async function iconContrast(target: Locator): Promise<number> {
 }
 
 for (const theme of ['dark', 'light'] as const) {
-    test(`the lightbox icons keep 3:1 over a white photo in the ${theme} theme`, async ({ page }) => {
-        await openLightbox(page, { theme });
-        // The worst case, a white photo right behind every icon.
-        await page.addStyleTag({
-            content: '.yarl__container, .yarl__toolbar { background: #fff !important; backdrop-filter: none !important; } .yarl__container::before, .yarl__slide { visibility: hidden !important; }',
+    for (const [fixture, color] of [['white', '#fff'], ['black', '#000']] as const) {
+        test(`the lightbox icons keep 3:1 over the ${fixture} photo in the ${theme} theme`, async ({ page }) => {
+            await openLightbox(page, { theme });
+            // A flat backdrop in the fixture's color stands in for that photo right behind every icon. White is the
+            // hard case for the dark theme's white icons, and black for the light theme's dark ones. html[data-theme]
+            // outranks the light theme's own [data-theme="light"] .yarl__container background.
+            await page.addStyleTag({
+                content: `html[data-theme] .yarl__container, html[data-theme] .yarl__toolbar { background: ${color} !important; backdrop-filter: none !important; } .yarl__container::before, .yarl__slide { visibility: hidden !important; }`,
+            });
+            await expect(page.locator('.yarl__container')).toHaveCSS('background-color', color === '#fff' ? 'rgb(255, 255, 255)' : 'rgb(0, 0, 0)');
+            for (const name of ['Play', 'Zoom in', 'Close', 'Previous', 'Next']) {
+                expect(await iconContrast(control(page, name)), `${name}'s icon over ${fixture}`).toBeGreaterThanOrEqual(3);
+            }
         });
-        for (const name of ['Play', 'Zoom in', 'Close', 'Previous', 'Next']) {
-            expect(await iconContrast(control(page, name)), `${name}'s icon over white`).toBeGreaterThanOrEqual(3);
-        }
-    });
+    }
 }
 
 test('every app hover rule in the lightbox waits for a fine pointer', async ({ page }) => {

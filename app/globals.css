@@ -459,8 +459,10 @@ body {
 /* Light mode toolbar buttons */
 [data-theme="light"] .yarl__button {
     color: rgba(0, 0, 0, 0.5) !important;
-    /* Dark icons already keep 4:1 over a white photo */
-    filter: none !important;
+    /* The dark icons keep about 4:1 over a white photo on their own. Over a black
+       one they'd vanish, so a tight white halo, the dark theme's black one turned
+       around, keeps them at 3:1 there. */
+    filter: drop-shadow(0 0 1px #fff) drop-shadow(0 0 1px #fff) !important;
 }
 
 @media (hover: hover) and (pointer: fine) {
