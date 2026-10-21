@@ -12,6 +12,7 @@
     "start": "next start --hostname 127.0.0.1",
     "test": "vitest",
     "test:e2e": "playwright test",
+    "smoke:media": "bash ci/smoke-media.sh",
     "lint": "eslint .",
     "images:watch": "npx tsx scripts/imageWatcher.ts --watch",
     "images:process": "npx tsx scripts/imageWatcher.ts --once",
