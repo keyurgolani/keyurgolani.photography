@@ -519,6 +519,31 @@ describe('activateRevision', { timeout: 30_000 }, () => {
         expect(await listActivations(root)).toHaveLength(1);
     });
 
+    it("takes its data root from the lock when it isn't given", async () => {
+        const { catalog, root, run, editPhoto, first } = await launched({ seed: 84 });
+        await editPhoto(catalog.photos[0].id, (photo) => {
+            photo.caption = 'A caption revision 2 publishes.';
+        });
+        const second = await run();
+        expect(second.revisionNumber).toBe(2);
+
+        const result = await withLock(CATALOG_LOCK, { root }, (lock) => activateRevision({
+            lock, revisionId: first.revisionId ?? '', expectedActiveRevisionId: second.revisionId ?? '', kind: 'rollback', actor: 'test', reason: 'rollback',
+        }));
+        expect(result.outcome).toBe('ACTIVATED');
+        expect(await readActivePointer(root)).toMatchObject({ revisionId: first.revisionId });
+    });
+
+    it("refuses a hold on another data root's catalog lock", async () => {
+        const { root, first } = await launched({ seed: 85 });
+        const other = fs.mkdtempSync(path.join(os.tmpdir(), 'catalog-other-'));
+        cleanups.push(() => fs.promises.rm(other, { recursive: true, force: true }));
+        await expect(withLock(CATALOG_LOCK, { root: other }, (lock) => activateRevision({
+            lock, dataRoot: root, revisionId: first.revisionId ?? '', expectedActiveRevisionId: first.revisionId ?? '', kind: 'rollback', actor: 'test', reason: 'rollback',
+        }))).rejects.toThrow(/live hold on this data root's catalog lock/);
+        expect(await listActivations(root)).toHaveLength(1);
+    });
+
     it('rolls back to a stored revision under its first number, and the rebase after it brings the working layer along', async () => {
         const { catalog, root, run, editPhoto, first } = await launched({ seed: 81, photos: 4, series: 1 });
         const [rolled, edited, untouched] = catalog.photos.map((photo) => photo.id);

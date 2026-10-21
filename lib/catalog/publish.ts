@@ -432,7 +432,8 @@ export async function validateWorkingLayer(options: { dataRoot: string; reprofil
 export interface ActivateOptions {
     /** The catalog lock the caller holds. */
     lock: LockContext;
-    dataRoot: string;
+    /** The data root, `lock.root` when omitted. A root the lock isn't on is refused. */
+    dataRoot?: string;
     revisionId: string;
     /** Return ACTIVE_CHANGED, writing nothing, unless this revision is active. */
     expectedActiveRevisionId: string;
@@ -460,7 +461,7 @@ export interface ActivateResult {
  * active revision. The caller rebases the working layer afterwards.
  */
 export async function activateRevision(options: ActivateOptions): Promise<ActivateResult> {
-    const root = path.resolve(options.dataRoot);
+    const root = path.resolve(options.dataRoot ?? options.lock.root);
     const { lock, clock = Date.now } = options;
     assertCatalogHold(lock, root);
     assertActorAndReason(options.actor, options.reason);
