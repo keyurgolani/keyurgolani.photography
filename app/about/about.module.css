@@ -28,10 +28,12 @@
 }
 
 /* The portrait sizes from here rather than from ProfilePicture's own w-64 box,
-   which 200% text grows past 320 px. */
+   which 200% text grows past 320 px. Its photo runs about 1.5rem past the
+   bottom of the box, so the margin keeps the name clear of it. */
 .portrait {
   width: min(16rem, 100%);
   aspect-ratio: 1 / 1;
+  margin-block-end: 1rem;
 }
 
 @media (min-width: 768px) {
