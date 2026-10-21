@@ -17,9 +17,16 @@ import {
     setMembers,
     sharesSet,
     SOURCE_CHANGED,
+    uprightMarkerPath,
+    writeUprightMarker,
 } from './imageOptimizer';
 
 type Logger = Pick<Console, 'log' | 'error'>;
+
+/** `1 photo`, `2 photos`. */
+function photos(count: number, noun: string): string {
+    return `${count} ${noun}${count === 1 ? '' : 's'}`;
+}
 
 export interface StartupBatchResult {
     processed: string[];
@@ -183,6 +190,19 @@ export function createWatcherHandlers(
         return new Promise((resolve) => idleWaiters.push(resolve));
     }
 
+    /** Record the one-time upright rebuild done, so later starts skip it. */
+    function recordUpright(rebuilt: number): void {
+        try {
+            writeUprightMarker(rebuilt);
+        } catch (error) {
+            logger.error(`[ImageWatcher] Could not write ${uprightMarkerPath()}: ${error instanceof Error ? error.message : String(error)}. The next start rebuilds the orientation-tagged photos again.`);
+            return;
+        }
+        if (rebuilt > 0) {
+            logger.log(`[ImageWatcher] Rebuilt the sets of ${photos(rebuilt, 'orientation-tagged photo')}. Clear the /_next/image cache, so it drops what it made from the old sets.`);
+        }
+    }
+
     return {
         async onAdd(filePath) {
             if (stopped || !isSourceFile(filePath)) return;
@@ -252,20 +272,29 @@ export function createWatcherHandlers(
             const result: StartupBatchResult = { processed: [], skipped: [], errors: [] };
             if (stopped) return result;
             logger.log('[ImageWatcher] Checking for unprocessed images...');
-            const { files, shared } = await planSources({ force });
+            const { files, upright, shared } = await planSources({ force });
             for (const { file, owner, undecodable } of shared) {
                 logger.log(`[ImageWatcher] Skipping ${file}: ${undecodable ? `it can't be decoded, so ${owner} has the derivatives they share` : `it shares its derivatives with ${owner}`}.`);
             }
+            const turned = new Set(upright ?? []);
+            if (turned.size > 0) {
+                logger.log(`[ImageWatcher] Rebuilding the sets of ${photos(turned.size, 'orientation-tagged photo')} once, since a set written before derivatives were turned upright shows its photo turned or mirrored.`);
+            }
             if (files.length === 0) {
+                if (upright !== null) recordUpright(0);
                 logger.log('[ImageWatcher] All images are processed.');
                 return result;
             }
 
             logger.log(`[ImageWatcher] Found ${files.length} unprocessed images.`);
-            const outcomes = await Promise.all(files.map((file, index) => enqueue(file, false, async () => {
-                logger.log(`[ImageWatcher] Processing ${index + 1}/${files.length}: ${file}`);
-                await refreshImage(file, { force });
-            }, force)));
+            const outcomes = await Promise.all(files.map((file, index) => {
+                // Each job's own force, which a live change that drops the job takes on.
+                const jobForce = force || turned.has(file);
+                return enqueue(file, false, async () => {
+                    logger.log(`[ImageWatcher] Processing ${index + 1}/${files.length}: ${file}`);
+                    await refreshImage(file, { force: jobForce });
+                }, jobForce);
+            }));
 
             const lists: Record<Outcome, string[]> = { done: result.processed, skipped: result.skipped, failed: result.errors };
             files.forEach((file, index) => lists[outcomes[index]].push(file));
@@ -273,6 +302,12 @@ export function createWatcherHandlers(
                 `[ImageWatcher] Completed: ${result.processed.length} processed, ` +
                 `${result.skipped.length} skipped, ${result.errors.length} errors`,
             );
+            if (upright !== null) {
+                // Recorded only once every one of them is rebuilt, so a failure or a stop leaves it to the next start.
+                const left = upright.filter((file) => outcomes[files.indexOf(file)] !== 'done');
+                if (left.length === 0) recordUpright(upright.length);
+                else logger.log(`[ImageWatcher] These orientation-tagged photos weren't rebuilt, so the next start tries again: ${left.join(', ')}.`);
+            }
             return result;
         },
 
