@@ -8,7 +8,7 @@ import Slideshow from 'yet-another-react-lightbox/plugins/slideshow';
 import Thumbnails from 'yet-another-react-lightbox/plugins/thumbnails';
 import 'yet-another-react-lightbox/plugins/thumbnails.css';
 import Image from 'next/image';
-import { photoEntryName } from '@/lib/a11y/photoName';
+import { photoEntryName, photoImageAlt } from '@/lib/a11y/photoName';
 
 interface ImageItem {
     id: number;
@@ -120,11 +120,13 @@ export default function Gallery({ images, className = '' }: GalleryProps) {
     const openerScrollRef = useRef(0);
 
     // Use pre-optimized image paths directly (already WebP format)
-    const photos = images.map(img => ({
+    const photos = images.map((img, i) => ({
         src: img.src,  // Pre-optimized 1920px WebP
         thumbnail: img.thumbnail || img.src,  // Pre-optimized 400px WebP
         width: img.width,
         height: img.height,
+        // Each slide's image is named. Thumbnails keep alt="", since their buttons carry the name.
+        alt: photoImageAlt({ position: i + 1, total: images.length }),
     }));
 
     // Granular "Best Fit" Layout Logic

@@ -59,6 +59,17 @@ for (const viewport of [undefined, { width: 640, height: 400 }]) {
     });
 }
 
+test('each slide image is named for its photograph, and the thumbnails keep alt=""', async ({ page }) => {
+    await openLightbox(page, { position: 2 });
+    await expect(page.locator('.yarl__slide_current .yarl__slide_image')).toHaveAttribute('alt', 'Photograph 2 of 12');
+    // Preloaded neighbors carry their own names.
+    const slides = await page.locator('.yarl__slide_image').evaluateAll((images) => images.map((image) => image.getAttribute('alt')));
+    expect(slides).toEqual(expect.arrayContaining(['Photograph 1 of 12', 'Photograph 2 of 12', 'Photograph 3 of 12']));
+    const thumbnails = await page.locator('.yarl__thumbnails_thumbnail img').evaluateAll((images) => images.map((image) => image.getAttribute('alt')));
+    expect(thumbnails.length).toBeGreaterThan(0);
+    expect(thumbnails.every((alt) => alt === '')).toBe(true);
+});
+
 test('Tab and Shift+Tab reach every enabled control', async ({ page }) => {
     await openLightbox(page);
     const labels = await enabledControls(page).evaluateAll((elements) => elements.map((el) => el.getAttribute('aria-label')));
