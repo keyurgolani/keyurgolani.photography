@@ -283,6 +283,25 @@ describe('HomeView', () => {
     expect(playback()).toBe('held');
   });
 
+  it('a key press after a mouse focus in the chrome makes it keyboard focus, which holds with no move', async () => {
+    const { playback, becomeReady } = await renderHome();
+    becomeReady();
+    const next = button('Next photograph');
+
+    // A click focuses Next without :focus-visible, which doesn't hold.
+    focusVisible(next, false);
+    act(() => next.focus());
+    expect(playback()).toBe('advancing');
+
+    // The browser shows the ring once a key is pressed, with no new focus event.
+    vi.restoreAllMocks();
+    focusVisible(next, true);
+    fireEvent.keyDown(next, { key: 'Shift' });
+    expect(playback()).toBe('held');
+    advance(HOME_AUTO_ADVANCE_MS * 2);
+    expect(position()).toBe('01 / 03');
+  });
+
   it('in Strict Mode, unmounting leaves no timers and balanced listeners', async () => {
     const counts = { added: 0, removed: 0 };
     for (const target of [document, window]) {

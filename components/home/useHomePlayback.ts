@@ -51,8 +51,13 @@ export function useHomePlayback({ photoIds, ready, intervalMs = HOME_AUTO_ADVANC
     const interval = useMemo(() => resolveInterval(intervalMs), [intervalMs]);
 
     // The reducer reads this render's preference, visibility, and readiness, so a queued tick never acts on stale ones.
+    // An action that changes nothing hands back the same state, so React skips the render.
     const [state, dispatch] = useReducer(
-        (current: PlaybackModel, action: PlaybackAction) => reducePlayback({ ...current, reducedMotion, visible, ready }, action),
+        (current: PlaybackModel, action: PlaybackAction) => {
+            const model = { ...current, reducedMotion, visible, ready };
+            const result = reducePlayback(model, action);
+            return result === model ? current : result;
+        },
         photoIds,
         (ids) => initialPlayback({ photoIds: ids, intent: isHomePlaybackPaused() ? 'paused' : 'none' }),
     );

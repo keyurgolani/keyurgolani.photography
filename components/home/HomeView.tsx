@@ -67,6 +67,19 @@ export default function HomeView({ photos }: HomeViewProps) {
     setHold('focus', isKeyboardFocus(event.target));
   };
 
+  // A key press turns a click's focus into keyboard focus with no new focus event, so each key checks again.
+  // It's a native listener because the focus-hold div isn't interactive, and lint keeps key handlers off it.
+  const holdRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const area = holdRef.current;
+    if (!area) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.target instanceof Element && isKeyboardFocus(event.target)) setHold('focus', true);
+    };
+    area.addEventListener('keydown', handleKeyDown);
+    return () => area.removeEventListener('keydown', handleKeyDown);
+  }, [setHold]);
+
   const handleBlur = (event: React.FocusEvent<HTMLDivElement>) => {
     if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setHold('focus', false);
   };
@@ -87,7 +100,7 @@ export default function HomeView({ photos }: HomeViewProps) {
 
       <RevealingContents onVisibleChange={setChromeVisible}>
         {/* Keyboard focus anywhere in here holds the slideshow. */}
-        <div className="relative flex flex-col items-center justify-end h-full pb-8" onFocus={handleFocus} onBlur={handleBlur}>
+        <div ref={holdRef} className="relative flex flex-col items-center justify-end h-full pb-8" onFocus={handleFocus} onBlur={handleBlur}>
           <HomeSequenceControls
             index={playback.index}
             count={playback.count}

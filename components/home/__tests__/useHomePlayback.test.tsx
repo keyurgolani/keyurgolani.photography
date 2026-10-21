@@ -1,11 +1,11 @@
-import { act, renderHook } from '@testing-library/react';
+import { act, render, renderHook } from '@testing-library/react';
 import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mediaListenerCounts, setPrefersReducedMotion } from '@/test/matchMedia';
 import { setDocumentVisibility } from '@/test/visibility';
 import { rememberHomePlaybackPaused } from '@/utils/homeHeroCache';
 import { HOME_AUTO_ADVANCE_MS } from '../homePlayback';
-import { useHomePlayback } from '../useHomePlayback';
+import { useHomePlayback, type HomePlayback } from '../useHomePlayback';
 
 const INTERVAL = HOME_AUTO_ADVANCE_MS;
 const ids = ['a', 'b', 'c', 'd'];
@@ -218,6 +218,29 @@ describe('useHomePlayback', () => {
         expect(result.current.index).toBe(0);
         advance(1);
         expect(result.current.index).toBe(1);
+    });
+
+    it('an action that changes nothing keeps the same state, so nothing under the hook renders again', () => {
+        const counts = { child: 0 };
+        const handle: { playback?: HomePlayback } = {};
+        function Child() {
+            counts.child += 1;
+            return null;
+        }
+        function Harness() {
+            handle.playback = useHomePlayback({ photoIds: ids, ready: true });
+            return <Child />;
+        }
+        render(<Harness />);
+        const settled = counts.child;
+        act(() => handle.playback?.setHold('focus', false));
+        act(() => handle.playback?.setHold('pointer', false));
+        expect(counts.child).toBe(settled);
+
+        // A real change renders, so the check above can fail.
+        act(() => handle.playback?.setHold('focus', true));
+        expect(counts.child).toBe(settled + 1);
+        expect(handle.playback?.playbackState).toBe('held');
     });
 
     it('in Strict Mode, unmounting leaves no timers and balanced listeners', () => {

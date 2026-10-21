@@ -28,9 +28,12 @@ const HomeSequence: React.FC<HomeSequenceProps> = ({ photos, index, playbackStat
   const hasNotifiedReady = useRef(false);
   const activeId = photos[index]?.id;
 
-  // The slide that just left keeps its zoom, paused, until its fade ends, so it doesn't snap back.
-  const [shown, setShown] = useState<{ active?: string; outgoing?: string }>({ active: activeId });
-  if (shown.active !== activeId) setShown({ active: activeId, outgoing: shown.active });
+  // Each slide that left keeps its zoom, paused, until its own fade ends, so two quick moves can't snap one back.
+  const [shown, setShown] = useState<{ active?: string; outgoing: readonly string[] }>({ active: activeId, outgoing: [] });
+  if (shown.active !== activeId) {
+    const stillFading = shown.outgoing.filter((id) => id !== activeId && id !== shown.active);
+    setShown({ active: activeId, outgoing: shown.active === undefined ? stillFading : [...stillFading, shown.active] });
+  }
 
   const notifyReady = () => {
     if (hasNotifiedReady.current) return;
@@ -84,7 +87,7 @@ const HomeSequence: React.FC<HomeSequenceProps> = ({ photos, index, playbackStat
     <div className={styles.carousel} data-zoom={playbackState === 'advancing' ? 'running' : 'paused'}>
       {photos.map((photo, slide) => {
         const active = slide === index;
-        const outgoing = photo.id === shown.outgoing;
+        const outgoing = shown.outgoing.includes(photo.id);
         // Render the photograph on screen, its neighbors, and anything already loaded.
         const render = Math.abs(slide - index) <= 1 || thumbnails.has(photo.id);
         const thumbnailLoaded = thumbnails.has(photo.id);
@@ -100,7 +103,9 @@ const HomeSequence: React.FC<HomeSequenceProps> = ({ photos, index, playbackStat
             aria-hidden={!active}
             onTransitionEnd={(event) => {
               if (outgoing && event.propertyName === 'opacity' && event.target === event.currentTarget) {
-                setShown((current) => (current.outgoing === photo.id ? { active: current.active } : current));
+                setShown((current) =>
+                  current.outgoing.includes(photo.id) ? { ...current, outgoing: current.outgoing.filter((id) => id !== photo.id) } : current,
+                );
               }
             }}
           >

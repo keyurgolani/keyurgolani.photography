@@ -60,10 +60,12 @@ describe('HomeSequence', () => {
     const { slides, rerender } = renderSequence({ index: 1 });
     expect(slides().map((slide) => slide.getAttribute('aria-hidden'))).toEqual(['true', 'false']);
 
-    // A reordered list keeps each slide with its photo.
+    // A reordered list keeps each slide with its photo: the node on screen moves with it, not just its content.
+    const second = slides()[1];
     const reordered = [photos[1], photos[0]];
     rerender(<HomeSequence photos={reordered} index={0} playbackState="advancing" />);
     const shown = slides().find((slide) => slide.getAttribute('aria-hidden') === 'false');
+    expect(shown).toBe(second);
     expect(shown?.querySelector('img[data-layer="optimized"]')).toHaveAttribute('alt', 'Photograph 2 of 2');
   });
 
@@ -93,6 +95,39 @@ describe('HomeSequence', () => {
     fireEvent.transitionEnd(first, { propertyName: 'opacity' });
     expect(first.classList).not.toContain(zoomClass);
     expect(slides()[1].classList).toContain(zoomClass);
+  });
+
+  it('two quick moves keep both slides that left zoomed, each until its own fade ends', () => {
+    const three = [photo(1, 3), photo(2, 3), photo(3, 3)];
+    const { slides, rerender } = renderSequence({ list: three });
+    const [first, second, third] = slides();
+    const zoomClass = Array.from(first.classList).find((name) => name.includes('zoom'));
+    expect(zoomClass).toBeDefined();
+
+    rerender(<HomeSequence photos={three} index={1} playbackState="advancing" />);
+    rerender(<HomeSequence photos={three} index={2} playbackState="advancing" />);
+    for (const slide of [first, second, third]) expect(slide.classList).toContain(zoomClass);
+
+    fireEvent.transitionEnd(first, { propertyName: 'opacity' });
+    expect(first.classList).not.toContain(zoomClass);
+    expect(second.classList).toContain(zoomClass);
+
+    fireEvent.transitionEnd(second, { propertyName: 'opacity' });
+    expect(second.classList).not.toContain(zoomClass);
+    expect(third.classList).toContain(zoomClass);
+  });
+
+  it('a slide that comes back while still fading is the one on screen again, not one that left', () => {
+    const three = [photo(1, 3), photo(2, 3), photo(3, 3)];
+    const { slides, rerender } = renderSequence({ list: three });
+    const [first, second] = slides();
+    const isOutgoing = (slide: HTMLElement) => Array.from(slide.classList).some((name) => name.includes('outgoing'));
+
+    rerender(<HomeSequence photos={three} index={1} playbackState="advancing" />);
+    rerender(<HomeSequence photos={three} index={0} playbackState="advancing" />);
+    expect(first.getAttribute('aria-hidden')).toBe('false');
+    expect(isOutgoing(first)).toBe(false);
+    expect(isOutgoing(second)).toBe(true);
   });
 
   it('renders nothing without photos', () => {
