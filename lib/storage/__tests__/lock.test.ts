@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runTsx } from '../../../test/helpers/runTsx';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
-import { LockLostError, LockTimeoutError, MAX_LEASE_MS, withLock, type LockRecord } from '../lock';
+import { LockLostError, LockTimeoutError, MAX_LEASE_MS, withLock, type LockContext, type LockRecord } from '../lock';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -364,6 +364,39 @@ describe('withLock', () => {
         // The old holder's release must not delete the new holder's lock.
         expect(outcome.stillLocked).toBe(true);
         expect(lockDirEntries()).toEqual([]);
+    });
+
+    it('re-reads the lock file in isHeld(), which turns false at a takeover before the paused holder\'s signal does', async () => {
+        const entered = deferred<LockContext>();
+        const pausedInRenewal = deferred();
+        const resume = deferred();
+        let pause = false;
+        const holder = withLock('registry', {
+            root: data.root,
+            leaseMs: 200,
+            hooks: {
+                async beforeRenew() {
+                    if (!pause) return;
+                    pausedInRenewal.resolve();
+                    await resume.promise;
+                },
+            },
+        }, async (context) => {
+            entered.resolve(context);
+            await new Promise<void>((done) => context.signal.addEventListener('abort', () => done()));
+        });
+        const context = await entered.promise;
+        await expect(context.isHeld()).resolves.toBe(true);
+        pause = true;
+        await pausedInRenewal.promise;
+
+        const seen = await withLock('registry', { root: data.root, leaseMs: 200, waitMs: 3_000, pollMs: 20 }, async () => {
+            const result = { aborted: context.signal.aborted, held: await context.isHeld() };
+            resume.resolve();
+            await holder;
+            return result;
+        });
+        expect(seen).toEqual({ aborted: false, held: false });
     });
 
     it('lets exactly one of two processes break an expired lease, and never runs them at once', { timeout: 60_000 }, async () => {

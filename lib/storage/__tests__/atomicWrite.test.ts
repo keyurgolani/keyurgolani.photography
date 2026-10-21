@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runTsx } from '../../../test/helpers/runTsx';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
-import { atomicWriteFile, atomicWriteJson } from '../atomicWrite';
+import { atomicCreateFile, atomicCreateJson, atomicWriteFile, atomicWriteJson } from '../atomicWrite';
 
 let data: TempDataRoot;
 
@@ -83,5 +83,50 @@ describe('atomicWriteJson', () => {
 
         await atomicWriteJson(file, { generation: 3 });
         expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ generation: 3 });
+    });
+});
+
+describe('atomicCreateJson', () => {
+    it('creates a missing file whole, readable by its owner only, and leaves no temp file', async () => {
+        const file = data.file('revision.json');
+        await expect(atomicCreateJson(file, { generation: 1 })).resolves.toBe(true);
+        expect(fs.readFileSync(file, 'utf8')).toBe('{\n  "generation": 1\n}\n');
+        expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+        expect(data.files()).toEqual(['revision.json']);
+    });
+
+    it('never replaces a file that is already there, and says so', async () => {
+        const file = data.file('revision.json');
+        fs.writeFileSync(file, 'first\n');
+        const before = fs.statSync(file);
+        await expect(atomicCreateFile(file, 'second\n')).resolves.toBe(false);
+        expect(fs.readFileSync(file, 'utf8')).toBe('first\n');
+        expect(fs.statSync(file).ino).toBe(before.ino);
+        expect(data.files()).toEqual(['revision.json']);
+    });
+
+    it('creates nothing and removes its temp file when a fault hits before the link', async () => {
+        const file = data.file('revision.json');
+        await expect(atomicCreateJson(file, { generation: 1 }, {
+            faults: { beforeRename() { throw new Error('injected fault before link'); } },
+        })).rejects.toThrow('injected fault before link');
+        expect(data.files()).toEqual([]);
+    });
+
+    it('has created the file once the link has happened, even if a later step fails', async () => {
+        const file = data.file('revision.json');
+        await expect(atomicCreateJson(file, { generation: 1 }, {
+            faults: { afterRename() { throw new Error('injected fault after link'); } },
+        })).rejects.toThrow('injected fault after link');
+        expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ generation: 1 });
+        expect(data.files()).toEqual(['revision.json']);
+    });
+
+    it('lets exactly one of two racing writers create the file', async () => {
+        const file = data.file('revision.json');
+        const results = await Promise.all([atomicCreateFile(file, 'a\n'), atomicCreateFile(file, 'b\n')]);
+        expect(results.filter(Boolean)).toHaveLength(1);
+        expect(fs.readFileSync(file, 'utf8')).toBe(results[0] ? 'a\n' : 'b\n');
+        expect(data.files()).toEqual(['revision.json']);
     });
 });
