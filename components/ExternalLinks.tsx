@@ -1,4 +1,4 @@
-import { ExternalLink } from 'lucide-react';
+import { ArrowUpRight } from 'lucide-react';
 import type { ExternalDestination } from '@/data/artist';
 import ExternalLinkIcon from './ExternalLinkIcon';
 import styles from './ExternalLinks.module.css';
@@ -16,7 +16,8 @@ function hasSafeHref({ href }: ExternalDestination): boolean {
 /**
  * About's links to the artist's profiles, the site source, and any contact,
  * in authored order. Disabled entries and unsafe hrefs are left out, and with
- * none left there's no nav. Every link opens in the same tab.
+ * none left there's no nav. Every link opens in the same tab. `data-brand`
+ * picks the brand's light in ExternalLinks.module.css.
  */
 export default function ExternalLinks({ destinations }: { destinations: ExternalDestination[] }) {
   const shown = destinations.filter((destination) => destination.enabled && hasSafeHref(destination));
@@ -28,10 +29,14 @@ export default function ExternalLinks({ destinations }: { destinations: External
       <ul role="list" className={styles.list}>
         {shown.map(({ id, label, href, icon }) => (
           <li key={id}>
-            <a href={href} className={styles.link}>
-              {icon ? <ExternalLinkIcon icon={icon} className={styles.icon} /> : null}
+            <a href={href} className={styles.link} data-brand={icon}>
+              {icon ? (
+                <span className={styles.mark}>
+                  <ExternalLinkIcon icon={icon} className={styles.icon} />
+                </span>
+              ) : null}
               <span className={styles.label}>{label}</span>
-              <ExternalLink size={14} strokeWidth={1.5} className={styles.arrow} aria-hidden="true" focusable="false" />
+              <ArrowUpRight size={16} strokeWidth={1.75} className={styles.arrow} aria-hidden="true" focusable="false" />
             </a>
           </li>
         ))}

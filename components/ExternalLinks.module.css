@@ -1,6 +1,7 @@
-/* About's external links. Colors come only from the About tokens, each with a
-   fallback that ignores the theme, since About's ground does too. Links never
-   transform, transition, or animate, and nothing in the list waits for hover. */
+/* About's external links. Ink, ground, and rule come from the About tokens,
+   each with a fallback that ignores the theme, since About's ground does too.
+   The only other colors are each brand's own light: a glow behind the mark
+   and the underline's color while a link is lit. Text stays in the ink. */
 .nav {
   /* #1's two-color ring, drawn in About's ink over its ground. */
   --focus-ring-light: var(--about-ink, #f0f0f0);
@@ -8,8 +9,8 @@
   width: 100%;
 }
 
-/* One full-width link per row on narrow screens, then a wrapping row. DOM
-   order is the only order. */
+/* One full-width row per link on narrow screens. From 40rem up, a wrapping
+   row of equal tiles. DOM order is the only order. */
 .list {
   display: flex;
   flex-direction: column;
@@ -19,46 +20,213 @@
   list-style: none;
 }
 
-@media (min-width: 40rem) {
-  .list {
-    flex-flow: row wrap;
-    justify-content: center;
-  }
+/* Each link's place in the first light, which passes along the list once. */
+.list > li:nth-child(2) { --order: 1; }
+.list > li:nth-child(3) { --order: 2; }
+.list > li:nth-child(4) { --order: 3; }
+.list > li:nth-child(5) { --order: 4; }
+.list > li:nth-child(6) { --order: 5; }
+
+/* The brand's light behind the mark, and the underline's lit color. */
+.link[data-brand='instagram'] {
+  --brand-glow: radial-gradient(circle at 35% 65%, #fb923c 0%, #e1306c 36%, #9333ea 58%, transparent 72%);
+  --brand-line: #e1306c;
 }
 
+.link[data-brand='500px'] {
+  --brand-glow: radial-gradient(closest-side, #22d3ee 0%, #0099e5 48%, transparent 100%);
+  --brand-line: #0099e5;
+}
+
+.link[data-brand='flickr'] {
+  --brand-glow: radial-gradient(circle at 28% 50%, #0063dc 0%, transparent 42%), radial-gradient(circle at 72% 50%, #ff0084 0%, transparent 42%);
+  --brand-line: #ff0084;
+}
+
+.link[data-brand='github'] {
+  --brand-glow: radial-gradient(circle, var(--about-ink, #f0f0f0) 0%, transparent 62%);
+  --brand-line: var(--about-ink, #f0f0f0);
+}
+
+/* --lit is 0 at rest and 1 on focus or a fine pointer's hover. Every lit
+   style below reads it, so hover and focus always show the same thing. The
+   link itself never transitions its outline, box-shadow, or opacity, so the
+   focus ring can't fade, and nothing on it ever transforms. */
 .link {
+  --lit: 0;
+  --soft-ink: color-mix(in srgb, var(--about-ink, #f0f0f0) calc(72% + var(--lit) * 28%), var(--about-ground, #000));
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 8px;
   min-width: 2.75rem;
   min-height: 2.75rem;
   padding: 0.5rem;
-  border: 1px solid var(--about-rule, #808080);
+  border: 1px solid;
+  border-color: color-mix(in srgb, var(--brand-line, var(--about-ink, #f0f0f0)) calc(var(--lit) * 55%), var(--about-rule, #808080));
   border-radius: 3px;
-  background: var(--about-ground, #000);
+  background-color: color-mix(in srgb, var(--about-ink, #f0f0f0) calc(var(--lit) * 6%), var(--about-ground, #000));
   color: var(--about-ink, #f0f0f0);
   font-size: 1rem;
   line-height: 1.5;
   text-decoration: none;
+  transition-property: border-color, background-color;
+  transition-duration: var(--motion-fast, 160ms);
+  transition-timing-function: var(--ease-standard, ease-out);
+}
+
+.link:focus-visible {
+  --lit: 1;
 }
 
 @media (hover: hover) and (pointer: fine) {
   .link:hover {
-    border-color: var(--about-ink, #f0f0f0);
+    --lit: 1;
   }
 }
 
-/* The underline is the cue that doesn't rely on color. Long labels wrap
-   anywhere instead of clipping. */
+/* A fixed slot keeps the labels in one column. The mark brightens to the
+   full ink when lit, over the brand's light. */
+.mark {
+  position: relative;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  color: var(--soft-ink);
+  isolation: isolate;
+  transition: color var(--motion-fast, 160ms) var(--ease-standard, ease-out);
+}
+
+.mark::before {
+  content: '';
+  position: absolute;
+  inset: -8px;
+  z-index: -1;
+  border-radius: 50%;
+  background: var(--brand-glow, none);
+  filter: blur(7px);
+  opacity: calc(var(--lit) * 0.8);
+  pointer-events: none;
+  transition: opacity var(--motion-base, 220ms) var(--ease-standard, ease-out);
+  animation: first-light 800ms var(--ease-standard, ease-out) backwards;
+  animation-delay: calc(200ms + var(--order, 0) * 110ms);
+}
+
+@keyframes first-light {
+  0%,
+  100% {
+    opacity: 0;
+  }
+
+  40% {
+    opacity: 0.6;
+  }
+}
+
+.icon {
+  width: 22px;
+  height: 22px;
+}
+
+/* 500px's mark is its wordmark, so it gets the slot's full width. */
+.icon[data-icon='500px'] {
+  width: 32px;
+  height: auto;
+}
+
+/* The underline is the cue that doesn't rely on color. Lit, it thickens and
+   takes the brand's color. Long labels wrap anywhere instead of clipping. */
 .label {
   min-width: 0;
   overflow-wrap: anywhere;
-  text-decoration: underline;
-  text-decoration-thickness: 1px;
-  text-underline-offset: 0.2em;
+  text-decoration-line: underline;
+  text-decoration-thickness: calc(1px + var(--lit) * 1px);
+  text-decoration-color: color-mix(in srgb, var(--brand-line, currentColor) calc(var(--lit) * 100%), currentColor);
+  text-underline-offset: 0.22em;
+  transition:
+    text-decoration-color var(--motion-fast, 160ms) var(--ease-standard, ease-out),
+    text-decoration-thickness var(--motion-fast, 160ms) var(--ease-standard, ease-out);
 }
 
-.icon,
+/* The arrow lifts toward the destination when lit. */
 .arrow {
   flex: none;
+  margin-inline-start: auto;
+  color: var(--soft-ink);
+  translate: calc(var(--lit) * 2px) calc(var(--lit) * -2px);
+  transition:
+    color var(--motion-fast, 160ms) var(--ease-standard, ease-out),
+    translate var(--motion-fast, 160ms) var(--ease-standard, ease-out);
+}
+
+/* Tiles: the mark at the top, the label and arrow along the bottom. */
+@media (min-width: 40rem) {
+  .list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 8.5rem), 1fr));
+    gap: 0.75rem;
+    max-width: 40rem;
+    margin-inline: auto;
+  }
+
+  .link {
+    display: grid;
+    grid-template:
+      'mark mark' 1fr
+      'label arrow' auto / 1fr auto;
+    align-items: end;
+    gap: 1rem 8px;
+    min-height: 6.5rem;
+    padding: 0.75rem;
+  }
+
+  .mark {
+    grid-area: mark;
+    align-self: start;
+    width: auto;
+    height: auto;
+  }
+
+  .mark::before {
+    inset: -12px;
+  }
+
+  .icon {
+    width: 28px;
+    height: 28px;
+  }
+
+  .icon[data-icon='500px'] {
+    width: 44px;
+    height: auto;
+  }
+
+  .label {
+    grid-area: label;
+  }
+
+  .arrow {
+    grid-area: arrow;
+    margin: 0;
+  }
+}
+
+/* Under reduced motion nothing moves: no first light, and the arrow stays
+   put. The light still shows when a link is lit, at once. */
+@media (prefers-reduced-motion: reduce) {
+  .mark::before {
+    animation: none;
+  }
+
+  .arrow {
+    translate: none;
+  }
+}
+
+/* Forced colors drop the glow and keep the system's own colors. */
+@media (forced-colors: active) {
+  .mark::before {
+    display: none;
+  }
 }
