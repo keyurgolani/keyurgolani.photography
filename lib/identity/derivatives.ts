@@ -20,7 +20,10 @@ import { VARIANT_FORMATS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth 
  * job's asset revision before anything is encoded, and a set already in
  * place is kept only if its manifest names the same photo, revision, and
  * profile and every file matches its size and SHA-256. The manifest is
- * written last, so a set without one was never finished.
+ * written last, so a set without one was never finished. A build holds
+ * stagingLockName(<id>) for as long as its `staging/<id>` folder exists, so
+ * a starting worker can remove the folders of killed builds without touching
+ * a live one's.
  *
  * resolveAsset() and the manifest reader live in lib/media/manifest.ts, so
  * the web process can read sets without loading the encoder.
@@ -72,8 +75,47 @@ export function stagingRoot(root: string): string {
     return path.join(root, 'staging');
 }
 
+/** The lock a build holds while `staging/<id>` exists. */
+export function stagingLockName(id: string): string {
+    return `build-${id}`;
+}
+
+/** A name a build's staging folder can have: one that makes a valid lock name. */
+const STAGING_ID = /^[a-z0-9-]+$/;
+
 const iso = (ms: number) => new Date(ms).toISOString();
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/**
+ * Remove the staging folders that builds killed before publishing left. A
+ * folder whose lock this takes belongs to no live build. A build killed less
+ * than a lease ago still holds its lock, so a later start removes its folder.
+ * Anything in `staging/` a build doesn't make is left alone, and a folder that
+ * can't be removed is logged and left for the next start. Returns the names
+ * removed.
+ */
+export async function removeAbandonedStaging(root: string, { leaseMs, logger = console }: { leaseMs?: number; logger?: Logger } = {}): Promise<string[]> {
+    const dir = stagingRoot(root);
+    let entries: fs.Dirent[];
+    try {
+        entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch (error) {
+        if (hasErrorCode(error, 'ENOENT')) return [];
+        throw error;
+    }
+    const removed: string[] = [];
+    for (const name of entries.filter((entry) => entry.isDirectory() && STAGING_ID.test(entry.name)).map((entry) => entry.name).sort()) {
+        try {
+            await withLock(stagingLockName(name), { root, waitMs: 0, leaseMs }, () => fs.promises.rm(path.join(dir, name), { recursive: true, force: true }));
+            removed.push(name);
+        } catch (error) {
+            // Held: a live build owns the folder, or one killed too recently to tell.
+            if (error instanceof LockTimeoutError) continue;
+            logger.warn(`[derivatives] Could not remove staging/${name}: ${errorText(error)}`);
+        }
+    }
+    return removed;
+}
 
 /** Encode one variant the way profile 1 says: upright, inside the width, never enlarged, no metadata. */
 async function encode(source: Buffer, width: VariantWidth, format: VariantFormat): Promise<Buffer> {
@@ -183,38 +225,48 @@ export async function buildDerivativeSet(job: DerivativeJob, options: BuildOptio
     if (revision.width === null) return recordFailed('undecodable');
     const orientedWidth = revision.width;
 
-    const staging = path.join(stagingRoot(root), idGen());
+    const id = idGen();
+    const staging = path.join(stagingRoot(root), id);
     const writeFile = faults.writeFile ?? ((file: string, data: Uint8Array) => fs.promises.writeFile(file, data, { mode: PRIVATE_FILE_MODE, flag: 'wx' }));
     try {
-        await fs.promises.mkdir(staging, { recursive: true, mode: PRIVATE_DIR_MODE });
-        const variants = {} as Record<VariantWidth, Record<VariantFormat, VariantFile>>;
-        for (const width of VARIANT_WIDTHS) {
-            variants[width] = {} as Record<VariantFormat, VariantFile>;
-            for (const format of VARIANT_FORMATS) {
-                const name = `${width}.${format}`;
-                const encoded = await encode(source, width, format);
-                const data = (await faults.afterEncode?.(name, encoded)) ?? encoded;
-                const size = await validated(name, data, format, Math.min(PROFILE_1.variants[width].width, orientedWidth));
-                await writeFile(path.join(staging, name), data);
-                variants[width][format] = { ...size, bytes: data.length, sha256: createHash('sha256').update(data).digest('hex') };
-                await faults.afterVariant?.(name);
+        // Taken before the folder exists and let go only once it is published or removed.
+        await withLock(stagingLockName(id), { root, waitMs: 0, leaseMs: options.lock?.leaseMs }, async ({ signal }) => {
+            try {
+                await fs.promises.mkdir(staging, { recursive: true, mode: PRIVATE_DIR_MODE });
+                const variants = {} as Record<VariantWidth, Record<VariantFormat, VariantFile>>;
+                for (const width of VARIANT_WIDTHS) {
+                    variants[width] = {} as Record<VariantFormat, VariantFile>;
+                    for (const format of VARIANT_FORMATS) {
+                        const name = `${width}.${format}`;
+                        const encoded = await encode(source, width, format);
+                        const data = (await faults.afterEncode?.(name, encoded)) ?? encoded;
+                        const size = await validated(name, data, format, Math.min(PROFILE_1.variants[width].width, orientedWidth));
+                        await writeFile(path.join(staging, name), data);
+                        variants[width][format] = { ...size, bytes: data.length, sha256: createHash('sha256').update(data).digest('hex') };
+                        await faults.afterVariant?.(name);
+                    }
+                }
+                const manifest: AssetManifest = {
+                    schemaVersion: 1,
+                    photoId: job.photoId,
+                    assetRevision: job.assetRevision,
+                    profileId: job.profileId,
+                    variants,
+                    lqip: await lqipOf(source),
+                    createdAt: iso(clock()),
+                };
+                await faults.beforeManifest?.();
+                await writeFile(path.join(staging, MANIFEST_FILE), Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`));
+                await faults.beforePublish?.();
+                // A build that stalled past its lease may have lost the folder to a starting worker.
+                signal.throwIfAborted();
+                await publishDirectory(staging, finalDir);
+            } catch (error) {
+                await fs.promises.rm(staging, { recursive: true, force: true });
+                throw error;
             }
-        }
-        const manifest: AssetManifest = {
-            schemaVersion: 1,
-            photoId: job.photoId,
-            assetRevision: job.assetRevision,
-            profileId: job.profileId,
-            variants,
-            lqip: await lqipOf(source),
-            createdAt: iso(clock()),
-        };
-        await faults.beforeManifest?.();
-        await writeFile(path.join(staging, MANIFEST_FILE), Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`));
-        await faults.beforePublish?.();
-        await publishDirectory(staging, finalDir);
+        });
     } catch (error) {
-        await fs.promises.rm(staging, { recursive: true, force: true });
         return recordFailed(error instanceof IntegrityError ? `integrity: ${error.problems.join('; ')}` : errorText(error), error);
     }
     return recordReady(false);
