@@ -159,7 +159,8 @@ test('each slide names its photo once, on the full-quality layer', async ({ page
 /** Two white records with distinct src values, so Home shows its controls over white. The fixture route serves both files by basename. */
 async function serveTwoWhitePhotos(page: Page) {
     const record = (src: string, id: number): ImageItem => ({
-        id, src, thumbnail: src, medium: src, optimized: src, width: 1200, height: 800, caption: '', date: Date.UTC(2024, 0, 1), lqip: '',
+        id, src, thumbnail: src, medium: src, optimized: src, width: 1200, height: 800, optimizedWidth: 1200, optimizedHeight: 800,
+        caption: '', date: Date.UTC(2024, 0, 1), lqip: '',
     });
     await page.route('**/api/photos', (route) =>
         route.fulfill({ json: [record('/assets/photos/white.jpg', 0), record('/assets/photos/copy-2/white.jpg', 1)] }));
