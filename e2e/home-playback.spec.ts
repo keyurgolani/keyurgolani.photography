@@ -257,6 +257,8 @@ test.describe('normal motion', () => {
                 await page.setViewportSize({ width, height });
                 await openHome(page);
                 const controls = await box(group(page));
+                // Where the controls sit above the pill, each label shows under its icon, away from them.
+                const below = width < 850 && height < 520;
                 for (const name of ['Gallery', 'Home', 'About']) {
                     const link = primary(page).getByRole('link', { name, exact: true });
                     const label = link.getByText(name, { exact: true });
@@ -264,7 +266,10 @@ test.describe('normal motion', () => {
                         if (show === 'hover') await link.hover();
                         else await pressUntilFocused(page, 'Tab', link, 12);
                         await expect(label).toHaveCSS('opacity', '1');
-                        expect(overlaps(await box(label), controls), `${name}'s label on ${show} overlaps the controls`).toBe(false);
+                        const [shown, icon] = [await box(label), await box(link)];
+                        expect(overlaps(shown, controls), `${name}'s label on ${show} overlaps the controls`).toBe(false);
+                        if (below) expect(shown.top, `${name}'s label on ${show} sits under its icon`).toBeGreaterThanOrEqual(icon.bottom);
+                        else expect(shown.bottom, `${name}'s label on ${show} sits over its icon`).toBeLessThanOrEqual(icon.top);
                     }
                 }
                 // From About up to Previous, which must take the click, not About's label.
