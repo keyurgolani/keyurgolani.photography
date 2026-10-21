@@ -180,7 +180,7 @@ jobs:
                 import { readFileSync } from "node:fs";
                 import { isHighestRelease } from "./ci/release-plan.mjs";
                 const tags = readFileSync(0, "utf8").split("\n")
-                  .map((line) => line.split("refs/tags/")[1])
+                  .map((line) => line.split("\t")[1]?.replace(/^refs\/tags\//, ""))
                   .filter(Boolean);
                 console.log(isHighestRelease(process.env.VERSION, tags));
               ' <<<"$remote"); then
