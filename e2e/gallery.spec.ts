@@ -189,10 +189,13 @@ test('the photo grid fills in DOM order, without dense packing', async ({ page }
     await expect(page.locator('main .grid')).toHaveCSS('grid-auto-flow', 'row');
 });
 
-test('every app hover rule on the page waits for a fine pointer', async ({ page }) => {
-    await openGallery(page);
-    await expectHoverRulesGated(page);
-});
+// Each theme has its own hover rules, and only the active theme's match markup.
+for (const theme of ['dark', 'light'] as const) {
+    test(`every app hover rule on the page waits for a fine pointer in the ${theme} theme`, async ({ page }) => {
+        await openGallery(page, theme);
+        await expectHoverRulesGated(page);
+    });
+}
 
 test('one tap on a photo opens the lightbox and leaves the tile untransformed', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'mobile', 'Taps run on the touch project.');

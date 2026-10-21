@@ -313,7 +313,10 @@ for (const theme of ['dark', 'light'] as const) {
     }
 }
 
-test('every app hover rule in the lightbox waits for a fine pointer', async ({ page }) => {
-    await openLightbox(page);
-    await expectHoverRulesGated(page);
-});
+// Each theme has its own hover rules, and only the active theme's match markup.
+for (const theme of ['dark', 'light'] as const) {
+    test(`every app hover rule in the lightbox waits for a fine pointer in the ${theme} theme`, async ({ page }) => {
+        await openLightbox(page, { theme });
+        await expectHoverRulesGated(page);
+    });
+}
