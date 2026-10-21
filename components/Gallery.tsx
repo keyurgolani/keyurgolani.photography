@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useId } from 'react';
 import Lightbox from 'yet-another-react-lightbox';
 import 'yet-another-react-lightbox/styles.css';
 import Zoom from 'yet-another-react-lightbox/plugins/zoom';
@@ -8,6 +8,7 @@ import Slideshow from 'yet-another-react-lightbox/plugins/slideshow';
 import Thumbnails from 'yet-another-react-lightbox/plugins/thumbnails';
 import 'yet-another-react-lightbox/plugins/thumbnails.css';
 import Image from 'next/image';
+import { photoEntryName, photoImageAlt } from '@/lib/a11y/photoName';
 
 interface ImageItem {
     id: number;
@@ -38,20 +39,23 @@ const getSizes = (colSpan: number): string => {
 };
 
 // Lazy-loaded gallery tile component
-function LazyGalleryTile({ 
-    img, 
-    index, 
-    colSpan, 
-    rows, 
-    onClick 
-}: { 
-    img: ImageItem; 
-    index: number; 
-    colSpan: number; 
-    rows: number; 
-    onClick: () => void;
+function LazyGalleryTile({
+    img,
+    index,
+    total,
+    colSpan,
+    rows,
+    onClick
+}: {
+    img: ImageItem;
+    index: number;
+    total: number;
+    colSpan: number;
+    rows: number;
+    onClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
 }) {
-    const ref = useRef<HTMLDivElement>(null);
+    const ref = useRef<HTMLButtonElement>(null);
+    const captionId = useId();
     const [isVisible, setIsVisible] = useState(index < 8); // First 8 load eagerly
 
     useEffect(() => {
@@ -74,16 +78,19 @@ function LazyGalleryTile({
     const sizes = useMemo(() => getSizes(colSpan), [colSpan]);
 
     return (
-        <div 
+        <button
             ref={ref}
+            type="button"
             style={{ gridColumn: `span ${colSpan}`, gridRow: `span ${rows}` }}
-            className="relative group cursor-pointer overflow-hidden rounded-xl shadow-lg border border-white/20 dark:border-white/10 transition-all duration-500 hover:shadow-2xl hover:scale-[1.01] hover:z-10"
+            className="relative group cursor-pointer overflow-hidden rounded-xl shadow-lg border border-white/20 dark:border-white/10 transition-transform duration-500 hover:shadow-2xl hover:scale-[1.01] hover:z-10 block w-full h-full p-0 text-left focus-visible:z-10"
             onClick={onClick}
+            aria-label={photoEntryName({ position: index + 1, total })}
+            aria-describedby={img.caption ? captionId : undefined}
         >
             {isVisible ? (
                 <Image
                     src={img.src}
-                    alt={img.caption || `Gallery Image ${index + 1}`}
+                    alt=""
                     fill
                     placeholder="blur"
                     blurDataURL={img.lqip || 'data:image/webp;base64,UklGRlYAAABXRUJQVlA4IEoAAADQAQCdASoKAAoAAUAmJYgCdAEO9ACA/v9P9f96f1AAAAAAfQ=='}
@@ -91,29 +98,35 @@ function LazyGalleryTile({
                     className="object-cover transition-transform duration-700 group-hover:scale-110"
                 />
             ) : (
-                <div className="absolute inset-0 bg-neutral-200/50 dark:bg-white/10 animate-pulse" />
+                <span className="absolute inset-0 bg-neutral-200/50 dark:bg-white/10 animate-pulse" />
             )}
-            {/* Overlay with details */}
-            {isVisible && (
-                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex flex-col justify-end p-4 pointer-events-none">
-                    <p className="text-white text-xs font-light tracking-wider opacity-90 translate-y-2 group-hover:translate-y-0 transition-transform duration-300">
+            {/* Overlay with details, on hover or keyboard focus. The scrim keeps the caption at 4.5:1 on a 3-row tile too. */}
+            <span className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity duration-300 flex flex-col justify-end p-4 pointer-events-none">
+                {img.caption && (
+                    <span id={captionId} className="text-white text-xs font-light tracking-wider opacity-90 translate-y-2 group-hover:translate-y-0 group-focus-visible:translate-y-0 transition-transform duration-300">
                         {img.caption}
-                    </p>
-                </div>
-            )}
-        </div>
+                    </span>
+                )}
+            </span>
+        </button>
     );
 }
 
 export default function Gallery({ images, className = '' }: GalleryProps) {
     const [index, setIndex] = useState(-1);
+    // Closing returns focus here, even after slide changes and in Safari, which doesn't focus buttons on click
+    const openerRef = useRef<HTMLButtonElement | null>(null);
+    // And puts the page back where it was when the photo opened
+    const openerScrollRef = useRef(0);
 
     // Use pre-optimized image paths directly (already WebP format)
-    const photos = images.map(img => ({
+    const photos = images.map((img, i) => ({
         src: img.src,  // Pre-optimized 1920px WebP
         thumbnail: img.thumbnail || img.src,  // Pre-optimized 400px WebP
         width: img.width,
         height: img.height,
+        // Each slide's image is named. Thumbnails keep alt="", since their buttons carry the name.
+        alt: photoImageAlt({ position: i + 1, total: images.length }),
     }));
 
     // Granular "Best Fit" Layout Logic
@@ -162,7 +175,7 @@ export default function Gallery({ images, className = '' }: GalleryProps) {
 
     return (
         <div className={`w-full ${className}`}>
-            <div className="grid grid-cols-4 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-12 auto-rows-[50px] gap-3 grid-flow-dense">
+            <div className="grid grid-cols-4 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-12 auto-rows-[50px] gap-3">
                 {images.map((img, i) => {
                     const layout = getLayout(img.width, img.height);
                     return (
@@ -170,9 +183,14 @@ export default function Gallery({ images, className = '' }: GalleryProps) {
                             key={img.id}
                             img={img}
                             index={i}
+                            total={images.length}
                             colSpan={layout.cols}
                             rows={layout.rows}
-                            onClick={() => setIndex(i)}
+                            onClick={(event) => {
+                                openerRef.current = event.currentTarget;
+                                openerScrollRef.current = window.scrollY;
+                                setIndex(i);
+                            }}
                         />
                     );
                 })}
@@ -185,6 +203,21 @@ export default function Gallery({ images, className = '' }: GalleryProps) {
                 close={() => setIndex(-1)}
                 plugins={[Zoom, Slideshow, Thumbnails]}
                 zoom={{ maxZoomPixelRatio: 3 }}
+                carousel={{ preload: 1 }}
+                // YARL moves the strip by width + 2 * (border + padding) + gap, so these match the rendered 86 px pitch
+                thumbnails={{ width: 64, height: 48, border: 0, padding: 3, gap: 16 }}
+                // exiting fires as the close starts and YARL lifts inert, so a reader who moves on during the fade keeps their place.
+                // YARL has just focused the opener the plain way, which scrolls a tile that's partly out of view, so undo that scroll.
+                // A rotation or resize while open can leave the saved spot clear of the tile, so then bring it just into view.
+                on={{
+                    exiting: () => {
+                        const opener = openerRef.current;
+                        opener?.focus({ preventScroll: true });
+                        window.scrollTo(0, openerScrollRef.current);
+                        const box = opener?.getBoundingClientRect();
+                        if (box && (box.bottom <= 0 || box.top >= window.innerHeight)) opener?.scrollIntoView({ block: 'nearest' });
+                    },
+                }}
             />
         </div>
     );

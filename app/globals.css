@@ -284,21 +284,22 @@ body {
     border-top: 1px solid rgba(0, 0, 0, 0.05) !important;
 }
 
-/* Individual Thumbnails */
+/* Individual Thumbnails. Their border, padding, and gap come through the thumbnails
+   prop in Gallery.tsx, since YARL's strip math reads them from there. */
 .yarl__thumbnails_thumbnail {
     background: transparent !important;
-    border: none !important;
     border-radius: 6px !important;
-    padding: 3px !important;
-    margin: 0 4px !important;
     opacity: 0.5;
-    transition: all 0.25s ease !important;
+    /* Not all, which would fade the focus band out on blur */
+    transition: opacity 0.25s ease, transform 0.25s ease !important;
     box-shadow: none !important;
 }
 
-.yarl__thumbnails_thumbnail:hover {
-    opacity: 0.8;
-    transform: scale(1.05);
+@media (hover: hover) and (pointer: fine) {
+    .yarl__thumbnails_thumbnail:hover {
+        opacity: 0.8;
+        transform: scale(1.05);
+    }
 }
 
 .yarl__thumbnails_thumbnail_image {
@@ -364,12 +365,14 @@ body {
 }
 
 /* Hover state */
-.yarl__navigation_prev .yarl__button:hover,
-.yarl__navigation_next .yarl__button:hover {
-    background: rgba(255, 255, 255, 0.15) !important;
-    border-color: rgba(255, 255, 255, 0.3) !important;
-    color: rgba(255, 255, 255, 1) !important;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 20px rgba(255, 255, 255, 0.1) !important;
+@media (hover: hover) and (pointer: fine) {
+    .yarl__navigation_prev .yarl__button:hover,
+    .yarl__navigation_next .yarl__button:hover {
+        background: rgba(255, 255, 255, 0.15) !important;
+        border-color: rgba(255, 255, 255, 0.3) !important;
+        color: rgba(255, 255, 255, 1) !important;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 20px rgba(255, 255, 255, 0.1) !important;
+    }
 }
 
 /* Active state */
@@ -387,12 +390,14 @@ body {
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08) !important;
 }
 
-[data-theme="light"] .yarl__navigation_prev .yarl__button:hover,
-[data-theme="light"] .yarl__navigation_next .yarl__button:hover {
-    background: rgba(0, 0, 0, 0.1) !important;
-    border-color: rgba(0, 0, 0, 0.15) !important;
-    color: rgba(0, 0, 0, 0.9) !important;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12) !important;
+@media (hover: hover) and (pointer: fine) {
+    [data-theme="light"] .yarl__navigation_prev .yarl__button:hover,
+    [data-theme="light"] .yarl__navigation_next .yarl__button:hover {
+        background: rgba(0, 0, 0, 0.1) !important;
+        border-color: rgba(0, 0, 0, 0.15) !important;
+        color: rgba(0, 0, 0, 0.9) !important;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12) !important;
+    }
 }
 
 /* ============================================
@@ -410,24 +415,52 @@ body {
     border-radius: 8px !important;
     padding: 8px !important;
     margin: 0 2px !important;
-    width: 40px !important;
-    height: 40px !important;
+    width: 44px !important;
+    height: 44px !important;
     
     color: rgba(255, 255, 255, 0.6) !important;
-    transition: all 0.2s ease !important;
+    /* Not all, which would fade the focus band out on blur */
+    transition: background-color 0.2s ease, color 0.2s ease, scale 0.2s ease !important;
     box-shadow: none !important;
-    filter: none !important;
+    /* A tight black halo keeps the white icons at 3:1 over a white photo. YARL's
+       softer 2 px drop shadow reaches only about 1.5:1 to 2.4:1 there. */
+    filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000) !important;
 }
 
-.yarl__button:hover {
-    background: rgba(255, 255, 255, 0.1) !important;
-    color: rgba(255, 255, 255, 1) !important;
-    transform: scale(1.08);
+/* scale, which the arrows' translate below applies after, so they grow in place. A
+   disabled button, such as Zoom out at the smallest zoom, takes neither. */
+@media (hover: hover) and (pointer: fine) {
+    .yarl__button:not(:disabled):hover {
+        background: rgba(255, 255, 255, 0.1) !important;
+        color: rgba(255, 255, 255, 1) !important;
+        scale: 1.08;
+    }
 }
 
-.yarl__button:active {
-    transform: scale(0.95);
+.yarl__button:not(:disabled):active {
+    scale: 0.95;
     background: rgba(255, 255, 255, 0.15) !important;
+}
+
+/* At .yarl__button's 2 px margin, .yarl__container's overflow: hidden cut 4 px off the arrows' focus ring */
+:root .yarl__navigation_prev,
+:root .yarl__navigation_next {
+    margin: 0 16px !important;
+}
+
+/* YARL centers the arrows with transform: translateY(-50%), and the hover and press
+   scale above then scales that offset too, nudging them up or down. The translate
+   property applies after scale, so they stay centered on their spot. The two
+   declarations sit in rules with different selectors, since the minifier folds a
+   translate beside transform: none back into transform. */
+:root .yarl__navigation_prev,
+:root .yarl__navigation_next {
+    translate: 0 -50%;
+}
+
+.yarl__container > .yarl__navigation_prev,
+.yarl__container > .yarl__navigation_next {
+    transform: none;
 }
 
 /* Button icons */
@@ -440,15 +473,31 @@ body {
 /* Light mode toolbar buttons */
 [data-theme="light"] .yarl__button {
     color: rgba(0, 0, 0, 0.5) !important;
+    /* The dark icons keep about 4:1 over a white photo on their own. Over a black
+       one they'd vanish, so a tight white halo, the dark theme's black one turned
+       around, keeps them at 3:1 there. */
+    filter: drop-shadow(0 0 1px #fff) drop-shadow(0 0 1px #fff) !important;
 }
 
-[data-theme="light"] .yarl__button:hover {
-    background: rgba(0, 0, 0, 0.06) !important;
-    color: rgba(0, 0, 0, 0.9) !important;
+@media (hover: hover) and (pointer: fine) {
+    [data-theme="light"] .yarl__button:not(:disabled):hover {
+        background: rgba(0, 0, 0, 0.06) !important;
+        color: rgba(0, 0, 0, 0.9) !important;
+    }
 }
 
-[data-theme="light"] .yarl__button:active {
+[data-theme="light"] .yarl__button:not(:disabled):active {
     background: rgba(0, 0, 0, 0.1) !important;
+}
+
+/* The color rules above outrank YARL's own dimmed :disabled color, so restate it */
+.yarl__button:disabled {
+    color: rgba(255, 255, 255, 0.3) !important;
+    cursor: default;
+}
+
+[data-theme="light"] .yarl__button:disabled {
+    color: rgba(0, 0, 0, 0.25) !important;
 }
 
 /* Close button - slightly larger and more prominent */
@@ -459,26 +508,34 @@ body {
     border-radius: 50% !important;
 }
 
-.yarl__close_button .yarl__button:hover {
-    background: rgba(255, 255, 255, 0.12) !important;
+@media (hover: hover) and (pointer: fine) {
+    .yarl__close_button .yarl__button:hover {
+        background: rgba(255, 255, 255, 0.12) !important;
+    }
 }
 
 [data-theme="light"] .yarl__close_button .yarl__button {
     background: rgba(0, 0, 0, 0.03) !important;
 }
 
-[data-theme="light"] .yarl__close_button .yarl__button:hover {
-    background: rgba(0, 0, 0, 0.08) !important;
+@media (hover: hover) and (pointer: fine) {
+    [data-theme="light"] .yarl__close_button .yarl__button:hover {
+        background: rgba(0, 0, 0, 0.08) !important;
+    }
 }
 
 /* Slideshow play button - accent highlight */
-.yarl__slideshow_button .yarl__button:hover {
-    color: #10b981 !important;
+@media (hover: hover) and (pointer: fine) {
+    .yarl__slideshow_button .yarl__button:hover {
+        color: #10b981 !important;
+    }
 }
 
 /* Zoom button */
-.yarl__zoom_button .yarl__button:hover {
-    color: #3b82f6 !important;
+@media (hover: hover) and (pointer: fine) {
+    .yarl__zoom_button .yarl__button:hover {
+        color: #3b82f6 !important;
+    }
 }
 
 /* Counter text styling */

@@ -11,7 +11,7 @@ Every visitor and curator surface follows these rules. #1 added them with the br
 5. Targets. Every standalone link, button, toggle, or thumbnail is at least 44 by 44 CSS px on its bounding box. Inline links in running text are exempt. This overrides the mockup's 42 px primary, 43 px Home rail, and 38 px sequence buttons.
 6. Order. DOM order is the reading and tab order. Entry collections use no `grid-auto-flow: dense`, CSS `order`, reversed flex direction, or masonry reordering. Visual order is row-major by top edge with an 8 px tolerance, then by left edge. Fixed site chrome may lead the DOM, and site navigation precedes any photograph collection in tab order.
 7. Touch. One tap activates, with no hover, long press, double tap, drag, or multi-finger gesture, except the first tap on idle Home, which #18 consumes as reveal intent.
-8. Contrast. Over the bright fixture and through any scrim, text on photographs keeps 4.5:1, and control boundaries and icons 3:1.
+8. Contrast. Over the bright fixture, over the dark one wherever text or icons are dark, and through any scrim, text on photographs keeps 4.5:1, and control boundaries and icons 3:1.
 9. Reflow. At 320 CSS px wide with a 200% root font size, revealed controls stay inside the viewport without overlap or clipping.
 10. Focus return. Closing a Viewer returns focus to the entry that opened it. #9 owns the route Viewer, and #1 the legacy lightbox.
 11. Curator routes. #14, #16, and #15 follow every rule, and every reorder has a non-drag alternative such as move buttons or a position field (WCAG 2.5.7).
@@ -75,7 +75,8 @@ Playwright builds the site and serves it on port 3100, or on `E2E_PORT` when tha
 | Rule | Helper in `e2e/support/` |
 |---|---|
 | 1 and 2 | `expectNoA11yViolations()`, `expectUniqueNames()` |
-| 4 | `expectFocusRingVisible()`, `expectRingNotClipped()`, `expectNotObscured()` |
+| 3 | `expectHoverRulesGated()` |
+| 4 | `expectFocusRingVisible()`, `expectNoFadeOnBlur()`, `expectRingNotClipped()`, `expectNotObscured()` |
 | 5 | `expectMinTargetSize()` |
 | 6 | `expectTabOrderMatchesVisualOrder()`, `expectReachableWithin()` |
 | 7 | `expectSingleTapActivates()` |

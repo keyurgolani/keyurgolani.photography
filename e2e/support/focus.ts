@@ -84,6 +84,25 @@ export async function expectFocusRingVisible(target: Locator): Promise<void> {
     expect(problems, `Focus ring on ${target} must be visible`).toEqual([]);
 }
 
+/**
+ * Contract rule 4's no-fade rule on the way out. Once focus leaves, the ring
+ * goes at once. A transition on the outline or the band, such as one from
+ * transition-all, keeps the old ring fading while the next control shows
+ * its own, so two controls look focused.
+ */
+export async function expectNoFadeOnBlur(target: Locator): Promise<void> {
+    await focusAndMeasure(target);
+    const fading = await target.evaluate((el) => {
+        (el as HTMLElement).blur();
+        return el
+            .getAnimations()
+            .filter((animation): animation is CSSTransition => animation instanceof CSSTransition && animation.playState === 'running')
+            .map((transition) => transition.transitionProperty);
+    });
+    const ring = fading.filter((property) => /^(outline(-[a-z]+)?|box-shadow)$/.test(property));
+    expect(ring, `${target} must drop its focus ring at once on blur, so it can't transition these`).toEqual([]);
+}
+
 /** Contract rule 4: no overflow ancestor clips the focus ring. */
 export async function expectRingNotClipped(target: Locator): Promise<void> {
     const { ring, clips } = await focusAndMeasure(target);
