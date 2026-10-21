@@ -9,13 +9,18 @@ import Thumbnails from 'yet-another-react-lightbox/plugins/thumbnails';
 import 'yet-another-react-lightbox/plugins/thumbnails.css';
 import Image from 'next/image';
 import { photoEntryName, photoImageAlt } from '@/lib/a11y/photoName';
+import { lightboxSlides } from './lightboxSlides';
 
 interface ImageItem {
     id: number;
     src: string;
     thumbnail?: string;
+    /** The photo's upright size, which lays out its tile. */
     width: number;
     height: number;
+    /** The size of the file at `src`, which sizes its Lightbox slide. */
+    optimizedWidth: number;
+    optimizedHeight: number;
     caption?: string;
     lqip?: string;
 }
@@ -119,13 +124,10 @@ export default function Gallery({ images, className = '' }: GalleryProps) {
     // And puts the page back where it was when the photo opened
     const openerScrollRef = useRef(0);
 
-    // Use pre-optimized image paths directly (already WebP format)
-    const photos = images.map((img, i) => ({
-        src: img.src,  // Pre-optimized 1920px WebP
-        thumbnail: img.thumbnail || img.src,  // Pre-optimized 400px WebP
-        width: img.width,
-        height: img.height,
-        // Each slide's image is named. Thumbnails keep alt="", since their buttons carry the name.
+    // The pre-optimized 1920px WebPs, with their 400px thumbnails. Each slide's image is named.
+    // Thumbnails keep alt="", since their buttons carry the name.
+    const photos = lightboxSlides(images).map((slide, i) => ({
+        ...slide,
         alt: photoImageAlt({ position: i + 1, total: images.length }),
     }));
 

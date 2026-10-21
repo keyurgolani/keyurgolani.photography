@@ -247,6 +247,25 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
         for (const entry of plan.entries) expect(fs.existsSync(entry.path), entry.relativePath).toBe(true);
     });
 
+    it("skips a folder it can't list, keeping what is in it, and still plans the rest and a takedown", async () => {
+        const lib = await libraryWithOrphans();
+        const dynamic = lib.file('cache/dynamic');
+        const realReaddirSync = fs.readdirSync;
+        vi.spyOn(fs, 'readdirSync').mockImplementation(((target: fs.PathLike, options?: unknown) => {
+            if (String(target) === dynamic) throw Object.assign(new Error('EACCES: permission denied, scandir'), { code: 'EACCES' });
+            return (realReaddirSync as (target: fs.PathLike, options?: unknown) => unknown)(target, options);
+        }) as unknown as typeof fs.readdirSync);
+
+        const plan = planOrphanCleanup();
+        expect(plan.skippedFolders).toEqual(['cache/dynamic']);
+        expect(plan.entries.map((entry) => entry.relativePath)).not.toContain(DYNAMIC_CACHE);
+        expect(plan.entries.map((entry) => entry.relativePath)).toEqual(expect.arrayContaining([STALE_TEMP, ...SQUARE]));
+
+        const { out, output } = capture();
+        expect(runImageCleanup(['--only', 'square'], output)).toBe(0);
+        expect(out).toContain("Skipped cache/dynamic/, which is a symlink, not a folder, or can't be listed, so cleanup deletes nothing in it.");
+    });
+
     it('never enters a symlinked folder, so it never deletes outside the library', async () => {
         const lib = await libraryWithOrphans();
         const outside = path.join(path.dirname(lib.root), 'outside');
@@ -262,8 +281,8 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
 
         const { out, output } = capture();
         expect(runImageCleanup([], output)).toBe(0);
-        expect(out).toContain('Skipped optimized/, which is a symlink or not a folder, so cleanup stays inside the library.');
-        expect(out).toContain('Skipped cache/, which is a symlink or not a folder, so cleanup stays inside the library.');
+        expect(out).toContain("Skipped optimized/, which is a symlink, not a folder, or can't be listed, so cleanup deletes nothing in it.");
+        expect(out).toContain("Skipped cache/, which is a symlink, not a folder, or can't be listed, so cleanup deletes nothing in it.");
         expect(out.some((line) => line.includes('optimized/square.webp') || line.includes('square-400-80'))).toBe(false);
 
         const hash = dryRunHash();

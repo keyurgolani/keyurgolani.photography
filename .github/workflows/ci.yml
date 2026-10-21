@@ -50,6 +50,8 @@ jobs:
       - run: npm run lint
       - run: npm test -- --run
       - run: npm run build
+      - name: Check the build traced no project files into .next/standalone
+        run: bash ci/check-standalone.sh
 
   e2e:
     name: Browser tests

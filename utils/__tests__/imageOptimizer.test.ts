@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import sharp, { type Sharp } from 'sharp';
-import { dominantChannel, fixtureFiles, type Channel } from '../../test/fixtures/makeLibrary';
+import { dominantChannel, fixtureFiles, withExifOrientation, type Channel } from '../../test/fixtures/makeLibrary';
+import { fakeCaseInsensitiveDisk, fakeCaseSensitiveDisk } from '../../test/helpers/caseDisk';
 import { createTempLibrary, derivativePaths, type TempLibrary } from '../../test/helpers/tempLibrary';
 import {
     baseNameOf,
@@ -15,9 +16,14 @@ import {
     isSourceFile,
     libraryPaths,
     libraryRootExists,
+    ownerOf,
+    pickOwner,
+    planSources,
     processImage,
     refreshImage,
     reprocessImage,
+    setGroups,
+    sharesSet,
     SOURCE_CHANGED,
     tempFilePrefix,
     writeVariants,
@@ -33,13 +39,13 @@ vi.mock('sharp', async (importOriginal) => {
     const realSharp = actual.default as unknown as (...args: unknown[]) => Sharp;
     const wrapped = (...args: unknown[]) => {
         const instance = realSharp(...args);
-        const toBuffer = instance.toBuffer.bind(instance) as () => Promise<Buffer>;
+        const toBuffer = instance.toBuffer.bind(instance) as (...options: unknown[]) => Promise<unknown>;
         Object.defineProperty(instance, 'toBuffer', {
-            value: async () => {
+            value: async (...options: unknown[]) => {
                 encodes.count += 1;
                 encodes.onEncode?.(encodes.count);
                 if (encodes.count === encodes.failAt) throw new Error(`injected encode failure at ${encodes.count}`);
-                return toBuffer();
+                return toBuffer(...options);
             },
         });
         return instance;
@@ -109,31 +115,6 @@ function relativeToLibrary(target: fs.PathLike): string {
 function renameSource(from: string, to: string): void {
     fs.renameSync(lib.file(from), lib.file('tmp-rename'));
     fs.renameSync(lib.file('tmp-rename'), lib.file(to));
-}
-
-/** The entry in `target`'s folder whose name differs from it only in case, if any. */
-function caseVariantOf(target: string): string | undefined {
-    const name = path.basename(target).toLowerCase();
-    try {
-        const match = fs.readdirSync(path.dirname(target)).find((entry) => entry.toLowerCase() === name);
-        return match === undefined ? undefined : path.join(path.dirname(target), match);
-    } catch {
-        return undefined;
-    }
-}
-
-/**
- * Make existsSync and lstatSync resolve names the way a case-insensitive disk
- * does, whatever disk this runs on. readdir still lists names as stored.
- */
-function fakeCaseInsensitiveDisk(): void {
-    const realExistsSync = fs.existsSync;
-    const realLstatSync = fs.lstatSync;
-    vi.spyOn(fs, 'existsSync').mockImplementation(((target: fs.PathLike) =>
-        realExistsSync(target) || caseVariantOf(String(target)) !== undefined) as typeof fs.existsSync);
-    vi.spyOn(fs, 'lstatSync').mockImplementation(((target: fs.PathLike, options?: fs.StatSyncOptions) =>
-        realLstatSync(realExistsSync(target) ? target : caseVariantOf(String(target)) ?? target, options)
-    ) as unknown as typeof fs.lstatSync);
 }
 
 /** Fail the Nth temp file write partway through, the way a full disk does. */
@@ -217,6 +198,63 @@ describe('source files', () => {
         expect(baseNameOf('a.jpg')).toBe('a');
         expect(baseNameOf('a.png')).toBe('a');
         expect(baseNameOf('my.photo.webp')).toBe('my.photo');
+    });
+});
+
+describe('sources sharing one set', { timeout: 60_000 }, () => {
+    beforeEach(async () => {
+        await newLibrary({ fixtures: 'basic' });
+        fs.copyFileSync(lib.file('portrait.png'), lib.file('Landscape.png'));
+    });
+
+    it('share a set when their base names match exactly, on any disk', () => {
+        fakeCaseSensitiveDisk();
+        expect(sharesSet('landscape.jpg', 'landscape.png')).toBe(true);
+        expect(sharesSet('landscape.jpg', 'landscape-edited.png')).toBe(false);
+    });
+
+    it('fold names as a case-insensitive disk does, so Straße and strasse can share a set there', () => {
+        fs.copyFileSync(lib.file('portrait.png'), lib.file('strasse.png'));
+        fakeCaseInsensitiveDisk();
+        expect(sharesSet('Straße.jpg', 'strasse.png')).toBe(true);
+        vi.restoreAllMocks();
+        fakeCaseSensitiveDisk();
+        expect(sharesSet('Straße.jpg', 'strasse.png')).toBe(false);
+    });
+
+    it('share a set across case only where the disk resolves both spellings to one file', async () => {
+        fakeCaseSensitiveDisk();
+        expect(sharesSet('landscape.jpg', 'Landscape.png')).toBe(false);
+        expect(setGroups(getPhotoFiles())).toEqual([['Landscape.png'], ['landscape.jpg'], ['portrait.png'], ['square.webp']]);
+        expect(await planSources({ force: true })).toEqual({ files: ['Landscape.png', 'landscape.jpg', 'portrait.png', 'square.webp'], shared: [] });
+        expect(await ownerOf('landscape.jpg')).toBe('landscape.jpg');
+        vi.restoreAllMocks();
+
+        fakeCaseInsensitiveDisk();
+        expect(sharesSet('landscape.jpg', 'Landscape.png')).toBe(true);
+        expect(setGroups(getPhotoFiles())).toEqual([['Landscape.png', 'landscape.jpg'], ['portrait.png'], ['square.webp']]);
+        expect(await planSources({ force: true })).toEqual({
+            files: ['Landscape.png', 'portrait.png', 'square.webp'],
+            shared: [{ file: 'landscape.jpg', owner: 'Landscape.png', undecodable: false }],
+        });
+        expect(await ownerOf('landscape.jpg')).toBe('Landscape.png');
+    });
+
+    it('pass over a truncated source whose header is intact, and decode it again once it changes', async () => {
+        const whole = fixture('landscape.jpg');
+        const truncated = whole.subarray(0, Math.floor(whole.length * 0.6));
+        // The header still reads, so only a real decode tells.
+        await expect(sharp(truncated).metadata()).resolves.toMatchObject({ width: 960, height: 640 });
+        fs.writeFileSync(lib.file('landscape.jpeg'), truncated);
+        expect(await pickOwner(['landscape.jpeg', 'landscape.jpg'])).toEqual({ owner: 'landscape.jpg', undecodable: ['landscape.jpeg'] });
+
+        // Both results are kept while the files stay as they are.
+        const reads = vi.spyOn(fs.promises, 'readFile');
+        await pickOwner(['landscape.jpeg', 'landscape.jpg']);
+        expect(reads).not.toHaveBeenCalled();
+
+        fs.writeFileSync(lib.file('landscape.jpeg'), whole);
+        expect(await pickOwner(['landscape.jpeg', 'landscape.jpg'])).toEqual({ owner: 'landscape.jpeg', undecodable: [] });
     });
 });
 
@@ -352,6 +390,23 @@ describe('writeVariants', { timeout: 60_000 }, () => {
 
         expect(fs.readdirSync(lib.file('cache/dynamic')).sort()).toEqual(['landscape-edited-800-85.webp', 'portrait-800-85.webp']);
     });
+
+    it("still regenerates when the /api/image cache folder can't be listed, since purging it is best effort", async () => {
+        fs.mkdirSync(lib.file('cache/dynamic'), { recursive: true });
+        fs.writeFileSync(lib.file('cache/dynamic', 'landscape-800-85.webp'), 'cached');
+        const dynamic = lib.file('cache/dynamic');
+        const realReaddirSync = fs.readdirSync;
+        vi.spyOn(fs, 'readdirSync').mockImplementation(((dir: fs.PathLike, options?: unknown) => {
+            if (path.resolve(String(dir)) === dynamic) throw Object.assign(new Error(`EACCES: scandir '${dynamic}'`), { code: 'EACCES' });
+            return (realReaddirSync as (dir: fs.PathLike, options?: unknown) => unknown)(dir, options);
+        }) as typeof fs.readdirSync);
+        fs.writeFileSync(lib.file('landscape.jpg'), fixtures.get('landscape-edited.jpg') as Buffer);
+
+        await reprocessImage('landscape.jpg');
+
+        expect(await outputChannels('landscape')).toEqual(Array(7).fill('blue'));
+        expect(realReaddirSync(dynamic)).toEqual(['landscape-800-85.webp']);
+    });
 });
 
 describe('exact names', { timeout: 60_000 }, () => {
@@ -469,6 +524,15 @@ describe('startup batch overwrite rule', { timeout: 60_000 }, () => {
         expect(first.processed.sort()).toEqual(['landscape.jpg', 'portrait.png', 'square.webp']);
     });
 
+    it('refreshImage() and reprocessImage() write nothing for a source whose set another source owns', async () => {
+        const before = lib.hashes(LANDSCAPE);
+        fs.copyFileSync(lib.file('portrait.png'), lib.file('landscape.png'));
+        expect(await refreshImage('landscape.png', { force: true })).toEqual([]);
+        await reprocessImage('landscape.png');
+        expect(lib.hashes(LANDSCAPE)).toEqual(before);
+        expect(await filesToProcess({ force: true })).toEqual(['landscape.jpg', 'portrait.png', 'square.webp']);
+    });
+
     it('regenerates a source newer than its outputs', async () => {
         const others = lib.hashes([...derivativePaths('portrait'), ...derivativePaths('square')]);
         fs.writeFileSync(lib.file('landscape.jpg'), fixture('landscape-edited.jpg'));
@@ -520,15 +584,70 @@ describe('startup batch overwrite rule', { timeout: 60_000 }, () => {
         const written = fs.statSync(lib.file('thumbnails/landscape.webp')).mtimeMs;
         expect(written).toBeGreaterThanOrEqual(startedAt - 1000);
         expect(written).toBeLessThanOrEqual(Date.now() + 1000);
-        expect(filesToProcess()).toContain('landscape.jpg');
+        expect(await filesToProcess()).toContain('landscape.jpg');
     });
 
     it('throws on a missing root when forced, the same as unforced', async () => {
         const missing = await createTempLibrary({ missingRoot: true });
         libraries.push(missing);
 
-        expect(() => filesToProcess()).toThrow(`Library root not found: ${missing.root}`);
-        expect(() => filesToProcess({ force: true })).toThrow(`Library root not found: ${missing.root}`);
+        await expect(filesToProcess()).rejects.toThrow(`Library root not found: ${missing.root}`);
+        await expect(filesToProcess({ force: true })).rejects.toThrow(`Library root not found: ${missing.root}`);
         await expect(newHandlers().queueStartupBatch({ force: true })).rejects.toThrow('Library root not found');
+    });
+});
+
+describe('orientation', { timeout: 60_000 }, () => {
+    const STORED = { width: 960, height: 640 };
+
+    /** A stored 960x640 JPEG whose top-left quarter is red and the rest blue, tagged with `orientation`. */
+    async function markedJpeg(orientation: number): Promise<Buffer> {
+        const { width, height } = STORED;
+        const pixels = Buffer.alloc(width * height * 3);
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const red = x < width / 2 && y < height / 2;
+                pixels.set(red ? [220, 30, 30] : [30, 30, 220], (y * width + x) * 3);
+            }
+        }
+        const jpeg = await sharp(pixels, { raw: { width, height, channels: 3 } }).jpeg({ quality: 90 }).toBuffer();
+        return withExifOrientation(jpeg, orientation);
+    }
+
+    /** An output's size and which quarter of it is red, sampled at each quarter's center. */
+    async function look(image: Buffer): Promise<{ width: number; height: number; red: string[] }> {
+        const { data, info } = await sharp(image).raw().toBuffer({ resolveWithObject: true });
+        const quarters: [string, number, number][] = [['top-left', 0.25, 0.25], ['top-right', 0.75, 0.25], ['bottom-left', 0.25, 0.75], ['bottom-right', 0.75, 0.75]];
+        const red = quarters
+            .filter(([, fx, fy]) => {
+                const offset = (Math.floor(fy * info.height) * info.width + Math.floor(fx * info.width)) * info.channels;
+                return data[offset] > data[offset + 2];
+            })
+            .map(([quarter]) => quarter);
+        return { width: info.width, height: info.height, red };
+    }
+
+    it.each([
+        [3, 'bottom-right', 960, 640],
+        [6, 'top-right', 640, 960],
+        [8, 'bottom-left', 640, 960],
+    ])('turns Orientation %i upright in all seven outputs, so the red quarter ends %s', async (orientation, quarter, width, height) => {
+        await newLibrary();
+        fs.writeFileSync(lib.file('turned.jpg'), await markedJpeg(orientation));
+        await processImage('turned.jpg');
+
+        const widths: Record<string, number> = { thumbnails: 400, medium: 800, optimized: 1920 };
+        for (const relativePath of derivativePaths('turned').filter((output) => !output.endsWith('.txt'))) {
+            const expectedWidth = Math.min(width, widths[relativePath.split('/')[0].replace(/-avif$/, '')]);
+            const seen = await look(fs.readFileSync(lib.file(relativePath)));
+            expect(seen.red, relativePath).toEqual([quarter]);
+            expect(seen.width, relativePath).toBe(expectedWidth);
+            expect(Math.abs(seen.height - (expectedWidth * height) / width), relativePath).toBeLessThanOrEqual(1);
+        }
+
+        const lqip = fs.readFileSync(lib.file('lqip/turned.txt'), 'utf8').replace(/^data:image\/webp;base64,/, '');
+        const small = await look(Buffer.from(lqip, 'base64'));
+        expect(small.red).toEqual([quarter]);
+        expect(small.width > small.height).toBe(width > height);
     });
 });

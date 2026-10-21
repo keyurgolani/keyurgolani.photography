@@ -66,9 +66,12 @@ npm install
 
 # Start development server
 npm run dev
+
+# In a second terminal, build the photos' derivatives, then keep watching for new ones
+npm run images:watch
 ```
 
-Open [http://localhost:3000](http://localhost:3000) to view the site.
+Open [http://localhost:3000](http://localhost:3000) to view the site. `npm run dev` alone builds no derivatives, and the Gallery lists a photo only once all seven of its derivatives exist, so it stays empty until the watcher has run. `npm run images:process` builds them once and exits.
 
 ### Development with Docker
 
@@ -131,11 +134,11 @@ docker compose -f docker-compose.prod.yml up -d
    - Optimizes full size (1920px)
    - Extracts EXIF data for captions
    - Creates LQIP placeholders
-3. **Gallery updates** automatically on next page load
+3. **Gallery updates** on the next page load once all seven of a photo's derivatives exist, and the original file is never served. The production server serves only the `public/` files that existed when it started, so restart `web` for photos added since to load there.
 
 ### Replacing and Removing Photos
 - **Replace** a photo by saving over it under the same name. The watcher regenerates its derivatives from the new file and swaps them in only once all seven are written, so a failed run keeps the old ones. Visitors can still see the old version for a while: `/_next/image` can serve its copy for up to a day, and a browser that cached it under the old `immutable` header may keep it for up to a year.
-- **Accepted risk:** a different photo saved under a removed photo's name, with an older modification time, shows the old images until you `touch` it or run `--force`. Copy tools that keep modification times, such as `cp -p` and `rsync -a`, do this. With the watcher stopped, run `images:cleanup` before reusing a name.
+- **Accepted risk:** a different photo saved under a removed photo's name, with an older modification time, shows the old images until you `touch` it or run `--force`. Copy tools that keep modification times, such as `cp -p` and `rsync -a`, do this. With the watcher stopped, run `images:cleanup` before reusing a name. The same goes for a photo added while the watcher is stopped that takes over a set another photo built, such as `IMG_1.jpg` added next to `IMG_1.png`, since the first name by path owns a shared set. A running watcher rebuilds the set when the new file arrives.
 - **Delete** a photo to hide it from the gallery. Its derivative files stay reachable at their URLs until `images:cleanup` deletes them. Restoring the file brings the photo back in the gallery after `web` restarts, since Next serves only the `public/` files that existed when it started.
 - **Review leftovers** with `npm run images:cleanup`. It lists each derivative no photo needs anymore, with the reason, and prints a plan hash. Re-run it with `-- --apply --plan <hash>` to delete exactly that list. It refuses if the list changed since the dry run. In production, run both steps in the watcher container:
 
@@ -168,6 +171,7 @@ docker compose -f docker-compose.prod.yml up -d
   docker compose -f docker-compose.prod.yml start image-watcher
   ```
 - **Restore the library folder** if it was deleted. The watcher exits 1 when its folder disappears, and since Compose no longer creates a missing photos folder, neither container can start until it's back. Stop the stack, copy the folder back into place rather than moving it with `mv`, then start the stack.
+- **Preview stable photo IDs** with `npm run photos:migrate -- --dry-run`. It proposes an ID for every photo and writes only a plan and a report, to `identity/migration/` in the data root or to `--out <dir>`. Nothing uses the IDs yet.
 
 ### Supported Formats
 - JPEG (.jpg, .jpeg)
@@ -183,6 +187,7 @@ docker compose -f docker-compose.prod.yml up -d
 | `NEXT_PUBLIC_CAROUSEL_INTERVAL` | Hero carousel slide duration (ms) | 12000 |
 | `NEXT_PUBLIC_UI_AUTO_HIDE_TIMEOUT` | UI auto-hide timeout on home page (ms) | 3000 |
 | `PHOTOGRAPHY_LIBRARY_DIR` | Photo library folder for the watcher, `images:cleanup`, and `/api/photos`. The site serves photos only from `public/assets/photos`, so leave it unset outside tests. | `public/assets/photos` |
+| `PHOTOGRAPHY_DATA_DIR` | Private data root for photo identity state. It must sit outside `public/` and the library. Only `photos:migrate --dry-run` and `photos:identity status` read it so far. | `portfolio-data`, none in production |
 
 ### Docker Configuration
 

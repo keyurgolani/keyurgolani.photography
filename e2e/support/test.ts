@@ -22,7 +22,11 @@ function photoRecords(names: readonly string[]): ImageItem[] {
     return names.map((name, index) => {
         const { width, height, caption } = photoFixture(name);
         const url = `/assets/photos/${name}.jpg`;
-        return { id: index, src: url, thumbnail: url, medium: url, optimized: url, width, height, caption, date: NEWEST - index * DAY, lqip: '' };
+        // The fixture itself stands in for every derivative, so the optimized size is its own
+        return {
+            id: index, src: url, thumbnail: url, medium: url, optimized: url, width, height,
+            optimizedWidth: width, optimizedHeight: height, caption, date: NEWEST - index * DAY, lqip: '',
+        };
     });
 }
 

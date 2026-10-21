@@ -138,7 +138,7 @@ function reportSkips(plan: OrphanCleanupPlan, output: Output): void {
         );
     }
     for (const folder of plan.skippedFolders) {
-        output.log(`Skipped ${folder}/, which is a symlink or not a folder, so cleanup stays inside the library.`);
+        output.log(`Skipped ${folder}/, which is a symlink, not a folder, or can't be listed, so cleanup deletes nothing in it.`);
     }
     const count = plan.youngTempFiles.length;
     if (count > 0) {

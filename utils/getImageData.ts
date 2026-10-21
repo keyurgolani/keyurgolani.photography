@@ -3,6 +3,7 @@ import path from 'path';
 import sharp from 'sharp';
 import exifFromBuffer from 'exif-reader';
 import {
+    baseNameOf,
     encodeLqip,
     ensureDirectories,
     getImagePaths,
@@ -11,8 +12,18 @@ import {
     isCompleteSet,
     libraryPaths,
     libraryRootExists,
+    optimizedSize,
+    pickOwner,
     readDerivativeIndex,
+    setGroups,
+    type LibraryPaths,
 } from './imageOptimizer';
+
+// Only the web process loads this module, and it reads library files by name for as long as it runs, while the
+// watcher replaces them under the same names. libvips caches what it loads by name, and a WebP it loaded keeps
+// reading as the old file, so a replaced photo kept its old size and caption until a restart. The web process
+// keeps no libvips cache. The watcher doesn't load this module, so its encodes keep theirs.
+sharp.cache(false);
 
 export interface ImageItem {
     id: number;
@@ -23,8 +34,12 @@ export interface ImageItem {
     thumbnailAvif?: string;
     mediumAvif?: string;
     optimizedAvif?: string;
+    /** The photo's upright size. */
     width: number;
     height: number;
+    /** The size of the optimized WebP, which is smaller than the photo once it is wider than 1920 px. */
+    optimizedWidth: number;
+    optimizedHeight: number;
     caption?: string;
     date: number;
     lqip: string;
@@ -51,6 +66,32 @@ async function placeholderFor(filePath: string): Promise<string> {
     }
 }
 
+/**
+ * Sources that share one set of legacy derivatives, such as IMG_1.jpg and
+ * IMG_1.png, or Beach.jpg and beach.png on a disk that resolves both names to
+ * one file, are listed once: by the source that owns the set, the first by
+ * path that decodes, which is the one the watcher builds it from. The others
+ * are logged. The migration dry run's "Basename collisions" section lists
+ * them.
+ */
+async function setOwners(files: string[], paths: LibraryPaths): Promise<string[]> {
+    const owners: string[] = [];
+    for (const group of setGroups(files, paths.root)) {
+        const { owner, undecodable } = await pickOwner(group, paths);
+        owners.push(owner);
+        for (const file of group) {
+            if (file === owner) continue;
+            if (undecodable.includes(file)) {
+                console.warn(`[getGalleryImages] Skipping ${file}: it can't be decoded, so ${owner} has the derivatives they share.`);
+            } else {
+                const folded = baseNameOf(file) === baseNameOf(owner) ? '' : ', since their base names differ only by case or Unicode form';
+                console.warn(`[getGalleryImages] Skipping ${file}: it shares its derivatives with ${owner}${folded}.`);
+            }
+        }
+    }
+    return owners;
+}
+
 export async function getGalleryImages(): Promise<ImageItem[]> {
     const paths = libraryPaths();
     const photosDir = paths.root;
@@ -70,23 +111,28 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
     }
 
     // The same source list the watcher and images:cleanup use, so dot-files never count
-    const files = getPhotoFiles(photosDir);
+    const files = await setOwners(getPhotoFiles(photosDir), paths);
     // Each derivative folder read once, so a set counts only under its exact name
     const derivatives = readDerivativeIndex(paths);
 
-    const readItem = async (file: string, index: number): Promise<ImageItem> => {
+    const readItem = async (file: string, index: number): Promise<ImageItem | 'incomplete'> => {
         const filePath = path.join(photosDir, file);
         // Use sharp with file path to avoid reading full buffer into memory
         const metadata = await sharp(filePath).metadata();
-        
+        // The derivatives are upright, so report the size after the EXIF Orientation is applied.
+        const upright = metadata.autoOrient ?? metadata;
+
         // Get paths for all image versions
         const imagePaths = getImagePaths(file, paths, derivatives);
-        // Derivatives only for a complete set, all seven by exact name. Anything
-        // less, such as a set cleanup only partly removed, gets the original.
-        const set = isCompleteSet(imagePaths) ? imagePaths : null;
-        
-        // Get LQIP base64
-        const lqip = (set && getLqipBase64(file, paths)) || await placeholderFor(filePath);
+        // Original files are never served, so a photo is listed only with a complete
+        // set, all seven by exact name. Anything less, such as a set cleanup only
+        // partly removed, leaves it out until the watcher writes the set again.
+        if (!isCompleteSet(imagePaths)) return 'incomplete';
+        // The Lightbox's slide gets the size of the file it loads. One that can't be read can't be shown either.
+        const optimized = await optimizedSize(file, paths);
+
+        // Get LQIP base64. An on-the-fly placeholder is upright, as encodeLqip() turns it.
+        const lqip = getLqipBase64(file, paths) || await placeholderFor(filePath);
         
         let exifData: Record<string, unknown> = {};
         if (metadata.exif) {
@@ -136,20 +182,19 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
         // Fallback if empty
         if (!caption) caption = '';
 
-        // `src` is the original source path. The gallery and carousel load the pre-generated `optimized` and `thumbnail` WebP files.
-        const src = imagePaths.original;
-        
         return {
             id: index,
-            src: src,
-            thumbnail: set ? set.thumbnail : src,
-            medium: set ? set.medium : src,
-            optimized: set ? set.optimized : src,
-            thumbnailAvif: set?.thumbnailAvif,
-            mediumAvif: set?.mediumAvif,
-            optimizedAvif: set?.optimizedAvif,
-            width: metadata.width || 800,
-            height: metadata.height || 600,
+            src: imagePaths.optimized,
+            thumbnail: imagePaths.thumbnail,
+            medium: imagePaths.medium,
+            optimized: imagePaths.optimized,
+            thumbnailAvif: imagePaths.thumbnailAvif,
+            mediumAvif: imagePaths.mediumAvif,
+            optimizedAvif: imagePaths.optimizedAvif,
+            width: upright.width || 800,
+            height: upright.height || 600,
+            optimizedWidth: optimized.width,
+            optimizedHeight: optimized.height,
             caption: caption,
             date: dateTaken.getTime(),
             lqip: lqip,
@@ -166,11 +211,15 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
         }
     }));
 
-    // If every photo failed, throw instead of returning an empty list, so the
-    // ISR cache keeps serving the last good one
-    const listed = images.filter((image): image is ImageItem => image !== null);
-    if (files.length > 0 && listed.length === 0) {
-        throw new Error(`Could not read any of the photos in ${photosDir} (${files.length} found).`);
+    const listed = images.filter((image): image is ImageItem => image !== null && image !== 'incomplete');
+    // If nothing could be listed and a photo failed, throw instead of returning
+    // an empty list, so the ISR cache keeps serving the last good one. A photo
+    // still waiting for its set hasn't failed: before the watcher's first run,
+    // the list is empty.
+    if (listed.length === 0 && images.includes(null)) {
+        const failed = images.filter((image) => image === null).length;
+        const counts = failed === files.length ? `${files.length} found` : `${failed} of ${files.length} failed, and the others are waiting for their derivatives`;
+        throw new Error(`Could not read any of the photos in ${photosDir} (${counts}).`);
     }
 
     // Sort: Newest First

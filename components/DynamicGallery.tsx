@@ -10,6 +10,8 @@ interface GalleryImage {
     thumbnail?: string;
     width: number;
     height: number;
+    optimizedWidth: number;
+    optimizedHeight: number;
     caption?: string;
     lqip?: string;
 }
@@ -32,6 +34,8 @@ export default function DynamicGallery() {
                     thumbnail: img.thumbnail,  // Pre-optimized 400px WebP
                     width: img.width,
                     height: img.height,
+                    optimizedWidth: img.optimizedWidth,
+                    optimizedHeight: img.optimizedHeight,
                     caption: img.caption || undefined,
                     lqip: img.lqip,
                 })));
