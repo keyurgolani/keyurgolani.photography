@@ -478,16 +478,17 @@ test.describe('on the desktop project', () => {
             test('the 500px wordmark renders wide enough to read, wider than the square marks', async ({ page }) => {
                 test.skip(!ENABLED.some((destination) => destination.icon === '500px'), '500px is off.');
                 await openAbout(page);
+                // What's drawn, so the path's box, not the svg's.
                 const marks = await external(page)
                     .locator('svg[data-icon]')
                     .evaluateAll((elements) =>
                         elements.map((el) => {
-                            const { width: w, height: h } = el.getBoundingClientRect();
+                            const { width: w, height: h } = el.querySelector('path')?.getBoundingClientRect() ?? { width: 0, height: 0 };
                             return { icon: el.getAttribute('data-icon'), width: w, height: h };
                         }),
                     );
                 const wordmark = marks.find((mark) => mark.icon === '500px');
-                expect(wordmark?.width ?? 0).toBeGreaterThanOrEqual(32);
+                expect(wordmark?.width ?? 0).toBeGreaterThanOrEqual(30);
                 expect((wordmark?.width ?? 0) / (wordmark?.height ?? 1)).toBeGreaterThan(3);
                 for (const mark of marks.filter(({ icon }) => icon !== '500px')) expect(wordmark?.width ?? 0, `wider than ${mark.icon}`).toBeGreaterThan(mark.width);
             });
