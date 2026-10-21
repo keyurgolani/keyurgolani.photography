@@ -1,8 +1,13 @@
 import js from '@eslint/js'
 import globals from 'globals'
+import jsxA11y from 'eslint-plugin-jsx-a11y'
 import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
 import tseslint from 'typescript-eslint'
+
+// The handlers a non-interactive element may not carry. Leaving out the mouse
+// move and enter events keeps ParallaxCard's hover-only tilt legal.
+const handlers = ['onClick', 'onMouseDown', 'onMouseUp', 'onKeyPress', 'onKeyDown', 'onKeyUp']
 
 export default tseslint.config(
   {
@@ -32,6 +37,31 @@ export default tseslint.config(
         'warn',
         { allowConstantExport: true },
       ],
+    },
+  },
+  {
+    // Contract rule 1 in docs/accessibility-contract.md: the focusable element owns the handler.
+    files: ['**/*.tsx'],
+    plugins: {
+      'jsx-a11y': jsxA11y,
+    },
+    rules: {
+      'jsx-a11y/click-events-have-key-events': 'error',
+      'jsx-a11y/interactive-supports-focus': 'error',
+      'jsx-a11y/alt-text': ['error', { img: ['Image'] }],
+      'jsx-a11y/no-static-element-interactions': ['error', { handlers }],
+      'jsx-a11y/no-noninteractive-element-interactions': ['error', { handlers }],
+    },
+  },
+  {
+    // Playwright runs in Node, and its fixture callback `use()` isn't a React hook.
+    files: ['e2e/**/*.ts', 'playwright.config.ts'],
+    languageOptions: {
+      globals: globals.node,
+    },
+    rules: {
+      'react-hooks/rules-of-hooks': 'off',
+      'react-hooks/exhaustive-deps': 'off',
     },
   },
 )

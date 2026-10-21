@@ -2,7 +2,17 @@ import fs from 'fs';
 import path from 'path';
 import sharp from 'sharp';
 import exifFromBuffer from 'exif-reader';
-import { getImagePaths, ensureDirectories, getLqipBase64, PHOTOS_DIR } from './imageOptimizer';
+import {
+    encodeLqip,
+    ensureDirectories,
+    getImagePaths,
+    getLqipBase64,
+    getPhotoFiles,
+    isCompleteSet,
+    libraryPaths,
+    libraryRootExists,
+    readDerivativeIndex,
+} from './imageOptimizer';
 
 export interface ImageItem {
     id: number;
@@ -20,51 +30,63 @@ export interface ImageItem {
     lqip: string;
 }
 
+const EMPTY_LQIP = 'data:image/webp;base64,UklGRlYAAABXRUJQVlA4IEoAAADQAQCdASoKAAoAAUAmJYgCdAEO9ACA/v9P9f96f1AAAAAAfQ==';
+
+/** On-the-fly placeholders by source path, reused while the file keeps its inode, size, and mtime. */
+const placeholders = new Map<string, { version: string; lqip: string }>();
+
+async function placeholderFor(filePath: string): Promise<string> {
+    try {
+        const { ino, size, mtimeMs } = fs.statSync(filePath);
+        const version = `${ino}:${size}:${mtimeMs}`;
+        const cached = placeholders.get(filePath);
+        if (cached?.version === version) return cached.lqip;
+        // Generate on-the-fly (using filePath, not buffer)
+        const lqip = await encodeLqip(filePath);
+        placeholders.set(filePath, { version, lqip });
+        return lqip;
+    } catch {
+        // Fallback to empty placeholder
+        return EMPTY_LQIP;
+    }
+}
+
 export async function getGalleryImages(): Promise<ImageItem[]> {
-    const photosDir = PHOTOS_DIR;
+    const paths = libraryPaths();
+    const photosDir = paths.root;
     
     // Return empty if photos directory doesn't exist
-    if (!fs.existsSync(photosDir)) {
+    if (!libraryRootExists(photosDir)) {
         return [];
     }
     
     // Try to ensure subdirectories exist, but don't fail if we can't create them
     // (they may be on a mounted volume with different permissions)
     try {
-        ensureDirectories();
+        ensureDirectories(paths);
     } catch (error) {
         console.warn('Could not create thumbnail/optimized directories:', error);
         // Continue anyway - thumbnails might already exist or will be created by watcher
     }
 
-    const files = fs.readdirSync(photosDir).filter(file => 
-        /\.(jpg|jpeg|png|webp)$/i.test(file) &&
-        !fs.statSync(path.join(photosDir, file)).isDirectory()
-    );
+    // The same source list the watcher and images:cleanup use, so dot-files never count
+    const files = getPhotoFiles(photosDir);
+    // Each derivative folder read once, so a set counts only under its exact name
+    const derivatives = readDerivativeIndex(paths);
 
-    const images = await Promise.all(files.map(async (file, index) => {
+    const readItem = async (file: string, index: number): Promise<ImageItem> => {
         const filePath = path.join(photosDir, file);
         // Use sharp with file path to avoid reading full buffer into memory
         const metadata = await sharp(filePath).metadata();
         
         // Get paths for all image versions
-        const imagePaths = getImagePaths(file);
+        const imagePaths = getImagePaths(file, paths, derivatives);
+        // Derivatives only for a complete set, all seven by exact name. Anything
+        // less, such as a set cleanup only partly removed, gets the original.
+        const set = isCompleteSet(imagePaths) ? imagePaths : null;
         
         // Get LQIP base64
-        let lqip = getLqipBase64(file);
-        if (!lqip) {
-            // Generate on-the-fly if not available (using filePath, not buffer)
-            try {
-                const lqipBuffer = await sharp(filePath)
-                    .resize(20, 20, { fit: 'inside' })
-                    .webp({ quality: 20 })
-                    .toBuffer();
-                lqip = `data:image/webp;base64,${lqipBuffer.toString('base64')}`;
-            } catch {
-                // Fallback to empty placeholder
-                lqip = 'data:image/webp;base64,UklGRlYAAABXRUJQVlA4IEoAAADQAQCdASoKAAoAAUAmJYgCdAEO9ACA/v9P9f96f1AAAAAAfQ==';
-            }
-        }
+        const lqip = (set && getLqipBase64(file, paths)) || await placeholderFor(filePath);
         
         let exifData: Record<string, unknown> = {};
         if (metadata.exif) {
@@ -114,26 +136,43 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
         // Fallback if empty
         if (!caption) caption = '';
 
-        // Always use original source path - /api/image handles format negotiation (AVIF/WebP)
+        // `src` is the original source path. The gallery and carousel load the pre-generated `optimized` and `thumbnail` WebP files.
         const src = imagePaths.original;
         
         return {
             id: index,
             src: src,
-            thumbnail: imagePaths.hasThumbnail ? imagePaths.thumbnail : imagePaths.original,
-            medium: imagePaths.hasMedium ? imagePaths.medium : src,
-            optimized: imagePaths.hasOptimized ? imagePaths.optimized : imagePaths.original,
-            thumbnailAvif: imagePaths.hasThumbnailAvif ? imagePaths.thumbnailAvif : undefined,
-            mediumAvif: imagePaths.hasMediumAvif ? imagePaths.mediumAvif : undefined,
-            optimizedAvif: imagePaths.hasOptimizedAvif ? imagePaths.optimizedAvif : undefined,
+            thumbnail: set ? set.thumbnail : src,
+            medium: set ? set.medium : src,
+            optimized: set ? set.optimized : src,
+            thumbnailAvif: set?.thumbnailAvif,
+            mediumAvif: set?.mediumAvif,
+            optimizedAvif: set?.optimizedAvif,
             width: metadata.width || 800,
             height: metadata.height || 600,
             caption: caption,
             date: dateTaken.getTime(),
             lqip: lqip,
         };
+    };
+
+    // One undecodable or vanished file is logged and left out, so the others still list
+    const images = await Promise.all(files.map(async (file, index) => {
+        try {
+            return await readItem(file, index);
+        } catch (error) {
+            console.error(`[getGalleryImages] Skipping ${file}: ${error instanceof Error ? error.message : String(error)}`);
+            return null;
+        }
     }));
 
+    // If every photo failed, throw instead of returning an empty list, so the
+    // ISR cache keeps serving the last good one
+    const listed = images.filter((image): image is ImageItem => image !== null);
+    if (files.length > 0 && listed.length === 0) {
+        throw new Error(`Could not read any of the photos in ${photosDir} (${files.length} found).`);
+    }
+
     // Sort: Newest First
-    return images.sort((a, b) => b.date - a.date);
+    return listed.sort((a, b) => b.date - a.date);
 }

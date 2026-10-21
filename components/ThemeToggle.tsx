@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { usePathname } from 'next/navigation';
 import { Sun, Moon } from 'lucide-react';
 import { useTheme } from './ThemeContext';
+import { DISMISSED_LABEL_STYLE, useDismissibleLabel } from './useDismissibleLabel';
 
 // Get auto-hide timeout from env, default to 3000ms (3 seconds)
 const AUTO_HIDE_TIMEOUT = parseInt(
@@ -13,6 +14,7 @@ const AUTO_HIDE_TIMEOUT = parseInt(
 
 export default function ThemeToggle() {
   const { theme, toggleTheme } = useTheme();
+  const { dismissed, handlers } = useDismissibleLabel();
   const pathname = usePathname();
   const isHomePage = pathname === '/';
   
@@ -86,9 +88,11 @@ export default function ThemeToggle() {
   
   return (
     <button
+      type="button"
       onClick={handleToggle}
+      {...handlers}
       aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
-      className={`fixed top-6 left-6 z-[2000] p-3 rounded-full bg-white/80 dark:bg-black/60 backdrop-blur-xl border border-black/10 dark:border-white/20 shadow-[0_4px_20px_rgba(0,0,0,0.1)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.5)] transition-all duration-500 hover:scale-110 hover:shadow-[0_6px_25px_rgba(0,0,0,0.15)] dark:hover:shadow-[0_6px_25px_rgba(0,0,0,0.6)] group ${
+      className={`fixed top-6 left-6 z-[2000] p-3 rounded-full bg-white/80 dark:bg-black/60 backdrop-blur-xl border border-black/10 dark:border-white/20 shadow-[0_4px_20px_rgba(0,0,0,0.1)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.5)] transition-[opacity,transform] duration-500 hover:scale-110 hover:shadow-[0_6px_25px_rgba(0,0,0,0.15)] dark:hover:shadow-[0_6px_25px_rgba(0,0,0,0.6)] group ${
         isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4 pointer-events-none'
       }`}
     >
@@ -97,7 +101,12 @@ export default function ThemeToggle() {
       ) : (
         <Sun size={20} strokeWidth={1.5} className="text-white/70 group-hover:text-white transition-colors" />
       )}
-      <span className="absolute -bottom-10 left-1/2 -translate-x-1/2 px-2 py-1 bg-white dark:bg-black/80 text-black dark:text-white text-xs font-medium rounded-full opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap border border-black/10 dark:border-white/10 backdrop-blur-md shadow-lg">
+      {/* Takes the pointer only while shown, so hidden it never catches a tap meant for the page under it. Escape hides it.
+          Its ::before bridges the gap up to the button, so the pointer can cross onto it without the button losing :hover. */}
+      <span
+        className="absolute -bottom-10 left-1/2 -translate-x-1/2 px-2 py-1 bg-white dark:bg-black/80 text-black dark:text-white text-xs font-medium rounded-full opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-visible:opacity-100 group-focus-visible:pointer-events-auto transition-opacity whitespace-nowrap border border-black/10 dark:border-white/10 backdrop-blur-md shadow-lg before:absolute before:inset-x-0 before:bottom-full before:h-4"
+        style={dismissed ? DISMISSED_LABEL_STYLE : undefined}
+      >
         {theme === 'light' ? 'Dark' : 'Light'}
       </span>
     </button>

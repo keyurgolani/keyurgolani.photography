@@ -38,7 +38,6 @@ A modern, high-performance photography portfolio website built with Next.js 16, 
 ### ⚡ Performance
 - **Next.js Image Optimization** - Automatic AVIF/WebP format negotiation
 - **Multi-size Image Pipeline** - Pre-generated thumbnails (400px), medium (800px), and full (1920px)
-- **Dynamic Image API** - On-demand image resizing with disk caching
 - **ISR Caching** - Incremental Static Regeneration for fast API responses
 - **Docker Ready** - Production-optimized containerized deployment
 
@@ -51,7 +50,7 @@ A modern, high-performance photography portfolio website built with Next.js 16, 
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Node.js 18+ 
+- Node.js 24 LTS (see `.nvmrc`)
 - npm or yarn
 - Docker (optional, for containerized deployment)
 
@@ -71,21 +70,38 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000) to view the site.
 
-### Production with Docker
+### Development with Docker
+
+`docker-compose.yml` runs `next dev` and the photo watcher against your checkout:
 
 ```bash
-# Build and run with Docker Compose
-docker-compose -f docker-compose.prod.yml up -d
-
-# Or use the pre-built image
-docker pull ghcr.io/keyurgolani/keyurgolani.photography:latest
+docker compose up
 ```
+
+After a dependency change, rebuild with `docker compose up --build -V`. Without `-V`, the anonymous `node_modules` volume keeps the old install.
+
+### Production with Docker
+
+Both containers run one pinned release tag. Set it in a `.env` next to `docker-compose.prod.yml`:
+
+```bash
+PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z
+```
+
+Then pull and start:
+
+```bash
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d
+```
+
+[docs/releasing.md](docs/releasing.md) covers cutting a release, deploying, rollback, and telling what's running.
 
 ## 📁 Project Structure
 
 ```
 ├── app/                    # Next.js App Router pages
-│   ├── api/               # API routes (photos, image optimization)
+│   ├── api/               # API route for the photo list
 │   ├── gallery/           # Gallery page
 │   ├── about/             # About page
 │   └── page.tsx           # Home page
@@ -96,8 +112,10 @@ docker pull ghcr.io/keyurgolani/keyurgolani.photography:latest
 │   └── LoadingAnimation.tsx # Loading screen animation
 ├── utils/                 # Utility functions
 │   ├── getImageData.ts    # Image metadata extraction
-│   └── imageOptimizer.ts  # Sharp-based image processing
+│   ├── imageOptimizer.ts  # Sharp-based image processing
+│   └── watcherHandlers.ts # Watcher event handlers and job queue
 ├── scripts/               # Background scripts
+│   ├── imageCleanup.ts    # Reviews and deletes leftover derivatives
 │   └── imageWatcher.ts    # File watcher for new photos
 ├── public/                # Static assets
 │   └── assets/photos/     # Photo storage directory
@@ -115,6 +133,42 @@ docker pull ghcr.io/keyurgolani/keyurgolani.photography:latest
    - Creates LQIP placeholders
 3. **Gallery updates** automatically on next page load
 
+### Replacing and Removing Photos
+- **Replace** a photo by saving over it under the same name. The watcher regenerates its derivatives from the new file and swaps them in only once all seven are written, so a failed run keeps the old ones. Visitors can still see the old version for a while: `/_next/image` can serve its copy for up to a day, and a browser that cached it under the old `immutable` header may keep it for up to a year.
+- **Accepted risk:** a different photo saved under a removed photo's name, with an older modification time, shows the old images until you `touch` it or run `--force`. Copy tools that keep modification times, such as `cp -p` and `rsync -a`, do this. With the watcher stopped, run `images:cleanup` before reusing a name.
+- **Delete** a photo to hide it from the gallery. Its derivative files stay reachable at their URLs until `images:cleanup` deletes them. Restoring the file brings the photo back in the gallery after `web` restarts, since Next serves only the `public/` files that existed when it started.
+- **Review leftovers** with `npm run images:cleanup`. It lists each derivative no photo needs anymore, with the reason, and prints a plan hash. Re-run it with `-- --apply --plan <hash>` to delete exactly that list. It refuses if the list changed since the dry run. In production, run both steps in the watcher container:
+
+  ```bash
+  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts
+  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts --apply --plan <hash>
+  ```
+- **Take a photo down** with the watcher stopped, so a job already running can't write its derivatives back:
+  1. Stop `image-watcher`, then delete the photo.
+  2. Run the full dry run. It also lists sets left under the photo's earlier names.
+  3. Run it with `--only <name>`, where `<name>` is the photo's exact name such as `landscape`, then apply that plan. Do the same for each earlier name.
+  4. Purge Next's image cache with `web` stopped, then start the stack. The purge runs inside the `web` image, since the cache files belong to its uid 1001 and a host user's `rm` can fail.
+  5. Wait about two minutes, then check that `/api/photos` no longer lists the photo. Its cached list survives a restart until it revalidates.
+
+  ```bash
+  docker compose -f docker-compose.prod.yml stop image-watcher
+  # Delete the photo, then:
+  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts
+  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts --only <name>
+  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts --only <name> --apply --plan <hash>
+  docker compose -f docker-compose.prod.yml stop web
+  docker compose -f docker-compose.prod.yml run --rm --no-deps web sh -c 'rm -rf /app/.next/cache/images/*'
+  docker compose -f docker-compose.prod.yml start web image-watcher
+  ```
+- **Regenerate everything** with `npm run images:process -- --force`. In production, stop `image-watcher` first so the two never write at once:
+
+  ```bash
+  docker compose -f docker-compose.prod.yml stop image-watcher
+  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageWatcher.ts --once --force
+  docker compose -f docker-compose.prod.yml start image-watcher
+  ```
+- **Restore the library folder** if it was deleted. The watcher exits 1 when its folder disappears, and since Compose no longer creates a missing photos folder, neither container can start until it's back. Stop the stack, copy the folder back into place rather than moving it with `mv`, then start the stack.
+
 ### Supported Formats
 - JPEG (.jpg, .jpeg)
 - PNG (.png)
@@ -128,12 +182,17 @@ docker pull ghcr.io/keyurgolani/keyurgolani.photography:latest
 |----------|-------------|---------|
 | `NEXT_PUBLIC_CAROUSEL_INTERVAL` | Hero carousel slide duration (ms) | 12000 |
 | `NEXT_PUBLIC_UI_AUTO_HIDE_TIMEOUT` | UI auto-hide timeout on home page (ms) | 3000 |
+| `PHOTOGRAPHY_LIBRARY_DIR` | Photo library folder for the watcher, `images:cleanup`, and `/api/photos`. The site serves photos only from `public/assets/photos`, so leave it unset outside tests. | `public/assets/photos` |
 
 ### Docker Configuration
 
 The production setup uses two containers:
 - **web** - Next.js application server
 - **image-watcher** - Background photo processor
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `PHOTOGRAPHY_IMAGE_TAG` | Release tag both containers run, such as `vX.Y.Z`. Set it in the `.env` next to `docker-compose.prod.yml`. | None. Compose refuses to start without it. |
 
 See `docker-compose.prod.yml` for full configuration.
 

@@ -1,0 +1,170 @@
+name: CI
+
+# The pull request gate. publish.yml calls this same workflow on every main
+# push, so an image is only published after these jobs pass in that run.
+# No paths filters: a required check that never runs blocks the merge.
+on:
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+# In a called workflow github.event_name is the caller's (push), so main runs
+# get a group of their own and only pull requests cancel superseded runs.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-run-{0}', github.run_id) }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Lint, unit tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Check the Dockerfile matches .nvmrc
+        run: |
+          node_major=$(cat .nvmrc)
+          if [[ ! $node_major =~ ^[0-9]+$ ]]; then
+            echo "::error file=.nvmrc::.nvmrc must hold a bare Node major such as 20, not '$node_major'."
+            exit 1
+          fi
+          if ! grep -Eq "^FROM node:${node_major}-" Dockerfile; then
+            echo "::error file=Dockerfile::The Dockerfile must build FROM node:${node_major}-*, the Node major in .nvmrc."
+            exit 1
+          fi
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test -- --run
+      - run: npm run build
+
+  e2e:
+    name: Browser tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - run: npx playwright install --with-deps --only-shell chromium
+
+      - run: npm run test:e2e
+
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+
+  image:
+    name: Image smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check docker-compose.prod.yml
+        run: ci/check-compose.sh
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build the image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          push: false
+          tags: ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke
+          cache-from: type=gha
+          # A failed cache export never fails the job. Publish to GHCR smoke
+          # tests the digest it pushes, so main doesn't depend on this cache.
+          cache-to: type=gha,mode=max,ignore-error=true
+
+      # The Dockerfile pins its base by tag and digest, so a Node bump that
+      # updates the tag but not the digest would still build the old Node.
+      # This runs before the smoke test, so a wrong runtime fails fast.
+      - name: Check the image runs the Node major in .nvmrc
+        run: |
+          node_major=$(cat .nvmrc)
+          version=$(docker run --rm --pull never ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke node --version)
+          echo "The image runs Node $version."
+          if [[ $version != "v${node_major}."* ]]; then
+            echo "::error file=Dockerfile::The image runs Node $version, but .nvmrc says ${node_major}. Check the base image digest."
+            exit 1
+          fi
+
+      - name: Smoke test the image
+        run: ci/smoke-image.sh ci-smoke
+
+      - name: Smoke test the watcher's --once mode
+        env:
+          IMAGE: ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke
+        run: bash ci/smoke-watcher-once.sh
+
+  # Fails on a high or critical advisory in a production dependency unless
+  # .github/audit-allowlist.json lists it. npm audit reads only the lockfile,
+  # so the job skips npm ci.
+  audit:
+    name: Production audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      - run: node ci/audit-gate.mjs
+
+  # The one required check. always() matters: without it a failed job skips
+  # this one, and GitHub counts a skipped required check as passing. The
+  # ruleset requires "CI result" by name, so a rename changes the ruleset in
+  # the same PR. A new job joins `needs` here and is checked automatically.
+  result:
+    name: CI result
+    if: always()
+    needs: [verify, e2e, image, audit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every job to succeed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          results=$(jq -r 'to_entries[] | "\(.key) \(.value.result)"' <<<"$NEEDS")
+          if [ -z "$results" ]; then
+            echo "::error::No job results to check."
+            exit 1
+          fi
+          failed=0
+          while read -r job result; do
+            echo "$job: $result"
+            if [ "$result" != success ]; then
+              echo "::error::$job finished with $result."
+              failed=1
+            fi
+          done <<<"$results"
+          exit "$failed"

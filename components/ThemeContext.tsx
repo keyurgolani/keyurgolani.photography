@@ -21,6 +21,11 @@ export const ThemeProvider = ({children}: { children: ReactNode }) => {
         document.documentElement.setAttribute('data-theme', savedTheme);
     }, []);
 
+    // Its own effect, so it runs after the children commit. Browser tests wait on html[data-hydrated].
+    useEffect(() => {
+        if (mounted) document.documentElement.dataset.hydrated = 'true';
+    }, [mounted]);
+
     const toggleTheme = () => {
         const newTheme = theme === 'light' ? 'dark' : 'light';
         const root = document.documentElement;

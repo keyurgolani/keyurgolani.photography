@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Host settings for docker-compose.prod.yml, such as PHOTOGRAPHY_IMAGE_TAG
+.env
+
 # Next.js
 .next*/
 out/
@@ -21,6 +24,11 @@ next-env.d.ts
 .turbo/
 .vitest/
 coverage/
+
+# Playwright
+test-results/
+playwright-report/
+blob-report/
 
 # Editor directories and files
 .vscode/*

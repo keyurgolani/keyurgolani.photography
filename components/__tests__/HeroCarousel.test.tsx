@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 import HeroCarousel from '../HeroCarousel';
 
 const images = [
@@ -14,29 +15,53 @@ const images = [
   },
 ];
 
+function renderCarousel(onFirstImageLoaded = vi.fn()) {
+  const { container } = render(
+    <HeroCarousel
+      images={images}
+      autoScroll={false}
+      autoScrollEnabled={false}
+      onFirstImageLoaded={onFirstImageLoaded}
+    />
+  );
+  const layers = (layer: 'thumbnail' | 'optimized') =>
+    Array.from(container.querySelectorAll<HTMLImageElement>(`img[data-layer="${layer}"]`));
+  return { layers };
+}
+
 describe('HeroCarousel', () => {
   it('notifies only after the first optimized image loads', () => {
     const onFirstImageLoaded = vi.fn();
+    const { layers } = renderCarousel(onFirstImageLoaded);
 
-    render(
-      <HeroCarousel
-        images={images}
-        autoScroll={false}
-        autoScrollEnabled={false}
-        onFirstImageLoaded={onFirstImageLoaded}
-      />
-    );
-
-    const slideOneImages = screen.getAllByAltText('Slide 1');
-    const thumbnail = slideOneImages[0];
-    const optimized = slideOneImages[1];
-
-    fireEvent.load(thumbnail);
+    fireEvent.load(layers('thumbnail')[0]);
 
     expect(onFirstImageLoaded).not.toHaveBeenCalled();
 
-    fireEvent.load(optimized);
+    fireEvent.load(layers('optimized')[0]);
 
     expect(onFirstImageLoaded).toHaveBeenCalledTimes(1);
+  });
+
+  it('names each photo once, on its full-quality layer', () => {
+    const { layers } = renderCarousel();
+
+    expect(layers('thumbnail').map((img) => img.getAttribute('alt'))).toEqual(['', '']);
+    expect(layers('optimized').map((img) => img.getAttribute('alt'))).toEqual(['Photograph 1 of 2', 'Photograph 2 of 2']);
+  });
+
+  it('names the arrows for photographs', () => {
+    renderCarousel();
+
+    expect(screen.getByRole('button', { name: 'Previous photograph' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next photograph' })).toBeInTheDocument();
+  });
+
+  it('makes the arrows plain buttons, so they never submit a form around them', () => {
+    renderCarousel();
+
+    for (const name of ['Previous photograph', 'Next photograph']) {
+      expect(screen.getByRole('button', { name })).toHaveAttribute('type', 'button');
+    }
   });
 });

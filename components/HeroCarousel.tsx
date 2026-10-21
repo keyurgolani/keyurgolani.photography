@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { photoImageAlt } from '@/lib/a11y/photoName';
 import styles from './HeroCarousel.module.css';
 
 interface CarouselImage {
@@ -145,20 +146,22 @@ const HeroCarousel: React.FC<HeroCarouselProps> = ({
           >
             {shouldRender && (
               <>
-                {/* Thumbnail layer (loads first) */}
+                {/* Thumbnail layer (loads first). The optimized layer carries the name, so this one is decorative. */}
                 <img
                   src={img.thumbnail}
-                  alt={`Slide ${index + 1}`}
+                  alt=""
+                  data-layer="thumbnail"
                   className={`${styles.slideImage} ${styles.thumbnailLayer}`}
                   loading={index === 0 ? 'eager' : 'lazy'}
                   fetchPriority={index === 0 ? 'high' : 'auto'}
                   onLoad={() => handleImageLoad(index, false)}
                   style={{ opacity: isLoaded && !hasOptimized ? 1 : hasOptimized ? 0 : 0 }}
                 />
-                {/* Optimized layer (loads on top) */}
+                {/* Optimized layer (loads on top). Position-only alt until #4 supplies descriptions. */}
                 <img
                   src={img.optimized}
-                  alt={`Slide ${index + 1}`}
+                  alt={photoImageAlt({ position: index + 1, total: images.length })}
+                  data-layer="optimized"
                   className={`${styles.slideImage} ${styles.optimizedLayer}`}
                   loading={index === 0 ? 'eager' : 'lazy'}
                   fetchPriority={index === 0 ? 'high' : 'auto'}
@@ -176,17 +179,19 @@ const HeroCarousel: React.FC<HeroCarouselProps> = ({
       })}
 
       <button
+        type="button"
         className={`${styles.navButton} ${styles.prev}`}
         onClick={prevSlide}
-        aria-label="Previous Slide"
+        aria-label="Previous photograph"
       >
         <ChevronLeft size={24} />
       </button>
 
       <button
+        type="button"
         className={`${styles.navButton} ${styles.next}`}
         onClick={nextSlide}
-        aria-label="Next Slide"
+        aria-label="Next photograph"
       >
         <ChevronRight size={24} />
       </button>
