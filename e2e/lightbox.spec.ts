@@ -121,6 +121,34 @@ test('Zoom in and Zoom out change the scale with Enter and with Space', async ({
     }
 });
 
+/** The color, background, and scale a hover or press would change. */
+const looks = (target: Locator) =>
+    target.evaluate((el) => {
+        const style = getComputedStyle(el);
+        return { color: style.color, background: style.backgroundColor, scale: style.scale };
+    });
+
+/** The alpha of a computed rgb() or rgba() color. */
+const alphaOf = (color: string) => Number(/rgba?\(([^)]*)\)/.exec(color)?.[1].split(',')[3] ?? 1);
+
+for (const theme of ['dark', 'light'] as const) {
+    test(`a disabled button stays dimmed and takes no hover styles in the ${theme} theme`, async ({ page, isMobile }) => {
+        await openLightbox(page, { theme });
+        const zoomOut = control(page, 'Zoom out');
+        const zoomIn = control(page, 'Zoom in');
+        // Zoom out starts disabled, at the smallest zoom.
+        await expect(zoomOut).toBeDisabled();
+        const resting = await looks(zoomOut);
+        expect(alphaOf(resting.color), 'Zoom out is dimmer than Zoom in').toBeLessThan(alphaOf((await looks(zoomIn)).color));
+        // Hover styles only apply to fine pointers.
+        if (isMobile) return;
+        await zoomOut.hover();
+        expect(await looks(zoomOut), 'Zoom out ignores the hover').toEqual(resting);
+        await zoomIn.hover();
+        await expect.poll(async () => (await looks(zoomIn)).scale, 'Zoom in still takes the hover').toBe('1.08');
+    });
+}
+
 test('Play and Pause swap with Enter and with Space', async ({ page }) => {
     await openLightbox(page);
     await control(page, 'Play').focus();

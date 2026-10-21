@@ -429,16 +429,17 @@ body {
     filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000) !important;
 }
 
-/* scale, not transform, so Previous and Next keep YARL's translateY(-50%) */
+/* scale, not transform, so Previous and Next keep YARL's translateY(-50%). A
+   disabled button, such as Zoom out at the smallest zoom, takes neither. */
 @media (hover: hover) and (pointer: fine) {
-    .yarl__button:hover {
+    .yarl__button:not(:disabled):hover {
         background: rgba(255, 255, 255, 0.1) !important;
         color: rgba(255, 255, 255, 1) !important;
         scale: 1.08;
     }
 }
 
-.yarl__button:active {
+.yarl__button:not(:disabled):active {
     scale: 0.95;
     background: rgba(255, 255, 255, 0.15) !important;
 }
@@ -466,14 +467,24 @@ body {
 }
 
 @media (hover: hover) and (pointer: fine) {
-    [data-theme="light"] .yarl__button:hover {
+    [data-theme="light"] .yarl__button:not(:disabled):hover {
         background: rgba(0, 0, 0, 0.06) !important;
         color: rgba(0, 0, 0, 0.9) !important;
     }
 }
 
-[data-theme="light"] .yarl__button:active {
+[data-theme="light"] .yarl__button:not(:disabled):active {
     background: rgba(0, 0, 0, 0.1) !important;
+}
+
+/* The color rules above outrank YARL's own dimmed :disabled color, so restate it */
+.yarl__button:disabled {
+    color: rgba(255, 255, 255, 0.3) !important;
+    cursor: default;
+}
+
+[data-theme="light"] .yarl__button:disabled {
+    color: rgba(0, 0, 0, 0.25) !important;
 }
 
 /* Close button - slightly larger and more prominent */
