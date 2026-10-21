@@ -972,16 +972,51 @@ export function applyOrphanCleanup(plan: OrphanCleanupPlan): OrphanCleanupResult
     return result;
 }
 
+/** A WebP header's first 30 bytes hold its size, in any of the three formats. */
+const WEBP_HEADER_BYTES = 30;
+
 /**
- * The size of a source's optimized WebP, read from the file, which the
- * Lightbox loads. It is smaller than the photo once the photo is wider than
- * 1920 px. Throws when the file is missing or can't be read.
+ * The width and height a WebP file's first 30 bytes declare, or null when
+ * they aren't a WebP header.
+ */
+export function webpSize(header: Buffer): { width: number; height: number } | null {
+    if (header.length < WEBP_HEADER_BYTES) return null;
+    if (header.toString('latin1', 0, 4) !== 'RIFF' || header.toString('latin1', 8, 12) !== 'WEBP') return null;
+    switch (header.toString('latin1', 12, 16)) {
+        case 'VP8X': // Extended: the canvas size, each side less one, in 24 bits
+            return { width: header.readUIntLE(24, 3) + 1, height: header.readUIntLE(27, 3) + 1 };
+        case 'VP8 ': // Lossy: 14-bit sides after the key frame's start code
+            if (header.readUIntBE(23, 3) !== 0x9d012a) return null;
+            return { width: header.readUInt16LE(26) & 0x3fff, height: header.readUInt16LE(28) & 0x3fff };
+        case 'VP8L': { // Lossless: 14-bit sides, each less one, after the signature byte
+            if (header[20] !== 0x2f) return null;
+            const bits = header.readUInt32LE(21);
+            return { width: (bits & 0x3fff) + 1, height: ((bits >>> 14) & 0x3fff) + 1 };
+        }
+        default:
+            return null;
+    }
+}
+
+/**
+ * The size of a source's optimized WebP, which the Lightbox loads. It is
+ * smaller than the photo once the photo is wider than 1920 px. Read from the
+ * file's header, not through Sharp: libvips caches what it loads by file name,
+ * so in a long-running server a file the watcher replaced would keep its old
+ * size. Throws when the file is missing or isn't a WebP.
  */
 export async function optimizedSize(filename: string, paths: LibraryPaths = libraryPaths()): Promise<{ width: number; height: number }> {
     const file = path.join(paths.optimized, outputName('optimized', baseNameOf(filename)));
-    const { width, height } = await sharp(file).metadata();
-    if (!width || !height) throw new Error(`${file} has no size.`);
-    return { width, height };
+    const handle = await fs.promises.open(file, 'r');
+    try {
+        const header = Buffer.alloc(WEBP_HEADER_BYTES);
+        const { bytesRead } = await handle.read(header, 0, WEBP_HEADER_BYTES, 0);
+        const size = webpSize(header.subarray(0, bytesRead));
+        if (!size) throw new Error(`${file} is not a WebP file.`);
+        return size;
+    } finally {
+        await handle.close();
+    }
 }
 
 /**

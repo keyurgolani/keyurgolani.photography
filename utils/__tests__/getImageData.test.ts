@@ -96,6 +96,17 @@ describe('getGalleryImages', () => {
         expect(item('landscape-rot6')).toMatchObject({ width: 640, height: 960, optimizedWidth: 640, optimizedHeight: 960 });
     }, 30_000);
 
+    it('reads the optimized size afresh once the watcher replaces the file under the same name', async () => {
+        const square = async () => (await getGalleryImages()).find((image) => image.optimized === '/assets/photos/optimized/square.webp');
+        expect(await square()).toMatchObject({ optimizedWidth: 720, optimizedHeight: 720 });
+
+        // As writeVariants() does: a temp file renamed over the old one
+        const temp = lib.file('optimized', '.square.tmp');
+        await sharp({ create: { width: 300, height: 200, channels: 3, background: '#4a6' } }).webp().toFile(temp);
+        fs.renameSync(temp, lib.file('optimized/square.webp'));
+        expect(await square()).toMatchObject({ optimizedWidth: 300, optimizedHeight: 200 });
+    });
+
     it('reads the optimized size from the file, and leaves out a photo whose optimized file is unreadable', async () => {
         await sharp({ create: { width: 300, height: 200, channels: 3, background: '#4a6' } }).webp().toFile(lib.file('optimized/square.webp'));
         fs.writeFileSync(lib.file('optimized/portrait.webp'), 'not a WebP');
