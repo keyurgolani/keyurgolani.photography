@@ -20,6 +20,30 @@ const navLinks = (page: Page) => primary(page).getByRole('link');
 const themeToggle = (page: Page) => page.getByRole('button', { name: /^Switch to (dark|light) mode$/ });
 const lightbox = (page: Page) => page.getByRole('dialog', { name: 'Lightbox' });
 
+/** Each label shown on hover or focus, with the control that shows it. */
+const labels = (page: Page) => [
+    ...['Gallery', 'Home', 'About'].map((name) => {
+        const host = primary(page).getByRole('link', { name, exact: true });
+        return { name, host, label: host.locator('span') };
+    }),
+    { name: 'ThemeToggle', host: themeToggle(page), label: themeToggle(page).locator('span') },
+];
+
+/** The label's center, where a click or tap aimed at the page under it would land. */
+async function centerOf(target: Locator) {
+    const box = await target.boundingBox();
+    if (!box) throw new Error(`${target} has no box`);
+    return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+}
+
+/** Whether a click or tap at the label's center would hit the label. */
+const hitsLabel = (label: Locator) =>
+    label.evaluate((el) => {
+        const { left, top, width, height } = el.getBoundingClientRect();
+        const hit = document.elementFromPoint(left + width / 2, top + height / 2);
+        return hit !== null && el.contains(hit);
+    });
+
 async function openGallery(page: Page, theme: 'dark' | 'light' = 'dark') {
     if (theme === 'light') await page.addInitScript(() => localStorage.setItem('theme', 'light'));
     await page.goto('/gallery');
@@ -107,6 +131,23 @@ test('each photo is named by its position before its image loads, and described 
     await expect(last.locator('img')).toHaveCount(0);
     await expect(entries(page).first()).toHaveAccessibleDescription(FIXTURE_CAPTION);
     await expect(entries(page).nth(1)).toHaveAccessibleDescription('');
+});
+
+test('a hidden label lets clicks and taps through to the page, and a shown one stays hoverable', async ({ page, isMobile }) => {
+    await openGallery(page);
+    for (const { name, host, label } of labels(page)) {
+        await expect(label, `${name}'s label starts hidden`).toHaveCSS('opacity', '0');
+        expect(await hitsLabel(label), `${name}'s hidden label takes no pointer`).toBe(false);
+        // Hover styles only apply to fine pointers.
+        if (isMobile) continue;
+        await host.hover();
+        await expect(label).toHaveCSS('opacity', '1');
+        expect(await hitsLabel(label), `${name}'s shown label takes the pointer`).toBe(true);
+        // WCAG 1.4.13: the pointer can move onto the label without it going away.
+        const { x, y } = await centerOf(label);
+        await page.mouse.move(x, y);
+        await expect(label).toHaveCSS('opacity', '1');
+    }
 });
 
 test('the photo grid fills in DOM order, without dense packing', async ({ page }) => {
