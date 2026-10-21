@@ -26,17 +26,23 @@ const effectiveOpacity = (target: Locator) =>
 /** Every stop on this page is named by its aria-label. */
 const focusedLabel = (page: Page) => page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.tagName);
 
+/** BottomBar's own opacity, apart from the chrome layer's, which reaches 1 once it has slid up after the intro. */
+const bottomBarOpacity = (page: Page) =>
+    primary(page).evaluate((el) => parseFloat(getComputedStyle(el.closest('.fixed.bottom-0') ?? el).opacity));
+
 /**
  * Opens Home on `photos`, which it shuffles, and waits out the intro: the
- * grain overlay gone and the Primary navigation at full opacity. The controls
- * hide 3 s after the last activity, so tests act right away or keep pressing keys.
+ * grain overlay gone and BottomBar slid up. It doesn't wait on the chrome
+ * layer, which shows for 3 s after the intro and hides 3 s after the last
+ * activity, so a slow run can't miss that window. No test here needs the
+ * chrome shown before it acts.
  */
 async function openHome(page: Page, photos: readonly string[] = ['white', 'gray', 'black']) {
     setPhotoFixtures(page, photos);
     await page.goto('/');
     await waitForHydration(page);
     await expect(page.locator('[class*="grainOverlay"]')).toHaveCount(0, { timeout: 15_000 });
-    await expect.poll(() => effectiveOpacity(primary(page)), { timeout: 10_000 }).toBe(1);
+    await expect.poll(() => bottomBarOpacity(page), { timeout: 10_000 }).toBe(1);
 }
 
 test('passes the surface checks on the arrows, with 44 px targets and unique names on every control', async ({ page }) => {
