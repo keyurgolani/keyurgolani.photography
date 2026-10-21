@@ -7,6 +7,8 @@ const config: Config = {
     "./utils/**/*.{js,ts,jsx,tsx,mdx}",
   ],
   darkMode: ['class', '[data-theme="dark"]'],
+  // Wraps every hover: and group-hover: utility in (hover: hover) and (pointer: fine), so a tap never leaves hover styles behind.
+  future: { hoverOnlyWhenSupported: true },
   theme: {
     extend: {
       screens: {
