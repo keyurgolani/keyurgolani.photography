@@ -545,6 +545,16 @@ export function setMembers(filename: string, paths: LibraryPaths = libraryPaths(
 /** What decodes() found for each path, kept while the file keeps its inode, size, and times. */
 const decoded = new Map<string, { version: string; ok: boolean }>();
 
+/** A source's inode, size, and times, which say when decodes() must look again. Null when it can't be read. */
+async function decodeVersion(filePath: string): Promise<string | null> {
+    try {
+        const { dev, ino, size, mtimeMs, ctimeMs } = await fs.promises.stat(filePath);
+        return `${dev}:${ino}:${size}:${mtimeMs}:${ctimeMs}`;
+    } catch {
+        return null;
+    }
+}
+
 /**
  * Whether a source decodes whole. The header alone isn't enough: a truncated
  * file can keep an intact one, and then every encode fails. Reads the bytes
@@ -552,13 +562,8 @@ const decoded = new Map<string, { version: string; ok: boolean }>();
  */
 async function decodes(file: string, paths: LibraryPaths): Promise<boolean> {
     const filePath = path.join(paths.root, file);
-    let version: string;
-    try {
-        const { dev, ino, size, mtimeMs, ctimeMs } = await fs.promises.stat(filePath);
-        version = `${dev}:${ino}:${size}:${mtimeMs}:${ctimeMs}`;
-    } catch {
-        return false;
-    }
+    const version = await decodeVersion(filePath);
+    if (version === null) return false;
     const cached = decoded.get(filePath);
     if (cached?.version === version) return cached.ok;
     let ok: boolean;
@@ -570,6 +575,19 @@ async function decodes(file: string, paths: LibraryPaths): Promise<boolean> {
     }
     decoded.set(filePath, { version, ok });
     return ok;
+}
+
+/**
+ * Whether a source decoded when decodes() last looked at it, at a version
+ * before its current one, so whether it could have owned its set before it
+ * changed. Null when decodes() never looked, or looked only at the current
+ * version. Ask before ownerOf() looks again.
+ */
+export async function decodedBeforeChange(filename: string, paths: LibraryPaths = libraryPaths()): Promise<boolean | null> {
+    const filePath = path.join(paths.root, filename);
+    const cached = decoded.get(filePath);
+    if (!cached) return null;
+    return cached.version === (await decodeVersion(filePath)) ? null : cached.ok;
 }
 
 /**
@@ -599,10 +617,13 @@ export async function ownerAfterRemoval(removed: string, paths: LibraryPaths = l
     return removed < owner ? owner : null;
 }
 
-/** The source that owns `filename`'s set among the library's sources now, or `filename` when it is the only one. */
-export async function ownerOf(filename: string, paths: LibraryPaths = libraryPaths()): Promise<string> {
-    const group = setMembers(filename, paths);
-    return group.includes(filename) ? (await pickOwner(group, paths)).owner : filename;
+/**
+ * The source that owns `filename`'s set among the library's sources now, or
+ * `filename` when it is the only one. Pass the setMembers() a caller already
+ * has as `members` to skip listing the library again.
+ */
+export async function ownerOf(filename: string, paths: LibraryPaths = libraryPaths(), members: string[] = setMembers(filename, paths)): Promise<string> {
+    return members.includes(filename) ? (await pickOwner(members, paths)).owner : filename;
 }
 
 /**
@@ -650,13 +671,14 @@ export async function filesToProcess({ force = false }: { force?: boolean } = {}
  * seven outputs when forced or when needsRefresh() says so, and otherwise do
  * nothing. A missing one next to existing ones may come from a different
  * version, so filling in only the gap could leave a mixed set. A source whose
- * set another source owns writes nothing.
+ * set another source owns writes nothing. `owns` skips that check, for a
+ * caller that just made it.
  *
  * Returns the paths it replaced, none when the set was already current.
  */
-export async function refreshImage(filename: string, { force = false }: { force?: boolean } = {}): Promise<string[]> {
+export async function refreshImage(filename: string, { force = false, owns = false }: { force?: boolean; owns?: boolean } = {}): Promise<string[]> {
     const paths = libraryPaths();
-    if (await ownerOf(filename, paths) !== filename) return [];
+    if (!owns && await ownerOf(filename, paths) !== filename) return [];
     if (!force && !needsRefresh(filename, paths)) return [];
     return writeVariants(filename, { overwrite: true, paths });
 }

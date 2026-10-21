@@ -2,9 +2,11 @@ import type { EventEmitter } from 'events';
 import path from 'path';
 import type { FSWatcherEventMap } from 'chokidar';
 import {
+    decodedBeforeChange,
     generatedFolderNames,
     hasErrorCode,
     isSourceFile,
+    libraryPaths,
     ownerAfterRemoval,
     ownerOf,
     planSources,
@@ -29,7 +31,9 @@ export interface WatcherHandlers {
     /**
      * Regenerate a new source's outputs when its set is incomplete or older than
      * it, the same rule as the startup batch, so an unchanged file a sync tool
-     * removed and copied back costs nothing.
+     * removed and copied back costs nothing. A source that owns a set it shares
+     * with another is the exception: its set is rebuilt from it whatever its
+     * mtime, since the other may have built the set, as its removal did.
      */
     onAdd(filePath: string): Promise<void>;
     /** Regenerate all seven outputs for a changed source, including a save-by-rename. */
@@ -75,6 +79,8 @@ interface Job {
     key: string;
     live: boolean;
     label: string;
+    /** A startup job's --force, which a live job that drops it takes on. */
+    force: boolean;
     run: () => Promise<unknown>;
     settle: (outcome: Outcome) => void;
 }
@@ -146,17 +152,19 @@ export function createWatcherHandlers(
         }
     }
 
-    /** Settle the queued, not yet started startup jobs that match, as skipped. */
-    function dropStartupJobs(matches: (job: Job) => boolean): void {
-        for (const job of queue.filter((queued) => !queued.live && matches(queued))) {
+    /** Settle the queued, not yet started startup jobs that match, as skipped, and return them. */
+    function dropStartupJobs(matches: (job: Job) => boolean): Job[] {
+        const dropped = queue.filter((queued) => !queued.live && matches(queued));
+        for (const job of dropped) {
             unqueue(job);
             job.settle('skipped');
         }
+        return dropped;
     }
 
-    function enqueue(filename: string, live: boolean, run: () => Promise<unknown>): Promise<Outcome> {
+    function enqueue(filename: string, live: boolean, run: () => Promise<unknown>, force = false): Promise<Outcome> {
         return new Promise((settle) => {
-            queue.push({ key: setKeyOf(filename), live, label: filename, run, settle });
+            queue.push({ key: setKeyOf(filename), live, label: filename, force, run, settle });
             if (live) liveQueued++;
             pump();
         });
@@ -176,11 +184,13 @@ export function createWatcherHandlers(
             let owner = filename;
             let tookOver = false;
             const outcome = await enqueue(filename, true, async () => {
-                owner = await ownerOf(filename);
+                const paths = libraryPaths();
+                const members = setMembers(filename, paths);
+                owner = await ownerOf(filename, paths, members);
                 if (owner !== filename) return;
                 // Another source built the set it now owns, so its mtime says nothing about the set.
-                tookOver = setMembers(filename).length > 1;
-                written = await refreshImage(filename, { force: tookOver });
+                tookOver = members.length > 1;
+                written = await refreshImage(filename, { force: tookOver, owns: true });
             });
             if (outcome !== 'done') return;
             if (owner !== filename) logger.log(`[ImageWatcher] Skipping ${filename}: it shares its derivatives with ${owner}.`);
@@ -192,21 +202,25 @@ export function createWatcherHandlers(
             if (stopped || !isSourceFile(filePath)) return;
             const filename = path.basename(filePath);
             logger.log(`[ImageWatcher] File changed, reprocessing: ${filename}`);
-            // This job rebuilds or refreshes the set, so a startup job still waiting for it is redundant
+            // This job rebuilds or refreshes the set, so a startup job still waiting for it is redundant, and its --force carries over
             const key = setKeyOf(filename);
-            dropStartupJobs((job) => job.key === key && sharesSet(job.label, filename));
+            const force = dropStartupJobs((job) => job.key === key && sharesSet(job.label, filename)).some((job) => job.force);
             let owner = filename;
+            let tookBack = false;
             const outcome = await enqueue(filename, true, async () => {
+                // Asked before ownerOf() decodes it again: one that didn't decode before never owned the set
+                const decodedBefore = await decodedBeforeChange(filename);
                 owner = await ownerOf(filename);
-                if (owner === filename) await reprocessImage(filename);
                 // It owned the set until this change, as when it no longer decodes, so the set may show its old pixels
-                else if (filename < owner) await reprocessImage(owner);
+                tookBack = filename < owner && decodedBefore !== false;
+                if (owner === filename) await reprocessImage(filename);
+                else if (tookBack) await reprocessImage(owner);
                 // The owner's startup job may have just been dropped
-                else await refreshImage(owner);
+                else await refreshImage(owner, { force });
             });
             if (outcome !== 'done') return;
             if (owner === filename) logger.log(`[ImageWatcher] Reprocessed: ${filename}`);
-            else if (filename < owner) logger.log(`[ImageWatcher] Rebuilt the set ${filename} shared from ${owner}, which owns it now.`);
+            else if (tookBack) logger.log(`[ImageWatcher] Rebuilt the set ${filename} shared from ${owner}, which owns it now.`);
             else logger.log(`[ImageWatcher] Skipping ${filename}: it shares its derivatives with ${owner}.`);
         },
 
@@ -240,7 +254,7 @@ export function createWatcherHandlers(
             const outcomes = await Promise.all(files.map((file, index) => enqueue(file, false, async () => {
                 logger.log(`[ImageWatcher] Processing ${index + 1}/${files.length}: ${file}`);
                 await refreshImage(file, { force });
-            })));
+            }, force)));
 
             const lists: Record<Outcome, string[]> = { done: result.processed, skipped: result.skipped, failed: result.errors };
             files.forEach((file, index) => lists[outcomes[index]].push(file));
