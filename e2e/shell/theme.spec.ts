@@ -45,6 +45,20 @@ test('a stored light theme is on <html> and the body before any Next.js script r
     expect(problems).toEqual([]);
 });
 
+for (const [stored, name, icon] of [[undefined, 'Switch to light mode', 'sun'], ['light', 'Switch to dark mode', 'moon']] as const) {
+    test(`with ${stored ?? 'no'} theme stored, the toggle's name and icon are right before React runs`, async ({ page }) => {
+        if (stored) await page.addInitScript((theme) => localStorage.setItem('theme', theme), stored);
+        // No Next.js script ever loads, so nothing hydrates. The inline theme script still runs.
+        await page.route('**/_next/static/**/*.js', (route) => route.abort());
+        await page.goto('/gallery', { waitUntil: 'domcontentloaded' });
+        await expect(page.locator('html')).toHaveAttribute('data-theme', stored ?? 'dark');
+        expect(await page.evaluate(() => document.documentElement.hasAttribute('data-hydrated')), 'React never hydrated').toBe(false);
+        await expect(toggle(page)).toHaveAccessibleName(name);
+        await expect(toggle(page).locator(`svg.lucide-${icon}`)).toBeVisible();
+        await expect(toggle(page).locator('svg:visible')).toHaveCount(1);
+    });
+}
+
 test('a stored value other than light or dark leaves the dark theme', async ({ page }) => {
     await page.addInitScript(() => localStorage.setItem('theme', 'blue'));
     await page.goto('/gallery');

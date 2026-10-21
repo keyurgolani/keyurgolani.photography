@@ -16,11 +16,11 @@ const toggles = (page: Page) => page.getByRole('button', { name: /^Switch to (da
 const slideshow = (page: Page) => page.getByRole('group', { name: 'Slideshow' });
 const TOGGLE = /^Switch to (dark|light) mode$/;
 
-/** The aria-label of whatever has focus, or its text. */
+/** The aria-label of whatever has focus, or its rendered text, which skips the toggle's hidden other name. */
 const focusedName = (page: Page) =>
     page.evaluate(() => {
-        const el = document.activeElement;
-        return el?.getAttribute('aria-label') ?? el?.textContent?.trim() ?? '';
+        const el = document.activeElement as HTMLElement | null;
+        return el?.getAttribute('aria-label') ?? el?.innerText.trim() ?? '';
     });
 
 async function open(page: Page, path: string, theme: 'dark' | 'light' = 'dark') {

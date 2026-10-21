@@ -14,9 +14,12 @@ const themeToggle = (page: Page) => page.getByRole('button', { name: /^Switch to
 const cards = (page: Page) => page.getByRole('link', { name: /@iserialclicker/ });
 const source = (page: Page) => page.getByRole('link', { name: 'View source on GitHub', exact: true });
 
-/** Stops with an aria-label report it, and the links without one, SiteNav's and the social cards, their href. */
+/** Stops with an aria-label report it, links without one their href, and the toggle its rendered name. */
 const focusedStop = (page: Page) =>
-    page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.getAttribute('href') ?? document.activeElement?.tagName);
+    page.evaluate(() => {
+        const el = document.activeElement as HTMLElement | null;
+        return el?.getAttribute('aria-label') ?? el?.getAttribute('href') ?? el?.innerText.trim();
+    });
 
 async function openAbout(page: Page) {
     await page.goto('/about');
