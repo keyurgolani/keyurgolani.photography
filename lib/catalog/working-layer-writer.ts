@@ -86,6 +86,7 @@ async function commit(
     ref: { kind: AuthoredKind; id: string },
     expectedVersion: number,
     hooks: WriteAuthoredOptions['hooks'],
+    rebaseTo?: string,
 ): Promise<AuthoredRecord> {
     const file = authoredRecordFile(root, ref.kind, ref.id);
     let existingText: string | null = null;
@@ -115,7 +116,7 @@ async function commit(
     }
 
     // An existing record keeps its base until a rebase moves it. A new one starts on the active revision.
-    const baseRevisionId = existing ? existing.baseRevisionId : (await readActivePointer(root))?.revisionId ?? null;
+    const baseRevisionId = rebaseTo ?? (existing ? existing.baseRevisionId : (await readActivePointer(root))?.revisionId ?? null);
     const next = { ...withoutManaged(record), schemaVersion: CATALOG_SCHEMA_VERSION, version: expectedVersion + 1, baseRevisionId };
     const parsed = parseAuthoredRecord(ref.kind, next);
     if (!parsed.ok) throw new AuthoredWriteError('INVALID_RECORD', ref, `The ${ref.kind} record ${ref.id} is not valid.`, { issues: parsed.error.issues });
@@ -185,4 +186,33 @@ export async function writeAuthoredRecord(record: AuthoredRecordInput, options: 
         if (error instanceof LockTimeoutError) throw new AuthoredWriteError('AUTHORED_LOCKED', ref, error.message, { holder: error.holder });
         throw error;
     }
+}
+
+export interface WriteRebasedOptions {
+    /** The version the rebase read. */
+    expectedVersion: number;
+    /** The authored lock the rebase holds. Required: a rebase never writes without it. */
+    lock: LockContext;
+    /** The revision the record is now based on. */
+    baseRevisionId: string;
+    hooks?: VersionedWriteOptions['hooks'];
+}
+
+/**
+ * Write a record that rebaseWorkingLayer() merged onto `baseRevisionId`. The
+ * only write that moves an existing record's base. It checks `version` the
+ * way writeAuthoredRecord() does, under the caller's authored hold.
+ */
+export function writeRebasedRecord(record: AuthoredSiteInput, options: WriteRebasedOptions): Promise<AuthoredSite>;
+export function writeRebasedRecord(record: AuthoredSeriesInput, options: WriteRebasedOptions): Promise<AuthoredSeries>;
+export function writeRebasedRecord(record: AuthoredPhotoInput, options: WriteRebasedOptions): Promise<AuthoredPhoto>;
+export async function writeRebasedRecord(record: AuthoredRecordInput, options: WriteRebasedOptions): Promise<AuthoredRecord> {
+    const { expectedVersion, lock, baseRevisionId, hooks } = options;
+    const kind = record.kind as AuthoredKind;
+    const id = kind === 'site' ? 'site' : String((record as { id?: unknown }).id);
+    const ref = { kind, id };
+    if (lock.name !== AUTHORED_LOCK || lock.signal.aborted) {
+        throw new AuthoredWriteError('LOCK_NOT_HELD', ref, 'A rebase writes only under a live hold on the authored lock.');
+    }
+    return commit(path.resolve(lock.root), record, ref, expectedVersion, hooks, baseRevisionId);
 }
