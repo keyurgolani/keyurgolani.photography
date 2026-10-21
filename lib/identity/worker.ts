@@ -81,6 +81,8 @@ export interface DerivativeWorker {
     start(): Promise<WorkerStart>;
     /** Queue the registry's pending entries that aren't queued or building yet. Returns how many it added. */
     enqueuePending(): Promise<number>;
+    /** Whether a build for `job` is queued or under way. */
+    isQueued(job: DerivativeJob): boolean;
     /** Resolves once the queue is empty and nothing is building. */
     idle(): Promise<void>;
     /** Take no more jobs. A build already running finishes. */
@@ -283,6 +285,8 @@ export function createWorker(options: WorkerOptions = {}): DerivativeWorker {
             }
             return enqueue(pendingJobs(registry, profileId));
         },
+
+        isQueued: (job) => queued.has(keyOf(job)),
 
         async idle() {
             while (draining) await draining;

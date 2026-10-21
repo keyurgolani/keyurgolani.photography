@@ -12,7 +12,7 @@ import { runReconcilePass } from '../pass';
 import { currentProfileId } from '../profile';
 import { identityPaths, readRegistry, writeRegistry } from '../registry';
 import type { DerivativeJob, ProfileEntry, Registry } from '../types';
-import { createWorker, onceExitCode, summarizeResults, WorkerStartError, type WorkerOptions, type WorkerResult } from '../worker';
+import { createWorker, onceExitCode, pendingJobs, summarizeResults, WorkerStartError, type WorkerOptions, type WorkerResult } from '../worker';
 import { sequentialIds } from './reconcileFixtures';
 
 const OLD_PROFILE = `p_${'0'.repeat(16)}`;
@@ -196,6 +196,26 @@ describe('the derivative worker', () => {
         const registry = await s.registry();
         expect(Object.values(registry.photos).map((photo) => Object.values(photo.revisions)[0].profiles[currentProfileId()].state)).toEqual(['ready', 'ready']);
         expect(statuses(worker.results)).toEqual(['ready', 'ready']);
+    }, 60_000);
+
+    it('says which jobs are queued or building, and forgets each once it is built', async () => {
+        const s = await setup(2);
+        const held = deferred();
+        const worker = s.worker({
+            build: async (job, options) => {
+                await held.promise;
+                return buildDerivativeSet(job, options);
+            },
+        });
+        const jobs = pendingJobs(await s.registry(), currentProfileId());
+        expect(jobs.map((job) => worker.isQueued(job))).toEqual([false, false]);
+
+        await worker.start();
+        // One is building and the other waits behind it.
+        expect(jobs.map((job) => worker.isQueued(job))).toEqual([true, true]);
+        held.resolve();
+        await worker.idle();
+        expect(jobs.map((job) => worker.isQueued(job))).toEqual([false, false]);
     }, 60_000);
 
     it('builds nothing for a revision that moved to another photo, and leaves its entries alone', async () => {
