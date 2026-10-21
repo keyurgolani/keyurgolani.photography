@@ -14,10 +14,15 @@ docs
 SHOWCASE.md
 docker-compose.prod.yml
 .nvmrc
-.next
+.next*
 test-results/
 playwright-report/
 blob-report/
 e2e
 playwright.config.ts
+# The photo library and the private data root, so a build from a checkout
+# that holds photos never copies them into the image
+public/assets/photos/*
+!public/assets/photos/README.md
+!public/assets/photos/.gitkeep
 portfolio-data
