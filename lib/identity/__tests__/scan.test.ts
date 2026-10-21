@@ -56,10 +56,14 @@ describe('scanLibrary', () => {
         expect(entry).toMatchObject({ key: 'cache-1.jpg', size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, ino: stat.ino });
     });
 
-    it('keys paths by their NFC, case-folded form', () => {
+    it('keys paths by their folded form, as a case-insensitive disk compares them', () => {
         expect(keyOf('Series/IMG_0001.JPG')).toBe('series/img_0001.jpg');
         expect(keyOf('Café/Crème.jpg')).toBe('café/crème.jpg');
         expect(keyOf('café/crème.jpg'.normalize('NFD'))).toBe(keyOf('café/crème.jpg'));
+        // As APFS folds them: the sharp s and its capital to ss, and the long s to s
+        expect(keyOf('Straße.jpg')).toBe('strasse.jpg');
+        expect(keyOf('STRAẞE.jpg')).toBe('strasse.jpg');
+        expect(keyOf('Caſe.jpg')).toBe('case.jpg');
     });
 
     it('throws LibraryRootMissingError for a missing root instead of reporting an empty library', async () => {

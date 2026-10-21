@@ -1,4 +1,5 @@
 import { DERIVATIVE_FOLDERS } from '../lib/derivativeFolders.mjs';
+import { foldName } from '../lib/foldName';
 
 /**
  * The legacy derivative files the site may serve from /assets/photos: top-level
@@ -44,13 +45,11 @@ export function resolvedPathname(pathname: string): string {
 /**
  * Whether a request pathname reaches /assets/photos or below it once
  * resolved, compared the way a case-insensitive disk would, where `next dev`
- * serves /Assets/Photos/x.jpg from public/assets/photos/x.jpg. Such a disk
- * folds every letter that has an uppercase or lowercase form, so this lowers,
- * uppers, and lowers again: that takes a capital sharp s to ß, then to SS,
- * and the long s to S, as the disk does.
+ * serves /Assets/Photos/x.jpg from public/assets/photos/x.jpg. It is folded
+ * as foldName() folds names, as the disk does.
  */
 export function isUnderPhotos(pathname: string): boolean {
-    const folded = resolvedPathname(pathname).normalize('NFC').toLowerCase().toUpperCase().toLowerCase();
+    const folded = foldName(resolvedPathname(pathname));
     return folded === '/assets/photos' || folded.startsWith(PHOTOS_PREFIX);
 }
 

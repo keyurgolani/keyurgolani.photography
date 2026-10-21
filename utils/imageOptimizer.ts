@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import sharp from 'sharp';
 import { CACHE_FOLDER, DERIVATIVE_FOLDERS } from '../lib/derivativeFolders.mjs';
+import { foldName } from '../lib/foldName';
 import { keyOf } from '../lib/identity/scan';
 import { libraryRoot } from '../lib/storage/config';
 import { hasErrorCode } from '../lib/storage/fsx';
@@ -281,11 +282,6 @@ function sourceChanged(filename: string): Error {
         new Error(`${filename} changed or was removed while it was processed, so its new outputs were discarded.`),
         { code: SOURCE_CHANGED },
     );
-}
-
-/** Folds case and Unicode form, the way a case-insensitive disk compares names. */
-function foldName(name: string): string {
-    return name.normalize('NFC').toLowerCase();
 }
 
 /**

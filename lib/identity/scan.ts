@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { CACHE_FOLDER, DERIVATIVE_FOLDERS } from '../derivativeFolders.mjs';
+import { foldName } from '../foldName';
 import { hasErrorCode } from '../storage/fsx';
 
 /** Extensions the pipeline reads, in any case. */
@@ -45,9 +46,9 @@ export class LibraryRootMissingError extends Error {
     }
 }
 
-/** The key a library path binds by: NFC-normalized and case-folded. */
+/** The key a library path binds by: folded as foldName() folds it, the way a case-insensitive disk compares names. */
 export function keyOf(relativePath: string): string {
-    return relativePath.normalize('NFC').toLowerCase().normalize('NFC');
+    return foldName(relativePath);
 }
 
 /** The library-relative folder of a path, '' at the root. */

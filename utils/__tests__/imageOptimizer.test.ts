@@ -213,6 +213,15 @@ describe('sources sharing one set', { timeout: 60_000 }, () => {
         expect(sharesSet('landscape.jpg', 'landscape-edited.png')).toBe(false);
     });
 
+    it('fold names as a case-insensitive disk does, so Straße and strasse can share a set there', () => {
+        fs.copyFileSync(lib.file('portrait.png'), lib.file('strasse.png'));
+        fakeCaseInsensitiveDisk();
+        expect(sharesSet('Straße.jpg', 'strasse.png')).toBe(true);
+        vi.restoreAllMocks();
+        fakeCaseSensitiveDisk();
+        expect(sharesSet('Straße.jpg', 'strasse.png')).toBe(false);
+    });
+
     it('share a set across case only where the disk resolves both spellings to one file', async () => {
         fakeCaseSensitiveDisk();
         expect(sharesSet('landscape.jpg', 'Landscape.png')).toBe(false);
