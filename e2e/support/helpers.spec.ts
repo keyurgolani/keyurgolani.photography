@@ -54,6 +54,12 @@ test.describe('expectNoA11yViolations', () => {
         await load(page, '<button type="button"></button>');
         await expect(expectNoA11yViolations(page)).rejects.toThrow(/button-name \(critical\)/);
     });
+
+    test('with include, checks only that part of the page', async ({ page }) => {
+        await load(page, '<nav aria-label="Primary"><a href="/">Home</a></nav><button type="button"></button>');
+        await expectNoA11yViolations(page, { include: 'nav[aria-label="Primary"]' });
+        await expect(expectNoA11yViolations(page, { include: 'button' })).rejects.toThrow(/button-name \(critical\)/);
+    });
 });
 
 test.describe('expectMinTargetSize', () => {

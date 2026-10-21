@@ -3,7 +3,7 @@ import { expectFocusRingVisible } from './support/focus';
 import { measure } from './support/measure';
 import { expect, test } from './support/test';
 
-// The focus token on ThemeToggle, each BottomBar link, and the About source
+// The focus token on ThemeToggle, each SiteNav link, and the About source
 // link, in both themes and under hover, since Tailwind's dark: and hover:
 // shadow variants land after the token. Then the lightbox elements YARL
 // focuses on its own, which must not draw it.
@@ -37,7 +37,7 @@ for (const theme of ['dark', 'light'] as const) {
             await expectFocusRingVisible(toggle(page));
         });
 
-        for (const name of ['Gallery', 'Home', 'About']) {
+        for (const name of ['KG, Keyur Golani', 'Home', 'Work', 'About']) {
             test(`the ${name} link shows the focus ring`, async ({ page }) => {
                 await open(page, '/gallery');
                 await expectFocusRingVisible(page.getByRole('link', { name, exact: true }));

@@ -1,0 +1,18 @@
+/* Light Takes Shape, About only: custom properties under [data-surface='about']
+   and nothing else, so no other route picks them up. #12 paints with them. */
+[data-surface='about'] {
+  --lts-paper: #f4ecd7;
+  --lts-ink: #292a28;
+  --lts-ink-soft: #5b564c;
+  --lts-rib: rgba(93, 73, 42, 0.045);
+  --lts-ribs: repeating-linear-gradient(90deg, var(--lts-rib) 0 1px, transparent 1px 9%);
+  --lts-rule: rgba(63, 51, 32, 0.24);
+  --lts-rule-strong: rgba(41, 42, 40, 0.42);
+  --lts-glass: rgba(244, 236, 215, 0.94);
+  --lts-frame: rgba(255, 250, 234, 0.76);
+  --lts-shadow: 0 16px 34px rgba(79, 57, 27, 0.2);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  [data-surface='about'] { --lts-glass: var(--lts-paper); }
+}
