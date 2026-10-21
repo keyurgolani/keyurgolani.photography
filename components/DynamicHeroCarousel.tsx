@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useCallback } from 'react';
-import HeroCarousel from './HeroCarousel';
+import HeroCarousel from './home/HomeSequence';
 import { ImageItem } from '@/utils/getImageData';
 import {
     getCachedHomeHeroImages,

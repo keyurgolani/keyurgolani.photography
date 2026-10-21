@@ -11,7 +11,7 @@ type CarouselProps = {
 
 let latestCarouselProps: CarouselProps | undefined;
 
-vi.mock('../HeroCarousel', () => ({
+vi.mock('../HomeSequence', () => ({
   default: (props: CarouselProps) => {
     latestCarouselProps = props;
     return <div data-testid="hero-carousel" data-count={String(props.images.length)} />;
@@ -19,7 +19,7 @@ vi.mock('../HeroCarousel', () => ({
 }));
 
 async function loadDynamicHeroCarousel() {
-  const module = await import('../DynamicHeroCarousel');
+  const module = await import('../../DynamicHeroCarousel');
   return module.default;
 }
 

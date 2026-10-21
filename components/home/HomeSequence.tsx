@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { photoImageAlt } from '@/lib/a11y/photoName';
-import styles from './HeroCarousel.module.css';
+import styles from './HomeSequence.module.css';
 
 interface CarouselImage {
     thumbnail: string;

@@ -8,29 +8,29 @@ type DynamicHeroCarouselProps = {
 
 let latestCarouselProps: DynamicHeroCarouselProps | undefined;
 
-vi.mock('../../components/DynamicHeroCarousel', () => ({
+vi.mock('../../DynamicHeroCarousel', () => ({
   default: (props: DynamicHeroCarouselProps) => {
     latestCarouselProps = props;
     return <div data-testid="carousel" />;
   },
 }));
 
-vi.mock('../../components/HeroReveal', () => ({
+vi.mock('../../HeroReveal', () => ({
   default: ({ isLoading }: { isLoading: boolean }) => (
     <div data-testid="hero-reveal" data-loading={String(isLoading)} />
   ),
 }));
 
-vi.mock('../../components/RevealingContents', () => ({
+vi.mock('../../RevealingContents', () => ({
   default: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
-vi.mock('../../components/BottomBar', () => ({
+vi.mock('../../BottomBar', () => ({
   default: () => <div data-testid="bottom-bar" />,
 }));
 
 async function loadHome() {
-  const module = await import('../page');
+  const module = await import('../../../app/page');
   return module.default;
 }
 
