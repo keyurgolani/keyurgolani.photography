@@ -6,11 +6,11 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import type { FSWatcherEventMap } from 'chokidar';
 import sharp, { type Sharp } from 'sharp';
 import { scanLibrary } from '../../lib/identity/scan';
-import { dominantChannel, fixtureFiles, type Channel } from '../../test/fixtures/makeLibrary';
+import { dominantChannel, fixtureFiles, withExifOrientation, type Channel } from '../../test/fixtures/makeLibrary';
 import { fakeCaseInsensitiveDisk, fakeCaseSensitiveDisk } from '../../test/helpers/caseDisk';
 import { REPO_ROOT } from '../../test/helpers/runTsx';
 import { createTempLibrary, derivativePaths, type TempLibrary } from '../../test/helpers/tempLibrary';
-import { baseNameOf, ownerOf, processImage } from '../imageOptimizer';
+import { baseNameOf, optimizedSize, ownerOf, planOrphanCleanup, processImage, writeUprightMarker } from '../imageOptimizer';
 import {
     attachWatcher,
     createIgnoreFilter,
@@ -85,6 +85,8 @@ const BASIC = ['landscape.jpg', 'portrait.png', 'square.webp'];
 let edited: Buffer; // blue-dominant re-export of landscape.jpg
 let green: Buffer; // a third version
 let corrupt: Buffer; // a JPEG header Sharp can't decode
+let turned: Buffer; // landscape.jpg stored as it is, with EXIF Orientation 6
+let turnedEdited: Buffer; // edited, with EXIF Orientation 6
 let lib: TempLibrary;
 let logs: string[];
 let handlers: WatcherHandlers;
@@ -106,6 +108,8 @@ beforeAll(async () => {
     const extras = await fixtureFiles({ extras: true });
     edited = extras.get('landscape-edited.jpg') as Buffer;
     corrupt = extras.get('corrupt.jpg') as Buffer;
+    turned = extras.get('landscape-rot6.jpg') as Buffer;
+    turnedEdited = withExifOrientation(edited, 6);
     green = await sharp({ create: { width: 960, height: 640, channels: 3, background: { r: 30, g: 190, b: 60 } } })
         .jpeg({ quality: 90 })
         .toBuffer();
@@ -548,6 +552,90 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
             await handlers.onUnlink(lib.file(name));
         }
         expect(logs).toEqual([]);
+    });
+});
+
+describe('the one-time rebuild of orientation-tagged photos', { timeout: 60_000 }, () => {
+    const marker = () => lib.file('cache', 'upright-rebuild.json');
+    const OTHERS = [...LANDSCAPE, ...derivativePaths('portrait'), ...derivativePaths('square')];
+    // Without autoOrient(), as derivatives were written before they were turned upright
+    const sideways = () => sharp(turned).webp().toBuffer();
+    const UPRIGHT = { width: 640, height: 960 };
+
+    /** Current sets for the basic photos, and one for turned.jpg from before derivatives were turned upright: sideways, and newer than its source. */
+    async function oldLibrary(): Promise<void> {
+        for (const name of BASIC) await processImage(name);
+        fs.writeFileSync(lib.file('turned.jpg'), turned);
+        await processImage('turned.jpg');
+        fs.writeFileSync(lib.file('optimized/turned.webp'), await sideways());
+        expect(await optimizedSize('turned.jpg')).toEqual({ width: 960, height: 640 });
+    }
+
+    it('turns upright a tagged photo whose set looks current, records it, and leaves it alone on later starts', async () => {
+        await oldLibrary();
+        const others = lib.hashes(OTHERS);
+
+        expect(await handlers.queueStartupBatch()).toEqual({ processed: ['turned.jpg'], skipped: [], errors: [] });
+        expect(await optimizedSize('turned.jpg')).toEqual(UPRIGHT);
+        expect(lib.hashes(OTHERS)).toEqual(others);
+        expect(JSON.parse(fs.readFileSync(marker(), 'utf8'))).toMatchObject({ photos: 1 });
+        expect(logs).toContain('[ImageWatcher] Rebuilt the sets of 1 orientation-tagged photo. Clear the /_next/image cache, so it drops what it made from the old sets.');
+        // images:cleanup leaves the record alone
+        expect(planOrphanCleanup().entries.map((entry) => entry.relativePath)).toEqual([]);
+
+        fs.writeFileSync(lib.file('optimized/turned.webp'), await sideways());
+        expect(await newHandlers().queueStartupBatch()).toEqual({ processed: [], skipped: [], errors: [] });
+        expect((await optimizedSize('turned.jpg')).width).toBe(960);
+    });
+
+    it('records nothing while a tagged photo is left unbuilt, so the next start tries again', async () => {
+        await oldLibrary();
+        const held = gate.arm();
+        const batch = handlers.queueStartupBatch();
+        await held.reached; // turned.jpg is the one photo to process, and it is mid-encode
+        fs.writeFileSync(lib.file('turned.jpg'), turnedEdited);
+        held.release();
+
+        expect(await batch).toEqual({ processed: [], skipped: ['turned.jpg'], errors: [] });
+        expect(fs.existsSync(marker())).toBe(false);
+        expect(logs).toContain("[ImageWatcher] These orientation-tagged photos weren't rebuilt, so the next start tries again: turned.jpg.");
+
+        expect(await newHandlers().queueStartupBatch()).toEqual({ processed: ['turned.jpg'], skipped: [], errors: [] });
+        expect(await outputChannels('turned')).toEqual(Array(7).fill('blue'));
+        expect(fs.existsSync(marker())).toBe(true);
+    });
+
+    it('records it at once when no photo is tagged, and after a forced run too', async () => {
+        // Orientation 1 is upright already
+        fs.writeFileSync(lib.file('level.jpg'), withExifOrientation(fs.readFileSync(lib.file('landscape.jpg')), 1));
+        for (const name of [...BASIC, 'level.jpg']) await processImage(name);
+        expect(await handlers.queueStartupBatch()).toEqual({ processed: [], skipped: [], errors: [] });
+        expect(JSON.parse(fs.readFileSync(marker(), 'utf8'))).toMatchObject({ photos: 0 });
+
+        fs.rmSync(marker());
+        fs.writeFileSync(lib.file('turned.jpg'), turned);
+        expect(await processOnce(newHandlers(), { force: true, logger })).toBe(0);
+        expect(JSON.parse(fs.readFileSync(marker(), 'utf8'))).toMatchObject({ photos: 1 });
+    });
+
+    it('never creates a missing library root to write the record', async () => {
+        const missing = await createTempLibrary({ missingRoot: true });
+        try {
+            expect(() => writeUprightMarker(0)).toThrow(/ENOENT/);
+            expect(fs.existsSync(missing.root)).toBe(false);
+        } finally {
+            await missing.cleanup();
+        }
+    });
+
+    it('logs a record it could not write, and still rebuilds', async () => {
+        await oldLibrary();
+        fs.writeFileSync(lib.file('cache'), 'a file where the cache folder goes');
+
+        expect(await handlers.queueStartupBatch()).toEqual({ processed: ['turned.jpg'], skipped: [], errors: [] });
+        expect(await optimizedSize('turned.jpg')).toEqual(UPRIGHT);
+        expect(logs.some((line) => line.startsWith(`[ImageWatcher] Could not write ${marker()}: `) && line.endsWith('The next start rebuilds the orientation-tagged photos again.'))).toBe(true);
+        expect(logs.some((line) => line.startsWith('[ImageWatcher] Rebuilt the sets'))).toBe(false);
     });
 });
 
