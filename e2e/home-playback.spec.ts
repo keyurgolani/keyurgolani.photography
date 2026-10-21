@@ -1,6 +1,7 @@
 import type { Locator, Page } from '@playwright/test';
 import type { ImageItem } from '../utils/getImageData';
 import { expectContrastOverImage } from './support/contrast';
+import { expectNotObscured } from './support/focus';
 import { waitForHydration } from './support/hydration';
 import { expectReflow } from './support/reflow';
 import { checkSurface } from './support/surface';
@@ -181,6 +182,67 @@ test.describe('normal motion', () => {
         await runFor(page, INTERVAL);
         await expect(position(page)).toHaveText('03 / 03');
         await expect(themeToggle(page)).toBeFocused();
+    });
+
+    test('a key press on Next after a click makes it keyboard focus, which holds the slideshow', async ({ page, isMobile }) => {
+        test.skip(isMobile, 'A mouse click runs on the desktop project.');
+        test.setTimeout(60_000);
+        await openHome(page, { clock: 'before' });
+        const { width, height } = page.viewportSize()!;
+        await revealByPointer(page, false);
+        await next(page).click();
+        await expect(position(page)).toHaveText('02 / 03');
+
+        // Enter moves once more and shows the ring, with no new focus event. Then the mouse leaves, so only that focus can hold.
+        await page.keyboard.press('Enter');
+        await expect(position(page)).toHaveText('03 / 03');
+        await page.mouse.move(width / 2, height / 2);
+        await expect(main(page)).toHaveAttribute('data-playback', 'held');
+        await runFor(page, IDLE + INTERVAL);
+        await expect(main(page)).toHaveAttribute('data-playback', 'held');
+        await expect(position(page)).toHaveText('03 / 03');
+        await expect(next(page)).toBeFocused();
+    });
+
+    test('Pause and Play take the same width, so Previous, the position, and Next stay put', async ({ page }) => {
+        await openHome(page);
+        const lefts = async () => Promise.all([previous(page), position(page), next(page)].map(async (target) => (await box(target)).left));
+        const before = await lefts();
+        await pause(page).focus();
+        await page.keyboard.press('Enter');
+        await expect(play(page)).toBeVisible();
+        const after = await lefts();
+        after.forEach((left, index) => expect(Math.abs(left - before[index]), `control ${index} moved`).toBeLessThan(0.5));
+    });
+
+    test.describe('on a short screen', () => {
+        // 100% covered before the controls moved down at the first three, and the portrait took the centre hit at the rest.
+        for (const [width, height] of [[640, 400], [667, 375], [568, 320], [740, 360], [736, 414], [768, 400]] as const) {
+            test(`at ${width} by ${height} a click or tap reaches Previous past the settled portrait`, async ({ page, isMobile }) => {
+                await page.setViewportSize({ width, height });
+                await openHome(page);
+                await expect(position(page)).toHaveText('01 / 03');
+                const ownsCentre = await previous(page).evaluate((el) => {
+                    const { left, top, width: w, height: h } = el.getBoundingClientRect();
+                    const hit = document.elementFromPoint(left + w / 2, top + h / 2);
+                    return hit !== null && el.contains(hit);
+                });
+                expect(ownsCentre, 'Previous is the element at its own centre').toBe(true);
+                if (isMobile) await previous(page).tap();
+                else await previous(page).click();
+                await expect(position(page)).toHaveText('03 / 03');
+            });
+        }
+
+        test('at 640 by 400 a key press shows the portrait clear of Previous and its ring', async ({ page }) => {
+            await page.setViewportSize({ width: 640, height: 400 });
+            await openHome(page);
+            await pressUntilFocused(page, 'Tab', previous(page));
+            // Activity brings the portrait back, so check once it's fully shown.
+            await page.keyboard.press('Shift');
+            await expect.poll(() => portrait(page).evaluate((el) => parseFloat(getComputedStyle(el).opacity))).toBe(1);
+            await expectNotObscured(previous(page), [portrait(page)]);
+        });
     });
 
     test('a Pause survives client navigation away and back, and a reload forgets it', async ({ page }) => {
@@ -373,6 +435,22 @@ test.describe('reduced motion', () => {
         expect(await hiddenLayers()).toEqual([]);
         expect(await unplacedVisibility()).toBe('visible');
     });
+});
+
+test('static glass keeps its backdrop-filter under reduced motion', async ({ page }) => {
+    await openHome(page);
+    const glass = () =>
+        page.evaluate(() =>
+            Array.from(document.querySelectorAll('body *')).flatMap((el) => {
+                const value = getComputedStyle(el).backdropFilter;
+                return value === 'none' ? [] : [`${el.tagName.toLowerCase()} ${value}`];
+            }),
+        );
+    const normal = await glass();
+    expect(normal.length, 'Home has glass to compare').toBeGreaterThan(0);
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await expect(main(page)).toHaveAttribute('data-playback', 'reduced-motion');
+    expect(await glass()).toEqual(normal);
 });
 
 test('a live preference change takes effect both ways without a reload or the intro', async ({ page }) => {

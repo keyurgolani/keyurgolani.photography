@@ -19,6 +19,8 @@ const playback = (page: Page) => page.getByRole('button', { name: /^(Pause|Play)
 const sequenceControls = (page: Page) => arrows(page).or(playback(page));
 /** The full-quality layer of the slide on screen. */
 const currentPhoto = (page: Page) => page.locator('[aria-hidden="false"] > img[data-layer="optimized"]');
+/** HeroReveal's settled portrait, fixed above the chrome. */
+const portrait = (page: Page) => page.locator('[class*="portrait"]');
 
 const effectiveOpacity = (target: Locator) =>
     target.evaluate((el) => {
@@ -57,7 +59,7 @@ for (const viewport of [undefined, { width: 640, height: 400 }]) {
         for (const theme of ['dark', 'light'] as const) {
             test(`passes the surface checks on the slideshow controls, with 44 px targets and unique names on every control, in the ${theme} theme`, async ({ page }) => {
                 await openHome(page, { theme });
-                await checkSurface(page, { controls: [sequenceControls(page)], chrome: [primary(page), themeToggle(page)] });
+                await checkSurface(page, { controls: [sequenceControls(page)], chrome: [primary(page), themeToggle(page), portrait(page)] });
                 await expectMinTargetSize(themeToggle(page).or(navLinks(page)));
                 await expectUniqueNames([themeToggle(page), sequenceControls(page), navLinks(page)]);
             });
