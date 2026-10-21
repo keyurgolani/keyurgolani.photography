@@ -205,15 +205,17 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
         }
     }));
 
-    // If every photo failed, throw instead of returning an empty list, so the
-    // ISR cache keeps serving the last good one. A photo still waiting for its
-    // set hasn't failed: before the watcher's first run, the list is empty.
-    if (files.length > 0 && images.every((image) => image === null)) {
-        throw new Error(`Could not read any of the photos in ${photosDir} (${files.length} found).`);
+    const listed = images.filter((image): image is ImageItem => image !== null && image !== 'incomplete');
+    // If nothing could be listed and a photo failed, throw instead of returning
+    // an empty list, so the ISR cache keeps serving the last good one. A photo
+    // still waiting for its set hasn't failed: before the watcher's first run,
+    // the list is empty.
+    if (listed.length === 0 && images.includes(null)) {
+        const failed = images.filter((image) => image === null).length;
+        const counts = failed === files.length ? `${files.length} found` : `${failed} of ${files.length} failed, and the others are waiting for their derivatives`;
+        throw new Error(`Could not read any of the photos in ${photosDir} (${counts}).`);
     }
 
     // Sort: Newest First
-    return images
-        .filter((image): image is ImageItem => image !== null && image !== 'incomplete')
-        .sort((a, b) => b.date - a.date);
+    return listed.sort((a, b) => b.date - a.date);
 }

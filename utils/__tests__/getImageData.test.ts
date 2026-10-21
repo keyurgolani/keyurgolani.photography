@@ -250,6 +250,15 @@ describe('getGalleryImages', () => {
         await expect(GET()).rejects.toThrow('Could not read any of the photos');
     });
 
+    it('throws when nothing lists and a photo failed, even while others wait for their sets', async () => {
+        // corrupt.jpg fails, and every other photo is missing its medium WebP, so none of them lists
+        for (const base of DECODABLE) fs.rmSync(lib.file(`medium/${base}.webp`));
+
+        const counts = `1 of ${DECODABLE.length + 1} failed, and the others are waiting for their derivatives`;
+        await expect(getGalleryImages()).rejects.toThrow(`Could not read any of the photos in ${lib.root} (${counts}).`);
+        await expect(GET()).rejects.toThrow('Could not read any of the photos');
+    });
+
     it('lists a photo whose name has a percent sign or a hash with URLs that reach its derivatives', async () => {
         fs.copyFileSync(lib.file('landscape-edited.jpg'), lib.file('50% #1.jpg'));
         await processImage('50% #1.jpg');
