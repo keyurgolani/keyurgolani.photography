@@ -26,3 +26,17 @@
 [data-theme="dark"] .grainTexture {
   opacity: 0.06;
 }
+
+/* .ripples wraps the ripple glows, and .portrait the portrait, which HeroReveal
+   marks data-placed once it sits at rest. */
+@media (prefers-reduced-motion: reduce) {
+  .grainOverlay,
+  .ripples {
+    display: none;
+  }
+
+  /* The inline opacity outranks this file, so visibility hides the portrait until it's placed. */
+  .portrait:not([data-placed]) {
+    visibility: hidden;
+  }
+}

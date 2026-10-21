@@ -23,6 +23,11 @@ export async function expectReflow(controls: Locator): Promise<void> {
     });
     try {
         await page.setViewportSize({ width: 320, height: 640 });
+        // A transition reports its start value until it ends, so measure once the new size and font have settled.
+        // Under reduced motion the baseline gives every property a 0.01 ms transition, since transition-property starts at all.
+        await expect
+            .poll(() => page.evaluate(() => document.getAnimations().filter((a) => a instanceof CSSTransition && a.playState === 'running').length))
+            .toBe(0);
         const problems: string[] = [];
 
         const overlaps = await controls.evaluateAll((elements, slack) => {

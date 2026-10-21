@@ -1,203 +1,140 @@
 'use client';
 
-import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
-import { photoImageAlt } from '@/lib/a11y/photoName';
+import React, { useEffect, useRef, useState } from 'react';
+import type { HomePhoto } from './homePhoto';
+import type { PlaybackState } from './homePlayback';
 import styles from './HomeSequence.module.css';
 
-interface CarouselImage {
-    thumbnail: string;
-    optimized: string;
-    src: string;
+interface HomeSequenceProps {
+  photos: readonly HomePhoto[];
+  index: number;
+  /** The slow zoom runs only while this is 'advancing'. */
+  playbackState: PlaybackState;
+  /** Called once, when the first photograph shown has its full-quality layer. */
+  onFirstImageReady?: () => void;
 }
 
-interface HeroCarouselProps {
-  images: CarouselImage[];
-  autoScroll?: boolean;
-  autoScrollEnabled?: boolean;
-  interval?: number;
-  preloadImages?: (urls: string[]) => void;
-  onFirstImageLoaded?: () => void;
-}
+const addTo = (set: ReadonlySet<string>, id: string) => (set.has(id) ? set : new Set(set).add(id));
 
-const HeroCarousel: React.FC<HeroCarouselProps> = ({
-  images,
-  autoScroll = true,
-  autoScrollEnabled = true,
-  interval = 18000,
-  preloadImages,
-  onFirstImageLoaded,
-}) => {
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [loadedImages, setLoadedImages] = useState<Set<number>>(new Set());
-  const [optimizedImages, setOptimizedImages] = useState<Set<number>>(new Set());
-  const [preloadedImages, setPreloadedImages] = useState<Set<number>>(new Set());
-  const hasNotifiedLoaded = useRef(false);
+/**
+ * Home's slide stack, controlled by useHomePlayback. It shows `photos[index]`
+ * and preloads what comes next. It keeps no playback timer, renders no button,
+ * and never moves focus, so a slide change can't take focus anywhere.
+ */
+const HomeSequence: React.FC<HomeSequenceProps> = ({ photos, index, playbackState, onFirstImageReady }) => {
+  const [thumbnails, setThumbnails] = useState<ReadonlySet<string>>(new Set());
+  const [fullImages, setFullImages] = useState<ReadonlySet<string>>(new Set());
+  const preloaded = useRef(new Set<string>());
+  const hasNotifiedReady = useRef(false);
+  const activeId = photos[index]?.id;
 
-  const nextSlide = useCallback(() => {
-    setCurrentIndex((prev) => (prev === images.length - 1 ? 0 : prev + 1));
-  }, [images.length]);
+  // The slide that just left keeps its zoom, paused, until its fade ends, so it doesn't snap back.
+  const [shown, setShown] = useState<{ active?: string; outgoing?: string }>({ active: activeId });
+  if (shown.active !== activeId) setShown({ active: activeId, outgoing: shown.active });
 
-  const prevSlide = useCallback(() => {
-    setCurrentIndex((prev) => (prev === 0 ? images.length - 1 : prev - 1));
-  }, [images.length]);
-
-  const handleImageLoad = (index: number, isOptimized: boolean = false) => {
-    if (isOptimized) {
-        setOptimizedImages(prev => new Set(prev).add(index));
-    } else {
-        setLoadedImages(prev => new Set(prev).add(index));
-    }
-    
-    // The intro reveal should only end once the first full-quality hero image is ready.
-    if (index === 0 && isOptimized && !hasNotifiedLoaded.current && onFirstImageLoaded) {
-      hasNotifiedLoaded.current = true;
-      onFirstImageLoaded();
-    }
+  const notifyReady = () => {
+    if (hasNotifiedReady.current) return;
+    hasNotifiedReady.current = true;
+    onFirstImageReady?.();
   };
 
-  // Fallback: Notify loaded after first image renders (in case onLoad doesn't fire for cached images)
+  const handleLoad = (id: string, layer: 'thumbnail' | 'full') => {
+    if (layer === 'thumbnail') {
+      setThumbnails((current) => addTo(current, id));
+      return;
+    }
+    setFullImages((current) => addTo(current, id));
+    // The intro ends only once the photograph on screen has its full-quality layer.
+    if (id === activeId) notifyReady();
+  };
+
+  // A cached image can finish before React attaches onLoad, so check the one on screen shortly after.
   useEffect(() => {
-    if (images.length === 0 || hasNotifiedLoaded.current) return;
-    
-    // Small delay to allow images to start loading
-    const fallbackTimer = setTimeout(() => {
-      if (!hasNotifiedLoaded.current && onFirstImageLoaded) {
-        // Check if first image might already be cached/loaded
-        const img = new Image();
-        img.src = images[0].optimized;
-        if (img.complete) {
-          hasNotifiedLoaded.current = true;
-          onFirstImageLoaded();
-        }
-      }
+    const photo = photos[index];
+    if (!photo || hasNotifiedReady.current) return;
+    const probe = setTimeout(() => {
+      const image = new Image();
+      image.src = photo.sources.full;
+      if (image.complete) notifyReady();
     }, 500);
+    return () => clearTimeout(probe);
+    // notifyReady only reads refs and the latest callback, so it isn't a dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photos, index]);
 
-    return () => clearTimeout(fallbackTimer);
-  }, [images, onFirstImageLoaded]);
-
-  // Preload next 3 high-quality images when current slide changes
+  // Warm up the next three full-quality images and the next two thumbnails.
   useEffect(() => {
-    if (images.length === 0) return;
-    
-    // Get next 3 indices (wrapping around)
-    const nextIndices = [1, 2, 3].map(offset => 
-      (currentIndex + offset) % images.length
-    );
-    
-    // Use preloadImages callback for high-quality preloading
-    if (preloadImages) {
-      const nextOptimizedUrls = nextIndices
-        .filter(idx => !preloadedImages.has(idx))
-        .map(idx => images[idx].optimized);
-      
-      if (nextOptimizedUrls.length > 0) {
-        // Create Image objects to cache them
-        nextOptimizedUrls.forEach(url => {
-          const img = new Image();
-          img.src = url;
-        });
-        
-        // Mark as preloaded
-        setPreloadedImages(prev => {
-          const newSet = new Set(prev);
-          nextIndices.forEach(idx => newSet.add(idx));
-          return newSet;
-        });
-      }
+    if (photos.length === 0) return;
+    const upcoming = [1, 2, 3].map((offset) => photos[(index + offset) % photos.length]);
+    for (const photo of upcoming) {
+      if (preloaded.current.has(photo.id)) continue;
+      preloaded.current.add(photo.id);
+      new Image().src = photo.sources.full;
     }
-    
-    // Also ensure thumbnails are loaded for adjacent slides
-    nextIndices.slice(0, 2).forEach(idx => {
-      if (!loadedImages.has(idx)) {
-        const thumbImg = new Image();
-        thumbImg.src = images[idx].thumbnail;
-      }
-    });
-    
-    // Also preload optimized version for current slide if only thumbnail is shown
-    if (loadedImages.has(currentIndex) && !optimizedImages.has(currentIndex)) {
-        const optImg = new Image();
-        optImg.src = images[currentIndex].optimized;
+    for (const photo of upcoming.slice(0, 2)) {
+      if (!thumbnails.has(photo.id)) new Image().src = photo.sources.thumbnail;
     }
-  }, [currentIndex, images, preloadedImages, loadedImages, optimizedImages, preloadImages]);
+    const current = photos[index];
+    if (current && thumbnails.has(current.id) && !fullImages.has(current.id)) new Image().src = current.sources.full;
+  }, [photos, index, thumbnails, fullImages]);
 
-  useEffect(() => {
-    if (!autoScroll || !autoScrollEnabled) return;
-    const slideInterval = setInterval(nextSlide, interval);
-    return () => clearInterval(slideInterval);
-  }, [autoScroll, autoScrollEnabled, interval, nextSlide]);
-
-  if (!images || images.length === 0) return null;
+  if (photos.length === 0) return null;
 
   return (
-    <div className={styles.carousel}>
-      {images.map((img, index) => {
-        // Only render image elements for current slide, adjacent slides, and loaded images
-        const shouldRender = Math.abs(index - currentIndex) <= 1 || loadedImages.has(index);
-        const isLoaded = loadedImages.has(index);
-        const hasOptimized = optimizedImages.has(index);
-        
+    <div className={styles.carousel} data-zoom={playbackState === 'advancing' ? 'running' : 'paused'}>
+      {photos.map((photo, slide) => {
+        const active = slide === index;
+        const outgoing = photo.id === shown.outgoing;
+        // Render the photograph on screen, its neighbors, and anything already loaded.
+        const render = Math.abs(slide - index) <= 1 || thumbnails.has(photo.id);
+        const thumbnailLoaded = thumbnails.has(photo.id);
+        const fullLoaded = fullImages.has(photo.id);
+        const className = [styles.slide, active && styles.active, (active || outgoing) && styles.zoom, outgoing && styles.outgoing]
+          .filter(Boolean)
+          .join(' ');
+
         return (
           <div
-            key={index}
-            className={`${styles.slide} ${index === currentIndex ? styles.active : ''}`}
-            aria-hidden={index !== currentIndex}
+            key={photo.id}
+            className={className}
+            aria-hidden={!active}
+            onTransitionEnd={(event) => {
+              if (outgoing && event.propertyName === 'opacity' && event.target === event.currentTarget) {
+                setShown((current) => (current.outgoing === photo.id ? { active: current.active } : current));
+              }
+            }}
           >
-            {shouldRender && (
+            {render && (
               <>
-                {/* Thumbnail layer (loads first). The optimized layer carries the name, so this one is decorative. */}
+                {/* The full-quality layer carries the name, so the thumbnail layer is decorative. */}
                 <img
-                  src={img.thumbnail}
+                  src={photo.sources.thumbnail}
                   alt=""
                   data-layer="thumbnail"
                   className={`${styles.slideImage} ${styles.thumbnailLayer}`}
-                  loading={index === 0 ? 'eager' : 'lazy'}
-                  fetchPriority={index === 0 ? 'high' : 'auto'}
-                  onLoad={() => handleImageLoad(index, false)}
-                  style={{ opacity: isLoaded && !hasOptimized ? 1 : hasOptimized ? 0 : 0 }}
+                  loading={slide === 0 ? 'eager' : 'lazy'}
+                  fetchPriority={slide === 0 ? 'high' : 'auto'}
+                  onLoad={() => handleLoad(photo.id, 'thumbnail')}
+                  style={{ opacity: thumbnailLoaded && !fullLoaded ? 1 : 0 }}
                 />
-                {/* Optimized layer (loads on top). Position-only alt until #4 supplies descriptions. */}
                 <img
-                  src={img.optimized}
-                  alt={photoImageAlt({ position: index + 1, total: images.length })}
+                  src={photo.sources.full}
+                  alt={photo.accessibleName}
                   data-layer="optimized"
                   className={`${styles.slideImage} ${styles.optimizedLayer}`}
-                  loading={index === 0 ? 'eager' : 'lazy'}
-                  fetchPriority={index === 0 ? 'high' : 'auto'}
-                  onLoad={() => handleImageLoad(index, true)}
-                  style={{ opacity: hasOptimized ? 1 : 0 }}
+                  loading={slide === 0 ? 'eager' : 'lazy'}
+                  fetchPriority={slide === 0 ? 'high' : 'auto'}
+                  onLoad={() => handleLoad(photo.id, 'full')}
+                  style={{ opacity: fullLoaded ? 1 : 0 }}
                 />
               </>
             )}
-            {/* Placeholder while loading */}
-            {!isLoaded && index === currentIndex && (
-              <div className={styles.slidePlaceholder} />
-            )}
+            {!thumbnailLoaded && active && <div className={styles.slidePlaceholder} />}
           </div>
         );
       })}
-
-      <button
-        type="button"
-        className={`${styles.navButton} ${styles.prev}`}
-        onClick={prevSlide}
-        aria-label="Previous photograph"
-      >
-        <ChevronLeft size={24} />
-      </button>
-
-      <button
-        type="button"
-        className={`${styles.navButton} ${styles.next}`}
-        onClick={nextSlide}
-        aria-label="Next photograph"
-      >
-        <ChevronRight size={24} />
-      </button>
-
     </div>
   );
 };
 
-export default HeroCarousel;
+export default HomeSequence;

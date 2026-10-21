@@ -45,7 +45,7 @@ A modern, high-performance photography portfolio website built with Next.js 16, 
 - **Sharp Image Processing** - High-quality image optimization with AVIF support
 - **Background Image Watcher** - Automatic processing of new photos
 - **EXIF Extraction** - Automatic caption generation from photo metadata
-- **Environment Variables** - Configurable carousel timing, UI timeouts, etc.
+- **Environment Variables** - Configurable UI timeouts and photo library folder
 
 ## 🚀 Quick Start
 
@@ -116,7 +116,7 @@ docker compose -f docker-compose.prod.yml up -d
 │   └── page.tsx           # Home page
 ├── components/            # React components
 │   ├── Gallery.tsx        # Masonry gallery grid
-│   ├── HeroCarousel.tsx   # Hero image carousel
+│   ├── home/              # Home slideshow, its controls, and playback
 │   ├── ThemeToggle.tsx    # Dark/light theme switcher
 │   └── LoadingAnimation.tsx # Loading screen animation
 ├── utils/                 # Utility functions
@@ -190,10 +190,11 @@ docker compose -f docker-compose.prod.yml up -d
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `NEXT_PUBLIC_CAROUSEL_INTERVAL` | Hero carousel slide duration (ms) | 12000 |
 | `NEXT_PUBLIC_UI_AUTO_HIDE_TIMEOUT` | UI auto-hide timeout on home page (ms) | 3000 |
 | `PHOTOGRAPHY_LIBRARY_DIR` | Photo library folder for the watcher, `images:cleanup`, and `/api/photos`. The site serves photos only from `public/assets/photos`, so leave it unset outside tests. | `public/assets/photos` |
 | `PHOTOGRAPHY_DATA_DIR` | Private data root for photo identity state. It must sit outside `public/` and the library. Only `photos:migrate --dry-run` and `photos:identity status` read it so far. | `portfolio-data`, none in production |
+
+The Home slideshow interval isn't configurable. It's `HOME_AUTO_ADVANCE_MS` (12000 ms) in `components/home/homePlayback.ts`.
 
 ### Docker Configuration
 

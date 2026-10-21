@@ -4,6 +4,7 @@ import React from 'react';
 import Link from 'next/link';
 import { Images, Home, UserRound, type LucideIcon } from 'lucide-react';
 import { motion } from 'framer-motion';
+import { usePrefersReducedMotion } from './motion/usePrefersReducedMotion';
 import { DISMISSED_LABEL_STYLE, useDismissibleLabel } from './useDismissibleLabel';
 
 interface BottomBarProps {
@@ -29,32 +30,31 @@ const NavLink: React.FC<{ href: string; label: string; icon: LucideIcon }> = ({ 
 };
 
 const BottomBar: React.FC<BottomBarProps> = ({ children, visible = true }) => {
+  // Under reduced motion the bar appears in place, at once.
+  const reducedMotion = usePrefersReducedMotion();
   return (
     <motion.div
       className="fixed bottom-0 left-0 w-full z-50 pointer-events-none"
       initial={false}
       animate={{
-        y: visible ? 0 : '100%',
+        y: visible || reducedMotion ? 0 : '100%',
         opacity: visible ? 1 : 0,
       }}
-      transition={{
-        duration: 0.8,
-        ease: [0.22, 1, 0.36, 1],
-      }}
+      transition={reducedMotion ? { duration: 0 } : { duration: 0.8, ease: [0.22, 1, 0.36, 1] }}
     >
        {/* Use pointer-events-none for container so clicks pass through to background when not on UI elements */}
        {/* But we don't want the container to block interactions, so flex layout handles positioning */}
       <div className="flex flex-col items-center justify-end w-full h-screen pb-8 pointer-events-none">
         
          {/* Children content area (e.g. Profile Picture) - Allow interactions */}
-        <div className="mb-12 pointer-events-auto transition-all duration-500 ease-out transform hover:scale-105 overflow-visible">
+        <div className="mb-12 pointer-events-auto transition-all duration-500 ease-out transform motion-safe:hover:scale-105 overflow-visible">
           {children}
         </div>
 
         {/* Navigation Bar - Allow interactions */}
         <div className="pointer-events-auto">
           <nav aria-label="Primary">
-             <div className="flex items-center gap-2 p-2 bg-white/80 dark:bg-black/60 backdrop-blur-xl border border-black/10 dark:border-white/20 rounded-full shadow-[0_10px_40px_rgba(0,0,0,0.1)] dark:shadow-[0_10px_40px_rgba(0,0,0,0.6)] ring-1 ring-black/5 dark:ring-white/10 transition-transform hover:scale-[1.02] duration-300">
+             <div className="flex items-center gap-2 p-2 bg-white/80 dark:bg-black/60 backdrop-blur-xl border border-black/10 dark:border-white/20 rounded-full shadow-[0_10px_40px_rgba(0,0,0,0.1)] dark:shadow-[0_10px_40px_rgba(0,0,0,0.6)] ring-1 ring-black/5 dark:ring-white/10 transition-transform motion-safe:hover:scale-[1.02] duration-300">
                 
                 <NavLink href="/gallery" label="Gallery" icon={Images} />
 

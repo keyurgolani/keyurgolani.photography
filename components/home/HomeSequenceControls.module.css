@@ -1,0 +1,93 @@
+/* Interim placement until #18 and #21 settle the Home layout: top right on the
+   theme toggle's row, and under that row below 768 px. One scrim keeps the
+   white text and icons legible over any photograph, white included. */
+.controls {
+  position: absolute;
+  top: 1.5rem;
+  right: 1.5rem;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  max-width: calc(100% - 3rem);
+  padding: 0.25rem;
+  border-radius: 26px;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+}
+
+/* Wraps at narrow widths and large text, so every control stays in view. */
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.25rem;
+}
+
+@media (max-width: 767px) {
+  .controls {
+    top: calc(3.5rem + 22px);
+  }
+}
+
+/* The buttons draw no fill or border of their own. The focus token draws the ring. */
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 9999px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.playback {
+  padding: 0 0.875rem 0 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.playback[aria-disabled='true'] {
+  cursor: default;
+}
+
+.position {
+  padding: 0 0.25rem;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Margins rather than padding keep the hint's box on its text, inside the scrim's rounded corner. */
+.hint {
+  margin: 0 0.875rem 0.375rem;
+  font-size: 0.75rem;
+  text-align: right;
+}
+
+/* Scale feedback only with motion allowed, and hover only for a fine pointer. */
+@media (prefers-reduced-motion: no-preference) {
+  .button {
+    transition: transform 0.2s ease;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) and (hover: hover) and (pointer: fine) {
+  .button:hover {
+    transform: scale(1.08);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .button:active {
+    transform: scale(0.94);
+  }
+}

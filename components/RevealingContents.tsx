@@ -4,6 +4,8 @@ import React, { useState, useEffect, useRef } from 'react';
 
 interface RevealingContentsProps {
   children: React.ReactNode;
+  /** Called with the overlay's visibility on mount and whenever it changes. */
+  onVisibleChange?: (visible: boolean) => void;
 }
 
 // Get auto-hide timeout from env, default to 3000ms (3 seconds)
@@ -12,7 +14,7 @@ const AUTO_HIDE_TIMEOUT = parseInt(
   10
 );
 
-const RevealingContents: React.FC<RevealingContentsProps> = ({ children }) => {
+const RevealingContents: React.FC<RevealingContentsProps> = ({ children, onVisibleChange }) => {
   const [isVisible, setIsVisible] = useState(false);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastMousePos = useRef<{ x: number, y: number } | null>(null);
@@ -59,9 +61,14 @@ const RevealingContents: React.FC<RevealingContentsProps> = ({ children }) => {
     };
   }, []);
 
+  useEffect(() => {
+    onVisibleChange?.(isVisible);
+  }, [isVisible, onVisibleChange]);
+
+  // Keyboard focus inside shows the overlay at once, through has-[:focus-visible], and keeps it up.
   return (
     <div 
-      className={`fixed inset-0 z-10 flex flex-col justify-between pointer-events-none transition-opacity duration-1000 ease-in-out ${isVisible ? 'opacity-100' : 'opacity-0'}`}
+      className={`fixed inset-0 z-10 flex flex-col justify-between pointer-events-none transition-opacity duration-1000 ease-in-out has-[:focus-visible]:opacity-100 has-[:focus-visible]:transition-none ${isVisible ? 'opacity-100' : 'opacity-0'}`}
     >
       {/* 
          We use pointer-events-auto on the children so they are clickable 

@@ -1,11 +1,9 @@
-export interface HeroCarouselImage {
-  thumbnail: string;
-  optimized: string;
-  src: string;
-}
+import type { HomePhoto } from '@/components/home/homePhoto';
 
+// Module memory, so it lasts through client navigation in a tab and a reload forgets it.
 let heroIntroCompleted = false;
-let cachedCarouselImages: HeroCarouselImage[] = [];
+let cachedHomePhotos: HomePhoto[] = [];
+let playbackPaused = false;
 
 export function hasCompletedHomeHeroIntro() {
   return heroIntroCompleted;
@@ -16,9 +14,18 @@ export function markHomeHeroIntroCompleted() {
 }
 
 export function getCachedHomeHeroImages() {
-  return cachedCarouselImages;
+  return cachedHomePhotos;
 }
 
-export function setCachedHomeHeroImages(images: HeroCarouselImage[]) {
-  cachedCarouselImages = [...images];
+export function setCachedHomeHeroImages(photos: HomePhoto[]) {
+  cachedHomePhotos = [...photos];
+}
+
+/** Whether the visitor paused the slideshow. Only a Pause is remembered, never a Play. */
+export function isHomePlaybackPaused() {
+  return playbackPaused;
+}
+
+export function rememberHomePlaybackPaused(paused: boolean) {
+  playbackPaused = paused;
 }
