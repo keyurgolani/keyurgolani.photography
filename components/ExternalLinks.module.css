@@ -29,7 +29,7 @@
 
 /* The brand's light behind the mark, and the underline's lit color. */
 .link[data-brand='instagram'] {
-  --brand-glow: radial-gradient(circle at 35% 65%, #fb923c 0%, #e1306c 36%, #9333ea 58%, transparent 72%);
+  --brand-glow: radial-gradient(circle at 30% 78%, #fb923c 0%, transparent 46%), radial-gradient(closest-side, #e1306c 0%, #9333ea 62%, transparent 100%);
   --brand-line: #e1306c;
 }
 
@@ -48,14 +48,17 @@
   --brand-line: var(--about-ink, #f0f0f0);
 }
 
-/* --lit is 0 at rest and 1 on focus or a fine pointer's hover. Every lit
-   style below reads it, so hover and focus always show the same thing. The
-   link itself never transitions its outline, box-shadow, or opacity, so the
-   focus ring can't fade, and nothing on it ever transforms. */
+/* --lit is 0 at rest and 1 on focus, on a fine pointer's hover, or while a
+   tap presses the link. Every lit style below reads it, so hover and focus
+   always show the same thing. The link itself never transitions its outline,
+   box-shadow, or opacity, so the focus ring can't fade, and it never
+   transforms. Its overflow keeps the light inside the frame, and the ring
+   draws outside it. */
 .link {
   --lit: 0;
   --soft-ink: color-mix(in srgb, var(--about-ink, #f0f0f0) calc(72% + var(--lit) * 28%), var(--about-ground, #000));
   display: flex;
+  overflow: hidden;
   align-items: center;
   gap: 8px;
   min-width: 2.75rem;
@@ -74,7 +77,8 @@
   transition-timing-function: var(--ease-standard, ease-out);
 }
 
-.link:focus-visible {
+.link:focus-visible,
+.link:active {
   --lit: 1;
 }
 
@@ -84,9 +88,14 @@
   }
 }
 
-/* A fixed slot keeps the labels in one column. The mark brightens to the
-   full ink when lit, over the brand's light. */
+/* A fixed slot keeps the labels in one column. The brand's light rests as a
+   faint glow behind the mark and rises when the link is lit, as the mark
+   brightens to the full ink. */
 .mark {
+  --glow-rest: 0.22;
+  /* The pool spreads from the mark toward the label. */
+  --glow-inset: -12px -40px -12px -12px;
+  --glow-blur: 10px;
   position: relative;
   display: grid;
   flex: none;
@@ -101,12 +110,12 @@
 .mark::before {
   content: '';
   position: absolute;
-  inset: -8px;
+  inset: var(--glow-inset);
   z-index: -1;
   border-radius: 50%;
   background: var(--brand-glow, none);
-  filter: blur(7px);
-  opacity: calc(var(--lit) * 0.8);
+  filter: blur(var(--glow-blur));
+  opacity: calc(var(--glow-rest) + var(--lit) * (0.8 - var(--glow-rest)));
   pointer-events: none;
   transition: opacity var(--motion-base, 220ms) var(--ease-standard, ease-out);
   animation: first-light 800ms var(--ease-standard, ease-out) backwards;
@@ -116,11 +125,11 @@
 @keyframes first-light {
   0%,
   100% {
-    opacity: 0;
+    opacity: var(--glow-rest);
   }
 
   40% {
-    opacity: 0.6;
+    opacity: 0.62;
   }
 }
 
@@ -182,14 +191,14 @@
   }
 
   .mark {
+    /* The pool spreads from the mark down and across the tile. */
+    --glow-inset: -12px -44px -40px -12px;
+    --glow-blur: 18px;
     grid-area: mark;
     align-self: start;
+    justify-self: start;
     width: auto;
     height: auto;
-  }
-
-  .mark::before {
-    inset: -12px;
   }
 
   .icon {

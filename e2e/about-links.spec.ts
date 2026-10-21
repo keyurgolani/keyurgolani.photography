@@ -1,8 +1,9 @@
 import type { Locator, Page } from '@playwright/test';
 import { artist } from '../data/artist';
 import { expectNoA11yViolations } from './support/a11y';
-import { contrast, type Rgb } from './support/contrast';
+import { contrast, expectContrastOverImage, type Rgb } from './support/contrast';
 import { expectFocusRingVisible, expectNotObscured } from './support/focus';
+import { expectHoverRulesGated } from './support/hover';
 import { waitForHydration } from './support/hydration';
 import { expectTabOrderMatchesVisualOrder } from './support/keyboard';
 import { expectReflow } from './support/reflow';
@@ -11,9 +12,10 @@ import { expectMinTargetSize } from './support/targets';
 import { expect, test } from './support/test';
 
 // #11's checks on About's external links: layout at six widths, focus from
-// either end, 200% text, long labels, contrast in both themes, motion,
-// requests, the #1 surface checks, and the server HTML. They iterate the
-// enabled entries in data/artist.ts, so they hold whichever set ships.
+// either end, 200% text, long labels, contrast in both themes, the brand
+// light and motion, requests, the #1 surface checks, and the server HTML.
+// They iterate the enabled entries in data/artist.ts, so they hold whichever
+// set ships.
 
 const ENABLED = artist.destinations.filter((destination) => destination.enabled);
 const WIDTHS = [
@@ -29,7 +31,8 @@ const SLACK = 0.5;
 
 const external = (page: Page) => page.getByRole('navigation', { name: /^External profiles( and contact)?$/ });
 const links = (page: Page) => external(page).getByRole('link');
-const labelOf = (link: Locator) => link.locator('span');
+/** The span with the link's text. The mark's span holds only its svg. */
+const labelOf = (link: Locator) => link.locator('span').filter({ hasText: /\S/ });
 const toggle = (page: Page) => page.getByRole('button', { name: /^Switch to (light|dark) mode$/ });
 const primaryLinks = (page: Page) => page.getByRole('navigation', { name: 'Primary' }).getByRole('link');
 /** The site nav bar: every navigation landmark but the external links' own, which since #21 is SiteNav. */
@@ -105,7 +108,7 @@ const clippedLabels = (page: Page) =>
     links(page).evaluateAll(
         (elements, slack) =>
             elements.flatMap((link) => {
-                const label = link.querySelector('span');
+                const label = Array.from(link.querySelectorAll('span')).find((span) => span.textContent?.trim());
                 if (!label) return [`${link.textContent} has no label`];
                 const text = label.textContent ?? '';
                 const problems: string[] = [];
@@ -147,6 +150,54 @@ async function expectFocusedLinkClear(page: Page, index: number) {
     await expectNotObscured(link, chrome(page));
 }
 
+/** Waits for the first light and any lit transition to finish. */
+const settled = (page: Page) => page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== 'running'));
+
+/** What a link shows: its frame, its mark, the brand's light behind the mark, its underline, and its arrow. */
+const litState = (link: Locator) =>
+    link.evaluate((el) => {
+        const mark = el.querySelector('svg[data-icon]')?.parentElement;
+        const label = Array.from(el.querySelectorAll('span')).find((span) => span.textContent?.trim());
+        const arrow = el.querySelector('svg:not([data-icon])');
+        const frame = getComputedStyle(el);
+        const line = label ? getComputedStyle(label) : null;
+        return {
+            frame: `${frame.borderTopColor} ${frame.backgroundColor}`,
+            mark: mark ? getComputedStyle(mark).color : '',
+            light: mark ? Number(getComputedStyle(mark, '::before').opacity) : 0,
+            underline: line ? `${line.textDecorationColor} ${line.textDecorationThickness}` : '',
+            arrow: arrow ? `${getComputedStyle(arrow).color} ${getComputedStyle(arrow).translate}` : '',
+        };
+    });
+
+/**
+ * What moves inside a link: transforms on any element or pseudo-element,
+ * animations by name, and transitions longer than 0.01 ms. A translate of
+ * zero, which the arrow has at rest, isn't movement.
+ */
+const motionOf = (link: Locator) =>
+    link.evaluate((el) =>
+        [el, ...Array.from(el.querySelectorAll('*'))].flatMap((node) =>
+            [null, '::before', '::after'].flatMap((pseudo) => {
+                const style = getComputedStyle(node, pseudo);
+                if (pseudo && style.content === 'none') return [];
+                const name = `${node.tagName.toLowerCase()}${pseudo ?? ''}`;
+                const found: string[] = [];
+                for (const property of ['transform', 'scale', 'rotate'] as const) {
+                    if (style[property] !== 'none') found.push(`${name} has ${property} ${style[property]}`);
+                }
+                if (!/^(none|0px( 0px)?)$/.test(style.translate)) found.push(`${name} has translate ${style.translate}`);
+                if (style.animationName !== 'none') found.push(`${name} animates ${style.animationName}`);
+                for (const value of style.transitionDuration.split(',')) {
+                    const text = value.trim();
+                    const ms = text.endsWith('ms') ? parseFloat(text) : parseFloat(text) * 1000;
+                    if (ms > 0.01) found.push(`${name} transitions for ${text}`);
+                }
+                return found;
+            }),
+        ),
+    );
+
 test.describe('the #1 checks', () => {
     test('About passes them, with the external links as its entries', async ({ page }) => {
         await openAbout(page);
@@ -164,6 +215,17 @@ test.describe('the #1 checks', () => {
             expect(context.pages()).toHaveLength(1);
         });
     }
+
+    test('a fine pointer lights a link on hover, and a touch screen never does', async ({ page, isMobile }) => {
+        await openAbout(page);
+        await settled(page);
+        const link = links(page).first();
+        const atRest = await litState(link);
+        await link.hover();
+        await settled(page);
+        if (isMobile) expect(await litState(link)).toEqual(atRest);
+        else expect((await litState(link)).light).toBeGreaterThan(atRest.light);
+    });
 });
 
 test.describe('on the desktop project', () => {
@@ -273,13 +335,14 @@ test.describe('on the desktop project', () => {
     });
 
     for (const theme of ['dark', 'light'] as const) {
-        test(`in the ${theme} theme the labels are underlined, pass axe's contrast check, and the ring keeps 3:1 on the About ground`, async ({ page }) => {
+        test(`in the ${theme} theme the labels are underlined and keep 4.5:1 over the light at rest and lit, and the ring keeps 3:1 on the About ground`, async ({ page }) => {
             await page.addInitScript((value) => localStorage.setItem('theme', value), theme);
             await openAbout(page);
             await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+            await settled(page);
             await expectNoA11yViolations(page, { include: 'nav[aria-label^="External profiles"]' });
 
-            /** The link's text, background, ring, and ground colors, and its label's text decoration. */
+            /** The link's ring and the About ground, and its label's text decoration. */
             const colorsOf = (link: Locator) =>
                 link.evaluate((el) => {
                     const rgb = (color: string): [number, number, number] => {
@@ -294,56 +357,140 @@ test.describe('on the desktop project', () => {
                     };
                     const style = getComputedStyle(el);
                     const ground = style.getPropertyValue('--about-ground').trim();
-                    const label = el.querySelector('span');
+                    const label = Array.from(el.querySelectorAll('span')).find((span) => span.textContent?.trim());
                     return {
                         ground: ground ? rgb(ground) : null,
-                        ink: rgb(style.color),
-                        background: rgb(style.backgroundColor),
                         outline: rgb(style.outlineColor),
                         decoration: label ? getComputedStyle(label).textDecorationLine : '',
                     };
                 });
+            /** The text against the real pixels behind it, the brand's light included. The underline sits below the text, so it's hidden for the reading. */
+            const expectLabelContrast = async (link: Locator) => {
+                const underline = await page.addStyleTag({ content: 'nav[aria-label^="External profiles"] span { text-decoration-color: transparent !important; transition: none !important; }' });
+                try {
+                    await expectContrastOverImage(labelOf(link), { min: 4.5 });
+                } finally {
+                    await underline.evaluate((node) => node.parentNode?.removeChild(node));
+                }
+            };
             for (const [index, link] of (await links(page).all()).entries()) {
                 const name = ENABLED[index].label;
-                const atRest = await colorsOf(link);
-                expect(atRest.decoration, `${name} is underlined at rest`).toContain('underline');
-                expect(contrast(atRest.ink, atRest.background), `${name} text contrast`).toBeGreaterThanOrEqual(4.5);
+                expect((await colorsOf(link)).decoration, `${name} is underlined at rest`).toContain('underline');
+                await expectLabelContrast(link);
                 await link.focus();
+                await settled(page);
+                await expectLabelContrast(link);
                 const focused = await colorsOf(link);
                 expect(focused.ground, '--about-ground is in scope').not.toBeNull();
                 expect(contrast(focused.outline, focused.ground as Rgb), `${name} ring contrast on the About ground`).toBeGreaterThanOrEqual(3);
+                await link.blur();
             }
         });
     }
 
-    for (const reducedMotion of ['no-preference', 'reduce'] as const) {
-        test(`with reducedMotion ${reducedMotion}, no link transforms, animates, or transitions at rest, on hover, or on focus`, async ({ page }) => {
-            await page.emulateMedia({ reducedMotion });
-            await openAbout(page);
-            const moving = (link: Locator) =>
-                link.evaluate((el) =>
-                    [el, ...Array.from(el.querySelectorAll('*'))].flatMap((node) => {
-                        const style = getComputedStyle(node);
-                        const found: string[] = [];
-                        if (style.transform !== 'none') found.push(`${node.tagName} transforms ${style.transform}`);
-                        if (style.animationName !== 'none') found.push(`${node.tagName} animates ${style.animationName}`);
-                        for (const value of style.transitionDuration.split(',')) {
-                            const text = value.trim();
-                            const ms = text.endsWith('ms') ? parseFloat(text) : parseFloat(text) * 1000;
-                            if (ms > 0.01) found.push(`${node.tagName} transitions for ${text}`);
-                        }
-                        return found;
-                    }),
-                );
-            for (const [index, link] of (await links(page).all()).entries()) {
-                const name = ENABLED[index].label;
-                expect(await moving(link), `${name} at rest`).toEqual([]);
-                await link.hover();
-                expect(await moving(link), `${name} on hover`).toEqual([]);
-                await link.focus();
-                expect(await moving(link), `${name} on focus`).toEqual([]);
-                await page.mouse.move(0, 0);
-            }
+    test('hover and focus light each link the same way, and it goes back to rest after', async ({ page }) => {
+        await openAbout(page);
+        await settled(page);
+        for (const [index, link] of (await links(page).all()).entries()) {
+            const name = ENABLED[index].label;
+            const atRest = await litState(link);
+            await link.hover();
+            await settled(page);
+            const hovered = await litState(link);
+            await page.mouse.move(0, 0);
+            await link.focus();
+            await settled(page);
+            const focused = await litState(link);
+            await link.blur();
+            await settled(page);
+            expect(focused, `focus on ${name} shows what hover shows`).toEqual(hovered);
+            expect(hovered.light, `${name}'s light rises`).toBeGreaterThan(atRest.light);
+            for (const part of ['frame', 'mark', 'underline', 'arrow'] as const) expect(hovered[part], `${name}'s ${part} lights`).not.toEqual(atRest[part]);
+            expect(await litState(link), `${name} goes back to rest`).toEqual(atRest);
+        }
+    });
+
+    test('every hover rule on About waits for a fine pointer', async ({ page }) => {
+        await openAbout(page);
+        await expectHoverRulesGated(page);
+    });
+
+    test('under reduced motion nothing in a link moves, animates, or transitions, at rest, on hover, or on focus', async ({ page }) => {
+        await page.emulateMedia({ reducedMotion: 'reduce' });
+        await openAbout(page);
+        for (const [index, link] of (await links(page).all()).entries()) {
+            const name = ENABLED[index].label;
+            expect(await motionOf(link), `${name} at rest`).toEqual([]);
+            await link.hover();
+            expect(await motionOf(link), `${name} on hover`).toEqual([]);
+            await link.focus();
+            expect(await motionOf(link), `${name} on focus`).toEqual([]);
+            await page.mouse.move(0, 0);
+        }
+    });
+
+    test('without reduced motion the first light passes once in order, only the arrow moves when lit, and no link moves or fades its ring', async ({ page }) => {
+        await page.emulateMedia({ reducedMotion: 'no-preference' });
+        await openAbout(page);
+        const passes = await links(page).evaluateAll((elements) =>
+            elements.map((el) => {
+                const mark = el.querySelector('svg[data-icon]')?.parentElement;
+                const style = mark ? getComputedStyle(mark, '::before') : null;
+                return style ? { name: style.animationName, delay: parseFloat(style.animationDelay), count: style.animationIterationCount } : null;
+            }),
+        );
+        for (const pass of passes) expect(pass).toMatchObject({ name: expect.stringMatching(/first-light/), count: '1' });
+        const delays = passes.map((pass) => pass?.delay ?? 0);
+        expect(delays, 'the light passes along the list in DOM order').toEqual([...delays].sort((a, b) => a - b));
+        expect(new Set(delays).size, 'one link at a time').toBe(delays.length);
+
+        await settled(page);
+        /** The link's own movement and transitions, and its arrow's translate. */
+        const moves = (link: Locator) =>
+            link.evaluate((el) => {
+                const style = getComputedStyle(el);
+                const arrow = el.querySelector('svg:not([data-icon])');
+                return {
+                    link: [style.transform, style.translate, style.scale, style.rotate].filter((value) => value !== 'none'),
+                    fades: style.transitionProperty.split(',').map((property) => property.trim()).filter((property) => /^(all|outline(-[a-z]+)?|box-shadow|opacity)$/.test(property)),
+                    arrow: arrow ? getComputedStyle(arrow).translate : '',
+                };
+            });
+        for (const [index, link] of (await links(page).all()).entries()) {
+            const name = ENABLED[index].label;
+            const atRest = await moves(link);
+            expect(atRest, `${name} at rest`).toEqual({ link: [], fades: [], arrow: expect.stringMatching(/^(none|0px( 0px)?)$/) });
+            await link.hover();
+            await settled(page);
+            expect(await moves(link), `${name} on hover`).toEqual({ link: [], fades: [], arrow: '2px -2px' });
+            await page.mouse.move(0, 0);
+            await link.focus();
+            await settled(page);
+            expect(await moves(link), `${name} on focus`).toEqual({ link: [], fades: [], arrow: '2px -2px' });
+            await link.blur();
+        }
+    });
+
+    for (const [width, height] of [[393, 659], [1280, 800]] as const) {
+        test.describe(`at ${width} by ${height}`, () => {
+            test.use({ viewport: { width, height } });
+
+            test('the 500px wordmark renders wide enough to read, wider than the square marks', async ({ page }) => {
+                test.skip(!ENABLED.some((destination) => destination.icon === '500px'), '500px is off.');
+                await openAbout(page);
+                const marks = await external(page)
+                    .locator('svg[data-icon]')
+                    .evaluateAll((elements) =>
+                        elements.map((el) => {
+                            const { width: w, height: h } = el.getBoundingClientRect();
+                            return { icon: el.getAttribute('data-icon'), width: w, height: h };
+                        }),
+                    );
+                const wordmark = marks.find((mark) => mark.icon === '500px');
+                expect(wordmark?.width ?? 0).toBeGreaterThanOrEqual(32);
+                expect((wordmark?.width ?? 0) / (wordmark?.height ?? 1)).toBeGreaterThan(3);
+                for (const mark of marks.filter(({ icon }) => icon !== '500px')) expect(wordmark?.width ?? 0, `wider than ${mark.icon}`).toBeGreaterThan(mark.width);
+            });
         });
     }
 
