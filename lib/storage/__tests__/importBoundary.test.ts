@@ -25,13 +25,16 @@ async function restrictedImports(relativePath: string, source: string): Promise<
     return result.messages.filter((message) => message.ruleId === 'no-restricted-imports').map((message) => message.message);
 }
 
-describe('the lib/storage and lib/identity import boundary', { timeout: 60_000 }, () => {
+describe('the lib/storage, lib/identity, and lib/media import boundary', { timeout: 60_000 }, () => {
     it.each([
         ['lib/storage/probe.ts', "import { NextResponse } from 'next/server';\nexport const probe = NextResponse;\n"],
         ['lib/identity/probe.ts', "import { headers } from 'next/headers';\nexport const probe = headers;\n"],
         ['lib/identity/nested/probe.ts', "import type { NextConfig } from 'next';\nexport type Probe = NextConfig;\n"],
         ['lib/storage/probe.ts', "import 'server-only';\nexport const probe = 1;\n"],
         ['lib/identity/probe.ts', "export { NextResponse } from 'next/server';\n"],
+        // lib/identity/metadata.ts imports lib/media, so it runs under the watcher and CLI too.
+        ['lib/media/probe.ts', "import { NextResponse } from 'next/server';\nexport const probe = NextResponse;\n"],
+        ['lib/media/probe.ts', "import 'server-only';\nexport const probe = 1;\n"],
     ])('rejects %s importing %j', async (file, source) => {
         expect(await restrictedImports(file, source)).toHaveLength(1);
     });

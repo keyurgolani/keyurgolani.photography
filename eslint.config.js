@@ -65,19 +65,19 @@ export default tseslint.config(
     },
   },
   {
-    // Storage and identity code runs in the watcher and CLI too, so it must
-    // not depend on Next or on server-only's bundler check.
-    files: ['lib/storage/**', 'lib/identity/**'],
+    // Storage, identity, and media code runs in the watcher and CLI too, so it
+    // must not depend on Next or on server-only's bundler check.
+    files: ['lib/storage/**', 'lib/identity/**', 'lib/media/**'],
     rules: {
       'no-restricted-imports': [
         'error',
         {
           paths: [
-            { name: 'next', message: 'lib/storage and lib/identity run outside Next. Keep Next imports in app/ or proxy.ts.' },
-            { name: 'server-only', message: 'lib/storage and lib/identity run under plain Node, where server-only throws.' },
+            { name: 'next', message: 'lib/storage, lib/identity, and lib/media run outside Next. Keep Next imports in app/ or proxy.ts.' },
+            { name: 'server-only', message: 'lib/storage, lib/identity, and lib/media run under plain Node, where server-only throws.' },
           ],
           patterns: [
-            { group: ['next/*'], message: 'lib/storage and lib/identity run outside Next. Keep Next imports in app/ or proxy.ts.' },
+            { group: ['next/*'], message: 'lib/storage, lib/identity, and lib/media run outside Next. Keep Next imports in app/ or proxy.ts.' },
           ],
         },
       ],
