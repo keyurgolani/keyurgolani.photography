@@ -72,6 +72,9 @@ describe('proxy.ts on /assets/photos', () => {
         ['an uppercase prefix', '/ASSETS/PHOTOS/landscape.jpg'],
         ['an encoded prefix letter', '/assets/photo%73/landscape.jpg'],
         ['a long s that folds to s', '/assets/photo%C5%BF/landscape.jpg'],
+        ['a sharp s that folds to ss', '/a%C3%9Fets/photos/landscape.jpg'],
+        ['a capital sharp s that folds to ss', '/a%E1%BA%9Eets/photos/landscape.jpg'],
+        ['a capital sharp s in a nested path', '/a%E1%BA%9Eets/photos/series/x.jpg'],
         ['a derivative under a capitalized prefix', '/Assets/photos/optimized/landscape.webp'],
         ['an encoded traversal from a sibling folder', '/assets/profile/..%2Fphotos%2Flandscape.jpg'],
         ['a lowercase encoded traversal from a sibling folder', '/assets/profile/..%2fphotos%2flandscape.jpg'],
@@ -128,7 +131,7 @@ describe('derivative URLs', () => {
         ['lqip', 'lqip', '.txt'],
     ] as const;
 
-    it.each(['50%off.jpg', 'a#b.jpg', 'what?.png', 'IMG 1234 (edited).jpg', 'café.webp', '100% #2.jpg'])(
+    it.each(['50%off.jpg', 'a#b.jpg', 'what?.png', 'IMG 1234 (edited).jpg', 'café.webp', '100% #2.jpg', 'a%2Fb.jpg', 'a%2fb.png', 'a%5Cb.jpg'])(
         'for %s, pass the proxy whole and decode to the file on disk',
         (name) => {
             const urls = getImagePaths(name, libraryPaths(), new Map());
