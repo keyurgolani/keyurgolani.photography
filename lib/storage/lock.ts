@@ -30,6 +30,12 @@ export interface LockContext {
     name: string;
     /** The data root whose `locks/` holds it. */
     root: string;
+    /**
+     * Re-read the lock file now: true while it is still this holder's. A
+     * waiter that broke an expired lease since the last renewal makes it
+     * false before `signal` knows.
+     */
+    isHeld(): Promise<boolean>;
 }
 
 export interface LockHooks {
@@ -365,7 +371,7 @@ export async function withLock<T>(name: string, options: LockOptions, fn: (conte
     }, Math.max(1, Math.floor(leaseMs / 4)));
 
     try {
-        return await fn({ signal: controller.signal, takeover, name, root });
+        return await fn({ signal: controller.signal, takeover, name, root, isHeld: stillOurs });
     } finally {
         clearInterval(timer);
         await renewing;
