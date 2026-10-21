@@ -84,6 +84,28 @@ describe('getGalleryImages', () => {
         expect(height).toBeGreaterThan(width);
     });
 
+    it('gives each photo the size of its optimized WebP, which is smaller than the photo once it is wider than 1920 px', async () => {
+        await sharp({ create: { width: 2400, height: 1600, channels: 3, background: '#4a6' } }).jpeg().toFile(lib.file('wide.jpg'));
+        await refreshImage('wide.jpg', { force: true });
+        const images = await getGalleryImages();
+        const item = (base: string) => images.find((image) => image.optimized === `/assets/photos/optimized/${base}.webp`);
+
+        expect(item('wide')).toMatchObject({ width: 2400, height: 1600, optimizedWidth: 1920, optimizedHeight: 1280 });
+        expect(item('landscape')).toMatchObject({ width: 960, height: 640, optimizedWidth: 960, optimizedHeight: 640 });
+        // Upright, as the derivatives are
+        expect(item('landscape-rot6')).toMatchObject({ width: 640, height: 960, optimizedWidth: 640, optimizedHeight: 960 });
+    }, 30_000);
+
+    it('reads the optimized size from the file, and leaves out a photo whose optimized file is unreadable', async () => {
+        await sharp({ create: { width: 300, height: 200, channels: 3, background: '#4a6' } }).webp().toFile(lib.file('optimized/square.webp'));
+        fs.writeFileSync(lib.file('optimized/portrait.webp'), 'not a WebP');
+        const images = await getGalleryImages();
+
+        expect(images.find((image) => image.optimized === '/assets/photos/optimized/square.webp')).toMatchObject({ optimizedWidth: 300, optimizedHeight: 200 });
+        expect(bases(images)).toEqual(DECODABLE.filter((base) => base !== 'portrait').sort());
+        expect(errors).toHaveBeenCalledWith(expect.stringMatching(/^\[getGalleryImages\] Skipping portrait\.png: /));
+    });
+
     it('lists sources that share derivatives once, by the first path, and warns naming both', async () => {
         // landscape.png would get landscape.jpg's derivatives, since both have the base name landscape.
         fs.copyFileSync(lib.file('portrait.png'), lib.file('landscape.png'));

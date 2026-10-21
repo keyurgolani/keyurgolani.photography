@@ -973,6 +973,18 @@ export function applyOrphanCleanup(plan: OrphanCleanupPlan): OrphanCleanupResult
 }
 
 /**
+ * The size of a source's optimized WebP, read from the file, which the
+ * Lightbox loads. It is smaller than the photo once the photo is wider than
+ * 1920 px. Throws when the file is missing or can't be read.
+ */
+export async function optimizedSize(filename: string, paths: LibraryPaths = libraryPaths()): Promise<{ width: number; height: number }> {
+    const file = path.join(paths.optimized, outputName('optimized', baseNameOf(filename)));
+    const { width, height } = await sharp(file).metadata();
+    if (!width || !height) throw new Error(`${file} has no size.`);
+    return { width, height };
+}
+
+/**
  * Get LQIP base64 string for an image
  */
 export function getLqipBase64(filename: string, paths: LibraryPaths = libraryPaths()): string | null {

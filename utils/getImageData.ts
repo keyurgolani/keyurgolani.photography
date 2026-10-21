@@ -12,6 +12,7 @@ import {
     isCompleteSet,
     libraryPaths,
     libraryRootExists,
+    optimizedSize,
     pickOwner,
     readDerivativeIndex,
     setGroups,
@@ -27,8 +28,12 @@ export interface ImageItem {
     thumbnailAvif?: string;
     mediumAvif?: string;
     optimizedAvif?: string;
+    /** The photo's upright size. */
     width: number;
     height: number;
+    /** The size of the optimized WebP, which is smaller than the photo once it is wider than 1920 px. */
+    optimizedWidth: number;
+    optimizedHeight: number;
     caption?: string;
     date: number;
     lqip: string;
@@ -117,6 +122,8 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
         // set, all seven by exact name. Anything less, such as a set cleanup only
         // partly removed, leaves it out until the watcher writes the set again.
         if (!isCompleteSet(imagePaths)) return 'incomplete';
+        // The Lightbox's slide gets the size of the file it loads. One that can't be read can't be shown either.
+        const optimized = await optimizedSize(file, paths);
 
         // Get LQIP base64. An on-the-fly placeholder is upright, as encodeLqip() turns it.
         const lqip = getLqipBase64(file, paths) || await placeholderFor(filePath);
@@ -180,6 +187,8 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
             optimizedAvif: imagePaths.optimizedAvif,
             width: upright.width || 800,
             height: upright.height || 600,
+            optimizedWidth: optimized.width,
+            optimizedHeight: optimized.height,
             caption: caption,
             date: dateTaken.getTime(),
             lqip: lqip,
