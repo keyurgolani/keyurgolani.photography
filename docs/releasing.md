@@ -100,7 +100,7 @@ When `Production audit` fails in a `main` publish, that commit never gets a `sha
 
 Releases come from `main` only. Tag a `main` commit whose `Publish to GHCR` job succeeded, never a commit that is only on `next`.
 
-1. Bump the version with `npm version X.Y.Z --no-git-tag-version` in a PR into `next` that changes nothing else. It sets `version` in `package.json` and both copies in `package-lock.json`. Plain `npm version` also tags the `next` commit, and the release workflow refuses a tag that isn't on `main`.
+1. Bump the version with `npm version X.Y.Z --no-git-tag-version` in a PR into `next` that changes nothing else. It sets `version` in `package.json` and both copies in `package-lock.json`. Plain `npm version` also commits and puts a local `vX.Y.Z` tag on that commit. Pushed, that tag isn't on `main`, so its release fails; kept, it blocks tagging the real `main` commit later.
 2. Promote `next` to `main` through a PR, merged with a merge commit, and wait for that merge's `Publish to GHCR` job to succeed. A red Docker Hub mirror doesn't block a release. To retry a failed publish, use Re-run failed jobs. The publish job reuses the `sha-` image if it already exists.
 3. Tag that `main` commit and push that one tag:
 
