@@ -255,14 +255,21 @@ export function createWatcherHandlers(
             const result: StartupBatchResult = { processed: [], skipped: [], errors: [] };
             if (stopped) return result;
             logger.log('[ImageWatcher] Checking for unprocessed images...');
-            const { files, upright, shared } = await planSources({ force });
+            const { files, reowned, upright, shared } = await planSources({ force });
             for (const { file, owner, undecodable } of shared) {
                 logger.log(`[ImageWatcher] Skipping ${file}: ${undecodable ? `it can't be decoded, so ${owner} has the derivatives they share` : `it shares its derivatives with ${owner}`}.`);
+            }
+            for (const { file, from } of reowned) {
+                logger.log(from === null
+                    ? `[ImageWatcher] Rebuilding ${file}'s set, which it shares, since nothing records which source it was built from.`
+                    : `[ImageWatcher] Rebuilding ${file}'s set, which was last built from ${from}.`);
             }
             const turned = new Set(upright ?? []);
             if (turned.size > 0) {
                 logger.log(`[ImageWatcher] Rebuilding the sets of ${photos(turned.size, 'orientation-tagged photo')} once, since a set written before derivatives were turned upright shows its photo turned or mirrored.`);
             }
+            // Rebuilt whatever their state, since their sets can look current
+            const forced = new Set([...turned, ...reowned.map(({ file }) => file)]);
             if (files.length === 0) {
                 if (upright !== null) recordUpright(0);
                 logger.log('[ImageWatcher] All images are processed.');
@@ -272,7 +279,7 @@ export function createWatcherHandlers(
             logger.log(`[ImageWatcher] Found ${files.length} unprocessed images.`);
             const outcomes = await Promise.all(files.map((file, index) => enqueue(file, false, async () => {
                 logger.log(`[ImageWatcher] Processing ${index + 1}/${files.length}: ${file}`);
-                await refreshImage(file, { force: force || turned.has(file) });
+                await refreshImage(file, { force: force || forced.has(file) });
             })));
 
             const lists: Record<Outcome, string[]> = { done: result.processed, skipped: result.skipped, failed: result.errors };

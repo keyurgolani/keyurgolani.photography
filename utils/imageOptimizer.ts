@@ -402,6 +402,12 @@ export async function writeVariants(
     }
 
     if (overwrite) purgeDynamicCache(baseName, paths);
+    try {
+        recordSetSource(filename, paths);
+    } catch (error) {
+        // Without it, the next start can't tell which source the set shows, and may rebuild it.
+        console.error(`[imageOptimizer] Couldn't record that ${filename}'s set was built from it: ${error instanceof Error ? error.message : String(error)}`);
+    }
     return order.map(({ target }) => target);
 }
 
@@ -625,15 +631,55 @@ export function uprightMarkerPath(paths: LibraryPaths = libraryPaths()): string 
     return path.join(path.dirname(paths.dynamicCache), 'upright-rebuild.json');
 }
 
+/** Create each folder in turn, one level at a time, so a missing library root is never created. */
+function makeFolders(...dirs: string[]): void {
+    for (const dir of dirs) {
+        try {
+            fs.mkdirSync(dir);
+        } catch (error) {
+            if (!hasErrorCode(error, 'EEXIST')) throw error;
+        }
+    }
+}
+
 /** Record that the one-time rebuild is done. Creates the cache folder, never the library root. */
 export function writeUprightMarker(photos: number, paths: LibraryPaths = libraryPaths(), now: Date = new Date()): void {
     const file = uprightMarkerPath(paths);
-    try {
-        fs.mkdirSync(path.dirname(file));
-    } catch (error) {
-        if (!hasErrorCode(error, 'EEXIST')) throw error;
-    }
+    makeFolders(path.dirname(file));
     fs.writeFileSync(file, `${JSON.stringify({ rebuiltAt: now.toISOString(), photos }, null, 2)}\n`);
+}
+
+/**
+ * Where a set records the source it was last built from:
+ * `cache/set-sources/<base name>.json`, which nothing serves, the scans skip,
+ * and images:cleanup leaves alone. Named like the set's files, so sources
+ * that share a set share its record.
+ */
+function setSourceFile(filename: string, paths: LibraryPaths): string {
+    return path.join(path.dirname(paths.dynamicCache), 'set-sources', `${baseNameOf(filename)}.json`);
+}
+
+/** The source the set `filename` writes was last built from, or null when nothing records it. */
+export function readSetSource(filename: string, paths: LibraryPaths = libraryPaths()): string | null {
+    try {
+        const value = JSON.parse(fs.readFileSync(setSourceFile(filename, paths), 'utf8')) as { source?: unknown } | null;
+        return typeof value?.source === 'string' ? value.source : null;
+    } catch {
+        return null;
+    }
+}
+
+/** Record that `filename`'s set was just built from it. Creates the folders under the library root, never the root. */
+function recordSetSource(filename: string, paths: LibraryPaths): void {
+    const file = setSourceFile(filename, paths);
+    makeFolders(path.dirname(path.dirname(file)), path.dirname(file));
+    fs.writeFileSync(file, `${JSON.stringify({ source: filename })}\n`);
+}
+
+/** Whether `filename`'s set was last built from another source, such as the owner before it. False when nothing records it. */
+function builtFromAnother(filename: string, paths: LibraryPaths): boolean {
+    const source = readSetSource(filename, paths);
+    return source !== null && source !== filename;
 }
 
 /** Whether a source's file carries an EXIF orientation other than 1, which its set turns upright. False when it can't be read. */
@@ -647,8 +693,15 @@ export async function isOrientationTagged(filename: string, paths: LibraryPaths 
 }
 
 export interface SourcePlan {
-    /** The owners whose sets need building: all of them with `force`, else those needsRefresh() names and those in `upright`. */
+    /** The owners whose sets need building: all of them with `force`, else those needsRefresh() names and those in `upright` and `reowned`. */
     files: string[];
+    /**
+     * The owners whose set shows another source, rebuilt whatever their state:
+     * one last built from `from`, such as an owner removed while the watcher
+     * was down, and a shared set nothing records the source of, with `from`
+     * null, since sets written before the record could show either source.
+     */
+    reowned: { file: string; from: string | null }[];
     /**
      * The owners whose files carry an orientation tag, rebuilt once whatever
      * their state: a set written before derivatives were turned upright shows
@@ -665,23 +718,27 @@ export async function planSources({ force = false }: { force?: boolean } = {}): 
     const paths = libraryPaths();
     ensureDirectories(paths);
     const upright: string[] | null = fs.existsSync(uprightMarkerPath(paths)) ? null : [];
-    const plan: SourcePlan = { files: [], upright, shared: [] };
+    const plan: SourcePlan = { files: [], reowned: [], upright, shared: [] };
     const index = force ? null : readDerivativeIndex(paths);
     for (const group of setGroups(getPhotoFiles(paths.root), paths.root)) {
         const { owner, undecodable } = await pickOwner(group, paths);
         for (const file of group) if (file !== owner) plan.shared.push({ file, owner, undecodable: undecodable.includes(file) });
         const tagged = upright !== null && await isOrientationTagged(owner, paths);
         if (tagged) upright.push(owner);
-        if (index === null || tagged || needsRefresh(owner, paths, index)) plan.files.push(owner);
+        // A removal or an addition while the watcher was down can change a set's owner without touching its files.
+        const recorded = readSetSource(owner, paths);
+        const reowned = recorded === null ? group.length > 1 : recorded !== owner;
+        if (reowned) plan.reowned.push({ file: owner, from: recorded });
+        if (index === null || tagged || reowned || needsRefresh(owner, paths, index)) plan.files.push(owner);
     }
     return plan;
 }
 
 /**
  * The sources the watcher's startup batch works on: the owner of each set,
- * every one with `force`, else the unprocessed ones and, until the one-time
- * upright rebuild is recorded, the orientation-tagged ones. Both throw on a
- * missing root.
+ * every one with `force`, else the unprocessed ones, those whose set shows
+ * another source, and, until the one-time upright rebuild is recorded, the
+ * orientation-tagged ones. Both throw on a missing root.
  */
 export async function filesToProcess({ force = false }: { force?: boolean } = {}): Promise<string[]> {
     return (await planSources({ force })).files;
@@ -689,8 +746,10 @@ export async function filesToProcess({ force = false }: { force?: boolean } = {}
 
 /**
  * The overwrite rule the startup batch and a live `add` use: regenerate all
- * seven outputs when forced or when needsRefresh() says so, and otherwise do
- * nothing. A missing one next to existing ones may come from a different
+ * seven outputs when forced, when needsRefresh() says so, or when the set was
+ * last built from another source, and otherwise do nothing. A source that
+ * sorts ahead of a set's owner takes it over even with an older modification
+ * time. A missing one next to existing ones may come from a different
  * version, so filling in only the gap could leave a mixed set. A source whose
  * set another source owns writes nothing.
  *
@@ -699,7 +758,7 @@ export async function filesToProcess({ force = false }: { force?: boolean } = {}
 export async function refreshImage(filename: string, { force = false }: { force?: boolean } = {}): Promise<string[]> {
     const paths = libraryPaths();
     if (await ownerOf(filename, paths) !== filename) return [];
-    if (!force && !needsRefresh(filename, paths)) return [];
+    if (!force && !needsRefresh(filename, paths) && !builtFromAnother(filename, paths)) return [];
     return writeVariants(filename, { overwrite: true, paths });
 }
 
