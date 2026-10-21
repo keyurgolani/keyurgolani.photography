@@ -29,9 +29,9 @@ const effectiveOpacity = (target: Locator) =>
         return opacity;
     });
 
-/** The name of whatever has focus: its aria-label, or for SiteNav's text links, their text. */
+/** The name of whatever has focus: its aria-label, or its rendered text, which skips the toggle's hidden other name. */
 const focusedLabel = (page: Page) =>
-    page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.textContent?.trim());
+    page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? (document.activeElement as HTMLElement | null)?.innerText.trim());
 
 /** The opacity of SiteNav's wrapper alone, apart from the chrome layer's. It reaches 1 once the intro settles. */
 const navOpacity = (page: Page) => primary(page).evaluate((el) => parseFloat(getComputedStyle(el.parentElement ?? el).opacity));

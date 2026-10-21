@@ -27,9 +27,9 @@ async function openGallery(page: Page, theme: 'dark' | 'light' = 'dark') {
     await expect(entries(page)).toHaveCount(COUNT);
 }
 
-/** The name of whatever has focus: its aria-label, or for SiteNav's text links, their text. */
+/** The name of whatever has focus: its aria-label, or its rendered text, which skips the toggle's hidden other name. */
 const focusedLabel = (page: Page) =>
-    page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.textContent?.trim());
+    page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? (document.activeElement as HTMLElement | null)?.innerText.trim());
 
 for (const viewport of [undefined, { width: 640, height: 400 }]) {
     test.describe(viewport ? 'at 640 by 400, which is 200% zoom' : 'at the project viewport', () => {

@@ -5,21 +5,19 @@ import { useTheme } from './ThemeContext';
 import styles from './ThemeToggle.module.css';
 
 /**
- * A plain 44 by 44 button in `SiteNav` that flips the theme. Both icons
- * render, and CSS on `html[data-theme]` shows the one for the current theme,
- * so the icon is right at first paint, before React reads the theme.
+ * A plain 44 by 44 button in `SiteNav` that flips the theme. It renders both
+ * icons and both names, and CSS on `html[data-theme]` hides the pair that
+ * doesn't fit, so the icon and the accessible name are right from first
+ * paint, before React runs.
  */
 export default function ThemeToggle() {
-  const { theme, toggleTheme } = useTheme();
+  const { toggleTheme } = useTheme();
   return (
-    <button
-      type="button"
-      onClick={toggleTheme}
-      aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
-      className={styles.toggle}
-    >
+    <button type="button" onClick={toggleTheme} className={styles.toggle}>
       <Sun size={20} strokeWidth={1.5} className={styles.sun} aria-hidden="true" />
       <Moon size={20} strokeWidth={1.5} className={styles.moon} aria-hidden="true" />
+      <span className={`${styles.name} ${styles.toLight}`}>Switch to light mode</span>
+      <span className={`${styles.name} ${styles.toDark}`}>Switch to dark mode</span>
     </button>
   );
 }
