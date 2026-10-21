@@ -429,7 +429,7 @@ body {
     filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000) !important;
 }
 
-/* scale, not transform, so Previous and Next keep YARL's translateY(-50%). A
+/* scale, which the arrows' translate below applies after, so they grow in place. A
    disabled button, such as Zoom out at the smallest zoom, takes neither. */
 @media (hover: hover) and (pointer: fine) {
     .yarl__button:not(:disabled):hover {
@@ -448,6 +448,21 @@ body {
 :root .yarl__navigation_prev,
 :root .yarl__navigation_next {
     margin: 0 16px !important;
+}
+
+/* YARL centers the arrows with transform: translateY(-50%), and the hover and press
+   scale above then scales that offset too, nudging them up or down. The translate
+   property applies after scale, so they stay centered on their spot. The two
+   declarations sit in rules with different selectors, since the minifier folds a
+   translate beside transform: none back into transform. */
+:root .yarl__navigation_prev,
+:root .yarl__navigation_next {
+    translate: 0 -50%;
+}
+
+.yarl__container > .yarl__navigation_prev,
+.yarl__container > .yarl__navigation_next {
+    transform: none;
 }
 
 /* Button icons */

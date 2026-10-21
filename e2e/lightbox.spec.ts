@@ -269,37 +269,55 @@ test('one tap on a toolbar button activates it and leaves it untransformed', asy
         .toBe('none none');
 });
 
-test("Previous and Next keep YARL's translateY(-50%) on hover, while pressed, and after a tap", async ({ page }, testInfo) => {
+test('Previous and Next stay centered on their spot on hover, while pressed, and after a tap', async ({ page }, testInfo) => {
     const touch = testInfo.project.name === 'mobile';
     await openGallery(page, 'dark');
     if (touch) await entries(page).first().tap();
     else await entries(page).first().click();
     await settle(page);
+    const arrows = [['Next', '.yarl__navigation_next'], ['Previous', '.yarl__navigation_prev']] as const;
+    const scale = (name: string) => control(page, name).evaluate((el) => getComputedStyle(el).scale);
+    const center = async (name: string) => {
+        const box = await control(page, name).boundingBox();
+        if (!box) throw new Error(`${name} has no box`);
+        return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    };
+    const resting = new Map<string, { x: number; y: number }>();
+    for (const [name] of arrows) resting.set(name, await center(name));
+    const expectCentered = async (name: string, state: string) => {
+        const [now, before] = [await center(name), resting.get(name)!];
+        expect(Math.abs(now.x - before.x), `${name}'s center moves sideways ${state}`).toBeLessThan(0.5);
+        expect(Math.abs(now.y - before.y), `${name}'s center moves up or down ${state}`).toBeLessThan(0.5);
+    };
+
+    for (const [name] of arrows) {
+        if (touch) {
+            await control(page, name).tap();
+            await expect.poll(() => scale(name)).toBe('none');
+            await expectCentered(name, 'after a tap');
+        } else {
+            // Hover styles only apply to fine pointers.
+            await control(page, name).hover();
+            await expect.poll(() => scale(name)).toBe('1.08');
+            await expectCentered(name, 'under hover');
+        }
+    }
+
     // Playwright's tap() presses and releases at once, and whether a held synthetic touch shows
-    // :active depends on the platform's gesture timing, so DevTools forces the pressed state.
+    // :active depends on the platform's gesture timing, so DevTools forces the pressed state. The
+    // taps come first: in headless Chromium, a tap just after DevTools releases a forced press can
+    // leave the lightbox laid out wrong.
     const devtools = await page.context().newCDPSession(page);
     await devtools.send('DOM.enable');
     await devtools.send('CSS.enable');
-    for (const [name, selector] of [['Next', '.yarl__navigation_next'], ['Previous', '.yarl__navigation_prev']] as const) {
-        const button = control(page, name);
-        const transform = () => button.evaluate((el) => getComputedStyle(el).transform);
-        const resting = await transform();
-        expect(resting, `${name} rests at translateY(-50%)`).toMatch(/^matrix\(1, 0, 0, 1, 0, -\d+(\.\d+)?\)$/);
-        if (!touch) {
-            // Hover styles only apply to fine pointers.
-            await button.hover();
-            expect(await transform(), `${name} keeps translateY(-50%) under hover`).toBe(resting);
-        }
+    for (const [name, selector] of arrows) {
         const { root } = await devtools.send('DOM.getDocument', { depth: 0 });
         const { nodeId } = await devtools.send('DOM.querySelector', { nodeId: root.nodeId, selector });
         await devtools.send('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: ['active'] });
-        expect(await button.evaluate((el) => el.matches(':active')), `${name} should be :active`).toBe(true);
-        expect(await transform(), `${name} keeps translateY(-50%) while pressed`).toBe(resting);
+        expect(await control(page, name).evaluate((el) => el.matches(':active')), `${name} should be :active`).toBe(true);
+        await expect.poll(() => scale(name)).toBe('0.95');
+        await expectCentered(name, 'while pressed');
         await devtools.send('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: [] });
-        if (touch) {
-            await button.tap();
-            await expect.poll(() => button.evaluate((el) => `${getComputedStyle(el).transform} ${getComputedStyle(el).scale}`)).toBe(`${resting} none`);
-        }
     }
 });
 
