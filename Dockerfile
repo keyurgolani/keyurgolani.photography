@@ -54,10 +54,9 @@ RUN chown nextjs:nodejs .next
 
 # Automatically leverage output traces to reduce image size
 # https://nextjs.org/docs/advanced-features/output-file-tracing
+# The standalone output carries package.json too.
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-
-COPY --from=builder /app/package.json ./package.json
 
 # The image watcher, its healthcheck, and the photo CLIs, run with plain node
 COPY --from=builder /app/dist/scripts ./dist/scripts
