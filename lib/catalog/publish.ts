@@ -664,7 +664,8 @@ export async function publish(options: PublishOptions): Promise<PublishResult> {
         // After step 11 the new revision is live even though the publish didn't finish.
         const pointer = await readActivePointer(root).catch(() => null);
         const live = pointer !== null && pointer.revisionId === result.candidateId ? await liveNote(root, pointer) : '';
-        return finish('STORAGE_ERROR', `${error instanceof Error ? error.message : String(error)}${live}`);
+        const message = error instanceof Error ? error.message : String(error);
+        return finish('STORAGE_ERROR', live ? `${message}${/[.!?]$/.test(message) ? '' : '.'}${live}` : message);
     }
 }
 
