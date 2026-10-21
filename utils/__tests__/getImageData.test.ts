@@ -136,6 +136,24 @@ describe('getGalleryImages', () => {
         expect(errors).toHaveBeenCalledWith(expect.stringMatching(/^\[getGalleryImages\] Skipping portrait\.png: /));
     });
 
+    it('sorts by an EXIF date only when its text is a real date, so a rolled-over one never moves a photo', async () => {
+        const dated = (original: string, modified: string) => sharp({ create: { width: 64, height: 48, channels: 3, background: '#4a6' } })
+            .withExif({ IFD0: { DateTime: modified }, IFD2: { DateTimeOriginal: original } })
+            .jpeg()
+            .toBuffer();
+        // exif-reader reads 2024:00:00 as 2023-11-30, which would sort rolled.jpg ahead of june.jpg.
+        fs.writeFileSync(lib.file('rolled.jpg'), await dated('2024:00:00 00:00:00', '2020:01:01 00:00:00'));
+        fs.writeFileSync(lib.file('june.jpg'), await dated('2023:06:01 08:00:00', '2023:06:02 08:00:00'));
+        for (const name of ['rolled.jpg', 'june.jpg']) await refreshImage(name, { force: true });
+        const images = await getGalleryImages();
+        const base = (image: ImageItem) => image.optimized.replace('/assets/photos/optimized/', '').replace(/\.webp$/, '');
+
+        expect(images.map(base).filter((name) => name === 'rolled' || name === 'june')).toEqual(['june', 'rolled']);
+        // The rolled-over original gives way to the last-changed time
+        expect(images.find((image) => base(image) === 'rolled')?.date).toBe(Date.parse('2020-01-01T00:00:00Z'));
+        expect(images.find((image) => base(image) === 'june')?.date).toBe(Date.parse('2023-06-01T08:00:00Z'));
+    });
+
     it('lists sources that share derivatives once, by the first path, and warns naming both', async () => {
         // landscape.png would get landscape.jpg's derivatives, since both have the base name landscape.
         fs.copyFileSync(lib.file('portrait.png'), lib.file('landscape.png'));

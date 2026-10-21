@@ -131,19 +131,33 @@ function wallClock(value: unknown): string | undefined {
 /** DateTimeOriginal's tag number in the Exif IFD. */
 const DATE_TIME_ORIGINAL = 0x9003;
 
-/**
- * The text of an ASCII tag in the Exif IFD, read from the block itself, for
- * the date tags exif-reader hands over only as a Date. Undefined when the tag
- * is missing, not ASCII, or runs past the block.
- */
-function exifIfdText(exif: Buffer, parsed: ParsedExif, tag: number): string | undefined {
-    const ifd = parsed.Image?.ExifTag;
-    if (typeof ifd !== 'number' || !Number.isInteger(ifd) || ifd <= 0) return undefined;
-    // The TIFF header starts the block or follows "Exif\0\0", as exif-reader finds it.
+/** DateTime's tag number in IFD0, which exif-reader calls ModifyDate. */
+const DATE_TIME = 0x0132;
+
+/** Where the TIFF header starts, at the block's start or after "Exif\0\0" as exif-reader finds it, and readers in its byte order. */
+function tiffHeader(exif: Buffer) {
     const base = ['MM\0', 'II*'].includes(exif.toString('latin1', 0, 3)) ? 0 : 6;
     const bigEndian = exif[base] === 0x4d;
-    const u16 = (at: number) => (bigEndian ? exif.readUInt16BE(at) : exif.readUInt16LE(at));
-    const u32 = (at: number) => (bigEndian ? exif.readUInt32BE(at) : exif.readUInt32LE(at));
+    return {
+        base,
+        u16: (at: number) => (bigEndian ? exif.readUInt16BE(at) : exif.readUInt16LE(at)),
+        u32: (at: number) => (bigEndian ? exif.readUInt32BE(at) : exif.readUInt32LE(at)),
+    };
+}
+
+/** The text of an ASCII tag in the Exif IFD, for the date tags exif-reader hands over only as a Date. */
+function exifIfdText(exif: Buffer, parsed: ParsedExif, tag: number): string | undefined {
+    return ifdText(exif, parsed.Image?.ExifTag, tag);
+}
+
+/**
+ * The text of an ASCII tag in the IFD at offset `ifd` from the TIFF header,
+ * read from the block itself. Undefined when the tag is missing, not ASCII,
+ * or runs past the block.
+ */
+function ifdText(exif: Buffer, ifd: unknown, tag: number): string | undefined {
+    if (typeof ifd !== 'number' || !Number.isInteger(ifd) || ifd <= 0) return undefined;
+    const { base, u16, u32 } = tiffHeader(exif);
     const start = base + ifd;
     if (exif.length < start + 2) return undefined;
     const count = u16(start);
@@ -243,6 +257,28 @@ export function extractMetadataTiers(exif: Uint8Array | undefined | null): Metad
     }
     if (parsed.Photo) parsed.Photo = { ...parsed.Photo, DateTimeOriginal: exifIfdText(block, parsed, DATE_TIME_ORIGINAL) };
     return tiersFromParsedExif(parsed);
+}
+
+/**
+ * When the photo was taken and when it was last changed, from DateTimeOriginal
+ * and IFD0's DateTime, as `YYYY-MM-DDTHH:MM:SS`, each only when its tag's text
+ * is a real date and time, as the capture date is. The legacy Gallery sorts by
+ * them, so a date exif-reader rolled over would sort a photo among the wrong ones.
+ */
+export function exifWallClocks(exif: Uint8Array | undefined | null): { original?: string; modified?: string } {
+    if (!exif || exif.length === 0) return {};
+    const block = Buffer.from(exif);
+    let parsed: ParsedExif;
+    try {
+        parsed = exifReader(block) as ParsedExif;
+    } catch {
+        return {};
+    }
+    const { base, u32 } = tiffHeader(block);
+    const original = wallClock(exifIfdText(block, parsed, DATE_TIME_ORIGINAL));
+    // IFD0's offset is the header's second field.
+    const modified = block.length >= base + 8 ? wallClock(ifdText(block, u32(base + 4), DATE_TIME)) : undefined;
+    return { ...(original ? { original } : {}), ...(modified ? { modified } : {}) };
 }
 
 /**
