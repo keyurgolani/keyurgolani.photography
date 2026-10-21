@@ -97,6 +97,24 @@ describe('getGalleryImages', () => {
         expect(item('landscape-rot6')).toMatchObject({ width: 640, height: 960, optimizedWidth: 640, optimizedHeight: 960 });
     }, 30_000);
 
+    it('reads a source replaced under the same name afresh, without a restart', async () => {
+        // libvips caches a WebP it loaded by file name, so square.webp is the one that would read stale. The
+        // replacement and its set are built first, so no Sharp work between the two listings evicts that.
+        fs.writeFileSync(lib.file('spare.webp'), await sharp({ create: { width: 500, height: 700, channels: 3, background: '#4a6' } })
+            .withExif({ IFD0: { Model: 'Fixture Replacement' } })
+            .webp()
+            .toBuffer());
+        await refreshImage('spare.webp', { force: true });
+        const square = async () => (await getGalleryImages()).find((image) => image.optimized === '/assets/photos/optimized/square.webp');
+        expect(await square()).toMatchObject({ width: 720, height: 720, caption: '' });
+
+        // spare.webp saved over square.webp by a rename, as an editor saves, with the set the watcher builds for it
+        fs.renameSync(lib.file('spare.webp'), lib.file('square.webp'));
+        for (const relativePath of derivativePaths('spare')) fs.renameSync(lib.file(relativePath), lib.file(relativePath.replace('spare', 'square')));
+
+        expect(await square()).toMatchObject({ width: 500, height: 700, optimizedWidth: 500, optimizedHeight: 700, caption: 'Fixture Replacement' });
+    });
+
     it('reads the optimized size afresh once the watcher replaces the file under the same name', async () => {
         const square = async () => (await getGalleryImages()).find((image) => image.optimized === '/assets/photos/optimized/square.webp');
         expect(await square()).toMatchObject({ optimizedWidth: 720, optimizedHeight: 720 });

@@ -7,6 +7,7 @@ import type { FSWatcherEventMap } from 'chokidar';
 import sharp, { type Sharp } from 'sharp';
 import { dominantChannel, fixtureFiles, type Channel } from '../../test/fixtures/makeLibrary';
 import { fakeCaseInsensitiveDisk, fakeCaseSensitiveDisk } from '../../test/helpers/caseDisk';
+import { REPO_ROOT } from '../../test/helpers/runTsx';
 import { createTempLibrary, derivativePaths, type TempLibrary } from '../../test/helpers/tempLibrary';
 import { baseNameOf, ownerOf, processImage } from '../imageOptimizer';
 import {
@@ -546,6 +547,28 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
             await handlers.onUnlink(lib.file(name));
         }
         expect(logs).toEqual([]);
+    });
+});
+
+describe("the web process's libvips setting", () => {
+    it('leaves the cache on in the watcher, which loads nothing that turns it off', () => {
+        // The modules this file loads are the ones the watcher runs.
+        expect(sharp.cache().items.max).toBeGreaterThan(0);
+
+        const loaded = new Set<string>();
+        const visit = (file: string) => {
+            if (loaded.has(file)) return;
+            loaded.add(file);
+            for (const [, specifier] of fs.readFileSync(file, 'utf8').matchAll(/from '(\.[^']+)'/g)) {
+                const base = path.resolve(path.dirname(file), specifier);
+                const resolved = [base, `${base}.ts`, `${base}.tsx`].find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile());
+                if (resolved) visit(resolved);
+            }
+        };
+        visit(path.join(REPO_ROOT, 'scripts/imageWatcher.ts'));
+        const relative = [...loaded].map((file) => path.relative(REPO_ROOT, file));
+        expect(relative).toContain('utils/imageOptimizer.ts');
+        expect(relative).not.toContain('utils/getImageData.ts');
     });
 });
 

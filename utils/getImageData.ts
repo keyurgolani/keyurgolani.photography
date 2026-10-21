@@ -19,6 +19,12 @@ import {
     type LibraryPaths,
 } from './imageOptimizer';
 
+// Only the web process loads this module, and it reads library files by name for as long as it runs, while the
+// watcher replaces them under the same names. libvips caches what it loads by name, and a WebP it loaded keeps
+// reading as the old file, so a replaced photo kept its old size and caption until a restart. The web process
+// keeps no libvips cache. The watcher doesn't load this module, so its encodes keep theirs.
+sharp.cache(false);
+
 export interface ImageItem {
     id: number;
     src: string;
