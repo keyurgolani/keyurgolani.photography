@@ -2,13 +2,29 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { Images, Home, UserRound } from 'lucide-react';
+import { Images, Home, UserRound, type LucideIcon } from 'lucide-react';
 import { motion } from 'framer-motion';
+import { DISMISSED_LABEL_STYLE, useDismissibleLabel } from './useDismissibleLabel';
 
 interface BottomBarProps {
   children?: React.ReactNode;
   visible?: boolean;
 }
+
+/**
+ * A Primary link with a label that hover or keyboard focus shows. The label
+ * takes the pointer only while shown, so a hidden one never catches a tap
+ * meant for the page under it, and Escape hides it.
+ */
+const NavLink: React.FC<{ href: string; label: string; icon: LucideIcon }> = ({ href, label, icon: Icon }) => {
+  const { dismissed, handlers } = useDismissibleLabel();
+  return (
+    <Link href={href} aria-label={label} className="group relative p-3 rounded-full hover:bg-black/5 dark:hover:bg-white/10 transition-colors duration-300" {...handlers}>
+      <Icon size={24} strokeWidth={1.5} className="text-black/70 dark:text-white/70 group-hover:text-black dark:group-hover:text-white transition-colors" />
+      <span className="absolute -top-12 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-white dark:bg-black/80 text-black dark:text-white text-xs font-medium rounded-full opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-visible:opacity-100 group-focus-visible:pointer-events-auto transition-opacity whitespace-nowrap border border-black/10 dark:border-white/10 backdrop-blur-md shadow-lg" style={dismissed ? DISMISSED_LABEL_STYLE : undefined}>{label}</span>
+    </Link>
+  );
+};
 
 const BottomBar: React.FC<BottomBarProps> = ({ children, visible = true }) => {
   return (
@@ -33,29 +49,20 @@ const BottomBar: React.FC<BottomBarProps> = ({ children, visible = true }) => {
           {children}
         </div>
 
-        {/* Navigation Bar - Allow interactions. Each label takes the pointer only while shown, so a hidden one never catches a tap meant for the page under it. */}
+        {/* Navigation Bar - Allow interactions */}
         <div className="pointer-events-auto">
           <nav aria-label="Primary">
              <div className="flex items-center gap-2 p-2 bg-white/80 dark:bg-black/60 backdrop-blur-xl border border-black/10 dark:border-white/20 rounded-full shadow-[0_10px_40px_rgba(0,0,0,0.1)] dark:shadow-[0_10px_40px_rgba(0,0,0,0.6)] ring-1 ring-black/5 dark:ring-white/10 transition-transform hover:scale-[1.02] duration-300">
                 
-                <Link href="/gallery" aria-label="Gallery" className="group relative p-3 rounded-full hover:bg-black/5 dark:hover:bg-white/10 transition-colors duration-300">
-                    <Images size={24} strokeWidth={1.5} className="text-black/70 dark:text-white/70 group-hover:text-black dark:group-hover:text-white transition-colors" />
-                    <span className="absolute -top-12 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-white dark:bg-black/80 text-black dark:text-white text-xs font-medium rounded-full opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-visible:opacity-100 group-focus-visible:pointer-events-auto transition-opacity whitespace-nowrap border border-black/10 dark:border-white/10 backdrop-blur-md shadow-lg">Gallery</span>
-                </Link>
+                <NavLink href="/gallery" label="Gallery" icon={Images} />
 
                 <div className="w-px h-6 bg-black/10 dark:bg-white/10" />
 
-                <Link href="/" aria-label="Home" className="group relative p-3 rounded-full hover:bg-black/5 dark:hover:bg-white/10 transition-colors duration-300">
-                    <Home size={24} strokeWidth={1.5} className="text-black/70 dark:text-white/70 group-hover:text-black dark:group-hover:text-white transition-colors" />
-                    <span className="absolute -top-12 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-white dark:bg-black/80 text-black dark:text-white text-xs font-medium rounded-full opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-visible:opacity-100 group-focus-visible:pointer-events-auto transition-opacity whitespace-nowrap border border-black/10 dark:border-white/10 backdrop-blur-md shadow-lg">Home</span>
-                </Link>
+                <NavLink href="/" label="Home" icon={Home} />
 
                 <div className="w-px h-6 bg-black/10 dark:bg-white/10" />
 
-                <Link href="/about" aria-label="About" className="group relative p-3 rounded-full hover:bg-black/5 dark:hover:bg-white/10 transition-colors duration-300">
-                    <UserRound size={24} strokeWidth={1.5} className="text-black/70 dark:text-white/70 group-hover:text-black dark:group-hover:text-white transition-colors" />
-                    <span className="absolute -top-12 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-white dark:bg-black/80 text-black dark:text-white text-xs font-medium rounded-full opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-visible:opacity-100 group-focus-visible:pointer-events-auto transition-opacity whitespace-nowrap border border-black/10 dark:border-white/10 backdrop-blur-md shadow-lg">About</span>
-                </Link>
+                <NavLink href="/about" label="About" icon={UserRound} />
             </div>
           </nav>
         </div>

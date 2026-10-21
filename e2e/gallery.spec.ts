@@ -150,6 +150,40 @@ test('a hidden label lets clicks and taps through to the page, and a shown one s
     }
 });
 
+test('Escape hides a label shown on focus until focus moves', async ({ page }) => {
+    await openGallery(page);
+    const [gallery, home] = labels(page);
+    // Nothing has had a pointer yet, so this focus matches :focus-visible like a Tab would.
+    await gallery.host.focus();
+    await expect(gallery.label).toHaveCSS('opacity', '1');
+    await page.keyboard.press('Escape');
+    await expect(gallery.label).toHaveCSS('opacity', '0');
+    await expect(gallery.host).toBeFocused();
+
+    await page.keyboard.press('Tab');
+    await expect(home.host).toBeFocused();
+    await expect(home.label).toHaveCSS('opacity', '1');
+    await page.keyboard.press('Shift+Tab');
+    await expect(gallery.label).toHaveCSS('opacity', '1');
+});
+
+test('Escape hides a label shown on hover until the pointer leaves', async ({ page, isMobile }) => {
+    test.skip(isMobile, 'Hover styles only apply to fine pointers.');
+    await openGallery(page);
+    for (const { name, host, label } of labels(page)) {
+        await host.hover();
+        await expect(label).toHaveCSS('opacity', '1');
+        await page.keyboard.press('Escape');
+        await expect(label, `${name}'s label hides on Escape`).toHaveCSS('opacity', '0');
+        expect(await hitsLabel(label), `${name}'s dismissed label takes no pointer`).toBe(false);
+        // Off the control and back, in the page's side padding.
+        await page.mouse.move(5, 300);
+        await host.hover();
+        await expect(label, `${name}'s label shows again on the next hover`).toHaveCSS('opacity', '1');
+        await page.mouse.move(5, 300);
+    }
+});
+
 test('the photo grid fills in DOM order, without dense packing', async ({ page }) => {
     await openGallery(page);
     await expect(page.locator('main .grid')).toHaveCSS('grid-auto-flow', 'row');
