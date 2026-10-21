@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { withLock, type LockRecord } from '../../storage/lock';
-import { activateRevision, publish, PUBLISH_EXIT_CODES, rebaseWorkingLayer, type ActivateOptions, type PublishOptions, type PublishResult } from '../publish';
+import { withLock, type LockContext, type LockRecord } from '../../storage/lock';
+import { activateRevision, publish, PUBLISH_EXIT_CODES, rebaseWorkingLayer, recover, type ActivateOptions, type PublishOptions, type PublishResult } from '../publish';
 import { CATALOG_LOCK, listActivations, readRevisionFile, revisionFilePath } from '../repository';
 import { createTestCatalog, type TestCatalog, type TestCatalogOptions } from '../testing';
 import type { AuthoredPhoto } from '../types';
@@ -415,6 +415,26 @@ describe('recovery', () => {
         expect(repair).toMatchObject({ kind: 'publish', status: 'committed', actor: 'recover', revisionId: second.revisionId, revisionNumber: 2, reason: expect.stringMatching(/^repair: active\.json named the/) });
         expect(await readActivePointer(root)).toMatchObject({ revisionId: second.revisionId, activationId: repaired });
         expect(events).toContainEqual(expect.objectContaining({ event: 'catalog.recover.repaired', activationId: repaired, revisionId: second.revisionId, replaced: named.activationId }));
+    });
+
+    it('leaves active.json alone when the catalog lock is lost before a repair moves it, and repairs on the next publish', async () => {
+        const { catalog, root, run, editPhoto } = await launched({ seed: 82 });
+        await editPhoto(catalog.photos[0].id, (photo) => {
+            photo.caption = 'A fixture caption.';
+        });
+        const second = await run();
+        fs.rmSync(path.join(catalogPaths(root).activationsDir, `000002-${second.activationId}.json`));
+        const pointer = fs.readFileSync(catalogPaths(root).active);
+
+        const lost: LockContext = { name: CATALOG_LOCK, root, signal: new AbortController().signal, takeover: null, isHeld: async () => false };
+        await expect(recover({ dataRoot: root, lock: lost, logger: { log: () => undefined } })).rejects.toThrow(/took over the catalog lock, so nothing was activated/);
+        expect(fs.readFileSync(catalogPaths(root).active)).toEqual(pointer);
+        const stale = (await listActivations(root)).filter((activation) => activation.status === 'pending');
+        expect(stale).toHaveLength(1);
+
+        const result = await run();
+        expect(result).toMatchObject({ outcome: 'NO_CHANGES', revisionId: second.revisionId, revisionNumber: 2, recovery: { abandoned: [stale[0].activationId] } });
+        expect(result.recovery?.repaired).toEqual(expect.stringMatching(/^act_/));
     });
 });
 

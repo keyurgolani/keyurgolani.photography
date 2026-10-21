@@ -281,7 +281,9 @@ export interface RecoverOptions {
  * one. If `active.json` names an abandoned or missing activation, record a
  * repair activation for its revision through commitActivation(). Then rebase
  * the working layer onto the active revision if any record is on another
- * base. Throws LockTimeoutError when that rebase can't get the authored lock.
+ * base. Throws LockTimeoutError when that rebase can't get the authored lock,
+ * and an error saying so when the catalog lock is lost before the repair
+ * moves the pointer, which publish() reports as LOCK_LOST.
  */
 export async function recover(options: RecoverOptions): Promise<RecoveryReport> {
     const root = path.resolve(options.dataRoot);
@@ -320,7 +322,7 @@ export async function recover(options: RecoverOptions): Promise<RecoveryReport> 
                 lockTakeover: lock.takeover,
                 clock,
             });
-            if (!result.ok) throw new Error(result.message);
+            if (!result.ok) throw new Stop(result.outcome, result.message);
             report.repaired = result.activation.activationId;
             logEvent(logger, 'catalog.recover.repaired', { activationId: result.activation.activationId, revisionId: pointer.revisionId, replaced: pointer.activationId });
         }
