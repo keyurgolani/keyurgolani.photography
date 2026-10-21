@@ -194,25 +194,37 @@ test('one tap on a toolbar button activates it and leaves it untransformed', asy
         .toBe('none none');
 });
 
-test("a tap on Previous or Next keeps YARL's translateY(-50%) through the press", async ({ page }, testInfo) => {
-    test.skip(testInfo.project.name !== 'mobile', 'Taps run on the touch project.');
+test("Previous and Next keep YARL's translateY(-50%) on hover, while pressed, and after a tap", async ({ page }, testInfo) => {
+    const touch = testInfo.project.name === 'mobile';
     await openGallery(page, 'dark');
-    await entries(page).first().tap();
+    if (touch) await entries(page).first().tap();
+    else await entries(page).first().click();
     await settle(page);
-    // Playwright's tap() presses and releases at once, so hold a 1 s touch tap through CDP to see :active.
-    const touch = await page.context().newCDPSession(page);
-    for (const name of ['Next', 'Previous']) {
+    // Playwright's tap() presses and releases at once, and whether a held synthetic touch shows
+    // :active depends on the platform's gesture timing, so DevTools forces the pressed state.
+    const devtools = await page.context().newCDPSession(page);
+    await devtools.send('DOM.enable');
+    await devtools.send('CSS.enable');
+    for (const [name, selector] of [['Next', '.yarl__navigation_next'], ['Previous', '.yarl__navigation_prev']] as const) {
         const button = control(page, name);
         const transform = () => button.evaluate((el) => getComputedStyle(el).transform);
         const resting = await transform();
         expect(resting, `${name} rests at translateY(-50%)`).toMatch(/^matrix\(1, 0, 0, 1, 0, -\d+(\.\d+)?\)$/);
-        const box = await button.boundingBox();
-        if (!box) throw new Error(`${name} has no box`);
-        const press = touch.send('Input.synthesizeTapGesture', { x: box.x + box.width / 2, y: box.y + box.height / 2, duration: 1000, tapCount: 1, gestureSourceType: 'touch' });
-        await expect.poll(() => button.evaluate((el) => el.matches(':active')), { message: `${name} should be :active while pressed` }).toBe(true);
+        if (!touch) {
+            // Hover styles only apply to fine pointers.
+            await button.hover();
+            expect(await transform(), `${name} keeps translateY(-50%) under hover`).toBe(resting);
+        }
+        const { root } = await devtools.send('DOM.getDocument', { depth: 0 });
+        const { nodeId } = await devtools.send('DOM.querySelector', { nodeId: root.nodeId, selector });
+        await devtools.send('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: ['active'] });
+        expect(await button.evaluate((el) => el.matches(':active')), `${name} should be :active`).toBe(true);
         expect(await transform(), `${name} keeps translateY(-50%) while pressed`).toBe(resting);
-        await press;
-        await expect.poll(() => button.evaluate((el) => `${getComputedStyle(el).transform} ${getComputedStyle(el).scale}`)).toBe(`${resting} none`);
+        await devtools.send('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: [] });
+        if (touch) {
+            await button.tap();
+            await expect.poll(() => button.evaluate((el) => `${getComputedStyle(el).transform} ${getComputedStyle(el).scale}`)).toBe(`${resting} none`);
+        }
     }
 });
 
