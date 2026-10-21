@@ -81,6 +81,8 @@ Open [http://localhost:3000](http://localhost:3000) to view the site. `npm run d
 docker compose up
 ```
 
+It listens on `127.0.0.1:3000` only. To open it from another machine, forward the port over SSH (`ssh -L 3000:127.0.0.1:3000 <host>`) rather than publishing it wider.
+
 After a dependency change, rebuild with `docker compose up --build -V`. Without `-V`, the anonymous `node_modules` volume keeps the old install.
 
 ### Production with Docker

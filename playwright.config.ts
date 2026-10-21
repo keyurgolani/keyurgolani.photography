@@ -48,7 +48,8 @@ export default defineConfig({
   ],
   webServer: {
     // next start warns that output: 'standalone' expects server.js, but it serves.
-    command: `npm run build && npm run start -- --port ${port}`,
+    // Loopback only, like baseURL: a test server has no reason to listen on the network.
+    command: `npm run build && npm run start -- --hostname 127.0.0.1 --port ${port}`,
     url: origin,
     timeout: 240_000,
     reuseExistingServer: !process.env.CI,
