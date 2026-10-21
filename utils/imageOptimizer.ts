@@ -702,7 +702,7 @@ export interface OrphanCleanupPlan {
     entries: OrphanEntry[];
     /** Temp files kept because a running job may still own them */
     youngTempFiles: string[];
-    /** Folders cleanup didn't enter because they are symlinks or not folders */
+    /** Folders cleanup didn't enter because they are symlinks, not folders, or can't be listed */
     skippedFolders: string[];
     /** Sources lstat can see but stat can't read. Their sets are kept. */
     unreadableSources: UnreadableSource[];
@@ -947,7 +947,15 @@ export function planOrphanCleanup(
         const guard = guardState(guards);
         if (guard.state === 'unsafe') skippedFolders.push(relativeTo(paths.root, guard.at));
         if (guard.state !== 'ok') continue;
-        scanned.push(...listFiles(dir).map((name) => path.join(dir, name)));
+        let names: string[];
+        try {
+            names = listFiles(dir);
+        } catch {
+            // Its files are kept, the same as a folder that is a symlink.
+            skippedFolders.push(relativeTo(paths.root, dir));
+            continue;
+        }
+        scanned.push(...names.map((name) => path.join(dir, name)));
     }
 
     const only = requested === null ? null : resolveOnly(requested, scanned, paths);
