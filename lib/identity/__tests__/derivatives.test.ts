@@ -9,7 +9,7 @@ import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempL
 import { resolveAsset } from '../../media/manifest';
 import { assetDir, mediaFilePath } from '../../media/path';
 import { IntegrityError } from '../../storage/publish';
-import { buildDerivativeSet, stagingRoot, type BuildOptions, type WriterFaults } from '../derivatives';
+import { buildDerivativeSet, removeAbandonedStaging, stagingLockName, stagingRoot, type BuildOptions, type WriterFaults } from '../derivatives';
 import { runReconcilePass, type PassOptions } from '../pass';
 import { currentProfileId } from '../profile';
 import { readRegistry, writeRegistry } from '../registry';
@@ -87,6 +87,12 @@ function stagingEntries(data: TempDataRoot): string[] {
     return fs.existsSync(dir) ? fs.readdirSync(dir) : [];
 }
 
+/** The lock files builds hold for their staging folders. */
+function buildLocks(data: TempDataRoot): string[] {
+    const dir = data.file('locks');
+    return fs.existsSync(dir) ? fs.readdirSync(dir).filter((name) => name.startsWith(stagingLockName(''))).sort() : [];
+}
+
 function snapshot(dir: string): Record<string, { bytes: string; mtimeMs: number }> {
     return Object.fromEntries(fs.readdirSync(dir).sort().map((name) => {
         const file = path.join(dir, name);
@@ -106,10 +112,13 @@ describe('buildDerivativeSet', () => {
                 // The manifest goes last: none exists while the variants are written.
                 const [staging] = stagingEntries(s.data);
                 expect(fs.existsSync(path.join(stagingRoot(s.data.root), staging, 'manifest.json'))).toBe(false);
+                // The build holds its staging folder's lock for as long as the folder exists.
+                expect(buildLocks(s.data)).toEqual([`${stagingLockName(staging)}.lock`]);
             },
         };
         expect(await s.build(job, { faults })).toEqual({ status: 'ready', reused: false });
         expect(order).toEqual([...VARIANT_NAMES, 'manifest']);
+        expect(buildLocks(s.data)).toEqual([]);
 
         const resolved = await resolveAsset(job);
         expect(resolved.state).toBe('ready');
@@ -175,11 +184,57 @@ describe('buildDerivativeSet', () => {
             expect(outcome).toMatchObject({ status: 'failed', error: expect.stringMatching(/injected fault|ENOSPC/) });
             expect(fs.existsSync(assetDir(job))).toBe(false);
             expect(stagingEntries(s.data)).toEqual([]);
+            expect(buildLocks(s.data)).toEqual([]);
             const after = await readRegistry(s.data.root);
             expect(profileOf(after, job)).toEqual({ state: 'failed', attempts: 1, error: expect.stringMatching(/injected fault|ENOSPC/) });
             expect(withoutProfile(after, job)).toEqual(withoutProfile(before, job));
         }, 60_000);
     });
+
+    it("keeps its staging folder when a worker starting meanwhile clears out killed builds' folders", async () => {
+        const s = await setup();
+        const job = await s.job('landscape.jpg');
+        let removed: string[] | null = null;
+        const outcome = await s.build(job, {
+            idGen: () => 'a-live-build',
+            faults: {
+                async afterVariant() {
+                    removed ??= await removeAbandonedStaging(s.data.root, { logger: { log: () => undefined, warn: () => undefined, error: () => undefined } });
+                },
+            },
+        });
+        expect(removed).toEqual([]);
+        expect(outcome).toEqual({ status: 'ready', reused: false });
+        expect((await resolveAsset(job)).state).toBe('ready');
+        expect(stagingEntries(s.data)).toEqual([]);
+        expect(buildLocks(s.data)).toEqual([]);
+    }, 60_000);
+
+    it('publishes nothing once another process has taken its staging lock over', async () => {
+        const s = await setup();
+        const job = await s.job('landscape.jpg');
+        const lockFile = s.data.file('locks', `${stagingLockName('stalled')}.lock`);
+        let taken = false;
+        const outcome = await s.build(job, {
+            idGen: () => 'stalled',
+            lock: { leaseMs: 200 },
+            faults: {
+                async afterVariant() {
+                    if (taken) return;
+                    taken = true;
+                    // As if this build stalled past its lease and a starting worker took the lock.
+                    const at = new Date().toISOString();
+                    fs.writeFileSync(`${lockFile}.new`, JSON.stringify({ owner: 'a starting worker', hostname: 'elsewhere', pid: 1, acquiredAt: at, heartbeatAt: at, leaseMs: 60_000 }));
+                    fs.renameSync(`${lockFile}.new`, lockFile);
+                    // Long enough for a renewal, every 50 ms, to see it.
+                    await new Promise((resolve) => setTimeout(resolve, 300));
+                },
+            },
+        });
+        expect(outcome).toMatchObject({ status: 'failed', error: expect.stringContaining('taken over by a starting worker') });
+        expect(fs.existsSync(assetDir(job))).toBe(false);
+        expect(stagingEntries(s.data)).toEqual([]);
+    }, 60_000);
 
     describe('checks every encoded file before it is written', () => {
         const replacements: [string, () => Promise<Buffer>, RegExp][] = [
