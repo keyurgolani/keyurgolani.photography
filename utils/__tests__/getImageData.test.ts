@@ -1,6 +1,7 @@
 // @vitest-environment node
 import fs from 'node:fs';
 import path from 'node:path';
+import sharp from 'sharp';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GET } from '../../app/api/photos/route';
 import { createTempLibrary, derivativePaths, type TempLibrary } from '../../test/helpers/tempLibrary';
@@ -70,6 +71,17 @@ describe('getGalleryImages', () => {
             height: 640,
         });
         expect(encodeLqip).not.toHaveBeenCalled();
+    });
+
+    it('reports an orientation-tagged photo at its upright size, as its derivatives are, with an upright placeholder', async () => {
+        const rotated = () => getGalleryImages().then((images) => images.find((image) => image.optimized.endsWith('/landscape-rot6.webp')));
+        expect(await rotated()).toMatchObject({ width: 640, height: 960 });
+
+        // With its LQIP file empty, the listing makes a placeholder from the source.
+        fs.writeFileSync(lib.file('lqip/landscape-rot6.txt'), '');
+        const placeholder = (await rotated())?.lqip.replace(/^data:image\/webp;base64,/, '') ?? '';
+        const { width, height } = await sharp(Buffer.from(placeholder, 'base64')).metadata();
+        expect(height).toBeGreaterThan(width);
     });
 
     it('logs an undecodable source, leaves it out, and still returns the others', async () => {

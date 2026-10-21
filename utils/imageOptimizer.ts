@@ -94,16 +94,26 @@ interface Variant {
     encode(input: Buffer): Promise<Buffer | string>;
 }
 
+/**
+ * autoOrient() is rotate() without an angle. It turns the pixels upright by
+ * the EXIF Orientation, since the outputs carry no EXIF for a browser to
+ * apply. Without it, a photo stored sideways shows sideways. `width` is the
+ * upright width, and both upright sides stay within MAX_SIDE.
+ */
 function resized(input: Buffer, width: number) {
-    return sharp(input).resize(Math.min(width, MAX_SIDE), MAX_SIDE, {
+    return sharp(input).autoOrient().resize(Math.min(width, MAX_SIDE), MAX_SIDE, {
         fit: 'inside',
         withoutEnlargement: true,
     });
 }
 
-/** The Low Quality Image Placeholder, a tiny WebP as a data URL. Takes the image bytes or a file path. */
+/**
+ * The Low Quality Image Placeholder, a tiny WebP as a data URL, upright like
+ * the other outputs. Takes the image bytes or a file path.
+ */
 export async function encodeLqip(input: Buffer | string): Promise<string> {
     const lqipBuffer = await sharp(input)
+        .autoOrient()
         .resize(LQIP_SIZE, LQIP_SIZE, { fit: 'inside' })
         .webp({ quality: 20 })
         .toBuffer();

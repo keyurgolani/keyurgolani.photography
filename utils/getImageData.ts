@@ -78,7 +78,9 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
         const filePath = path.join(photosDir, file);
         // Use sharp with file path to avoid reading full buffer into memory
         const metadata = await sharp(filePath).metadata();
-        
+        // The derivatives are upright, so report the size after the EXIF Orientation is applied.
+        const upright = metadata.autoOrient ?? metadata;
+
         // Get paths for all image versions
         const imagePaths = getImagePaths(file, paths, derivatives);
         // Original files are never served, so a photo is listed only with a complete
@@ -86,7 +88,7 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
         // partly removed, leaves it out until the watcher writes the set again.
         if (!isCompleteSet(imagePaths)) return 'incomplete';
 
-        // Get LQIP base64
+        // Get LQIP base64. An on-the-fly placeholder is upright, as encodeLqip() turns it.
         const lqip = getLqipBase64(file, paths) || await placeholderFor(filePath);
         
         let exifData: Record<string, unknown> = {};
@@ -146,8 +148,8 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
             thumbnailAvif: imagePaths.thumbnailAvif,
             mediumAvif: imagePaths.mediumAvif,
             optimizedAvif: imagePaths.optimizedAvif,
-            width: metadata.width || 800,
-            height: metadata.height || 600,
+            width: upright.width || 800,
+            height: upright.height || 600,
             caption: caption,
             date: dateTaken.getTime(),
             lqip: lqip,

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import sharp, { type Sharp } from 'sharp';
-import { dominantChannel, fixtureFiles, type Channel } from '../../test/fixtures/makeLibrary';
+import { dominantChannel, fixtureFiles, withExifOrientation, type Channel } from '../../test/fixtures/makeLibrary';
 import { createTempLibrary, derivativePaths, type TempLibrary } from '../../test/helpers/tempLibrary';
 import {
     baseNameOf,
@@ -33,13 +33,13 @@ vi.mock('sharp', async (importOriginal) => {
     const realSharp = actual.default as unknown as (...args: unknown[]) => Sharp;
     const wrapped = (...args: unknown[]) => {
         const instance = realSharp(...args);
-        const toBuffer = instance.toBuffer.bind(instance) as () => Promise<Buffer>;
+        const toBuffer = instance.toBuffer.bind(instance) as (...options: unknown[]) => Promise<unknown>;
         Object.defineProperty(instance, 'toBuffer', {
-            value: async () => {
+            value: async (...options: unknown[]) => {
                 encodes.count += 1;
                 encodes.onEncode?.(encodes.count);
                 if (encodes.count === encodes.failAt) throw new Error(`injected encode failure at ${encodes.count}`);
-                return toBuffer();
+                return toBuffer(...options);
             },
         });
         return instance;
@@ -530,5 +530,60 @@ describe('startup batch overwrite rule', { timeout: 60_000 }, () => {
         expect(() => filesToProcess()).toThrow(`Library root not found: ${missing.root}`);
         expect(() => filesToProcess({ force: true })).toThrow(`Library root not found: ${missing.root}`);
         await expect(newHandlers().queueStartupBatch({ force: true })).rejects.toThrow('Library root not found');
+    });
+});
+
+describe('orientation', { timeout: 60_000 }, () => {
+    const STORED = { width: 960, height: 640 };
+
+    /** A stored 960x640 JPEG whose top-left quarter is red and the rest blue, tagged with `orientation`. */
+    async function markedJpeg(orientation: number): Promise<Buffer> {
+        const { width, height } = STORED;
+        const pixels = Buffer.alloc(width * height * 3);
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const red = x < width / 2 && y < height / 2;
+                pixels.set(red ? [220, 30, 30] : [30, 30, 220], (y * width + x) * 3);
+            }
+        }
+        const jpeg = await sharp(pixels, { raw: { width, height, channels: 3 } }).jpeg({ quality: 90 }).toBuffer();
+        return withExifOrientation(jpeg, orientation);
+    }
+
+    /** An output's size and which quarter of it is red, sampled at each quarter's center. */
+    async function look(image: Buffer): Promise<{ width: number; height: number; red: string[] }> {
+        const { data, info } = await sharp(image).raw().toBuffer({ resolveWithObject: true });
+        const quarters: [string, number, number][] = [['top-left', 0.25, 0.25], ['top-right', 0.75, 0.25], ['bottom-left', 0.25, 0.75], ['bottom-right', 0.75, 0.75]];
+        const red = quarters
+            .filter(([, fx, fy]) => {
+                const offset = (Math.floor(fy * info.height) * info.width + Math.floor(fx * info.width)) * info.channels;
+                return data[offset] > data[offset + 2];
+            })
+            .map(([quarter]) => quarter);
+        return { width: info.width, height: info.height, red };
+    }
+
+    it.each([
+        [3, 'bottom-right', 960, 640],
+        [6, 'top-right', 640, 960],
+        [8, 'bottom-left', 640, 960],
+    ])('turns Orientation %i upright in all seven outputs, so the red quarter ends %s', async (orientation, quarter, width, height) => {
+        await newLibrary();
+        fs.writeFileSync(lib.file('turned.jpg'), await markedJpeg(orientation));
+        await processImage('turned.jpg');
+
+        const widths: Record<string, number> = { thumbnails: 400, medium: 800, optimized: 1920 };
+        for (const relativePath of derivativePaths('turned').filter((output) => !output.endsWith('.txt'))) {
+            const expectedWidth = Math.min(width, widths[relativePath.split('/')[0].replace(/-avif$/, '')]);
+            const seen = await look(fs.readFileSync(lib.file(relativePath)));
+            expect(seen.red, relativePath).toEqual([quarter]);
+            expect(seen.width, relativePath).toBe(expectedWidth);
+            expect(Math.abs(seen.height - (expectedWidth * height) / width), relativePath).toBeLessThanOrEqual(1);
+        }
+
+        const lqip = fs.readFileSync(lib.file('lqip/turned.txt'), 'utf8').replace(/^data:image\/webp;base64,/, '');
+        const small = await look(Buffer.from(lqip, 'base64'));
+        expect(small.red).toEqual([quarter]);
+        expect(small.width > small.height).toBe(width > height);
     });
 });

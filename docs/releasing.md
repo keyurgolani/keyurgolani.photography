@@ -156,6 +156,23 @@ docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx t
 docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts --apply --plan <hash>
 ```
 
+The first release with slice A of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10) needs a step too. The Gallery grid and lightbox now show the derivatives instead of the original files, and derivatives written before it ignored the EXIF orientation, so a photo whose file carries an orientation tag shows turned or mirrored until its derivatives are rebuilt. After `up -d`, run the dry run first. It changes nothing in the library and prints the path of its report:
+
+```bash
+docker compose -f docker-compose.prod.yml exec image-watcher npm run photos:migrate -- --dry-run --out /tmp/photo-migration
+docker compose -f docker-compose.prod.yml exec image-watcher cat <report path>
+```
+
+Read the report's "Orientation-tagged files" section. It lists every photo the rebuild turns upright. If it says "None.", skip the rest. Otherwise rebuild every derivative once, with the watcher stopped so the two never write at once:
+
+```bash
+docker compose -f docker-compose.prod.yml stop image-watcher
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageWatcher.ts --once --force
+docker compose -f docker-compose.prod.yml start image-watcher
+```
+
+The old derivatives keep serving until each photo's new set is written. Once the rebuild finishes, clear `./.next-images-cache` the same way as above, so `/_next/image` drops the copies it made from the old derivatives. If this is also the first release with Phase 0, this one clear, after the rebuild, covers both.
+
 ## Rollback
 
 Before changing `.env`, note the tag the host runs now. To roll back, set `PHOTOGRAPHY_IMAGE_TAG` back to that tag and run the same two commands. That swaps the code, not the photo library. Rolling back to a release before Phase 0 of #17 brings back the watcher's startup cleanup, which deletes the derivative sets this release keeps for removed photos. That older release also refills `./.next-images-cache` under its year-long headers and writes new `cache/dynamic` files, so roll forward again the way Deploying describes for `v1.1.0`. Whether an older release can read data a newer one wrote is part of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10).
