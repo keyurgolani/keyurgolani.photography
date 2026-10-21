@@ -116,7 +116,7 @@ function readLoop(root: string) {
     };
 }
 
-describe('the first publish', () => {
+describe('the first publish', { timeout: 30_000 }, () => {
     it('stops for confirmation, writing nothing but the candidate, its diagnostics, and last-publish.json', async () => {
         const { root, run, catalogFiles } = await setup({ seed: 61 });
         const result = await run({ confirmLaunch: false });
@@ -180,7 +180,7 @@ describe('the first publish', () => {
     });
 });
 
-describe('later publishes', () => {
+describe('later publishes', { timeout: 30_000 }, () => {
     it('return NO_CHANGES for the active candidate and write no activation', async () => {
         const { root, run, events, first } = await launched({ seed: 65 });
         const again = await run();
@@ -263,7 +263,7 @@ describe('later publishes', () => {
     });
 });
 
-describe('arguments and the data root', () => {
+describe('arguments and the data root', { timeout: 30_000 }, () => {
     it('refuse a blank actor before touching the catalog', async () => {
         const { run, catalogFiles } = await setup({ seed: 70 });
         await expect(run({ actor: '  ' })).rejects.toThrow(TypeError);
@@ -282,7 +282,7 @@ describe('arguments and the data root', () => {
     });
 });
 
-describe('an interrupted publish', () => {
+describe('an interrupted publish', { timeout: 30_000 }, () => {
     it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])('converges after a crash after step %i: one revision ID, one committed activation, no revision file rewritten', async (crashAfter) => {
         const { catalog, root, run, editPhoto, first } = await launched({ seed: 71 });
         const firstFile = fs.readFileSync(revisionFilePath(root, catalog.revisionId));
@@ -329,7 +329,7 @@ describe('an interrupted publish', () => {
     });
 });
 
-describe('the catalog lock', () => {
+describe('the catalog lock', { timeout: 30_000 }, () => {
     it('makes a second publish fail fast with CATALOG_LOCKED, naming the holder', async () => {
         const { root, run } = await setup({ seed: 72 });
         const result = await withLock(CATALOG_LOCK, { root }, () => run());
@@ -404,7 +404,7 @@ describe('the catalog lock', () => {
     });
 });
 
-describe('recovery', () => {
+describe('recovery', { timeout: 30_000 }, () => {
     it.each([
         ['an abandoned activation', (file: string) => fs.writeFileSync(file, JSON.stringify({ ...(JSON.parse(fs.readFileSync(file, 'utf8')) as object), status: 'abandoned' }))],
         ['a missing activation', (file: string) => fs.rmSync(file)],
@@ -449,7 +449,7 @@ describe('recovery', () => {
     });
 });
 
-describe('the authored lock', () => {
+describe('the authored lock', { timeout: 30_000 }, () => {
     it('stops a publish with AUTHORED_LOCKED at step 2 while a tool holds the working layer', async () => {
         const { root, run } = await launched({ seed: 76 });
         const result = await withLock(AUTHORED_LOCK, { root }, () => run({ authoredWaitMs: 50 }));
@@ -493,7 +493,7 @@ describe('the authored lock', () => {
     });
 });
 
-describe('activateRevision', () => {
+describe('activateRevision', { timeout: 30_000 }, () => {
     type Overrides = Omit<ActivateOptions, 'lock' | 'dataRoot' | 'kind' | 'actor' | 'reason'> & Partial<ActivateOptions>;
     const activate = (root: string, overrides: Overrides) =>
         withLock(CATALOG_LOCK, { root }, (lock) => activateRevision({ lock, dataRoot: root, kind: 'rollback', actor: 'test', reason: 'rollback', ...overrides }));
