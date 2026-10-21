@@ -9,7 +9,7 @@ Every pull request runs `.github/workflows/ci.yml`, whether it targets `main` or
 | Job | What it does |
 |---|---|
 | `Lint, unit tests, build` | Checks that `.nvmrc` holds a bare Node major and the `Dockerfile` base image matches it, then runs `npm ci`, `npm run lint`, `npm test -- --run`, and `npm run build`. |
-| `Browser tests` | Runs `npm run test:e2e` with Playwright. Until `package.json` has that script, it passes with a notice. |
+| `Browser tests` | Runs `npm run test:e2e`, which builds and serves the site against an empty temp photo library and runs `e2e/` in Chromium on a desktop and a Pixel 7 project. A failed run uploads `playwright-report/` and `test-results/`. |
 | `Image smoke test` | Runs `ci/check-compose.sh`, builds the image, checks that it runs the Node major in `.nvmrc`, and runs `ci/smoke-image.sh` against it. Then it runs `ci/smoke-watcher-once.sh`, which has the image generate a fixture library from the checkout's `test/fixtures`, runs the image's watcher with `--once` on it, checks that it deletes nothing after a photo is removed and exits 1 on a missing library, and checks the web server's image routes. |
 | `Production audit` | Runs `ci/audit-gate.mjs`, which runs `npm audit --omit=dev` and fails on a high or critical advisory that `.github/audit-allowlist.json` doesn't list. It reads only the lockfile, so it skips `npm ci`. |
 | `CI result` | Fails unless all four jobs above succeeded. |
