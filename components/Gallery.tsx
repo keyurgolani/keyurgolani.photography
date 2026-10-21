@@ -116,6 +116,8 @@ export default function Gallery({ images, className = '' }: GalleryProps) {
     const [index, setIndex] = useState(-1);
     // Closing returns focus here, even after slide changes and in Safari, which doesn't focus buttons on click
     const openerRef = useRef<HTMLButtonElement | null>(null);
+    // And puts the page back where it was when the photo opened
+    const openerScrollRef = useRef(0);
 
     // Use pre-optimized image paths directly (already WebP format)
     const photos = images.map(img => ({
@@ -184,6 +186,7 @@ export default function Gallery({ images, className = '' }: GalleryProps) {
                             rows={layout.rows}
                             onClick={(event) => {
                                 openerRef.current = event.currentTarget;
+                                openerScrollRef.current = window.scrollY;
                                 setIndex(i);
                             }}
                         />
@@ -200,8 +203,14 @@ export default function Gallery({ images, className = '' }: GalleryProps) {
                 zoom={{ maxZoomPixelRatio: 3 }}
                 carousel={{ preload: 1 }}
                 thumbnails={{ width: 64, height: 48, gap: 8 }}
-                // exiting fires as the close starts and YARL lifts inert, so a reader who moves on during the fade keeps their place
-                on={{ exiting: () => openerRef.current?.focus() }}
+                // exiting fires as the close starts and YARL lifts inert, so a reader who moves on during the fade keeps their place.
+                // YARL has just focused the opener the plain way, which scrolls a tile that's partly out of view, so undo that scroll.
+                on={{
+                    exiting: () => {
+                        openerRef.current?.focus({ preventScroll: true });
+                        window.scrollTo(0, openerScrollRef.current);
+                    },
+                }}
             />
         </div>
     );

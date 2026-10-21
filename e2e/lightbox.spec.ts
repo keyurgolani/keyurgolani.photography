@@ -162,6 +162,42 @@ test('Close returns focus to the photo a tap opened', async ({ page }, testInfo)
     await expect(entries(page).nth(3)).toBeFocused();
 });
 
+for (const edge of ['top', 'bottom'] as const) {
+    test(`closing leaves the page where it was when a click or tap opened a photo with its ${edge} edge out of view`, async ({ page }, testInfo) => {
+        const touch = testInfo.project.name === 'mobile';
+        await openGallery(page, 'dark');
+        const tile = entries(page).nth(7);
+        // Chrome's plain focus() leaves a photo taller than the room between the scroll paddings where it is.
+        const room = await page.evaluate(() => {
+            const style = getComputedStyle(document.documentElement);
+            return window.innerHeight - parseFloat(style.scrollPaddingTop) - parseFloat(style.scrollPaddingBottom);
+        });
+        expect((await tile.boundingBox())?.height, 'the photo fits between the scroll paddings').toBeLessThan(room);
+        // 40 px past the edge of the viewport, so YARL's plain focus() on close would bring it into view.
+        await tile.evaluate((el, edge) => {
+            const { top, bottom } = el.getBoundingClientRect();
+            window.scrollTo(0, window.scrollY + (edge === 'top' ? top + 40 : bottom - window.innerHeight - 40));
+        }, edge);
+        const box = await tile.boundingBox();
+        if (!box) throw new Error('The photo has no box');
+        const before = await page.evaluate(() => window.scrollY);
+
+        // At the middle of the part in view, since click() and tap() would scroll the photo into view first.
+        const viewport = page.viewportSize();
+        if (!viewport) throw new Error('No viewport');
+        const [x, y] = [box.x + box.width / 2, (Math.max(box.y, 0) + Math.min(box.y + box.height, viewport.height)) / 2];
+        if (touch) await page.touchscreen.tap(x, y);
+        else await page.mouse.click(x, y);
+        await settle(page);
+        if (touch) await control(page, 'Close').tap();
+        else await control(page, 'Close').click();
+        await expect(lightbox(page)).toBeHidden();
+
+        expect(await page.evaluate(() => window.scrollY), 'the page stays where it was').toBe(before);
+        await expect(tile).toBeFocused();
+    });
+}
+
 test('Escape returns focus to a photo whose click never focused it', async ({ page }) => {
     await openGallery(page, 'dark');
     // The click handler runs but focus stays put, as in Safari, which doesn't focus a button on click.
