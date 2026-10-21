@@ -159,7 +159,7 @@ function misnamedRecord(kind: 'series' | 'photo', name: string): string | null {
 async function loadFolder<K extends 'series' | 'photo'>(dir: string, kind: K, problems: RecordProblem[]): Promise<RecordOf<K>[]> {
     let entries: fs.Dirent[];
     try {
-        entries = await fs.promises.readdir(dir, { withFileTypes: true });
+        entries = await fs.promises.readdir(/*turbopackIgnore: true*/ dir, { withFileTypes: true });
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT')) return [];
         throw error;

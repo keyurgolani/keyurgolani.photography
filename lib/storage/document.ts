@@ -179,7 +179,7 @@ export class StaleVersionError extends Error {
 export async function readJsonFile(file: string): Promise<unknown | null> {
     let text: string;
     try {
-        text = await fs.promises.readFile(file, 'utf8');
+        text = await fs.promises.readFile(/*turbopackIgnore: true*/ file, 'utf8');
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT')) return null;
         throw error;
@@ -246,7 +246,7 @@ interface Listing {
 async function list(dir: string): Promise<Listing> {
     let names: string[];
     try {
-        names = await fs.promises.readdir(dir);
+        names = await fs.promises.readdir(/*turbopackIgnore: true*/ dir);
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT')) return { versions: [], temps: [] };
         throw error;
@@ -325,7 +325,7 @@ export async function readVersionedDocument(dir: string, { hooks }: { hooks?: Re
         await hooks?.afterList?.(file);
         let handle: fs.promises.FileHandle;
         try {
-            handle = await fs.promises.open(file, 'r');
+            handle = await fs.promises.open(/*turbopackIgnore: true*/ file, 'r');
         } catch (error) {
             if (!hasErrorCode(error, 'ENOENT')) throw error;
             // Pruned since the listing, so a newer version exists: look again.
