@@ -1,0 +1,64 @@
+/* About's external links. Colors come only from the About tokens, each with a
+   fallback that ignores the theme, since About's ground does too. Links never
+   transform, transition, or animate, and nothing in the list waits for hover. */
+.nav {
+  /* #1's two-color ring, drawn in About's ink over its ground. */
+  --focus-ring-light: var(--about-ink, #f0f0f0);
+  --focus-ring-dark: var(--about-ground, #000);
+  width: 100%;
+}
+
+/* One full-width link per row on narrow screens, then a wrapping row. DOM
+   order is the only order. */
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+@media (min-width: 40rem) {
+  .list {
+    flex-flow: row wrap;
+    justify-content: center;
+  }
+}
+
+.link {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--about-rule, #808080);
+  border-radius: 3px;
+  background: var(--about-ground, #000);
+  color: var(--about-ink, #f0f0f0);
+  font-size: 1rem;
+  line-height: 1.5;
+  text-decoration: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .link:hover {
+    border-color: var(--about-ink, #f0f0f0);
+  }
+}
+
+/* The underline is the cue that doesn't rely on color. Long labels wrap
+   anywhere instead of clipping. */
+.label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+}
+
+.icon,
+.arrow {
+  flex: none;
+}
