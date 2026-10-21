@@ -28,11 +28,15 @@ const themeToggle = (page: Page) => page.getByRole('button', { name: /^Switch to
 const primary = (page: Page) => page.getByRole('navigation', { name: 'Primary' });
 const navLinks = (page: Page) => primary(page).getByRole('link');
 const portrait = (page: Page) => page.locator('[class*="portrait"]');
+/** The portrait as painted: its rounded images, which reach past the wrapper's box at the bottom. */
+const paintedPortrait = (page: Page) => portrait(page).locator('img');
 const grainOverlay = (page: Page) => page.locator('[class*="grainOverlay"]');
 
 /** The chrome layer: RevealingContents' fixed overlay around the controls. */
 const chromeOpacity = (page: Page) =>
     group(page).evaluate((el) => parseFloat(getComputedStyle(el.closest('.fixed.inset-0') ?? el).opacity));
+/** Whether RevealingContents has set the chrome to show, whatever its opacity is at the moment. */
+const chromeShown = (page: Page) => group(page).evaluate((el) => el.closest('.fixed.inset-0')?.classList.contains('opacity-100') ?? false);
 
 /** Running animations and transitions whose single iteration lasts longer than `limit` ms. */
 const runningLongerThan = (page: Page, limit: number) =>
@@ -217,33 +221,58 @@ test.describe('normal motion', () => {
     });
 
     test.describe('on a short screen', () => {
-        // 100% covered before the controls moved down at the first three, and the portrait took the centre hit at the rest.
-        for (const [width, height] of [[640, 400], [667, 375], [568, 320], [740, 360], [736, 414], [768, 400]] as const) {
-            test(`at ${width} by ${height} a click or tap reaches Previous past the settled portrait`, async ({ page, isMobile }) => {
+        // Where the settled portrait reached Previous before the controls moved: the first three 100% covered, the
+        // rest by its square layers or its painted image, and 820 and 844 px wide with the controls at the top right.
+        const SHORT_SCREENS = [[640, 400], [667, 375], [568, 320], [740, 360], [736, 414], [768, 400], [780, 420], [800, 480], [812, 375], [820, 400], [844, 390]] as const;
+        /** Points around Previous's centre. The square layers once took a click 10 px left of and 12 px above it. */
+        const PROBES = [[0, 0], [-10, -12], [10, -12], [-10, 12], [10, 12], [-18, 0], [18, 0], [0, -18], [0, 18]] as const;
+
+        for (const [width, height] of SHORT_SCREENS) {
+            test(`at ${width} by ${height} Previous keeps its ring clear of the painted portrait and takes a click or tap anywhere on it`, async ({ page, isMobile }) => {
                 await page.setViewportSize({ width, height });
                 await openHome(page);
                 await expect(position(page)).toHaveText('01 / 03');
-                const ownsCentre = await previous(page).evaluate((el) => {
+                await pressUntilFocused(page, 'Tab', previous(page));
+                // Activity brings the portrait back, so check once it's fully shown.
+                await page.keyboard.press('Shift');
+                await expect.poll(() => portrait(page).evaluate((el) => parseFloat(getComputedStyle(el).opacity))).toBe(1);
+                await expectNotObscured(previous(page), [paintedPortrait(page)]);
+
+                const missed = await previous(page).evaluate((el, probes) => {
                     const { left, top, width: w, height: h } = el.getBoundingClientRect();
-                    const hit = document.elementFromPoint(left + w / 2, top + h / 2);
-                    return hit !== null && el.contains(hit);
-                });
-                expect(ownsCentre, 'Previous is the element at its own centre').toBe(true);
+                    return probes.filter(([dx, dy]) => {
+                        const hit = document.elementFromPoint(left + w / 2 + dx, top + h / 2 + dy);
+                        return !(hit && el.contains(hit));
+                    }).map(([dx, dy]) => `${dx}, ${dy}`);
+                }, PROBES);
+                expect(missed, 'points on Previous that something else takes').toEqual([]);
                 if (isMobile) await previous(page).tap();
                 else await previous(page).click();
                 await expect(position(page)).toHaveText('03 / 03');
             });
-        }
 
-        test('at 640 by 400 a key press shows the portrait clear of Previous and its ring', async ({ page }) => {
-            await page.setViewportSize({ width: 640, height: 400 });
-            await openHome(page);
-            await pressUntilFocused(page, 'Tab', previous(page));
-            // Activity brings the portrait back, so check once it's fully shown.
-            await page.keyboard.press('Shift');
-            await expect.poll(() => portrait(page).evaluate((el) => parseFloat(getComputedStyle(el).opacity))).toBe(1);
-            await expectNotObscured(previous(page), [portrait(page)]);
-        });
+            test(`at ${width} by ${height} no nav label lands on the controls, and the pointer crosses from About to Previous`, async ({ page }, testInfo) => {
+                test.skip(testInfo.project.name === 'mobile', 'Hover runs on the desktop project, where focus shows the same labels.');
+                await page.setViewportSize({ width, height });
+                await openHome(page);
+                const controls = await box(group(page));
+                for (const name of ['Gallery', 'Home', 'About']) {
+                    const link = primary(page).getByRole('link', { name, exact: true });
+                    const label = link.getByText(name, { exact: true });
+                    for (const show of ['hover', 'focus'] as const) {
+                        if (show === 'hover') await link.hover();
+                        else await pressUntilFocused(page, 'Tab', link, 12);
+                        await expect(label).toHaveCSS('opacity', '1');
+                        expect(overlaps(await box(label), controls), `${name}'s label on ${show} overlaps the controls`).toBe(false);
+                    }
+                }
+                // From About up to Previous, which must take the click, not About's label.
+                await primary(page).getByRole('link', { name: 'About', exact: true }).hover();
+                await previous(page).click();
+                await expect(page).toHaveURL('/');
+                await expect(position(page)).toHaveText('03 / 03');
+            });
+        }
     });
 
     test('a Pause survives client navigation away and back, and a reload forgets it', async ({ page }) => {
@@ -320,7 +349,10 @@ test.describe('reduced motion', () => {
 
         await expect.poll(() => chromeOpacity(page), { timeout: IDLE + 3000 }).toBe(0);
         await revealByPointer(page, isMobile);
-        await expect.poll(() => chromeOpacity(page), { timeout: 300, intervals: [16] }).toBe(1);
+        // Waits on the chrome's own state, then checks that nothing fades it in, so a slow machine can't fail it.
+        await expect.poll(() => chromeShown(page)).toBe(true);
+        expect(await runningLongerThan(page, 1)).toEqual([]);
+        await expect.poll(() => chromeOpacity(page)).toBe(1);
         if (isMobile) await next(page).tap();
         else await next(page).click();
         await expect(position(page)).toHaveText('02 / 03');
@@ -352,7 +384,7 @@ test.describe('reduced motion', () => {
         for (const control of [previous(page), next(page), playback(page)]) await expectContrastOverImage(control.locator('svg'), { min: 3 });
 
         const controls = await box(group(page));
-        for (const [name, other] of [['portrait', portrait(page)], ['theme toggle', themeToggle(page)], ['nav pill', primary(page)]] as const) {
+        for (const [name, other] of [['portrait', paintedPortrait(page).first()], ['theme toggle', themeToggle(page)], ['nav pill', primary(page)]] as const) {
             expect(overlaps(controls, await box(other)), `the controls overlap the ${name}`).toBe(false);
         }
         await expectReflow(sequenceControls(page).or(group(page)).or(themeToggle(page)).or(primary(page)));
@@ -363,7 +395,7 @@ test.describe('reduced motion', () => {
         await openHome(page, { state: 'reduced-motion' });
 
         const controls = await box(group(page));
-        for (const [name, other] of [['portrait', portrait(page)], ['theme toggle', themeToggle(page)], ['nav pill', primary(page)]] as const) {
+        for (const [name, other] of [['portrait', paintedPortrait(page).first()], ['theme toggle', themeToggle(page)], ['nav pill', primary(page)]] as const) {
             expect(overlaps(controls, await box(other)), `the controls overlap the ${name}`).toBe(false);
         }
     });

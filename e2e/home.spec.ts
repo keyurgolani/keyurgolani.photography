@@ -19,8 +19,8 @@ const playback = (page: Page) => page.getByRole('button', { name: /^(Pause|Play)
 const sequenceControls = (page: Page) => arrows(page).or(playback(page));
 /** The full-quality layer of the slide on screen. */
 const currentPhoto = (page: Page) => page.locator('[aria-hidden="false"] > img[data-layer="optimized"]');
-/** HeroReveal's settled portrait, fixed above the chrome. */
-const portrait = (page: Page) => page.locator('[class*="portrait"]');
+/** HeroReveal's settled portrait, fixed above the chrome, as painted: its rounded images, which reach past the wrapper's box. */
+const portrait = (page: Page) => page.locator('[class*="portrait"] img');
 
 const effectiveOpacity = (target: Locator) =>
     target.evaluate((el) => {

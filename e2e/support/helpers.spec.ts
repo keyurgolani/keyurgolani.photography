@@ -197,6 +197,34 @@ test.describe('expectNotObscured', () => {
             </nav>`);
         await expectNotObscured(page.getByRole('link'), page.locator('#bar'));
     });
+
+    // A 200 px circle at the top left, scaled from 400 px the way the portrait is, over a button near its box's bottom right corner.
+    const circle = '<div id="round" style="position: fixed; top: 0; left: 0; width: 400px; height: 400px; border-radius: 9999px; background: #222; transform: scale(0.5); transform-origin: 0 0; z-index: 1"></div>';
+    const nearCorner = (at: number) => `<button type="button" style="position: absolute; top: ${at}px; left: ${at}px">Near</button>`;
+
+    test("passes a short element whose ring meets a round cover's box but not its curve", async ({ page }) => {
+        // The ring's top left corner at 178 px sits 110 px from the circle's centre at 100 px, past its 100 px radius.
+        await load(page, `${circle}${nearCorner(184)}`);
+        await expectNotObscured(page.getByRole('button'), page.locator('#round'));
+    });
+
+    test("fails a short element whose ring a round cover's curve reaches", async ({ page }) => {
+        // The ring's top left corner at 158 px sits 82 px from the circle's centre.
+        await load(page, `${circle}${nearCorner(164)}`);
+        await expect(expectNotObscured(page.getByRole('button'), page.locator('#round'))).rejects.toThrow(/ring samples under div/);
+    });
+
+    test('takes rounded-full on a tall box as a capsule, which reaches wider than an ellipse in the same box', async ({ page }) => {
+        // 200 by 300: half circles of 100 px radius centred 100 and 200 px down, joined by straight sides.
+        const capsule = '<div id="round" style="position: fixed; top: 0; left: 0; width: 200px; height: 300px; border-radius: 9999px; background: #222; z-index: 1"></div>';
+        const beside = (left: number) => `<button type="button" style="position: absolute; top: 28px; left: ${left}px">Beside</button>`;
+        // A ring from 190 px across reaches 78 px down, 93 px from the top centre: inside the capsule, outside the ellipse.
+        await load(page, `${capsule}${beside(196)}`);
+        await expect(expectNotObscured(page.getByRole('button'), page.locator('#round'))).rejects.toThrow(/ring samples under div/);
+        // From 200 px across it clears the curve.
+        await load(page, `${capsule}${beside(206)}`);
+        await expectNotObscured(page.getByRole('button'), page.locator('#round'));
+    });
 });
 
 test.describe('expectTabOrderMatchesVisualOrder', () => {
