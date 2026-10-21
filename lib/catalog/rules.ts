@@ -53,7 +53,8 @@ export function rulesetVersion(list: readonly Rule[] = registeredRules()): strin
 /** Values several rules share, worked out once per runRules() call. */
 let running: { ctx: RuleContext; values: Map<string, unknown> } | null = null;
 
-function shared<T>(ctx: RuleContext, key: string, compute: () => T): T {
+/** A value several rules share, worked out once per runRules() call, and afresh outside one. Rules registered elsewhere use it too. */
+export function shared<T>(ctx: RuleContext, key: string, compute: () => T): T {
     if (running?.ctx !== ctx) return compute();
     if (!running.values.has(key)) running.values.set(key, compute());
     return running.values.get(key) as T;
