@@ -107,6 +107,26 @@ describe('HeroReveal', () => {
     expect(portrait()).toHaveAttribute('data-placed');
   });
 
+  it('keeps the portrait over the grain through the intro, then drops it under the chrome once settled', async () => {
+    const { portrait, setLoading } = renderReveal(true);
+    expect(portrait()).toHaveStyle({ zIndex: '42' });
+
+    setLoading(false);
+    await act(() => vi.advanceTimersByTimeAsync(FULL_INTRO_MS));
+
+    expect(portrait()).toHaveStyle({ zIndex: '1' });
+  });
+
+  it('a returning visit and reduce settle the portrait under the chrome from the start', () => {
+    const returning = renderReveal(false);
+    expect(returning.portrait()).toHaveStyle({ zIndex: '1' });
+    returning.unmount();
+
+    setPrefersReducedMotion(true);
+    const reduced = renderReveal(true);
+    expect(reduced.portrait()).toHaveStyle({ zIndex: '1' });
+  });
+
   it('under reduce, the portrait takes no pointer, so its tilt stays off', () => {
     setPrefersReducedMotion(true);
     const { portrait } = renderReveal(false);

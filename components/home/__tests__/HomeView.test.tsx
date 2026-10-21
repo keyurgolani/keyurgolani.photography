@@ -152,7 +152,7 @@ describe('HomeView', () => {
     expect(playback()).toBe('advancing');
   });
 
-  it('keeps SiteNav in the DOM, hidden and out of the pointer\'s way, until the intro settles', async () => {
+  it('keeps SiteNav in the DOM, hidden and out of the pointer\'s way, until the intro settles, then hands it the pointer', async () => {
     const { becomeReady } = await renderHome();
     const wrapper = () => screen.getByRole('navigation', { name: 'Primary' }).parentElement;
     expect(wrapper()).toHaveClass('opacity-0', 'pointer-events-none');
@@ -160,6 +160,8 @@ describe('HomeView', () => {
     becomeReady();
     expect(wrapper()).not.toHaveClass('opacity-0');
     expect(wrapper()).not.toHaveClass('pointer-events-none');
+    // The chrome layer lets the pointer through, so SiteNav takes it back.
+    expect(wrapper()).toHaveClass('pointer-events-auto');
   });
 
   it('puts SiteNav ahead of the slideshow controls, inside the focus hold', async () => {
