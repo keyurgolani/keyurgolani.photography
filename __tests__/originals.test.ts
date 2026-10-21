@@ -75,6 +75,8 @@ describe('proxy.ts on /assets/photos', () => {
         ['a sharp s that folds to ss', '/a%C3%9Fets/photos/landscape.jpg'],
         ['a capital sharp s that folds to ss', '/a%E1%BA%9Eets/photos/landscape.jpg'],
         ['a capital sharp s in a nested path', '/a%E1%BA%9Eets/photos/series/x.jpg'],
+        ['a prefix with a character that is neither a letter nor a digit', '/assets/pho%E2%80%8Ctos/landscape.jpg'],
+        ['a prefix with punctuation in it', '/as.sets/photos/landscape.jpg'],
         ['a derivative under a capitalized prefix', '/Assets/photos/optimized/landscape.webp'],
         ['an encoded traversal from a sibling folder', '/assets/profile/..%2Fphotos%2Flandscape.jpg'],
         ['a lowercase encoded traversal from a sibling folder', '/assets/profile/..%2fphotos%2flandscape.jpg'],

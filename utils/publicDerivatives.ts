@@ -45,12 +45,13 @@ export function resolvedPathname(pathname: string): string {
 /**
  * Whether a request pathname reaches /assets/photos or below it once
  * resolved, compared the way a case-insensitive disk would, where `next dev`
- * serves /Assets/Photos/x.jpg from public/assets/photos/x.jpg. It is folded
- * as foldName() folds names, as the disk does.
+ * serves /Assets/Photos/x.jpg from public/assets/photos/x.jpg. Its first two
+ * segments are folded as foldName() folds them, and then only their letters
+ * and digits count, which also blocks a few paths no file has, the safe side.
  */
 export function isUnderPhotos(pathname: string): boolean {
-    const folded = foldName(resolvedPathname(pathname));
-    return folded === '/assets/photos' || folded.startsWith(PHOTOS_PREFIX);
+    const [first, second] = resolvedPathname(pathname).split('/').slice(1).map((segment) => foldName(segment).replace(/[^a-z0-9]/g, ''));
+    return first === 'assets' && second === 'photos';
 }
 
 /**
