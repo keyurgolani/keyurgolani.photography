@@ -1,6 +1,7 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { hasErrorCode, isInside, realpathLoose } from './fsx';
+import { hasErrorCode, isInside, PRIVATE_FILE_MODE, realpathLoose } from './fsx';
 
 /**
  * Root locations, resolved on every call so tests and tools can repoint them
@@ -20,7 +21,9 @@ export interface DataRootMarker {
  * - `unset`: no PHOTOGRAPHY_DATA_DIR, and production has no default.
  * - `unavailable`: missing, not a readable directory, inside public/ or the
  *   library, or its `data-root.json` is unreadable or from a newer build.
- * - `unwritable`: exists but can't be written. Only reported when asked with `write`.
+ * - `unwritable`: exists but can't be written, or its filesystem can't hold
+ *   the hard links every versioned write claims its version with, as on exFAT
+ *   or FAT. Only reported when asked with `write`.
  * - `uninitialized`: usable, but has no valid `data-root.json`.
  * - `ready`: initialized and usable.
  */
@@ -85,6 +88,35 @@ function canAccess(target: string, mode: number): boolean {
     }
 }
 
+// Data roots, by device and inode, that held a hard link in this process
+const linkCapableRoots = new Set<string>();
+
+/**
+ * Why `root` can't take a versioned write, or null when it can. Each one
+ * claims its version with link(), so this links a probe file there and
+ * removes both names. A root that passes isn't probed again.
+ */
+function linkProblem(root: string, stat: fs.Stats): string | null {
+    const key = `${stat.dev}:${stat.ino}`;
+    if (linkCapableRoots.has(key)) return null;
+    const probe = path.join(/*turbopackIgnore: true*/ root, `.link-probe-${process.pid}-${randomUUID()}`);
+    try {
+        fs.writeFileSync(probe, '', { flag: 'wx', mode: PRIVATE_FILE_MODE });
+    } catch (error) {
+        return `a file can't be created in it: ${(error as Error).message}`;
+    }
+    try {
+        fs.linkSync(probe, `${probe}.link`);
+        linkCapableRoots.add(key);
+        return null;
+    } catch (error) {
+        return `its filesystem can't hold hard links, which every versioned write needs: ${(error as Error).message}`;
+    } finally {
+        fs.rmSync(`${probe}.link`, { force: true });
+        fs.rmSync(probe, { force: true });
+    }
+}
+
 type MarkerCheck = { kind: 'valid' } | { kind: 'absent' | 'invalid'; detail: string } | { kind: 'future' | 'unreadable'; detail: string };
 
 function checkMarker(root: string): MarkerCheck {
@@ -122,9 +154,9 @@ function checkMarker(root: string): MarkerCheck {
 }
 
 /**
- * Classify the data root. With `write`, a root this process can't write is
- * `unwritable`; without it, the check is read-only, which is all the web
- * process needs.
+ * Classify the data root. With `write`, a root this process can't write, or
+ * whose filesystem can't hold hard links, is `unwritable`; without it, the
+ * check is read-only, which is all the web process needs.
  */
 export function dataRootStatus({ write = false }: { write?: boolean } = {}): DataRootStatus {
     const root = dataRoot();
@@ -149,7 +181,11 @@ export function dataRootStatus({ write = false }: { write?: boolean } = {}): Dat
     const marker = checkMarker(root);
     if (marker.kind === 'future') return { state: 'unavailable', root, cause: 'newer-schema', detail: marker.detail };
     if (marker.kind === 'unreadable') return { state: 'unavailable', root, cause: 'marker-unreadable', detail: marker.detail };
-    if (write && !canAccess(root, fs.constants.W_OK)) return { state: 'unwritable', root, detail: 'it is not writable' };
+    if (write) {
+        if (!canAccess(root, fs.constants.W_OK)) return { state: 'unwritable', root, detail: 'it is not writable' };
+        const problem = linkProblem(root, stat);
+        if (problem !== null) return { state: 'unwritable', root, detail: problem };
+    }
     if (marker.kind !== 'valid') return { state: 'uninitialized', root, detail: marker.detail };
     return { state: 'ready', root };
 }
