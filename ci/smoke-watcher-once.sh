@@ -2,7 +2,8 @@
 # Runs the built image's watcher with --once against a generated fixture
 # library and checks that it never deletes a derivative, then starts the web
 # server on that library and checks that the removed image endpoints return
-# 404 and legacy derivatives no longer send `immutable`.
+# 404, legacy derivatives no longer send `immutable`, and original source
+# files are never served, directly or through /_next/image.
 #
 #   IMAGE=ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke ci/smoke-watcher-once.sh
 #
@@ -130,3 +131,17 @@ case $cache_control in
   *immutable*) fail "optimized/portrait.webp still sends immutable ($cache_control)." ;;
 esac
 echo "optimized/portrait.webp returned 200 with ${cache_control:-no Cache-Control header}."
+
+# 6. Original source files 404, and /_next/image refuses them with 400.
+for original in portrait.png square.webp portrait%2Epng; do
+  code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$BASE_URL/assets/photos/$original") ||
+    fail "GET /assets/photos/$original failed."
+  [ "$code" = 404 ] || fail "GET /assets/photos/$original returned $code, expected 404."
+done
+code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$BASE_URL/_next/image?url=%2Fassets%2Fphotos%2Fportrait.png&w=400&q=75") ||
+  fail "GET /_next/image for portrait.png failed."
+[ "$code" = 400 ] || fail "GET /_next/image for portrait.png returned $code, expected 400."
+code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$BASE_URL/_next/image?url=%2Fassets%2Fphotos%2Foptimized%2Fportrait.webp&w=400&q=75") ||
+  fail "GET /_next/image for optimized/portrait.webp failed."
+[ "$code" = 200 ] || fail "GET /_next/image for optimized/portrait.webp returned $code, expected 200."
+echo "Originals return 404, and /_next/image serves derivatives but refuses originals."

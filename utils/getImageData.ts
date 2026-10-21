@@ -74,19 +74,20 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
     // Each derivative folder read once, so a set counts only under its exact name
     const derivatives = readDerivativeIndex(paths);
 
-    const readItem = async (file: string, index: number): Promise<ImageItem> => {
+    const readItem = async (file: string, index: number): Promise<ImageItem | 'incomplete'> => {
         const filePath = path.join(photosDir, file);
         // Use sharp with file path to avoid reading full buffer into memory
         const metadata = await sharp(filePath).metadata();
         
         // Get paths for all image versions
         const imagePaths = getImagePaths(file, paths, derivatives);
-        // Derivatives only for a complete set, all seven by exact name. Anything
-        // less, such as a set cleanup only partly removed, gets the original.
-        const set = isCompleteSet(imagePaths) ? imagePaths : null;
-        
+        // Original files are never served, so a photo is listed only with a complete
+        // set, all seven by exact name. Anything less, such as a set cleanup only
+        // partly removed, leaves it out until the watcher writes the set again.
+        if (!isCompleteSet(imagePaths)) return 'incomplete';
+
         // Get LQIP base64
-        const lqip = (set && getLqipBase64(file, paths)) || await placeholderFor(filePath);
+        const lqip = getLqipBase64(file, paths) || await placeholderFor(filePath);
         
         let exifData: Record<string, unknown> = {};
         if (metadata.exif) {
@@ -136,18 +137,15 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
         // Fallback if empty
         if (!caption) caption = '';
 
-        // `src` is the original source path. The gallery and carousel load the pre-generated `optimized` and `thumbnail` WebP files.
-        const src = imagePaths.original;
-        
         return {
             id: index,
-            src: src,
-            thumbnail: set ? set.thumbnail : src,
-            medium: set ? set.medium : src,
-            optimized: set ? set.optimized : src,
-            thumbnailAvif: set?.thumbnailAvif,
-            mediumAvif: set?.mediumAvif,
-            optimizedAvif: set?.optimizedAvif,
+            src: imagePaths.optimized,
+            thumbnail: imagePaths.thumbnail,
+            medium: imagePaths.medium,
+            optimized: imagePaths.optimized,
+            thumbnailAvif: imagePaths.thumbnailAvif,
+            mediumAvif: imagePaths.mediumAvif,
+            optimizedAvif: imagePaths.optimizedAvif,
             width: metadata.width || 800,
             height: metadata.height || 600,
             caption: caption,
@@ -167,12 +165,14 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
     }));
 
     // If every photo failed, throw instead of returning an empty list, so the
-    // ISR cache keeps serving the last good one
-    const listed = images.filter((image): image is ImageItem => image !== null);
-    if (files.length > 0 && listed.length === 0) {
+    // ISR cache keeps serving the last good one. A photo still waiting for its
+    // set hasn't failed: before the watcher's first run, the list is empty.
+    if (files.length > 0 && images.every((image) => image === null)) {
         throw new Error(`Could not read any of the photos in ${photosDir} (${files.length} found).`);
     }
 
     // Sort: Newest First
-    return listed.sort((a, b) => b.date - a.date);
+    return images
+        .filter((image): image is ImageItem => image !== null && image !== 'incomplete')
+        .sort((a, b) => b.date - a.date);
 }
