@@ -221,16 +221,18 @@ export function getImagePaths(
     const webpExt = '.webp';
     const avifExt = '.avif';
     const has = (dir: DerivativeDir, ext: string) => index.get(dir)?.has(`${baseName}${ext}`) ?? false;
-    
+    // The file name is one encoded path segment, so a % or # in it reaches the file instead of breaking the URL.
+    const url = (folder: string, name: string) => `/assets/photos/${folder}${encodeURIComponent(name)}`;
+
     return {
-        original: `/assets/photos/${filename}`,
-        thumbnail: `/assets/photos/thumbnails/${baseName}${webpExt}`,
-        medium: `/assets/photos/medium/${baseName}${webpExt}`,
-        optimized: `/assets/photos/optimized/${baseName}${webpExt}`,
-        thumbnailAvif: `/assets/photos/thumbnails-avif/${baseName}${avifExt}`,
-        mediumAvif: `/assets/photos/medium-avif/${baseName}${avifExt}`,
-        optimizedAvif: `/assets/photos/optimized-avif/${baseName}${avifExt}`,
-        lqip: `/assets/photos/lqip/${baseName}.txt`,
+        original: url('', filename),
+        thumbnail: url('thumbnails/', `${baseName}${webpExt}`),
+        medium: url('medium/', `${baseName}${webpExt}`),
+        optimized: url('optimized/', `${baseName}${webpExt}`),
+        thumbnailAvif: url('thumbnails-avif/', `${baseName}${avifExt}`),
+        mediumAvif: url('medium-avif/', `${baseName}${avifExt}`),
+        optimizedAvif: url('optimized-avif/', `${baseName}${avifExt}`),
+        lqip: url('lqip/', `${baseName}.txt`),
         hasThumbnail: has('thumbnails', webpExt),
         hasMedium: has('medium', webpExt),
         hasOptimized: has('optimized', webpExt),

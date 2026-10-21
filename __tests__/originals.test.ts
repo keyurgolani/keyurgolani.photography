@@ -5,6 +5,7 @@ import { unstable_doesMiddlewareMatch } from 'next/experimental/testing/server';
 import { describe, expect, it } from 'vitest';
 import nextConfig from '../next.config.mjs';
 import { config, proxy } from '../proxy';
+import { baseNameOf, getImagePaths, libraryPaths } from '../utils/imageOptimizer';
 import { resolvedPathname } from '../utils/publicDerivatives';
 
 // The function /_next/image uses to check `url` against images.localPatterns. Next ships no types for it.
@@ -114,6 +115,33 @@ describe('proxy.ts on /assets/photos', () => {
             expect(matches(url), url).toBe(false);
         }
     });
+});
+
+describe('derivative URLs', () => {
+    const outputs = [
+        ['thumbnail', 'thumbnails', '.webp'],
+        ['medium', 'medium', '.webp'],
+        ['optimized', 'optimized', '.webp'],
+        ['thumbnailAvif', 'thumbnails-avif', '.avif'],
+        ['mediumAvif', 'medium-avif', '.avif'],
+        ['optimizedAvif', 'optimized-avif', '.avif'],
+        ['lqip', 'lqip', '.txt'],
+    ] as const;
+
+    it.each(['50%off.jpg', 'a#b.jpg', 'what?.png', 'IMG 1234 (edited).jpg', 'café.webp', '100% #2.jpg'])(
+        'for %s, pass the proxy whole and decode to the file on disk',
+        (name) => {
+            const urls = getImagePaths(name, libraryPaths(), new Map());
+            const base = baseNameOf(name);
+            for (const [field, folder, extension] of outputs) {
+                const url = urls[field];
+                // Nothing in the name becomes a query or a fragment.
+                expect(new URL(url, 'http://localhost').pathname, url).toBe(url);
+                expect(passes(url), url).toBe(true);
+                expect(resolvedPathname(url), url).toBe(`/assets/photos/${folder}/${base}${extension}`);
+            }
+        },
+    );
 });
 
 describe('outputFileTracingExcludes', () => {

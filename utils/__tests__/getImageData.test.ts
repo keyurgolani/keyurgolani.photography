@@ -172,6 +172,18 @@ describe('getGalleryImages', () => {
         await expect(GET()).rejects.toThrow('Could not read any of the photos');
     });
 
+    it('lists a photo whose name has a percent sign or a hash with URLs that reach its derivatives', async () => {
+        fs.copyFileSync(lib.file('landscape-edited.jpg'), lib.file('50% #1.jpg'));
+        await processImage('50% #1.jpg');
+
+        const image = (await getGalleryImages()).find((candidate) => decodeURIComponent(candidate.optimized) === '/assets/photos/optimized/50% #1.webp');
+        expect(image?.src).toBe('/assets/photos/optimized/50%25%20%231.webp');
+        for (const field of URL_FIELDS) {
+            const url = image?.[field] ?? '';
+            expect(fs.existsSync(lib.file(decodeURIComponent(url.replace('/assets/photos/', '')))), `${field}: ${url}`).toBe(true);
+        }
+    });
+
     it.each(['EACCES', 'EIO', 'EMFILE'])("throws when a derivative folder can't be listed (%s), instead of listing no photos", async (code) => {
         const thumbnails = lib.file('thumbnails');
         const realReaddirSync = fs.readdirSync;
