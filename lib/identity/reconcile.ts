@@ -450,10 +450,26 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
         if (pixelDigest !== null) addTo(pixelOwners, pixelDigest, photo.photoId);
     }
 
-    /** The earliest-created photo among `ids`, the one a duplicate points at. */
+    /** The path a photo was first seen at: that of its earliest revision. */
+    function firstSeenPath(photo: PhotoRecord): string {
+        let earliest: AssetRevisionRecord | undefined;
+        for (const revision of Object.values(photo.revisions)) {
+            if (!earliest || revision.firstSeenAt < earliest.firstSeenAt || (revision.firstSeenAt === earliest.firstSeenAt && revision.firstSeenPath < earliest.firstSeenPath)) {
+                earliest = revision;
+            }
+        }
+        return earliest?.firstSeenPath ?? photo.source.path;
+    }
+
+    /**
+     * The earliest-created photo among `ids`, the one a duplicate points at.
+     * Photos created in one pass go by the path each was first seen at, so the
+     * first of them by path is the original, whatever their IDs.
+     */
     function original(ids: Iterable<string>): string {
+        const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
         return [...ids].sort((a, b) =>
-            photos[a].createdAt < photos[b].createdAt ? -1 : photos[a].createdAt > photos[b].createdAt ? 1 : a < b ? -1 : a > b ? 1 : 0)[0];
+            compare(photos[a].createdAt, photos[b].createdAt) || compare(firstSeenPath(photos[a]), firstSeenPath(photos[b])) || compare(a, b))[0];
     }
 
     /** The most recently seen photo that went missing from this key before the pass. */

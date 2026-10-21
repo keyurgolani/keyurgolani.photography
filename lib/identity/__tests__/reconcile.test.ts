@@ -47,6 +47,30 @@ describe('reconcile: first sight', () => {
         expect(again.registry.photos).toEqual(frozen.photos);
     });
 
+    it('points a duplicate at the photo first seen at the earliest path when photos share a creation time, whatever their IDs', () => {
+        // IDs that count down, so ID order and path order disagree.
+        let next = 99;
+        const idGen = () => `00000000-0000-4000-8000-${String(next--).padStart(12, '0')}`;
+        const library = new FakeLibrary().put('a.jpg', image('A')).put('b.jpg', image('A'));
+        const first = reconcile(library.scan(), emptyRegistry(), library.lookup, { idGen, profileId: PROFILE });
+        const at = (registry: typeof first.registry, path: string) => Object.values(registry.photos).find((photo) => photo.source.path === path);
+        const [a, b] = [at(first.registry, 'a.jpg'), at(first.registry, 'b.jpg')];
+        expect(b?.duplicateOf).toBe(a?.photoId);
+        expect((a?.photoId ?? '') > (b?.photoId ?? '')).toBe(true);
+
+        // A minute later, a.jpg's photo moves past b.jpg by name, with a metadata edit, so its newest
+        // revision was first seen at z.jpg. It was still first seen at a.jpg.
+        const minutesLater = (minutes: number) => ({ ...library.scan(), observedAt: NOW + minutes * 60_000 });
+        library.remove('a.jpg').put('z.jpg', image('A, edited', { pixels: 'A' }));
+        const second = reconcile(minutesLater(1), first.registry, library.lookup, { idGen, profileId: PROFILE });
+        expect(second.facts).toMatchObject([{ type: 'metadata-changed', photoId: a?.photoId, path: 'z.jpg' }]);
+
+        library.put('c.jpg', image('A'));
+        const third = reconcile(minutesLater(2), second.registry, library.lookup, { idGen, profileId: PROFILE });
+        expect(at(third.registry, 'c.jpg')?.duplicateOf).toBe(a?.photoId);
+        expect(third.facts).toMatchObject([{ type: 'new', path: 'c.jpg', duplicateOf: a?.photoId }]);
+    });
+
     it('keeps duplicate bytes as separate records, the later one pointing at the earlier', () => {
         const r = seeded({ 'a.jpg': 'A', 'b.jpg': 'A' });
         const [a, b] = [r.photoAt('a.jpg'), r.photoAt('b.jpg')];
