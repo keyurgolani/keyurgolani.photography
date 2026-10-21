@@ -1,4 +1,5 @@
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+import type { ImageItem } from '../utils/getImageData';
 import { expectContrastOverImage } from './support/contrast';
 import { FIXTURE_CAPTION } from './support/fixtures';
 import { expectNoFadeOnBlur } from './support/focus';
@@ -129,14 +130,31 @@ test('one tap on a photo opens the lightbox and leaves the tile untransformed', 
     await expect.poll(() => element?.evaluate((el) => getComputedStyle(el).transform)).toBe('none');
 });
 
-test('the caption keeps 4.5:1 over the white photo once focus reveals it', async ({ page }) => {
-    await openGallery(page);
-    const tile = entries(page).first(); // white.jpg, captioned
+/** Focuses `tile` once its image has loaded and checks its caption over the photo. */
+async function expectCaptionContrast(tile: Locator) {
     await expect.poll(() => tile.locator('img').evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
     await tile.focus();
     const caption = tile.getByText(FIXTURE_CAPTION);
     await expect(caption.locator('xpath=..')).toHaveCSS('opacity', '1');
     await expectContrastOverImage(caption, { min: 4.5 });
+}
+
+test('the caption keeps 4.5:1 over the white photo once focus reveals it', async ({ page }) => {
+    await openGallery(page);
+    const tile = entries(page).first(); // white.jpg, captioned, 8 rows
+    await expectCaptionContrast(tile);
+});
+
+test('the caption keeps 4.5:1 over the white photo on a 3-row tile, where the scrim has the least room', async ({ page }) => {
+    // A captioned 4:1 record gets the shortest tile, 3 rows of 50 px and 2 gaps of 12 px.
+    const src = '/assets/photos/white.jpg';
+    const record: ImageItem = { id: 0, src, thumbnail: src, medium: src, optimized: src, width: 2000, height: 500, caption: FIXTURE_CAPTION, date: Date.UTC(2024, 0, 1), lqip: '' };
+    await page.route('**/api/photos', (route) => route.fulfill({ json: [record] }));
+    await page.goto('/gallery');
+    await waitForHydration(page);
+    const tile = page.getByRole('button', { name: 'Photograph 1 of 1', exact: true });
+    await expect.poll(async () => (await tile.boundingBox())?.height).toBe(174);
+    await expectCaptionContrast(tile);
 });
 
 test('a photo, the theme toggle, and the Primary links drop their focus ring at once on blur', async ({ page }) => {

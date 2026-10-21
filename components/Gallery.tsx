@@ -100,8 +100,8 @@ function LazyGalleryTile({
             ) : (
                 <span className="absolute inset-0 bg-neutral-200/50 dark:bg-white/10 animate-pulse" />
             )}
-            {/* Overlay with details, on hover or keyboard focus */}
-            <span className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity duration-300 flex flex-col justify-end p-4 pointer-events-none">
+            {/* Overlay with details, on hover or keyboard focus. The scrim keeps the caption at 4.5:1 on a 3-row tile too. */}
+            <span className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity duration-300 flex flex-col justify-end p-4 pointer-events-none">
                 {img.caption && (
                     <span id={captionId} className="text-white text-xs font-light tracking-wider opacity-90 translate-y-2 group-hover:translate-y-0 group-focus-visible:translate-y-0 transition-transform duration-300">
                         {img.caption}
