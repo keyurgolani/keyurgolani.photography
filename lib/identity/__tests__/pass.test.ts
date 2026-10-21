@@ -209,6 +209,51 @@ describe('runReconcilePass', () => {
         expect(third.facts).toMatchObject([{ type: 'processing-failed', path: 'raw.heic' }]);
     });
 
+    it.each([
+        ['a crash between the registry and stat cache writes', 'crash'],
+        ['a stat cache that cannot be written', 'unwritable'],
+    ] as const)('gives an unsupported-file report repeated after %s the same factId, so sinks see one', async (_label, loss) => {
+        await setup({ files: ['landscape.jpg'] });
+        fs.writeFileSync(lib.file('raw.heic'), 'not really heic');
+        const { seen, options } = harness();
+        if (loss === 'crash') {
+            const crash = { registryWrite: { afterRename() { throw new Error('crash after the registry write'); } } };
+            await expect(runReconcilePass(options({ clearDelivered: true, faults: crash }))).rejects.toThrow('crash after the registry write');
+        } else {
+            fs.mkdirSync(identityPaths(data.root).statCache, { recursive: true });
+            committed(await runReconcilePass(options({ clearDelivered: true })));
+        }
+
+        // The stat cache never recorded the report, so this pass makes it again.
+        const second = committed(await runReconcilePass(options({ clearDelivered: true })));
+        expect(second.facts.filter((fact) => fact.reason === 'unsupported-format')).toHaveLength(1);
+
+        const reports = seen.flat().filter((fact) => fact.reason === 'unsupported-format');
+        expect(new Set(reports.map((fact) => fact.factId)).size).toBe(1);
+        if (loss === 'crash') expect(reports).toHaveLength(1);
+        expect((await readRegistry(data.root)).pendingFacts).toEqual([]);
+    });
+
+    it('gives a digest-collision report repeated after a crash the same factId', async () => {
+        await setup({ files: ['landscape.jpg'] });
+        const real = (name: string) => sha256([fixtures.get(name) as Buffer]);
+        const colliding: Hasher = (chunks) => {
+            const digest = sha256(chunks);
+            return chunks.length === 1 && digest === real('portrait.png') ? real('landscape.jpg') : digest;
+        };
+        const { seen, options } = harness();
+        committed(await runReconcilePass(options({ hasher: colliding, clearDelivered: true })));
+        put('portrait.png', 'portrait.png');
+        const crash = { registryWrite: { afterRename() { throw new Error('crash after the registry write'); } } };
+        await expect(runReconcilePass(options({ hasher: colliding, clearDelivered: true, faults: crash }))).rejects.toThrow('crash after the registry write');
+
+        committed(await runReconcilePass(options({ hasher: colliding, clearDelivered: true })));
+
+        const reports = seen.flat().filter((fact) => fact.reason === 'digest-collision');
+        expect(reports).toHaveLength(1);
+        expect((await readRegistry(data.root)).pendingFacts).toEqual([]);
+    });
+
     it('reads a file again after an in-place edit that kept its size, inode, and mtime', async () => {
         await setup({ files: [] });
         const landscape = fixtures.get('landscape.jpg') as Buffer;

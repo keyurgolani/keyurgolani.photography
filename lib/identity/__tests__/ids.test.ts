@@ -8,6 +8,7 @@ import {
     assetRevisionOf,
     canonicalJson,
     mintPhotoId,
+    namedUuid,
     PHOTO_ID_RE,
     PIXEL_DIGEST_RE,
     pixelDigestOf,
@@ -23,6 +24,13 @@ describe('identifiers', () => {
         expect(mintPhotoId()).toMatch(PHOTO_ID_RE);
         expect(() => mintPhotoId(() => 'landscape.jpg')).toThrow(/not a UUID v4/);
         expect(() => mintPhotoId(() => '6f1c1a2e-0b4b-1d8e-9a43-1d2b3c4d5e6f')).toThrow(/not a UUID v4/);
+    });
+
+    it('names a UUID by its input alone, as RFC 9562 version 8', () => {
+        const name = 'processing-failed:sha256-x:sha256-x\0raw.heic\0unsupported-format';
+        expect(namedUuid(name)).toBe(namedUuid(name));
+        expect(namedUuid(name)).not.toBe(namedUuid(`${name} `));
+        expect(namedUuid(name)).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     });
 
     it('digests source bytes as sha256- plus 64 hex, through an injectable hasher', () => {

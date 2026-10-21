@@ -3,7 +3,7 @@ import type { AtomicWriteFaults } from '../storage/atomicWrite';
 import { dataRootStatus, libraryRoot, type DataRootState } from '../storage/config';
 import { UnsupportedSchemaError } from '../storage/document';
 import { LockTimeoutError, withLock, type LockRecord } from '../storage/lock';
-import { sha256, type Hasher } from './ids';
+import { namedUuid, sha256, type Hasher } from './ids';
 import { inspectEntry, type Inspection } from './inspect';
 import { currentProfileId } from './profile';
 import { isStillChanging, reconcile, type FactDraft, type ReconcileReport } from './reconcile';
@@ -43,6 +43,25 @@ export interface ObservedLibrary {
     report: ReconcileReport;
     retryAfterMs: number | null;
     statCache: StatCache;
+}
+
+/**
+ * Reports made once per version of a file, an unsupported file and a digest
+ * collision: they change no registry state, so only the stat cache remembers
+ * that they were made.
+ */
+function reportedOncePerVersion(fact: Pick<FactDraft, 'type' | 'reason'>): boolean {
+    return fact.type === 'processing-failed' && fact.reason !== 'undecodable';
+}
+
+/**
+ * The stat cache is written after the registry, so a crash between the two,
+ * or a cache that can't be written, makes one of those reports again. Its
+ * factId comes from the report itself, so the repeat carries the same one and
+ * sinks drop it. Every other fact gets a fresh ID.
+ */
+function factIdFor(draft: FactDraft, idGen: () => string): string {
+    return reportedOncePerVersion(draft) ? namedUuid(`${draft.key}\0${draft.path}\0${draft.reason ?? ''}`) : idGen();
 }
 
 type Signature = Pick<StatCacheEntry, 'size' | 'mtimeMs' | 'ctimeMs' | 'ino'>;
@@ -107,7 +126,7 @@ export async function observeLibrary(
 
     // An unsupported file or a digest collision changes no registry state, so report it once per version of the file.
     const facts = result.facts.filter((fact) => {
-        if (fact.type !== 'processing-failed' || fact.reason === 'undecodable') return true;
+        if (!reportedOncePerVersion(fact)) return true;
         const entry = entries[fact.path];
         if (!entry) return true;
         if (entry.emitted.includes(fact.key)) return false;
@@ -196,7 +215,7 @@ export async function runReconcilePass(options: PassOptions = {}): Promise<PassO
             for (const skipped of observed.report.unreadable) logger.warn(`[identity] Skipped ${skipped}: it can't be read.`);
             for (const folder of observed.scan.unreadableDirs) logger.warn(`[identity] Skipped folder ${folder}: it can't be listed.`);
 
-            const facts: IdentityFact[] = observed.facts.map((draft) => ({ ...draft, factId: idGen() }));
+            const facts: IdentityFact[] = observed.facts.map((draft) => ({ ...draft, factId: factIdFor(draft, idGen) }));
             await faults?.beforeRegistryWrite?.();
             const written = await writeRegistry(root, { ...observed.registry, pendingFacts: [...before.pendingFacts, ...facts] }, before.version, faults?.registryWrite);
             await writeStatCache(root, observed.statCache).catch((error: unknown) => {
