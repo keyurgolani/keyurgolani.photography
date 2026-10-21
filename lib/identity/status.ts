@@ -1,6 +1,6 @@
-import path from 'node:path';
 import { dataRootStatus, type DataRootStatus } from '../storage/config';
 import { readJsonFile } from '../storage/document';
+import { watcherStatusFile } from './heartbeat';
 import { readRegistry } from './registry';
 import type { Hold, SourceHealth } from './types';
 
@@ -65,7 +65,7 @@ export async function identityStatus({ clock = Date.now }: { clock?: () => numbe
     }
 
     try {
-        const heartbeat = await readJsonFile(path.join(dataRoot.root, 'status', 'watcher.json'));
+        const heartbeat = await readJsonFile(watcherStatusFile(dataRoot.root));
         const at = typeof heartbeat === 'object' && heartbeat !== null ? (heartbeat as { heartbeatAt?: unknown }).heartbeatAt : undefined;
         if (typeof at === 'string' && !Number.isNaN(Date.parse(at))) {
             status.watcher = { heartbeatAt: at, ageSeconds: Math.max(0, Math.round((clock() - Date.parse(at)) / 1000)) };
