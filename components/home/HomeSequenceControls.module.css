@@ -35,7 +35,7 @@
 /* On a short screen the settled portrait reaches the top right and covers
    Previous. Under 850 px wide, which takes in a phone on its side up to
    844 px, the controls move down above the nav pill, with the hint over the
-   buttons. Wider, the top right already clears the portrait. */
+   buttons. Wider, the top right clears the portrait. */
 @media (max-width: 849px) and (max-height: 519px) {
   .controls {
     top: auto;
@@ -44,10 +44,14 @@
   }
 }
 
-/* Under 660 px wide, Previous would still sit under the bottom of the
-   portrait, so the playback button takes a second row, and the narrower
-   controls keep clear of it. */
-@media (max-width: 659px) and (max-height: 519px) {
+/* Under 800 px wide, one row would put Previous within a few px of the bottom
+   of the portrait, less in a wider font. The playback button takes a second
+   row instead, and the narrower controls sit 1rem from the edge. */
+@media (max-width: 799px) and (max-height: 519px) {
+  .controls {
+    right: 1rem;
+  }
+
   .row {
     display: grid;
     grid-template-columns: repeat(3, auto);
