@@ -154,8 +154,10 @@ async function writeRecord(handle: fs.promises.FileHandle, record: LockRecord): 
  * ahead of the waiter's clock, is renamed to `<name>.lock.stale-<uuid>` and
  * re-read: if it changed in the meantime it is linked back and the waiter
  * keeps waiting, otherwise the waiter replaces it and gets `takeover`. A
- * holder whose renewal finds another owner aborts `fn` through `signal`.
- * There are no PID checks, so this works across hosts.
+ * lock path that blocks the create but can't be read, such as a dangling
+ * symlink, counts as held, so the wait still ends. A holder whose renewal
+ * finds another owner aborts `fn` through `signal`. There are no PID checks,
+ * so this works across hosts.
  */
 export async function withLock<T>(name: string, options: LockOptions, fn: (context: LockContext) => Promise<T>): Promise<T> {
     if (!LOCK_NAME.test(name)) throw new TypeError(`Invalid lock name: ${name}`);
@@ -248,23 +250,31 @@ export async function withLock<T>(name: string, options: LockOptions, fn: (conte
     const started = clock();
     let brokeLease: LockTakeover | null = null;
     let acquired: { handle: fs.promises.FileHandle; record: LockRecord } | null = null;
+    let unreadable = 0;
     for (;;) {
         acquired = await tryCreate();
         if (acquired) break;
 
         const observed = await observe(lockPath);
-        if (!observed) continue; // Released between our open and our read
-        if (isExpired(observed, clock())) {
-            const replaced = await breakExpired(observed);
-            if (replaced) {
-                // Create it again right away. Another waiter may still win, and then we wait on that one.
-                brokeLease = replaced;
-                continue;
+        if (observed) {
+            unreadable = 0;
+            if (isExpired(observed, clock())) {
+                const replaced = await breakExpired(observed);
+                if (replaced) {
+                    // Create it again right away. Another waiter may still win, and then we wait on that one.
+                    brokeLease = replaced;
+                    continue;
+                }
             }
+        } else if (++unreadable === 1) {
+            // Most likely released between our create and our read, so try again at once. Something that
+            // blocks the create but can't be read, such as a dangling symlink, counts as a holder from the
+            // second try, so the wait still ends.
+            continue;
         }
         brokeLease = null;
         const waited = clock() - started;
-        if (waited >= waitMs) throw new LockTimeoutError(name, observed.record, waited);
+        if (waited >= waitMs) throw new LockTimeoutError(name, observed?.record ?? null, waited);
         await sleep(Math.min(pollMs, Math.max(0, waitMs - waited)));
     }
 

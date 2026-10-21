@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runTsx } from '../../../test/helpers/runTsx';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { LockLostError, LockTimeoutError, MAX_LEASE_MS, withLock, type LockRecord } from '../lock';
@@ -184,6 +184,48 @@ describe('withLock', () => {
         expect(Date.parse(after.heartbeatAt)).toBeGreaterThan(Date.parse(before.heartbeatAt));
         expect(aborted).toBe(false);
         expect(lockDirEntries()).toEqual([]);
+    });
+
+    it("counts a lock path it can neither create nor read, such as a dangling symlink, as held, and times out instead of spinning", async () => {
+        fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+        fs.symlinkSync(path.join(data.root, 'nowhere'), lockPath);
+        let now = Date.now();
+        const waits: number[] = [];
+        const error = await withLock('registry', {
+            root: data.root,
+            waitMs: 600,
+            pollMs: 50,
+            clock: () => now,
+            sleep: async (ms) => {
+                waits.push(ms);
+                now += ms;
+                if (waits.length > 100) throw new Error('the waiter kept waiting');
+            },
+        }, async () => 'never').catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(LockTimeoutError);
+        expect((error as LockTimeoutError).holder).toBeNull();
+        expect(waits.reduce((total, ms) => total + ms, 0)).toBe(600);
+        await expect(withLock('registry', { root: data.root, waitMs: 0 }, async () => 'never')).rejects.toBeInstanceOf(LockTimeoutError);
+    });
+
+    it('tries again at once, without waiting, when the lock is released between its create and its read', async () => {
+        const realOpen = fs.promises.open.bind(fs.promises);
+        let opens = 0;
+        const open = vi.spyOn(fs.promises, 'open').mockImplementation((async (...args: Parameters<typeof fs.promises.open>) => {
+            opens++;
+            if (opens === 1) throw Object.assign(new Error(`EEXIST: file already exists, open '${String(args[0])}'`), { code: 'EEXIST' });
+            if (opens === 2) throw Object.assign(new Error(`ENOENT: no such file or directory, open '${String(args[0])}'`), { code: 'ENOENT' });
+            return realOpen(...args);
+        }) as typeof fs.promises.open);
+        const waits: number[] = [];
+        try {
+            const result = await withLock('registry', { root: data.root, waitMs: 0, sleep: async (ms) => { waits.push(ms); } }, async () => 'acquired');
+            expect(result).toBe('acquired');
+        } finally {
+            open.mockRestore();
+        }
+        expect(waits).toEqual([]);
     });
 
     it('judges a lease by the holder\'s leaseMs, not the waiter\'s', async () => {
