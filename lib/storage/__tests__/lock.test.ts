@@ -111,11 +111,24 @@ describe('withLock', () => {
         await entered.promise;
         const holderRecord = readRecord();
 
-        const started = Date.now();
-        const error = await withLock('registry', { root: data.root, waitMs: 0 }, async () => 'never').catch((caught: unknown) => caught);
+        // At once means without waiting. The waiter only waits through the injected sleep, so
+        // counting those calls, rather than timing the attempt, holds on a busy machine too. The
+        // clock stands still, so no time passes even on a slow attempt, and a waiter that kept
+        // polling would fail here instead of spinning.
+        const now = Date.now();
+        const waits: number[] = [];
+        const error = await withLock('registry', {
+            root: data.root,
+            waitMs: 0,
+            clock: () => now,
+            sleep: async (ms) => {
+                waits.push(ms);
+                if (waits.length > 3) throw new Error('the waiter kept waiting');
+            },
+        }, async () => 'never').catch((caught: unknown) => caught);
         expect(error).toBeInstanceOf(LockTimeoutError);
         expect((error as LockTimeoutError).holder).toEqual(holderRecord);
-        expect(Date.now() - started).toBeLessThan(250);
+        expect(waits).toEqual([]);
 
         release.resolve();
         await holder;
