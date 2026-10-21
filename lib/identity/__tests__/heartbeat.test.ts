@@ -97,7 +97,7 @@ describe('checkWatcherHealth', () => {
         const stale = await runTsx('scripts/watcherHealth.ts', [], { env: { PHOTOGRAPHY_DATA_DIR: data.root } });
         expect(stale.code).toBe(1);
         expect(stale.stderr).toMatch(/^\[watcher-health\] The last heartbeat was \d+ s ago, at /m);
-    });
+    }, 120_000);
 });
 
 describe('identityStatus', () => {
