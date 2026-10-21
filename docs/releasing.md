@@ -173,7 +173,7 @@ docker compose -f docker-compose.prod.yml logs image-watcher | grep orientation-
 
 Once it logs that it rebuilt the sets of the orientation-tagged photos, clear `./.next-images-cache` the same way as above, so `/_next/image` drops the copies it made from the old derivatives. If it also names photos that failed to rebuild, fix or remove those files, and clear the cache again once it logs that it rebuilt them. If this is also the first release with Phase 0, this one clear, after the rebuild, covers both.
 
-The first release with slice C of #10 changes `docker-compose.prod.yml` itself. Both containers mount the data root, `./portfolio-data`, and the watcher runs the bundled `node dist/scripts/imageWatcher.mjs`, since the image no longer has tsx, so the old compose file can't run the new image's watcher. Fetch that release's compose file, and create the data root before `up -d`, since Compose never creates it:
+The first release with slice C of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10) needs the new `docker-compose.prod.yml` on the host, and the data root, `./portfolio-data`, created and owned by uid 1001 before the first `up`. The old compose file runs the watcher with tsx, which the image no longer has, and the new one never creates a missing data root, so neither container starts without it:
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/keyurgolani/keyurgolani.photography/vX.Y.Z/docker-compose.prod.yml
@@ -183,7 +183,7 @@ docker compose -f docker-compose.prod.yml pull
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-The site keeps serving the legacy derivatives, and the watcher's identity step stays off until the migration in [data-root.md](data-root.md) initializes the data root. Back up first, then run it whenever you're ready.
+[Setting it up](data-root.md#setting-it-up) in data-root.md is the same step. The site keeps serving the legacy derivatives, and the watcher's identity step stays off until the [migration runbook](data-root.md#migration-runbook) there initializes the data root. Back up first, then run it whenever you're ready.
 
 ## Rollback
 
