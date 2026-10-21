@@ -105,11 +105,26 @@ describe('migrateApply', () => {
         expect(mapping.unmappable).toEqual(Object.fromEntries(legacyUrls('x.jpg').filter((url) => url !== '/assets/photos/x.jpg').map((url) => [url, ['x.jpg', 'x.png']])));
     }, 60_000);
 
-    it('names the URLs the legacy site served, and only originals for nested files', () => {
-        const legacy = getImagePaths('y.jpg');
-        expect(legacyUrls('y.jpg')).toEqual([legacy.original, legacy.thumbnail, legacy.medium, legacy.optimized, legacy.thumbnailAvif, legacy.mediumAvif, legacy.optimizedAvif, legacy.lqip]);
-        expect(legacyUrls('series/z.jpg')).toEqual(['/assets/photos/series/z.jpg']);
+    it.each(['y.jpg', '50%off.jpg', 'a#b.png', 'IMG 1 (edited).jpg', 'café.webp', 'what?.jpg'])('names the URLs the legacy site served for %s, encoded as it wrote them', (name) => {
+        const legacy = getImagePaths(name);
+        expect(legacyUrls(name)).toEqual([legacy.original, legacy.thumbnail, legacy.medium, legacy.optimized, legacy.thumbnailAvif, legacy.mediumAvif, legacy.optimizedAvif, legacy.lqip]);
     });
+
+    it('names only the original for a nested file, each segment encoded', () => {
+        expect(legacyUrls('series/z.jpg')).toEqual(['/assets/photos/series/z.jpg']);
+        expect(legacyUrls('50% off/a#1.jpg')).toEqual(['/assets/photos/50%25%20off/a%231.jpg']);
+    });
+
+    it('maps no derivative URL that differs from another only by case or Unicode form, since a case-insensitive disk serves one file for both', async () => {
+        // café in NFC, then in NFD.
+        const s = await setup({ 'Beach.jpg': 0, 'beach.png': 1, 'café.jpg': 2, 'cafe\u0301.png': 3 });
+        const result = await s.apply();
+        const mapping = mappingOf(s.data, result.status === 'applied' ? result.mappingPath : '');
+        const derivatives = (file: string) => legacyUrls(file).slice(1);
+        const shared = (a: string, b: string) => [...derivatives(a), ...derivatives(b)].map((url) => [url, [a, b].sort()]);
+        expect(mapping.unmappable).toEqual(Object.fromEntries([...shared('Beach.jpg', 'beach.png'), ...shared('café.jpg', 'cafe\u0301.png')]));
+        expect(Object.keys(mapping.urls).sort()).toEqual(['Beach.jpg', 'beach.png', 'café.jpg', 'cafe\u0301.png'].map((file) => legacyUrls(file)[0]).sort());
+    }, 60_000);
 
     it('leaves a dry run afterwards with nothing to report', async () => {
         const s = await setup({ 'x.jpg': 0, 'y.jpg': 1 });
