@@ -163,7 +163,7 @@ docker compose -f docker-compose.prod.yml exec image-watcher npm run photos:migr
 docker compose -f docker-compose.prod.yml exec image-watcher cat <report path>
 ```
 
-Read the report's "Orientation-tagged files" section. It lists every photo the rebuild turns upright. If it says "None.", skip the rest. Otherwise rebuild every derivative once, with the watcher stopped so the two never write at once:
+Read the report's "Orientation-tagged files" section. It lists the top-level photos the rebuild turns upright, the only ones the Gallery shows, except any the library reaches through a symlink, since the dry run reads no file through one. If it says "None." and no photo in the library's top folder is a symlink, skip the rest. Otherwise rebuild every derivative once, with the watcher stopped so the two never write at once:
 
 ```bash
 docker compose -f docker-compose.prod.yml stop image-watcher

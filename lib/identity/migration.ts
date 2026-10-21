@@ -208,14 +208,15 @@ export function renderReport(plan: MigrationPlan, observed: ObservedLibrary): st
     ]));
     section('Unsupported files', bullets(report.unsupported.map(code)));
 
-    const oriented = images.flatMap((source) => {
+    // The photos the legacy rebuild turns upright: top-level ones, since it builds sets only for those.
+    const oriented = topLevel.flatMap((source) => {
         const inspection = observed.inspections.get(source.path);
         return inspection?.kind === 'image' && inspection.orientation !== null && inspection.orientation !== 1
             ? [`${code(source.path)}: orientation ${inspection.orientation}`]
             : [];
     });
     section('Orientation-tagged files', oriented.length === 0 ? ['None.'] : [
-        'New derivatives turn these upright, and orientations 5 to 8 swap width and height.',
+        'The rebuild turns these top-level photos upright, and orientations 5 to 8 swap width and height.',
         '',
         ...oriented.map((line) => `- ${line}`),
     ]);

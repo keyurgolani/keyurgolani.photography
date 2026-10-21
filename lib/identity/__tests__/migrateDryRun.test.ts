@@ -161,6 +161,17 @@ describe('photos:migrate --dry-run', () => {
         expect(plan.sources.every((source) => source.assetRevision?.startsWith('sha256-'))).toBe(true);
     });
 
+    it('lists only the top-level orientation-tagged photos, the ones the rebuild turns upright', async () => {
+        await library({ 'landscape-rot6.jpg': fixture('landscape-rot6.jpg'), 'series/rot6.jpg': fixture('landscape-rot6.jpg') });
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', '');
+        vi.stubEnv('NODE_ENV', 'production');
+
+        const { report } = await migrateDryRun(options({ outDir: tempOut() }));
+        const section = report.split('## Orientation-tagged files\n')[1].split('\n## ')[0];
+        expect(section).toContain('`landscape-rot6.jpg`: orientation 6');
+        expect(section).not.toContain('series/rot6.jpg');
+    });
+
     it('escapes a pipe in a path, so the Proposed photo IDs table keeps its columns', async () => {
         await library({ 'a|b.jpg': fixture('landscape.jpg') });
         vi.stubEnv('PHOTOGRAPHY_DATA_DIR', '');
