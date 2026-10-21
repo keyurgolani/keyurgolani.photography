@@ -39,9 +39,15 @@ export interface DataRootStatus {
     detail?: string;
 }
 
-/** The photo library: PHOTOGRAPHY_LIBRARY_DIR, or public/assets/photos under the working directory. */
+/**
+ * The photo library: PHOTOGRAPHY_LIBRARY_DIR, or public/assets/photos under the working directory.
+ *
+ * The roots are found at run time, so the build must not trace them: the
+ * ignore comments here and in dataRootStatus() keep Turbopack from copying
+ * the whole project into .next/standalone.
+ */
 export function libraryRoot(): string {
-    return path.resolve(process.env.PHOTOGRAPHY_LIBRARY_DIR || path.join(process.cwd(), 'public/assets/photos'));
+    return path.resolve(/*turbopackIgnore: true*/ process.env.PHOTOGRAPHY_LIBRARY_DIR || path.join(process.cwd(), 'public/assets/photos'));
 }
 
 /**
@@ -126,7 +132,7 @@ export function dataRootStatus({ write = false }: { write?: boolean } = {}): Dat
 
     let stat: fs.Stats;
     try {
-        stat = fs.statSync(root);
+        stat = fs.statSync(/*turbopackIgnore: true*/ root);
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return { state: 'unavailable', root, cause: 'missing', detail: 'it does not exist' };
         return { state: 'unavailable', root, cause: 'not-readable', detail: `it can't be read: ${(error as Error).message}` };
