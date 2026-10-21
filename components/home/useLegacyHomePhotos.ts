@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { photoImageAlt } from '@/lib/a11y/photoName';
-import type { ImageItem } from '@/utils/getImageData';
+import type { ImageItem } from '@/lib/catalog/photos-api';
 import { getCachedHomeHeroImages, setCachedHomeHeroImages } from '@/utils/homeHeroCache';
 import type { HomePhoto } from './homePhoto';
 

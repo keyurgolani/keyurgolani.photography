@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { test as base, expect, type Page, type Route } from '@playwright/test';
-import type { ImageItem } from '../../utils/getImageData';
+import type { ImageItem } from '../../lib/catalog/photos-api';
 import { DEFAULT_PHOTO_NAMES, fixtureDir, isPhotoFixture, photoFixture } from './fixtures';
 
 const photoLists = new WeakMap<Page, readonly string[]>();
