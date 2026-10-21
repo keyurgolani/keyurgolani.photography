@@ -150,9 +150,23 @@ describe('images.localPatterns', () => {
             '/assets/photos/lqip/landscape.txt',
             '/assets/photos/optimized/landscape.webp?v=2',
             '/public/assets/photos/landscape.jpg',
-            // The portraits are static imports, which /_next/image gets from /_next/static/media.
-            '/assets/profile/front.png',
             '/assets/profile/..%2Fphotos%2Flandscape.jpg',
+            '/favicon.ico',
+        ]) {
+            expect(allows(url), url).toBe(false);
+        }
+    });
+
+    it('lets /_next/image optimize the two profile portraits by their exact paths only', () => {
+        expect(allows('/assets/profile/front.png')).toBe(true);
+        expect(allows('/assets/profile/back.png')).toBe(true);
+        for (const url of [
+            '/assets/profile/front.png?v=2',
+            '/assets/profile/Front.png',
+            '/assets/profile/side.png',
+            '/assets/profile/front.png%2F..%2F..%2Fphotos%2Flandscape.jpg',
+            '/assets/profile/front.png/../../photos/landscape.jpg',
+            '/assets/profile/%2E%2E/photos/landscape.jpg',
         ]) {
             expect(allows(url), url).toBe(false);
         }
