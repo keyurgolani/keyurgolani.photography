@@ -81,6 +81,7 @@ const BASIC = ['landscape.jpg', 'portrait.png', 'square.webp'];
 
 let edited: Buffer; // blue-dominant re-export of landscape.jpg
 let green: Buffer; // a third version
+let corrupt: Buffer; // a JPEG header Sharp can't decode
 let lib: TempLibrary;
 let logs: string[];
 let handlers: WatcherHandlers;
@@ -99,7 +100,9 @@ function newHandlers(options: { maxConcurrentJobs?: number } = {}): WatcherHandl
 }
 
 beforeAll(async () => {
-    edited = (await fixtureFiles({ extras: true })).get('landscape-edited.jpg') as Buffer;
+    const extras = await fixtureFiles({ extras: true });
+    edited = extras.get('landscape-edited.jpg') as Buffer;
+    corrupt = extras.get('corrupt.jpg') as Buffer;
     green = await sharp({ create: { width: 960, height: 640, channels: 3, background: { r: 30, g: 190, b: 60 } } })
         .jpeg({ quality: 90 })
         .toBuffer();
@@ -161,6 +164,60 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
         expect(fs.statSync(lib.file('thumbnails/landscape.webp')).mtimeMs).toBe(thumbnail.mtimeMs);
         expect(fs.readdirSync(lib.root).filter((name) => name.includes('.')).sort()).toEqual(['portrait.png', 'square.webp']);
         expect(logs).toContain('[ImageWatcher] Source removed: landscape.jpg. Derivatives kept. See npm run images:cleanup.');
+    });
+
+    describe('sources sharing one set', () => {
+        it('builds the set only from its owner, the first by path, so it shows the photo the Gallery lists', async () => {
+            fs.copyFileSync(lib.file('portrait.png'), lib.file('landscape.png'));
+            expect(await processOnce(handlers, { force: true, logger })).toBe(0);
+            expect(await outputChannels('landscape')).toEqual(Array(7).fill('red'));
+            expect(logs).toContain('[ImageWatcher] Skipping landscape.png: it shares its derivatives with landscape.jpg.');
+        });
+
+        it('treats base names that differ only by case or Unicode form as one set', async () => {
+            fs.copyFileSync(lib.file('portrait.png'), lib.file('Landscape.png'));
+            expect(await processOnce(handlers, { force: true, logger })).toBe(0);
+            // Landscape.png comes first by path, so its set is the one written, under its own spelling.
+            expect(await outputChannels('Landscape')).toEqual(Array(7).fill('green'));
+            expect(logs).toContain('[ImageWatcher] Skipping landscape.jpg: it shares its derivatives with Landscape.png.');
+        });
+
+        it('falls back to the next source when the first by path does not decode', async () => {
+            fs.writeFileSync(lib.file('landscape.jpeg'), corrupt);
+            expect(await processOnce(handlers, { force: true, logger })).toBe(0);
+            expect(await outputChannels('landscape')).toEqual(Array(7).fill('red'));
+            expect(logs).toContain("[ImageWatcher] Skipping landscape.jpeg: it can't be decoded, so landscape.jpg has the derivatives they share.");
+        });
+
+        it('writes nothing for an add or a change of a source whose set another owns', async () => {
+            await handlers.onAdd(lib.file('landscape.jpg'));
+            const before = lib.hashes(LANDSCAPE);
+            fs.copyFileSync(lib.file('portrait.png'), lib.file('landscape.png'));
+            await handlers.onAdd(lib.file('landscape.png'));
+            await handlers.onChange(lib.file('landscape.png'));
+            expect(lib.hashes(LANDSCAPE)).toEqual(before);
+            expect(logs.filter((line) => line.startsWith('[ImageWatcher] Skipping landscape.png'))).toEqual(
+                Array(2).fill('[ImageWatcher] Skipping landscape.png: it shares its derivatives with landscape.jpg.'));
+        });
+
+        it('builds the set again from the source that owns it once the owner is removed', async () => {
+            fs.copyFileSync(lib.file('portrait.png'), lib.file('landscape.png'));
+            await processOnce(handlers, { force: true, logger });
+            fs.unlinkSync(lib.file('landscape.jpg'));
+            await handlers.onUnlink(lib.file('landscape.jpg'));
+            expect(await outputChannels('landscape')).toEqual(Array(7).fill('green'));
+            expect(logs).toContain('[ImageWatcher] Rebuilt the set landscape.jpg shared from landscape.png.');
+        });
+
+        it('leaves the set alone when a source that never owned it is removed', async () => {
+            fs.copyFileSync(lib.file('portrait.png'), lib.file('landscape.png'));
+            await processOnce(handlers, { force: true, logger });
+            const before = lib.hashes(LANDSCAPE);
+            fs.unlinkSync(lib.file('landscape.png'));
+            await handlers.onUnlink(lib.file('landscape.png'));
+            expect(lib.hashes(LANDSCAPE)).toEqual(before);
+            expect(logs.filter((line) => line.includes('Rebuilt'))).toEqual([]);
+        });
     });
 
     it('keeps the old set for a different, older file under a deleted name until it is touched', async () => {

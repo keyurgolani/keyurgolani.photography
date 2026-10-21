@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { GET } from '../../app/api/photos/route';
 import { createTempLibrary, derivativePaths, type TempLibrary } from '../../test/helpers/tempLibrary';
 import { getGalleryImages, type ImageItem } from '../getImageData';
-import { encodeLqip, getPhotoFiles, processImage } from '../imageOptimizer';
+import { encodeLqip, getPhotoFiles, processImage, refreshImage } from '../imageOptimizer';
 
 // Counts the gallery's on-the-fly placeholders. The encoder itself still runs.
 vi.mock('../imageOptimizer', async (importOriginal) => {
@@ -95,34 +95,35 @@ describe('getGalleryImages', () => {
         expect(warnings).toHaveBeenCalledWith('[getGalleryImages] Skipping landscape.png: it shares its derivatives with landscape.jpg.');
     });
 
-    it('warns about base names that differ only by case or Unicode form, which share one set on a case-insensitive disk', async () => {
+    it('lists one source for base names that differ only by case or Unicode form: the first by path, which the watcher builds from', async () => {
         fs.copyFileSync(lib.file('portrait.png'), lib.file('Landscape.png'));
         // crème in NFC, then in NFD.
         fs.copyFileSync(lib.file('portrait.png'), lib.file('crème.png'));
         fs.copyFileSync(lib.file('landscape.jpg'), lib.file('cre\u0300me.jpg'));
+        // On a case-insensitive disk this replaces landscape.jpg's set, and elsewhere it sits beside it.
+        await refreshImage('Landscape.png', { force: true });
         const warnings = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
         const images = await getGalleryImages();
 
-        // None of the new files has a set under its own name, so the listing is as it was.
-        expect(bases(images)).toEqual([...DECODABLE].sort());
-        const shared = (a: string, b: string) =>
-            `[getGalleryImages] ${a} and ${b} share one set of derivatives on a case-insensitive disk, since their base names differ only by case or Unicode form.`;
-        expect(warnings).toHaveBeenCalledWith(shared('Landscape.png', 'landscape.jpg'));
-        expect(warnings).toHaveBeenCalledWith(shared('cre\u0300me.jpg', 'crème.png'));
+        expect(bases(images)).toEqual(['Landscape', ...DECODABLE.filter((base) => base !== 'landscape')].sort());
+        // The set shows the photo the listing names: the portrait.
+        expect(images.find((image) => image.optimized === '/assets/photos/optimized/Landscape.webp')).toMatchObject({ width: 640, height: 960 });
+        const folded = ', since their base names differ only by case or Unicode form';
+        expect(warnings).toHaveBeenCalledWith(`[getGalleryImages] Skipping landscape.jpg: it shares its derivatives with Landscape.png${folded}.`);
+        expect(warnings).toHaveBeenCalledWith(`[getGalleryImages] Skipping crème.png: it shares its derivatives with cre\u0300me.jpg${folded}.`);
         expect(warnings).toHaveBeenCalledTimes(2);
     });
 
-    it('still lists both when each has a set under its own name, as on a case-sensitive disk', async () => {
-        fs.copyFileSync(lib.file('portrait.png'), lib.file('Landscape.png'));
-        // A case-sensitive disk holds a Landscape.* set beside the landscape.* one.
-        const realReaddirSync = fs.readdirSync;
-        vi.spyOn(fs, 'readdirSync').mockImplementation(((dir: fs.PathLike, options?: never) => {
-            const names = realReaddirSync(dir, options) as string[];
-            return [...names, ...names.filter((name) => /^landscape\.(webp|avif|txt)$/.test(name)).map((name) => `L${name.slice(1)}`)];
-        }) as typeof fs.readdirSync);
-        vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    it('falls back to the next source of a set when the first by path does not decode', async () => {
+        fs.copyFileSync(lib.file('corrupt.jpg'), lib.file('landscape.jpeg'));
+        fs.copyFileSync(lib.file('corrupt.jpg'), lib.file('Square.jpg'));
+        const warnings = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const images = await getGalleryImages();
 
-        expect(bases(await getGalleryImages())).toEqual(['Landscape', ...DECODABLE].sort());
+        expect(bases(images)).toEqual([...DECODABLE].sort());
+        expect(images.find((image) => image.optimized === '/assets/photos/optimized/landscape.webp')).toMatchObject({ width: 960, height: 640 });
+        expect(warnings).toHaveBeenCalledWith("[getGalleryImages] Skipping landscape.jpeg: it can't be decoded, so landscape.jpg has the derivatives they share.");
+        expect(warnings).toHaveBeenCalledWith("[getGalleryImages] Skipping Square.jpg: it can't be decoded, so square.webp has the derivatives they share.");
     });
 
     it('logs an undecodable source, leaves it out, and still returns the others', async () => {

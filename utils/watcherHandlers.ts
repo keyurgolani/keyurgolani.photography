@@ -2,13 +2,15 @@ import type { EventEmitter } from 'events';
 import path from 'path';
 import type { FSWatcherEventMap } from 'chokidar';
 import {
-    baseNameOf,
-    filesToProcess,
     generatedFolderNames,
     hasErrorCode,
     isSourceFile,
+    ownerAfterRemoval,
+    ownerOf,
+    planSources,
     refreshImage,
     reprocessImage,
+    setKeyOf,
     SOURCE_CHANGED,
 } from './imageOptimizer';
 
@@ -78,11 +80,12 @@ interface Job {
 export function createWatcherHandlers(
     { logger = console, maxConcurrentJobs = 1 }: { logger?: Logger; maxConcurrentJobs?: number } = {},
 ): WatcherHandlers {
-    // One queue, in arrival order. A job starts only when no job for its basename
-    // is running or queued ahead of it, so one source's jobs run in turn and never
-    // at once. Each job holds its source in memory, so at most maxConcurrentJobs
-    // run. A free slot goes first to a basename with a live event waiting, so a
-    // photo added after start doesn't wait behind the whole startup backlog.
+    // One queue, in arrival order. A job starts only when no job for its set,
+    // setKeyOf() of its name, is running or queued ahead of it, so the jobs of
+    // the sources sharing one set run in turn and never at once. Each job holds
+    // its source in memory, so at most maxConcurrentJobs run. A free slot goes
+    // first to a set with a live event waiting, so a photo added after start
+    // doesn't wait behind the whole startup backlog.
     const queue: Job[] = [];
     const running = new Map<string, Job>();
     // Live jobs in the queue, so pick() skips looking for them when there are none
@@ -151,7 +154,7 @@ export function createWatcherHandlers(
 
     function enqueue(filename: string, live: boolean, run: () => Promise<unknown>): Promise<Outcome> {
         return new Promise((settle) => {
-            queue.push({ key: baseNameOf(filename), live, label: filename, run, settle });
+            queue.push({ key: setKeyOf(filename), live, label: filename, run, settle });
             if (live) liveQueued++;
             pump();
         });
@@ -168,12 +171,14 @@ export function createWatcherHandlers(
             const filename = path.basename(filePath);
             logger.log(`[ImageWatcher] New file detected: ${filename}`);
             let written: string[] = [];
+            let owner = filename;
             const outcome = await enqueue(filename, true, async () => {
-                written = await refreshImage(filename);
+                owner = await ownerOf(filename);
+                if (owner === filename) written = await refreshImage(filename);
             });
-            if (outcome === 'done') {
-                logger.log(`[ImageWatcher] ${written.length > 0 ? 'Processed' : 'Already up to date'}: ${filename}`);
-            }
+            if (outcome !== 'done') return;
+            if (owner !== filename) logger.log(`[ImageWatcher] Skipping ${filename}: it shares its derivatives with ${owner}.`);
+            else logger.log(`[ImageWatcher] ${written.length > 0 ? 'Processed' : 'Already up to date'}: ${filename}`);
         },
 
         async onChange(filePath) {
@@ -181,23 +186,39 @@ export function createWatcherHandlers(
             const filename = path.basename(filePath);
             logger.log(`[ImageWatcher] File changed, reprocessing: ${filename}`);
             // This job always regenerates, so a startup job still waiting for the photo is redundant
-            const key = baseNameOf(filename);
+            const key = setKeyOf(filename);
             dropStartupJobs((job) => job.key === key);
-            if (await enqueue(filename, true, () => reprocessImage(filename)) === 'done') {
-                logger.log(`[ImageWatcher] Reprocessed: ${filename}`);
-            }
+            let owner = filename;
+            const outcome = await enqueue(filename, true, async () => {
+                owner = await ownerOf(filename);
+                if (owner === filename) await reprocessImage(filename);
+            });
+            if (outcome !== 'done') return;
+            if (owner !== filename) logger.log(`[ImageWatcher] Skipping ${filename}: it shares its derivatives with ${owner}.`);
+            else logger.log(`[ImageWatcher] Reprocessed: ${filename}`);
         },
 
         async onUnlink(filePath) {
             if (stopped || !isSourceFile(filePath)) return;
-            logger.log(`[ImageWatcher] Source removed: ${path.basename(filePath)}. Derivatives kept. See npm run images:cleanup.`);
+            const filename = path.basename(filePath);
+            logger.log(`[ImageWatcher] Source removed: ${filename}. Derivatives kept. See npm run images:cleanup.`);
+            // The set it shared may show its pixels, so the source that owns it now builds it again.
+            let next: string | null = null;
+            const outcome = await enqueue(filename, true, async () => {
+                next = await ownerAfterRemoval(filename);
+                if (next) await reprocessImage(next);
+            });
+            if (outcome === 'done' && next) logger.log(`[ImageWatcher] Rebuilt the set ${filename} shared from ${next}.`);
         },
 
         async queueStartupBatch({ force = false } = {}) {
             const result: StartupBatchResult = { processed: [], skipped: [], errors: [] };
             if (stopped) return result;
             logger.log('[ImageWatcher] Checking for unprocessed images...');
-            const files = filesToProcess({ force });
+            const { files, shared } = await planSources({ force });
+            for (const { file, owner, undecodable } of shared) {
+                logger.log(`[ImageWatcher] Skipping ${file}: ${undecodable ? `it can't be decoded, so ${owner} has the derivatives they share` : `it shares its derivatives with ${owner}`}.`);
+            }
             if (files.length === 0) {
                 logger.log('[ImageWatcher] All images are processed.');
                 return result;

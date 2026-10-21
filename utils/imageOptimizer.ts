@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import sharp from 'sharp';
 import { CACHE_FOLDER, DERIVATIVE_FOLDERS } from '../lib/derivativeFolders.mjs';
+import { keyOf } from '../lib/identity/scan';
 import { libraryRoot } from '../lib/storage/config';
 import { hasErrorCode } from '../lib/storage/fsx';
 
@@ -498,36 +499,116 @@ export function getUnprocessedFiles(): string[] {
 }
 
 /**
- * Regenerate all seven outputs from the current source bytes. The old outputs
- * keep serving until every new one is written.
+ * The key of the derivative set a source writes: its base name, folded as the
+ * identity scan folds paths. Sources sharing one, such as IMG_1.jpg and
+ * IMG_1.png, or Beach.jpg and beach.png, write one set of files on a
+ * case-insensitive disk.
  */
-export async function reprocessImage(filename: string): Promise<ProcessedImagePaths> {
-    const paths = libraryPaths();
-    await writeVariants(filename, { overwrite: true, paths });
-    return getImagePaths(filename, paths);
+export function setKeyOf(filename: string): string {
+    return keyOf(baseNameOf(filename));
+}
+
+/** Sources grouped by setKeyOf(), each group in path order. */
+export function setGroups(files: string[]): string[][] {
+    const groups = new Map<string, string[]>();
+    for (const file of [...files].sort()) groups.set(setKeyOf(file), [...(groups.get(setKeyOf(file)) ?? []), file]);
+    return [...groups.values()];
+}
+
+async function decodes(file: string, paths: LibraryPaths): Promise<boolean> {
+    try {
+        await sharp(path.join(paths.root, file)).metadata();
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 /**
- * The sources the watcher's startup batch works on: every source with `force`,
- * else the unprocessed ones. Both throw on a missing root.
+ * Which source of a group owns its set: the first by path that decodes, or
+ * the first when none does. The Gallery lists only the owner and the watcher
+ * builds only from it, so the set always shows the photo the Gallery names.
+ * Also returns the sources before the owner, which didn't decode.
  */
-export function filesToProcess({ force = false }: { force?: boolean } = {}): string[] {
-    if (!force) return getUnprocessedFiles();
+export async function pickOwner(group: string[], paths: LibraryPaths = libraryPaths()): Promise<{ owner: string; undecodable: string[] }> {
+    if (group.length > 1) {
+        for (const [index, file] of group.entries()) {
+            if (await decodes(file, paths)) return { owner: file, undecodable: group.slice(0, index) };
+        }
+    }
+    return { owner: group[0], undecodable: [] };
+}
+
+/**
+ * The source that owns a removed source's set now, when the set may have been
+ * the removed one's and so shows its pixels: when another source shares the
+ * set and the removed one came before it by path. Null otherwise.
+ */
+export async function ownerAfterRemoval(removed: string, paths: LibraryPaths = libraryPaths()): Promise<string | null> {
+    const group = getPhotoFiles(paths.root).filter((file) => file !== removed && setKeyOf(file) === setKeyOf(removed)).sort();
+    if (group.length === 0) return null;
+    const { owner } = await pickOwner(group, paths);
+    return removed < owner ? owner : null;
+}
+
+/** The source that owns `filename`'s set among the library's sources now, or `filename` when it is the only one. */
+export async function ownerOf(filename: string, paths: LibraryPaths = libraryPaths()): Promise<string> {
+    const group = getPhotoFiles(paths.root).filter((file) => setKeyOf(file) === setKeyOf(filename));
+    return group.includes(filename) ? (await pickOwner(group.sort(), paths)).owner : filename;
+}
+
+/**
+ * Regenerate all seven outputs from the current source bytes. The old outputs
+ * keep serving until every new one is written. A source whose set another
+ * source owns writes nothing.
+ */
+export async function reprocessImage(filename: string): Promise<ProcessedImagePaths> {
+    const paths = libraryPaths();
+    if (await ownerOf(filename, paths) === filename) await writeVariants(filename, { overwrite: true, paths });
+    return getImagePaths(filename, paths);
+}
+
+export interface SourcePlan {
+    /** The owners whose sets need building: all of them with `force`, else those needsRefresh() names. */
+    files: string[];
+    /** The sources left out because another one owns their set, and whether each was passed over for not decoding. */
+    shared: { file: string; owner: string; undecodable: boolean }[];
+}
+
+/** What the watcher's startup batch builds, and which sources it leaves out. Throws on a missing root. */
+export async function planSources({ force = false }: { force?: boolean } = {}): Promise<SourcePlan> {
     const paths = libraryPaths();
     ensureDirectories(paths);
-    return getPhotoFiles(paths.root);
+    const plan: SourcePlan = { files: [], shared: [] };
+    const index = force ? null : readDerivativeIndex(paths);
+    for (const group of setGroups(getPhotoFiles(paths.root))) {
+        const { owner, undecodable } = await pickOwner(group, paths);
+        for (const file of group) if (file !== owner) plan.shared.push({ file, owner, undecodable: undecodable.includes(file) });
+        if (index === null || needsRefresh(owner, paths, index)) plan.files.push(owner);
+    }
+    return plan;
+}
+
+/**
+ * The sources the watcher's startup batch works on: the owner of each set,
+ * every one with `force`, else the unprocessed ones. Both throw on a missing root.
+ */
+export async function filesToProcess({ force = false }: { force?: boolean } = {}): Promise<string[]> {
+    return (await planSources({ force })).files;
 }
 
 /**
  * The overwrite rule the startup batch and a live `add` use: regenerate all
  * seven outputs when forced or when needsRefresh() says so, and otherwise do
  * nothing. A missing one next to existing ones may come from a different
- * version, so filling in only the gap could leave a mixed set.
+ * version, so filling in only the gap could leave a mixed set. A source whose
+ * set another source owns writes nothing.
  *
  * Returns the paths it replaced, none when the set was already current.
  */
 export async function refreshImage(filename: string, { force = false }: { force?: boolean } = {}): Promise<string[]> {
     const paths = libraryPaths();
+    if (await ownerOf(filename, paths) !== filename) return [];
     if (!force && !needsRefresh(filename, paths)) return [];
     return writeVariants(filename, { overwrite: true, paths });
 }

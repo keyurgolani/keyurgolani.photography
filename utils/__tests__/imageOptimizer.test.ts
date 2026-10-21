@@ -486,6 +486,15 @@ describe('startup batch overwrite rule', { timeout: 60_000 }, () => {
         expect(first.processed.sort()).toEqual(['landscape.jpg', 'portrait.png', 'square.webp']);
     });
 
+    it('refreshImage() and reprocessImage() write nothing for a source whose set another source owns', async () => {
+        const before = lib.hashes(LANDSCAPE);
+        fs.copyFileSync(lib.file('portrait.png'), lib.file('landscape.png'));
+        expect(await refreshImage('landscape.png', { force: true })).toEqual([]);
+        await reprocessImage('landscape.png');
+        expect(lib.hashes(LANDSCAPE)).toEqual(before);
+        expect(await filesToProcess({ force: true })).toEqual(['landscape.jpg', 'portrait.png', 'square.webp']);
+    });
+
     it('regenerates a source newer than its outputs', async () => {
         const others = lib.hashes([...derivativePaths('portrait'), ...derivativePaths('square')]);
         fs.writeFileSync(lib.file('landscape.jpg'), fixture('landscape-edited.jpg'));
@@ -537,15 +546,15 @@ describe('startup batch overwrite rule', { timeout: 60_000 }, () => {
         const written = fs.statSync(lib.file('thumbnails/landscape.webp')).mtimeMs;
         expect(written).toBeGreaterThanOrEqual(startedAt - 1000);
         expect(written).toBeLessThanOrEqual(Date.now() + 1000);
-        expect(filesToProcess()).toContain('landscape.jpg');
+        expect(await filesToProcess()).toContain('landscape.jpg');
     });
 
     it('throws on a missing root when forced, the same as unforced', async () => {
         const missing = await createTempLibrary({ missingRoot: true });
         libraries.push(missing);
 
-        expect(() => filesToProcess()).toThrow(`Library root not found: ${missing.root}`);
-        expect(() => filesToProcess({ force: true })).toThrow(`Library root not found: ${missing.root}`);
+        await expect(filesToProcess()).rejects.toThrow(`Library root not found: ${missing.root}`);
+        await expect(filesToProcess({ force: true })).rejects.toThrow(`Library root not found: ${missing.root}`);
         await expect(newHandlers().queueStartupBatch({ force: true })).rejects.toThrow('Library root not found');
     });
 });

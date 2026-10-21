@@ -2,7 +2,6 @@ import fs from 'fs';
 import path from 'path';
 import sharp from 'sharp';
 import exifFromBuffer from 'exif-reader';
-import { keyOf } from '../lib/identity/scan';
 import {
     baseNameOf,
     encodeLqip,
@@ -13,7 +12,10 @@ import {
     isCompleteSet,
     libraryPaths,
     libraryRootExists,
+    pickOwner,
     readDerivativeIndex,
+    setGroups,
+    type LibraryPaths,
 } from './imageOptimizer';
 
 export interface ImageItem {
@@ -54,31 +56,29 @@ async function placeholderFor(filePath: string): Promise<string> {
 }
 
 /**
- * Sources sharing a base name, such as IMG_1.jpg and IMG_1.png, share one set
- * of legacy derivatives, so only the first by path is listed and the others
- * are logged. Base names that differ only by case or Unicode form, such as
- * Beach.jpg and beach.png, share one set on a case-insensitive disk, so those
- * are logged too. Both stay listed: each is shown only with a complete set
- * under its own name, which on such a disk only the one written last has. The
- * migration dry run's "Basename collisions" section lists both kinds.
+ * Sources that share one set of legacy derivatives, such as IMG_1.jpg and
+ * IMG_1.png, or Beach.jpg and beach.png, which write the same files on a
+ * case-insensitive disk, are listed once: by the source that owns the set,
+ * the first by path that decodes, which is the one the watcher builds it
+ * from. The others are logged. The migration dry run's "Basename collisions"
+ * section lists them.
  */
-function onePerBaseName(files: string[]): string[] {
-    const kept = new Map<string, string>();
-    const folded = new Map<string, string>();
-    for (const file of [...files].sort()) {
-        const base = baseNameOf(file);
-        const first = kept.get(base);
-        if (first !== undefined) {
-            console.warn(`[getGalleryImages] Skipping ${file}: it shares its derivatives with ${first}.`);
-            continue;
+async function setOwners(files: string[], paths: LibraryPaths): Promise<string[]> {
+    const owners: string[] = [];
+    for (const group of setGroups(files)) {
+        const { owner, undecodable } = await pickOwner(group, paths);
+        owners.push(owner);
+        for (const file of group) {
+            if (file === owner) continue;
+            if (undecodable.includes(file)) {
+                console.warn(`[getGalleryImages] Skipping ${file}: it can't be decoded, so ${owner} has the derivatives they share.`);
+            } else {
+                const folded = baseNameOf(file) === baseNameOf(owner) ? '' : ', since their base names differ only by case or Unicode form';
+                console.warn(`[getGalleryImages] Skipping ${file}: it shares its derivatives with ${owner}${folded}.`);
+            }
         }
-        kept.set(base, file);
-        // The key the identity scan folds paths by, so both name the same collisions.
-        const other = folded.get(keyOf(base));
-        if (other === undefined) folded.set(keyOf(base), file);
-        else console.warn(`[getGalleryImages] ${other} and ${file} share one set of derivatives on a case-insensitive disk, since their base names differ only by case or Unicode form.`);
     }
-    return [...kept.values()];
+    return owners;
 }
 
 export async function getGalleryImages(): Promise<ImageItem[]> {
@@ -100,7 +100,7 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
     }
 
     // The same source list the watcher and images:cleanup use, so dot-files never count
-    const files = onePerBaseName(getPhotoFiles(photosDir));
+    const files = await setOwners(getPhotoFiles(photosDir), paths);
     // Each derivative folder read once, so a set counts only under its exact name
     const derivatives = readDerivativeIndex(paths);
 
