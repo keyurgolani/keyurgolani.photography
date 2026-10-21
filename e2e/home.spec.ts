@@ -31,26 +31,46 @@ const bottomBarOpacity = (page: Page) =>
     primary(page).evaluate((el) => parseFloat(getComputedStyle(el.closest('.fixed.bottom-0') ?? el).opacity));
 
 /**
- * Opens Home on `photos`, which it shuffles, and waits out the intro: the
- * grain overlay gone and BottomBar slid up. It doesn't wait on the chrome
- * layer, which shows for about 5.5 s after the intro and hides 3 s after the
- * last activity, so a slow run can't miss that window. No test here needs the
- * chrome shown before it acts.
+ * Opens Home on `photos`, which it shuffles, in `theme`, and waits out the
+ * intro: the grain overlay gone and BottomBar slid up. It doesn't wait on the
+ * chrome layer, which shows for about 5.5 s after the intro and hides 3 s
+ * after the last activity, so a slow run can't miss that window. No test here
+ * needs the chrome shown before it acts.
  */
-async function openHome(page: Page, photos: readonly string[] = ['white', 'gray', 'black']) {
+async function openHome(page: Page, { photos = ['white', 'gray', 'black'], theme = 'dark' }: { photos?: readonly string[]; theme?: 'dark' | 'light' } = {}) {
     setPhotoFixtures(page, photos);
+    if (theme === 'light') await page.addInitScript(() => localStorage.setItem('theme', 'light'));
     await page.goto('/');
     await waitForHydration(page);
     await expect(page.locator('[class*="grainOverlay"]')).toHaveCount(0, { timeout: 15_000 });
     await expect.poll(() => bottomBarOpacity(page), { timeout: 10_000 }).toBe(1);
 }
 
-test('passes the surface checks on the arrows, with 44 px targets and unique names on every control', async ({ page }) => {
-    await openHome(page);
-    await checkSurface(page, { controls: [arrows(page)], chrome: [primary(page), themeToggle(page)] });
-    await expectMinTargetSize(themeToggle(page).or(navLinks(page)));
-    await expectUniqueNames([themeToggle(page), arrows(page), navLinks(page)]);
-});
+for (const viewport of [undefined, { width: 640, height: 400 }]) {
+    test.describe(viewport ? 'at 640 by 400, which is 200% zoom' : 'at the project viewport', () => {
+        if (viewport) test.use({ viewport });
+
+        for (const theme of ['dark', 'light'] as const) {
+            test(`passes the surface checks on the arrows, with 44 px targets and unique names on every control, in the ${theme} theme`, async ({ page }) => {
+                await openHome(page, { theme });
+                await checkSurface(page, { controls: [arrows(page)], chrome: [primary(page), themeToggle(page)] });
+                await expectMinTargetSize(themeToggle(page).or(navLinks(page)));
+                await expectUniqueNames([themeToggle(page), arrows(page), navLinks(page)]);
+            });
+
+            test(`Tab shows the theme toggle with its focus ring inside the 3 s idle window in the ${theme} theme`, async ({ page }) => {
+                await openHome(page, { theme });
+                await page.keyboard.press('Tab');
+                const toggle = themeToggle(page);
+                await expect(toggle).toBeFocused();
+                await expect(toggle).toHaveCSS('opacity', '1');
+                await expectFocusRingVisible(toggle);
+                await expectRingNotClipped(toggle);
+                await expectNotObscured(toggle, [primary(page), toggle]);
+            });
+        }
+    });
+}
 
 test('Tab goes from the theme toggle to both arrows, then the Primary links, and Shift+Tab walks back', async ({ page }) => {
     await openHome(page);
@@ -67,17 +87,6 @@ test('Tab goes from the theme toggle to both arrows, then the Primary links, and
         back.push(await focusedLabel(page));
     }
     expect(back).toEqual(stops.slice(0, -1).reverse());
-});
-
-test('Tab shows the theme toggle with its focus ring inside the 3 s idle window', async ({ page }) => {
-    await openHome(page);
-    await page.keyboard.press('Tab');
-    const toggle = themeToggle(page);
-    await expect(toggle).toBeFocused();
-    await expect(toggle).toHaveCSS('opacity', '1');
-    await expectFocusRingVisible(toggle);
-    await expectRingNotClipped(toggle);
-    await expectNotObscured(toggle, [primary(page), toggle]);
 });
 
 test('keyboard focus on an arrow shows both arrows at full opacity', async ({ page }) => {
@@ -142,7 +151,7 @@ test('each slide names its photo once, on the full-quality layer', async ({ page
 });
 
 test('the arrow icons keep 3:1 over the white photo', async ({ page }) => {
-    await openHome(page, ['white']);
+    await openHome(page, { photos: ['white'] });
     await expect(currentPhoto(page)).toHaveCSS('opacity', '1');
     for (const arrow of [previous(page), next(page)]) {
         await arrow.focus();
