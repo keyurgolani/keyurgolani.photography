@@ -87,12 +87,19 @@ jobs:
       - if: steps.existing.outputs.digest == ''
         uses: docker/setup-buildx-action@v4
 
+      # A release copies this image by digest, so its version label is set here,
+      # from the commit's package.json, instead of metadata-action's sha- default
+      - if: steps.existing.outputs.digest == ''
+        id: version
+        run: echo "version=v$(jq -r .version package.json)" >> "$GITHUB_OUTPUT"
+
       - if: steps.existing.outputs.digest == ''
         id: meta
         uses: docker/metadata-action@v6
         with:
           images: ${{ steps.existing.outputs.image }}
           tags: type=sha
+          labels: org.opencontainers.image.version=${{ steps.version.outputs.version }}
 
       # Pushed by digest only. The sha- tag waits for the smoke test.
       - if: steps.existing.outputs.digest == ''

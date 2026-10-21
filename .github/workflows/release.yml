@@ -170,7 +170,9 @@ jobs:
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           # Decide latest from the tags on origin right now. A higher release
           # may have been tagged, or a tag deleted, since this run started.
-          if ! remote=$(git ls-remote --tags --refs origin 'refs/tags/v*'); then
+          # Without --refs, annotated tags also list their peeled ^{} commit, which
+          # the tag check below reads. Release tag names never end in ^{}.
+          if ! remote=$(git ls-remote --tags origin 'refs/tags/v*'); then
             echo "::error::Could not list the release tags on origin."
             exit 1
           fi
@@ -178,11 +180,20 @@ jobs:
                 import { readFileSync } from "node:fs";
                 import { isHighestRelease } from "./ci/release-plan.mjs";
                 const tags = readFileSync(0, "utf8").split("\n")
-                  .map((line) => line.split("refs/tags/")[1])
+                  .map((line) => line.split("\t")[1]?.replace(/^refs\/tags\//, ""))
                   .filter(Boolean);
                 console.log(isHighestRelease(process.env.VERSION, tags));
               ' <<<"$remote"); then
             echo "::error::Could not decide whether latest moves."
+            exit 1
+          fi
+
+          # The tag may have been deleted or moved since this run started, for
+          # example to stop a release. Never publish one whose tag no longer names this commit.
+          commit=$(awk -v ref="refs/tags/$VERSION^{}" '$2 == ref { print $1 }' <<<"$remote")
+          [ -n "$commit" ] || commit=$(awk -v ref="refs/tags/$VERSION" '$2 == ref { print $1 }' <<<"$remote")
+          if [ "$commit" != "$GITHUB_SHA" ]; then
+            echo "::error::$VERSION on origin now names ${commit:-no commit}, not $GITHUB_SHA, so this run publishes nothing."
             exit 1
           fi
 
