@@ -208,10 +208,14 @@ export default function Gallery({ images, className = '' }: GalleryProps) {
                 thumbnails={{ width: 64, height: 48, border: 0, padding: 3, gap: 16 }}
                 // exiting fires as the close starts and YARL lifts inert, so a reader who moves on during the fade keeps their place.
                 // YARL has just focused the opener the plain way, which scrolls a tile that's partly out of view, so undo that scroll.
+                // A rotation or resize while open can leave the saved spot clear of the tile, so then bring it just into view.
                 on={{
                     exiting: () => {
-                        openerRef.current?.focus({ preventScroll: true });
+                        const opener = openerRef.current;
+                        opener?.focus({ preventScroll: true });
                         window.scrollTo(0, openerScrollRef.current);
+                        const box = opener?.getBoundingClientRect();
+                        if (box && (box.bottom <= 0 || box.top >= window.innerHeight)) opener?.scrollIntoView({ block: 'nearest' });
                     },
                 }}
             />

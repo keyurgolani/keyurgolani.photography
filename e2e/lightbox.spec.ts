@@ -237,6 +237,25 @@ for (const edge of ['top', 'bottom'] as const) {
     });
 }
 
+test('closing after a rotation brings the photo that opened the lightbox back into view', async ({ page }, testInfo) => {
+    const touch = testInfo.project.name === 'mobile';
+    await openGallery(page, 'dark');
+    const tile = entries(page).nth(9);
+    if (touch) await tile.tap();
+    else await tile.click();
+    await settle(page);
+    // The grid reflows for the new width, so the spot the click saved no longer shows the photo.
+    const viewport = page.viewportSize();
+    if (!viewport) throw new Error('No viewport');
+    await page.setViewportSize({ width: viewport.height, height: viewport.width });
+    if (touch) await control(page, 'Close').tap();
+    else await control(page, 'Close').click();
+    await expect(lightbox(page)).toBeHidden();
+
+    await expect(tile).toBeInViewport();
+    await expect(tile).toBeFocused();
+});
+
 test('Escape returns focus to a photo whose click never focused it', async ({ page }) => {
     await openGallery(page, 'dark');
     // The click handler runs but focus stays put, as in Safari, which doesn't focus a button on click.
