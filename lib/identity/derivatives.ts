@@ -6,7 +6,7 @@ import { assetDir } from '../media/path';
 import { dataRootStatus, libraryRoot } from '../storage/config';
 import { hasErrorCode, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE } from '../storage/fsx';
 import { LockTimeoutError, withLock } from '../storage/lock';
-import { IntegrityError, MANIFEST_FILE, publishDirectory, verifyDirectory } from '../storage/publish';
+import { IntegrityError, MANIFEST_FILE, manifestFiles, publishDirectory, readDirectoryManifest, verifyDirectory, type DirectoryManifest } from '../storage/publish';
 import { assetRevisionOf, sha256, type Hasher } from './ids';
 import { PROFILE_1 } from './profile';
 import { readRegistry, writeRegistry } from './registry';
@@ -19,11 +19,11 @@ import { VARIANT_FORMATS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth 
  * set is checked against the bytes that made it: the source must hash to the
  * job's asset revision before anything is encoded, and a set already in
  * place is kept only if its manifest names the same photo, revision, and
- * profile and every file matches its size and SHA-256. The manifest is
- * written last, so a set without one was never finished. A build holds
- * stagingLockName(<id>) for as long as its `staging/<id>` folder exists, so
- * a starting worker can remove the folders of killed builds without touching
- * a live one's.
+ * profile, lists every variant the profile builds and no others, and every
+ * file matches its size and SHA-256. The manifest is written last, so a set
+ * without one was never finished. A build holds stagingLockName(<id>) for as
+ * long as its `staging/<id>` folder exists, so a starting worker can remove
+ * the folders of killed builds without touching a live one's.
  *
  * resolveAsset() and the manifest reader live in lib/media/manifest.ts, so
  * the web process can read sets without loading the encoder.
@@ -117,6 +117,19 @@ export async function removeAbandonedStaging(root: string, { leaseMs, logger = c
     return removed;
 }
 
+/** The files a build writes, by name. */
+const VARIANT_FILES = VARIANT_WIDTHS.flatMap((width) => VARIANT_FORMATS.map((format) => `${width}.${format}`));
+
+/** How a set's file list differs from what a build writes. Empty when they match. */
+function variantDifferences(manifest: DirectoryManifest | null): string[] {
+    if (!manifest) return ['no manifest'];
+    const listed = new Set(manifestFiles(manifest).map((file) => file.name));
+    return [
+        ...VARIANT_FILES.filter((name) => !listed.has(name)).map((name) => `lists no ${name}, which the profile builds`),
+        ...[...listed].filter((name) => !VARIANT_FILES.includes(name)).sort().map((name) => `lists ${name}, which the profile doesn't build`),
+    ];
+}
+
 /** Encode one variant the way profile 1 says: upright, inside the width, never enlarged, no metadata. */
 async function encode(source: Buffer, width: VariantWidth, format: VariantFormat): Promise<Buffer> {
     const recipe = PROFILE_1.variants[width];
@@ -206,6 +219,8 @@ export async function buildDerivativeSet(job: DerivativeJob, options: BuildOptio
     const finalDir = assetDir(job, root);
     if (fs.existsSync(finalDir)) {
         const problems = await verifyDirectory(finalDir, job);
+        // Checking out against its own manifest isn't enough: it has to list what this profile builds.
+        if (problems.length === 0) problems.push(...variantDifferences(await readDirectoryManifest(finalDir)));
         if (problems.length === 0) return recordReady(true);
         const integrity = new IntegrityError(finalDir, problems);
         return recordFailed(`integrity: ${problems.join('; ')}`, integrity);
