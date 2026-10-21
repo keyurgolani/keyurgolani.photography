@@ -179,6 +179,7 @@ const HeroCarousel: React.FC<HeroCarouselProps> = ({
       })}
 
       <button
+        type="button"
         className={`${styles.navButton} ${styles.prev}`}
         onClick={prevSlide}
         aria-label="Previous photograph"
@@ -187,6 +188,7 @@ const HeroCarousel: React.FC<HeroCarouselProps> = ({
       </button>
 
       <button
+        type="button"
         className={`${styles.navButton} ${styles.next}`}
         onClick={nextSlide}
         aria-label="Next photograph"

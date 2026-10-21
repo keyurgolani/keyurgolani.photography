@@ -56,4 +56,12 @@ describe('HeroCarousel', () => {
     expect(screen.getByRole('button', { name: 'Previous photograph' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Next photograph' })).toBeInTheDocument();
   });
+
+  it('makes the arrows plain buttons, so they never submit a form around them', () => {
+    renderCarousel();
+
+    for (const name of ['Previous photograph', 'Next photograph']) {
+      expect(screen.getByRole('button', { name })).toHaveAttribute('type', 'button');
+    }
+  });
 });
