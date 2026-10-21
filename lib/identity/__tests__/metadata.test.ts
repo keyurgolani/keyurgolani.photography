@@ -168,6 +168,32 @@ async function exifWithDate(value: string, order: 'little-endian' | 'big-endian'
     return exif;
 }
 
+describe('the pixel digest', () => {
+    it('hashes the pixels as stored, so a copy whose color profile was stripped still matches', async () => {
+        const lib = await createTempLibrary();
+        cleanups.push(() => lib.cleanup());
+        const base = await sharp({ create: { width: 64, height: 48, channels: 3, background: { r: 200, g: 80, b: 40 } } }).png().toBuffer();
+        const p3 = await sharp(base).withIccProfile('p3').png().toBuffer();
+        // The same stored pixels, written out again without the profile
+        const stored = await sharp(p3).keepIccProfile().raw().toBuffer({ resolveWithObject: true });
+        const stripped = await sharp(stored.data, { raw: stored.info }).png().toBuffer();
+        expect((await sharp(p3).metadata()).icc).toBeDefined();
+        expect((await sharp(stripped).metadata()).icc).toBeUndefined();
+        fs.writeFileSync(lib.file('p3.png'), p3);
+        fs.writeFileSync(lib.file('stripped.png'), stripped);
+
+        const scan = await scanLibrary(lib.root);
+        const [withProfile, withoutProfile] = await Promise.all(['p3.png', 'stripped.png'].map(async (name) => {
+            const entry = scan.entries.find((candidate) => candidate.path === name);
+            if (!entry) throw new Error(`The scan missed ${name}`);
+            return await inspectEntry(lib.root, entry) as ImageInspection;
+        }));
+        expect(withProfile.assetRevision).not.toBe(withoutProfile.assetRevision);
+        expect(withProfile.pixelDigest).not.toBeNull();
+        expect(withProfile.pixelDigest).toBe(withoutProfile.pixelDigest);
+    });
+});
+
 describe('stored and public metadata from a real file', () => {
     let lib: TempLibrary;
     let data: TempDataRoot;

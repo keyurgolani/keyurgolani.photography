@@ -84,7 +84,9 @@ export async function inspectEntry(root: string, entry: ScanEntry, { hasher = sh
     const sourceFormat = metadata?.format ?? FORMAT_BY_EXTENSION[path.extname(entry.path).toLowerCase()] ?? 'unknown';
 
     try {
-        const { data, info } = await sharp(bytes).autoOrient().raw().toBuffer({ resolveWithObject: true });
+        // The pixels as stored. Without keepIccProfile() Sharp converts them to sRGB first, so a copy whose profile
+        // was stripped would hash differently from its original.
+        const { data, info } = await sharp(bytes).autoOrient().keepIccProfile().raw().toBuffer({ resolveWithObject: true });
         return {
             kind: 'image',
             assetRevision,
