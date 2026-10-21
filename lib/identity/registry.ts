@@ -77,7 +77,7 @@ export async function readRegistry(root: string): Promise<Registry> {
 
 async function ensureIdentityDir(root: string): Promise<void> {
     try {
-        await fs.promises.mkdir(identityPaths(root).dir, { mode: PRIVATE_DIR_MODE });
+        await fs.promises.mkdir(/*turbopackIgnore: true*/ identityPaths(root).dir, { mode: PRIVATE_DIR_MODE });
     } catch (error) {
         if (!hasErrorCode(error, 'EEXIST')) throw error;
     }

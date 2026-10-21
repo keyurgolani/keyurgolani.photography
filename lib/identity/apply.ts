@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { DERIVATIVE_FOLDERS } from '../derivativeFolders.mjs';
+import { legacyUrls } from './legacyUrls';
 import { atomicWriteJson } from '../storage/atomicWrite';
 import { DATA_ROOT_FILE, DATA_ROOT_SCHEMA_VERSION, dataRootStatus, libraryRoot } from '../storage/config';
 import { isRecord, readJsonFile, UnsupportedSchemaError } from '../storage/document';
@@ -75,19 +75,7 @@ export class ApplyRefusedError extends Error {
     }
 }
 
-/**
- * The URLs the legacy site served for a source, as getImagePaths() names
- * them: the original, and for a top-level file the derivatives named by its
- * base name. Nested files never had derivatives. Each path segment is
- * encoded, as the site wrote it, so a `%` or `#` in a name stays part of it.
- */
-export function legacyUrls(sourcePath: string): string[] {
-    const url = (...segments: string[]) => `/assets/photos/${segments.map(encodeURIComponent).join('/')}`;
-    const original = url(...sourcePath.split('/'));
-    if (sourcePath.includes('/')) return [original];
-    const base = path.posix.basename(sourcePath, path.posix.extname(sourcePath));
-    return [original, ...Object.entries(DERIVATIVE_FOLDERS).map(([folder, extension]) => url(folder, `${base}${extension}`))];
-}
+export { legacyUrls };
 
 /** Enough of the plan's shape to trust it. Returns why it isn't a plan, or null. */
 function planProblem(value: unknown): string | null {

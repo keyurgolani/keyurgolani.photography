@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState, useCallback } from 'react';
 import HeroCarousel from './HeroCarousel';
-import { ImageItem } from '@/utils/getImageData';
+import type { ImageItem } from '@/lib/catalog/photos-api';
 import {
     getCachedHomeHeroImages,
     HeroCarouselImage,

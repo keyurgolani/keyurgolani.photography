@@ -113,7 +113,7 @@ docker compose -f docker-compose.prod.yml up -d
 
 ```
 ├── app/                    # Next.js App Router pages
-│   ├── api/               # API route for the photo list
+│   ├── api/               # API routes: the photo list and health
 │   ├── gallery/           # Gallery page
 │   ├── about/             # About page
 │   └── page.tsx           # Home page
@@ -123,7 +123,6 @@ docker compose -f docker-compose.prod.yml up -d
 │   ├── ThemeToggle.tsx    # Dark/light theme switcher
 │   └── LoadingAnimation.tsx # Loading screen animation
 ├── utils/                 # Utility functions
-│   ├── getImageData.ts    # Image metadata extraction
 │   ├── imageOptimizer.ts  # Sharp-based image processing
 │   └── watcherHandlers.ts # Watcher event handlers and job queue
 ├── scripts/               # Background scripts, bundled into dist/scripts for the image

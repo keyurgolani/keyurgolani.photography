@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import Gallery from './Gallery';
-import { ImageItem } from '@/utils/getImageData';
+import type { ImageItem } from '@/lib/catalog/photos-api';
 
 interface GalleryImage {
     id: number;

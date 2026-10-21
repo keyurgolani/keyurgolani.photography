@@ -55,7 +55,7 @@ const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 async function load<K extends AuthoredKind>(file: string, kind: K, id: string): Promise<Loaded<K>> {
     let text: string;
     try {
-        text = await fs.promises.readFile(file, 'utf8');
+        text = await fs.promises.readFile(/*turbopackIgnore: true*/ file, 'utf8');
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT')) return null;
         const code = (error as NodeJS.ErrnoException).code ?? 'an I/O error';
@@ -83,7 +83,7 @@ async function load<K extends AuthoredKind>(file: string, kind: K, id: string): 
 async function loadFolder<K extends 'series' | 'photo'>(dir: string, kind: K, problems: RecordProblem[]): Promise<RecordOf<K>[]> {
     let names: string[];
     try {
-        names = await fs.promises.readdir(dir);
+        names = await fs.promises.readdir(/*turbopackIgnore: true*/ dir);
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT')) return [];
         throw error;
@@ -133,7 +133,7 @@ export async function readAuthoredRecord<K extends AuthoredKind>(root: string, k
 export async function readActivePointer(root: string): Promise<ActivePointer | null> {
     let text: string;
     try {
-        text = await fs.promises.readFile(catalogPaths(root).active, 'utf8');
+        text = await fs.promises.readFile(/*turbopackIgnore: true*/ catalogPaths(root).active, 'utf8');
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT')) return null;
         throw error;
