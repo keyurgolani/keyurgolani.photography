@@ -441,6 +441,23 @@ describe('reconcile: renames, copies, swaps, and unstable files', () => {
         expect(r.last.retryAfterMs).toBe(STABILITY_MS);
     });
 
+    it("counts only other unbound paths for row 7, so a hold at another photo's bound path leaves a rename a rename", () => {
+        const r = seeded({ 'a.jpg': 'A', 'b.jpg': 'B' });
+        const [x, y] = [r.photoAt('a.jpg').photoId, r.photoAt('b.jpg').photoId];
+        // b.jpg moves to c.jpg, and a copy of it lands over a.jpg.
+        r.library.move('b.jpg', 'c.jpg').put('a.jpg', image('B'));
+        r.pass();
+        expect(r.factSummary()).toEqual(['ambiguous a.jpg', 'renamed c.jpg']);
+        expect(r.photo(y).source).toMatchObject({ path: 'c.jpg', present: true });
+        expect(r.registry.holds).toMatchObject([{ path: 'a.jpg', candidates: [x, y].sort() }]);
+
+        // Nothing changes: the rename stands, and only a.jpg waits for a decision.
+        r.pass();
+        expect(r.last.facts).toEqual([]);
+        expect(r.photo(y).source).toMatchObject({ path: 'c.jpg', present: true });
+        expect(r.registry.holds.map((held) => held.path)).toEqual(['a.jpg']);
+    });
+
     it('swapping two photos holds both paths', () => {
         const r = seeded({ 'a.jpg': 'A', 'b.jpg': 'B' });
         const [x, y] = [r.photoAt('a.jpg').photoId, r.photoAt('b.jpg').photoId];

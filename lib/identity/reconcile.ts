@@ -355,12 +355,12 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
     }
     const isSourceless = (id: string) => !isRetired(photos[id]) && (!photos[id].source.present || sourceless.has(id));
     const unbound = unboundAtStart.filter((item) => !isHeld(item));
-    // How many unbound paths, held ones included, show each byte and pixel digest, for row 7's uniqueness check.
+    // How many unbound paths, held ones included, show each byte and pixel digest, for row 7's uniqueness
+    // check. A bound path doesn't count, even held: row 7 asks only that no other U shares the evidence.
     const bytesSeen = new Map<string, number>();
     const pixelsSeen = new Map<string, number>();
-    const unboundPaths = new Set(unbound.map((item) => item.entry.path));
     for (const item of seen) {
-        if (!isImage(item) || inKeyCollision.has(item.entry.path) || !(isHeld(item) || unboundPaths.has(item.entry.path))) continue;
+        if (!isImage(item) || inKeyCollision.has(item.entry.path) || boundByKey.has(item.entry.key)) continue;
         bytesSeen.set(item.inspection.assetRevision, (bytesSeen.get(item.inspection.assetRevision) ?? 0) + 1);
         if (item.inspection.pixelDigest !== null) pixelsSeen.set(item.inspection.pixelDigest, (pixelsSeen.get(item.inspection.pixelDigest) ?? 0) + 1);
     }
