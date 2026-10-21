@@ -97,6 +97,11 @@ function code(text: string): string {
     return text.includes('`') ? `\`\` ${text} \`\`` : `\`${text}\``;
 }
 
+/** A table cell's content, with each pipe escaped so a path that holds one stays in its column. */
+function cell(text: string): string {
+    return text.replace(/\|/g, '\\|');
+}
+
 function bullets(items: string[]): string[] {
     return items.length === 0 ? ['None.'] : items.map((item) => `- ${item}`);
 }
@@ -174,7 +179,7 @@ export function renderReport(plan: MigrationPlan, observed: ObservedLibrary): st
             '',
             '| Path | Proposed photoId | Duplicate of |',
             '| --- | --- | --- |',
-            ...proposed.map((photo) => `| ${code(photo.path)} | ${code(photo.photoId)} | ${photo.duplicateOf ? code(photo.duplicateOf) : ''} |`),
+            ...proposed.map((photo) => `| ${cell(code(photo.path))} | ${cell(code(photo.photoId))} | ${photo.duplicateOf ? cell(code(photo.duplicateOf)) : ''} |`),
         ]),
     ]);
 

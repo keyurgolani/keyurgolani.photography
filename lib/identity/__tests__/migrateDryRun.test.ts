@@ -141,6 +141,17 @@ describe('photos:migrate --dry-run', () => {
         expect(plan.sources.every((source) => source.assetRevision?.startsWith('sha256-'))).toBe(true);
     });
 
+    it('escapes a pipe in a path, so the Proposed photo IDs table keeps its columns', async () => {
+        await library({ 'a|b.jpg': fixture('landscape.jpg') });
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', '');
+        vi.stubEnv('NODE_ENV', 'production');
+
+        const result = await migrateDryRun(options({ outDir: tempOut() }));
+
+        const [photo] = result.plan.photos;
+        expect(result.report.split('\n')).toContain(`| \`a\\|b.jpg\` | \`${photo.photoId}\` |  |`);
+    });
+
     it('writes into identity/migration/ of a usable data root and nothing else there', async () => {
         await library({ 'landscape.jpg': fixture('landscape.jpg') });
         const data = dataRoot('uninitialized');
