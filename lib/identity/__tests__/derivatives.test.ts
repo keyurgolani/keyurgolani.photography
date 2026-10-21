@@ -13,7 +13,7 @@ import { buildDerivativeSet, removeAbandonedStaging, stagingLockName, stagingRoo
 import { runReconcilePass, type PassOptions } from '../pass';
 import { currentProfileId } from '../profile';
 import { readRegistry, writeRegistry } from '../registry';
-import type { DerivativeJob, Registry } from '../types';
+import type { AssetManifest, DerivativeJob, Registry } from '../types';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../variants';
 import { sequentialIds } from './reconcileFixtures';
 
@@ -305,6 +305,32 @@ describe('buildDerivativeSet', () => {
         expect(outcome.status === 'failed' && outcome.cause).toBeInstanceOf(IntegrityError);
         expect(snapshot(dir)).toEqual(before);
         expect(profileOf(await readRegistry(s.data.root), job)).toMatchObject({ state: 'failed', error: expect.stringMatching(/^integrity:/) });
+    }, 60_000);
+
+    it.each([
+        ['fewer variants', 'lists no w1920.avif, which the profile builds', (manifest: AssetManifest, dir: string) => {
+            delete (manifest.variants.w1920 as Partial<AssetManifest['variants']['w1920']>).avif;
+            fs.rmSync(path.join(dir, 'w1920.avif'));
+        }],
+        ['a variant the profile never builds', "lists w2560.webp, which the profile doesn't build", (manifest: AssetManifest, dir: string) => {
+            (manifest.variants as Record<string, unknown>).w2560 = { webp: manifest.variants.w1920.webp };
+            fs.copyFileSync(path.join(dir, 'w1920.webp'), path.join(dir, 'w2560.webp'));
+        }],
+    ])('refuses a set in place whose own manifest checks out but lists %s, and leaves it byte-identical', async (_label, problem, change) => {
+        const s = await setup();
+        const job = await s.job('landscape.jpg');
+        await s.build(job);
+        const dir = assetDir(job);
+        const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')) as AssetManifest;
+        change(manifest, dir);
+        fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest));
+        const before = snapshot(dir);
+        await resetToPending(s.data, job);
+
+        const outcome = await s.build(job);
+        expect(outcome).toMatchObject({ status: 'failed', error: `integrity: ${problem}` });
+        expect(snapshot(dir)).toEqual(before);
+        expect(profileOf(await readRegistry(s.data.root), job)).toMatchObject({ state: 'failed', error: `integrity: ${problem}` });
     }, 60_000);
 
     it('after a crash between publishing and recording, a restart skips encoding and marks the profile ready', async () => {
