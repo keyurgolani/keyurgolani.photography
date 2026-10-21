@@ -60,9 +60,7 @@
   cursor: pointer;
 }
 
-/* Wide enough for Pause, so swapping to Play doesn't shift Previous, the position, and Next. */
 .playback {
-  min-width: 5.75rem;
   padding: 0 0.875rem 0 0.75rem;
   font-size: 0.875rem;
   font-weight: 500;
@@ -71,6 +69,22 @@
 
 .playback[aria-disabled='true'] {
   cursor: default;
+}
+
+/* The label shares one cell with an invisible Pause, so Play keeps Pause's
+   width in any font and never shifts Previous, the position, and Next. */
+.label {
+  display: inline-grid;
+}
+
+.label > *,
+.label::after {
+  grid-area: 1 / 1;
+}
+
+.label::after {
+  content: 'Pause';
+  visibility: hidden;
 }
 
 .position {

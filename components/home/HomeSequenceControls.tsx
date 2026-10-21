@@ -68,7 +68,9 @@ const HomeSequenceControls: React.FC<HomeSequenceControlsProps> = ({
           onClick={reducedMotion ? undefined : onTogglePlayback}
         >
           {wantsPlay ? <Pause size={16} aria-hidden="true" /> : <Play size={16} aria-hidden="true" />}
-          <span>{wantsPlay ? 'Pause' : 'Play'}</span>
+          <span className={styles.label}>
+            <span>{wantsPlay ? 'Pause' : 'Play'}</span>
+          </span>
         </button>
       </div>
       {reducedMotion && (
