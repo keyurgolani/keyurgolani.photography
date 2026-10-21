@@ -26,7 +26,7 @@ docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher cat /
 
 ## Where it can live
 
-- On a local POSIX filesystem on the same host as the containers, such as ext4, XFS, or APFS. The writers depend on atomic renames, `O_EXCL` lock files, and `fsync`, which NFS, SMB, and synced folders like Dropbox don't guarantee. The watcher also refuses to build sets when `assets/` and `staging/` sit on different filesystems.
+- On a local POSIX filesystem on the same host as the containers, such as ext4 or XFS. The writers depend on atomic renames, `O_EXCL` lock files, and `fsync`, which NFS, SMB, and synced folders like Dropbox don't guarantee. The watcher also refuses to build sets when `assets/` and `staging/` sit on different filesystems.
 - Outside `public/` and the photo library. The containers treat a data root inside either one as `unavailable`, since anything under `public/` can end up served.
 - In a folder that already exists. `docker-compose.prod.yml` never creates `./portfolio-data`, so if it goes missing, neither container starts. Compose won't quietly start over with an empty one.
 
@@ -43,7 +43,7 @@ Until the migration below initializes it, the watcher writes only its heartbeat 
 
 ## Never migrate into an empty data root beside a library that had IDs
 
-`migrate --apply` gives a new photo ID to every photo the registry doesn't know. If a library already had a data root, migrating it again into an empty one gives every photo a new ID, and every link and catalog entry that names an old ID stops resolving. Nothing can tell those IDs apart from a first migration afterwards.
+`migrate --apply` gives a new photo ID to every photo the registry doesn't know. If a library already had a data root, migrating it again into an empty one gives every photo a new ID, and every link and catalog entry that names an old ID stops resolving. Afterwards, nothing tells the new IDs apart from a first migration's.
 
 If `./portfolio-data` is lost or comes up empty on a host whose library had IDs, stop the watcher and restore the data root from a backup, as [Restoring](#restoring) describes. Run the migration only on a library that never had a data root.
 
@@ -53,19 +53,19 @@ While the stack runs, the watcher is the only process that writes the data root,
 
 ```bash
 docker compose -f docker-compose.prod.yml stop image-watcher
-sudo tar -czpf photography-$(date -u +%Y%m%dT%H%M%SZ).tar.gz public/assets/photos portfolio-data
+sudo tar -czf photography-$(date -u +%Y%m%dT%H%M%SZ).tar.gz public/assets/photos portfolio-data
 docker compose -f docker-compose.prod.yml start image-watcher
 ```
 
-`sudo` lets `tar` read the uid 1001 files, and `-p` keeps their owners and modes. `web` keeps serving meanwhile, since it only reads, but don't run `photos.mjs` commands until the watcher is back. `./.next-images-cache` needs no backup.
+`sudo` lets `tar` read the uid 1001 files. `web` keeps serving meanwhile, since it only reads, but don't run `photos.mjs` commands while `tar` runs. `./.next-images-cache` needs no backup.
 
 ## Restoring
 
-Restore both folders from the same archive, so the registry describes the library beside it. Move the current folders aside instead of deleting them until the restored stack checks out:
+Restore both folders from the same archive, so the registry describes the library beside it. Move the current folders aside instead of deleting them until the restored stack checks out. Extracting as root with `-p` keeps the files' owners and modes:
 
 ```bash
 docker compose -f docker-compose.prod.yml stop
-sudo mv public/assets/photos public/assets/photos.before-restore
+sudo mv public/assets/photos photos.before-restore
 sudo mv portfolio-data portfolio-data.before-restore
 sudo tar -xzpf photography-<timestamp>.tar.gz
 docker compose -f docker-compose.prod.yml up -d
@@ -73,7 +73,15 @@ docker compose -f docker-compose.prod.yml up -d
 
 Then check that `photos.mjs identity status` counts the photos you expect, as in step 6 of the runbook, and that `GET /api/health` reports `ready`.
 
-If only the data root was lost and the library is fine, restore just `portfolio-data` from the newest archive and keep the current library. The watcher's next pass keeps the ID of every photo that archive knew, follows a photo renamed since by its bytes, and gives new IDs only to photos added after the archive was made. That loses far less than migrating again.
+If only the data root was lost and the library is fine, restore just `portfolio-data` from the newest archive and keep the current library. Move whatever is left of `./portfolio-data` aside first, as above:
+
+```bash
+docker compose -f docker-compose.prod.yml stop
+sudo tar -xzpf photography-<timestamp>.tar.gz portfolio-data
+docker compose -f docker-compose.prod.yml up -d
+```
+
+The watcher's next pass keeps the ID of every photo that archive knew, follows a photo renamed since by its bytes, marks one deleted since as missing, and gives new IDs only to photos added after the archive was made. That loses far less than migrating again.
 
 ## Health
 
