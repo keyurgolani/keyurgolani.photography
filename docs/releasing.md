@@ -99,8 +99,8 @@ When `Production audit` fails in a `main` publish, that commit never gets a `sha
 
 Releases come from `main` only. Tag a `main` commit whose `Publish to GHCR` job succeeded, never a commit that is only on `next`.
 
-1. Bump `version` in `package.json` in a PR into `next`, like the [v0.4.1 release commit](https://github.com/keyurgolani/keyurgolani.photography/commit/c5353deb4c10fdaad6fdc6dc17ae4eec55458422).
-2. Promote `next` to `main` through a PR, and wait for that merge's `Publish to GHCR` job to succeed. A red Docker Hub mirror doesn't block a release. To retry a failed publish, use Re-run failed jobs. The publish job reuses the `sha-` image if it already exists.
+1. Bump the version with `npm version X.Y.Z --no-git-tag-version` in a PR into `next` that changes nothing else, like [#25](https://github.com/keyurgolani/keyurgolani.photography/pull/25). It sets `version` in `package.json` and both copies in `package-lock.json`. Plain `npm version` also tags the `next` commit, and the release workflow refuses a tag that isn't on `main`.
+2. Promote `next` to `main` through a PR, merged with a merge commit rather than a squash so the two branches keep one history, and wait for that merge's `Publish to GHCR` job to succeed. A red Docker Hub mirror doesn't block a release. To retry a failed publish, use Re-run failed jobs. The publish job reuses the `sha-` image if it already exists.
 3. Tag that `main` commit and push that one tag:
 
    ```bash
@@ -139,7 +139,7 @@ docker compose -f docker-compose.prod.yml up -d
 
 Both services switch together. Every `docker compose -f docker-compose.prod.yml` command needs `PHOTOGRAPHY_IMAGE_TAG`, not just `up`, so `pull`, `ps`, `logs`, and `down` refuse to run without it too. A `PHOTOGRAPHY_IMAGE_TAG` exported in your shell overrides `.env`. Nothing pulls `:latest` anymore, so every release needs this `.env` edit.
 
-The first release with Phase 0 of [replacement and missing files (#17)](https://github.com/keyurgolani/keyurgolani.photography/issues/17) needs one more step. Before it, derivative URLs were marked `immutable` for a year, and `./.next-images-cache` holds `/_next/image` copies made under that header. Clear it once while `web` is stopped. The cache files belong to the container's uid 1001, and a host user's `rm` can fail on them, so this runs `rm` inside the `web` image:
+`v1.1.0`, the first release with Phase 0 of [replacement and missing files (#17)](https://github.com/keyurgolani/keyurgolani.photography/issues/17), needs two more steps once it runs on the host. Before it, derivative URLs were marked `immutable` for a year, and `./.next-images-cache` holds `/_next/image` copies made under that header. Clear it once while `web` is stopped. The cache files belong to the container's uid 1001, and a host user's `rm` can fail on them, so this runs `rm` inside the `web` image:
 
 ```bash
 docker compose -f docker-compose.prod.yml stop web
@@ -156,7 +156,7 @@ docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx t
 
 ## Rollback
 
-Before changing `.env`, note the tag the host runs now. To roll back, set `PHOTOGRAPHY_IMAGE_TAG` back to that tag and run the same two commands. That swaps the code, not the photo library. Rolling back to a release before Phase 0 of #17 brings back the watcher's startup cleanup, which deletes the derivative sets this release keeps for removed photos. Whether an older release can read data a newer one wrote is part of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10).
+Before changing `.env`, note the tag the host runs now. To roll back, set `PHOTOGRAPHY_IMAGE_TAG` back to that tag and run the same two commands. That swaps the code, not the photo library. Rolling back to a release before Phase 0 of #17 brings back the watcher's startup cleanup, which deletes the derivative sets this release keeps for removed photos. That older release also refills `./.next-images-cache` under its year-long headers and writes new `cache/dynamic` files, so when you roll forward again, repeat both steps from Deploying. Whether an older release can read data a newer one wrote is part of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10).
 
 Never roll back to `v1.0.0`. That image, on GHCR and on Docker Hub, is the initial commit and can't run under this compose file.
 
@@ -178,14 +178,13 @@ docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revis
 
 ## Rollout
 
-PRs merge into `next`, and `main` only moves when the owner promotes `next` to it through a PR. The one-time move from `:latest` to pinned tags:
+PRs merge into `next`, and `main` only moves when the owner promotes `next` to it through a PR. The one-time move from `:latest` to pinned tags, with `next` already at version `1.1.0`:
 
-1. Merge the PR that adds this process into `next` through its `CI result`.
-2. Right before promoting, apply the two rulesets above.
-3. Open a PR from `next` to `main`. Its `CI result` must pass. Merge it.
-4. That merge's `Publish image` run pushes the first `sha-<merge commit>`. `latest` stays where it is.
-5. In the Actions tab, disable the old "Build and Publish Docker Image" workflow. It lives at the old `.github/workflows/deploy.yml` path, which older refs still carry, so a tag push or a manual run there would still publish `latest`.
-6. On the host, before pulling the new `docker-compose.prod.yml`, pin exactly what it runs now. Read the running image's digest and the commit it was built from:
+1. Right before promoting, apply the two rulesets above.
+2. Open a PR from `next` to `main`. Its `CI result` must pass. Merge it with a merge commit.
+3. That merge's `Publish image` run pushes the first `sha-<merge commit>`. `latest` stays where it is.
+4. In the Actions tab, disable the old "Build and Publish Docker Image" workflow. It lives at the old `.github/workflows/deploy.yml` path, which older refs still carry, so a tag push or a manual run there would still publish `latest`.
+5. On the host, before pulling the new `docker-compose.prod.yml`, pin exactly what it runs now. Read the running image's digest and the commit it was built from:
 
    ```bash
    docker inspect --format '{{index .RepoDigests 0}}' "$(docker inspect --format '{{.Image}}' <container>)"
@@ -193,7 +192,8 @@ PRs merge into `next`, and `main` only moves when the owner promotes `next` to i
    ```
 
    Set `PHOTOGRAPHY_IMAGE_TAG=sha-<first 7 characters of the commit>@<digest>` in `.env`, where `<digest>` is the `sha256:...` part of the first command's output. The old workflow built tagged commits twice with different digests, so the digest is what keeps the host on the exact image it runs. Then `pull` and `up -d`. Both containers restart briefly.
-7. Cut the first gated release, `v1.1.0`. Set `version` to `1.1.0` in a PR into `next`, promote `next` to `main`, and once that merge's `Publish to GHCR` succeeds, tag it `v1.1.0`. `latest` moves to it.
-8. On the host, set `PHOTOGRAPHY_IMAGE_TAG=v1.1.0`, then `pull` and `up -d`.
+6. Once step 3's `Publish to GHCR` job has succeeded, tag that merge commit `v1.1.0` and push the tag, as in Cutting a release. `latest` moves to it.
+7. On the host, set `PHOTOGRAPHY_IMAGE_TAG=v1.1.0`, then `pull` and `up -d`.
+8. Then run the two one-time Phase 0 steps under Deploying: clear the image cache with `web` stopped, then run `images:cleanup`. Not earlier: until step 7 the old image still serves year-long `immutable` headers that refill the cache, and it has no `images:cleanup`.
 
-The first gated release is `v1.1.0` because a stray `v1.0.0` tag on the initial commit is the highest tag today. To stay on 0.x instead, delete the `v1.0.0` tag on GitHub before the first release and cut `v0.5.0`. The old `v1.0.0` image stays on GHCR after the tag is gone, so a later real `v1.0.0` release is refused until that package version is deleted too.
+The first gated release is `v1.1.0` because a stray `v1.0.0` tag on the initial commit is the highest tag today. To stay on 0.x instead, set `version` to `0.5.0` in a PR into `next` and delete the `v1.0.0` tag on GitHub before tagging `v0.5.0`. The old `v1.0.0` image stays on GHCR after the tag is gone, so a later real `v1.0.0` release is refused until that package version is deleted too.
