@@ -9,6 +9,24 @@ import tseslint from 'typescript-eslint'
 // move and enter events keeps ParallaxCard's hover-only tilt legal.
 const handlers = ['onClick', 'onMouseDown', 'onMouseUp', 'onKeyPress', 'onKeyDown', 'onKeyUp']
 
+const NEXT_MESSAGE = 'This code runs outside Next. Keep Next imports in app/, proxy.ts, or lib/catalog/request.ts.'
+const NEXT_PATHS = [
+  { name: 'next', message: NEXT_MESSAGE },
+  { name: 'server-only', message: 'This code runs under plain Node, where server-only throws. Only lib/catalog/public-reader.ts may import it.' },
+]
+const NEXT_PATTERNS = [{ group: ['next/*'], message: NEXT_MESSAGE }]
+// Ingestion never authors order (#8). The watcher process may read the
+// working layer, but never load the sequence operations or the authored
+// writer, by alias or relative path. Flat config replaces a rule's options
+// per file, so every entry that sets no-restricted-imports for a watcher
+// path repeats this pattern.
+const ORDER_WRITER_PATTERNS = [
+  {
+    regex: '(^|/)catalog/(sequence|working-layer-writer)',
+    message: 'Ingestion never authors order. The watcher process may read lib/catalog/working-layer.ts, but not import the sequence operations or the authored writer.',
+  },
+]
+
 export default tseslint.config(
   {
     ignores: [
@@ -65,22 +83,38 @@ export default tseslint.config(
     },
   },
   {
-    // Storage, identity, and media code runs in the watcher and CLI too, so it
-    // must not depend on Next or on server-only's bundler check.
+    // Storage, identity, and media code runs in the watcher and CLI, so it
+    // must not depend on Next or on server-only's bundler check, and the
+    // watcher process must not reach the order writers.
     files: ['lib/storage/**', 'lib/identity/**', 'lib/media/**'],
     rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          paths: [
-            { name: 'next', message: 'lib/storage, lib/identity, and lib/media run outside Next. Keep Next imports in app/ or proxy.ts.' },
-            { name: 'server-only', message: 'lib/storage, lib/identity, and lib/media run under plain Node, where server-only throws.' },
-          ],
-          patterns: [
-            { group: ['next/*'], message: 'lib/storage, lib/identity, and lib/media run outside Next. Keep Next imports in app/ or proxy.ts.' },
-          ],
-        },
-      ],
+      'no-restricted-imports': ['error', { paths: NEXT_PATHS, patterns: [...NEXT_PATTERNS, ...ORDER_WRITER_PATTERNS] }],
+    },
+  },
+  {
+    // The rest of the watcher process. #17's curation actions, policy, and
+    // resolutions, and #14's auth, run only in the CLI or curator process.
+    files: ['scripts/imageWatcher.ts', 'utils/**', 'lib/ingest/**', 'lib/curation/**'],
+    ignores: [
+      '**/__tests__/**',
+      'lib/curation/actions.ts',
+      'lib/curation/policy.ts',
+      'lib/curation/resolutions.ts',
+      'lib/curation/auth.ts',
+      'lib/curation/auth/**',
+    ],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: ORDER_WRITER_PATTERNS }],
+    },
+  },
+  {
+    // Catalog code runs in the CLI too, so only request.ts and
+    // public-reader.ts, which only the web process imports, may use Next or
+    // server-only. sequence.ts and its callers import the writer.
+    files: ['lib/catalog/**'],
+    ignores: ['lib/catalog/request.ts', 'lib/catalog/public-reader.ts'],
+    rules: {
+      'no-restricted-imports': ['error', { paths: NEXT_PATHS, patterns: NEXT_PATTERNS }],
     },
   },
 )
