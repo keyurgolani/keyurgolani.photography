@@ -48,7 +48,7 @@ Clicking any photo opens a full-featured lightbox with zoom, slideshow, keyboard
 
 ## 👤 About — Identity & Social Profiles
 
-The About page presents the photographer's identity with an animated profile composition and glassmorphism cards linking out to Instagram, 500px, and Flickr — each styled to match the platform's brand.
+The About page presents the photographer's portrait and name, then a plain list of links to their photography profiles and the site's source.
 
 ![About page](docs/screenshots/about.png)
 

@@ -9,7 +9,7 @@ import { expect, test } from './support/test';
 // focuses on its own, which must not draw it.
 
 const toggle = (page: Page) => page.getByRole('button', { name: /^Switch to (dark|light) mode$/ });
-const source = (page: Page) => page.getByRole('link', { name: 'View source on GitHub', exact: true });
+const source = (page: Page) => page.getByRole('navigation', { name: 'External profiles' }).getByRole('link', { name: 'Site source', exact: true });
 const firstPhoto = (page: Page) => page.getByRole('button', { name: 'Photograph 1 of 12', exact: true });
 
 /** Opens the lightbox with Enter, so the focus YARL moves matches :focus-visible. A click on a button tile doesn't. */

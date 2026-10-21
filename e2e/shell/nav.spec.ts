@@ -75,11 +75,10 @@ test('the labels are visible text at rest, and the wordmark shows KG', async ({ 
 });
 
 for (const theme of ['dark', 'light'] as const) {
-    for (const [path, include] of [['/gallery', undefined], ['/about', 'nav[aria-label="Primary"]'], ['/does-not-exist', undefined]] as const) {
+    for (const path of ['/gallery', '/about', '/does-not-exist']) {
         test(`SiteNav passes the #1 checks on ${path} in the ${theme} theme`, async ({ page }) => {
             await open(page, path, theme);
-            // About's axe run covers only the nav. The rest of that legacy page is #11's.
-            await checkSurface(page, { controls: [navControls(page)], include });
+            await checkSurface(page, { controls: [navControls(page)] });
         });
     }
 }

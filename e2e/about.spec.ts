@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test';
+import { artist } from '../data/artist';
 import { expectNoA11yViolations } from './support/a11y';
 import { expectFocusRingVisible, expectNoFadeOnBlur, expectRingNotClipped } from './support/focus';
 import { waitForHydration } from './support/hydration';
@@ -6,13 +7,16 @@ import { expectReflow } from './support/reflow';
 import { expect, test } from './support/test';
 
 // The About subset of #1: the navigation links and theme control in full,
-// Tab reach and the ring style for the social cards and source link, and axe.
+// Tab reach and the ring for the external links, and axe. #11's own checks
+// on those links are in about-links.spec.ts.
+
+const ENABLED = artist.destinations.filter((destination) => destination.enabled);
 
 const primary = (page: Page) => page.getByRole('navigation', { name: 'Primary' });
 const navLinks = (page: Page) => primary(page).getByRole('link');
 const themeToggle = (page: Page) => page.getByRole('button', { name: /^Switch to (dark|light) mode$/ });
-const cards = (page: Page) => page.getByRole('link', { name: /@iserialclicker/ });
-const source = (page: Page) => page.getByRole('link', { name: 'View source on GitHub', exact: true });
+const links = (page: Page) => page.getByRole('navigation', { name: /^External profiles( and contact)?$/ }).getByRole('link');
+const source = (page: Page) => links(page).filter({ hasText: /^Site source$/ });
 
 /** Stops with an aria-label report it, links without one their href, and the toggle its rendered name. */
 const focusedStop = (page: Page) =>
@@ -24,7 +28,7 @@ const focusedStop = (page: Page) =>
 async function openAbout(page: Page) {
     await page.goto('/about');
     await waitForHydration(page);
-    await expect(cards(page)).toHaveCount(3);
+    await expect(links(page)).toHaveCount(ENABLED.length);
 }
 
 test('passes axe', async ({ page }) => {
@@ -32,19 +36,9 @@ test('passes axe', async ({ page }) => {
     await expectNoA11yViolations(page);
 });
 
-test('Tab goes through SiteNav, its toggle last, then the social cards and the source link, and Shift+Tab walks back', async ({ page }) => {
+test('Tab goes through SiteNav, its toggle last, then the external links, and Shift+Tab walks back', async ({ page }) => {
     await openAbout(page);
-    const stops = [
-        'KG, Keyur Golani',
-        '/',
-        '/gallery',
-        '/about',
-        'Switch to light mode',
-        'https://www.instagram.com/iserialclicker',
-        'https://500px.com/p/iserialclicker',
-        'https://www.flickr.com/photos/iserialclicker',
-        'View source on GitHub',
-    ];
+    const stops = ['KG, Keyur Golani', '/', '/gallery', '/about', 'Switch to light mode', ...ENABLED.map((destination) => destination.href)];
     const forward: (string | undefined)[] = [];
     for (let press = 0; press < stops.length; press++) {
         await page.keyboard.press('Tab');
@@ -78,42 +72,50 @@ for (const [name, path] of [['Work', '/gallery'], ['Home', '/']] as const) {
     });
 }
 
-test('the theme toggle, the Primary links, the social cards, and the source link show the focus ring', async ({ page }) => {
+test('the theme toggle, the Primary links, and the external links show the focus ring', async ({ page }) => {
     await openAbout(page);
-    for (const group of [themeToggle(page), navLinks(page), cards(page), source(page)]) {
+    for (const group of [themeToggle(page), navLinks(page), links(page)]) {
         for (const target of await group.all()) await expectFocusRingVisible(target);
     }
 });
 
-// #11 (About links) owns these.
-test.describe('#11', () => {
-    test.describe('in a short 1280 by 400 window, where the cards outgrow the page', () => {
-        test.use({ viewport: { width: 1280, height: 400 } });
+test.describe('in a short 1280 by 400 window', () => {
+    test.use({ viewport: { width: 1280, height: 400 } });
 
-        test.fixme('no overflow container clips a social card or source link ring', async ({ page }) => {
-            await openAbout(page);
-            for (const target of await cards(page).or(source(page)).all()) await expectRingNotClipped(target);
-        });
-    });
-
-    test.fixme('the social cards and source link reflow at 320 px without overlap', async ({ page }) => {
+    test('no overflow container clips an external link ring', async ({ page }) => {
         await openAbout(page);
-        await expectReflow(cards(page).or(source(page)));
+        for (const target of await links(page).all()) await expectRingNotClipped(target);
     });
+});
 
-    test.fixme('"Visit Profile" and "View Source" show on keyboard focus, not only on hover', async ({ page }) => {
-        await openAbout(page);
-        for (const card of await cards(page).all()) {
-            await card.focus();
-            await expect(card.getByText('Visit Profile', { exact: false })).toBeVisible();
-            await expect(card.getByText('Visit Profile', { exact: false }).locator('xpath=..')).toHaveCSS('opacity', '1');
-        }
-        await source(page).focus();
-        await expect(source(page).getByText('View Source')).toHaveCSS('opacity', '1');
-    });
+test('the external links reflow at 320 px without overlap', async ({ page }) => {
+    await openAbout(page);
+    await expectReflow(links(page));
+});
 
-    test.fixme('the source link drops its focus ring at once on blur', async ({ page }) => {
-        await openAbout(page);
-        await expectNoFadeOnBlur(source(page));
-    });
+test('every external link shows its label at rest, so nothing waits for hover or focus', async ({ page }) => {
+    await openAbout(page);
+    const list = page.getByRole('navigation', { name: /^External profiles( and contact)?$/ });
+    // What each element in the list shows, which hover or focus must not change.
+    const shown = () =>
+        list.evaluate((nav) =>
+            [nav, ...Array.from(nav.querySelectorAll('*'))].map((el) => {
+                const { display, visibility, opacity } = getComputedStyle(el);
+                return `${el.tagName} ${display} ${visibility} ${opacity}`;
+            }),
+        );
+    const atRest = await shown();
+    for (const [index, link] of (await links(page).all()).entries()) {
+        await expect(link.getByText(ENABLED[index].label, { exact: true })).toBeVisible();
+        await link.hover();
+        expect(await shown(), `hovering ${ENABLED[index].label}`).toEqual(atRest);
+        await link.focus();
+        expect(await shown(), `focusing ${ENABLED[index].label}`).toEqual(atRest);
+    }
+});
+
+test('the Site source link and the rest drop their focus ring at once on blur', async ({ page }) => {
+    await openAbout(page);
+    await expect(source(page)).toHaveCount(1);
+    for (const target of await links(page).all()) await expectNoFadeOnBlur(target);
 });

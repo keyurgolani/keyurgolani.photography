@@ -13,7 +13,7 @@ A modern, high-performance photography portfolio website built with Next.js 16, 
 
 <p align="center">
   <img src="docs/screenshots/gallery-dark.png" alt="Masonry photo gallery" width="49%" />
-  <img src="docs/screenshots/about.png" alt="About page with social profiles" width="49%" />
+  <img src="docs/screenshots/about.png" alt="About page" width="49%" />
 </p>
 
 <p align="center"><em>Immersive hero carousel, masonry gallery, and lightbox viewer.</em><br/>
