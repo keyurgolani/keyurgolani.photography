@@ -173,7 +173,7 @@ docker compose -f docker-compose.prod.yml logs image-watcher | grep orientation-
 
 Once it logs that it rebuilt the sets of the orientation-tagged photos, clear `./.next-images-cache` the same way as above, so `/_next/image` drops the copies it made from the old derivatives. If this is also the first release with Phase 0, this one clear, after the rebuild, covers both.
 
-The first release with slice C of #10 changes `docker-compose.prod.yml` itself. Both containers mount the data root, `./portfolio-data`, and the watcher runs the bundled `node dist/scripts/imageWatcher.mjs`, since the image no longer has tsx, so the old compose file can't run the new image's watcher. Fetch that release's compose file, and create the data root before `up -d`, since Compose never creates it:
+The first release with slice C of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10) needs the new `docker-compose.prod.yml` on the host, and the data root, `./portfolio-data`, created and owned by uid 1001 before the first `up`. The old compose file runs the watcher with tsx, which the image no longer has, and the new one never creates a missing data root, so neither container starts without it:
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/keyurgolani/keyurgolani.photography/vX.Y.Z/docker-compose.prod.yml
@@ -183,7 +183,7 @@ docker compose -f docker-compose.prod.yml pull
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-The site keeps serving the legacy derivatives, and the watcher's identity step stays off until the migration in [data-root.md](data-root.md) initializes the data root. Back up first, then run it whenever you're ready.
+[Setting it up](data-root.md#setting-it-up) in data-root.md is the same step. The site keeps serving the legacy derivatives, and the watcher's identity step stays off until the [migration runbook](data-root.md#migration-runbook) there initializes the data root. Back up first, then run it whenever you're ready.
 
 ## Rollback
 
@@ -226,7 +226,7 @@ PRs merge into `next`, and `main` only moves when the owner promotes `next` to i
    docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' <container>
    ```
 
-   Set `PHOTOGRAPHY_IMAGE_TAG=sha-<first 7 characters of the commit>@<digest>` in `.env`, where `<digest>` is the `sha256:...` part of the first command's output. The old workflow built tagged commits twice with different digests, so the digest is what keeps the host on the exact image it runs. Then `pull` and `up -d`. Both containers restart briefly. If `next` already has slice C of #10, create `./portfolio-data` first, as Deploying describes for that release. The old image has no `dist/scripts` and no `/api/health`, so until step 7 its watcher keeps restarting and `web` reports unhealthy, while `web` keeps serving.
+   Set `PHOTOGRAPHY_IMAGE_TAG=sha-<first 7 characters of the commit>@<digest>` in `.env`, where `<digest>` is the `sha256:...` part of the first command's output. The old workflow built tagged commits twice with different digests, so the digest is what keeps the host on the exact image it runs. Then `pull` and `up -d`. Both containers restart briefly.
 6. Once step 3's `Publish to GHCR` job has succeeded, tag that merge commit `v1.1.0` and push the tag, as in Cutting a release. `latest` moves to it.
 7. On the host, set `PHOTOGRAPHY_IMAGE_TAG=v1.1.0` and deploy it the way Deploying describes for `v1.1.0`, with its one-time cache clear and `images:cleanup`.
 
