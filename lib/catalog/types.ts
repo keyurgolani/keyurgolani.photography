@@ -96,6 +96,21 @@ export interface Issue {
 /** What a rule reports. The registry adds the rule's ID as `code` and its severity. */
 export type RuleFinding = Omit<Issue, 'code' | 'severity'>;
 
+/**
+ * Why compile left a published series' member out of the candidate. The
+ * first two are #8's `order.unknown-photo`'s to report, the rest `assets.*`'s.
+ */
+export type ExclusionReason = 'no-record' | 'unknown-photo' | 'unknown-revision' | 'not-ready' | 'no-manifest';
+
+/** A member compile left out: its series, the asset it pins, and the profile compile chose, when it got that far. */
+export interface ExcludedMember {
+    seriesId: string;
+    photoId: string;
+    assetRevision: string | null;
+    profileId: string | null;
+    reason: ExclusionReason;
+}
+
 export interface RuleContext {
     /** The compiled candidate, or a stored revision's content. */
     candidate: CandidateContent;
@@ -107,6 +122,8 @@ export interface RuleContext {
     registry: Registry | null;
     /** For privacy.path: no published string may hold either. */
     roots: { dataRoot: string | null; libraryRoot: string | null };
+    /** The members compile left out, for `assets.*`. Absent for a stored revision. */
+    excluded?: readonly ExcludedMember[];
 }
 
 export interface Rule {
