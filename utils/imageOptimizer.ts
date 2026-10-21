@@ -670,14 +670,19 @@ export function writeUprightMarker(photos: number, paths: LibraryPaths = library
     fs.writeFileSync(file, `${JSON.stringify({ rebuiltAt: now.toISOString(), photos }, null, 2)}\n`);
 }
 
+/** `cache/set-sources`, where each set records the source it was last built from. */
+function setSourcesDir(paths: LibraryPaths): string {
+    return path.join(path.dirname(paths.dynamicCache), 'set-sources');
+}
+
 /**
  * Where a set records the source it was last built from:
- * `cache/set-sources/<base name>.json`, which nothing serves, the scans skip,
- * and images:cleanup leaves alone. Named like the set's files, so sources
- * that share a set share its record.
+ * `cache/set-sources/<base name>.json`, which nothing serves and the scans
+ * skip. images:cleanup removes it with the set once no source has its base
+ * name. Named like the set's files, so sources that share a set share it.
  */
 function setSourceFile(filename: string, paths: LibraryPaths): string {
-    return path.join(path.dirname(paths.dynamicCache), 'set-sources', `${baseNameOf(filename)}.json`);
+    return path.join(setSourcesDir(paths), `${baseNameOf(filename)}.json`);
 }
 
 /** The source the set `filename` writes was last built from, or null when nothing records it. */
@@ -931,13 +936,17 @@ function sourceSet(root: string, sourceFiles: string[]): SourceSet {
 /**
  * The folders cleanup reads, each with the folders that must be real
  * directories before it enters, and the extension of a derivative's exact
- * name there. The /api/image cache has none, since its names carry a width
- * and a quality.
+ * name there: the derivative folders, `/api/image`'s cache, and the records
+ * of which source each set was built from, named like the set's files, so a
+ * record goes when its set does. The /api/image cache has no extension here,
+ * since its names carry a width and a quality.
  */
 function scannedFolders(paths: LibraryPaths): { dir: string; guards: string[]; ext: string | null }[] {
+    const cache = path.dirname(paths.dynamicCache);
     return [
         ...DERIVATIVE_DIRS.map((key) => ({ dir: paths[key], guards: [paths[key]], ext: DERIVATIVE_FOLDERS[FOLDER_OF[key]] as string })),
-        { dir: paths.dynamicCache, guards: [path.dirname(paths.dynamicCache), paths.dynamicCache], ext: null },
+        { dir: paths.dynamicCache, guards: [cache, paths.dynamicCache], ext: null },
+        { dir: setSourcesDir(paths), guards: [cache, setSourcesDir(paths)], ext: '.json' },
     ];
 }
 
@@ -1120,7 +1129,8 @@ export function planOrphanCleanup(
     const scanned: string[] = [];
     for (const { dir, guards, ext } of scannedFolders(paths)) {
         const guard = guardState(guards);
-        if (guard.state === 'unsafe') {
+        // Two scanned folders share the cache folder's guard, so it is named once.
+        if (guard.state === 'unsafe' && !skippedFolders.includes(relativeTo(paths.root, guard.at))) {
             skippedFolders.push(relativeTo(paths.root, guard.at));
             // Looking inside would follow it, maybe out of the library
             if (requested !== null) uncheckedFolders.push(relativeTo(paths.root, guard.at));
