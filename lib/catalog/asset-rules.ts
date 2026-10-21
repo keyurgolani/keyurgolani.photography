@@ -3,8 +3,8 @@ import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../identity/variants';
 import { mediaFilePath } from '../media/path';
 import { mediaUrl } from '../media/url';
 import { hasErrorCode } from '../storage/fsx';
-import { registerRule } from './rules';
-import type { CandidatePhotoRecord, Rule, RuleContext, RuleFinding } from './types';
+import { registerRule, shared } from './rules';
+import type { CandidatePhotoRecord, ExcludedMember, ExclusionReason, Rule, RuleContext, RuleFinding } from './types';
 
 /**
  * The asset rules, slice B's: each published photo's derivative set is the
@@ -20,13 +20,13 @@ import type { CandidatePhotoRecord, Rule, RuleContext, RuleFinding } from './typ
 
 const photoRecord = (id: string) => ({ kind: 'photo' as const, id });
 
-/** The candidate's photos with their registry entry, worked out once per rule. */
+/** The findings of `test` for each of the candidate's photos. */
 function eachPhoto(ctx: RuleContext, test: (photo: CandidatePhotoRecord) => RuleFinding[]): RuleFinding[] {
     return ctx.candidate.photos.flatMap(test);
 }
 
-/** One finding per member compile left out for `reason`. */
-function excludedFor(ctx: RuleContext, reason: string, finding: (member: NonNullable<RuleContext['excluded']>[number]) => RuleFinding): RuleFinding[] {
+/** One finding per photo compile left out for `reason`, however many series list it. */
+function excludedFor(ctx: RuleContext, reason: ExclusionReason, finding: (member: ExcludedMember) => RuleFinding): RuleFinding[] {
     const seen = new Set<string>();
     return (ctx.excluded ?? []).filter((member) => {
         if (member.reason !== reason || seen.has(member.photoId)) return false;
@@ -53,18 +53,13 @@ function variantFiles(ctx: RuleContext, photo: CandidatePhotoRecord): { field: s
 }
 
 /** stat() each variant once per runRules() call, since two rules read the result. */
-const statted = new WeakMap<RuleContext, Map<string, ReturnType<typeof variantFiles>>>();
-
 function filesOf(ctx: RuleContext, photo: CandidatePhotoRecord): ReturnType<typeof variantFiles> {
-    let byPhoto = statted.get(ctx);
-    if (!byPhoto) {
-        byPhoto = new Map();
-        statted.set(ctx, byPhoto);
-    }
-    let files = byPhoto.get(photo.id);
+    const bySet = shared(ctx, 'assets.variant-files', () => new Map<string, ReturnType<typeof variantFiles>>());
+    const key = `${photo.id}/${photo.assetRevision}/${photo.profileId}`;
+    let files = bySet.get(key);
     if (!files) {
         files = variantFiles(ctx, photo);
-        byPhoto.set(photo.id, files);
+        bySet.set(key, files);
     }
     return files;
 }
