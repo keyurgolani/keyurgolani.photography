@@ -225,6 +225,34 @@ test.describe('expectNotObscured', () => {
         await load(page, `${capsule}${beside(206)}`);
         await expectNotObscured(page.getByRole('button'), page.locator('#round'));
     });
+
+    // A 100 px square at the top left. Its shadows decide how far past the box it paints.
+    const square = (shadow: string) =>
+        `<div id="square" style="position: fixed; top: 0; left: 0; width: 100px; height: 100px; background: #222; box-shadow: ${shadow}; z-index: 1"></div>`;
+    const rightOf = (left: number) => `<button type="button" style="position: absolute; top: 40px; left: ${left}px">Beside</button>`;
+
+    test('counts a solid shadow band as cover, as a ring-4 paints one', async ({ page }) => {
+        // The band paints to 108 px across. A ring from 106 px reaches into it, and one from 110 px clears it.
+        await load(page, `${square('0 0 0 8px #222')}${rightOf(112)}`);
+        await expect(expectNotObscured(page.getByRole('button'), page.locator('#square'))).rejects.toThrow(/ring samples under div/);
+        await load(page, `${square('0 0 0 8px #222')}${rightOf(116)}`);
+        await expectNotObscured(page.getByRole('button'), page.locator('#square'));
+    });
+
+    test('ignores an inset, blurred, or transparent shadow', async ({ page }) => {
+        await load(page, `${square('inset 0 0 0 20px #000, 0 0 12px 20px rgba(0, 0, 0, 0.5), 0 0 0 20px transparent')}${rightOf(112)}`);
+        await expectNotObscured(page.getByRole('button'), page.locator('#square'));
+    });
+
+    test('grows a round cover by its band, scaled as the cover is', async ({ page }) => {
+        // The 20 px band on the half-scale circle is 10 px on screen, so its radius reaches 110 px from the centre at
+        // 100 px. A ring corner at 174 px sits 104.7 px from it: clear of the circle, under the band.
+        const banded = circle.replace('background: #222;', 'background: #222; box-shadow: 0 0 0 20px #222;');
+        await load(page, `${banded}${nearCorner(180)}`);
+        await expect(expectNotObscured(page.getByRole('button'), page.locator('#round'))).rejects.toThrow(/ring samples under div/);
+        await load(page, `${circle}${nearCorner(180)}`);
+        await expectNotObscured(page.getByRole('button'), page.locator('#round'));
+    });
 });
 
 test.describe('expectTabOrderMatchesVisualOrder', () => {

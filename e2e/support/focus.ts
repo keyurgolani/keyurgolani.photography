@@ -145,7 +145,8 @@ function onCover({ box, radii }: Cover, { x, y }: { x: number; y: number }): boo
  * What the rendered chrome elements paint, minus any that contain the target,
  * since an ancestor never covers it. A rounded element paints only inside
  * its curves, so an image with `rounded-full` covers the shape it shows, not
- * its whole box.
+ * its whole box. A solid outer box-shadow band, such as a Tailwind `ring-4`,
+ * paints past the box, so the cover grows by the widest one.
  */
 async function chromeBoxes(target: Locator, chrome: readonly Locator[]): Promise<Cover[]> {
     const handle = await target.elementHandle();
@@ -177,11 +178,25 @@ async function chromeBoxes(target: Locator, chrome: readonly Locator[]): Promise
                     const shrink = Math.min(1,
                         fit(width, radii[0][0] + radii[1][0]), fit(width, radii[3][0] + radii[2][0]),
                         fit(height, radii[0][1] + radii[3][1]), fit(height, radii[1][1] + radii[2][1]));
+                    // The widest outer shadow with no offset and no blur, which paints a solid band that wide around the box.
+                    // Each shadow serializes as its color, then x, y, blur, and spread. Commas inside a color don't split it.
+                    const band = style.boxShadow === 'none' ? 0 : Math.max(0, ...style.boxShadow.split(/,(?![^(]*\))/).map((shadow) => {
+                        if (/\binset\b/.test(shadow) || /rgba\([^)]*,\s*0\)/.test(shadow)) return 0;
+                        const lengths = shadow.replace(/[a-z-]+\([^)]*\)/gi, ' ').split(/\s+/).filter((part) => /^-?[\d.]+px$/.test(part)).map(parseFloat);
+                        const [x = 0, y = 0, blur = 0, spread = 0] = lengths;
+                        return x === 0 && y === 0 && blur === 0 ? spread : 0;
+                    }));
+                    // On screen, as a transform scales it. The band rounds a curved corner wider by its own width.
+                    const [scaleX, scaleY] = [r.width / width, r.height / height];
+                    const [growX, growY] = [band * scaleX, band * scaleY];
                     const name = el.getAttribute('aria-label');
                     return [{
                         label: el.tagName.toLowerCase() + (name ? `[aria-label="${name}"]` : ''),
-                        box: { left: r.left, top: r.top, right: r.right, bottom: r.bottom },
-                        radii: radii.map(([across, down]): [number, number] => [across * shrink * (r.width / width), down * shrink * (r.height / height)]),
+                        box: { left: r.left - growX, top: r.top - growY, right: r.right + growX, bottom: r.bottom + growY },
+                        radii: radii.map(([across, down]): [number, number] => {
+                            const [rx, ry] = [across * shrink * scaleX, down * shrink * scaleY];
+                            return rx > 0 && ry > 0 ? [rx + growX, ry + growY] : [rx, ry];
+                        }),
                     }];
                 }), handle);
             covers.push(...found);
