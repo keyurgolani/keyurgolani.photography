@@ -71,7 +71,7 @@ npm run dev
 npm run images:watch
 ```
 
-Open [http://localhost:3000](http://localhost:3000) to view the site. `npm run dev` alone builds no derivatives, and the Gallery lists a photo only once all seven of its derivatives exist, so it stays empty until the watcher has run. `npm run images:process` builds them once and exits.
+Open [http://localhost:3000](http://localhost:3000) to view the site. `npm run dev` and `npm start` listen on `127.0.0.1` only. `npm run dev` alone builds no derivatives, and the Gallery lists a photo only once all seven of its derivatives exist, so it stays empty until the watcher has run. `npm run images:process` builds them once and exits.
 
 ### Development with Docker
 
@@ -81,7 +81,11 @@ Open [http://localhost:3000](http://localhost:3000) to view the site. `npm run d
 docker compose up
 ```
 
-It listens on `127.0.0.1:3000` only. To open it from another machine, forward the port over SSH (`ssh -L 3000:127.0.0.1:3000 <host>`) rather than publishing it wider.
+It listens on `127.0.0.1:3000` only. Open [http://localhost:3000](http://localhost:3000), since the dev server in the container accepts hot reload only from `localhost`. To open it from another machine, forward the port over SSH rather than publishing it wider:
+
+```bash
+ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:3000:127.0.0.1:3000 <host>
+```
 
 After a dependency change, rebuild with `docker compose up --build -V`. Without `-V`, the anonymous `node_modules` volume keeps the old install.
 

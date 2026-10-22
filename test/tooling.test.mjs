@@ -46,3 +46,22 @@ describe('npm test', () => {
     }
   }, 30_000);
 });
+
+describe('local servers', () => {
+  // `npm run dev`, `npm start` and the e2e server listen on loopback, and the
+  // dev compose publishes its port to loopback only.
+  it('stay on 127.0.0.1', async () => {
+    const { scripts } = JSON.parse(await fs.readFile(path.join(REPO_ROOT, 'package.json'), 'utf8'));
+    expect(scripts.dev).toMatch(/--hostname 127\.0\.0\.1(\s|$)/);
+    expect(scripts.start).toMatch(/--hostname 127\.0\.0\.1(\s|$)/);
+
+    const compose = await fs.readFile(path.join(REPO_ROOT, 'docker-compose.yml'), 'utf8');
+    const published = [...compose.matchAll(/^\s*-\s*"([\d.:]+)"\s*$/gm)].map(([, entry]) => entry);
+    expect(published.length).toBeGreaterThan(0);
+    for (const entry of published) expect(entry).toMatch(/^127\.0\.0\.1:/);
+
+    const config = await fs.readFile(path.join(REPO_ROOT, 'playwright.config.ts'), 'utf8');
+    expect(config).toContain("const host = '127.0.0.1';");
+    expect(config).toContain('npm run start -- --hostname ${host}');
+  });
+});

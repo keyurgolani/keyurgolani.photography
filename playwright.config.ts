@@ -5,7 +5,9 @@ import { defineConfig, devices } from '@playwright/test';
 
 // E2E_PORT picks another port when 3100 is taken.
 const port = process.env.E2E_PORT || '3100';
-const origin = `http://127.0.0.1:${port}`;
+// Loopback only: a test server has no reason to listen on the network.
+const host = '127.0.0.1';
+const origin = `http://${host}:${port}`;
 
 /**
  * The server builds and serves against an empty photo library, so the
@@ -48,8 +50,7 @@ export default defineConfig({
   ],
   webServer: {
     // next start warns that output: 'standalone' expects server.js, but it serves.
-    // Loopback only, like baseURL: a test server has no reason to listen on the network.
-    command: `npm run build && npm run start -- --hostname 127.0.0.1 --port ${port}`,
+    command: `npm run build && npm run start -- --hostname ${host} --port ${port}`,
     url: origin,
     timeout: 240_000,
     reuseExistingServer: !process.env.CI,
