@@ -9,10 +9,16 @@ import type { AssetManifest } from '../../identity/types';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../../identity/variants';
 import { DATA_ROOT_FILE } from '../../storage/config';
 import { MANIFEST_FILE } from '../../storage/publish';
-import { mediaAccess } from '../access';
+import { activeRevisionAccess } from '../access';
 import { createMediaHandler, type MediaHandlerOptions } from '../handler';
 import { assetDir, mediaFilePath } from '../path';
 import type { AssetRef } from '../url';
+
+vi.mock('next/server', async (importOriginal) => ({
+    ...await importOriginal<Record<string, unknown>>(),
+    // Outside Next there is no request scope, and the route only needs it to wait.
+    connection: vi.fn(async () => undefined),
+}));
 
 const REF: AssetRef = {
     photoId: 'ph_00000000-0000-4000-8000-000000000001',
@@ -237,50 +243,37 @@ describe('the media route handler', () => {
     });
 });
 
-describe('mediaAccess', () => {
+describe('media access policies', () => {
     const request = new Request('http://localhost/media/x');
 
-    it.each([[undefined], [''], ['deny'], ['yes']])('denies with PHOTOGRAPHY_MEDIA_ACCESS=%s', (value) => {
-        vi.stubEnv('PHOTOGRAPHY_MEDIA_ACCESS', value);
-        expect(mediaAccess(REF, request)).toBe('deny');
-    });
-
-    it('makes every set public with PHOTOGRAPHY_MEDIA_ACCESS=all', () => {
-        vi.stubEnv('PHOTOGRAPHY_MEDIA_ACCESS', 'all');
-        expect(mediaAccess(REF, request)).toBe('public');
-    });
-
-    it.each([
-        ['all', 200, 'every derivative set is public'],
-        ['yes', 404, "isn't deny or all"],
-    ])('the default policy warns once per handler about PHOTOGRAPHY_MEDIA_ACCESS=%s', async (value, status, warning) => {
-        vi.stubEnv('PHOTOGRAPHY_MEDIA_ACCESS', value);
+    it('serves no set from a handler given no policy', async () => {
         const data = dataRoot();
         writeSet(data.root);
-        const warnings: string[] = [];
-        const handler = createMediaHandler({ logger: { ...quiet, warn: (line: string) => { warnings.push(line); } } });
-        expect((await get(handler)).status).toBe(status);
-        expect((await get(handler, { variant: 'w400.webp' })).status).toBe(status);
-        expect(warnings).toEqual([expect.stringContaining(warning)]);
+        const response = await get(createMediaHandler({ logger: quiet }));
+        expect(response.status).toBe(404);
+        expect(response.headers.get('cache-control')).toBe('no-store');
     });
 
-    it('the default policy stays quiet under deny', async () => {
-        vi.stubEnv('PHOTOGRAPHY_MEDIA_ACCESS', 'deny');
-        const warnings: string[] = [];
-        const handler = createMediaHandler({ logger: { ...quiet, warn: (line: string) => { warnings.push(line); } } });
-        expect((await get(handler)).status).toBe(404);
-        expect(warnings).toEqual([]);
+    it('makes a set public only while the check says the revision being served holds it', async () => {
+        const other = { ...REF, profileId: `p_${'f'.repeat(16)}` };
+        const asked: AssetRef[] = [];
+        const policy = activeRevisionAccess((ref) => {
+            asked.push(ref);
+            return ref.profileId === REF.profileId;
+        });
+        expect(await policy(REF, request)).toBe('public');
+        expect(await policy(other, request)).toBe('deny');
+        expect(asked).toEqual([REF, other]);
     });
 });
 
 describe('app/media route', () => {
-    it('runs on Node, dynamically, and denies by default', async () => {
+    it('runs on Node, dynamically, and serves no set before the first activation', async () => {
         const route = await import('../../../app/media/[photoId]/[assetRevision]/[profileId]/[variant]/route');
         expect(route.runtime).toBe('nodejs');
         expect(route.dynamic).toBe('force-dynamic');
         const data = dataRoot();
         writeSet(data.root);
-        vi.stubEnv('PHOTOGRAPHY_MEDIA_ACCESS', '');
         const response = await get(route.GET);
         expect(response.status).toBe(404);
         expect(response.headers.get('cache-control')).toBe('no-store');

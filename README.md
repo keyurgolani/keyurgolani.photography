@@ -199,7 +199,6 @@ docker compose -f docker-compose.prod.yml up -d
 | `NEXT_PUBLIC_UI_AUTO_HIDE_TIMEOUT` | UI auto-hide timeout on home page (ms) | 3000 |
 | `PHOTOGRAPHY_LIBRARY_DIR` | Photo library folder for the watcher, `images:cleanup`, and `/api/photos`. The site serves photos only from `public/assets/photos`, so leave it unset outside tests. | `public/assets/photos` |
 | `PHOTOGRAPHY_DATA_DIR` | Private data root for photo identity state and the `/media` sets. It must sit outside `public/` and the library. The watcher's identity step runs only once `photos:migrate --apply` has initialized it, and until then the watcher logs why once. Both compose files set it to `/data/portfolio` and mount `./portfolio-data` there. | `portfolio-data`, none in production |
-| `PHOTOGRAPHY_MEDIA_ACCESS` | Who `/media` serves sets to: `deny` serves none, and `all` serves every set to anyone. Any other value denies. The web server reads it at each request. Leave it unset in production until the catalog decides which photos are public. | `deny` |
 
 ### Docker Configuration
 
