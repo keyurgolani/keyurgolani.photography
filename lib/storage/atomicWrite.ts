@@ -17,7 +17,7 @@ export interface AtomicWriteOptions {
 
 /** The `.<name>.<pid>.<uuid>.tmp` name a write stages beside its target. */
 export function tempPathFor(file: string): string {
-    return path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.${randomUUID()}.tmp`);
+    return path.join(/*turbopackIgnore: true*/ path.dirname(file), `.${path.basename(file)}.${process.pid}.${randomUUID()}.tmp`);
 }
 
 /**

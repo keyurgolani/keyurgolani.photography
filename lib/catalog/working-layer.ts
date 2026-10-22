@@ -48,7 +48,7 @@ export function authoredRecordFile(root: string, kind: AuthoredKind, id: string)
     if (!isRecordId(kind, id)) throw new Error(`Invalid ${kind} ID: ${JSON.stringify(id)}`);
     const paths = authoredPaths(root);
     if (kind === 'site') return paths.site;
-    return path.join(kind === 'series' ? paths.seriesDir : paths.photosDir, `${id}.json`);
+    return path.join(/*turbopackIgnore: true*/ kind === 'series' ? paths.seriesDir : paths.photosDir, `${id}.json`);
 }
 
 export type { RecordProblem, RecordProblemReason, WorkingLayer } from './types';
@@ -98,7 +98,7 @@ async function loadFolder<K extends 'series' | 'photo'>(dir: string, kind: K, pr
     const records: RecordOf<K>[] = [];
     // Dot-files are temp files from an interrupted atomic write, or OS metadata.
     for (const name of names.filter((entry) => !entry.startsWith('.') && entry.endsWith('.json')).sort(compare)) {
-        const loaded = await load(path.join(dir, name), kind, name.slice(0, -'.json'.length));
+        const loaded = await load(path.join(/*turbopackIgnore: true*/ dir, name), kind, name.slice(0, -'.json'.length));
         if (loaded === null) continue;
         if ('problem' in loaded) problems.push(loaded.problem);
         else records.push(loaded.record);

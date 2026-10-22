@@ -32,14 +32,14 @@ const ACTIVATION_FILE_RE = new RegExp(`^(\\d{6,})-(${ACTIVATION_ID_RE.source.rep
 const relative = (root: string, file: string) => path.relative(root, file).split(path.sep).join('/');
 
 async function ensureDir(dir: string): Promise<void> {
-    await fs.promises.mkdir(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
+    await fs.promises.mkdir(/*turbopackIgnore: true*/ dir, { recursive: true, mode: PRIVATE_DIR_MODE });
 }
 
 /** A JSON file's value, `{json: false}` when it isn't JSON, or null when it doesn't exist. */
 async function readJson(file: string): Promise<{ json: true; value: unknown } | { json: false } | null> {
     let text: string;
     try {
-        text = await fs.promises.readFile(file, 'utf8');
+        text = await fs.promises.readFile(/*turbopackIgnore: true*/ file, 'utf8');
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT')) return null;
         throw error;
@@ -52,7 +52,7 @@ async function readJson(file: string): Promise<{ json: true; value: unknown } | 
 }
 
 export function revisionFilePath(root: string, revisionId: string): string {
-    return path.join(catalogPaths(root).revisionsDir, `${revisionId}.json`);
+    return path.join(/*turbopackIgnore: true*/ catalogPaths(root).revisionsDir, `${revisionId}.json`);
 }
 
 /**
@@ -105,7 +105,7 @@ export async function listActivations(root: string): Promise<Activation[]> {
     const dir = catalogPaths(root).activationsDir;
     let names: string[];
     try {
-        names = await fs.promises.readdir(dir);
+        names = await fs.promises.readdir(/*turbopackIgnore: true*/ dir);
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT')) return [];
         throw error;
@@ -116,7 +116,7 @@ export async function listActivations(root: string): Promise<Activation[]> {
         const file = `${relative(root, dir)}/${name}`;
         const match = ACTIVATION_FILE_RE.exec(name);
         if (!match) throw new CatalogIntegrityError(file, `${file} is not named NNNNNN-<activationId>.json.`);
-        const read = await readJson(path.join(dir, name));
+        const read = await readJson(path.join(/*turbopackIgnore: true*/ dir, name));
         if (read === null) continue;
         if (!read.json) throw new CatalogIntegrityError(file, `${file} is not valid JSON.`);
         const parsed = parseActivation(read.value);
@@ -139,7 +139,7 @@ export async function writeActivation(root: string, activation: Activation, faul
     if (!parsed.ok) throw new Error(`Refusing to write an invalid activation: ${parsed.error.issues.slice(0, 3).map((issue) => `${issue.path}: ${issue.message}`).join('; ')}.`);
     const dir = catalogPaths(root).activationsDir;
     await ensureDir(dir);
-    await atomicWriteJson(path.join(dir, activationFileName(activation)), activation, { faults });
+    await atomicWriteJson(path.join(/*turbopackIgnore: true*/ dir, activationFileName(activation)), activation, { faults });
 }
 
 /** The sequence the next activation takes: one past the highest, abandoned ones included, so file names never repeat. */
@@ -177,7 +177,7 @@ export async function writeActivePointer(root: string, pointer: ActivePointer, f
 export async function writeCandidate(root: string, candidate: CandidateFile): Promise<void> {
     const dir = catalogPaths(root).candidatesDir;
     await ensureDir(dir);
-    await atomicWriteJson(path.join(dir, `${candidate.revisionId}.json`), candidate);
+    await atomicWriteJson(path.join(/*turbopackIgnore: true*/ dir, `${candidate.revisionId}.json`), candidate);
 }
 
 /** What `catalog/diagnostics/<candidateId>.json` holds: every issue, for #16, not just the 200 the CLI prints. */
@@ -194,7 +194,7 @@ export interface DiagnosticsFile {
 export async function writeDiagnostics(root: string, diagnostics: DiagnosticsFile): Promise<void> {
     const dir = catalogPaths(root).diagnosticsDir;
     await ensureDir(dir);
-    await atomicWriteJson(path.join(dir, `${diagnostics.candidateId}.json`), diagnostics);
+    await atomicWriteJson(path.join(/*turbopackIgnore: true*/ dir, `${diagnostics.candidateId}.json`), diagnostics);
 }
 
 /** `catalog/diagnostics/last-publish.json`: how the last publish attempt ended, for `photos status` and #16. */
@@ -214,5 +214,5 @@ export interface LastPublishFile {
 export async function writeLastPublish(root: string, summary: LastPublishFile): Promise<void> {
     const dir = catalogPaths(root).diagnosticsDir;
     await ensureDir(dir);
-    await atomicWriteJson(path.join(dir, 'last-publish.json'), summary);
+    await atomicWriteJson(path.join(/*turbopackIgnore: true*/ dir, 'last-publish.json'), summary);
 }
