@@ -35,6 +35,38 @@
  *     bind to a path another photo holds merges that photo into <photoId>
  *     only when --merge names it, and only if it was minted at that path.
  *
+ *   npx tsx scripts/photos.ts status [--json]
+ *     The data root, the catalog mode and active revision, the last publish,
+ *     registry counts, the working layer's records, how many photos no series
+ *     lists and how many have no reviewed description, and the watcher's
+ *     heartbeat. Exits 1 unless the data root is ready and everything reads.
+ *
+ *   npx tsx scripts/photos.ts list [--unassigned] [--json]
+ *     Every photo the registry holds, but not archived ones, with its library
+ *     path, capture date, series, description state, and the data-root path
+ *     of the 400 px WebP it would publish on. --unassigned keeps the photos in
+ *     the library that no series lists.
+ *
+ *   npx tsx scripts/photos.ts draft:init
+ *     Create site.json and a photo record for every photo without one, with
+ *     no description and the asset revision its source is bound to. Never
+ *     overwrites a record.
+ *
+ *   npx tsx scripts/photos.ts describe --import <file> [--dry-run]
+ *     Set descriptions, decorative flags, titles, and captions from a CSV or
+ *     JSON file with the columns photoId, alt, decorative, title, and caption.
+ *     An empty cell changes nothing, imported descriptions count as reviewed,
+ *     and any row it can't apply, such as an unknown photo ID, stops the whole
+ *     import before it writes anything.
+ *
+ *   npx tsx scripts/photos.ts sequence <command> <seriesId> ...
+ *   npx tsx scripts/photos.ts series (order | featured) <seriesId>...
+ *     Change a series' photos, cover, opening photo, and chapters, or the
+ *     Work order and featured series, through #8's operations. The usage
+ *     below lists each form. Exits 0 on success, 1 when the operation is
+ *     refused, 2 on a usage error, 3 on a version conflict or a busy authored
+ *     lock, and 4 for I/O.
+ *
  *   npx tsx scripts/photos.ts validate [--reprofile]
  *     Compile the working layer and run every rule, taking no lock and
  *     writing nothing, so it runs on a read-only data root too. Prints the
@@ -67,8 +99,12 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { runDescribeImport } from '../lib/catalog/describe-import';
+import { runDraftInit } from '../lib/catalog/draft-init';
+import { runListCommand, runStatusCommand } from '../lib/catalog/owner-status';
 import { publish, PUBLISH_EXIT_CODES, validateWorkingLayer, VALIDATE_EXIT_CODES, type PublishResult } from '../lib/catalog/publish';
 import { REVISION_ID_RE } from '../lib/catalog/schema';
+import { runSequenceCommand, type CommandResult, type PlacementArg, type SequenceCommand } from '../lib/catalog/sequence-commands';
 import type { Issue } from '../lib/catalog/types';
 import { catalogPaths } from '../lib/catalog/working-layer';
 import { ApplyRefusedError, migrateApply } from '../lib/identity/apply';
@@ -94,6 +130,20 @@ const USAGE = `Usage:
   ${PROGRAM} identity archive <photoId> [--reason <text>]
   ${PROGRAM} identity retry <photoId> [<assetRevision>] [--reason <text>]
   ${PROGRAM} identity reprofile (<photoId> | --all) [--reason <text>]
+  ${PROGRAM} status [--json]
+  ${PROGRAM} list [--unassigned] [--json]
+  ${PROGRAM} draft:init
+  ${PROGRAM} describe --import <file> [--dry-run]
+  ${PROGRAM} sequence show <seriesId>
+  ${PROGRAM} sequence set <seriesId> <photoId>... [--expect-version <N>]
+  ${PROGRAM} sequence (insert | move) <seriesId> <photoId> (--start | --end | --after <photoId> | --to <N>) [--expect-version <N>]
+  ${PROGRAM} sequence remove <seriesId> <photoId> [--expect-version <N>]
+  ${PROGRAM} sequence cover <seriesId> <photoId> [--focal <x>,<y> | --clear-focal] [--expect-version <N>]
+  ${PROGRAM} sequence opening <seriesId> (<photoId> | --clear) [--expect-version <N>]
+  ${PROGRAM} sequence chapter add <seriesId> <title> --start <photoId> [--expect-version <N>]
+  ${PROGRAM} sequence chapter move <seriesId> <chapterId> --start <photoId> [--expect-version <N>]
+  ${PROGRAM} sequence chapter remove <seriesId> <chapterId> [--expect-version <N>]
+  ${PROGRAM} series (order | featured) <seriesId>... [--expect-version <N>]
   ${PROGRAM} validate [--reprofile]
   ${PROGRAM} publish [--actor <name>] [--reason <text>] [--expect <candidateId>] [--dry-run] [--confirm-launch] [--reprofile]`;
 
@@ -296,6 +346,14 @@ async function validate(args: string[]): Promise<number> {
     return exitCode;
 }
 
+/** What the first publish asks of the owner. docs/curation.md's launch checklist has the whole list. */
+const LAUNCH_CHECKLIST = [
+    'Launch checklist, from docs/curation.md:',
+    '  - The cutover milestone has shipped: Home, Work, the series pages, and the Viewer read the catalog (#4, #3, #5, #7), and a rollback works (#15 slice A).',
+    '  - Viewer hardening (#9) is recommended first.',
+    '  - A preview, this data root copied, published, and served on another port, looks right.',
+];
+
 function printPublish(print: (line: string) => void, result: PublishResult, root: string): void {
     print(`[photos] ${result.outcome}: ${result.message}`);
     if (result.candidateId) print(`Candidate: ${result.candidateId}`);
@@ -305,6 +363,7 @@ function printPublish(print: (line: string) => void, result: PublishResult, root
         const { published, gone } = result.launch;
         const leaving = gone === 0 ? 'Every photograph in the library is in it.' : `${count(gone, 'photograph')} in the library ${gone === 1 ? "isn't" : "aren't"} in it, so ${gone === 1 ? 'it leaves' : 'they leave'} the site.`;
         print(`Launch: this revision replaces the legacy Home and Gallery with ${count(published, 'photograph')}. ${leaving}`);
+        for (const line of LAUNCH_CHECKLIST) print(line);
         if (result.outcome === 'LAUNCH_CONFIRMATION_REQUIRED') print('Run it again with --confirm-launch to publish it.');
     }
     if (result.reprofiled) {
@@ -349,11 +408,183 @@ async function publishCommand(args: string[]): Promise<number> {
     return exitCode;
 }
 
+/** Print a handler's text, on stdout when it succeeded and stderr when it didn't, and return its exit code. */
+function printed(result: CommandResult): number {
+    (result.exitCode === 0 ? process.stdout : process.stderr).write(result.output);
+    return result.exitCode;
+}
+
+async function statusCommand(args: string[]): Promise<number> {
+    const { values } = strictly(() => parseArgs({ args, options: { json: { type: 'boolean' } }, strict: true }));
+    const root = catalogRoot();
+    if (typeof root === 'number') return root;
+    return printed(await runStatusCommand({ dataRoot: root }, { json: values.json }));
+}
+
+async function listCommand(args: string[]): Promise<number> {
+    const { values } = strictly(() => parseArgs({ args, options: { unassigned: { type: 'boolean' }, json: { type: 'boolean' } }, strict: true }));
+    const root = catalogRoot();
+    if (typeof root === 'number') return root;
+    return printed(await runListCommand({ dataRoot: root }, { unassigned: values.unassigned, json: values.json }));
+}
+
+async function draftInitCommand(args: string[]): Promise<number> {
+    strictly(() => parseArgs({ args, options: {}, strict: true }));
+    const root = catalogRoot();
+    if (typeof root === 'number') return root;
+    return printed(await runDraftInit({ dataRoot: root }));
+}
+
+async function describeCommand(args: string[]): Promise<number> {
+    const { values } = strictly(() => parseArgs({ args, options: { import: { type: 'string' }, 'dry-run': { type: 'boolean' } }, strict: true }));
+    if (!values.import) throw new UsageError('photos describe needs --import <file>.');
+    const root = catalogRoot();
+    if (typeof root === 'number') return root;
+    return printed(await runDescribeImport({ dataRoot: root }, { file: values.import, dryRun: values['dry-run'] }));
+}
+
+/** `--expect-version`: the version the record must be at, the current one when omitted. */
+function expectVersionArg(value: string | undefined): number | undefined {
+    if (value === undefined) return undefined;
+    if (!/^\d+$/.test(value)) throw new UsageError('--expect-version takes a version from 0.');
+    return Number(value);
+}
+
+/** Where insert and move put a photo: exactly one of --start, --end, --after <photoId>, and --to <N>. */
+function placementArg(values: { start?: boolean; end?: boolean; after?: string; to?: string }): PlacementArg {
+    const given = [values.start === true, values.end === true, values.after !== undefined, values.to !== undefined].filter(Boolean).length;
+    if (given !== 1) throw new UsageError('Place the photo with exactly one of --start, --end, --after <photoId>, and --to <N>.');
+    if (values.start) return 'start';
+    if (values.end) return 'end';
+    if (values.after !== undefined) return { after: photoIdArg(values.after) };
+    if (!/^\d+$/.test(values.to ?? '')) throw new UsageError('--to takes a position from 1.');
+    return { to: Number(values.to) };
+}
+
+/** `--focal <x>,<y>`, each from 0 to 1. */
+function focalArg(value: string): { x: number; y: number } {
+    const match = /^\s*([0-9.]+)\s*,\s*([0-9.]+)\s*$/.exec(value);
+    const [x, y] = match ? [Number(match[1]), Number(match[2])] : [Number.NaN, Number.NaN];
+    if (!(x >= 0 && x <= 1 && y >= 0 && y <= 1)) throw new UsageError('--focal takes x,y, each from 0 to 1, such as --focal 0.5,0.4.');
+    return { x, y };
+}
+
+/** One positional count, or a usage error that names the form. */
+function exactly(positionals: string[], n: number, form: string): string[] {
+    if (positionals.length !== n) throw new UsageError(`Usage: photos ${form}`);
+    return positionals;
+}
+
+/** Parsed flags and positionals. Each command reads only the flags it declares. */
+interface Parsed {
+    values: Record<string, string | boolean | undefined>;
+    positionals: string[];
+}
+
+type Options = NonNullable<Parameters<typeof parseArgs>[0]>['options'];
+
+/** Strict parsing with --expect-version, which every changing command takes. */
+function parseOrder(args: string[], options: Options = {}): Parsed {
+    return strictly(() => parseArgs({ args, options: { 'expect-version': { type: 'string' }, ...options }, allowPositionals: true, strict: true })) as Parsed;
+}
+
+const text = (value: string | boolean | undefined): string | undefined => (typeof value === 'string' ? value : undefined);
+
+function sequenceArgs(args: string[]): SequenceCommand {
+    const [sub, ...rest] = args;
+    const expectVersion = (values: Parsed['values']) => expectVersionArg(text(values['expect-version']));
+    switch (sub) {
+        case 'show': {
+            const { values, positionals } = parseOrder(rest);
+            if (values['expect-version'] !== undefined) throw new UsageError('sequence show takes no --expect-version.');
+            const [seriesId] = exactly(positionals, 1, 'sequence show <seriesId>');
+            return { command: 'show', seriesId };
+        }
+        case 'set': {
+            const { values, positionals } = parseOrder(rest);
+            if (positionals.length < 1) throw new UsageError('Usage: photos sequence set <seriesId> <photoId>...');
+            const [seriesId, ...photoIds] = positionals;
+            return { command: 'set', seriesId, photoIds: photoIds.map(photoIdArg), expectVersion: expectVersion(values) };
+        }
+        case 'insert':
+        case 'move': {
+            const { values, positionals } = parseOrder(rest, { start: { type: 'boolean' }, end: { type: 'boolean' }, after: { type: 'string' }, to: { type: 'string' } });
+            const [seriesId, photoId] = exactly(positionals, 2, `sequence ${sub} <seriesId> <photoId> (--start | --end | --after <photoId> | --to <N>)`);
+            const at = placementArg({ start: values.start === true, end: values.end === true, after: text(values.after), to: text(values.to) });
+            return { command: sub, seriesId, photoId: photoIdArg(photoId), at, expectVersion: expectVersion(values) };
+        }
+        case 'remove': {
+            const { values, positionals } = parseOrder(rest);
+            const [seriesId, photoId] = exactly(positionals, 2, 'sequence remove <seriesId> <photoId>');
+            return { command: 'remove', seriesId, photoId: photoIdArg(photoId), expectVersion: expectVersion(values) };
+        }
+        case 'cover': {
+            const { values, positionals } = parseOrder(rest, { focal: { type: 'string' }, 'clear-focal': { type: 'boolean' } });
+            const [seriesId, photoId] = exactly(positionals, 2, 'sequence cover <seriesId> <photoId> [--focal <x>,<y> | --clear-focal]');
+            const focal = text(values.focal);
+            if (focal !== undefined && values['clear-focal'] === true) throw new UsageError('--focal and --clear-focal don\'t go together.');
+            const point = values['clear-focal'] === true ? 'clear' as const : focal === undefined ? undefined : focalArg(focal);
+            return { command: 'cover', seriesId, photoId: photoIdArg(photoId), ...(point === undefined ? {} : { focal: point }), expectVersion: expectVersion(values) };
+        }
+        case 'opening': {
+            const { values, positionals } = parseOrder(rest, { clear: { type: 'boolean' } });
+            const form = 'sequence opening <seriesId> (<photoId> | --clear)';
+            if (values.clear === true) {
+                const [seriesId] = exactly(positionals, 1, form);
+                return { command: 'opening', seriesId, photoId: null, expectVersion: expectVersion(values) };
+            }
+            const [seriesId, photoId] = exactly(positionals, 2, form);
+            return { command: 'opening', seriesId, photoId: photoIdArg(photoId), expectVersion: expectVersion(values) };
+        }
+        case 'chapter': {
+            const [action, ...tail] = rest;
+            if (action === 'add' || action === 'move') {
+                const { values, positionals } = parseOrder(tail, { start: { type: 'string' } });
+                const form = action === 'add' ? 'sequence chapter add <seriesId> <title> --start <photoId>' : 'sequence chapter move <seriesId> <chapterId> --start <photoId>';
+                const [seriesId, second] = exactly(positionals, 2, form);
+                const start = text(values.start);
+                if (start === undefined) throw new UsageError(`chapter ${action} needs --start <photoId>.`);
+                return action === 'add'
+                    ? { command: 'chapter-add', seriesId, title: second, startPhotoId: photoIdArg(start), expectVersion: expectVersion(values) }
+                    : { command: 'chapter-move', seriesId, chapterId: second, startPhotoId: photoIdArg(start), expectVersion: expectVersion(values) };
+            }
+            if (action === 'remove') {
+                const { values, positionals } = parseOrder(tail);
+                const [seriesId, chapterId] = exactly(positionals, 2, 'sequence chapter remove <seriesId> <chapterId>');
+                return { command: 'chapter-remove', seriesId, chapterId, expectVersion: expectVersion(values) };
+            }
+            throw new UsageError(action ? `Unknown chapter command: ${action}` : 'photos sequence chapter needs add, move, or remove.');
+        }
+        default:
+            throw new UsageError(sub ? `Unknown sequence command: ${sub}` : 'photos sequence needs a command.');
+    }
+}
+
+function seriesArgs(args: string[]): SequenceCommand {
+    const [sub, ...rest] = args;
+    if (sub !== 'order' && sub !== 'featured') throw new UsageError(sub ? `Unknown series command: ${sub}` : 'photos series needs order or featured.');
+    const { values, positionals } = parseOrder(rest);
+    return { command: sub === 'order' ? 'series-order' : 'series-featured', seriesIds: positionals, expectVersion: expectVersionArg(text(values['expect-version'])) };
+}
+
+async function orderCommand(parse: () => SequenceCommand): Promise<number> {
+    const command = parse();
+    const root = catalogRoot();
+    if (typeof root === 'number') return root;
+    return printed(await runSequenceCommand({ dataRoot: root }, command));
+}
+
 async function main(argv: string[]): Promise<number> {
     const [command, ...args] = argv;
     try {
         if (command === 'migrate') return await migrate(args);
         if (command === 'identity') return await identity(args);
+        if (command === 'status') return await statusCommand(args);
+        if (command === 'list') return await listCommand(args);
+        if (command === 'draft:init') return await draftInitCommand(args);
+        if (command === 'describe') return await describeCommand(args);
+        if (command === 'sequence') return await orderCommand(() => sequenceArgs(args));
+        if (command === 'series') return await orderCommand(() => seriesArgs(args));
         if (command === 'validate') return await validate(args);
         if (command === 'publish') return await publishCommand(args);
         throw new UsageError(command ? `Unknown command: ${command}` : 'No command given.');
