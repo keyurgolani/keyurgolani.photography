@@ -542,8 +542,22 @@ export function setMembers(filename: string, paths: LibraryPaths = libraryPaths(
     return getPhotoFiles(paths.root).filter((file) => sharesSet(filename, file, paths.root)).sort();
 }
 
-/** What decodes() found for each path, kept while the file keeps its inode, size, and times. */
-const decoded = new Map<string, { version: string; ok: boolean }>();
+/**
+ * What decodes() found for each path, kept while the file keeps its inode,
+ * size, and times, with what it found for the version before, null when it
+ * saw none.
+ */
+const decoded = new Map<string, { version: string; ok: boolean; okBefore: boolean | null }>();
+
+/** A source's inode, size, and times, which say when decodes() must look again. Null when it can't be read. */
+async function decodeVersion(filePath: string): Promise<string | null> {
+    try {
+        const { dev, ino, size, mtimeMs, ctimeMs } = await fs.promises.stat(filePath);
+        return `${dev}:${ino}:${size}:${mtimeMs}:${ctimeMs}`;
+    } catch {
+        return null;
+    }
+}
 
 /**
  * Whether a source decodes whole. The header alone isn't enough: a truncated
@@ -552,13 +566,8 @@ const decoded = new Map<string, { version: string; ok: boolean }>();
  */
 async function decodes(file: string, paths: LibraryPaths): Promise<boolean> {
     const filePath = path.join(paths.root, file);
-    let version: string;
-    try {
-        const { dev, ino, size, mtimeMs, ctimeMs } = await fs.promises.stat(filePath);
-        version = `${dev}:${ino}:${size}:${mtimeMs}:${ctimeMs}`;
-    } catch {
-        return false;
-    }
+    const version = await decodeVersion(filePath);
+    if (version === null) return false;
     const cached = decoded.get(filePath);
     if (cached?.version === version) return cached.ok;
     let ok: boolean;
@@ -568,8 +577,20 @@ async function decodes(file: string, paths: LibraryPaths): Promise<boolean> {
     } catch {
         ok = false;
     }
-    decoded.set(filePath, { version, ok });
+    decoded.set(filePath, { version, ok, okBefore: cached ? cached.ok : null });
     return ok;
+}
+
+/**
+ * Whether a source decoded at the last version decodes() saw before its
+ * current one, so whether it could have owned its set before it changed.
+ * Null when decodes() saw no earlier version.
+ */
+export async function decodedBeforeChange(filename: string, paths: LibraryPaths = libraryPaths()): Promise<boolean | null> {
+    const filePath = path.join(paths.root, filename);
+    const cached = decoded.get(filePath);
+    if (!cached) return null;
+    return cached.version === (await decodeVersion(filePath)) ? cached.okBefore : cached.ok;
 }
 
 /**
@@ -599,10 +620,13 @@ export async function ownerAfterRemoval(removed: string, paths: LibraryPaths = l
     return removed < owner ? owner : null;
 }
 
-/** The source that owns `filename`'s set among the library's sources now, or `filename` when it is the only one. */
-export async function ownerOf(filename: string, paths: LibraryPaths = libraryPaths()): Promise<string> {
-    const group = setMembers(filename, paths);
-    return group.includes(filename) ? (await pickOwner(group, paths)).owner : filename;
+/**
+ * The source that owns `filename`'s set among the library's sources now, or
+ * `filename` when it is the only one. Pass the setMembers() a caller already
+ * has as `members` to skip listing the library again.
+ */
+export async function ownerOf(filename: string, paths: LibraryPaths = libraryPaths(), members: string[] = setMembers(filename, paths)): Promise<string> {
+    return members.includes(filename) ? (await pickOwner(members, paths)).owner : filename;
 }
 
 /**
@@ -650,13 +674,14 @@ export async function filesToProcess({ force = false }: { force?: boolean } = {}
  * seven outputs when forced or when needsRefresh() says so, and otherwise do
  * nothing. A missing one next to existing ones may come from a different
  * version, so filling in only the gap could leave a mixed set. A source whose
- * set another source owns writes nothing.
+ * set another source owns writes nothing. `owns` skips that check, for a
+ * caller that just made it.
  *
  * Returns the paths it replaced, none when the set was already current.
  */
-export async function refreshImage(filename: string, { force = false }: { force?: boolean } = {}): Promise<string[]> {
+export async function refreshImage(filename: string, { force = false, owns = false }: { force?: boolean; owns?: boolean } = {}): Promise<string[]> {
     const paths = libraryPaths();
-    if (await ownerOf(filename, paths) !== filename) return [];
+    if (!owns && await ownerOf(filename, paths) !== filename) return [];
     if (!force && !needsRefresh(filename, paths)) return [];
     return writeVariants(filename, { overwrite: true, paths });
 }
@@ -700,6 +725,12 @@ export interface OrphanCleanupPlan {
     youngTempFiles: string[];
     /** Folders cleanup didn't enter because they are symlinks, not folders, or can't be listed */
     skippedFolders: string[];
+    /**
+     * With `only`, the skipped folders it couldn't look that photo's files up
+     * in by name, so some may be left there. In a folder it can't list but can
+     * search, its derivatives are looked up by their exact names instead.
+     */
+    uncheckedFolders: string[];
     /** Sources lstat can see but stat can't read. Their sets are kept. */
     unreadableSources: UnreadableSource[];
     /** With `only` and no file under that exact name, the names that differ from it only in case or Unicode form */
@@ -790,12 +821,39 @@ function sourceSet(root: string, sourceFiles: string[]): SourceSet {
     };
 }
 
-/** The folders cleanup reads, each with the folders that must be real directories before it enters. */
-function scannedFolders(paths: LibraryPaths): { dir: string; guards: string[] }[] {
+/**
+ * The folders cleanup reads, each with the folders that must be real
+ * directories before it enters, and the extension of a derivative's exact
+ * name there. The /api/image cache has none, since its names carry a width
+ * and a quality.
+ */
+function scannedFolders(paths: LibraryPaths): { dir: string; guards: string[]; ext: string | null }[] {
     return [
-        ...DERIVATIVE_DIRS.map((key) => ({ dir: paths[key], guards: [paths[key]] })),
-        { dir: paths.dynamicCache, guards: [path.dirname(paths.dynamicCache), paths.dynamicCache] },
+        ...DERIVATIVE_DIRS.map((key) => ({ dir: paths[key], guards: [paths[key]], ext: DERIVATIVE_FOLDERS[FOLDER_OF[key]] as string })),
+        { dir: paths.dynamicCache, guards: [path.dirname(paths.dynamicCache), paths.dynamicCache], ext: null },
     ];
+}
+
+/**
+ * With `only`, look up the photo's derivatives by their exact names in a
+ * folder cleanup can't list, since a takedown mustn't leave one there. Looks
+ * up `requested` as given and without a source extension, the two names
+ * `only` can resolve to. Returns the files found, or null when the folder
+ * can't be searched either.
+ */
+function lookUpByName(dir: string, ext: string | null, requested: string): string[] | null {
+    if (ext === null) return null;
+    const found: string[] = [];
+    for (const base of new Set([requested, isSourceFile(requested) ? baseNameOf(requested) : requested])) {
+        const file = path.join(dir, `${base}${ext}`);
+        try {
+            fs.lstatSync(file);
+            found.push(file);
+        } catch (error) {
+            if (!hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return null;
+        }
+    }
+    return found;
 }
     
 /** lstat, so a symlink never counts as a folder and cleanup never follows one out of the library. */
@@ -938,17 +996,26 @@ export function planOrphanCleanup(
 
     const sources = sourceSet(paths.root, sourceFiles);
     const skippedFolders: string[] = [];
+    const uncheckedFolders: string[] = [];
     const scanned: string[] = [];
-    for (const { dir, guards } of scannedFolders(paths)) {
+    for (const { dir, guards, ext } of scannedFolders(paths)) {
         const guard = guardState(guards);
-        if (guard.state === 'unsafe') skippedFolders.push(relativeTo(paths.root, guard.at));
+        if (guard.state === 'unsafe') {
+            skippedFolders.push(relativeTo(paths.root, guard.at));
+            // Looking inside would follow it, maybe out of the library
+            if (requested !== null) uncheckedFolders.push(relativeTo(paths.root, guard.at));
+        }
         if (guard.state !== 'ok') continue;
         let names: string[];
         try {
             names = listFiles(dir);
         } catch {
-            // Its files are kept, the same as a folder that is a symlink.
+            // Its files are kept, the same as a folder that is a symlink, except a takedown's, looked up by name.
             skippedFolders.push(relativeTo(paths.root, dir));
+            if (requested === null) continue;
+            const found = lookUpByName(dir, ext, requested);
+            if (found === null) uncheckedFolders.push(relativeTo(paths.root, dir));
+            else scanned.push(...found);
             continue;
         }
         scanned.push(...names.map((name) => path.join(dir, name)));
@@ -975,6 +1042,7 @@ export function planOrphanCleanup(
         entries,
         youngTempFiles,
         skippedFolders,
+        uncheckedFolders,
         unreadableSources: unreadable,
         onlyVariants: only === null ? [] : caseVariants(only, scanned, paths),
         otherOrphans: only === null ? [] : orphanedSets(only, scanned, paths, sources),

@@ -27,6 +27,7 @@ async function tempLibrary(): Promise<TempLibrary> {
 
 afterEach(async () => {
     vi.unstubAllEnvs();
+    vi.restoreAllMocks();
     for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
@@ -129,6 +130,21 @@ describe('dataRootState', () => {
         fs.chmodSync(data.root, 0o555);
         expect(dataRootState({ write: true })).toBe('unwritable');
         expect(dataRootState()).toBe('ready');
+    });
+
+    it("is unwritable when asked with write if its filesystem can't hold hard links, and says why", () => {
+        const data = tempDataRoot();
+        // As on exFAT
+        vi.spyOn(fs, 'linkSync').mockImplementation(() => {
+            throw Object.assign(new Error('ENOTSUP: operation not supported, link'), { code: 'ENOTSUP' });
+        });
+        expect(dataRootStatus({ write: true })).toMatchObject({ state: 'unwritable', detail: expect.stringContaining("can't hold hard links") });
+        expect(dataRootState()).toBe('ready');
+        expect(data.files()).toEqual([DATA_ROOT_FILE]);
+
+        vi.restoreAllMocks();
+        expect(dataRootState({ write: true })).toBe('ready');
+        expect(data.files()).toEqual([DATA_ROOT_FILE]);
     });
 
     it.skipIf(isRoot)('is unavailable when data-root.json exists but cannot be read', () => {
