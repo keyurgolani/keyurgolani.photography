@@ -95,7 +95,7 @@ export async function recordFolderProblem(root: string, kind: AuthoredKind, id: 
             if (names.includes(name)) return `${relative}/ ${SYMLINKED}`;
             stored = names.find((entry) => entry.toLowerCase() === name.toLowerCase());
         } else {
-            // fs.promises.realpath is the native realpath, as the `--only` lookup in images:cleanup checks it.
+            // fs.promises.realpath is the native realpath, which reports the spelling on disk.
             stored = path.basename(await fs.promises.realpath(dir));
         }
     } catch {

@@ -48,7 +48,7 @@ export interface WatcherHandlers {
     onAdd(filePath: string): Promise<void>;
     /** Regenerate all seven outputs for a changed source, including a save-by-rename. */
     onChange(filePath: string): Promise<void>;
-    /** Keep the derivatives, and point at images:cleanup. */
+    /** Keep the derivatives, and rebuild a set the source shared from the source that owns it now. */
     onUnlink(filePath: string): Promise<void>;
     /** Queue every unprocessed source, using the overwrite rule in refreshImage(). */
     queueStartupBatch(options?: { force?: boolean }): Promise<StartupBatchResult>;
@@ -332,7 +332,7 @@ export function createWatcherHandlers(
         async onUnlink(filePath) {
             if (stopped || !isSourceFile(filePath)) return;
             const filename = path.basename(filePath);
-            logger.log(`[ImageWatcher] Source removed: ${filename}. Derivatives kept. See npm run images:cleanup.`);
+            logger.log(`[ImageWatcher] Source removed: ${filename}. Derivatives kept.`);
             // The set it shared may show its pixels, so the source that owns it now builds it again.
             let next: string | null = null;
             const outcome = await enqueue(filename, true, async () => {

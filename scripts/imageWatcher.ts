@@ -5,7 +5,7 @@
  * Watches the photos directory for changes and processes new images automatically.
  * Uses chokidar for reliable file watching in Docker bind-mount scenarios.
  * It never deletes a source or a derivative. Removing a source keeps its
- * derivatives, and `npm run images:cleanup` reviews the leftovers.
+ * derivatives.
  *
  * Two steps run. The legacy step writes the derivatives under the library
  * for photos directly in its root. The identity step runs only when the data
