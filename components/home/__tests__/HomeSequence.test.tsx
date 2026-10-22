@@ -43,6 +43,35 @@ describe('HomeSequence', () => {
     expect(onFirstImageReady).toHaveBeenCalledTimes(1);
   });
 
+  it('reports onImageReady whenever the photograph on screen has its full layer, one loaded off screen included once it comes on', () => {
+    const onImageReady = vi.fn();
+    const sequence = (index: number) => <HomeSequence photos={photos} index={index} playbackState="advancing" onImageReady={onImageReady} />;
+    const { container, rerender } = render(sequence(0));
+    const optimized = () => container.querySelectorAll<HTMLImageElement>('img[data-layer="optimized"]');
+
+    fireEvent.load(optimized()[1]);
+    expect(onImageReady).not.toHaveBeenCalled();
+    rerender(sequence(1));
+    expect(onImageReady).toHaveBeenCalledTimes(1);
+
+    rerender(sequence(0));
+    expect(onImageReady).toHaveBeenCalledTimes(1);
+    fireEvent.load(optimized()[0]);
+    expect(onImageReady).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports onFirstImageError only for the first slide's full-quality layer", () => {
+    const onFirstImageError = vi.fn();
+    const { container } = render(<HomeSequence photos={photos} index={0} playbackState="advancing" onFirstImageError={onFirstImageError} />);
+    const layer = (name: string, slide: number) => container.querySelectorAll<HTMLImageElement>(`img[data-layer="${name}"]`)[slide];
+
+    fireEvent.error(layer('thumbnail', 0));
+    fireEvent.error(layer('optimized', 1));
+    expect(onFirstImageError).not.toHaveBeenCalled();
+    fireEvent.error(layer('optimized', 0));
+    expect(onFirstImageError).toHaveBeenCalledTimes(1);
+  });
+
   it('names each photo once, on its full-quality layer', () => {
     const { layers } = renderSequence();
 

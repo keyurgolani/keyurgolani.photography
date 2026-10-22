@@ -237,6 +237,17 @@ describe('HomeChromeController', () => {
       expect(state()).toBe('interactive');
     });
 
+    it('a lone modifier still re-checks focus, since the browser may now show the ring', () => {
+      focusVisible = false;
+      const { next } = renderHome();
+      act(() => next.focus());
+      recede();
+      focusVisible = true;
+      key('keydown', 'Shift', next);
+      expect(holds()).toBe('keyboard-focus');
+      expect(state()).toBe('interactive');
+    });
+
     it('keyboard focus in the chrome holds it up, and focus leaving starts a fresh full idle', () => {
       const { link } = renderHome();
       act(() => link.focus());
@@ -529,7 +540,8 @@ describe('HomeChromeController', () => {
       act(() => setDocumentVisibility('hidden'));
       expect(state()).toBe('immersive');
       expect(holds()).toBe('');
-      expect(vi.getTimerCount()).toBe(1);
+      // The idle is cleared, and the photograph already ended the loading deadline.
+      expect(vi.getTimerCount()).toBe(0);
 
       act(() => setDocumentVisibility('visible'));
       advance(IDLE * 2);
@@ -627,6 +639,13 @@ describe('HomeChromeController', () => {
       expect(state()).toBe('interactive');
     });
 
+    it('a photograph reported before the deadline clears it, so no timer outlives loading', () => {
+      renderHome({ loading: true });
+      expect(vi.getTimerCount()).toBe(1);
+      act(() => api.reportPhoto('shown'));
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
     it('a return visit starts with loading over and still holds the chrome when no photograph arrives', () => {
       renderHome({ photo: false });
       expect(main()).toHaveAttribute('data-home-loading', 'false');
@@ -684,7 +703,6 @@ describe('HomeChromeController', () => {
     const media = { ...mediaListenerCounts };
 
     view.rerender(<Home />);
-    act(() => api.reportPhoto('shown'));
     const photo = view.getByTestId('photo');
     const next = view.getByRole('button', { name: 'Next' });
     move();

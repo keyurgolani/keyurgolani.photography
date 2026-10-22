@@ -51,16 +51,16 @@ const HomeSequence: React.FC<HomeSequenceProps> = ({ photos, index, playbackStat
       setThumbnails((current) => addTo(current, id));
       return;
     }
+    // The effect below reports it once this is the photograph on screen.
     setFullImages((current) => addTo(current, id));
-    // The intro ends only once the photograph on screen has its full-quality layer.
-    if (id === activeId) notifyReady();
   };
 
   const handleError = (slide: number, layer: 'thumbnail' | 'full') => {
     if (slide === 0 && layer === 'full') onFirstImageError?.();
   };
 
-  // A slide whose full-quality layer loaded off screen counts once Previous or Next brings it on.
+  // The intro ends only once the photograph on screen has its full-quality layer, loaded
+  // on screen or off it and brought on by Previous or Next.
   useEffect(() => {
     if (activeId !== undefined && fullImages.has(activeId)) notifyReady();
     // notifyReady only reads refs and the latest callbacks, so it isn't a dependency.

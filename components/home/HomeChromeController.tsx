@@ -159,10 +159,12 @@ export default function HomeChromeController({
   }, [documentVisible, send]);
 
   // Loading ends on the first photograph report, or here. A return visit runs it too, for the photograph alone.
+  const awaitingPhoto = state.photo === 'unknown';
   useEffect(() => {
+    if (!awaitingPhoto) return;
     const timer = setTimeout(() => send({ type: 'loadingTimedOut' }), HOME_LOADING_TIMEOUT_MS);
     return () => clearTimeout(timer);
-  }, [send]);
+  }, [awaitingPhoto, send]);
 
   // The first gesture on immersive Home, and the guards that keep it from activating anything.
   useEffect(() => {
@@ -262,7 +264,11 @@ export default function HomeChromeController({
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (MODIFIERS.has(event.key)) return;
+      // A lone modifier isn't activity, but the browser may now draw focus as keyboard focus.
+      if (MODIFIERS.has(event.key)) {
+        recheckKeyboardFocus();
+        return;
+      }
       const chrome = chromeRef.current;
       const active = document.activeElement;
       if (
