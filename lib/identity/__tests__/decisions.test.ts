@@ -13,7 +13,10 @@ import {
     type DecisionOutcome,
     type IdentityDecision,
 } from '../decisions';
+import { toPublicAsset } from '../metadata';
 import { identityPaths } from '../registry';
+import type { AssetManifest } from '../types';
+import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../variants';
 import { image, NOW, PROFILE, Reconciler, revisionOf, sequentialIds } from './reconcileFixtures';
 
 const UUID = '00000000-0000-4000-8000-0000000000aa';
@@ -426,6 +429,51 @@ describe('reconcile: new', () => {
         r.pass();
         expect(r.photo(x)).toMatchObject({ sourceHealth: 'present', source: { path: 'elsewhere.jpg', observedRevision: revisionOf('A') } });
         expect(r.registry.holds).toEqual([]);
+    });
+
+    it('gives the photo its own revision back when a bind undoes it, so the revision builds and projects again', () => {
+        const r = seeded({ 'a.jpg': 'A' });
+        const x = r.photoAt('a.jpg').photoId;
+        const n = mintedBy(r.decide({ type: 'new', path: 'a.jpg' }));
+        r.pass();
+        expect(r.photo(x).revisions[revisionOf('A')].reassignedTo).toBe(n);
+
+        r.decide({ type: 'bind', path: 'a.jpg', photoId: x, merge: n });
+        r.pass();
+        expect(r.last.decisions).toMatchObject([{ status: 'applied', detail: `bound a.jpg to ${x} and merged ${n} into it` }]);
+        const record = r.photo(x).revisions[revisionOf('A')];
+        expect(record.reassignedTo).toBeUndefined();
+        expect(record.profiles).toEqual({ [PROFILE]: { state: 'pending', attempts: 0 } });
+        expect(r.photo(x)).toMatchObject({ sourceHealth: 'present', source: { path: 'a.jpg', present: true, observedRevision: revisionOf('A') } });
+        expect(r.photo(n)).toMatchObject({ sourceHealth: 'archived', mergedInto: x });
+        expect(r.photo(n).revisions[revisionOf('A')].reassignedTo).toBe(x);
+        expect(r.factSummary()).toEqual(['reappeared a.jpg']);
+        expect(r.last.jobs).toEqual([{ photoId: x, assetRevision: revisionOf('A'), profileId: PROFILE, path: 'a.jpg' }]);
+        const manifest = {
+            schemaVersion: 1,
+            photoId: x,
+            assetRevision: revisionOf('A'),
+            profileId: PROFILE,
+            variants: Object.fromEntries(VARIANT_WIDTHS.map((width) => [width, Object.fromEntries(VARIANT_FORMATS.map((format) => [format, { width: 64, height: 48, bytes: 100, sha256: 'a'.repeat(64) }]))])),
+            lqip: 'data:image/webp;base64,UklGRg==',
+            createdAt: CREATED,
+        } as AssetManifest;
+        expect(toPublicAsset(r.photo(x), revisionOf('A'), PROFILE, manifest)).toMatchObject({ photoId: x, assetRevision: revisionOf('A') });
+    });
+
+    it("refuses to bind a photo to bytes it gave to another photo, unless that photo's merge brings them back", () => {
+        const r = seeded({ 'a.jpg': 'A' });
+        const x = r.photoAt('a.jpg').photoId;
+        const n = mintedBy(r.decide({ type: 'new', path: 'a.jpg' }));
+        r.pass();
+        r.library.remove('a.jpg').put('p.jpg', image('A')).put('q.jpg', image('A'));
+        r.pass();
+        expect(r.registry.holds).toMatchObject([{ path: 'p.jpg', candidates: [n] }, { path: 'q.jpg', candidates: [n] }]);
+        r.decide({ type: 'bind', path: 'p.jpg', photoId: x });
+        r.pass();
+        expect(outcomes(r)).toEqual([{ status: 'rejected', reason: `p.jpg holds ${revisionOf('A')}, which ${x} gave to ${n}` }]);
+        expect(r.photo(x).revisions[revisionOf('A')].reassignedTo).toBe(n);
+        expect(r.photo(x).source.present).toBe(false);
     });
 
     it('refuses a path that is neither held nor bound, which gets a photo ID by itself', () => {
