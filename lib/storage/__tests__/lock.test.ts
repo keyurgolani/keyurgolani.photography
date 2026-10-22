@@ -67,6 +67,11 @@ describe('withLock', () => {
         expect(lockDirEntries()).toEqual([]);
     });
 
+    it('names the lock and its data root in the hold it passes, so a callee can check it', async () => {
+        const hold = await withLock('registry', { root: data.root }, async ({ name, root }) => ({ name, root }));
+        expect(hold).toEqual({ name: 'registry', root: data.root });
+    });
+
     it('creates locks/ and the lock file for their owner only', async () => {
         const modes = await withLock('registry', { root: data.root }, async () => ({
             dir: fs.statSync(path.dirname(lockPath)).mode & 0o777,

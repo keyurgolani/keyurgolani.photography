@@ -136,6 +136,32 @@ describe('getGalleryImages', () => {
         expect(errors).toHaveBeenCalledWith(expect.stringMatching(/^\[getGalleryImages\] Skipping portrait\.png: /));
     });
 
+    it("sorts by DateTimeOriginal only when its text is a real date, and otherwise by the file's birth time", async () => {
+        const dated = (tags: { DateTimeOriginal?: string; DateTime?: string }) => sharp({ create: { width: 64, height: 48, channels: 3, background: '#4a6' } })
+            .withExif({
+                ...(tags.DateTime ? { IFD0: { DateTime: tags.DateTime } } : {}),
+                ...(tags.DateTimeOriginal ? { IFD2: { DateTimeOriginal: tags.DateTimeOriginal } } : {}),
+            })
+            .jpeg()
+            .toBuffer();
+        // exif-reader reads 2024:00:00 as 2023-11-30. A camera whose clock was never set writes all zeros.
+        fs.writeFileSync(lib.file('rolled.jpg'), await dated({ DateTimeOriginal: '2024:00:00 00:00:00', DateTime: '2020:01:01 00:00:00' }));
+        fs.writeFileSync(lib.file('unset.jpg'), await dated({ DateTimeOriginal: '0000:00:00 00:00:00' }));
+        // DateTime is when the file last changed, which says nothing about when the photo was taken
+        fs.writeFileSync(lib.file('edited.jpg'), await dated({ DateTime: '2020:01:01 00:00:00' }));
+        fs.writeFileSync(lib.file('june.jpg'), await dated({ DateTimeOriginal: '2023:06:01 08:00:00', DateTime: '2023:06:02 08:00:00' }));
+        // A real date of any year, as the Gallery sorted it before
+        fs.writeFileSync(lib.file('old.jpg'), await dated({ DateTimeOriginal: '1888:07:04 12:00:00' }));
+        for (const name of ['rolled.jpg', 'unset.jpg', 'edited.jpg', 'june.jpg', 'old.jpg']) await refreshImage(name, { force: true });
+        const images = await getGalleryImages();
+        const base = (image: ImageItem) => image.optimized.replace('/assets/photos/optimized/', '').replace(/\.webp$/, '');
+        const dateOf = (name: string) => images.find((image) => base(image) === name)?.date;
+
+        for (const name of ['rolled', 'unset', 'edited']) expect(dateOf(name), name).toBe(fs.statSync(lib.file(`${name}.jpg`)).birthtime.getTime());
+        expect(dateOf('june')).toBe(Date.parse('2023-06-01T08:00:00Z'));
+        expect(dateOf('old')).toBe(Date.parse('1888-07-04T12:00:00Z'));
+    });
+
     it('lists sources that share derivatives once, by the first path, and warns naming both', async () => {
         // landscape.png would get landscape.jpg's derivatives, since both have the base name landscape.
         fs.copyFileSync(lib.file('portrait.png'), lib.file('landscape.png'));
