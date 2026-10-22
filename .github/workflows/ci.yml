@@ -49,7 +49,9 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm test -- --run
-      - run: npm run build
+      # Builds, then publishes to and rolls back the standalone server on a
+      # temp data root. The steps after it check that same build.
+      - run: npm run test:prod
       - name: Check the build traced no project files into .next/standalone
         run: bash ci/check-standalone.sh
       - run: npm run check:prerender
