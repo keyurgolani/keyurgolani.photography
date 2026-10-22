@@ -15,11 +15,12 @@ interface BottomBarProps {
 /**
  * On a short screen Home's slideshow controls sit just above the pill, so a
  * label shows under its icon instead, clear of the link's focus ring, and its
- * bridge reaches up. The query is the one HomeSequenceControls moves the
- * controls under.
+ * bridge reaches up past the 0.5rem gap into the link, so a pointer moving
+ * down off the icon's centre stays on the round link or the bridge. The query
+ * is the one HomeSequenceControls moves the controls under.
  */
 const LABEL_BELOW_ON_SHORT_SCREENS =
-  '[@media(max-width:849px)_and_(max-height:519px)]:top-[calc(100%+0.5rem)] [@media(max-width:849px)_and_(max-height:519px)]:after:top-auto [@media(max-width:849px)_and_(max-height:519px)]:after:bottom-full [@media(max-width:849px)_and_(max-height:519px)]:after:h-2';
+  '[@media(max-width:849px)_and_(max-height:519px)]:top-[calc(100%+0.5rem)] [@media(max-width:849px)_and_(max-height:519px)]:after:top-auto [@media(max-width:849px)_and_(max-height:519px)]:after:bottom-full [@media(max-width:849px)_and_(max-height:519px)]:after:h-3';
 
 /**
  * A Primary link with a label that hover or keyboard focus shows. The label

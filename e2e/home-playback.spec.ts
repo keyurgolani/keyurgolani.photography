@@ -278,6 +278,44 @@ test.describe('normal motion', () => {
                 await expect(page).toHaveURL('/');
                 await expect(position(page)).toHaveText('03 / 03');
             });
+
+            test(`at ${width} by ${height} a mouse moving down to a label off the icon's centre keeps the label`, async ({ page }, testInfo) => {
+                test.skip(testInfo.project.name === 'mobile', 'Hover runs on the desktop project.');
+                test.skip(!(width < 850 && height < 520), 'Labels sit under their icons only below 850 by 520 px.');
+                await page.setViewportSize({ width, height });
+                await openHome(page);
+                for (const name of ['Gallery', 'Home', 'About']) {
+                    const link = primary(page).getByRole('link', { name, exact: true });
+                    const label = link.getByText(name, { exact: true });
+                    await link.hover();
+                    await expect(label).toHaveCSS('opacity', '1');
+                    // Straight down from the icon to the label, 5 and 10 px either side of its centre, the pointer stays on
+                    // the round link, the bridge, or the label, so the link never loses :hover on the way.
+                    const misses = await link.evaluate((el, offsets) => {
+                        const icon = el.getBoundingClientRect();
+                        const shown = el.querySelector('span')!.getBoundingClientRect();
+                        const centre = icon.left + icon.width / 2;
+                        const found: string[] = [];
+                        for (const dx of offsets) {
+                            for (let y = icon.top + icon.height / 2; y <= shown.top + shown.height / 2; y += 0.25) {
+                                const hit = document.elementFromPoint(centre + dx, y);
+                                if (hit && el.contains(hit)) continue;
+                                found.push(`${dx} px off centre, ${(y - icon.bottom).toFixed(2)} px below the icon`);
+                                break;
+                            }
+                        }
+                        return found;
+                    }, [-10, -5, 0, 5, 10]);
+                    expect(misses, `points on the way down to ${name}'s label that leave the link`).toEqual([]);
+
+                    // A real mouse 10 px off centre moving down onto the label keeps it shown.
+                    const [icon, shown] = [await box(link), await box(label)];
+                    const x = (icon.left + icon.right) / 2 + 10;
+                    await page.mouse.move(x, (icon.top + icon.bottom) / 2);
+                    await page.mouse.move(x, (shown.top + shown.bottom) / 2, { steps: 12 });
+                    await expect(label).toHaveCSS('opacity', '1');
+                }
+            });
         }
     });
 
