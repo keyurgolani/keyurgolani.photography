@@ -2,16 +2,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { dataRootStatus } from '../storage/config';
 import { hasErrorCode } from '../storage/fsx';
-import { parseCandidateFile, parseRevisionFile, type ParseResult, type SchemaIssue } from './schema';
-import type { CandidateContent } from './types';
+import { parseAuthoredRecord, parseCandidateFile, parseRevisionFile, type ParseResult, type SchemaIssue } from './schema';
+import type { AuthoredPhoto, AuthoredSeries, CandidateContent } from './types';
 import { authoredPaths, catalogPaths, readActivePointer, readWorkingLayer, type RecordProblem } from './working-layer';
 
 /**
  * What destructive cleanup has to keep: every asset a revision, a candidate,
- * or the working layer names. #15's GC and purge and #17's staging cleanup
- * call references() while they hold the catalog lock. It takes no lock and
- * writes nothing. It fails closed: a file it can't read or parse throws, since
- * nobody can tell what that file references.
+ * or the working layer names, including the next version of a record that a
+ * write which didn't finish left claimed. It takes no lock and writes
+ * nothing, so #15's GC and purge and #17's staging cleanup must hold the
+ * `authored` lock, as well as the catalog lock, from this scan through their
+ * delete, or a write in between could pin an asset they delete. It fails
+ * closed: a file it can't read or parse throws, since nobody can tell what
+ * that file references.
  */
 
 export type ReferenceSource = 'active-revision' | 'revision' | 'candidate' | 'working-layer-series' | 'working-layer-photo';
@@ -75,7 +78,8 @@ async function readStored(root: string, dir: string, parse: (value: unknown) => 
         throw new ReferenceScanError(relativeDir, 'unreadable', `the folder can't be listed (${errorCode(error)})`);
     }
     const stored: StoredFile[] = [];
-    for (const name of names.filter((entry) => !entry.startsWith('.') && entry.endsWith('.json')).sort()) {
+    // `.JSON` too: a case-insensitive disk may hand it out as `.json`, so it fails the name check rather than go unread.
+    for (const name of names.filter((entry) => !entry.startsWith('.') && /\.json$/i.test(entry)).sort()) {
         const file = `${relativeDir}/${name}`;
         let text: string;
         try {
@@ -102,6 +106,58 @@ async function readStored(root: string, dir: string, parse: (value: unknown) => 
 function problemFile(problem: RecordProblem): string {
     if (problem.kind === 'site') return 'authored/site.json';
     return `authored/${problem.kind === 'series' ? 'series' : 'photos'}/${problem.id}.json`;
+}
+
+/** `<id>.json.claim-<version>`: a write that didn't finish leaves its record's next version here, and the next write installs it. */
+const CLAIM_RE = /^(.+)\.json\.claim-\d+$/i;
+
+/**
+ * The records that writes which didn't finish left claimed, which
+ * readWorkingLayer() doesn't show, read as the records they will be. Throws
+ * for a claim it can't use, and for a record file whose `.json` isn't lower
+ * case, which readWorkingLayer() passes over though a case-insensitive disk
+ * hands it out as the record.
+ */
+async function claimedRecords(root: string): Promise<{ series: AuthoredSeries[]; photos: AuthoredPhoto[] }> {
+    const paths = authoredPaths(root);
+    const claimed = { series: [] as AuthoredSeries[], photos: [] as AuthoredPhoto[] };
+    for (const [dir, kind] of [[paths.seriesDir, 'series'], [paths.photosDir, 'photo']] as const) {
+        const relativeDir = path.relative(root, dir).split(path.sep).join('/');
+        let names: string[];
+        try {
+            names = await fs.promises.readdir(dir);
+        } catch (error) {
+            if (hasErrorCode(error, 'ENOENT')) continue;
+            throw new ReferenceScanError(relativeDir, 'unreadable', `the folder can't be listed (${errorCode(error)})`);
+        }
+        for (const name of names.filter((entry) => !entry.startsWith('.')).sort()) {
+            const file = `${relativeDir}/${name}`;
+            if (/\.json$/i.test(name) && !name.endsWith('.json')) throw new ReferenceScanError(file, 'file-name', 'its .json is not lower case');
+            const claim = CLAIM_RE.exec(name);
+            if (!claim) continue;
+            let text: string;
+            try {
+                text = await fs.promises.readFile(path.join(dir, name), 'utf8');
+            } catch (error) {
+                // Installed or let go since the listing
+                if (hasErrorCode(error, 'ENOENT')) continue;
+                throw new ReferenceScanError(file, 'unreadable', `the file can't be read (${errorCode(error)})`);
+            }
+            let value: unknown;
+            try {
+                value = JSON.parse(text);
+            } catch {
+                throw new ReferenceScanError(file, 'invalid-json', 'the file is not valid JSON');
+            }
+            const parsed = parseAuthoredRecord(kind, value);
+            if (!parsed.ok) throw new ReferenceScanError(file, parsed.error.reason, issueSummary(parsed.error.issues));
+            const record = parsed.value as AuthoredSeries | AuthoredPhoto;
+            if (record.id !== claim[1]) throw new ReferenceScanError(file, 'file-name', `it holds ${record.id}`);
+            if (kind === 'series') claimed.series.push(record as AuthoredSeries);
+            else claimed.photos.push(record as AuthoredPhoto);
+        }
+    }
+    return claimed;
 }
 
 /**
@@ -153,14 +209,25 @@ export async function references(dataRoot: string): Promise<AssetReference[]> {
     }
     const [problem] = layer.problems;
     if (problem) throw new ReferenceScanError(problemFile(problem), problem.reason, issueSummary(problem.issues));
-    const pinned = new Map(layer.photos.map((photo) => [photo.id, photo.assetRevision]));
-    for (const series of layer.series) {
-        const members = [...series.photoIds, ...(series.cover ? [series.cover.photoId] : []), ...(series.openingPhotoId ? [series.openingPhotoId] : [])];
+    const claimed = await claimedRecords(dataRoot);
+    const photos = [...layer.photos, ...claimed.photos];
+    const pinned = new Map<string, Set<string>>();
+    for (const photo of photos) pinned.set(photo.id, new Set([...(pinned.get(photo.id) ?? []), photo.assetRevision]));
+    for (const series of [...layer.series, ...claimed.series]) {
+        const members = [
+            ...series.photoIds,
+            ...(series.cover ? [series.cover.photoId] : []),
+            ...(series.openingPhotoId ? [series.openingPhotoId] : []),
+            ...series.chapters.map((chapter) => chapter.startPhotoId),
+        ];
         for (const photoId of members) {
-            add({ source: 'working-layer-series', holder: series.id, photoId, assetRevision: pinned.get(photoId) ?? null, profileId: null });
+            const revisions = pinned.get(photoId);
+            for (const assetRevision of revisions ? [...revisions] : [null]) {
+                add({ source: 'working-layer-series', holder: series.id, photoId, assetRevision, profileId: null });
+            }
         }
     }
-    for (const photo of layer.photos) {
+    for (const photo of photos) {
         add({ source: 'working-layer-photo', holder: photo.id, photoId: photo.id, assetRevision: photo.assetRevision, profileId: null });
     }
     return [...found.values()].sort(byReference);

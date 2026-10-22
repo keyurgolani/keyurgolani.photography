@@ -113,6 +113,28 @@ describe('references', () => {
         expect(holders).toEqual([ids[0], ids[1], ids[2]]);
     });
 
+    it('counts the photo a chapter starts at, outside photoIds', async () => {
+        const ids = Array.from({ length: 3 }, (_, index) => `ph_00000000-0000-4000-8000-00000000000${index + 1}`);
+        const catalog = await fixture({
+            photos: ids.map((id) => ({ id })),
+            series: [{ photoIds: [ids[0]], chapters: [{ id: 'ch-1', title: 'One', startPhotoId: ids[2] }], visibility: 'draft' }],
+        });
+        const holders = bySource(await references(catalog.root), 'working-layer-series').map((reference) => reference.photoId);
+        expect(holders).toEqual([ids[0], ids[2]]);
+    });
+
+    it('counts the next version a write that did not finish left claimed, since the next write installs it', async () => {
+        const catalog = await fixture();
+        const photo = catalog.photos[0];
+        const file = authoredRecordFile(catalog.root, 'photo', photo.id);
+        const stored = JSON.parse(fs.readFileSync(file, 'utf8')) as { version: number; assetRevision: string };
+        // What a writer whose process died between its claim and its rename leaves
+        writeJson(`${file}.claim-${stored.version + 1}`, { ...stored, version: stored.version + 1, assetRevision: OTHER_ASSET });
+
+        const found = bySource(await references(catalog.root), 'working-layer-photo').filter((reference) => reference.holder === photo.id);
+        expect(found.map((reference) => reference.assetRevision).sort()).toEqual([stored.assetRevision, OTHER_ASSET].sort());
+    });
+
     it('keeps every asset revision of a series member that has no photo record', async () => {
         const catalog = await fixture();
         const member = catalog.series[0].photoIds[0];
@@ -193,6 +215,22 @@ describe('references fails closed', () => {
             writeJson(authoredRecordFile(catalog.root, 'series', series.id), { ...series, visibility: 'public' });
             return `authored/series/${series.id}.json`;
         }, 'invalid'],
+        ['a revision whose .json is upper case', (catalog) => {
+            store(catalog.root, catalog.content, 'revisionsDir', 'REV');
+            fs.renameSync(path.join(catalogPaths(catalog.root).revisionsDir, 'REV.json'), path.join(catalogPaths(catalog.root).revisionsDir, `${catalog.revisionId}.JSON`));
+            return `catalog/revisions/${catalog.revisionId}.JSON`;
+        }, 'file-name'],
+        ['a photo record whose .json is upper case', (catalog) => {
+            const photo = catalog.photos[2];
+            const file = authoredRecordFile(catalog.root, 'photo', photo.id);
+            fs.renameSync(file, file.replace(/\.json$/, '.JSON'));
+            return `authored/photos/${photo.id}.JSON`;
+        }, 'file-name'],
+        ['a claim that is not JSON', (catalog) => {
+            const photo = catalog.photos[2];
+            writeJson(`${authoredRecordFile(catalog.root, 'photo', photo.id)}.claim-2`, 'partial');
+            return `authored/photos/${photo.id}.json.claim-2`;
+        }, 'invalid-json'],
     ];
 
     it.each(cases)('on %s', async (_label, breakIt, reason) => {
