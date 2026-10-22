@@ -7,7 +7,9 @@
 #   ci/smoke-image.sh <tag>
 #
 # ghcr.io/keyurgolani/keyurgolani.photography:<tag> must already exist
-# locally, since nothing pulls here. Binds host port 3000.
+# locally, since nothing pulls here. web publishes on 127.0.0.1 port 3000
+# only, through an override whose !override tag needs Docker Compose 2.24.4 or
+# later; that's the one change to docker-compose.prod.yml here.
 set -euo pipefail
 
 if [ "$#" -ne 1 ] || [ -z "$1" ]; then
@@ -29,9 +31,16 @@ OUTPUT_TIMEOUT=120
 PROJECT=photography-smoke-$$
 TMP=$(mktemp -d)
 PHOTOS=$TMP/public/assets/photos
+OVERRIDE=$TMP/smoke.override.yml
+cat >"$OVERRIDE" <<'YAML'
+services:
+  web:
+    ports: !override
+      - "127.0.0.1:3000:3000"
+YAML
 
 compose() {
-  docker compose -f "$ROOT/docker-compose.prod.yml" --project-directory "$TMP" -p "$PROJECT" "$@"
+  docker compose -f "$ROOT/docker-compose.prod.yml" -f "$OVERRIDE" --project-directory "$TMP" -p "$PROJECT" "$@"
 }
 
 fail() {

@@ -49,7 +49,7 @@ describe('npm test', () => {
 
 describe('local servers', () => {
   // `npm run dev`, `npm start` and the e2e server listen on loopback, and the
-  // dev compose publishes its port to loopback only.
+  // dev compose and the image smoke test publish their ports to loopback only.
   it('stay on 127.0.0.1', async () => {
     const { scripts } = JSON.parse(await fs.readFile(path.join(REPO_ROOT, 'package.json'), 'utf8'));
     expect(scripts.dev).toMatch(/--hostname 127\.0\.0\.1(\s|$)/);
@@ -63,5 +63,9 @@ describe('local servers', () => {
     const config = await fs.readFile(path.join(REPO_ROOT, 'playwright.config.ts'), 'utf8');
     expect(config).toContain("const host = '127.0.0.1';");
     expect(config).toContain('npm run start -- --hostname ${host}');
+
+    const smoke = await fs.readFile(path.join(REPO_ROOT, 'ci', 'smoke-image.sh'), 'utf8');
+    expect(smoke).toMatch(/ports: !override\n\s*- "127\.0\.0\.1:3000:3000"/);
+    expect(smoke).toContain('-f "$OVERRIDE"');
   });
 });
