@@ -32,11 +32,12 @@ interface DecisionBase {
 /**
  * `path` is library-relative POSIX. `new` carries the photoId minted for its
  * path when the decision was written, so applying it again mints nothing.
- * `retry` without `assetRevision` covers every revision of the photo, and
- * `reprofile` without `photoId` covers every photo.
+ * `bind` with `merge` names the photo holding the path that it may merge
+ * into `photoId`. `retry` without `assetRevision` covers every revision of
+ * the photo, and `reprofile` without `photoId` covers every photo.
  */
 export type IdentityDecision =
-    | (DecisionBase & { type: 'bind'; path: string; photoId: string })
+    | (DecisionBase & { type: 'bind'; path: string; photoId: string; merge?: string })
     | (DecisionBase & { type: 'new'; path: string; photoId: string })
     | (DecisionBase & { type: 'archive'; photoId: string })
     | (DecisionBase & { type: 'retry'; photoId: string; assetRevision?: string })
@@ -61,14 +62,14 @@ export type DecisionOutcome =
     | { name: string; decisionId: string | null; status: 'deferred'; reason: string };
 
 const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const FIELDS = new Set(['schemaVersion', 'decisionId', 'type', 'path', 'photoId', 'assetRevision', 'actor', 'reason', 'createdAt']);
+const FIELDS = new Set(['schemaVersion', 'decisionId', 'type', 'path', 'photoId', 'merge', 'assetRevision', 'actor', 'reason', 'createdAt']);
 /** Which of the optional fields each type takes, and which it requires. */
-const SHAPES: Record<DecisionType, { path: 'required' | 'none'; photoId: 'required' | 'optional'; assetRevision: 'optional' | 'none' }> = {
-    bind: { path: 'required', photoId: 'required', assetRevision: 'none' },
-    new: { path: 'required', photoId: 'required', assetRevision: 'none' },
-    archive: { path: 'none', photoId: 'required', assetRevision: 'none' },
-    retry: { path: 'none', photoId: 'required', assetRevision: 'optional' },
-    reprofile: { path: 'none', photoId: 'optional', assetRevision: 'none' },
+const SHAPES: Record<DecisionType, { path: 'required' | 'none'; photoId: 'required' | 'optional'; merge: 'optional' | 'none'; assetRevision: 'optional' | 'none' }> = {
+    bind: { path: 'required', photoId: 'required', merge: 'optional', assetRevision: 'none' },
+    new: { path: 'required', photoId: 'required', merge: 'none', assetRevision: 'none' },
+    archive: { path: 'none', photoId: 'required', merge: 'none', assetRevision: 'none' },
+    retry: { path: 'none', photoId: 'required', merge: 'none', assetRevision: 'optional' },
+    reprofile: { path: 'none', photoId: 'optional', merge: 'none', assetRevision: 'none' },
 };
 
 /** A library-relative POSIX path with no empty, `.`, or `..` segment. */
@@ -85,7 +86,7 @@ export function parseDecision(value: unknown): { decision: IdentityDecision } | 
         const newer = typeof value.schemaVersion === 'number' && value.schemaVersion > DECISION_SCHEMA_VERSION;
         return { invalid: newer ? `schemaVersion ${value.schemaVersion} comes from a newer build` : 'schemaVersion must be 1' };
     }
-    const { decisionId, type, path: target, photoId, assetRevision, actor, reason, createdAt } = value;
+    const { decisionId, type, path: target, photoId, merge, assetRevision, actor, reason, createdAt } = value;
     if (typeof decisionId !== 'string' || !UUID_V4_RE.test(decisionId)) return { invalid: 'decisionId must be a lowercase UUID v4' };
     if (typeof type !== 'string' || !(DECISION_TYPES as readonly string[]).includes(type)) return { invalid: `type must be one of ${DECISION_TYPES.join(', ')}` };
     if (typeof actor !== 'string' || actor.length === 0) return { invalid: 'actor must be a non-empty string' };
@@ -98,6 +99,9 @@ export function parseDecision(value: unknown): { decision: IdentityDecision } | 
     if (shape.path === 'none' && target !== undefined) return { invalid: `${type} takes no path` };
     if (photoId !== undefined && (typeof photoId !== 'string' || !PHOTO_ID_RE.test(photoId))) return { invalid: 'photoId must be ph_ plus a UUID v4' };
     if (shape.photoId === 'required' && photoId === undefined) return { invalid: `${type} needs a photoId` };
+    if (merge !== undefined && shape.merge === 'none') return { invalid: `${type} takes no merge` };
+    if (merge !== undefined && (typeof merge !== 'string' || !PHOTO_ID_RE.test(merge))) return { invalid: 'merge must be ph_ plus a UUID v4' };
+    if (merge !== undefined && merge === photoId) return { invalid: 'merge must name a photo other than photoId' };
     if (assetRevision !== undefined && (typeof assetRevision !== 'string' || !ASSET_REVISION_RE.test(assetRevision))) {
         return { invalid: 'assetRevision must be sha256- plus 64 hex' };
     }
@@ -114,6 +118,7 @@ export interface DecisionInput {
     type: DecisionType;
     path?: string;
     photoId?: string;
+    merge?: string;
     assetRevision?: string;
     actor: string;
     reason?: string;
@@ -131,6 +136,7 @@ export function createDecision(input: DecisionInput, { idGen = randomUUID, clock
         type: input.type,
         ...(input.path === undefined ? {} : { path: input.path }),
         ...(input.type === 'new' ? { photoId: mintPhotoId(idGen) } : input.photoId === undefined ? {} : { photoId: input.photoId }),
+        ...(input.merge === undefined ? {} : { merge: input.merge }),
         ...(input.assetRevision === undefined ? {} : { assetRevision: input.assetRevision }),
         actor: input.actor,
         reason: input.reason ?? '',

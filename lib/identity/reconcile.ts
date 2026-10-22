@@ -396,11 +396,14 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
     /**
      * bind: give a present path to X, a non-archived photo that is sourceless
      * or a hold candidate. New bytes become a replacement revision. Refused if
-     * X is present elsewhere, or another present photo N holds the path,
-     * unless N was minted there: then N's revision moves to X, and N is
-     * archived with `mergedInto: X`.
+     * X is present elsewhere, or another present photo N holds the path, with
+     * two exceptions. When the decision names N to merge and N was minted
+     * there, N's revision moves to X, and N is archived with `mergedInto: X`.
+     * When the path's hold lists both N and X, as after one photo's file was
+     * moved over another's, N loses the path and is classified like any
+     * photo whose path is gone.
      */
-    function bind(target: string, photoId: string): Decided {
+    function bind(target: string, photoId: string, merge: string | undefined): Decided {
         const found = imageAt(target);
         if (!('entry' in found)) return found;
         const item = found;
@@ -418,15 +421,29 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
         if (holder !== x && x.sourceHealth === 'present' && x.source.present && byKey.has(x.source.key)) {
             return decided.rejected(`${photoId} is present at ${x.source.path}`);
         }
+        if (merge !== undefined && holder?.photoId !== merge) {
+            return decided.rejected(`the decision merges ${merge}, but ${at} is ${holder ? `bound to ${holder.photoId}` : 'bound to no other photo'}`);
+        }
         let merged: PhotoRecord | undefined;
+        let unbound: PhotoRecord | undefined;
         if (holder && holder !== x) {
-            const own = Object.values(holder.revisions).filter((candidate) => !candidate.reassignedTo);
-            if (own.length !== 1 || keyOf(own[0].firstSeenPath) !== key) return decided.rejected(`${at} is bound to ${holder.photoId}`);
-            merged = holder;
-            adoptRevision(x, own[0], holder);
-            // mergedInto retires it, so it reads as archived from here on.
-            holder.mergedInto = x.photoId;
-            holder.source.present = false;
+            const held = liveHolds.find((candidate) => candidate.path === at);
+            if (merge === undefined && held?.candidates.includes(holder.photoId) && held.candidates.includes(photoId)) {
+                // The hold already doubts N's claim to the path, so N gives it up and keeps everything else.
+                unbound = holder;
+                holder.source.present = false;
+            } else {
+                if (merge === undefined) return decided.rejected(`${at} is bound to ${holder.photoId}. To merge ${holder.photoId} into ${photoId}, name it with --merge`);
+                const own = Object.values(holder.revisions).filter((candidate) => !candidate.reassignedTo);
+                if (own.length !== 1 || keyOf(own[0].firstSeenPath) !== key) {
+                    return decided.rejected(`${holder.photoId} has more than the one revision first seen at ${at}, so it can't be merged`);
+                }
+                merged = holder;
+                adoptRevision(x, own[0], holder);
+                // mergedInto retires it, so it reads as archived from here on.
+                holder.mergedInto = x.photoId;
+                holder.source.present = false;
+            }
         }
 
         const fromPath = x.source.key === key ? {} : { fromPath: x.source.path };
@@ -448,7 +465,8 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
             fact({ type: 'replaced', photoId, assetRevision: revision, path: at, ...fromPath });
         }
         endHold(at);
-        return decided.applied(merged ? `bound ${at} to ${photoId} and merged ${merged.photoId} into it` : `bound ${at} to ${photoId}`);
+        if (merged) return decided.applied(`bound ${at} to ${photoId} and merged ${merged.photoId} into it`);
+        return decided.applied(unbound ? `bound ${at} to ${photoId}, which ${unbound.photoId} no longer holds` : `bound ${at} to ${photoId}`);
     }
 
     /**
@@ -569,7 +587,7 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
     function decide(decision: IdentityDecision): Decided {
         switch (decision.type) {
             case 'bind':
-                return bind(decision.path, decision.photoId);
+                return bind(decision.path, decision.photoId, decision.merge);
             case 'new':
                 return newPhoto(decision.path, decision.photoId);
             case 'archive':
