@@ -9,7 +9,7 @@ import { scanLibrary } from '../../lib/identity/scan';
 import { dominantChannel, fixtureFiles, withExifOrientation, type Channel } from '../../test/fixtures/makeLibrary';
 import { fakeCaseInsensitiveDisk, fakeCaseSensitiveDisk } from '../../test/helpers/caseDisk';
 import { createTempLibrary, derivativePaths, type TempLibrary } from '../../test/helpers/tempLibrary';
-import { baseNameOf, optimizedSize, ownerOf, planOrphanCleanup, processImage, writeUprightMarker } from '../imageOptimizer';
+import { baseNameOf, optimizedSize, ownerOf, processImage, writeUprightMarker } from '../imageOptimizer';
 import {
     attachWatcher,
     createIgnoreFilter,
@@ -157,7 +157,7 @@ function setMtime(relativePath: string, mtimeMs: number): void {
 }
 
 describe('watcher handlers', { timeout: 60_000 }, () => {
-    it('onUnlink deletes nothing, leaves the set as it was, and points at images:cleanup', async () => {
+    it('onUnlink deletes nothing and leaves the set as it was', async () => {
         await handlers.onAdd(lib.file('landscape.jpg'));
         const before = lib.hashes(LANDSCAPE);
         const thumbnail = fs.statSync(lib.file('thumbnails/landscape.webp'));
@@ -169,7 +169,7 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
         expect(lib.hashes(LANDSCAPE)).toEqual(before);
         expect(fs.statSync(lib.file('thumbnails/landscape.webp')).mtimeMs).toBe(thumbnail.mtimeMs);
         expect(fs.readdirSync(lib.root).filter((name) => name.includes('.')).sort()).toEqual(['portrait.png', 'square.webp']);
-        expect(logs).toContain('[ImageWatcher] Source removed: landscape.jpg. Derivatives kept. See npm run images:cleanup.');
+        expect(logs).toContain('[ImageWatcher] Source removed: landscape.jpg. Derivatives kept.');
     });
 
     describe('sources sharing one set', () => {
@@ -624,8 +624,6 @@ describe('the one-time rebuild of orientation-tagged photos', { timeout: 60_000 
         expect(lib.hashes(OTHERS)).toEqual(others);
         expect(JSON.parse(fs.readFileSync(marker(), 'utf8'))).toMatchObject({ photos: 1 });
         expect(logs).toContain('[ImageWatcher] Rebuilt the sets of 1 orientation-tagged photo. Clear the /_next/image cache, so it drops what it made from the old sets.');
-        // images:cleanup leaves the record alone
-        expect(planOrphanCleanup().entries.map((entry) => entry.relativePath)).toEqual([]);
 
         fs.writeFileSync(lib.file('optimized/turned.webp'), await sideways());
         expect(await newHandlers().queueStartupBatch()).toEqual({ processed: [], skipped: [], errors: [] });

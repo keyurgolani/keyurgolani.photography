@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "build:scripts": "esbuild scripts/imageWatcher.ts scripts/photos.ts scripts/imageCleanup.ts scripts/watcherHealth.ts --bundle --platform=node --format=esm --target=node24 --external:sharp --outdir=dist/scripts --out-extension:.js=.mjs",
+    "build:scripts": "esbuild scripts/imageWatcher.ts scripts/photos.ts scripts/watcherHealth.ts --bundle --platform=node --format=esm --target=node24 --external:sharp --outdir=dist/scripts --out-extension:.js=.mjs",
     "start": "next start",
     "test": "vitest",
     "test:e2e": "playwright test",
@@ -22,7 +22,6 @@
     "images:watch": "npx tsx scripts/imageWatcher.ts --watch",
     "images:process": "npx tsx scripts/imageWatcher.ts --once",
     "images:optimize": "npm run images:process --",
-    "images:cleanup": "npx tsx scripts/imageCleanup.ts",
     "photos": "tsx scripts/photos.ts",
     "photos:migrate": "npx tsx scripts/photos.ts migrate",
     "photos:identity": "npx tsx scripts/photos.ts identity"

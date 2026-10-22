@@ -52,17 +52,7 @@ const LQIP_SIZE = 20;
  */
 const MAX_SIDE = 16383;
 
-/** `images:cleanup` deletes a leftover temp file only once it is this old, so it never races a running job. */
-export const STALE_TEMP_FILE_MS = 10 * 60 * 1000;
-
 const SOURCE_FILE = /\.(jpg|jpeg|png|webp)$/i;
-
-/**
- * Matches the `.<base hash>.<pid>.<random>.tmp` files writeVariants() stages
- * beside each output. Hashing the base name keeps the length fixed, so a long
- * but valid photo name never makes the temp name too long.
- */
-const TEMP_FILE = /^\.[0-9a-f]{16}\.\d+\.[0-9a-f]{8}\.tmp$/;
 
 /** `/api/image` cached files as `<base>-<width>-<quality>.<format>`. */
 const DYNAMIC_CACHE_FILE = /^(.+)-\d+-\d+\.(avif|webp|jpeg)$/;
@@ -260,6 +250,11 @@ export function tempFilePrefix(baseName: string): string {
     return `.${createHash('sha256').update(baseName).digest('hex').slice(0, 16)}.`;
 }
 
+/**
+ * `.<base hash>.<pid>.<random>.tmp` beside `target`. Hashing the base name
+ * keeps the length fixed, so a long but valid photo name never makes the temp
+ * name too long.
+ */
 function tempPathFor(target: string, baseName: string): string {
     const name = `${tempFilePrefix(baseName)}${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
     return path.join(path.dirname(target), name);
@@ -411,6 +406,17 @@ export async function writeVariants(
     return order.map(({ target }) => target);
 }
 
+/** Whether each folder is a real directory. lstat, so a symlink never counts and nothing follows one out of the library. */
+function realFolders(dirs: string[]): boolean {
+    return dirs.every((dir) => {
+        try {
+            return fs.lstatSync(dir).isDirectory();
+        } catch {
+            return false;
+        }
+    });
+}
+
 /**
  * Delete `/api/image`'s cached copies of one photo, which still serve its
  * previous version as static files. Matches the cached file's base exactly, so
@@ -418,19 +424,19 @@ export async function writeVariants(
  * cache folder out of the library.
  */
 function purgeDynamicCache(baseName: string, paths: LibraryPaths): void {
-    if (guardState([path.dirname(paths.dynamicCache), paths.dynamicCache]).state !== 'ok') return;
+    if (!realFolders([path.dirname(paths.dynamicCache), paths.dynamicCache])) return;
     let names: string[];
     try {
         names = listNames(paths.dynamicCache);
     } catch {
-        return; // Best effort, after the new set is in place. images:cleanup lists what's left.
+        return; // Best effort, after the new set is in place.
     }
     for (const name of names) {
         if (DYNAMIC_CACHE_FILE.exec(name)?.[1] !== baseName) continue;
         try {
             fs.unlinkSync(path.join(paths.dynamicCache, name));
         } catch {
-            // Gone already, or not removable. images:cleanup lists what's left.
+            // Gone already, or not removable.
         }
     }
 }
@@ -514,8 +520,7 @@ export function setKeyOf(filename: string): string {
  * match, such as IMG_1.jpg and IMG_1.png, or differ only in case or Unicode
  * form and the disk resolves both spellings to one file, as a case-insensitive
  * disk does with Beach.jpg and beach.png. On a case-sensitive disk those two
- * have a set each. The rule sourceSet() uses for cleanup: when lstat can't
- * tell, they count as one.
+ * have a set each. When lstat can't tell, they count as one.
  */
 export function sharesSet(a: string, b: string, root: string = libraryPaths().root): boolean {
     const baseA = baseNameOf(a);
@@ -624,8 +629,8 @@ export async function reprocessImage(filename: string): Promise<ProcessedImagePa
 
 /**
  * Where the watcher records, once per library, that it rebuilt the sets of
- * the orientation-tagged photos: in the cache folder, which nothing serves,
- * the scans skip, and images:cleanup leaves alone.
+ * the orientation-tagged photos: in the cache folder, which nothing serves
+ * and the scans skip.
  */
 export function uprightMarkerPath(paths: LibraryPaths = libraryPaths()): string {
     return path.join(path.dirname(paths.dynamicCache), 'upright-rebuild.json');
@@ -657,8 +662,7 @@ function setSourcesDir(paths: LibraryPaths): string {
 /**
  * Where a set records the source it was last built from:
  * `cache/set-sources/<base name>.json`, which nothing serves and the scans
- * skip. images:cleanup removes it with the set once no source has its base
- * name. Named like the set's files, so sources that share a set share it.
+ * skip. Named like the set's files, so sources that share a set share it.
  */
 function setSourceFile(filename: string, paths: LibraryPaths): string {
     return path.join(setSourcesDir(paths), `${baseNameOf(filename)}.json`);
@@ -765,381 +769,6 @@ export async function refreshImage(filename: string, { force = false }: { force?
     if (await ownerOf(filename, paths) !== filename) return [];
     if (!force && !needsRefresh(filename, paths) && !builtFromAnother(filename, paths)) return [];
     return writeVariants(filename, { overwrite: true, paths });
-}
-
-export type OrphanReason =
-    | `no source named ${string}.*`
-    | `rebuilt from ${string} when the watcher starts`
-    | 'stale temp file'
-    | 'unused since /api/image was removed';
-
-export interface OrphanEntry {
-    path: string;
-    /** POSIX path relative to the library root, for display */
-    relativePath: string;
-    reason: OrphanReason;
-    bytes: number;
-}
-
-export interface OrphanCleanupOptions {
-    /** Plan a library with no sources, where every derivative counts as an orphan. */
-    allowEmptyLibrary?: boolean;
-    /**
-     * Limit the plan to one photo's set, for a takedown. An exact base name wins.
-     * Otherwise a source extension is stripped, so `landscape.jpg` means `landscape`.
-     */
-    only?: string | null;
-}
-
-export interface UnreadableSource {
-    name: string;
-    code: string;
-}
-
-export interface OrphanCleanupPlan {
-    root: string;
-    allowEmptyLibrary: boolean;
-    /** The base name `only` resolved to */
-    only: string | null;
-    entries: OrphanEntry[];
-    /** Temp files kept because a running job may still own them */
-    youngTempFiles: string[];
-    /** Folders cleanup didn't enter because they are symlinks, not folders, or can't be listed */
-    skippedFolders: string[];
-    /** Sources lstat can see but stat can't read. Their sets are kept. */
-    unreadableSources: UnreadableSource[];
-    /** With `only` and no file under that exact name, the names that differ from it only in case or Unicode form */
-    onlyVariants: string[];
-    /** With `only`, the other sets with no source, which may be earlier names of the same photo */
-    otherOrphans: string[];
-    /** Short hash of what the plan deletes. `images:cleanup --apply` needs it, so only a reviewed plan runs. */
-    hash: string;
-}
-
-export interface OrphanCleanupResult {
-    deleted: OrphanEntry[];
-    /** Entries that no longer qualified when re-checked right before deletion */
-    skipped: OrphanEntry[];
-    failed: { entry: OrphanEntry; error: Error }[];
-}
-
-export class CleanupRefusedError extends Error {
-    constructor(message: string) {
-        super(message);
-        this.name = 'CleanupRefusedError';
-    }
-}
-
-type Verdict =
-    | { kind: 'delete'; reason: OrphanReason; bytes: number }
-    | { kind: 'young-temp' }
-    | { kind: 'keep' };
-
-const KEEP: Verdict = { kind: 'keep' };
-
-/**
- * The sources cleanup protects. An entry lstat can see but stat can't, such as
- * a dangling symlink or one that fails with EACCES, ELOOP, or EIO, still
- * counts, so its set is kept.
- */
-function cleanupSources(root: string): { files: string[]; unreadable: UnreadableSource[] } {
-    const files: string[] = [];
-    const unreadable: UnreadableSource[] = [];
-    for (const name of fs.readdirSync(root)) {
-        if (!isSourceFile(name)) continue;
-        const file = path.join(root, name);
-        try {
-            if (!fs.statSync(file).isDirectory()) files.push(name);
-        } catch (error) {
-            let present = true;
-            try {
-                present = fs.lstatSync(file, { throwIfNoEntry: false }) !== undefined;
-            } catch {
-                // Can't tell, so it counts
-            }
-            if (!present) continue; // Removed since readdir
-            files.push(name);
-            unreadable.push({ name, code: (error as NodeJS.ErrnoException).code ?? 'unknown error' });
-        }
-    }
-    return { files, unreadable };
-}
-
-interface SourceSet {
-    any: boolean;
-    /** The sources a derivative named `base` belongs to. */
-    of(base: string): string[];
-}
-
-/**
- * Sources by base name. A derivative belongs to a source with exactly its base
- * name. On a case-sensitive disk `Beach.jpg` and `beach.jpg` are different
- * photos, so a name that differs in case or Unicode form counts only when the
- * disk resolves both names to the same file, or when lstat can't tell.
- */
-function sourceSet(root: string, sourceFiles: string[]): SourceSet {
-    const exact = new Map<string, string[]>();
-    const folded = new Map<string, string[]>();
-    for (const file of sourceFiles) {
-        const base = baseNameOf(file);
-        exact.set(base, [...(exact.get(base) ?? []), file]);
-        folded.set(foldName(base), [...(folded.get(foldName(base)) ?? []), file]);
-    }
-    return {
-        any: sourceFiles.length > 0,
-        of: (base) => {
-            const matches = exact.get(base);
-            if (matches) return matches;
-            return (folded.get(foldName(base)) ?? []).filter((file) =>
-                sameFile(path.join(root, file), path.join(root, `${base}${path.extname(file)}`)) !== false);
-        },
-    };
-}
-
-/**
- * The folders cleanup reads, each with the folders that must be real
- * directories before it enters: the derivative folders, `/api/image`'s cache,
- * and the records of which source each set was built from, named like the
- * set's files, so a record goes when its set does.
- */
-function scannedFolders(paths: LibraryPaths): { dir: string; guards: string[] }[] {
-    const cache = path.dirname(paths.dynamicCache);
-    return [
-        ...DERIVATIVE_DIRS.map((key) => ({ dir: paths[key], guards: [paths[key]] })),
-        { dir: paths.dynamicCache, guards: [cache, paths.dynamicCache] },
-        { dir: setSourcesDir(paths), guards: [cache, setSourcesDir(paths)] },
-    ];
-}
-    
-/** lstat, so a symlink never counts as a folder and cleanup never follows one out of the library. */
-function folderState(dir: string): 'ok' | 'missing' | 'unsafe' {
-    try {
-        return fs.lstatSync(dir).isDirectory() ? 'ok' : 'unsafe';
-    } catch (error) {
-        return hasErrorCode(error, 'ENOENT') ? 'missing' : 'unsafe';
-    }
-}
-
-function guardState(guards: string[]): { state: 'ok' | 'missing' | 'unsafe'; at: string } {
-    for (const guard of guards) {
-        const state = folderState(guard);
-        if (state !== 'ok') return { state, at: guard };
-    }
-    return { state: 'ok', at: '' };
-}
-
-/** The base name a derivative or `/api/image` cache file belongs to. Null for a temp file or an unrecognized cache file. */
-function ownerBase(file: string, paths: LibraryPaths): string | null {
-    const name = path.basename(file);
-    if (path.dirname(file) === paths.dynamicCache) return DYNAMIC_CACHE_FILE.exec(name)?.[1] ?? null;
-    return TEMP_FILE.test(name) ? null : baseNameOf(name);
-}
-
-/** Whether a derivative, temp, or cache file belongs to the base name `only`, matched exactly. */
-function matchesOnly(file: string, paths: LibraryPaths, only: string): boolean {
-    const name = path.basename(file);
-    if (path.dirname(file) !== paths.dynamicCache && TEMP_FILE.test(name)) return name.startsWith(tempFilePrefix(only));
-    return ownerBase(file, paths) === only;
-}
-
-function classify(
-    file: string,
-    paths: LibraryPaths,
-    sources: SourceSet,
-    { allowEmptyLibrary, only, now }: { allowEmptyLibrary: boolean; only: string | null; now: number },
-): Verdict {
-    let stat: fs.Stats;
-    try {
-        stat = fs.lstatSync(file);
-    } catch {
-        return KEEP; // Already gone, or the library is
-    }
-    if (!stat.isFile()) return KEEP;
-    if (only !== null && !matchesOnly(file, paths, only)) return KEEP;
-
-    const name = path.basename(file);
-    // The route that wrote these is gone, so all of them go
-    if (path.dirname(file) === paths.dynamicCache) {
-        return { kind: 'delete', reason: 'unused since /api/image was removed', bytes: stat.size };
-    }
-    if (TEMP_FILE.test(name)) {
-        return now - stat.mtimeMs >= STALE_TEMP_FILE_MS
-            ? { kind: 'delete', reason: 'stale temp file', bytes: stat.size }
-            : { kind: 'young-temp' };
-    }
-
-    const base = baseNameOf(name);
-    const owners = sources.of(base);
-    // A takedown removes the set even when a sibling shares it, such as a.png
-    // next to a deleted a.jpg. The watcher rebuilds it from the sibling.
-    if (only !== null && owners.length > 0) {
-        return { kind: 'delete', reason: `rebuilt from ${[...owners].sort().join(', ')} when the watcher starts`, bytes: stat.size };
-    }
-    if (owners.length > 0) return KEEP;
-    // A library that lost every source is more likely unmounted or mid-sync than retired.
-    if (!sources.any && !allowEmptyLibrary) return KEEP;
-    return { kind: 'delete', reason: `no source named ${base}.*`, bytes: stat.size };
-}
-
-function listFiles(dir: string): string[] {
-    return listNames(dir).sort();
-}
-
-function relativeTo(root: string, file: string): string {
-    return path.relative(root, file).split(path.sep).join('/');
-}
-
-function planHash(root: string, allowEmptyLibrary: boolean, only: string | null, entries: OrphanEntry[]): string {
-    const canonical = JSON.stringify({
-        root,
-        allowEmptyLibrary,
-        only,
-        entries: entries.map(({ relativePath, reason, bytes }) => [relativePath, reason, bytes]),
-    });
-    return createHash('sha256').update(canonical).digest('hex').slice(0, 12);
-}
-
-/** `only` as given when a file matches it exactly, else with a source extension stripped. */
-function resolveOnly(requested: string, scanned: string[], paths: LibraryPaths): string {
-    if (!isSourceFile(requested) || scanned.some((file) => matchesOnly(file, paths, requested))) return requested;
-    return baseNameOf(requested);
-}
-
-/** With nothing under `only` exactly, the sets whose names differ from it only in case or Unicode form. */
-function caseVariants(only: string, scanned: string[], paths: LibraryPaths): string[] {
-    if (scanned.some((file) => matchesOnly(file, paths, only))) return [];
-    const variants = new Set<string>();
-    for (const file of scanned) {
-        const owner = ownerBase(file, paths);
-        if (owner !== null && owner !== only && foldName(owner) === foldName(only)) variants.add(owner);
-    }
-    return [...variants].sort();
-}
-
-/** The other sets no source needs, which a takedown may also want gone as earlier names of the photo. */
-function orphanedSets(only: string, scanned: string[], paths: LibraryPaths, sources: SourceSet): string[] {
-    const bases = new Set<string>();
-    for (const file of scanned) {
-        if (path.dirname(file) === paths.dynamicCache) continue;
-        const owner = ownerBase(file, paths);
-        if (owner !== null && owner !== only && sources.of(owner).length === 0) bases.add(owner);
-    }
-    return [...bases].sort();
-}
-
-/**
- * Plan which derivatives no source needs anymore, without touching anything.
- * Refuses a missing root, and a root with no sources unless
- * `allowEmptyLibrary`, because either would make every derivative look orphaned.
- */
-export function planOrphanCleanup(
-    { allowEmptyLibrary = false, only: requested = null }: OrphanCleanupOptions = {},
-): OrphanCleanupPlan {
-    const paths = libraryPaths();
-    if (!libraryRootExists(paths.root)) {
-        throw new CleanupRefusedError(
-            `library root not found: ${paths.root}. Check the mount or PHOTOGRAPHY_LIBRARY_DIR.`,
-        );
-    }
-    const { files: sourceFiles, unreadable } = cleanupSources(paths.root);
-    if (sourceFiles.length === 0 && !allowEmptyLibrary) {
-        throw new CleanupRefusedError(
-            `${paths.root} has no source photos, so every derivative would count as an orphan. ` +
-            'Pass --allow-empty-library if the library is meant to be empty.',
-        );
-    }
-
-    const sources = sourceSet(paths.root, sourceFiles);
-    const skippedFolders: string[] = [];
-    const scanned: string[] = [];
-    for (const { dir, guards } of scannedFolders(paths)) {
-        const guard = guardState(guards);
-        // Two scanned folders share the cache folder's guard, so it is named once.
-        if (guard.state === 'unsafe' && !skippedFolders.includes(relativeTo(paths.root, guard.at))) skippedFolders.push(relativeTo(paths.root, guard.at));
-        if (guard.state !== 'ok') continue;
-        let names: string[];
-        try {
-            names = listFiles(dir);
-        } catch {
-            // Its files are kept, the same as a folder that is a symlink.
-            skippedFolders.push(relativeTo(paths.root, dir));
-            continue;
-        }
-        scanned.push(...names.map((name) => path.join(dir, name)));
-    }
-
-    const only = requested === null ? null : resolveOnly(requested, scanned, paths);
-    const options = { allowEmptyLibrary, only, now: Date.now() };
-    const entries: OrphanEntry[] = [];
-    const youngTempFiles: string[] = [];
-    for (const file of scanned) {
-        const relativePath = relativeTo(paths.root, file);
-        const verdict = classify(file, paths, sources, options);
-        if (verdict.kind === 'delete') {
-            entries.push({ path: file, relativePath, reason: verdict.reason, bytes: verdict.bytes });
-        } else if (verdict.kind === 'young-temp') {
-            youngTempFiles.push(relativePath);
-        }
-    }
-    
-    return {
-        root: paths.root,
-        allowEmptyLibrary,
-        only,
-        entries,
-        youngTempFiles,
-        skippedFolders,
-        unreadableSources: unreadable,
-        onlyVariants: only === null ? [] : caseVariants(only, scanned, paths),
-        otherOrphans: only === null ? [] : orphanedSets(only, scanned, paths, sources),
-        hash: planHash(paths.root, allowEmptyLibrary, only, entries),
-    };
-}
-
-/**
- * Delete a plan's entries, re-checking each one right before deleting it.
- * Lists the sources once, fresh, and keeps everything if it can't. An entry
- * that no longer qualifies for the same reason (its source came back, its
- * folder became a symlink, a temp file was touched) is skipped.
- */
-export function applyOrphanCleanup(plan: OrphanCleanupPlan): OrphanCleanupResult {
-    const paths = libraryPaths();
-    if (paths.root !== plan.root) {
-        throw new CleanupRefusedError(`the plan is for ${plan.root}, but the library root is now ${paths.root}.`);
-    }
-    
-    const result: OrphanCleanupResult = { deleted: [], skipped: [], failed: [] };
-    let sources: SourceSet;
-    try {
-        sources = sourceSet(paths.root, cleanupSources(paths.root).files);
-    } catch {
-        result.skipped.push(...plan.entries);
-        return result;
-    }
-
-    const options = { allowEmptyLibrary: plan.allowEmptyLibrary, only: plan.only, now: Date.now() };
-    const folders = scannedFolders(paths);
-    for (const entry of plan.entries) {
-        const folder = folders.find(({ dir }) => dir === path.dirname(entry.path));
-        const verdict = folder && guardState(folder.guards).state === 'ok'
-            ? classify(entry.path, paths, sources, options)
-            : KEEP;
-        if (verdict.kind !== 'delete' || verdict.reason !== entry.reason) {
-            result.skipped.push(entry);
-            continue;
-        }
-        try {
-            fs.unlinkSync(entry.path);
-            result.deleted.push({ ...entry, bytes: verdict.bytes });
-        } catch (error) {
-            if (hasErrorCode(error, 'ENOENT')) {
-                result.skipped.push(entry);
-            } else {
-                result.failed.push({ entry, error: error as Error });
-            }
-        }
-    }
-    return result;
 }
 
 /** A WebP header's first 30 bytes hold its size, in any of the three formats. */
