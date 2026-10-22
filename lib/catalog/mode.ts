@@ -11,7 +11,7 @@ const cutOver = new Set<string>();
 
 async function exists(file: string): Promise<boolean> {
     try {
-        await fs.promises.lstat(file);
+        await fs.promises.lstat(/*turbopackIgnore: true*/ file);
         return true;
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT')) return false;
