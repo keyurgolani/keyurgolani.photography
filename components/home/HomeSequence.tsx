@@ -12,6 +12,10 @@ interface HomeSequenceProps {
   playbackState: PlaybackState;
   /** Called once, when the first photograph shown has its full-quality layer. */
   onFirstImageReady?: () => void;
+  /** Called whenever the photograph on screen has its full-quality layer, so one reached with Next counts when the first stalls. */
+  onImageReady?: () => void;
+  /** Called when the first slide's full-quality layer fails to load. */
+  onFirstImageError?: () => void;
 }
 
 const addTo = (set: ReadonlySet<string>, id: string) => (set.has(id) ? set : new Set(set).add(id));
@@ -21,7 +25,7 @@ const addTo = (set: ReadonlySet<string>, id: string) => (set.has(id) ? set : new
  * and preloads what comes next. It keeps no playback timer, renders no button,
  * and never moves focus, so a slide change can't take focus anywhere.
  */
-const HomeSequence: React.FC<HomeSequenceProps> = ({ photos, index, playbackState, onFirstImageReady }) => {
+const HomeSequence: React.FC<HomeSequenceProps> = ({ photos, index, playbackState, onFirstImageReady, onImageReady, onFirstImageError }) => {
   const [thumbnails, setThumbnails] = useState<ReadonlySet<string>>(new Set());
   const [fullImages, setFullImages] = useState<ReadonlySet<string>>(new Set());
   const preloaded = useRef(new Set<string>());
@@ -36,6 +40,7 @@ const HomeSequence: React.FC<HomeSequenceProps> = ({ photos, index, playbackStat
   }
 
   const notifyReady = () => {
+    onImageReady?.();
     if (hasNotifiedReady.current) return;
     hasNotifiedReady.current = true;
     onFirstImageReady?.();
@@ -50,6 +55,17 @@ const HomeSequence: React.FC<HomeSequenceProps> = ({ photos, index, playbackStat
     // The intro ends only once the photograph on screen has its full-quality layer.
     if (id === activeId) notifyReady();
   };
+
+  const handleError = (slide: number, layer: 'thumbnail' | 'full') => {
+    if (slide === 0 && layer === 'full') onFirstImageError?.();
+  };
+
+  // A slide whose full-quality layer loaded off screen counts once Previous or Next brings it on.
+  useEffect(() => {
+    if (activeId !== undefined && fullImages.has(activeId)) notifyReady();
+    // notifyReady only reads refs and the latest callbacks, so it isn't a dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, fullImages]);
 
   // A cached image can finish before React attaches onLoad, so check the one on screen shortly after.
   useEffect(() => {
@@ -120,6 +136,7 @@ const HomeSequence: React.FC<HomeSequenceProps> = ({ photos, index, playbackStat
                   loading={slide === 0 ? 'eager' : 'lazy'}
                   fetchPriority={slide === 0 ? 'high' : 'auto'}
                   onLoad={() => handleLoad(photo.id, 'thumbnail')}
+                  onError={() => handleError(slide, 'thumbnail')}
                   style={{ opacity: thumbnailLoaded && !fullLoaded ? 1 : 0 }}
                 />
                 <img
@@ -130,6 +147,7 @@ const HomeSequence: React.FC<HomeSequenceProps> = ({ photos, index, playbackStat
                   loading={slide === 0 ? 'eager' : 'lazy'}
                   fetchPriority={slide === 0 ? 'high' : 'auto'}
                   onLoad={() => handleLoad(photo.id, 'full')}
+                  onError={() => handleError(slide, 'full')}
                   style={{ opacity: fullLoaded ? 1 : 0 }}
                 />
               </>

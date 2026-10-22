@@ -27,29 +27,33 @@
   opacity: 0.06;
 }
 
-/* Only the painted images take the pointer, and only while HeroReveal marks
-   the portrait data-pointer. ParallaxCard's layers are squares wider than the
-   photograph, and they'd catch a click meant for the slideshow controls. The
-   tilt still reads the pointer off the images. */
-.portrait,
+/* The loading portrait, centered over the grain. It takes no pointer, so it
+   never tilts or catches a tap meant for the chrome, and it fades out as the
+   reveal opens. */
+.portrait {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 42;
+  pointer-events: none;
+  translate: -50% -50%;
+  transition: opacity 300ms ease-out;
+}
+
 .portrait * {
   pointer-events: none;
 }
 
-.portrait[data-pointer] img {
-  pointer-events: auto;
+.portrait[data-revealing] {
+  opacity: 0;
 }
 
-/* .ripples wraps the ripple glows, and .portrait the portrait, which HeroReveal
-   marks data-placed once it sits at rest. */
+/* The intro never shows under reduced motion. HeroReveal renders none of it
+   there once React runs, and these rules cover the server HTML before then. */
 @media (prefers-reduced-motion: reduce) {
   .grainOverlay,
-  .ripples {
+  .ripples,
+  .portrait {
     display: none;
-  }
-
-  /* The inline opacity outranks this file, so visibility hides the portrait until it's placed. */
-  .portrait:not([data-placed]) {
-    visibility: hidden;
   }
 }
