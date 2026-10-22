@@ -2,11 +2,12 @@ import { act, render } from '@testing-library/react';
 import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setPrefersReducedMotion } from '@/test/matchMedia';
-import HeroReveal from '../HeroReveal';
+import HeroReveal, { type HeroRevealPhase } from '../HeroReveal';
+
+type AnimateOptions = { onComplete?: () => void };
 
 const framer = vi.hoisted(() => ({
-  controls: { set: vi.fn(), start: vi.fn(() => Promise.resolve()), stop: vi.fn() },
-  animate: vi.fn(() => ({ stop: vi.fn() })),
+  animate: vi.fn<(value: unknown, to: number, options: AnimateOptions) => { stop: () => void }>(() => ({ stop: vi.fn() })),
   progress: { set: vi.fn() },
   /** The class of every motion.div rendered, so a test can tell the overlay never mounted. */
   rendered: [] as string[],
@@ -33,30 +34,39 @@ vi.mock('framer-motion', () => ({
   useMotionValue: () => framer.progress,
   useTransform: (_value: unknown, transform: (value: number) => string) => transform(0),
   animate: framer.animate,
-  useAnimationControls: () => framer.controls,
 }));
 
-const settled = () => ({ top: window.innerHeight - 280, left: window.innerWidth / 2, scale: 0.85 });
+/** The minimum ripple time, then the lead before the mask opens. */
+const RIPPLES_MS = 2400;
+const LEAD_MS = 300;
 
-function renderReveal(isLoading: boolean, onSettled = vi.fn()) {
-  const view = render(
+function renderReveal(isLoading: boolean) {
+  const onSettled = vi.fn();
+  const phases: HeroRevealPhase[] = [];
+  const onPhaseChange = (phase: HeroRevealPhase) => {
+    if (phases.at(-1) !== phase) phases.push(phase);
+  };
+  const tree = (loading: boolean) => (
     <StrictMode>
-      <HeroReveal isLoading={isLoading} onSettled={onSettled} />
+      <HeroReveal isLoading={loading} onSettled={onSettled} onPhaseChange={onPhaseChange} />
     </StrictMode>
   );
+  const view = render(tree(isLoading));
   const portrait = () => view.container.querySelector<HTMLElement>('[class*="portrait"]');
   const overlay = () => view.container.querySelector('svg');
-  const setLoading = (next: boolean) =>
-    view.rerender(
-      <StrictMode>
-        <HeroReveal isLoading={next} onSettled={onSettled} />
-      </StrictMode>
-    );
-  return { ...view, onSettled, portrait, overlay, setLoading };
+  const setLoading = (next: boolean) => view.rerender(tree(next));
+  /** The mask finishing, as framer-motion reports it. */
+  const finishReveal = () =>
+    act(() => {
+      framer.animate.mock.calls.at(-1)?.[2].onComplete?.();
+    });
+  return { ...view, onSettled, phases, portrait, overlay, setLoading, finishReveal };
 }
 
-/** The ripple wait, both reveal steps, and the settle delay. */
-const FULL_INTRO_MS = 2400 + 300 + 300 + 50;
+const advance = (ms: number) =>
+  act(() => {
+    vi.advanceTimersByTime(ms);
+  });
 
 describe('HeroReveal', () => {
   beforeEach(() => {
@@ -67,169 +77,127 @@ describe('HeroReveal', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
-  it('does not render the loading overlay when the hero is already ready on mount', () => {
-    const { overlay } = renderReveal(false);
-
-    expect(overlay()).toBeNull();
-  });
-
-  it('a returning visit places the portrait at rest without running the intro', () => {
-    renderReveal(false);
-
-    expect(framer.controls.set).toHaveBeenCalledWith(settled());
+  it('a return visit renders nothing and reports settled once', () => {
+    const { container, onSettled, phases } = renderReveal(false);
+    expect(container).toBeEmptyDOMElement();
+    expect(phases).toEqual(['settled']);
+    expect(onSettled).toHaveBeenCalledTimes(1);
     expect(framer.animate).not.toHaveBeenCalled();
   });
 
-  it('runs the full intro with motion allowed and reports settled once', async () => {
-    const { overlay, onSettled, setLoading } = renderReveal(true);
+  it('a first visit loads over the grain, reveals as the portrait fades, then settles and renders nothing', () => {
+    const { container, overlay, portrait, phases, onSettled, setLoading, finishReveal } = renderReveal(true);
     expect(overlay()).not.toBeNull();
-    expect(framer.controls.set).toHaveBeenCalledWith({ top: window.innerHeight / 2, left: window.innerWidth / 2, scale: 1 });
+    expect(portrait()).not.toHaveAttribute('data-revealing');
+    expect(phases).toEqual(['loading']);
 
     setLoading(false);
-    await act(() => vi.advanceTimersByTimeAsync(FULL_INTRO_MS));
-
+    advance(RIPPLES_MS + LEAD_MS - 1);
+    expect(phases).toEqual(['loading']);
+    advance(1);
+    expect(phases).toEqual(['loading', 'revealing']);
+    expect(portrait()).toHaveAttribute('data-revealing');
     expect(framer.animate).toHaveBeenCalledTimes(1);
-    expect(framer.controls.start).toHaveBeenCalledWith(expect.objectContaining(settled()));
+    expect(onSettled).not.toHaveBeenCalled();
+
+    finishReveal();
+    expect(phases).toEqual(['loading', 'revealing', 'settled']);
     expect(onSettled).toHaveBeenCalledTimes(1);
-    expect(overlay()).toBeNull();
+    expect(container).toBeEmptyDOMElement();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('under reduce at mount, mounts no overlay, settles once, and places the portrait before paint', () => {
-    setPrefersReducedMotion(true);
-    const { overlay, onSettled, portrait } = renderReveal(true);
-
-    expect(overlay()).toBeNull();
-    expect(framer.rendered.some((name) => name.includes('grainOverlay'))).toBe(false);
-    expect(onSettled).toHaveBeenCalledTimes(1);
-    expect(framer.controls.set).toHaveBeenCalledWith(settled());
-    expect(portrait()).toHaveAttribute('data-placed');
-  });
-
-  it('keeps the portrait over the grain through the intro, then drops it under the chrome once settled', async () => {
-    const { portrait, setLoading } = renderReveal(true);
-    expect(portrait()).toHaveStyle({ zIndex: '42' });
-
+  it('the ripples run their minimum time from mount, so a slow load reveals at once', () => {
+    const { phases, setLoading } = renderReveal(true);
+    advance(RIPPLES_MS * 2);
+    expect(phases).toEqual(['loading']);
     setLoading(false);
-    await act(() => vi.advanceTimersByTimeAsync(FULL_INTRO_MS));
-
-    expect(portrait()).toHaveStyle({ zIndex: '1' });
+    advance(LEAD_MS);
+    expect(phases).toEqual(['loading', 'revealing']);
   });
 
-  it('a returning visit and reduce settle the portrait under the chrome from the start', () => {
-    const returning = renderReveal(false);
-    expect(returning.portrait()).toHaveStyle({ zIndex: '1' });
-    returning.unmount();
-
+  it('under reduce at mount renders nothing, mounts no overlay, and settles once', () => {
     setPrefersReducedMotion(true);
-    const reduced = renderReveal(true);
-    expect(reduced.portrait()).toHaveStyle({ zIndex: '1' });
+    const { container, onSettled, phases } = renderReveal(true);
+
+    expect(container).toBeEmptyDOMElement();
+    expect(framer.rendered.some((name) => name.includes('grainOverlay'))).toBe(false);
+    expect(phases).toEqual(['settled']);
+    expect(onSettled).toHaveBeenCalledTimes(1);
   });
 
-  it('under reduce, the portrait takes no pointer, so its tilt stays off', () => {
+  it('turning reduce off after settling replays nothing', () => {
     setPrefersReducedMotion(true);
-    const { portrait } = renderReveal(false);
-
-    expect(portrait()).not.toHaveAttribute('data-pointer');
-  });
-
-  it('with motion, the settled portrait takes the pointer until it hides, and again on activity', () => {
-    const { portrait } = renderReveal(false);
-    expect(portrait()).toHaveAttribute('data-pointer');
-
-    act(() => {
-      vi.advanceTimersByTime(3000);
-    });
-    expect(portrait()).not.toHaveAttribute('data-pointer');
-
-    act(() => {
-      window.dispatchEvent(new KeyboardEvent('keydown'));
-    });
-    expect(portrait()).toHaveAttribute('data-pointer');
-  });
-
-  it('turning reduce off after settling replays nothing', async () => {
-    setPrefersReducedMotion(true);
-    const { overlay, onSettled, setLoading } = renderReveal(true);
+    const { container, onSettled, setLoading } = renderReveal(true);
 
     act(() => setPrefersReducedMotion(false));
     setLoading(false);
-    await act(() => vi.advanceTimersByTimeAsync(FULL_INTRO_MS * 2));
+    advance((RIPPLES_MS + LEAD_MS) * 2);
 
-    expect(overlay()).toBeNull();
+    expect(container).toBeEmptyDOMElement();
     expect(framer.animate).not.toHaveBeenCalled();
-    expect(framer.controls.start).not.toHaveBeenCalled();
     expect(onSettled).toHaveBeenCalledTimes(1);
   });
 
-  it('reduce turning on while loading settles at once and leaves no timers after unmount', async () => {
-    const { overlay, onSettled, portrait, unmount } = renderReveal(true);
+  it('reduce turning on while loading settles at once and leaves no timers', () => {
+    const { container, overlay, onSettled, phases, unmount } = renderReveal(true);
     expect(overlay()).not.toBeNull();
     expect(vi.getTimerCount()).toBeGreaterThan(0);
 
     act(() => setPrefersReducedMotion(true));
 
-    expect(overlay()).toBeNull();
+    expect(container).toBeEmptyDOMElement();
+    expect(phases).toEqual(['loading', 'settled']);
     expect(onSettled).toHaveBeenCalledTimes(1);
-    expect(framer.progress.set).toHaveBeenCalledWith(1);
-    expect(framer.controls.set).toHaveBeenLastCalledWith(settled());
-    expect(portrait()).toHaveAttribute('data-placed');
+    expect(vi.getTimerCount()).toBe(0);
     unmount();
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('reduce turning on mid-reveal stops both animations, and the travel ending later changes nothing', async () => {
-    let finishTravel: () => void = () => {};
-    framer.controls.start.mockImplementationOnce(() => new Promise<void>((resolve) => (finishTravel = resolve)));
-    const { overlay, onSettled, setLoading, unmount } = renderReveal(true);
+  it('reduce turning on mid-reveal stops the mask, and the mask finishing later changes nothing', () => {
+    const { container, onSettled, setLoading, finishReveal } = renderReveal(true);
     setLoading(false);
-    await act(() => vi.advanceTimersByTimeAsync(2400 + 300 + 300));
-    expect(framer.controls.start).toHaveBeenCalledTimes(1);
+    advance(RIPPLES_MS + LEAD_MS);
+    const reveal = framer.animate.mock.results[0].value as { stop: ReturnType<typeof vi.fn> };
 
     act(() => setPrefersReducedMotion(true));
-
-    const reveal = framer.animate.mock.results[0].value as { stop: ReturnType<typeof vi.fn> };
     expect(reveal.stop).toHaveBeenCalled();
-    expect(framer.controls.stop).toHaveBeenCalled();
-    expect(overlay()).toBeNull();
+    expect(container).toBeEmptyDOMElement();
     expect(onSettled).toHaveBeenCalledTimes(1);
 
-    await act(async () => {
-      finishTravel();
-      await vi.advanceTimersByTimeAsync(FULL_INTRO_MS);
-    });
+    finishReveal();
     expect(onSettled).toHaveBeenCalledTimes(1);
-    unmount();
+  });
+
+  it('unmounting mid-intro leaves no timer, and the mask finishing after unmount settles nothing', () => {
+    const first = renderReveal(true);
+    first.setLoading(false);
+    advance(RIPPLES_MS);
+    first.unmount();
+    expect(vi.getTimerCount()).toBe(0);
+
+    const second = renderReveal(true);
+    second.setLoading(false);
+    advance(RIPPLES_MS + LEAD_MS);
+    const reveal = framer.animate.mock.results.at(-1)!.value as { stop: ReturnType<typeof vi.fn> };
+    second.unmount();
+    expect(reveal.stop).toHaveBeenCalled();
+    second.finishReveal();
+    expect(second.onSettled).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('unmounting in the moment before settling leaves no timer', async () => {
-    const { onSettled, setLoading, unmount } = renderReveal(true);
-    setLoading(false);
-    // The travel resolves at once here, which arms the short settle delay.
-    await act(() => vi.advanceTimersByTimeAsync(2400 + 300 + 300));
-    expect(vi.getTimerCount()).toBe(1);
-
-    unmount();
-    expect(vi.getTimerCount()).toBe(0);
-    expect(onSettled).not.toHaveBeenCalled();
-  });
-
-  it('unmounting during the travel arms no settle timer', async () => {
-    let finishTravel: () => void = () => {};
-    framer.controls.start.mockImplementationOnce(() => new Promise<void>((resolve) => (finishTravel = resolve)));
-    const { onSettled, setLoading, unmount } = renderReveal(true);
-    setLoading(false);
-    await act(() => vi.advanceTimersByTimeAsync(2400 + 300 + 300));
-
-    unmount();
-    await act(async () => {
-      finishTravel();
-      await vi.advanceTimersByTimeAsync(0);
-    });
-
-    expect(vi.getTimerCount()).toBe(0);
-    expect(onSettled).not.toHaveBeenCalled();
+  it('adds no window listener, so nothing in the intro watches for activity', () => {
+    const add = vi.spyOn(window, 'addEventListener');
+    const view = renderReveal(true);
+    view.setLoading(false);
+    advance(RIPPLES_MS + LEAD_MS);
+    view.finishReveal();
+    view.unmount();
+    renderReveal(false).unmount();
+    expect(add).not.toHaveBeenCalled();
   });
 });
