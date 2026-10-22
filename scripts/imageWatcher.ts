@@ -41,8 +41,9 @@ import { parseArgs } from 'node:util';
 import chokidar from 'chokidar';
 import { scanKind } from '../lib/identity/scan';
 import { createIdentityStep, runIdentityOnce, watchIdentity, type IdentityWatch } from '../lib/identity/watcherStep';
+import { dataRoot } from '../lib/storage/config';
 import { ensureDirectories, libraryPaths, libraryRootExists } from '../utils/imageOptimizer';
-import { attachWatcher, createIgnoreFilter, createWatcherHandlers, drainOrReport, processOnce, type LibraryChange } from '../utils/watcherHandlers';
+import { attachWatcher, createWatcherHandlers, drainOrReport, processOnce, watchSetup, type LibraryChange } from '../utils/watcherHandlers';
 
 const USAGE = 'Usage: npx tsx scripts/imageWatcher.ts [--watch | --once] [--force]';
 
@@ -117,8 +118,10 @@ async function drainIdentity(identity: ReturnType<typeof createIdentityStep>, ti
 function startWatcher(): void {
     const root = requireLibraryRoot();
     ensureDirectories();
+    // With no data root the identity step never runs, so the watch stays exactly as it was before it.
+    const setup = watchSetup(root, { identity: dataRoot() !== null });
 
-    console.log(`[ImageWatcher] Starting chokidar watcher for: ${root}`);
+    console.log(`[ImageWatcher] Starting chokidar watcher for: ${root}${setup.path === root ? '' : ` (${setup.path})`}`);
 
     const handlers = createWatcherHandlers();
     // A pass reads the library after the legacy step's queued jobs, and asks the watch for any pass it needs next.
@@ -130,26 +133,12 @@ function startWatcher(): void {
     watch = watchIdentity(identity);
     void identity.check(); // The first heartbeat, before the first pass
 
-    // Set up chokidar watcher with Docker-friendly options
-    const watcher = chokidar.watch(root, {
-        persistent: true,
-        ignoreInitial: true, // Don't fire events for existing files on startup
-        usePolling: true, // Reliable in Docker bind mounts
-        interval: 2000, // Poll every 2 seconds
-        binaryInterval: 3000, // Poll binary files every 3 seconds
-        alwaysStat: true, // Always provide stats
-        followSymlinks: false, // The identity scan skips symlinks, so never walk through one
-        ignored: createIgnoreFilter(root), // The identity scan's filter: dot-entries and the generated folders
-        awaitWriteFinish: {
-            stabilityThreshold: 3000, // Wait until file size is stable for 3 seconds
-            pollInterval: 500, // Check size every 500ms
-        },
-    });
+    const watcher = chokidar.watch(setup.path, setup.options);
 
     // Events, and the startup batch once the initial scan is ready. Live events still jump ahead of that backlog.
     // The identity step's startup pass comes after that batch.
     attachWatcher(watcher, handlers, {
-        root,
+        root: setup.path,
         force: FORCE,
         onRootRemoved: () => void shutdown(1, `Library root removed: ${root}`),
         onLibraryChange: (event, changedPath) => {
