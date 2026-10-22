@@ -64,7 +64,7 @@ The About page presents the photographer's portrait and name, then links to thei
 | **Gallery** | Masonry layout, lazy loading, LQIP blur-up placeholders |
 | **Lightbox** | Zoom, slideshow, thumbnails, keyboard navigation |
 | **Images** | Sharp pipeline (400/800/1920px), AVIF/WebP, EXIF captions |
-| **Performance** | ISR caching, pre-generated derivatives, Next.js image optimization |
+| **Performance** | Registry-backed photo list, pre-generated derivatives, Next.js image optimization |
 | **Deployment** | Docker-ready, background image watcher |
 
 ---

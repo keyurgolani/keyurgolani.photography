@@ -294,7 +294,15 @@ curl -fsS https://<public host>/api/health
 
 If the first answers and the second doesn't, the proxy or tunnel can't reach `web`. One in a container needs the `http://web:3000` setup above.
 
-[Setting it up](data-root.md#setting-it-up) in data-root.md is the same step. The site keeps serving the legacy derivatives, and the watcher's identity step stays off until the [migration runbook](data-root.md#migration-runbook) there initializes the data root. Back up first, then run it whenever you're ready.
+[Setting it up](data-root.md#setting-it-up) in data-root.md is the same step. The site keeps serving the legacy derivatives, and the watcher's identity step stays off until the [migration runbook](data-root.md#migration-runbook) there initializes the data root. Back up first, then run it before the release the next paragraph describes, which needs it.
+
+The first release with slice C of the [atomic catalog publish (#13)](https://github.com/keyurgolani/keyurgolani.photography/issues/13) lists `/api/photos` from the data root's registry instead of reading the library. On a data root the migration hasn't initialized, `/api/photos` and `/api/ready` answer 503 with `registry-missing`, and Home and Gallery show no photos. Run the migration runbook before deploying it, or right after, which leaves Home and Gallery empty in between. Then check that the site is ready:
+
+```bash
+curl -s http://127.0.0.1:3000/api/ready
+```
+
+It should report `"mode":"legacy"` and `"state":"ok"`. Until a catalog revision is published, `/media` serves no set and the site keeps serving the legacy derivatives.
 
 ## Rollback
 
@@ -314,6 +322,8 @@ docker compose -f docker-compose.prod.yml up -d
 ```
 
 Leave `./portfolio-data` where it is. Older releases never read it, and once you roll forward, the watcher's next pass catches up with what changed in the library meanwhile. A release that finds a data root written by a newer one, with a schema it doesn't know, treats it as unavailable and runs only the legacy step.
+
+Rolling back past the first release with slice C of #13 lists `/api/photos` from the library again, and ignores any catalog revision published since. Rolling forward serves the active revision again.
 
 Never roll back to `v1.0.0`. That image, on GHCR and on Docker Hub, is the initial commit and can't run under this compose file.
 
