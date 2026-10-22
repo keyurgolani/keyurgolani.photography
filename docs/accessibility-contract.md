@@ -27,7 +27,7 @@ Every visitor and curator surface follows these rules. #1 added them with the br
 
 | Surface | Spec | Owner |
 |---|---|---|
-| Home, `/` | `e2e/home.spec.ts` from #1 slice 4, and `e2e/home-immersive.spec.ts` from #18 | #1, then #18 for immersive mode and #4 for the authored sequence |
+| Home, `/` | `e2e/home.spec.ts` from #1 slice 4, `e2e/home-playback.spec.ts` from #2, and `e2e/home-immersive.spec.ts` from #18 | #1, #2 for playback and reduced motion, then #18 for immersive mode and #4 for the authored sequence |
 | Gallery, `/gallery` | `e2e/gallery.spec.ts` from #1 slice 3 | #1, until #3 retires the page |
 | Lightbox on `/gallery` | `e2e/lightbox.spec.ts` from #1 slice 3 | #1, until #3 retires the page |
 | About, `/about` | `e2e/about.spec.ts` from #1 slice 4 | #1 for the subset below, then #11 for the links and #12 for the artist statement |
@@ -40,7 +40,7 @@ Every visitor and curator surface follows these rules. #1 added them with the br
 | Publish preview | Added by #16 | #16 |
 | Revision history | Added by #15 | #15 |
 
-On `/about`, #1 checks the navigation links and theme control in full, Tab reach for the social cards and source link, the ring style on all of them, and axe. Ring clipping, reflow, and the hover-only labels there belong to #11. On `/`, #18 owns pointer and tap reach for the arrows, the first tap on idle Home, and keeping the controls visible while focus is inside them.
+On `/about`, #1 checks the navigation links and theme control in full, Tab reach for the social cards and source link, the ring style on all of them, and axe. Ring clipping, reflow, and the hover-only labels there belong to #11. On `/`, #18 owns the first tap on idle Home.
 
 ## Focus token
 

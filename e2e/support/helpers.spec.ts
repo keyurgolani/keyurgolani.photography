@@ -197,6 +197,62 @@ test.describe('expectNotObscured', () => {
             </nav>`);
         await expectNotObscured(page.getByRole('link'), page.locator('#bar'));
     });
+
+    // A 200 px circle at the top left, scaled from 400 px the way the portrait is, over a button near its box's bottom right corner.
+    const circle = '<div id="round" style="position: fixed; top: 0; left: 0; width: 400px; height: 400px; border-radius: 9999px; background: #222; transform: scale(0.5); transform-origin: 0 0; z-index: 1"></div>';
+    const nearCorner = (at: number) => `<button type="button" style="position: absolute; top: ${at}px; left: ${at}px">Near</button>`;
+
+    test("passes a short element whose ring meets a round cover's box but not its curve", async ({ page }) => {
+        // The ring's top left corner at 178 px sits 110 px from the circle's centre at 100 px, past its 100 px radius.
+        await load(page, `${circle}${nearCorner(184)}`);
+        await expectNotObscured(page.getByRole('button'), page.locator('#round'));
+    });
+
+    test("fails a short element whose ring a round cover's curve reaches", async ({ page }) => {
+        // The ring's top left corner at 158 px sits 82 px from the circle's centre.
+        await load(page, `${circle}${nearCorner(164)}`);
+        await expect(expectNotObscured(page.getByRole('button'), page.locator('#round'))).rejects.toThrow(/ring samples under div/);
+    });
+
+    test('takes rounded-full on a tall box as a capsule, which reaches wider than an ellipse in the same box', async ({ page }) => {
+        // 200 by 300: half circles of 100 px radius centred 100 and 200 px down, joined by straight sides.
+        const capsule = '<div id="round" style="position: fixed; top: 0; left: 0; width: 200px; height: 300px; border-radius: 9999px; background: #222; z-index: 1"></div>';
+        const beside = (left: number) => `<button type="button" style="position: absolute; top: 28px; left: ${left}px">Beside</button>`;
+        // A ring from 190 px across reaches 78 px down, 93 px from the top centre: inside the capsule, outside the ellipse.
+        await load(page, `${capsule}${beside(196)}`);
+        await expect(expectNotObscured(page.getByRole('button'), page.locator('#round'))).rejects.toThrow(/ring samples under div/);
+        // From 200 px across it clears the curve.
+        await load(page, `${capsule}${beside(206)}`);
+        await expectNotObscured(page.getByRole('button'), page.locator('#round'));
+    });
+
+    // A 100 px square at the top left. Its shadows decide how far past the box it paints.
+    const square = (shadow: string) =>
+        `<div id="square" style="position: fixed; top: 0; left: 0; width: 100px; height: 100px; background: #222; box-shadow: ${shadow}; z-index: 1"></div>`;
+    const rightOf = (left: number) => `<button type="button" style="position: absolute; top: 40px; left: ${left}px">Beside</button>`;
+
+    test('counts a solid shadow band as cover, as a ring-4 paints one', async ({ page }) => {
+        // The band paints to 108 px across. A ring from 106 px reaches into it, and one from 110 px clears it.
+        await load(page, `${square('0 0 0 8px #222')}${rightOf(112)}`);
+        await expect(expectNotObscured(page.getByRole('button'), page.locator('#square'))).rejects.toThrow(/ring samples under div/);
+        await load(page, `${square('0 0 0 8px #222')}${rightOf(116)}`);
+        await expectNotObscured(page.getByRole('button'), page.locator('#square'));
+    });
+
+    test('ignores an inset, blurred, or transparent shadow', async ({ page }) => {
+        await load(page, `${square('inset 0 0 0 20px #000, 0 0 12px 20px rgba(0, 0, 0, 0.5), 0 0 0 20px transparent')}${rightOf(112)}`);
+        await expectNotObscured(page.getByRole('button'), page.locator('#square'));
+    });
+
+    test('grows a round cover by its band, scaled as the cover is', async ({ page }) => {
+        // The 20 px band on the half-scale circle is 10 px on screen, so its radius reaches 110 px from the centre at
+        // 100 px. A ring corner at 174 px sits 104.7 px from it: clear of the circle, under the band.
+        const banded = circle.replace('background: #222;', 'background: #222; box-shadow: 0 0 0 20px #222;');
+        await load(page, `${banded}${nearCorner(180)}`);
+        await expect(expectNotObscured(page.getByRole('button'), page.locator('#round'))).rejects.toThrow(/ring samples under div/);
+        await load(page, `${circle}${nearCorner(180)}`);
+        await expectNotObscured(page.getByRole('button'), page.locator('#round'));
+    });
 });
 
 test.describe('expectTabOrderMatchesVisualOrder', () => {

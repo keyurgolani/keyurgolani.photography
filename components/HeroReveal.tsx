@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { motion, useMotionValue, useTransform, animate, useAnimationControls } from 'framer-motion';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
+import { motion, useMotionValue, useTransform, animate, useAnimationControls, type AnimationPlaybackControls } from 'framer-motion';
 import ProfilePicture from './ProfilePicture';
+import { usePrefersReducedMotion } from './motion/usePrefersReducedMotion';
 import profileBack from '../public/assets/profile/back.png';
 import profileFront from '../public/assets/profile/front.png';
 import styles from './HeroReveal.module.css';
@@ -23,20 +24,34 @@ const AUTO_HIDE_TIMEOUT = parseInt(
   10
 );
 
+/** Where the portrait rests after the intro, in pixels. It reads the viewport, so call it only on the client. */
+const settledPosition = () => ({
+  top: window.innerHeight - 280,
+  left: window.innerWidth / 2,
+  scale: 0.85,
+});
+
 export default function HeroReveal({ isLoading, onSettled }: HeroRevealProps) {
-  const [phase, setPhase] = useState<Phase>(() => (isLoading ? 'loading' : 'settled'));
+  const reducedMotion = usePrefersReducedMotion();
+  // Settled is terminal: once there, no preference change replays the intro.
+  const [phase, setPhase] = useState<Phase>(() => (isLoading && !reducedMotion ? 'loading' : 'settled'));
+  const settledRef = useRef(phase === 'settled');
+  const [placed, setPlaced] = useState(false);
   const [ripples, setRipples] = useState<number[]>([]);
   const [ripplesExiting, setRipplesExiting] = useState(false);
   const [profileRadius, setProfileRadius] = useState(160);
   const [maxRadius, setMaxRadius] = useState(2000);
-  const [reducedMotion, setReducedMotion] = useState(false);
   const [profileVisible, setProfileVisible] = useState(true);
   const rippleIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const rippleIdRef = useRef(0);
   const rippleWaitRef = useRef<NodeJS.Timeout | null>(null);
   const revealTimeout1Ref = useRef<NodeJS.Timeout | null>(null);
   const revealTimeout2Ref = useRef<NodeJS.Timeout | null>(null);
+  const settleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const revealAnimationRef = useRef<AnimationPlaybackControls | null>(null);
   const revealInitiatedRef = useRef(!isLoading);
+  const mountedRef = useRef(false);
+  const notifiedRef = useRef(false);
   const mountTimeRef = useRef(Date.now());
   const wasLoadingRef = useRef(isLoading);
   const profileControls = useAnimationControls();
@@ -51,15 +66,59 @@ export default function HeroReveal({ isLoading, onSettled }: HeroRevealProps) {
     return `radial-gradient(circle ${radius}px at 50% 50%, transparent 0%, transparent 97%, black 100%)`;
   });
 
+  const clearIntroTimers = useCallback(() => {
+    for (const timer of [rippleWaitRef, revealTimeout1Ref, revealTimeout2Ref, settleTimeoutRef]) {
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = null;
+    }
+    if (rippleIntervalRef.current) clearInterval(rippleIntervalRef.current);
+    rippleIntervalRef.current = null;
+  }, []);
+
+  // No intro timer outlives the component.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      clearIntroTimers();
+    };
+  }, [clearIntroTimers]);
+
+  // Under reduced motion the first painted frame already has the portrait at rest, and an intro
+  // in progress ends where it is. Declared after useAnimationControls(), whose own layout effect
+  // mounts the controls, so set() works here.
+  useLayoutEffect(() => {
+    if (!reducedMotion) return;
+    clearIntroTimers();
+    revealAnimationRef.current?.stop();
+    profileControls.stop();
+    revealProgress.set(1);
+    profileControls.set(settledPosition());
+    setPlaced(true);
+    if (!settledRef.current) {
+      settledRef.current = true;
+      setPhase('settled');
+    }
+  }, [reducedMotion, profileControls, revealProgress, clearIntroTimers]);
+
+  // Tell Home once, when the intro ends or turns out not to be needed.
+  useEffect(() => {
+    if (phase !== 'settled' || notifiedRef.current) return;
+    notifiedRef.current = true;
+    onSettled();
+  }, [phase, onSettled]);
+
   // Measure viewport and profile size on mount (SSR-safe)
   // Also convert profile position to pixel values so Framer Motion can interpolate
   useEffect(() => {
     const isMd = window.innerWidth >= 768;
     setProfileRadius(isMd ? 160 : 128);
     setMaxRadius(Math.ceil(Math.sqrt(window.innerWidth ** 2 + window.innerHeight ** 2)));
-    setReducedMotion(window.matchMedia('(prefers-reduced-motion: reduce)').matches);
 
-    if (isLoading) {
+    // Under reduced motion the layout effect above has already placed the portrait.
+    if (reducedMotion) return;
+
+    if (isLoading && !settledRef.current) {
       // Convert initial centering position from percentages to pixels
       // so profileControls.start() can interpolate to pixel targets later
       profileControls.set({
@@ -75,21 +134,9 @@ export default function HeroReveal({ isLoading, onSettled }: HeroRevealProps) {
     // (i.e., returning visitor with completed intro). If we transitioned
     // from loading to not loading, the reveal animation handles the position.
     if (!wasLoadingRef.current) {
-      profileControls.set({
-        top: window.innerHeight - 280,
-        left: window.innerWidth / 2,
-        scale: 0.85,
-      });
+      profileControls.set(settledPosition());
     }
-  }, [isLoading, profileControls]);
-
-  // If reduced motion, skip to settled immediately
-  useEffect(() => {
-    if (reducedMotion) {
-      setPhase('settled');
-      onSettled();
-    }
-  }, [reducedMotion, onSettled]);
+  }, [isLoading, reducedMotion, profileControls]);
 
   // Spawn ripple rings during loading phase
   useEffect(() => {
@@ -121,7 +168,7 @@ export default function HeroReveal({ isLoading, onSettled }: HeroRevealProps) {
   // Uses a ref to track initiation so `phase` isn't in the dependency array —
   // otherwise setPhase('revealing') would trigger cleanup that cancels our timeouts
   useEffect(() => {
-    if (!isLoading && !revealInitiatedRef.current && !reducedMotion) {
+    if (!isLoading && !revealInitiatedRef.current && !reducedMotion && !settledRef.current) {
       revealInitiatedRef.current = true;
 
       // Ensure at least 2 ripple cycles (2400ms) have played before revealing
@@ -140,20 +187,21 @@ export default function HeroReveal({ isLoading, onSettled }: HeroRevealProps) {
           setPhase('revealing');
 
           // Animate the mask-image reveal (expanding hole from center outward)
-          animate(revealProgress, 1, { duration: 1.2, ease: 'easeInOut' });
+          revealAnimationRef.current = animate(revealProgress, 1, { duration: 1.2, ease: 'easeInOut' });
 
           // Animate profile photo from center to bottom position (starts 0.3s after reveal)
           // Use pixel values — Framer Motion can't interpolate between '%' and 'calc()'
           revealTimeout2Ref.current = setTimeout(() => {
             profileControls.start({
-              top: window.innerHeight - 280,
-              left: window.innerWidth / 2,
-              scale: 0.85,
+              ...settledPosition(),
               transition: { duration: 0.8, ease: EASE_OUT },
             }).then(() => {
-              setTimeout(() => {
+              // Reduced motion may have settled the intro mid-travel, or Home may be gone.
+              if (settledRef.current || !mountedRef.current) return;
+              settleTimeoutRef.current = setTimeout(() => {
+                settleTimeoutRef.current = null;
+                settledRef.current = true;
                 setPhase('settled');
-                onSettled();
               }, 50);
             });
           }, 300);
@@ -166,7 +214,7 @@ export default function HeroReveal({ isLoading, onSettled }: HeroRevealProps) {
       if (revealTimeout1Ref.current) clearTimeout(revealTimeout1Ref.current);
       if (revealTimeout2Ref.current) clearTimeout(revealTimeout2Ref.current);
     };
-  }, [isLoading, reducedMotion, revealProgress, profileControls, onSettled]);
+  }, [isLoading, reducedMotion, revealProgress, profileControls]);
 
   // Auto-hide profile photo after settling (mirrors RevealingContents behavior)
   useEffect(() => {
@@ -252,10 +300,13 @@ export default function HeroReveal({ isLoading, onSettled }: HeroRevealProps) {
           </motion.div>
 
           {/* Ripple Glows — soft radial pulses, faded out as a group on exit */}
-          <div style={{
-            opacity: ripplesExiting ? 0 : 1,
-            transition: 'opacity 0.5s ease-out',
-          }}>
+          <div
+            className={styles.ripples}
+            style={{
+              opacity: ripplesExiting ? 0 : 1,
+              transition: 'opacity 0.5s ease-out',
+            }}
+          >
             {ripples.map(id => (
               <motion.div
                 key={id}
@@ -284,7 +335,11 @@ export default function HeroReveal({ isLoading, onSettled }: HeroRevealProps) {
       )}
 
       {/* Profile Photo — same element across all phases to preserve animation state */}
+      {/* data-pointer lets the painted images take the pointer. Under reduced motion they take none, which also keeps ParallaxCard's tilt off Home. */}
       <motion.div
+        className={styles.portrait}
+        data-placed={placed ? '' : undefined}
+        data-pointer={reducedMotion || (phase === 'settled' && !profileVisible) ? undefined : ''}
         animate={profileControls}
         initial={{
           position: 'fixed',
@@ -299,7 +354,6 @@ export default function HeroReveal({ isLoading, onSettled }: HeroRevealProps) {
           zIndex: 42,
           opacity: phase === 'settled' ? (profileVisible ? 1 : 0) : 1,
           transition: phase === 'settled' ? 'opacity 1s ease-in-out' : undefined,
-          pointerEvents: phase === 'settled' && !profileVisible ? 'none' : 'auto',
         }}
       >
         <ProfilePicture

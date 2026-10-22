@@ -6,6 +6,7 @@ import { waitForHydration } from './support/hydration';
 import { checkSurface, expectUniqueNames } from './support/surface';
 import { expectMinTargetSize } from './support/targets';
 import { expect, setPhotoFixtures, test } from './support/test';
+import type { ImageItem } from '../utils/getImageData';
 
 const primary = (page: Page) => page.getByRole('navigation', { name: 'Primary' });
 const navLinks = (page: Page) => primary(page).getByRole('link');
@@ -13,8 +14,13 @@ const themeToggle = (page: Page) => page.getByRole('button', { name: /^Switch to
 const previous = (page: Page) => page.getByRole('button', { name: 'Previous photograph', exact: true });
 const next = (page: Page) => page.getByRole('button', { name: 'Next photograph', exact: true });
 const arrows = (page: Page) => previous(page).or(next(page));
+const playback = (page: Page) => page.getByRole('button', { name: /^(Pause|Play) slideshow$/ });
+/** Previous, Next, and the playback button, which sit together in the chrome layer. */
+const sequenceControls = (page: Page) => arrows(page).or(playback(page));
 /** The full-quality layer of the slide on screen. */
 const currentPhoto = (page: Page) => page.locator('[aria-hidden="false"] > img[data-layer="optimized"]');
+/** HeroReveal's settled portrait, fixed above the chrome, as painted: its rounded images, which reach past the wrapper's box. */
+const portrait = (page: Page) => page.locator('[class*="portrait"] img');
 
 const effectiveOpacity = (target: Locator) =>
     target.evaluate((el) => {
@@ -33,9 +39,9 @@ const bottomBarOpacity = (page: Page) =>
 /**
  * Opens Home on `photos`, which it shuffles, in `theme`, and waits out the
  * intro: the grain overlay gone and BottomBar slid up. It doesn't wait on the
- * chrome layer, which shows for about 5.5 s after the intro and hides 3 s
- * after the last activity, so a slow run can't miss that window. No test here
- * needs the chrome shown before it acts.
+ * chrome layer, which shows for 3 s after the intro and hides 3 s after the
+ * last activity, so a slow run can't miss that window. No test here needs the
+ * chrome shown before it acts.
  */
 async function openHome(page: Page, { photos = ['white', 'gray', 'black'], theme = 'dark' }: { photos?: readonly string[]; theme?: 'dark' | 'light' } = {}) {
     setPhotoFixtures(page, photos);
@@ -51,11 +57,11 @@ for (const viewport of [undefined, { width: 640, height: 400 }]) {
         if (viewport) test.use({ viewport });
 
         for (const theme of ['dark', 'light'] as const) {
-            test(`passes the surface checks on the arrows, with 44 px targets and unique names on every control, in the ${theme} theme`, async ({ page }) => {
+            test(`passes the surface checks on the slideshow controls, with 44 px targets and unique names on every control, in the ${theme} theme`, async ({ page }) => {
                 await openHome(page, { theme });
-                await checkSurface(page, { controls: [arrows(page)], chrome: [primary(page), themeToggle(page)] });
+                await checkSurface(page, { controls: [sequenceControls(page)], chrome: [primary(page), themeToggle(page), portrait(page)] });
                 await expectMinTargetSize(themeToggle(page).or(navLinks(page)));
-                await expectUniqueNames([themeToggle(page), arrows(page), navLinks(page)]);
+                await expectUniqueNames([themeToggle(page), sequenceControls(page), navLinks(page)]);
             });
 
             test(`Tab shows the theme toggle with its focus ring inside the 3 s idle window in the ${theme} theme`, async ({ page }) => {
@@ -72,9 +78,9 @@ for (const viewport of [undefined, { width: 640, height: 400 }]) {
     });
 }
 
-test('Tab goes from the theme toggle to both arrows, then the Primary links, and Shift+Tab walks back', async ({ page }) => {
+test('Tab goes from the theme toggle to both arrows and Pause, then the Primary links, and Shift+Tab walks back', async ({ page }) => {
     await openHome(page);
-    const stops = ['Switch to light mode', 'Previous photograph', 'Next photograph', 'Gallery', 'Home', 'About'];
+    const stops = ['Switch to light mode', 'Previous photograph', 'Next photograph', 'Pause slideshow', 'Gallery', 'Home', 'About'];
     const forward: (string | undefined)[] = [];
     for (let press = 0; press < stops.length; press++) {
         await page.keyboard.press('Tab');
@@ -98,9 +104,9 @@ test('keyboard focus on an arrow shows both arrows at full opacity', async ({ pa
     await expect(next(page)).toHaveCSS('opacity', '1');
 });
 
-test('the arrows drop their focus ring at once on blur', async ({ page }) => {
+test('the slideshow controls drop their focus ring at once on blur', async ({ page }) => {
     await openHome(page);
-    for (const arrow of [previous(page), next(page)]) await expectNoFadeOnBlur(arrow);
+    for (const control of [previous(page), next(page), playback(page)]) await expectNoFadeOnBlur(control);
 });
 
 test('Enter and Space on the arrows change the photo', async ({ page }) => {
@@ -150,13 +156,24 @@ test('each slide names its photo once, on the full-quality layer', async ({ page
     for (const alt of optimized) expect(alt).toMatch(/^Photograph [1-3] of 3$/);
 });
 
-test('the arrow icons keep 3:1 over the white photo', async ({ page }) => {
-    await openHome(page, { photos: ['white'] });
+/** Two white records with distinct src values, so Home shows its controls over white. The fixture route serves both files by basename. */
+async function serveTwoWhitePhotos(page: Page) {
+    const record = (src: string, id: number): ImageItem => ({
+        id, src, thumbnail: src, medium: src, optimized: src, width: 1200, height: 800, optimizedWidth: 1200, optimizedHeight: 800,
+        caption: '', date: Date.UTC(2024, 0, 1), lqip: '',
+    });
+    await page.route('**/api/photos', (route) =>
+        route.fulfill({ json: [record('/assets/photos/white.jpg', 0), record('/assets/photos/copy-2/white.jpg', 1)] }));
+}
+
+test('the control icons keep 3:1 over the white photo', async ({ page }) => {
+    await serveTwoWhitePhotos(page);
+    await openHome(page);
     await expect(currentPhoto(page)).toHaveCSS('opacity', '1');
-    for (const arrow of [previous(page), next(page)]) {
-        await arrow.focus();
-        await expect(arrow).toHaveCSS('opacity', '1');
-        await expectContrastOverImage(arrow.locator('svg'), { min: 3 });
+    for (const control of [previous(page), next(page), playback(page)]) {
+        await control.focus();
+        await expect(control).toHaveCSS('opacity', '1');
+        await expectContrastOverImage(control.locator('svg'), { min: 3 });
     }
 });
 
@@ -165,22 +182,33 @@ test('every app hover rule on the page waits for a fine pointer', async ({ page 
     await expectHoverRulesGated(page);
 });
 
-// #18 (Home immersive mode) owns these, and e2e/home-immersive.spec.ts replaces them.
+// The controls sit in the chrome layer, so a click or tap reaches them, and keyboard focus in the chrome holds it.
+test('a click on Previous or Next changes the photo', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === 'mobile', 'Mouse clicks run on the desktop project.');
+    await openHome(page);
+    await next(page).click();
+    await expect(currentPhoto(page)).toHaveAttribute('alt', 'Photograph 2 of 3');
+});
+
+test('a tap on Previous or Next changes the photo', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'mobile', 'Taps run on the touch project.');
+    await openHome(page);
+    await next(page).tap();
+    await expect(currentPhoto(page)).toHaveAttribute('alt', 'Photograph 2 of 3');
+});
+
+test('focus inside the controls holds them visible past the idle timeout', async ({ page }) => {
+    await openHome(page);
+    const gallery = primary(page).getByRole('link', { name: 'Gallery', exact: true });
+    await gallery.focus();
+    // The chrome hides 3 s after the intro's synthetic click and then fades for 1 s, so 7 s waits on the
+    // behavior itself, not on readiness.
+    await page.waitForTimeout(7_000);
+    expect(await effectiveOpacity(gallery)).toBe(1);
+});
+
+// #18 (Home immersive mode) owns this, and e2e/home-immersive.spec.ts replaces it.
 test.describe('#18', () => {
-    test.fixme('a click on Previous or Next changes the photo', async ({ page }, testInfo) => {
-        test.skip(testInfo.project.name === 'mobile', 'Mouse clicks run on the desktop project.');
-        await openHome(page);
-        await next(page).click();
-        await expect(currentPhoto(page)).toHaveAttribute('alt', 'Photograph 2 of 3');
-    });
-
-    test.fixme('a tap on Previous or Next changes the photo', async ({ page }, testInfo) => {
-        test.skip(testInfo.project.name !== 'mobile', 'Taps run on the touch project.');
-        await openHome(page);
-        await next(page).tap();
-        await expect(currentPhoto(page)).toHaveAttribute('alt', 'Photograph 2 of 3');
-    });
-
     test.fixme('the first tap on idle Home reveals the controls without navigating', async ({ page }, testInfo) => {
         test.skip(testInfo.project.name !== 'mobile', 'Taps run on the touch project.');
         await openHome(page);
@@ -188,16 +216,5 @@ test.describe('#18', () => {
         await primary(page).getByRole('link', { name: 'Gallery', exact: true }).tap();
         await expect(page).toHaveURL('/');
         await expect.poll(() => effectiveOpacity(primary(page))).toBe(1);
-    });
-
-    test.fixme('focus inside the controls holds them visible past the idle timeout', async ({ page }) => {
-        await openHome(page);
-        const gallery = primary(page).getByRole('link', { name: 'Gallery', exact: true });
-        await gallery.focus();
-        // The chrome hides 3 s after the last activity and then fades for 1 s, and app/page.tsx's synthetic click
-        // when autoplay turns on, 2.5 s after the intro, restarts that timer. So 7 s waits on the behavior itself,
-        // not on readiness.
-        await page.waitForTimeout(7_000);
-        expect(await effectiveOpacity(gallery)).toBe(1);
     });
 });

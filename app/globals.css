@@ -580,3 +580,26 @@ body {
     transition: none !important;
 }
 
+
+/* Reduced-motion baseline for every route: animations and transitions end at
+   once, so fades, cross-fades, shimmer, and pulses still reach their end
+   state without moving. It sets no transform, which would break centering. */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        transition-delay: 0s !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* The lightbox's own !important transitions above outrank the baseline. */
+@media (prefers-reduced-motion: reduce) {
+    :root .yarl__button,
+    :root .yarl__thumbnails_thumbnail {
+        transition: none !important;
+    }
+}
