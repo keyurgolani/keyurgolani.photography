@@ -224,18 +224,23 @@ describe('photos identity decisions', { timeout: 120_000 }, () => {
         await settled.bind?.cleanup();
     });
 
-    it('binds a path, prints what it did, and files the decision as applied', async () => {
+    it('binds a path, merging the photo --merge names, prints what it did, and files the decision as applied', async () => {
         const s = await setup(settled.bind);
         const [x, n] = [await s.photoAt('a.jpg'), await s.photoAt('z.jpg')];
         fs.rmSync(s.lib.file('a.jpg'));
-        const run = await cli(s, ['bind', 'z.jpg', x, '--reason', 'same photo, new edit']);
+        const refused = await cli(s, ['bind', 'z.jpg', x]);
+        expect(refused.code).toBe(1);
+        expect(refused.stderr).toContain(`Rejected: z.jpg is bound to ${n}. To merge ${n} into ${x}, name it with --merge.`);
+        expect(await s.photoAt('z.jpg')).toBe(n);
+
+        const run = await cli(s, ['bind', 'z.jpg', x, '--merge', n, '--reason', 'same photo, new edit']);
         expect(run.stderr).toBe('');
         expect(run.code).toBe(0);
         expect(run.stdout).toContain(`Applied: bound z.jpg to ${x} and merged ${n} into it.`);
         expect(await s.photoAt('z.jpg')).toBe(x);
         const [filed] = s.filed('applied');
         expect(JSON.parse(fs.readFileSync(path.join(identityPaths(s.data.root).decisions, 'applied', filed), 'utf8'))).toMatchObject({
-            type: 'bind', path: 'z.jpg', photoId: x, actor: 'cli', reason: 'same photo, new edit',
+            type: 'bind', path: 'z.jpg', photoId: x, merge: n, actor: 'cli', reason: 'same photo, new edit',
         });
     });
 
@@ -292,6 +297,9 @@ describe('photos identity decisions', { timeout: 120_000 }, () => {
         [['archive', 'ph_00000000-0000-4000-8000-000000000001', '--force'], "Unknown option '--force'"],
         [['archive', 'ph_00000000-0000-4000-8000-000000000001', '--reason'], "Option '--reason <value>' argument missing"],
         [['new', 'a.jpg', '--all'], '--all goes with identity reprofile.'],
+        [['archive', 'ph_00000000-0000-4000-8000-000000000001', '--merge', 'ph_00000000-0000-4000-8000-000000000002'], '--merge goes with identity bind.'],
+        [['bind', 'a.jpg', 'ph_00000000-0000-4000-8000-000000000001', '--merge', 'ph_1'], 'ph_1 is not a photo ID.'],
+        [['bind', 'a.jpg', 'ph_00000000-0000-4000-8000-000000000001', '--merge', 'ph_00000000-0000-4000-8000-000000000001'], '--merge must name a photo other than ph_00000000-0000-4000-8000-000000000001.'],
     ])('exits 2 on %j', async (args, message) => {
         const s = await setup({ 'a.jpg': 'A' });
         const run = await cli(s, args);

@@ -21,7 +21,7 @@
  *     root's state, and the watcher's heartbeat age. Exits 1 unless the data
  *     root is ready.
  *
- *   npx tsx scripts/photos.ts identity bind <path> <photoId> [--reason <text>]
+ *   npx tsx scripts/photos.ts identity bind <path> <photoId> [--merge <photoId>] [--reason <text>]
  *   npx tsx scripts/photos.ts identity new <path> [--reason <text>]
  *   npx tsx scripts/photos.ts identity archive <photoId> [--reason <text>]
  *   npx tsx scripts/photos.ts identity retry <photoId> [<assetRevision>] [--reason <text>]
@@ -30,7 +30,9 @@
  *     applies it. If the registry is busy, the decision stays saved and the
  *     watcher applies it on its next pass. Exits 0 when applied or saved, 1
  *     when refused or the data root isn't ready, and 2 on a usage error.
- *     <path> is relative to the library, or an absolute path inside it.
+ *     <path> is relative to the library, or an absolute path inside it. A
+ *     bind to a path another photo holds merges that photo into <photoId>
+ *     only when --merge names it, and only if it was minted at that path.
  *
  * The library is PHOTOGRAPHY_LIBRARY_DIR, or public/assets/photos under the
  * working directory. The data root is PHOTOGRAPHY_DATA_DIR, or portfolio-data
@@ -54,7 +56,7 @@ const USAGE = `Usage:
   npx tsx scripts/photos.ts migrate --dry-run [--out <dir>]
   npx tsx scripts/photos.ts migrate --apply --plan <file>
   npx tsx scripts/photos.ts identity status [--json]
-  npx tsx scripts/photos.ts identity bind <path> <photoId> [--reason <text>]
+  npx tsx scripts/photos.ts identity bind <path> <photoId> [--merge <photoId>] [--reason <text>]
   npx tsx scripts/photos.ts identity new <path> [--reason <text>]
   npx tsx scripts/photos.ts identity archive <photoId> [--reason <text>]
   npx tsx scripts/photos.ts identity retry <photoId> [<assetRevision>] [--reason <text>]
@@ -124,12 +126,15 @@ async function migrate(args: string[]): Promise<number> {
 
 const DECISION_COMMANDS: readonly DecisionInput['type'][] = ['bind', 'new', 'archive', 'retry', 'reprofile'];
 
-function decisionInput(type: DecisionInput['type'], positionals: string[], values: { reason?: string; all?: boolean }): DecisionInput {
+function decisionInput(type: DecisionInput['type'], positionals: string[], values: { reason?: string; all?: boolean; merge?: string }): DecisionInput {
     const base = { actor: 'cli', reason: values.reason ?? '' };
     switch (type) {
-        case 'bind':
+        case 'bind': {
             if (positionals.length !== 2) throw new UsageError('identity bind needs a path and a photo ID.');
-            return { ...base, type, path: libraryPath(positionals[0]), photoId: photoIdArg(positionals[1]) };
+            const photoId = photoIdArg(positionals[1]);
+            if (values.merge !== undefined && photoIdArg(values.merge) === photoId) throw new UsageError(`--merge must name a photo other than ${photoId}.`);
+            return { ...base, type, path: libraryPath(positionals[0]), photoId, ...(values.merge === undefined ? {} : { merge: values.merge }) };
+        }
         case 'new':
             if (positionals.length !== 1) throw new UsageError('identity new needs a path.');
             return { ...base, type, path: libraryPath(positionals[0]) };
@@ -155,11 +160,12 @@ function decisionInput(type: DecisionInput['type'], positionals: string[], value
 async function decide(type: DecisionInput['type'], args: string[]): Promise<number> {
     const { values, positionals } = strictly(() => parseArgs({
         args,
-        options: { reason: { type: 'string' }, all: { type: 'boolean' } },
+        options: { reason: { type: 'string' }, all: { type: 'boolean' }, merge: { type: 'string' } },
         allowPositionals: true,
         strict: true,
     }));
     if (values.all !== undefined && type !== 'reprofile') throw new UsageError('--all goes with identity reprofile.');
+    if (values.merge !== undefined && type !== 'bind') throw new UsageError('--merge goes with identity bind.');
     const input = decisionInput(type, positionals, values);
     const status = dataRootStatus({ write: true });
     if (status.state !== 'ready' || status.root === null) {

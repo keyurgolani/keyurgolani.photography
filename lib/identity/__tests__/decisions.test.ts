@@ -18,6 +18,7 @@ import { image, NOW, PROFILE, Reconciler, revisionOf, sequentialIds } from './re
 
 const UUID = '00000000-0000-4000-8000-0000000000aa';
 const PHOTO = 'ph_00000000-0000-4000-8000-0000000000bb';
+const OTHER = 'ph_00000000-0000-4000-8000-0000000000cc';
 const CREATED = '2026-06-01T12:00:00.000Z';
 const base = { schemaVersion: 1, decisionId: UUID, actor: 'cli', reason: '', createdAt: CREATED };
 
@@ -45,6 +46,7 @@ const outcomes = (r: Reconciler) => r.last.decisions.map(({ status, ...rest }) =
 describe('parseDecision', () => {
     it.each([
         { type: 'bind', path: 'trips/a.jpg', photoId: PHOTO },
+        { type: 'bind', path: 'trips/a.jpg', photoId: PHOTO, merge: OTHER },
         { type: 'new', path: 'a.jpg', photoId: PHOTO },
         { type: 'archive', photoId: PHOTO },
         { type: 'retry', photoId: PHOTO },
@@ -74,6 +76,9 @@ describe('parseDecision', () => {
         ['archive with a path', { ...base, type: 'archive', path: 'a.jpg', photoId: PHOTO }, 'archive takes no path'],
         ['new without its photoId', { ...base, type: 'new', path: 'a.jpg' }, 'new needs a photoId'],
         ['a bad photoId', { ...base, type: 'archive', photoId: 'ph_1' }, 'photoId must be ph_ plus a UUID v4'],
+        ['new with a merge', { ...base, type: 'new', path: 'a.jpg', photoId: PHOTO, merge: OTHER }, 'new takes no merge'],
+        ['a bad merge', { ...base, type: 'bind', path: 'a.jpg', photoId: PHOTO, merge: 'ph_1' }, 'merge must be ph_ plus a UUID v4'],
+        ['a merge naming the photo itself', { ...base, type: 'bind', path: 'a.jpg', photoId: PHOTO, merge: PHOTO }, 'merge must name a photo other than photoId'],
         ['a bad assetRevision', { ...base, type: 'retry', photoId: PHOTO, assetRevision: 'sha256-x' }, 'assetRevision must be sha256- plus 64 hex'],
         ['reprofile with a revision', { ...base, type: 'reprofile', assetRevision: revisionOf('A') }, 'reprofile takes no assetRevision'],
     ])('rejects %s', (_name, value, invalid) => {
@@ -95,6 +100,11 @@ describe('createDecision', () => {
             createdAt: '2026-06-01T12:00:00.000Z',
         });
         expect(decisionFileName(decision)).toBe('2026-06-01T12-00-00-000Z-00000000-0000-4000-8000-000000000001.json');
+    });
+
+    it('carries the photo a bind may merge', () => {
+        const decision = createDecision({ type: 'bind', path: 'a.jpg', photoId: PHOTO, merge: OTHER, actor: 'cli' }, { idGen: sequentialIds(), clock: () => NOW });
+        expect(decision).toMatchObject({ type: 'bind', path: 'a.jpg', photoId: PHOTO, merge: OTHER });
     });
 
     it('refuses input that makes no valid decision', () => {
@@ -227,14 +237,14 @@ describe('reconcile: bind', () => {
         expect(r.last.facts).toMatchObject([{ type: 'replaced', photoId: x, assetRevision: revisionOf('B'), path: 'a.jpg' }]);
     });
 
-    it('merges a photo minted at the path into the photo it really is', () => {
+    it('merges a photo minted at the path into the photo it really is, when the decision names it', () => {
         const r = seeded({ 'a.jpg': 'A' });
         const x = r.photoAt('a.jpg').photoId;
         r.library.remove('a.jpg').put('z.jpg', image('Z'));
         r.pass();
         const n = r.photoAt('z.jpg').photoId;
         r.registry.photos[n].revisions[revisionOf('Z')].profiles[PROFILE] = { state: 'ready', attempts: 1, readyAt: CREATED };
-        r.decide({ type: 'bind', path: 'z.jpg', photoId: x });
+        r.decide({ type: 'bind', path: 'z.jpg', photoId: x, merge: n });
         r.pass();
         expect(outcomes(r)).toEqual([{ status: 'applied' }]);
         expect(r.last.decisions[0]).toMatchObject({ detail: `bound z.jpg to ${x} and merged ${n} into it` });
@@ -258,17 +268,63 @@ describe('reconcile: bind', () => {
         expect(r.factSummary()).toEqual(['new b.jpg']);
     });
 
-    it('refuses a path another photo holds, unless that photo was minted there', () => {
+    it('refuses a path another photo holds unless the decision names it to merge, so a mistyped ID retires nothing', () => {
+        const r = seeded({ 'a.jpg': 'A', 'b.jpg': 'B' });
+        const [x, b] = [r.photoAt('a.jpg').photoId, r.photoAt('b.jpg').photoId];
+        r.library.remove('a.jpg');
+        r.pass();
+        // b.jpg was meant. b has only the revision first seen at b.jpg, which a merge would take.
+        r.decide({ type: 'bind', path: 'b.jpg', photoId: x });
+        r.pass();
+        expect(outcomes(r)).toEqual([{ status: 'rejected', reason: `b.jpg is bound to ${b}. To merge ${b} into ${x}, name it with --merge` }]);
+        expect(r.photo(b)).toMatchObject({ sourceHealth: 'present', source: { path: 'b.jpg', present: true } });
+        expect(r.photo(b).mergedInto).toBeUndefined();
+        expect(r.photo(x).sourceHealth).toBe('missing');
+    });
+
+    it('refuses a merge that names another photo than the one holding the path', () => {
+        const r = seeded({ 'a.jpg': 'A' });
+        const x = r.photoAt('a.jpg').photoId;
+        r.library.remove('a.jpg').put('z.jpg', image('Z'));
+        r.pass();
+        const n = r.photoAt('z.jpg').photoId;
+        r.decide({ type: 'bind', path: 'z.jpg', photoId: x, merge: OTHER });
+        r.pass();
+        expect(outcomes(r)).toEqual([{ status: 'rejected', reason: `the decision merges ${OTHER}, but z.jpg is bound to ${n}` }]);
+        expect(r.photo(n).sourceHealth).toBe('present');
+    });
+
+    it('refuses to merge a photo that was more than minted at the path', () => {
         const r = seeded({ 'a.jpg': 'A', 'b.jpg': 'B' });
         const [x, n] = [r.photoAt('a.jpg').photoId, r.photoAt('b.jpg').photoId];
         r.library.put('b.jpg', image('B2'));
         r.library.remove('a.jpg');
         r.pass();
         // n now has two revisions, so it wasn't merely minted at b.jpg.
-        r.decide({ type: 'bind', path: 'b.jpg', photoId: x });
+        r.decide({ type: 'bind', path: 'b.jpg', photoId: x, merge: n });
         r.pass();
-        expect(outcomes(r)).toEqual([{ status: 'rejected', reason: `b.jpg is bound to ${n}` }]);
+        expect(outcomes(r)).toEqual([{ status: 'rejected', reason: `${n} has more than the one revision first seen at b.jpg, so it can't be merged` }]);
         expect(r.photo(n).sourceHealth).toBe('present');
+    });
+
+    it("gives a path holding a moved photo's bytes to that photo, and the photo whose file it overwrote goes missing", () => {
+        const r = seeded({ 'x.jpg': 'X', 'y.jpg': 'Y' });
+        const [x, y] = [r.photoAt('x.jpg').photoId, r.photoAt('y.jpg').photoId];
+        const revisions = structuredClone(r.photo(x).revisions);
+        // mv y.jpg x.jpg
+        r.library.move('y.jpg', 'x.jpg');
+        r.pass();
+        expect(r.registry.holds).toMatchObject([{ path: 'x.jpg', candidates: [x, y].sort() }]);
+        r.decide({ type: 'bind', path: 'x.jpg', photoId: y });
+        r.pass();
+        expect(r.last.decisions).toMatchObject([{ status: 'applied', detail: `bound x.jpg to ${y}, which ${x} no longer holds` }]);
+        expect(r.registry.holds).toEqual([]);
+        expect(r.photo(y)).toMatchObject({ sourceHealth: 'present', source: { path: 'x.jpg', present: true, observedRevision: revisionOf('Y') } });
+        expect(r.photo(x)).toMatchObject({ sourceHealth: 'missing', source: { path: 'x.jpg', present: false, observedRevision: revisionOf('X') } });
+        expect(r.photo(x).mergedInto).toBeUndefined();
+        expect(r.photo(x).revisions).toEqual(revisions);
+        expect(r.photo(y).revisions[revisionOf('X')]).toBeUndefined();
+        expect(r.factSummary()).toEqual(['missing x.jpg', 'renamed x.jpg']);
     });
 
     it.each([
