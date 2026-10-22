@@ -89,6 +89,15 @@ function newestReady(revision: AssetRevisionRecord): string | null {
     return ready[0]?.[0] ?? null;
 }
 
+/**
+ * The profile a photo publishes on without `reprofile`: the one the active
+ * revision gives this asset revision, else #10's current profile when its set
+ * is ready, else the newest ready one, else the current profile.
+ */
+export function usualProfile(revision: AssetRevisionRecord, current: string, activeProfile: string | null): string {
+    return activeProfile ?? (revision.profiles[current]?.state === 'ready' ? current : newestReady(revision) ?? current);
+}
+
 /** The authored half of a public photo record. */
 function authoredFields(photo: AuthoredPhoto): Partial<CandidatePhotoRecord> {
     const fields: Partial<CandidatePhotoRecord> = { alt: candidateAlt(photo.alt) };
@@ -117,7 +126,7 @@ export async function compileCandidate(input: CompileInput): Promise<CompileResu
     function chooseProfile(photo: PhotoRecord, assetRevision: string, revision: AssetRevisionRecord): string {
         const activePhoto = activePhotos.get(photo.photoId);
         const activeProfile = activePhoto && activePhoto.assetRevision === assetRevision ? activePhoto.profileId : null;
-        const usual = activeProfile ?? (revision.profiles[current]?.state === 'ready' ? current : newestReady(revision) ?? current);
+        const usual = usualProfile(revision, current, activeProfile);
         if (!reprofile) return usual;
         if (canRebuild(photo, assetRevision)) {
             if (usual !== current) moved.add(photo.photoId);
