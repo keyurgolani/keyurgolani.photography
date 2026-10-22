@@ -221,9 +221,13 @@ test.describe('normal motion', () => {
     });
 
     test.describe('on a short screen', () => {
-        // Short screens, where the settled portrait once covered Previous, phones on their side included. The
-        // chrome sits over the portrait now, so Previous keeps its ring and its hit at every size.
-        const SHORT_SCREENS = [[640, 400], [667, 375], [568, 320], [740, 360], [736, 414], [768, 400], [780, 420], [800, 480], [812, 375], [820, 400], [844, 390], [896, 414], [932, 430]] as const;
+        // Short screens, where the settled portrait once covered Previous, phones on their side included. The last
+        // five are where it still covered Previous's ring, or at 360 by 320 its centre, before the chrome sat over
+        // it. The chrome sits over the portrait now, so Previous keeps its ring and its hit at every size.
+        const SHORT_SCREENS = [
+            [640, 400], [667, 375], [568, 320], [740, 360], [736, 414], [768, 400], [780, 420], [800, 480], [812, 375], [820, 400], [844, 390], [896, 414], [932, 430],
+            [533, 320], [512, 384], [480, 320], [360, 320], [568, 520],
+        ] as const;
         /** Points around Previous's centre. The square layers once took a click 10 px left of and 12 px above it. */
         const PROBES = [[0, 0], [-10, -12], [10, -12], [-10, 12], [10, 12], [-18, 0], [18, 0], [0, -18], [0, 18]] as const;
 
