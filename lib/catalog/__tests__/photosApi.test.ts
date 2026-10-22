@@ -24,6 +24,7 @@ vi.mock('next/server', async (importOriginal) => ({
 }));
 
 const { GET } = await import('../../../app/api/photos/route');
+const { GET: ready } = await import('../../../app/api/ready/route');
 
 const URL_FIELDS = ['src', 'thumbnail', 'medium', 'optimized', 'thumbnailAvif', 'mediumAvif', 'optimizedAvif'] as const;
 const DERIVATIVE_URL = /^\/assets\/photos\/(thumbnails|medium|optimized)(-avif)?\/[^/]+\.(webp|avif)$/;
@@ -242,6 +243,61 @@ describe('GET /api/photos', { timeout: 60_000 }, () => {
         const items = await response.json() as ImageItem[];
         expect(items.length).toBeGreaterThan(0);
         expect(items.every((item) => item.src.startsWith('/media/'))).toBe(true);
+    });
+});
+
+describe('GET /api/ready', { timeout: 60_000 }, () => {
+    const NO_REVISION = { revisionId: null, revisionNumber: null, activatedAt: null };
+
+    /** A published test catalog as PHOTOGRAPHY_DATA_DIR. */
+    async function published(seed: number): Promise<{ root: string; revisionId: string }> {
+        const catalog = await createTestCatalog({ variantBytes: VARIANT_BYTES, seed });
+        cleanups.push(() => catalog.cleanup());
+        const restore = process.env.PHOTOGRAPHY_DATA_DIR;
+        process.env.PHOTOGRAPHY_DATA_DIR = catalog.root;
+        cleanups.push(async () => {
+            process.env.PHOTOGRAPHY_DATA_DIR = restore;
+        });
+        const outcome = await publish({ dataRoot: catalog.root, actor: 'test', confirmLaunch: true, logger: { log: () => undefined } });
+        if (outcome.outcome !== 'PUBLISHED') throw new Error(outcome.message);
+        return { root: catalog.root, revisionId: outcome.revisionId as string };
+    }
+
+    it('answers 503 with registry-missing before the migration, then 200 in legacy mode with no revision, never cached', async () => {
+        const before = await ready();
+        expect(before.status).toBe(503);
+        expect(before.headers.get('cache-control')).toBe('no-store');
+        expect(await before.json()).toEqual({ mode: 'legacy', state: 'unavailable', ...NO_REVISION, reason: 'registry-missing' });
+
+        await pass();
+        const after = await ready();
+        expect(after.status).toBe(200);
+        expect(after.headers.get('cache-control')).toBe('no-store');
+        expect(await after.json()).toEqual({ mode: 'legacy', state: 'ok', ...NO_REVISION });
+    });
+
+    it('names the active revision, then answers 200 as degraded once its pointer turns unreadable, naming no path', async () => {
+        const { root, revisionId } = await published(12);
+        const ok = await ready();
+        expect(ok.status).toBe(200);
+        expect(ok.headers.get('x-catalog-revision')).toBe(revisionId);
+        const body = await ok.json();
+        expect(body).toEqual({ mode: 'catalog', state: 'ok', revisionId, revisionNumber: 1, activatedAt: expect.any(String) });
+
+        fs.writeFileSync(`${root}/catalog/active.json`, 'not json');
+        const degraded = await ready();
+        expect(degraded.status).toBe(200);
+        const text = await degraded.text();
+        expect(JSON.parse(text)).toEqual({ ...body, state: 'degraded' });
+        expect(text).not.toContain(root);
+    });
+
+    it('answers 503 when its pointer is unreadable and no revision loaded before', async () => {
+        const { root } = await published(13);
+        fs.writeFileSync(`${root}/catalog/active.json`, 'not json');
+        const response = await ready();
+        expect(response.status).toBe(503);
+        expect(await response.json()).toEqual({ mode: 'catalog', state: 'unavailable', ...NO_REVISION, reason: 'active-unreadable' });
     });
 });
 
