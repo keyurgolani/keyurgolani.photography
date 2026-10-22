@@ -72,7 +72,7 @@ export type BuildOutcome =
 
 /** Where builds stage, beside `assets/` so the publishing rename stays on one device. */
 export function stagingRoot(root: string): string {
-    return path.join(root, 'staging');
+    return path.join(/*turbopackIgnore: true*/ root, 'staging');
 }
 
 /** The lock a build holds while `staging/<id>` exists. */

@@ -22,7 +22,7 @@ export interface WatcherHeartbeat {
 }
 
 export function watcherStatusFile(root: string): string {
-    return path.join(root, 'status', 'watcher.json');
+    return path.join(/*turbopackIgnore: true*/ root, 'status', 'watcher.json');
 }
 
 /** Replace `status/watcher.json` atomically, creating `status/` for its owner only. */

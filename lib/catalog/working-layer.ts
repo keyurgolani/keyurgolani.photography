@@ -12,21 +12,28 @@ import type { ActivePointer, AuthoredPhoto, AuthoredSeries, AuthoredSite, Record
  * go through working-layer-writer.ts, which nothing on the read path imports.
  */
 
+// The data root is found at run time, so the ignore comments keep Turbopack from tracing these folders into .next/standalone.
+
 export function authoredPaths(root: string) {
-    const dir = path.join(root, 'authored');
-    return { dir, site: path.join(dir, 'site.json'), seriesDir: path.join(dir, 'series'), photosDir: path.join(dir, 'photos') };
+    const dir = path.join(/*turbopackIgnore: true*/ root, 'authored');
+    return {
+        dir,
+        site: path.join(/*turbopackIgnore: true*/ dir, 'site.json'),
+        seriesDir: path.join(/*turbopackIgnore: true*/ dir, 'series'),
+        photosDir: path.join(/*turbopackIgnore: true*/ dir, 'photos'),
+    };
 }
 
 /** Where catalog state lives. Only the CLI writes here; slice B's repository owns those writes. */
 export function catalogPaths(root: string) {
-    const dir = path.join(root, 'catalog');
+    const dir = path.join(/*turbopackIgnore: true*/ root, 'catalog');
     return {
         dir,
-        active: path.join(dir, 'active.json'),
-        revisionsDir: path.join(dir, 'revisions'),
-        activationsDir: path.join(dir, 'activations'),
-        candidatesDir: path.join(dir, 'candidates'),
-        diagnosticsDir: path.join(dir, 'diagnostics'),
+        active: path.join(/*turbopackIgnore: true*/ dir, 'active.json'),
+        revisionsDir: path.join(/*turbopackIgnore: true*/ dir, 'revisions'),
+        activationsDir: path.join(/*turbopackIgnore: true*/ dir, 'activations'),
+        candidatesDir: path.join(/*turbopackIgnore: true*/ dir, 'candidates'),
+        diagnosticsDir: path.join(/*turbopackIgnore: true*/ dir, 'diagnostics'),
     };
 }
 
