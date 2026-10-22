@@ -13,6 +13,7 @@
     "start": "next start --hostname 127.0.0.1",
     "test": "vitest",
     "test:e2e": "playwright test",
+    "test:prod": "npm run build && RUN_PROD_TESTS=1 vitest run test/prod",
     "check:prerender": "node ci/check-prerender.mjs",
     "smoke:media": "bash ci/smoke-media.sh",
     "smoke:image": "bash ci/smoke-image.sh ci-smoke",
