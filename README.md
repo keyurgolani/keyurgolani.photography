@@ -124,7 +124,7 @@ The site listens on the host's 127.0.0.1 only, port 3000 unless `PHOTOGRAPHY_POR
 
 ```
 ├── app/                    # Next.js App Router pages
-│   ├── api/               # API routes: the photo list and health
+│   ├── api/               # API routes: the photo list, health, and readiness
 │   ├── gallery/           # Gallery page
 │   ├── about/             # About page
 │   └── page.tsx           # Home page
@@ -218,7 +218,7 @@ Neither is how long Home's chrome stays up after the last activity. It's `HOME_C
 ### Docker Configuration
 
 The production setup uses two containers, which both mount the photos folder and the data root, `./portfolio-data`, and never create either one:
-- **web** - Next.js application server. Its healthcheck calls `/api/health`, which answers 200 with the data root's state.
+- **web** - Next.js application server. Its healthcheck calls `/api/health`, which answers 200 with the data root's state. `/api/ready` says whether the photos can be served, and from which catalog revision, and answers 503 when they can't, such as before `photos:migrate --apply` has written the registry.
 - **image-watcher** - Background photo processor, run from the bundled `dist/scripts/imageWatcher.mjs`. Its healthcheck passes while the heartbeat it writes to the data root every 30 s is under 120 s old.
 
 | Variable | Description | Default |
