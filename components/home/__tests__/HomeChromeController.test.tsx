@@ -176,6 +176,13 @@ describe('HomeChromeController', () => {
       expect(state()).toBe('immersive');
     });
 
+    it('the fade runs on its own timer, so one jump past the idle and the fade ends immersive', () => {
+      renderHome();
+      move();
+      advance(IDLE + FADE);
+      expect(state()).toBe('immersive');
+    });
+
     it('the API object only changes on a transition', () => {
       renderHome();
       move();

@@ -120,9 +120,14 @@ async function openHome(page: Page, { photos = ['white', 'gray', 'black'], clock
     }
 }
 
-/** Two mouse moves onto the photograph, since Chromium gives a document's first move no movement. */
+/**
+ * Mouse moves onto the photograph, ending on the photo point. There's more
+ * than one, since Chromium gives a document's first move no movement, and the
+ * first goes elsewhere, so a reveal with the mouse already there moves too.
+ */
 async function revealByMouse(page: Page) {
     const { x, y } = await photoPoint(page);
+    await page.mouse.move(x - 40, y + 30);
     await page.mouse.move(x, y, { steps: 2 });
     await expect(main(page)).toHaveAttribute('data-interface-state', 'interactive');
 }
@@ -599,7 +604,8 @@ test.describe('reduced motion', () => {
         await openHome(page, { clock: true });
         if (isMobile) await revealByTap(page, { clock: true });
         else await revealByMouse(page);
-        expect(await chromeFadeMs(page)).toBeNull();
+        // The reduced-motion baseline leaves every transition at 0.01 ms.
+        expect(await chromeFadeMs(page)).toBeLessThanOrEqual(0.01);
         expect(await effectiveOpacity(chrome(page))).toBe(1);
 
         await runFor(page, IDLE);
@@ -713,7 +719,11 @@ test.describe('contrast and reflow', () => {
         await expect(main(page)).toHaveAttribute('data-chrome-holds', 'keyboard-focus');
 
         for (const name of ['Home', 'Work', 'About']) await expectContrastOverImage(navLink(page, name), { min: 4.5 });
+        // The helper reads every pixel in the box, and the monogram's 1 px circle sits at the box's edge, behind no
+        // glyph, so the circle is taken out for the text.
+        const circle = await page.addStyleTag({ content: '[class*="monogram"] { border-color: transparent !important; }' });
         await expectContrastOverImage(wordmark(page).getByText('KG', { exact: true }), { min: 4.5 });
+        await circle.evaluate((style) => style.parentNode?.removeChild(style));
         for (const text of [position(page), playbackLabel(page)]) await expectContrastOverImage(text, { min: 4.5 });
         for (const control of [previous(page), next(page), playback(page), themeToggle(page)]) {
             await expectContrastOverImage(control.locator('svg').first(), { min: 3 });
