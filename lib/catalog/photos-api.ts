@@ -125,11 +125,11 @@ export async function legacyList(registry: Registry, library: string): Promise<I
     const owners = setGroups([...candidates.keys()], library).map(([owner]) => candidates.get(owner) as Candidate);
     const listed = await Promise.all(owners.map(async ({ photo, revision }) => {
         const base = baseNameOf(photo.source.path);
-        const files = Object.entries(DERIVATIVE_FOLDERS).map(([folder, extension]) => path.join(library, folder, `${base}${extension}`));
+        const files = Object.entries(DERIVATIVE_FOLDERS).map(([folder, extension]) => path.join(/*turbopackIgnore: true*/ library, folder, `${base}${extension}`));
         if (!files.every(exists)) return null;
         let lqip: string;
         try {
-            lqip = await fs.promises.readFile(path.join(library, 'lqip', `${base}.txt`), 'utf8');
+            lqip = await fs.promises.readFile(path.join(/*turbopackIgnore: true*/ library, 'lqip', `${base}.txt`), 'utf8');
         } catch {
             return null;
         }

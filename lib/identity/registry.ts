@@ -17,16 +17,20 @@ import { emptyRegistry, REGISTRY_SCHEMA_VERSION, type Registry } from './types';
 
 export const STAT_CACHE_SCHEMA_VERSION = 1;
 
-/** Where identity state lives inside the data root. */
+/**
+ * Where identity state lives inside the data root. The root is found at run
+ * time, so the ignore comments keep Turbopack from tracing this folder into
+ * .next/standalone.
+ */
 export function identityPaths(root: string) {
-    const dir = path.join(root, 'identity');
+    const dir = path.join(/*turbopackIgnore: true*/ root, 'identity');
     return {
         dir,
         /** A version folder: `v<N>.json`, one per version (lib/storage/document.ts). */
-        registry: path.join(dir, 'registry'),
-        statCache: path.join(dir, 'stat-cache.json'),
-        decisions: path.join(dir, 'decisions'),
-        migration: path.join(dir, 'migration'),
+        registry: path.join(/*turbopackIgnore: true*/ dir, 'registry'),
+        statCache: path.join(/*turbopackIgnore: true*/ dir, 'stat-cache.json'),
+        decisions: path.join(/*turbopackIgnore: true*/ dir, 'decisions'),
+        migration: path.join(/*turbopackIgnore: true*/ dir, 'migration'),
     };
 }
 
