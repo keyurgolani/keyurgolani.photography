@@ -2,7 +2,7 @@ import path from 'node:path';
 import { ASSET_REVISION_RE, PHOTO_ID_RE, PROFILE_ID_RE } from '../identity/ids';
 import type { AssetManifest } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
-import { mediaAccess, mediaAccessMode, type MediaAccessPolicy } from './access';
+import { denyAll, type MediaAccessPolicy } from './access';
 import { containedAssetDir, openRegularFile, readAssetManifest } from './manifest';
 import { parseVariantFile } from './path';
 import type { AssetRef } from './url';
@@ -24,7 +24,7 @@ import type { AssetRef } from './url';
 type Logger = Pick<Console, 'warn'>;
 
 export interface MediaHandlerOptions {
-    /** Who may fetch a set. Defaults to mediaAccess(), with a warning, once, when it serves everything. */
+    /** Who may fetch a set. Defaults to denyAll. The web route passes activeRevisionAccess(). */
     access?: MediaAccessPolicy;
     logger?: Logger;
     /** How many found manifests to keep. */
@@ -51,18 +51,7 @@ function matches(header: string | null, etag: string): boolean {
 }
 
 export function createMediaHandler(options: MediaHandlerOptions = {}): (request: Request, context: MediaRouteContext) => Promise<Response> {
-    const { logger = console, cacheSize = 2_000 } = options;
-    let warned = false;
-    const access: MediaAccessPolicy = options.access ?? ((ref, request) => {
-        const { mode, unknown } = mediaAccessMode();
-        if (!warned && (mode === 'all' || unknown !== undefined)) {
-            warned = true;
-            logger.warn(mode === 'all'
-                ? '[media] PHOTOGRAPHY_MEDIA_ACCESS=all: every derivative set is public until the catalog decides who sees what.'
-                : `[media] PHOTOGRAPHY_MEDIA_ACCESS=${unknown} isn't deny or all, so every set is denied.`);
-        }
-        return mediaAccess(ref, request);
-    });
+    const { logger = console, cacheSize = 2_000, access = denyAll } = options;
     const manifests = new Map<string, AssetManifest>();
 
     return async (request, { params }) => {
