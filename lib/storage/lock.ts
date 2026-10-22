@@ -22,7 +22,11 @@ export interface LockTakeover {
 }
 
 export interface LockContext {
-    /** Aborted when a renewal finds the lock gone or held by another owner. */
+    /**
+     * Aborted when a renewal finds the lock gone or held by another owner, and
+     * once `fn` returns or throws, before the lock is released, so work that
+     * keeps the signal past `fn` sees the lock as gone.
+     */
     signal: AbortSignal;
     /** Set when this holder replaced an expired lease. */
     takeover: LockTakeover | null;
@@ -369,6 +373,8 @@ export async function withLock<T>(name: string, options: LockOptions, fn: (conte
     } finally {
         clearInterval(timer);
         await renewing;
+        // Before the release, so nothing still holding the signal acts as the holder once another can take the lock
+        if (!controller.signal.aborted) controller.abort(new Error(`The ${name} lock was released when its holder finished.`));
         try {
             await release();
         } finally {
