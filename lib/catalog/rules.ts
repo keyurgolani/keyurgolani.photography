@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { foldName } from '../foldName';
 import { ASSET_REVISION_RE, PHOTO_ID_RE, PROFILE_ID_RE } from '../identity/ids';
 import type { TechnicalKey } from '../identity/metadata';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../identity/variants';
@@ -121,15 +122,18 @@ function slugsOf(series: SeriesLike): [field: string, slug: string][] {
 // Source file names.
 
 const NON_ASCII_RE = /[\u0080-\uffff]/;
-/** NFC and lowercase. ASCII text is already NFC, so it skips the normalizer. */
-const lowered = (text: string) => (NON_ASCII_RE.test(text) ? text.normalize('NFC') : text).toLowerCase();
+/**
+ * Folded as foldName() folds a name, the way a case-insensitive disk compares
+ * names, so Stra\u00dfe and STRASSE match. ASCII text only needs lowering.
+ */
+const lowered = (text: string) => (NON_ASCII_RE.test(text) ? foldName(text) : text.toLowerCase());
 
 interface SourceNames {
     names: string[];
     stems: string[];
 }
 
-/** Each published photo's source base names, past and present, from the registry, lowercased. */
+/** Each published photo's source base names, past and present, from the registry, folded. */
 function sourceNames(ctx: RuleContext): Map<string, SourceNames> {
     return shared(ctx, 'sourceNames', () => {
         const byPhoto = new Map<string, SourceNames>();
@@ -346,10 +350,13 @@ function publishedValues(ctx: RuleContext): PublishedValues {
 
 /** Every PATH_LIKE_RE match holds one of these, so most strings skip the full pattern. */
 const MAYBE_PATH_RE = /[\\/:]|^\.\.$/;
-/** A common absolute path, a Windows drive, a file: URL, or a `..` segment. */
-const PATH_LIKE_RE =/\/(?:users|home|data)\/|(?<![\p{L}\p{N}])[a-z]:\\|(?<![\p{L}\p{N}])file:|(?:^|[\\/])\.\.(?:[\\/]|$)/iu;
+/** A common absolute path, a home-relative one, a Windows drive, a file: URL, or a `..` segment. */
+const PATH_LIKE_RE = /\/(?:users|home|data|volumes|mnt)\/|(?<![\p{L}\p{N}])~\/|(?<![\p{L}\p{N}])[a-z]:[\\/]|(?<![\p{L}\p{N}])file:|(?:^|[\\/])\.\.(?:[\\/]|$)/iu;
 
-/** Whether `text` holds `root` as a whole path: not followed by more of a name, so `/data` doesn't match `/database`. */
+/** A path folded as a case-insensitive disk compares it, with each run of slashes or backslashes as one `/`. */
+const foldedPath = (text: string) => lowered(text).replace(/[\\/]+/g, '/');
+
+/** Whether `text` holds `root` as a whole path: not followed by more of a name, so `/data` doesn't match `/database`. Both come folded. */
 function holdsRoot(text: string, root: string): boolean {
     for (let at = text.indexOf(root); at !== -1; at = text.indexOf(root, at + 1)) {
         if (!/[\p{L}\p{N}_-]/u.test(text.charAt(at + root.length))) return true;
@@ -672,10 +679,10 @@ const SLICE_A_RULES: RuleDefinition[] = [
         gate: 'render',
         check: (ctx) => {
             const roots = [ctx.roots.dataRoot, ctx.roots.libraryRoot]
-                .map((root) => root?.replace(/[\\/]+$/, ''))
-                .filter((root): root is string => Boolean(root));
+                .map((root) => (root ? foldedPath(root).replace(/\/$/, '') : ''))
+                .filter(Boolean);
             return publishedValues(ctx).strings
-                .filter(({ value }) => (MAYBE_PATH_RE.test(value) && PATH_LIKE_RE.test(value)) || roots.some((root) => holdsRoot(value, root)))
+                .filter(({ value }) => (MAYBE_PATH_RE.test(value) && PATH_LIKE_RE.test(value)) || roots.some((root) => holdsRoot(foldedPath(value), root)))
                 .map(({ record, field }) => ({ record, field, message: 'The field holds what looks like a file path.', hint: 'Published text never names a path.' }));
         },
     },

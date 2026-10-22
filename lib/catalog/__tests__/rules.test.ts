@@ -256,9 +256,24 @@ describe('the edges of the checks', () => {
         expect(runRules(ctx)).toEqual([expect.objectContaining({ code: 'privacy.source-name', record: { kind: 'photo', id: photoAt(ctx, 3).id }, field: 'title' })]);
     });
 
+    it('privacy.source-name: matches names a case-insensitive disk takes for one, such as Stra\u00dfe and STRASSE', () => {
+        const ctx = context();
+        const record = ctx.registry?.photos[photoAt(ctx, 1).id];
+        if (record) record.source.path = 'series/Stra\u00dfe-0002.jpg';
+        photoAt(ctx, 3).title = 'Fixture title naming STRASSE-0002.JPG';
+        expect(runRules(ctx)).toEqual([expect.objectContaining({ code: 'privacy.source-name', record: { kind: 'photo', id: photoAt(ctx, 3).id }, field: 'title' })]);
+    });
+
     it.each([
         ['a longer name that starts with the library root', 'See /srv/photo-library-archive', []],
         ['the library root', 'From /srv/photo-library.', ['privacy.path']],
+        ['the library root in capitals', 'From /SRV/PHOTO-LIBRARY/x.jpg', ['privacy.path']],
+        ['the library root with a doubled slash', 'From /srv//photo-library', ['privacy.path']],
+        ['a macOS volume', 'Copied from /Volumes/Card/DCIM', ['privacy.path']],
+        ['a mount point', 'Synced from /mnt/photos', ['privacy.path']],
+        ['a home-relative path', 'Kept in ~/Pictures', ['privacy.path']],
+        ['a Windows drive with a forward slash', 'Exported to C:/Exports', ['privacy.path']],
+        ['a slash in a sentence', 'Ink/acrylic on paper', []],
         ['a word ending in file', 'Profile: a fixture portrait', []],
         ['a file URL', 'file:///tmp/fixture', ['privacy.path']],
         ['a parent segment', '../fixture', ['privacy.path']],
