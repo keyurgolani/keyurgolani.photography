@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { ASSET_REVISION_RE, PHOTO_ID_RE, PROFILE_ID_RE } from '../identity/ids';
+import { ASSET_REVISION_RE, canonicalJson, PHOTO_ID_RE, PROFILE_ID_RE } from '../identity/ids';
 import { TECHNICAL_KEYS } from '../identity/metadata';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../identity/variants';
 
@@ -250,18 +250,25 @@ function versioned<T>(schema: z.ZodType<T>, upgrades: Record<number, Upgrade> = 
         if (!isObject(value)) return { ok: false, error: { reason: 'invalid', issues: [{ path: '', message: 'expected a JSON object' }] } };
         let current = value;
         while (current.schemaVersion !== CATALOG_SCHEMA_VERSION) {
-            const upgrade = typeof current.schemaVersion === 'number' ? upgrades[current.schemaVersion] : undefined;
-            if (!upgrade) {
+            const version = current.schemaVersion;
+            const upgrade = typeof version === 'number' ? upgrades[version] : undefined;
+            if (upgrade) {
+                current = upgrade(current);
+                continue;
+            }
+            // Only a newer build writes a higher version. Anything else, such as a missing, 0, or "1", is just wrong.
+            if (typeof version === 'number' && Number.isInteger(version) && version > CATALOG_SCHEMA_VERSION) {
                 return {
                     ok: false,
                     error: {
                         reason: 'unknown-schema-version',
-                        schemaVersion: value.schemaVersion,
-                        issues: [{ path: 'schemaVersion', message: `schemaVersion ${JSON.stringify(value.schemaVersion)} is not one this build reads` }],
+                        schemaVersion: version,
+                        issues: [{ path: 'schemaVersion', message: `schemaVersion ${version} is newer than this build reads` }],
                     },
                 };
             }
-            current = upgrade(current);
+            const message = version === undefined ? 'schemaVersion is missing' : `schemaVersion must be ${CATALOG_SCHEMA_VERSION}, not ${JSON.stringify(version)}`;
+            return { ok: false, error: { reason: 'invalid', issues: [{ path: 'schemaVersion', message }] } };
         }
         const parsed = schema.safeParse(current);
         if (parsed.success) return { ok: true, value: parsed.data };
@@ -287,22 +294,6 @@ export type AuthoredKind = keyof typeof authoredParsers;
 
 export function parseAuthoredRecord<K extends AuthoredKind>(kind: K, value: unknown): ReturnType<(typeof authoredParsers)[K]> {
     return authoredParsers[kind](value) as ReturnType<(typeof authoredParsers)[K]>;
-}
-
-function canonicalize(value: unknown): unknown {
-    if (typeof value === 'string') return value.normalize('NFC');
-    if (Array.isArray(value)) return value.map(canonicalize);
-    if (!isObject(value)) return value;
-    const entries = Object.entries(value)
-        .filter(([, inner]) => inner !== undefined)
-        .map(([key, inner]): [string, unknown] => [key.normalize('NFC'), canonicalize(inner)])
-        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    return Object.fromEntries(entries);
-}
-
-/** JSON with sorted keys, array order kept, absent optionals omitted, NFC strings, and no whitespace. */
-export function canonicalJson(value: unknown): string {
-    return JSON.stringify(canonicalize(value));
 }
 
 /** `rev_` plus the SHA-256 of the canonical JSON of the schema version and content, so the same content always gets the same ID. */

@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { foldName } from '../foldName';
-import { ASSET_REVISION_RE, PHOTO_ID_RE, PROFILE_ID_RE } from '../identity/ids';
+import { ASSET_REVISION_RE, canonicalJson, PHOTO_ID_RE, PROFILE_ID_RE } from '../identity/ids';
 import type { TechnicalKey } from '../identity/metadata';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../identity/variants';
 import { cameraSettingsCaption } from './legacy-photos';
-import { canonicalJson, MAX_SLUG_LENGTH, RESERVED_SLUGS, SERIES_ID_RE, SLUG_RE } from './schema';
+import { MAX_SLUG_LENGTH, RESERVED_SLUGS, SERIES_ID_RE, SLUG_RE } from './schema';
 import type { Gate, Issue, IssueRecord, Rule, RuleContext, RuleFinding } from './types';
 
 /**

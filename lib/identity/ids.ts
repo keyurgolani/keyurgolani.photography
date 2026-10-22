@@ -62,14 +62,24 @@ export function pixelDigestOf({ data, width, height, channels }: RawPixels, hash
     return digest(hasher, [header, data]);
 }
 
-/** JSON with object keys sorted at every level, so equal values always serialize the same way. */
+function canonicalize(value: unknown): unknown {
+    if (typeof value === 'string') return value.normalize('NFC');
+    if (Array.isArray(value)) return value.map(canonicalize);
+    if (typeof value !== 'object' || value === null) return value;
+    const entries = Object.entries(value)
+        .filter(([, inner]) => inner !== undefined)
+        .map(([key, inner]): [string, unknown] => [key.normalize('NFC'), canonicalize(inner)])
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return Object.fromEntries(entries);
+}
+
+/**
+ * JSON with object keys sorted at every level, array order kept, absent
+ * optionals left out, strings and keys in NFC, and no whitespace, so equal
+ * values always serialize the same way.
+ */
 export function canonicalJson(value: unknown): string {
-    return JSON.stringify(value, (_key, inner: unknown) => {
-        if (typeof inner !== 'object' || inner === null || Array.isArray(inner)) return inner;
-        const sorted: Record<string, unknown> = {};
-        for (const key of Object.keys(inner).sort()) sorted[key] = (inner as Record<string, unknown>)[key];
-        return sorted;
-    });
+    return JSON.stringify(canonicalize(value));
 }
 
 export function profileIdOf(recipe: unknown, versions: { sharp: string; vips: string }): string {

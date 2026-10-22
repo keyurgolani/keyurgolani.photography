@@ -116,7 +116,8 @@ async function loadFolder<K extends 'series' | 'photo'>(dir: string, kind: K, pr
         if ('problem' in loaded) problems.push(loaded.problem);
         else records.push(loaded.record);
     }
-    return records;
+    // By ID, not file name: `ser_ab-c.json` sorts before `ser_ab.json`, but `ser_ab` comes first.
+    return records.sort((a, b) => compare(a.id, b.id));
 }
 
 /** Read every authored record. A missing `authored/` reads as an empty working layer. */

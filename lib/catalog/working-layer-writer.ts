@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { dataRoot, dataRootStatus } from '../storage/config';
-import { StaleVersionError, writeVersionedDocument, type VersionedWriteOptions } from '../storage/document';
+import { readJsonFile, StaleVersionError, versionOf, writeVersionedDocument, type VersionedWriteOptions } from '../storage/document';
 import { hasErrorCode, PRIVATE_DIR_MODE, realpathLoose } from '../storage/fsx';
 import { LockTimeoutError, withLock, type LockContext, type LockRecord } from '../storage/lock';
 import { CATALOG_SCHEMA_VERSION, parseAuthoredRecord, type AuthoredKind, type SchemaIssue } from './schema';
@@ -80,6 +80,11 @@ async function ensureFolder(dir: string): Promise<void> {
     }
 }
 
+/** The version a record's file holds now, 0 when there is none. */
+async function storedVersion(file: string): Promise<number> {
+    return versionOf(file, await readJsonFile(file));
+}
+
 async function commit(
     root: string,
     record: AuthoredRecordInput,
@@ -104,7 +109,10 @@ async function commit(
         }
         const parsed = parseAuthoredRecord(ref.kind, value);
         if (!parsed.ok) {
-            throw new AuthoredWriteError('INVALID_RECORD', ref, `The stored ${ref.kind} record ${ref.id} can't be read. Fix it by hand first.`, { issues: parsed.error.issues });
+            const message = parsed.error.reason === 'unknown-schema-version'
+                ? `The stored ${ref.kind} record ${ref.id} comes from a newer build, which this one can't read.`
+                : `The stored ${ref.kind} record ${ref.id} can't be read. Fix it by hand first.`;
+            throw new AuthoredWriteError('INVALID_RECORD', ref, message, { issues: parsed.error.issues });
         }
         existing = parsed.value;
     }
@@ -129,10 +137,12 @@ async function commit(
         return await writeVersionedDocument(file, parsed.value, expectedVersion, { hooks });
     } catch (error) {
         if (!(error instanceof StaleVersionError)) throw error;
-        throw new AuthoredWriteError('VERSION_CONFLICT', ref, `The ${ref.kind} record ${ref.id} is at version ${error.found}, not ${expectedVersion}.`, {
-            expectedVersion,
-            foundVersion: error.found,
-        });
+        // A claim that a write which didn't finish holds keeps the next version, while the file still reads this one.
+        const stored = await storedVersion(file).catch(() => error.found);
+        const message = stored === expectedVersion
+            ? `The ${ref.kind} record ${ref.id} is at version ${stored}, but a write that didn't finish holds version ${stored + 1}.`
+            : `The ${ref.kind} record ${ref.id} is at version ${stored}, not ${expectedVersion}.`;
+        throw new AuthoredWriteError('VERSION_CONFLICT', ref, message, { expectedVersion, foundVersion: stored });
     }
 }
 

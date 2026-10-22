@@ -1,9 +1,9 @@
 // @vitest-environment node
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
+import { canonicalJson } from '../../identity/ids';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../../identity/variants';
 import {
-    canonicalJson,
     parseActivation,
     parseActivePointer,
     parseAuthoredRecord,
@@ -103,9 +103,14 @@ describe('revision files', () => {
         expect(parsed.error.issues.map((issue) => issue.path)).toContain(field);
     });
 
-    it('reject an unknown schemaVersion as such, and a non-object as invalid', () => {
+    it('reject a newer integer schemaVersion as unknown, and any other one, or a non-object, as invalid', () => {
         expect(parseRevisionFile({ ...revisionFile(), schemaVersion: 2 })).toMatchObject({ ok: false, error: { reason: 'unknown-schema-version', schemaVersion: 2 } });
-        expect(parseRevisionFile({ ...revisionFile(), schemaVersion: '1' })).toMatchObject({ ok: false, error: { reason: 'unknown-schema-version' } });
+        const unversioned: Record<string, unknown> = { ...revisionFile() };
+        delete unversioned.schemaVersion;
+        const others: Record<string, unknown>[] = [{ ...revisionFile(), schemaVersion: '1' }, { ...revisionFile(), schemaVersion: 0 }, { ...revisionFile(), schemaVersion: 1.5 }, unversioned];
+        for (const value of others) {
+            expect(parseRevisionFile(value), String(value.schemaVersion)).toMatchObject({ ok: false, error: { reason: 'invalid', issues: [{ path: 'schemaVersion' }] } });
+        }
         expect(parseRevisionFile([])).toMatchObject({ ok: false, error: { reason: 'invalid' } });
     });
 

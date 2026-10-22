@@ -18,7 +18,8 @@ const LATER = `rev_${'2'.repeat(64)}`;
 const roots: TempDataRoot[] = [];
 
 afterEach(async () => {
-    for (const root of roots.splice(0)) await root.cleanup();
+    // Newest first, so each cleanup puts back the PHOTOGRAPHY_DATA_DIR from before its own root
+    for (const root of roots.splice(0).reverse()) await root.cleanup();
 });
 
 function dataRoot(state: 'ready' | 'uninitialized' = 'ready'): TempDataRoot {
@@ -207,6 +208,36 @@ describe('writeAuthoredRecord', () => {
         expect(await readAuthoredRecord(data.root, 'photo', PHOTO_A)).toMatchObject({ version: 2, title: 'Fresh' });
         // No version claim is left beside the record
         expect(fs.readdirSync(authoredPaths(data.root).photosDir)).toEqual([`${PHOTO_A}.json`]);
+    });
+
+    it("says a write that didn't finish holds the next version, instead of a version the file isn't at", async () => {
+        const data = dataRoot();
+        const first = await writeAuthoredRecord(photo(PHOTO_A), { expectedVersion: 0, root: data.root });
+        const file = path.join(authoredPaths(data.root).photosDir, `${PHOTO_A}.json`);
+        // What a writer whose process died between its claim and its rename leaves, while that claim is fresh
+        writeJson(`${file}.claim-2`, { ...JSON.parse(fs.readFileSync(file, 'utf8')), version: 2, title: 'Unfinished' });
+
+        const error = await rejection(writeAuthoredRecord({ ...first, title: 'Retry' }, { expectedVersion: 1, root: data.root }));
+        expect(error).toMatchObject({ code: 'VERSION_CONFLICT', expectedVersion: 1, foundVersion: 1 });
+        expect(error.message).toBe(`The photo record ${PHOTO_A} is at version 1, but a write that didn't finish holds version 2.`);
+    });
+
+    it('tells a stored record from a newer build apart from one to fix by hand', async () => {
+        const data = dataRoot();
+        const file = path.join(authoredPaths(data.root).photosDir, `${PHOTO_A}.json`);
+        writeJson(file, { schemaVersion: 2, version: 1, baseRevisionId: null, ...photo(PHOTO_A) });
+        const newer = await rejection(writeAuthoredRecord(photo(PHOTO_A), { expectedVersion: 1, root: data.root }));
+        expect(newer).toMatchObject({ code: 'INVALID_RECORD', message: `The stored photo record ${PHOTO_A} comes from a newer build, which this one can't read.` });
+
+        writeJson(file, { schemaVersion: 1, version: 1, baseRevisionId: null, ...photo(PHOTO_A), title: 7 });
+        const broken = await rejection(writeAuthoredRecord(photo(PHOTO_A), { expectedVersion: 1, root: data.root }));
+        expect(broken).toMatchObject({ code: 'INVALID_RECORD', message: `The stored photo record ${PHOTO_A} can't be read. Fix it by hand first.` });
+    });
+
+    it('sorts records by ID, not by file name', async () => {
+        const data = dataRoot();
+        for (const id of ['ser_ab-c', 'ser_ab']) await writeAuthoredRecord(series(id), { expectedVersion: 0, root: data.root });
+        expect((await readWorkingLayer(data.root)).series.map((record) => record.id)).toEqual(['ser_ab', 'ser_ab-c']);
     });
 
     it('refuses a hold that is not this data root\'s authored lock, or that was lost', async () => {
