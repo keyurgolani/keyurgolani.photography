@@ -722,6 +722,12 @@ export interface OrphanCleanupPlan {
     youngTempFiles: string[];
     /** Folders cleanup didn't enter because they are symlinks, not folders, or can't be listed */
     skippedFolders: string[];
+    /**
+     * With `only`, the skipped folders it couldn't look that photo's files up
+     * in by name, so some may be left there. In a folder it can't list but can
+     * search, its derivatives are looked up by their exact names instead.
+     */
+    uncheckedFolders: string[];
     /** Sources lstat can see but stat can't read. Their sets are kept. */
     unreadableSources: UnreadableSource[];
     /** With `only` and no file under that exact name, the names that differ from it only in case or Unicode form */
@@ -812,12 +818,39 @@ function sourceSet(root: string, sourceFiles: string[]): SourceSet {
     };
 }
 
-/** The folders cleanup reads, each with the folders that must be real directories before it enters. */
-function scannedFolders(paths: LibraryPaths): { dir: string; guards: string[] }[] {
+/**
+ * The folders cleanup reads, each with the folders that must be real
+ * directories before it enters, and the extension of a derivative's exact
+ * name there. The /api/image cache has none, since its names carry a width
+ * and a quality.
+ */
+function scannedFolders(paths: LibraryPaths): { dir: string; guards: string[]; ext: string | null }[] {
     return [
-        ...DERIVATIVE_DIRS.map((key) => ({ dir: paths[key], guards: [paths[key]] })),
-        { dir: paths.dynamicCache, guards: [path.dirname(paths.dynamicCache), paths.dynamicCache] },
+        ...DERIVATIVE_DIRS.map((key) => ({ dir: paths[key], guards: [paths[key]], ext: DERIVATIVE_FOLDERS[FOLDER_OF[key]] as string })),
+        { dir: paths.dynamicCache, guards: [path.dirname(paths.dynamicCache), paths.dynamicCache], ext: null },
     ];
+}
+
+/**
+ * With `only`, look up the photo's derivatives by their exact names in a
+ * folder cleanup can't list, since a takedown mustn't leave one there. Looks
+ * up `requested` as given and without a source extension, the two names
+ * `only` can resolve to. Returns the files found, or null when the folder
+ * can't be searched either.
+ */
+function lookUpByName(dir: string, ext: string | null, requested: string): string[] | null {
+    if (ext === null) return null;
+    const found: string[] = [];
+    for (const base of new Set([requested, isSourceFile(requested) ? baseNameOf(requested) : requested])) {
+        const file = path.join(dir, `${base}${ext}`);
+        try {
+            fs.lstatSync(file);
+            found.push(file);
+        } catch (error) {
+            if (!hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return null;
+        }
+    }
+    return found;
 }
     
 /** lstat, so a symlink never counts as a folder and cleanup never follows one out of the library. */
@@ -960,17 +993,26 @@ export function planOrphanCleanup(
 
     const sources = sourceSet(paths.root, sourceFiles);
     const skippedFolders: string[] = [];
+    const uncheckedFolders: string[] = [];
     const scanned: string[] = [];
-    for (const { dir, guards } of scannedFolders(paths)) {
+    for (const { dir, guards, ext } of scannedFolders(paths)) {
         const guard = guardState(guards);
-        if (guard.state === 'unsafe') skippedFolders.push(relativeTo(paths.root, guard.at));
+        if (guard.state === 'unsafe') {
+            skippedFolders.push(relativeTo(paths.root, guard.at));
+            // Looking inside would follow it, maybe out of the library
+            if (requested !== null) uncheckedFolders.push(relativeTo(paths.root, guard.at));
+        }
         if (guard.state !== 'ok') continue;
         let names: string[];
         try {
             names = listFiles(dir);
         } catch {
-            // Its files are kept, the same as a folder that is a symlink.
+            // Its files are kept, the same as a folder that is a symlink, except a takedown's, looked up by name.
             skippedFolders.push(relativeTo(paths.root, dir));
+            if (requested === null) continue;
+            const found = lookUpByName(dir, ext, requested);
+            if (found === null) uncheckedFolders.push(relativeTo(paths.root, dir));
+            else scanned.push(...found);
             continue;
         }
         scanned.push(...names.map((name) => path.join(dir, name)));
@@ -997,6 +1039,7 @@ export function planOrphanCleanup(
         entries,
         youngTempFiles,
         skippedFolders,
+        uncheckedFolders,
         unreadableSources: unreadable,
         onlyVariants: only === null ? [] : caseVariants(only, scanned, paths),
         otherOrphans: only === null ? [] : orphanedSets(only, scanned, paths, sources),
