@@ -191,7 +191,7 @@ export default function HomeChromeController({
     const root = rootRef.current;
     if (!root) return;
     let gesturePointer: number | null = null;
-    let clickGuard: { pointerId: number; expiry: ReturnType<typeof setTimeout> | null } | null = null;
+    let clickGuard: { expiry: ReturnType<typeof setTimeout> | null } | null = null;
     let keyGuard: string | null = null;
     let lastPoint: { x: number; y: number } | null = null;
     const frames = new Set<number>();
@@ -232,7 +232,7 @@ export default function HomeChromeController({
         // The reveal gesture. Its click can't reach a control, now visible, under it.
         gesturePointer = event.pointerId;
         root.setAttribute('data-reveal-gesture', '');
-        clickGuard = { pointerId: event.pointerId, expiry: null };
+        clickGuard = { expiry: null };
         activity();
         return;
       }
@@ -262,15 +262,14 @@ export default function HomeChromeController({
     };
 
     const onClick = (event: MouseEvent) => {
-      // The click that ends the reveal gesture never activates anything.
+      // The click that ends the reveal gesture never activates anything. The guard doesn't match pointerId,
+      // since WebKit gives a tap's click the mouse's, and a click of another primary pointer comes after
+      // that pointer's own press, which disarms the guard.
       if (clickGuard && event.detail > 0) {
-        const pointerId = (event as PointerEvent).pointerId;
-        if (pointerId === undefined || pointerId === clickGuard.pointerId || pointerId < 0) {
-          event.preventDefault();
-          event.stopPropagation();
-          disarmClickGuard();
-          return;
-        }
+        event.preventDefault();
+        event.stopPropagation();
+        disarmClickGuard();
+        return;
       }
       // Enter or Space that revealed the chrome doesn't activate the control focus was left on.
       if (keyGuard !== null && event.detail === 0) {

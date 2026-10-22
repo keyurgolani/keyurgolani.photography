@@ -402,28 +402,45 @@ test.describe('the keyboard', () => {
     });
 });
 
+/** Real clicks that reach the document, which a consumed one never does. */
+async function countDeliveredClicks(page: Page) {
+    await page.addInitScript(() => {
+        const counter = { clicks: 0 };
+        (window as unknown as { __clicks: typeof counter }).__clicks = counter;
+        document.addEventListener('click', (event) => {
+            if (event.detail > 0) counter.clicks += 1;
+        });
+    });
+    return () => page.evaluate(() => (window as unknown as { __clicks: { clicks: number } }).__clicks.clicks);
+}
+
 test.describe('touch', () => {
     test.beforeEach(() => runsOn(test.info(), 'mobile', 'mobile-webkit'));
 
     test('the first tap on idle Home reveals the controls without navigating, even on a receded link, and the next tap follows it', async ({ page }) => {
+        const clicks = await countDeliveredClicks(page);
         await openHome(page);
         await tapAt(page, navLink(page, 'Work'));
         await expect(main(page)).toHaveAttribute('data-interface-state', 'interactive');
         await expect(main(page)).not.toHaveAttribute('data-reveal-gesture');
         await expect(chrome(page)).toHaveCSS('opacity', '1');
         await expect(page).toHaveURL('/');
+        // The tap's own click, which WebKit credits to the mouse, never reaches the page.
+        expect(await clicks()).toBe(0);
 
         await tapAt(page, navLink(page, 'Work'));
         await expect(page).toHaveURL('/gallery');
     });
 
     test('the first tap on a receded Next only reveals, and the next tap moves the photograph', async ({ page }) => {
+        const clicks = await countDeliveredClicks(page);
         await openHome(page, { clock: true });
         const before = await position(page).textContent();
         await tapAt(page, next(page));
         await expect(main(page)).toHaveAttribute('data-interface-state', 'interactive');
         await runFor(page, FRAME);
         await expect(position(page)).toHaveText(before ?? '');
+        expect(await clicks()).toBe(0);
 
         await tapAt(page, next(page));
         await expect(position(page)).toHaveText(positionAfter(before, 1));

@@ -391,11 +391,21 @@ describe('HomeChromeController', () => {
       expect(onNext).toHaveBeenCalledTimes(1);
     });
 
-    it('the guard only takes the click of the pointer that revealed', () => {
+    it("takes the reveal tap's click whatever pointer it names, as WebKit names the mouse's", () => {
+      const { photo, next, onNext } = renderHome();
+      pointer(photo, 'pointerdown', { pointerId: 0 });
+      pointer(photo, 'pointerup', { pointerId: 0 });
+      expect(click(next, { detail: 1, pointerId: 1, pointerType: 'mouse' }).defaultPrevented).toBe(true);
+      expect(onNext).not.toHaveBeenCalled();
+    });
+
+    it("a second pointer's press disarms the guard, so its own click goes through", () => {
       const { photo, next, onNext } = renderHome();
       pointer(photo, 'pointerdown');
       pointer(photo, 'pointerup');
-      click(next, { detail: 1, pointerId: 9 });
+      pointer(next, 'pointerdown', { pointerType: 'mouse', pointerId: 1 });
+      pointer(next, 'pointerup', { pointerType: 'mouse', pointerId: 1 });
+      click(next, { detail: 1, pointerId: 1 });
       expect(onNext).toHaveBeenCalledTimes(1);
     });
 

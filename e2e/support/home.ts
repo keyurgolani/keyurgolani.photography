@@ -57,8 +57,9 @@ export async function expectHomeImmersive(target: HomeTarget): Promise<void> {
     const main = target.locator('main[data-interface-state]');
     await expect(main).toHaveAttribute('data-home-intro', 'settled', { timeout: 20_000 });
     await expect(main).toHaveAttribute('data-home-loading', 'false');
-    await expect(main).not.toHaveAttribute('data-chrome-holds', /\bno-photo\b/);
-    await expect(main).toHaveAttribute('data-interface-state', 'immersive');
+    // A photograph that arrives after the 6 s bound, as on a busy machine, releases the hold, and the chrome idles out.
+    await expect(main).not.toHaveAttribute('data-chrome-holds', /\bno-photo\b/, { timeout: 20_000 });
+    await expect(main).toHaveAttribute('data-interface-state', 'immersive', { timeout: 10_000 });
     for (const layer of ['[data-home-chrome]', '[data-home-vignette]']) {
         await expect(target.locator(layer)).toHaveCSS('opacity', '0');
     }
