@@ -122,7 +122,7 @@ sudo chown -R 1001:1001 public/assets/photos
 
 `./.next-images-cache` is where `web` keeps the `/_next/image` copies it makes, so it has to belong to uid 1001 too. `docker-compose.prod.yml` never creates it, like the other two folders: a short-syntax bind of a missing folder has the Docker daemon create it, owned by root when the daemon runs as root, and `web` then can't write it. A host that ran the older compose file may already have one that Docker created that way, and the `chown` fixes it.
 
-Until the migration below initializes the data root, the watcher writes only its heartbeat there, logs once that the identity step is off, and keeps writing the legacy derivatives the site serves today. `GET /api/health` reports `uninitialized`.
+Until the migration below initializes the data root, the watcher writes only its heartbeat there, logs once that the identity step is off, and keeps writing the legacy derivatives. `GET /api/health` reports `uninitialized`. The site lists photos from the registry the migration writes, so until it runs, `/api/photos` and `GET /api/ready` answer 503 with `registry-missing`, and Home and Gallery show no photos.
 
 ### Who owns the photos
 
@@ -218,6 +218,8 @@ The watcher's next pass keeps the ID of every photo that archive knew, follows a
 
 `GET /api/health` answers 200 whenever `web` is up, with the data root's state: `ready`, `uninitialized`, `unavailable`, or `unset`. Both `web` healthchecks call it.
 
+`GET /api/ready` says whether `web` can list the photos, and from where: `"mode":"legacy"` lists the registry's photos before the first catalog activation, and `"mode":"catalog"` the active revision's after it, with `revisionId`, `revisionNumber`, and `activatedAt`. It answers 503 with a `reason` when it can't list them, such as `registry-missing` before the migration.
+
 The watcher's healthcheck runs `node dist/scripts/watcherHealth.mjs`, which passes while `status/watcher.json` is at most 120 s old, isn't stamped more than 120 s ahead of the container's clock, and shows no identity pass running longer than 30 minutes. The watcher rewrites it every 30 s, so a watcher whose loop stopped, a data root uid 1001 can't write, or an identity pass that never ends turns it unhealthy. It doesn't catch a legacy derivative job that never finishes: a pass starts only once the legacy step is idle, and the legacy backlog on a first start can rightly take hours, so the healthcheck doesn't time it. The 30-minute limit can also flag a pass that's working as it should. A pass reads, hashes, and decodes every file whose size, inode, or times changed, so after a restore, after `identity/stat-cache.json` is deleted, or after a `chown -R` of the library, the first pass reads every photo again, and on a large library that can take longer than 30 minutes. The watcher shows unhealthy until that pass ends, so check its logs before acting on it. If `/media` sets stop appearing while the watcher reads healthy, check its logs for the last photo it processed. `restart: always` doesn't act on unhealthy, so this only changes what `ps` and a dashboard show. `docker compose -f docker-compose.prod.yml ps` shows the state, and the healthcheck's last lines say why:
 
 ```bash
@@ -226,7 +228,7 @@ docker inspect --format '{{json .State.Health}}' "$(docker compose -f docker-com
 
 ## Migration runbook
 
-Run this once, on a library that never had a data root, to give every photo its ID. Nothing on the site uses the IDs yet, and the legacy derivatives keep serving throughout.
+Run this once, on a library that never had a data root, to give every photo its ID. Until the catalog launches, Home and Gallery list the registry's photos at their legacy derivative URLs, so they show no photos until step 4 writes the registry. The legacy derivatives keep serving throughout.
 
 1. Stop the watcher, so the library holds still:
 
@@ -245,7 +247,7 @@ Run this once, on a library that never had a data root, to give every photo its 
 
    Check its duplicate-byte groups, basename collisions, unreadable, unsupported, and undecodable files, and ambiguous items. An ambiguous file gets no ID until you decide with `photos.mjs identity bind` or `new`.
 
-4. Apply the plan the dry run printed. It writes the registry with exactly the plan's IDs, and `data-root.json`, after which `GET /api/health` reports `ready`. If the library or the registry changed since the dry run, it refuses, so run the dry run again and apply that plan. Applying a plan twice prints that it's already applied and exits 0.
+4. Apply the plan the dry run printed. It writes the registry with exactly the plan's IDs, and `data-root.json`, after which `GET /api/health` reports `ready` and `GET /api/ready` reports `"state":"ok"`. If the library or the registry changed since the dry run, it refuses, so run the dry run again and apply that plan. Applying a plan twice prints that it's already applied and exits 0.
 
    ```bash
    docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs migrate --apply --plan <plan path>

@@ -38,7 +38,7 @@ A modern, high-performance photography portfolio website built with Next.js 16, 
 ### ⚡ Performance
 - **Next.js Image Optimization** - Automatic AVIF/WebP format negotiation
 - **Multi-size Image Pipeline** - Pre-generated thumbnails (400px), medium (800px), and full (1920px)
-- **ISR Caching** - Incremental Static Regeneration for fast API responses
+- **Registry-backed Photo List** - `/api/photos` reads the photo registry instead of decoding photos, and rebuilds only when the registry changes
 - **Docker Ready** - Production-optimized containerized deployment
 
 ### 🔧 Technical
@@ -64,6 +64,10 @@ cd keyurgolani.photography
 # Install dependencies
 npm install
 
+# Give the library's photos their IDs, once. The dry run prints the plan to apply.
+npm run photos:migrate -- --dry-run
+npm run photos:migrate -- --apply --plan <plan path>
+
 # Start development server
 npm run dev
 
@@ -71,7 +75,7 @@ npm run dev
 npm run images:watch
 ```
 
-Open [http://localhost:3000](http://localhost:3000) to view the site. `npm run dev` and `npm start` listen on `127.0.0.1` only. `npm run dev` alone builds no derivatives, and the Gallery lists a photo only once all seven of its derivatives exist, so it stays empty until the watcher has run. `npm run images:process` builds them once and exits.
+Open [http://localhost:3000](http://localhost:3000) to view the site. `npm run dev` and `npm start` listen on `127.0.0.1` only. The Gallery lists the photos the migration recorded in `./portfolio-data`, the data root the npm scripts use by default, so until it has run, `/api/photos` answers 503 and the Gallery is empty. `npm run dev` alone builds no derivatives, and the Gallery lists a photo only once all seven of its derivatives exist, so it also stays empty until the watcher has run. `npm run images:process` builds them once and exits.
 
 Outside production, `PHOTOGRAPHY_DATA_DIR` defaults to `./portfolio-data`, so the watcher here (and in the dev compose) runs with its identity watch on whether or not you set it. The identity pass itself waits until `photos:migrate --apply` initializes that folder.
 
@@ -154,7 +158,7 @@ The site listens on the host's 127.0.0.1 only, port 3000 unless `PHOTOGRAPHY_POR
    - Optimizes full size (1920px)
    - Extracts EXIF data for captions
    - Creates LQIP placeholders
-3. **Gallery updates** on the next page load once all seven of a photo's derivatives exist, and the original file is never served. The production server serves only the `public/` files that existed when it started, so restart `web` for photos added since to load there.
+3. **Gallery updates** on the next page load once the watcher has recorded the photo in the data root and written all seven of its derivatives, and the original file is never served. The production server serves only the `public/` files that existed when it started, so restart `web` for photos added since to load there.
 
 ### Replacing and Removing Photos
 - **Replace** a photo by saving over it under the same name. The watcher regenerates its derivatives from the new file and swaps them in only once all seven are written, so a failed run keeps the old ones. Visitors can still see the old version for a while: `/_next/image` can serve its copy for up to a day, and a browser that cached it under the old `immutable` header may keep it for up to a year.
@@ -182,8 +186,8 @@ The site listens on the host's 127.0.0.1 only, port 3000 unless `PHOTOGRAPHY_POR
   docker compose -f docker-compose.prod.yml start image-watcher
   ```
 - **Restore the library folder** if it was deleted. The watcher exits 1 when its folder disappears, and since Compose no longer creates a missing photos folder, neither container can start until it's back. Stop the stack, copy the folder back into place rather than moving it with `mv`, then start the stack.
-- **Preview stable photo IDs** with `npm run photos:migrate -- --dry-run`. It proposes an ID for every photo and writes only a plan and a report, to `identity/migration/` in the data root or to `--out <dir>`. Applying the plan with `-- --apply --plan <file>` initializes the data root, and from then on the watcher keeps the IDs current, nested folders included, and builds each photo's `/media` set. Nothing on the site uses them yet. In production, follow the runbook in [docs/data-root.md](docs/data-root.md), which backs up the library and the data root first and runs the same steps in the watcher container.
-- **Check and publish the catalog** with `npm run photos -- validate`, which compiles the authored records in the data root and prints every problem without taking a lock or writing anything, so it also runs on a read-only data root, and `npm run photos -- publish --actor <name>`, which validates them again under a lock and makes the result the active revision. Add `--dry-run` to stop after validation. The first publish also needs `--confirm-launch`. Nothing on the site reads the catalog yet, and once it does, the active revision replaces the legacy Home and Gallery, so don't publish in production before the launch.
+- **Preview stable photo IDs** with `npm run photos:migrate -- --dry-run`. It proposes an ID for every photo and writes only a plan and a report, to `identity/migration/` in the data root or to `--out <dir>`. Applying the plan with `-- --apply --plan <file>` initializes the data root, and from then on the watcher keeps the IDs current, nested folders included, and builds each photo's `/media` set. Home and the Gallery list photos from the registry it writes, so they stay empty until the plan is applied. In production, follow the runbook in [docs/data-root.md](docs/data-root.md), which backs up the library and the data root first and runs the same steps in the watcher container.
+- **Check and publish the catalog** with `npm run photos -- validate`, which compiles the authored records in the data root and prints every problem without taking a lock or writing anything, so it also runs on a read-only data root, and `npm run photos -- publish --actor <name>`, which validates them again under a lock and makes the result the active revision. Add `--dry-run` to stop after validation. The first publish also needs `--confirm-launch`. From then on, `/api/photos` lists the active revision's photos at their `/media` URLs instead of the registry's, and `/media` serves only the sets the active revision holds, so don't publish in production before the launch.
 
 ### Supported Formats
 - JPEG (.jpg, .jpeg)
