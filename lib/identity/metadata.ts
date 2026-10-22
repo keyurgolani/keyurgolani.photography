@@ -114,15 +114,16 @@ function exposureTime(seconds: number): string {
 
 /**
  * `YYYY:MM:DD HH:MM:SS` as `YYYY-MM-DDTHH:MM:SS`, or undefined unless every
- * field is in range for a real date and time. Only the tag's own text counts:
- * exif-reader's Date comes from Date.UTC, which rolls a bad field over, so
- * "2024:00:00 00:00:00" would read as 2023-11-30.
+ * field is in range for a real date and time, and the year is 1900 to 2200
+ * unless `anyYear`. Only the tag's own text counts: exif-reader's Date comes
+ * from Date.UTC, which rolls a bad field over, so "2024:00:00 00:00:00"
+ * would read as 2023-11-30.
  */
-function wallClock(value: unknown): string | undefined {
+function wallClock(value: unknown, { anyYear = false }: { anyYear?: boolean } = {}): string | undefined {
     const match = typeof value === 'string' ? /^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(value) : null;
     if (!match) return undefined;
     const [year, month, day, hour, minute, second] = match.slice(1).map(Number);
-    if (year < 1900 || year > 2200) return undefined;
+    if (!anyYear && (year < 1900 || year > 2200)) return undefined;
     const written = `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}`;
     // A field out of range rolls over into the next one, so the date doesn't come back as written.
     return new Date(Date.UTC(year, month - 1, day, hour, minute, second)).toISOString().slice(0, 19) === written ? written : undefined;
@@ -249,7 +250,9 @@ export function extractMetadataTiers(exif: Uint8Array | undefined | null): Metad
  * When the photo was taken, from DateTimeOriginal, as `YYYY-MM-DDTHH:MM:SS`,
  * only when its text is a real date and time, as the capture date is. The
  * legacy Gallery sorts by it, so a date exif-reader rolled over would sort a
- * photo among the wrong ones.
+ * photo among the wrong ones. Any year counts, as it did when the Gallery
+ * sorted by exif-reader's Date, so a photo dated 1888 or 2250 keeps its
+ * place. The capture date still drops a year outside 1900 to 2200.
  */
 export function exifCaptureTime(exif: Uint8Array | undefined | null): string | undefined {
     if (!exif || exif.length === 0) return undefined;
@@ -260,7 +263,7 @@ export function exifCaptureTime(exif: Uint8Array | undefined | null): string | u
     } catch {
         return undefined;
     }
-    return wallClock(exifIfdText(block, parsed, DATE_TIME_ORIGINAL));
+    return wallClock(exifIfdText(block, parsed, DATE_TIME_ORIGINAL), { anyYear: true });
 }
 
 /**

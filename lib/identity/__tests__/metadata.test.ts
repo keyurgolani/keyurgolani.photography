@@ -173,6 +173,17 @@ describe('exifCaptureTime', () => {
         expect(exifCaptureTime(await exifWithDates('2024:02:29 23:59:59', '2024:05:02 09:00:00', order))).toBe('2024-02-29T23:59:59');
     });
 
+    // The Gallery sorted these by exif-reader's Date before, so each keeps its place.
+    it.each([
+        ['1888:07:04 12:00:00', '1888-07-04T12:00:00'],
+        ['1899:12:31 23:59:59', '1899-12-31T23:59:59'],
+        ['2250:01:01 00:00:00', '2250-01-01T00:00:00'],
+    ])('reads a DateTimeOriginal of any year, such as %s', async (value, expected) => {
+        for (const order of ['little-endian', 'big-endian'] as const) {
+            expect(exifCaptureTime(await exifWithDates(value, '2024:05:02 09:00:00', order)), order).toBe(expected);
+        }
+    });
+
     it.each(['little-endian', 'big-endian'] as const)('leaves out a DateTimeOriginal that rolls over or is all zeros, and never reads DateTime instead, in %s EXIF', async (order) => {
         const exif = await exifWithDates('2024:00:00 00:00:00', '2020:01:01 00:00:00', order);
         expect(exifReader(exif).Photo?.DateTimeOriginal).toEqual(new Date('2023-11-30T00:00:00.000Z'));

@@ -150,13 +150,16 @@ describe('getGalleryImages', () => {
         // DateTime is when the file last changed, which says nothing about when the photo was taken
         fs.writeFileSync(lib.file('edited.jpg'), await dated({ DateTime: '2020:01:01 00:00:00' }));
         fs.writeFileSync(lib.file('june.jpg'), await dated({ DateTimeOriginal: '2023:06:01 08:00:00', DateTime: '2023:06:02 08:00:00' }));
-        for (const name of ['rolled.jpg', 'unset.jpg', 'edited.jpg', 'june.jpg']) await refreshImage(name, { force: true });
+        // A real date of any year, as the Gallery sorted it before
+        fs.writeFileSync(lib.file('old.jpg'), await dated({ DateTimeOriginal: '1888:07:04 12:00:00' }));
+        for (const name of ['rolled.jpg', 'unset.jpg', 'edited.jpg', 'june.jpg', 'old.jpg']) await refreshImage(name, { force: true });
         const images = await getGalleryImages();
         const base = (image: ImageItem) => image.optimized.replace('/assets/photos/optimized/', '').replace(/\.webp$/, '');
         const dateOf = (name: string) => images.find((image) => base(image) === name)?.date;
 
         for (const name of ['rolled', 'unset', 'edited']) expect(dateOf(name), name).toBe(fs.statSync(lib.file(`${name}.jpg`)).birthtime.getTime());
         expect(dateOf('june')).toBe(Date.parse('2023-06-01T08:00:00Z'));
+        expect(dateOf('old')).toBe(Date.parse('1888-07-04T12:00:00Z'));
     });
 
     it('lists sources that share derivatives once, by the first path, and warns naming both', async () => {
