@@ -1,6 +1,7 @@
 import type { EventEmitter } from 'events';
+import fs from 'fs';
 import path from 'path';
-import type { FSWatcherEventMap } from 'chokidar';
+import type { ChokidarOptions, FSWatcherEventMap } from 'chokidar';
 import { isScanExcluded } from '../lib/identity/scan';
 import {
     generatedFolderNames,
@@ -64,23 +65,70 @@ export interface WatcherHandlers {
 }
 
 /**
- * The chokidar `ignored` filter, the identity scan's own: skip dot-entries at
- * any depth and the generated folders directly under the root. Folders match
- * by exact name on the first path segment, never by substring, so a root like
- * `/srv/cache/photos`, a photo named `thumbnails-beach.jpg`, and a nested
- * `trips/thumbnails/` folder are still watched.
+ * The chokidar `ignored` filter. It always skips the generated folders
+ * directly under the root, matched by exact name on the first path segment,
+ * never by substring, so a root like `/srv/cache/photos`, a photo named
+ * `thumbnails-beach.jpg`, and a nested `trips/thumbnails/` folder are still
+ * watched. With `identity`, the default, it also skips what the identity scan
+ * skips: dot-entries at any depth, every symlink below the root, and a
+ * symlink in the root to a folder, since the scan reads nothing through a
+ * symlink. A symlink in the root to a file is still watched through the link,
+ * the way the legacy step reads it.
  */
-export function createIgnoreFilter(root: string): (watchedPath: string) => boolean {
+export function createIgnoreFilter(root: string, { identity = true }: { identity?: boolean } = {}): (watchedPath: string, stats?: fs.Stats) => boolean {
     const generated = new Set(generatedFolderNames());
     const resolvedRoot = path.resolve(root);
-    return (watchedPath) => {
+    return (watchedPath, stats) => {
         const relative = path.relative(resolvedRoot, path.resolve(watchedPath));
         if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
             return false;
         }
         const posix = relative.split(path.sep).join('/');
-        return generated.has(posix.split('/')[0]) || isScanExcluded(posix);
+        if (generated.has(posix.split('/')[0])) return true;
+        if (!identity) return false;
+        if (isScanExcluded(posix)) return true;
+        // chokidar passes lstat's stats while it lists a folder, so a symlink shows as one there.
+        if (!stats?.isSymbolicLink()) return false;
+        if (posix.includes('/')) return true;
+        try {
+            return fs.statSync(watchedPath).isDirectory();
+        } catch {
+            return false; // A link to nothing, which chokidar passes over by itself.
+        }
     };
+}
+
+/** What the watcher hands chokidar: the path to watch, and the options. */
+export interface WatchSetup {
+    path: string;
+    options: ChokidarOptions;
+}
+
+/**
+ * How the watcher watches the library, polling either way, as Docker bind
+ * mounts need. Without a data root the identity step never runs, so it
+ * watches exactly as it did before that step: the root's own files, through
+ * symlinks, skipping the generated folders. With one, it watches every depth
+ * for the identity step, from the root's real path, so a symlinked root still
+ * reports its changes, and createIgnoreFilter() keeps it out of everything
+ * reached through a symlink but a file in the root.
+ */
+export function watchSetup(root: string, { identity }: { identity: boolean }): WatchSetup {
+    const polling = {
+        persistent: true,
+        ignoreInitial: true, // Don't fire events for existing files on startup
+        usePolling: true, // Reliable in Docker bind mounts
+        interval: 2000, // Poll every 2 seconds
+        binaryInterval: 3000, // Poll binary files every 3 seconds
+        alwaysStat: true, // Always provide stats
+        awaitWriteFinish: {
+            stabilityThreshold: 3000, // Wait until file size is stable for 3 seconds
+            pollInterval: 500, // Check size every 500ms
+        },
+    };
+    if (!identity) return { path: root, options: { ...polling, depth: 0, ignored: createIgnoreFilter(root, { identity: false }) } };
+    const real = fs.realpathSync(root);
+    return { path: real, options: { ...polling, followSymlinks: true, ignored: createIgnoreFilter(real) } };
 }
 
 /** Whether `filePath` sits directly in the library root, the only folder the legacy step reads sources from. */
