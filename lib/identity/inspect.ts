@@ -85,7 +85,8 @@ export async function inspectEntry(root: string, entry: ScanEntry, { hasher = sh
 
     try {
         // The pixels as stored. Without keepIccProfile() Sharp converts them to sRGB first, so a copy whose profile
-        // was stripped would hash differently from its original.
+        // was stripped would hash differently from its original. A CMYK JPEG is the exception: Sharp converts it to
+        // sRGB whatever the flag, so its digest is of the converted pixels.
         const { data, info } = await sharp(bytes).autoOrient().keepIccProfile().raw().toBuffer({ resolveWithObject: true });
         return {
             kind: 'image',

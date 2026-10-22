@@ -6,6 +6,7 @@ import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { buildExif, KEPT_VALUES, leakyJpeg, PRIVATE_VALUES } from '../../../test/fixtures/exif';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempLibrary';
+import { pixelDigestOf } from '../ids';
 import { inspectEntry, type ImageInspection } from '../inspect';
 import { extractMetadataTiers, TECHNICAL_KEYS, tiersFromParsedExif, toPublicAsset, VARIANT_FORMATS, VARIANT_WIDTHS } from '../metadata';
 import { runReconcilePass } from '../pass';
@@ -191,6 +192,24 @@ describe('the pixel digest', () => {
         expect(withProfile.assetRevision).not.toBe(withoutProfile.assetRevision);
         expect(withProfile.pixelDigest).not.toBeNull();
         expect(withProfile.pixelDigest).toBe(withoutProfile.pixelDigest);
+    });
+
+    it('hashes a CMYK JPEG as Sharp converts it to sRGB, the one exception to the stored pixels', async () => {
+        const lib = await createTempLibrary();
+        cleanups.push(() => lib.cleanup());
+        const cmyk = await sharp({ create: { width: 16, height: 12, channels: 3, background: { r: 200, g: 40, b: 40 } } })
+            .toColourspace('cmyk')
+            .jpeg()
+            .toBuffer();
+        expect(await sharp(cmyk).metadata()).toMatchObject({ space: 'cmyk', channels: 4 });
+        fs.writeFileSync(lib.file('cmyk.jpg'), cmyk);
+
+        const entry = (await scanLibrary(lib.root)).entries.find((candidate) => candidate.path === 'cmyk.jpg');
+        if (!entry) throw new Error('The scan missed cmyk.jpg');
+        const inspection = await inspectEntry(lib.root, entry) as ImageInspection;
+        const converted = await sharp(cmyk).autoOrient().raw().toBuffer({ resolveWithObject: true });
+        expect(converted.info.channels).toBe(3);
+        expect(inspection.pixelDigest).toBe(pixelDigestOf({ data: converted.data, ...converted.info }));
     });
 });
 

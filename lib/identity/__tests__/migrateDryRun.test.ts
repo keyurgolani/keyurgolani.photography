@@ -172,6 +172,34 @@ describe('photos:migrate --dry-run', () => {
         expect(section).not.toContain('series/rot6.jpg');
     });
 
+    it.skipIf(isRoot)("lists the top-level photos it couldn't read, or that were still changing, as not checked for orientation", async () => {
+        const lib = await library({
+            'incoming.jpg': fixture('landscape-rot6.jpg'),
+            'unreadable.jpg': fixture('landscape-rot6.jpg'),
+            'series/rot6.jpg': fixture('landscape-rot6.jpg'),
+        });
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', '');
+        vi.stubEnv('NODE_ENV', 'production');
+        // Modified right when the run looks, so it counts as still being written
+        const looked = new Date(Date.now() + 60_000);
+        fs.utimesSync(lib.file('incoming.jpg'), looked, looked);
+        fs.chmodSync(lib.file('unreadable.jpg'), 0o000);
+        try {
+            const { report } = await migrateDryRun(options({ outDir: tempOut(), sleep: async () => undefined }));
+            const section = report.split('## Orientation-tagged files\n')[1].split('\n## ')[0];
+            expect(section.trim().split('\n')).toEqual([
+                'None among the photos it read.',
+                '',
+                "Not checked, since they couldn't be read or were still changing:",
+                '',
+                '- `incoming.jpg`',
+                '- `unreadable.jpg`',
+            ]);
+        } finally {
+            fs.chmodSync(lib.file('unreadable.jpg'), 0o644);
+        }
+    });
+
     it('escapes a pipe in a path, so the Proposed photo IDs table keeps its columns', async () => {
         await library({ 'a|b.jpg': fixture('landscape.jpg') });
         vi.stubEnv('PHOTOGRAPHY_DATA_DIR', '');
