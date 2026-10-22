@@ -13,6 +13,7 @@
     "start": "next start",
     "test": "vitest",
     "test:e2e": "playwright test",
+    "check:prerender": "node ci/check-prerender.mjs",
     "smoke:media": "bash ci/smoke-media.sh",
     "smoke:image": "bash ci/smoke-image.sh ci-smoke",
     "lint": "eslint .",
