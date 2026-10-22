@@ -198,9 +198,13 @@ const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\/]/g, '\\$
 /** Built patterns by camera, since a library holds a few cameras and thousands of photos. */
 const cameraPatterns = new Map<string, RegExp | null>();
 
-/** The photo's make, model, and lens as whole words, longest first. */
+/**
+ * The photo's make, model, and lens, and its own shutter speed as the legacy
+ * caption writes it, such as `2s` or `1.5s`, which SETTING misses, as whole
+ * words, longest first.
+ */
 function cameraNames(technical: Partial<Record<TechnicalKey, string>>): RegExp | null {
-    const names = [technical.Make, technical.Model, technical.LensModel]
+    const names = [technical.Make, technical.Model, technical.LensModel, technical.ExposureTime && `${technical.ExposureTime}s`]
         .map((value) => value?.normalize('NFC').trim())
         .filter((value): value is string => Boolean(value))
         .sort((a, b) => b.length - a.length);
@@ -252,7 +256,8 @@ function describedPhotos(ctx: RuleContext): DescribedPhoto[] {
             if (photo.alt.kind !== 'described') return [];
             const text = photo.alt.text;
             const value = normalized(text);
-            const blank = value === '';
+            // Nothing a screen reader would say, such as `...` or a zero-width space
+            const blank = !/[\p{L}\p{N}\p{Extended_Pictographic}]/u.test(value);
             const source = names.get(photo.id);
             return [{
                 id: photo.id,
@@ -541,7 +546,7 @@ const SLICE_A_RULES: RuleDefinition[] = [
         id: 'description.empty',
         severity: 'error',
         gate: 'publish',
-        check: (ctx) => describedPhotos(ctx).filter((photo) => photo.blank).map((photo) => describedIssue(photo, 'The description is empty.', DESCRIBE_HINT)),
+        check: (ctx) => describedPhotos(ctx).filter((photo) => photo.blank).map((photo) => describedIssue(photo, 'The description has no letters, digits, or emoji.', DESCRIBE_HINT)),
     },
     {
         id: 'description.filename',

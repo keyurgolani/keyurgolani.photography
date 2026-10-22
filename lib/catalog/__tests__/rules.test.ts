@@ -222,6 +222,25 @@ describe('the edges of the checks', () => {
         expect(codes(ctx)).toEqual(expected);
     });
 
+    it.each(['2', '1.5'])('description: the settings of a photo taken at %s s are a camera caption', (exposure) => {
+        const ctx = context();
+        photoAt(ctx, 0).technical = { ...photoAt(ctx, 0).technical, ExposureTime: exposure };
+        describe0(ctx, `35mm f/8 ${exposure}s ISO 200`);
+        expect(codes(ctx)).toEqual(['description.camera-caption']);
+    });
+
+    it.each([
+        ['a period', '.', ['description.empty']],
+        ['an ellipsis', '...', ['description.empty']],
+        ['a dash', '-', ['description.empty']],
+        ['a zero-width space', '\u200b', ['description.empty']],
+        ['an emoji', '\u{1F305}', []],
+    ])('description: %s alone', (_label, text, expected) => {
+        const ctx = context();
+        describe0(ctx, text);
+        expect(codes(ctx)).toEqual(expected);
+    });
+
     it('description and privacy: alt text that is the whole source file name fails both', () => {
         const ctx = context();
         describe0(ctx, ctx.registry?.photos[photoAt(ctx, 0).id].source.path.toUpperCase() ?? '');
