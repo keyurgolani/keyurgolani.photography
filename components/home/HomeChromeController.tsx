@@ -1,21 +1,11 @@
 'use client';
 
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDocumentVisible } from '../motion/useDocumentVisible';
 import { usePrefersReducedMotion } from '../motion/usePrefersReducedMotion';
 import { HOME_CHROME_FADE_MS, HOME_CHROME_IDLE_MS, HOME_LOADING_TIMEOUT_MS } from './homeChromeConfig';
-import {
-  HOVER,
-  initialChrome,
-  KEYBOARD_FOCUS,
-  NO_PHOTO,
-  PRESS,
-  reduceChrome,
-  type ChromeEvent,
-  type ChromeState,
-  type ChromeVisibility,
-  type IntroPhase,
-} from './homeChrome';
+import { HOVER, initialChrome, KEYBOARD_FOCUS, PRESS, reduceChrome, type ChromeEvent, type ChromeState, type IntroPhase } from './homeChrome';
+import { ChromeContext, useChromeContext, type ChromeContextValue, type HomeChromeApi } from './useHomeChrome';
 import styles from './HomeChrome.module.css';
 
 /** The chrome's controls, for the hover and press holds. */
@@ -24,39 +14,6 @@ const CONTROL = 'a[href], button, input, select, textarea';
 const MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta']);
 /** The first gesture's click guard disarms this long after the gesture ends. */
 const GUARD_EXPIRY_MS = 500;
-/** Holds the controller sets itself. Any other reason is a consumer's. */
-export const BUILT_IN_HOLDS: ReadonlySet<string> = new Set([KEYBOARD_FOCUS, HOVER, PRESS, NO_PHOTO]);
-
-export interface HomeChromeApi {
-  visibility: ChromeVisibility;
-  loading: boolean;
-  /** Keyboard focus is inside the chrome, which holds it up. Pointer focus never does. */
-  isKeyboardHeld: boolean;
-  holds: ReadonlySet<string>;
-  /** Keeps the chrome up for `reason`, such as a dialog opened from it, until `release(reason)`. */
-  hold: (reason: string) => void;
-  release: (reason: string) => void;
-  reportPhoto: (status: 'shown' | 'none') => void;
-  reportIntro: (phase: IntroPhase) => void;
-}
-
-interface ChromeContextValue {
-  api: HomeChromeApi;
-  registerChrome: (element: HTMLDivElement | null) => void;
-}
-
-const ChromeContext = createContext<ChromeContextValue | null>(null);
-
-function useChromeContext(): ChromeContextValue {
-  const context = useContext(ChromeContext);
-  if (!context) throw new Error('Home chrome needs a HomeChromeController above it.');
-  return context;
-}
-
-/** Home chrome's state and its holds. The object changes only on transitions. */
-export function useHomeChrome(): HomeChromeApi {
-  return useChromeContext().api;
-}
 
 /** Keyboard focus is what draws the ring. A browser that can't tell counts it as keyboard focus. */
 function isFocusVisible(element: Element): boolean {
@@ -116,8 +73,11 @@ export default function HomeChromeController({
 
   // The reducer runs here, against the latest state, so a handler that runs right after another sees its result.
   const send = useCallback((event: ChromeEvent) => {
-    const next = reduceChrome(stateRef.current, event);
-    if (next === stateRef.current) return;
+    const previous = stateRef.current;
+    const next = reduceChrome(previous, event);
+    if (next === previous) return;
+    // Any release, the no-photo one included, starts a fresh full timeout.
+    if ([...previous.holds].some((reason) => !next.holds.has(reason))) lastActivityAt.current = Date.now();
     stateRef.current = next;
     setState(next);
   }, []);
@@ -130,13 +90,8 @@ export default function HomeChromeController({
   const setHeld = useCallback(
     (reason: string, held: boolean) => {
       const has = stateRef.current.holds.has(reason);
-      if (held && !has) {
-        send({ type: 'hold', reason });
-      } else if (!held && has) {
-        // Any release starts a fresh full timeout.
-        lastActivityAt.current = Date.now();
-        send({ type: 'release', reason });
-      }
+      if (held && !has) send({ type: 'hold', reason });
+      else if (!held && has) send({ type: 'release', reason });
     },
     [send],
   );

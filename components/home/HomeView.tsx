@@ -6,10 +6,12 @@ import { usePrefersReducedMotion } from '@/components/motion/usePrefersReducedMo
 import LoadingState from '@/components/site/LoadingState';
 import SiteNav from '@/components/site/SiteNav';
 import { hasCompletedHomeHeroIntro, markHomeHeroIntroCompleted } from '@/utils/homeHeroCache';
-import HomeChromeController, { BUILT_IN_HOLDS, HomeChrome, HomeVignette, useHomeChrome } from './HomeChromeController';
+import { BUILT_IN_HOLDS } from './homeChrome';
+import HomeChromeController, { HomeChrome, HomeVignette } from './HomeChromeController';
 import type { HomePhoto } from './homePhoto';
 import HomeSequence from './HomeSequence';
 import HomeSequenceControls from './HomeSequenceControls';
+import { useHomeChrome } from './useHomeChrome';
 import { useHomePlayback } from './useHomePlayback';
 import type { HomePhotosStatus } from './useLegacyHomePhotos';
 

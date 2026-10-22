@@ -19,6 +19,9 @@ export const PRESS = 'press';
 /** No photograph on screen once loading ends, so navigation has to stay up. */
 export const NO_PHOTO = 'no-photo';
 
+/** Holds the controller sets itself. Any other reason is a consumer's. */
+export const BUILT_IN_HOLDS: ReadonlySet<string> = new Set([KEYBOARD_FOCUS, HOVER, PRESS, NO_PHOTO]);
+
 /** A hidden document drops these, since the pointer can't be resting or pressing anymore. */
 const POINTER_HOLDS = [HOVER, PRESS] as const;
 
