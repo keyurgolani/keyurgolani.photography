@@ -360,6 +360,11 @@ test.describe('reduced motion', () => {
         await expect(position(page)).toHaveText('02 / 03');
         expect(await runningLongerThan(page, 1)).toEqual([]);
 
+        // A mouse resting on Next holds the chrome, so it moves onto the photograph first.
+        if (!isMobile) {
+            const { x, y } = await photoPoint(page);
+            await page.mouse.move(x, y, { steps: 2 });
+        }
         await expect.poll(() => chromeOpacity(page), { timeout: IDLE + 3000 }).toBe(0);
         // Programmatic focus on the toggle sets where Tab starts, and Tab gives Next keyboard focus.
         await themeToggle(page).focus();
