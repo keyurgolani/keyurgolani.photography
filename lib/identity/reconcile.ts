@@ -354,15 +354,23 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
         return revision.pixelDigest === null ? { state: 'failed', attempts: 0, error: 'undecodable' } : { state: 'pending', attempts: 0 };
     }
 
-    /** Give `photo` a copy of `revision`, which another photo gives up, with a fresh profile entry. */
-    function adoptRevision(photo: PhotoRecord, revision: AssetRevisionRecord, from: PhotoRecord): void {
-        photo.revisions[revision.assetRevision] ??= { ...structuredClone(revision), profiles: { [context.profileId]: freshProfile(revision) } };
+    /**
+     * Give `photo` a copy of `revision`, which another photo gives up, with a
+     * fresh profile entry. A revision coming back to the photo it was taken
+     * from, as when a bind undoes a `new`, gets that photo's own record back,
+     * profiles and all, instead of staying marked as given away.
+     */
+    function adoptRevision(photo: PhotoRecord, revision: AssetRevisionRecord, from: PhotoRecord): 'copied' | 'restored' {
+        const earlier = photo.revisions[revision.assetRevision];
+        if (earlier) delete earlier.reassignedTo;
+        else photo.revisions[revision.assetRevision] = { ...structuredClone(revision), profiles: { [context.profileId]: freshProfile(revision) } };
         revision.reassignedTo = photo.photoId;
         if (from.source.observedRevision === revision.assetRevision) {
             const own = Object.values(from.revisions).filter((candidate) => !candidate.reassignedTo);
             const latest = own.sort((a, b) => (a.firstSeenAt < b.firstSeenAt ? 1 : a.firstSeenAt > b.firstSeenAt ? -1 : 0))[0];
             if (latest) from.source.observedRevision = latest.assetRevision;
         }
+        return earlier ? 'restored' : 'copied';
     }
 
     /** The present, non-retired photo bound to `key`, in the order the rows use. */
@@ -401,7 +409,7 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
      * there, N's revision moves to X, and N is archived with `mergedInto: X`.
      * When the path's hold lists both N and X, as after one photo's file was
      * moved over another's, N loses the path and is classified like any
-     * photo whose path is gone.
+     * photo whose path is gone. Every refusal comes before anything changes.
      */
     function bind(target: string, photoId: string, merge: string | undefined): Decided {
         const found = imageAt(target);
@@ -412,7 +420,6 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
         if (isRetired(x)) return decided.rejected(`${photoId} is archived`);
         const { key, path: at } = item.entry;
         const revision = item.inspection.assetRevision;
-        const ownBytes = x.revisions[revision] !== undefined && !x.revisions[revision].reassignedTo;
         const holder = boundAt(key);
         if (holder === x && x.source.observedRevision === revision) {
             endHold(at);
@@ -424,49 +431,58 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
         if (merge !== undefined && holder?.photoId !== merge) {
             return decided.rejected(`the decision merges ${merge}, but ${at} is ${holder ? `bound to ${holder.photoId}` : 'bound to no other photo'}`);
         }
-        let merged: PhotoRecord | undefined;
-        let unbound: PhotoRecord | undefined;
+        // What becomes of N, decided before anything changes.
+        let plan: { kind: 'unbind'; holder: PhotoRecord } | { kind: 'merge'; holder: PhotoRecord; revision: AssetRevisionRecord } | null = null;
         if (holder && holder !== x) {
             const held = liveHolds.find((candidate) => candidate.path === at);
             if (merge === undefined && held?.candidates.includes(holder.photoId) && held.candidates.includes(photoId)) {
                 // The hold already doubts N's claim to the path, so N gives it up and keeps everything else.
-                unbound = holder;
-                holder.source.present = false;
+                plan = { kind: 'unbind', holder };
             } else {
                 if (merge === undefined) return decided.rejected(`${at} is bound to ${holder.photoId}. To merge ${holder.photoId} into ${photoId}, name it with --merge`);
                 const own = Object.values(holder.revisions).filter((candidate) => !candidate.reassignedTo);
                 if (own.length !== 1 || keyOf(own[0].firstSeenPath) !== key) {
                     return decided.rejected(`${holder.photoId} has more than the one revision first seen at ${at}, so it can't be merged`);
                 }
-                merged = holder;
-                adoptRevision(x, own[0], holder);
-                // mergedInto retires it, so it reads as archived from here on.
-                holder.mergedInto = x.photoId;
-                holder.source.present = false;
+                plan = { kind: 'merge', holder, revision: own[0] };
             }
+        }
+        // X's record of these bytes, if a `new` gave them to another photo, comes back only with that photo merged.
+        const given = x.revisions[revision]?.reassignedTo;
+        if (given !== undefined && !(plan?.kind === 'merge' && plan.revision.assetRevision === revision)) {
+            return decided.rejected(`${at} holds ${revision}, which ${photoId} gave to ${given}`);
+        }
+
+        let copied = false;
+        if (plan?.kind === 'unbind') {
+            plan.holder.source.present = false;
+        } else if (plan?.kind === 'merge') {
+            copied = adoptRevision(x, plan.revision, plan.holder) === 'copied' && plan.revision.assetRevision === revision;
+            // mergedInto retires it, so it reads as archived from here on.
+            plan.holder.mergedInto = x.photoId;
+            plan.holder.source.present = false;
         }
 
         const fromPath = x.source.key === key ? {} : { fromPath: x.source.path };
         const lastRevision = x.source.observedRevision;
-        const own = x.revisions[revision];
-        if (ownBytes) {
-            // X's own bytes: its observed revision at a new path, or an older one back.
+        if (x.revisions[revision] && !copied) {
+            // X's own bytes, its record back from a merged photo included: its observed revision at a new path, or an older one back.
             bindTo(x, item, revision);
             requeueIfNeeded(x, revision, at);
             if (revision === lastRevision) fact({ type: 'fromPath' in fromPath ? 'renamed' : 'reappeared', photoId, assetRevision: revision, path: at, ...fromPath });
             else fact({ type: 'replaced', photoId, assetRevision: revision, path: at, revert: true, ...fromPath });
-        } else if (own) {
-            // The revision just moved over from the merged photo.
+        } else if (x.revisions[revision]) {
+            // A copy of the merged photo's revision, with a fresh profile entry.
             bindTo(x, item, revision);
-            if (own.profiles[context.profileId]?.state === 'pending') queue(x, revision, at);
+            requeueIfNeeded(x, revision, at);
             fact({ type: 'replaced', photoId, assetRevision: revision, path: at, ...fromPath });
         } else {
             addRevision(x, item);
             fact({ type: 'replaced', photoId, assetRevision: revision, path: at, ...fromPath });
         }
         endHold(at);
-        if (merged) return decided.applied(`bound ${at} to ${photoId} and merged ${merged.photoId} into it`);
-        return decided.applied(unbound ? `bound ${at} to ${photoId}, which ${unbound.photoId} no longer holds` : `bound ${at} to ${photoId}`);
+        if (plan?.kind === 'merge') return decided.applied(`bound ${at} to ${photoId} and merged ${plan.holder.photoId} into it`);
+        return decided.applied(plan?.kind === 'unbind' ? `bound ${at} to ${photoId}, which ${plan.holder.photoId} no longer holds` : `bound ${at} to ${photoId}`);
     }
 
     /**
