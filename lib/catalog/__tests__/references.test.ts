@@ -1,13 +1,19 @@
 // @vitest-environment node
 import fs from 'node:fs';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createTempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { references, referencesTo, ReferenceScanError, type AssetReference } from '../references';
 import { revisionIdOf } from '../schema';
 import { createTestCatalog, type TestCatalog } from '../testing';
 import type { CandidateContent } from '../types';
-import { authoredRecordFile, catalogPaths } from '../working-layer';
+import { authoredRecordFile, catalogPaths, readWorkingLayer } from '../working-layer';
+
+// The real reader, which a test can wrap to act between the reads references() makes.
+vi.mock('../working-layer', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../working-layer')>();
+    return { ...actual, readWorkingLayer: vi.fn(actual.readWorkingLayer) };
+});
 
 const OTHER_ASSET = `sha256-${'b'.repeat(64)}`;
 const OTHER_PROFILE = `p_${'1'.repeat(16)}`;
@@ -121,6 +127,26 @@ describe('references', () => {
         });
         const holders = bySource(await references(catalog.root), 'working-layer-series').map((reference) => reference.photoId);
         expect(holders).toEqual([ids[0], ids[2]]);
+    });
+
+    it('counts a claimed version that a writer installs while it reads', async () => {
+        const catalog = await fixture();
+        const photo = catalog.photos[0];
+        const file = authoredRecordFile(catalog.root, 'photo', photo.id);
+        const stored = JSON.parse(fs.readFileSync(file, 'utf8')) as { version: number; assetRevision: string };
+        const claim = `${file}.claim-${stored.version + 1}`;
+        writeJson(claim, { ...stored, version: stored.version + 1, assetRevision: OTHER_ASSET });
+        const { readWorkingLayer: read } = await vi.importActual<typeof import('../working-layer')>('../working-layer');
+        // The writer installs its claim right after the records are read.
+        vi.mocked(readWorkingLayer).mockImplementationOnce(async (...args) => {
+            const layer = await read(...args);
+            fs.renameSync(claim, file);
+            return layer;
+        });
+
+        const found = bySource(await references(catalog.root), 'working-layer-photo').filter((reference) => reference.holder === photo.id);
+        expect(found.map((reference) => reference.assetRevision)).toContain(OTHER_ASSET);
+        expect(fs.existsSync(claim)).toBe(false);
     });
 
     it('counts the next version a write that did not finish left claimed, since the next write installs it', async () => {

@@ -201,6 +201,9 @@ export async function references(dataRoot: string): Promise<AssetReference[]> {
         }
     }
 
+    // Claims before the records: one installed between the two reads then shows in the records. Read the other
+    // way round, a claim installed in between would be in neither.
+    const claimed = await claimedRecords(dataRoot);
     let layer: Awaited<ReturnType<typeof readWorkingLayer>>;
     try {
         layer = await readWorkingLayer(dataRoot);
@@ -209,7 +212,6 @@ export async function references(dataRoot: string): Promise<AssetReference[]> {
     }
     const [problem] = layer.problems;
     if (problem) throw new ReferenceScanError(problemFile(problem), problem.reason, issueSummary(problem.issues));
-    const claimed = await claimedRecords(dataRoot);
     const photos = [...layer.photos, ...claimed.photos];
     const pinned = new Map<string, Set<string>>();
     for (const photo of photos) pinned.set(photo.id, new Set([...(pinned.get(photo.id) ?? []), photo.assetRevision]));
