@@ -191,11 +191,12 @@ docker compose -f docker-compose.prod.yml up -d
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `SITE_URL` | The site's public origin, like `https://keyurgolani.photography`, for share links and the share image URL. Read when the server starts, not at build time. Unset or invalid, share links point at `http://localhost:3000` and the server logs one warning. | none |
-| `NEXT_PUBLIC_UI_AUTO_HIDE_TIMEOUT` | UI auto-hide timeout on home page (ms) | 3000 |
 | `PHOTOGRAPHY_LIBRARY_DIR` | Photo library folder for the watcher, `images:cleanup`, and `/api/photos`. The site serves photos only from `public/assets/photos`, so leave it unset outside tests. | `public/assets/photos` |
 | `PHOTOGRAPHY_DATA_DIR` | Private data root for photo identity state. It must sit outside `public/` and the library. Only `photos:migrate --dry-run` and `photos:identity status` read it so far. | `portfolio-data`, none in production |
 
 The Home slideshow interval isn't configurable. It's `HOME_AUTO_ADVANCE_MS` (12000 ms) in `components/home/homePlayback.ts`.
+
+Neither is how long Home's chrome stays up after the last activity. It's `HOME_CHROME_IDLE_MS` (4000 ms) in `components/home/homeChromeConfig.ts`.
 
 ### Docker Configuration
 

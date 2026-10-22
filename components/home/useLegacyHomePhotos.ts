@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { photoImageAlt } from '@/lib/a11y/photoName';
 import type { ImageItem } from '@/utils/getImageData';
 import { getCachedHomeHeroImages, setCachedHomeHeroImages } from '@/utils/homeHeroCache';
@@ -59,13 +59,22 @@ const samePhotos = (a: HomePhoto[], b: HomePhoto[]) =>
         );
     });
 
+/** `ready` once there's a list to show, `empty` when the library has none, and `error` when the request fails with nothing cached. */
+export type HomePhotosStatus = 'loading' | 'ready' | 'empty' | 'error';
+
+export interface LegacyHomePhotos {
+    photos: HomePhoto[];
+    status: HomePhotosStatus;
+}
+
 /**
  * Home's photographs from /api/photos, until #13's catalog replaces it. A
  * return visit in the tab shows the cached list at once and refreshes it in
  * the background. The array changes only when the merged list does.
  */
-export function useLegacyHomePhotos(): HomePhoto[] {
+export function useLegacyHomePhotos(): LegacyHomePhotos {
     const [photos, setPhotos] = useState<HomePhoto[]>(() => getCachedHomeHeroImages());
+    const [status, setStatus] = useState<HomePhotosStatus>(() => (getCachedHomeHeroImages().length > 0 ? 'ready' : 'loading'));
 
     useEffect(() => {
         let active = true;
@@ -97,11 +106,13 @@ export function useLegacyHomePhotos(): HomePhoto[] {
                 setCachedHomeHeroImages(merged);
                 if (!active) return;
                 setPhotos((current) => (samePhotos(current, merged) ? current : merged));
+                setStatus(merged.length > 0 ? 'ready' : 'empty');
                 if (merged.length > 0) preload(merged.map((photo) => photo.sources.full));
             } catch (error) {
                 console.error('Error fetching gallery images:', error);
                 if (active && getCachedHomeHeroImages().length === 0) {
                     setPhotos((current) => (current.length === 0 ? current : []));
+                    setStatus('error');
                 }
             }
         };
@@ -115,5 +126,5 @@ export function useLegacyHomePhotos(): HomePhoto[] {
         };
     }, []);
 
-    return photos;
+    return useMemo(() => ({ photos, status }), [photos, status]);
 }
