@@ -621,13 +621,14 @@ test.describe('reduced motion', () => {
         await openHome(page, { clock: true });
         if (isMobile) await revealByTap(page, { clock: true });
         else await revealByMouse(page);
-        // The reduced-motion baseline leaves every transition at 0.01 ms.
+        // The reduced-motion baseline leaves every transition at 0.01 ms, which ends by the next frame.
         expect(await chromeFadeMs(page)).toBeLessThanOrEqual(0.01);
-        expect(await effectiveOpacity(chrome(page))).toBe(1);
+        await expect.poll(() => effectiveOpacity(chrome(page))).toBe(1);
 
         await runFor(page, IDLE);
         await expect(main(page)).toHaveAttribute('data-interface-state', 'immersive');
-        expect(await effectiveOpacity(chrome(page))).toBe(0);
+        expect(await chromeFadeMs(page)).toBeLessThanOrEqual(0.01);
+        await expect.poll(() => effectiveOpacity(chrome(page))).toBe(0);
         expect(await states()).not.toContain('receding');
     });
 
