@@ -7,7 +7,7 @@ import { buildExif, KEPT_VALUES, leakyJpeg, PRIVATE_VALUES } from '../../../test
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempLibrary';
 import { inspectEntry, type ImageInspection } from '../inspect';
-import { exifWallClocks, extractMetadataTiers, TECHNICAL_KEYS, tiersFromParsedExif, toPublicAsset, VARIANT_FORMATS, VARIANT_WIDTHS } from '../metadata';
+import { exifCaptureTime, extractMetadataTiers, TECHNICAL_KEYS, tiersFromParsedExif, toPublicAsset, VARIANT_FORMATS, VARIANT_WIDTHS } from '../metadata';
 import { runReconcilePass } from '../pass';
 import { identityPaths } from '../registry';
 import { scanLibrary } from '../scan';
@@ -156,7 +156,7 @@ describe('metadata tiers', () => {
     });
 });
 
-describe('exifWallClocks', () => {
+describe('exifCaptureTime', () => {
     /** An EXIF block with these DateTimeOriginal and IFD0 DateTime texts. */
     async function exifWithDates(original: string, modified: string, order: 'little-endian' | 'big-endian'): Promise<Buffer> {
         if (order === 'big-endian') {
@@ -169,21 +169,20 @@ describe('exifWallClocks', () => {
         return (await sharp(jpeg).metadata()).exif as Buffer;
     }
 
-    it.each(['little-endian', 'big-endian'] as const)('reads both times as written, in %s EXIF', async (order) => {
-        expect(exifWallClocks(await exifWithDates('2024:02:29 23:59:59', '2024:05:02 09:00:00', order)))
-            .toEqual({ original: '2024-02-29T23:59:59', modified: '2024-05-02T09:00:00' });
+    it.each(['little-endian', 'big-endian'] as const)('reads DateTimeOriginal as written, in %s EXIF', async (order) => {
+        expect(exifCaptureTime(await exifWithDates('2024:02:29 23:59:59', '2024:05:02 09:00:00', order))).toBe('2024-02-29T23:59:59');
     });
 
-    it.each(['little-endian', 'big-endian'] as const)('leaves out a time whose fields roll over, in %s EXIF', async (order) => {
+    it.each(['little-endian', 'big-endian'] as const)('leaves out a DateTimeOriginal that rolls over or is all zeros, and never reads DateTime instead, in %s EXIF', async (order) => {
         const exif = await exifWithDates('2024:00:00 00:00:00', '2020:01:01 00:00:00', order);
         expect(exifReader(exif).Photo?.DateTimeOriginal).toEqual(new Date('2023-11-30T00:00:00.000Z'));
-        expect(exifWallClocks(exif)).toEqual({ modified: '2020-01-01T00:00:00' });
-        expect(exifWallClocks(await exifWithDates('2024:05:01 10:00:00', '2024:13:01 10:00:00', order))).toEqual({ original: '2024-05-01T10:00:00' });
+        expect(exifCaptureTime(exif)).toBeUndefined();
+        expect(exifCaptureTime(await exifWithDates('0000:00:00 00:00:00', '2020:01:01 00:00:00', order))).toBeUndefined();
     });
 
-    it('is empty for missing or unparseable EXIF', () => {
-        expect(exifWallClocks(undefined)).toEqual({});
-        expect(exifWallClocks(Buffer.from('Exif\0\0garbage'))).toEqual({});
+    it('is undefined for missing or unparseable EXIF', () => {
+        expect(exifCaptureTime(undefined)).toBeUndefined();
+        expect(exifCaptureTime(Buffer.from('Exif\0\0garbage'))).toBeUndefined();
     });
 });
 

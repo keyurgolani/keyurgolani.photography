@@ -136,22 +136,27 @@ describe('getGalleryImages', () => {
         expect(errors).toHaveBeenCalledWith(expect.stringMatching(/^\[getGalleryImages\] Skipping portrait\.png: /));
     });
 
-    it('sorts by an EXIF date only when its text is a real date, so a rolled-over one never moves a photo', async () => {
-        const dated = (original: string, modified: string) => sharp({ create: { width: 64, height: 48, channels: 3, background: '#4a6' } })
-            .withExif({ IFD0: { DateTime: modified }, IFD2: { DateTimeOriginal: original } })
+    it("sorts by DateTimeOriginal only when its text is a real date, and otherwise by the file's birth time", async () => {
+        const dated = (tags: { DateTimeOriginal?: string; DateTime?: string }) => sharp({ create: { width: 64, height: 48, channels: 3, background: '#4a6' } })
+            .withExif({
+                ...(tags.DateTime ? { IFD0: { DateTime: tags.DateTime } } : {}),
+                ...(tags.DateTimeOriginal ? { IFD2: { DateTimeOriginal: tags.DateTimeOriginal } } : {}),
+            })
             .jpeg()
             .toBuffer();
-        // exif-reader reads 2024:00:00 as 2023-11-30, which would sort rolled.jpg ahead of june.jpg.
-        fs.writeFileSync(lib.file('rolled.jpg'), await dated('2024:00:00 00:00:00', '2020:01:01 00:00:00'));
-        fs.writeFileSync(lib.file('june.jpg'), await dated('2023:06:01 08:00:00', '2023:06:02 08:00:00'));
-        for (const name of ['rolled.jpg', 'june.jpg']) await refreshImage(name, { force: true });
+        // exif-reader reads 2024:00:00 as 2023-11-30. A camera whose clock was never set writes all zeros.
+        fs.writeFileSync(lib.file('rolled.jpg'), await dated({ DateTimeOriginal: '2024:00:00 00:00:00', DateTime: '2020:01:01 00:00:00' }));
+        fs.writeFileSync(lib.file('unset.jpg'), await dated({ DateTimeOriginal: '0000:00:00 00:00:00' }));
+        // DateTime is when the file last changed, which says nothing about when the photo was taken
+        fs.writeFileSync(lib.file('edited.jpg'), await dated({ DateTime: '2020:01:01 00:00:00' }));
+        fs.writeFileSync(lib.file('june.jpg'), await dated({ DateTimeOriginal: '2023:06:01 08:00:00', DateTime: '2023:06:02 08:00:00' }));
+        for (const name of ['rolled.jpg', 'unset.jpg', 'edited.jpg', 'june.jpg']) await refreshImage(name, { force: true });
         const images = await getGalleryImages();
         const base = (image: ImageItem) => image.optimized.replace('/assets/photos/optimized/', '').replace(/\.webp$/, '');
+        const dateOf = (name: string) => images.find((image) => base(image) === name)?.date;
 
-        expect(images.map(base).filter((name) => name === 'rolled' || name === 'june')).toEqual(['june', 'rolled']);
-        // The rolled-over original gives way to the last-changed time
-        expect(images.find((image) => base(image) === 'rolled')?.date).toBe(Date.parse('2020-01-01T00:00:00Z'));
-        expect(images.find((image) => base(image) === 'june')?.date).toBe(Date.parse('2023-06-01T08:00:00Z'));
+        for (const name of ['rolled', 'unset', 'edited']) expect(dateOf(name), name).toBe(fs.statSync(lib.file(`${name}.jpg`)).birthtime.getTime());
+        expect(dateOf('june')).toBe(Date.parse('2023-06-01T08:00:00Z'));
     });
 
     it('lists sources that share derivatives once, by the first path, and warns naming both', async () => {

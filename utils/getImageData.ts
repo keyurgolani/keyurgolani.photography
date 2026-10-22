@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import sharp from 'sharp';
 import exifFromBuffer from 'exif-reader';
-import { exifWallClocks } from '../lib/identity/metadata';
+import { exifCaptureTime } from '../lib/identity/metadata';
 import {
     baseNameOf,
     encodeLqip,
@@ -149,12 +149,10 @@ export async function getGalleryImages(): Promise<ImageItem[]> {
         const exifTags = (exifData.exif || exifData.Photo || {}) as Record<string, unknown>;
         const imageTags = (exifData.image || exifData.Image || {}) as Record<string, unknown>;
 
-        // Date: DateTimeOriginal, then the last-changed DateTime, then the file's birth time. Each EXIF one only
-        // when its text is a real date: exif-reader rolls a bad field over, so 2024:00:00 would sort as 2023-11-30.
-        // The wall-clock time reads as UTC, as exif-reader read it.
-        const { original, modified } = exifWallClocks(metadata.exif);
-        const wallClock = original ?? modified;
-        const dateTaken = wallClock ? new Date(`${wallClock}Z`) : fs.statSync(filePath).birthtime;
+        // Date: DateTimeOriginal when its text is a real date, else the file's birth time. exif-reader rolls a bad
+        // field over, so 2024:00:00 would sort as 2023-11-30. The wall-clock time reads as UTC, as exif-reader read it.
+        const taken = exifCaptureTime(metadata.exif);
+        const dateTaken = taken ? new Date(`${taken}Z`) : fs.statSync(filePath).birthtime;
 
         const camera = imageTags.Model || '';
         const fNumber = exifTags.FNumber;
