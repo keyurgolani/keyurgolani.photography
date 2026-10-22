@@ -5,7 +5,7 @@ This directory is where gallery photos should be placed.
 ## Usage
 
 1. Add your photos (JPG, JPEG, PNG, WEBP) to this directory
-2. The gallery loads them through `/api/photos` once the watcher has written all seven of their derivatives. The original files are never served.
+2. The gallery loads them through `/api/photos` once the watcher has recorded them in the data root and written all seven of their derivatives. Until `photos:migrate --apply` has initialized the data root, `/api/photos` answers 503 and the gallery is empty. The original files are never served.
 3. Photos are sorted by date taken (newest first), extracted from EXIF metadata
 
 ## Replacing and Removing Photos

@@ -43,7 +43,7 @@ mkdir -p portfolio-data
 sudo chown -R 1001:1001 public/assets/photos portfolio-data
 ```
 
-Until the migration below initializes it, the watcher writes only its heartbeat there, logs once that the identity step is off, and keeps writing the legacy derivatives the site serves today. `GET /api/health` reports `uninitialized`.
+Until the migration below initializes it, the watcher writes only its heartbeat there, logs once that the identity step is off, and keeps writing the legacy derivatives. `GET /api/health` reports `uninitialized`. The site lists photos from the registry the migration writes, so until it runs, `/api/photos` and `GET /api/ready` answer 503 with `registry-missing`, and Home and Gallery show no photos.
 
 ## Never migrate into an empty data root beside a library that had IDs
 
@@ -91,6 +91,8 @@ The watcher's next pass keeps the ID of every photo that archive knew, follows a
 
 `GET /api/health` answers 200 whenever `web` is up, with the data root's state: `ready`, `uninitialized`, `unavailable`, or `unset`. Both `web` healthchecks call it.
 
+`GET /api/ready` says whether `web` can list the photos, and from where: `"mode":"legacy"` lists the registry's photos before the first catalog activation, and `"mode":"catalog"` the active revision's after it, with `revisionId`, `revisionNumber`, and `activatedAt`. It answers 503 with a `reason` when it can't list them, such as `registry-missing` before the migration.
+
 The watcher's healthcheck runs `node dist/scripts/watcherHealth.mjs`, which passes while `status/watcher.json` is at most 120 s old. The watcher rewrites it every 30 s, so a stuck watcher, or a data root uid 1001 can't write, turns it unhealthy. `docker compose -f docker-compose.prod.yml ps` shows the state, and the healthcheck's last lines say why:
 
 ```bash
@@ -99,7 +101,7 @@ docker inspect --format '{{json .State.Health}}' "$(docker compose -f docker-com
 
 ## Migration runbook
 
-Run this once, on a library that never had a data root, to give every photo its ID. Nothing on the site uses the IDs yet, and the legacy derivatives keep serving throughout.
+Run this once, on a library that never had a data root, to give every photo its ID. Until the catalog launches, Home and Gallery list the registry's photos at their legacy derivative URLs, so they show no photos until step 4 writes the registry. The legacy derivatives keep serving throughout.
 
 1. Stop the watcher, so the library holds still:
 
@@ -118,7 +120,7 @@ Run this once, on a library that never had a data root, to give every photo its 
 
    Check its duplicate-byte groups, basename collisions, unreadable, unsupported, and undecodable files, and ambiguous items. An ambiguous file gets no ID until you decide with `photos.mjs identity bind` or `new`.
 
-4. Apply the plan the dry run printed. It writes the registry with exactly the plan's IDs, and `data-root.json`, after which `GET /api/health` reports `ready`. If the library or the registry changed since the dry run, it refuses, so run the dry run again and apply that plan. Applying a plan twice prints that it's already applied and exits 0.
+4. Apply the plan the dry run printed. It writes the registry with exactly the plan's IDs, and `data-root.json`, after which `GET /api/health` reports `ready` and `GET /api/ready` reports `"state":"ok"`. If the library or the registry changed since the dry run, it refuses, so run the dry run again and apply that plan. Applying a plan twice prints that it's already applied and exits 0.
 
    ```bash
    docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs migrate --apply --plan <plan path>
