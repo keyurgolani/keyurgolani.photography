@@ -52,6 +52,7 @@ jobs:
       - run: npm run build
       - name: Check the build traced no project files into .next/standalone
         run: bash ci/check-standalone.sh
+      - run: npm run check:prerender
       - run: npm run smoke:media
 
   e2e:
