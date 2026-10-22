@@ -81,7 +81,7 @@ problems=$(docker run --rm --pull never "$IMAGE" node -e '
   for (const source of ["scripts", "utils", "lib", "tsconfig.json"]) {
     if (fs.existsSync(source)) problems.push(source);
   }
-  for (const script of ["imageWatcher", "photos", "imageCleanup", "watcherHealth"]) {
+  for (const script of ["imageWatcher", "photos", "watcherHealth"]) {
     if (!fs.existsSync("dist/scripts/" + script + ".mjs")) problems.push("no dist/scripts/" + script + ".mjs");
   }
   console.log(problems.join(", "));

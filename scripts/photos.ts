@@ -99,7 +99,7 @@ const USAGE = `Usage:
 
 class UsageError extends Error {}
 
-/** Parse flags strictly, as images:cleanup does: an unknown flag, a stray argument, or a missing value is a usage error. */
+/** Parse flags strictly: an unknown flag, a stray argument, or a missing value is a usage error. */
 function strictly<T>(parse: () => T): T {
     try {
         return parse();
