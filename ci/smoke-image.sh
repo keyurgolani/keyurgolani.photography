@@ -3,25 +3,29 @@
 # project directory, with the photos in ci/fixtures/library and an empty data
 # root, and checks:
 #
-# 1. web serves the site and /api/health, and the watcher writes every
-#    legacy derivative, for the photos it starts with and for one added while
-#    it runs, and stays healthy.
+# 1. web serves the site and /api/health, /api/photos and /api/ready answer
+#    503 with registry-missing until the migration runs, and the watcher
+#    writes every legacy derivative, for the photos it starts with and for one
+#    added while it runs, and stays healthy.
 # 2. The migration runbook in docs/data-root.md works as uid 1001: with the
 #    watcher stopped, a dry run and an apply in image-watcher initialize the
-#    data root, and once the watcher is back it builds every /media set and
-#    keeps its heartbeat fresh.
-# 3. /media serves those sets, an original source 404s, and the photo IDs and
-#    ETags stay the same once the containers are recreated.
+#    data root, after which /api/photos lists every photo and /api/ready
+#    reports legacy mode. Once the watcher is back it builds every /media set
+#    and keeps its heartbeat fresh.
+# 3. /media serves none of those sets before the first activation, an
+#    original source 404s, and the photo IDs, /media URLs, and set digests
+#    stay the same once the containers are recreated.
 # 4. With PHOTOGRAPHY_DATA_DIR unset, the watcher says the identity step is
 #    off, writes the legacy derivatives, and writes no registry.
 #
 #   ci/smoke-image.sh <tag>
 #
 # ghcr.io/keyurgolani/keyurgolani.photography:<tag> must already exist
-# locally, since nothing pulls here. web serves every /media set here, through
-# PHOTOGRAPHY_MEDIA_ACCESS=all, on 127.0.0.1 port SMOKE_IMAGE_PORT, 3000 by
-# default. Those are the only changes to docker-compose.prod.yml, made with an
-# override that needs Docker Compose 2.24.4 or later for its !override tag.
+# locally, since nothing pulls here. web listens on 127.0.0.1 port
+# SMOKE_IMAGE_PORT, 3000 by default. That is the only change to
+# docker-compose.prod.yml, made with an override that needs Docker Compose
+# 2.24.4 or later for its !override tag. ci/smoke-catalog.sh checks /media on
+# a published catalog.
 set -euo pipefail
 
 if [ "$#" -ne 1 ] || [ -z "$1" ]; then
@@ -170,23 +174,32 @@ media_sets() {
       end' "$TMP/registry.json" | LC_ALL=C sort >"$1" || fail "Could not list a ready set for every photo."
 }
 
-# Fetches each set listed in <sets> and writes its line with the ETag to
-# <file>. Fails unless each is 200, immutable, image/webp, and tagged with a
-# SHA-256.
-media_etags() {
-  local path photo url code etag
+# Writes each line of <sets> to <file> with the SHA-256 its set's manifest
+# records for the w800 WebP, the ETag /media sends once a revision holds it.
+set_digests() {
+  local path photo url set digest
   : >"$2"
   while read -r path photo url; do
-    code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$BASE_URL$url") ||
-      fail "GET $url failed."
-    [ "$code" = 200 ] || fail "GET $url, the set of $path, returned $code, expected 200."
-    tr -d '\r' <"$TMP/headers.txt" | grep -qix 'cache-control: public, max-age=31536000, immutable' ||
-      fail "GET $url did not send Cache-Control: public, max-age=31536000, immutable."
-    tr -d '\r' <"$TMP/headers.txt" | grep -qix 'content-type: image/webp' || fail "GET $url did not send Content-Type: image/webp."
-    etag=$(tr -d '\r' <"$TMP/headers.txt" | sed -n 's/^[Ee][Tt][Aa][Gg]: *//p' | head -1)
-    [[ $etag =~ ^\"[0-9a-f]{64}\"$ ]] || fail "GET $url sent ETag '$etag', expected a quoted SHA-256."
-    echo "$path $photo $url $etag" >>"$2"
+    set=${url#/media/}
+    set=${set%/w800.webp}
+    # compose run reads stdin, which here is <sets>.
+    digest=$(in_watcher cat "/data/portfolio/assets/$set/manifest.json" </dev/null | jq -r '.variants.w800.webp.sha256') ||
+      fail "Could not read the manifest of $url, the set of $path."
+    [[ $digest =~ ^[0-9a-f]{64}$ ]] || fail "The manifest of $url records '$digest' for w800.webp, expected a SHA-256."
+    echo "$path $photo $url $digest" >>"$2"
   done <"$1"
+}
+
+# Fails unless GET <endpoint> answers <code> with Cache-Control <cache> and a
+# JSON body jq <filter> accepts. Any further arguments go to jq first.
+expect_json() {
+  local endpoint=$1 expected=$2 cache=$3 filter=$4 code
+  shift 4
+  code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o "$TMP/body.json" -w '%{http_code}' "$BASE_URL$endpoint") ||
+    fail "GET $endpoint failed."
+  [ "$code" = "$expected" ] || fail "GET $endpoint returned $code, expected $expected: $(cat "$TMP/body.json")"
+  tr -d '\r' <"$TMP/headers.txt" | grep -qix "cache-control: $cache" || fail "GET $endpoint did not send Cache-Control: $cache."
+  jq -e "$@" "$filter" "$TMP/body.json" >/dev/null || fail "GET $endpoint returned $(cat "$TMP/body.json"), which fails $filter."
 }
 
 # 1. A throwaway library and an empty data root. Both containers run as uid
@@ -204,8 +217,6 @@ services:
   web:
     ports: !override
       - "127.0.0.1:$PORT:3000"
-    environment:
-      - PHOTOGRAPHY_MEDIA_ACCESS=all
 YAML
 if curl -s --max-time 2 -o /dev/null "$BASE_URL/"; then
   fail "Something already answers on $BASE_URL. Set SMOKE_IMAGE_PORT to a free port."
@@ -236,13 +247,11 @@ esac
 grep -q '<title>' "$TMP/home.html" || fail "GET / has no <title>."
 echo "GET / returned HTML with a <title>."
 
-# 4. /api/photos returns a JSON array. It is prerendered with revalidate = 60,
-#    so the first responses can be the empty build-time list.
-code=$(curl -sS --max-time 30 -o "$TMP/photos.json" -w '%{http_code}' "$BASE_URL/api/photos") ||
-  fail "GET /api/photos failed."
-[ "$code" = 200 ] || fail "GET /api/photos returned $code, expected 200."
-jq -e 'type == "array"' "$TMP/photos.json" >/dev/null || fail "GET /api/photos did not return a JSON array."
-echo "GET /api/photos returned a JSON array."
+# 4. Until the migration writes the registry, there is nothing to list, so
+#    /api/photos and /api/ready answer 503 with registry-missing.
+expect_json /api/photos 503 no-store '. == {reason: "registry-missing"}'
+expect_json /api/ready 503 no-store '.mode == "legacy" and .state == "unavailable" and .reason == "registry-missing"'
+echo "GET /api/photos and /api/ready returned 503 with registry-missing before the migration."
 
 # 5. /api/health answers 200 and reports the empty data root as uninitialized.
 check_health
@@ -275,6 +284,15 @@ check_health
 [ "$HEALTH" = ready ] || fail "GET /api/health reported dataRoot '$HEALTH' after the migration, expected ready."
 echo "The migration ran as uid 1001, and /api/health reports the data root ready."
 
+# With the registry written, legacy mode lists every photo at its legacy
+# derivative URLs, which the watcher wrote in steps 6 and 7.
+# shellcheck disable=SC2016 # $photos is jq's
+expect_json /api/photos 200 no-cache \
+  'type == "array" and length == $photos and all(.[]; .src | startswith("/assets/photos/optimized/"))' \
+  --argjson photos "$((${#fixtures[@]} + 1))"
+expect_json /api/ready 200 no-store '. == {mode: "legacy", state: "ok", revisionId: null, revisionNumber: null, activatedAt: null}'
+echo "GET /api/photos listed every photo at its legacy URLs, and /api/ready reported legacy mode."
+
 # 9. Back up, the watcher builds every set, and its heartbeat stays fresh.
 compose up -d --pull never --wait --wait-timeout 180 image-watcher
 deadline=$((SECONDS + OUTPUT_TIMEOUT))
@@ -293,27 +311,32 @@ age=$(jq -r '.watcher.ageSeconds // empty' "$TMP/status.json")
 require_watcher_running
 echo "The watcher built every /media set, and its heartbeat is ${age} s old."
 
-# 10. /media serves each set under PHOTOGRAPHY_MEDIA_ACCESS=all, and an original 404s.
+# 10. Nothing is active yet, so /media serves none of the sets, and an original 404s.
 media_sets "$TMP/sets.txt"
 [ "$(wc -l <"$TMP/sets.txt")" -eq "$((${#fixtures[@]} + 1))" ] || fail "Expected a set per photo, got: $(cat "$TMP/sets.txt")"
-media_etags "$TMP/sets.txt" "$TMP/before.txt"
+while read -r path photo url; do
+  code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$BASE_URL$url") || fail "GET $url failed."
+  [ "$code" = 404 ] || fail "GET $url, the set of $path, returned $code before the first activation, expected 404."
+  tr -d '\r' <"$TMP/headers.txt" | grep -qix 'cache-control: no-store' || fail "The 404 for $url did not send Cache-Control: no-store."
+done <"$TMP/sets.txt"
 code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$BASE_URL/assets/photos/${fixtures[0]}.jpg") ||
   fail "GET /assets/photos/${fixtures[0]}.jpg failed."
 [ "$code" = 404 ] || fail "GET /assets/photos/${fixtures[0]}.jpg, an original, returned $code, expected 404."
-echo "/media served every set with immutable and an ETag, and the original returned 404."
+echo "/media served none of the sets before the first activation, and the original returned 404."
 
-# 11. Recreated containers keep every photo ID, /media URL, and ETag.
+# 11. Recreated containers keep every photo ID, /media URL, and set.
+set_digests "$TMP/sets.txt" "$TMP/before.txt"
 compose down
 compose up -d --pull never --wait --wait-timeout 180 "${services[@]}"
 check_health
 [ "$HEALTH" = ready ] || fail "GET /api/health reported dataRoot '$HEALTH' after the restart, expected ready."
 media_sets "$TMP/sets-after.txt"
-media_etags "$TMP/sets-after.txt" "$TMP/after.txt"
+set_digests "$TMP/sets-after.txt" "$TMP/after.txt"
 if ! diff -u "$TMP/before.txt" "$TMP/after.txt"; then
-  fail "The photo IDs, /media URLs, or ETags changed when the containers were recreated."
+  fail "The photo IDs, /media URLs, or set digests changed when the containers were recreated."
 fi
 require_watcher_running
-echo "After the containers were recreated, every photo kept its ID, /media URL, and ETag."
+echo "After the containers were recreated, every photo kept its ID, /media URL, and set."
 
 # 12. With PHOTOGRAPHY_DATA_DIR unset, the image's watcher runs only the legacy
 #     step. The image sets no default, so nothing names a data root.
