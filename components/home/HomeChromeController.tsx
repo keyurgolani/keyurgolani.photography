@@ -66,21 +66,41 @@ export default function HomeChromeController({
   const reducedMotionRef = useRef(reducedMotion);
   const lastActivityAt = useRef(0);
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fadeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     reducedMotionRef.current = reducedMotion;
   }, [reducedMotion]);
 
-  // The reducer runs here, against the latest state, so a handler that runs right after another sees its result.
-  const send = useCallback((event: ChromeEvent) => {
-    const previous = stateRef.current;
-    const next = reduceChrome(previous, event);
-    if (next === previous) return;
-    // Any release, the no-photo one included, starts a fresh full timeout.
-    if ([...previous.holds].some((reason) => !next.holds.has(reason))) lastActivityAt.current = Date.now();
-    stateRef.current = next;
-    setState(next);
+  const clearFade = useCallback(() => {
+    if (fadeTimer.current === null) return;
+    clearTimeout(fadeTimer.current);
+    fadeTimer.current = null;
   }, []);
+
+  // The reducer runs here, against the latest state, so a handler that runs right after another sees its
+  // result. The fade's timer starts with the fade, so its end never waits on a render.
+  const send = useCallback(
+    function send(event: ChromeEvent) {
+      const previous = stateRef.current;
+      const next = reduceChrome(previous, event);
+      if (next === previous) return;
+      // Any release, the no-photo one included, starts a fresh full timeout.
+      if ([...previous.holds].some((reason) => !next.holds.has(reason))) lastActivityAt.current = Date.now();
+      stateRef.current = next;
+      if (next.visibility !== previous.visibility) {
+        clearFade();
+        if (next.visibility === 'receding') {
+          fadeTimer.current = setTimeout(() => {
+            fadeTimer.current = null;
+            send({ type: 'fadeEnded' });
+          }, HOME_CHROME_FADE_MS);
+        }
+      }
+      setState(next);
+    },
+    [clearFade],
+  );
 
   const activity = useCallback(() => {
     lastActivityAt.current = Date.now();
@@ -137,18 +157,18 @@ export default function HomeChromeController({
     }
   }, [state.visibility, holdsKey, state.holds.size, documentVisible, armIdle, clearIdle]);
 
-  useEffect(() => clearIdle, [clearIdle]);
+  useEffect(
+    () => () => {
+      clearIdle();
+      clearFade();
+    },
+    [clearIdle, clearFade],
+  );
 
-  // The fade out, which reduced motion skips, mid-fade too.
+  // Reduced motion skips the fade, one already running included.
   useEffect(() => {
-    if (state.visibility !== 'receding') return;
-    if (reducedMotion) {
-      send({ type: 'fadeEnded' });
-      return;
-    }
-    const timer = setTimeout(() => send({ type: 'fadeEnded' }), HOME_CHROME_FADE_MS);
-    return () => clearTimeout(timer);
-  }, [state.visibility, reducedMotion, send]);
+    if (reducedMotion && state.visibility === 'receding') send({ type: 'fadeEnded' });
+  }, [reducedMotion, state.visibility, send]);
 
   // A hidden document drops the hover and press holds and returns Home to immersive, unless something still holds it.
   const pressPointer = useRef<number | null>(null);

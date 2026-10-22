@@ -2,6 +2,7 @@ import type { Locator, Page } from '@playwright/test';
 import type { ImageItem } from '../utils/getImageData';
 import { expectContrastOverImage } from './support/contrast';
 import { expectNotObscured } from './support/focus';
+import { photoPoint } from './support/home';
 import { waitForHydration } from './support/hydration';
 import { expectReflow } from './support/reflow';
 import { checkSurface } from './support/surface';
@@ -9,10 +10,12 @@ import { expect, setPhotoFixtures, test } from './support/test';
 
 /** HOME_AUTO_ADVANCE_MS in components/home/homePlayback.ts. */
 const INTERVAL = 12_000;
-/** RevealingContents hides the chrome this long after the last activity. */
-const IDLE = 3_000;
+/** HOME_CHROME_IDLE_MS and HOME_CHROME_FADE_MS: the chrome recedes this long after the last activity, then fades. */
+const IDLE = 4_000;
+const FADE = 220;
 
-const main = (page: Page) => page.locator('main[data-playback]');
+/** The display: contents wrapper inside Home's main that carries the playback state. */
+const stage = (page: Page) => page.locator('[data-playback]');
 const group = (page: Page) => page.getByRole('group', { name: 'Slideshow' });
 const previous = (page: Page) => page.getByRole('button', { name: 'Previous photograph', exact: true });
 const next = (page: Page) => page.getByRole('button', { name: 'Next photograph', exact: true });
@@ -28,15 +31,13 @@ const themeToggle = (page: Page) => page.getByRole('button', { name: /^Switch to
 const primary = (page: Page) => page.getByRole('navigation', { name: 'Primary' });
 const navLinks = (page: Page) => primary(page).getByRole('link');
 const portrait = (page: Page) => page.locator('[class*="portrait"]');
-/** The portrait as painted: its rounded images, which reach past the wrapper's box at the bottom. */
-const paintedPortrait = (page: Page) => portrait(page).locator('img');
 const grainOverlay = (page: Page) => page.locator('[class*="grainOverlay"]');
+const home = (page: Page) => page.locator('main[data-interface-state]');
 
-/** The chrome layer: RevealingContents' fixed overlay around the controls. */
-const chromeOpacity = (page: Page) =>
-    group(page).evaluate((el) => parseFloat(getComputedStyle(el.closest('.fixed.inset-0') ?? el).opacity));
-/** Whether RevealingContents has set the chrome to show, whatever its opacity is at the moment. */
-const chromeShown = (page: Page) => group(page).evaluate((el) => el.closest('.fixed.inset-0')?.classList.contains('opacity-100') ?? false);
+/** The chrome layer HomeChromeController shows and hides around the controls. */
+const chromeOpacity = (page: Page) => page.locator('[data-home-chrome]').evaluate((el) => parseFloat(getComputedStyle(el).opacity));
+/** Whether the controller has the chrome up, whatever its opacity is at the moment. */
+const chromeShown = async (page: Page) => (await home(page).getAttribute('data-interface-state')) === 'interactive';
 
 /** Running animations and transitions whose single iteration lasts longer than `limit` ms. */
 const runningLongerThan = (page: Page, limit: number) =>
@@ -83,16 +84,22 @@ async function pressUntilFocused(page: Page, key: 'Tab' | 'Shift+Tab', target: L
     await expect(target).toBeFocused();
 }
 
-/** Shows the chrome with a pointer: two mouse moves 100 px apart, since RevealingContents ignores the first, or a tap on the photo. */
-async function revealByPointer(page: Page, isMobile: boolean) {
-    const { width, height } = page.viewportSize()!;
+/**
+ * Shows the chrome with a pointer: mouse moves onto the photograph, more than
+ * one since Chromium gives a document's first move no movement, or a tap on
+ * it. With the page clock paused, `clocked` runs a frame so a tap's gesture ends.
+ */
+async function revealByPointer(page: Page, isMobile: boolean, { clocked = false } = {}) {
+    const { x, y } = await photoPoint(page);
     if (isMobile) {
-        // Left of center, clear of the controls, SiteNav, and the portrait.
-        await page.touchscreen.tap(24, Math.round(height / 2));
+        await page.touchscreen.tap(x, y);
+        if (clocked) await runFor(page, 50);
     } else {
-        await page.mouse.move(width / 2 - 200, height / 2 - 150);
-        await page.mouse.move(width / 2 - 200, height / 2 + 50);
+        await page.mouse.move(x - 40, y + 30);
+        await page.mouse.move(x, y, { steps: 2 });
     }
+    await expect(home(page)).toHaveAttribute('data-interface-state', 'interactive');
+    await expect(home(page)).not.toHaveAttribute('data-reveal-gesture');
 }
 
 /**
@@ -105,7 +112,7 @@ async function openHome(page: Page, { state = 'advancing', clock }: { state?: st
     if (clock === 'before') await page.clock.install();
     await page.goto('/');
     await waitForHydration(page);
-    await expect(main(page)).toHaveAttribute('data-playback', state, { timeout: 20_000 });
+    await expect(stage(page)).toHaveAttribute('data-playback', state, { timeout: 20_000 });
     if (clock === 'after') await page.clock.install();
     if (clock) {
         // A second ahead of the page's clock, which keeps running until the pause lands.
@@ -141,10 +148,10 @@ test.describe('normal motion', () => {
         await expect(position(page)).toHaveText('01 / 03');
 
         // Pause by click or tap, then move the mouse off the controls so its hold can't stand in for a broken Pause.
-        await revealByPointer(page, isMobile);
+        await revealByPointer(page, isMobile, { clocked: true });
         if (isMobile) await pause(page).tap();
         else await pause(page).click();
-        await expect(main(page)).toHaveAttribute('data-playback', 'paused');
+        await expect(stage(page)).toHaveAttribute('data-playback', 'paused');
         if (!isMobile) await page.mouse.move(width / 2, height / 2);
 
         await runFor(page, INTERVAL * 3);
@@ -154,15 +161,19 @@ test.describe('normal motion', () => {
         expect(zooms.length).toBeGreaterThan(0);
         expect(zooms.every((state) => state === 'paused')).toBe(true);
 
+        // The chrome receded during the wait, so a pointer reveals it again first.
+        await revealByPointer(page, isMobile, { clocked: true });
         if (isMobile) {
             await play(page).tap();
-            await expect(main(page)).toHaveAttribute('data-playback', 'advancing');
+            await expect(stage(page)).toHaveAttribute('data-playback', 'advancing');
         } else {
-            // The click leaves the mouse resting on the controls with the chrome shown, which holds until the chrome hides.
+            // The click leaves the mouse resting on Play, which holds the chrome and the slideshow until it moves off.
             await play(page).click();
-            await expect(main(page)).toHaveAttribute('data-playback', 'held');
-            await runFor(page, IDLE);
-            await expect(main(page)).toHaveAttribute('data-playback', 'advancing');
+            await expect(stage(page)).toHaveAttribute('data-playback', 'held');
+            await runFor(page, IDLE + FADE);
+            await expect(stage(page)).toHaveAttribute('data-playback', 'held');
+            await page.mouse.move(width / 2, height / 2, { steps: 2 });
+            await expect(stage(page)).toHaveAttribute('data-playback', 'advancing');
             await expect(position(page)).toHaveText('01 / 03');
         }
         await settle(page);
@@ -175,14 +186,14 @@ test.describe('normal motion', () => {
         if (!isMobile) await page.mouse.move(width / 2, height / 2);
         await pressUntilFocused(page, 'Shift+Tab', next(page));
         expect(await chromeOpacity(page)).toBe(1);
-        await expect(main(page)).toHaveAttribute('data-playback', 'held');
+        await expect(stage(page)).toHaveAttribute('data-playback', 'held');
         await runFor(page, IDLE + 1000);
         expect(await chromeOpacity(page)).toBe(1);
         await expect(position(page)).toHaveText('02 / 03');
 
         // The toggle sits in SiteNav inside the chrome, so focus there holds too, and nothing moves.
         await pressUntilFocused(page, 'Shift+Tab', themeToggle(page));
-        await expect(main(page)).toHaveAttribute('data-playback', 'held');
+        await expect(stage(page)).toHaveAttribute('data-playback', 'held');
         await settle(page);
         await runFor(page, INTERVAL);
         await expect(position(page)).toHaveText('02 / 03');
@@ -194,7 +205,7 @@ test.describe('normal motion', () => {
         test.setTimeout(60_000);
         await openHome(page, { clock: 'before' });
         const { width, height } = page.viewportSize()!;
-        await revealByPointer(page, false);
+        await revealByPointer(page, false, { clocked: true });
         await next(page).click();
         await expect(position(page)).toHaveText('02 / 03');
 
@@ -202,9 +213,9 @@ test.describe('normal motion', () => {
         await page.keyboard.press('Enter');
         await expect(position(page)).toHaveText('03 / 03');
         await page.mouse.move(width / 2, height / 2);
-        await expect(main(page)).toHaveAttribute('data-playback', 'held');
+        await expect(stage(page)).toHaveAttribute('data-playback', 'held');
         await runFor(page, IDLE + INTERVAL);
-        await expect(main(page)).toHaveAttribute('data-playback', 'held');
+        await expect(stage(page)).toHaveAttribute('data-playback', 'held');
         await expect(position(page)).toHaveText('03 / 03');
         await expect(next(page)).toBeFocused();
     });
@@ -221,9 +232,9 @@ test.describe('normal motion', () => {
     });
 
     test.describe('on a short screen', () => {
-        // Short screens, where the settled portrait once covered Previous, phones on their side included. The last
-        // five are where it still covered Previous's ring, or at 360 by 320 its centre, before the chrome sat over
-        // it. The chrome sits over the portrait now, so Previous keeps its ring and its hit at every size.
+        // Short screens, where the settled portrait once covered Previous, phones on their side included, and the
+        // narrower ones where it covered Previous's ring or centre until the chrome sat over it. Settled Home has no
+        // portrait now, and Previous keeps its ring in view and its hit at every size.
         const SHORT_SCREENS = [
             [640, 400], [667, 375], [568, 320], [740, 360], [736, 414], [768, 400], [780, 420], [800, 480], [812, 375], [820, 400], [844, 390], [896, 414], [932, 430],
             [533, 320], [512, 384], [480, 320], [360, 320], [568, 520],
@@ -232,15 +243,14 @@ test.describe('normal motion', () => {
         const PROBES = [[0, 0], [-10, -12], [10, -12], [-10, 12], [10, 12], [-18, 0], [18, 0], [0, -18], [0, 18]] as const;
 
         for (const [width, height] of SHORT_SCREENS) {
-            test(`at ${width} by ${height} Previous keeps its ring clear of the painted portrait and takes a click or tap anywhere on it`, async ({ page, isMobile }) => {
+            test(`at ${width} by ${height} Previous keeps its ring in view and takes a click or tap anywhere on it`, async ({ page, isMobile }) => {
                 await page.setViewportSize({ width, height });
                 await openHome(page);
                 await expect(position(page)).toHaveText('01 / 03');
+                await expect(portrait(page)).toHaveCount(0);
+                // Keyboard focus reveals the chrome and holds it, so it takes the pointer.
                 await pressUntilFocused(page, 'Tab', previous(page));
-                // Activity brings the portrait back, so check once it's fully shown.
-                await page.keyboard.press('Shift');
-                await expect.poll(() => portrait(page).evaluate((el) => parseFloat(getComputedStyle(el).opacity))).toBe(1);
-                await expectNotObscured(previous(page), [paintedPortrait(page)]);
+                await expectNotObscured(previous(page), []);
 
                 const missed = await previous(page).evaluate((el, probes) => {
                     const { left, top, width: w, height: h } = el.getBoundingClientRect();
@@ -269,12 +279,12 @@ test.describe('normal motion', () => {
         await primary(page).getByRole('link', { name: 'Home', exact: true }).focus();
         await page.keyboard.press('Enter');
         await expect(page).toHaveURL('/');
-        await expect(main(page)).toHaveAttribute('data-playback', 'paused', { timeout: 20_000 });
+        await expect(stage(page)).toHaveAttribute('data-playback', 'paused', { timeout: 20_000 });
         await expect(play(page)).toHaveCount(1);
 
         await page.reload();
         await waitForHydration(page);
-        await expect(main(page)).toHaveAttribute('data-playback', 'advancing', { timeout: 20_000 });
+        await expect(stage(page)).toHaveAttribute('data-playback', 'advancing', { timeout: 20_000 });
         await expect(pause(page)).toHaveCount(1);
     });
 });
@@ -284,14 +294,15 @@ test.describe('reduced motion', () => {
         await page.emulateMedia({ reducedMotion: 'reduce' });
     });
 
-    test('before load: no grain or ripple, the portrait at rest, nothing advances, and the playback button does nothing', async ({ page, isMobile }) => {
-        // Samples every rendered frame from the first for a displayed intro layer.
+    test('before load: no grain, ripple, or portrait, nothing advances, and the playback button does nothing', async ({ page, isMobile }) => {
+        // Samples every rendered frame from the first for a displayed intro layer or portrait.
         await page.addInitScript(() => {
-            const seen = { overlay: false, ripples: false };
+            const seen = { overlay: false, ripples: false, portrait: false };
             (window as unknown as { __introSeen: typeof seen }).__introSeen = seen;
             const sample = () => {
                 for (const el of document.querySelectorAll('[class*="grainOverlay"]')) if (getComputedStyle(el).display !== 'none') seen.overlay = true;
                 for (const el of document.querySelectorAll('[class*="ripples"]')) if (getComputedStyle(el).display !== 'none') seen.ripples = true;
+                for (const el of document.querySelectorAll('[class*="portrait"]')) if (getComputedStyle(el).display !== 'none') seen.portrait = true;
                 requestAnimationFrame(sample);
             };
             requestAnimationFrame(sample);
@@ -299,26 +310,24 @@ test.describe('reduced motion', () => {
         // The clock goes in after the load, so the frame sampler runs on real frames. Nothing advances under reduce, so no timer predates it.
         await openHome(page, { state: 'reduced-motion', clock: 'after' });
 
-        expect(await page.evaluate(() => (window as unknown as { __introSeen: unknown }).__introSeen)).toEqual({ overlay: false, ripples: false });
+        expect(await page.evaluate(() => (window as unknown as { __introSeen: unknown }).__introSeen)).toEqual({ overlay: false, ripples: false, portrait: false });
         await expect(grainOverlay(page)).toHaveCount(0);
-        const { top, bottom, left, right } = await box(portrait(page));
-        const viewport = page.viewportSize()!;
-        expect(Math.abs((top + bottom) / 2 - (viewport.height - 280))).toBeLessThan(1);
-        expect(Math.abs((left + right) / 2 - viewport.width / 2)).toBeLessThan(1);
+        await expect(portrait(page)).toHaveCount(0);
 
         await runFor(page, INTERVAL * 3);
         await expect(position(page)).toHaveText('01 / 03');
 
         await expect(play(page)).toHaveAttribute('aria-disabled', 'true');
         await expect(play(page)).toHaveAccessibleDescription('Off with reduced motion');
-        // Playwright won't act on an aria-disabled element unless forced, but a visitor still can.
+        // Playwright won't act on an aria-disabled element unless forced, but a visitor still can, once the chrome is up.
+        await revealByPointer(page, isMobile, { clocked: true });
         if (isMobile) await play(page).tap({ force: true });
         else await play(page).click({ force: true });
         await play(page).focus();
         await page.keyboard.press('Enter');
         await page.keyboard.press('Space');
         await settle(page);
-        await expect(main(page)).toHaveAttribute('data-playback', 'reduced-motion');
+        await expect(stage(page)).toHaveAttribute('data-playback', 'reduced-motion');
         await expect(play(page)).toHaveCount(1);
         await runFor(page, INTERVAL * 2);
         await expect(position(page)).toHaveText('01 / 03');
@@ -355,7 +364,7 @@ test.describe('reduced motion', () => {
         await checkSurface(page, { controls: [sequenceControls(page), navLinks(page)], chrome: [primary(page), themeToggle(page)] });
     });
 
-    test('over white, the controls keep their contrast, reflow, and clear SiteNav and the portrait', async ({ page }) => {
+    test('over white, the controls keep their contrast, reflow, and clear SiteNav and the toggle', async ({ page }) => {
         await serveTwoWhitePhotos(page);
         await openHome(page, { state: 'reduced-motion' });
         // Keyboard focus in the nav keeps the chrome up through the checks, with its ring clear of the controls.
@@ -366,18 +375,19 @@ test.describe('reduced motion', () => {
         for (const control of [previous(page), next(page), playback(page)]) await expectContrastOverImage(control.locator('svg'), { min: 3 });
 
         const controls = await box(group(page));
-        for (const [name, other] of [['portrait', paintedPortrait(page).first()], ['theme toggle', themeToggle(page)], ['SiteNav', primary(page)]] as const) {
+        for (const [name, other] of [['theme toggle', themeToggle(page)], ['SiteNav', primary(page)]] as const) {
             expect(overlaps(controls, await box(other)), `the controls overlap the ${name}`).toBe(false);
         }
         await expectReflow(sequenceControls(page).or(group(page)).or(themeToggle(page)).or(primary(page)));
     });
 
-    test('at 320 by 640 with 100% text, the controls clear the settled portrait and SiteNav', async ({ page }) => {
+    test('at 320 by 640 with 100% text, the controls clear SiteNav and the toggle, with no portrait', async ({ page }) => {
         await page.setViewportSize({ width: 320, height: 640 });
         await openHome(page, { state: 'reduced-motion' });
+        await expect(portrait(page)).toHaveCount(0);
 
         const controls = await box(group(page));
-        for (const [name, other] of [['portrait', paintedPortrait(page).first()], ['theme toggle', themeToggle(page)], ['SiteNav', primary(page)]] as const) {
+        for (const [name, other] of [['theme toggle', themeToggle(page)], ['SiteNav', primary(page)]] as const) {
             expect(overlaps(controls, await box(other)), `the controls overlap the ${name}`).toBe(false);
         }
     });
@@ -406,9 +416,8 @@ test.describe('reduced motion', () => {
         expect(slow).toEqual([]);
     });
 
-    // Today ThemeProvider renders nothing on the server, so the client's first render already reads the preference.
-    // These rules cover the server HTML #21 brings, where the intro renders before any script can.
-    test('the CSS that covers server HTML hides the intro layers and an unplaced portrait, only under reduce', async ({ page }) => {
+    // These rules cover the server HTML, where the intro renders before any script can.
+    test('the CSS that covers server HTML hides the intro layers and the portrait, only under reduce', async ({ page }) => {
         await openHome(page, { state: 'reduced-motion' });
         const hiddenLayers = () =>
             page.evaluate(() => {
@@ -425,30 +434,16 @@ test.describe('reduced motion', () => {
                         if (!matchMedia(rule.media.mediaText).matches) continue;
                         for (const inner of Array.from(rule.cssRules)) {
                             if (!(inner instanceof CSSStyleRule) || inner.style.display !== 'none') continue;
-                            for (const name of ['grainOverlay', 'ripples']) if (inner.selectorText.includes(name)) found.add(name);
+                            for (const name of ['grainOverlay', 'ripples', 'portrait']) if (inner.selectorText.includes(name)) found.add(name);
                         }
                     }
                 }
                 return [...found].sort();
             });
-        // A copy of the portrait's wrapper without data-placed, as the server would send it.
-        const unplacedVisibility = () =>
-            portrait(page).evaluate((el) => {
-                const copy = el.cloneNode(false) as HTMLElement;
-                copy.removeAttribute('data-placed');
-                document.body.append(copy);
-                const { visibility } = getComputedStyle(copy);
-                copy.remove();
-                return visibility;
-            });
-
-        expect(await hiddenLayers()).toEqual(['grainOverlay', 'ripples']);
-        expect(await unplacedVisibility()).toBe('hidden');
-        await expect(portrait(page)).toHaveCSS('visibility', 'visible');
+        expect(await hiddenLayers()).toEqual(['grainOverlay', 'portrait', 'ripples']);
 
         await page.emulateMedia({ reducedMotion: 'no-preference' });
         expect(await hiddenLayers()).toEqual([]);
-        expect(await unplacedVisibility()).toBe('visible');
     });
 });
 
@@ -464,7 +459,7 @@ test('static glass keeps its backdrop-filter under reduced motion', async ({ pag
     const normal = await glass();
     expect(normal.length, 'Home has glass to compare').toBeGreaterThan(0);
     await page.emulateMedia({ reducedMotion: 'reduce' });
-    await expect(main(page)).toHaveAttribute('data-playback', 'reduced-motion');
+    await expect(stage(page)).toHaveAttribute('data-playback', 'reduced-motion');
     expect(await glass()).toEqual(normal);
 });
 
@@ -474,13 +469,13 @@ test('a live preference change takes effect both ways without a reload or the in
     expect((await zoomStates(page)).length).toBeGreaterThan(0);
 
     await page.emulateMedia({ reducedMotion: 'reduce' });
-    await expect(main(page)).toHaveAttribute('data-playback', 'reduced-motion');
+    await expect(stage(page)).toHaveAttribute('data-playback', 'reduced-motion');
     await expect(play(page)).toHaveAttribute('aria-disabled', 'true');
     expect(await zoomStates(page)).toEqual([]);
     await expect(grainOverlay(page)).toHaveCount(0);
 
     await page.emulateMedia({ reducedMotion: 'no-preference' });
-    await expect(main(page)).toHaveAttribute('data-playback', 'advancing');
+    await expect(stage(page)).toHaveAttribute('data-playback', 'advancing');
     await expect(pause(page)).not.toHaveAttribute('aria-disabled');
     expect(await zoomStates(page)).toContain('running');
     await expect(grainOverlay(page)).toHaveCount(0);
