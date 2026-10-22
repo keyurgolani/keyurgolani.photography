@@ -195,25 +195,4 @@ The commit a container was built from:
 docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' <container>
 ```
 
-From the first `Publish image` build on, the `org.opencontainers.image.version` label is `v` plus the `package.json` version the image was built with, for example `v1.1.0`. Every `main` build carries it, released or not, so only a `vX.Y.Z` tag on GHCR shows that a digest is that release. Images from the old `deploy.yml` say `latest` there for `main` builds, including the one the host runs before the rollout, and the tag name for tag builds, such as `v0.4.2`.
-
-## Rollout
-
-PRs merge into `next`, and `main` only moves when the owner promotes `next` to it through a PR. The one-time move from `:latest` to pinned tags, with `next` already at version `1.1.0`:
-
-1. Right before promoting, apply the two rulesets above.
-2. Open a PR from `next` to `main`. Its `CI result` must pass. Merge it, as a merge commit.
-3. That merge's `Publish image` run pushes the first `sha-<merge commit>`. `latest` stays where it is.
-4. In the Actions tab, disable the old "Build and Publish Docker Image" workflow. It lives at the old `.github/workflows/deploy.yml` path, which older refs still carry, so a tag push or a manual run there would still publish `latest`.
-5. On the host, before pulling the new `docker-compose.prod.yml`, pin exactly what it runs now. Read the running image's digest and the commit it was built from:
-
-   ```bash
-   docker inspect --format '{{index .RepoDigests 0}}' "$(docker inspect --format '{{.Image}}' <container>)"
-   docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' <container>
-   ```
-
-   Set `PHOTOGRAPHY_IMAGE_TAG=sha-<first 7 characters of the commit>@<digest>` in `.env`, where `<digest>` is the `sha256:...` part of the first command's output. The old workflow built tagged commits twice with different digests, so the digest is what keeps the host on the exact image it runs. Then `pull` and `up -d`. Both containers restart briefly.
-6. Once step 3's `Publish to GHCR` job has succeeded, tag that merge commit `v1.1.0` and push the tag, as in Cutting a release. `latest` moves to it.
-7. On the host, set `PHOTOGRAPHY_IMAGE_TAG=v1.1.0` and deploy it the way Deploying describes for `v1.1.0`, with its one-time cache clear and `images:cleanup`.
-
-The first gated release is `v1.1.0` because a stray `v1.0.0` tag on the initial commit is the highest tag today. To stay on 0.x instead, bump to `0.5.0` as in step 1 of Cutting a release, and delete the `v1.0.0` tag on GitHub before tagging `v0.5.0`. Read `v0.5.0` wherever the steps above, Deploying and Rollback say `v1.1.0`. The old `v1.0.0` image stays on GHCR after the tag is gone, so a later real `v1.0.0` release is refused until that package version is deleted too.
+From the first `Publish image` build on, the `org.opencontainers.image.version` label is `v` plus the `package.json` version the image was built with, for example `v1.1.0`. Every `main` build carries it, released or not, so only a `vX.Y.Z` tag on GHCR shows that a digest is that release. Images from the old `deploy.yml` say `latest` there for `main` builds, including the one the host ran before `v1.1.0`, and the tag name for tag builds, such as `v0.4.2`.
