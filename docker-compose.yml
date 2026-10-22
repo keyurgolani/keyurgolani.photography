@@ -6,9 +6,12 @@ services:
       context: .
       dockerfile: Dockerfile
       target: deps
-    command: npm run dev
+    # No --hostname: inside the container, next dev listens on every interface,
+    # and the loopback-only port below is the boundary.
+    command: npx next dev
     ports:
-      - "3000:3000"
+      # Loopback only. From another machine, use an SSH tunnel to 127.0.0.1:3000.
+      - "127.0.0.1:3000:3000"
     volumes:
       - .:/app
       - /app/node_modules
