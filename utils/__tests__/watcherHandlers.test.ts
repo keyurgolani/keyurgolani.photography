@@ -271,7 +271,8 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
             expect(await processOnce(handlers, { force: true, logger })).toBe(0);
             const before = inodes(LANDSCAPE);
             fs.writeFileSync(lib.file('landscape.jpeg'), Buffer.concat([corrupt, Buffer.from([0])]));
-            await handlers.onChange(lib.file('landscape.jpeg'));
+            // Two events for one save, so the second job finds it decoded already at the version it has now
+            await Promise.all([handlers.onChange(lib.file('landscape.jpeg')), handlers.onChange(lib.file('landscape.jpeg'))]);
 
             expect(inodes(LANDSCAPE)).toEqual(before);
             expect(await outputChannels('landscape')).toEqual(Array(7).fill('red'));
@@ -295,6 +296,18 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
             await handlers.onAdd(lib.file('portrait.jpg'));
             expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
             fs.writeFileSync(lib.file('portrait.jpg'), corrupt);
+            await handlers.onChange(lib.file('portrait.jpg'));
+            expect(await outputChannels('portrait')).toEqual(Array(7).fill('green'));
+            expect(logs).toContain('[ImageWatcher] Rebuilt the set portrait.jpg shared from portrait.png, which owns it now.');
+        });
+
+        it('still rebuilds from the next source when something decoded the changed owner again before its change job', async () => {
+            fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+            await handlers.onAdd(lib.file('portrait.jpg'));
+            expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
+            fs.writeFileSync(lib.file('portrait.jpg'), corrupt);
+            // As a job for another source of the set would, ahead of this change's job
+            expect(await ownerOf('portrait.png')).toBe('portrait.png');
             await handlers.onChange(lib.file('portrait.jpg'));
             expect(await outputChannels('portrait')).toEqual(Array(7).fill('green'));
             expect(logs).toContain('[ImageWatcher] Rebuilt the set portrait.jpg shared from portrait.png, which owns it now.');

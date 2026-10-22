@@ -542,8 +542,12 @@ export function setMembers(filename: string, paths: LibraryPaths = libraryPaths(
     return getPhotoFiles(paths.root).filter((file) => sharesSet(filename, file, paths.root)).sort();
 }
 
-/** What decodes() found for each path, kept while the file keeps its inode, size, and times. */
-const decoded = new Map<string, { version: string; ok: boolean }>();
+/**
+ * What decodes() found for each path, kept while the file keeps its inode,
+ * size, and times, with what it found for the version before, null when it
+ * saw none.
+ */
+const decoded = new Map<string, { version: string; ok: boolean; okBefore: boolean | null }>();
 
 /** A source's inode, size, and times, which say when decodes() must look again. Null when it can't be read. */
 async function decodeVersion(filePath: string): Promise<string | null> {
@@ -573,21 +577,20 @@ async function decodes(file: string, paths: LibraryPaths): Promise<boolean> {
     } catch {
         ok = false;
     }
-    decoded.set(filePath, { version, ok });
+    decoded.set(filePath, { version, ok, okBefore: cached ? cached.ok : null });
     return ok;
 }
 
 /**
- * Whether a source decoded when decodes() last looked at it, at a version
- * before its current one, so whether it could have owned its set before it
- * changed. Null when decodes() never looked, or looked only at the current
- * version. Ask before ownerOf() looks again.
+ * Whether a source decoded at the last version decodes() saw before its
+ * current one, so whether it could have owned its set before it changed.
+ * Null when decodes() saw no earlier version.
  */
 export async function decodedBeforeChange(filename: string, paths: LibraryPaths = libraryPaths()): Promise<boolean | null> {
     const filePath = path.join(paths.root, filename);
     const cached = decoded.get(filePath);
     if (!cached) return null;
-    return cached.version === (await decodeVersion(filePath)) ? null : cached.ok;
+    return cached.version === (await decodeVersion(filePath)) ? cached.okBefore : cached.ok;
 }
 
 /**
