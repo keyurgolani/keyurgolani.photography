@@ -155,7 +155,7 @@ docker compose -f docker-compose.prod.yml up -d
 - **Take a photo down** with the watcher stopped, so a job already running can't write its derivatives back:
   1. Stop `image-watcher`, then delete the photo.
   2. Run the full dry run. It also lists sets left under the photo's earlier names.
-  3. Run it with `--only <name>`, where `<name>` is the photo's exact name such as `landscape`, then apply that plan. Do the same for each earlier name.
+  3. Run it with `--only <name>`, where `<name>` is the photo's exact name such as `landscape`, then apply that plan. Do the same for each earlier name. If either step exits 1 and names a folder it couldn't look in, remove the photo's files from that folder by hand.
   4. Purge Next's image cache with `web` stopped, then start the stack. The purge runs inside the `web` image, since the cache files belong to its uid 1001 and a host user's `rm` can fail.
   5. Wait about two minutes, then check that `/api/photos` no longer lists the photo. Its cached list survives a restart until it revalidates.
 
