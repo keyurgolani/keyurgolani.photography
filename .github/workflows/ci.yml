@@ -67,7 +67,8 @@ jobs:
 
       - run: npm ci
 
-      - run: npx playwright install --with-deps --only-shell chromium
+      # WebKit runs Home's first-tap cases on the mobile-webkit project. --only-shell applies to Chromium alone.
+      - run: npx playwright install --with-deps --only-shell chromium webkit
 
       - run: npm run test:e2e
 

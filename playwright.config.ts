@@ -47,6 +47,12 @@ export default defineConfig({
       // The helper self-tests build their own pages, so they run on desktop only.
       testIgnore: '**/support/**',
     },
+    {
+      // WebKit targets the click after a tap differently from Chromium, so Home's first-tap rule runs on both.
+      name: 'mobile-webkit',
+      use: { ...devices['iPhone 13'] },
+      testMatch: /home-immersive\.spec\.ts/,
+    },
   ],
   webServer: {
     // next start warns that output: 'standalone' expects server.js, but it serves.
