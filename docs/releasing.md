@@ -157,7 +157,7 @@ docker compose -f docker-compose.prod.yml run --rm --no-deps web sh -c 'rm -rf /
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-Then run `images:cleanup` once. Its dry run lists what the old pipeline left behind, including every `cache/dynamic` file from the removed `/api/image` route, and the second command deletes exactly that list:
+Then run `images:cleanup` once. Only the images from `v1.1.0` up to the release before slice C of #13 have it, so run it before upgrading past that release. Its dry run lists what the old pipeline left behind, including every `cache/dynamic` file from the removed `/api/image` route, and the second command deletes exactly that list:
 
 ```bash
 docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts
