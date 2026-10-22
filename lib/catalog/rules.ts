@@ -260,8 +260,9 @@ function describedPhotos(ctx: RuleContext): DescribedPhoto[] {
             if (photo.alt.kind !== 'described') return [];
             const text = photo.alt.text;
             const value = normalized(text);
-            // Nothing a screen reader would say, such as `...` or a zero-width space
-            const blank = !/[\p{L}\p{N}\p{Extended_Pictographic}]/u.test(value);
+            // Nothing a screen reader would say, such as `...` or a zero-width space. A flag's regional
+            // indicators and a keycap's enclosing mark (U+20E3) count as content.
+            const blank = !/[\p{L}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u20E3]/u.test(value);
             const source = names.get(photo.id);
             return [{
                 id: photo.id,

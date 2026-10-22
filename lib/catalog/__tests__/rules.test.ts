@@ -235,6 +235,8 @@ describe('the edges of the checks', () => {
         ['a dash', '-', ['description.empty']],
         ['a zero-width space', '\u200b', ['description.empty']],
         ['an emoji', '\u{1F305}', []],
+        ['a flag', '\u{1F1FA}\u{1F1F8}', []],
+        ['a keycap', '#\uFE0F\u20E3', []],
     ])('description: %s alone', (_label, text, expected) => {
         const ctx = context();
         describe0(ctx, text);
