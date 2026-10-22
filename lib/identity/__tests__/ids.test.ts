@@ -62,6 +62,33 @@ describe('identifiers', () => {
         expect(currentProfileId()).toBe(profileIdOf(PROFILE_1, { sharp: sharp.versions.sharp, vips: sharp.versions.vips }));
     });
 
+    it('serializes plain JSON canonically, leaving out undefined object values and keeping null-prototype objects', () => {
+        const bare = Object.assign(Object.create(null) as Record<string, unknown>, { z: 'e\u0301', a: null });
+        expect(canonicalJson({ b: [true, -1.5, bare], a: undefined, 'e\u0301': 'x' })).toBe('{"b":[true,-1.5,{"a":null,"z":"\u00e9"}],"\u00e9":"x"}');
+    });
+
+    class Recipe {
+        size = 1;
+    }
+    const holey: unknown[] = [1];
+    holey[2] = 3;
+
+    it.each([
+        ['a Date', { at: new Date(0) }, 'the value.at is a Date, not plain JSON'],
+        ['a Map', { photos: [new Map()] }, 'the value.photos[0] is a Map, not plain JSON'],
+        ['a class instance', new Recipe(), 'the value is a Recipe, not plain JSON'],
+        ['a function', { run: () => 1 }, 'the value.run is a function, not plain JSON'],
+        ['a bigint', { n: BigInt(1) }, 'the value.n is a bigint, not plain JSON'],
+        ['a symbol', [Symbol('s')], 'the value[0] is a symbol, not plain JSON'],
+        ['NaN', { n: Number.NaN }, "the value.n is NaN, which JSON can't hold"],
+        ['Infinity', [Number.POSITIVE_INFINITY], "the value[0] is Infinity, which JSON can't hold"],
+        ['undefined in an array', [1, undefined], 'the value[1] is undefined, not plain JSON'],
+        ['a hole in an array', holey, 'the value[1] is undefined, not plain JSON'],
+        ['undefined alone', undefined, 'the value is undefined, not plain JSON'],
+    ])('refuses %s, which it would otherwise serialize as something else', (_label, value, message) => {
+        expect(() => canonicalJson(value)).toThrow(new TypeError(`canonicalJson: ${message}`));
+    });
+
     it('builds /media URLs from validated segments only', () => {
         const ref = { photoId: 'ph_6f1c1a2e-0b4b-4d8e-9a43-1d2b3c4d5e6f', assetRevision: `sha256-${'a'.repeat(64)}`, profileId: 'p_0123456789abcdef' };
         const url = mediaUrl(ref, 'w1200', 'webp');
