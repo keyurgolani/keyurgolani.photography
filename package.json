@@ -17,6 +17,7 @@
     "check:prerender": "node ci/check-prerender.mjs",
     "smoke:media": "bash ci/smoke-media.sh",
     "smoke:image": "bash ci/smoke-image.sh ci-smoke",
+    "smoke:catalog": "bash ci/smoke-catalog.sh ci-smoke",
     "lint": "eslint .",
     "images:watch": "npx tsx scripts/imageWatcher.ts --watch",
     "images:process": "npx tsx scripts/imageWatcher.ts --once",
