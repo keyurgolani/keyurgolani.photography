@@ -9,7 +9,8 @@ test.skip(({ isMobile }) => isMobile, 'The desktop project covers it. SiteNav ru
 const NAV = /<nav[^>]*aria-label="Primary"/;
 
 for (const [path, content] of [
-    ['/', /<main[^>]*data-playback=/],
+    // Home's main carries the chrome's state, immersive from the first byte, and a wrapper inside it the playback's.
+    ['/', /<main[^>]*data-interface-state="immersive"[^>]*>[\s\S]*?<div[^>]*data-playback=/],
     ['/gallery', /<h1[^>]*>Gallery<\/h1>/],
     ['/about', /<h1[^>]*>Keyur Golani<\/h1>[\s\S]*aka ISerialClicker/],
 ] as const) {
