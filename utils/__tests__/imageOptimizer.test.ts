@@ -226,7 +226,7 @@ describe('sources sharing one set', { timeout: 60_000 }, () => {
         fakeCaseSensitiveDisk();
         expect(sharesSet('landscape.jpg', 'Landscape.png')).toBe(false);
         expect(setGroups(getPhotoFiles())).toEqual([['Landscape.png'], ['landscape.jpg'], ['portrait.png'], ['square.webp']]);
-        expect(await planSources({ force: true })).toEqual({ files: ['Landscape.png', 'landscape.jpg', 'portrait.png', 'square.webp'], shared: [] });
+        expect(await planSources({ force: true })).toEqual({ files: ['Landscape.png', 'landscape.jpg', 'portrait.png', 'square.webp'], reowned: [], upright: [], shared: [] });
         expect(await ownerOf('landscape.jpg')).toBe('landscape.jpg');
         vi.restoreAllMocks();
 
@@ -235,6 +235,9 @@ describe('sources sharing one set', { timeout: 60_000 }, () => {
         expect(setGroups(getPhotoFiles())).toEqual([['Landscape.png', 'landscape.jpg'], ['portrait.png'], ['square.webp']]);
         expect(await planSources({ force: true })).toEqual({
             files: ['Landscape.png', 'portrait.png', 'square.webp'],
+            // Nothing records which of the two built the shared set yet, so its owner rebuilds it once.
+            reowned: [{ file: 'Landscape.png', from: null }],
+            upright: [],
             shared: [{ file: 'landscape.jpg', owner: 'Landscape.png', undecodable: false }],
         });
         expect(await ownerOf('landscape.jpg')).toBe('Landscape.png');

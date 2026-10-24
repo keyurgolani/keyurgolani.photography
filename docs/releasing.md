@@ -8,7 +8,7 @@ Every pull request runs `.github/workflows/ci.yml`, whether it targets `main` or
 
 | Job | What it does |
 |---|---|
-| `Lint, unit tests, build` | Checks that `.nvmrc` holds a bare Node major and the `Dockerfile` base image matches it, then runs `npm ci`, `npm run lint`, `npm test -- --run`, and `npm run build`, and runs `ci/check-standalone.sh`, which fails if the build copied project sources, the default data root, or the library into `.next/standalone`. |
+| `Lint, unit tests, build` | Checks that `.nvmrc` holds a bare Node major and the `Dockerfile` base image matches it, then runs `npm ci`, `npm run lint`, `npm test -- --run`, `npm run build`, `ci/check-standalone.sh`, and `npm run smoke:media`. `ci/check-standalone.sh` fails if the build copied project sources, the default data root, or the library into `.next/standalone`. `npm run smoke:media` migrates a generated fixture library into a temp data root, builds its sets with the watcher's `--once`, and checks that the build's `/media` route serves them, including one built after the server started. |
 | `Browser tests` | Runs `npm run test:e2e`, which builds and serves the site against an empty temp photo library and runs `e2e/` in Chromium on a desktop and a Pixel 7 project. A failed run uploads `playwright-report/` and `test-results/`. |
 | `Image smoke test` | Runs `ci/check-compose.sh`, builds the image, checks that it runs the Node major in `.nvmrc`, and runs `ci/smoke-image.sh` against it. Then it runs `ci/smoke-watcher-once.sh`, which has the image generate a fixture library from the checkout's `test/fixtures`, runs the image's watcher with `--once` on it, checks that it deletes nothing after a photo is removed and exits 1 on a missing library, and checks the web server's image routes. |
 | `Production audit` | Runs `ci/audit-gate.mjs`, which runs `npm audit --omit=dev` and fails on a high or critical advisory that `.github/audit-allowlist.json` doesn't list. It reads only the lockfile, so it skips `npm ci`. |
@@ -156,22 +156,22 @@ docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx t
 docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts --apply --plan <hash>
 ```
 
-The first release with slice A of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10) needs a step too. The Gallery grid and lightbox now show the derivatives instead of the original files, and derivatives written before it ignored the EXIF orientation, so a photo whose file carries an orientation tag shows turned or mirrored until its derivatives are rebuilt. After `up -d`, run the dry run first. It changes nothing in the library and prints the path of its report:
+The first release with slice A of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10) needs a step too. The Gallery grid and lightbox now show the derivatives instead of the original files, and derivatives written before it ignored the EXIF orientation, so a photo whose file carries an orientation tag shows turned or mirrored until its derivatives are rebuilt. The watcher rebuilds them by itself. The first time it starts on a library, it rebuilds the set of every photo with an orientation tag, and once all of them are written it records that in `cache/upright-rebuild.json` in the library, so later starts skip it. If one fails, or the watcher stops first, the next start rebuilds them again. The old derivatives keep serving until each photo's new set is written.
+
+To see which photos it rebuilds, run the dry run after `up -d`. It changes nothing in the library and prints the path of its report:
 
 ```bash
 docker compose -f docker-compose.prod.yml exec image-watcher npm run photos:migrate -- --dry-run --out /tmp/photo-migration
 docker compose -f docker-compose.prod.yml exec image-watcher cat <report path>
 ```
 
-Read the report's "Orientation-tagged files" section. It lists the top-level photos the rebuild turns upright, the only ones the Gallery shows, except any the library reaches through a symlink, since the dry run reads no file through one. If it says "None." and no photo in the library's top folder is a symlink, skip the rest. Otherwise rebuild every derivative once, with the watcher stopped so the two never write at once:
+Its "Orientation-tagged files" section lists them, except any the library reaches through a symlink, since the dry run reads no file through one. If it says "None." and no photo in the library's top folder is a symlink, skip the rest. Otherwise wait for the watcher to log that it rebuilt them:
 
 ```bash
-docker compose -f docker-compose.prod.yml stop image-watcher
-docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageWatcher.ts --once --force
-docker compose -f docker-compose.prod.yml start image-watcher
+docker compose -f docker-compose.prod.yml logs image-watcher | grep orientation-tagged
 ```
 
-The old derivatives keep serving until each photo's new set is written. Once the rebuild finishes, clear `./.next-images-cache` the same way as above, so `/_next/image` drops the copies it made from the old derivatives. If this is also the first release with Phase 0, this one clear, after the rebuild, covers both.
+Once it logs that it rebuilt the sets of the orientation-tagged photos, clear `./.next-images-cache` the same way as above, so `/_next/image` drops the copies it made from the old derivatives. If this is also the first release with Phase 0, this one clear, after the rebuild, covers both.
 
 ## Rollback
 

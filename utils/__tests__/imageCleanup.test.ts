@@ -91,8 +91,10 @@ function caseInsensitive(lib: TempLibrary): boolean {
     }
 }
 
-const SQUARE = derivativePaths('square');
-const KEPT = [...derivativePaths('landscape'), ...derivativePaths('portrait'), YOUNG_TEMP, 'landscape.png', 'portrait.png'];
+/** The record of which source a set was built from, which goes when the set does. */
+const record = (base: string) => `cache/set-sources/${base}.json`;
+const SQUARE = [...derivativePaths('square'), record('square')];
+const KEPT = [...derivativePaths('landscape'), ...derivativePaths('portrait'), record('landscape'), record('portrait'), YOUNG_TEMP, 'landscape.png', 'portrait.png'];
 const PER_PATH = /^(Would delete|Deleted) \S+ \(/;
 
 describe('images:cleanup', { timeout: 30_000 }, () => {
@@ -110,7 +112,7 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
             ...SQUARE.map((relativePath) => `Would delete ${relativePath} (no source named square.*)`),
             `Would delete ${STALE_TEMP} (stale temp file)`,
         ].sort());
-        expect(out).toContainEqual(expect.stringMatching(/^Would delete 9 files, \d+ bytes.*\. This was a dry run\.$/));
+        expect(out).toContainEqual(expect.stringMatching(/^Would delete 10 files, \d+ bytes.*\. This was a dry run\.$/));
         const planLine = out.findIndex((line) => /^Plan [0-9a-f]{12}\. To delete exactly these files, run one of:$/.test(line));
         expect(planLine, out.join('\n')).toBeGreaterThan(-1);
         const hash = out[planLine].slice('Plan '.length, 'Plan '.length + 12);
@@ -130,8 +132,8 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
 
         expect(runImageCleanup(['--apply', '--plan', hash], output)).toBe(0);
 
-        expect(out.filter((line) => PER_PATH.test(line))).toHaveLength(9);
-        expect(out).toContainEqual(expect.stringMatching(/^Deleted 9 files, \d+ bytes/));
+        expect(out.filter((line) => PER_PATH.test(line))).toHaveLength(10);
+        expect(out).toContainEqual(expect.stringMatching(/^Deleted 10 files, \d+ bytes/));
         for (const relativePath of [...SQUARE, STALE_TEMP, DYNAMIC_CACHE]) {
             expect(fs.existsSync(lib.file(relativePath)), relativePath).toBe(false);
         }
@@ -202,7 +204,7 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
     it('re-checks each path and skips ones that stopped qualifying', async () => {
         const lib = await libraryWithOrphans();
         const plan = planOrphanCleanup();
-        expect(plan.entries).toHaveLength(9);
+        expect(plan.entries).toHaveLength(10);
         expect(plan.youngTempFiles).toEqual([YOUNG_TEMP]);
 
         // After the plan, square.webp comes back and the stale temp file is written to again
@@ -243,7 +245,7 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
         const result = applyOrphanCleanup(plan);
 
         expect(result.deleted).toEqual([]);
-        expect(result.skipped).toHaveLength(9);
+        expect(result.skipped).toHaveLength(10);
         for (const entry of plan.entries) expect(fs.existsSync(entry.path), entry.relativePath).toBe(true);
     });
 
@@ -278,17 +280,21 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
         fs.mkdirSync(path.join(outside, 'cache-root'));
         fs.symlinkSync(path.join(outside, 'cache-root'), lib.file('cache'));
         fs.symlinkSync(path.join(outside, 'cache-target'), path.join(outside, 'cache-root', 'dynamic'));
+        fs.mkdirSync(path.join(outside, 'cache-root', 'set-sources'));
+        fs.writeFileSync(path.join(outside, 'cache-root', 'set-sources', 'square.json'), '{"source":"square.webp"}\n');
 
         const { out, output } = capture();
         expect(runImageCleanup([], output)).toBe(0);
         expect(out).toContain("Skipped optimized/, which is a symlink, not a folder, or can't be listed, so cleanup deletes nothing in it.");
-        expect(out).toContain("Skipped cache/, which is a symlink, not a folder, or can't be listed, so cleanup deletes nothing in it.");
-        expect(out.some((line) => line.includes('optimized/square.webp') || line.includes('square-400-80'))).toBe(false);
+        // Named once, though both folders cleanup reads under it are skipped
+        expect(out.filter((line) => line === "Skipped cache/, which is a symlink, not a folder, or can't be listed, so cleanup deletes nothing in it.")).toHaveLength(1);
+        expect(out.some((line) => line.includes('optimized/square.webp') || line.includes('square-400-80') || line.includes('set-sources'))).toBe(false);
 
         const hash = dryRunHash();
         expect(runImageCleanup(['--apply', '--plan', hash], capture().output)).toBe(0);
         expect(fs.existsSync(path.join(outside, 'square.webp'))).toBe(true);
         expect(fs.existsSync(path.join(outside, 'cache-target', 'square-400-80.webp'))).toBe(true);
+        expect(fs.existsSync(path.join(outside, 'cache-root', 'set-sources', 'square.json'))).toBe(true);
     });
 
     it('keeps derivatives for a name that differs only in case when this disk resolves both names to one file', async () => {
@@ -302,7 +308,7 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
             expect(planned).toEqual([]);
         } else {
             // As on Linux: Landscape.JPG gets its own Landscape.* set, so no source needs landscape.*
-            expect(planned.map((entry) => entry.relativePath).sort()).toEqual([...derivativePaths('landscape')].sort());
+            expect(planned.map((entry) => entry.relativePath).sort()).toEqual([...derivativePaths('landscape'), record('landscape')].sort());
         }
     });
 
@@ -320,7 +326,7 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
 
         const planned = planOrphanCleanup().entries.filter((entry) => entry.relativePath.includes('landscape'));
 
-        expect(planned.map((entry) => entry.relativePath).sort()).toEqual([...derivativePaths('landscape')].sort());
+        expect(planned.map((entry) => entry.relativePath).sort()).toEqual([...derivativePaths('landscape'), record('landscape')].sort());
         expect(planned.every((entry) => entry.reason === 'no source named landscape.*')).toBe(true);
     });
 
@@ -339,7 +345,7 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
 
         const exact = capture();
         expect(runImageCleanup(['--only', 'landscape'], exact.output)).toBe(0);
-        expect(exact.out.filter((line) => PER_PATH.test(line))).toHaveLength(7);
+        expect(exact.out.filter((line) => PER_PATH.test(line))).toHaveLength(8);
         expect(exact.out.some((line) => line.startsWith('No file is named exactly'))).toBe(false);
     });
 
@@ -374,7 +380,7 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
 
         const dash = capture();
         expect(runImageCleanup(['--only=-dash'], dash.output)).toBe(0);
-        expect(dash.out.filter((line) => PER_PATH.test(line))).toHaveLength(7);
+        expect(dash.out.filter((line) => PER_PATH.test(line))).toHaveLength(8);
         expect(dash.out).toContainEqual(expect.stringMatching(/^ {2}npx tsx scripts\/imageCleanup\.ts --only=-dash --apply --plan [0-9a-f]{12}$/));
     });
 
@@ -391,14 +397,14 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
         expect(runImageCleanup(['--only', 'notes.jpg'], exact.output)).toBe(0);
         expect(exact.out).toContain('Only files for: notes.jpg');
         expect(exact.out.filter((line) => PER_PATH.test(line)).sort()).toEqual(
-            derivativePaths('notes.jpg').map((relativePath) => `Would delete ${relativePath} (no source named notes.jpg.*)`).sort(),
+            [...derivativePaths('notes.jpg'), record('notes.jpg')].map((relativePath) => `Would delete ${relativePath} (no source named notes.jpg.*)`).sort(),
         );
 
         const stripped = capture();
         expect(runImageCleanup(['--only', 'notes.png'], stripped.output)).toBe(0);
         expect(stripped.out).toContain('Only files for: notes');
         expect(stripped.out.filter((line) => PER_PATH.test(line)).sort()).toEqual(
-            derivativePaths('notes').map((relativePath) => `Would delete ${relativePath} (no source named notes.*)`).sort(),
+            [...derivativePaths('notes'), record('notes')].map((relativePath) => `Would delete ${relativePath} (no source named notes.*)`).sort(),
         );
     });
 
@@ -414,13 +420,29 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
         const { out, output } = capture();
         expect(runImageCleanup(['--only', 'a'], output)).toBe(0);
         expect(out.filter((line) => PER_PATH.test(line)).sort()).toEqual(
-            derivativePaths('a').map((relativePath) => `Would delete ${relativePath} (rebuilt from a.png when the watcher starts)`).sort(),
+            [...derivativePaths('a'), record('a')].map((relativePath) => `Would delete ${relativePath} (rebuilt from a.png when the watcher starts)`).sort(),
         );
 
         const hash = dryRunHash(['--only', 'a']);
         expect(runImageCleanup(['--only', 'a', '--apply', '--plan', hash], capture().output)).toBe(0);
-        expect(lib.hashes(derivativePaths('a'))).toEqual({});
+        expect(lib.hashes([...derivativePaths('a'), record('a')])).toEqual({});
         expect(fs.existsSync(lib.file('a.png'))).toBe(true);
+    });
+
+    it('removes the record of which source a set was built from once no source has its base name, and keeps the others', async () => {
+        const lib = await newLibrary({ fixtures: 'basic' });
+        for (const name of ['landscape.jpg', 'portrait.png', 'square.webp']) await processImage(name);
+        // A record left after its set went, such as by hand, is planned alone
+        fs.unlinkSync(lib.file('square.webp'));
+        for (const relativePath of derivativePaths('square')) fs.unlinkSync(lib.file(relativePath));
+        expect(fs.existsSync(lib.file(record('square')))).toBe(true);
+
+        expect(planOrphanCleanup().entries.map(({ relativePath, reason }) => [relativePath, reason])).toEqual([[record('square'), 'no source named square.*']]);
+        const hash = dryRunHash();
+        expect(runImageCleanup(['--apply', '--plan', hash], capture().output)).toBe(0);
+        expect(fs.existsSync(lib.file(record('square')))).toBe(false);
+        expect(fs.existsSync(lib.file(record('landscape')))).toBe(true);
+        expect(fs.existsSync(lib.file(record('portrait')))).toBe(true);
     });
 
     it('--only names the other sets with no source, which may be earlier names of the photo', async () => {

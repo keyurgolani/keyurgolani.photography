@@ -9,6 +9,11 @@ import path from 'node:path';
 export const PRIVATE_FILE_MODE = 0o600;
 export const PRIVATE_DIR_MODE = 0o700;
 
+/** A filesystem-safe form of an ISO timestamp, such as 2026-10-20T06-34-12-123Z. */
+export function timestampOf(iso: string): string {
+    return iso.replace(/[:.]/g, '-');
+}
+
 /** True when `error` is a Node errno error carrying one of `codes`. */
 export function hasErrorCode(error: unknown, ...codes: string[]): boolean {
     if (typeof error !== 'object' || error === null) return false;
