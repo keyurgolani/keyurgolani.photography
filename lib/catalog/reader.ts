@@ -1,3 +1,6 @@
+// Only the web process and the tests import this, never the CLI or a client
+// module. A client bundle that reaches it fails the build (#3).
+import 'server-only';
 import type { PublicAssetProjection } from '../identity/metadata';
 import { workCatalogOf, type WorkCatalog } from './projections/work';
 import type { CandidateContent, RevisionContent, SeriesRecord, SiteRecord } from './types';
