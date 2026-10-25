@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { importGraph } from '../../../test/helpers/importGraph';
+import { isCuratorFile } from '../../../test/helpers/routeInventory';
 import { REPO_ROOT } from '../../../test/helpers/runTsx';
 
 /**
@@ -38,8 +39,9 @@ describe('the public routes', () => {
         for (const entry of ['lib/curation/auth/index.ts', 'lib/curation/auth/policy.ts']) expect(curationModules(entry)).toEqual([]);
     });
 
+    // By URL, as the route inventory decides it, so a route group or a parallel slot counts too.
     it('have no curation route but the placeholder, until 14-3', () => {
-        const curator = publicEntries().filter((entry) => entry.startsWith('app/curation/') || entry.startsWith('app/api/curation/'));
+        const curator = publicEntries().filter(isCuratorFile);
         expect(curator).toEqual(['app/curation/page.tsx']);
     });
 });
