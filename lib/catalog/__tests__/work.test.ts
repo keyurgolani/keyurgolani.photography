@@ -130,10 +130,19 @@ describe('visibility and order', () => {
         expect(workOf(reordered).series.map((summary) => summary.slug)).toEqual(['fixture-b', 'fixture-a', 'fixture-c']);
     });
 
-    it('lists a series once, where it first appears', () => {
+    it('leaves out a series whose ID appears twice, even as an identical copy', () => {
         const repeated = content();
         repeated.series.push(structuredClone(repeated.series[0]));
-        expect(workOf(repeated).series.map((summary) => summary.slug)).toEqual(['fixture-c', 'fixture-a', 'fixture-b']);
+        expect(workOf(repeated).series.map((summary) => summary.slug)).toEqual(['fixture-a', 'fixture-b']);
+    });
+
+    it('leaves out both records that share an ID, so one record\'s copy never pairs with the other\'s photos', () => {
+        const shared = content();
+        shared.series[2].id = shared.series[1].id;
+        const reader = createCatalogReader(shared, { revisionId: REVISION_A, revisionNumber: 3 });
+        // The reader's member index holds one record's photos under the shared ID, so neither entry could be told right.
+        expect(reader.photosOf('ser_fixture-a').map((photo) => photo.id)).toEqual([P[3], P[4]]);
+        expect(reader.getWorkSummaries().series.map((summary) => summary.slug)).toEqual(['fixture-c']);
     });
 });
 
@@ -293,26 +302,56 @@ describe('cover fallback', () => {
         expect(entry(workOf(none as unknown as CandidateContent), 'fixture-a').cover).toBeNull();
     });
 
+    type Ladder = Record<string, Record<string, Record<string, unknown>>>;
+    const files = (photo: Record<string, unknown>) => photo.variants as Ladder;
+
     it.each([
-        ['a missing variant width', (variants: Record<string, Record<string, Record<string, unknown>>>) => { delete variants.w800; }],
-        ['a missing format', (variants: Record<string, Record<string, Record<string, unknown>>>) => { delete variants.w1920.avif; }],
-        ['a file outside /media', (variants: Record<string, Record<string, Record<string, unknown>>>) => { variants.w400.webp.url = '/fixture-cover.webp'; }],
-        ['another photo\'s file', (variants: Record<string, Record<string, Record<string, unknown>>>) => { variants.w1200.webp.url = ladder(P[0]).w1200.webp.url; }],
-        ['an absolute URL', (variants: Record<string, Record<string, Record<string, unknown>>>) => { variants.w800.avif.url = `https://example.invalid${ladder(P[1]).w800.avif.url}`; }],
-        ['a file with no width', (variants: Record<string, Record<string, Record<string, unknown>>>) => { variants.w400.avif.width = 0; }],
+        ['a missing variant width', (photo: Record<string, unknown>) => { delete files(photo).w800; }],
+        ['a missing format', (photo: Record<string, unknown>) => { delete files(photo).w1920.avif; }],
+        ['a file outside /media', (photo: Record<string, unknown>) => { files(photo).w400.webp.url = '/fixture-cover.webp'; }],
+        ['another photo\'s file', (photo: Record<string, unknown>) => { files(photo).w1200.webp.url = ladder(P[0]).w1200.webp.url; }],
+        ['an absolute URL', (photo: Record<string, unknown>) => { files(photo).w800.avif.url = `https://example.invalid${ladder(P[1]).w800.avif.url}`; }],
+        ['a file with no width', (photo: Record<string, unknown>) => { files(photo).w400.avif.width = 0; }],
+        ['a file with no height', (photo: Record<string, unknown>) => { files(photo).w800.webp.height = 0; }],
+        ['a file with no bytes', (photo: Record<string, unknown>) => { files(photo).w1200.avif.bytes = 0; }],
+        ['a file with a fractional width', (photo: Record<string, unknown>) => { files(photo).w1920.webp.width = 1919.5; }],
+        ['a photo with no width', (photo: Record<string, unknown>) => { photo.width = 0; }],
+        ['a photo with no height', (photo: Record<string, unknown>) => { photo.height = 0; }],
+        ['an asset revision /media can\'t name', (photo: Record<string, unknown>) => { photo.assetRevision = 'bad'; }],
     ])('gives no cover for %s, so the entry falls back instead of pointing anywhere else', (_name, damage) => {
         const damaged = content();
         const cover = damaged.photos.find((photo) => photo.id === P[1]);
         if (!cover) throw new Error('No cover');
-        damage(cover.variants as unknown as Record<string, Record<string, Record<string, unknown>>>);
-        expect(entry(workOf(damaged), 'fixture-a').cover).toBeNull();
-        expect(entry(workOf(damaged), 'fixture-b').cover).not.toBeNull();
+        damage(cover as unknown as Record<string, unknown>);
+        // One damaged cover never takes the rest of Work down with it.
+        const work = workOf(damaged);
+        expect(work.series.map((summary) => summary.slug)).toEqual(['fixture-c', 'fixture-a', 'fixture-b']);
+        expect(entry(work, 'fixture-a').cover).toBeNull();
+        expect(entry(work, 'fixture-b').cover).not.toBeNull();
+    });
+
+    it('narrows a crop it doesn\'t know to cover', () => {
+        const odd = content() as unknown as { photos: Record<string, unknown>[] };
+        const cover = odd.photos.find((photo) => photo.id === P[3]);
+        if (!cover) throw new Error('No cover');
+        cover.crop = 'fill';
+        expect(entry(workOf(odd as unknown as CandidateContent), 'fixture-b').cover?.crop).toBe('cover');
     });
 
     it('ignores a focal point outside 0 to 1 and falls back along the chain', () => {
         const odd = content();
         odd.series[1].cover = { photoId: P[1], focalPoint: { x: 2, y: 0.5 } };
         expect(entry(workOf(odd), 'fixture-a').cover?.focalPoint).toEqual({ x: 0.9, y: 0.9 });
+        odd.series[1].cover = { photoId: P[1], focalPoint: { x: 0.5, y: -0.1 } };
+        expect(entry(workOf(odd), 'fixture-a').cover?.focalPoint).toEqual({ x: 0.9, y: 0.9 });
+    });
+
+    it('keeps a focal point on either edge, since both bounds are inclusive', () => {
+        const edge = content();
+        for (const focalPoint of [{ x: 0, y: 1 }, { x: 1, y: 0 }]) {
+            edge.series[1].cover = { photoId: P[1], focalPoint };
+            expect(entry(workOf(edge), 'fixture-a').cover?.focalPoint).toEqual(focalPoint);
+        }
     });
 });
 
@@ -394,6 +433,15 @@ describe('workRouteOf, the /work and /gallery matrix', () => {
             expect(workRouteOf('work', unavailable, routes)).toEqual({ kind: 'unavailable', reason });
             expect(workRouteOf('gallery', unavailable, routes)).toEqual({ kind: 'unavailable', reason });
         }
+    });
+
+    it('builds the /gallery 308 only from the public builder, in every mode, and still takes any builder for Work\'s links', () => {
+        const preview = createRouteBuilder({ basePath: '/preview/token' });
+        for (const catalog of [{ mode: 'legacy' } as const, okCatalog(), okCatalog('degraded'), { mode: 'catalog', state: 'unavailable', reason: 'catalog-unreadable' } as const]) {
+            expect(() => workRouteOf('gallery', catalog, preview)).toThrow(TypeError);
+        }
+        const work = workRouteOf('work', okCatalog(), preview);
+        expect(work.kind === 'work' && work.work.series[0].href).toBe('/preview/token/work/fixture-c');
     });
 
     it('reads the catalog only to render Work', () => {

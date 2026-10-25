@@ -141,18 +141,22 @@ function coverOf(series: SeriesRecord, members: readonly Photo[]): WorkCover | n
 
 /**
  * The Work catalog of one source, in its series order. A series appears
- * once (the first time, as compile keeps it), and only with something to
- * open: a positive published count and at least one member that resolves.
- * An empty series is left out, as compile leaves it out, so no entry links
- * to an empty page. Hrefs come from `routes`: #13's `publicRoutes` on the
- * site, a preview's own builder in a preview.
+ * only with something to open: a positive published count and at least one
+ * member that resolves. An empty series is left out, as compile leaves it
+ * out, so no entry links to an empty page. A series ID that appears more
+ * than once is left out entirely: compile never writes one, and the reader
+ * indexes members by ID, so a hand-written revision with two records under
+ * one ID would pair one record's copy with the other's photos. Hrefs come
+ * from `routes`: #13's `publicRoutes` on the site, a preview's own builder
+ * in a preview.
  */
 export function workCatalogOf(source: WorkSource, routes: Pick<RouteBuilder, 'seriesHref'>): WorkCatalog {
-    const seen = new Set<string>();
+    const records = source.listSeries();
+    const uses = new Map<string, number>();
+    for (const record of records) uses.set(record.id, (uses.get(record.id) ?? 0) + 1);
     const series: WorkSeriesSummary[] = [];
-    for (const record of source.listSeries()) {
-        if (seen.has(record.id)) continue;
-        seen.add(record.id);
+    for (const record of records) {
+        if (uses.get(record.id) !== 1) continue;
         const photoCount = record.derived?.photoCount;
         if (!dimension(photoCount)) continue;
         const members = source.photosOf(record.id);
@@ -213,8 +217,16 @@ export type WorkRouteResult<Reason extends string = string> =
  * `catalog-unreadable`, which catalogMode() doesn't remember), and a
  * browser caches a 308, so a permanent redirect there could pair with a
  * later legacy 307 into a loop. A degraded catalog serves its last revision.
+ *
+ * `routes` builds Work's links. `/gallery` takes only the public builder
+ * (#13's `publicRoutes`, no `basePath`) and throws on any other, in every
+ * mode, so a miswired page fails before the cutover rather than sending a
+ * cached 308 into a preview path after it.
  */
 export function workRouteOf<Reason extends string>(route: 'work' | 'gallery', catalog: WorkActiveCatalog<Reason>, routes: RouteBuilder): WorkRouteResult<Reason> {
+    if (route === 'gallery' && routes.basePath !== '') {
+        throw new TypeError(`workRouteOf('gallery') takes the public route builder, got basePath ${JSON.stringify(routes.basePath)}`);
+    }
     if (catalog.mode === 'legacy') {
         return route === 'work' ? { kind: 'redirect', location: LEGACY_GALLERY_PATH, status: 307 } : { kind: 'legacy-gallery' };
     }
