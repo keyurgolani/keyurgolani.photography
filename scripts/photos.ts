@@ -35,6 +35,27 @@
  *     bind to a path another photo holds merges that photo into <photoId>
  *     only when --merge names it, and only if it was minted at that path.
  *
+ *   npx tsx scripts/photos.ts validate [--reprofile]
+ *     Compile the working layer and run every rule, taking no lock and
+ *     writing nothing, so it runs on a read-only data root too. Prints the
+ *     candidate ID and the first 200 issues. Exits 0 when only warnings
+ *     remain, 1 on any error, 2 on a usage error, 4 when a catalog file is
+ *     damaged or can't be read, and 3 when the data root isn't ready.
+ *
+ *   npx tsx scripts/photos.ts publish [--actor <name>] [--reason <text>] [--expect <candidateId>]
+ *                                     [--dry-run] [--confirm-launch] [--reprofile]
+ *     Compile the working layer, validate it under the catalog lock, write
+ *     its revision, and make that revision active. The actor is --actor or
+ *     PHOTOS_ACTOR, and one is required. --reason defaults to publish.
+ *     --expect stops unless the candidate has that ID, and --dry-run stops
+ *     after validation. The first publish replaces the legacy Home and
+ *     Gallery, so it needs --confirm-launch, and prints what changes.
+ *     --reprofile moves every photograph the watcher can rebuild to the
+ *     current profile: run identity reprofile --all first. Exits 0 when
+ *     published, unchanged, or a dry run passes, 1 on validation errors, 2
+ *     on a usage error, 4 when a catalog file is damaged or an I/O error
+ *     stops it, and 3 on any other stop. Logs one JSON line per event.
+ *
  * The library is PHOTOGRAPHY_LIBRARY_DIR, or public/assets/photos under the
  * working directory. The data root is PHOTOGRAPHY_DATA_DIR, or portfolio-data
  * under the working directory outside production.
@@ -46,6 +67,10 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { publish, PUBLISH_EXIT_CODES, validateWorkingLayer, VALIDATE_EXIT_CODES, type PublishResult } from '../lib/catalog/publish';
+import { REVISION_ID_RE } from '../lib/catalog/schema';
+import type { Issue } from '../lib/catalog/types';
+import { catalogPaths } from '../lib/catalog/working-layer';
 import { ApplyRefusedError, migrateApply } from '../lib/identity/apply';
 import { createDecision, decisionFileName, isLibraryPath, writeDecision, type DecisionInput } from '../lib/identity/decisions';
 import { ASSET_REVISION_RE, PHOTO_ID_RE } from '../lib/identity/ids';
@@ -54,7 +79,7 @@ import { jsonLogSink, runReconcilePass } from '../lib/identity/pass';
 import { identityPaths } from '../lib/identity/registry';
 import { LibraryRootMissingError } from '../lib/identity/scan';
 import { formatStatus, identityStatus } from '../lib/identity/status';
-import { dataRootStatus, libraryRoot } from '../lib/storage/config';
+import { dataRoot, dataRootStatus, libraryRoot } from '../lib/storage/config';
 import { isInside } from '../lib/storage/fsx';
 
 /** This CLI the way it was started: the bundle in the image, or the source under tsx. */
@@ -68,7 +93,9 @@ const USAGE = `Usage:
   ${PROGRAM} identity new <path> [--reason <text>]
   ${PROGRAM} identity archive <photoId> [--reason <text>]
   ${PROGRAM} identity retry <photoId> [<assetRevision>] [--reason <text>]
-  ${PROGRAM} identity reprofile (<photoId> | --all) [--reason <text>]`;
+  ${PROGRAM} identity reprofile (<photoId> | --all) [--reason <text>]
+  ${PROGRAM} validate [--reprofile]
+  ${PROGRAM} publish [--actor <name>] [--reason <text>] [--expect <candidateId>] [--dry-run] [--confirm-launch] [--reprofile]`;
 
 class UsageError extends Error {}
 
@@ -229,11 +256,106 @@ async function identity(args: string[]): Promise<number> {
     return status.dataRoot.state === 'ready' && !status.registryError ? 0 : 1;
 }
 
+/** How many issues the CLI prints. The diagnostics file holds every one. */
+const PRINTED_ISSUES = 200;
+
+const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
+
+/** Lines for a command's report: stdout when it succeeded, stderr when it didn't, as the identity commands do. */
+function reporter(exitCode: number): (line: string) => void {
+    return exitCode === 0 ? (line) => console.log(line) : (line) => console.error(line);
+}
+
+function printIssues(print: (line: string) => void, issues: readonly Issue[], rest: string): void {
+    for (const issue of issues.slice(0, PRINTED_ISSUES)) {
+        print(`${issue.severity} ${issue.record.kind} ${issue.record.id} ${issue.field}: ${issue.message} (${issue.code})`);
+        if (issue.hint) print(`    ${issue.hint}`);
+    }
+    if (issues.length > PRINTED_ISSUES) print(`${count(issues.length - PRINTED_ISSUES, 'more issue')} not shown. ${rest}`);
+}
+
+/** The data root to compile from, or an exit code after saying why there is none. */
+function catalogRoot(): string | number {
+    const root = dataRoot();
+    if (root !== null) return root;
+    const status = dataRootStatus();
+    console.error(`[photos] DATA_ROOT_NOT_READY: The data root is ${status.state}${status.detail ? `: ${status.detail}` : ''}.`);
+    return 3;
+}
+
+async function validate(args: string[]): Promise<number> {
+    const { values } = strictly(() => parseArgs({ args, options: { reprofile: { type: 'boolean' } }, strict: true }));
+    const root = catalogRoot();
+    if (typeof root === 'number') return root;
+    const result = await validateWorkingLayer({ dataRoot: root, reprofile: values.reprofile });
+    const exitCode = VALIDATE_EXIT_CODES[result.outcome];
+    const print = reporter(exitCode);
+    print(`[photos] ${result.outcome}: ${result.message}`);
+    if (result.candidateId) print(`Candidate: ${result.candidateId}`);
+    printIssues(print, result.issues, 'publish --dry-run writes them all to the diagnostics file.');
+    return exitCode;
+}
+
+function printPublish(print: (line: string) => void, result: PublishResult, root: string): void {
+    print(`[photos] ${result.outcome}: ${result.message}`);
+    if (result.candidateId) print(`Candidate: ${result.candidateId}`);
+    if (result.revisionId) print(`Active: ${result.revisionId}${result.revisionNumber === null ? '' : `, revision ${result.revisionNumber}`}`);
+    if (result.missingRules?.length) print(`Missing rules: ${result.missingRules.join(', ')}`);
+    if (result.launch) {
+        const { published, gone } = result.launch;
+        const leaving = gone === 0 ? 'Every photograph in the library is in it.' : `${count(gone, 'photograph')} in the library ${gone === 1 ? "isn't" : "aren't"} in it, so ${gone === 1 ? 'it leaves' : 'they leave'} the site.`;
+        print(`Launch: this revision replaces the legacy Home and Gallery with ${count(published, 'photograph')}. ${leaving}`);
+        if (result.outcome === 'LAUNCH_CONFIRMATION_REQUIRED') print('Run it again with --confirm-launch to publish it.');
+    }
+    if (result.reprofiled) {
+        const { moved, kept } = result.reprofiled;
+        if (moved.length) print(`Moved to the current profile: ${moved.slice(0, PRINTED_ISSUES).join(', ')}${moved.length > PRINTED_ISSUES ? `, and ${moved.length - PRINTED_ISSUES} more` : ''}`);
+        if (kept.length) print(`Kept their profile, since the watcher can't rebuild them: ${kept.slice(0, PRINTED_ISSUES).join(', ')}${kept.length > PRINTED_ISSUES ? `, and ${kept.length - PRINTED_ISSUES} more` : ''}`);
+    }
+    const diagnostics = result.candidateId ? path.relative(root, path.join(catalogPaths(root).diagnosticsDir, `${result.candidateId}.json`)) : null;
+    printIssues(print, result.issues, diagnostics ? `All of them are in ${diagnostics}.` : '');
+}
+
+async function publishCommand(args: string[]): Promise<number> {
+    const { values } = strictly(() => parseArgs({
+        args,
+        options: {
+            actor: { type: 'string' },
+            reason: { type: 'string' },
+            expect: { type: 'string' },
+            'dry-run': { type: 'boolean' },
+            'confirm-launch': { type: 'boolean' },
+            reprofile: { type: 'boolean' },
+        },
+        strict: true,
+    }));
+    const actor = values.actor ?? process.env.PHOTOS_ACTOR ?? '';
+    if (!/\S/.test(actor)) throw new UsageError('photos publish needs --actor <name> or PHOTOS_ACTOR.');
+    if (values.reason !== undefined && !/\S/.test(values.reason)) throw new UsageError('--reason needs some text.');
+    if (values.expect !== undefined && !REVISION_ID_RE.test(values.expect)) throw new UsageError(`${values.expect} is not a candidate ID.`);
+    const root = catalogRoot();
+    if (typeof root === 'number') return root;
+    const result = await publish({
+        dataRoot: root,
+        actor: actor.trim(),
+        reason: values.reason?.trim(),
+        expectedRevisionId: values.expect,
+        dryRun: values['dry-run'],
+        confirmLaunch: values['confirm-launch'],
+        reprofile: values.reprofile,
+    });
+    const exitCode = PUBLISH_EXIT_CODES[result.outcome];
+    printPublish(reporter(exitCode), result, root);
+    return exitCode;
+}
+
 async function main(argv: string[]): Promise<number> {
     const [command, ...args] = argv;
     try {
         if (command === 'migrate') return await migrate(args);
         if (command === 'identity') return await identity(args);
+        if (command === 'validate') return await validate(args);
+        if (command === 'publish') return await publishCommand(args);
         throw new UsageError(command ? `Unknown command: ${command}` : 'No command given.');
     } catch (error) {
         if (error instanceof UsageError) {

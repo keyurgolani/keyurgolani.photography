@@ -82,6 +82,12 @@ function withoutManaged(record: AuthoredRecordInput): Record<string, unknown> {
     return Object.fromEntries(Object.entries(record).filter(([key]) => !MANAGED.has(key)));
 }
 
+/** The base Work order a rebase merged the site record against, read before withoutManaged() strips it. */
+function rebasedSeriesOrder(record: AuthoredRecordInput): unknown {
+    const value = (record as { baseSeriesOrder?: unknown }).baseSeriesOrder;
+    return value === undefined ? null : value;
+}
+
 /** The newest stored version of a record, or null. A version that can't be used is INVALID_RECORD, with how to fix it. */
 async function readStored(dir: string, ref: { kind: AuthoredKind; id: string }): Promise<StoredVersion | null> {
     try {
@@ -108,6 +114,7 @@ async function commit(
     ref: { kind: AuthoredKind; id: string },
     expectedVersion: number,
     hooks: VersionedWriteHooks | undefined,
+    rebaseTo?: string,
 ): Promise<AuthoredRecord> {
     const dir = authoredRecordDir(root, ref.kind, ref.id);
     const folder = await recordFolderProblem(root, ref.kind, ref.id);
@@ -136,9 +143,12 @@ async function commit(
     }
 
     // An existing record keeps its base until a rebase moves it. A new one starts on the active revision.
-    const baseRevisionId = existing ? existing.baseRevisionId : (await readActivePointer(root))?.revisionId ?? null;
-    // The site record's base Work order moves with its base, so only a rebase sets it. A new record's is unknown.
-    const site = ref.kind === 'site' ? { baseSeriesOrder: (existing as AuthoredSite | null)?.baseSeriesOrder ?? null } : {};
+    const baseRevisionId = rebaseTo ?? (existing ? existing.baseRevisionId : (await readActivePointer(root))?.revisionId ?? null);
+    // The site record's base Work order moves with its base, so only a rebase sets it, from the record it merged.
+    // Any other write keeps the stored value, and a new record's is unknown.
+    const site = ref.kind === 'site'
+        ? { baseSeriesOrder: rebaseTo !== undefined ? rebasedSeriesOrder(record) : (existing as AuthoredSite | null)?.baseSeriesOrder ?? null }
+        : {};
     const next = { ...withoutManaged(record), schemaVersion: CATALOG_SCHEMA_VERSION, version: expectedVersion + 1, baseRevisionId, ...site };
     const parsed = parseAuthoredRecord(ref.kind, next);
     if (!parsed.ok) throw new AuthoredWriteError('INVALID_RECORD', ref, `The ${ref.kind} record ${ref.id} is not valid.`, { issues: parsed.error.issues });
@@ -212,4 +222,35 @@ export async function writeAuthoredRecord(record: AuthoredRecordInput, options: 
         if (error instanceof LockTimeoutError) throw new AuthoredWriteError('AUTHORED_LOCKED', ref, error.message, { holder: error.holder });
         throw error;
     }
+}
+
+export interface WriteRebasedOptions {
+    /** The version the rebase read. */
+    expectedVersion: number;
+    /** The authored lock the rebase holds. Required: a rebase never writes without it. */
+    lock: LockContext;
+    /** The revision the record is now based on. */
+    baseRevisionId: string;
+    hooks?: VersionedWriteHooks;
+}
+
+/**
+ * Write a record that rebaseWorkingLayer() merged onto `baseRevisionId`. The
+ * only write that moves an existing record's base. It checks `version` the
+ * way writeAuthoredRecord() does, under the caller's authored hold. For the
+ * site record it also stores the `baseSeriesOrder` the rebase merged against,
+ * the one write that sets that field.
+ */
+export function writeRebasedRecord(record: AuthoredSiteInput, options: WriteRebasedOptions): Promise<AuthoredSite>;
+export function writeRebasedRecord(record: AuthoredSeriesInput, options: WriteRebasedOptions): Promise<AuthoredSeries>;
+export function writeRebasedRecord(record: AuthoredPhotoInput, options: WriteRebasedOptions): Promise<AuthoredPhoto>;
+export async function writeRebasedRecord(record: AuthoredRecordInput, options: WriteRebasedOptions): Promise<AuthoredRecord> {
+    const { expectedVersion, lock, baseRevisionId, hooks } = options;
+    const kind = record.kind as AuthoredKind;
+    const id = kind === 'site' ? 'site' : String((record as { id?: unknown }).id);
+    const ref = { kind, id };
+    if (lock.name !== AUTHORED_LOCK || lock.signal.aborted) {
+        throw new AuthoredWriteError('LOCK_NOT_HELD', ref, 'A rebase writes only under a live hold on the authored lock.');
+    }
+    return commit(path.resolve(lock.root), record, ref, expectedVersion, hooks, baseRevisionId);
 }

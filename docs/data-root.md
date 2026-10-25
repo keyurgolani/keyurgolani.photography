@@ -10,14 +10,18 @@ The registry in it names every photo by its path in the library and by the SHA-2
 |---|---|---|
 | `data-root.json` | The marker that says the folder is an initialized data root | `migrate --apply`, once |
 | `identity/registry/v<N>.json` | Every photo ID, the photo's path, and its revisions, with the state of each revision's `/media` set. A [version folder](#version-folders): the highest `v<N>.json` is the registry. | The watcher, `migrate --apply`, and `identity` decisions |
-| `authored/site/v<N>.json`, `authored/<kind>/<id>/v<N>.json` | The authored catalog records: the site record, and one version folder per series (`authored/series/<seriesId>/`) and per photo (`authored/photos/<photoId>/`) | Nothing yet. The catalog commands of #13 will. |
+| `authored/site/v<N>.json`, `authored/<kind>/<id>/v<N>.json` | The authored catalog records: the site record, and one version folder per series (`authored/series/<seriesId>/`) and per photo (`authored/photos/<photoId>/`) | Hand edits for now, and `photos.mjs publish` when it rebases them |
 | `identity/stat-cache.json` | File sizes and times, so a pass doesn't hash files that haven't changed. Safe to delete, though the next pass then reads every photo again, as [Health](#health) says. | The watcher |
 | `identity/decisions/` | `identity` decisions waiting for a pass, then filed under `applied/` or `rejected/` | `photos.mjs identity` |
 | `identity/migration/` | Dry-run plans and reports, and the mapping each apply wrote from paths and legacy URLs to photo IDs | `photos.mjs migrate` |
 | `assets/<photoId>/<assetRevision>/<profileId>/` | One `/media` set: its WebP and AVIF files and `manifest.json`. A set never changes once it's written. | The watcher |
 | `staging/` | Sets still being built | The watcher |
 | `status/watcher.json` | The watcher's heartbeat, which its healthcheck reads | The watcher, every 30 s |
-| `locks/` | The locks writers take on the registry and the authored records | The watcher and `photos.mjs` |
+| `catalog/revisions/` | Every published revision, which never changes once it's written | `photos.mjs publish` |
+| `catalog/activations/` | Each activation | `photos.mjs publish` |
+| `catalog/active/v<N>.json` | The pointer to the active revision. A [version folder](#version-folders), so a publish moves it by adding the next version. | `photos.mjs publish` |
+| `catalog/candidates/`, `catalog/diagnostics/` | The last compile of each candidate, its issues, and how the last publish ended | `photos.mjs publish` |
+| `locks/` | The locks writers take on the registry, the authored records, and the catalog | The watcher and `photos.mjs` |
 
 Everything in it belongs to uid 1001, the user both containers run as, and only that user can read it, since the registry keeps curator-only details such as GPS. To read a file, go through the container instead of `sudo`:
 
@@ -27,7 +31,9 @@ docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher cat /
 
 ## Version folders
 
-Every document that two writers could change at once is a folder with one file per version: `identity/registry/`, `authored/site/`, `authored/series/<seriesId>/`, and `authored/photos/<photoId>/`. Inside each folder the versions are `v1.json`, `v2.json`, and so on. The highest number is the document. A write never changes an existing file. It adds the next number with `link()`, which fails if that number already exists, so two writers can't both store the same version. That's why the data root needs a filesystem with hard links.
+Every document that two writers could change at once is a folder with one file per version: `identity/registry/`, `authored/site/`, `authored/series/<seriesId>/`, `authored/photos/<photoId>/`, and the active catalog pointer, `catalog/active/`. Inside each folder the versions are `v1.json`, `v2.json`, and so on. The highest number is the document. A write never changes an existing file. It adds the next number with `link()`, which fails if that number already exists, so two writers can't both store the same version. That's why the data root needs a filesystem with hard links.
+
+Never edit the active pointer by hand: only `photos.mjs publish`, and later `photos.mjs rollback`, move it. A version copied there by hand makes a revision live without the checks a publish runs, so the next command refuses to record it if the rules block that revision.
 
 Each write keeps the two newest versions and removes older ones. Files that start with `.v` and end in `.tmp` are writes in progress, or left by a write that crashed. The next write in that folder removes them. Leave them alone.
 
@@ -51,6 +57,8 @@ uid="$(sudo stat -c %u "$file")" && gid="$(sudo stat -c %g "$file")" &&
 On macOS, use `stat -f %u` and `stat -f %g` in place of `stat -c %u` and `stat -c %g`. Each step runs only if the one before it worked, so nothing runs for a missing file. The `test` stops it when the folder already exists, since `install -d` would change an existing folder's owner. In that case the old file sits beside versions of its own, and nothing says which copy is current: decide that first, by hand.
 
 ## Editing a document by hand
+
+This is for the registry and the authored records, never the active pointer.
 
 Only while no command runs: stop the watcher, and don't run `photos.mjs` commands until you're done. The folders are 0700 and the files 0600, owned by the user the app runs as (uid 1001 in the containers), so the new version has to keep that owner and mode. A copy root owns can't be read by the app: the registry then reads as unreadable, and a record as `unreadable`. With the containers, edit as uid 1001 from a shell in the watcher's image:
 

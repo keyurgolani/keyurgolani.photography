@@ -189,11 +189,14 @@ describe('activations and the active pointer', () => {
         expect(parseActivation({ ...activation, ...change }).ok).toBe(false);
     });
 
-    it('parse active.json and reject anything else in it', () => {
-        const pointer = { schemaVersion: 1, revisionId: REVISION, activationId: activation.activationId };
+    it('parse the active pointer and reject anything else in it', () => {
+        const pointer = { schemaVersion: 1, version: 3, revisionId: REVISION, activationId: activation.activationId };
         expect(parseActivePointer(pointer)).toEqual({ ok: true, value: pointer });
         expect(parseActivePointer({ ...pointer, revisionId: 'rev_1' }).ok).toBe(false);
         expect(parseActivePointer({ ...pointer, path: '/data' }).ok).toBe(false);
+        // Its version is the number of the file it was read from.
+        expect(parseActivePointer({ ...pointer, version: 0 }).ok).toBe(false);
+        expect(parseActivePointer({ schemaVersion: 1, revisionId: REVISION, activationId: activation.activationId }).ok).toBe(false);
     });
 });
 

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { recordDirectorySyncs } from '../../../test/helpers/directorySyncs';
 import { importGraph } from '../../../test/helpers/importGraph';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
-import { MAX_VERSION_DIGITS } from '../../storage/document';
+import { MAX_VERSION_DIGITS, versionFile, versionText } from '../../storage/document';
 import { withLock } from '../../storage/lock';
 import type { AuthoredPhoto, AuthoredSeries, ManagedField } from '../types';
 import { authoredPaths, catalogPaths, readActivePointer, readAuthoredRecord, readWorkingLayer } from '../working-layer';
@@ -49,8 +49,9 @@ function editInPlace(file: string, edit: (text: string) => string): void {
     fs.writeFileSync(file, edit(fs.readFileSync(file, 'utf8')));
 }
 
+/** Point `catalog/active/` at `revisionId`, as its first version. */
 function activate(root: string, revisionId: string): void {
-    writeJson(catalogPaths(root).active, { schemaVersion: 1, revisionId, activationId: 'act_00000000-0000-4000-8000-000000000001' });
+    writeJson(versionFile(catalogPaths(root).active, 1), versionText({ schemaVersion: 1, revisionId, activationId: 'act_00000000-0000-4000-8000-000000000001' }, 1));
 }
 
 const photo = (id: string, extra: Partial<AuthoredPhoto> = {}) => ({ kind: 'photo' as const, id, assetRevision: ASSET, alt: null, ...extra });
