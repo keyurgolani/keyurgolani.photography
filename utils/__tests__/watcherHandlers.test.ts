@@ -349,6 +349,22 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
             expect(await outputChannels('portrait')).toEqual(Array(7).fill('green'));
         });
 
+        it('leaves a set alone on a change of a source it shares, when the record says another process built it from its owner', async () => {
+            fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+            const run = await runTsx('scripts/imageWatcher.ts', ['--once'], {
+                env: { PHOTOGRAPHY_LIBRARY_DIR: lib.root, PHOTOGRAPHY_DATA_DIR: path.join(lib.root, '..', 'no-data-root') },
+            });
+            expect(run.code, run.stderr).toBe(0);
+            expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
+            const before = lib.hashes(derivativePaths('portrait'));
+
+            // A watcher started since knows from cache/set-sources that the owner built the set, so it has nothing to rebuild.
+            const restarted = newHandlers();
+            await restarted.onChange(lib.file('portrait.png'));
+            expect(lib.hashes(derivativePaths('portrait'))).toEqual(before);
+            expect(logs).toContain('[ImageWatcher] Skipping portrait.png: it shares its derivatives with portrait.jpg.');
+        });
+
         it('writes nothing for an add or a change of a source whose set another owns', async () => {
             await handlers.onAdd(lib.file('landscape.jpg'));
             const before = lib.hashes(LANDSCAPE);
@@ -739,6 +755,24 @@ describe('the one-time rebuild of orientation-tagged photos', { timeout: 60_000 
         fs.writeFileSync(lib.file('optimized/turned.webp'), await sideways());
         expect(await newHandlers().queueStartupBatch()).toEqual({ processed: [], skipped: [], errors: [] });
         expect((await optimizedSize('turned.jpg')).width).toBe(960);
+    });
+
+    it("keeps a startup job's own force, here the upright rebuild, when a change to a later source of its set drops the job", async () => {
+        await oldLibrary();
+        fs.copyFileSync(lib.file('turned.jpg'), lib.file('turned.png'));
+        // landscape.jpg's job goes first, and the gate holds it, so turned.jpg's job is still queued when the change comes.
+        fs.rmSync(lib.file(LANDSCAPE[0]));
+        expect(await ownerOf('turned.png')).toBe('turned.jpg');
+        const single = newHandlers();
+        const held = gate.arm();
+        const batch = single.queueStartupBatch();
+        await held.reached;
+        const change = single.onChange(lib.file('turned.png'));
+        held.release();
+
+        expect(await batch).toEqual({ processed: ['landscape.jpg'], skipped: ['turned.jpg'], errors: [] });
+        await change;
+        expect(await optimizedSize('turned.jpg')).toEqual(UPRIGHT);
     });
 
     it('records nothing while a tagged photo is left unbuilt, so the next start tries again', async () => {
