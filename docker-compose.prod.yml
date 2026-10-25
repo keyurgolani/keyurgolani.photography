@@ -60,9 +60,11 @@ services:
       - NODE_ENV=production
       - PHOTOGRAPHY_DATA_DIR=/data/portfolio
     command: ["node", "dist/scripts/imageWatcher.mjs", "--watch"]
-    # Healthy while status/watcher.json in the data root is at most 120 s old.
-    # The watcher rewrites it every 30 s, so a stuck watcher, or a data root it
-    # can't write, turns unhealthy.
+    # Healthy while status/watcher.json in the data root is at most 120 s old
+    # and no identity pass has run longer than 30 minutes. The watcher rewrites
+    # it every 30 s, so a stopped event loop, a data root it can't write, or a
+    # pass that never ends turns unhealthy. A stuck legacy derivative job
+    # doesn't (docs/data-root.md, Health).
     healthcheck:
       test: ["CMD", "node", "dist/scripts/watcherHealth.mjs"]
       interval: 30s

@@ -145,7 +145,7 @@ describe('an identity pass', { timeout: 60_000 }, () => {
         expect(profileStates(registry)).toEqual(['ready', 'ready']);
         expect(registry.pendingFacts).toEqual([]);
         expect(Object.keys(assetStore(s.data.root)).filter((file) => file.endsWith('manifest.json'))).toHaveLength(2);
-        expect(s.heartbeat()).toEqual({ pid: 4242, hostname: 'test-host', lastPassAt: iso(NOW), lastPassResult: 'committed', heartbeatAt: iso(NOW) });
+        expect(s.heartbeat()).toEqual({ pid: 4242, hostname: 'test-host', lastPassAt: iso(NOW), lastPassResult: 'committed', passStartedAt: null, heartbeatAt: iso(NOW) });
         expect(s.lines).toContain(`[identity] Identity step on: data root ${s.data.root}.`);
         expect(s.lines.filter((line) => line.includes('"event":"identity-fact"'))).toHaveLength(2);
         expect(s.requests).toEqual([]);
@@ -356,8 +356,37 @@ describe('the 30 s check', { timeout: 60_000 }, () => {
         now += 30_000;
         await s.step.check();
 
-        expect(s.heartbeat()).toEqual({ pid: 4242, hostname: 'test-host', lastPassAt: iso(NOW), lastPassResult: 'committed', heartbeatAt: iso(NOW + 30_000) });
+        expect(s.heartbeat()).toEqual({ pid: 4242, hostname: 'test-host', lastPassAt: iso(NOW), lastPassResult: 'committed', passStartedAt: null, heartbeatAt: iso(NOW + 30_000) });
         expect(s.requests).toEqual([]);
+    });
+
+    it('stamps the heartbeats it writes while a pass runs with when that pass started, and clears it once the pass ends', async () => {
+        let now = NOW;
+        const gate = deferred();
+        const entered = deferred();
+        const s = await setup({
+            options: {
+                clock: () => now,
+                sinks: [async () => {
+                    entered.resolve();
+                    await gate.promise;
+                }],
+            },
+        });
+        cleanups.push(async () => gate.resolve());
+        const pass = s.step.pass('startup');
+        await entered.promise;
+
+        now += 30_000;
+        await s.step.check();
+        expect(s.heartbeat()).toMatchObject({ passStartedAt: iso(NOW), heartbeatAt: iso(NOW + 30_000) });
+
+        gate.resolve();
+        await pass;
+        await s.step.idle();
+        now += 30_000;
+        await s.step.check();
+        expect(s.heartbeat()).toMatchObject({ passStartedAt: null, lastPassResult: 'committed', heartbeatAt: iso(NOW + 60_000) });
     });
 
     it('keeps the heartbeat for its owner only', async () => {
@@ -366,7 +395,7 @@ describe('the 30 s check', { timeout: 60_000 }, () => {
 
         expect(fs.statSync(s.data.file('status')).mode & 0o777).toBe(0o700);
         expect(fs.statSync(watcherStatusFile(s.data.root)).mode & 0o777).toBe(0o600);
-        expect(s.heartbeat()).toEqual({ pid: 4242, hostname: 'test-host', lastPassAt: null, lastPassResult: null, heartbeatAt: iso(NOW) });
+        expect(s.heartbeat()).toEqual({ pid: 4242, hostname: 'test-host', lastPassAt: null, lastPassResult: null, passStartedAt: null, heartbeatAt: iso(NOW) });
     });
 
     it('asks for a pass when a decision is waiting', async () => {
