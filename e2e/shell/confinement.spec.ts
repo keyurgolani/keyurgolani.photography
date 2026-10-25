@@ -47,11 +47,13 @@ test('on /about only main and the Primary nav carry the about surface, and neith
     await expectAboutSurface(page);
 });
 
-test('it holds after a client-side move from /about to /gallery', async ({ page }) => {
+test('it holds after a client-side move from /about through /work to the legacy /gallery', async ({ page }) => {
     await page.goto('/about');
     await waitForHydration(page);
     await expectAboutSurface(page);
-    await page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Work', exact: true }).click();
+    const work = page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Work', exact: true });
+    await expect(work).toHaveAttribute('href', '/work');
+    await work.click();
     await expect(page).toHaveURL('/gallery');
     await expect(page.getByRole('heading', { level: 1, name: 'Gallery' })).toBeVisible();
     await expectConfined(page);

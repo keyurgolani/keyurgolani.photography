@@ -54,7 +54,16 @@ test('an unknown path returns 404 with SiteNav and the not-found page', async ({
     expect(html).toMatch(NAV);
     expect(html).toMatch(/<h1[^>]*>Page not found<\/h1>/);
     expect(html).toContain('This link may be out of date, or the work it pointed to is no longer published.');
-    expect(html).toMatch(/<a[^>]*href="\/gallery"[^>]*>Browse the work<\/a>/);
+    expect(html).toMatch(/<a[^>]*href="\/work"[^>]*>Browse the work<\/a>/);
+});
+
+test('before the cutover /work answers 307 to /gallery, which serves the legacy page', async ({ request }) => {
+    const work = await request.get('/work', { maxRedirects: 0 });
+    expect(work.status()).toBe(307);
+    expect(work.headers()['location']).toBe('/gallery');
+    const gallery = await request.get('/gallery', { maxRedirects: 0 });
+    expect(gallery.status()).toBe(200);
+    expect(await gallery.text()).toMatch(/<h1[^>]*>Gallery<\/h1>/);
 });
 
 test('the fonts come from the site, headings take the serif at 400, and the legacy Gallery h1 keeps 700', async ({ page }) => {
