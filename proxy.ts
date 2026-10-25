@@ -8,7 +8,7 @@ import {
     isLoginRequest,
     LOGIN_PAGE,
 } from './lib/curation/auth/policy';
-import { hasEncodedSeparator, isPublicDerivativePath, isUnderPhotos, resolvedPathname } from './utils/publicDerivatives';
+import { hasEncodedSeparator, isUnderPhotos, resolvedPathname } from './utils/privatePaths';
 
 const PLAIN_TEXT = { 'Content-Type': 'text/plain; charset=utf-8', 'X-Content-Type-Options': 'nosniff' };
 
@@ -63,10 +63,9 @@ const READ_METHODS = new Set(['GET', 'HEAD']);
  *   curator prefixes mutates (the route-inventory test), so a POST there,
  *   such as a server action ID posted to `/`, gets a 404 before Next looks
  *   for the action.
- * - Under /assets/photos only the legacy derivatives pass: top-level files
- *   in thumbnails, medium, and optimized (.webp), their -avif twins (.avif),
- *   and lqip (.txt). Everything else, including source files at any depth,
- *   gets a 404.
+ * - Everything under /assets/photos gets a 404: original sources at any
+ *   depth, and the legacy basename derivatives too, since the site serves
+ *   photos only from the /media sets the active catalog revision holds.
  */
 export function proxy(request: NextRequest): NextResponse {
     const { pathname } = request.nextUrl;
@@ -109,8 +108,8 @@ export function proxy(request: NextRequest): NextResponse {
         if (denial !== null) return curatorDenial(denial.status);
     }
     if (!READ_METHODS.has(method) && method !== 'OPTIONS') return notFound();
-    if (!isUnderPhotos(pathname) || isPublicDerivativePath(pathname)) return NextResponse.next();
-    return notFound();
+    if (isUnderPhotos(pathname)) return notFound();
+    return NextResponse.next();
 }
 
 export const config = {

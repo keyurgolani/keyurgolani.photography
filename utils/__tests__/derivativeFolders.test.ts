@@ -5,7 +5,6 @@ import { CACHE_FOLDER, DERIVATIVE_FOLDERS } from '../../lib/derivativeFolders.mj
 import { LEGACY_OUTPUT_DIRS } from '../../lib/identity/scan';
 import nextConfig from '../../next.config.mjs';
 import { generatedFolderNames, libraryPaths } from '../imageOptimizer';
-import { PUBLIC_DERIVATIVE_FOLDERS } from '../publicDerivatives';
 
 describe('the derivative folder list', () => {
     const entries = Object.entries(DERIVATIVE_FOLDERS);
@@ -19,14 +18,16 @@ describe('the derivative folder list', () => {
         ]);
     });
 
-    it('is what the pipeline, the proxy, /_next/image, and the identity scan all read', () => {
+    it('is what the pipeline and the identity scan read', () => {
         const paths = libraryPaths();
         const folderPaths = Object.entries(paths).filter(([key]) => key !== 'root' && key !== 'dynamicCache').map(([, folder]) => path.relative(paths.root, folder));
         expect(folderPaths).toEqual(folders);
         expect(generatedFolderNames()).toEqual([...folders, CACHE_FOLDER]);
-        expect(PUBLIC_DERIVATIVE_FOLDERS).toEqual(DERIVATIVE_FOLDERS);
         expect(LEGACY_OUTPUT_DIRS).toEqual([...folders, CACHE_FOLDER]);
-        const photoPatterns = (nextConfig.images?.localPatterns ?? []).map((pattern) => pattern.pathname).filter((pathname) => pathname?.startsWith('/assets/photos/'));
-        expect(photoPatterns).toEqual(entries.filter(([, extension]) => extension !== '.txt').map(([folder, extension]) => `/assets/photos/${folder}/*${extension}`));
+    });
+
+    it('gives /_next/image no pattern under /assets/photos', () => {
+        const patterns = (nextConfig.images?.localPatterns ?? []).map((pattern) => pattern.pathname ?? '');
+        expect(patterns.filter((pathname) => pathname.toLowerCase().includes('/assets/photos'))).toEqual([]);
     });
 });

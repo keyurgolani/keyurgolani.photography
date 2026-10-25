@@ -134,7 +134,9 @@ describe('proxy.ts with CURATION_ENABLED=true', () => {
                 expect(response.status, `${pathname} on ${host}`).toBe(421);
                 expect(response.headers.get('cache-control')).toBe('no-store');
             }
-            expect(passes(send(pathname)), pathname).toBe(true);
+            // 13E closed every /assets/photos path, legacy derivatives included.
+            if (pathname.startsWith('/assets/photos/')) expect(send(pathname).status, pathname).toBe(404);
+            else expect(passes(send(pathname)), pathname).toBe(true);
         }
     });
 

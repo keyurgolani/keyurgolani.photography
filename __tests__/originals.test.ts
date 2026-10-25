@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import nextConfig from '../next.config.mjs';
 import { config, proxy } from '../proxy';
 import { baseNameOf, getImagePaths, libraryPaths } from '../utils/imageOptimizer';
-import { resolvedPathname } from '../utils/publicDerivatives';
+import { resolvedPathname } from '../utils/privatePaths';
 
 // The function /_next/image uses to check `url` against images.localPatterns. Next ships no types for it.
 const { hasLocalMatch } = createRequire(import.meta.url)('next/dist/shared/lib/match-local-pattern') as {
@@ -19,7 +19,15 @@ function respond(pathname: string) {
 
 const passes = (pathname: string) => respond(pathname).headers.get('x-middleware-next') === '1';
 
+function expectNotFound(pathname: string): void {
+    const response = respond(pathname);
+    expect(response.status, pathname).toBe(404);
+    expect(response.headers.get('x-middleware-next'), pathname).toBeNull();
+    expect(response.headers.get('cache-control'), pathname).toBe('no-store');
+}
+
 describe('proxy.ts on /assets/photos', () => {
+    // The site serves photos only from /media, so the legacy basename URLs close too.
     it.each([
         '/assets/photos/thumbnails/landscape.webp',
         '/assets/photos/medium/landscape.webp',
@@ -31,8 +39,10 @@ describe('proxy.ts on /assets/photos', () => {
         '/assets/photos/optimized/IMG%201234%20(edited).webp',
         '/assets/photos/optimized/caf%C3%A9.webp',
         '/assets/photos/optimized/50%25off.webp',
-    ])('passes the legacy derivative %s', (pathname) => {
-        expect(passes(pathname)).toBe(true);
+        '/assets/photos/Optimized/landscape.webp',
+        '/Assets/Photos/optimized/landscape.webp',
+    ])('404s the legacy derivative %s', (pathname) => {
+        expectNotFound(pathname);
     });
 
     it.each([
@@ -88,10 +98,7 @@ describe('proxy.ts on /assets/photos', () => {
         ['a nested original reached through a sibling folder', '/assets/profile/%2E%2E/photos/series/x.jpg'],
         ['an encoded slash outside /assets/photos', '/gallery%2Fx'],
     ])('404s %s', (_label, pathname) => {
-        const response = respond(pathname);
-        expect(response.status).toBe(404);
-        expect(response.headers.get('x-middleware-next')).toBeNull();
-        expect(response.headers.get('cache-control')).toBe('no-store');
+        expectNotFound(pathname);
     });
 
     it.each([
@@ -134,15 +141,15 @@ describe('derivative URLs', () => {
     ] as const;
 
     it.each(['50%off.jpg', 'a#b.jpg', 'what?.png', 'IMG 1234 (edited).jpg', 'café.webp', '100% #2.jpg', 'a%2Fb.jpg', 'a%2fb.png', 'a%5Cb.jpg'])(
-        'for %s, pass the proxy whole and decode to the file on disk',
+        'for %s, decode to the file on disk, and 404 at the proxy',
         (name) => {
             const urls = getImagePaths(name, libraryPaths(), new Map());
             const base = baseNameOf(name);
+            for (const field of ['original', ...outputs.map(([output]) => output)] as const) expectNotFound(urls[field]);
             for (const [field, folder, extension] of outputs) {
                 const url = urls[field];
                 // Nothing in the name becomes a query or a fragment.
                 expect(new URL(url, 'http://localhost').pathname, url).toBe(url);
-                expect(passes(url), url).toBe(true);
                 expect(resolvedPathname(url), url).toBe(`/assets/photos/${folder}/${base}${extension}`);
             }
         },
@@ -158,7 +165,14 @@ describe('outputFileTracingExcludes', () => {
 describe('images.localPatterns', () => {
     const allows = (url: string) => hasLocalMatch(nextConfig.images?.localPatterns, url);
 
-    it('lets /_next/image optimize the legacy derivatives', () => {
+    it('holds only the two exact portrait paths', () => {
+        expect(nextConfig.images?.localPatterns).toEqual([
+            { pathname: '/assets/profile/front.png', search: '' },
+            { pathname: '/assets/profile/back.png', search: '' },
+        ]);
+    });
+
+    it('refuses every legacy derivative, every original, and every other public file, so /_next/image answers 400 for one', () => {
         for (const url of [
             '/assets/photos/thumbnails/landscape.webp',
             '/assets/photos/medium/landscape.webp',
@@ -166,13 +180,8 @@ describe('images.localPatterns', () => {
             '/assets/photos/thumbnails-avif/landscape.avif',
             '/assets/photos/medium-avif/landscape.avif',
             '/assets/photos/optimized-avif/landscape.avif',
-        ]) {
-            expect(allows(url), url).toBe(true);
-        }
-    });
-
-    it('refuses every original and every other public file, so /_next/image answers 400 for one', () => {
-        for (const url of [
+            '/assets/photos/optimized/IMG%201234%20(edited).webp',
+            '/Assets/Photos/optimized/landscape.webp',
             '/assets/photos/series/x.jpg',
             '/assets/photos/landscape.jpg',
             '/assets/photos/portrait.png',
@@ -202,6 +211,44 @@ describe('images.localPatterns', () => {
             '/assets/profile/%2E%2E/photos/landscape.jpg',
         ]) {
             expect(allows(url), url).toBe(false);
+        }
+    });
+});
+
+describe('images.localPatterns as Next loads them', () => {
+    // At load, Next adds its own static media patterns to the list, for statically imported images.
+    const { default: loadConfig } = createRequire(import.meta.url)('next/dist/server/config') as {
+        default(phase: string, dir: string, options?: { silent?: boolean }): Promise<{ images: { localPatterns?: unknown } }>;
+    };
+
+    it('refuses an encoded path under /assets/photos at /_next/image', async () => {
+        const loaded = await loadConfig('phase-production-server', process.cwd(), { silent: true });
+        const patterns = loaded.images.localPatterns;
+        expect(patterns).toEqual(expect.arrayContaining([
+            { pathname: '/assets/profile/front.png', search: '' },
+            { pathname: '/assets/profile/back.png', search: '' },
+            { pathname: '/_next/static/media/**', search: '' },
+        ]));
+        // Loading it leaves the module's own list as written.
+        expect(nextConfig.images?.localPatterns).toHaveLength(2);
+        expect(hasLocalMatch(patterns, '/assets/profile/front.png')).toBe(true);
+        for (const url of [
+            '/assets/photos/optimized/landscape.webp',
+            '/assets/photos/optimized/landscape%2Ewebp',
+            '/assets%2Fphotos%2Foptimized%2Flandscape.webp',
+            '/assets/photos/landscape.jpg',
+        ]) {
+            expect(hasLocalMatch(patterns, url), url).toBe(false);
+        }
+        // For a url under Next's own patterns, /_next/image fetches it internally, so the proxy
+        // has to run on that fetch and refuse anything that encodes its way out of the folder.
+        for (const url of [
+            '/_next/static/media/..%2F..%2F..%2Fassets%2Fphotos%2Foptimized%2Flandscape.webp',
+            '/_next/static/media/..%5C..%5C..%5Cassets%5Cphotos%5Coptimized%5Clandscape.webp',
+            '/_next/static/immutable/media/..%2F..%2F..%2F..%2Fassets%2Fphotos%2Flandscape.jpg',
+        ]) {
+            expect(unstable_doesMiddlewareMatch({ config, url }), url).toBe(true);
+            expectNotFound(url);
         }
     });
 });

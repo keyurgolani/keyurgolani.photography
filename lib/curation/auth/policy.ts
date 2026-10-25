@@ -3,7 +3,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { foldName } from '../../foldName';
-import { resolvedPathname } from '../../../utils/publicDerivatives';
+import { resolvedPathname } from '../../../utils/privatePaths';
 import { readCuratorSecrets } from './secrets';
 import { sessionFromCookies } from './sessions';
 
@@ -328,7 +328,7 @@ export function isLoginRequest(pathname: string, method: string, isAction: boole
 
 /**
  * Whether a request pathname, as sent, reaches a curator path once decoded
- * and resolved the way utils/publicDerivatives.ts resolves it: `/curation` or
+ * and resolved the way utils/privatePaths.ts resolves it: `/curation` or
  * `/api/curation`, and anything below either. The first segments are folded
  * and compared by their letters and digits only, and a longer name that
  * starts the same way counts too (`/curation.rsc`, `/Curation`), which
