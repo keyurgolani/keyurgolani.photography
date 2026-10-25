@@ -107,6 +107,29 @@
   background: var(--gah-surface);
 }
 
+/* The cover's link to its Viewer takes the same width cap, from the page's
+   --ratio for the cover, so the focus ring wraps the photograph and not the
+   empty column beside a tall one. The frame inside fills it. */
+.coverLink {
+  --ratio: 3 / 2;
+  display: block;
+  width: min(100%, calc(82svh * var(--ratio)));
+  border-radius: var(--gah-radius);
+  color: inherit;
+  text-decoration: none;
+}
+
+/* Inside the link the frame takes the link's --ratio, so a cover whose image
+   fails keeps the photograph's shape, and with it the 82svh cap. */
+.coverLink .coverFrame {
+  --ratio: inherit;
+  width: 100%;
+}
+
+.coverLink .coverFrame.fallback {
+  aspect-ratio: var(--ratio);
+}
+
 .coverFrame .image {
   object-position: var(--focal-x, 50%) var(--focal-y, 50%);
 }
@@ -217,7 +240,8 @@
 }
 
 /* The missing-image mark: a hairline across the empty box, so it never reads as a photograph still loading. */
-.thumbFrame.fallback {
+.thumbFrame.fallback,
+.coverFrame.fallback {
   background: linear-gradient(to top right, transparent calc(50% - 0.5px), var(--gah-rule) calc(50% - 0.5px), var(--gah-rule) calc(50% + 0.5px), transparent calc(50% + 0.5px)), var(--gah-surface);
 }
 
@@ -250,7 +274,8 @@
 }
 
 /* Hover parity: focus marks the entry the same way a pointer does. No scaling either way. */
-.entry:focus-visible .thumbFrame {
+.entry:focus-visible .thumbFrame,
+.coverLink:focus-visible .coverFrame {
   box-shadow: 0 0 0 1px var(--gah-rule-strong);
 }
 
@@ -307,6 +332,12 @@
 @media (hover: hover) and (pointer: fine) {
   .moreButton:not([aria-disabled='true']):hover {
     background: var(--gah-surface);
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .coverLink:hover .coverFrame {
+    box-shadow: 0 0 0 1px var(--gah-rule-strong);
   }
 }
 

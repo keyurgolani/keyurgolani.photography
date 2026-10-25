@@ -1,5 +1,13 @@
-import type { PhotoAlt } from '@/lib/a11y/photoName';
+import { photoEntryName, type PhotoAlt } from '@/lib/a11y/photoName';
 import type { SeriesFacts } from '@/lib/catalog/projections/series';
+
+/** The suffix that keeps the cover's link name apart from its own sequence entry's (contract rule 2: names are unique). */
+export const COVER_SUFFIX = 'series cover';
+
+/** The cover link's name: its photograph's photoEntryName(), then COVER_SUFFIX. */
+export function coverEntryName(input: Parameters<typeof photoEntryName>[0]): string {
+    return `${photoEntryName(input)}, ${COVER_SUFFIX}`;
+}
 
 /** The projection's description as #1's alt union: described text, or decorative when there's none. */
 export function altOf(description: string | null): PhotoAlt {
