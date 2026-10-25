@@ -36,7 +36,7 @@ const SERIES: SeriesOption[] = [
 ];
 
 function item(overrides: Partial<InboxItem> = {}): InboxItem {
-    return { id: EVT(1), version: 3, type: 'new', status: 'open', group: 'judgment', title: 'Uncurated photograph', photoId: P(9), shortId: P(9).slice(0, 11), waiting: null, ...overrides };
+    return { id: EVT(1), version: 3, type: 'new', status: 'open', group: 'judgment', title: 'Uncurated photograph', photoId: P(9), shortId: P(9).slice(0, 11), waiting: null, placedBy: null, unplacedSeries: null, ...overrides };
 }
 
 function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
@@ -70,7 +70,7 @@ function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
 }
 
 function view(overrides: Partial<Extract<InboxView, { state: 'ready' }>> = {}): Extract<InboxView, { state: 'ready' }> {
-    return { state: 'ready', activeRevisionId: ACTIVE, needsJudgment: 1, waiting: 0, items: [item()], problems: [], series: SERIES, seriesProblem: null, selected: detail(), missingSelection: null, ...overrides };
+    return { state: 'ready', activeRevisionId: ACTIVE, needsJudgment: 1, waiting: 0, placed: 0, unplaced: 0, placementUnknown: false, items: [item()], problems: [], series: SERIES, seriesProblem: null, selected: detail(), missingSelection: null, ...overrides };
 }
 
 const renderInbox = (v = view()) =>
