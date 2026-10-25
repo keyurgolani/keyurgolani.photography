@@ -12,13 +12,14 @@ const handlers = ['onClick', 'onMouseDown', 'onMouseUp', 'onKeyPress', 'onKeyDow
 const NEXT_MESSAGE = 'This code runs outside Next. Keep Next imports in app/, proxy.ts, or lib/catalog/request.ts.'
 const NEXT_PATHS = [
   { name: 'next', message: NEXT_MESSAGE },
-  { name: 'server-only', message: 'This code runs under plain Node, where server-only throws. Only lib/catalog/public-reader.ts, reader.ts, projections/work.ts, and projections/home.ts may import it.' },
+  { name: 'server-only', message: 'This code runs under plain Node, where server-only throws. Only lib/catalog/public-reader.ts, reader.ts, projections/work.ts, projections/home.ts, and projections/viewer.ts may import it.' },
 ]
-// The reader and the Work and Home projections carry server-only so a client bundle
-// that reaches them fails the build (#3, #4). Nothing the CLI, the watcher,
-// Playwright, or ci/publish-fixture.ts loads reaches them at runtime, which
-// lib/catalog/__tests__/clientImports.test.ts checks. They still may not use Next.
-const SERVER_ONLY_CATALOG = ['lib/catalog/reader.ts', 'lib/catalog/projections/work.ts', 'lib/catalog/projections/home.ts']
+// The reader and the Work, Home, and Viewer projections carry server-only so a
+// client bundle that reaches them fails the build (#3, #4, #7). Nothing the CLI,
+// the watcher, Playwright, or ci/publish-fixture.ts loads reaches them at
+// runtime, which lib/catalog/__tests__/clientImports.test.ts checks. They still
+// may not use Next.
+const SERVER_ONLY_CATALOG = ['lib/catalog/reader.ts', 'lib/catalog/projections/work.ts', 'lib/catalog/projections/home.ts', 'lib/catalog/projections/viewer.ts']
 const NEXT_PATTERNS = [{ group: ['next/*'], message: NEXT_MESSAGE }]
 // Ingestion never authors order (#8). The watcher process may read the
 // working layer, but never load the sequence operations or the authored

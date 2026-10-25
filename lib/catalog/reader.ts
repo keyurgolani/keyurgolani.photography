@@ -3,6 +3,7 @@
 import 'server-only';
 import type { PublicAssetProjection } from '../identity/metadata';
 import { workCatalogOf, type WorkCatalog } from './projections/work';
+import { viewerPhotoOf, type ViewerPhotoResult } from './projections/viewer';
 import type { CandidateContent, RevisionContent, SeriesRecord, SiteRecord } from './types';
 
 /**
@@ -33,6 +34,8 @@ export interface CatalogReader<Photo = CatalogContent['photos'][number]> {
     photosOf(seriesId: string, offset?: number, limit?: number): Photo[];
     /** #3's Work read model for `/work`, from this reader's content alone. Hrefs from `routes`, the public ones by default. */
     getWorkSummaries(routes?: Pick<RouteBuilder, 'seriesHref'>): WorkCatalog;
+    /** #7's Viewer read model for `/work/<slug>/photo/<photoId>`, from this reader's content alone. */
+    getViewerPhoto(slug: string, photoId: string): ViewerPhotoResult;
 }
 
 interface Index {
@@ -88,6 +91,7 @@ export function createCatalogReader<C extends CatalogContent>(content: C, meta: 
             return members.slice(offset, limit === Infinity ? undefined : offset + limit);
         },
         getWorkSummaries: (routes = publicRouteBuilder) => workCatalogOf({ revisionId: revision.revisionId, listSeries: reader.listSeries, photosOf: reader.photosOf }, routes),
+        getViewerPhoto: (slug, photoId) => viewerPhotoOf({ revisionId: revision.revisionId, listSeries: reader.listSeries, seriesBySlug: reader.seriesBySlug, photo: reader.photo, photosOf: reader.photosOf }, slug, photoId),
     };
     return reader;
 }
