@@ -67,7 +67,14 @@ describe('local servers', () => {
 
     const prod = await fs.readFile(path.join(REPO_ROOT, 'docker-compose.prod.yml'), 'utf8');
     const prodPublished = [...prod.matchAll(/^\s*-\s*"(\S+:3000)"\s*$/gm)].map(([, entry]) => entry);
-    expect(prodPublished).toEqual(['127.0.0.1:${PHOTOGRAPHY_PORT:-3000}:3000']);
+    // web's, and #14's curator, which the Host allowlist holds to 3001.
+    expect(prodPublished).toEqual(['127.0.0.1:${PHOTOGRAPHY_PORT:-3000}:3000', '127.0.0.1:3001:3000']);
+    // The curator flag only on curator, the last service. ci/check-compose.sh
+    // checks the resolved file in CI.
+    const [beforeCurator, curator] = prod.split(/^  curator:$/m);
+    expect(curator).toContain('- CURATION_ENABLED=true');
+    expect(beforeCurator).not.toContain('CURATION_ENABLED=');
+    expect(beforeCurator).not.toContain('CURATION_BIND_SCOPE=');
 
     const smoke = await fs.readFile(path.join(REPO_ROOT, 'ci', 'smoke-image.sh'), 'utf8');
     expect(smoke).toMatch(/ports: !override\n\s*- "127\.0\.0\.1:\$PORT:3000"/);

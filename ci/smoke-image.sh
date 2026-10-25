@@ -17,6 +17,9 @@
 #    stay the same once the containers are recreated.
 # 4. With PHOTOGRAPHY_DATA_DIR unset, the watcher says the identity step is
 #    off, writes the legacy derivatives, and writes no registry.
+# 5. web 404s the curator paths, and the curator service, started by name,
+#    serves /curation on 127.0.0.1:3001 with its headers and refuses another
+#    Host and an Origin-less POST.
 #
 #   ci/smoke-image.sh <tag>
 #
@@ -73,7 +76,7 @@ cleanup() {
     echo "Smoke test failed. Container logs:"
     compose logs --no-color
   fi
-  compose down --remove-orphans
+  compose --profile curator down --remove-orphans
   # The containers write the derivative folders and the data root as uid
   # 1001. Remove them with the image under test, so cleanup never pulls anything.
   docker run --rm --pull never --user 0 --entrypoint rm -v "$TMP:/t" "$IMAGE" \
@@ -257,6 +260,33 @@ echo "GET /api/photos and /api/ready returned 503 with registry-missing before t
 check_health
 [ "$HEALTH" = uninitialized ] || fail "GET /api/health reported dataRoot '$HEALTH' before the migration, expected uninitialized."
 echo "GET /api/health returned 200 with dataRoot uninitialized."
+
+# 5b. The curator (#14): web 404s every curator path, and curator, started
+#     by name, listens inside its container under CURATION_BIND_SCOPE, serves
+#     /curation on 127.0.0.1:3001 with its headers, refuses another Host with
+#     421 and a POST without an Origin with 403, and then stops.
+CURATOR_URL=http://127.0.0.1:3001
+for path in /curation /api/curation/x; do
+  code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$BASE_URL$path") || fail "GET $path from web failed."
+  [ "$code" = 404 ] || fail "GET $path from web returned $code, expected 404."
+done
+if curl -s --max-time 2 -o /dev/null "$CURATOR_URL/"; then
+  fail "Something already answers on $CURATOR_URL, curator's fixed port."
+fi
+compose up -d --pull never --wait --wait-timeout 180 curator
+code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$CURATOR_URL/curation") || fail "GET /curation from curator failed."
+[ "$code" = 200 ] || fail "GET /curation from curator returned $code, expected 200."
+headers=$(tr -d '\r' <"$TMP/headers.txt")
+grep -qi '^cache-control:.*no-store' <<<"$headers" || fail "curator's /curation did not send Cache-Control with no-store."
+grep -qix 'x-robots-tag: noindex, nofollow' <<<"$headers" || fail "curator's /curation did not send X-Robots-Tag: noindex, nofollow."
+grep -qix 'referrer-policy: no-referrer' <<<"$headers" || fail "curator's /curation did not send Referrer-Policy: no-referrer."
+grep -qix "content-security-policy: frame-ancestors 'none'" <<<"$headers" || fail "curator's /curation did not send frame-ancestors 'none'."
+code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -H 'Host: rebound.example:3001' "$CURATOR_URL/curation") || fail "GET /curation with another Host failed."
+[ "$code" = 421 ] || fail "GET /curation from curator with another Host returned $code, expected 421."
+code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -X POST "$CURATOR_URL/curation") || fail "POST /curation failed."
+[ "$code" = 403 ] || fail "POST /curation from curator without an Origin returned $code, expected 403."
+compose rm --stop --force curator
+echo "web 404s the curator paths, and curator served /curation on 127.0.0.1:3001 with its headers and refused another Host and an Origin-less POST."
 
 # 6. The startup scan writes all seven derivatives for every fixture, and the
 #    watcher stays up.
