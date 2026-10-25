@@ -31,11 +31,11 @@ Every visitor and curator surface follows these rules. #1 added them with the br
 | Gallery, `/gallery` | `e2e/gallery.spec.ts` from #1 slice 3 | #1, until #3 retires the page |
 | Lightbox on `/gallery` | `e2e/lightbox.spec.ts` from #1 slice 3 | #1, until #3 retires the page |
 | About, `/about` | `e2e/about.spec.ts` from #1 slice 4 | #1 for the subset below, then #11 for the links and #12 for the artist statement |
-| The focus token on the site chrome and in the lightbox | `e2e/focus-ring.spec.ts` from #1 slice 2 | #1, until #21 replaces the chrome |
+| The focus token on `SiteNav`, its theme toggle, and in the lightbox | `e2e/focus-ring.spec.ts` from #1 slice 2, moved onto `SiteNav` by #21 | #1, with #21 for `SiteNav` |
 | Work catalog | Added by #3 | #3 |
 | Series pages | Added by #5 | #5 |
 | Viewer | Added by #7 | #7, then #9 |
-| Site navigation | Added by #21 | #21 |
+| Site navigation, `SiteNav` | `e2e/shell/nav.spec.ts` from #21, with `server-html`, `theme`, and `confinement` in `e2e/shell/` | #21, then #18 for its reveal on Home |
 | Curation inbox | Added by #14 | #14 |
 | Publish preview | Added by #16 | #16 |
 | Revision history | Added by #15 | #15 |
