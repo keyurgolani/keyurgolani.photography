@@ -86,8 +86,8 @@ async function startServer(cwd: string, dataRoot: string, library: string): Prom
     for (;;) {
         if (child.exitCode !== null) throw new Error(`The server exited with ${child.exitCode}:\n${output}`);
         try {
-            // Any answer means it listens. `/` reads no catalog, so no route has loaded one when this returns.
-            await (await fetch(`${base}/`)).arrayBuffer();
+            // Any answer means it listens. /api/health reads no catalog (`/` does now), so no route has loaded one when this returns.
+            await (await fetch(`${base}/api/health`)).arrayBuffer();
             break;
         } catch {
             // Not listening yet.
