@@ -132,6 +132,50 @@ const box = (target: Locator) => target.evaluate((el): Box => {
 });
 const overlaps = (a: Box, b: Box) => Math.min(a.right, b.right) - Math.max(a.left, b.left) > 0.5 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 0.5;
 
+/**
+ * The five short screens where the settled portrait still covered Previous's
+ * ring, or at 360 by 320 its centre, before the chrome sat over it.
+ */
+const NARROW_SHORT_SCREENS = [[533, 320], [512, 384], [480, 320], [360, 320], [568, 520]] as const;
+/** Short screens where the settled portrait once covered Previous, phones on their side included. */
+const SHORT_SCREENS = [
+    [640, 400], [667, 375], [568, 320], [740, 360], [736, 414], [768, 400], [780, 420], [800, 480], [812, 375], [820, 400], [844, 390], [896, 414], [932, 430],
+    ...NARROW_SHORT_SCREENS,
+] as const;
+/** Points around Previous's centre. The square layers once took a click 10 px left of and 12 px above it. */
+const PROBES = [[0, 0], [-10, -12], [10, -12], [-10, 12], [10, 12], [-18, 0], [18, 0], [0, -18], [0, 18]] as const;
+
+/**
+ * The chrome sits over the portrait now, so at each of `screens` Previous
+ * keeps its ring and its hit, once Home has opened in `state`.
+ */
+function shortScreenChecks(state: 'advancing' | 'reduced-motion', screens: readonly (readonly [number, number])[]) {
+    for (const [width, height] of screens) {
+        test(`at ${width} by ${height} Previous keeps its ring clear of the painted portrait and takes a click or tap anywhere on it`, async ({ page, isMobile }) => {
+            await page.setViewportSize({ width, height });
+            await openHome(page, { state });
+            await expect(position(page)).toHaveText('01 / 03');
+            await pressUntilFocused(page, 'Tab', previous(page));
+            // Activity brings the portrait back, so check once it's fully shown.
+            await page.keyboard.press('Shift');
+            await expect.poll(() => portrait(page).evaluate((el) => parseFloat(getComputedStyle(el).opacity))).toBe(1);
+            await expectNotObscured(previous(page), [paintedPortrait(page)]);
+
+            const missed = await previous(page).evaluate((el, probes) => {
+                const { left, top, width: w, height: h } = el.getBoundingClientRect();
+                return probes.filter(([dx, dy]) => {
+                    const hit = document.elementFromPoint(left + w / 2 + dx, top + h / 2 + dy);
+                    return !(hit && el.contains(hit));
+                }).map(([dx, dy]) => `${dx}, ${dy}`);
+            }, PROBES);
+            expect(missed, 'points on Previous that something else takes').toEqual([]);
+            if (isMobile) await previous(page).tap();
+            else await previous(page).click();
+            await expect(position(page)).toHaveText('03 / 03');
+        });
+    }
+}
+
 test.describe('normal motion', () => {
     test('Pause holds the photo and the zoom, Play moves once a full interval later, and holds never change the choice', async ({ page, isMobile }) => {
         test.setTimeout(90_000);
@@ -221,40 +265,7 @@ test.describe('normal motion', () => {
     });
 
     test.describe('on a short screen', () => {
-        // Short screens, where the settled portrait once covered Previous, phones on their side included. The last
-        // five are where it still covered Previous's ring, or at 360 by 320 its centre, before the chrome sat over
-        // it. The chrome sits over the portrait now, so Previous keeps its ring and its hit at every size.
-        const SHORT_SCREENS = [
-            [640, 400], [667, 375], [568, 320], [740, 360], [736, 414], [768, 400], [780, 420], [800, 480], [812, 375], [820, 400], [844, 390], [896, 414], [932, 430],
-            [533, 320], [512, 384], [480, 320], [360, 320], [568, 520],
-        ] as const;
-        /** Points around Previous's centre. The square layers once took a click 10 px left of and 12 px above it. */
-        const PROBES = [[0, 0], [-10, -12], [10, -12], [-10, 12], [10, 12], [-18, 0], [18, 0], [0, -18], [0, 18]] as const;
-
-        for (const [width, height] of SHORT_SCREENS) {
-            test(`at ${width} by ${height} Previous keeps its ring clear of the painted portrait and takes a click or tap anywhere on it`, async ({ page, isMobile }) => {
-                await page.setViewportSize({ width, height });
-                await openHome(page);
-                await expect(position(page)).toHaveText('01 / 03');
-                await pressUntilFocused(page, 'Tab', previous(page));
-                // Activity brings the portrait back, so check once it's fully shown.
-                await page.keyboard.press('Shift');
-                await expect.poll(() => portrait(page).evaluate((el) => parseFloat(getComputedStyle(el).opacity))).toBe(1);
-                await expectNotObscured(previous(page), [paintedPortrait(page)]);
-
-                const missed = await previous(page).evaluate((el, probes) => {
-                    const { left, top, width: w, height: h } = el.getBoundingClientRect();
-                    return probes.filter(([dx, dy]) => {
-                        const hit = document.elementFromPoint(left + w / 2 + dx, top + h / 2 + dy);
-                        return !(hit && el.contains(hit));
-                    }).map(([dx, dy]) => `${dx}, ${dy}`);
-                }, PROBES);
-                expect(missed, 'points on Previous that something else takes').toEqual([]);
-                if (isMobile) await previous(page).tap();
-                else await previous(page).click();
-                await expect(position(page)).toHaveText('03 / 03');
-            });
-        }
+        shortScreenChecks('advancing', SHORT_SCREENS);
     });
 
     test('a Pause survives client navigation away and back, and a reload forgets it', async ({ page }) => {
@@ -380,6 +391,11 @@ test.describe('reduced motion', () => {
         for (const [name, other] of [['portrait', paintedPortrait(page).first()], ['theme toggle', themeToggle(page)], ['SiteNav', primary(page)]] as const) {
             expect(overlaps(controls, await box(other)), `the controls overlap the ${name}`).toBe(false);
         }
+    });
+
+    test.describe('on a short screen', () => {
+        // Under reduce the portrait settles at once and takes no pointer, which the ring check now places beneath.
+        shortScreenChecks('reduced-motion', NARROW_SHORT_SCREENS);
     });
 
     for (const path of ['/gallery', '/about']) {

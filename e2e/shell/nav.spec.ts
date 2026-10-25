@@ -145,7 +145,7 @@ test.describe('on / over the settled portrait', () => {
         await expect.poll(() => portrait(page).evaluate((el) => parseFloat(getComputedStyle(el).opacity))).toBe(1);
     }
 
-    for (const [width, height] of SHORT_SCREENS) {
+    const checks = () => SHORT_SCREENS.forEach(([width, height]) => {
         test(`at ${width} by ${height} the links keep their rings clear of the portrait and take a click or tap`, async ({ page }, testInfo) => {
             await page.setViewportSize({ width, height });
             await open(page, '/');
@@ -171,7 +171,17 @@ test.describe('on / over the settled portrait', () => {
                 await expect.poll(() => navOpacity(page)).toBe(1);
             }
         });
-    }
+    });
+
+    test.describe('with motion on', checks);
+
+    test.describe('under reduced motion', () => {
+        // The portrait settles at once and takes no pointer, which the ring check places beneath the chrome.
+        test.beforeEach(async ({ page }) => {
+            await page.emulateMedia({ reducedMotion: 'reduce' });
+        });
+        checks();
+    });
 });
 
 test.describe('under reduced motion', () => {
