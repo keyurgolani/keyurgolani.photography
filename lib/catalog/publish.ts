@@ -147,6 +147,13 @@ export interface LaunchImpact {
     gone: number;
 }
 
+/** A photograph the active revision shows and the candidate leaves out, so a publish takes it off the site (#17). */
+export interface RemovedPhoto {
+    photoId: string;
+    /** The active revision's series that showed it. */
+    series: string[];
+}
+
 export interface PublishResult {
     outcome: PublishOutcome;
     message: string;
@@ -165,6 +172,8 @@ export interface PublishResult {
     /** Before the first activation. */
     launch?: LaunchImpact;
     reprofiled?: CompileResult['reprofiled'];
+    /** What the publish takes off the site, once a revision is active: the dry run's removed section. */
+    removed?: RemovedPhoto[];
     /** False when step 13 couldn't get the authored lock. The next publish's recovery rebases. */
     rebased?: boolean;
     recovery?: RecoveryReport;
@@ -406,6 +415,16 @@ async function snapshotAndCompile(root: string, options: { lock: boolean; author
     if (pointer && active === null) throw new CatalogIntegrityError(ACTIVE_POINTER_NAME, `${ACTIVE_POINTER_NAME} names ${pointer.revisionId}, which has no revision file.`);
     const compiled = await compileCandidate({ layer, registry, root, active, reprofile: options.reprofile, profileId: options.profileId });
     return { layer, registry, pointer, active, compiled };
+}
+
+/** The active revision's photographs the candidate leaves out, by photo ID, each with the series that showed it. */
+export function removedPhotos(active: RevisionFile | null, candidate: CompileResult['content']): RemovedPhoto[] {
+    if (active === null) return [];
+    const kept = new Set(candidate.photos.map((photo) => photo.id));
+    return active.content.photos
+        .filter((photo) => !kept.has(photo.id))
+        .map((photo) => ({ photoId: photo.id, series: active.content.series.filter((series) => series.photoIds.includes(photo.id)).map((series) => series.id) }))
+        .sort((a, b) => (a.photoId < b.photoId ? -1 : a.photoId > b.photoId ? 1 : 0));
 }
 
 function ruleContext(root: string, snapshot: Snapshot) {
@@ -708,6 +727,7 @@ export async function publish(options: PublishOptions): Promise<PublishResult> {
         // 3. Write the candidate, for #16.
         result.candidateId = compiled.candidateId;
         result.reprofiled = compiled.reprofiled;
+        if (snapshot.active !== null) result.removed = removedPhotos(snapshot.active, compiled.content);
         const compiledAt = iso(clock());
         const candidate = candidateFile(compiled, { baseRevisionId: pointer?.revisionId ?? null, compiledAt });
         await writeCandidate(root, candidate);
