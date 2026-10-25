@@ -143,9 +143,11 @@ function onCover({ box, radii }: Cover, { x, y }: { x: number; y: number }): boo
 
 /**
  * What the rendered chrome elements paint that can land on the target. An
- * ancestor never covers it, and neither does chrome that paints beneath it,
- * which a hit test at a point inside both tells. Chrome the hit test can't
- * place, like chrome that takes no pointer, stays a cover. A rounded element
+ * ancestor never covers it, and neither does chrome that paints beneath it
+ * everywhere the two meet, which hit tests at points inside both tell. A hit
+ * test skips what takes no pointer, so the probe turns pointer events on for
+ * the chrome and the target and puts their inline styles back before it
+ * returns. Chrome no hit test places stays a cover. A rounded element
  * paints only inside its curves, so an image with `rounded-full` covers the
  * shape it shows, not its whole box. A solid outer box-shadow band, such as a
  * Tailwind `ring-4`, paints past the box, so the cover grows by the widest one.
@@ -165,63 +167,84 @@ async function chromeBoxes(target: Locator, chrome: readonly Locator[]): Promise
                     const bottom = Math.min(r.bottom, own.bottom);
                     if (left >= right || top >= bottom) return false;
                     // Topmost first, so the target or a part of it ahead of the chrome puts the chrome beneath. A 5 by 5
-                    // grid over the overlap finds a point both take, since a rounded cover misses its own corners.
+                    // grid over the overlap, since a rounded cover misses its own corners. One point with the chrome on
+                    // top makes it a cover, and it paints beneath only when some point has both and none has it on top.
+                    let met = false;
                     for (let i = 0; i < 25; i++) {
                         const x = left + (((i % 5) + 0.5) * (right - left)) / 5;
                         const y = top + ((Math.floor(i / 5) + 0.5) * (bottom - top)) / 5;
                         const hits = document.elementsFromPoint(x, y);
                         const targetAt = hits.findIndex((node) => focused.contains(node));
                         const chromeAt = hits.findIndex((node) => el.contains(node));
-                        if (targetAt >= 0 && chromeAt >= 0) return chromeAt > targetAt;
+                        if (targetAt < 0 || chromeAt < 0) continue;
+                        if (chromeAt < targetAt) return false;
+                        met = true;
                     }
-                    return false;
+                    return met;
                 };
-                return elements
-                    .filter((el) => !el.contains(focused) && !focused.contains(el))
-                    .flatMap((el) => {
-                        let opacity = 1;
-                        for (let node: Element | null = el; node; node = node.parentElement) opacity *= parseFloat(getComputedStyle(node).opacity);
-                        const r = el.getBoundingClientRect();
-                        const style = getComputedStyle(el);
-                        if (opacity === 0 || style.visibility === 'hidden' || r.width === 0 || r.height === 0) return [];
-                        if (paintsBeneath(el, r)) return [];
-                        // The border box before transforms. Its ratio to the box on screen scales the radii, as a transform does.
-                        const sum = (...values: string[]) => values.reduce((total, value) => total + (parseFloat(value) || 0), 0);
-                        const contentBox = style.boxSizing === 'content-box';
-                        const width = (parseFloat(style.width) || r.width) + (contentBox ? sum(style.paddingLeft, style.paddingRight, style.borderLeftWidth, style.borderRightWidth) : 0);
-                        const height = (parseFloat(style.height) || r.height) + (contentBox ? sum(style.paddingTop, style.paddingBottom, style.borderTopWidth, style.borderBottomWidth) : 0);
-                        const corner = (value: string): [number, number] => {
-                            const [across, down = across] = value.split(' ');
-                            const resolve = (part: string, size: number) => (part.endsWith('%') ? (parseFloat(part) / 100) * size : parseFloat(part)) || 0;
-                            return [resolve(across, width), resolve(down, height)];
-                        };
-                        const radii = [style.borderTopLeftRadius, style.borderTopRightRadius, style.borderBottomRightRadius, style.borderBottomLeftRadius].map(corner);
-                        // Radii that overrun a side all shrink by one factor, which is how `rounded-full` on a tall box makes a capsule.
-                        const fit = (length: number, total: number) => (total > 0 ? length / total : Infinity);
-                        const shrink = Math.min(1,
-                            fit(width, radii[0][0] + radii[1][0]), fit(width, radii[3][0] + radii[2][0]),
-                            fit(height, radii[0][1] + radii[3][1]), fit(height, radii[1][1] + radii[2][1]));
-                        // The widest outer shadow with no offset and no blur, which paints a solid band that wide around the box.
-                        // Each shadow serializes as its color, then x, y, blur, and spread. Commas inside a color don't split it.
-                        const band = style.boxShadow === 'none' ? 0 : Math.max(0, ...style.boxShadow.split(/,(?![^(]*\))/).map((shadow) => {
-                            if (/\binset\b/.test(shadow) || /rgba\([^)]*,\s*0\)/.test(shadow)) return 0;
-                            const lengths = shadow.replace(/[a-z-]+\([^)]*\)/gi, ' ').split(/\s+/).filter((part) => /^-?[\d.]+px$/.test(part)).map(parseFloat);
-                            const [x = 0, y = 0, blur = 0, spread = 0] = lengths;
-                            return x === 0 && y === 0 && blur === 0 ? spread : 0;
-                        }));
-                        // On screen, as a transform scales it. The band rounds a curved corner wider by its own width.
-                        const [scaleX, scaleY] = [r.width / width, r.height / height];
-                        const [growX, growY] = [band * scaleX, band * scaleY];
-                        const name = el.getAttribute('aria-label');
-                        return [{
-                            label: el.tagName.toLowerCase() + (name ? `[aria-label="${name}"]` : ''),
-                            box: { left: r.left - growX, top: r.top - growY, right: r.right + growX, bottom: r.bottom + growY },
-                            radii: radii.map(([across, down]): [number, number] => {
-                                const [rx, ry] = [across * shrink * scaleX, down * shrink * scaleY];
-                                return rx > 0 && ry > 0 ? [rx + growX, ry + growY] : [rx, ry];
-                            }),
-                        }];
-                    });
+                // Pointer events on for every element of the chrome and the target while the hit tests run. Each
+                // element's style attribute goes back exactly as it was before this call returns, so nothing paints it.
+                const saved: [HTMLElement | SVGElement, string | null][] = [];
+                for (const root of [focused, ...elements]) {
+                    for (const node of [root, ...root.querySelectorAll('*')]) {
+                        if (!(node instanceof HTMLElement || node instanceof SVGElement)) continue;
+                        saved.push([node, node.getAttribute('style')]);
+                        node.style.setProperty('pointer-events', 'auto', 'important');
+                    }
+                }
+                try {
+                    return elements
+                        .filter((el) => !el.contains(focused) && !focused.contains(el))
+                        .flatMap((el) => {
+                            let opacity = 1;
+                            for (let node: Element | null = el; node; node = node.parentElement) opacity *= parseFloat(getComputedStyle(node).opacity);
+                            const r = el.getBoundingClientRect();
+                            const style = getComputedStyle(el);
+                            if (opacity === 0 || style.visibility === 'hidden' || r.width === 0 || r.height === 0) return [];
+                            if (paintsBeneath(el, r)) return [];
+                            // The border box before transforms. Its ratio to the box on screen scales the radii, as a transform does.
+                            const sum = (...values: string[]) => values.reduce((total, value) => total + (parseFloat(value) || 0), 0);
+                            const contentBox = style.boxSizing === 'content-box';
+                            const width = (parseFloat(style.width) || r.width) + (contentBox ? sum(style.paddingLeft, style.paddingRight, style.borderLeftWidth, style.borderRightWidth) : 0);
+                            const height = (parseFloat(style.height) || r.height) + (contentBox ? sum(style.paddingTop, style.paddingBottom, style.borderTopWidth, style.borderBottomWidth) : 0);
+                            const corner = (value: string): [number, number] => {
+                                const [across, down = across] = value.split(' ');
+                                const resolve = (part: string, size: number) => (part.endsWith('%') ? (parseFloat(part) / 100) * size : parseFloat(part)) || 0;
+                                return [resolve(across, width), resolve(down, height)];
+                            };
+                            const radii = [style.borderTopLeftRadius, style.borderTopRightRadius, style.borderBottomRightRadius, style.borderBottomLeftRadius].map(corner);
+                            // Radii that overrun a side all shrink by one factor, which is how `rounded-full` on a tall box makes a capsule.
+                            const fit = (length: number, total: number) => (total > 0 ? length / total : Infinity);
+                            const shrink = Math.min(1,
+                                fit(width, radii[0][0] + radii[1][0]), fit(width, radii[3][0] + radii[2][0]),
+                                fit(height, radii[0][1] + radii[3][1]), fit(height, radii[1][1] + radii[2][1]));
+                            // The widest outer shadow with no offset and no blur, which paints a solid band that wide around the box.
+                            // Each shadow serializes as its color, then x, y, blur, and spread. Commas inside a color don't split it.
+                            const band = style.boxShadow === 'none' ? 0 : Math.max(0, ...style.boxShadow.split(/,(?![^(]*\))/).map((shadow) => {
+                                if (/\binset\b/.test(shadow) || /rgba\([^)]*,\s*0\)/.test(shadow)) return 0;
+                                const lengths = shadow.replace(/[a-z-]+\([^)]*\)/gi, ' ').split(/\s+/).filter((part) => /^-?[\d.]+px$/.test(part)).map(parseFloat);
+                                const [x = 0, y = 0, blur = 0, spread = 0] = lengths;
+                                return x === 0 && y === 0 && blur === 0 ? spread : 0;
+                            }));
+                            // On screen, as a transform scales it. The band rounds a curved corner wider by its own width.
+                            const [scaleX, scaleY] = [r.width / width, r.height / height];
+                            const [growX, growY] = [band * scaleX, band * scaleY];
+                            const name = el.getAttribute('aria-label');
+                            return [{
+                                label: el.tagName.toLowerCase() + (name ? `[aria-label="${name}"]` : ''),
+                                box: { left: r.left - growX, top: r.top - growY, right: r.right + growX, bottom: r.bottom + growY },
+                                radii: radii.map(([across, down]): [number, number] => {
+                                    const [rx, ry] = [across * shrink * scaleX, down * shrink * scaleY];
+                                    return rx > 0 && ry > 0 ? [rx + growX, ry + growY] : [rx, ry];
+                                }),
+                            }];
+                        });
+                } finally {
+                    for (const [node, style] of saved.reverse()) {
+                        if (style === null) node.removeAttribute('style');
+                        else node.setAttribute('style', style);
+                    }
+                }
             }, handle);
             covers.push(...found);
         }
