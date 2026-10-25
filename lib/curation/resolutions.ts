@@ -18,7 +18,9 @@ import { candidateOf } from './candidates';
 import type { CandidateFailure, CurationEvent } from './events';
 import { pendingBindOf, pendingMergeOf } from './binds';
 import { mergeBlockers, type MergeBlockers } from './holders';
-import { draftPlan, latestPin } from './pins';
+import { confirmStampOf, draftPlan, latestPin } from './pins';
+
+export { confirmStampOf } from './pins';
 import { listEvents } from './repository';
 
 /**
@@ -122,18 +124,6 @@ async function underAuthoredLock(root: string, step: Step, input: ActionInput, w
         }
         throw error;
     }
-}
-
-/**
- * The revision a confirm of `eventId` replaced, when the record's #16 stamp
- * on `assetRevision` shows that confirm wrote the bytes it pins, or null.
- * Leave in draft's put back writes a stamp naming the item too, but with the
- * revision it put back as `to`, so it never reads as the confirm.
- */
-export function confirmStampOf(record: AuthoredPhoto, eventId: string, assetRevision: string): string | null {
-    const stamp = record.review?.fields.assetRevision;
-    if (!stamp || stamp.event?.id !== eventId || !stamp.asset || stamp.asset.to !== assetRevision || stamp.asset.from === assetRevision) return null;
-    return record.assetRevision === assetRevision && stamp.valueHash === hashValue(assetRevision) ? stamp.asset.from : null;
 }
 
 /** Point the photo record at `to`, in place of `from`, through #13's writer with compare-and-swap, passing what was reviewed for #16. */
@@ -270,7 +260,7 @@ export function leaveInDraft(input: ActionInput & { reason?: string; faults?: Co
         const registry = await readRegistryOrFail(root);
         const record = await readAuthored<AuthoredPhoto>(root, 'photo', photoId);
         // Reopen's note and curation show describe this same plan (pins.ts), so they promise what this does.
-        const plan = draftPlan(event, record?.assetRevision ?? null, record === null ? null : await latestPin(root, registry, photoId));
+        const plan = draftPlan(event, record?.assetRevision ?? null, record === null ? null : await latestPin(root, registry, photoId), record === null ? null : confirmStampOf(record, event.id, revision));
         switch (plan.kind) {
             case 'plain':
                 return defer(['Left in draft.']);
@@ -284,9 +274,11 @@ export function leaveInDraft(input: ActionInput & { reason?: string; faults?: Co
                 return defer([`Left in draft. ${photoId}'s photo record keeps ${plan.pinned}.`]);
             case 'unexplained':
                 // The record pins these bytes with no pin of the inbox's to say so: a hand edit, a #15 rollback, or a confirm whose event a crash lost.
-                // Nothing on record tells those apart, so nothing is guessed and nothing is written.
+                // The inbox's pins don't tell those apart, so nothing is written. #16's stamp shows a lost confirm, and confirm again records it.
                 return defer([
-                    `Left in draft. ${photoId}'s photo record already pins ${revision}, by an edit or rollback this item didn't make, or a confirm of it that was never recorded, so nothing was put back.${plan.pin ? ` The inbox last pinned ${plan.pin.revision}.` : ''} The draft keeps ${revision}, and the next photos publish ships it.`,
+                    plan.stampedFrom
+                        ? `Left in draft. ${photoId}'s photo record already pins ${revision}: its review stamp shows a confirm of this item wrote it, in place of ${plan.stampedFrom}, though the inbox never recorded that confirm, so nothing was put back. Run curation confirm again to record what it replaced, and then reopen and defer put ${plan.stampedFrom} back. The draft keeps ${revision} until then.`
+                        : `Left in draft. ${photoId}'s photo record already pins ${revision}, by an edit or rollback this item didn't make, so nothing was put back.${plan.pin ? ` The inbox last pinned ${plan.pin.revision}.` : ''} The draft keeps ${revision}, and the next photos publish ships it.`,
                 ]);
             case 'keeps': {
                 // This item's last confirm recorded nothing to put back, or a later pin, such as another item's Leave in draft, set the record on these bytes.
