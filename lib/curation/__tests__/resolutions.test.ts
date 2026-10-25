@@ -9,7 +9,7 @@ import { readVersionedDocument, writeVersionedDocument } from '../../storage/doc
 import { reopenEvent } from '../actions';
 import { eventIdOf, eventKey, type CurationEvent } from '../events';
 import { readEvent } from '../repository';
-import { confirmReplacement, leaveInDraft } from '../resolutions';
+import { confirmReplacement, leaveInDraft, ownerCopyOf } from '../resolutions';
 import { createWorld, makeImages, P_PATH, photoRecord, removeTemplate, replacementEventId, setDir, treeBytes, type Images, type World } from './replacementWorld';
 
 // The real writer, watched, so a test can read what each resolution handed it.
@@ -281,5 +281,14 @@ describe('leave in draft\'s guards', { timeout: 60_000 }, () => {
         expect(again.ok && again.notes.join(' ')).toContain(`already pins ${c}: its review stamp shows a confirm of this item wrote it, in place of ${w.a}`);
         expect(await leave(w, await reopen(w, (again as { event: CurationEvent }).event))).toMatchObject({ ok: true, event: { status: 'deferred', decisions: expect.arrayContaining([expect.objectContaining({ action: 'defer', fromRevision: w.a })]) } });
         expect((await photoRecord(w)).assetRevision).toBe(w.a);
+    });
+});
+
+describe('ownerCopyOf()', () => {
+    it('counts the owner\'s copy and never #16\'s review stamps, which are the writer\'s metadata', () => {
+        const stamp = { valueHash: '0'.repeat(64), origin: 'curator' as const, baseRevisionId: null, actor: 'cli', reviewedAt: '2026-05-01T00:00:00.000Z' };
+        const bare = { schemaVersion: 1 as const, version: 2, baseRevisionId: null, kind: 'photo' as const, id: 'ph_00000000-0000-4000-8000-000000000001', assetRevision: `sha256-${'a'.repeat(64)}`, alt: null };
+        expect(ownerCopyOf({ ...bare, review: { fields: { assetRevision: stamp, alt: stamp } } })).toEqual([]);
+        expect(ownerCopyOf({ ...bare, title: 'Fixture title.', review: { fields: { title: stamp } } })).toEqual(['title']);
     });
 });

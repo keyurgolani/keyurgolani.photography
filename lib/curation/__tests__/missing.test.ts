@@ -380,6 +380,8 @@ describe('other bytes back', { timeout: 60_000 }, () => {
         await writeAuthoredRecord({ kind: 'photo', id: n, assetRevision: (await w.registry()).photos[n].source.observedRevision, alt: null }, { expectedVersion: 0, root: w.root });
         const recordDir = authoredRecordDir(w.root, 'photo', n);
         const record = treeBytes(recordDir);
+        // #16's review stamp is the writer's metadata, not the owner's copy, so it doesn't block the merge alone.
+        expect((await readAuthoredRecord(w.root, 'photo', n))?.review?.fields.assetRevision).toMatchObject({ origin: 'curator' });
         const item = await w.event(w.missingId);
         const bound = await bindReplacement({ root: w.root, eventId: item.id, expectedVersion: item.version, actor: ACTOR });
         expect(bound).toMatchObject({ ok: true });
