@@ -1,0 +1,216 @@
+/**
+ * What the curator's inbox page shows, as plain data a client component can
+ * take: no Node imports, no paths outside the library, and nothing a public
+ * route loads. lib/curation/inbox.ts builds it on the server, and the
+ * page's forms read the event versions and the active revision from it, so
+ * every action is checked against what the curator saw.
+ */
+
+import type { CurationEventStatus, CurationEventType, Placement } from './events';
+
+export const BADGE_LABELS: Record<CurationEventType, string> = {
+    new: 'New photograph',
+    replacement: 'Replacement',
+    missing: 'Missing source',
+    reappeared: 'Source reappeared',
+    ambiguous: 'Ambiguous match',
+    'processing-failure': 'Processing failure',
+};
+
+/** The item's title in the list, by type. */
+export function itemTitle(type: CurationEventType, waiting: boolean): string {
+    switch (type) {
+        case 'new':
+            return 'Uncurated photograph';
+        case 'replacement':
+            return waiting ? 'Replacement building' : 'Replacement ready';
+        case 'missing':
+            return 'Source file missing';
+        case 'reappeared':
+            return 'Source file back';
+        case 'ambiguous':
+            return 'Identity needs a choice';
+        case 'processing-failure':
+            return 'Processing failed';
+    }
+}
+
+/** What the system did with the item, by type. Never a claim about what a visitor sees changing. */
+export const SYSTEM_RESPONSE: Record<CurationEventType, string> = {
+    new: 'It has a stable ID and waits here as a draft suggestion. Nothing publishes.',
+    replacement: 'It keeps its photo ID and its place in the story. The new bytes are a new asset revision, used only after every derivative succeeds.',
+    missing: 'The source is marked missing. The site keeps serving the last published derivatives until you resolve it.',
+    reappeared: 'The source is back. Nothing a visitor sees changed.',
+    ambiguous: 'It matches more than one photograph, so no identity is bound until you choose one.',
+    'processing-failure': "The watcher couldn't process it, so nothing was made from it.",
+};
+
+/** The primary action the approved mockup names for each type that has one. */
+export const PRIMARY_ACTION: Partial<Record<CurationEventType, string>> = {
+    new: 'Review series suggestion',
+    replacement: 'Confirm new asset revision',
+    missing: 'Resolve source or archive intentionally',
+};
+
+export const STATUS_LABELS: Record<CurationEventStatus, string> = {
+    open: 'Draft only',
+    failed: 'Draft only',
+    deferred: 'Left in draft',
+    dismissed: 'Dismissed',
+    approved: 'Suggestion approved',
+};
+
+/** Where an item sits in the list. */
+export type ItemGroup = 'judgment' | 'waiting' | 'deferred' | 'settled';
+
+export interface InboxSuggestion {
+    /** Null is "Leave unassigned". */
+    value: string | null;
+    confidence: 'high' | 'medium' | 'low';
+    producedBy: string;
+    producedAt: string;
+    evidence: string[];
+}
+
+export interface InboxPlacementSuggestion extends Omit<InboxSuggestion, 'value'> {
+    value: Placement;
+}
+
+export interface InboxItem {
+    id: string;
+    version: number;
+    type: CurationEventType;
+    status: CurationEventStatus;
+    group: ItemGroup;
+    title: string;
+    photoId: string | null;
+    shortId: string;
+    waiting: string | null;
+}
+
+export interface SeriesOption {
+    id: string;
+    /** The authored title, or the ID when it has none. */
+    label: string;
+    visibility: 'draft' | 'published' | 'hidden';
+    /** In authored order. */
+    members: { photoId: string; shortId: string }[];
+}
+
+export interface InboxDetail extends InboxItem {
+    assetRevision: string | null;
+    observedAt: string;
+    lastObservedAt: string;
+    /** Library-relative, with anything unprintable escaped. */
+    sourcePath: string;
+    fromPath: string | null;
+    identity: string;
+    derivatives: string;
+    /** A curator-only URL for the candidate's w800 WebP, or null when no set is ready. */
+    previewUrl: string | null;
+    facts: { label: string; value: string }[];
+    failure: string | null;
+    candidates: string[];
+    /** Who still shows it: the active revision, or a working-layer series. Null when it can't be told. */
+    references: string[] | null;
+    suggestions: { series: InboxSuggestion | null; placement: InboxPlacementSuggestion | null };
+    edits: {
+        seriesId?: string | null;
+        placement?: Placement;
+        description?: { kind: 'described'; text: string } | { kind: 'decorative' } | null;
+        editedAt: string;
+        editedBy: string;
+    } | null;
+    decisions: { action: string; at: string; by: string; detail: string }[];
+    reviewedAt: string | null;
+    reviewedBy: string | null;
+    /** What each action would do now, so the page offers only those that can work. */
+    can: { approve: boolean; edit: boolean; defer: boolean; dismiss: boolean; retry: boolean; reopen: boolean };
+    /** Why the type's primary action isn't offered here, when it isn't. */
+    primaryUnavailable: string | null;
+}
+
+export type InboxView =
+    | { state: 'not-ready'; message: string }
+    | {
+          state: 'ready';
+          /** The active revision every action is checked against. Null before the first publish. */
+          activeRevisionId: string | null;
+          needsJudgment: number;
+          waiting: number;
+          items: InboxItem[];
+          /** Event folders that couldn't be read, by ID and reason. Never a path. */
+          problems: { id: string; message: string }[];
+          series: SeriesOption[];
+          /** A problem reading the working layer's series, which empties the series choices. */
+          seriesProblem: string | null;
+          selected: InboxDetail | null;
+          /** The `item` the URL asked for, when no event has that ID. */
+          missingSelection: string | null;
+      };
+
+/** "N items require judgment", and how many wait on the watcher. */
+export function summaryText(view: { needsJudgment: number; waiting: number }): string {
+    const judgment = `${view.needsJudgment} ${view.needsJudgment === 1 ? 'item requires' : 'items require'} judgment`;
+    return view.waiting > 0 ? `${judgment}, ${view.waiting} waiting` : judgment;
+}
+
+const PLACEMENT_RE = /^(start|end|after:ph_[0-9a-f-]{36})$/;
+
+/** A placement as a form value: `start`, `end`, or `after:<photoId>`. */
+export function placementValue(placement: Placement): string {
+    return typeof placement === 'string' ? placement : `after:${placement.after}`;
+}
+
+/** The placement a form value names, or null for anything else. */
+export function parsePlacementValue(value: string): Placement | null {
+    if (!PLACEMENT_RE.test(value)) return null;
+    if (value === 'start' || value === 'end') return value;
+    return { after: value.slice('after:'.length) };
+}
+
+/** The series an approval would use with no new choice: the saved edit, then the suggestion. Undefined when neither names one. */
+export function defaultSeries(detail: Pick<InboxDetail, 'edits' | 'suggestions'>): string | null | undefined {
+    if (detail.edits?.seriesId !== undefined) return detail.edits.seriesId;
+    if (detail.suggestions.series) return detail.suggestions.series.value;
+    return undefined;
+}
+
+/**
+ * The position an approval would use for `seriesId` with no new choice, the
+ * way lib/curation/actions.ts resolves it: a saved position for that series,
+ * then the suggested one when it's for the same series, then the end.
+ */
+export function defaultPlacement(detail: Pick<InboxDetail, 'edits' | 'suggestions'>, seriesId: string): Placement {
+    const edits = detail.edits;
+    const suggested = detail.suggestions.series?.value;
+    if (edits?.placement !== undefined && (edits.seriesId ?? suggested) === seriesId) return edits.placement;
+    if (suggested === seriesId && detail.suggestions.placement) return detail.suggestions.placement.value;
+    return 'end';
+}
+
+/** A position in words, for a select or a message. */
+export function placementLabel(placement: Placement, members: readonly { photoId: string; shortId: string }[]): string {
+    if (placement === 'start') return 'At the start';
+    if (placement === 'end') return 'At the end';
+    const index = members.findIndex((member) => member.photoId === placement.after);
+    if (index < 0) return `After ${placement.after.slice(0, 11)}`;
+    return `After photograph ${String(index + 1).padStart(2, '0')} (${members[index].shortId})`;
+}
+
+/** What a curator action answered, as the page shows it. */
+export type InboxActionKind = 'approve' | 'edit' | 'defer' | 'dismiss' | 'retry' | 'reopen';
+
+export type InboxActionState =
+    | { status: 'idle' }
+    | {
+          /** `stale`: the event, the active revision, or the source moved since the page loaded, and nothing was written. */
+          status: 'done' | 'stale' | 'busy' | 'refused' | 'invalid' | 'failed';
+          action: InboxActionKind;
+          eventId: string | null;
+          message: string;
+          /** Counts up, so the page can tell one answer from the next. */
+          serial: number;
+      };
+
+export const IDLE: InboxActionState = { status: 'idle' };

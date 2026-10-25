@@ -1,12 +1,12 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import SameOriginPostForm from '@/components/site/SameOriginPostForm';
 import StatusPage from '@/components/site/StatusPage';
 import { requireCurator } from '@/lib/curation/auth';
 
 /**
- * A placeholder for the curator, so the access boundary has a page to guard
- * and test. #14's 14-3 replaces it with the inbox. It reads nothing from the
- * data root.
+ * Where the login sends a signed-in curator: a way into the Inbox, and Sign
+ * out. It reads nothing from the data root.
  */
 export const dynamic = 'force-dynamic';
 
@@ -17,9 +17,14 @@ export default async function CurationPage() {
   return (
     <StatusPage
       heading="Curation"
-      actions={<SameOriginPostForm action="/api/curation/logout" submitLabel="Sign out" />}
+      actions={
+        <>
+          <Link href="/curation/inbox">Open the inbox</Link>
+          <SameOriginPostForm action="/api/curation/logout" submitLabel="Sign out" />
+        </>
+      }
     >
-      The curator is on, and you&apos;re signed in. The inbox isn&apos;t built yet.
+      The curator is on, and you&apos;re signed in.
     </StatusPage>
   );
 }
