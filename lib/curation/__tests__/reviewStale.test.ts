@@ -123,6 +123,19 @@ describe('a stale approval after a #17 replacement', { timeout: 120_000 }, () =>
         expect((await photoRecord(w)).assetRevision).toBe(w.a);
     });
 
+    it('names a reopened replacement\'s curation show with what settles it, which is no approval', async () => {
+        const w = await world();
+        await w.build(w.job(w.b));
+        const item = await w.event();
+        expect(await confirm(w, item)).toMatchObject({ ok: true });
+        const reopened = await reopenEvent({ root: w.root, eventId: item.id, expectedVersion: (await w.event(item.id)).version, expectedBase: w.revisionId, actor: ACTOR });
+        expect(reopened).toMatchObject({ ok: true, event: { status: 'open' } });
+
+        const issues = review((await validateWorkingLayer({ dataRoot: w.root })).issues);
+        expect(issues).toEqual([expect.objectContaining({ record: { kind: 'photo', id: w.p }, field: 'assetRevision', message: expect.stringContaining(`It settled the inbox item ${item.id}, which is open again.`) })]);
+        expect(issues[0].hint).toBe(`Run curation show ${item.id}, then confirm it again or leave it in draft.`);
+    });
+
     it('names the reopened item\'s curation show when the inbox counts it as already placed', async () => {
         const w = await world();
         const fresh = 'harbor/fresh.jpg';

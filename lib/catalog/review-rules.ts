@@ -1,5 +1,6 @@
 import { diffCatalog, EMPTY_DIFF_MESSAGE, type CatalogDiff } from './diff';
 import { registerRule, shared } from './rules';
+import type { ReviewContext } from './review';
 import { revisionIdOf } from './schema';
 import type { Rule, RuleContext, RuleFinding } from './types';
 
@@ -41,16 +42,22 @@ const HINTS: Record<string, string> = {
     'inbox-unread': 'Publish reads the inbox. Run it again.',
 };
 
+/** What settles a reopened item again, by its type. Only a new photograph is approved. */
+const SETTLE_AGAIN: Record<string, string> = {
+    new: 'approve it again or leave it in draft. curation list counts a reopened photograph a series still holds as already placed, but this review waits for that decision.',
+    replacement: 'confirm it again or leave it in draft.',
+    missing: 'archive it again or leave it in draft.',
+};
+
 /**
- * The fix for a reason. A reopened item names its `curation show`, since
- * `curation list` counts a reopened new photograph as already placed while a
- * series holds it (settledByPlacement()), so the list alone wouldn't point
- * the curator at it.
+ * The fix for a reason. A reopened item names its `curation show` and what
+ * settles it, since `curation list` counts a reopened new photograph as
+ * already placed while a series holds it (settledByPlacement()), so the list
+ * alone wouldn't point the curator at it.
  */
-function hintFor(reason: string | undefined, eventId: string | undefined): string {
-    if (reason === 'item-reopened' && eventId !== undefined) {
-        return `Run curation show ${eventId}, then approve it again or leave it in draft. curation list counts a reopened photograph a series still holds as already placed, but this review waits for that decision.`;
-    }
+function hintFor(reason: string | undefined, eventId: string | undefined, review: ReviewContext | undefined): string {
+    const settle = reason === 'item-reopened' && eventId !== undefined ? SETTLE_AGAIN[review?.inbox.get(eventId)?.type ?? ''] : undefined;
+    if (settle !== undefined) return `Run curation show ${eventId}, then ${settle}`;
     return HINTS[reason ?? ''] ?? 'Review the change, then publish again.';
 }
 
@@ -78,7 +85,7 @@ const REVIEW_RULES: Rule[] = [
                         record: entry.record,
                         field: entry.field,
                         message: `${entry.state === 'stale' ? 'Stale review' : 'Not reviewed'}: ${entry.detail}`,
-                        hint: hintFor(entry.reason, entry.eventId),
+                        hint: hintFor(entry.reason, entry.eventId, ctx.review),
                     });
                 }
             }
