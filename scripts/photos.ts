@@ -131,6 +131,23 @@
  *     revision going live first, or a busy lock. Logs one JSON line per
  *     event.
  *
+ *   npx tsx scripts/photos.ts curation list [--status <status> | --all] [--json]
+ *   npx tsx scripts/photos.ts curation show <eventId> [--json]
+ *   npx tsx scripts/photos.ts curation (edit | approve) <eventId> --version <n> [--series <id> | --unassigned]
+ *                                      [--start | --end | --after <photoId>] [--description <text> | --decorative]
+ *   npx tsx scripts/photos.ts curation (defer | retry | reopen) <eventId> --version <n> [--reason <text>]
+ *   npx tsx scripts/photos.ts curation dismiss <eventId> --version <n> --reason <text>
+ *     The curation inbox (lib/curation/commands.ts). New photographs wait
+ *     here until approved into the draft; nothing here publishes. Item
+ *     commands take the --version that list or show printed, and --base
+ *     <revisionId|none> for the active revision they were reviewed against,
+ *     which approve requires once a revision is active, and write nothing
+ *     when either moved. An approval keeps a photograph already in the
+ *     series where it is unless a position flag or a saved edit picks one.
+ *     Exits 0 when done, 1 when
+ *     refused, 2 on a usage error, 3 when stale, locked, or the data root
+ *     isn't ready, and 4 when a file can't be read. Prints no absolute path.
+ *
  * The library is PHOTOGRAPHY_LIBRARY_DIR, or public/assets/photos under the
  * working directory. The data root is PHOTOGRAPHY_DATA_DIR, or portfolio-data
  * under the working directory outside production.
@@ -159,6 +176,7 @@ import { issueLines, photoIdArg, publishReport, sequenceArgs, seriesArgs, parseF
 import { publish, PUBLISH_EXIT_CODES, validateWorkingLayer, VALIDATE_EXIT_CODES } from '../lib/catalog/publish';
 import { REVISION_ID_RE } from '../lib/catalog/schema';
 import { runSequenceCommand, type CommandResult, type SequenceCommand } from '../lib/catalog/sequence-commands';
+import { curationUsage, runCurationCli } from '../lib/curation/commands';
 import { ApplyRefusedError, migrateApply } from '../lib/identity/apply';
 import { createDecision, decisionFileName, isLibraryPath, writeDecision, type DecisionInput } from '../lib/identity/decisions';
 import { ASSET_REVISION_RE } from '../lib/identity/ids';
@@ -202,6 +220,7 @@ const USAGE = `Usage:
   ${PROGRAM} publish [--actor <name>] [--reason <text>] [--expect <candidateId>] [--dry-run] [--confirm-launch] [--reprofile]
   ${PROGRAM} history
   ${PROGRAM} rollback --to <number | revisionId> --reason <text> [--actor <name>] [--expect-active <revisionId>] [--yes]
+${curationUsage(PROGRAM)}
 A flag given twice is refused. An argument that starts with - goes after --.
 In production: docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs <command>
 The README's "Curating the catalog" section has the commands, the hand-edit rules, and the launch checklist.`;
@@ -517,6 +536,11 @@ async function main(argv: string[]): Promise<number> {
         if (command === 'publish') return await publishCommand(args);
         if (command === 'history') return await historyCommand(args);
         if (command === 'rollback') return await rollbackCommand(args);
+        if (command === 'curation') {
+            const result = await runCurationCli(args, { dataRoot: dataRoot(), libraryRoot: libraryRoot(), program: PROGRAM });
+            (result.exitCode === 0 ? process.stdout : process.stderr).write(result.output);
+            return result.exitCode;
+        }
         throw new UsageError(command ? `Unknown command: ${command}` : 'No command given.');
     } catch (error) {
         if (error instanceof UsageError) {

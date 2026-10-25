@@ -9,6 +9,8 @@ import { folderBytes } from '../../../test/helpers/folderBytes';
 import { runTsx } from '../../../test/helpers/runTsx';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempLibrary';
+import { listEvents } from '../../curation/repository';
+import { createCurationSink } from '../../curation/sink';
 import { migrateApply } from '../../identity/apply';
 import { watcherStatusFile } from '../../identity/heartbeat';
 import { migrateDryRun } from '../../identity/migration';
@@ -133,7 +135,8 @@ async function prepare({ migrate = false }: { migrate?: boolean } = {}): Promise
         clock: () => Date.now() + 60_000,
         idGen: ids,
         logger: quiet,
-        sinks: [jsonLogSink(quiet)],
+        // #14's inbox sink rides along on every pass, so each row below runs it too.
+        sinks: [jsonLogSink(quiet), createCurationSink({ logger: quiet })],
         ...extra,
     });
     const pass = async () => {
@@ -342,6 +345,12 @@ describe('reconcile never authors order', () => {
         ]);
 
         expect([...seen].sort()).toEqual([...ALL_FACT_TYPES].sort());
+        // The curation sink saw every one of them, writing only under curation/. It opened an item for each type but
+        // a rename and the reappearance: the same bytes came back for an open missing item, which it closed instead.
+        const { events, problems } = await listEvents(fixture.data.root);
+        expect(problems).toEqual([]);
+        expect([...new Set(events.map((event) => event.type))].sort()).toEqual(['ambiguous', 'missing', 'new', 'processing-failure', 'replacement']);
+        expect(events.filter((event) => event.type === 'missing' && event.status === 'dismissed').map((event) => event.decisions.at(-1)?.by)).toContain('watcher');
         // Identity moved underneath, but the published members keep their IDs and positions.
         expect((await readAuthoredRecord(fixture.data.root, 'series', SERIES))?.photoIds).toEqual([landscape, portrait, square]);
     }, 120_000);
@@ -390,6 +399,9 @@ describe('the watcher never authors order', () => {
             run('regenerating every derivative', () => undefined, '--force'),
         ]);
         expect(fs.existsSync(lib.file('optimized', 'square.webp'))).toBe(true);
+        // The watcher's own --once run delivered to #14's curation sink: the new photograph is an inbox item.
+        const { events } = await listEvents(fixture.data.root);
+        expect(events.filter((event) => event.type === 'new').map((event) => event.derivedFacts.sourcePath)).toContain('added.jpg');
     }, 180_000);
 
     it('leaves them alone at startup against an uninitialized data root too', async () => {

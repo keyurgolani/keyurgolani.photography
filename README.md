@@ -225,6 +225,7 @@ The commands:
 - `sequence show | set | insert | move | remove | cover | opening | chapter add | chapter move | chapter remove`: a series' photographs, cover and its focal point, opening photograph, and chapters. `photos` with no command prints each form.
 - `series order <seriesId>...` sets the Work order, and `series featured <seriesId>...` the featured series, which Home opens on once it reads the catalog (#4). `series featured --clear` features none, and a publish then stops on `refs.non-empty` until a published series is featured again.
 - `edit <record>`: any other change to a record, below.
+- `curation list | show | edit | approve | defer | dismiss | retry | reopen`: the draft inbox the watcher fills as photographs arrive, change, or go missing. `approve` places a new photograph in the draft, and nothing publishes until `publish`. `photos` with no command prints each form, and [docs/data-root.md](docs/data-root.md#curation-inbox) has the suggestion rules.
 - `validate`, then `publish --actor <name>`, as above.
 - `history` and `rollback`, below.
 

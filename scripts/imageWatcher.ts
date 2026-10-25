@@ -43,6 +43,8 @@
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import chokidar from 'chokidar';
+import { createCurationSink } from '../lib/curation/sink';
+import { jsonLogSink } from '../lib/identity/pass';
 import { scanKind } from '../lib/identity/scan';
 import { createIdentityStep, runIdentityOnce, watchIdentity, type IdentityWatch } from '../lib/identity/watcherStep';
 import { dataRoot } from '../lib/storage/config';
@@ -101,6 +103,11 @@ function requireLibraryRoot(): string {
     return root;
 }
 
+/** Where the identity step's facts go: the log, and the curation inbox, which opens a draft item for each. */
+function factSinks() {
+    return [jsonLogSink(), createCurationSink()];
+}
+
 /** A file the identity scan reads, or any folder, since a moved folder moves the photos in it. */
 function concernsIdentity(event: LibraryChange, changedPath: string): boolean {
     return event === 'addDir' || event === 'unlinkDir' || scanKind(changedPath) !== null;
@@ -135,6 +142,7 @@ function startWatcher(): void {
     // A pass reads the library after the legacy step's queued jobs, and asks the watch for any pass it needs next.
     let watch: IdentityWatch | null = null;
     const identity = createIdentityStep({
+        sinks: factSinks(),
         legacyIdle: () => handlers.idle(),
         requestPass: (reason, delayMs) => watch?.schedule(reason, delayMs),
     });
@@ -198,7 +206,7 @@ async function runOnce(): Promise<number> {
     ensureDirectories();
     const handlers = createWatcherHandlers();
     const legacy = await processOnce(handlers, { force: FORCE });
-    const identity = await runIdentityOnce({ legacyIdle: () => handlers.idle() });
+    const identity = await runIdentityOnce({ sinks: factSinks(), legacyIdle: () => handlers.idle() });
     return Math.max(legacy, identity);
 }
 

@@ -1,4 +1,5 @@
 // @vitest-environment node
+import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -78,6 +79,19 @@ describe('the watcher process import graph', () => {
     it('covers the watcher\'s whole pipeline, not only its entry file', () => {
         const { files } = importGraph('scripts/imageWatcher.ts');
         expect(files).toEqual(expect.arrayContaining(['utils/watcherHandlers.ts', 'utils/imageOptimizer.ts', 'lib/storage/config.ts']));
+    });
+
+    it('reaches #14\'s curation sink, and none of the curator\'s commands', () => {
+        const { files } = importGraph('scripts/imageWatcher.ts');
+        expect(files).toEqual(expect.arrayContaining(['lib/curation/sink.ts', 'lib/curation/repository.ts', 'lib/catalog/working-layer.ts']));
+        expect(files.filter((file) => /^lib\/curation\/(?:actions|commands)\.ts$/.test(file))).toEqual([]);
+    });
+
+    it('hands the curation sink to the identity step in both watch and --once', () => {
+        const source = fs.readFileSync(path.join(REPO_ROOT, 'scripts/imageWatcher.ts'), 'utf8');
+        expect(source).toMatch(/function factSinks\(\) \{\n\s+return \[jsonLogSink\(\), createCurationSink\(\)\];/);
+        expect(source).toMatch(/createIdentityStep\(\{\n\s+sinks: factSinks\(\),/);
+        expect(source).toMatch(/runIdentityOnce\(\{ sinks: factSinks\(\),/);
     });
 
     it('lets a watcher module read the working layer and the catalog reader', () => {

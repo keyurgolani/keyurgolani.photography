@@ -222,14 +222,25 @@ export async function readAuthoredSeries(root: string): Promise<{ series: Author
     return { series, problems };
 }
 
-/** Read one record, or null when it doesn't exist. Throws when it exists but can't be used. */
+/** What readAuthoredRecord() throws for a record that exists but can't be used, with the reason, so a caller can tell I/O (`unreadable`) from damage. */
+export class RecordUnusableError extends Error {
+    readonly problem: RecordProblem;
+
+    constructor(problem: RecordProblem, message: string) {
+        super(message);
+        this.name = 'RecordUnusableError';
+        this.problem = problem;
+    }
+}
+
+/** Read one record, or null when it doesn't exist. Throws RecordUnusableError when it exists but can't be used. */
 export async function readAuthoredRecord<K extends AuthoredKind>(root: string, kind: K, id: string): Promise<RecordOf<K> | null> {
     if (!isRecordId(kind, id)) return null;
     const folder = await recordFolderProblem(root, kind, id);
-    if (folder !== null) throw new Error(`The ${kind} record ${id} can't be used: ${folder}`);
+    if (folder !== null) throw new RecordUnusableError({ kind, id, reason: 'file-name', issues: [{ path: '', message: folder }] }, `The ${kind} record ${id} can't be used: ${folder}`);
     const loaded = await load(authoredRecordDir(root, kind, id), kind, id);
     if (loaded === null) return null;
-    if ('problem' in loaded) throw new Error(`The ${kind} record ${id} can't be used: ${loaded.problem.issues.map((issue) => issue.message).join('; ')}`);
+    if ('problem' in loaded) throw new RecordUnusableError(loaded.problem, `The ${kind} record ${id} can't be used: ${loaded.problem.issues.map((issue) => issue.message).join('; ')}`);
     return loaded.record;
 }
 
