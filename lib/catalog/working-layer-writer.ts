@@ -93,6 +93,13 @@ export interface ReviewInputs {
     event?: { id: string; version: number };
     /** For a confirmed replacement: the asset revision the record pinned, the one it pins now, and the set's profile. */
     asset?: { from: string; to: string; profileId: string };
+    /**
+     * Fields this write leaves as they are but the curator reviewed again,
+     * from review.ts's restampable(). Each gets a fresh stamp only while its
+     * stamp still covers the value it holds, so a hand edit or a suggestion
+     * stays unreviewed.
+     */
+    restamp?: readonly string[];
     actor: string;
     reviewedAt: string;
 }
@@ -215,6 +222,7 @@ async function commit(
             ...(review?.origin ? { origin: review.origin } : {}),
             ...(review?.event ? { event: review.event } : {}),
             ...(review?.asset ? { asset: review.asset } : {}),
+            ...(review?.restamp ? { restamp: review.restamp } : {}),
             actor: review?.actor ?? DEFAULT_REVIEW_ACTOR,
             reviewedAt: review?.reviewedAt ?? new Date().toISOString(),
         }, { next: await coverAsset(root, unstamped.value), existing: await coverAsset(root, existing), backfill });
