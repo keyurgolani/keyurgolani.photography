@@ -329,7 +329,8 @@ async function matchSpelling(target: string, names: ReadonlySet<string> | undefi
  * Before the first rename it records in `cache/set-sources` that a build
  * from this source started, and after the last one that it finished, so a
  * build killed partway is rebuilt at the next start. When that first record
- * can't be written and another source shares the set, it renames nothing.
+ * can't be written and the set was last built whole from another source
+ * that's still in the library, it renames nothing.
  *
  * Returns the paths it replaced or created.
  */
@@ -395,13 +396,15 @@ export async function writeVariants(
     try {
         recordSetSource(filename, paths, { finished: false });
     } catch (error) {
-        // Without the record, a set another source shares could be left part this source's and part the other's,
-        // with nothing to say so once one of them is removed, so it keeps its old outputs. A set no other source
-        // shares, or one this source last built whole, can only mix this source's own versions, which the
-        // thumbnail going last already catches.
-        if (setMembers(filename, paths).length > 1 && lastBuiltFrom(filename, paths) !== filename) {
+        // Without the record, a build stopped partway over a set last built whole from another source that's
+        // still here would leave it part each, while the old record still says the other built it, and once that
+        // source is removed nothing says the set needs rebuilding. So that set keeps the other source's outputs.
+        // Any other set goes ahead: its old outputs show this source, or one that's gone or replaced, so keeping
+        // them protects nothing.
+        const built = lastBuiltFrom(filename, paths);
+        if (built !== null && built !== filename && setMembers(filename, paths).includes(built)) {
             await removeQuietly(order.map(({ temp }) => temp));
-            console.error(`[imageOptimizer] Couldn't record that ${filename}'s set is being rebuilt, so the set it shares keeps its old outputs: ${error instanceof Error ? error.message : String(error)}`);
+            console.error(`[imageOptimizer] Couldn't record that ${filename}'s set is being rebuilt, so it keeps the outputs of ${built}, which built it last: ${error instanceof Error ? error.message : String(error)}`);
             throw error;
         }
     }

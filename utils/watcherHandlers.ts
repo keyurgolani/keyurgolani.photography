@@ -360,7 +360,7 @@ export function createWatcherHandlers(
                 logger.log('[ImageWatcher] Checking for unprocessed images...');
                 const { files, reowned, upright, shared } = await planSources({ force });
                 if (!cacheFolderWritable()) {
-                    logger.error(`[ImageWatcher] ${path.dirname(uprightMarkerPath())} can't be written, so the watcher can't record which sets it rebuilt. Until it can, every start rebuilds the orientation-tagged photos again, and a set two sources share keeps its old outputs.`);
+                    logger.error(`[ImageWatcher] ${path.dirname(uprightMarkerPath())} can't be written, so the watcher can't record which sets it rebuilt. Until it can, every start rebuilds the orientation-tagged photos again, and a set last built from another source that's still in the library keeps that source's outputs.`);
                 }
                 for (const { file, owner, undecodable } of shared) {
                     logger.log(`[ImageWatcher] Skipping ${file}: ${undecodable ? `it can't be decoded, so ${owner} has the derivatives they share` : `it shares its derivatives with ${owner}`}.`);
