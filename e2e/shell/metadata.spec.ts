@@ -11,6 +11,11 @@ test.skip(({ isMobile }) => isMobile, 'The desktop project covers it.');
 test.describe.configure({ mode: 'serial' });
 
 const SITE_NAME = 'Keyur Golani Photography';
+/** How long a server gets to answer, and to exit before it's killed. */
+const READY_TIMEOUT = 30_000;
+const STOP_TIMEOUT = 5_000;
+/** Above both, so a slow start fails in startServer, which stops its child, not in the hook's own timeout. */
+const HOOK_TIMEOUT = READY_TIMEOUT + STOP_TIMEOUT + 15_000;
 
 function freePort(): Promise<number> {
     return new Promise((resolve, reject) => {
@@ -37,30 +42,45 @@ async function startServer(siteUrl: string | undefined): Promise<Server> {
     delete env.SITE_URL;
     if (siteUrl) env.SITE_URL = siteUrl;
     const next = path.join(process.cwd(), 'node_modules', 'next', 'dist', 'bin', 'next');
-    const child = spawn(process.execPath, [next, 'start', '--port', String(port), '--hostname', '127.0.0.1'], { cwd: process.cwd(), env });
+    // Its own process group, so stopping it also stops any process it starts.
+    const child = spawn(process.execPath, [next, 'start', '--port', String(port), '--hostname', '127.0.0.1'], { cwd: process.cwd(), env, detached: true });
     let output = '';
     child.stdout.on('data', (chunk) => (output += chunk));
     child.stderr.on('data', (chunk) => (output += chunk));
-    const origin = `http://127.0.0.1:${port}`;
-    await expect
-        .poll(async () => {
-            try {
-                return (await fetch(`${origin}/api/photos`)).status;
-            } catch {
-                return 0;
-            }
-        }, { timeout: 30_000 })
-        .toBe(200);
-    return {
-        origin,
-        output: () => output,
-        stop: () =>
-            new Promise<void>((resolve) => {
-                if (child.exitCode !== null) return resolve();
-                child.once('exit', () => resolve());
-                child.kill();
-            }),
+    const signal = (name: NodeJS.Signals) => {
+        try {
+            if (child.pid) process.kill(-child.pid, name);
+        } catch {
+            // The group is already gone.
+        }
     };
+    const stop = () =>
+        new Promise<void>((resolve) => {
+            if (child.exitCode !== null || child.signalCode !== null) return resolve();
+            const force = setTimeout(() => signal('SIGKILL'), STOP_TIMEOUT);
+            child.once('exit', () => {
+                clearTimeout(force);
+                resolve();
+            });
+            signal('SIGTERM');
+        });
+    const origin = `http://127.0.0.1:${port}`;
+    try {
+        await expect
+            .poll(async () => {
+                try {
+                    return (await fetch(`${origin}/api/photos`)).status;
+                } catch {
+                    return 0;
+                }
+            }, { timeout: READY_TIMEOUT })
+            .toBe(200);
+    } catch (error) {
+        // No hook gets the server back to stop it, so a failed start stops its own.
+        await stop();
+        throw error;
+    }
+    return { origin, output: () => output, stop };
 }
 
 /** The content of the first `<meta>` with `property` or `name`. */
@@ -72,9 +92,11 @@ const iconLinks = (html: string, origin: string) =>
 test.describe('with SITE_URL set for this server only', () => {
     let server: Server;
     test.beforeAll(async () => {
+        test.setTimeout(HOOK_TIMEOUT);
         server = await startServer('https://example.test');
     });
     test.afterAll(async () => {
+        test.setTimeout(HOOK_TIMEOUT);
         await server?.stop();
     });
 
@@ -118,15 +140,23 @@ test.describe('with SITE_URL set for this server only', () => {
 test.describe('with SITE_URL unset', () => {
     let server: Server;
     test.beforeAll(async () => {
+        test.setTimeout(HOOK_TIMEOUT);
         server = await startServer(undefined);
     });
     test.afterAll(async () => {
+        test.setTimeout(HOOK_TIMEOUT);
         await server?.stop();
     });
 
-    test('the server logs one startup warning, and share URLs fall back to localhost', async ({ request }) => {
+    const warnings = () => server.output().match(/SITE_URL/g)?.length ?? 0;
+
+    test('the server logs one warning at startup, still one after page requests, and share URLs fall back to localhost', async ({ request }) => {
+        // Readiness only asked /api/photos, so a warning now came from startup, not from rendering a page.
+        await expect.poll(warnings, { timeout: 5_000 }).toBe(1);
+        expect(server.output()).toContain("SITE_URL isn't set, so share links point at http://localhost:3000.");
         const html = await (await request.get(`${server.origin}/about`)).text();
         expect(meta(html, 'og:image')).toMatch(/^http:\/\/localhost:3000\//);
-        expect(server.output().match(/SITE_URL/g)).toHaveLength(1);
+        for (const route of ['/', '/gallery', '/does-not-exist']) await request.get(`${server.origin}${route}`);
+        expect(warnings()).toBe(1);
     });
 });
