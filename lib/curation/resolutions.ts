@@ -328,22 +328,30 @@ export function holdRefusal(at: string, candidates: readonly string[], photoId: 
     return `${doubt} Settle that path's ambiguous item first, with photos identity bind or photos identity new, then bind again. Nothing was written.`;
 }
 
-/** The owner-set fields of a photo record, beside the asset revision draft:init pins, by the names the bind note uses. */
-const OWNER_FIELDS = [
-    ['alt', 'description'],
-    ['title', 'title'],
-    ['caption', 'caption'],
-    ['focalPoint', 'focal point'],
-    ['crop', 'crop'],
-    ['accent', 'accent'],
-    ['credit', 'credit'],
-    ['location', 'location'],
-    ['capturedAt', 'capture date'],
-] as const satisfies readonly (readonly [keyof AuthoredPhoto, string])[];
+/**
+ * The owner-set fields of a photo record, by the names the bind note uses.
+ * With MANAGED_PHOTO_FIELDS they cover authoredPhotoSchema, which a test
+ * checks, so a new schema field has to be sorted into one or the other.
+ */
+export const OWNER_FIELDS = {
+    alt: 'description',
+    title: 'title',
+    caption: 'caption',
+    focalPoint: 'focal point',
+    crop: 'crop',
+    accent: 'accent',
+    credit: 'credit',
+    location: 'location',
+    capturedAt: 'capture date',
+} as const satisfies Partial<Record<keyof AuthoredPhoto, string>>;
+
+/** The photo record fields the tools set: the record's identity, the asset revision draft:init pins, and the version and rebase fields. */
+export const MANAGED_PHOTO_FIELDS = ['schemaVersion', 'version', 'baseRevisionId', 'conflicts', 'kind', 'id', 'assetRevision'] as const satisfies readonly (keyof AuthoredPhoto)[];
 
 /** What the owner set on a photo record, which a merge would lose. Empty for the bare record draft:init writes. */
 export function ownerCopyOf(record: AuthoredPhoto): string[] {
-    return OWNER_FIELDS.filter(([field]) => record[field] !== undefined && record[field] !== null)
+    return (Object.entries(OWNER_FIELDS) as [keyof typeof OWNER_FIELDS, string][])
+        .filter(([field]) => record[field] !== undefined && record[field] !== null)
         .map(([field, name]) => (field === 'alt' && record.alt?.kind === 'decorative' ? 'decorative flag' : name));
 }
 
@@ -415,9 +423,12 @@ async function bindPlan(root: string, registry: Registry, photo: PhotoRecord, at
             // revision that lists it could no longer be rolled back to, and its photo record's copy would be dropped.
             const found = await mergeBlockers(root, holder.photoId);
             if ('unknown' in found) fail('damaged', `${found.unknown.message.replace(' Nothing was deleted.', '')} So nothing shows whether ${holder.photoId} is in use. Nothing was written.`);
-            const { shown, retained, record } = found as MergeBlockers;
-            if (shown.length > 0) {
-                fail('refused', `${at} is ${holder.photoId}, which ${shown.join(' and ')} already ${shown.length === 1 ? 'shows' : 'show'}. Take it out first, or keep it as its own photograph. Nothing was written.`);
+            const { shown, active, series, retained, record } = found as MergeBlockers;
+            if (active !== null) {
+                fail('refused', `${at} is ${holder.photoId}, which ${shown.join(' and ')} already ${shown.length === 1 ? 'shows' : 'show'}. A photograph visitors see can't be merged, even once it's taken out: the revision that shows it stays one photos rollback can go back to, which a merge would break. Keep it as its own photograph, or bind another file. Nothing was written.`);
+            }
+            if (series.length > 0) {
+                fail('refused', `${at} is ${holder.photoId}, which ${shown.join(' and ')} already ${shown.length === 1 ? 'lists' : 'list'} in the draft. Take it out of ${series.join(' and ')} first, or keep it as its own photograph. Even then a bind is refused if a revision photos rollback can go back to lists it. Nothing was written.`);
             }
             if (retained.length > 0) {
                 const named = retained.length === 1 ? `the retained catalog revision ${retained[0]} lists` : `the retained catalog revisions ${retained.join(', ')} list`;
