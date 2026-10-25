@@ -105,6 +105,19 @@ describe('writeAuthoredRecord() stamps', { timeout: 60_000 }, () => {
         expect(written.review?.fields.title).toMatchObject({ assetRevision: other });
     });
 
+    it('writes an existing record when the active pointer can\'t be read, stamping it against the record\'s base', async () => {
+        const f = await fixture();
+        const first = published(await f.publish());
+        const id = f.catalog.photos[0].id;
+        const before = await f.read<AuthoredPhoto>('photo', id);
+        fs.writeFileSync(versionFile(`${f.root}/catalog/active`, 2), '{"schemaVersion": 1, "version": 2}\n', { mode: 0o600 });
+        const written = await f.edit<AuthoredPhoto>('photo', id, (photo) => {
+            photo.caption = 'Fixture caption.';
+        });
+        expect(written.version).toBe(before.version + 1);
+        expect(written.review?.fields.caption).toMatchObject({ baseRevisionId: first });
+    });
+
     it('stamps a suggested description as generated, until the curator marks it reviewed', async () => {
         const f = await fixture();
         published(await f.publish());
