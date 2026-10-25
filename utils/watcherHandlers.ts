@@ -149,6 +149,15 @@ interface Job {
     settle: (outcome: Outcome) => void;
 }
 
+/**
+ * The handlers watch mode runs: with awaitStartup, so they aren't idle before
+ * chokidar's ready queues the startup batch, and the identity step's first
+ * pass, which waits on idle(), can't build alongside it.
+ */
+export function createWatchModeHandlers(options: { logger?: Logger } = {}): WatcherHandlers {
+    return createWatcherHandlers({ ...options, awaitStartup: true });
+}
+
 export function createWatcherHandlers(
     { logger = console, maxConcurrentJobs = 1, awaitStartup = false }: {
         logger?: Logger;
