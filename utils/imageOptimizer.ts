@@ -4,10 +4,10 @@ import path from 'path';
 import sharp from 'sharp';
 import { CACHE_FOLDER, DERIVATIVE_FOLDERS } from '../lib/derivativeFolders.mjs';
 import { foldName } from '../lib/foldName';
-import { keyOf } from '../lib/identity/scan';
 import { atomicWriteFile } from '../lib/storage/atomicWrite';
 import { libraryRoot } from '../lib/storage/config';
 import { hasErrorCode } from '../lib/storage/fsx';
+import { baseNameOf, sameFile, setGroups, setKeyOf, sharesSet } from './derivativeSets';
 
 /** A derivative folder's name under the library root, such as `thumbnails-avif`. */
 type DerivativeFolder = keyof typeof DERIVATIVE_FOLDERS;
@@ -156,13 +156,11 @@ export function isSourceFile(filename: string): boolean {
     return !name.startsWith('.') && SOURCE_FILE.test(name);
 }
 
-/** A source's name without its extension. Its derivatives share it, so `a.jpg` and `a.png` share one set. */
-export function baseNameOf(filename: string): string {
-    return path.basename(filename, path.extname(filename));
-}
-
 /** The shared errno check, re-exported for callers of the image pipeline. */
 export { hasErrorCode };
+
+/** The set grouping, which lives in derivativeSets.ts so the web process can use it without Sharp. */
+export { baseNameOf, setGroups, setKeyOf, sharesSet };
 
 /**
  * Create the derivative folders inside an existing library root. Never creates
@@ -278,21 +276,6 @@ function sourceChanged(filename: string): Error {
         new Error(`${filename} changed or was removed while it was processed, so its new outputs were discarded.`),
         { code: SOURCE_CHANGED },
     );
-}
-
-/**
- * Whether two paths are one file, as when a case-insensitive disk resolves two
- * spellings of a name to one entry. Null when lstat fails for a reason other
- * than a missing entry, since then it can't tell.
- */
-function sameFile(a: string, b: string): boolean | null {
-    try {
-        const first = fs.lstatSync(a, { throwIfNoEntry: false });
-        const second = fs.lstatSync(b, { throwIfNoEntry: false });
-        return first !== undefined && second !== undefined && first.dev === second.dev && first.ino === second.ino;
-    } catch {
-        return null;
-    }
 }
 
 /**
@@ -535,48 +518,6 @@ export function getUnprocessedFiles(): string[] {
     ensureDirectories(paths);
     const index = readDerivativeIndex(paths);
     return getPhotoFiles(paths.root).filter((file) => needsRefresh(file, paths, index));
-}
-
-/**
- * A source's base name, folded as the identity scan folds paths. Sources that
- * may write one set of derivatives share it, so the watcher runs their jobs in
- * turn. Whether they do share one is sharesSet()'s call.
- */
-export function setKeyOf(filename: string): string {
-    return keyOf(baseNameOf(filename));
-}
-
-/**
- * Whether two sources write one set of derivatives: when their base names
- * match, such as IMG_1.jpg and IMG_1.png, or differ only in case or Unicode
- * form and the disk resolves both spellings to one file, as a case-insensitive
- * disk does with Beach.jpg and beach.png. On a case-sensitive disk those two
- * have a set each. When lstat can't tell, they count as one.
- */
-export function sharesSet(a: string, b: string, root: string = libraryPaths().root): boolean {
-    const baseA = baseNameOf(a);
-    const baseB = baseNameOf(b);
-    if (baseA === baseB) return true;
-    if (setKeyOf(a) !== setKeyOf(b)) return false;
-    return sameFile(path.join(root, b), path.join(root, `${baseA}${path.extname(b)}`)) !== false;
-}
-
-/** Sources grouped by the set they write, each group in path order. */
-export function setGroups(files: string[], root: string = libraryPaths().root): string[][] {
-    const groups: string[][] = [];
-    const byKey = new Map<string, string[][]>();
-    for (const file of [...files].sort()) {
-        const candidates = byKey.get(setKeyOf(file)) ?? [];
-        const group = candidates.find((members) => sharesSet(members[0], file, root));
-        if (group) {
-            group.push(file);
-            continue;
-        }
-        const created = [file];
-        byKey.set(setKeyOf(file), [...candidates, created]);
-        groups.push(created);
-    }
-    return groups;
 }
 
 /** The library's sources that write `filename`'s set, in path order, `filename` among them while it exists. */
