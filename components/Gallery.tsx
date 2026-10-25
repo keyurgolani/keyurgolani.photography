@@ -10,6 +10,7 @@ import 'yet-another-react-lightbox/plugins/thumbnails.css';
 import Image from 'next/image';
 import { photoEntryName, photoImageAlt } from '@/lib/a11y/photoName';
 import { lightboxSlides } from './lightboxSlides';
+import { isMediaSrc, mediaImageLoader } from './mediaImageLoader';
 
 interface ImageItem {
     id: number;
@@ -95,6 +96,8 @@ function LazyGalleryTile({
             {isVisible ? (
                 <Image
                     src={img.src}
+                    // A /media set is already sized, and /_next/image refuses it, so its own variants fill the srcset.
+                    loader={isMediaSrc(img.src) ? mediaImageLoader : undefined}
                     alt=""
                     fill
                     placeholder="blur"
