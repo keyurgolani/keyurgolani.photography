@@ -11,7 +11,7 @@ import { currentProfileId } from '../../identity/profile';
 import { readRegistry } from '../../identity/registry';
 import type { DerivativeJob, IdentityFact, Registry } from '../../identity/types';
 import { runIdentityOnce } from '../../identity/watcherStep';
-import { createCandidateSink, settlingAfterBuild } from '../candidates';
+import { createCandidateSink, owedSettles, settlingAfterBuild, type OwedSettles } from '../candidates';
 import { eventIdOf, eventKey, type CurationEvent } from '../events';
 import { readEvent } from '../repository';
 import { createCurationSink } from '../sink';
@@ -48,6 +48,12 @@ export interface MissingWorld {
     pass(): Promise<IdentityFact[]>;
     /** Pass with new sinks, as a restarted watcher's first pass. */
     restartPass(): Promise<IdentityFact[]>;
+    /** A pass with no sinks, as the watcher's registry commit before it delivers: it applies pending decisions. */
+    bareRegistryPass(): Promise<void>;
+    /** The replacement items this world's builds owe the candidate sink, as the watcher shares them. */
+    owed: OwedSettles;
+    /** The failed-build items this world's builds owe the sources sink. */
+    owedSources: OwedSettles;
     /** The watcher started again with `--once`: the derivative worker's start, then passes and builds. */
     restart(): Promise<0 | 1>;
     /** One build as the watcher's worker runs it, settling the inbox after. */
@@ -63,11 +69,13 @@ const nextId = () => `00000000-0000-4000-8000-${String(++ids).padStart(12, '0')}
 /** A minute ahead, so files a test just wrote count as settled. */
 export const clock = () => Date.now() + 60_000;
 
-export function watcherSinks(): FactSink[] {
-    return [createCurationSink({ logger: quiet, clock }), createCandidateSink({ logger: quiet, clock }), createSourcesSink({ logger: quiet, clock })];
+/** The watcher's sinks, sharing what its builds owe them, as scripts/imageWatcher.ts wires them. */
+export function watcherSinks(owed = owedSettles(), owedSources = owedSettles()): FactSink[] {
+    return [createCurationSink({ logger: quiet, clock }), createCandidateSink({ logger: quiet, clock, owed }), createSourcesSink({ logger: quiet, clock, owed: owedSources })];
 }
 
-const watcherBuild = () => recordingFailuresAfterBuild(settlingAfterBuild(buildDerivativeSet, { logger: quiet, clock }), { logger: quiet, clock });
+const watcherBuild = (owed = owedSettles(), owedSources = owedSettles()) =>
+    recordingFailuresAfterBuild(settlingAfterBuild(buildDerivativeSet, { logger: quiet, clock, owed }), { logger: quiet, clock, owed: owedSources });
 
 async function passIn(sinks: FactSink[] = watcherSinks()): Promise<IdentityFact[]> {
     const outcome = await runReconcilePass({ clock, idGen: nextId, logger: quiet, sinks, clearDelivered: true });
@@ -158,8 +166,10 @@ export async function createMissingWorld(images: Images): Promise<MissingWorld> 
     fs.rmSync(data.root, { recursive: true, force: true });
     fs.cpSync(template.library, lib.root, { recursive: true });
     fs.cpSync(template.data, data.root, { recursive: true });
-    const build = watcherBuild();
-    const processSinks = watcherSinks();
+    const owed = owedSettles();
+    const owedSources = owedSettles();
+    const build = watcherBuild(owed, owedSources);
+    const processSinks = watcherSinks(owed, owedSources);
     return {
         ...template.facts,
         lib,
@@ -167,14 +177,23 @@ export async function createMissingWorld(images: Images): Promise<MissingWorld> 
         root: data.root,
         pass: () => passIn(processSinks),
         restartPass: () => passIn(),
-        restart: () => runIdentityOnce({
-            sinks: watcherSinks(),
-            worker: { build: watcherBuild() },
-            pass: { clock, idGen: nextId },
-            clock,
-            logger: quiet,
-            sleep: async () => undefined,
-        }),
+        async bareRegistryPass() {
+            const outcome = await runReconcilePass({ clock, idGen: nextId, logger: quiet, sinks: [], clearDelivered: false });
+            if (outcome.status !== 'committed') throw new Error(`The pass didn't commit: ${JSON.stringify(outcome)}`);
+        },
+        owed,
+        owedSources,
+        restart: () => {
+            const restarted = { owed: owedSettles(), owedSources: owedSettles() };
+            return runIdentityOnce({
+                sinks: watcherSinks(restarted.owed, restarted.owedSources),
+                worker: { build: watcherBuild(restarted.owed, restarted.owedSources) },
+                pass: { clock, idGen: nextId },
+                clock,
+                logger: quiet,
+                sleep: async () => undefined,
+            });
+        },
         build: (job, faults = {}, options = {}) => build(job, { logger: quiet, faults, ...options }),
         registry: () => readRegistry(data.root),
         async event(id) {
