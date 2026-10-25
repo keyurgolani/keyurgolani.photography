@@ -94,9 +94,8 @@ function isNextCli(argv: readonly string[]): boolean {
 /**
  * The address this server listens on: the `--hostname` (or `-H`) argument
  * under the Next CLI, and `HOSTNAME` otherwise, as the standalone server.js
- * reads it. `next dev` hands its argument to a child process this can't see,
- * so there the child reads `HOSTNAME` like server.js, and a curator under
- * `next dev` sets both.
+ * reads it. `next dev` hands its argument to a child process over IPC, so
+ * bindProblem() checks that child by its listening socket instead.
  */
 export function listenTarget(env: CuratorEnv, argv: readonly string[]): ListenTarget {
     if (isNextCli(argv)) {

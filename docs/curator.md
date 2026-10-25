@@ -37,20 +37,25 @@ Each of these holds on its own. `proxy.ts` checks the first four on every reques
 
 - **The flag.** `CURATION_ENABLED` turns the curator on, and only the exact value `true` does. It's read on every request, never at build time, so the one image serves both. While it's off, every curator path answers 404. Only `curator` sets it; `web` never does, and CI fails a Compose file that sets it anywhere else.
 - **The bind.** With the flag on, a server told to listen beyond loopback stops at startup with a message, and refuses every curator request until it exits. See the rule below.
-- **The `Host` allowlist.** A curator request needs `Host: 127.0.0.1:3001` or `localhost:3001`, or the same names on `CURATOR_TUNNEL_PORT`. Any other answers 421. That turns away a page that points its own domain name at `127.0.0.1` (DNS rebinding).
+- **The `Host` allowlist.** With the flag on, every request to the curator process, its public paths included, needs `Host: 127.0.0.1:3001` or `localhost:3001`, or the same names on `CURATOR_TUNNEL_PORT`. Any other answers 421. That turns away a page that points its own domain name at `127.0.0.1` (DNS rebinding). The service's healthcheck sends `Host: localhost:3001` for the same reason.
 - **The `Origin` check.** Anything that can change state (every method but GET and HEAD, and every server action) also needs an `Origin` naming the same host and port over `http`. Anything else answers 403. That turns away a form or script on another site posting to the curator through your open tunnel.
 - **The headers.** Every curator response sends `Cache-Control: no-store`, `X-Robots-Tag: noindex, nofollow`, `Referrer-Policy: no-referrer`, and `Content-Security-Policy: frame-ancestors 'none'`, and every curator page renders per request.
 - **Read-only everywhere else.** Outside the curator paths the site takes only GET, HEAD and OPTIONS, so a server action posted to `/` answers 404. `web` mounts the library and the data root read-only, and `/media` serves only what the active catalog revision holds.
 
 ### The bind rule
 
-With `CURATION_ENABLED=true`, the server checks the address it was told to listen on: `--hostname` (or `-H`) when `next start` runs it, and `HOSTNAME` otherwise, which the standalone `server.js` reads. It must be `127.0.0.1`, `::1` or `localhost`. An unset one counts as every interface, since that's what both servers do without it. `npm start` already passes `--hostname 127.0.0.1`. `next dev` hands its `--hostname` to a child process the check can't see, so to run the curator under `npm run dev`, set `HOSTNAME=127.0.0.1` too:
+With `CURATION_ENABLED=true`, the server checks where it listens, twice.
+
+1. The address it was told: `--hostname` (or `-H`) when `next start` runs it, and `HOSTNAME` otherwise, which the standalone `server.js` reads. It must be `127.0.0.1`, `::1` or `localhost`. An unset one counts as every interface, since that's what both servers do without it. `npm start` already passes `--hostname 127.0.0.1`.
+2. The socket it actually listens on, once it does. Every one must be on loopback, whatever the settings said. Under `next dev`, whose server runs in a child process that gets `--hostname` over IPC, the socket is the only check, and a dev server whose socket can't be read stops. `npm run dev` already passes `--hostname 127.0.0.1`, so this just works:
 
 ```bash
-CURATION_ENABLED=true HOSTNAME=127.0.0.1 npm run dev
+CURATION_ENABLED=true npm run dev
 ```
 
-The one exception is the `curator` service. Docker's port forward reaches a container on its own network interface, so inside the container the server has to listen on every interface, and the publish to the host's `127.0.0.1` is the boundary. The service sets `HOSTNAME=0.0.0.0` with `CURATION_BIND_SCOPE=container`, which accepts `0.0.0.0` or `::` and nothing else, and only where Docker's or Podman's container marker file exists. Outside a container, that setting stops the server. CI checks that `curator` is the only service with it, that its one published port is `127.0.0.1:3001`, and that it shares no network with another service.
+The one exception is the `curator` service. Docker's port forward reaches a container on its own network interface, so inside the container the server has to listen on every interface, and the publish to the host's `127.0.0.1` is the boundary. The service sets `HOSTNAME=0.0.0.0` with `CURATION_BIND_SCOPE=container`, which accepts `0.0.0.0` or `::` and nothing else, only where Docker's or Podman's container marker file exists, and only while the process sees one network interface beyond loopback. Outside a container, that setting stops the server. CI checks that `curator` is the only service with it, that its one published port is `127.0.0.1:3001`, and that it shares no network with another service.
+
+The exception assumes the container has a network of its own. Never run the curator with the host's network (`network_mode: host`, `docker run --network host`, Kubernetes `hostNetwork`, or a toolbox or distrobox container): there `0.0.0.0` is every interface of the host. CI rejects `network_mode` on `curator`, and the one-interface check stops it on most hosts, since a Docker host has its own bridge as well as its uplink, but neither covers a container started outside this Compose file.
 
 ## Settings
 
