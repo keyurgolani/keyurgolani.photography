@@ -95,9 +95,12 @@ interface PreviewReaderState {
  * no longer current couldn't drop it from the media or records handlers'
  * maps, and concurrent compiles would be shared per route only. So the maps
  * live on `globalThis`, one for the process, whichever bundle loaded this
- * module.
+ * module. Only this module names the key: ESLint refuses it, and any
+ * computed Symbol.for() key, outside app/curation/** and lib/catalog/**,
+ * and lib/catalog/__tests__/previewBoundary.test.ts checks no public module
+ * reaches it.
  */
-export const PREVIEW_READER_STATE_KEY = Symbol.for('kg.catalog.previewReader');
+const PREVIEW_READER_STATE_KEY = Symbol.for('kg.catalog.previewReader');
 
 function sharedState(): PreviewReaderState {
     const global = globalThis as typeof globalThis & { [PREVIEW_READER_STATE_KEY]?: PreviewReaderState };
@@ -200,6 +203,11 @@ export async function currentDraftId(options: Pick<LoadPreviewOptions, 'now'> = 
 export function resetPreviewReaderForTests(): void {
     kept.clear();
     compiling.clear();
+}
+
+/** The process's kept and under-way compiles, as every copy of this module sees them. For tests. */
+export function previewReaderStateForTests(): { readonly kept: ReadonlyMap<string, unknown>; readonly compiling: ReadonlyMap<string, unknown> } {
+    return sharedState();
 }
 
 /** A `/media` variant path as revisions store it (#10's mediaUrl()). */
