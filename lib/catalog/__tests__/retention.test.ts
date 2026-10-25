@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { runTsx } from '../../../test/helpers/runTsx';
 import { createTempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { stagingLockName } from '../../identity/derivatives';
 import { versionFile, versionText } from '../../storage/document';
@@ -484,5 +485,31 @@ describe('photos gc fails closed', () => {
         expect(result.outcome).toBe(outcome);
         expect(result.message).toMatch(new RegExp(`^Another command holds the ${lock} lock: [0-9a-f-]+ \\(pid \\d+ on .+, since .+\\)\\. Nothing was deleted\\.$`));
         expect(snapshot(root)).toEqual(before);
+    });
+});
+
+describe('photos gc through scripts/photos.ts', { timeout: 60_000 }, () => {
+    it('plans, applies the printed digest, and refuses a bad one', async () => {
+        const catalog = await fixture();
+        // The real clock: 30 days back is past the grace period whatever today is.
+        stage(catalog.root, 'killed-build', Math.floor(Date.now() / 1000) * 1000 - 30 * 24 * 60 * 60 * 1000);
+        const env = { PHOTOGRAPHY_DATA_DIR: catalog.root };
+
+        const planned = await runTsx('scripts/photos.ts', ['gc'], { env });
+        expect(planned.code, planned.stderr).toBe(0);
+        expect(planned.stdout).toContain('Delete staging/killed-build: abandoned-staging, 18 bytes.');
+        const digest = /Plan digest: (gc_[0-9a-f]{64})/.exec(planned.stdout)?.[1];
+        expect(digest).toBeDefined();
+        expect(fs.existsSync(path.join(catalog.root, 'staging', 'killed-build'))).toBe(true);
+
+        const bad = await runTsx('scripts/photos.ts', ['gc', '--apply', 'everything'], { env });
+        expect(bad.code).toBe(2);
+        expect(bad.stderr).toContain('--apply takes the plan digest photos gc printed');
+
+        const applied = await runTsx('scripts/photos.ts', ['gc', '--apply', digest as string], { env });
+        expect(applied.code, applied.stderr).toBe(0);
+        expect(applied.stdout).toContain('[photos] APPLIED: Deleted 1 path.');
+        expect(applied.stdout).toContain('"event":"catalog.gc.deleted"');
+        expect(fs.existsSync(path.join(catalog.root, 'staging', 'killed-build'))).toBe(false);
     });
 });
