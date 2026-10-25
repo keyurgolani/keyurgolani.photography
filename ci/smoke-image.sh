@@ -17,9 +17,11 @@
 #    stay the same once the containers are recreated.
 # 4. With PHOTOGRAPHY_DATA_DIR unset, the watcher says the identity step is
 #    off, writes the legacy derivatives, and writes no registry.
-# 5. web 404s the curator paths, and the curator service, started by name,
-#    serves /curation on 127.0.0.1:3001 with its headers and refuses another
-#    Host and an Origin-less POST.
+# 5. web 404s the curator paths, and the curator service, started by name
+#    with secret files the image's commands made, serves its login on
+#    127.0.0.1:3001 with its headers, refuses another Host and an
+#    Origin-less POST, signs in only with the passphrase, ends the session
+#    at logout, and answers 503 without its session secret.
 #
 #   ci/smoke-image.sh <tag>
 #
@@ -80,7 +82,7 @@ cleanup() {
   # The containers write the derivative folders and the data root as uid
   # 1001. Remove them with the image under test, so cleanup never pulls anything.
   docker run --rm --pull never --user 0 --entrypoint rm -v "$TMP:/t" "$IMAGE" \
-    -rf /t/public /t/.next-images-cache /t/portfolio-data /t/unset-library
+    -rf /t/public /t/.next-images-cache /t/portfolio-data /t/unset-library /t/secrets
   rm -rf "$TMP"
   exit "$status"
 }
@@ -261,10 +263,16 @@ check_health
 [ "$HEALTH" = uninitialized ] || fail "GET /api/health reported dataRoot '$HEALTH' before the migration, expected uninitialized."
 echo "GET /api/health returned 200 with dataRoot uninitialized."
 
-# 5b. The curator (#14): web 404s every curator path, and curator, started
-#     by name, listens inside its container under CURATION_BIND_SCOPE, serves
-#     /curation on 127.0.0.1:3001 with its headers, refuses another Host with
-#     421 and a POST without an Origin with 403, and then stops.
+# 5b. The curator (#14): web 404s every curator path. Then the curator's
+#     secret files are made the way docs/curator.md makes them, with the
+#     image's own commands and a passphrase made for this run, and curator,
+#     started by name, listens inside its container under
+#     CURATION_BIND_SCOPE. It sends /curation to the login page without a
+#     session, serves the login page on 127.0.0.1:3001 with its headers,
+#     refuses another Host with 421 and a POST without an Origin with 403,
+#     signs in with the passphrase and not without it, serves /curation to
+#     the session, and ends it at logout. With a secret file gone, every path
+#     answers 503. No passphrase, hash, secret or cookie is printed.
 CURATOR_URL=http://127.0.0.1:3001
 for path in /curation /api/curation/x; do
   code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$BASE_URL$path") || fail "GET $path from web failed."
@@ -273,22 +281,71 @@ done
 if curl -s --max-time 2 -o /dev/null "$CURATOR_URL/"; then
   fail "Something already answers on $CURATOR_URL, curator's fixed port."
 fi
+SECRETS=$TMP/secrets
+mkdir "$SECRETS"
+docker run --rm --pull never --user 0 --entrypoint sh -v "$SECRETS:/s" "$IMAGE" -c 'chown 1001:1001 /s && chmod 0700 /s'
+# A test passphrase for this run only, never printed.
+SMOKE_PASSPHRASE=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+in_secrets() {
+  docker run --rm -i --pull never --network none --user 1001:1001 -v "$SECRETS:/secrets" "$IMAGE" node dist/scripts/photos.mjs curation "$@"
+}
+printf '%s\n' "$SMOKE_PASSPHRASE" | in_secrets hash-passphrase --out /secrets/curator-passphrase.hash >/dev/null \
+  || fail "curation hash-passphrase failed in the image."
+in_secrets session-secret --out /secrets/curator-session.key </dev/null >/dev/null || fail "curation session-secret failed in the image."
 compose up -d --pull never --wait --wait-timeout 180 curator
 code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$CURATOR_URL/curation") || fail "GET /curation from curator failed."
-[ "$code" = 200 ] || fail "GET /curation from curator returned $code, expected 200."
+[ "$code" = 307 ] || fail "GET /curation from curator without a session returned $code, expected 307 to the login page."
+grep -qix 'location: /curation/login' <<<"$(tr -d '\r' <"$TMP/headers.txt")" || fail "GET /curation without a session did not lead to /curation/login."
+code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$CURATOR_URL/curation/login") || fail "GET /curation/login from curator failed."
+[ "$code" = 200 ] || fail "GET /curation/login from curator returned $code, expected 200."
 headers=$(tr -d '\r' <"$TMP/headers.txt")
-grep -qi '^cache-control:.*no-store' <<<"$headers" || fail "curator's /curation did not send Cache-Control with no-store."
-grep -qix 'x-robots-tag: noindex, nofollow' <<<"$headers" || fail "curator's /curation did not send X-Robots-Tag: noindex, nofollow."
-grep -qix 'referrer-policy: no-referrer' <<<"$headers" || fail "curator's /curation did not send Referrer-Policy: no-referrer."
-grep -qix "content-security-policy: frame-ancestors 'none'" <<<"$headers" || fail "curator's /curation did not send frame-ancestors 'none'."
-code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -H 'Host: rebound.example:3001' "$CURATOR_URL/curation") || fail "GET /curation with another Host failed."
-[ "$code" = 421 ] || fail "GET /curation from curator with another Host returned $code, expected 421."
+grep -qi '^cache-control:.*no-store' <<<"$headers" || fail "curator's /curation/login did not send Cache-Control with no-store."
+grep -qix 'x-robots-tag: noindex, nofollow' <<<"$headers" || fail "curator's /curation/login did not send X-Robots-Tag: noindex, nofollow."
+grep -qix 'referrer-policy: no-referrer' <<<"$headers" || fail "curator's /curation/login did not send Referrer-Policy: no-referrer."
+grep -qix "content-security-policy: frame-ancestors 'none'" <<<"$headers" || fail "curator's /curation/login did not send frame-ancestors 'none'."
+code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -H 'Host: rebound.example:3001' "$CURATOR_URL/curation/login") || fail "GET /curation/login with another Host failed."
+[ "$code" = 421 ] || fail "GET /curation/login from curator with another Host returned $code, expected 421."
 code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -H 'Host: rebound.example:3001' "$CURATOR_URL/api/health") || fail "GET /api/health with another Host failed."
 [ "$code" = 421 ] || fail "GET /api/health from curator with another Host returned $code, expected 421."
 code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -X POST "$CURATOR_URL/curation") || fail "POST /curation failed."
 [ "$code" = 403 ] || fail "POST /curation from curator without an Origin returned $code, expected 403."
+code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$CURATOR_URL/api/curation/x") || fail "GET /api/curation/x failed."
+[ "$code" = 401 ] || fail "GET /api/curation/x from curator without a session returned $code, expected 401."
+# Posts the login form with the passphrase on stdin, so it's never an argument.
+login() {
+  printf '%s' "$1" | curl -sS --max-time 60 -D "$TMP/login.txt" -o /dev/null -w '%{http_code}' \
+    -H "Origin: $CURATOR_URL" --data-urlencode 'passphrase@-' "$CURATOR_URL/api/curation/login"
+}
+code=$(login "not-$SMOKE_PASSPHRASE") || fail "POST /api/curation/login failed."
+[ "$code" = 303 ] || fail "A wrong passphrase got $code, expected 303."
+grep -qi '^set-cookie:' <(tr -d '\r' <"$TMP/login.txt") && fail "A wrong passphrase got a cookie."
+code=$(login "$SMOKE_PASSPHRASE") || fail "POST /api/curation/login failed."
+[ "$code" = 303 ] || fail "The passphrase got $code, expected 303."
+set_cookie=$(tr -d '\r' <"$TMP/login.txt" | grep -i '^set-cookie: curator_session=' | head -n 1)
+[ -n "$set_cookie" ] || fail "The passphrase got no curator_session cookie."
+for attribute in HttpOnly Secure SameSite=Strict Path=/ Max-Age=43200; do
+  grep -qi "; $attribute\(;\|$\)" <<<"$set_cookie" || fail "The curator_session cookie lacks $attribute."
+done
+session=$(sed -e 's/^[Ss]et-[Cc]ookie: //' -e 's/;.*//' <<<"$set_cookie")
+rm -f "$TMP/login.txt"
+code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -H "Cookie: $session" "$CURATOR_URL/curation") || fail "GET /curation with the session failed."
+[ "$code" = 200 ] || fail "GET /curation with the session returned $code, expected 200."
+code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -X POST -H "Cookie: $session" -H "Origin: $CURATOR_URL" "$CURATOR_URL/api/curation/logout") || fail "POST /api/curation/logout failed."
+[ "$code" = 303 ] || fail "POST /api/curation/logout returned $code, expected 303."
+code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -H "Cookie: $session" "$CURATOR_URL/api/curation/x") || fail "GET /api/curation/x after logout failed."
+[ "$code" = 401 ] || fail "The session's cookie, replayed after logout, got $code, expected 401."
+unset session set_cookie
+# Without the session secret, every path is a 503, and nothing signs in.
+docker run --rm --pull never --user 0 --entrypoint rm -v "$SECRETS:/s" "$IMAGE" -f /s/curator-session.key
+for path in /curation/login /api/health; do
+  code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$CURATOR_URL$path") || fail "GET $path without the session secret failed."
+  [ "$code" = 503 ] || fail "GET $path from curator without the session secret returned $code, expected 503."
+done
+code=$(login "$SMOKE_PASSPHRASE") || fail "POST /api/curation/login without the session secret failed."
+[ "$code" = 503 ] || fail "The passphrase without the session secret got $code, expected 503."
+unset SMOKE_PASSPHRASE
 compose rm --stop --force curator
-echo "web 404s the curator paths, and curator served /curation on 127.0.0.1:3001 with its headers and refused another Host, on a public path too, and an Origin-less POST."
+echo "web 404s the curator paths, and curator sent /curation to its login, served the login with its headers, refused another Host, an Origin-less POST and a sessionless handler, signed in only with the passphrase, ended the session at logout, and answered 503 without its session secret."
 
 # 6. The startup scan writes all seven derivatives for every fixture, and the
 #    watcher stays up.

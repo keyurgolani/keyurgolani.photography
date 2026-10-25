@@ -68,9 +68,10 @@ export default defineConfig({
     },
     {
       // WebKit targets the click after a tap differently from Chromium, so Home's first-tap rule runs on both.
+      // The curator's Secure cookie over http on loopback runs on both too, since browsers differ there.
       name: 'mobile-webkit',
       use: { ...devices['iPhone 13'] },
-      testMatch: /home-immersive\.spec\.ts/,
+      testMatch: /(?:home-immersive|curator-login)\.spec\.ts/,
     },
   ],
   webServer: [
