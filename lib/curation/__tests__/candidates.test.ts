@@ -92,7 +92,9 @@ describe('withCandidate', () => {
 
     it('moves the status only when the candidate state moves', () => {
         expect(withCandidate(event('open'), failed, AT)).toMatchObject({ status: 'failed', candidate: { state: 'failed', failure: 'build', at: AT } });
-        expect(withCandidate(event('deferred'), failed, AT)).toMatchObject({ status: 'failed' });
+        // Leave in draft sticks: a set that fails afterwards lands only in the candidate.
+        expect(withCandidate(event('deferred'), failed, AT)).toMatchObject({ status: 'deferred', candidate: { state: 'failed', failure: 'build', at: AT } });
+        expect(withCandidate(event('deferred', { ...failed, at: AT }), { ...failed, failure: 'integrity' }, AT)).toMatchObject({ status: 'deferred', candidate: { failure: 'integrity' } });
         expect(withCandidate(event('failed', { ...failed, at: AT }), ready, AT)).toMatchObject({ status: 'open', candidate: { state: 'ready' } });
         expect(withCandidate(event('deferred', { ...failed, at: AT }), ready, AT)).toMatchObject({ status: 'deferred', candidate: { state: 'ready' } });
         // A curator who deferred a failed item keeps it deferred while it stays failed.

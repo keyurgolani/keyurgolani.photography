@@ -245,6 +245,20 @@ describe('a replacement whose build fails', { timeout: 60_000 }, () => {
         expect(await w.event()).toMatchObject({ status: 'open', candidate: { state: 'ready' } });
     });
 
+    it('keeps an item left in draft while building deferred when its set fails, and show reports the failure', async () => {
+        const w = await world();
+        const building = await w.event();
+        const deferred = await deferEvent({ root: w.root, eventId: building.id, expectedVersion: building.version, expectedBase: w.revisionId, actor: ACTOR });
+        expect(deferred).toMatchObject({ ok: true, event: { status: 'deferred' } });
+        expect(await w.build(w.job(w.b), { afterVariant: (name) => { if (name === 'w400.webp') throw new Error('fault'); } })).toMatchObject({ status: 'failed' });
+        const event = await w.event();
+        expect(event).toMatchObject({ status: 'deferred', candidate: { state: 'failed', profileId: w.profileId, failure: 'build' } });
+        expect(event.decisions.map((decision) => decision.action)).toEqual(['defer']);
+        const shown = await runCurationCli(['show', event.id], { dataRoot: w.root }, { PHOTOS_ACTOR: ACTOR });
+        expect(shown.output).toContain(`deferred`);
+        expect(shown.output).toContain(`New derivative set: failed under ${w.profileId}: building it failed.`);
+    });
+
     it('keeps a failed item deferred once the curator leaves it in draft', async () => {
         const w = await world();
         await w.build(w.job(w.b), { beforeManifest: () => { throw new Error('fault'); } });
