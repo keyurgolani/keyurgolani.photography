@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { recordDirectorySyncs } from '../../../test/helpers/directorySyncs';
 import { importGraph } from '../../../test/helpers/importGraph';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
+import { MAX_VERSION_DIGITS } from '../../storage/document';
 import { withLock } from '../../storage/lock';
 import type { AuthoredPhoto, AuthoredSeries, ManagedField } from '../types';
 import { authoredPaths, catalogPaths, readActivePointer, readAuthoredRecord, readWorkingLayer } from '../working-layer';
@@ -391,6 +392,16 @@ describe('writeAuthoredRecord', () => {
         const error = await rejection(writeAuthoredRecord(photo(PHOTO_A, { title: 'Fixture title' }), { expectedVersion: 1, root: data.root }));
         expect(error).toMatchObject({ code: 'INVALID_RECORD', message: expect.stringContaining(upper) });
         expect(error.message).not.toContain('photo-target');
+    });
+
+    it('refuses to write past the highest version as INVALID_RECORD, with no path in the message', async () => {
+        const data = dataRoot();
+        const longest = Number('9'.repeat(MAX_VERSION_DIGITS));
+        writeVersion(path.join(authoredPaths(data.root).photosDir, PHOTO_A), longest, { schemaVersion: 1, version: longest, baseRevisionId: null, ...photo(PHOTO_A) });
+        expect(await readAuthoredRecord(data.root, 'photo', PHOTO_A)).toMatchObject({ version: longest });
+        const error = await rejection(writeAuthoredRecord(photo(PHOTO_A, { title: 'Fixture title' }), { expectedVersion: longest, root: data.root }));
+        expect(error).toMatchObject({ code: 'INVALID_RECORD', message: expect.stringContaining(`at version ${longest}, the highest a version can be`) });
+        expect(error.message).not.toContain(data.root);
     });
 
     it('tells a stored record from a newer build apart from one to fix by hand', async () => {

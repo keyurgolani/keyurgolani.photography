@@ -5,6 +5,7 @@ import {
     EditedInPlaceError,
     readVersionedDocument,
     StaleVersionError,
+    VersionLimitError,
     writeVersionedDocument,
     type StoredVersion,
     type VersionedWriteHooks,
@@ -147,6 +148,9 @@ async function commit(
     try {
         return await writeVersionedDocument(dir, parsed.value, expectedVersion, { hooks });
     } catch (error) {
+        if (error instanceof VersionLimitError) {
+            throw new AuthoredWriteError('INVALID_RECORD', ref, `The stored ${ref.kind} record ${ref.id} is at version ${error.version}, the highest a version can be. Fix it by hand first.`);
+        }
         if (!(error instanceof StaleVersionError)) throw error;
         throw new AuthoredWriteError('VERSION_CONFLICT', ref, `The ${ref.kind} record ${ref.id} is at version ${error.found}, not ${expectedVersion}.`, { expectedVersion, foundVersion: error.found });
     }
