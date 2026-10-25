@@ -51,6 +51,12 @@ export interface IdentityStepOptions {
     createWorker?: (options: WorkerOptions) => DerivativeWorker;
     /** Where committed facts go. Defaults to one JSON log line per fact. */
     sinks?: FactSink[];
+    /**
+     * Keep what each build did until the caller takes it, as `--once` does.
+     * Otherwise each pass drops the results, so a watcher that runs for
+     * months doesn't keep one per build.
+     */
+    keepResults?: boolean;
 }
 
 export interface IdentityStep {
@@ -62,6 +68,8 @@ export interface IdentityStep {
     readonly worker: DerivativeWorker | null;
     /** Why the worker can never start here, such as staging on another device. */
     readonly workerError: string | null;
+    /** Why the last try to start the worker failed, when a later pass may still start it. Null once it starts. */
+    readonly startError: string | null;
     /** Start nothing new. A pass or build under way finishes. */
     stop(): void;
     /** Resolves once no pass is running or waiting and the worker is idle. */
@@ -88,6 +96,9 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
     let worker: DerivativeWorker | null = null;
     let started = false;
     let workerError: string | null = null;
+    let startError: string | null = null;
+    // Decision files the last committed pass deferred. The check doesn't ask for a pass for them alone.
+    let deferredDecisions = new Set<string>();
     let stateSeen: string | null = null;
     let heartbeatWarned = false;
     let lastPassAt: string | null = null;
@@ -128,6 +139,7 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
             const start = await worker.start();
             if (start.started) {
                 started = true;
+                startError = null;
                 return start.queued;
             }
             if (start.reason === 'locked') {
@@ -139,7 +151,8 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
                 workerError = error.message;
                 logger.error(`[identity] ${error.message}`);
             } else {
-                logger.error(`[identity] The worker could not start, so the next pass tries again: ${errorText(error)}`);
+                startError = errorText(error);
+                logger.error(`[identity] The worker could not start, so the next pass tries again: ${startError}`);
             }
         }
         return 0;
@@ -170,6 +183,8 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
         }
 
         lastPassResult = 'committed';
+        deferredDecisions = new Set(outcome.decisions.filter((decision) => decision.status === 'deferred').map((decision) => decision.name));
+        if (!options.keepResults) worker?.takeResults();
         const queued = await feedWorker();
         if (outcome.facts.length > 0 || queued > 0) {
             logger.log(`[identity] Pass (${reason}) committed ${count(outcome.facts.length, 'fact')} and queued ${count(queued, 'set')} to build.`);
@@ -214,7 +229,9 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
     /** Work another process left for the watcher: a decision, facts no sink has had, or pending sets the worker hasn't queued. */
     async function waitingWork(root: string): Promise<PassReason | null> {
         try {
-            if ((await readPendingDecisions(root)).length > 0) return 'decisions';
+            // A decision the last pass deferred waits for what it waits on: a file to settle, which that pass
+            // already asked another pass for, or a folder to become readable, which the 10-minute pass checks.
+            if ((await readPendingDecisions(root)).some((file) => !deferredDecisions.has(file.name))) return 'decisions';
             const registry = await readRegistry(root);
             if (registry.pendingFacts.length > 0) return 'facts';
             // A worker that can never start would make this ask every 30 s for nothing.
@@ -246,6 +263,10 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
 
         get workerError() {
             return workerError;
+        },
+
+        get startError() {
+            return startError;
         },
 
         stop() {
@@ -379,7 +400,7 @@ export const ONCE_MAX_PASSES = 5;
  * `--once`: a pass, the builds it queued, and another pass while a file is
  * still settling or a build asks for one, up to `maxPasses`. Returns 1 when a
  * build failed for any reason but `source-superseded`, when the registry
- * stayed busy, when the worker can't start, or when files were still
+ * stayed busy, when the worker didn't start for any reason, or when files were still
  * changing after the last pass. A data root that isn't ready gives 0, after
  * one log line, so the legacy step alone decides the exit code.
  */
@@ -388,6 +409,7 @@ export async function runIdentityOnce(options: IdentityOnceOptions = {}): Promis
     let wanted: number | null = null;
     const step = createIdentityStep({
         ...options,
+        keepResults: true,
         logger,
         requestPass: (reason, delayMs = 0) => {
             wanted = wanted === null ? delayMs : Math.min(wanted, delayMs);
@@ -402,7 +424,12 @@ export async function runIdentityOnce(options: IdentityOnceOptions = {}): Promis
         }
         const superseded = summary.superseded > 0 ? `, ${summary.superseded} superseded` : '';
         logger.log(`[identity] Done: ${summary.built} built, ${summary.kept} kept, ${summary.failed.length} failed${superseded}.`);
-        return step.workerError === null ? onceExitCode(results) : 1;
+        if (step.workerError !== null) return 1;
+        if (step.startError !== null) {
+            logger.error('[identity] The worker never started, so no set was built. Run it again.');
+            return 1;
+        }
+        return onceExitCode(results);
     }
 
     try {

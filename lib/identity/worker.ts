@@ -52,7 +52,7 @@ export interface WorkerOptions {
 
 export interface WorkerResult {
     job: DerivativeJob;
-    /** A build that threw is `failed` here, and its entry stays pending in the registry. */
+    /** A build that threw is `failed` here, and its entry stays pending in the registry. A failure keeps its error text, not its cause. */
     outcome: BuildOutcome;
 }
 
@@ -179,7 +179,8 @@ export function createWorker(options: WorkerOptions = {}): DerivativeWorker {
             logger.error(`[derivatives] Building ${describe(job)} failed before it was recorded, so it stays pending: ${errorText(error)}`);
             outcome = { status: 'failed', error: errorText(error) };
         }
-        results.push({ job, outcome });
+        // Only the error text: a failure's cause can hold as much memory as the source it read.
+        results.push({ job, outcome: outcome.status === 'failed' ? { status: 'failed', error: outcome.error } : outcome });
         if (outcome.status === 'ready') {
             logger.log(`[derivatives] ${outcome.reused ? 'Kept the set already in place for' : 'Built'} ${describe(job)}`);
         } else if (outcome.status === 'pending') {
