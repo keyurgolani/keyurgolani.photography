@@ -43,7 +43,7 @@
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import chokidar from 'chokidar';
-import { createCandidateSink, settlingAfterBuild } from '../lib/curation/candidates';
+import { createCandidateSink, owedSettles, settlingAfterBuild } from '../lib/curation/candidates';
 import { createCurationSink } from '../lib/curation/sink';
 import { buildDerivativeSet } from '../lib/identity/derivatives';
 import { jsonLogSink } from '../lib/identity/pass';
@@ -105,18 +105,21 @@ function requireLibraryRoot(): string {
     return root;
 }
 
+/** The replacement items a build couldn't settle yet, which the candidate sink settles on its next delivery. One per process. */
+const owed = owedSettles();
+
 /**
  * Where the identity step's facts go: the log, the curation inbox, which
  * opens a draft item for each, then #17's candidate sink, which records on
  * each replacement item whether its new set is ready or failed.
  */
 function factSinks() {
-    return [jsonLogSink(), createCurationSink(), createCandidateSink()];
+    return [jsonLogSink(), createCurationSink(), createCandidateSink({ owed })];
 }
 
-/** The derivative worker's builds, each followed by recording its set on the revision's replacement item. */
+/** The derivative worker's builds, each followed by recording its set on the revision's replacement item, or owing that to the candidate sink. */
 function workerBuilds() {
-    return { build: settlingAfterBuild(buildDerivativeSet) };
+    return { build: settlingAfterBuild(buildDerivativeSet, { owed }) };
 }
 
 /** A file the identity scan reads, or any folder, since a moved folder moves the photos in it. */
