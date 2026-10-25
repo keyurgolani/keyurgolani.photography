@@ -344,6 +344,27 @@ describe('CatalogHome', () => {
       expect(position()).toBe('03 / 04');
     });
 
+    it('a mouse resting on the slideshow controls holds the sequence while the chrome shows them', async () => {
+      await renderHome();
+      load(3);
+      // A real mouse move over Home, which is what reveals the chrome.
+      act(() => {
+        for (const clientX of [0, 1]) {
+          main().dispatchEvent(new PointerEvent('pointermove', { pointerType: 'mouse', isPrimary: true, clientX, clientY: 200, movementX: 1, bubbles: true }));
+        }
+      });
+      expect(main()).toHaveAttribute('data-interface-state', 'interactive');
+      expect(playback()).toBe('advancing');
+
+      const group = screen.getByRole('group', { name: 'Slideshow' });
+      fireEvent.pointerEnter(group, { pointerType: 'mouse' });
+      expect(playback()).toBe('held');
+      advance(HOME_AUTO_ADVANCE_MS / 4);
+      expect(position()).toBe('03 / 04');
+      fireEvent.pointerLeave(group, { pointerType: 'mouse' });
+      expect(playback()).toBe('advancing');
+    });
+
     it('never reads the legacy photo list or /api/photos', async () => {
       const fetch = vi.spyOn(globalThis, 'fetch');
       const cache = await import('@/utils/homeHeroCache');
