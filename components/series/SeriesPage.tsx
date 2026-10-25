@@ -3,6 +3,7 @@ import { photoImageAlt } from '@/lib/a11y/photoName';
 import type { PublishedSeriesPage, SeriesFacts } from '@/lib/catalog/projections/series';
 import SeriesPhoto from './SeriesPhoto';
 import SeriesSequence from './SeriesSequence';
+import { coverSizes } from './seriesCopy';
 import { altOf, capturedSource, yearsLabel } from './seriesLabels';
 import styles from './SeriesPage.module.css';
 
@@ -11,9 +12,6 @@ export { ENTRY_SIZES, SEQUENCE_HEADING } from './seriesCopy';
 export interface SeriesPageProps {
     page: PublishedSeriesPage;
 }
-
-/** The cover fills the content column, the viewport less its gutters. */
-export const COVER_SIZES = '100vw';
 
 /** Interface copy for the derived facts, apart from the authored text. */
 export const FACTS_HEADING = 'From the published photographs';
@@ -94,7 +92,7 @@ export default function SeriesPage({ page }: SeriesPageProps) {
                         <SeriesPhoto
                             image={cover.image}
                             alt={photoImageAlt({ alt: altOf(cover.description), position: cover.position, total })}
-                            sizes={COVER_SIZES}
+                            sizes={coverSizes(cover.image)}
                             priority
                             focalPoint={cover.focalPoint}
                             crop={cover.crop}

@@ -41,6 +41,10 @@ describe('SeriesPhoto', () => {
         const img = container.querySelector('img') as HTMLImageElement;
         expect(img.getAttribute('loading')).toBe('eager');
         expect(img.getAttribute('fetchpriority')).toBe('high');
+        // The cover is preloaded from the head with its own srcset (#6).
+        expect(document.head.querySelector('link[rel="preload"][as="image"]')?.getAttribute('imagesrcset')).toBe(
+            container.querySelector('source[type="image/avif"]')?.getAttribute('srcset'),
+        );
         expect(img.style.backgroundImage).toBe(`url("${LQIP}")`);
         const frame = container.firstElementChild as HTMLElement;
         expect(frame.style.aspectRatio).toBe('1800 / 1200');

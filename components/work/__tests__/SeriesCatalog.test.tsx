@@ -172,6 +172,19 @@ describe('WorkCoverImage', () => {
         expect(container.querySelector('img')).toHaveAttribute('loading', 'eager');
     });
 
+    it('preloads only the first cover, at high priority, with the srcset and sizes its <picture> has (#6)', () => {
+        const preloadOf = (n: number) =>
+            [...document.head.querySelectorAll('link[rel="preload"][as="image"]')].filter((link) => link.getAttribute('imagesrcset')?.includes(REF(n).photoId));
+        const lazy = render(<WorkCoverImage cover={cover(6)} />).container;
+        expect(lazy.querySelector('img')?.hasAttribute('fetchpriority')).toBe(false);
+        expect(preloadOf(6)).toHaveLength(0);
+        const eager = render(<WorkCoverImage cover={cover(7)} eager />).container;
+        expect(eager.querySelector('img')).toHaveAttribute('fetchpriority', 'high');
+        const [link] = preloadOf(7);
+        expect(link.getAttribute('imagesrcset')).toBe(eager.querySelector('source[type="image/avif"]')?.getAttribute('srcset'));
+        expect(link.getAttribute('imagesizes')).toBe(COVER_SIZES);
+    });
+
     it('swaps in the text fallback when the image fails, never leaving a broken image', () => {
         const { container } = render(<WorkCoverImage cover={cover(4)} />);
         const image = container.querySelector('img') as HTMLImageElement;

@@ -9,7 +9,7 @@ import styles from './SeriesCatalog.module.css';
 export interface WorkCoverImageProps {
     /** The projection's cover, or null when it can't be shown. */
     cover: WorkCover | null;
-    /** Load at once instead of lazily. */
+    /** The first cover: load at once at high priority, preloaded from the head, instead of lazily. */
     eager?: boolean;
 }
 
@@ -53,6 +53,8 @@ export default function WorkCoverImage({ cover, eager = false }: WorkCoverImageP
                 alt=""
                 sizes={COVER_SIZES}
                 loading={eager ? 'eager' : 'lazy'}
+                fetchPriority={eager ? 'high' : undefined}
+                preload={eager}
                 onError={() => setFailed(true)}
                 className={styles.cover}
             />
