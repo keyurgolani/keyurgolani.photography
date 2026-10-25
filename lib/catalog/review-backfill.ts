@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { atomicCreateJson } from '../storage/atomicWrite';
 import { ensureDirectory, hasErrorCode } from '../storage/fsx';
-import { backfillKey, hashValue, STAMPED_FIELDS, type BackfilledRecord, type ReviewBackfill } from './review';
+import { backfillKey, coverAssetOf, hashValue, STAMPED_FIELDS, type BackfilledRecord, type ReviewBackfill } from './review';
 import { authoredPaths, readWorkingLayer } from './working-layer';
 
 export type { ReviewBackfill } from './review';
@@ -32,11 +32,17 @@ export const reviewBackfillPath = (root: string) => path.join(/*turbopackIgnore:
 
 const HEX_64 = /^[0-9a-f]{64}$/;
 
+const REVISION = /^rev_[0-9a-f]{64}$/;
+const ASSET = /^sha256-[0-9a-f]{64}$/;
+
 function isRecordEntry(entry: unknown): boolean {
-    const value = entry as { version?: unknown; fields?: unknown } | null;
+    const value = entry as { version?: unknown; fields?: unknown; baseRevisionId?: unknown; assetRevision?: unknown; coverAsset?: unknown } | null;
     return typeof value === 'object' && value !== null && Number.isInteger(value.version) && (value.version as number) > 0
         && typeof value.fields === 'object' && value.fields !== null && !Array.isArray(value.fields)
-        && Object.values(value.fields).every((hash) => typeof hash === 'string' && HEX_64.test(hash));
+        && Object.values(value.fields).every((hash) => typeof hash === 'string' && HEX_64.test(hash))
+        && (value.baseRevisionId === null || (typeof value.baseRevisionId === 'string' && REVISION.test(value.baseRevisionId)))
+        && (value.assetRevision === undefined || (typeof value.assetRevision === 'string' && ASSET.test(value.assetRevision)))
+        && (value.coverAsset === undefined || (typeof value.coverAsset === 'string' && ASSET.test(value.coverAsset)));
 }
 
 function parse(text: string): ReviewBackfill {
@@ -85,7 +91,14 @@ export async function ensureReviewBackfill(root: string, clock: () => number = D
     for (const record of [layer.site, ...layer.series, ...layer.photos]) {
         if (record === null || record.review !== undefined) continue;
         const fields = Object.fromEntries(STAMPED_FIELDS[record.kind].map((field) => [field, hashValue((record as unknown as Record<string, unknown>)[field])]));
-        records[backfillKey(record)] = { version: record.version, fields };
+        const cover = coverAssetOf(layer, record);
+        records[backfillKey(record)] = {
+            version: record.version,
+            fields,
+            baseRevisionId: record.baseRevisionId,
+            ...(record.kind === 'photo' ? { assetRevision: record.assetRevision } : {}),
+            ...(cover ? { coverAsset: cover } : {}),
+        };
     }
     const marker: ReviewBackfill = { schemaVersion: 1, backfilledAt: new Date(clock()).toISOString(), records };
     await ensureDirectory(authoredPaths(root).dir);
