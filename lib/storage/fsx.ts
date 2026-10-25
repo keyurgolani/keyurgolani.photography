@@ -97,3 +97,20 @@ export function isInside(child: string, parent: string): boolean {
     const relative = path.relative(parent, child);
     return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
+
+// An absolute path, as Node's errors quote one, that isn't part of a relative path or a URL
+const ABSOLUTE_PATH = /(?<![\w.~:/-])\/[^\s'"`,;()]+/g;
+
+/**
+ * Error text with no absolute path left in it, for a reason a document stores
+ * or a status command prints, so neither shows where the library or the data
+ * root lives on the host. A path inside one of `roots` becomes relative to
+ * it, and any other absolute path becomes its base name.
+ */
+export function withoutAbsolutePaths(text: string, roots: readonly (string | null)[]): string {
+    const prefixes = [...new Set(roots.flatMap((root) => (root === null ? [] : [path.resolve(root), realpathLoose(root)])))]
+        .sort((a, b) => b.length - a.length);
+    let result = text;
+    for (const prefix of prefixes) result = result.split(`${prefix}${path.sep}`).join('');
+    return result.replace(ABSOLUTE_PATH, (match) => path.posix.basename(match) || match);
+}

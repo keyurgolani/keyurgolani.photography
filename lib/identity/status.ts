@@ -1,5 +1,6 @@
-import { dataRootStatus, type DataRootStatus } from '../storage/config';
+import { dataRootStatus, libraryRoot, type DataRootStatus } from '../storage/config';
 import { readJsonFile } from '../storage/document';
+import { withoutAbsolutePaths } from '../storage/fsx';
 import { watcherStatusFile } from './heartbeat';
 import { readRegistry } from './registry';
 import type { Hold, SourceHealth } from './types';
@@ -42,6 +43,8 @@ export async function identityStatus({ clock = Date.now }: { clock?: () => numbe
     };
     if (dataRoot.root === null || (dataRoot.state === 'unavailable' && dataRoot.cause !== 'inside-served-folder')) return status;
 
+    // A reason recorded before builds left paths out may still name where the library or the data root lives.
+    const roots = [libraryRoot(), dataRoot.root];
     try {
         const registry = await readRegistry(dataRoot.root);
         status.registry = { version: registry.version, updatedAt: registry.updatedAt };
@@ -55,7 +58,7 @@ export async function identityStatus({ clock = Date.now }: { clock?: () => numbe
                 for (const [profileId, profile] of Object.entries(revision.profiles)) {
                     if (profile.state === 'pending') status.pendingJobs++;
                     if (profile.state === 'failed') {
-                        status.failedProfiles.push({ photoId: photo.photoId, assetRevision: revision.assetRevision, profileId, ...(profile.error ? { error: profile.error } : {}) });
+                        status.failedProfiles.push({ photoId: photo.photoId, assetRevision: revision.assetRevision, profileId, ...(profile.error ? { error: withoutAbsolutePaths(profile.error, roots) } : {}) });
                     }
                 }
             }

@@ -4,7 +4,7 @@ import path from 'node:path';
 import sharp, { type Metadata } from 'sharp';
 import { assetDir } from '../media/path';
 import { dataRootStatus, libraryRoot } from '../storage/config';
-import { hasErrorCode, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE } from '../storage/fsx';
+import { hasErrorCode, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, withoutAbsolutePaths } from '../storage/fsx';
 import { LockTimeoutError, withLock } from '../storage/lock';
 import { IntegrityError, MANIFEST_FILE, manifestFiles, publishDirectory, readDirectoryManifest, verifyDirectory, type DirectoryManifest } from '../storage/publish';
 import { assetRevisionOf, sha256, type Hasher } from './ids';
@@ -221,7 +221,10 @@ export async function buildDerivativeSet(job: DerivativeJob, options: BuildOptio
         }
         return { status: 'ready', reused };
     };
-    const recordFailed = async (error: string, cause?: unknown, still?: (current: Registry) => boolean): Promise<BuildOutcome> => {
+    const library = options.library ?? libraryRoot();
+    // The reason goes into the registry and `photos identity status`, so it names files relative to the library or the data root, never where they live on the host.
+    const recordFailed = async (reason: string, cause?: unknown, still?: (current: Registry) => boolean): Promise<BuildOutcome> => {
+        const error = withoutAbsolutePaths(reason, [library, root]);
         try {
             if (!await record(root, job, (current) => ({ state: 'failed', attempts: current.attempts + 1, error }), options, still)) {
                 return { status: 'pending', reason: 'source-changing' };
@@ -253,7 +256,7 @@ export async function buildDerivativeSet(job: DerivativeJob, options: BuildOptio
     }
     let source: Buffer;
     try {
-        source = await fs.promises.readFile(path.join(options.library ?? libraryRoot(), photo.source.path));
+        source = await fs.promises.readFile(path.join(library, photo.source.path));
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return { status: 'pending', reason: 'source-changing' };
         return recordFailed(`source unreadable: ${errorText(error)}`, error);
