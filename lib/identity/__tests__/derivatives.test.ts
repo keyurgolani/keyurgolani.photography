@@ -8,6 +8,7 @@ import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tem
 import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempLibrary';
 import { resolveAsset } from '../../media/manifest';
 import { assetDir, mediaFilePath } from '../../media/path';
+import { withLock } from '../../storage/lock';
 import { IntegrityError } from '../../storage/publish';
 import { buildDerivativeSet, removeAbandonedStaging, stagingLockName, stagingRoot, type BuildOptions, type WriterFaults } from '../derivatives';
 import { runReconcilePass, type PassOptions } from '../pass';
@@ -382,6 +383,27 @@ describe('buildDerivativeSet', () => {
         await s.pass();
         expect(await s.build(job)).toEqual({ status: 'failed', error: 'source-superseded' });
         expect(profileOf(await readRegistry(s.data.root), job)).toMatchObject({ state: 'failed', error: 'source-superseded' });
+    });
+
+    it('stays pending when a revert brings the revision back while it waits for the registry', async () => {
+        const s = await setup();
+        const job = await s.job('landscape.jpg');
+        fs.writeFileSync(s.lib.file('landscape.jpg'), edited);
+        await s.pass();
+
+        const outcome = await withLock('registry', { root: s.data.root }, async () => {
+            // The build reads the registry without the lock, finds another revision current, and waits to record that.
+            const building = s.build(job);
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            // Meanwhile a pass commits the revert.
+            const registry = await readRegistry(s.data.root);
+            registry.photos[job.photoId].source.observedRevision = job.assetRevision;
+            await writeRegistry(s.data.root, registry, registry.version);
+            return { building };
+        }).then(({ building }) => building);
+
+        expect(outcome).toEqual({ status: 'pending', reason: 'source-changing' });
+        expect(profileOf(await readRegistry(s.data.root), job)).toEqual({ state: 'pending', attempts: 0 });
     });
 
     it('waits, changing nothing, while the source is missing', async () => {
