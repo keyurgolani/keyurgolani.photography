@@ -8,14 +8,20 @@ import {
     isCurationEnabled,
     isCuratorPath,
     listenTarget,
+    type BindProbe,
     type CuratorEnv,
     type CuratorRequest,
 } from '../policy';
 
 /** argv for the standalone server.js, which listens on HOSTNAME. */
 const SERVER_JS = ['/usr/local/bin/node', '/app/server.js'];
-const notContainer = () => false;
-const container = () => true;
+/** What the checks see of the process. No socket list, so the settings decide, as before the server listens. */
+const notContainer: BindProbe = { containerized: () => false, sockets: () => null, interfaces: () => 1 };
+const container: BindProbe = { containerized: () => true, sockets: () => null, interfaces: () => 1 };
+/** argv of the child process `next dev` forks, which gets --hostname over IPC, not in argv or HOSTNAME. */
+const DEV_CHILD = ['/usr/local/bin/node', '/repo/node_modules/next/dist/server/lib/start-server.js'];
+const DEV_ENV = { __NEXT_DEV_SERVER: '1', NEXT_PRIVATE_WORKER: '1' };
+const listening = (...addresses: string[]): BindProbe => ({ containerized: () => false, sockets: () => addresses, interfaces: () => 1 });
 
 const ON: CuratorEnv = { CURATION_ENABLED: 'true', HOSTNAME: '127.0.0.1' };
 
@@ -23,8 +29,8 @@ function request(overrides: Partial<CuratorRequest> = {}): CuratorRequest {
     return { host: '127.0.0.1:3001', origin: null, forwardedHost: null, mutation: false, ...overrides };
 }
 
-const evaluate = (overrides: Partial<CuratorRequest>, env: CuratorEnv = ON, containerized = notContainer) =>
-    evaluateCuratorRequest(request(overrides), env, SERVER_JS, containerized);
+const evaluate = (overrides: Partial<CuratorRequest>, env: CuratorEnv = ON, probe: BindProbe = notContainer) =>
+    evaluateCuratorRequest(request(overrides), env, SERVER_JS, probe);
 
 describe('CURATION_ENABLED', () => {
     it.each([undefined, '', 'false', 'TRUE', 'True', '1', 'yes', ' true', 'true ', 'on'])('is off for %j', (value) => {
@@ -164,6 +170,47 @@ describe('the bind rule', () => {
     it('refuses every request with 503 while the bind is wrong, so the time before the process exits is covered', () => {
         expect(evaluate({}, { CURATION_ENABLED: 'true', HOSTNAME: '0.0.0.0' })).toEqual({ status: 503, reason: 'misconfigured' });
         expect(evaluate({}, { CURATION_ENABLED: 'true' })).toEqual({ status: 503, reason: 'misconfigured' });
+    });
+});
+
+describe('the socket the server listens on', () => {
+    it.each([
+        ['every IPv4 interface, with HOSTNAME on loopback', { HOSTNAME: '127.0.0.1' }, '0.0.0.0'],
+        ['every interface, with HOSTNAME on localhost', { HOSTNAME: 'localhost' }, '::'],
+        ['every interface, with no HOSTNAME', {}, '::'],
+        ['a LAN address, with HOSTNAME on loopback', { HOSTNAME: '127.0.0.1' }, '192.168.1.20'],
+    ])('refuses a next dev server listening on %s', (_, env, address) => {
+        // The message names no address.
+        expect(bindProblem({ ...DEV_ENV, ...env }, DEV_CHILD, listening(address))).toBe('the server listens on an address other than 127.0.0.1, ::1 or localhost');
+    });
+
+    it('refuses a next dev server whose socket it cannot read, rather than trusting HOSTNAME', () => {
+        expect(bindProblem({ ...DEV_ENV, HOSTNAME: '127.0.0.1' }, DEV_CHILD, notContainer)).toContain("can't be read");
+        expect(bindProblem({ ...DEV_ENV, HOSTNAME: '127.0.0.1' }, DEV_CHILD, listening())).toContain("can't be read");
+    });
+
+    it.each(['127.0.0.1', '::1', '::ffff:127.0.0.1'])('takes a next dev server listening on %s, with or without HOSTNAME', (address) => {
+        expect(bindProblem(DEV_ENV, DEV_CHILD, listening(address))).toBeNull();
+        expect(bindProblem({ ...DEV_ENV, HOSTNAME: '0.0.0.0' }, DEV_CHILD, listening(address))).toBeNull();
+    });
+
+    it('refuses server.js on a socket beyond loopback, whatever HOSTNAME says', () => {
+        expect(bindProblem({ HOSTNAME: '127.0.0.1' }, SERVER_JS, listening('0.0.0.0'))).toContain('listens on an address other than');
+        expect(bindProblem({ HOSTNAME: '127.0.0.1' }, SERVER_JS, listening('127.0.0.1', '0.0.0.0'))).toContain('listens on an address other than');
+        expect(bindProblem({ HOSTNAME: '127.0.0.1' }, SERVER_JS, listening('127.0.0.1'))).toBeNull();
+    });
+
+    it('still reads the settings once the socket checks out', () => {
+        expect(bindProblem({}, SERVER_JS, listening('127.0.0.1'))).toContain('HOSTNAME is unset');
+    });
+
+    it('takes the in-container wildcard socket, but not with more than one network interface, as under host networking', () => {
+        const env = { HOSTNAME: '0.0.0.0', CURATION_BIND_SCOPE: 'container' };
+        const inside = (interfaces: number): BindProbe => ({ containerized: () => true, sockets: () => ['0.0.0.0'], interfaces: () => interfaces });
+        expect(bindProblem(env, SERVER_JS, inside(1))).toBeNull();
+        expect(bindProblem(env, SERVER_JS, inside(2))).toContain('more than one network interface');
+        expect(bindProblem(env, SERVER_JS, { ...container, interfaces: () => 3 })).toContain('more than one network interface');
+        expect(bindProblem(env, SERVER_JS, { ...inside(1), containerized: () => false })).toContain("isn't in a container");
     });
 });
 
