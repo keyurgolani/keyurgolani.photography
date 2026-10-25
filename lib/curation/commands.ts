@@ -257,19 +257,33 @@ function printableLines(output: string): string {
 const STATUS_WIDTH = 8;
 const TYPE_WIDTH = 18;
 
-function listLine(event: CurationEvent, waiting: string | null = null, placed: string | null = null): string {
+function listLine(event: CurationEvent, waiting: string | null = null, placed: string | null = null, unplaced: string | null = null): string {
     const line = `${`${event.id}@${event.version}`.padEnd(32)}  ${event.type.padEnd(TYPE_WIDTH)}  ${event.status.padEnd(STATUS_WIDTH)}  ${shortPhotoId(event.photoId).padEnd(11)}  ${printable(event.derivedFacts.sourcePath)}`;
-    return `${line}${waiting === null ? '' : `  waiting: ${waiting}`}${placed === null ? '' : `  placed: ${placed}`}`;
+    return `${line}${waiting === null ? '' : `  waiting: ${waiting}`}${placed === null ? '' : `  placed: ${placed}`}${unplaced === null ? '' : `  unplaced: approved into ${unplaced}, but no series or the live revision holds its photo now`}`;
 }
 
-/** The default list leaves out items settled by placement; `--status` and `--all` go by the stored status. */
-function matches(filter: ListFilter, event: CurationEvent, placed: boolean): boolean {
+/**
+ * The default list leaves out items settled by placement and takes in
+ * approvals whose photo nothing holds now (unplacedApproval()); `--status`
+ * and `--all` go by the stored status.
+ */
+function matches(filter: ListFilter, event: CurationEvent, placed: boolean, unplaced: boolean): boolean {
     if (filter === 'all') return true;
-    if (filter === 'active') return !placed && (event.status === 'open' || event.status === 'failed' || event.status === 'deferred');
+    if (filter === 'active') return unplaced || (!placed && (event.status === 'open' || event.status === 'failed' || event.status === 'deferred'));
     return event.status === filter;
 }
 
-const unknownPlacementLine = (error: ReferenceScanError) => `Can't tell which new photographs are already placed, since ${error.file} can't be used (${error.reason}), so each one counts.`;
+const unknownPlacementLine = (error: ReferenceScanError) => `Can't tell which new photographs are placed, since ${error.file} can't be used (${error.reason}), so every item counts by its stored status: none reads as already placed or as no longer placed.`;
+
+/** What `show` prints for an approval whose photo nothing holds now: the two commands that put it back, ready to run. */
+function unplacedLines(event: CurationEvent, series: string, active: string | null): string[] {
+    const base = active ?? 'none';
+    return [
+        `No longer placed: it was approved into ${series}, but no series or the live revision holds its photo now. The photo record stays in the draft, unassigned. To put it back at the end of ${series}, run:`,
+        `  curation reopen ${event.id} --version ${event.version} --base ${base}`,
+        `  curation approve ${event.id} --version ${event.version + 1} --series ${series} --base ${base}`,
+    ];
+}
 
 const items = (n: number) => `${n} item${n === 1 ? '' : 's'}`;
 
@@ -282,26 +296,26 @@ async function list(root: string, command: Extract<CurationCommand, { command: '
     const registry = events.length > 0 ? await readRegistry(root).catch(() => null) : null;
     const profileId = currentProfileId();
     const waiting = new Map(events.map((event) => [event.id, waitingReason(event, registry, profileId)]));
-    const { placed, unknown } = await placedItems(root, events);
-    const shown = events.filter((event) => matches(command.filter, event, placed.has(event.id)));
+    const { placed, unplaced, unknown } = await placedItems(root, events);
+    const shown = events.filter((event) => matches(command.filter, event, placed.has(event.id), unplaced.has(event.id)));
     const judgment = events.filter((event) => needsJudgment(event, waiting.get(event.id) ?? null, placed.has(event.id))).length;
     const waitingCount = [...waiting.values()].filter((reason) => reason !== null).length;
     if (command.json) {
-        const summary = shown.map((event) => ({ id: event.id, version: event.version, type: event.type, status: event.status, photoId: event.photoId, sourcePath: event.derivedFacts.sourcePath, observedAt: event.observedAt, waiting: waiting.get(event.id) ?? null, placed: placed.get(event.id) ?? null }));
-        return { exitCode: problems.length > 0 ? 4 : 0, output: `${JSON.stringify({ needsJudgment: judgment, waiting: waitingCount, placed: placed.size, total: events.length, events: summary, problems }, null, 2)}\n` };
+        const summary = shown.map((event) => ({ id: event.id, version: event.version, type: event.type, status: event.status, photoId: event.photoId, sourcePath: event.derivedFacts.sourcePath, observedAt: event.observedAt, waiting: waiting.get(event.id) ?? null, placed: placed.get(event.id) ?? null, unplaced: unplaced.get(event.id) ?? null }));
+        return { exitCode: problems.length > 0 ? 4 : 0, output: `${JSON.stringify({ needsJudgment: judgment, waiting: waitingCount, placed: placed.size, unplaced: unplaced.size, total: events.length, events: summary, problems }, null, 2)}\n` };
     }
     const lines: string[] = [];
     if (events.length === 0 && problems.length === 0) {
         lines.push('Curation inbox: empty. Nothing requires judgment.');
     } else {
-        lines.push(`Curation inbox: ${items(judgment)} ${judgment === 1 ? 'requires' : 'require'} judgment${waitingCount > 0 ? `, ${waitingCount} waiting` : ''}${placed.size > 0 ? `, ${placed.size} already placed` : ''}, ${events.length} in all.`);
+        lines.push(`Curation inbox: ${items(judgment)} ${judgment === 1 ? 'requires' : 'require'} judgment${waitingCount > 0 ? `, ${waitingCount} waiting` : ''}${placed.size > 0 ? `, ${placed.size} already placed` : ''}${unplaced.size > 0 ? `, ${unplaced.size} approved but no longer placed` : ''}, ${events.length} in all.`);
         if (unknown !== null) lines.push(unknownPlacementLine(unknown));
         if (shown.length === 0) {
             lines.push(command.filter === 'active' && placed.size > 0
                 ? `Nothing matches open, failed, or deferred but the ${items(placed.size)} already placed. --all lists them.`
                 : `Nothing matches ${command.filter === 'active' ? 'open, failed, or deferred' : command.filter}.`);
         }
-        for (const event of shown) lines.push(listLine(event, waiting.get(event.id) ?? null, placed.get(event.id) ?? null));
+        for (const event of shown) lines.push(listLine(event, waiting.get(event.id) ?? null, placed.get(event.id) ?? null, unplaced.get(event.id) ?? null));
     }
     for (const problem of problems) lines.push(problemLine(problem));
     return { exitCode: problems.length > 0 ? 4 : 0, output: `${lines.join('\n')}\n` };
@@ -389,16 +403,17 @@ async function show(root: string, command: Extract<CurationCommand, { command: '
     if (event === null) return { exitCode: 1, output: `Error (not-found): There is no event ${command.eventId}.\n` };
     const active = (await readActivePointer(root))?.revisionId ?? null;
     const registry = await readRegistry(root).catch(() => null);
-    const { placed, unknown } = await placedItems(root, [event]);
+    const { placed, unplaced, unknown } = await placedItems(root, [event]);
     if (command.json) {
         const placementUnknown = unknown === null ? null : { file: unknown.file, reason: unknown.reason };
-        return { exitCode: 0, output: `${JSON.stringify({ event, activeRevisionId: active, placed: placed.get(event.id) ?? null, placementUnknown }, null, 2)}\n` };
+        return { exitCode: 0, output: `${JSON.stringify({ event, activeRevisionId: active, placed: placed.get(event.id) ?? null, unplaced: unplaced.get(event.id) ?? null, placementUnknown }, null, 2)}\n` };
     }
     const lines = [
         `${event.id}, version ${event.version}: ${event.type}, ${event.status}`,
         ...identityLines(event, registry),
         ...((reason) => (reason === null ? [] : [`Waiting: ${reason}. Act on it once the set is ready.`]))(waitingReason(event, registry, currentProfileId())),
         ...((reason) => (reason === undefined ? [] : [`Already placed: ${reason}, so it needs no judgment while it stays there.`]))(placed.get(event.id)),
+        ...((series) => (series === undefined ? [] : unplacedLines(event, series, active)))(unplaced.get(event.id)),
         ...(unknown === null ? [] : [unknownPlacementLine(unknown)]),
         `Asset revision: ${event.assetRevision ?? 'none'}`,
         `Observed: ${event.observedAt}${event.lastObservedAt !== event.observedAt ? `, last ${event.lastObservedAt}` : ''}`,

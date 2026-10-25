@@ -12,7 +12,9 @@ import { STABILITY_MS } from '../../identity/reconcile';
  * The launch path as the owner runs it, migrate, the watcher's pass,
  * `draft:init`, `sequence set`, and publish, then what the inbox says: the
  * new items for photos `sequence set` placed need no judgment, and the one
- * photo left out still does.
+ * photo left out still does. Then the rehearsal's rollback: approve that
+ * photo, publish it, roll back, and the approval reads as no longer placed
+ * until it is reopened and approved again.
  */
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -26,12 +28,13 @@ const SERIES = 'ser_launch-inbox';
 interface Listed {
     needsJudgment: number;
     placed: number;
+    unplaced: number;
     total: number;
-    events: { id: string; type: string; status: string; photoId: string | null; sourcePath: string; placed: string | null }[];
+    events: { id: string; version: number; type: string; status: string; photoId: string | null; sourcePath: string; placed: string | null; unplaced: string | null }[];
 }
 
 describe('the inbox after the launch path', () => {
-    it('settles the new items for photos sequence set placed, and keeps the unplaced one open', { timeout: 300_000 }, async () => {
+    it('settles the new items for photos sequence set placed, keeps the unplaced one open, and marks an approval a rollback undid', { timeout: 300_000 }, async () => {
         const lib: TempLibrary = await createTempLibrary({ fixtures: 'basic' });
         cleanups.push(() => lib.cleanup());
         const data: TempDataRoot = createTempDataRoot({ state: 'uninitialized' });
@@ -97,5 +100,40 @@ describe('the inbox after the launch path', () => {
         expect(byPhoto.get(portrait)?.placed).not.toBeNull();
         expect(byPhoto.get(square)).toMatchObject({ type: 'new', status: 'open', placed: null });
         expect((await inbox()).events.map((event) => event.photoId)).toEqual([square]);
+
+        // The rehearsal's rollback: approve the third photo into the series, publish it as revision 2, and roll back to 1.
+        const item = byPhoto.get(square) as Listed['events'][number];
+        ok(await photos('curation', 'approve', item.id, '--version', String(item.version), '--series', SERIES, '--description', 'A purple fixture checkerboard.', '--base', candidate ?? ''));
+        const second = /PUBLISHED: Published (rev_[0-9a-f]{64}) as revision 2\./.exec(ok(await photos('publish', '--actor', 'launch-inbox')))?.[1];
+        expect(second).toBeDefined();
+        expect(await inbox()).toMatchObject({ needsJudgment: 0, placed: 2, unplaced: 0, events: [] });
+        ok(await photos('rollback', '--to', '1', '--reason', 'launch inbox test', '--actor', 'launch-inbox', '--yes', '--expect-active', second ?? ''));
+        const unlisted = JSON.parse(ok(await photos('list', '--unassigned', '--json'))) as { photoId: string }[];
+        expect(unlisted.map((row) => row.photoId)).toEqual([square]);
+
+        // Still approved, as stored, and the default list, --all, show, and the summary line all say its place in the series is gone.
+        const rolledBack = await inbox();
+        expect(rolledBack).toMatchObject({ needsJudgment: 0, placed: 2, unplaced: 1, total: 3 });
+        expect(rolledBack.events).toEqual([expect.objectContaining({ id: item.id, status: 'approved', unplaced: SERIES })]);
+        expect((await inbox('--all')).events.find((event) => event.id === item.id)).toMatchObject({ status: 'approved', unplaced: SERIES });
+        const summary = ok(await photos('curation', 'list'));
+        expect(summary).toMatch(/^Curation inbox: 0 items require judgment, 2 already placed, 1 approved but no longer placed, 3 in all\.\n/);
+        expect(summary).toContain(`  approved  ${square.slice(0, 11)}  square.webp  unplaced: approved into ${SERIES}, but no series or the live revision holds its photo now`);
+        const shown = ok(await photos('curation', 'show', item.id));
+        expect(shown).toContain(`No longer placed: it was approved into ${SERIES}, but no series or the live revision holds its photo now. The photo record stays in the draft, unassigned. To put it back at the end of ${SERIES}, run:\n`);
+
+        // The two commands show printed, run as printed: reopened, it needs judgment again; approved again, it is back in the series.
+        const advice = shown.split('\n').filter((line) => line.startsWith('  curation '));
+        expect(advice).toEqual([
+            expect.stringMatching(new RegExp(`^ {2}curation reopen ${item.id} --version \\d+ --base ${candidate}$`)),
+            expect.stringMatching(new RegExp(`^ {2}curation approve ${item.id} --version \\d+ --series ${SERIES} --base ${candidate}$`)),
+        ]);
+        const run = (line: string) => photos(...line.trim().split(' '));
+        expect(ok(await run(advice[0]))).toContain(`Reopened. No series in the draft holds its photo, so there is no draft placement to keep. Approve it with --series ${SERIES} to place it again, at the end.`);
+        expect(await inbox()).toMatchObject({ needsJudgment: 1, placed: 2, unplaced: 0 });
+        expect(ok(await run(advice[1]))).toContain(`Approved into ${SERIES} at the end, in the draft.`);
+        expect(await inbox()).toMatchObject({ needsJudgment: 0, placed: 2, unplaced: 0, events: [] });
+        expect(JSON.parse(ok(await photos('list', '--unassigned', '--json')))).toEqual([]);
+        expect(ok(await photos('curation', 'show', item.id))).not.toContain('No longer placed');
     });
 });
