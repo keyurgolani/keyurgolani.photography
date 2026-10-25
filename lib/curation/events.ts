@@ -242,6 +242,26 @@ export function settledByPlacement(event: Pick<CurationEvent, 'type' | 'status' 
 }
 
 /**
+ * The series an approved new photograph's item placed it in, when nothing
+ * holds the photo now (`holders`, from lib/curation/placement.ts's index),
+ * or null. A rollback rebases the working layer onto its target, so a
+ * series' photo list goes back to the target's, a placement the rolled-away
+ * revision published goes with it, and the item still reads `approved`. The
+ * photo record stays in the draft, unassigned. Nothing writes that to the
+ * item, so the rollback stays a pointer move and a rebase: list and show
+ * say it, and reopening the item and approving it with `--series` places
+ * the photo again. A `sequence remove` reads the same way. A series only
+ * the rolled-away revision published goes hidden and keeps its photos, so
+ * its approvals still have a holder and aren't flagged. Only the last
+ * approval counts: one that left the photo unassigned flags nothing.
+ */
+export function unplacedApproval(event: Pick<CurationEvent, 'type' | 'status' | 'photoId' | 'decisions'>, holders: readonly string[]): string | null {
+    if (event.type !== 'new' || event.status !== 'approved' || event.photoId === null || holders.length > 0) return null;
+    const approvals = event.decisions.filter((decision) => decision.action === 'approve');
+    return approvals[approvals.length - 1]?.seriesId ?? null;
+}
+
+/**
  * Whether an event still needs the curator's judgment. An item that is
  * waiting (waitingReason()) doesn't, yet, and neither does one settled by
  * placement (settledByPlacement(), through placedItems() in

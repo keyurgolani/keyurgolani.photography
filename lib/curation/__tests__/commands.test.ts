@@ -36,7 +36,7 @@ describe('curation list', () => {
     it('says the inbox is empty when it is', async () => {
         const f = await fixture();
         expect(await cli(f, 'list')).toEqual({ exitCode: 0, output: 'Curation inbox: empty. Nothing requires judgment.\n' });
-        expect(JSON.parse((await cli(f, 'list', '--json')).output)).toEqual({ needsJudgment: 0, waiting: 0, placed: 0, total: 0, events: [], problems: [] });
+        expect(JSON.parse((await cli(f, 'list', '--json')).output)).toEqual({ needsJudgment: 0, waiting: 0, placed: 0, unplaced: 0, total: 0, events: [], problems: [] });
     });
 
     it('counts what needs judgment and lists each item with its version, type, status, and short photo ID', async () => {
@@ -309,6 +309,26 @@ describe('a new photograph that is already placed', () => {
         const approved = await cli(f, 'approve', fresh?.id as string, '--version', '1', '--series', DRAFT, '--base', 'none');
         expect(approved).toMatchObject({ exitCode: 0, output: expect.stringContaining(`Approved into ${DRAFT}, where it kept its place`) });
         expect((await cli(f, 'list')).output).toMatch(/^Curation inbox: 2 items require judgment, 3 in all\./);
+    });
+
+    it('lists an approval whose photo nothing holds now, but not one left unassigned on purpose', async () => {
+        const f = await fixture();
+        await createCurationSink({ root: f.root, logger: quiet })([f.fact('new', f.fresh[0]), f.fact('new', f.fresh[1])]);
+        const { events } = await listEvents(f.root);
+        const [placedItem, loose] = [events.find((event) => event.photoId === f.fresh[0]), events.find((event) => event.photoId === f.fresh[1])];
+        expect(await cli(f, 'approve', placedItem?.id as string, '--version', '1', '--series', DRAFT, '--description', 'A harbor.')).toMatchObject({ exitCode: 0 });
+        expect(await cli(f, 'approve', loose?.id as string, '--version', '1', '--unassigned', '--description', 'A pier.')).toMatchObject({ exitCode: 0 });
+        expect((await cli(f, 'list')).output).toBe('Curation inbox: 0 items require judgment, 2 in all.\nNothing matches open, failed, or deferred.\n');
+
+        const before = folderBytes(path.join(f.root, 'curation'));
+        expect(await applySequenceOp({ dataRoot: f.root }, { kind: 'remove', seriesId: DRAFT, photoId: f.fresh[0] }, { expectedVersion: 2, actor: editor })).toMatchObject({ ok: true, changed: true });
+        const listed = (await cli(f, 'list')).output.trimEnd().split('\n');
+        expect(listed[0]).toBe('Curation inbox: 0 items require judgment, 1 approved but no longer placed, 2 in all.');
+        expect(listed.slice(1)).toEqual([expect.stringMatching(new RegExp(`^${placedItem?.id}@2 .* approved .*unplaced: approved into ${DRAFT}, but no series or the live revision holds its photo now$`))]);
+        expect(JSON.parse((await cli(f, 'list', '--json')).output)).toMatchObject({ needsJudgment: 0, unplaced: 1, events: [{ id: placedItem?.id, unplaced: DRAFT }] });
+        expect((await cli(f, 'show', placedItem?.id as string)).output).toContain(`No longer placed: it was approved into ${DRAFT}, but no series or the live revision holds its photo now, as after a rollback. To place it again, reopen it, then approve it.`);
+        expect((await cli(f, 'show', loose?.id as string)).output).not.toContain('No longer placed');
+        expect(folderBytes(path.join(f.root, 'curation'))).toEqual(before);
     });
 
     it('counts every item when the data root can\'t show what is placed, and says why', async () => {

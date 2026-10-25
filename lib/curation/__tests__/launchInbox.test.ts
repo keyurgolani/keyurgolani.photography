@@ -12,7 +12,9 @@ import { STABILITY_MS } from '../../identity/reconcile';
  * The launch path as the owner runs it, migrate, the watcher's pass,
  * `draft:init`, `sequence set`, and publish, then what the inbox says: the
  * new items for photos `sequence set` placed need no judgment, and the one
- * photo left out still does.
+ * photo left out still does. Then the rehearsal's rollback: approve that
+ * photo, publish it, roll back, and the approval reads as no longer placed
+ * until it is reopened and approved again.
  */
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -26,12 +28,13 @@ const SERIES = 'ser_launch-inbox';
 interface Listed {
     needsJudgment: number;
     placed: number;
+    unplaced: number;
     total: number;
-    events: { id: string; type: string; status: string; photoId: string | null; sourcePath: string; placed: string | null }[];
+    events: { id: string; version: number; type: string; status: string; photoId: string | null; sourcePath: string; placed: string | null; unplaced: string | null }[];
 }
 
 describe('the inbox after the launch path', () => {
-    it('settles the new items for photos sequence set placed, and keeps the unplaced one open', { timeout: 300_000 }, async () => {
+    it('settles the new items for photos sequence set placed, keeps the unplaced one open, and marks an approval a rollback undid', { timeout: 300_000 }, async () => {
         const lib: TempLibrary = await createTempLibrary({ fixtures: 'basic' });
         cleanups.push(() => lib.cleanup());
         const data: TempDataRoot = createTempDataRoot({ state: 'uninitialized' });
@@ -97,5 +100,34 @@ describe('the inbox after the launch path', () => {
         expect(byPhoto.get(portrait)?.placed).not.toBeNull();
         expect(byPhoto.get(square)).toMatchObject({ type: 'new', status: 'open', placed: null });
         expect((await inbox()).events.map((event) => event.photoId)).toEqual([square]);
+
+        // The rehearsal's rollback: approve the third photo into the series, publish it as revision 2, and roll back to 1.
+        const item = byPhoto.get(square) as Listed['events'][number];
+        ok(await photos('curation', 'approve', item.id, '--version', String(item.version), '--series', SERIES, '--description', 'A purple fixture checkerboard.', '--base', candidate ?? ''));
+        const second = /PUBLISHED: Published (rev_[0-9a-f]{64}) as revision 2\./.exec(ok(await photos('publish', '--actor', 'launch-inbox')))?.[1];
+        expect(second).toBeDefined();
+        expect(await inbox()).toMatchObject({ needsJudgment: 0, placed: 2, unplaced: 0, events: [] });
+        ok(await photos('rollback', '--to', '1', '--reason', 'launch inbox test', '--actor', 'launch-inbox', '--yes', '--expect-active', second ?? ''));
+        const unlisted = JSON.parse(ok(await photos('list', '--unassigned', '--json'))) as { photoId: string }[];
+        expect(unlisted.map((row) => row.photoId)).toEqual([square]);
+
+        // Still approved, as stored, and the default list, --all, show, and the summary line all say its photo left the draft.
+        const rolledBack = await inbox();
+        expect(rolledBack).toMatchObject({ needsJudgment: 0, placed: 2, unplaced: 1, total: 3 });
+        expect(rolledBack.events).toEqual([expect.objectContaining({ id: item.id, status: 'approved', unplaced: SERIES })]);
+        expect((await inbox('--all')).events.find((event) => event.id === item.id)).toMatchObject({ status: 'approved', unplaced: SERIES });
+        const summary = ok(await photos('curation', 'list'));
+        expect(summary).toMatch(/^Curation inbox: 0 items require judgment, 2 already placed, 1 approved but no longer placed, 3 in all\.\n/);
+        expect(summary).toContain(`  approved  ${square.slice(0, 11)}  square.webp  unplaced: approved into ${SERIES}, but no series or the live revision holds its photo now`);
+        const shown = ok(await photos('curation', 'show', item.id));
+        expect(shown).toContain(`No longer placed: it was approved into ${SERIES}, but no series or the live revision holds its photo now, as after a rollback. To place it again, reopen it, then approve it.`);
+        const version = Number(/^evt_[0-9a-f]{24}, version (\d+):/.exec(shown)?.[1]);
+
+        // Reopened, it needs judgment again; approved again, it is placed and leaves the default list.
+        ok(await photos('curation', 'reopen', item.id, '--version', String(version), '--base', candidate ?? ''));
+        expect(await inbox()).toMatchObject({ needsJudgment: 1, placed: 2, unplaced: 0 });
+        ok(await photos('curation', 'approve', item.id, '--version', String(version + 1), '--series', SERIES, '--base', candidate ?? ''));
+        expect(await inbox()).toMatchObject({ needsJudgment: 0, placed: 2, unplaced: 0, events: [] });
+        expect(ok(await photos('curation', 'show', item.id))).not.toContain('No longer placed');
     });
 });
