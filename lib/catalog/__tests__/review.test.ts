@@ -248,7 +248,9 @@ describe('the review publish gate', { timeout: 60_000 }, () => {
             photo.title = 'Fixture title.';
         });
         published(await f.publish());
+        // By hand: the title a tool stamped, and a caption no tool ever wrote.
         await f.handEdit<AuthoredPhoto>('photo', id, (photo) => {
+            photo.title = 'Fixture title, by hand.';
             photo.caption = 'Fixture caption, by hand.';
         });
         const validated = await validateWorkingLayer({ dataRoot: f.root });
@@ -256,14 +258,17 @@ describe('the review publish gate', { timeout: 60_000 }, () => {
         expect(refused.outcome).toBe('VALIDATION_FAILED');
         for (const result of [validated, refused]) {
             expect(reviewIssues(result)).toEqual([
-                expect.objectContaining({ code: 'review.authored-change', severity: 'error', record: { kind: 'photo', id }, field: 'caption', message: expect.stringContaining('Not reviewed') }),
+                expect.objectContaining({ code: 'review.authored-change', severity: 'error', record: { kind: 'photo', id }, field: 'caption', message: expect.stringContaining('was written outside the tools') }),
+                expect.objectContaining({ code: 'review.authored-change', severity: 'error', record: { kind: 'photo', id }, field: 'title', message: expect.stringContaining('changed outside the tools since it was last reviewed') }),
             ]);
         }
-        expect(reviewIssues(refused)[0].hint).toContain('photos edit');
-        // The same value written through the writer is reviewed as it is written.
+        for (const issue of reviewIssues(refused)) expect(issue.hint).toContain('photos edit');
+        // Written through the writer, both are reviewed as they are written.
         await f.edit<AuthoredPhoto>('photo', id, (photo) => {
+            photo.title = 'Fixture title.';
             photo.caption = 'Fixture caption, through the tool.';
         });
+        expect((await f.read<AuthoredPhoto>('photo', id)).review?.fields.title?.actor).toBe('cli');
         published(await f.publish());
     });
 
