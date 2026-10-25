@@ -164,9 +164,10 @@ test('stores the series it shows after a refused answer', async ({ page }) => {
     await expect(answer(page, 'invalid')).toContainText('markup');
     await expect(series).toHaveValue(INBOX_SERIES.draft.id);
     await page.getByRole('textbox', { name: 'Draft description' }).fill('Harbor wall, fixed after the refusal.');
+    // Read before approving: an approved item no longer offers the suggestion.
+    const shown = await series.inputValue();
     await page.getByRole('button', { name: 'Review series suggestion' }).click();
     await expect(answer(page, 'done')).toBeVisible();
-    const shown = await series.inputValue();
     expect((await readAuthoredRecord(data().root, 'series', shown))?.photoIds).toContain(FRESH.refused);
 });
 
