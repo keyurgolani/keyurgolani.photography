@@ -8,9 +8,9 @@ Every pull request runs `.github/workflows/ci.yml`, whether it targets `main` or
 
 | Job | What it does |
 |---|---|
-| `Lint, unit tests, build` | Checks that `.nvmrc` holds a bare Node major and the `Dockerfile` base image matches it, then runs `npm ci`, `npm run lint`, `npm test -- --run`, `npm run build`, `ci/check-standalone.sh`, and `npm run smoke:media`. `ci/check-standalone.sh` fails if the build copied project sources, the default data root, or the library into `.next/standalone`. `npm run smoke:media` migrates a generated fixture library into a temp data root, builds its sets with the watcher's `--once`, and checks that the build's `/media` route serves them, including one built after the server started. |
+| `Lint, unit tests, build` | Checks that `.nvmrc` holds a bare Node major and the `Dockerfile` base image matches it, then runs `npm ci`, `npm run lint`, `npm test -- --run`, `npm run test:prod`, `ci/check-standalone.sh`, `npm run check:prerender`, and `npm run smoke:media`. `npm run test:prod` runs `npm run build`, serves `.next/standalone` on a temp data root, publishes twice and rolls back once, and checks that `/api/ready`, `/api/photos`, and `/media` follow each activation without a restart. Plain `npm test` skips it unless `RUN_PROD_TESTS=1`, and the checks after it run on its build. `ci/check-standalone.sh` fails if the build copied project sources, the default data root, or the library into `.next/standalone`. `npm run check:prerender` fails if the build prerendered a route that reads the data root per request, `/api/photos`, `/api/ready`, or another path `ci/check-prerender.mjs` lists. `npm run smoke:media` publishes a small test catalog into a temp data root with `ci/publish-fixture.ts`, and checks that the build's `/media` route serves a set the active revision holds, 404s one whose files exist but which no revision holds, and that `/api/ready` names the revision. |
 | `Browser tests` | Runs `npm run test:e2e`, which builds and serves the site against an empty temp photo library and runs `e2e/` in Chromium on a desktop and a Pixel 7 project, and `e2e/home-immersive.spec.ts` in WebKit on an iPhone 13 project, `mobile-webkit`. A failed run uploads `playwright-report/` and `test-results/`. |
-| `Image smoke test` | Runs `ci/check-compose.sh`, builds the image, checks that it runs the Node major in `.nvmrc`, and runs `ci/smoke-image.sh` against it. Then it runs `ci/smoke-watcher-once.sh`, which checks that the image ships the bundled scripts and no dev dependencies or tsx, has the image's node generate a fixture library from the checkout's `test/fixtures`, runs the image's watcher with `--once` on it, checks that it deletes nothing after a photo is removed and exits 1 on a missing library, and checks the web server's image routes. |
+| `Image smoke test` | Runs `ci/check-compose.sh`, builds the image, checks that it runs the Node major in `.nvmrc`, and runs `ci/smoke-image.sh` against it. Then it runs `ci/smoke-watcher-once.sh`, which checks that the image ships the bundled scripts and no dev dependencies or tsx, has the image's node generate a fixture library from the checkout's `test/fixtures`, runs the image's watcher with `--once` on it, checks that it deletes nothing after a photo is removed and exits 1 on a missing library, and checks the web server's image routes. Last, it runs `npm ci` and `ci/smoke-catalog.sh`, which checks the catalog routes in the image on a migrated fixture library and on a published test catalog. |
 | `Production audit` | Runs `ci/audit-gate.mjs`, which runs `npm audit --omit=dev` and fails on a high or critical advisory that `.github/audit-allowlist.json` doesn't list. It reads only the lockfile, so it skips `npm ci`. |
 | `CI result` | Fails unless all four jobs above succeeded. |
 
@@ -20,12 +20,18 @@ Every pull request runs `.github/workflows/ci.yml`, whether it targets `main` or
 
 `ci/check-compose.sh` checks that every image line in `docker-compose.prod.yml` is exactly `ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?...}`, that Compose resolves every service to that one tag and refuses the file when the variable is unset, that the file has no `:latest`, that the services Compose starts by default are exactly the ones in `ci/smoke-services`, the list `ci/smoke-image.sh` starts, that every published port is on the host's 127.0.0.1 whatever `PHOTOGRAPHY_PORT` says and no service uses `network_mode: host`, that `web` mounts the data root once, read-only, and points `PHOTOGRAPHY_DATA_DIR` at it, and that every bind of the data root, the library, or `web`'s image cache has `create_host_path: false`. A PR that adds a service lists it in `ci/smoke-services` and extends the smoke test to check it.
 
-`ci/smoke-image.sh` starts `web` and `image-watcher` from `docker-compose.prod.yml` on the image under test, with the two photos in `ci/fixtures/library/` as the library and an empty data root. It checks that `/` returns HTML, `/api/photos` returns a JSON array, `/api/health` answers, and the watcher passes its healthcheck, writes all seven derivatives for each photo, picks up a photo added while it runs, and never restarts. Then it runs the migration runbook in [data-root.md](data-root.md) as uid 1001, waits for the watcher to build every `/media` set, checks that `/media` serves them and an original 404s, and that recreating the containers keeps every photo ID and ETag. Last, it runs the watcher with `PHOTOGRAPHY_DATA_DIR` unset and checks that it writes the legacy derivatives and no registry. Its only change to the Compose file is an override that turns on `PHOTOGRAPHY_MEDIA_ACCESS=all` and binds `web` to 127.0.0.1. CI runs it on the image the PR built, and `Publish to GHCR` runs it again on the exact digest it pushed. To run it locally you need Docker with Compose 2.24.4 or later, for the override's `!override` tag, and a free port, 3000 unless you set `SMOKE_IMAGE_PORT`:
+`ci/smoke-image.sh` starts `web` and `image-watcher` from `docker-compose.prod.yml` on the image under test, with the two photos in `ci/fixtures/library/` as the library and an empty data root. It checks that `/` returns HTML, `/api/health` answers, `/api/photos` and `/api/ready` answer 503 with `registry-missing` before the migration, and the watcher passes its healthcheck, writes all seven derivatives for each photo, picks up a photo added while it runs, and never restarts. Then it runs the migration runbook in [data-root.md](data-root.md) as uid 1001, checks that `/api/photos` then lists every photo and `/api/ready` reports legacy mode, waits for the watcher to build every `/media` set, checks that `/media` serves none of them before the first activation and an original 404s, and that recreating the containers keeps every photo ID, `/media` URL, and set. Last, it runs the watcher with `PHOTOGRAPHY_DATA_DIR` unset and checks that it writes the legacy derivatives and no registry. Its only change to the Compose file is an override that binds `web` to 127.0.0.1. CI runs it on the image the PR built, and `Publish to GHCR` runs it again on the exact digest it pushed. To run it locally you need Docker with Compose 2.24.4 or later, for the override's `!override` tag, and a free port, 3000 unless you set `SMOKE_IMAGE_PORT`:
 
 ```bash
 docker build -t ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke .
 ci/check-compose.sh
 npm run smoke:image
+```
+
+`ci/smoke-catalog.sh` runs the image with `docker run` on two throwaway data roots. On the first, the image generates a fixture library from `test/fixtures`, `photos migrate` gives each photo its ID, and the watcher's `--once` run builds every derivative. `web` must then report legacy mode at `/api/ready`, list each photo once at `/api/photos` in the legacy item shape, serve each listed WebP, and answer the same after a restart. On the second, `ci/publish-fixture.ts` publishes a small test catalog, and `web` must name its revision at `/api/ready` and `/api/photos`, serve a set the revision holds from `/media` with `immutable`, its ETag, and a 304 to that ETag, and 404 a set no revision holds. After a restart on that root, `/api/ready` must answer exactly as before it, naming the same revision, and the set must still serve. `ci/publish-fixture.ts` runs on the machine, not in the image, so run `npm ci` first. `web` publishes a random port on 127.0.0.1:
+
+```bash
+npm run smoke:catalog
 ```
 
 A PR runs its own copy of `ci.yml` and `ci/`, so a PR that edits `.github/workflows/`, `ci/`, or `.github/audit-allowlist.json` can weaken the check that gates it. Read those diffs by hand.
@@ -151,7 +157,7 @@ docker compose -f docker-compose.prod.yml run --rm --no-deps web sh -c 'rm -rf /
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-Then run `images:cleanup` once. Its dry run lists what the old pipeline left behind, including every `cache/dynamic` file from the removed `/api/image` route, and the second command deletes exactly that list:
+Then run `images:cleanup` once. Only the images from `v1.1.0` up to the release before slice C of #13 have it, so run it before upgrading past that release. Its dry run lists what the old pipeline left behind, including every `cache/dynamic` file from the removed `/api/image` route, and the second command deletes exactly that list:
 
 ```bash
 docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts
@@ -288,7 +294,15 @@ curl -fsS https://<public host>/api/health
 
 If the first answers and the second doesn't, the proxy or tunnel can't reach `web`. One in a container needs the `http://web:3000` setup above.
 
-[Setting it up](data-root.md#setting-it-up) in data-root.md is the same step. The site keeps serving the legacy derivatives, and the watcher's identity step stays off until the [migration runbook](data-root.md#migration-runbook) there initializes the data root. Back up first, then run it whenever you're ready.
+[Setting it up](data-root.md#setting-it-up) in data-root.md is the same step. The site keeps serving the legacy derivatives, and the watcher's identity step stays off until the [migration runbook](data-root.md#migration-runbook) there initializes the data root. Back up first, then run it before the release the next paragraph describes, which needs it.
+
+The first release with slice C of the [atomic catalog publish (#13)](https://github.com/keyurgolani/keyurgolani.photography/issues/13) lists `/api/photos` from the data root's registry instead of reading the library. On a data root the migration hasn't initialized, `/api/photos` and `/api/ready` answer 503 with `registry-missing`, and Home and Gallery show no photos. Run the migration runbook before deploying it, or right after, which leaves Home and Gallery empty in between. Then check that the site is ready:
+
+```bash
+curl -s http://127.0.0.1:3000/api/ready
+```
+
+It should report `"mode":"legacy"` and `"state":"ok"`. Until a catalog revision is published, `/media` serves no set and the site keeps serving the legacy derivatives.
 
 ## Rollback
 
@@ -308,6 +322,8 @@ docker compose -f docker-compose.prod.yml up -d
 ```
 
 Leave `./portfolio-data` where it is. Older releases never read it, and once you roll forward, the watcher's next pass catches up with what changed in the library meanwhile. A release that finds a data root written by a newer one, with a schema it doesn't know, treats it as unavailable and runs only the legacy step.
+
+Rolling back past the first release with slice C of #13 lists `/api/photos` from the library again, and ignores any catalog revision published since. Rolling forward serves the active revision again.
 
 Never roll back to `v1.0.0`. That image, on GHCR and on Docker Hub, is the initial commit and can't run under this compose file.
 

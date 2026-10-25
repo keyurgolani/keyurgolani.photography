@@ -49,9 +49,12 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm test -- --run
-      - run: npm run build
+      # Builds, then publishes to and rolls back the standalone server on a
+      # temp data root. The steps after it check that same build.
+      - run: npm run test:prod
       - name: Check the build traced no project files into .next/standalone
         run: bash ci/check-standalone.sh
+      - run: npm run check:prerender
       - run: npm run smoke:media
 
   e2e:
@@ -126,6 +129,18 @@ jobs:
         env:
           IMAGE: ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke
         run: bash ci/smoke-watcher-once.sh
+
+      # ci/smoke-catalog.sh publishes its test catalog on the runner with
+      # ci/publish-fixture.ts, so it needs Node and the dev dependencies.
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Smoke test the catalog in the image
+        run: ci/smoke-catalog.sh ci-smoke
 
   # Fails on a high or critical advisory in a production dependency unless
   # .github/audit-allowlist.json lists it. npm audit reads only the lockfile,

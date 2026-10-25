@@ -5,6 +5,8 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(import.meta.dirname, '.'),
+      // Empty under Next's react-server condition, which Vitest doesn't set. See test/stubs/server-only.ts.
+      'server-only': path.resolve(import.meta.dirname, 'test/stubs/server-only.ts'),
     },
   },
   test: {

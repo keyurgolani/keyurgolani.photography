@@ -5,36 +5,34 @@ This directory is where gallery photos should be placed.
 ## Usage
 
 1. Add your photos (JPG, JPEG, PNG, WEBP) to this directory
-2. The gallery loads them through `/api/photos` once the watcher has written all seven of their derivatives. The original files are never served.
+2. The gallery loads them through `/api/photos` once the watcher has recorded them in the data root and written all seven of their derivatives. Until `photos:migrate --apply` has initialized the data root, `/api/photos` answers 503 and the gallery is empty. The original files are never served.
 3. Photos are sorted by date taken (newest first), extracted from EXIF metadata
 
 ## Replacing and Removing Photos
 
 - Saving over a photo under the same name regenerates its derivatives. The old ones keep serving until all seven new ones are written. `/_next/image` can serve the old version for up to a day, and a browser that cached it under the old `immutable` header may keep it for up to a year.
-- Accepted risk: a different photo saved under a removed photo's name, with an older modification time, shows the old images until you `touch` it or run `--force`. Copy tools that keep modification times, such as `cp -p` and `rsync -a`, do this. With the watcher stopped, run `images:cleanup` before reusing a name.
-- Deleting a photo hides it from the gallery, but its derivative files stay reachable at their URLs until `images:cleanup` deletes them. Restoring the file brings it back in the gallery after `web` restarts, since Next serves only the `public/` files that existed when it started.
-- `npm run images:cleanup` lists derivatives no photo needs anymore, with the reason for each, and prints a plan hash. It deletes them only when re-run with `-- --apply --plan <hash>`. In production, the watcher container runs the bundled script, since the image has no tsx:
-
-```bash
-docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/imageCleanup.mjs
-```
-
+- Accepted risk: a different photo saved under a removed photo's name, with an older modification time, shows the old images until you `touch` it or run `--force`. Copy tools that keep modification times, such as `cp -p` and `rsync -a`, do this.
+- Before the launch, deleting a photo hides it from the gallery once the watcher's next pass records it missing. Nothing deletes its derivative files, which stay reachable at their URLs, so restoring the file brings it back with nothing to rebuild. After the launch, deleting the file hides nothing: the active catalog revision keeps listing the photo, and `/media` keeps serving it.
 - To take a photo down:
   1. Stop `image-watcher`, so a job already running can't write its derivatives back, then delete the photo.
-  2. Run the full dry run, which also lists sets left under the photo's earlier names.
-  3. Run it with `--only <name>`, where `<name>` is the photo's exact name such as `landscape`, then apply that plan. Do the same for each earlier name. If either step exits 1 and names a folder it couldn't look in, remove the photo's files from that folder by hand.
-  4. Purge Next's image cache inside the `web` image, since its files belong to uid 1001, then start the stack.
-  5. Wait about two minutes and check that `/api/photos` no longer lists the photo, since its cached list survives a restart.
+  2. Delete its seven derivatives and `cache/set-sources/<name>.json`, where `<name>` is the photo's file name without its extension, such as `landscape`. Do the same for each earlier name the photo had, which the listing below finds.
+  3. Purge Next's image cache inside the `web` image, since its files belong to the containers' user, then start the stack.
+  4. Check that `/api/photos` no longer lists the photo. Once a catalog revision is active, `/media` keeps serving it until a publish leaves it out, as below.
 
 ```bash
 docker compose -f docker-compose.prod.yml stop image-watcher
-# Delete the photo, then:
-docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/imageCleanup.mjs
-docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/imageCleanup.mjs --only <name>
-docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/imageCleanup.mjs --only <name> --apply --plan <hash>
+# Delete the photo, then, with its name for <name>:
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher sh -c 'cd /app/public/assets/photos && rm -f -- thumbnails/"$1".webp medium/"$1".webp optimized/"$1".webp thumbnails-avif/"$1".avif medium-avif/"$1".avif optimized-avif/"$1".avif lqip/"$1".txt cache/set-sources/"$1".json' sh '<name>'
 docker compose -f docker-compose.prod.yml stop web
 docker compose -f docker-compose.prod.yml run --rm --no-deps web sh -c 'rm -rf /app/.next/cache/images/*'
 docker compose -f docker-compose.prod.yml start web image-watcher
+```
+
+- After the launch, also take it out of the catalog. Remove it from every series that lists it (its `photoIds` entry, and the cover or a chapter start if it is one), or hide the series, then run `node dist/scripts/photos.mjs publish --actor <name>` in `image-watcher` the same way. Check that `GET /api/ready` answers `"state":"ok"` with the new `revisionId`: `degraded` means `web` still serves the revision before. Purge the photo's `/media` URLs from any CDN, since `/media` sends `max-age=31536000, immutable` and a browser can keep the photo for up to a year. If the publish stops on errors in other records, the photo stays public. As a last resort, delete `assets/<photoId>/` in the data root inside `image-watcher`, so `/media` 404s it until a publish leaves it out.
+- To list legacy derivatives whose photo is gone, such as a renamed photo's earlier names, print each base name in `optimized/` that no file in this folder has:
+
+```bash
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher sh -c 'cd /app/public/assets/photos && for f in optimized/*.webp; do n=${f#optimized/}; n=${n%.webp}; set -- "$n".*; [ -e "$1" ] || echo "$n"; done'
 ```
 
 - To regenerate everything in production, stop `image-watcher`, run the regeneration, and start it again:

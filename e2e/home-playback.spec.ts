@@ -1,5 +1,5 @@
 import type { Locator, Page } from '@playwright/test';
-import type { ImageItem } from '../utils/getImageData';
+import type { ImageItem } from '../lib/catalog/photos-api';
 import { expectContrastOverImage } from './support/contrast';
 import { expectNotObscured } from './support/focus';
 import { photoPoint } from './support/home';

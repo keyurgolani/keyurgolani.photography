@@ -179,7 +179,7 @@ export class StaleVersionError extends Error {
 export async function readJsonFile(file: string): Promise<unknown | null> {
     let text: string;
     try {
-        text = await fs.promises.readFile(file, 'utf8');
+        text = await fs.promises.readFile(/*turbopackIgnore: true*/ file, 'utf8');
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT')) return null;
         throw error;
@@ -232,7 +232,7 @@ const TEMP_NAME = /^\.v([1-9]\d*)\.\d+\.[0-9a-f-]+\.tmp$/;
 
 /** `<dir>/v<version>.json`. */
 export function versionFile(dir: string, version: number): string {
-    return path.join(dir, `v${version}.json`);
+    return path.join(/*turbopackIgnore: true*/ dir, `v${version}.json`);
 }
 
 interface Listing {
@@ -246,7 +246,7 @@ interface Listing {
 async function list(dir: string): Promise<Listing> {
     let names: string[];
     try {
-        names = await fs.promises.readdir(dir);
+        names = await fs.promises.readdir(/*turbopackIgnore: true*/ dir);
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT')) return { versions: [], temps: [] };
         throw error;
@@ -260,7 +260,7 @@ async function list(dir: string): Promise<Listing> {
             continue;
         }
         // A case-insensitive disk would hand `V4.JSON` out as `v4.json` to a writer's link, so it can't be passed over.
-        if (VERSION_LIKE.test(name)) throw new MisnamedVersionError(path.join(dir, name));
+        if (VERSION_LIKE.test(name)) throw new MisnamedVersionError(path.join(/*turbopackIgnore: true*/ dir, name));
         const temp = TEMP_NAME.exec(name);
         if (temp) temps.push({ name, version: Number(temp[1]) });
         // Anything else, such as OS metadata, is left alone.
@@ -325,7 +325,7 @@ export async function readVersionedDocument(dir: string, { hooks }: { hooks?: Re
         await hooks?.afterList?.(file);
         let handle: fs.promises.FileHandle;
         try {
-            handle = await fs.promises.open(file, 'r');
+            handle = await fs.promises.open(/*turbopackIgnore: true*/ file, 'r');
         } catch (error) {
             if (!hasErrorCode(error, 'ENOENT')) throw error;
             // Pruned since the listing, so a newer version exists: look again.
@@ -393,7 +393,7 @@ export async function writeVersionedDocument<T extends VersionedDocument>(
     }
     const version = expectedVersion + 1;
     const file = versionFile(dir, version);
-    const temp = path.join(dir, `.v${version}.${process.pid}.${randomUUID()}.tmp`);
+    const temp = path.join(/*turbopackIgnore: true*/ dir, `.v${version}.${process.pid}.${randomUUID()}.tmp`);
     try {
         // Staged before the listing: a prune that could free this number either sees this temp and sweeps it before
         // it deletes anything, or ran before it, and then the listing below sees the newer version that prune kept.
@@ -451,7 +451,7 @@ export async function pruneVersions(dir: string, { keep = KEEP_VERSIONS, hooks }
     const removed: string[] = [];
     const remove = async (name: string) => {
         try {
-            await fs.promises.unlink(path.join(dir, name));
+            await fs.promises.unlink(path.join(/*turbopackIgnore: true*/ dir, name));
             removed.push(name);
         } catch (error) {
             if (!hasErrorCode(error, 'ENOENT')) throw error;

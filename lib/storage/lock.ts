@@ -187,8 +187,8 @@ export async function withLock<T>(name: string, options: LockOptions, fn: (conte
     const root = options.root ?? dataRoot();
     if (root === null) throw new Error(`Can't take the ${name} lock: PHOTOGRAPHY_DATA_DIR is not set.`);
 
-    const lockDir = path.join(root, 'locks');
-    const lockPath = path.join(lockDir, `${name}.lock`);
+    const lockDir = path.join(/*turbopackIgnore: true*/ root, 'locks');
+    const lockPath = path.join(/*turbopackIgnore: true*/ lockDir, `${name}.lock`);
     try {
         // Never create the data root itself: a missing one is an unmounted volume, not an empty one.
         await fs.promises.mkdir(lockDir, { mode: PRIVATE_DIR_MODE });

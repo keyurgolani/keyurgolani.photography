@@ -17,16 +17,20 @@ import { emptyRegistry, REGISTRY_SCHEMA_VERSION, type Registry } from './types';
 
 export const STAT_CACHE_SCHEMA_VERSION = 1;
 
-/** Where identity state lives inside the data root. */
+/**
+ * Where identity state lives inside the data root. The root is found at run
+ * time, so the ignore comments keep Turbopack from tracing this folder into
+ * .next/standalone.
+ */
 export function identityPaths(root: string) {
-    const dir = path.join(root, 'identity');
+    const dir = path.join(/*turbopackIgnore: true*/ root, 'identity');
     return {
         dir,
         /** A version folder: `v<N>.json`, one per version (lib/storage/document.ts). */
-        registry: path.join(dir, 'registry'),
-        statCache: path.join(dir, 'stat-cache.json'),
-        decisions: path.join(dir, 'decisions'),
-        migration: path.join(dir, 'migration'),
+        registry: path.join(/*turbopackIgnore: true*/ dir, 'registry'),
+        statCache: path.join(/*turbopackIgnore: true*/ dir, 'stat-cache.json'),
+        decisions: path.join(/*turbopackIgnore: true*/ dir, 'decisions'),
+        migration: path.join(/*turbopackIgnore: true*/ dir, 'migration'),
     };
 }
 
@@ -93,22 +97,35 @@ function assertRegistry(file: string, value: Record<string, unknown>): asserts v
  * EditedInPlaceError, a CorruptDocumentError, for one edited in place.
  */
 export async function readRegistry(root: string): Promise<Registry> {
-    const paths = identityPaths(root);
-    // #28 stored the registry as one file. Passing over it would read an empty registry, and the next pass would
-    // mint new IDs for every photo.
-    const old = `${paths.registry}.json`;
-    if (await pathExists(old)) {
-        throw new CorruptDocumentError(
-            old,
+    return (await readStoredRegistry(root))?.registry ?? emptyRegistry();
+}
+
+/** `identity/registry.json`, #28's one-file registry, is still in the data root. */
+export class OldRegistryLayoutError extends CorruptDocumentError {
+    constructor(file: string) {
+        super(
+            file,
             'the data root\'s layout changed, and this build no longer reads identity/registry.json. The registry is now the folder identity/registry/, '
                 + 'with one v<N>.json per version. Move the file there as its next version (v1.json in an empty folder) while no command runs',
         );
     }
+}
+
+/**
+ * readRegistry(), but null when `identity/registry/` holds no version, and
+ * with the version file it read. Throws as readRegistry() does.
+ */
+export async function readStoredRegistry(root: string): Promise<{ registry: Registry; file: string } | null> {
+    const paths = identityPaths(root);
+    // #28 stored the registry as one file. Passing over it would read an empty registry, and the next pass would
+    // mint new IDs for every photo.
+    const old = `${paths.registry}.json`;
+    if (await pathExists(old)) throw new OldRegistryLayoutError(old);
     const stored = await readVersionedDocument(paths.registry);
-    if (stored === null) return emptyRegistry();
+    if (stored === null) return null;
     checkSchemaVersion(stored.file, stored.value, REGISTRY_SCHEMA_VERSION);
     assertRegistry(stored.file, stored.value);
-    return stored.value as unknown as Registry;
+    return { registry: stored.value as unknown as Registry, file: stored.file };
 }
 
 /** Compare-and-swap write of the registry's next version. The caller holds the registry lock. */

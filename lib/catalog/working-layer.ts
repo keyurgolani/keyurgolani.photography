@@ -16,22 +16,29 @@ import type { ActivePointer, AuthoredPhoto, AuthoredSeries, AuthoredSite, Record
  * nothing on the read path imports.
  */
 
+// The data root is found at run time, so the ignore comments keep Turbopack from tracing these folders into .next/standalone.
+
 export function authoredPaths(root: string) {
-    const dir = path.join(root, 'authored');
-    return { dir, site: path.join(dir, 'site'), seriesDir: path.join(dir, 'series'), photosDir: path.join(dir, 'photos') };
+    const dir = path.join(/*turbopackIgnore: true*/ root, 'authored');
+    return {
+        dir,
+        site: path.join(/*turbopackIgnore: true*/ dir, 'site'),
+        seriesDir: path.join(/*turbopackIgnore: true*/ dir, 'series'),
+        photosDir: path.join(/*turbopackIgnore: true*/ dir, 'photos'),
+    };
 }
 
 /** Where catalog state lives. Only the CLI writes here; slice B's repository owns those writes. */
 export function catalogPaths(root: string) {
-    const dir = path.join(root, 'catalog');
+    const dir = path.join(/*turbopackIgnore: true*/ root, 'catalog');
     return {
         dir,
         /** The active pointer's version folder: `catalog/active/v<N>.json`. */
-        active: path.join(dir, 'active'),
-        revisionsDir: path.join(dir, 'revisions'),
-        activationsDir: path.join(dir, 'activations'),
-        candidatesDir: path.join(dir, 'candidates'),
-        diagnosticsDir: path.join(dir, 'diagnostics'),
+        active: path.join(/*turbopackIgnore: true*/ dir, 'active'),
+        revisionsDir: path.join(/*turbopackIgnore: true*/ dir, 'revisions'),
+        activationsDir: path.join(/*turbopackIgnore: true*/ dir, 'activations'),
+        candidatesDir: path.join(/*turbopackIgnore: true*/ dir, 'candidates'),
+        diagnosticsDir: path.join(/*turbopackIgnore: true*/ dir, 'diagnostics'),
     };
 }
 
@@ -46,7 +53,7 @@ export function authoredRecordDir(root: string, kind: AuthoredKind, id: string):
     if (!isRecordId(kind, id)) throw new Error(`Invalid ${kind} ID: ${JSON.stringify(id)}`);
     const paths = authoredPaths(root);
     if (kind === 'site') return paths.site;
-    return path.join(kind === 'series' ? paths.seriesDir : paths.photosDir, id);
+    return path.join(/*turbopackIgnore: true*/ kind === 'series' ? paths.seriesDir : paths.photosDir, id);
 }
 
 /**
@@ -82,14 +89,14 @@ export async function recordFolderProblem(root: string, kind: AuthoredKind, id: 
     const name = path.basename(dir);
     let stored: string | undefined;
     try {
-        if ((await fs.promises.lstat(dir)).isSymbolicLink()) {
+        if ((await fs.promises.lstat(/*turbopackIgnore: true*/ dir)).isSymbolicLink()) {
             // realpath would give the target's name. The working layer goes by the link's own name in the listing.
-            const names = await fs.promises.readdir(path.dirname(dir));
+            const names = await fs.promises.readdir(/*turbopackIgnore: true*/ path.dirname(dir));
             if (names.includes(name)) return `${relative}/ ${SYMLINKED}`;
             stored = names.find((entry) => entry.toLowerCase() === name.toLowerCase());
         } else {
-            // fs.promises.realpath is the native realpath, as the `--only` lookup in images:cleanup checks it.
-            stored = path.basename(await fs.promises.realpath(dir));
+            // fs.promises.realpath is the native realpath, which reports the spelling on disk.
+            stored = path.basename(await fs.promises.realpath(/*turbopackIgnore: true*/ dir));
         }
     } catch {
         // Missing, or unreadable, which the read itself reports.
@@ -159,7 +166,7 @@ function misnamedRecord(kind: 'series' | 'photo', name: string): string | null {
 async function loadFolder<K extends 'series' | 'photo'>(dir: string, kind: K, problems: RecordProblem[]): Promise<RecordOf<K>[]> {
     let entries: fs.Dirent[];
     try {
-        entries = await fs.promises.readdir(dir, { withFileTypes: true });
+        entries = await fs.promises.readdir(/*turbopackIgnore: true*/ dir, { withFileTypes: true });
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT')) return [];
         throw error;
@@ -179,7 +186,7 @@ async function loadFolder<K extends 'series' | 'photo'>(dir: string, kind: K, pr
     const loaded: Loaded<K>[] = new Array<Loaded<K>>(ids.length);
     for (let start = 0; start < ids.length; start += READ_CONCURRENCY) {
         await Promise.all(ids.slice(start, start + READ_CONCURRENCY).map(async (id, offset) => {
-            loaded[start + offset] = await load(path.join(dir, id), kind, id);
+            loaded[start + offset] = await load(path.join(/*turbopackIgnore: true*/ dir, id), kind, id);
         }));
     }
     const records: RecordOf<K>[] = [];

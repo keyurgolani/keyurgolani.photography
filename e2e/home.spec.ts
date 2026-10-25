@@ -7,7 +7,7 @@ import { waitForHydration } from './support/hydration';
 import { checkSurface, expectUniqueNames } from './support/surface';
 import { expectMinTargetSize } from './support/targets';
 import { expect, setPhotoFixtures, test } from './support/test';
-import type { ImageItem } from '../utils/getImageData';
+import type { ImageItem } from '../lib/catalog/photos-api';
 
 const primary = (page: Page) => page.getByRole('navigation', { name: 'Primary' });
 const navLinks = (page: Page) => primary(page).getByRole('link');
