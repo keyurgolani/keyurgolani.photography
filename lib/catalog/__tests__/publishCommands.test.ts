@@ -166,7 +166,7 @@ describe('photos publish', { timeout: 120_000 }, () => {
             return { run: await photos(catalog.root, ['publish', '--actor', 'test', '--confirm-launch']), holder: record };
         });
         expect(run.code).toBe(3);
-        expect(run.stderr).toContain(`[photos] CATALOG_LOCKED: Another publish holds the catalog lock: `);
+        expect(run.stderr).toContain(`[photos] CATALOG_LOCKED: Another publish or rollback holds the catalog lock: `);
         expect(run.stderr).toContain(`(pid ${process.pid} on ${os.hostname()}, since ${holder.acquiredAt})`);
     });
 

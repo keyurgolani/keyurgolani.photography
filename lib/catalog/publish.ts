@@ -679,7 +679,7 @@ export async function publish(options: PublishOptions): Promise<PublishResult> {
         // Nothing here holds the catalog lock, so nothing writes the summary.
         if (error instanceof LockTimeoutError) {
             const who = error.holder ? `${error.holder.owner} (pid ${error.holder.pid} on ${error.holder.hostname}, since ${error.holder.acquiredAt})` : 'another process';
-            return finish('CATALOG_LOCKED', `Another publish holds the catalog lock: ${who}.`, { holder: error.holder }, false);
+            return finish('CATALOG_LOCKED', `Another publish or rollback holds the catalog lock: ${who}.`, { holder: error.holder }, false);
         }
         const stop = await stopFor(error);
         return finish(stop.outcome, stop.message, stop.details, false);
