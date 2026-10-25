@@ -20,7 +20,9 @@ const SHARE_FONT = 'Newsreader-1-003-static-400-16pt';
  * sets the type in the static Newsreader TTF.
  */
 export default async function OpenGraphImage() {
-  const newsreader = await readFile(path.join(process.cwd(), 'app/fonts/newsreader/Newsreader-Regular.ttf'));
+  // The build renders this route once, so the font is read only then. The
+  // ignore comment keeps Turbopack from tracing app/ into .next/standalone.
+  const newsreader = await readFile(path.join(/*turbopackIgnore: true*/ process.cwd(), 'app/fonts/newsreader/Newsreader-Regular.ttf'));
   return new ImageResponse(
     (
       <div
