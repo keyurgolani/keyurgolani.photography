@@ -538,6 +538,21 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
                 expect(errors).toHaveBeenCalledWith(expect.stringMatching(/^\[imageOptimizer\] Couldn't record that portrait\.jpg's set is being rebuilt, so it keeps the outputs of portrait\.png, which built it last: /));
             });
 
+            it("rebuilds a shared set from the owner that last built it whole when it can't record that the build starts", async () => {
+                fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+                expect(await processOnce(handlers, { force: true, logger })).toBe(0);
+                expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
+                expect(readSetSource('portrait.png')).toEqual({ source: 'portrait.jpg', finished: true });
+                vi.spyOn(console, 'error').mockImplementation(() => undefined);
+                failRecordWrites(unfinished);
+
+                // A build stopped partway could only mix the owner's own versions, which the thumbnail going last catches.
+                fs.writeFileSync(lib.file('portrait.jpg'), edited);
+                await handlers.onChange(lib.file('portrait.jpg'));
+                expect(await outputChannels('portrait')).toEqual(Array(7).fill('blue'));
+                expect(readSetSource('portrait.png')).toEqual({ source: 'portrait.jpg', finished: true });
+            });
+
             it("rebuilds a shared set from the source that owns it once its owner is removed, live and at the next start, when cache/set-sources can't be written", async () => {
                 fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
                 fs.copyFileSync(lib.file('square.webp'), lib.file('portrait.webp'));
