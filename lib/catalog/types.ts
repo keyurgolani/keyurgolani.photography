@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 import type { Registry } from '../identity/types';
+import type { ReviewContext } from './review';
 import type * as schema from './schema';
 
 /**
@@ -35,11 +36,13 @@ export type AuthoredPhoto = z.infer<typeof schema.authoredPhotoSchema>;
 export type AuthoredAlt = z.infer<typeof schema.authoredAltSchema>;
 export type AuthoredRecord = AuthoredSite | AuthoredSeries | AuthoredPhoto;
 export type Conflict = NonNullable<AuthoredSite['conflicts']>[number];
+export type FieldReview = z.infer<typeof schema.fieldReviewSchema>;
+export type ReviewStamp = z.infer<typeof schema.reviewStampSchema>;
 export type Visibility = AuthoredSeries['visibility'];
 export type PublicationPolicy = AuthoredSeries['publicationPolicy'];
 
 /** The fields the writer owns: it sets them on every write, whatever a caller passes. */
-export type ManagedField = 'schemaVersion' | 'version' | 'baseRevisionId' | 'baseSeriesOrder';
+export type ManagedField = 'schemaVersion' | 'version' | 'baseRevisionId' | 'baseSeriesOrder' | 'review';
 type Writable<T> = Omit<T, ManagedField> & Partial<Record<ManagedField, unknown>>;
 /** What a caller hands writeAuthoredRecord(): a record as read or newly built, before defaults. */
 export type AuthoredSiteInput = Writable<z.input<typeof schema.authoredSiteSchema>>;
@@ -124,6 +127,8 @@ export interface RuleContext {
     roots: { dataRoot: string | null; libraryRoot: string | null };
     /** The members compile left out, for `assets.*`. Absent for a stored revision. */
     excluded?: readonly ExcludedMember[];
+    /** #16's review bases and inbox, for `review.*`. Absent for a stored revision, and where a caller didn't read them. */
+    review?: ReviewContext;
 }
 
 export interface Rule {

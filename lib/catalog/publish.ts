@@ -9,6 +9,8 @@ import { candidateFile, compileCandidate, type CompileResult } from './compile';
 import { onLegacySite } from './legacy-photos';
 import { LAUNCH_ORDER_RULE_IDS } from './order-rules';
 import { rebaseWorkingLayer, type RebaseReport } from './rebase';
+import type { ReviewContext } from './review';
+import { readReviewContext } from './review-context';
 import {
     ActivePointerMovedError,
     assertRevisionId,
@@ -389,6 +391,8 @@ interface Snapshot {
     pointer: ActivePointer | null;
     active: RevisionFile | null;
     compiled: CompileResult;
+    /** #16's review bases and inbox, for the review rules. */
+    review: ReviewContext;
 }
 
 /**
@@ -414,7 +418,8 @@ async function snapshotAndCompile(root: string, options: { lock: boolean; author
     const active = pointer ? await readRevisionFile(root, pointer.revisionId) : null;
     if (pointer && active === null) throw new CatalogIntegrityError(ACTIVE_POINTER_NAME, `${ACTIVE_POINTER_NAME} names ${pointer.revisionId}, which has no revision file.`);
     const compiled = await compileCandidate({ layer, registry, root, active, reprofile: options.reprofile, profileId: options.profileId });
-    return { layer, registry, pointer, active, compiled };
+    const review = await readReviewContext(root, layer, pointer?.revisionId ?? null);
+    return { layer, registry, pointer, active, compiled, review };
 }
 
 /** The active revision's photographs the candidate leaves out, by photo ID, each with the series that showed it. */
@@ -435,6 +440,7 @@ function ruleContext(root: string, snapshot: Snapshot) {
         registry: snapshot.registry,
         roots: { dataRoot: root, libraryRoot: libraryRoot() },
         excluded: snapshot.compiled.excluded,
+        review: snapshot.review,
     };
 }
 

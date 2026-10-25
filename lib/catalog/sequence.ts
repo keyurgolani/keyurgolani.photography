@@ -8,8 +8,8 @@ import { realpathLoose } from '../storage/fsx';
 import { LockTimeoutError, withLock, type LockContext } from '../storage/lock';
 import { SERIES_ID_RE } from './schema';
 import type { AuthoredSeries, AuthoredSite, FocalPoint } from './types';
-import { readAuthoredRecord, readAuthoredSeries } from './working-layer';
-import { AUTHORED_LEASE_MS, AUTHORED_LOCK, AUTHORED_WAIT_MS, AuthoredWriteError, writeAuthoredRecord } from './working-layer-writer';
+import { readActivePointer, readAuthoredRecord, readAuthoredSeries } from './working-layer';
+import { AUTHORED_LEASE_MS, AUTHORED_LOCK, AUTHORED_WAIT_MS, AuthoredWriteError, writeAuthoredRecord, type ReviewInputs } from './working-layer-writer';
 
 /**
  * The sequence operations: the only code that changes authored order besides
@@ -356,6 +356,11 @@ export interface ApplyOptions {
     waitMs?: number;
     /** Test hooks, passed to the writer's writeVersionedDocument(). */
     hooks?: VersionedWriteHooks;
+    /**
+     * What the curator reviewed, for #16's stamps, as #14's approvals pass it.
+     * A `policy` actor's write is stamped as generated, since nobody chose it.
+     */
+    review?: ReviewInputs;
 }
 
 export type ApplyResult =
@@ -390,7 +395,17 @@ async function applyUnderHold(root: string, op: SequenceOp, options: ApplyOption
     if (!result.changed) return { ok: true, changed: false, version: found, actor: options.actor, consequences: [] };
 
     const record: AuthoredSite | AuthoredSeries = result.record;
-    const writeOptions = { expectedVersion: found, lock: hold, root, hooks: options.hooks };
+    const policy = options.actor.kind === 'policy';
+    const review: ReviewInputs | undefined = options.review || policy
+        ? {
+            baseRevisionId: options.review ? options.review.baseRevisionId : (await readActivePointer(root))?.revisionId ?? null,
+            actor: options.review?.actor ?? `policy${options.actor.ref ? `:${options.actor.ref}` : ''}`,
+            reviewedAt: options.review?.reviewedAt ?? new Date().toISOString(),
+            ...(options.review?.event ? { event: options.review.event } : {}),
+            ...(policy ? { origin: 'generated' as const } : {}),
+        }
+        : undefined;
+    const writeOptions = { expectedVersion: found, lock: hold, root, hooks: options.hooks, ...(review ? { review } : {}) };
     try {
         const written = record.kind === 'site' ? await writeAuthoredRecord(record, writeOptions) : await writeAuthoredRecord(record, writeOptions);
         return { ok: true, changed: true, version: written.version, actor: options.actor, consequences: result.consequences };
