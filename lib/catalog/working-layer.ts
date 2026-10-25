@@ -89,14 +89,14 @@ export async function recordFolderProblem(root: string, kind: AuthoredKind, id: 
     const name = path.basename(dir);
     let stored: string | undefined;
     try {
-        if ((await fs.promises.lstat(dir)).isSymbolicLink()) {
+        if ((await fs.promises.lstat(/*turbopackIgnore: true*/ dir)).isSymbolicLink()) {
             // realpath would give the target's name. The working layer goes by the link's own name in the listing.
-            const names = await fs.promises.readdir(path.dirname(dir));
+            const names = await fs.promises.readdir(/*turbopackIgnore: true*/ path.dirname(dir));
             if (names.includes(name)) return `${relative}/ ${SYMLINKED}`;
             stored = names.find((entry) => entry.toLowerCase() === name.toLowerCase());
         } else {
             // fs.promises.realpath is the native realpath, which reports the spelling on disk.
-            stored = path.basename(await fs.promises.realpath(dir));
+            stored = path.basename(await fs.promises.realpath(/*turbopackIgnore: true*/ dir));
         }
     } catch {
         // Missing, or unreadable, which the read itself reports.
