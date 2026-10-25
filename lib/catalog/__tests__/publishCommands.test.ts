@@ -122,13 +122,15 @@ describe('photos publish', { timeout: 120_000 }, () => {
         const unconfirmed = await photos(catalog.root, ['publish'], { PHOTOS_ACTOR: 'cli-test' });
         expect(unconfirmed.code).toBe(3);
         expect(unconfirmed.stderr).toContain('[photos] LAUNCH_CONFIRMATION_REQUIRED: This is the first publish: 3 photographs replace the legacy Home and Gallery.');
-        expect(unconfirmed.stderr).toContain('Launch: this revision replaces the legacy Home and Gallery with 3 photographs. Every photograph in the library is in it.');
-        expect(unconfirmed.stderr).toContain('Run it again with --confirm-launch to publish it.');
+        expect(unconfirmed.stderr).toContain('Launch: this revision replaces the legacy Home and Gallery with 3 photographs. Every photograph the legacy site lists is in it.');
+        expect(unconfirmed.stderr).toContain(`To publish exactly this candidate, run publish again with --confirm-launch --expect ${catalog.revisionId}.`);
 
-        const published = await photos(catalog.root, ['publish', '--confirm-launch', '--reason', 'launch'], { PHOTOS_ACTOR: 'cli-test' });
+        const published = await photos(catalog.root, ['publish', '--confirm-launch', '--expect', catalog.revisionId, '--reason', 'launch'], { PHOTOS_ACTOR: 'cli-test' });
         expect(published.code, published.stderr).toBe(0);
         expect(published.stdout).toContain(`[photos] PUBLISHED: Published ${catalog.revisionId} as revision 1.`);
         expect(published.stdout).toContain(`Active: ${catalog.revisionId}, revision 1`);
+        expect(published.stdout).toContain('Launch: this revision replaced the legacy Home and Gallery with 3 photographs.');
+        expect(published.stdout).not.toContain('checklist');
         expect(eventsOf(published.stdout).map((entry) => entry.event)).toEqual(['catalog.publish.started', 'catalog.publish.validated', 'catalog.publish.activated']);
         expect((await listActivations(catalog.root))[0]).toMatchObject({ actor: 'cli-test', reason: 'launch' });
 

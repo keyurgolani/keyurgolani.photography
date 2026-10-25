@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { parseArgs } from 'node:util';
+import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { PHOTO_ID_RE } from '../identity/ids';
 import type { PublishResult } from './publish';
 import type { PlacementArg, SequenceCommand } from './sequence-commands';
@@ -14,13 +14,32 @@ import { catalogPaths } from './working-layer';
 
 export class UsageError extends Error {}
 
-/** Parse flags strictly: an unknown flag, a stray argument, or a missing value is a usage error. */
-export function strictly<T>(parse: () => T): T {
+/** Run a parser, turning what it throws into a usage error. */
+function strictly<T>(parse: () => T): T {
     try {
         return parse();
     } catch (error) {
         throw new UsageError(error instanceof Error ? error.message : String(error));
     }
+}
+
+type Strict<T extends ParseArgsConfig> = T & { strict: true };
+
+/**
+ * Parse flags strictly: an unknown flag, a stray argument, a missing value,
+ * or a flag given twice is a usage error. parseArgs() alone keeps the last
+ * of a repeated flag, so `--import a.csv --import b.csv` would import b.csv.
+ * A positional that starts with `-` goes after `--`.
+ */
+export function parseFlags<T extends ParseArgsConfig>(config: T): ReturnType<typeof parseArgs<Strict<T>>> {
+    const parsed = strictly(() => parseArgs({ ...config, strict: true, tokens: true }));
+    const seen = new Set<string>();
+    for (const token of parsed.tokens ?? []) {
+        if (token.kind !== 'option') continue;
+        if (seen.has(token.name)) throw new UsageError(`--${token.name} is given more than once. Give it once.`);
+        seen.add(token.name);
+    }
+    return { values: parsed.values, positionals: parsed.positionals } as ReturnType<typeof parseArgs<Strict<T>>>;
 }
 
 export function photoIdArg(arg: string): string {
@@ -66,11 +85,11 @@ interface Parsed {
     positionals: string[];
 }
 
-type Options = NonNullable<Parameters<typeof parseArgs>[0]>['options'];
+type Options = NonNullable<ParseArgsConfig['options']>;
 
 /** Strict parsing with --expect-version, which every changing command takes. */
 function parseOrder(args: string[], options: Options = {}): Parsed {
-    return strictly(() => parseArgs({ args, options: { 'expect-version': { type: 'string' }, ...options }, allowPositionals: true, strict: true })) as Parsed;
+    return parseFlags({ args, options: { 'expect-version': { type: 'string' }, ...options }, allowPositionals: true }) as Parsed;
 }
 
 const text = (value: string | boolean | undefined): string | undefined => (typeof value === 'string' ? value : undefined);
@@ -87,7 +106,8 @@ export function sequenceArgs(args: string[]): SequenceCommand {
         }
         case 'set': {
             const { values, positionals } = parseOrder(rest);
-            if (positionals.length < 1) throw new UsageError('Usage: photos sequence set <seriesId> <photoId>...');
+            // An empty list would empty the series; sequence remove takes photos out one at a time.
+            if (positionals.length < 2) throw new UsageError('photos sequence set needs a series ID and at least one photo ID.');
             const [seriesId, ...photoIds] = positionals;
             return { command: 'set', seriesId, photoIds: photoIds.map(photoIdArg), expectVersion: expectVersion(values) };
         }
@@ -148,8 +168,16 @@ export function sequenceArgs(args: string[]): SequenceCommand {
 export function seriesArgs(args: string[]): SequenceCommand {
     const [sub, ...rest] = args;
     if (sub !== 'order' && sub !== 'featured') throw new UsageError(sub ? `Unknown series command: ${sub}` : 'photos series needs order or featured.');
-    const { values, positionals } = parseOrder(rest);
-    return { command: sub === 'order' ? 'series-order' : 'series-featured', seriesIds: positionals, expectVersion: expectVersionArg(text(values['expect-version'])) };
+    const { values, positionals } = parseOrder(rest, sub === 'featured' ? { clear: { type: 'boolean' } } : {});
+    const expectVersion = expectVersionArg(text(values['expect-version']));
+    // An empty Work order loses the owner's order. Featuring no series is a real choice, so it takes --clear.
+    if (sub === 'order') {
+        if (positionals.length === 0) throw new UsageError('photos series order needs at least one series ID.');
+        return { command: 'series-order', seriesIds: positionals, expectVersion };
+    }
+    if (values.clear === true && positionals.length > 0) throw new UsageError('photos series featured takes series IDs or --clear, not both.');
+    if (values.clear !== true && positionals.length === 0) throw new UsageError('photos series featured needs at least one series ID, or --clear to feature none.');
+    return { command: 'series-featured', seriesIds: positionals, expectVersion };
 }
 
 /** How many issues the CLI prints. The diagnostics file holds every one. */
@@ -167,13 +195,31 @@ export function issueLines(issues: readonly Issue[], rest: string): string[] {
     return lines;
 }
 
-/** What the first publish asks of the owner. docs/curation.md's launch checklist has the whole list. */
+/** What the first publish asks of the owner, as the README's "Curating the catalog" lists it. */
 const LAUNCH_CHECKLIST = [
-    'Launch checklist, from docs/curation.md:',
-    '  - The cutover milestone has shipped: Home, Work, the series pages, and the Viewer read the catalog (#4, #3, #5, #7), and a rollback works (#15 slice A).',
+    'Launch checklist, from the README\'s "Curating the catalog":',
+    "  - The cutover milestone has shipped: Home, Work, the series pages, and the Viewer read the catalog (#4, #3, #5, #7), and #15's 15-1 and 15-2 are in, so a rollback works.",
     '  - Viewer hardening (#9) is recommended first.',
-    '  - A preview, this data root copied, published, and served on another port, looks right.',
+    '  - A preview looks right: this data root copied, the copy published, and served on another port.',
 ];
+
+/**
+ * The first publish's impact. Before the launch, with the checklist and the
+ * command that publishes exactly the candidate shown, so a working layer
+ * that changes in between stops it. After it, only what it replaced.
+ */
+function launchLines(result: PublishResult): string[] {
+    if (!result.launch) return [];
+    const { published, gone } = result.launch;
+    if (result.outcome === 'PUBLISHED') return [`Launch: this revision replaced the legacy Home and Gallery with ${count(published, 'photograph')}.`];
+    if (result.outcome !== 'LAUNCH_CONFIRMATION_REQUIRED' && result.outcome !== 'DRY_RUN_OK') return [];
+    const leaving = gone === 0
+        ? 'Every photograph the legacy site lists is in it.'
+        : `${count(gone, 'photograph')} the legacy site lists ${gone === 1 ? "isn't" : "aren't"} in it, so ${gone === 1 ? 'it leaves' : 'they leave'} the site.`;
+    const lines = [`Launch: this revision replaces the legacy Home and Gallery with ${count(published, 'photograph')}. ${leaving}`, ...LAUNCH_CHECKLIST];
+    if (result.candidateId) lines.push(`To publish exactly this candidate, run publish again with --confirm-launch --expect ${result.candidateId}. --expect stops it if the working layer changes before then.`);
+    return lines;
+}
 
 /** The lines `photos publish` prints for a result. */
 export function publishReport(result: PublishResult, root: string): string[] {
@@ -181,13 +227,7 @@ export function publishReport(result: PublishResult, root: string): string[] {
     if (result.candidateId) lines.push(`Candidate: ${result.candidateId}`);
     if (result.revisionId) lines.push(`Active: ${result.revisionId}${result.revisionNumber === null ? '' : `, revision ${result.revisionNumber}`}`);
     if (result.missingRules?.length) lines.push(`Missing rules: ${result.missingRules.join(', ')}`);
-    if (result.launch) {
-        const { published, gone } = result.launch;
-        const leaving = gone === 0 ? 'Every photograph in the library is in it.' : `${count(gone, 'photograph')} in the library ${gone === 1 ? "isn't" : "aren't"} in it, so ${gone === 1 ? 'it leaves' : 'they leave'} the site.`;
-        lines.push(`Launch: this revision replaces the legacy Home and Gallery with ${count(published, 'photograph')}. ${leaving}`);
-        lines.push(...LAUNCH_CHECKLIST);
-        if (result.outcome === 'LAUNCH_CONFIRMATION_REQUIRED') lines.push('Run it again with --confirm-launch to publish it.');
-    }
+    lines.push(...launchLines(result));
     if (result.reprofiled) {
         const { moved, kept } = result.reprofiled;
         if (moved.length) lines.push(`Moved to the current profile: ${moved.slice(0, PRINTED_ISSUES).join(', ')}${moved.length > PRINTED_ISSUES ? `, and ${moved.length - PRINTED_ISSUES} more` : ''}`);
@@ -198,7 +238,3 @@ export function publishReport(result: PublishResult, root: string): string[] {
     return lines;
 }
 
-// Placeholder until the flag check lands: parses strictly, like the commands do.
-export function parseFlags(config: Parameters<typeof parseArgs>[0]): ReturnType<typeof parseArgs> {
-    return strictly(() => parseArgs({ ...config, strict: true }));
-}

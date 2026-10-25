@@ -6,6 +6,7 @@ import type { Registry } from '../identity/types';
 import { dataRootStatus, libraryRoot } from '../storage/config';
 import { LockTimeoutError, withLock, type LockContext, type LockHooks, type LockRecord } from '../storage/lock';
 import { candidateFile, compileCandidate, type CompileResult } from './compile';
+import { onLegacySite } from './legacy-photos';
 import { LAUNCH_ORDER_RULE_IDS } from './order-rules';
 import { rebaseWorkingLayer, type RebaseReport } from './rebase';
 import {
@@ -142,7 +143,7 @@ export interface PublishOptions {
 export interface LaunchImpact {
     /** Photographs the candidate publishes. */
     published: number;
-    /** Photographs #10 knows, with a present source, that the candidate leaves out. They leave the site at launch. */
+    /** Photographs the legacy site can list, by onLegacySite(), that the candidate leaves out. They leave the site at launch. */
     gone: number;
 }
 
@@ -581,9 +582,9 @@ export async function activateRevision(options: ActivateOptions): Promise<Activa
     return { outcome: 'ACTIVATED', message: `Activated ${revision.revisionId} as revision ${result.activation.revisionNumber}.`, activation: result.activation, recovery, issues };
 }
 
-/** What a first activation takes away: present photographs #10 knows that the candidate doesn't publish. */
+/** What a first activation takes away: photographs the legacy site can list that the candidate doesn't publish. */
 function launchImpact(registry: Registry, published: number, publishedIds: ReadonlySet<string>): LaunchImpact {
-    const gone = Object.values(registry.photos).filter((photo) => photo.sourceHealth === 'present' && !publishedIds.has(photo.photoId)).length;
+    const gone = Object.values(registry.photos).filter((photo) => onLegacySite(photo) && !publishedIds.has(photo.photoId)).length;
     return { published, gone };
 }
 
@@ -742,7 +743,7 @@ export async function publish(options: PublishOptions): Promise<PublishResult> {
             result.launch = launchImpact(registry, compiled.content.photos.length, new Set(compiled.content.photos.map((photo) => photo.id)));
             if (!confirmLaunch && !dryRun) {
                 const { published, gone } = result.launch;
-                const leaving = gone > 0 ? `, and ${photographs(gone)} in the library ${gone === 1 ? 'leaves' : 'leave'} the site` : '';
+                const leaving = gone > 0 ? `, and ${photographs(gone)} the legacy site lists ${gone === 1 ? 'leaves' : 'leave'} it` : '';
                 throw new Stop('LAUNCH_CONFIRMATION_REQUIRED', `This is the first publish: ${photographs(published)} ${published === 1 ? 'replaces' : 'replace'} the legacy Home and Gallery${leaving}. Confirm the launch to go ahead.`);
             }
         }

@@ -8,7 +8,7 @@ import type { AssetRevisionRecord, PhotoRecord, Registry } from '../identity/typ
 import { libraryRoot } from '../storage/config';
 import { hasErrorCode, pathExists } from '../storage/fsx';
 import { baseNameOf, setGroups } from '../../utils/derivativeSets';
-import { cameraSettingsCaption } from './legacy-photos';
+import { cameraSettingsCaption, onLegacySite } from './legacy-photos';
 import type { CatalogReader } from './reader';
 import type { PublicPhotoRecord } from './types';
 
@@ -119,9 +119,8 @@ function technicalValues(revision: AssetRevisionRecord): Partial<Record<Technica
 export async function legacyList(registry: Registry, library: string): Promise<ImageItem[]> {
     const candidates = new Map<string, Candidate>();
     for (const photo of Object.values(registry.photos)) {
-        if (!photo.source.present || photo.sourceHealth !== 'present' || photo.mergedInto !== undefined || photo.source.path.includes('/')) continue;
+        if (!onLegacySite(photo)) continue;
         const revision = photo.revisions[photo.source.observedRevision];
-        if (!revision || revision.width === null || revision.height === null) continue;
         candidates.set(photo.source.path, { photo, revision: revision as Candidate['revision'] });
     }
 
