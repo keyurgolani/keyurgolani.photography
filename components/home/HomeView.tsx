@@ -6,21 +6,19 @@ import { usePrefersReducedMotion } from '@/components/motion/usePrefersReducedMo
 import LoadingState from '@/components/site/LoadingState';
 import SiteNav from '@/components/site/SiteNav';
 import { hasCompletedHomeHeroIntro, markHomeHeroIntroCompleted } from '@/utils/homeHeroCache';
-import { BUILT_IN_HOLDS } from './homeChrome';
 import HomeChromeController, { HomeChrome, HomeVignette } from './HomeChromeController';
 import type { HomePhoto } from './homePhoto';
 import HomeSequence from './HomeSequence';
 import HomeSequenceControls from './HomeSequenceControls';
 import { useHomeChrome } from './useHomeChrome';
 import { useHomePlayback } from './useHomePlayback';
+import { usePlaybackHolds } from './usePlaybackHolds';
 import type { HomePhotosStatus } from './useLegacyHomePhotos';
 
 interface HomeViewProps {
   photos: HomePhoto[];
   photosStatus?: HomePhotosStatus;
 }
-
-const holdsPointer = (event: React.PointerEvent) => event.pointerType === 'mouse' || event.pointerType === 'pen';
 
 /**
  * Home: the intro, the slideshow, and the chrome over it. HomeChromeController
@@ -38,16 +36,15 @@ export default function HomeView({ photos, photosStatus = 'ready' }: HomeViewPro
 
 function HomeViewContent({ photos, photosStatus }: Required<HomeViewProps>) {
   const chrome = useHomeChrome();
-  const { reportPhoto, reportIntro, isKeyboardHeld, holds, visibility, loading } = chrome;
+  const { reportPhoto, reportIntro, loading } = chrome;
   const reducedMotion = usePrefersReducedMotion();
   const [isSettled, setIsSettled] = useState(hasCompletedHomeHeroIntro);
   const [firstImageReady, setFirstImageReady] = useState(false);
   const shownRef = useRef(false);
-  const [pointerOver, setPointerOver] = useState(false);
 
   const photoIds = useMemo(() => photos.map((photo) => photo.id), [photos]);
   const playback = useHomePlayback({ photoIds, ready: firstImageReady && isSettled });
-  const { setHold } = playback;
+  const pointerHandlers = usePlaybackHolds(playback.setHold);
 
   // The first photograph on screen ends loading and releases any no-photo hold.
   const handleImageReady = useCallback(() => {
@@ -67,23 +64,6 @@ function HomeViewContent({ photos, photosStatus }: Required<HomeViewProps>) {
   }, [photosStatus, reportPhoto]);
 
   const handleSettled = useCallback(() => setIsSettled(true), []);
-
-  // Keyboard focus in the chrome holds the slideshow, and pointer focus doesn't.
-  useEffect(() => {
-    setHold('focus', isKeyboardHeld);
-  }, [setHold, isKeyboardHeld]);
-
-  // A consumer's hold on the chrome, such as an open dialog, holds the slideshow too.
-  const consumerHeld = useMemo(() => [...holds].some((reason) => !BUILT_IN_HOLDS.has(reason)), [holds]);
-  useEffect(() => {
-    setHold('chrome', consumerHeld);
-  }, [setHold, consumerHeld]);
-
-  // A mouse or pen resting on the controls holds the slideshow, but only while the chrome shows them.
-  const chromeVisible = visibility !== 'immersive';
-  useEffect(() => {
-    setHold('pointer', pointerOver && chromeVisible);
-  }, [setHold, pointerOver, chromeVisible]);
 
   return (
     <div className="contents" data-playback={playback.playbackState}>
@@ -118,10 +98,7 @@ function HomeViewContent({ photos, photosStatus }: Required<HomeViewProps>) {
             onPrev={playback.prev}
             onNext={playback.next}
             onTogglePlayback={playback.togglePlayback}
-            onPointerEnter={(event) => {
-              if (holdsPointer(event)) setPointerOver(true);
-            }}
-            onPointerLeave={() => setPointerOver(false)}
+            {...pointerHandlers}
           />
         }
       />
