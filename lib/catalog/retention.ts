@@ -4,12 +4,12 @@ import path from 'node:path';
 import { STAGING_ID, stagingLockName, stagingRoot } from '../identity/derivatives';
 import { canonicalJson } from '../storage/canonical';
 import { dataRootStatus } from '../storage/config';
-import { hasErrorCode } from '../storage/fsx';
+import { hasErrorCode, isInside } from '../storage/fsx';
 import { LockTimeoutError, withLock, type LockContext, type LockRecord } from '../storage/lock';
 import { CATALOG_LEASE_MS, type CatalogLogger } from './publish';
 import { references, ReferenceScanError } from './references';
 import { CATALOG_LOCK, CatalogIntegrityError, listActivations, readLastPublish } from './repository';
-import { holderText } from './rollback';
+import { errorText as sharedErrorText, holderText } from './rollback';
 import { parseCandidateFile, REVISION_ID_RE } from './schema';
 import { AUTHORED_LOCK } from './working-layer-writer';
 import { catalogPaths } from './working-layer';
@@ -423,25 +423,18 @@ function assertSameFolders(realRoot: string, checked: Checked): void {
 }
 
 /**
- * An error for a message, without the absolute path a Node fs error carries:
- * its code and the path relative to the data root, or "a path outside the
- * data root", as 15-2's rollback does. Other errors keep their message, which
- * catalog code writes relative already.
+ * An error for a message, without the data root's absolute path: 15-2's
+ * errorText(), which gives a Node fs error as its code and the path relative
+ * to the data root, run against whichever of `roots` (the real path and the
+ * one given) holds the path. Any other message that names a root says it
+ * relative to it too, such as dataRootStatus()'s detail.
  */
 export function errorText(error: unknown, roots: readonly string[]): string {
-    const errno = error as NodeJS.ErrnoException;
-    if (error instanceof Error && typeof errno.code === 'string' && typeof errno.path === 'string') {
-        const file = path.resolve(errno.path);
-        for (const root of roots) {
-            const relative = path.relative(root, file);
-            if (relative === '') return `${errno.code} on the data root`;
-            if (!relative.startsWith('..') && !path.isAbsolute(relative)) return `${errno.code} on ${posix(relative)}`;
-        }
-        return `${errno.code} on a path outside the data root`;
-    }
-    const message = error instanceof Error ? error.message : String(error);
-    // Anything else that names the data root says it relative to it too.
-    return roots.reduce((text, root) => text.split(`${root}${path.sep}`).join('').split(root).join('the data root'), message);
+    const named = (error as NodeJS.ErrnoException | null)?.path ?? (error as { file?: unknown } | null)?.file;
+    const file = typeof named === 'string' ? path.resolve(named) : null;
+    const root = (file !== null ? roots.find((candidate) => isInside(file, candidate)) : undefined) ?? roots[0];
+    const text = sharedErrorText(error, root);
+    return roots.reduce((message, each) => message.split(`${each}${path.sep}`).join('').split(each).join('the data root'), text);
 }
 
 /**
