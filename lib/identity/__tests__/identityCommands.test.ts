@@ -253,6 +253,43 @@ describe('a pass with decision files', () => {
         expect(registry.photos[n]).toMatchObject({ sourceHealth: 'present', source: { path: 'z.jpg' } });
         expect(registry.photos[x].sourceHealth).toBe('missing');
     }, 60_000);
+
+    /** The [bind z.jpg x, new z.jpg] batch, applied by a pass that died before filing it. */
+    async function crashedBatch() {
+        const s = await setup({ 'a.jpg': 'A' });
+        const x = await s.photoAt('a.jpg');
+        fs.rmSync(s.lib.file('a.jpg'));
+        fs.writeFileSync(s.lib.file('z.jpg'), images.Z);
+        const bind = await s.decide({ type: 'bind', path: 'z.jpg', photoId: x });
+        const made = await s.decide({ type: 'new', path: 'z.jpg' });
+        await expect(s.pass({ faults: { beforeSettle: () => { throw new Error('the process died'); } } })).rejects.toThrow('the process died');
+        return { s, x, n: made.photoId as string, bind, made };
+    }
+
+    it('refuses a hand-edited record that names another file, and deletes or writes nothing outside decisions/', async () => {
+        const { s, bind } = await crashedBatch();
+        const file = identityPaths(s.data.root).registry;
+        const victim = path.join(s.data.root, 'victim.txt');
+        fs.writeFileSync(victim, 'keep me');
+        const registry = JSON.parse(fs.readFileSync(file, 'utf8'));
+        registry.decided[bind.decisionId] = { status: 'rejected', reason: 'edited', name: '../../victim.txt' };
+        fs.writeFileSync(file, JSON.stringify(registry));
+
+        await expect(s.pass()).rejects.toThrow('decided holds a malformed entry');
+        expect(fs.readFileSync(victim, 'utf8')).toBe('keep me');
+        expect(fs.readdirSync(identityPaths(s.data.root).dir).sort()).toEqual(['decisions', 'registry.json', 'stat-cache.json']);
+        expect(s.pending()).toHaveLength(2);
+        expect(s.filed('rejected')).toEqual([]);
+    }, 60_000);
+
+    it('refuses a record keyed by something other than a decision ID', async () => {
+        const { s, bind } = await crashedBatch();
+        const file = identityPaths(s.data.root).registry;
+        const registry = JSON.parse(fs.readFileSync(file, 'utf8'));
+        registry.decided['../../victim'] = registry.decided[bind.decisionId];
+        fs.writeFileSync(file, JSON.stringify(registry));
+        await expect(s.pass()).rejects.toThrow('decided is keyed by something other than a decision ID');
+    }, 60_000);
 });
 
 describe('photos identity decisions', { timeout: 120_000 }, () => {

@@ -11,7 +11,7 @@ import {
     type VersionedWriteHooks,
 } from '../storage/document';
 import { hasErrorCode, PRIVATE_DIR_MODE } from '../storage/fsx';
-import { ASSET_REVISION_RE, PHOTO_ID_RE } from './ids';
+import { ASSET_REVISION_RE, DECISION_ID_RE, PHOTO_ID_RE } from './ids';
 import type { ImageInspection, UnsupportedInspection } from './inspect';
 import { EXTRACTOR_VERSION } from './metadata';
 import { emptyRegistry, REGISTRY_SCHEMA_VERSION, type Registry } from './types';
@@ -30,6 +30,8 @@ export function identityPaths(root: string) {
         migration: path.join(dir, 'migration'),
     };
 }
+
+const hasOnlyKeys = (value: Record<string, unknown>, keys: readonly string[]) => Object.keys(value).every((key) => keys.includes(key));
 
 const HEALTH = new Set(['present', 'missing', 'ambiguous', 'archived']);
 
@@ -70,8 +72,12 @@ function assertRegistry(file: string, value: Record<string, unknown>): asserts v
     }
     if (value.decided !== undefined) {
         if (!isRecord(value.decided)) fail('decided must be an object');
-        for (const recorded of Object.values(value.decided as Record<string, unknown>)) {
-            const ok = isRecord(recorded) && ((recorded.status === 'applied' && typeof recorded.detail === 'string') || (recorded.status === 'rejected' && typeof recorded.reason === 'string'));
+        for (const [decisionId, recorded] of Object.entries(value.decided as Record<string, unknown>)) {
+            if (!DECISION_ID_RE.test(decisionId)) fail('decided is keyed by something other than a decision ID');
+            // Exactly the fields a pass writes, so a hand-edited entry can't carry anything a later pass would use.
+            const ok = isRecord(recorded) && (
+                (recorded.status === 'applied' && typeof recorded.detail === 'string' && hasOnlyKeys(recorded, ['status', 'detail'])) ||
+                (recorded.status === 'rejected' && typeof recorded.reason === 'string' && hasOnlyKeys(recorded, ['status', 'reason'])));
             if (!ok) fail('decided holds a malformed entry');
         }
     }

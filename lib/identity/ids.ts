@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { canonicalJson } from '../storage/canonical';
 
+/** A decision's ID: a lowercase UUID v4. */
+export const DECISION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** `ph_` plus a lowercase UUID v4. Minted once and never derived from path, bytes, time, or position. */
 export const PHOTO_ID_RE = /^ph_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** `sha256-` plus 64 lowercase hex of the source bytes, so a metadata edit is a new revision. */

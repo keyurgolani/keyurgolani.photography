@@ -190,6 +190,21 @@ describe('decision files', () => {
             raw: '{ nope',
         });
     });
+    it("moves and writes nothing for an outcome naming a file it didn't list", async () => {
+        const data = root();
+        const decision = createDecision({ type: 'archive', photoId: PHOTO, actor: 'cli' }, { idGen: sequentialIds(), clock: () => NOW });
+        await writeDecision(data.root, decision);
+        const victim = path.join(data.root, 'victim.txt');
+        fs.writeFileSync(victim, 'keep me');
+        const files = await readPendingDecisions(data.root);
+        await settleDecisions(data.root, files, [
+            { name: '../../victim.txt', decisionId: decision.decisionId, status: 'rejected', reason: 'no' },
+            { name: '../../victim.txt', decisionId: decision.decisionId, status: 'applied', detail: 'yes' },
+        ], '2026-06-01T12:05:00.000Z');
+        expect(fs.readFileSync(victim, 'utf8')).toBe('keep me');
+        expect(fs.existsSync(path.join(identityPaths(data.root).dir, 'victim.txt'))).toBe(false);
+        expect(fs.readdirSync(identityPaths(data.root).decisions)).toEqual([decisionFileName(decision)]);
+    });
 });
 
 describe('reconcile: bind', () => {
