@@ -217,6 +217,43 @@ describe('photos edit', () => {
     });
 });
 
+describe('photos edit and #49\'s layout checks', () => {
+    const neverOpened: Editor = async () => {
+        throw new Error('the editor opened');
+    };
+
+    it('refuses a symlinked record folder and a file left in the old layout, opening nothing and keeping nothing', async () => {
+        const [linked, old] = catalog.photos.map((photo) => photo.id);
+        const folder = authoredRecordDir(catalog.root, 'photo', linked);
+        fs.renameSync(folder, path.join(dir, 'elsewhere'));
+        fs.symlinkSync(path.join(dir, 'elsewhere'), folder);
+        const symlinked = await runEditRecord({ dataRoot: catalog.root }, { kind: 'photo', id: linked }, { editor: neverOpened });
+        expect(symlinked.exitCode).toBe(1);
+        expect(symlinked.output).toContain('symlinked record folders aren\'t supported');
+
+        fs.copyFileSync(newestRecordFile(catalog.root, 'photo', old), `${authoredRecordDir(catalog.root, 'photo', old)}.json`);
+        const before = versions('photo', old);
+        const oldLayout = await runEditRecord({ dataRoot: catalog.root }, { kind: 'photo', id: old }, { editor: neverOpened });
+        expect(oldLayout.exitCode).toBe(1);
+        expect(oldLayout.output).toContain('is in the old layout');
+        expect(versions('photo', old)).toEqual(before);
+        expect(keptEdits()).toEqual([]);
+    });
+
+    it('refuses an edits/ that is a symlink or a file, rather than writing a working copy through it', async () => {
+        const id = catalog.photos[0].id;
+        const target = path.join(dir, 'outside');
+        fs.mkdirSync(target);
+        fs.symlinkSync(target, editsDir(catalog.root));
+        const linked = await runEditRecord({ dataRoot: catalog.root }, { kind: 'photo', id }, { editor: neverOpened });
+        expect(linked).toEqual({ exitCode: 1, output: 'Error: edits/ in the data root is a symlink or not a folder, so photos edit won\'t keep a working copy there. Make it a folder of its own (0700). Nothing was written.\n' });
+        expect(fs.readdirSync(target)).toEqual([]);
+        fs.unlinkSync(editsDir(catalog.root));
+        fs.writeFileSync(editsDir(catalog.root), '');
+        expect((await runEditRecord({ dataRoot: catalog.root }, { kind: 'photo', id }, { editor: neverOpened })).exitCode).toBe(1);
+    });
+});
+
 describe('the shell editor', () => {
     it('passes the file as an argument, so a data root path with spaces, $(...) and backticks runs nothing', async () => {
         const marks = [path.join(dir, 'mark-1'), path.join(dir, 'mark-2')];
