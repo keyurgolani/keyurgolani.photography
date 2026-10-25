@@ -76,9 +76,22 @@ export function readSeriesPages(state: unknown, revisionId: string, slug: string
     return loaded;
 }
 
-/** Record the extent in the current history entry, keeping every key already there (Next's router state among them). */
-export function writeSeriesPages(pages: SeriesPagesState): void {
+/**
+ * Record the extent in the current history entry, keeping every key already
+ * there (Next's router state among them), but only while that entry is the
+ * series page at `seriesPath`. A page that arrives while #9's modal Viewer
+ * is open would otherwise land in the Viewer's entry. Returns whether it
+ * wrote, so the caller can keep the extent and write it once the series
+ * entry is current again.
+ *
+ * Next drops this key whenever a soft navigation replaces the current entry
+ * (`router.refresh()`, `router.replace()`, a link to the current URL), so
+ * anything that adds one of those to the series page has to write it again.
+ */
+export function writeSeriesPages(pages: SeriesPagesState, seriesPath: string): boolean {
+    if (window.location.pathname !== seriesPath) return false;
     const current = window.history.state;
     const base = typeof current === 'object' && current !== null ? current : {};
     window.history.replaceState({ ...base, [SERIES_PAGES_KEY]: pages }, '');
+    return true;
 }

@@ -100,7 +100,8 @@ function EntryList({ entries, total }: { entries: SeriesEntry[]; total: number }
  *   series and the key change when its revision or slug changes. A load in
  *   flight while #9's modal Viewer is open keeps going, since the page stays
  *   mounted under it and still wants the result.
- * - Back: each append records the loaded extent in the history entry. A
+ * - Back: each append records the loaded extent in the series' own history
+ *   entry (held until it's current again if #9's modal Viewer is open). A
  *   fresh mount on Back with an extent for this revision and series loads
  *   the same pages again, with the section `aria-busy`, then fires
  *   SERIES_RESTORED_EVENT on it, so #5's return can find a photograph past
@@ -118,6 +119,9 @@ export default function SeriesSequence({ revisionId, slug, href, entries: firstP
     const focusAfter = useRef<string | null>(null);
     const controllers = useRef(new Set<AbortController>());
 
+    /** An extent that arrived while another entry was current (#9's modal Viewer), for the series entry once it's back. */
+    const unwritten = useRef<number | null>(null);
+
     useEffect(() => {
         const active = controllers.current;
         return () => {
@@ -125,6 +129,22 @@ export default function SeriesSequence({ revisionId, slug, href, entries: firstP
             active.clear();
         };
     }, []);
+
+    const recordExtent = useCallback(
+        (count: number) => {
+            unwritten.current = writeSeriesPages({ revisionId, slug, loaded: count }, href) ? null : count;
+        },
+        [revisionId, slug, href],
+    );
+
+    // Closing the modal Viewer is a Back to the series entry: write what arrived while it was open.
+    useEffect(() => {
+        const onPopState = () => {
+            if (unwritten.current !== null) recordExtent(unwritten.current);
+        };
+        window.addEventListener('popstate', onPopState);
+        return () => window.removeEventListener('popstate', onPopState);
+    }, [recordExtent]);
 
     /** Add a page when it continues the sequence. A page that doesn't (a repeat, a gap) is dropped. */
     const append = useCallback(
@@ -135,10 +155,10 @@ export default function SeriesSequence({ revisionId, slug, href, entries: firstP
             loaded.current = grown;
             next.current = answer.nextHref;
             setEntries(grown);
-            writeSeriesPages({ revisionId, slug, loaded: grown.length });
+            recordExtent(grown.length);
             return true;
         },
-        [revisionId, slug],
+        [recordExtent],
     );
 
     const request = useCallback(

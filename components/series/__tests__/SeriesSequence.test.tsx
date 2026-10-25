@@ -62,13 +62,13 @@ const positions = () => [...document.querySelectorAll('[data-position]')].map((n
 const link = (position: number) => document.getElementById(`photo-${id(position)}`);
 
 beforeEach(() => {
-    window.history.replaceState({ __NA: true, kept: 'yes' }, '');
+    window.history.replaceState({ __NA: true, kept: 'yes' }, '', '/work/fixture-long');
     fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => pageAnswer(String(url)));
 });
 
 afterEach(() => {
     vi.restoreAllMocks();
-    window.history.replaceState(null, '');
+    window.history.replaceState(null, '', '/');
 });
 
 describe('SeriesSequence', () => {
@@ -204,6 +204,40 @@ describe('SeriesSequence', () => {
         expect(signal.aborted).toBe(false);
         view.unmount();
         expect(signal.aborted).toBe(true);
+    });
+
+    it.each(['https://elsewhere.test/x', '/api/other', '//elsewhere.test/api/catalog/series/x'])('never follows a next page the server didn\'t mint (%s): the page is an error and nothing goes there', async (foreign) => {
+        fetch.mockImplementation(async (url) => (String(url) === PAGE_2 ? json({ revisionId: REVISION, entries: range(101, 200), nextHref: foreign }) : json({}, 500)));
+        show();
+        fireEvent.click(more());
+        await flush();
+        expect(status()).toBe(MORE_FAILED);
+        expect(positions()).toHaveLength(100);
+        fireEvent.click(screen.getByRole('button', { name: TRY_AGAIN }));
+        await flush();
+        expect(fetch.mock.calls.map(([url]) => String(url)).filter((url) => url !== PAGE_2)).toEqual([]);
+    });
+
+    it('writes an extent that arrives while another entry is current (the modal Viewer) only once the series entry is back', async () => {
+        let resolve: (response: Response) => void = () => undefined;
+        fetch.mockImplementation(() => new Promise<Response>((done) => (resolve = done)));
+        show();
+        fireEvent.click(more());
+        await flush();
+        // The modal Viewer pushes its own entry while the page is on its way.
+        window.history.pushState({ __NA: true, viewer: true }, '', `/work/fixture-long/photo/${id(150)}`);
+        resolve(pageAnswer(PAGE_2));
+        await flush();
+        expect(positions()).toHaveLength(200);
+        expect(window.history.state).toEqual({ __NA: true, viewer: true });
+        // Close is one Back to the series entry.
+        await act(async () => {
+            const popped = new Promise((done) => window.addEventListener('popstate', done, { once: true }));
+            window.history.back();
+            await popped;
+        });
+        expect(window.location.pathname).toBe('/work/fixture-long');
+        expect(window.history.state).toEqual({ __NA: true, kept: 'yes', [SERIES_PAGES_KEY]: { revisionId: REVISION, slug: 'fixture-long', loaded: 200 } });
     });
 
     it('records the loaded extent in the history entry, keeping the keys already there', async () => {
