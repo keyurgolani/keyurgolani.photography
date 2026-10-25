@@ -354,6 +354,25 @@ describe('diffCatalog() empty, provenance, and output', () => {
     }
 });
 
+describe('an authored capture date', () => {
+    it('shows dropping it as an authored change that needs review, not a recalculated derived fact', () => {
+        const w = world();
+        const id = series(w, 0).photoIds[0];
+        const read = photo(w, id).capturedAt as string;
+        // The active revision published the owner's override; the draft drops it, so compile falls back to #10's date.
+        const content = structuredClone(active.content);
+        (content.photos.find((entry) => entry.id === id) as RevisionFile['content']['photos'][number]).capturedAt = '2020-05-05';
+        const overridden: RevisionFile = { ...active, revisionId: revisionIdOf(content), content };
+        authoredPhoto(w, id).baseRevisionId = overridden.revisionId;
+        const result = diff(w, { active: overridden });
+        expect(rows(result.changes)).toEqual([['photo', id, 'capturedAt', 'authored']]);
+        expect(result.changes[0]).toMatchObject({ before: '2020-05-05', after: read, provenance: 'authored', review: { state: 'reviewed' } });
+        // Dropped by hand after the backfill, with a stamp that still holds the override, it needs a review.
+        authoredPhoto(w, id).review = { fields: { capturedAt: { valueHash: hashValue('2020-05-05'), origin: 'curator', baseRevisionId: overridden.revisionId, actor: 'cli', reviewedAt: '2026-03-01T00:00:00.000Z' } } };
+        expect(diff(w, { active: overridden }).changes[0].review).toMatchObject({ state: 'unreviewed', fields: [{ reason: 'edited' }] });
+    });
+});
+
 describe('movedIds()', () => {
     it.each([
         { name: 'no change', before: ['a', 'b', 'c'], after: ['a', 'b', 'c'], moved: [] },
