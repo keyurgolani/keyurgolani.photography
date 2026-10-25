@@ -157,20 +157,18 @@ docker compose -f docker-compose.prod.yml run --rm --no-deps web sh -c 'rm -rf /
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-Then run `images:cleanup` once. Only the images from `v1.1.0` up to the release before slice C of #13 have it, so run it before upgrading past that release. Its dry run lists what the old pipeline left behind, including every `cache/dynamic` file from the removed `/api/image` route, and the second command deletes exactly that list:
+Then run `images:cleanup` once, while the host still runs `v1.1.0` and its compose file, before upgrading. No later release has it: the first release with slice C of #10, whose image has no tsx, also has slice C of #13, which removes the script, so no image ships a bundled copy. Its dry run lists what the old pipeline left behind, including every `cache/dynamic` file from the removed `/api/image` route, and the second command deletes exactly that list:
 
 ```bash
 docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts
 docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts --apply --plan <hash>
 ```
 
-Those commands are for the `v1.1.0` image and the releases before slice C of #10. From the first release with slice C on, the image has no tsx, so run `node dist/scripts/imageCleanup.mjs` with the same flags.
-
 The first release with slice A of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10) needs a step too. The Gallery grid and lightbox now show the derivatives instead of the original files, and derivatives written before it ignored the EXIF orientation, so a photo whose file carries an orientation tag shows turned or mirrored until its derivatives are rebuilt. The watcher rebuilds them by itself. The first time it starts on a library, it rebuilds the set of every photo with an orientation tag, and once each of them is written or has failed it records that in `cache/upright-rebuild.json` in the library, so later starts skip it. A photo that failed is listed there, and each start tries it again until it builds. If the watcher stops first, or a photo changes while it is rebuilt, the next start rebuilds them all again. The watcher has to be able to write `cache/`; it logs at start when it can't. The old derivatives keep serving until each photo's new set is written.
 
 On a host that already ran a release with slice A, the watcher has already rebuilt them, so skip the rest of this step.
 
-To see which photos it rebuilds, run the migration dry run the way the [migration runbook](data-root.md#migration-runbook) does, with `run --rm --no-deps` while the watcher is stopped, before the new watcher first starts. The deploy blocks for the first release with slice C, below, do that between their `pull` and their `up -d`, with `node dist/scripts/photos.mjs migrate --dry-run`, since that image has no tsx. It changes nothing in the library, adds only a plan and a report under `identity/migration/` in the data root, and prints the report's path. Read the report once the block is done:
+To see which photos it rebuilds, run the migration dry run the way the [migration runbook](data-root.md#migration-runbook) does, with `run --rm --no-deps` while the watcher is stopped, before the new watcher first starts. The deploy blocks for the first release with slice C, below, do that after their `pull`, before the migration and the `up -d` that follow them, with `node dist/scripts/photos.mjs migrate --dry-run`, since that image has no tsx. It changes nothing in the library, adds only a plan and a report under `identity/migration/` in the data root, and prints the report's path. Read the report once the block is done:
 
 ```bash
 docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher cat <report path>
@@ -247,9 +245,9 @@ A container whose service the second list doesn't name is left from an old servi
 docker rm -f <ID>
 ```
 
-For an old `web`, you can instead add `--remove-orphans` to the block's `up -d`, deliberately. It removes every container of this project whose service the files don't name, including one an earlier override started that this override no longer has. It runs only at the end, though, so remove a watcher left from an old service name with `docker rm -f` before the block either way. The block's `stop image-watcher` doesn't reach it, and it would keep writing the library while the dry run reads it.
+For an old `web`, you can instead add `--remove-orphans` to the `up -d` after the block, deliberately. It removes every container of this project whose service the files don't name, including one an earlier override started that this override no longer has. That `up -d` runs only after the migration, though, so remove a watcher left from an old service name with `docker rm -f` before the block either way. The block's `stop image-watcher` doesn't reach it, and it would keep writing the library while the dry run reads it.
 
-Then install the new file, set up the data root and the image cache, stop the old watcher, run the slice A dry run above, and deploy. Do it this way instead of the plain `pull` and `up -d`, and only after the `.env` edit. Each half of the switch needs the other: the plain commands would start the old file on the new image, whose watcher command needs tsx, and this block run on the old tag would start the new file on the old image, which has no `dist/scripts`. Either way the watcher crash-loops. So the block checks `.env` first, and stops before it changes anything when the tag isn't there yet. The check takes the tag alone or pinned to a digest, `vX.Y.Z@sha256:<digest>`, as one line with no quotes or spaces. In the `grep` pattern, put the version's digits in place of `X`, `Y`, and `Z` and keep the `\.` between them. The `exit` leaves only the block's subshell, not your shell. On a large library the dry run reads every photo and can take as long as a full identity pass, while the watcher is stopped and the old `web` keeps serving, so let it finish. If you stop it, the block stops before `up -d`. Run the block again: its `mv` reports that the `.new` file is gone, since the first run moved it in, and the rest runs as before:
+Then install the new file, set up the data root and the image cache, stop the old watcher, and run the slice A dry run above, which is also the migration's dry run. The block stops there, before `up -d`, and the steps after it apply the migration and then deploy. Do it this way instead of the plain `pull` and `up -d`, and only after the `.env` edit. Each half of the switch needs the other: the plain commands would start the old file on the new image, whose watcher command needs tsx, and this block run on the old tag would start the new file on the old image, which has no `dist/scripts`. Either way the watcher crash-loops. So the block checks `.env` first, and stops before it changes anything when the tag isn't there yet. The check takes the tag alone or pinned to a digest, `vX.Y.Z@sha256:<digest>`, as one line with no quotes or spaces. In the `grep` pattern, put the version's digits in place of `X`, `Y`, and `Z` and keep the `\.` between them. The `exit` leaves only the block's subshell, not your shell. On a large library the dry run reads every photo and can take as long as a full identity pass, while the watcher is stopped and the old `web` keeps serving, so let it finish. If you stop it, run the block again: its `mv` reports that the `.new` file is gone, since the first run moved it in, and the rest runs as before:
 
 ```bash
 (
@@ -261,7 +259,6 @@ Then install the new file, set up the data root and the image cache, stop the ol
   docker compose -f docker-compose.prod.yml pull
   docker compose -f docker-compose.prod.yml stop image-watcher
   docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs migrate --dry-run
-  docker compose -f docker-compose.prod.yml up -d
 )
 ```
 
@@ -281,9 +278,26 @@ With an override, use this block instead. It also checks the merged file, the ne
   docker compose -f docker-compose.prod.yml -f <override> pull
   docker compose -f docker-compose.prod.yml -f <override> stop image-watcher
   docker compose -f docker-compose.prod.yml -f <override> run --rm --no-deps image-watcher node dist/scripts/photos.mjs migrate --dry-run
-  docker compose -f docker-compose.prod.yml -f <override> up -d
 )
 ```
+
+The block leaves the old `web` serving and the watcher stopped. The first release with slice C of #10 is also the first with slice C of [#13](https://github.com/keyurgolani/keyurgolani.photography/issues/13), whose `web` lists photos only from the registry the migration writes, so apply the migration now, before `up -d`. Started first, the new `web` shows no photos on Home and Gallery until it applies. The old image can't run the migration, since it has no `dist/scripts/photos.mjs`, so these steps run the new image through the new compose file, as the block's dry run did, with the old watcher still stopped. With an override, add `-f <override>` after `-f docker-compose.prod.yml` in each command:
+
+1. Back up both folders, as step 2 of the [migration runbook](data-root.md#migration-runbook) says. The watcher is already stopped, so skip the backup block's `stop` and `start`.
+2. Read the report the block's dry run printed, and check what step 3 of the runbook lists.
+3. Apply the plan the dry run printed, as step 4 of the runbook does. If it refuses because the library changed since the dry run, run the block's dry run line again and apply that plan:
+
+   ```bash
+   docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs migrate --apply --plan <plan path>
+   ```
+
+4. Start the new stack, in place of step 5 of the runbook:
+
+   ```bash
+   docker compose -f docker-compose.prod.yml up -d
+   ```
+
+5. Check the watcher's progress as step 6 of the runbook says.
 
 Once it's up, check the site from the host, on `PHOTOGRAPHY_PORT` if you set one, and then through the public URL:
 
@@ -294,9 +308,9 @@ curl -fsS https://<public host>/api/health
 
 If the first answers and the second doesn't, the proxy or tunnel can't reach `web`. One in a container needs the `http://web:3000` setup above.
 
-[Setting it up](data-root.md#setting-it-up) in data-root.md is the same step. The site keeps serving the legacy derivatives, and the watcher's identity step stays off until the [migration runbook](data-root.md#migration-runbook) there initializes the data root. Back up first, then run it before the release the next paragraph describes, which needs it.
+[Setting it up](data-root.md#setting-it-up) in data-root.md is the same setup as the block, and the steps after the block are its [migration runbook](data-root.md#migration-runbook), in an order that keeps the old `web` serving until the registry is written.
 
-The first release with slice C of the [atomic catalog publish (#13)](https://github.com/keyurgolani/keyurgolani.photography/issues/13) lists `/api/photos` from the data root's registry instead of reading the library. On a data root the migration hasn't initialized, `/api/photos` and `/api/ready` answer 503 with `registry-missing`, and Home and Gallery show no photos. Run the migration runbook before deploying it, or right after, which leaves Home and Gallery empty in between. Then check that the site is ready:
+The first release with slice C of the [atomic catalog publish (#13)](https://github.com/keyurgolani/keyurgolani.photography/issues/13) lists `/api/photos` from the data root's registry instead of reading the library. On a data root the migration hasn't initialized, `/api/photos` and `/api/ready` answer 503 with `registry-missing`, and Home and Gallery show no photos. That's why the steps after the deploy blocks above apply the migration before their `up -d`. Once it's up, check that the site is ready:
 
 ```bash
 curl -s http://127.0.0.1:3000/api/ready

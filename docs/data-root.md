@@ -133,7 +133,7 @@ Both containers run as uid 1001, and each needs only part of the photos folder:
 
 | Container | Reads | Writes |
 |---|---|---|
-| `web` | The originals, for their size and EXIF, and the derivatives it serves | Only `./.next-images-cache`, outside the photos folder |
+| `web` | The derivatives it serves and the `lqip` files. Each photo's size and EXIF come from the registry in the data root, so it never opens an original. | Only `./.next-images-cache`, outside the photos folder |
 | `image-watcher` | The originals, in every folder of the library | The derivative folders (`thumbnails`, `medium`, `optimized`, `thumbnails-avif`, `medium-avif`, `optimized-avif`, `lqip`) and `cache/`, all at the top of the photos folder, and the data root |
 
 When nothing else writes the photos, the second `chown -R` in [Setting it up](#setting-it-up) is the simple way to give uid 1001 all of that.
@@ -148,7 +148,7 @@ When another process writes them, such as a file sync tool running as another us
 )
 ```
 
-That works only if uid 1001 can still read the originals: every folder in the library readable and searchable, and every photo readable. The containers share no group with the tool unless you set one up, so in practice that means the world bits, folders at least `0755` and photos at least `0644`, and a tool set to create new files that way. A photo that arrives as `0600` stays out of the Gallery, since neither container can read it. This prints every file or folder in the library that uid 1001 can't read, so no output means it can read them all:
+That works only if uid 1001 can still read the originals: every folder in the library readable and searchable, and every photo readable. The containers share no group with the tool unless you set one up, so in practice that means the world bits, folders at least `0755` and photos at least `0644`, and a tool set to create new files that way. A photo that arrives as `0600` stays out of the Gallery, since the watcher can't read it. This prints every file or folder in the library that uid 1001 can't read, so no output means it can read them all:
 
 ```bash
 docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher \
