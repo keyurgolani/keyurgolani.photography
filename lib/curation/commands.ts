@@ -22,8 +22,8 @@ import {
     type Choices,
 } from './actions';
 import { currentProfileId } from '../identity/profile';
-import { EVENT_ID_RE, EVENT_STATUSES, FAILURE_TEXT, needsJudgment, settledByPlacement, settlesByPlacement, shortPhotoId, waitingReason, type CurationEvent, type CurationEventStatus, type Placement } from './events';
-import { photoHolders, type ReferenceCache } from './holders';
+import { EVENT_ID_RE, EVENT_STATUSES, FAILURE_TEXT, needsJudgment, shortPhotoId, waitingReason, type CurationEvent, type CurationEventStatus, type Placement } from './events';
+import { placedItems } from './placement';
 import { EventUnusableError, listEvents, readEvent, type EventProblem } from './repository';
 import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from './text';
 
@@ -269,23 +269,6 @@ function matches(filter: ListFilter, event: CurationEvent, placed: boolean): boo
     return event.status === filter;
 }
 
-/**
- * The items settled by placement (settledByPlacement()), each with what
- * holds its photo, from one references() scan, taken only when an item could
- * settle. When the scan can't tell, none settles, so each still counts.
- */
-async function placedItems(root: string, events: readonly CurationEvent[]): Promise<{ placed: Map<string, string>; unknown: ReferenceScanError | null }> {
-    const placed = new Map<string, string>();
-    const cache: ReferenceCache = {};
-    for (const event of events) {
-        if (!settlesByPlacement(event)) continue;
-        const found = await photoHolders(root, event.photoId as string, cache);
-        if ('unknown' in found) return { placed: new Map(), unknown: found.unknown };
-        if (settledByPlacement(event, found.holders)) placed.set(event.id, `its photo is in ${found.holders.join(' and ')}`);
-    }
-    return { placed, unknown: null };
-}
-
 const unknownPlacementLine = (error: ReferenceScanError) => `Can't tell which new photographs are already placed, since ${error.file} can't be used (${error.reason}), so each one counts.`;
 
 const items = (n: number) => `${n} item${n === 1 ? '' : 's'}`;
@@ -406,8 +389,11 @@ async function show(root: string, command: Extract<CurationCommand, { command: '
     if (event === null) return { exitCode: 1, output: `Error (not-found): There is no event ${command.eventId}.\n` };
     const active = (await readActivePointer(root))?.revisionId ?? null;
     const registry = await readRegistry(root).catch(() => null);
-    if (command.json) return { exitCode: 0, output: `${JSON.stringify({ event, activeRevisionId: active }, null, 2)}\n` };
     const { placed, unknown } = await placedItems(root, [event]);
+    if (command.json) {
+        const placementUnknown = unknown === null ? null : { file: unknown.file, reason: unknown.reason };
+        return { exitCode: 0, output: `${JSON.stringify({ event, activeRevisionId: active, placed: placed.get(event.id) ?? null, placementUnknown }, null, 2)}\n` };
+    }
     const lines = [
         `${event.id}, version ${event.version}: ${event.type}, ${event.status}`,
         ...identityLines(event, registry),
