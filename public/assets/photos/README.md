@@ -22,7 +22,7 @@ docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx t
 - To take a photo down:
   1. Stop `image-watcher`, so a job already running can't write its derivatives back, then delete the photo.
   2. Run the full dry run, which also lists sets left under the photo's earlier names.
-  3. Run it with `--only <name>`, where `<name>` is the photo's exact name such as `landscape`, then apply that plan. Do the same for each earlier name.
+  3. Run it with `--only <name>`, where `<name>` is the photo's exact name such as `landscape`, then apply that plan. Do the same for each earlier name. If either step exits 1 and names a folder it couldn't look in, remove the photo's files from that folder by hand.
   4. Purge Next's image cache inside the `web` image, since its files belong to uid 1001, then start the stack.
   5. Wait about two minutes and check that `/api/photos` no longer lists the photo, since its cached list survives a restart.
 

@@ -192,7 +192,7 @@ docker compose -f docker-compose.prod.yml up -d
 |----------|-------------|---------|
 | `NEXT_PUBLIC_UI_AUTO_HIDE_TIMEOUT` | UI auto-hide timeout on home page (ms) | 3000 |
 | `PHOTOGRAPHY_LIBRARY_DIR` | Photo library folder for the watcher, `images:cleanup`, and `/api/photos`. The site serves photos only from `public/assets/photos`, so leave it unset outside tests. | `public/assets/photos` |
-| `PHOTOGRAPHY_DATA_DIR` | Private data root for photo identity state. It must sit outside `public/` and the library, on a filesystem that supports hard links (not exFAT or FAT), since its documents are written with `link()`. Only `photos:migrate --dry-run` and `photos:identity status` read it so far. | `portfolio-data`, none in production |
+| `PHOTOGRAPHY_DATA_DIR` | Private data root for photo identity state. It must sit outside `public/` and the library, on a filesystem that supports hard links (not exFAT or FAT), since each version of its documents is written with `link()`. Only `photos:migrate --dry-run` and `photos:identity status` read it so far. To edit a document there by hand, copy its newest version to the next number with `cp -n`, edit the copy, and do it only while no command runs. Never edit a version in place. [`docs/data-root.md`](docs/data-root.md) has the steps. | `portfolio-data`, none in production |
 
 The Home slideshow interval isn't configurable. It's `HOME_AUTO_ADVANCE_MS` (12000 ms) in `components/home/homePlayback.ts`.
 
