@@ -107,6 +107,20 @@ async function swipe(page: Page, dx: number, { dy = 0, end = 'lift' as 'lift' | 
     await touchDrag(page, { from: center, dx, dy, end });
 }
 
+/** Resolves once `region`'s scroll position holds still across two 100 ms looks, so any fling after a real drag is over. */
+async function scrollSettled(region: Locator): Promise<void> {
+    const looks: number[] = [];
+    await expect
+        .poll(
+            async () => {
+                looks.push(await region.evaluate((element) => element.scrollLeft));
+                return looks.length >= 3 && looks.slice(-3).every((left) => left === looks[looks.length - 1]);
+            },
+            { message: 'the pan came to rest', intervals: [100] },
+        )
+        .toBe(true);
+}
+
 /** The URL and header still show photograph `n` of 3. */
 async function expectStill(page: Page, photoId: string, n: number): Promise<void> {
     await expect(page).toHaveURL(`${origin()}${href(photoId)}`);
@@ -265,6 +279,9 @@ test.describe('swipe', () => {
             // Toward the left first, so the region's scroll moved off its start.
             await swipe(page, -150, { on: region });
             await expect.poll(() => region.evaluate((element) => element.scrollLeft), 'the drag panned the photograph').toBeGreaterThan(0);
+            // That pan is the browser's own scroll, so it flings on after the lift, and a tap during a fling only stops it
+            // (Chromium on Linux, as on a phone). A visitor taps Zoom once the photograph stops, and so does this.
+            await scrollSettled(region);
         }
         await zoom.tap();
         await expect(zoom).toHaveAttribute('aria-pressed', 'false');
