@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
 import { versionFile } from '../../storage/document';
+import { withLock } from '../../storage/lock';
 import { revisionIdOf } from '../schema';
 import { blockingIssues, publish, validateStored, validateWorkingLayer, type PublishResult } from '../publish';
 import { readRevisionFile } from '../repository';
@@ -11,7 +12,7 @@ import { registeredRules, runRules } from '../ruleset';
 import { applySequenceOp } from '../sequence';
 import { createTestCatalog, type TestCatalogOptions } from '../testing';
 import type { AuthoredPhoto, AuthoredRecord, AuthoredSeries, AuthoredSite, Issue, RevisionFile } from '../types';
-import { writeAuthoredRecord } from '../working-layer-writer';
+import { AUTHORED_LOCK, writeAuthoredRecord } from '../working-layer-writer';
 import { authoredRecordDir, readAuthoredRecord } from '../working-layer';
 import { VARIANT_BYTES } from './catalogFixtures';
 
@@ -276,6 +277,53 @@ describe('rebase and review stamps', { timeout: 60_000 }, () => {
         expect(after.review?.fields.caption).toEqual({ ...edited.review?.fields.caption, baseRevisionId: second });
     });
 
+    it('moves the base along when recover() rebases after a publish whose own rebase couldn\'t get the lock', async () => {
+        // A photo no published series showed joins one, and its caption is rewritten while the publish that adds it
+        // runs. That publish's step 13 can't take the authored lock, so the next publish's recover() rebases instead.
+        const f = await fixture({ photos: 4, series: [{ photos: 3 }] });
+        published(await f.publish());
+        const series = f.catalog.series[0];
+        const id = f.catalog.photos.find((photo) => !series.photoIds.includes(photo.id))?.id as string;
+        expect(await applySequenceOp({ dataRoot: f.root }, { kind: 'insert', seriesId: series.id, photoId: id, at: 'end' }, { expectedVersion: (await f.read<AuthoredSeries>('series', series.id)).version, actor: { kind: 'editor' } })).toMatchObject({ ok: true });
+        await f.edit<AuthoredPhoto>('photo', id, (photo) => {
+            photo.caption = 'Fixture caption, published.';
+        });
+        let release = () => undefined as void;
+        const held = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let holding: Promise<unknown> = Promise.resolve();
+        const second = await f.publish({
+            authoredWaitMs: 100,
+            hooks: {
+                async afterStep(step) {
+                    if (step === 3) {
+                        await f.edit<AuthoredPhoto>('photo', id, (photo) => {
+                            photo.caption = 'Fixture caption, written while it ran.';
+                        });
+                    }
+                    if (step !== 12) return;
+                    let taken = () => undefined as void;
+                    const holds = new Promise<void>((resolve) => {
+                        taken = resolve;
+                    });
+                    holding = withLock(AUTHORED_LOCK, { root: f.root }, async () => {
+                        taken();
+                        await held;
+                    });
+                    await holds;
+                },
+            },
+        });
+        release();
+        await holding;
+        expect(second).toMatchObject({ outcome: 'PUBLISHED', rebased: false });
+        // What that publish changed came from this working layer, so the caption written while it ran is still reviewed.
+        const third = await f.publish();
+        expect(reviewIssues(third)).toEqual([]);
+        expect(third.outcome, third.message).toBe('PUBLISHED');
+    });
+
     it('drops the stamp of a field a rollback moves, and keeps the others with the base they were reviewed against', async () => {
         const f = await fixture();
         const first = published(await f.publish());
@@ -348,6 +396,19 @@ describe('the review publish gate', { timeout: 60_000 }, () => {
             photo.caption = 'Fixture caption, through the tool.';
         });
         expect((await f.read<AuthoredPhoto>('photo', id)).review?.fields.title?.actor).toBe('cli');
+        published(await f.publish());
+    });
+
+    it('refuses a placement a policy made, which nobody reviewed, until the curator makes one', async () => {
+        const f = await fixture();
+        published(await f.publish());
+        const series = f.catalog.series[0];
+        const move = async (kind: 'policy' | 'editor') => applySequenceOp({ dataRoot: f.root }, { kind: 'move', seriesId: series.id, photoId: series.photoIds[0], at: kind === 'policy' ? 'end' : { after: series.photoIds[1] } }, { expectedVersion: (await f.read<AuthoredSeries>('series', series.id)).version, actor: { kind, ref: 'fixture' } });
+        expect(await move('policy')).toMatchObject({ ok: true, changed: true });
+        const refused = await f.publish();
+        expect(refused.outcome).toBe('VALIDATION_FAILED');
+        expect(reviewIssues(refused)).toEqual([expect.objectContaining({ record: { kind: 'series', id: series.id }, field: 'photoIds', message: expect.stringContaining('a suggestion nobody has reviewed') })]);
+        expect(await move('editor')).toMatchObject({ ok: true, changed: true });
         published(await f.publish());
     });
 

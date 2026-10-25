@@ -484,6 +484,28 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
     });
 
+    it('never takes another item\'s put back for this item\'s confirm, so a repeat confirm records no revision it never replaced', async () => {
+        const w = await world();
+        await w.build(w.job(w.b));
+        // X: B in place of A. Y: C in place of B, then left in draft, which puts B back with a stamp naming Y, from C to B.
+        expect(await confirm(w, await w.event())).toMatchObject({ ok: true });
+        fs.writeFileSync(w.lib.file(P_PATH), images.third);
+        const c = (await w.pass()).find((fact) => fact.type === 'replaced' && fact.photoId === w.p)?.assetRevision;
+        if (!c) throw new Error('The pass reported no replacement.');
+        expect(await w.build(w.job(c))).toEqual({ status: 'ready', reused: false });
+        const yId = replacementEventId(w.p, c);
+        expect(await confirm(w, await w.event(yId))).toMatchObject({ ok: true });
+        await leave(w, await reopen(w, await w.event(yId)));
+        expect((await photoRecord(w)).review?.fields.assetRevision).toMatchObject({ event: { id: yId }, asset: { from: c, to: w.b } });
+        // B's bytes come back to the source, and X is confirmed again.
+        fs.writeFileSync(w.lib.file(P_PATH), images.replacement);
+        await w.pass();
+        const again = await confirm(w, await reopen(w, await w.event()));
+        expect(again).toMatchObject({ ok: true, event: { status: 'approved' } });
+        expect(again.ok && again.event.decisions.at(-1)).toMatchObject({ action: 'confirm', writes: [] });
+        expect(again.ok && again.event.decisions.at(-1)).not.toHaveProperty('fromRevision');
+    });
+
     it('after a later item\'s confirm is left in draft, reopen and show say leaving the earlier item in draft keeps its bytes, which it does', async () => {
         const w = await world();
         const cli = (args: string[]) => runCurationCli(args, { dataRoot: w.root }, { PHOTOS_ACTOR: ACTOR });

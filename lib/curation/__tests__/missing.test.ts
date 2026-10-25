@@ -852,6 +852,8 @@ describe('archive, then publish', { timeout: 60_000 }, () => {
         if (!archived.ok) return;
         expect(archived.notes.join('\n')).toContain('photos publish --dry-run lists it as removed');
         expect((await series(w)).photoIds).toEqual([w.q]);
+        // #16: the removal is stamped with the missing item it settled, so it goes stale if that item opens again.
+        expect((await series(w)).review?.fields.photoIds).toMatchObject({ event: { id: item.id, version: item.version }, actor: ACTOR, baseRevisionId: w.revisionId });
         expect(pendingDecisions(w)).toEqual([expect.objectContaining({ type: 'archive', photoId: w.p })]);
         expect(treeBytes(path.join(w.root, 'catalog'))).toEqual(catalog);
         expect(await served(w)).toEqual(visible);
