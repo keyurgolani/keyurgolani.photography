@@ -334,56 +334,86 @@ test.describe('on the desktop project', () => {
         });
     });
 
-    for (const theme of ['dark', 'light'] as const) {
-        test(`in the ${theme} theme the labels are underlined and keep 4.5:1 over the light at rest and lit, and the ring keeps 3:1 on the About ground`, async ({ page }) => {
-            await page.addInitScript((value) => localStorage.setItem('theme', value), theme);
-            await openAbout(page);
-            await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
-            await settled(page);
-            await expectNoA11yViolations(page, { include: 'nav[aria-label^="External profiles"]' });
+    // Rows below 40rem and tiles above it put the light in different places, so both are measured.
+    for (const [width, height] of [
+        [393, 659],
+        [1280, 800],
+    ] as const) {
+        test.describe(`at ${width} by ${height}`, () => {
+            test.use({ viewport: { width, height } });
 
-            /** The link's ring and the About ground, and its label's text decoration. */
-            const colorsOf = (link: Locator) =>
-                link.evaluate((el) => {
-                    const rgb = (color: string): [number, number, number] => {
-                        const canvas = document.createElement('canvas');
-                        canvas.width = canvas.height = 1;
-                        const context = canvas.getContext('2d', { willReadFrequently: true });
-                        if (!context) throw new Error('No 2D canvas to resolve a color');
-                        context.fillStyle = color;
-                        context.fillRect(0, 0, 1, 1);
-                        const [r, g, b] = context.getImageData(0, 0, 1, 1).data;
-                        return [r, g, b];
+            for (const theme of ['dark', 'light'] as const) {
+                test(`in the ${theme} theme the labels are underlined and keep 4.5:1 over the light at rest and lit by hover, focus, and a press, and the ring keeps 3:1 on the About ground`, async ({ page }) => {
+                    await page.addInitScript((value) => localStorage.setItem('theme', value), theme);
+                    await openAbout(page);
+                    await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+                    await settled(page);
+                    await expectNoA11yViolations(page, { include: 'nav[aria-label^="External profiles"]' });
+
+                    /** The link's ring and the About ground, and its label's text decoration. */
+                    const colorsOf = (link: Locator) =>
+                        link.evaluate((el) => {
+                            const rgb = (color: string): [number, number, number] => {
+                                const canvas = document.createElement('canvas');
+                                canvas.width = canvas.height = 1;
+                                const context = canvas.getContext('2d', { willReadFrequently: true });
+                                if (!context) throw new Error('No 2D canvas to resolve a color');
+                                context.fillStyle = color;
+                                context.fillRect(0, 0, 1, 1);
+                                const [r, g, b] = context.getImageData(0, 0, 1, 1).data;
+                                return [r, g, b];
+                            };
+                            const style = getComputedStyle(el);
+                            const ground = style.getPropertyValue('--about-ground').trim();
+                            const label = Array.from(el.querySelectorAll('span')).find((span) => span.textContent?.trim());
+                            return {
+                                ground: ground ? rgb(ground) : null,
+                                outline: rgb(style.outlineColor),
+                                decoration: label ? getComputedStyle(label).textDecorationLine : '',
+                            };
+                        });
+                    /** The text against the real pixels behind it, the brand's light included. The underline sits below the text, so it's hidden for the reading. */
+                    const expectLabelContrast = async (link: Locator) => {
+                        const underline = await page.addStyleTag({ content: 'nav[aria-label^="External profiles"] span { text-decoration-color: transparent !important; transition: none !important; }' });
+                        try {
+                            await expectContrastOverImage(labelOf(link), { min: 4.5 });
+                        } finally {
+                            await underline.evaluate((node) => node.parentNode?.removeChild(node));
+                        }
                     };
-                    const style = getComputedStyle(el);
-                    const ground = style.getPropertyValue('--about-ground').trim();
-                    const label = Array.from(el.querySelectorAll('span')).find((span) => span.textContent?.trim());
-                    return {
-                        ground: ground ? rgb(ground) : null,
-                        outline: rgb(style.outlineColor),
-                        decoration: label ? getComputedStyle(label).textDecorationLine : '',
-                    };
+                    for (const [index, link] of (await links(page).all()).entries()) {
+                        const name = ENABLED[index].label;
+                        expect((await colorsOf(link)).decoration, `${name} is underlined at rest`).toContain('underline');
+                        await expectLabelContrast(link);
+
+                        await link.hover();
+                        await settled(page);
+                        expect((await litState(link)).light, `${name} is lit on hover`).toBeGreaterThan(0.5);
+                        await expectLabelContrast(link);
+                        await page.mouse.move(0, 0);
+
+                        await link.focus();
+                        await settled(page);
+                        expect((await litState(link)).light, `${name} is lit on focus`).toBeGreaterThan(0.5);
+                        await expectLabelContrast(link);
+                        const focused = await colorsOf(link);
+                        expect(focused.ground, '--about-ground is in scope').not.toBeNull();
+                        expect(contrast(focused.outline, focused.ground as Rgb), `${name} ring contrast on the About ground`).toBeGreaterThanOrEqual(3);
+                        await link.blur();
+
+                        // A press, as a tap holds :active. The release mustn't navigate.
+                        await link.evaluate((el) => el.addEventListener('click', (event) => event.preventDefault(), { once: true }));
+                        await link.hover();
+                        await page.mouse.down();
+                        await settled(page);
+                        expect((await litState(link)).light, `${name} is lit while pressed`).toBeGreaterThan(0.5);
+                        await expectLabelContrast(link);
+                        await page.mouse.up();
+                        await page.mouse.move(0, 0);
+                        await link.blur();
+                        await settled(page);
+                    }
                 });
-            /** The text against the real pixels behind it, the brand's light included. The underline sits below the text, so it's hidden for the reading. */
-            const expectLabelContrast = async (link: Locator) => {
-                const underline = await page.addStyleTag({ content: 'nav[aria-label^="External profiles"] span { text-decoration-color: transparent !important; transition: none !important; }' });
-                try {
-                    await expectContrastOverImage(labelOf(link), { min: 4.5 });
-                } finally {
-                    await underline.evaluate((node) => node.parentNode?.removeChild(node));
-                }
-            };
-            for (const [index, link] of (await links(page).all()).entries()) {
-                const name = ENABLED[index].label;
-                expect((await colorsOf(link)).decoration, `${name} is underlined at rest`).toContain('underline');
-                await expectLabelContrast(link);
-                await link.focus();
-                await settled(page);
-                await expectLabelContrast(link);
-                const focused = await colorsOf(link);
-                expect(focused.ground, '--about-ground is in scope').not.toBeNull();
-                expect(contrast(focused.outline, focused.ground as Rgb), `${name} ring contrast on the About ground`).toBeGreaterThanOrEqual(3);
-                await link.blur();
             }
         });
     }

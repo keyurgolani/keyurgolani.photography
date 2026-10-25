@@ -93,8 +93,9 @@
    brightens to the full ink. */
 .mark {
   --glow-rest: 0.22;
-  /* The pool spreads from the mark toward the label. */
-  --glow-inset: -12px -40px -12px -12px;
+  /* In a row the label starts 8px after the mark, so the pool stays centered
+     on the mark and off the label, which keeps a lit label at 4.5:1. */
+  --glow-inset: -12px;
   --glow-blur: 10px;
   position: relative;
   display: grid;
