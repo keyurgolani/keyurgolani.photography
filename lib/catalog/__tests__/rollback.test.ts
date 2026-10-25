@@ -703,3 +703,34 @@ describe('fix round 2', { timeout: 60_000 }, () => {
         expect(await bases(root)).toEqual([two]);
     });
 });
+
+describe('after a rollback off a damaged live revision', { timeout: 60_000 }, () => {
+    it('blocks the next publish on a conflict instead of bringing the damaged revision\'s caption back', async () => {
+        const { catalog, root, rollTo, publishNow, editPhoto, one, two } = await twoRevisions({ seed: 271 });
+        const captioned = catalog.photos[0].id;
+        const secondCaption = 'A caption revision 2 publishes.';
+        fs.writeFileSync(revisionFilePath(root, two), '{ not json');
+
+        const rolled = await rollTo(one, two);
+        expect(rolled.outcome).toBe('ROLLED_BACK');
+        expect(await readActivePointer(root)).toMatchObject({ revisionId: one });
+        // The working record can't be compared with the damaged base, so its caption stays only as a conflict to settle.
+        const record = (await readWorkingLayer(root)).photos.find((photo) => photo.id === captioned);
+        expect(record?.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ field: 'caption' })]));
+
+        // An unrelated edit, then a publish.
+        await editPhoto(catalog.photos[1].id, (photo) => {
+            photo.caption = 'An unrelated caption after the rollback.';
+        });
+        const activations = await listActivations(root);
+        const result = await publishNow();
+        expect(result.outcome).toBe('VALIDATION_FAILED');
+        expect(result.issues).toContainEqual(expect.objectContaining({ code: 'working.conflicts', record: { kind: 'photo', id: captioned }, field: 'caption' }));
+        expect(await readActivePointer(root)).toMatchObject({ revisionId: one });
+        expect(await listActivations(root)).toEqual(activations);
+        // No revision but the damaged one ever held revision 2's caption.
+        for (const name of fs.readdirSync(catalogPaths(root).revisionsDir).filter((entry) => entry !== `${two}.json`)) {
+            expect(fs.readFileSync(path.join(catalogPaths(root).revisionsDir, name), 'utf8')).not.toContain(secondCaption);
+        }
+    });
+});
