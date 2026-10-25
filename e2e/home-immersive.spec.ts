@@ -19,6 +19,10 @@ const IDLE = 4000;
 const FADE = 220;
 /** HOME_LOADING_TIMEOUT_MS. */
 const LOADING_TIMEOUT = 6000;
+/** HeroReveal's exit starts by this long after mount: the intro's 1.5 s exit ends within the 6 s bound. */
+const INTRO_EXIT_DEADLINE = LOADING_TIMEOUT - 1500;
+/** The intro's layers, by their CSS module class names. */
+const INTRO_LAYERS = ['grainOverlay', 'ripples', 'portrait'] as const;
 /** One frame and then some on the page clock, for work a gesture leaves to the next frame. */
 const FRAME = 50;
 
@@ -119,6 +123,64 @@ async function openHome(page: Page, { photos = ['white', 'gray', 'black'], clock
         await pauseClock(page);
     }
 }
+
+/** Each intro layer displayed at any rendered frame from the first, sampled in the page. */
+async function recordIntroSeen(page: Page) {
+    await page.addInitScript((names) => {
+        const seen: string[] = [];
+        (window as unknown as { __introSeen: string[] }).__introSeen = seen;
+        const sample = () => {
+            for (const name of names) {
+                for (const el of document.querySelectorAll(`[class*="${name}"]`)) {
+                    if (getComputedStyle(el).display !== 'none' && !seen.includes(name)) seen.push(name);
+                }
+            }
+            requestAnimationFrame(sample);
+        };
+        requestAnimationFrame(sample);
+    }, [...INTRO_LAYERS]);
+    return () => page.evaluate(() => (window as unknown as { __introSeen: string[] }).__introSeen);
+}
+
+/** Every intro layer still in the document. */
+const introLayersLeft = (page: Page) =>
+    page.evaluate((names) => names.filter((name) => document.querySelector(`[class*="${name}"]`) !== null), [...INTRO_LAYERS]);
+
+/** Holds every photograph until the returned function runs, so Home stays loading. */
+async function holdPhotos(page: Page) {
+    let release: () => void = () => {};
+    const released = new Promise<void>((resolve) => (release = resolve));
+    await page.route('**/assets/photos/**', async (route) => {
+        await released;
+        await route.fallback();
+    });
+    return release;
+}
+
+/**
+ * What the focused element is: its name, whether it's in the chrome, what the
+ * visitor sees of it, and whether a click at its centre reaches it with every
+ * intro layer made to take the pointer, so it must stack above them.
+ */
+const focusedControl = (page: Page) =>
+    page.evaluate((names) => {
+        const el = document.activeElement as HTMLElement | null;
+        if (!el || el === document.body) return { name: 'body', inChrome: false, opacity: 0, onTop: false };
+        let opacity = 1;
+        for (let node: Element | null = el; node; node = node.parentElement) opacity *= parseFloat(getComputedStyle(node).opacity);
+        const layers = names.flatMap((name) => Array.from(document.querySelectorAll<HTMLElement>(`[class*="${name}"], [class*="${name}"] *`)));
+        const before = layers.map((layer) => layer.style.getPropertyValue('pointer-events'));
+        layers.forEach((layer) => layer.style.setProperty('pointer-events', 'auto', 'important'));
+        const box = el.getBoundingClientRect();
+        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+        layers.forEach((layer, index) => layer.style.setProperty('pointer-events', before[index]));
+        return {
+            name: (el.getAttribute('aria-label') ?? el.textContent ?? '').trim(),
+            inChrome: !!el.closest('[data-home-chrome]'),
+            opacity,
+            onTop: !!hit && el.contains(hit),
+        };
+    }, [...INTRO_LAYERS]);
 
 /**
  * Mouse moves onto the photograph, ending on the photo point. There's more
@@ -228,22 +290,9 @@ test.describe('at rest', () => {
     test('under reduced motion, no intro layer or portrait shows at any frame, and Home settles the same way, there and back', async ({ page, isMobile }, testInfo) => {
         runsOn(testInfo, 'desktop', 'mobile');
         await page.emulateMedia({ reducedMotion: 'reduce' });
-        // Samples every rendered frame from the first for a displayed intro layer or portrait.
-        await page.addInitScript(() => {
-            const seen: string[] = [];
-            (window as unknown as { __introSeen: string[] }).__introSeen = seen;
-            const sample = () => {
-                for (const name of ['grainOverlay', 'ripples', 'portrait']) {
-                    for (const el of document.querySelectorAll(`[class*="${name}"]`)) {
-                        if (getComputedStyle(el).display !== 'none' && !seen.includes(name)) seen.push(name);
-                    }
-                }
-                requestAnimationFrame(sample);
-            };
-            requestAnimationFrame(sample);
-        });
+        const introSeen = await recordIntroSeen(page);
         await openHome(page);
-        expect(await page.evaluate(() => (window as unknown as { __introSeen: string[] }).__introSeen)).toEqual([]);
+        expect(await introSeen()).toEqual([]);
         await roundTripToAbout(page, isMobile);
         await expectHomeImmersive(page);
     });
@@ -399,6 +448,56 @@ test.describe('the keyboard', () => {
         await runFor(page, 1);
         await runFor(page, FADE);
         await expectHomeImmersive(page);
+    });
+
+    test('Tab during the first-visit intro lands every focus on a fully visible control above the intro', async ({ page }) => {
+        setPhotoFixtures(page, ['white', 'gray', 'black']);
+        await holdPhotos(page);
+        // Paused before the load, so the intro stays up for as long as the test takes.
+        await page.clock.install();
+        await page.clock.pauseAt(Date.now() + 1000);
+        await page.goto('/');
+        await waitForHydration(page);
+        await settle(page);
+        await expect(main(page)).toHaveAttribute('data-home-intro', 'loading');
+        expect(await introLayersLeft(page)).toEqual([...INTRO_LAYERS]);
+
+        const count = await chromeControls(page).count();
+        expect(count).toBeGreaterThan(0);
+        for (let i = 0; i < count; i++) {
+            await page.keyboard.press('Tab');
+            const focused = await focusedControl(page);
+            expect(focused, `Tab ${i + 1}`).toEqual({ name: focused.name, inChrome: true, opacity: 1, onTop: true });
+        }
+        await expect(main(page)).toHaveAttribute('data-chrome-holds', 'keyboard-focus');
+        await expect(main(page)).toHaveAttribute('data-home-intro', 'loading');
+        await expect(page).toHaveURL('/');
+    });
+
+    test('a Tab to Work before Home hydrates leaves it visibly focused, and the first Enter after hydration follows it', async ({ page }) => {
+        setPhotoFixtures(page, ['white', 'gray', 'black']);
+        // Hold the scripts, not the stylesheets, so the server HTML paints and takes focus before React runs.
+        let releaseScripts = () => {};
+        const scriptsHeld = new Promise<void>((resolve) => (releaseScripts = resolve));
+        await page.route('**/_next/static/**/*.js', async (route) => {
+            await scriptsHeld;
+            await route.continue();
+        });
+        await page.goto('/', { waitUntil: 'commit' });
+        await expect(navLink(page, 'Work')).toBeAttached();
+        for (let i = 0; i < 10 && !(await navLink(page, 'Work').evaluate((link) => link === document.activeElement)); i++) {
+            await page.keyboard.press('Tab');
+        }
+        await expect(navLink(page, 'Work')).toBeFocused();
+        expect(await page.evaluate(() => document.documentElement.hasAttribute('data-hydrated')), 'React has not hydrated yet').toBe(false);
+        expect(await effectiveOpacity(navLink(page, 'Work'))).toBe(1);
+
+        releaseScripts();
+        await waitForHydration(page);
+        await settle(page);
+        await expect(navLink(page, 'Work')).toBeFocused();
+        await page.keyboard.press('Enter');
+        await expect(page).toHaveURL('/gallery');
     });
 });
 
@@ -574,34 +673,28 @@ test.describe('loading', () => {
         await expect(main(page)).toHaveAttribute('data-interface-state', 'interactive');
     });
 
-    test('a stalled photograph ends loading at 6 s with the chrome over the intro, and the photograph arriving lets it recede', async ({ page }) => {
+    test('a stalled photograph ends the intro, fade included, and loading by 6 s, and the photograph arriving lets the chrome recede', async ({ page }) => {
         setPhotoFixtures(page, ['white', 'gray', 'black']);
-        let release: () => void = () => {};
-        const released = new Promise<void>((resolve) => (release = resolve));
-        await page.route('**/assets/photos/**', async (route) => {
-            await released;
-            await route.fallback();
-        });
-        // Paused before the load, so the loading deadline runs on the page clock from mount.
+        const release = await holdPhotos(page);
+        // Paused before the load, so the intro and the loading deadline run on the page clock from mount.
         await page.clock.install();
         await page.clock.pauseAt(Date.now() + 1000);
         await page.goto('/');
         await waitForHydration(page);
         await settle(page);
-        await runFor(page, LOADING_TIMEOUT - 1);
-        await expect(main(page)).toHaveAttribute('data-home-loading', 'true');
-        await expect(main(page)).toHaveAttribute('data-interface-state', 'immersive');
+        await runFor(page, INTRO_EXIT_DEADLINE - 1);
+        await expect(main(page)).toHaveAttribute('data-home-intro', 'loading');
+        expect(await introLayersLeft(page)).toEqual([...INTRO_LAYERS]);
 
-        await runFor(page, 1);
+        // The exit starts with the photograph still held, and nothing of the intro is left at 6 s.
+        await runFor(page, LOADING_TIMEOUT - INTRO_EXIT_DEADLINE + 1);
+        await expect(main(page)).toHaveAttribute('data-home-intro', 'settled');
+        expect(await introLayersLeft(page)).toEqual([]);
         await expect(main(page)).toHaveAttribute('data-home-loading', 'false');
         await expect(main(page)).toHaveAttribute('data-chrome-holds', 'no-photo');
         await expect(main(page)).toHaveAttribute('data-interface-state', 'interactive');
-        // The intro is still up, and the chrome stacks above it: even an intro that took the pointer would sit beneath.
-        await expect(page.locator('[class*="grainOverlay"]')).toHaveCount(1);
         await expect(chrome(page)).toHaveCSS('opacity', '1');
-        const hitTestable = await page.addStyleTag({ content: '[class*="grainOverlay"], [class*="grainOverlay"] * { pointer-events: auto !important; }' });
         expect(await controlsMissingTheirCentre(page)).toEqual([]);
-        await hitTestable.evaluate((style) => style.parentNode?.removeChild(style));
 
         release();
         await expect(main(page)).toHaveAttribute('data-chrome-holds', '');
@@ -609,6 +702,23 @@ test.describe('loading', () => {
         await runFor(page, FADE);
         await runFor(page, 2000);
         await expectHomeImmersive(page);
+    });
+
+    test('under reduced motion a stalled photograph shows no intro at any frame until loading ends at 6 s', async ({ page }) => {
+        await page.emulateMedia({ reducedMotion: 'reduce' });
+        setPhotoFixtures(page, ['white', 'gray', 'black']);
+        const release = await holdPhotos(page);
+        const introSeen = await recordIntroSeen(page);
+        await page.goto('/');
+        await waitForHydration(page);
+        await expect(main(page)).toHaveAttribute('data-home-intro', 'settled');
+        await expect(main(page)).toHaveAttribute('data-home-loading', 'true');
+        expect(await introLayersLeft(page)).toEqual([]);
+
+        await expect(main(page)).toHaveAttribute('data-home-loading', 'false', { timeout: LOADING_TIMEOUT + 5000 });
+        await expect(main(page)).toHaveAttribute('data-chrome-holds', 'no-photo');
+        expect(await introSeen()).toEqual([]);
+        release();
     });
 });
 
