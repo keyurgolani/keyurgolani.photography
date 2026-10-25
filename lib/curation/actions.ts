@@ -84,21 +84,22 @@ class ActionFailure extends Error {
     }
 }
 
-const fail = (code: ActionErrorCode, message: string, writes?: WrittenRecord[]): never => {
+/** Stop an action with `code`. Exported for #17's resolutions, which share these steps. */
+export const fail = (code: ActionErrorCode, message: string, writes?: WrittenRecord[]): never => {
     throw new ActionFailure(code, message, writes);
 };
 
-interface Step {
+export interface Step {
     event: CurationEvent;
     active: string | null;
     at: string;
     hold: LockContext;
 }
 
-type Change = { event: CurationEvent; notes?: string[] };
+export type Change = { event: CurationEvent; notes?: string[] };
 
 /** The checks every action shares, then `change`, then the event write, all under the curation lock. */
-async function act(input: ActionInput, change: (step: Step) => Promise<Change>): Promise<ActionOutcome> {
+export async function act(input: ActionInput, change: (step: Step) => Promise<Change>): Promise<ActionOutcome> {
     const root = path.resolve(input.root);
     const status = dataRootStatus({ versioned: true, root });
     if (status.state !== 'ready') return { ok: false, code: 'not-ready', message: `The data root is ${status.state}. Nothing was written.` };
@@ -139,13 +140,13 @@ async function act(input: ActionInput, change: (step: Step) => Promise<Change>):
     }
 }
 
-function requireStatus(event: CurationEvent, allowed: readonly CurationEventStatus[], action: string): void {
+export function requireStatus(event: CurationEvent, allowed: readonly CurationEventStatus[], action: string): void {
     if (allowed.includes(event.status)) return;
     const hint = event.status === 'approved' || event.status === 'dismissed' ? ' Reopen it first.' : '';
     fail('refused', `The event ${event.id} is ${event.status}, so it can't be ${action}.${hint}`);
 }
 
-function decided(step: Step, input: ActionInput, decision: Omit<CurationDecision, 'at' | 'by' | 'baseRevisionId'>, status: CurationEventStatus, extra: Partial<CurationEvent> = {}): CurationEvent {
+export function decided(step: Step, input: ActionInput, decision: Omit<CurationDecision, 'at' | 'by' | 'baseRevisionId'>, status: CurationEventStatus, extra: Partial<CurationEvent> = {}): CurationEvent {
     return {
         ...step.event,
         ...extra,
@@ -433,7 +434,7 @@ export function approveEvent(input: ActionInput & { choices: Choices; faults?: A
 }
 
 /** A working-layer record, or a damaged-data failure naming it. */
-async function readAuthored<T>(root: string, kind: 'photo' | 'series', id: string): Promise<T | null> {
+export async function readAuthored<T>(root: string, kind: 'photo' | 'series', id: string): Promise<T | null> {
     try {
         return (await readAuthoredRecord(root, kind, id)) as T | null;
     } catch (error) {
