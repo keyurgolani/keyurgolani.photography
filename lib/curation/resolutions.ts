@@ -328,6 +328,25 @@ export function holdRefusal(at: string, candidates: readonly string[], photoId: 
     return `${doubt} Settle that path's ambiguous item first, with photos identity bind or photos identity new, then bind again. Nothing was written.`;
 }
 
+/** The owner-set fields of a photo record, beside the asset revision draft:init pins, by the names the bind note uses. */
+const OWNER_FIELDS = [
+    ['alt', 'description'],
+    ['title', 'title'],
+    ['caption', 'caption'],
+    ['focalPoint', 'focal point'],
+    ['crop', 'crop'],
+    ['accent', 'accent'],
+    ['credit', 'credit'],
+    ['location', 'location'],
+    ['capturedAt', 'capture date'],
+] as const satisfies readonly (readonly [keyof AuthoredPhoto, string])[];
+
+/** What the owner set on a photo record, which a merge would lose. Empty for the bare record draft:init writes. */
+export function ownerCopyOf(record: AuthoredPhoto): string[] {
+    return OWNER_FIELDS.filter(([field]) => record[field] !== undefined && record[field] !== null)
+        .map(([field, name]) => (field === 'alt' && record.alt?.kind === 'decorative' ? 'decorative flag' : name));
+}
+
 interface BindPlan {
     /** The photo the decision names to merge, when #10 needs it named. */
     merge?: string;
@@ -335,6 +354,8 @@ interface BindPlan {
     unbinds?: string;
     /** Whether the bytes at the path are a revision the missing photo has. */
     ownBytes: boolean;
+    /** The merged photo's bare record, which the merge leaves unused. */
+    bareRecord?: boolean;
 }
 
 /**
@@ -351,8 +372,9 @@ interface BindPlan {
  *   photo with one revision of its own, first seen at that path. This also
  *   refuses one a series or the active revision shows, which a merge would
  *   leave pointing at a retired photo, one a retained revision lists, which
- *   rollback could then never bring back, one with a photo record, whose
- *   copy a merge would drop, and one a pending bind already merges.
+ *   rollback could then never bring back, one whose photo record holds
+ *   owner-set copy, which a merge would drop, and one a pending bind
+ *   already merges. A bare record, as draft:init writes it, is left unused.
  * - Bytes the photo gave to another photo come back only with that photo merged.
  */
 async function bindPlan(root: string, registry: Registry, photo: PhotoRecord, at: string): Promise<BindPlan> {
@@ -402,7 +424,12 @@ async function bindPlan(root: string, registry: Registry, photo: PhotoRecord, at
                 fail('refused', `${at} is ${holder.photoId}, which ${named}. A merge retires it and moves its asset revision to ${photo.photoId}, so photos rollback could never bring ${retained.length === 1 ? 'that revision' : 'those revisions'} back. Keep it as its own photograph, or bind another file. Nothing was written.`);
             }
             if (record) {
-                fail('refused', `${at} is ${holder.photoId}, which has a photo record in the draft. A merge retires it and drops that record's title, description, and story. Keep it as its own photograph, or bind another file. Nothing was written.`);
+                const authored = await readAuthored<AuthoredPhoto>(root, 'photo', holder.photoId);
+                const copy = authored ? ownerCopyOf(authored) : [];
+                if (copy.length > 0) {
+                    fail('refused', `${at} is ${holder.photoId}, which has a photo record in the draft with the owner's ${copy.join(', ')}. A merge retires it and drops that copy. Keep it as its own photograph, or bind another file. Nothing was written.`);
+                }
+                plan.bareRecord = true;
             }
             plan.merge = holder.photoId;
         }
@@ -461,6 +488,9 @@ export function bindReplacement(input: ActionInput & { path?: string; reason?: s
                 plan.ownBytes
                     ? `${at} holds ${photo.photoId}'s own bytes, so nothing new needs confirming. Visitors keep the current image until photos publish runs.`
                     : 'A replacement item opens for the new bytes. Confirm the new asset revision there once all its derivatives succeed. Visitors keep the current image until photos publish runs.',
+                ...(plan.bareRecord && plan.merge
+                    ? [`${plan.merge}'s photo record holds nothing the owner set, as draft:init writes it, so the merge leaves it unused in authored/photos/. Nothing is deleted.`]
+                    : []),
             ],
         };
     });
