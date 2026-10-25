@@ -12,6 +12,7 @@ import { emptyRegistry, type AssetManifest, type PhotoRecord, type Registry, typ
 import { VARIANT_FORMATS, VARIANT_PIXELS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth } from '../identity/variants';
 import { mediaUrl } from '../media/url';
 import { DATA_ROOT_FILE, DATA_ROOT_SCHEMA_VERSION } from '../storage/config';
+import { versionFile, versionText } from '../storage/document';
 import { isInside, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, realpathLoose } from '../storage/fsx';
 import { createCatalogReader, type CatalogReader, type ReaderMeta } from './reader';
 import { registerRule } from './rules';
@@ -31,7 +32,7 @@ import type {
     SeriesRecord,
     Visibility,
 } from './types';
-import { authoredPaths, authoredRecordFile, readWorkingLayer } from './working-layer';
+import { authoredPaths, authoredRecordDir, readWorkingLayer } from './working-layer';
 
 /**
  * Test catalogs: a data root with a working layer, #10's registry, and
@@ -275,7 +276,7 @@ function present(value: string | undefined): string | undefined {
 
 /**
  * Build a test catalog. Writes `data-root.json`, `authored/`, and
- * `identity/registry.json`, plus `assets/<photoId>/<assetRevision>/<profileId>/`
+ * `identity/registry/`, plus `assets/<photoId>/<assetRevision>/<profileId>/`
  * with `withAssets` or `variantBytes`. Without either, the profile is
  * `pending` and no asset files exist, but `content` still describes the
  * variants as #10 would write them.
@@ -513,9 +514,11 @@ export async function createTestCatalog(options: TestCatalogOptions = {}): Promi
     // Write everything.
     const written = await writeRegistry(root, registry, 0);
     const paths = authoredPaths(root);
-    await writeFileIn(paths.site, `${JSON.stringify(site, null, 2)}\n`);
-    await inBatches(series, (entry) => writeFileIn(authoredRecordFile(root, 'series', entry.id), `${JSON.stringify(entry, null, 2)}\n`));
-    await inBatches(photos, (photo) => writeFileIn(authoredRecordFile(root, 'photo', photo.id), `${JSON.stringify(photo, null, 2)}\n`));
+    // Each record as the version a writer would have committed.
+    const writeRecord = (dir: string, record: { version: number }) => writeFileIn(versionFile(dir, record.version), versionText(record, record.version));
+    await writeRecord(paths.site, site);
+    await inBatches(series, (entry) => writeRecord(authoredRecordDir(root, 'series', entry.id), entry));
+    await inBatches(photos, (photo) => writeRecord(authoredRecordDir(root, 'photo', photo.id), photo));
     await inBatches(manifests, async ({ dir, manifest, files }) => {
         await fs.promises.mkdir(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
         for (const file of files) {

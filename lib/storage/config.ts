@@ -21,9 +21,9 @@ export interface DataRootMarker {
  * - `unset`: no PHOTOGRAPHY_DATA_DIR, and production has no default.
  * - `unavailable`: missing, not a readable directory, inside public/ or the
  *   library, or its `data-root.json` is unreadable or from a newer build.
- * - `unwritable`: exists but can't be written, or its filesystem can't hold
- *   the hard links every versioned write claims its version with, as on exFAT
- *   or FAT. Only reported when asked with `write`.
+ * - `unwritable`: exists but can't be written, or, asked with `versioned`,
+ *   its filesystem can't hold the hard links every versioned write commits its
+ *   version with, as on exFAT or FAT. Only reported when asked with `write`.
  * - `uninitialized`: usable, but has no valid `data-root.json`.
  * - `ready`: initialized and usable.
  */
@@ -93,7 +93,7 @@ const linkCapableRoots = new Set<string>();
 
 /**
  * Why `root` can't take a versioned write, or null when it can. Each one
- * claims its version with link(), so this links a probe file there and
+ * commits its version with link(), so this links a probe file there and
  * removes both names. A root that passes isn't probed again.
  */
 function linkProblem(root: string, stat: fs.Stats): string | null {
@@ -155,11 +155,16 @@ function checkMarker(root: string): MarkerCheck {
 
 /**
  * Classify the data root, or `root` when a caller names one. With `write`, a
- * root this process can't write, or whose filesystem can't hold hard links,
- * is `unwritable`; without it, the check is read-only, which is all the web
- * process needs.
+ * root this process can't write is `unwritable`; without it, the check is
+ * read-only, which is all the web process needs. `versioned`, for callers
+ * that write versioned documents, implies `write` and also links a probe file
+ * in the root, so a filesystem that can't hold hard links is `unwritable` too. Nothing else
+ * writes there, so a caller that writes elsewhere, as `photos:migrate
+ * --dry-run --out` does, leaves the data root untouched.
  */
-export function dataRootStatus({ write = false, root: named }: { write?: boolean; root?: string } = {}): DataRootStatus {
+export function dataRootStatus(
+    { write = false, versioned = false, root: named }: { write?: boolean; versioned?: boolean; root?: string } = {},
+): DataRootStatus {
     const root = named === undefined ? dataRoot() : path.resolve(/*turbopackIgnore: true*/ named);
     if (root === null) return { state: 'unset', root, detail: 'PHOTOGRAPHY_DATA_DIR is not set' };
 
@@ -182,15 +187,15 @@ export function dataRootStatus({ write = false, root: named }: { write?: boolean
     const marker = checkMarker(root);
     if (marker.kind === 'future') return { state: 'unavailable', root, cause: 'newer-schema', detail: marker.detail };
     if (marker.kind === 'unreadable') return { state: 'unavailable', root, cause: 'marker-unreadable', detail: marker.detail };
-    if (write) {
+    if (write || versioned) {
         if (!canAccess(root, fs.constants.W_OK)) return { state: 'unwritable', root, detail: 'it is not writable' };
-        const problem = linkProblem(root, stat);
+        const problem = versioned ? linkProblem(root, stat) : null;
         if (problem !== null) return { state: 'unwritable', root, detail: problem };
     }
     if (marker.kind !== 'valid') return { state: 'uninitialized', root, detail: marker.detail };
     return { state: 'ready', root };
 }
 
-export function dataRootState(options: { write?: boolean } = {}): DataRootState {
+export function dataRootState(options: { write?: boolean; versioned?: boolean } = {}): DataRootState {
     return dataRootStatus(options).state;
 }

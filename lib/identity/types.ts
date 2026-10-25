@@ -2,9 +2,10 @@ import type { CuratorOnlyMetadata, DerivedMetadata } from './metadata';
 import type { VariantFormat, VariantWidth } from './variants';
 
 /**
- * The identity registry, `identity/registry.json` in the data root. It holds
- * identity, binding, source health, and revisions only. Authored copy and
- * publication state belong to the catalog (#13), keyed by photoId.
+ * The identity registry, the version folder `identity/registry/` in the data
+ * root, read from its newest `v<N>.json`. It holds identity, binding, source
+ * health, and revisions only. Authored copy and publication state belong to
+ * the catalog (#13), keyed by photoId.
  */
 
 export const REGISTRY_SCHEMA_VERSION = 1;

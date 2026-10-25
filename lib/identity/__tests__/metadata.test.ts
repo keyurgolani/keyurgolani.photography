@@ -1,5 +1,6 @@
 // @vitest-environment node
 import fs from 'node:fs';
+import path from 'node:path';
 import exifReader from 'exif-reader';
 import sharp from 'sharp';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -272,9 +273,13 @@ describe('stored and public metadata from a real file', () => {
 
         const outcome = await runReconcilePass({ clock: () => Date.now() + 60_000, idGen: sequentialIds(), sinks: [] });
         expect(outcome.status).toBe('committed');
-        const registryJson = fs.readFileSync(identityPaths(data.root).registry, 'utf8');
+        // Every version the registry folder holds, not only the newest
+        const registryDir = identityPaths(data.root).registry;
+        const versions = fs.readdirSync(registryDir).sort();
+        expect(versions).toEqual(['v1.json']);
+        const registryJson = fs.readFileSync(path.join(registryDir, 'v1.json'), 'utf8');
         const statCacheJson = fs.readFileSync(identityPaths(data.root).statCache, 'utf8');
-        expectNoPrivateValues(registryJson, 'registry.json');
+        expectNoPrivateValues(registryJson, 'registry/v1.json');
         expectNoPrivateValues(statCacheJson, 'stat-cache.json');
 
         const registry = JSON.parse(registryJson);

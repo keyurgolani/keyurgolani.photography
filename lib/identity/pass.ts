@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { AtomicWriteFaults } from '../storage/atomicWrite';
 import { dataRootStatus, libraryRoot, type DataRootState } from '../storage/config';
-import { UnsupportedSchemaError } from '../storage/document';
+import { UnsupportedSchemaError, type VersionedWriteHooks } from '../storage/document';
 import { LockTimeoutError, withLock, type LockRecord } from '../storage/lock';
 import { namedUuid, sha256, type Hasher } from './ids';
 import { inspectEntry, type Inspection } from './inspect';
@@ -150,7 +149,7 @@ export async function observeLibrary(
 export interface PassFaults {
     /** After reconciling, before the registry write. A test can write the registry here as a foreign writer. */
     beforeRegistryWrite?(): void | Promise<void>;
-    registryWrite?: AtomicWriteFaults;
+    registryWrite?: VersionedWriteHooks;
     /** After the registry and stat cache are written, before any fact is delivered. */
     beforeDelivery?(): void | Promise<void>;
     /** After delivery, before delivered facts are cleared. */
@@ -198,7 +197,7 @@ function dedupeByFactId(facts: readonly IdentityFact[]): IdentityFact[] {
  * next pass delivers them.
  */
 export async function runReconcilePass(options: PassOptions = {}): Promise<PassOutcome> {
-    const status = dataRootStatus({ write: true });
+    const status = dataRootStatus({ versioned: true });
     if (status.state !== 'ready' || status.root === null) {
         return { status: 'skipped', reason: 'data-root', state: status.state, detail: status.detail };
     }

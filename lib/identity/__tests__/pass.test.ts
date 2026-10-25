@@ -1,17 +1,19 @@
 // @vitest-environment node
 import fs from 'node:fs';
+import path from 'node:path';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { fixtureFiles, withExifOrientation } from '../../../test/fixtures/makeLibrary';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempLibrary';
-import { StaleVersionError } from '../../storage/document';
+import { EditedInPlaceError, StaleVersionError } from '../../storage/document';
 import { withLock } from '../../storage/lock';
 import { PHOTO_ID_RE, sha256, type Hasher } from '../ids';
 import { inspectEntry } from '../inspect';
 import { jsonLogSink, runReconcilePass, type PassOptions, type PassOutcome } from '../pass';
-import { identityPaths, readRegistry } from '../registry';
+import { identityPaths, readRegistry, writeRegistry } from '../registry';
 import { scanLibrary } from '../scan';
-import type { IdentityFact } from '../types';
+import { identityStatus } from '../status';
+import type { IdentityFact, Registry } from '../types';
 import { sequentialIds } from './reconcileFixtures';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -112,13 +114,37 @@ describe('runReconcilePass', () => {
 
     it('does nothing and writes nothing when the registry comes from a newer build', async () => {
         await setup();
-        fs.mkdirSync(identityPaths(data.root).dir);
-        fs.writeFileSync(identityPaths(data.root).registry, JSON.stringify({ schemaVersion: 2, version: 9 }));
-        const before = fs.readFileSync(identityPaths(data.root).registry);
+        const newest = path.join(identityPaths(data.root).registry, 'v9.json');
+        fs.mkdirSync(identityPaths(data.root).registry, { recursive: true });
+        fs.writeFileSync(newest, JSON.stringify({ schemaVersion: 2, version: 9 }));
+        const before = fs.readFileSync(newest);
         const outcome = await runReconcilePass(harness().options());
         expect(outcome).toMatchObject({ status: 'skipped', reason: 'data-root', state: 'unavailable' });
-        expect(fs.readFileSync(identityPaths(data.root).registry).equals(before)).toBe(true);
-        expect(data.files()).toEqual(['data-root.json', 'identity/registry.json']);
+        expect(fs.readFileSync(newest).equals(before)).toBe(true);
+        expect(data.files()).toEqual(['data-root.json', 'identity/registry/v9.json']);
+    });
+
+    it('refuses a registry edited in place, writes nothing, and takes the copy the refusal names as the next version', async () => {
+        await setup();
+        const { options } = harness();
+        committed(await runReconcilePass(options()));
+        const dir = identityPaths(data.root).registry;
+        const file = path.join(dir, 'v1.json');
+        fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('"updatedAt": "', '"updatedAt": "edited '));
+
+        const refused = await runReconcilePass(options()).catch((caught: unknown) => caught);
+        expect(refused).toBeInstanceOf(EditedInPlaceError);
+        expect((refused as Error).message).toContain('cp -n v1.json v2.json');
+        expect((await identityStatus()).registryError).toContain('edited in place');
+        expect(fs.readdirSync(dir)).toEqual(['v1.json']);
+
+        // The documented hand edit: the edited file, copied to the next number, is a hand-made version 2.
+        fs.copyFileSync(file, path.join(dir, 'v2.json'), fs.constants.COPYFILE_EXCL);
+        expect((await readRegistry(data.root)).version).toBe(2);
+        const pass = committed(await runReconcilePass(options()));
+        expect(pass.registry.version).toBe(3);
+        expect(JSON.parse(fs.readFileSync(path.join(dir, 'v3.json'), 'utf8'))).toMatchObject({ stamp: { version: 3 } });
+        expect((await identityStatus()).registryError).toBeUndefined();
     });
 
     it('skips, without waiting, when another holder has the registry lock and the pass asks for waitMs 0', async () => {
@@ -141,14 +167,16 @@ describe('runReconcilePass', () => {
         expect(registry.version).toBe(2);
         expect(registry.pendingFacts).toEqual([]);
         expect(Object.keys(registry.photos).every((id) => PHOTO_ID_RE.test(id))).toBe(true);
-        expect(data.files()).toEqual(['data-root.json', 'identity/registry.json', 'identity/stat-cache.json']);
+        // Committed twice, as versions 1 and 2: the second pass cleared what the first delivered.
+        expect(data.files()).toEqual(['data-root.json', 'identity/registry/v1.json', 'identity/registry/v2.json', 'identity/stat-cache.json']);
         const landscape = Object.values(registry.photos).find((photo) => photo.source.path === 'landscape.jpg');
         expect(landscape?.revisions[landscape.source.observedRevision]).toMatchObject({ width: 960, height: 640, sourceFormat: 'jpeg', orientation: null });
 
         // The registry and stat cache hold curator-only metadata, so only their owner can read them.
         const mode = (file: string) => fs.statSync(file).mode & 0o777;
         const paths = identityPaths(data.root);
-        expect([mode(paths.dir), mode(paths.registry), mode(paths.statCache), mode(data.file('locks'))]).toEqual([0o700, 0o600, 0o600, 0o700]);
+        expect([mode(paths.dir), mode(paths.registry), mode(path.join(paths.registry, 'v2.json')), mode(paths.statCache), mode(data.file('locks'))])
+            .toEqual([0o700, 0o700, 0o600, 0o600, 0o700]);
     });
 
     it('re-delivers facts committed before a crash, leftovers first, so each factId is seen once', async () => {
@@ -196,12 +224,15 @@ describe('runReconcilePass', () => {
         await setup();
         const { seen, options } = harness();
         committed(await runReconcilePass(options({ clearDelivered: true })));
-        const file = identityPaths(data.root).registry;
-        const foreign = { ...JSON.parse(fs.readFileSync(file, 'utf8')), version: 40 };
+        let foreign: Registry | undefined;
         put('extra.jpg', 'landscape-edited.jpg');
-        await expect(runReconcilePass(options({ faults: { beforeRegistryWrite() { fs.writeFileSync(file, JSON.stringify(foreign)); } } })))
-            .rejects.toBeInstanceOf(StaleVersionError);
-        expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual(foreign);
+        // A writer that lost the lock, or never took it, commits the next version between this pass's read and its write.
+        const beforeRegistryWrite = async () => {
+            const current = await readRegistry(data.root);
+            foreign = await writeRegistry(data.root, { ...current, updatedAt: '2030-01-01T00:00:00.000Z' }, current.version);
+        };
+        await expect(runReconcilePass(options({ faults: { beforeRegistryWrite } }))).rejects.toBeInstanceOf(StaleVersionError);
+        expect(await readRegistry(data.root)).toEqual(foreign);
         expect(seen).toHaveLength(1);
     });
 
@@ -237,7 +268,7 @@ describe('runReconcilePass', () => {
         fs.writeFileSync(lib.file('raw.heic'), 'not really heic');
         const { seen, options } = harness();
         if (loss === 'crash') {
-            const crash = { registryWrite: { afterRename() { throw new Error('crash after the registry write'); } } };
+            const crash = { registryWrite: { afterLink() { throw new Error('crash after the registry write'); } } };
             await expect(runReconcilePass(options({ clearDelivered: true, faults: crash }))).rejects.toThrow('crash after the registry write');
         } else {
             fs.mkdirSync(identityPaths(data.root).statCache, { recursive: true });
@@ -264,7 +295,7 @@ describe('runReconcilePass', () => {
         const { seen, options } = harness();
         committed(await runReconcilePass(options({ hasher: colliding, clearDelivered: true })));
         put('portrait.png', 'portrait.png');
-        const crash = { registryWrite: { afterRename() { throw new Error('crash after the registry write'); } } };
+        const crash = { registryWrite: { afterLink() { throw new Error('crash after the registry write'); } } };
         await expect(runReconcilePass(options({ hasher: colliding, clearDelivered: true, faults: crash }))).rejects.toThrow('crash after the registry write');
 
         committed(await runReconcilePass(options({ hasher: colliding, clearDelivered: true })));

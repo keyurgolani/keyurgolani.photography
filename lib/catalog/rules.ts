@@ -414,6 +414,7 @@ const STRUCTURE_HINTS: Record<string, string> = {
     invalid: 'Fix the field so the record matches the catalog schema.',
     'invalid-json': 'Fix the JSON syntax.',
     unreadable: 'Check the file\'s permissions.',
+    'edited-in-place': 'Never edit a version in place. Copy the newest version to the next number and edit the copy, while no command runs.',
 };
 
 const SLICE_A_RULES: RuleDefinition[] = [
@@ -421,7 +422,7 @@ const SLICE_A_RULES: RuleDefinition[] = [
         id: 'structure.schema',
         severity: 'error',
         gate: 'render',
-        check: (ctx) => problemsWith(ctx, ['invalid', 'invalid-json', 'unreadable'], (reason) => STRUCTURE_HINTS[reason]),
+        check: (ctx) => problemsWith(ctx, ['invalid', 'invalid-json', 'unreadable', 'edited-in-place'], (reason) => STRUCTURE_HINTS[reason]),
     },
     {
         id: 'structure.schema-version',
@@ -433,7 +434,7 @@ const SLICE_A_RULES: RuleDefinition[] = [
         id: 'structure.file-name',
         severity: 'error',
         gate: 'render',
-        check: (ctx) => problemsWith(ctx, ['file-name'], () => 'Name the file after the record\'s id, or fix the id.'),
+        check: (ctx) => problemsWith(ctx, ['file-name'], () => 'Name the record\'s folder after its id, or fix the id.'),
     },
     {
         id: 'structure.series-id',

@@ -1,18 +1,24 @@
 // @vitest-environment node
 import fs from 'node:fs';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { runTsx } from '../../../test/helpers/runTsx';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import {
     checkSchemaVersion,
     CorruptDocumentError,
+    EditedInPlaceError,
+    KEEP_VERSIONS,
+    MisnamedVersionError,
+    pruneVersions,
+    READ_ATTEMPTS,
     readJsonFile,
+    readVersionedDocument,
     StaleVersionError,
     UnsupportedSchemaError,
-    VERSION_CLAIM_STALE_MS,
-    versionClaimPath,
+    versionFile,
     writeVersionedDocument,
 } from '../document';
-import { MAX_LEASE_MS } from '../lock';
 
 interface Counter {
     schemaVersion: number;
@@ -21,15 +27,33 @@ interface Counter {
 }
 
 let data: TempDataRoot;
+let dir: string;
 
 beforeEach(() => {
     data = createTempDataRoot({ state: 'uninitialized' });
+    dir = data.file('counter');
 });
 
 afterEach(async () => {
     vi.restoreAllMocks();
     await data.cleanup();
 });
+
+const counter = (count: number): Counter => ({ schemaVersion: 1, version: 0, count });
+
+/** Commit `count` on top of whatever is newest. */
+async function commitNext(count: number): Promise<Counter> {
+    const newest = (await readVersionedDocument(dir))?.version ?? 0;
+    return writeVersionedDocument(dir, counter(count), newest);
+}
+
+/** The names in the document's folder, sorted, temps included. */
+function names(): string[] {
+    return fs.readdirSync(dir).sort();
+}
+
+const temps = () => names().filter((name) => name.endsWith('.tmp'));
+const countIn = (version: number) => (JSON.parse(fs.readFileSync(versionFile(dir, version), 'utf8')) as Counter).count;
 
 describe('checkSchemaVersion', () => {
     it('accepts the current and previous versions and says which', () => {
@@ -64,396 +88,267 @@ describe('readJsonFile', () => {
     });
 });
 
-describe('writeVersionedDocument', () => {
-    it('creates a missing document at version 1 and bumps the version on each write', async () => {
-        const file = data.file('counter.json');
-        const first = await writeVersionedDocument<Counter>(file, { schemaVersion: 1, version: 0, count: 1 }, 0);
-        expect(first.version).toBe(1);
-        const second = await writeVersionedDocument<Counter>(file, { ...first, count: 2 }, first.version);
-        expect(second.version).toBe(2);
-        expect(await readJsonFile(file)).toEqual({ schemaVersion: 1, version: 2, count: 2 });
+describe('readVersionedDocument', () => {
+    it('reads the newest version by number, and null for a folder with none or no folder', async () => {
+        expect(await readVersionedDocument(dir)).toBeNull();
+        fs.mkdirSync(dir);
+        fs.writeFileSync(path.join(dir, '.DS_Store'), '');
+        fs.writeFileSync(path.join(dir, '.v1.123.abc.tmp'), '{}');
+        expect(await readVersionedDocument(dir)).toBeNull();
+
+        fs.writeFileSync(versionFile(dir, 2), JSON.stringify({ schemaVersion: 1, version: 2, count: 2 }));
+        fs.writeFileSync(versionFile(dir, 10), JSON.stringify({ schemaVersion: 1, version: 10, count: 10 }));
+        expect(await readVersionedDocument(dir)).toMatchObject({ version: 10, value: { count: 10, version: 10 }, file: versionFile(dir, 10) });
     });
 
-    it('fails a write based on a stale version and leaves the newer document alone', async () => {
-        const file = data.file('counter.json');
-        const base = await writeVersionedDocument<Counter>(file, { schemaVersion: 1, version: 0, count: 0 }, 0);
-
-        // Two writers read version 1. The first one wins.
-        const winner = await writeVersionedDocument<Counter>(file, { ...base, count: 10 }, base.version);
-        const before = fs.readFileSync(file);
-        let error: unknown;
-        try {
-            await writeVersionedDocument<Counter>(file, { ...base, count: 20 }, base.version);
-        } catch (caught) {
-            error = caught;
-        }
-
-        expect(error).toBeInstanceOf(StaleVersionError);
-        expect(error).toMatchObject({ expected: 1, found: 2 });
-        expect(fs.readFileSync(file).equals(before)).toBe(true);
-        expect(await readJsonFile(file)).toEqual(winner);
+    it("refuses a name that looks like a version but isn't spelled as one, which a case-insensitive disk could hand a writer", async () => {
+        await commitNext(1);
+        fs.writeFileSync(path.join(dir, 'V2.JSON'), '{}');
+        await expect(readVersionedDocument(dir)).rejects.toBeInstanceOf(MisnamedVersionError);
+        fs.rmSync(path.join(dir, 'V2.JSON'));
+        fs.writeFileSync(path.join(dir, 'v02.json'), '{}');
+        await expect(readVersionedDocument(dir)).rejects.toThrow('looks like a version');
     });
 
-    it('treats a missing document as version 0, so a writer expecting an existing one fails', async () => {
-        await expect(writeVersionedDocument<Counter>(data.file('counter.json'), { schemaVersion: 1, version: 3, count: 0 }, 3))
-            .rejects.toMatchObject({ name: 'StaleVersionError', expected: 3, found: 0 });
-        expect(fs.existsSync(data.file('counter.json'))).toBe(false);
-    });
-
-    it('lets one of two overlapping writes at the same version through and refuses the other, so no update is lost', async () => {
-        const file = data.file('counter.json');
-        const base = await writeVersionedDocument<Counter>(file, { schemaVersion: 1, version: 0, count: 0 }, 0);
-
-        // The second writer reads version 1 while the first is between its check and its rename.
-        let second: Promise<unknown> = Promise.resolve();
-        await writeVersionedDocument<Counter>(file, { ...base, count: 10 }, base.version, {
-            faults: {
-                async beforeRename() {
-                    second = writeVersionedDocument<Counter>(file, { ...base, count: 20 }, base.version).catch((caught: unknown) => caught);
-                    await second;
-                },
-            },
-        });
-
-        expect(await second).toBeInstanceOf(StaleVersionError);
-        expect(await readJsonFile(file)).toEqual({ schemaVersion: 1, version: 2, count: 10 });
-        expect(claims()).toEqual([]);
-    });
-
-    it('checks the version again once it holds the claim, so a writer that read before another moved the file on fails', async () => {
-        const file = data.file('counter.json');
-        const base = await writeVersionedDocument<Counter>(file, { schemaVersion: 1, version: 0, count: 0 }, 0);
-
-        // Another writer stores version 2 and lets its claim go between this writer's read and its claim.
-        const error = await writeVersionedDocument<Counter>(file, { ...base, count: 10 }, base.version, {
-            hooks: { beforeClaim: () => writeVersionedDocument<Counter>(file, { ...base, count: 20 }, base.version).then(() => undefined) },
-        }).catch((caught: unknown) => caught);
-
-        expect(error).toBeInstanceOf(StaleVersionError);
-        expect(error).toMatchObject({ expected: 1, found: 2 });
-        expect(await readJsonFile(file)).toEqual({ schemaVersion: 1, version: 2, count: 20 });
-        expect(claims()).toEqual([]);
-    });
-
-    it('keeps a writer paused between its claim and its rename the only one to store its version, so nothing goes back', async () => {
-        const file = data.file('counter.json');
-        const base = await writeVersionedDocument<Counter>(file, { schemaVersion: 1, version: 0, count: 0 }, 0);
-        // Past the 60 s a claim used to last, but well inside a lock's lease
-        const soon = () => Date.now() + 61_000;
-        const others: unknown[] = [];
-
-        const first = await writeVersionedDocument<Counter>(file, { ...base, count: 10 }, base.version, {
-            faults: {
-                async beforeRename() {
-                    others.push(await writeVersionedDocument<Counter>(file, { ...base, count: 20 }, 1, { clock: soon }).catch((caught: unknown) => caught));
-                    others.push(await writeVersionedDocument<Counter>(file, { ...base, version: 2, count: 30 }, 2, { clock: soon }).catch((caught: unknown) => caught));
-                },
-            },
-        });
-
-        expect(first).toMatchObject({ version: 2, count: 10 });
-        expect(others).toEqual([
-            expect.objectContaining({ name: 'StaleVersionError', expected: 1, found: 2 }),
-            expect.objectContaining({ name: 'StaleVersionError', expected: 2, found: 1 }),
-        ]);
-        expect(await readJsonFile(file)).toEqual({ schemaVersion: 1, version: 2, count: 10 });
-        expect(claims()).toEqual([]);
-    });
-
-    it('keeps the stale age of a claim above any lock lease, so a writer that still holds its lock is never taken for dead', () => {
-        expect(VERSION_CLAIM_STALE_MS).toBeGreaterThan(MAX_LEASE_MS);
-    });
-
-    it('waits out a claim a writer that died before its rename left, then installs it once it is stale', async () => {
-        const file = data.file('counter.json');
-        const base = await writeVersionedDocument<Counter>(file, { schemaVersion: 1, version: 0, count: 0 }, 0);
-        // A claim holds its writer's whole document from the moment it is linked.
-        fs.writeFileSync(versionClaimPath(file, 2), `${JSON.stringify({ schemaVersion: 1, version: 2, count: 7 }, null, 2)}\n`);
-
-        await expect(writeVersionedDocument<Counter>(file, { ...base, count: 10 }, base.version)).rejects.toMatchObject({ name: 'StaleVersionError', expected: 1, found: 2 });
-        expect(await readJsonFile(file)).toEqual(base);
-
-        const later = () => Date.now() + VERSION_CLAIM_STALE_MS + 1_000;
-        await expect(writeVersionedDocument<Counter>(file, { ...base, count: 10 }, base.version, { clock: later }))
-            .rejects.toMatchObject({ name: 'StaleVersionError', expected: 1, found: 2 });
-        expect(await readJsonFile(file)).toEqual({ schemaVersion: 1, version: 2, count: 7 });
-        expect(claims()).toEqual([]);
-        // From the version it installed, the next write goes through.
-        expect(await writeVersionedDocument<Counter>(file, { ...base, count: 10 }, 2)).toMatchObject({ version: 3, count: 10 });
-    });
-
-    it('installs the claim of a writer paused past the stale age, which then reports its write done, though the file moved on', async () => {
-        const file = data.file('counter.json');
-        const base = await writeVersionedDocument<Counter>(file, { schemaVersion: 1, version: 0, count: 0 }, 0);
-        const later = () => Date.now() + VERSION_CLAIM_STALE_MS + 1_000;
-        let third: Counter | undefined;
-
-        const first = await writeVersionedDocument<Counter>(file, { ...base, count: 10 }, base.version, {
-            hooks: {
-                async beforeInstall() {
-                    // Taken for dead: the next writer installs this claim, and another stores version 3 on top of it.
-                    await expect(writeVersionedDocument<Counter>(file, { ...base, count: 20 }, 1, { clock: later })).rejects.toMatchObject({ found: 2 });
-                    expect(await readJsonFile(file)).toEqual({ schemaVersion: 1, version: 2, count: 10 });
-                    third = await writeVersionedDocument<Counter>(file, { schemaVersion: 1, version: 2, count: 30 }, 2);
-                },
-            },
-        });
-
-        expect(first).toMatchObject({ version: 2, count: 10 });
-        expect(third).toMatchObject({ version: 3, count: 30 });
-        expect(await readJsonFile(file)).toEqual({ schemaVersion: 1, version: 3, count: 30 });
-        expect(claims()).toEqual([]);
-    });
-
-    it('frees a stale claim that holds no document, and writes', async () => {
-        const file = data.file('counter.json');
-        const base = await writeVersionedDocument<Counter>(file, { schemaVersion: 1, version: 0, count: 0 }, 0);
-        fs.writeFileSync(versionClaimPath(file, 2), '');
-
-        await expect(writeVersionedDocument<Counter>(file, { ...base, count: 10 }, base.version)).rejects.toMatchObject({ name: 'StaleVersionError', found: 2 });
-        const later = () => Date.now() + VERSION_CLAIM_STALE_MS + 1_000;
-        expect(await writeVersionedDocument<Counter>(file, { ...base, count: 10 }, base.version, { clock: later })).toMatchObject({ version: 2, count: 10 });
-        expect(claims()).toEqual([]);
-    });
-
-    it("leaves a claim that took a stale one's place between its look and its settling", async () => {
-        const file = data.file('counter.json');
-        const base = await writeVersionedDocument<Counter>(file, { schemaVersion: 1, version: 0, count: 0 }, 0);
-        const left = versionClaimPath(file, 2);
-        fs.writeFileSync(left, '');
-        const later = () => Date.now() + VERSION_CLAIM_STALE_MS + 1_000;
-
-        const error = await writeVersionedDocument<Counter>(file, { ...base, count: 10 }, base.version, {
-            clock: later,
-            hooks: {
-                beforeRollForward(claimPath) {
-                    // Another writer settled the stale claim first and holds a fresh one now.
-                    fs.rmSync(claimPath);
-                    fs.writeFileSync(claimPath, 'fresh');
-                },
-            },
-        }).catch((caught: unknown) => caught);
-
-        expect(error).toBeInstanceOf(StaleVersionError);
-        expect(fs.readFileSync(left, 'utf8')).toBe('fresh');
-        expect(await readJsonFile(file)).toEqual(base);
-    });
-
-    it('drops claims for older versions a crash left after its rename, and leaves none after a write that failed', async () => {
-        const file = data.file('counter.json');
-        const base = await writeVersionedDocument<Counter>(file, { schemaVersion: 1, version: 0, count: 0 }, 0);
-        fs.writeFileSync(versionClaimPath(file, 1), '');
-
-        await expect(writeVersionedDocument<Counter>(file, { ...base, count: 5 }, base.version, { faults: { beforeRename() { throw new Error('disk full'); } } }))
-            .rejects.toThrow('disk full');
-        expect(claims()).toEqual(['counter.json.claim-1']);
-        expect(await readJsonFile(file)).toEqual(base);
-
-        await writeVersionedDocument<Counter>(file, { ...base, count: 5 }, base.version);
-        expect(claims()).toEqual([]);
-    });
-
-    it('installs a claim once when two writers take it for dead together, so a version stored after it is never put back', async () => {
-        const file = data.file('counter.json');
-        const base = await writeVersionedDocument<Counter>(file, { schemaVersion: 1, version: 0, count: 0 }, 0);
-        const left = versionClaimPath(file, 2);
-        fs.writeFileSync(left, `${JSON.stringify({ schemaVersion: 1, version: 2, count: 7 }, null, 2)}\n`);
-        const { ino, ctimeMs } = fs.statSync(left);
-        // Stale by less than the wait below, so a link made after the wait is fresh by the same clock.
-        const later = () => ctimeMs + VERSION_CLAIM_STALE_MS + 200;
-        await sleep(400);
-
-        // The first of the two to install it stops right before it moves the claim over the file.
-        const paused = gate();
-        const resume = gate();
-        const realRename = fs.promises.rename.bind(fs.promises);
-        vi.spyOn(fs.promises, 'rename').mockImplementation(async (...args: Parameters<typeof fs.promises.rename>) => {
-            if (args[1] === file && !paused.opened && inoOf(args[0]) === ino) {
-                paused.open();
-                await resume.promise;
-            }
-            return realRename(...args);
-        });
-        // Both judge the claim stale before either installs it.
-        const judged = gate();
-        const settle = gate();
-        const second = writeVersionedDocument<Counter>(file, { ...base, count: 20 }, base.version, {
-            clock: later,
-            hooks: {
-                async beforeRollForward() {
-                    judged.open();
-                    await settle.promise;
-                },
-            },
-        }).catch((caught: unknown) => caught);
-        await judged.promise;
-        const first = writeVersionedDocument<Counter>(file, { ...base, count: 10 }, base.version, { clock: later }).catch((caught: unknown) => caught);
-        await paused.promise;
-        settle.open();
-        expect(await second).toBeInstanceOf(StaleVersionError);
-
-        // The file stays at 1 until the first installs the claim, so no write lands on top for it to put back.
-        const third = await writeVersionedDocument<Counter>(file, { ...base, version: 2, count: 30 }, 2).catch((caught: unknown) => caught);
-        resume.open();
-        expect(await first).toBeInstanceOf(StaleVersionError);
-
-        expect(third).toMatchObject({ name: 'StaleVersionError', expected: 2, found: 1 });
-        expect(await readJsonFile(file)).toEqual({ schemaVersion: 1, version: 2, count: 7 });
-        expect(claims()).toEqual([]);
-        expect(await writeVersionedDocument<Counter>(file, { ...base, version: 2, count: 30 }, 2)).toMatchObject({ version: 3, count: 30 });
-    });
-
-    it('fails a writer as stale, not with ENOENT, when the claim it took for dead is installed and gone before it installs it', async () => {
-        const file = data.file('counter.json');
-        const base = await writeVersionedDocument<Counter>(file, { schemaVersion: 1, version: 0, count: 0 }, 0);
-        const left = versionClaimPath(file, 2);
-        fs.writeFileSync(left, `${JSON.stringify({ schemaVersion: 1, version: 2, count: 7 }, null, 2)}\n`);
-        const later = () => Date.now() + VERSION_CLAIM_STALE_MS + 1_000;
-
-        // It stops right before it links the claim to install it.
-        const paused = gate();
-        const resume = gate();
-        const realLink = fs.promises.link.bind(fs.promises);
-        vi.spyOn(fs.promises, 'link').mockImplementation(async (...args: Parameters<typeof fs.promises.link>) => {
-            if (args[0] === left && !paused.opened) {
-                paused.open();
-                await resume.promise;
-            }
-            return realLink(...args);
-        });
-        const first = writeVersionedDocument<Counter>(file, { ...base, count: 10 }, base.version, { clock: later }).catch((caught: unknown) => caught);
-        await paused.promise;
-
-        // Another writer installs it meanwhile, and the claim goes once it is the file.
-        await expect(writeVersionedDocument<Counter>(file, { ...base, count: 20 }, base.version, { clock: later }))
-            .rejects.toMatchObject({ name: 'StaleVersionError', found: 2 });
-        resume.open();
-
-        expect(await first).toMatchObject({ name: 'StaleVersionError', expected: 1, found: 2 });
-        expect(await readJsonFile(file)).toEqual({ schemaVersion: 1, version: 2, count: 7 });
-        expect(claims()).toEqual([]);
-    });
-
-    it('reports its write done when its claim is installed while it is paused right after the link', async () => {
-        const file = data.file('counter.json');
-        const base = await writeVersionedDocument<Counter>(file, { schemaVersion: 1, version: 0, count: 0 }, 0);
-        const claimPath = versionClaimPath(file, 2);
-        const later = () => Date.now() + VERSION_CLAIM_STALE_MS + 1_000;
-
-        const paused = gate();
-        const resume = gate();
-        const realLink = fs.promises.link.bind(fs.promises);
-        vi.spyOn(fs.promises, 'link').mockImplementation(async (...args: Parameters<typeof fs.promises.link>) => {
-            await realLink(...args);
-            if (args[1] === claimPath && !paused.opened) {
-                paused.open();
-                await resume.promise;
-            }
-        });
-        const first = writeVersionedDocument<Counter>(file, { ...base, count: 10 }, base.version).catch((caught: unknown) => caught);
-        await paused.promise;
-
-        // Taken for dead: the next writer installs its claim.
-        await expect(writeVersionedDocument<Counter>(file, { ...base, count: 20 }, base.version, { clock: later }))
-            .rejects.toMatchObject({ name: 'StaleVersionError', found: 2 });
-        expect(await readJsonFile(file)).toEqual({ schemaVersion: 1, version: 2, count: 10 });
-        resume.open();
-
-        expect(await first).toEqual({ schemaVersion: 1, version: 2, count: 10 });
-        expect(await readJsonFile(file)).toEqual({ schemaVersion: 1, version: 2, count: 10 });
-        expect(claims()).toEqual([]);
-    });
-
-    it('leaves the install to the writer that took it for dead and holds the claim, so a version stored after it is never put back', async () => {
-        const file = data.file('counter.json');
-        const base = await writeVersionedDocument<Counter>(file, { schemaVersion: 1, version: 0, count: 0 }, 0);
-        const claimPath = versionClaimPath(file, 2);
-        const later = () => Date.now() + VERSION_CLAIM_STALE_MS + 1_000;
-
-        // The writer that takes it for dead stops right before it moves the claim over the file.
-        let ino = -1;
-        const paused = gate();
-        const resume = gate();
-        const realRename = fs.promises.rename.bind(fs.promises);
-        vi.spyOn(fs.promises, 'rename').mockImplementation(async (...args: Parameters<typeof fs.promises.rename>) => {
-            if (args[1] === file && !paused.opened && inoOf(args[0]) === ino) {
-                paused.open();
-                await resume.promise;
-            }
-            return realRename(...args);
-        });
-        let settler: Promise<unknown> = Promise.resolve();
-        const first = await writeVersionedDocument<Counter>(file, { ...base, count: 10 }, base.version, {
-            hooks: {
-                async beforeInstall() {
-                    ino = fs.statSync(claimPath).ino;
-                    settler = writeVersionedDocument<Counter>(file, { ...base, count: 20 }, base.version, { clock: later }).catch((caught: unknown) => caught);
-                    await paused.promise;
-                },
-            },
-        });
-        expect(first).toMatchObject({ version: 2, count: 10 });
-
-        // The file stays at 1 until that writer installs the claim, so no write lands on top for it to put back.
-        const third = await writeVersionedDocument<Counter>(file, { ...base, version: 2, count: 30 }, 2).catch((caught: unknown) => caught);
-        resume.open();
-        expect(await settler).toBeInstanceOf(StaleVersionError);
-
-        expect(third).toMatchObject({ name: 'StaleVersionError', expected: 2, found: 1 });
-        expect(await readJsonFile(file)).toEqual({ schemaVersion: 1, version: 2, count: 10 });
-        expect(claims()).toEqual([]);
-        expect(await writeVersionedDocument<Counter>(file, { ...base, version: 2, count: 30 }, 2)).toMatchObject({ version: 3, count: 30 });
-    });
-
-    it("leaves a stale claim it can't read alone, rather than taking it for one that holds no document", async () => {
-        const file = data.file('counter.json');
-        const base = await writeVersionedDocument<Counter>(file, { schemaVersion: 1, version: 0, count: 0 }, 0);
-        const left = versionClaimPath(file, 2);
-        fs.writeFileSync(left, `${JSON.stringify({ schemaVersion: 1, version: 2, count: 7 }, null, 2)}\n`);
-        const later = () => Date.now() + VERSION_CLAIM_STALE_MS + 1_000;
-        const realReadFile = fs.promises.readFile.bind(fs.promises);
-        vi.spyOn(fs.promises, 'readFile').mockImplementation((async (...args: Parameters<typeof fs.promises.readFile>) => {
-            if (args[0] === left) throw Object.assign(new Error('EIO: i/o error, read'), { code: 'EIO' });
-            return realReadFile(...args);
-        }) as typeof fs.promises.readFile);
-
-        await expect(writeVersionedDocument<Counter>(file, { ...base, count: 10 }, base.version, { clock: later })).rejects.toMatchObject({ code: 'EIO' });
-        vi.restoreAllMocks();
-        expect(await readJsonFile(left)).toEqual({ schemaVersion: 1, version: 2, count: 7 });
-        expect(await readJsonFile(file)).toEqual(base);
+    it('throws CorruptDocumentError for a newest version that is not a JSON object', async () => {
+        fs.mkdirSync(dir);
+        fs.writeFileSync(versionFile(dir, 1), '{"truncated": ');
+        await expect(readVersionedDocument(dir)).rejects.toBeInstanceOf(CorruptDocumentError);
+        fs.writeFileSync(versionFile(dir, 2), '[1]');
+        await expect(readVersionedDocument(dir)).rejects.toThrow('expected a JSON object');
     });
 });
 
-/** The claim files beside the documents, by name. */
-function claims(): string[] {
-    return fs.readdirSync(data.root).filter((name) => name.includes('.claim-')).sort();
-}
+describe('writeVersionedDocument', () => {
+    it('commits each version as its own stamped file, readable by its owner only, and keeps the newest two', async () => {
+        const first = await writeVersionedDocument(dir, counter(1), 0);
+        expect(first).toEqual({ schemaVersion: 1, version: 1, count: 1 });
+        await writeVersionedDocument(dir, counter(2), 1);
+        await writeVersionedDocument(dir, counter(3), 2);
+        expect(KEEP_VERSIONS).toBe(2);
+        expect(names()).toEqual(['v2.json', 'v3.json']);
+        expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+        expect(fs.statSync(versionFile(dir, 3)).mode & 0o777).toBe(0o600);
 
-/** A promise a test waits on, and what opens it. */
-function gate(): { promise: Promise<void>; opened: boolean; open(): void } {
-    let resolve: () => void = () => undefined;
-    const promise = new Promise<void>((done) => {
-        resolve = done;
+        const raw = JSON.parse(fs.readFileSync(versionFile(dir, 3), 'utf8')) as Record<string, unknown>;
+        expect(raw).toMatchObject({ count: 3, version: 3, stamp: { version: 3, sha256: expect.stringMatching(/^[0-9a-f]{64}$/) } });
+        expect(await readVersionedDocument(dir)).toEqual({ version: 3, value: { schemaVersion: 1, version: 3, count: 3 }, file: versionFile(dir, 3), handMade: false });
     });
-    const result = {
-        promise,
-        opened: false,
-        open() {
-            result.opened = true;
-            resolve();
-        },
-    };
-    return result;
-}
 
-function inoOf(target: fs.PathLike): number {
-    try {
-        return fs.statSync(target).ino;
-    } catch {
-        return -1;
-    }
-}
+    it('lets exactly one of many writers at one version commit, and fails the rest as stale', async () => {
+        await writeVersionedDocument(dir, counter(0), 0);
+        const results = await Promise.allSettled(Array.from({ length: 20 }, (_, index) => writeVersionedDocument(dir, counter(index + 1), 1)));
+        const won = results.filter((result) => result.status === 'fulfilled');
+        const lost = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+        expect(won).toHaveLength(1);
+        expect(lost).toHaveLength(19);
+        for (const result of lost) expect(result.reason).toBeInstanceOf(StaleVersionError);
+        expect((await readVersionedDocument(dir))?.value).toEqual((won[0] as PromiseFulfilledResult<Counter>).value);
+        expect(temps()).toEqual([]);
+    });
 
-function sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
+    it('fails as stale and commits nothing when the newest is not the version it expected', async () => {
+        await writeVersionedDocument(dir, counter(1), 0);
+        await expect(writeVersionedDocument(dir, counter(9), 0)).rejects.toMatchObject({ name: 'StaleVersionError', expected: 0, found: 1 });
+        await expect(writeVersionedDocument(dir, counter(9), 3)).rejects.toMatchObject({ name: 'StaleVersionError', expected: 3, found: 1 });
+        expect(names()).toEqual(['v1.json']);
+    });
+
+    it('never commits a pruned number again: a writer that read an old version stops at its listing', async () => {
+        for (let count = 1; count <= 5; count++) await commitNext(count);
+        expect(names()).toEqual(['v4.json', 'v5.json']);
+        // It read version 2 long ago. v3.json is free again, so only the listing before the link stops it.
+        await expect(writeVersionedDocument(dir, counter(99), 2)).rejects.toMatchObject({ name: 'StaleVersionError', expected: 2, found: 5 });
+        expect(names()).toEqual(['v4.json', 'v5.json']);
+        expect((await readVersionedDocument(dir))?.value.count).toBe(5);
+    });
+
+    it('fails a writer paused between its listing and its link while others commit and prune past its number', async () => {
+        await commitNext(1);
+        const paused = writeVersionedDocument(dir, counter(99), 1, {
+            hooks: {
+                async beforeLink() {
+                    // Others commit 2, 3, and 4. The prune after 4 frees v2.json, the number this writer is about to link.
+                    for (let count = 2; count <= 4; count++) await commitNext(count);
+                    expect(names()).toEqual(['v3.json', 'v4.json']);
+                },
+            },
+        });
+        await expect(paused).rejects.toMatchObject({ name: 'StaleVersionError', expected: 1, found: 4 });
+        expect(names()).toEqual(['v3.json', 'v4.json']);
+        expect((await readVersionedDocument(dir))?.value.count).toBe(4);
+    });
+
+    it('fails a writer paused before its link while another commits its number', async () => {
+        await commitNext(1);
+        let other: Promise<Counter> | undefined;
+        let release!: () => void;
+        const paused = writeVersionedDocument(dir, counter(99), 1, {
+            hooks: {
+                beforeLink: () => new Promise<void>((linked) => {
+                    // The other writer links version 2 and stops before its prune, so this one's temp is still there.
+                    other = writeVersionedDocument(dir, counter(2), 1, {
+                        hooks: { afterLink: () => new Promise<void>((resume) => { release = resume; linked(); }) },
+                    });
+                }),
+            },
+        });
+        await expect(paused).rejects.toMatchObject({ name: 'StaleVersionError', expected: 1, found: 2 });
+        release();
+        await expect(other).resolves.toMatchObject({ version: 2, count: 2 });
+        expect(countIn(2)).toBe(2);
+        expect(temps()).toEqual([]);
+    });
+
+    it('reports a commit paused right after its link done, though others commit and prune it before it resumes', async () => {
+        await commitNext(1);
+        const paused = writeVersionedDocument(dir, counter(10), 1, {
+            hooks: {
+                async afterLink() {
+                    await commitNext(20);
+                    await commitNext(30);
+                    // Its own v2.json is pruned, and its temp swept, before it goes on.
+                    expect(names()).toEqual(['v3.json', 'v4.json']);
+                },
+            },
+        });
+        await expect(paused).resolves.toEqual({ schemaVersion: 1, version: 2, count: 10 });
+        expect((await readVersionedDocument(dir))?.value.count).toBe(30);
+    });
+
+    it("removes a crashed writer's temp at the next commit's prune, and no prune removes a temp above the newest", { timeout: 30_000 }, async () => {
+        await commitNext(1);
+        const run = await runTsx('test/helpers/storageWorker.ts', ['crash-version', JSON.stringify({ dir, value: counter(2), expected: 1 })]);
+        expect(run.signal, run.stderr).toBe('SIGKILL');
+        expect(temps()).toHaveLength(1);
+        expect(temps()[0]).toMatch(/^\.v2\.\d+\.[0-9a-f-]+\.tmp$/);
+        expect((await readVersionedDocument(dir))?.value.count).toBe(1);
+
+        // A writer may still be committing version 2 with it.
+        expect(await pruneVersions(dir)).toEqual([]);
+        expect(temps()).toHaveLength(1);
+
+        await commitNext(2);
+        expect(names()).toEqual(['v1.json', 'v2.json']);
+    });
+
+    it('creates only the document folder, never a missing parent', async () => {
+        await expect(writeVersionedDocument(data.file('missing', 'doc'), counter(1), 0)).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(fs.existsSync(data.file('missing'))).toBe(false);
+    });
+});
+
+describe('pruneVersions', () => {
+    it('sweeps the temps at or below the newest before it deletes anything, then keeps the newest two by number', async () => {
+        fs.mkdirSync(dir);
+        for (const version of [1, 2, 3, 4]) fs.writeFileSync(versionFile(dir, version), JSON.stringify({ ...counter(version), version }));
+        fs.writeFileSync(path.join(dir, '.v3.77.aaaa.tmp'), '{}');
+        fs.writeFileSync(path.join(dir, '.v5.77.bbbb.tmp'), '{}');
+        fs.writeFileSync(path.join(dir, 'notes.txt'), 'left alone');
+
+        expect(await pruneVersions(dir)).toEqual(['.v3.77.aaaa.tmp', 'v2.json', 'v1.json']);
+        expect(names()).toEqual(['.v5.77.bbbb.tmp', 'notes.txt', 'v3.json', 'v4.json']);
+        expect(await pruneVersions(dir, { keep: 1 })).toEqual(['v3.json']);
+        await expect(pruneVersions(dir, { keep: 0 })).rejects.toThrow(RangeError);
+    });
+});
+
+describe('a reader against commits and prunes', () => {
+    it('lists again when the version it picked is pruned before it opens it, and returns the newest', async () => {
+        await commitNext(1);
+        let pauses = 0;
+        const read = await readVersionedDocument(dir, {
+            hooks: {
+                async afterList(file) {
+                    if (pauses++ > 0) return;
+                    expect(path.basename(file)).toBe('v1.json');
+                    // KEEP_VERSIONS commits and their prune land between its listing and its open.
+                    await commitNext(2);
+                    await commitNext(3);
+                    expect(fs.existsSync(file)).toBe(false);
+                },
+            },
+        });
+        expect(pauses).toBe(2);
+        expect(read).toMatchObject({ version: 3, value: { count: 3 } });
+    });
+
+    it('reads a version it has open whole, though a prune unlinks it meanwhile', async () => {
+        await commitNext(1);
+        const read = await readVersionedDocument(dir, {
+            hooks: {
+                async afterOpen(file) {
+                    await commitNext(2);
+                    await commitNext(3);
+                    expect(fs.existsSync(file)).toBe(false);
+                },
+            },
+        });
+        expect(read).toMatchObject({ version: 1, value: { count: 1 }, handMade: false });
+    });
+
+    it(`gives up after ${READ_ATTEMPTS} listings when every version it picks is pruned first`, async () => {
+        await commitNext(0);
+        let listings = 0;
+        const read = readVersionedDocument(dir, {
+            hooks: {
+                async afterList() {
+                    listings++;
+                    await commitNext(listings * 10);
+                    await commitNext(listings * 10 + 1);
+                },
+            },
+        });
+        await expect(read).rejects.toThrow(`its newest version was pruned ${READ_ATTEMPTS} times`);
+        expect(listings).toBe(READ_ATTEMPTS);
+    });
+});
+
+describe('the stamp', () => {
+    it('refuses an in-place edit of the newest version, and names the copy step', async () => {
+        await commitNext(1);
+        await commitNext(2);
+        const file = versionFile(dir, 2);
+        fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('"count": 2', '"count": 7'));
+
+        const error = await readVersionedDocument(dir).catch((caught: unknown) => caught);
+        expect(error).toBeInstanceOf(EditedInPlaceError);
+        expect(error).toBeInstanceOf(CorruptDocumentError);
+        expect(error).toMatchObject({ version: 2, message: expect.stringContaining('cp -n v2.json v3.json') });
+    });
+
+    it('accepts a hand-made copy at the next number, reads it as that number, and stamps the next write again', async () => {
+        await commitNext(1);
+        await commitNext(2);
+        // The documented hand edit: copy the newest to the next number, then edit the copy.
+        fs.copyFileSync(versionFile(dir, 2), versionFile(dir, 3), fs.constants.COPYFILE_EXCL);
+        fs.writeFileSync(versionFile(dir, 3), fs.readFileSync(versionFile(dir, 3), 'utf8').replace('"count": 2', '"count": 7'));
+
+        expect(await readVersionedDocument(dir)).toMatchObject({ version: 3, value: { count: 7, version: 3 }, handMade: true });
+        await writeVersionedDocument(dir, counter(8), 3);
+        const raw = JSON.parse(fs.readFileSync(versionFile(dir, 4), 'utf8')) as { stamp: { version: number } };
+        expect(raw.stamp.version).toBe(4);
+        expect(await readVersionedDocument(dir)).toMatchObject({ version: 4, value: { count: 8 }, handMade: false });
+        expect(names()).toEqual(['v3.json', 'v4.json']);
+    });
+
+    it('reads an edit made in place again once it is copied to the next number, as the refusal says', async () => {
+        await commitNext(1);
+        const file = versionFile(dir, 1);
+        fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('"count": 1', '"count": 5'));
+        await expect(readVersionedDocument(dir)).rejects.toBeInstanceOf(EditedInPlaceError);
+
+        fs.copyFileSync(file, versionFile(dir, 2), fs.constants.COPYFILE_EXCL);
+        expect(await readVersionedDocument(dir)).toMatchObject({ version: 2, value: { count: 5 }, handMade: true });
+    });
+
+    it('ignores formatting and key order, and checks only the newest version', async () => {
+        await commitNext(1);
+        await commitNext(2);
+        const newest = JSON.parse(fs.readFileSync(versionFile(dir, 2), 'utf8')) as Record<string, unknown>;
+        const reordered = Object.fromEntries(Object.entries(newest).reverse());
+        fs.writeFileSync(versionFile(dir, 2), JSON.stringify(reordered));
+        fs.writeFileSync(versionFile(dir, 1), fs.readFileSync(versionFile(dir, 1), 'utf8').replace('"count": 1', '"count": 9'));
+        expect(await readVersionedDocument(dir)).toMatchObject({ version: 2, value: { count: 2 }, handMade: false });
+    });
+});
