@@ -4,6 +4,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { runTsx } from '../../../test/helpers/runTsx';
+import { newestRegistryFile } from '../../../test/helpers/registryFiles';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempLibrary';
 import { getImagePaths } from '../../../utils/imageOptimizer';
@@ -89,7 +90,7 @@ describe('migrateApply', () => {
         expect(s.data.files().filter((file) => !before.includes(file)).sort()).toEqual([
             DATA_ROOT_FILE,
             'identity/migration/applied-2026-07-01T08-00-00-000Z.json',
-            'identity/registry.json',
+            'identity/registry/v1.json',
             'identity/stat-cache.json',
         ]);
 
@@ -137,11 +138,11 @@ describe('migrateApply', () => {
     it('reports a plan already applied and changes nothing', async () => {
         const s = await setup({ 'x.jpg': 0 });
         const first = await s.apply();
-        const registry = fs.readFileSync(identityPaths(s.data.root).registry);
+        const registry = fs.readFileSync(newestRegistryFile(s.data.root));
         const files = s.data.files();
         const again = await s.apply({ appliedAt: () => APPLIED_AT + 60_000 });
         expect(again).toEqual({ status: 'already-applied', planId: s.plan.planId, mappingPath: first.status === 'applied' ? first.mappingPath : '' });
-        expect(fs.readFileSync(identityPaths(s.data.root).registry).equals(registry)).toBe(true);
+        expect(fs.readFileSync(newestRegistryFile(s.data.root)).equals(registry)).toBe(true);
         expect(s.data.files()).toEqual(files);
     }, 60_000);
 

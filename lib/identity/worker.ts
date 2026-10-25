@@ -232,7 +232,7 @@ export function createWorker(options: WorkerOptions = {}): DerivativeWorker {
     async function begin(): Promise<WorkerStart> {
         if (state === 'stopped') return { started: false, reason: 'stopped' };
         if (state === 'running') return { started: true, queued: 0 };
-        const status = dataRootStatus(options.root === undefined ? { write: true } : { write: true, root: options.root });
+        const status = dataRootStatus(options.root === undefined ? { versioned: true } : { versioned: true, root: options.root });
         if (status.state !== 'ready' || status.root === null) {
             return { started: false, reason: 'data-root', state: status.state, ...(status.detail === undefined ? {} : { detail: status.detail }) };
         }

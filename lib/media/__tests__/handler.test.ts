@@ -5,8 +5,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { writeRegistryFile } from '../../../test/helpers/registryFiles';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
-import { identityPaths } from '../../identity/registry';
 import type { AssetManifest } from '../../identity/types';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../../identity/variants';
 import { DATA_ROOT_FILE } from '../../storage/config';
@@ -328,8 +328,7 @@ describe('the media route handler', () => {
     it('never reads the registry or the library', async () => {
         const data = dataRoot();
         writeSet(data.root);
-        fs.mkdirSync(identityPaths(data.root).dir, { recursive: true });
-        fs.writeFileSync(identityPaths(data.root).registry, '{ not a registry');
+        writeRegistryFile(data.root, 1, '{ not a registry');
         vi.stubEnv('PHOTOGRAPHY_LIBRARY_DIR', path.join(data.root, '..', 'no-library'));
         expect((await get(handlerWith({ access: allowAll }))).status).toBe(200);
     });

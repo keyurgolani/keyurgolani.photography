@@ -199,7 +199,7 @@ async function record(
  */
 export async function buildDerivativeSet(job: DerivativeJob, options: BuildOptions = {}): Promise<BuildOutcome> {
     const { hasher = sha256, clock = Date.now, idGen = randomUUID, faults = {}, logger = console } = options;
-    const status = dataRootStatus(options.root === undefined ? { write: true } : { write: true, root: options.root });
+    const status = dataRootStatus(options.root === undefined ? { versioned: true } : { versioned: true, root: options.root });
     if (status.state !== 'ready' || status.root === null) return { status: 'skipped', reason: 'data-root' };
     const root = status.root;
 

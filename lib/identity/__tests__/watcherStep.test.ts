@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import sharp from 'sharp';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { writeRegistryFile } from '../../../test/helpers/registryFiles';
 import { createTempDataRoot, writeDataRootMarker, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempLibrary';
 import { assetsRoot } from '../../media/path';
@@ -167,7 +168,7 @@ describe('an identity pass', { timeout: 60_000 }, () => {
 
         const report = s.step.pass('startup');
         await new Promise((resolve) => setTimeout(resolve, 200));
-        expect(fs.existsSync(s.data.file('identity', 'registry.json'))).toBe(false);
+        expect(fs.existsSync(s.data.file('identity', 'registry'))).toBe(false);
 
         legacy.resolve();
         expect((await report).status).toBe('committed');
@@ -296,7 +297,7 @@ describe('an identity pass', { timeout: 60_000 }, () => {
     it('turns itself off, saying why, when the registry comes from a newer build', async () => {
         const s = await setup();
         fs.mkdirSync(s.data.file('identity'), { mode: 0o700 });
-        fs.writeFileSync(s.data.file('identity', 'registry.json'), JSON.stringify({ schemaVersion: 99, version: 1 }));
+        writeRegistryFile(s.data.root, 1, JSON.stringify({ schemaVersion: 99, version: 1 }));
 
         expect(await s.step.pass('startup')).toEqual({ status: 'off', state: 'unavailable' });
         expect(offLines(s.lines)).toEqual([expect.stringContaining('the data root is unavailable')]);
