@@ -55,20 +55,22 @@ describe('the owner walkthrough', () => {
         expect(listed.every((row) => row.w400 !== null && fs.existsSync(path.join(data.root, row.w400)))).toBe(true);
         const [landscape, portrait, square] = listed.map((row) => row.photoId);
 
-        // 3. The series record, by hand, then its sequence, cover, a chapter, and the site's order through the commands.
-        fs.mkdirSync(data.file('authored', 'series', SERIES), { recursive: true, mode: 0o700 });
-        fs.writeFileSync(data.file('authored', 'series', SERIES, 'v1.json'), `${JSON.stringify({
-            schemaVersion: 1,
-            version: 1,
-            baseRevisionId: null,
+        // 3. The series record through photos edit, which reviews what it writes, then its sequence, cover, a chapter,
+        // and the site's order through the commands. A record made by hand after the upgrade would read as not reviewed.
+        const seriesFile = path.join(path.dirname(data.root), 'series.json');
+        fs.writeFileSync(seriesFile, `${JSON.stringify({
             kind: 'series',
             id: SERIES,
             slug: 'walkthrough',
             title: 'Walkthrough fixture series',
             statement: 'A fixture statement for the walkthrough. Not real copy.',
             shortStatement: 'A fixture short statement.',
+            photoIds: [],
+            chapters: [],
+            cover: null,
             visibility: 'published',
         }, null, 2)}\n`);
+        expect(ok(await photos('edit', SERIES, '--file', seriesFile))).toContain(`Saved series ${SERIES} as version 1.`);
         expect(ok(await photos('sequence', 'set', SERIES, landscape, portrait, square))).toContain(`${SERIES}, version 2, 3 photographs`);
         ok(await photos('sequence', 'cover', SERIES, portrait, '--focal', '0.5,0.4'));
         ok(await photos('sequence', 'chapter', 'add', SERIES, '--start', square, '--', '-Fixture chapter'));

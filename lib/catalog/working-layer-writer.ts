@@ -23,7 +23,8 @@ import type {
     AuthoredSite,
     AuthoredSiteInput,
 } from './types';
-import { rebaseStamps, stampWrite } from './review';
+import { noteHandMade, rebaseStamps, stampWrite } from './review';
+import { ensureReviewBackfill } from './review-backfill';
 import { authoredPaths, authoredRecordDir, isRecordId, readActivePointer, readAuthoredRecord, recordFolderProblem } from './working-layer';
 
 /**
@@ -167,6 +168,8 @@ async function commit(
             throw new AuthoredWriteError('INVALID_RECORD', ref, message, { issues: parsed.error.issues });
         }
         existing = parsed.value;
+        // #16: a version made by hand gets no review backfill.
+        noteHandMade(existing, stored.handMade);
         // As the reader does: a folder holding another record's versions is never extended as this one.
         if (ref.kind !== 'site' && (existing as AuthoredSeries | AuthoredPhoto).id !== ref.id) {
             const message = `its folder holds the record ${JSON.stringify((existing as AuthoredSeries | AuthoredPhoto).id)}`;
@@ -196,9 +199,11 @@ async function commit(
     const unstamped = parseAuthoredRecord(ref.kind, next);
     if (!unstamped.ok) throw new AuthoredWriteError('INVALID_RECORD', ref, `The ${ref.kind} record ${ref.id} is not valid.`, { issues: unstamped.error.issues });
     // #16's stamps, under the same hold: a rebase keeps those of the fields it left alone, and any other write stamps
-    // what it changed with what the curator reviewed, keeping the rest as they were.
+    // what it changed with what the curator reviewed, keeping the rest as they were. The first write after the upgrade
+    // records the one-time backfill first, while this hold keeps every other tool write out.
+    const backfill = await ensureReviewBackfill(root);
     const stamps = rebaseTo !== undefined
-        ? rebaseStamps(existing, unstamped.value, await coverAsset(root, existing), new Date().toISOString(), published ? rebaseTo : undefined)
+        ? rebaseStamps(existing, unstamped.value, await coverAsset(root, existing), new Date().toISOString(), published ? rebaseTo : undefined, backfill)
         : stampWrite(existing, unstamped.value, {
             baseRevisionId: reviewedAgainst,
             ...(review?.origin ? { origin: review.origin } : {}),
@@ -206,7 +211,7 @@ async function commit(
             ...(review?.asset ? { asset: review.asset } : {}),
             actor: review?.actor ?? DEFAULT_REVIEW_ACTOR,
             reviewedAt: review?.reviewedAt ?? new Date().toISOString(),
-        }, { next: await coverAsset(root, unstamped.value), existing: await coverAsset(root, existing) });
+        }, { next: await coverAsset(root, unstamped.value), existing: await coverAsset(root, existing), backfill });
     const parsed = parseAuthoredRecord(ref.kind, stamps ? { ...unstamped.value, review: stamps } : unstamped.value);
     if (!parsed.ok) throw new AuthoredWriteError('INVALID_RECORD', ref, `The ${ref.kind} record ${ref.id} is not valid.`, { issues: parsed.error.issues });
 
