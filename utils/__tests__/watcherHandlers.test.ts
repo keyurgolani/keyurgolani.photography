@@ -535,7 +535,40 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
                 expect(lib.hashes(derivativePaths('portrait'))).toEqual(before);
                 expect(lib.tempFiles()).toEqual([]);
                 expect(readSetSource('portrait.png')).toEqual({ source: 'portrait.png', finished: true });
-                expect(errors).toHaveBeenCalledWith(expect.stringMatching(/^\[imageOptimizer\] Couldn't record that portrait\.jpg's set is being rebuilt, so the set it shares keeps its old outputs: /));
+                expect(errors).toHaveBeenCalledWith(expect.stringMatching(/^\[imageOptimizer\] Couldn't record that portrait\.jpg's set is being rebuilt, so it keeps the outputs of portrait\.png, which built it last: /));
+            });
+
+            it("rebuilds a shared set from the source that owns it once its owner is removed, live and at the next start, when cache/set-sources can't be written", async () => {
+                fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+                fs.copyFileSync(lib.file('square.webp'), lib.file('portrait.webp'));
+                expect(await processOnce(handlers, { force: true, logger })).toBe(0);
+                expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
+                expect(readSetSource('portrait.png')).toEqual({ source: 'portrait.jpg', finished: true });
+                vi.spyOn(console, 'error').mockImplementation(() => undefined);
+                failRecordWrites(() => true);
+
+                // The record still names portrait.jpg, which is gone, so its outputs show nothing the library has.
+                fs.unlinkSync(lib.file('portrait.jpg'));
+                await handlers.onUnlink(lib.file('portrait.jpg'));
+                expect(await outputChannels('portrait')).toEqual(Array(7).fill('green'));
+                handlers.stop();
+
+                expect(await newHandlers().queueStartupBatch()).toEqual({ processed: ['portrait.png'], skipped: [], errors: [] });
+                expect(await outputChannels('portrait')).toEqual(Array(7).fill('green'));
+            });
+
+            it("rebuilds a shared set nothing records from its owner when the owner is replaced and cache/set-sources can't be written", async () => {
+                fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+                expect(await processOnce(handlers, { force: true, logger })).toBe(0);
+                expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
+                // As every shared set on a library built before the record was kept
+                fs.rmSync(lib.file('cache', 'set-sources'), { recursive: true });
+                vi.spyOn(console, 'error').mockImplementation(() => undefined);
+                failRecordWrites(() => true);
+
+                fs.writeFileSync(lib.file('portrait.jpg'), edited);
+                await handlers.onChange(lib.file('portrait.jpg'));
+                expect(await outputChannels('portrait')).toEqual(Array(7).fill('blue'));
             });
 
             it('keeps the record that a build started after a rename fails, and rebuilds at startup once the source that took the set over is removed', async () => {
@@ -1009,7 +1042,7 @@ describe('the one-time rebuild of orientation-tagged photos', { timeout: 60_000 
         expect(await handlers.queueStartupBatch()).toEqual({ processed: ['turned.jpg'], skipped: [], errors: [] });
         expect(await optimizedSize('turned.jpg')).toEqual(UPRIGHT);
         // Said up front, before any build
-        const warning = `[ImageWatcher] ${path.dirname(marker())} can't be written, so the watcher can't record which sets it rebuilt. Until it can, every start rebuilds the orientation-tagged photos again, and a set two sources share keeps its old outputs.`;
+        const warning = `[ImageWatcher] ${path.dirname(marker())} can't be written, so the watcher can't record which sets it rebuilt. Until it can, every start rebuilds the orientation-tagged photos again, and a set last built from another source that's still in the library keeps that source's outputs.`;
         expect(logs.indexOf(warning)).toBeGreaterThanOrEqual(0);
         expect(logs.indexOf(warning)).toBeLessThan(logs.findIndex((line) => line.startsWith('[ImageWatcher] Processing ')));
         expect(logs.some((line) => line.startsWith(`[ImageWatcher] Could not write ${marker()}: `) && line.endsWith('The next start rebuilds the orientation-tagged photos again.'))).toBe(true);
