@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { renderToString } from 'react-dom/server';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ThemeProvider, useTheme } from '../ThemeContext';
 
 function Probe() {
@@ -75,5 +75,26 @@ describe('ThemeProvider', () => {
     act(() => fireEvent.click(screen.getByRole('button')));
     expect(html.getAttribute('data-theme')).toBe('dark');
     expect(localStorage.getItem('theme')).toBe('dark');
+  });
+
+  it('still flips both ways when localStorage throws on write', () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('The operation is insecure.', 'SecurityError');
+    });
+    try {
+      render(
+        <ThemeProvider>
+          <Probe />
+        </ThemeProvider>,
+      );
+      act(() => fireEvent.click(screen.getByRole('button')));
+      expect(html.getAttribute('data-theme')).toBe('light');
+      expect(screen.getByRole('button')).toHaveTextContent('light');
+      act(() => fireEvent.click(screen.getByRole('button')));
+      expect(html.getAttribute('data-theme')).toBe('dark');
+      expect(screen.getByRole('button')).toHaveTextContent('dark');
+    } finally {
+      setItem.mockRestore();
+    }
   });
 });

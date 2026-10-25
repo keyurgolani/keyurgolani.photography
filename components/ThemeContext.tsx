@@ -25,11 +25,17 @@ export const ThemeProvider = ({children}: { children: ReactNode }) => {
         root.dataset.hydrated = 'true';
     }, []);
 
+    // The page's own attribute decides the next theme, and storage that throws (site data blocked) only loses the
+    // choice on reload, so the toggle still flips both ways.
     const toggleTheme = () => {
-        const newTheme = theme === 'light' ? 'dark' : 'light';
+        const newTheme = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
         document.documentElement.setAttribute('data-theme', newTheme);
-        localStorage.setItem('theme', newTheme);
         setTheme(newTheme);
+        try {
+            localStorage.setItem('theme', newTheme);
+        } catch {
+            // Nothing to keep it in.
+        }
     };
 
     return (
