@@ -124,8 +124,8 @@ function coverVariants(photo: Photo): WorkCover['variants'] | null {
  */
 function coverOf(series: SeriesRecord, members: readonly Photo[]): WorkCover | null {
     const photoId = series.cover?.photoId;
-    if (typeof photoId !== 'string' || !series.photoIds.includes(photoId)) return null;
-    const photo = members.find((member) => member.id === photoId);
+    // Members are the series' photoIds that resolve, so a cover from anywhere else finds nothing.
+    const photo = typeof photoId === 'string' ? members.find((member) => member.id === photoId) : undefined;
     if (!photo || !dimension(photo.width) || !dimension(photo.height)) return null;
     const variants = coverVariants(photo);
     if (variants === null) return null;
