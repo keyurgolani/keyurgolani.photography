@@ -80,7 +80,7 @@ Only while no command runs: stop the watcher, and don't run `photos.mjs` command
    test ! -e v5.json && cp -n v4.json v5.json && vi v5.json
    ```
 
-3. While you edit, leave the `stamp` as it is. A stamp that names another number marks the file as made by hand, and the next write stamps the version after it again. Leave `baseRevisionId` alone too, and in the site record `baseSeriesOrder`: publishing manages them, and they're how it tells your edits from the published ones. Leave an authored record's `review` alone as well. A field you change by hand no longer matches its review stamp, so a publish refuses it as not reviewed ([Review state](#review-state)). Make a change you mean to publish with `photos.mjs edit` instead.
+3. While you edit, leave the `stamp` as it is. A stamp that names another number marks the file as made by hand, and the next write stamps the version after it again. Leave `baseRevisionId` alone too, and in the site record `baseSeriesOrder`: publishing manages them, and they're how it tells your edits from the published ones. Leave an authored record's `review` alone as well. Once the upgrade's one-time review backfill has run, a field you change by hand no longer matches its review stamp, and a version without `review` has none, so a publish refuses it as not reviewed ([Review state](#review-state)). Make a change you mean to publish with `photos.mjs edit` instead.
 4. Leave the shell with `exit`, and start the watcher again:
 
    ```bash

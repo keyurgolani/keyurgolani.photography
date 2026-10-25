@@ -352,6 +352,8 @@ Rolling back past the first release with slice C of #13 lists `/api/photos` from
 
 An image older than the first release with slice A of #10 serves photos the way that release replaced, without its privacy protections. After the catalog launch, roll the image back that far only as a last resort, and prefer `photos rollback` or a data-root restore, as [After the catalog launch](#after-the-catalog-launch) describes.
 
+Rolling the image back past the first release with #16's review stamps keeps the site serving, since the active revision and `/media` don't read the authored records, and `photos rollback` still works. The older image can't read an authored record this release has written, which is every record after its first publish or rollback. So its `validate`, `publish`, `edit`, `sequence`, `series`, `describe --import`, `curation` decisions, and `gc` refuse until you roll forward again. To edit or publish from the older image, restore `authored/` from the data-root backup taken before the upgrade. Edits made since are lost.
+
 Never roll back to `v1.0.0`. That image, on GHCR and on Docker Hub, is the initial commit and can't run under this compose file.
 
 ### After the catalog launch
