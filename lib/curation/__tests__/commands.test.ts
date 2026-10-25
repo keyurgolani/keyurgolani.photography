@@ -343,6 +343,10 @@ describe('a new photograph that is already placed', () => {
         const listed = await cli(f, 'list');
         expect(listed.output).toMatch(new RegExp(`^Curation inbox: 1 item requires judgment, 1 in all\\.\\n${events[0].id}@2 `));
         expect((await cli(f, 'show', events[0].id)).output).not.toContain('Already placed');
+
+        // A photo record that pins the new bytes, as draft:init writes one, places them, so the moved item settles again.
+        await writeAuthoredRecord({ kind: 'photo', id: photoId, assetRevision: newer, alt: null }, { expectedVersion: 0, root: f.root });
+        expect((await cli(f, 'list')).output).toMatch(/^Curation inbox: 0 items require judgment, 1 already placed, 1 in all\./);
     });
 
     it('counts only a series sequence as a placement, not a cover outside it', async () => {
