@@ -56,9 +56,10 @@ describe('SiteNav', () => {
     expect(within(primary()).getAllByRole('link').filter((link) => link.hasAttribute('aria-current'))).toEqual([]);
   });
 
-  it('links Work to /gallery and the wordmark to /', () => {
+  it('links Work to /work, never the legacy /gallery, and the wordmark to /', () => {
     render(<SiteNav />);
-    expect(within(primary()).getByRole('link', { name: 'Work' })).toHaveAttribute('href', '/gallery');
+    expect(within(primary()).getByRole('link', { name: 'Work' })).toHaveAttribute('href', '/work');
+    expect(primary().querySelector('a[href="/gallery"]')).toBeNull();
     expect(within(primary()).getByRole('link', { name: 'KG, Keyur Golani' })).toHaveAttribute('href', '/');
   });
 

@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { currentSection, NAV_ITEMS } from '../nav';
 
 describe('NAV_ITEMS', () => {
-  it('lists Home, Work, and About in order, with Work on /gallery until #3', () => {
+  it('lists Home, Work, and About in order, with Work on /work, which serves both modes', () => {
     expect(NAV_ITEMS).toEqual([
       { section: 'home', label: 'Home', href: '/' },
-      { section: 'work', label: 'Work', href: '/gallery' },
+      { section: 'work', label: 'Work', href: '/work' },
       { section: 'about', label: 'About', href: '/about' },
     ]);
   });

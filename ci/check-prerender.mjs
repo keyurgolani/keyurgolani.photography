@@ -12,7 +12,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // Paths no build may prerender. A route that reads the catalog adds its path,
 // and a dynamic one its pattern, such as /work/[slug].
-export const DYNAMIC_PATHS = ['/api/photos', '/api/ready'];
+export const DYNAMIC_PATHS = ['/api/photos', '/api/ready', '/work', '/gallery'];
 
 const isObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 
