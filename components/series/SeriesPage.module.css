@@ -260,6 +260,56 @@
   }
 }
 
+/* #6's Show more: under the last loaded entry, above All work. The status line holds its height, so the control doesn't jump. */
+.more {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.5rem;
+  margin-top: clamp(2rem, 5vw, 3rem);
+}
+
+.moreLoading {
+  flex-basis: 100%;
+}
+
+.moreStatus {
+  flex-basis: 100%;
+  min-height: 1.45em;
+  margin: 0;
+  color: var(--gah-ink-soft);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-ui);
+  line-height: 1.45;
+}
+
+.moreButton {
+  display: inline-flex;
+  min-width: 44px;
+  min-height: 44px;
+  align-items: center;
+  padding: 0 1rem;
+  border: 1px solid var(--gah-rule-strong);
+  border-radius: var(--gah-radius);
+  background: transparent;
+  color: var(--gah-ink);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-ui);
+  letter-spacing: var(--gah-label-tracking);
+  cursor: pointer;
+}
+
+.moreButton[aria-disabled='true'] {
+  color: var(--gah-ink-muted);
+  cursor: progress;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .moreButton:not([aria-disabled='true']):hover {
+    background: var(--gah-surface);
+  }
+}
+
 /* The sequence ends here. Nothing wraps, and there's no next-series link. */
 .end {
   margin: clamp(3rem, 7vw, 5rem) 0 0;

@@ -3,7 +3,7 @@ import { notFound, permanentRedirect } from 'next/navigation';
 import { cache } from 'react';
 import SeriesPage from '@/components/series/SeriesPage';
 import SiteNav from '@/components/site/SiteNav';
-import { seriesPageFrom, seriesSections } from '@/lib/catalog/projections/series';
+import { seriesPageFrom } from '@/lib/catalog/projections/series';
 import { CatalogUnavailableError, getActiveCatalog, publicRoutes } from '@/lib/catalog/public-reader';
 import { getSiteOrigin } from '@/lib/site/config';
 import { siteOpenGraph } from '@/lib/site/metadata';
@@ -74,7 +74,7 @@ export default async function SeriesRoute({ params }: SeriesRouteProps) {
                 <>
                     {/* Outside main, so the nav landmark isn't part of the page's content. */}
                     <SiteNav />
-                    <SeriesPage page={result.page} sections={seriesSections(result.page)} />
+                    <SeriesPage page={result.page} />
                 </>
             );
     }
