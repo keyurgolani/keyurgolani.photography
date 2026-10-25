@@ -157,6 +157,9 @@ export interface StatusHandle {
 }
 
 export async function ownerStatus({ dataRoot, clock }: StatusHandle): Promise<OwnerStatus> {
+    // TODO(restack): status --json carries identityStatus()'s failedProfiles[].error verbatim, which can name an
+    // absolute library path (13D pre-review finding 11). status builds none of that text itself, so the fix is in
+    // identityStatus(): take the lead's withoutAbsolutePaths() when fix/identity-set-sources-followups lands.
     const identity = dataRoot === null ? unsetIdentity() : await identityStatus({ root: path.resolve(dataRoot), clock });
     const status: OwnerStatus = { identity, catalog: { mode: 'legacy', active: null, lastPublish: null }, working: null };
     if (dataRoot === null || identity.dataRoot.state !== 'ready') return status;
@@ -210,15 +213,15 @@ function formatStatus(status: OwnerStatus): string {
                 break;
             case 'abandoned':
                 lines.push(`Catalog: ${catalog.mode} mode, revision ${revisionNumber} (${revisionId}) is live, though its activation was abandoned`);
-                lines.push(`  Activation ${sequence} is abandoned, but the pointer names it. The next photos publish repairs it.`);
+                lines.push(`  Activation ${sequence} is abandoned, but the pointer names it. The next photos publish repairs it, unless that revision's rules block it.`);
                 break;
             case 'missing':
                 lines.push(`Catalog: ${catalog.mode} mode, ${revisionId} is live, but no activation record names it`);
-                lines.push('  The next photos publish repairs the record.');
+                lines.push("  The next photos publish repairs the record, unless that revision's rules block it.");
                 break;
             case 'mismatch':
                 lines.push(`Catalog: ${catalog.mode} mode, ${revisionId} is live, but the pointer names activation ${sequence}, which activated ${catalog.active.activationRevisionId}`);
-                lines.push('  The pointer and its activation record disagree. The next photos publish repairs them.');
+                lines.push("  The pointer and its activation record disagree. The next photos publish repairs them, unless that revision's rules block it.");
                 break;
         }
     } else {

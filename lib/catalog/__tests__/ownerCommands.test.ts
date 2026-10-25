@@ -136,7 +136,7 @@ describe('photos status with a pointer its activation disagrees with', () => {
         expect(status.catalog.active).toMatchObject({ revisionId: catalog.revisionId, activationId: pointer?.activationId, status: 'mismatch' });
         const { output } = await runStatusCommand({ dataRoot: catalog.root });
         expect(output).toContain(`Catalog: catalog mode, ${catalog.revisionId} is live, but the pointer names activation 2, which activated ${second.revisionId}`);
-        expect(output).toContain('  The pointer and its activation record disagree. The next photos publish repairs them.');
+        expect(output).toContain("  The pointer and its activation record disagree. The next photos publish repairs them, unless that revision's rules block it.");
     });
 });
 
