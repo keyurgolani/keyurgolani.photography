@@ -306,6 +306,28 @@ describe('the Viewer projection', () => {
         }
     });
 
+    it('keeps the photo\'s set and drops an LQIP that isn\'t a WebP data URI', () => {
+        const stored = content.photos.find((entry) => entry.id === P[0]);
+        expect(stored?.lqip).toMatch(/^data:image\/webp;base64,/);
+        const values: [string, string][] = [
+            ['a trailing CSS injection', 'data:image/webp;base64,AAAA");background:url("/x'],
+            ['a prefix before a valid data URI', '/x.png"),url("data:image/webp;base64,AAAA'],
+            ['another image type', 'data:image/png;base64,AAAA'],
+            ['a parenthesis in the base64', 'data:image/webp;base64,AA)AA'],
+            ['a quote in the base64', "data:image/webp;base64,AA'AA"],
+        ];
+        for (const [name, bad] of values) {
+            const odd = structuredClone(content);
+            const photo = odd.photos.find((entry) => entry.id === P[0]);
+            if (!photo) throw new Error('Missing fixture photo');
+            photo.lqip = bad;
+            const result = viewer(createCatalogReader(odd, { revisionId: REVISION_A, revisionNumber: 3 }).getViewerPhoto('fixture-a', P[0])).photo;
+            expect(result, name).not.toHaveProperty('lqip');
+            expect(result.variants, name).toEqual(stored?.variants);
+            expect([result.width, result.height, result.assetRevision], name).toEqual([stored?.width, stored?.height, stored?.assetRevision]);
+        }
+    });
+
     it('copies the variant ladder, so a caller can\'t edit the revision through it', () => {
         const reader = createCatalogReader(content, { revisionId: REVISION_A, revisionNumber: 3 });
         const result = viewer(reader.getViewerPhoto('fixture-a', P[0]));

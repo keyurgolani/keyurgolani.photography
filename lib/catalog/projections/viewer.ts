@@ -64,7 +64,8 @@ export interface PublishedViewerPhoto {
         width: number;
         height: number;
         assetRevision: string;
-        lqip: string;
+        /** The stored WebP data URI. Absent when it isn't one, so nothing else reaches the CSS `url()` that ResponsivePhoto writes it into. */
+        lqip?: string;
         variants: Record<VariantWidth, Record<VariantFormat, ViewerVariant>>;
         /** The photo's stored `#rrggbb` accent, or null. */
         accent: string | null;
@@ -98,6 +99,12 @@ export interface ViewerSource {
 const NOT_FOUND: ViewerPhotoResult = Object.freeze({ kind: 'not-found' });
 /** The shape accent.format checks at publish. A preview's candidate hasn't passed it yet. */
 const ACCENT_RE = /^#[0-9a-f]{6}$/i;
+/**
+ * The shape the revision schema checks, checked again because ResponsivePhoto
+ * puts it in a CSS `url()`. The same check as #4's Home projection; one
+ * shared helper once both land.
+ */
+const LQIP_RE = /^data:image\/webp;base64,[A-Za-z0-9+/]+={0,2}$/;
 
 /**
  * The route params when both are well formed: a series slug in #13's shape
@@ -118,6 +125,10 @@ function text(value: unknown): string | null {
 
 function accent(value: unknown): string | null {
     return typeof value === 'string' && ACCENT_RE.test(value) ? value : null;
+}
+
+function lqip(value: unknown): { lqip?: string } {
+    return typeof value === 'string' && LQIP_RE.test(value) ? { lqip: value } : {};
 }
 
 /**
@@ -187,7 +198,7 @@ export function viewerPhotoOf(source: ViewerSource, slug: unknown, photoId: unkn
                 width: record.width,
                 height: record.height,
                 assetRevision: record.assetRevision,
-                lqip: record.lqip,
+                ...lqip(record.lqip),
                 variants: variants(record.variants),
                 accent: accent(record.accent),
                 technical: technical(record.technical),
