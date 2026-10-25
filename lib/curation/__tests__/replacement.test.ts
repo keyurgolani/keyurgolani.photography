@@ -668,11 +668,13 @@ describe('a busy curation lock', { timeout: 60_000 }, () => {
         expect((await w.event()).candidate).toBeUndefined();
         const warn = vi.fn();
         const build = settlingAfterBuild(buildDerivativeSet, { logger: { ...quiet, warn }, waitMs: 100, owed: w.owed });
-        // A curator action holds the curation lock through the build's settle.
+        // A curator action holds the curation lock through the build's settle, and through the next pass, whose own settle fails too.
         await withCurationLock(w.root, {}, async () => {
             expect(await build(w.job(w.b), { logger: quiet })).toEqual({ status: 'ready', reused: false });
+            expect(warn).toHaveBeenCalledWith(expect.stringContaining(`Could not record the set for ${w.p} ${w.b} on its replacement item yet; the next pass settles it`));
+            expect((await w.pass()).filter((fact) => fact.photoId === w.p)).toEqual([]);
         });
-        expect(warn).toHaveBeenCalledWith(expect.stringContaining(`Could not record the set for ${w.p} ${w.b} on its replacement item yet; the next pass settles it`));
+        // That failed settle leaves B owed still.
         expect((await w.event()).candidate).toBeUndefined();
 
         // The next pass names no fact for B, and settles it all the same.
