@@ -6,7 +6,7 @@ import { runTsx } from '../../../test/helpers/runTsx';
 import { readRevisionFile } from '../../catalog/repository';
 import { applySequenceOp } from '../../catalog/sequence';
 import type { AuthoredPhoto, AuthoredSeries } from '../../catalog/types';
-import { readActivePointer, readAuthoredRecord } from '../../catalog/working-layer';
+import { authoredRecordDir, readActivePointer, readAuthoredRecord } from '../../catalog/working-layer';
 import { writeAuthoredRecord } from '../../catalog/working-layer-writer';
 import { runReconcilePass } from '../../identity/pass';
 import { identityPaths } from '../../identity/registry';
@@ -119,6 +119,16 @@ describe('a source that disappears', { timeout: 60_000 }, () => {
     });
 });
 
+/**
+ * Closed by the watcher because the same bytes came back: resolved by the
+ * sources sink, or, at the same path once 14-1's round 5 lands, dismissed by
+ * #14's sink, which then opens no reappeared item.
+ */
+function expectClosedAsBack(item: CurationEvent): void {
+    expect(['resolved', 'dismissed']).toContain(item.status);
+    expect(item.decisions.at(-1)).toMatchObject({ action: item.status === 'resolved' ? 'close' : 'dismiss', by: 'watcher', reason: expect.stringMatching(/same bytes/i) });
+}
+
 describe('the same bytes back', { timeout: 60_000 }, () => {
     it.each([
         ['at its path', P_PATH, 'reappeared'],
@@ -134,8 +144,7 @@ describe('the same bytes back', { timeout: 60_000 }, () => {
         expect(facts).toEqual(expect.arrayContaining([expect.objectContaining({ type: factType, photoId: w.p, assetRevision: w.a })]));
 
         const item = await w.event(w.missingId);
-        expect(item.status).toBe('resolved');
-        expect(item.decisions.at(-1)).toMatchObject({ action: 'close', by: 'watcher', reason: expect.stringContaining('with the same bytes') });
+        expectClosedAsBack(item);
         expect((await w.registry()).photos[w.p]).toMatchObject({ sourceHealth: 'present', source: { path: back, present: true, observedRevision: w.a } });
         expect(await served(w)).toEqual(visible);
 
@@ -144,18 +153,41 @@ describe('the same bytes back', { timeout: 60_000 }, () => {
         expect((await w.event(w.missingId)).version).toBe(item.version);
     });
 
-    it('open the resolved item again when the source goes missing again', async () => {
+    it('open the closed item again when the source goes missing again', async () => {
         const w = await world();
         removeP(w);
         await w.pass();
         fs.writeFileSync(w.lib.file(P_PATH), images.original);
         await w.pass();
-        expect((await w.event(w.missingId)).status).toBe('resolved');
+        expectClosedAsBack(await w.event(w.missingId));
         removeP(w);
         await w.pass();
         const item = await w.event(w.missingId);
         expect(item.status).toBe('open');
         expect(item.decisions.at(-1)).toMatchObject({ action: 'reopen', by: 'watcher' });
+    });
+
+    it.each([
+        ['at its path', 'harbor/third.jpg'],
+        ['at a new path', 'harbor/third-moved.jpg'],
+    ])('open the item again for a draft photo nothing shows, back %s and then gone again', async (_label, back) => {
+        const w = await world();
+        const R_PATH = 'harbor/third.jpg';
+        fs.writeFileSync(w.lib.file(R_PATH), images.third);
+        const r = (await w.pass()).find((fact) => fact.type === 'new')?.photoId as string;
+        const id = missingEventId(r, (await w.registry()).photos[r].source.observedRevision);
+        fs.rmSync(w.lib.file(R_PATH));
+        await w.pass();
+        expect(await w.event(id)).toMatchObject({ status: 'open', photoId: r });
+        fs.writeFileSync(w.lib.file(back), images.third);
+        await w.pass();
+        expectClosedAsBack(await w.event(id));
+        // Nothing shows R, so only the sources sink's rule opens its item again.
+        fs.rmSync(w.lib.file(back));
+        await w.pass();
+        const item = await w.event(id);
+        expect(item.status).toBe('open');
+        expect(item.decisions.at(-1)).toMatchObject({ action: 'reopen', by: 'watcher', reason: 'The source went missing again.' });
     });
 });
 
@@ -368,7 +400,7 @@ describe('a deletion made while the watcher was stopped', { timeout: 60_000 }, (
 
         fs.writeFileSync(w.lib.file(P_PATH), images.original);
         expect(await w.restart()).toBe(0);
-        expect((await w.event(w.missingId)).status).toBe('resolved');
+        expectClosedAsBack(await w.event(w.missingId));
         expect(kept(w)).toEqual(before);
     });
 });
@@ -473,6 +505,61 @@ describe('archive, then publish', { timeout: 60_000 }, () => {
         expect((await w.event(w.missingId)).version).toBe(item.version);
     });
 
+    it('refuses when a publish moves the active revision while it waits for the authored lock, writing nothing', async () => {
+        const w = await world();
+        removeP(w);
+        await w.pass();
+        const item = await w.event(w.missingId);
+        let authored: ReturnType<typeof treeBytes> = null;
+        const archived = await archiveMissing({
+            root: w.root,
+            eventId: item.id,
+            expectedVersion: item.version,
+            expectedBase: w.revisionId,
+            actor: ACTOR,
+            faults: {
+                beforeAuthoredLock: async () => {
+                    await editQ(w);
+                    expect((await w.publish()).outcome).toBe('PUBLISHED');
+                    authored = treeBytes(path.join(w.root, 'authored'));
+                },
+            },
+        });
+        expect(archived).toMatchObject({ ok: false, code: 'stale', message: expect.stringContaining('The active revision moved while the archive waited for the authored lock') });
+        expect(authored).not.toBeNull();
+        expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
+        expect((await series(w)).photoIds).toContain(w.p);
+        expect(pendingDecisions(w)).toEqual([]);
+        expect((await w.event(w.missingId)).version).toBe(item.version);
+    });
+
+    it("refuses when a series record can't be read, since it may list the photo, writing nothing", async () => {
+        const w = await world();
+        await writeAuthoredRecord({
+            kind: 'series',
+            id: 'ser_other',
+            slug: 'other',
+            title: 'Fixture other',
+            statement: 'Fixture statement.',
+            shortStatement: 'Fixture short statement.',
+            photoIds: [w.q, w.p],
+            cover: { photoId: w.q },
+            visibility: 'draft',
+        }, { expectedVersion: 0, root: w.root });
+        const dir = authoredRecordDir(w.root, 'series', 'ser_other');
+        for (const name of fs.readdirSync(dir).filter((entry) => entry.endsWith('.json'))) fs.writeFileSync(path.join(dir, name), '{ not json');
+        removeP(w);
+        await w.pass();
+        const authored = treeBytes(path.join(w.root, 'authored'));
+        const item = await w.event(w.missingId);
+        const archived = await archiveMissing({ root: w.root, eventId: item.id, expectedVersion: item.version, expectedBase: w.revisionId, actor: ACTOR });
+        expect(archived).toMatchObject({ ok: false, code: 'damaged', message: expect.stringContaining('ser_other') });
+        expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
+        expect((await series(w)).photoIds).toContain(w.p);
+        expect(pendingDecisions(w)).toEqual([]);
+        expect((await w.event(w.missingId)).version).toBe(item.version);
+    });
+
     it('is only for a missing item, and the CLI takes it with the version and base show printed', async () => {
         const w = await world();
         const { events } = await listEvents(w.root);
@@ -532,6 +619,34 @@ describe('a build that stays failed', { timeout: 60_000 }, () => {
         expect(await w.restart()).toBe(0);
         expect((await w.registry()).photos[r].revisions[job.assetRevision].profiles[w.profileId].state).toBe('ready');
         expect((await w.event(failureEventId(r, job.assetRevision))).status).toBe('resolved');
+    });
+
+    it('closes once the photo moves on to other bytes', async () => {
+        const w = await world();
+        const { r, job } = await failedR(w);
+        fs.writeFileSync(w.lib.file(R_PATH), images.replacement);
+        const facts = await w.pass();
+        expect(facts).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'replaced', photoId: r })]));
+        expect(await w.event(failureEventId(r, job.assetRevision))).toMatchObject({
+            status: 'resolved',
+            decisions: [expect.objectContaining({ action: 'close', by: 'watcher', reason: expect.stringContaining('other bytes') })],
+        });
+    });
+
+    it('closes once the photo is archived, which #10 applies without a fact', async () => {
+        const w = await world();
+        const { r, job } = await failedR(w);
+        fs.rmSync(w.lib.file(R_PATH));
+        await w.pass();
+        const missing = await w.event(missingEventId(r, job.assetRevision));
+        expect(await archiveMissing({ root: w.root, eventId: missing.id, expectedVersion: missing.version, expectedBase: w.revisionId, actor: ACTOR })).toMatchObject({ ok: true });
+        expect((await w.event(failureEventId(r, job.assetRevision))).status).toBe('failed');
+        expect(await w.pass()).toEqual([]);
+        expect((await w.registry()).photos[r].sourceHealth).toBe('archived');
+        expect(await w.event(failureEventId(r, job.assetRevision))).toMatchObject({
+            status: 'resolved',
+            decisions: [expect.objectContaining({ action: 'close', by: 'watcher', reason: 'The photograph is archived.' })],
+        });
     });
 
     it("gets no second item when a replacement item already carries the failure", async () => {
