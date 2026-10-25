@@ -36,7 +36,12 @@ interface Options {
     photoIds: readonly string[];
     ready: boolean;
     intervalMs?: number;
+    /** The photograph to open on, read once at mount, such as #4's authored opening. Anything that isn't one of `photoIds`' positions opens on the first. */
+    initialIndex?: number;
 }
+
+const openingIndex = (index: number | undefined, count: number) =>
+    typeof index === 'number' && Number.isInteger(index) && index >= 0 && index < count ? index : 0;
 
 const sameIds = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((id, i) => id === b[i]);
 
@@ -45,7 +50,7 @@ const sameIds = (a: readonly string[], b: readonly string[]) => a.length === b.l
  * visibility, and keeps the only slideshow timer: a single setTimeout armed
  * while the sequence is advancing.
  */
-export function useHomePlayback({ photoIds, ready, intervalMs = HOME_AUTO_ADVANCE_MS }: Options): HomePlayback {
+export function useHomePlayback({ photoIds, ready, intervalMs = HOME_AUTO_ADVANCE_MS, initialIndex }: Options): HomePlayback {
     const reducedMotion = usePrefersReducedMotion();
     const visible = useDocumentVisible();
     const interval = useMemo(() => resolveInterval(intervalMs), [intervalMs]);
@@ -59,7 +64,7 @@ export function useHomePlayback({ photoIds, ready, intervalMs = HOME_AUTO_ADVANC
             return result === model ? current : result;
         },
         photoIds,
-        (ids) => initialPlayback({ photoIds: ids, intent: isHomePlaybackPaused() ? 'paused' : 'none' }),
+        (ids) => initialPlayback({ photoIds: ids, index: openingIndex(initialIndex, ids.length), intent: isHomePlaybackPaused() ? 'paused' : 'none' }),
     );
 
     // A new list keeps the current photograph by id. Deciding it during render means no frame shows the wrong one.

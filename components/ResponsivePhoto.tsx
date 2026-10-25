@@ -11,6 +11,7 @@ export interface ResponsivePhotoProps {
   sizes?: string;
   loading?: 'lazy' | 'eager';
   fetchPriority?: 'high' | 'low' | 'auto';
+  onLoad?: React.ReactEventHandler<HTMLImageElement>;
   onError?: React.ReactEventHandler<HTMLImageElement>;
   className?: string;
   ref?: React.Ref<HTMLImageElement>;
@@ -35,7 +36,7 @@ function srcSet(variants: PhotoAsset['variants'], format: VariantFormat): string
  * layout never shifts, over its LQIP until the image paints. Plain markup,
  * not next/image: the set is already sized and encoded, and /media serves it.
  */
-export default function ResponsivePhoto({ asset, alt, sizes, loading, fetchPriority, onError, className, ref }: ResponsivePhotoProps) {
+export default function ResponsivePhoto({ asset, alt, sizes, loading, fetchPriority, onLoad, onError, className, ref }: ResponsivePhotoProps) {
   const placeholder: React.CSSProperties | undefined = asset.lqip
     ? { backgroundImage: `url("${asset.lqip}")`, backgroundSize: 'cover', backgroundPosition: 'center' }
     : undefined;
@@ -51,6 +52,7 @@ export default function ResponsivePhoto({ asset, alt, sizes, loading, fetchPrior
         alt={alt}
         loading={loading}
         fetchPriority={fetchPriority}
+        onLoad={onLoad}
         onError={onError}
         className={className}
         style={placeholder}
