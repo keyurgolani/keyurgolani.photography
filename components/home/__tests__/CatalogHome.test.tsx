@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { StrictMode } from 'react';
 import { renderToString } from 'react-dom/server';
+import { preloadsIn, serverHtml } from '@/test/helpers/serverHtml';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import type { HomeImage, HomePhoto, PublishedHome } from '@/lib/catalog/projections/home';
 import { HOME_CHROME_IDLE_MS, HOME_LOADING_TIMEOUT_MS } from '../homeChromeConfig';
@@ -214,8 +215,8 @@ describe('CatalogHome', () => {
     it('preloads the opening photograph alone in the server HTML, with the srcset and sizes its <picture> has (#6)', async () => {
       const { default: CatalogHome } = await import('../CatalogHome');
       const host = document.createElement('div');
-      host.innerHTML = renderToString(<CatalogHome home={published()} />);
-      const links = [...host.querySelectorAll('link[rel="preload"][as="image"]')];
+      host.innerHTML = serverHtml(<CatalogHome home={published()} />);
+      const links = preloadsIn(host.innerHTML);
       expect(links).toHaveLength(1);
       const avif = host.querySelector(`[data-photo-id="${id(3)}"] source[type="image/avif"]`)!;
       expect(links[0].getAttribute('imagesrcset')).toBe(avif.getAttribute('srcset'));
@@ -226,11 +227,15 @@ describe('CatalogHome', () => {
     });
 
     it('asks for at most two full-size photographs at first: the opening, then the next once it loads (#6)', async () => {
+      const headLinks = document.head.querySelectorAll('link[rel="preload"][as="image"]').length;
       await renderHome();
       const eager = () => [...document.querySelectorAll('[data-photo-id] img')].filter((img) => img.getAttribute('loading') === 'eager');
       expect(eager()).toHaveLength(1);
       load(3);
       expect(eager()).toHaveLength(2);
+      // The preload is the server's alone; a client render adds no head link to keep a passed photograph downloading.
+      click('Next photograph');
+      expect(document.head.querySelectorAll('link[rel="preload"][as="image"]')).toHaveLength(headLinks);
     });
 
     it('with nothing loaded yet, a move puts the new photograph on screen, since there is nothing to keep', async () => {

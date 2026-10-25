@@ -26,9 +26,12 @@ export interface ResponsivePhotoProps {
   loading?: 'lazy' | 'eager';
   fetchPriority?: 'high' | 'low' | 'auto';
   /**
-   * Put a preload for this photograph in the document head, carrying the
-   * same srcset and sizes the <picture> has, so the browser fetches the rung
-   * the element would. Only for a screen's lead photograph.
+   * In the server render, put a preload for this photograph in the document
+   * head, carrying the same srcset and sizes the <picture> has, so the
+   * browser fetches the rung the element would. Only for a screen's lead
+   * photograph. A client render adds none: the <img> is in the same commit,
+   * so a link would start nothing sooner, and it would stay in the head and
+   * keep a passed photograph downloading.
    */
   preload?: boolean;
   onLoad?: React.ReactEventHandler<HTMLImageElement>;
@@ -58,7 +61,8 @@ function srcSet(variants: PhotoAsset['variants'], format: VariantFormat): string
  *
  * The preload carries the AVIF srcset only, typed, so a browser without AVIF
  * skips it and finds the WebP source in the markup, and no browser fetches
- * both. Unmounted before it finished, the image stops fetching (#6).
+ * both. Unmounted before it finished, the image stops fetching (#6),
+ * except a lead the server preloaded, which its head link keeps going.
  */
 export default function ResponsivePhoto({
   asset,
@@ -91,7 +95,7 @@ export default function ResponsivePhoto({
   }, []);
 
   const avif = srcSet(asset.variants, 'avif');
-  if (preloadIt) {
+  if (preloadIt && typeof window === 'undefined') {
     preload(asset.variants.w1200.avif.url, { as: 'image', type: 'image/avif', imageSrcSet: avif, imageSizes: sizes, fetchPriority: fetchPriority ?? 'high' });
   }
 
