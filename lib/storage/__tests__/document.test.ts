@@ -9,6 +9,7 @@ import {
     CorruptDocumentError,
     EditedInPlaceError,
     KEEP_VERSIONS,
+    MAX_VERSION_DIGITS,
     MisnamedVersionError,
     pruneVersions,
     READ_ATTEMPTS,
@@ -108,6 +109,28 @@ describe('readVersionedDocument', () => {
         fs.rmSync(path.join(dir, 'V2.JSON'));
         fs.writeFileSync(path.join(dir, 'v02.json'), '{}');
         await expect(readVersionedDocument(dir)).rejects.toThrow('looks like a version');
+    });
+
+    it('refuses a name that folds to a version only under Unicode case folding, as APFS folds v2.jſon to v2.json', async () => {
+        await commitNext(1);
+        fs.writeFileSync(path.join(dir, 'v2.jſon'), '{}');
+        await expect(readVersionedDocument(dir)).rejects.toBeInstanceOf(MisnamedVersionError);
+    });
+
+    it('refuses a version number too long to read exactly as misnamed, not as a folder that kept changing', async () => {
+        await commitNext(1);
+        const huge = 'v99999999999999999999.json';
+        fs.writeFileSync(path.join(dir, huge), '{}');
+        const error = await readVersionedDocument(dir).catch((caught: unknown) => caught);
+        expect(error).toBeInstanceOf(MisnamedVersionError);
+        expect(error).toMatchObject({ file: path.join(dir, huge), message: expect.stringContaining(`at most ${MAX_VERSION_DIGITS} digits`) });
+        // The longest number it reads is still a version.
+        fs.rmSync(path.join(dir, huge));
+        const longest = Number('9'.repeat(MAX_VERSION_DIGITS));
+        expect(Number.isSafeInteger(longest)).toBe(true);
+        fs.writeFileSync(versionFile(dir, longest), JSON.stringify(counter(5)));
+        expect(await readVersionedDocument(dir)).toMatchObject({ version: longest, value: { count: 5 } });
+        await expect(writeVersionedDocument(dir, counter(6), longest)).rejects.toThrow(RangeError);
     });
 
     it('throws CorruptDocumentError for a newest version that is not a JSON object', async () => {
