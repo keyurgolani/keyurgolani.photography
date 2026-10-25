@@ -220,9 +220,9 @@ function refreshable(stamp: FieldReview | undefined, value: unknown): boolean {
  * The fields among `fields` a review against `baseRevisionId` should stamp
  * again though it leaves their values alone: each one's stamp reviewed the
  * value it holds, against another base, and is neither a suggestion's nor a
- * confirm's. An approval vouches again for the description and bytes it
- * showed (lib/curation/actions.ts's approveEvent()), so a rollback since the
- * last review doesn't leave them stale. A field edited by hand, a generated
+ * confirm's. An approval vouches again for the photo record it places
+ * (lib/curation/actions.ts's approveEvent()), so a rollback since the last
+ * review doesn't leave its fields stale. A field edited by hand, a generated
  * description, and a version made by hand without stamps get nothing, so a
  * stamp is only ever refreshed for a value someone reviewed.
  */
