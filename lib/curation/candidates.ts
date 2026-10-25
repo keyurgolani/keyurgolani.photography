@@ -15,7 +15,8 @@ import { SINK_WAIT_MS } from './sink';
  * records on that item, as `candidate`, what became of the set once #10's
  * registry says: `ready` once the writer has committed it with its manifest,
  * which is what makes the item a replacement-ready one the curator can
- * confirm, or `failed` (the item turns `failed`, and #14's retry applies).
+ * confirm, or `failed` (an open item turns `failed`, and #14's retry
+ * applies; a deferred one stays deferred).
  * An older revision's bytes coming back reuse the set already committed for
  * them, so that item is ready without a build.
  *
@@ -80,9 +81,10 @@ function sameCandidate(candidate: Candidate | undefined, view: Extract<Candidate
 /**
  * The item with `view` recorded, or null when nothing changes. Its status
  * moves only when the candidate's state does: a set that fails turns an open
- * or deferred item `failed`, and one that becomes ready after a failure
- * turns it `open` again. So a curator who defers a failed item keeps it
- * deferred. Approved and dismissed items are never touched.
+ * item `failed`, and one that becomes ready after a failure turns it `open`
+ * again. A deferred item stays deferred either way: Leave in draft is the
+ * curator's, so a failure only lands in its `candidate`, which `show`
+ * reports. Approved and dismissed items are never touched.
  */
 export function withCandidate(event: CurationEvent, view: CandidateView, at: string): CurationEvent | null {
     if (event.type !== 'replacement' || !STILL_OPEN.has(event.status)) return null;
@@ -90,7 +92,7 @@ export function withCandidate(event: CurationEvent, view: CandidateView, at: str
     if (sameCandidate(event.candidate, view)) return null;
     const candidate: Candidate = { state: view.state, profileId: view.profileId, ...(view.state === 'failed' ? { failure: view.failure } : {}), at };
     let status = event.status;
-    if (view.state === 'failed' && (status === 'open' || status === 'deferred')) status = 'failed';
+    if (view.state === 'failed' && status === 'open') status = 'failed';
     if (view.state === 'ready' && status === 'failed' && event.candidate?.state !== 'ready') status = 'open';
     return { ...event, candidate, status };
 }
