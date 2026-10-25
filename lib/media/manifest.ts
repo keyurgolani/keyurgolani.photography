@@ -95,7 +95,7 @@ type ManifestRead = { manifest: AssetManifest; dir: string } | { reason: 'missin
 async function readManifestFile(ref: AssetRef, root: string): Promise<ManifestRead> {
     const dir = await containedAssetDir(ref, root);
     if (dir === null) return { reason: 'missing' };
-    const opened = await openRegularFile(path.join(dir, MANIFEST_FILE));
+    const opened = await openRegularFile(path.join(/*turbopackIgnore: true*/ dir, MANIFEST_FILE));
     if (opened === null) return { reason: 'missing' };
     let text: string;
     try {
@@ -142,7 +142,7 @@ export async function resolveAsset(ref: AssetRef, { root }: { root?: string } = 
             let stats: fs.Stats;
             try {
                 // lstat, so a symlinked file counts as missing, as /media treats it
-                stats = await fs.promises.lstat(path.join(read.dir, `${width}.${format}`));
+                stats = await fs.promises.lstat(path.join(/*turbopackIgnore: true*/ read.dir, `${width}.${format}`));
             } catch (error) {
                 if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return { state: 'unavailable', reason: 'missing-file' };
                 throw error;
