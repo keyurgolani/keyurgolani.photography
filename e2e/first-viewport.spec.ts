@@ -72,25 +72,38 @@ const pathOf = (screen: Screen) =>
 
 /**
  * The first-viewport policy, per screen. `images` caps the /media requests of
- * the first load, `api` the /api requests. `lead` is the largest rung the
- * lead photograph may ask for, from its sizes at that device's width and
- * pixel ratio, and `rest` the largest any other image may (null where there's
- * no other). The payload target is the lead at its rung plus the rest of
- * the cap at theirs, at the fixture's declared AVIF sizes (BUDGET_VARIANT_BYTES).
- * Lazy images count when Chromium starts them, 1,250 to 2,500 px ahead of the
- * viewport, so Work's and the series' caps leave room for that margin while
- * staying far under their hundred entries.
+ * the first load where the screen has a fixed number to show, and `api` the
+ * /api requests. Work and the series show a list, so they're held by where
+ * each request sits instead (`reach`): every image asked for belongs to an
+ * entry whose top is within REACH px under the first viewport, which is as
+ * far ahead as Chromium starts a lazy image, and an entry past that is never
+ * asked for. `lead` is the largest rung the lead photograph may ask for, from
+ * its sizes at that device's width and pixel ratio, and `rest` the largest
+ * any other image may (null where there's no other). Where `images` is set,
+ * the payload target is the lead at its rung plus the rest of the cap at
+ * theirs, at the fixture's declared AVIF sizes (BUDGET_VARIANT_BYTES).
  */
-const POLICY: Record<Screen, { images: number; api: number; lead: Record<Profile, number>; rest: Record<Profile, number> | null }> = {
+type Policy = { api: number; lead: Record<Profile, number>; rest: Record<Profile, number> | null } & ({ images: number } | { reach: true });
+const POLICY: Record<Screen, Policy> = {
     // 100vw: 1280 px, or 412 px at 2.625. The opening, then the next once it shows: two at most.
     home: { images: 2, api: 1, lead: { desktop: 1920, phone: 1200 }, rest: { desktop: 1920, phone: 1200 } },
     // 60vw above 768 px, else 100vw. Only covers near the first viewport, never the hundred.
-    work: { images: 16, api: 0, lead: { desktop: 800, phone: 1200 }, rest: { desktop: 800, phone: 1200 } },
-    // The cover at its 82vh-capped width, then thumbnails at 20vw or 50vw.
-    series: { images: 40, api: 0, lead: { desktop: 1200, phone: 1200 }, rest: { desktop: 400, phone: 800 } },
+    work: { reach: true, api: 0, lead: { desktop: 800, phone: 1200 }, rest: { desktop: 800, phone: 1200 } },
+    // The cover at its 82vh-capped width, then thumbnails at 20vw or 50vw, only near the first viewport.
+    series: { reach: true, api: 0, lead: { desktop: 1200, phone: 1200 }, rest: { desktop: 400, phone: 800 } },
     // One photograph, at 80vw or 100vw capped by the screen's height. Nothing else.
     viewer: { images: 1, api: 0, lead: { desktop: 1200, phone: 1200 }, rest: null },
 };
+
+/** How far under the first viewport a lazy image may start, in px: Chromium's own lazy-loading margin. */
+const REACH = 3_000;
+
+/** The entry on a list screen that each photograph's image belongs to: a series entry by its ID, a Work entry by its series' cover. */
+function entrySelectors(screen: 'work' | 'series'): Map<string, string> {
+    if (!catalog) throw new Error('No catalog');
+    if (screen === 'series') return new Map(featured().photoIds.map((photoId) => [photoId, `#photo-${photoId}`]));
+    return new Map(catalog.series.flatMap((series) => (series.cover ? [[series.cover.photoId, `a[href="/work/${series.slug}"]`] as const] : [])));
+}
 
 interface MediaRequest {
     photoId: string;
@@ -155,15 +168,15 @@ async function measure(browser: Browser, profile: Profile, path: string): Promis
 
 for (const profile of Object.keys(PROFILES) as Profile[]) {
     for (const screen of SCREENS) {
-        test(`${screen} on the ${profile}: the first viewport's requests, rungs, and bytes stay inside the policy`, async ({ browser }) => {
+        test(`${screen} on the ${profile}: the first viewport's requests, rungs, and reach stay inside the policy`, async ({ browser }) => {
             const policy = POLICY[screen];
-            const { page, document, media, api, portraits, other } = await measure(browser, profile, pathOf(screen));
+            const { page, document: doc, media, api, portraits, other } = await measure(browser, profile, pathOf(screen));
             try {
                 const bytes = media.reduce((sum, request) => sum + request.bytes, 0);
                 // Every screen leads with the featured series' first photograph: Home's opening, Work's first cover, the series cover, the Viewer's photograph.
                 const leadId = featured().photoIds[0];
                 report[`${screen}/${profile}`] = {
-                    documentKiB: Number((document.transfer / KIB).toFixed(1)),
+                    documentKiB: Number((doc.transfer / KIB).toFixed(1)),
                     images: media.length,
                     imageKiB: Number((bytes / KIB).toFixed(1)),
                     rungs: [...new Set(media.map((request) => request.rung))].sort((a, b) => a - b),
@@ -174,7 +187,7 @@ for (const profile of Object.keys(PROFILES) as Profile[]) {
                 console.log(`[first-viewport] ${screen}/${profile} ${JSON.stringify(report[`${screen}/${profile}`])}`);
 
                 expect(media.length, 'the lead photograph is asked for').toBeGreaterThan(0);
-                expect(media.length, 'images on the first load').toBeLessThanOrEqual(policy.images);
+                if ('images' in policy) expect(media.length, 'images on the first load').toBeLessThanOrEqual(policy.images);
                 expect(api.length, '/api requests on the first load').toBeLessThanOrEqual(policy.api);
                 // The browser takes AVIF, so the AVIF-only preload is the request the <picture> makes, never a second format.
                 for (const request of media) expect(request.format, request.url).toBe('avif');
@@ -189,10 +202,32 @@ for (const profile of Object.keys(PROFILES) as Profile[]) {
                 }
                 expect(portraits, 'the intro portraits, Home only').toBeLessThanOrEqual(screen === 'home' ? 2 : 0);
 
-                // Payload: the lead at its rung, and the rest of the request cap at theirs, at the fixture's declared AVIF sizes.
-                const avif = (rung: number) => BUDGET_VARIANT_BYTES[`w${rung}` as 'w1920'].avif;
-                const target = avif(policy.lead[profile]) + (policy.images - 1) * (policy.rest === null ? 0 : avif(policy.rest[profile]));
-                expect(bytes, 'image bytes on the first load').toBeLessThanOrEqual(target);
+                if ('images' in policy) {
+                    // Payload: the lead at its rung, and the rest of the request cap at theirs, at the fixture's declared AVIF sizes.
+                    const avif = (rung: number) => BUDGET_VARIANT_BYTES[`w${rung}` as 'w1920'].avif;
+                    const target = avif(policy.lead[profile]) + (policy.images - 1) * (policy.rest === null ? 0 : avif(policy.rest[profile]));
+                    expect(bytes, 'image bytes on the first load').toBeLessThanOrEqual(target);
+                } else if (screen === 'work' || screen === 'series') {
+                    // Every image asked for belongs to an entry near the first viewport, and the entries far below are never asked for.
+                    const selectors = entrySelectors(screen);
+                    const ids = [...selectors.keys()];
+                    const tops = await page.evaluate(
+                        (pairs) => ({
+                            height: window.innerHeight,
+                            tops: Object.fromEntries(pairs.map(([id, selector]) => [id, (document.querySelector(selector)?.getBoundingClientRect().top ?? NaN) + window.scrollY])),
+                        }),
+                        [...selectors.entries()],
+                    );
+                    const limit = tops.height + REACH;
+                    for (const request of media) {
+                        expect(selectors.has(request.photoId), `${request.url} belongs to an entry on the page`).toBe(true);
+                        expect(tops.tops[request.photoId], `${request.url}'s entry is within ${REACH} px under the first viewport`).toBeLessThanOrEqual(limit + 1);
+                    }
+                    const far = ids.filter((id) => tops.tops[id] > limit + 1);
+                    // The 100th entry is far below on both devices, so this always has entries to check.
+                    expect(far.length, 'entries far below the first viewport').toBeGreaterThan(0);
+                    for (const request of media) expect(far, `${request.url} is near the first viewport`).not.toContain(request.photoId);
+                }
                 // Home asks only for its opening photograph and the one after it, and for no other series' covers.
                 if (screen === 'home') for (const request of media) expect(featured().photoIds.slice(0, 2)).toContain(request.photoId);
             } finally {
