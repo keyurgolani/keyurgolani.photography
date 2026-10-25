@@ -275,6 +275,42 @@ describe('other bytes back', { timeout: 60_000 }, () => {
         expect((await w.event(w.missingId)).version).toBe(item.version);
     });
 
+    it('refuse a bind that would merge a photograph only an older retained revision lists, naming it, so its rollback stays possible', async () => {
+        const w = await world();
+        const { n } = await otherBytes(w);
+        const nRevision = (await w.registry()).photos[n].source.observedRevision;
+        expect((await w.build({ photoId: n, assetRevision: nRevision, profileId: w.profileId, path: P_PATH })).status).toBe('ready');
+        await writeAuthoredRecord({ kind: 'photo', id: n, assetRevision: nRevision, alt: { kind: 'decorative' } }, { expectedVersion: 0, root: w.root });
+        const inserted = await applySequenceOp({ dataRoot: w.root }, { kind: 'insert', seriesId: SERIES, photoId: n, at: 'end' }, { expectedVersion: (await series(w)).version, actor: { kind: 'editor' } });
+        expect(inserted).toMatchObject({ ok: true });
+        const showing = await w.publish();
+        expect(showing).toMatchObject({ outcome: 'PUBLISHED' });
+        const removed = await applySequenceOp({ dataRoot: w.root }, { kind: 'remove', seriesId: SERIES, photoId: n }, { expectedVersion: (await series(w)).version, actor: { kind: 'editor' } });
+        expect(removed).toMatchObject({ ok: true });
+        expect(await w.publish()).toMatchObject({ outcome: 'PUBLISHED', removed: [{ photoId: n }] });
+
+        const item = await w.event(w.missingId);
+        const bound = await bindReplacement({ root: w.root, eventId: item.id, expectedVersion: item.version, actor: ACTOR, path: P_PATH });
+        expect(bound).toMatchObject({ ok: false, code: 'refused', message: expect.stringContaining(`the retained catalog revision ${showing.revisionId} lists`) });
+        if (bound.ok) return;
+        expect(bound.message).toContain(`moves its asset revision to ${w.p}, so photos rollback could never bring that revision back`);
+        expect(pendingDecisions(w)).toEqual([]);
+        expect((await w.event(w.missingId)).version).toBe(item.version);
+        await w.pass();
+        expect((await w.registry()).photos[n].mergedInto).toBeUndefined();
+    });
+
+    it('refuse a bind that would merge a photograph with a photo record in the draft, so its copy isn\'t dropped', async () => {
+        const w = await world();
+        const { n } = await otherBytes(w);
+        await writeAuthoredRecord({ kind: 'photo', id: n, assetRevision: (await w.registry()).photos[n].source.observedRevision, title: 'Fixture title for N', alt: { kind: 'decorative' } }, { expectedVersion: 0, root: w.root });
+        const item = await w.event(w.missingId);
+        const bound = await bindReplacement({ root: w.root, eventId: item.id, expectedVersion: item.version, actor: ACTOR });
+        expect(bound).toMatchObject({ ok: false, code: 'refused', message: expect.stringContaining(`${n}, which has a photo record in the draft`) });
+        expect(pendingDecisions(w)).toEqual([]);
+        expect((await w.event(w.missingId)).version).toBe(item.version);
+    });
+
     it('need a path when nothing is linked, and take one anywhere in the library', async () => {
         const w = await world();
         removeP(w);
