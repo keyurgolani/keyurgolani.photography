@@ -29,10 +29,10 @@ docker compose -f docker-compose.prod.yml start web image-watcher
 ```
 
 - After the launch, also take it out of the catalog. Remove it from every series that lists it (its `photoIds` entry, and the cover or a chapter start if it is one), or hide the series, then run `node dist/scripts/photos.mjs publish --actor <name>` in `image-watcher` the same way. Check that `GET /api/ready` answers `"state":"ok"` with the new `revisionId`: `degraded` means `web` still serves the revision before. Purge the photo's `/media` URLs from any CDN, since `/media` sends `max-age=31536000, immutable` and a browser can keep the photo for up to a year. If the publish stops on errors in other records, the photo stays public. As a last resort, delete `assets/<photoId>/` in the data root inside `image-watcher`, so `/media` 404s it until a publish leaves it out.
-- To list legacy derivatives whose photo is gone, such as a renamed photo's earlier names, print each base name in `optimized/` that no file in this folder has:
+- To list legacy derivatives whose photo is gone, such as a renamed photo's earlier names, print each base name in `optimized/` that no photo in this folder has. Only `.jpg`, `.jpeg`, `.png`, and `.webp` count, in any case, so a sidecar such as `IMG_1.xmp` doesn't hide a deleted photo's old images:
 
 ```bash
-docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher sh -c 'cd /app/public/assets/photos && for f in optimized/*.webp; do n=${f#optimized/}; n=${n%.webp}; set -- "$n".*; [ -e "$1" ] || echo "$n"; done'
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher sh -c 'cd /app/public/assets/photos && for f in optimized/*.webp; do n=${f#optimized/}; n=${n%.webp}; found=; for s in "$n".*; do case "$s" in *.[jJ][pP][gG]|*.[jJ][pP][eE][gG]|*.[pP][nN][gG]|*.[wW][eE][bB][pP]) found=1;; esac; done; [ -n "$found" ] || echo "$n"; done'
 ```
 
 - To regenerate everything in production, stop `image-watcher`, run the regeneration, and start it again:
