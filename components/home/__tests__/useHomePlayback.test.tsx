@@ -170,6 +170,32 @@ describe('useHomePlayback', () => {
         expect(result.current.index).toBe(0);
     });
 
+    it('opens on initialIndex, read once, and moves and wraps from there', () => {
+        const { result, rerender } = renderHook((current: Props & { initialIndex?: number }) => useHomePlayback(current), {
+            initialProps: { photoIds: ids, ready: true, initialIndex: 2 },
+            wrapper: StrictMode,
+        });
+        expect(result.current.index).toBe(2);
+        rerender({ photoIds: ids, ready: true, initialIndex: 0 });
+        expect(result.current.index).toBe(2);
+        advance(INTERVAL);
+        expect(result.current.index).toBe(3);
+        act(() => result.current.next());
+        expect(result.current.index).toBe(0);
+        act(() => result.current.prev());
+        expect(result.current.index).toBe(3);
+    });
+
+    it('opens on the first photograph for an initialIndex that names no position', () => {
+        for (const initialIndex of [-1, 4, 1.5, Number.NaN, undefined]) {
+            const { result, unmount } = renderHook(() => useHomePlayback({ photoIds: ids, ready: true, initialIndex }), { wrapper: StrictMode });
+            expect(result.current.index, String(initialIndex)).toBe(0);
+            unmount();
+        }
+        const { result } = renderHook(() => useHomePlayback({ photoIds: ids, ready: true, initialIndex: 3 }), { wrapper: StrictMode });
+        expect(result.current.index).toBe(3);
+    });
+
     it('reduced motion stops moves and timers at once, and turning it off honors the earlier choice', () => {
         const { result } = renderPlayback();
         advance(6000);
