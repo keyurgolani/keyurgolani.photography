@@ -1,11 +1,10 @@
-import fs from 'node:fs';
+import path from 'node:path';
 import { ASSET_REVISION_RE, PHOTO_ID_RE, PROFILE_ID_RE } from '../identity/ids';
 import type { AssetManifest } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
-import { hasErrorCode } from '../storage/fsx';
 import { mediaAccess, mediaAccessMode, type MediaAccessPolicy } from './access';
-import { readAssetManifest } from './manifest';
-import { mediaFilePath, parseVariantFile } from './path';
+import { containedAssetDir, openRegularFile, readAssetManifest } from './manifest';
+import { parseVariantFile } from './path';
 import type { AssetRef } from './url';
 
 /**
@@ -16,7 +15,10 @@ import type { AssetRef } from './url';
  * or the library. A malformed segment, a denied or missing set, and a data
  * root that isn't ready all give 404, and every 404 and 410 is `no-store`.
  * Found manifests are kept, since a published set never changes; a missing
- * one is read again next time, so a set built later is served.
+ * one is read again next time, so a set built later is served. Each request
+ * still finds the set's folder and opens the file, so a set gone since gets
+ * 404, never a 304 from what was kept, and nothing is served through a
+ * symlink below the asset store.
  */
 
 type Logger = Pick<Console, 'warn'>;
@@ -87,18 +89,34 @@ export function createMediaHandler(options: MediaHandlerOptions = {}): (request:
         const listed = manifest.variants[file.variant][file.format];
         const etag = `"${listed.sha256}"`;
         const headers = { 'Cache-Control': CACHE_CONTROL[decision], ETag: etag, 'X-Content-Type-Options': 'nosniff' };
-        if (matches(request.headers.get('if-none-match'), etag)) return new Response(null, { status: 304, headers });
+        const name = `${photoId}/${assetRevision}/${profileId}/${variant}`;
 
         let data: Buffer;
         try {
-            data = await fs.promises.readFile(mediaFilePath(ref, file.variant, file.format, status.root));
+            const dir = await containedAssetDir(ref, status.root);
+            const opened = dir === null ? null : await openRegularFile(path.join(dir, `${file.variant}.${file.format}`));
+            if (opened === null) {
+                manifests.delete(key);
+                return refused(404);
+            }
+            try {
+                if (opened.size !== listed.bytes) {
+                    logger.warn(`[media] ${name} is ${opened.size} bytes, but its manifest says ${listed.bytes}, so it isn't served.`);
+                    return refused(404);
+                }
+                // The file is there, so a client's copy of it is still current.
+                if (matches(request.headers.get('if-none-match'), etag)) return new Response(null, { status: 304, headers });
+                data = await opened.handle.readFile();
+            } finally {
+                await opened.handle.close();
+            }
         } catch (error) {
-            if (!hasErrorCode(error, 'ENOENT', 'ENOTDIR')) logger.warn(`[media] Could not read ${photoId}/${assetRevision}/${profileId}/${variant}: ${(error as Error).message}`);
+            logger.warn(`[media] Could not read ${name}: ${(error as Error).message}`);
             manifests.delete(key);
             return refused(404);
         }
         if (data.length !== listed.bytes) {
-            logger.warn(`[media] ${photoId}/${assetRevision}/${profileId}/${variant} is ${data.length} bytes, but its manifest says ${listed.bytes}, so it isn't served.`);
+            logger.warn(`[media] ${name} is ${data.length} bytes, but its manifest says ${listed.bytes}, so it isn't served.`);
             return refused(404);
         }
         // readFile() fills a plain ArrayBuffer, never a shared one.

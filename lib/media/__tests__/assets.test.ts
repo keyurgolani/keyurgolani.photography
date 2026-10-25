@@ -121,6 +121,41 @@ describe('resolveAsset', () => {
         expect(await resolveAsset(REF)).toEqual({ state: 'unavailable', reason: 'missing-file' });
     });
 
+    it('reports a variant file that is a symlink as missing, even one of the listed size', async () => {
+        const elsewhere = createTempDataRoot();
+        data = createTempDataRoot();
+        try {
+            writeSet();
+            const copy = elsewhere.file('w800.webp');
+            fs.writeFileSync(copy, Buffer.alloc(manifestFor().variants.w800.webp.bytes));
+            fs.rmSync(mediaFilePath(REF, 'w800', 'webp'));
+            fs.symlinkSync(copy, mediaFilePath(REF, 'w800', 'webp'));
+            expect(await resolveAsset(REF)).toEqual({ state: 'unavailable', reason: 'missing-file' });
+        } finally {
+            await elsewhere.cleanup();
+        }
+    });
+
+    it('reports a set whose folder, or manifest, is a symlink as missing', async () => {
+        const elsewhere = createTempDataRoot();
+        data = createTempDataRoot();
+        try {
+            const dir = writeSet();
+            fs.renameSync(dir, elsewhere.file('set'));
+            fs.symlinkSync(elsewhere.file('set'), dir);
+            expect(await resolveAsset(REF)).toEqual({ state: 'unavailable', reason: 'missing' });
+            expect(await readAssetManifest(REF)).toBeNull();
+
+            fs.rmSync(dir);
+            writeSet();
+            fs.renameSync(path.join(dir, 'manifest.json'), elsewhere.file('manifest.json'));
+            fs.symlinkSync(elsewhere.file('manifest.json'), path.join(dir, 'manifest.json'));
+            expect(await resolveAsset(REF)).toEqual({ state: 'unavailable', reason: 'missing' });
+        } finally {
+            await elsewhere.cleanup();
+        }
+    });
+
     it('reports a manifest for another set, or unreadable JSON, as invalid', async () => {
         data = createTempDataRoot();
         const dir = writeSet();
