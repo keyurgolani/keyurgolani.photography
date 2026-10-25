@@ -9,7 +9,7 @@ import { hashValue } from '../review';
 import { rollback } from '../rollback';
 import { registeredRules, runRules } from '../ruleset';
 import { applySequenceOp } from '../sequence';
-import { createTestCatalog, type TestCatalog, type TestCatalogOptions } from '../testing';
+import { createTestCatalog, type TestCatalogOptions } from '../testing';
 import type { AuthoredPhoto, AuthoredRecord, AuthoredSeries, AuthoredSite, Issue, RevisionFile } from '../types';
 import { writeAuthoredRecord } from '../working-layer-writer';
 import { authoredRecordDir, readAuthoredRecord } from '../working-layer';
