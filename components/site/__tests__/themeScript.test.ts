@@ -2,13 +2,23 @@ import vm from 'node:vm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { THEME_INIT_SCRIPT } from '../themeScript';
 
-/** Runs the inline script the way the browser would, against the test document. */
-const run = () => new Function(THEME_INIT_SCRIPT)();
+const attributeNames = () => document.documentElement.getAttributeNames().sort();
+
+/** Runs the inline script against the test document, and checks it set no attribute but `data-theme`, which each test sets first. */
+const run = () => {
+  const before = attributeNames();
+  try {
+    new Function(THEME_INIT_SCRIPT)();
+  } finally {
+    expect(attributeNames()).toEqual(before);
+  }
+};
 
 describe('THEME_INIT_SCRIPT', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     localStorage.clear();
+    for (const name of document.documentElement.getAttributeNames()) document.documentElement.removeAttribute(name);
     document.documentElement.setAttribute('data-theme', 'dark');
   });
 
@@ -39,7 +49,9 @@ describe('THEME_INIT_SCRIPT', () => {
     localStorage.setItem('theme', 'light');
     const global = { localStorage, document };
     vm.createContext(global);
+    const before = attributeNames();
     vm.runInContext(THEME_INIT_SCRIPT, global);
+    expect(attributeNames()).toEqual(before);
     expect(document.documentElement.getAttribute('data-theme')).toBe('light');
     expect(Object.keys(global)).toEqual(['localStorage', 'document']);
   });

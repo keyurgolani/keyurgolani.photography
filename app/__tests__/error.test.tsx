@@ -3,10 +3,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ErrorPage from '../error';
 
 const router = vi.hoisted(() => ({ refresh: vi.fn() }));
+/** Whether a startTransition callback is running, so a call can record that it ran inside one. */
+const transition = vi.hoisted(() => ({ inside: false }));
 
 vi.mock('next/navigation', () => ({
   useRouter: () => router,
 }));
+
+vi.mock('react', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react')>();
+  return {
+    ...actual,
+    startTransition: (callback: () => void) =>
+      actual.startTransition(() => {
+        transition.inside = true;
+        try {
+          callback();
+        } finally {
+          transition.inside = false;
+        }
+      }),
+  };
+});
 
 vi.mock('@/components/site/SiteNav', () => ({
   default: () => <nav aria-label="Primary" />,
@@ -16,7 +34,7 @@ const failure = Object.assign(new Error('ENOENT: no such file, /srv/photos/catal
 
 describe('app/error', () => {
   beforeEach(() => {
-    router.refresh.mockClear();
+    router.refresh.mockReset();
   });
 
   afterEach(() => {
@@ -38,12 +56,13 @@ describe('app/error', () => {
     expect(container.textContent).not.toContain(failure.digest);
   });
 
-  it('refreshes the route and resets the boundary on Try again', () => {
-    const reset = vi.fn();
+  it('refreshes the route and resets the boundary in one transition on Try again', () => {
+    const calls: string[] = [];
+    router.refresh.mockImplementation(() => calls.push(`refresh ${transition.inside ? 'inside' : 'outside'}`));
+    const reset = vi.fn(() => calls.push(`reset ${transition.inside ? 'inside' : 'outside'}`));
     render(<ErrorPage error={failure} reset={reset} />);
     act(() => fireEvent.click(screen.getByRole('button', { name: 'Try again' })));
-    expect(router.refresh).toHaveBeenCalledTimes(1);
-    expect(reset).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual(['refresh inside', 'reset inside']);
   });
 
   it('says so when the browser is offline', () => {
