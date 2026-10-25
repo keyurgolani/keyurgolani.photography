@@ -101,6 +101,24 @@ function snapshot(dir: string): Record<string, { bytes: string; mtimeMs: number 
 }
 
 describe('buildDerivativeSet', () => {
+    it('builds a panorama taller than WebP can encode, narrower so no variant is over 16383 px tall', async () => {
+        const tall = await sharp({ create: { width: 100, height: 17_000, channels: 3, background: { r: 90, g: 140, b: 200 } } }).jpeg().toBuffer();
+        const s = await setup({ 'tall.jpg': tall });
+        const job = await s.job('tall.jpg');
+
+        expect(await s.build(job)).toEqual({ status: 'ready', reused: false });
+        const resolved = await resolveAsset(job);
+        if (resolved.state !== 'ready') throw new Error(JSON.stringify(resolved));
+        for (const width of VARIANT_WIDTHS) {
+            for (const format of VARIANT_FORMATS) {
+                const metadata = await sharp(fs.readFileSync(mediaFilePath(job, width, format))).metadata();
+                expect(metadata.width, `${width}.${format}`).toBe(96);
+                expect(metadata.height, `${width}.${format}`).toBeLessThanOrEqual(16_383);
+                expect(resolved.manifest.variants[width][format]).toMatchObject({ width: 96, height: metadata.height });
+            }
+        }
+    }, 120_000);
+
     it('writes all eight variants and the LQIP from one read of the source, then the manifest, and records the profile ready', async () => {
         const s = await setup();
         const job = await s.job('landscape.jpg');
