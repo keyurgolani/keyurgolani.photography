@@ -82,7 +82,7 @@ export type PublishOutcome =
     | 'INTEGRITY_MISMATCH'
     | 'STORAGE_ERROR';
 
-export type ActivateOutcome = 'ACTIVATED' | 'NOTHING_ACTIVE' | 'ACTIVE_CHANGED' | 'VALIDATION_FAILED' | 'LOCK_LOST' | 'INTEGRITY_MISMATCH';
+export type ActivateOutcome = 'ACTIVATED' | 'NOTHING_ACTIVE' | 'ACTIVE_CHANGED' | 'VALIDATION_FAILED' | 'LOCK_LOST' | 'INTEGRITY_MISMATCH' | 'STORAGE_ERROR';
 
 /** The CLI's exit code for each outcome. Usage errors, 2, are the CLI's own. */
 export const PUBLISH_EXIT_CODES: Record<PublishOutcome, 0 | 1 | 3 | 4> = {
@@ -494,7 +494,9 @@ export interface ActivateResult {
  * on the stored revision and refuses with VALIDATION_FAILED, writing nothing
  * more, on any `integrity` error or any `editorial` error whose rule isn't in
  * `acceptedRules`, so a revision whose sets broke since it was published
- * never goes live again. The caller rebases the working layer afterwards.
+ * never goes live again. A registry it can't read is STORAGE_ERROR, writing
+ * nothing more, since those rules need it. The caller rebases the working
+ * layer afterwards.
  */
 export async function activateRevision(options: ActivateOptions): Promise<ActivateResult> {
     const root = path.resolve(options.dataRoot ?? options.lock.root);
@@ -526,7 +528,14 @@ export async function activateRevision(options: ActivateOptions): Promise<Activa
         throw error;
     }
     if (revision === null) return { outcome: 'INTEGRITY_MISMATCH', message: `${options.revisionId} has no revision file.`, activation: null, recovery };
-    const registry = await readRegistry(root).catch(() => null);
+    // Without #10's registry the readiness and source-name rules can't run, so refuse, as publish() does.
+    let registry: Registry;
+    try {
+        registry = await readRegistry(root);
+    } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        return { outcome: 'STORAGE_ERROR', message: `The identity registry can't be read, so ${revision.revisionId}'s sets can't be checked: ${reason}${/[.!?]$/.test(reason) ? '' : '.'} Nothing was activated.`, activation: null, recovery };
+    }
     const acceptedRules = options.acceptedRules ?? [];
     const { validation, issues } = validateStored(root, revision, registry);
     const blocking = blockingIssues(issues, acceptedRules);

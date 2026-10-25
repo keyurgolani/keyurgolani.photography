@@ -751,6 +751,27 @@ describe('activateRevision', { timeout: 30_000 }, () => {
         expect(catalogFiles()).toEqual(files);
     });
 
+    it('refuses a rollback when the identity registry can\'t be read, as publish does, writing nothing', async () => {
+        const { catalog, root, run, editPhoto, first, catalogFiles } = await launched({ seed: 91 });
+        await editPhoto(catalog.photos[0].id, (photo) => {
+            photo.caption = 'A caption revision 2 publishes.';
+        });
+        const second = await run();
+        const registryDir = path.join(root, 'identity', 'registry');
+        const newest = fs.readdirSync(registryDir).filter((name) => /^v\d+\.json$/.test(name)).sort((a, b) => Number(b.slice(1, -5)) - Number(a.slice(1, -5)))[0];
+        fs.writeFileSync(path.join(registryDir, newest), '{ not json');
+        const pointer = folderBytes(catalogPaths(root).active);
+        const files = catalogFiles();
+
+        const result = await activate(root, { revisionId: first.revisionId ?? '', expectedActiveRevisionId: second.revisionId ?? '' });
+        expect(result).toMatchObject({ outcome: 'STORAGE_ERROR', activation: null });
+        expect(result.message).toMatch(/^The identity registry can't be read, so rev_[0-9a-f]{64}'s sets can't be checked: .+ Nothing was activated\.$/);
+        expect(folderBytes(catalogPaths(root).active)).toEqual(pointer);
+        expect(catalogFiles()).toEqual(files);
+        // publish() stops the same way on the same root.
+        expect((await run()).outcome).toBe('STORAGE_ERROR');
+    });
+
     it('refuses a stored revision with an editorial error unless the caller accepts that rule, and records what it accepted', async () => {
         const { catalog, root, run, editPhoto, first } = await launched({ seed: 89 });
         await editPhoto(catalog.photos[0].id, (photo) => {
