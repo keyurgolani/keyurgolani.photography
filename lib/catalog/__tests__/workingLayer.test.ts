@@ -353,6 +353,46 @@ describe('writeAuthoredRecord', () => {
         expect(fs.readdirSync(path.join(paths.dir, 'Site'))).toEqual(['v1.json']);
     });
 
+    it('reads and extends a record or site folder that is itself a symlink, as the working layer reads it', async () => {
+        const data = dataRoot();
+        const paths = authoredPaths(data.root);
+        await writeAuthoredRecord(photo(PHOTO_A), { expectedVersion: 0, root: data.root });
+        await writeAuthoredRecord({ kind: 'site', featuredSeriesIds: [], seriesOrder: [] }, { expectedVersion: 0, root: data.root });
+        // Moved elsewhere, as a restore or a reorganisation might, and linked back under their own names.
+        const elsewhere = path.join(data.root, 'elsewhere');
+        fs.mkdirSync(elsewhere);
+        fs.renameSync(path.join(paths.photosDir, PHOTO_A), path.join(elsewhere, 'photo-target'));
+        fs.renameSync(paths.site, path.join(elsewhere, 'site-target'));
+        fs.symlinkSync(path.join(elsewhere, 'photo-target'), path.join(paths.photosDir, PHOTO_A), 'dir');
+        fs.symlinkSync(path.join(elsewhere, 'site-target'), paths.site, 'dir');
+
+        const layer = await readWorkingLayer(data.root);
+        expect(layer).toMatchObject({ site: { version: 1 }, photos: [{ id: PHOTO_A, version: 1 }], problems: [] });
+        expect(await readAuthoredRecord(data.root, 'photo', PHOTO_A)).toMatchObject({ version: 1 });
+        expect(await readAuthoredRecord(data.root, 'site', 'site')).toMatchObject({ version: 1 });
+        await expect(writeAuthoredRecord(photo(PHOTO_A, { title: 'Fixture title' }), { expectedVersion: 1, root: data.root })).resolves.toMatchObject({ version: 2 });
+        await expect(writeAuthoredRecord({ kind: 'site', featuredSeriesIds: [], seriesOrder: [] }, { expectedVersion: 1, root: data.root }))
+            .resolves.toMatchObject({ version: 2 });
+        expect(fs.readdirSync(path.join(elsewhere, 'photo-target')).sort()).toEqual(['v1.json', 'v2.json']);
+        expect(fs.readdirSync(path.join(elsewhere, 'site-target')).sort()).toEqual(['v1.json', 'v2.json']);
+        expect(fs.lstatSync(path.join(paths.photosDir, PHOTO_A)).isSymbolicLink()).toBe(true);
+    });
+
+    it('refuses a symlinked record folder named in another case, naming the link, not its target', async (context) => {
+        const data = dataRoot();
+        if (!caseInsensitive(data.root)) context.skip();
+        const paths = authoredPaths(data.root);
+        await writeAuthoredRecord(photo(PHOTO_A), { expectedVersion: 0, root: data.root });
+        const upper = PHOTO_A.toUpperCase();
+        fs.renameSync(path.join(paths.photosDir, PHOTO_A), path.join(data.root, 'photo-target'));
+        fs.symlinkSync(path.join(data.root, 'photo-target'), path.join(paths.photosDir, upper), 'dir');
+        expect((await readWorkingLayer(data.root)).problems).toEqual([expect.objectContaining({ kind: 'photo', id: upper, reason: 'file-name' })]);
+        await expect(readAuthoredRecord(data.root, 'photo', PHOTO_A)).rejects.toThrow(`is "${upper}" on disk`);
+        const error = await rejection(writeAuthoredRecord(photo(PHOTO_A, { title: 'Fixture title' }), { expectedVersion: 1, root: data.root }));
+        expect(error).toMatchObject({ code: 'INVALID_RECORD', message: expect.stringContaining(upper) });
+        expect(error.message).not.toContain('photo-target');
+    });
+
     it('tells a stored record from a newer build apart from one to fix by hand', async () => {
         const data = dataRoot();
         const dir = path.join(authoredPaths(data.root).photosDir, PHOTO_A);

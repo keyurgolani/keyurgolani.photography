@@ -56,6 +56,12 @@ export function authoredRecordDir(root: string, kind: AuthoredKind, id: string):
  * - the disk holds the folder under another name, as a case-insensitive disk
  *   finds `PH_…/` under `ph_…`. readWorkingLayer() reports that folder as
  *   misnamed, so reading or extending it here would disagree.
+ *
+ * A folder that is itself a symlink is checked by its own name in its
+ * parent's listing, as readWorkingLayer() finds it, not by its target's name.
+ * Anything else is checked with the native realpath, which returns the name
+ * the disk holds on APFS and Windows. glibc and musl return the name they're
+ * given, so off macOS and Windows the spelling check is best effort.
  */
 export async function recordFolderProblem(root: string, kind: AuthoredKind, id: string): Promise<string | null> {
     const dir = authoredRecordDir(root, kind, id);
@@ -64,16 +70,25 @@ export async function recordFolderProblem(root: string, kind: AuthoredKind, id: 
         return `${relative}.json is in the old layout, which this build no longer reads: the data root's layout changed, and a record is now the folder `
             + `${relative}/, holding v<N>.json. Move the file there as its next version (v1.json in an empty folder) while no command runs`;
     }
-    let stored: string;
+    const name = path.basename(dir);
+    let stored: string | undefined;
     try {
-        // The native realpath returns the name the disk holds, as the `--only` lookup in images:cleanup checks it.
-        stored = path.basename(fs.realpathSync.native(dir));
+        if ((await fs.promises.lstat(dir)).isSymbolicLink()) {
+            // realpath would give the target's name. The working layer goes by the link's own name in the listing.
+            const names = await fs.promises.readdir(path.dirname(dir));
+            if (names.includes(name)) return null;
+            stored = names.find((entry) => entry.toLowerCase() === name.toLowerCase());
+        } else {
+            // fs.promises.realpath is the native realpath, as the `--only` lookup in images:cleanup checks it.
+            stored = path.basename(await fs.promises.realpath(dir));
+        }
     } catch {
         // Missing, or unreadable, which the read itself reports.
         return null;
     }
-    if (stored !== path.basename(dir)) {
-        return `${relative}/ is the folder ${JSON.stringify(stored)} on disk, which the working layer reads as misnamed. Name the folder ${JSON.stringify(path.basename(dir))}`;
+    if (stored === undefined) return `${relative}/ isn't listed under that name in its folder, so the working layer doesn't read it. Name it ${JSON.stringify(name)}`;
+    if (stored !== name) {
+        return `${relative}/ is ${JSON.stringify(stored)} on disk, which the working layer reads as misnamed. Name it ${JSON.stringify(name)}`;
     }
     return null;
 }
