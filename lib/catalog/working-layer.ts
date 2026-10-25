@@ -49,10 +49,13 @@ export function authoredRecordDir(root: string, kind: AuthoredKind, id: string):
 
 /**
  * Why a record's folder can't be read or written as the record, or null when
- * it can: its file in the old one-file layout (#28's `authored/site.json`, or
- * `<id>.json` in its kind's folder) is still there. Reading only the folder
- * would pass over that file, and a write would add a second copy of the
- * record beside it.
+ * it can:
+ * - its file in the old one-file layout (#28's `authored/site.json`, or
+ *   `<id>.json` in its kind's folder) is still there. Reading only the folder
+ *   would pass over that file, and a write would add a second copy beside it;
+ * - the disk holds the folder under another name, as a case-insensitive disk
+ *   finds `PH_…/` under `ph_…`. readWorkingLayer() reports that folder as
+ *   misnamed, so reading or extending it here would disagree.
  */
 export async function recordFolderProblem(root: string, kind: AuthoredKind, id: string): Promise<string | null> {
     const dir = authoredRecordDir(root, kind, id);
@@ -60,6 +63,17 @@ export async function recordFolderProblem(root: string, kind: AuthoredKind, id: 
     if (await pathExists(`${dir}.json`)) {
         return `${relative}.json is in the old layout, which this build no longer reads: the data root's layout changed, and a record is now the folder `
             + `${relative}/, holding v<N>.json. Move the file there as its next version (v1.json in an empty folder) while no command runs`;
+    }
+    let stored: string;
+    try {
+        // The native realpath returns the name the disk holds, as the `--only` lookup in images:cleanup checks it.
+        stored = path.basename(fs.realpathSync.native(dir));
+    } catch {
+        // Missing, or unreadable, which the read itself reports.
+        return null;
+    }
+    if (stored !== path.basename(dir)) {
+        return `${relative}/ is the folder ${JSON.stringify(stored)} on disk, which the working layer reads as misnamed. Name the folder ${JSON.stringify(path.basename(dir))}`;
     }
     return null;
 }

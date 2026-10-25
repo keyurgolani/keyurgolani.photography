@@ -54,6 +54,16 @@ function activate(root: string, revisionId: string): void {
 const photo = (id: string, extra: Partial<AuthoredPhoto> = {}) => ({ kind: 'photo' as const, id, assetRevision: ASSET, alt: null, ...extra });
 const series = (id: string, extra: Partial<AuthoredSeries> = {}) => ({ kind: 'series' as const, id, slug: id.slice(4), visibility: 'draft' as const, ...extra });
 
+/** Whether the disk under `root` treats names that differ only in case as one, as macOS does by default. */
+function caseInsensitive(root: string): boolean {
+    fs.writeFileSync(path.join(root, 'Case-Probe'), '');
+    try {
+        return fs.existsSync(path.join(root, 'case-probe'));
+    } finally {
+        fs.unlinkSync(path.join(root, 'Case-Probe'));
+    }
+}
+
 async function rejection(promise: Promise<unknown>): Promise<AuthoredWriteError> {
     const error = await promise.then(() => null, (caught: unknown) => caught);
     expect(error).toBeInstanceOf(AuthoredWriteError);
@@ -312,6 +322,35 @@ describe('writeAuthoredRecord', () => {
         const photoError = await rejection(writeAuthoredRecord(photo(PHOTO_A), { expectedVersion: 0, root: data.root }));
         expect(photoError).toMatchObject({ code: 'INVALID_RECORD', message: expect.stringContaining(`authored/photos/${PHOTO_A}.json`) });
         expect(data.files().filter((file) => file.startsWith('authored'))).toEqual([`authored/photos/${PHOTO_A}.json`, 'authored/site.json']);
+    });
+
+    it('refuses to read or extend a record folder the disk spells in another case, which the working layer reports as misnamed', async (context) => {
+        const data = dataRoot();
+        if (!caseInsensitive(data.root)) context.skip();
+        const paths = authoredPaths(data.root);
+        await writeAuthoredRecord(photo(PHOTO_A), { expectedVersion: 0, root: data.root });
+        await writeAuthoredRecord({ kind: 'site', featuredSeriesIds: [], seriesOrder: [] }, { expectedVersion: 0, root: data.root });
+        const upper = PHOTO_A.toUpperCase();
+        fs.renameSync(path.join(paths.photosDir, PHOTO_A), path.join(paths.photosDir, upper));
+        fs.renameSync(paths.site, path.join(paths.dir, 'Site'));
+        // This disk finds both under their own names, but the working layer reads neither.
+        expect(fs.existsSync(path.join(paths.photosDir, PHOTO_A, 'v1.json'))).toBe(true);
+        const layer = await readWorkingLayer(data.root);
+        expect(layer).toMatchObject({ site: null, photos: [] });
+        expect(layer.problems.map(({ kind, id, reason }) => ({ kind, id, reason }))).toEqual([
+            { kind: 'photo', id: upper, reason: 'file-name' },
+            { kind: 'site', id: 'site', reason: 'file-name' },
+        ]);
+
+        await expect(readAuthoredRecord(data.root, 'photo', PHOTO_A)).rejects.toThrow(upper);
+        for (const expectedVersion of [1, 0]) {
+            const error = await rejection(writeAuthoredRecord(photo(PHOTO_A, { title: 'Fixture title' }), { expectedVersion, root: data.root }));
+            expect(error).toMatchObject({ code: 'INVALID_RECORD', message: expect.stringContaining(upper) });
+        }
+        const site = await rejection(writeAuthoredRecord({ kind: 'site', featuredSeriesIds: [], seriesOrder: [] }, { expectedVersion: 1, root: data.root }));
+        expect(site).toMatchObject({ code: 'INVALID_RECORD', message: expect.stringContaining('Site') });
+        expect(fs.readdirSync(path.join(paths.photosDir, upper))).toEqual(['v1.json']);
+        expect(fs.readdirSync(path.join(paths.dir, 'Site'))).toEqual(['v1.json']);
     });
 
     it('tells a stored record from a newer build apart from one to fix by hand', async () => {
