@@ -268,6 +268,14 @@ describe('the edges of the checks', () => {
         expect(runRules(ctx)).toEqual([expect.objectContaining({ code: 'privacy.source-name', record: { kind: 'photo', id: photoAt(ctx, 3).id }, field: 'title' })]);
     });
 
+    it('privacy.source-name: matches a name split by an invisible character', () => {
+        const ctx = context();
+        const record = ctx.registry?.photos[photoAt(ctx, 1).id];
+        if (record) record.source.path = 'series/harbour-0002.jpg';
+        photoAt(ctx, 3).title = 'Fixture title naming harb\u00adour-00\u200d02.jpg';
+        expect(runRules(ctx)).toEqual([expect.objectContaining({ code: 'privacy.source-name', record: { kind: 'photo', id: photoAt(ctx, 3).id }, field: 'title' })]);
+    });
+
     it.each([
         ['a longer name that starts with the library root', 'See /srv/photo-library-archive', []],
         ['the library root', 'From /srv/photo-library.', ['privacy.path']],
@@ -282,6 +290,9 @@ describe('the edges of the checks', () => {
         ['a file URL', 'file:///tmp/fixture', ['privacy.path']],
         ['a parent segment', '../fixture', ['privacy.path']],
         ['an ellipsis', 'Fixture caption...', []],
+        ['a path split by a soft hyphen', 'Shot from /Us\u00ADers/someone/Pictures', ['privacy.path']],
+        ['a path split by a ZWJ', 'Shot from /Us\u200Ders/someone/Pictures', ['privacy.path']],
+        ['a path split by a tag character', 'Shot from /ho\u{E0041}me/someone', ['privacy.path']],
     ])('privacy.path: %s', (_label, caption, expected) => {
         const ctx = context();
         photoAt(ctx, 2).caption = caption;
