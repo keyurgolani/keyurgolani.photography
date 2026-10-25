@@ -1,13 +1,11 @@
 import type { Page, Request } from '@playwright/test';
-import { publish } from '../lib/catalog/publish';
-import { createTestCatalog, type TestCatalog } from '../lib/catalog/testing';
-import { startCatalogServer, READY_TIMEOUT, type CatalogServer } from './support/catalogServer';
 import { expectHoverRulesGated } from './support/hover';
 import { waitForHydration } from './support/hydration';
 import { expectReflow } from './support/reflow';
 import { checkSurface } from './support/surface';
 import { expect, test } from './support/test';
 import { expectSingleTapActivates } from './support/touch';
+import { HARBOR, P, SENTINELS, SITE_URL, href, id, useViewerCatalog } from './support/viewerCatalog';
 
 // The Viewer (#7) on a published catalog, on both #1 projects: a direct load,
 // the series and position, Previous and Next inside the series that stop at
@@ -17,107 +15,19 @@ import { expectSingleTapActivates } from './support/touch';
 // the HTML or the RSC payload. Each project's worker publishes its own
 // fixture and serves it from a second `next start`, so the harness server
 // stays in legacy mode for every other spec. Close points at #5's series
-// page, which isn't on this branch, so only its href is checked.
+// page, which isn't on this branch, so only its href is checked. The fixture
+// lives in support/viewerCatalog.ts, shared with #9's viewer-modal.spec.ts.
 
 test.describe.configure({ mode: 'serial' });
 
-/** Above the catalog, the publish, and a server start, so a slow start fails in startCatalogServer, which stops its child. */
-const HOOK_TIMEOUT = READY_TIMEOUT + 60_000;
-const SITE_URL = 'https://photos.example.test';
-
-const id = (n: number) => `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
-const P = Array.from({ length: 6 }, (_, n) => id(n + 1));
-
-/** Strings only unpublished records and fields outside the Viewer's allowlist carry. */
-const SENTINELS = [
-    'SENTINEL draft title',
-    'SENTINEL hidden title',
-    'sentinel-hidden',
-    'SENTINEL location',
-    'SENTINEL credit',
-    'SENTINEL statement',
-    'sentinel-old-slug',
-    'private/SENTINEL-source.jpg',
-    'SENTINEL chapter',
-    '2019-07-08',
-    // The draft and hidden series' photos, and their IDs, which would reach the RSC payload as React keys.
-    P[4],
-    P[5],
-    'ser_e2e-draft',
-    'ser_e2e-hidden',
-];
-
-const HARBOR = [P[0], P[1], P[2]];
-const href = (photoId: string, slug = 'harbor') => `/work/${slug}/photo/${photoId}`;
-
-let catalog: TestCatalog | undefined;
-let server: CatalogServer | undefined;
-
-test.beforeAll(async () => {
-    test.setTimeout(HOOK_TIMEOUT);
-    // Small photos: the variants are never enlarged, so the fixture encodes fast.
-    const photo = (n: number) => ({ id: P[n], width: 900, height: 600 });
-    catalog = await createTestCatalog({
-        seed: 71,
-        withAssets: true,
-        photos: [
-            {
-                ...photo(0),
-                title: 'Fixture harbor at dusk',
-                caption: 'Fixture authored caption.',
-                alt: { kind: 'described', text: 'Fixture description of the harbor.', reviewed: true },
-                accent: '#c08040',
-                location: 'SENTINEL location',
-                credit: 'SENTINEL credit',
-                capturedAt: '2019-07-08',
-                sourcePath: 'private/SENTINEL-source.jpg',
-                technical: { Make: 'Fixture Make', Model: 'Fixture Model', FNumber: '2.8', ISO: '200' },
-            },
-            photo(1),
-            photo(2),
-            photo(3),
-            { ...photo(4), title: 'SENTINEL draft title' },
-            { ...photo(5), title: 'SENTINEL hidden title' },
-        ],
-        series: [
-            {
-                id: 'ser_e2e-harbor',
-                slug: 'harbor',
-                title: 'Fixture harbor',
-                statement: 'SENTINEL statement',
-                slugAliases: ['sentinel-old-slug'],
-                accent: '#5e7173',
-                chapters: [{ id: 'chapter-one', title: 'SENTINEL chapter', startPhotoId: P[0] }],
-                photoIds: HARBOR,
-            },
-            { id: 'ser_e2e-ridge', slug: 'ridge', title: 'Fixture ridge', photoIds: [P[3]] },
-            { id: 'ser_e2e-draft', slug: 'draft', title: 'SENTINEL draft title', photoIds: [P[4]], visibility: 'draft' },
-            { id: 'ser_e2e-hidden', slug: 'sentinel-hidden', title: 'SENTINEL hidden title', photoIds: [P[5]], visibility: 'hidden' },
-        ],
-    });
-    const outcome = await publish({ dataRoot: catalog.root, actor: 'e2e', confirmLaunch: true, logger: { log: () => undefined } });
-    expect(outcome.outcome, outcome.message).toBe('PUBLISHED');
-    // E2E_CATALOG_PORT pins a port per worker, for a machine that hands out ranges.
-    const base = Number(process.env.E2E_CATALOG_PORT);
-    server = await startCatalogServer(catalog.root, Number.isInteger(base) && base > 0 ? base + test.info().parallelIndex : undefined, { siteUrl: SITE_URL });
-});
-
-test.afterAll(async () => {
-    test.setTimeout(HOOK_TIMEOUT);
-    await server?.stop();
-    await catalog?.cleanup();
-});
-
-const origin = () => {
-    if (!server) throw new Error('The catalog server did not start');
-    return server.origin;
-};
+const origin = useViewerCatalog();
 
 const header = (page: Page) => page.locator('[data-surface="viewer"] > header');
 const close = (page: Page) => header(page).getByRole('link', { name: 'Close' });
 const zoom = (page: Page) => header(page).getByRole('button', { name: 'Zoom' });
-const previous = (page: Page) => page.getByRole('main').getByRole('link', { name: 'Previous photograph' });
-const next = (page: Page) => page.getByRole('main').getByRole('link', { name: 'Next photograph' });
+// Buttons that outlive every move (#9), so focus stays on them.
+const previous = (page: Page) => page.getByRole('main').getByRole('button', { name: 'Previous photograph' });
+const next = (page: Page) => page.getByRole('main').getByRole('button', { name: 'Next photograph' });
 const technical = (page: Page) => page.getByRole('main').getByRole('button', { name: /^(Show|Hide) technical details$/ });
 const photograph = (page: Page) => page.getByRole('main').locator('picture img');
 
@@ -220,19 +130,28 @@ test('nothing outside the allowlist reaches the served HTML or the RSC payload o
 
 test('Previous and Next stay inside the series and stop at the ends', async ({ page }) => {
     await openViewer(page, P[0]);
-    await expect(page.getByRole('button', { name: 'Previous photograph' })).toBeDisabled();
+    // An end stays a focusable button, unavailable through aria-disabled (#9), never the disabled attribute.
+    await expect(previous(page)).toHaveAttribute('aria-disabled', 'true');
+    await expect(previous(page)).not.toHaveAttribute('disabled');
     await next(page).click();
     await expect(page).toHaveURL(`${origin()}${href(P[1])}`);
     await expect(header(page)).toContainText('02 / 03');
+    await expect(previous(page)).not.toHaveAttribute('aria-disabled');
     await next(page).click();
     await expect(page).toHaveURL(`${origin()}${href(P[2])}`);
     await expect(header(page)).toContainText('03 / 03');
-    await expect(page.getByRole('button', { name: 'Next photograph' })).toBeDisabled();
-    await expect(next(page)).toHaveCount(0);
-    // The one-photo series has neither.
+    await expect(next(page)).toHaveAttribute('aria-disabled', 'true');
+    // Pressing an end changes neither the photograph nor the URL. Playwright won't click an aria-disabled
+    // control, so the press comes from the keyboard, as it would for anyone who can't reach it otherwise.
+    await next(page).press('Enter');
+    await expect(page).toHaveURL(`${origin()}${href(P[2])}`);
+    await expect(header(page)).toContainText('03 / 03');
+    // The one-photo series has neither, and nothing but Close links anywhere.
     await page.goto(`${origin()}${href(P[3], 'ridge')}`);
     await waitForHydration(page);
-    await expect(page.getByRole('main').getByRole('link')).toHaveCount(0);
+    await expect(previous(page)).toHaveAttribute('aria-disabled', 'true');
+    await expect(next(page)).toHaveAttribute('aria-disabled', 'true');
+    await expect(page.getByRole('main').getByRole('link')).toHaveText(['Close']);
 });
 
 test('moves replace the history entry, so one Back leaves the Viewer for the page that opened it', async ({ page }) => {
