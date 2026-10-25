@@ -4,6 +4,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { runTsx } from '../../../test/helpers/runTsx';
+import { handEditRegistry } from '../../../test/helpers/registryFiles';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { createTempLibrary, setLibraryDir, type TempLibrary } from '../../../test/helpers/tempLibrary';
 import { withLock } from '../../storage/lock';
@@ -268,26 +269,25 @@ describe('a pass with decision files', () => {
 
     it('refuses a hand-edited record that names another file, and deletes or writes nothing outside decisions/', async () => {
         const { s, bind } = await crashedBatch();
-        const file = identityPaths(s.data.root).registry;
         const victim = path.join(s.data.root, 'victim.txt');
         fs.writeFileSync(victim, 'keep me');
-        const registry = JSON.parse(fs.readFileSync(file, 'utf8'));
-        registry.decided[bind.decisionId] = { status: 'rejected', reason: 'edited', name: '../../victim.txt' };
-        fs.writeFileSync(file, JSON.stringify(registry));
+        handEditRegistry(s.data.root, (registry) => {
+            (registry.decided as Record<string, unknown>)[bind.decisionId] = { status: 'rejected', reason: 'edited', name: '../../victim.txt' };
+        });
 
         await expect(s.pass()).rejects.toThrow('decided holds a malformed entry');
         expect(fs.readFileSync(victim, 'utf8')).toBe('keep me');
-        expect(fs.readdirSync(identityPaths(s.data.root).dir).sort()).toEqual(['decisions', 'registry.json', 'stat-cache.json']);
+        expect(fs.readdirSync(identityPaths(s.data.root).dir).sort()).toEqual(['decisions', 'registry', 'stat-cache.json']);
         expect(s.pending()).toHaveLength(2);
         expect(s.filed('rejected')).toEqual([]);
     }, 60_000);
 
     it('refuses a record keyed by something other than a decision ID', async () => {
         const { s, bind } = await crashedBatch();
-        const file = identityPaths(s.data.root).registry;
-        const registry = JSON.parse(fs.readFileSync(file, 'utf8'));
-        registry.decided['../../victim'] = registry.decided[bind.decisionId];
-        fs.writeFileSync(file, JSON.stringify(registry));
+        handEditRegistry(s.data.root, (registry) => {
+            const decided = registry.decided as Record<string, unknown>;
+            decided['../../victim'] = decided[bind.decisionId];
+        });
         await expect(s.pass()).rejects.toThrow('decided is keyed by something other than a decision ID');
     }, 60_000);
 

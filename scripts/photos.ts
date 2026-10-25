@@ -168,7 +168,7 @@ async function decide(type: DecisionInput['type'], args: string[]): Promise<numb
     if (values.all !== undefined && type !== 'reprofile') throw new UsageError('--all goes with identity reprofile.');
     if (values.merge !== undefined && type !== 'bind') throw new UsageError('--merge goes with identity bind.');
     const input = decisionInput(type, positionals, values);
-    const status = dataRootStatus({ write: true });
+    const status = dataRootStatus({ versioned: true });
     if (status.state !== 'ready' || status.root === null) {
         console.error(`[photos] The data root is ${status.state}${status.detail ? `: ${status.detail}` : ''}. Nothing was written.`);
         return 1;

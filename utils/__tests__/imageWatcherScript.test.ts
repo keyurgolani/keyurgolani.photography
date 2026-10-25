@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { currentProfileId } from '../../lib/identity/profile';
 import type { Registry } from '../../lib/identity/types';
 import { dominantChannel, fixtureFiles } from '../../test/fixtures/makeLibrary';
+import { newestRegistryVersion, readNewestRegistry } from '../../test/helpers/registryFiles';
 import { createTempDataRoot, type TempDataRoot } from '../../test/helpers/tempDataRoot';
 import { createTempLibrary, derivativePaths, type TempLibrary } from '../../test/helpers/tempLibrary';
 
@@ -105,12 +106,12 @@ async function runOnceWithIdentity(root: string, dataRoot: string): Promise<{ co
 }
 
 function readRegistryFile(root: string): Registry {
-    return JSON.parse(fs.readFileSync(path.join(root, 'identity', 'registry.json'), 'utf8')) as Registry;
+    return readNewestRegistry(root) as unknown as Registry;
 }
 
 /** The library paths of photos whose current revision has a ready set. */
 function readySets(root: string): string[] {
-    if (!fs.existsSync(path.join(root, 'identity', 'registry.json'))) return [];
+    if (newestRegistryVersion(root) === 0) return [];
     return Object.values(readRegistryFile(root).photos)
         .filter((photo) => photo.revisions[photo.source.observedRevision]?.profiles[currentProfileId()]?.state === 'ready')
         .map((photo) => photo.source.path)

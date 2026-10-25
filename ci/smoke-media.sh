@@ -50,16 +50,20 @@ run_once() {
   }
 }
 
-# The /media URL of the w800 WebP in the ready set of the photo at <library path>, from the registry.
+# The /media URL of the w800 WebP in the ready set of the photo at <library path>, from the registry's
+# newest version file, identity/registry/v<N>.json.
 media_url() {
   node -e '
-    const registry = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    const fs = require("fs");
+    const versions = fs.readdirSync(process.argv[1]).map((name) => /^v([1-9][0-9]*)\.json$/.exec(name)).filter(Boolean).map((match) => Number(match[1]));
+    if (versions.length === 0) process.exit(1);
+    const registry = JSON.parse(fs.readFileSync(`${process.argv[1]}/v${Math.max(...versions)}.json`, "utf8"));
     const photo = Object.values(registry.photos).find((candidate) => candidate.source.path === process.argv[2]);
     const revision = photo && photo.revisions[photo.source.observedRevision];
     const ready = revision ? Object.keys(revision.profiles).filter((id) => revision.profiles[id].state === "ready") : [];
     if (ready.length !== 1) process.exit(1);
     console.log(["", "media", photo.photoId, revision.assetRevision, ready[0], "w800.webp"].join("/"));
-  ' "$PHOTOGRAPHY_DATA_DIR/identity/registry.json" "$1"
+  ' "$PHOTOGRAPHY_DATA_DIR/identity/registry" "$1"
 }
 
 [ -f .next/standalone/server.js ] || fail "There is no .next/standalone/server.js. Run npm run build first."

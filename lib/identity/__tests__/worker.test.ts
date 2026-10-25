@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { newestRegistryFile, newestRegistryVersion, writeRegistryFile } from '../../../test/helpers/registryFiles';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempLibrary';
 import { resolveAsset } from '../../media/manifest';
@@ -11,7 +12,7 @@ import { buildDerivativeSet, stagingLockName, stagingRoot, type BuildOutcome } f
 import { sha256, type Hasher } from '../ids';
 import { runReconcilePass } from '../pass';
 import { currentProfileId } from '../profile';
-import { identityPaths, readRegistry, writeRegistry } from '../registry';
+import { readRegistry, writeRegistry } from '../registry';
 import type { DerivativeJob, ProfileEntry, Registry } from '../types';
 import { createWorker, onceExitCode, pendingJobs, summarizeResults, WorkerStartError, type WorkerOptions, type WorkerResult } from '../worker';
 import { sequentialIds } from './reconcileFixtures';
@@ -425,12 +426,12 @@ describe('the derivative worker', () => {
         await s.edit((registry) => {
             Object.values(registry.photos[s.ids[0]].revisions)[0].profiles[currentProfileId()] = { state: 'failed', attempts: 1, error: 'the disk was full' };
         });
-        const before = fs.readFileSync(identityPaths(s.data.root).registry);
+        const before = fs.readFileSync(newestRegistryFile(s.data.root));
         const worker = s.worker({ deviceOf: (dir) => (dir.endsWith('staging') ? 2 : 1) });
         const error = await worker.start().catch((caught: unknown) => caught);
         expect(error).toBeInstanceOf(WorkerStartError);
         expect(error).toMatchObject({ code: 'EXDEV', message: expect.stringContaining('different devices') });
-        expect(fs.readFileSync(identityPaths(s.data.root).registry).equals(before)).toBe(true);
+        expect(fs.readFileSync(newestRegistryFile(s.data.root)).equals(before)).toBe(true);
         expect(await worker.enqueuePending()).toBe(0);
     });
 
@@ -472,10 +473,10 @@ describe('the derivative worker', () => {
 
         it('does nothing, and creates nothing, when the registry comes from a newer build', async () => {
             const s = await setup(1);
-            fs.writeFileSync(identityPaths(s.data.root).registry, JSON.stringify({ schemaVersion: 2, version: 9 }));
-            const before = fs.readFileSync(identityPaths(s.data.root).registry);
+            writeRegistryFile(s.data.root, 9, JSON.stringify({ schemaVersion: 2, version: 9 }));
+            const before = fs.readFileSync(newestRegistryFile(s.data.root));
             await expectNothingDone(s.worker(), s.data.root, 'unavailable');
-            expect(fs.readFileSync(identityPaths(s.data.root).registry).equals(before)).toBe(true);
+            expect(fs.readFileSync(newestRegistryFile(s.data.root)).equals(before)).toBe(true);
         });
     });
 
@@ -504,7 +505,7 @@ describe('the derivative worker', () => {
         await s.edit((registry) => {
             Object.values(registry.photos[s.ids[0]].revisions)[0].profiles[currentProfileId()] = { state: 'failed', attempts: 1, error: 'the disk was full' };
         });
-        const before = fs.readFileSync(identityPaths(s.data.root).registry);
+        const before = fs.readFileSync(newestRegistryFile(s.data.root));
         const entered = deferred();
         const release = deferred();
         const holder = withLock('registry', { root: s.data.root }, async () => {
@@ -518,7 +519,7 @@ describe('the derivative worker', () => {
         release.resolve();
         await holder;
         expect(await starting).toEqual({ started: false, reason: 'stopped' });
-        expect(fs.readFileSync(identityPaths(s.data.root).registry).equals(before)).toBe(true);
+        expect(fs.readFileSync(newestRegistryFile(s.data.root)).equals(before)).toBe(true);
         expect(worker.results).toEqual([]);
     });
 
@@ -604,7 +605,7 @@ describe('the derivative worker', () => {
         const worker = s.worker({ logger: { ...quiet, warn: (line: string) => { warnings.push(line); } } });
         await worker.start();
         await worker.idle();
-        fs.writeFileSync(identityPaths(s.data.root).registry, '{ not json');
+        writeRegistryFile(s.data.root, newestRegistryVersion(s.data.root) + 1, '{ not json');
         expect(await worker.enqueuePending()).toBe(0);
         expect(warnings).toEqual([expect.stringContaining('Could not read the registry')]);
     }, 60_000);

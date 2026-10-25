@@ -202,7 +202,7 @@ export async function migrateApply(options: ApplyOptions): Promise<ApplyResult> 
     const deviceOf = options.deviceOf ?? ((dir: string) => fs.statSync(dir).dev);
     const plan = await readPlan(options.planPath);
 
-    const status = dataRootStatus({ write: true });
+    const status = dataRootStatus({ versioned: true });
     if (status.root === null || (status.state !== 'ready' && status.state !== 'uninitialized')) {
         throw new ApplyRefusedError(`The data root is ${status.state}${status.detail ? `: ${status.detail}` : ''}. Nothing was applied.`);
     }

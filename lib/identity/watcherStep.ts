@@ -196,7 +196,7 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
     async function runPass(reason: PassReason): Promise<PassReport> {
         await legacyIdle();
         if (stopped) return { status: 'stopped' };
-        const status = dataRootStatus({ write: true });
+        const status = dataRootStatus({ versioned: true });
         noteState(status);
         let report: PassReport;
         if (status.state === 'ready' && status.root !== null) {
@@ -249,7 +249,7 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
 
         async check() {
             if (stopped) return;
-            const status = dataRootStatus({ write: true });
+            const status = dataRootStatus({ versioned: true });
             noteState(status);
             await writeHeartbeat(status);
             if (status.state !== 'ready' || status.root === null) return;
