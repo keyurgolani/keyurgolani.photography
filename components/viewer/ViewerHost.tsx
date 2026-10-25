@@ -34,7 +34,8 @@ interface Opener {
 export default function ViewerHost({ children, modal }: { children: ReactNode; modal: ReactNode }) {
     const pathname = usePathname();
     const onPhotoPage = useSelectedLayoutSegments()[0] === 'photo';
-    const slotHoldsPhoto = useSelectedLayoutSegments('modal')[0] === MODAL_SEGMENT && isViewerPath(pathname);
+    // Next wraps the slot's tree in a `(__SLOT__)` segment, so look for the route's own segment anywhere in it.
+    const slotHoldsPhoto = useSelectedLayoutSegments('modal').includes(MODAL_SEGMENT) && isViewerPath(pathname);
     const modalOpen = !onPhotoPage && slotHoldsPhoto;
     const opener = useRef<Opener | null>(null);
     const wasOpen = useRef(false);
