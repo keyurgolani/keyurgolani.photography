@@ -9,13 +9,13 @@ import { stagingLockName } from '../../identity/derivatives';
 import { versionFile, versionText } from '../../storage/document';
 import { withLock } from '../../storage/lock';
 import { references } from '../references';
-import { CATALOG_LOCK } from '../repository';
-import { GC_EXIT_CODES, GC_GRACE_MS, runGc, type GcOptions, type GcResult } from '../retention';
+import { activationFileName, CATALOG_LOCK, writeActivation } from '../repository';
+import { errorText, GC_EXIT_CODES, GC_GRACE_MS, runGc, type GcOptions, type GcResult } from '../retention';
 import { gcArgs, runGcCommand } from '../retention-cli';
 import { UsageError } from '../owner-cli';
 import { revisionIdOf } from '../schema';
 import { createTestCatalog, type TestCatalog } from '../testing';
-import type { CandidateContent } from '../types';
+import type { Activation, CandidateContent } from '../types';
 import { AUTHORED_LOCK } from '../working-layer-writer';
 import { catalogPaths } from '../working-layer';
 
@@ -141,6 +141,90 @@ async function mixedRoot() {
     return { catalog, root, ids };
 }
 
+/** A valid activation record naming `revisionId`, written as #13's repository writes it. */
+async function activationFor(root: string, revisionId: string): Promise<string> {
+    const activation: Activation = {
+        schemaVersion: 1,
+        activationId: 'act_00000000-0000-4000-8000-0000000000aa',
+        sequence: 1,
+        kind: 'publish',
+        status: 'committed',
+        revisionId,
+        revisionNumber: 1,
+        previousRevisionId: null,
+        previousActivationId: null,
+        actor: 'test',
+        reason: 'fixture',
+        startedAt: new Date(OLD).toISOString(),
+        committedAt: new Date(OLD).toISOString(),
+        validation: { rulesetVersion: 'a'.repeat(64), errors: 0, warnings: 0, diagnosticsDigest: 'b'.repeat(64) },
+        acceptedRules: [],
+        lockTakeover: null,
+    };
+    await writeActivation(root, activation);
+    return path.join(catalogPaths(root).activationsDir, activationFileName(activation));
+}
+
+/** Whether this disk treats `a` and `A` as one name, as macOS's default APFS does. */
+function caseInsensitive(dir: string): boolean {
+    const probe = path.join(dir, 'case-probe');
+    fs.writeFileSync(probe, '');
+    try {
+        return fs.existsSync(path.join(dir, 'CASE-PROBE'));
+    } finally {
+        fs.rmSync(probe);
+    }
+}
+
+/** Put a link to the same path under `outside` where `relative` was, so the folder GC checked is no longer there. */
+function linkElsewhere(root: string, relative: string, outside: string): void {
+    fs.renameSync(path.join(root, relative), path.join(root, `${relative}-moved`));
+    fs.symlinkSync(path.join(outside, relative), path.join(root, relative));
+}
+
+/**
+ * Put a link to a copy of the folder that holds the data root where that
+ * folder was, so the data root's path leads to the copy. Returns the copy's
+ * killed build, and a function that puts the original back.
+ */
+function moveDataRootParent(root: string, outside: string): { copy: string; restore: () => void } {
+    const parent = path.dirname(fs.realpathSync(root));
+    const copy = path.join(outside, 'parent');
+    fs.cpSync(parent, copy, { recursive: true });
+    // The copy matches what GC planned, so only its location differs.
+    const build = path.join(copy, path.basename(root), 'staging', 'killed-build');
+    for (const name of fs.readdirSync(build)) setTime(path.join(build, name), OLD);
+    setTime(build, OLD);
+    fs.renameSync(parent, `${parent}-orig`);
+    fs.symlinkSync(copy, parent);
+    let restored = false;
+    const restore = () => {
+        if (restored) return;
+        restored = true;
+        fs.unlinkSync(parent);
+        fs.renameSync(`${parent}-orig`, parent);
+    };
+    cleanups.push(restore);
+    return { copy: build, restore };
+}
+
+/** Run `act` the first time GC lstats `target` after `arm()`, so a test can change a folder while GC is checking a path. */
+function whenChecking(target: string, act: () => void): { arm: () => void } {
+    const original = fs.promises.lstat;
+    let armed = false;
+    fs.promises.lstat = (async (file: fs.PathLike, ...rest: unknown[]) => {
+        if (armed && path.resolve(String(file)) === target) {
+            armed = false;
+            act();
+        }
+        return (original as (...args: unknown[]) => Promise<fs.Stats>)(file, ...rest);
+    }) as typeof fs.promises.lstat;
+    cleanups.push(() => {
+        fs.promises.lstat = original;
+    });
+    return { arm: () => { armed = true; } };
+}
+
 describe('photos gc, the dry run', () => {
     it('lists every path it would delete with its class, rule, and size, prints a digest, and deletes nothing', async () => {
         const { root, ids } = await mixedRoot();
@@ -152,7 +236,7 @@ describe('photos gc, the dry run', () => {
         expect(out[0]).toBe('[photos] PLANNED: 2 paths can go. Nothing was deleted.');
         expect(out).toContainEqual(expect.stringMatching(new RegExp(`^Delete staging/killed-build: abandoned-staging, 18 bytes\\. gc\\.staging\\.unlocked-past-grace: no build holds its lock, and nothing in it changed since ${new Date(OLD).toISOString()}, more than 7 days ago\\.$`)));
         const size = fs.statSync(path.join(root, candidatePath(ids.orphan))).size;
-        expect(out).toContainEqual(`Delete ${candidatePath(ids.orphan)}: orphan-candidate, ${size} bytes. gc.candidate.unpublished-past-grace: no revision, activation, active pointer, or last publish names it, and it was last written ${new Date(OLD).toISOString()}, more than 7 days ago.`);
+        expect(out).toContainEqual(`Delete ${candidatePath(ids.orphan)}: orphan-candidate, ${size} bytes. gc.candidate.unpublished-past-grace: no revision, activation, or last publish names it, and it was last written ${new Date(OLD).toISOString()}, more than 7 days ago.`);
         const keptCandidates = [`${candidatePath(ids.published)} (a revision of the same ID exists)`, `${candidatePath(ids.young)} (changed within the last 7 days)`].sort();
         expect(out).toContainEqual(`Kept 3: staging/recent-build (changed within the last 7 days), ${keptCandidates.join(', ')}.`);
         expect(out.find((line) => line.startsWith('Plan digest: '))).toMatch(/^Plan digest: gc_[0-9a-f]{64}$/);
@@ -451,6 +535,300 @@ describe('what photos gc never deletes', () => {
         expect(exitCode).toBe(GC_EXIT_CODES.UNSAFE_PATH);
         expect(err[0]).toBe(`[photos] UNSAFE_PATH: ${folder} is a symlink, so GC can't be sure what it would delete. Nothing was deleted.`);
         expect(fs.existsSync(victim)).toBe(true);
+    });
+});
+
+describe('round 2: the protections a removal would otherwise leave untested', () => {
+    it('keeps a candidate an activation names when its revision file is gone, and deletes it once nothing names it', async () => {
+        const catalog = await fixture();
+        const id = candidate(catalog.root, variant(catalog.content, 11), OLD);
+        const record = await activationFor(catalog.root, id);
+
+        const named = await gc(catalog.root);
+        expect(named.plan?.delete).toEqual([]);
+        expect(named.plan?.kept).toEqual([{ class: 'orphan-candidate', path: candidatePath(id), reason: 'named-by-activation' }]);
+        expect(await gc(catalog.root, { apply: named.plan?.digest })).toMatchObject({ outcome: 'APPLIED', deleted: [] });
+        expect(fs.existsSync(path.join(catalog.root, candidatePath(id)))).toBe(true);
+
+        fs.rmSync(record);
+        const unnamed = await gc(catalog.root);
+        expect(unnamed.plan?.delete.map((entry) => entry.path)).toEqual([candidatePath(id)]);
+    });
+
+    it("stops with INTEGRITY_MISMATCH, through references(), when the pointer names a revision that isn't there", async () => {
+        const { root, catalog, ids } = await mixedRoot();
+        // The pointer's revision is gone, so its old candidate is the one at stake.
+        const missing = candidate(root, variant(catalog.content, 12), OLD);
+        fs.mkdirSync(catalogPaths(root).active, { recursive: true });
+        fs.writeFileSync(versionFile(catalogPaths(root).active, 1), versionText({ schemaVersion: 1, revisionId: missing, activationId: 'act_00000000-0000-4000-8000-000000000001' }, 1));
+        const before = snapshot(root);
+        const { exitCode, err } = await command(root, []);
+        expect(exitCode).toBe(GC_EXIT_CODES.INTEGRITY_MISMATCH);
+        expect(err[0]).toBe(`[photos] INTEGRITY_MISMATCH: Can't tell what catalog/revisions/${missing}.json references: catalog/active names it, but it does not exist. Nothing was deleted.`);
+        expect(snapshot(root)).toEqual(before);
+        expect(fs.existsSync(path.join(root, candidatePath(missing)))).toBe(true);
+        expect(fs.existsSync(path.join(root, candidatePath(ids.orphan)))).toBe(true);
+    });
+
+    it.each([CATALOG_LOCK, AUTHORED_LOCK])('stops with LOCK_LOST before the next delete once another process replaces the %s lock', async (lock) => {
+        const { root, ids } = await mixedRoot();
+        const planned = await gc(root);
+        const lockFile = path.join(root, 'locks', `${lock}.lock`);
+        const result = await gc(root, {
+            apply: planned.plan?.digest,
+            hooks: {
+                beforeDelete(entry) {
+                    if (entry.class !== 'abandoned-staging') return;
+                    // Another process broke this run's lease and took the lock: a new file at the same path.
+                    fs.renameSync(lockFile, `${lockFile}.broken`);
+                    const now = new Date().toISOString();
+                    fs.writeFileSync(lockFile, `${JSON.stringify({ owner: 'other', hostname: 'other-host', pid: 1, acquiredAt: now, heartbeatAt: now, leaseMs: 60_000 })}\n`);
+                },
+            },
+        });
+        expect(result.outcome).toBe('LOCK_LOST');
+        expect(GC_EXIT_CODES[result.outcome]).toBe(3);
+        expect(result.message).toBe("GC lost the catalog or authored lock. It had deleted 1 of the plan's 2 paths, and deleted nothing else.");
+        expect(result.deleted).toEqual(['staging/killed-build']);
+        expect(fs.existsSync(path.join(root, candidatePath(ids.orphan)))).toBe(true);
+    });
+
+    it('stops at a candidate whose revision appears between the plan and its delete', async () => {
+        const { root, catalog, ids } = await mixedRoot();
+        const planned = await gc(root);
+        const result = await gc(root, {
+            apply: planned.plan?.digest,
+            hooks: {
+                beforeDelete(entry) {
+                    if (entry.class === 'orphan-candidate') revision(root, variant(catalog.content, 1));
+                },
+            },
+        });
+        expect(result).toMatchObject({ outcome: 'PLAN_CHANGED', deleted: ['staging/killed-build'] });
+        expect(result.message).toBe(`${candidatePath(ids.orphan)} has a revision now. GC stopped there. It had deleted 1 of the plan's 2 paths, and deleted nothing else. Run the dry run again.`);
+        expect(fs.existsSync(path.join(root, candidatePath(ids.orphan)))).toBe(true);
+    });
+
+    it('stops at a path that is back inside the grace period at its delete, as after the clock steps back', async () => {
+        const { root } = await mixedRoot();
+        const planned = await gc(root);
+        let calls = 0;
+        // The scan reads NOW. Every later read is two minutes earlier, so the 60 s margin of OLD is gone.
+        const result = await gc(root, { apply: planned.plan?.digest, clock: () => (calls++ === 0 ? NOW : NOW - 120_000) });
+        expect(result).toMatchObject({ outcome: 'PLAN_CHANGED', deleted: [] });
+        expect(result.message).toBe('staging/killed-build is within the grace period. GC stopped there. Nothing was deleted. Run the dry run again.');
+        expect(fs.existsSync(path.join(root, 'staging', 'killed-build'))).toBe(true);
+    });
+
+    it('refuses to delete a path outside its two shapes, even one a corrupted plan names', async () => {
+        const { root, ids } = await mixedRoot();
+        const published = path.join(catalogPaths(root).revisionsDir, `${ids.published}.json`);
+        setTime(published, OLD);
+        const planned = await gc(root);
+        const result = await gc(root, {
+            apply: planned.plan?.digest,
+            hooks: {
+                beforeDelete(entry) {
+                    if (entry.class !== 'orphan-candidate') return;
+                    // Everything else about the entry matches the revision file, so the shape check is what stops it.
+                    Object.assign(entry, { path: `catalog/revisions/${ids.published}.json`, bytes: fs.statSync(published).size, newestMs: OLD });
+                },
+            },
+        });
+        expect(result.outcome).toBe('UNSAFE_PATH');
+        expect(result.message).toBe(`catalog/revisions/${ids.published}.json is not a path GC deletes, so GC can't be sure what it would delete. It had deleted 1 of the plan's 2 paths, and deleted nothing else.`);
+        expect(fs.existsSync(published)).toBe(true);
+    });
+
+    it('refuses a class folder the disk resolves to another spelling', async () => {
+        const catalog = await fixture();
+        stage(catalog.root, 'killed-build', OLD);
+        fs.renameSync(path.join(catalog.root, 'staging'), path.join(catalog.root, 'Staging-tmp'));
+        fs.renameSync(path.join(catalog.root, 'Staging-tmp'), path.join(catalog.root, 'Staging'));
+        const result = await gc(catalog.root);
+        if (caseInsensitive(catalog.root)) {
+            // `staging` opens `Staging` here, so only the realpath check tells them apart.
+            expect(result.outcome).toBe('UNSAFE_PATH');
+            expect(result.message).toBe("staging resolves somewhere else, so GC can't be sure what it would delete. Nothing was deleted.");
+        } else {
+            expect(result.outcome).toBe('PLANNED');
+            expect(result.plan?.delete).toEqual([]);
+        }
+        expect(fs.existsSync(path.join(catalog.root, 'Staging', 'killed-build', 'w400.webp'))).toBe(true);
+    });
+
+    it('refuses when the data root no longer resolves to the folder GC started in', async () => {
+        const { root } = await mixedRoot();
+        const planned = await gc(root);
+        let moved: ReturnType<typeof moveDataRootParent> | null = null;
+        const result = await gc(root, {
+            apply: planned.plan?.digest,
+            hooks: {
+                beforeDelete(entry) {
+                    if (entry.class === 'abandoned-staging') moved = moveDataRootParent(root, outsideDir());
+                },
+            },
+        });
+        const copy = (moved as ReturnType<typeof moveDataRootParent> | null)?.copy;
+        (moved as ReturnType<typeof moveDataRootParent> | null)?.restore();
+        expect(result.outcome).toBe('UNSAFE_PATH');
+        expect(result.message).toBe("staging resolves somewhere else, so GC can't be sure what it would delete. Nothing was deleted.");
+        expect(fs.existsSync(path.join(copy as string, 'w400.webp'))).toBe(true);
+        expect(fs.existsSync(path.join(root, 'staging', 'killed-build', 'w400.webp'))).toBe(true);
+    });
+
+    describe('re-verifies at delete time that every folder it deletes in is the one it checked', () => {
+        it('refuses when the data root changes while GC checks a path', async () => {
+            const { root } = await mixedRoot();
+            const planned = await gc(root);
+            let copy = '';
+            let restore = () => undefined as void;
+            const checking = whenChecking(path.join(fs.realpathSync(root), 'staging', 'killed-build'), () => {
+                ({ copy, restore } = moveDataRootParent(root, outsideDir()));
+            });
+            const result = await gc(root, {
+                apply: planned.plan?.digest,
+                hooks: {
+                    beforeDelete(entry) {
+                        if (entry.class === 'abandoned-staging') checking.arm();
+                    },
+                },
+            });
+            restore();
+            expect(copy).not.toBe('');
+            expect(result.outcome).toBe('UNSAFE_PATH');
+            expect(result.message).toBe("The data root no longer resolves to the folder GC started in, so GC can't be sure what it would delete. Nothing was deleted.");
+            expect(fs.existsSync(path.join(copy, 'w400.webp'))).toBe(true);
+            expect(fs.existsSync(path.join(root, 'staging', 'killed-build', 'w400.webp'))).toBe(true);
+        });
+
+        it('refuses when the data root folder itself is replaced while GC checks a path', async () => {
+            const { root } = await mixedRoot();
+            const realRoot = fs.realpathSync(root);
+            const planned = await gc(root);
+            const checking = whenChecking(path.join(realRoot, 'staging', 'killed-build'), () => {
+                fs.renameSync(realRoot, `${realRoot}-orig`);
+                fs.cpSync(`${realRoot}-orig`, realRoot, { recursive: true });
+                const build = path.join(realRoot, 'staging', 'killed-build');
+                for (const name of fs.readdirSync(build)) setTime(path.join(build, name), OLD);
+                setTime(build, OLD);
+            });
+            cleanups.push(() => fs.rmSync(`${realRoot}-orig`, { recursive: true, force: true }));
+            const result = await gc(root, {
+                apply: planned.plan?.digest,
+                hooks: {
+                    beforeDelete(entry) {
+                        if (entry.class === 'abandoned-staging') checking.arm();
+                    },
+                },
+            });
+            expect(result.outcome).toBe('UNSAFE_PATH');
+            expect(result.message).toBe("The data root changed just before the delete, so GC can't be sure what it would delete. Nothing was deleted.");
+            expect(fs.existsSync(path.join(realRoot, 'staging', 'killed-build', 'w400.webp'))).toBe(true);
+            expect(fs.existsSync(path.join(`${realRoot}-orig`, 'staging', 'killed-build', 'w400.webp'))).toBe(true);
+        });
+
+        it('refuses when a checked folder is replaced while GC checks a path', async () => {
+            const { root } = await mixedRoot();
+            const planned = await gc(root);
+            const checking = whenChecking(path.join(fs.realpathSync(root), 'staging', 'killed-build'), () => {
+                fs.renameSync(path.join(root, 'staging'), path.join(root, 'staging-moved'));
+                stage(root, 'killed-build', OLD);
+            });
+            const result = await gc(root, {
+                apply: planned.plan?.digest,
+                hooks: {
+                    beforeDelete(entry) {
+                        if (entry.class === 'abandoned-staging') checking.arm();
+                    },
+                },
+            });
+            expect(result.outcome).toBe('UNSAFE_PATH');
+            expect(result.message).toBe("staging changed just before the delete, so GC can't be sure what it would delete. Nothing was deleted.");
+            expect(fs.existsSync(path.join(root, 'staging', 'killed-build', 'w400.webp'))).toBe(true);
+            expect(fs.existsSync(path.join(root, 'staging-moved', 'killed-build', 'w400.webp'))).toBe(true);
+        });
+
+        it.each([
+            ['staging', 'staging/killed-build/w400.webp'],
+            ['catalog/candidates', 'orphan'],
+        ])('refuses when %s changes after the last check', async (folder, victimPath) => {
+            const { root, ids } = await mixedRoot();
+            const outside = outsideDir();
+            let victim: string;
+            if (folder === 'staging') {
+                stage(outside, 'killed-build', OLD);
+                victim = path.join(outside, victimPath);
+            } else {
+                victim = path.join(outside, candidatePath(ids.orphan));
+                fs.mkdirSync(path.dirname(victim), { recursive: true });
+                fs.copyFileSync(path.join(root, candidatePath(ids.orphan)), victim);
+            }
+            const planned = await gc(root);
+            const result = await gc(root, {
+                apply: planned.plan?.digest,
+                hooks: {
+                    afterRecheck(entry) {
+                        if (entry.path.startsWith(`${folder}/`)) linkElsewhere(root, folder, outside);
+                    },
+                },
+            });
+            expect(result.outcome).toBe('UNSAFE_PATH');
+            expect(result.message.startsWith(`${folder} changed just before the delete, so GC can't be sure what it would delete.`)).toBe(true);
+            expect(fs.existsSync(victim)).toBe(true);
+        });
+
+        it('refuses when staging is replaced by another folder after the last check', async () => {
+            const { root } = await mixedRoot();
+            const planned = await gc(root);
+            const result = await gc(root, {
+                apply: planned.plan?.digest,
+                hooks: {
+                    afterRecheck(entry) {
+                        if (entry.class !== 'abandoned-staging') return;
+                        fs.renameSync(path.join(root, 'staging'), path.join(root, 'staging-moved'));
+                        stage(root, 'killed-build', OLD);
+                    },
+                },
+            });
+            expect(result.outcome).toBe('UNSAFE_PATH');
+            expect(result.message).toBe("staging changed just before the delete, so GC can't be sure what it would delete. Nothing was deleted.");
+            expect(fs.existsSync(path.join(root, 'staging', 'killed-build', 'w400.webp'))).toBe(true);
+        });
+    });
+
+    it.skipIf(process.getuid?.() === 0)("says why the data root isn't ready without its absolute path", async () => {
+        const catalog = await fixture();
+        const marker = path.join(catalog.root, 'data-root.json');
+        fs.chmodSync(marker, 0o000);
+        cleanups.push(() => fs.chmodSync(marker, 0o600));
+        const result = await gc(catalog.root);
+        expect(result.outcome).toBe('DATA_ROOT_NOT_READY');
+        expect(result.message).toMatch(/^The data root is unavailable: data-root\.json can't be read: EACCES.*Nothing was deleted\.$/);
+        expect(result.message).not.toContain(path.dirname(catalog.root));
+        expect(result.message).not.toContain(fs.realpathSync(path.dirname(catalog.root)));
+    });
+
+    it.skipIf(process.getuid?.() === 0)('names an I/O error by its code and its path relative to the data root', async () => {
+        const catalog = await fixture();
+        const inner = path.join(stage(catalog.root, 'killed-build', OLD), 'inner');
+        fs.mkdirSync(inner);
+        fs.chmodSync(inner, 0o000);
+        cleanups.push(() => fs.chmodSync(inner, 0o700));
+        const result = await gc(catalog.root);
+        expect(result.outcome).toBe('STORAGE_ERROR');
+        expect(result.message).toBe('EACCES on staging/killed-build/inner. Nothing was deleted.');
+        expect(result.message).not.toContain(path.dirname(catalog.root));
+        expect(result.message).not.toContain(fs.realpathSync(path.dirname(catalog.root)));
+    });
+
+    it('keeps the data root out of every other error message too', () => {
+        const root = path.join(os.tmpdir(), 'some-root');
+        const errno = (code: string, file: string) => Object.assign(new Error(`${code}: failed, open '${file}'`), { code, path: file });
+        expect(errorText(errno('EIO', path.join(root, 'catalog', 'x.json')), [root])).toBe('EIO on catalog/x.json');
+        expect(errorText(errno('EIO', path.join(path.sep, 'elsewhere', 'file')), [root])).toBe('EIO on a path outside the data root');
+        expect(errorText(errno('EIO', root), [root])).toBe('EIO on the data root');
+        expect(errorText(new Error(`couldn't read ${path.join(root, 'staging', 'x')} or ${root}`), [root])).toBe(`couldn't read ${path.join('staging', 'x')} or the data root`);
     });
 });
 
