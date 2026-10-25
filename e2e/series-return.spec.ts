@@ -1,6 +1,7 @@
 import type { Locator, Page } from '@playwright/test';
 import { publish } from '../lib/catalog/publish';
-import { createTestCatalog, type TestCatalog } from '../lib/catalog/testing';
+import { createTestCatalog, type TestCatalog, type VariantByteTable } from '../lib/catalog/testing';
+import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../lib/identity/variants';
 import { startCatalogServer, READY_TIMEOUT, type CatalogServer } from './support/catalogServer';
 import { waitForHydration } from './support/hydration';
 import { expect, test } from './support/test';
@@ -221,5 +222,112 @@ test.describe('touch', () => {
         await expect(page).toHaveURL(`${origin()}${viewerPath(DEEP)}`);
         await dialog(page).getByRole('button', { name: 'Close' }).tap();
         await expectReturned(page, entry(page, DEEP), offset);
+    });
+});
+
+// Past the first page (#6): a series longer than one page of 100, on its own
+// published fixture. Sparse variant files, as #6's spec uses, so it's quick to
+// write; the images fail and show their missing state, which keeps every box.
+test.describe('an entry past the first page', () => {
+    const PAGE_SIZE = 100;
+    const PAGED_COUNT = 150;
+    const Q = Array.from({ length: PAGED_COUNT }, (_, n) => id(1000 + n));
+    /** On the second page, so it's only on the page once Show more, or #6's restore, has loaded it. */
+    const LATE = Q[129];
+    const PAGED = '/work/paged';
+    const BYTES = Object.fromEntries(VARIANT_WIDTHS.map((width) => [width, Object.fromEntries(VARIANT_FORMATS.map((format) => [format, 1_024]))])) as VariantByteTable;
+
+    let pagedCatalog: TestCatalog | undefined;
+    let pagedServer: CatalogServer | undefined;
+
+    test.beforeAll(async () => {
+        test.setTimeout(HOOK_TIMEOUT);
+        pagedCatalog = await createTestCatalog({
+            seed: 53,
+            variantBytes: BYTES,
+            photos: Q.map((photoId) => ({ id: photoId, width: 900, height: 600 })),
+            series: [{ id: 'ser_e2e-paged', slug: 'paged', title: 'Fixture paged', photoIds: Q }],
+        });
+        const outcome = await publish({ dataRoot: pagedCatalog.root, actor: 'e2e', confirmLaunch: true, logger: { log: () => undefined } });
+        expect(outcome.outcome, outcome.message).toBe('PUBLISHED');
+        // Two above the file's own servers, so both can run in one worker.
+        const base = Number(process.env.E2E_CATALOG_PORT);
+        pagedServer = await startCatalogServer(pagedCatalog.root, Number.isInteger(base) && base > 0 ? base + 3 + test.info().parallelIndex : undefined);
+    });
+
+    test.afterAll(async () => {
+        test.setTimeout(HOOK_TIMEOUT);
+        await pagedServer?.stop();
+        await pagedCatalog?.cleanup();
+    });
+
+    const pagedOrigin = () => {
+        if (!pagedServer) throw new Error('The paged catalog server did not start');
+        return pagedServer.origin;
+    };
+    const listed = (page: Page) => page.getByRole('main').locator('ol > li > a');
+
+    /** The series with its second page loaded by Show more, and LATE scrolled into view and focused. Returns the offset. */
+    async function openLate(page: Page): Promise<number> {
+        await page.goto(`${pagedOrigin()}${PAGED}`);
+        await waitForHydration(page);
+        await expect(listed(page)).toHaveCount(PAGE_SIZE);
+        const more = page.getByRole('button', { name: 'Show more photographs' });
+        await more.focus();
+        await page.keyboard.press('Enter');
+        await expect(listed(page)).toHaveCount(PAGED_COUNT);
+        const late = entry(page, LATE);
+        await late.scrollIntoViewIfNeeded();
+        await late.focus();
+        return scrollY(page);
+    }
+
+    async function openViewer(page: Page): Promise<void> {
+        await page.keyboard.press('Enter');
+        await expect(page).toHaveURL(`${pagedOrigin()}${PAGED}/photo/${LATE}`);
+        await expect(page.getByRole('dialog', { name: /^Fixture paged/ })).toBeVisible();
+    }
+
+    /** On the series, with both pages, focus on LATE, at `offset` within a pixel, and LATE in view. */
+    async function expectBackOnLate(page: Page, offset: number): Promise<void> {
+        await expect(page).toHaveURL(`${pagedOrigin()}${PAGED}`);
+        await expect(listed(page)).toHaveCount(PAGED_COUNT);
+        await expect(entry(page, LATE)).toBeFocused();
+        await expect.poll(async () => Math.abs((await scrollY(page)) - offset), { message: `scroll offset near ${offset}` }).toBeLessThanOrEqual(1);
+        expect(await inView(entry(page, LATE))).toBe(true);
+    }
+
+    test('Escape from the modal lands on that entry, with the page and its loaded pages untouched', async ({ page }) => {
+        const offset = await openLate(page);
+        expect(offset, 'the entry sits below the first screen').toBeGreaterThan(200);
+        await openViewer(page);
+        await page.keyboard.press('Escape');
+        await expectBackOnLate(page, offset);
+    });
+
+    test('a reload on the Viewer, then Back, waits for #6\'s restored pages and the real event, then lands on that entry', async ({ page }) => {
+        const offset = await openLate(page);
+        await openViewer(page);
+        await page.reload();
+        await waitForHydration(page);
+        await expect(page.locator('[data-surface="viewer"]')).toHaveAttribute('data-viewer-mode', 'page');
+        // Count the event wherever Back renders the series: this document (a same-document traversal), or a new one.
+        const count = () => {
+            const counted = window as unknown as { kgRestored?: number };
+            window.addEventListener('kg:series-entries-restored', () => {
+                counted.kgRestored = (counted.kgRestored ?? 0) + 1;
+            });
+        };
+        await page.evaluate(count);
+        await page.addInitScript(count);
+        await page.goBack();
+        await expectBackOnLate(page, offset);
+        await expect.poll(() => page.evaluate(() => (window as unknown as { kgRestored?: number }).kgRestored ?? 0)).toBe(1);
+        await expect(page.locator('section[aria-labelledby="series-sequence"]')).not.toHaveAttribute('aria-busy', 'true');
+        // Used up, beside #6's extent and Next's keys.
+        const state = await page.evaluate(() => history.state as Record<string, unknown>);
+        expect(state).not.toHaveProperty('kgSeriesReturn');
+        expect(state).toHaveProperty('kgSeriesPages');
+        expect(state.__NA).toBe(true);
     });
 });
