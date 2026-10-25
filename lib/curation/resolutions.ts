@@ -318,6 +318,16 @@ export async function linkedNewItems(root: string, photoId: string, registry: Re
     });
 }
 
+/** Why bind refuses a path #10 holds without listing the photo, worded for how many photos the hold names. */
+export function holdRefusal(at: string, candidates: readonly string[], photoId: string): string {
+    const doubt = candidates.length === 0
+        ? `#10 holds ${at} without naming a photograph it might be, as it does when another file's name differs from it only by case or Unicode form, so it can't tell which file a bind would give ${photoId}.`
+        : candidates.length === 1
+            ? `#10 holds ${at} in doubt: it may still be ${candidates[0]}'s file, and a bind would merge ${candidates[0]} into ${photoId}.`
+            : `#10 holds ${at} in doubt between ${candidates.join(' and ')}, so it can't tell whose file it is, and a bind would merge one of them into ${photoId}.`;
+    return `${doubt} Settle that path's ambiguous item first, with photos identity bind or photos identity new, then bind again. Nothing was written.`;
+}
+
 interface BindPlan {
     /** The photo the decision names to merge, when #10 needs it named. */
     merge?: string;
@@ -361,7 +371,7 @@ async function bindPlan(root: string, registry: Registry, photo: PhotoRecord, at
     if (own?.reassignedTo !== undefined && !(holderOwn.length === 1 && holderOwn[0].assetRevision === bytes)) givenAway();
     // A hold that doesn't list the photo is #10 unsure which other photo the file is, and a bind would merge one of them.
     if (held && !held.candidates.includes(photo.photoId)) {
-        fail('refused', `#10 holds ${at} in doubt between ${held.candidates.join(' and ')}, so it can't tell whose file it is, and a bind would merge one of them into ${photo.photoId}. Settle that path's ambiguous item first, with photos identity bind or photos identity new, then bind again. Nothing was written.`);
+        fail('refused', holdRefusal(at, held.candidates, photo.photoId));
     }
     let merged: string | null = null;
     if (holder) {
