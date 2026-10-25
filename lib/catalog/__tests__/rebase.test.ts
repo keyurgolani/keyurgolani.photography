@@ -155,7 +155,7 @@ describe('rebaseWorkingLayer', { timeout: 30_000 }, () => {
         });
     });
 
-    it('keeps the owner\'s move of a series the base revision hid through a rollback, with a conflict that blocks publish', async () => {
+    it('keeps the owner\'s move of a series the base revision hid through a rollback, with a conflict that blocks publish until a roll forward settles it', async () => {
         // #8's review, P3: as #15 will call it, through publish(), activateRevision() and rebaseWorkingLayer().
         const { catalog, root, run, edit, record, rollBack } = await setup({ seed: 104, photos: 6, series: 3 });
         const [a, b, c] = catalog.series.map((series) => series.id);
@@ -179,6 +179,16 @@ describe('rebaseWorkingLayer', { timeout: 30_000 }, () => {
         expect(blocked.outcome).toBe('VALIDATION_FAILED');
         expect(blocked.issues).toContainEqual(expect.objectContaining({ code: 'working.conflicts' }));
         expect((await readActivePointer(root))?.revisionId).toBe(first.revisionId);
+
+        // Rolling forward again, the owner's order agrees with revision 2, so the conflict naming revision 1 goes.
+        const forward = await rollBack(ids(second), ids(first));
+        expect(forward.conflicts).toEqual([]);
+        const site = await record<AuthoredSite>('site', 'site');
+        expect(site).toMatchObject({ seriesOrder: [c, a, b], baseRevisionId: second.revisionId });
+        expect(site).not.toHaveProperty('conflicts');
+        const unblocked = await publish({ dataRoot: root, actor: 'test', logger: quiet });
+        expect(unblocked.outcome).toBe('NO_CHANGES');
+        expect((await readActivePointer(root))?.revisionId).toBe(second.revisionId);
     });
 
     it('keeps a Work order and featured edit made after a first publish that couldn\'t rebase, and publishes them with no conflict', async () => {
@@ -273,22 +283,29 @@ describe('rebaseWorkingLayer', { timeout: 30_000 }, () => {
         expect(await record<AuthoredPhoto>('photo', dated)).not.toHaveProperty('capturedAt');
     });
 
-    it('replaces an older conflict on the same field and keeps one on another', async () => {
-        const { catalog, run, edit, record, rollBack } = await setup({ seed: 96, photos: 2, series: 1 });
+    it('replaces an older conflict on a field it compares, drops one that field no longer has, and keeps one on a field it can\'t compare', async () => {
+        const { catalog, run, edit, record, rollBack } = await setup({ seed: 96, photos: 3, series: [{ photos: 2 }, { photos: 1, visibility: 'draft' }] });
         const photoId = catalog.photos[0].id;
+        const draft = catalog.series[1].id;
         const first = await run();
         await edit<AuthoredPhoto>('photo', photoId, (photo) => {
             photo.caption = 'The caption revision 2 publishes.';
         });
         const second = await run();
-        const titleConflict = { field: 'title', base: 'Older title', active: 'Old title' };
         await edit<AuthoredPhoto>('photo', photoId, (photo) => {
             photo.caption = 'The curator\'s caption.';
-            photo.conflicts = [titleConflict, { field: 'caption', base: 'stale', active: 'staler' }];
+            // The photo's title is the same on both sides now, so this one is settled.
+            photo.conflicts = [{ field: 'title', base: 'Older title', active: 'Old title' }, { field: 'caption', base: 'stale', active: 'staler' }];
+        });
+        // Neither revision publishes the draft, so the rebase can't compare its title.
+        const titleConflict = { field: 'title', base: 'Older title', active: 'Old title' };
+        await edit<AuthoredSeries>('series', draft, (series) => {
+            series.conflicts = [titleConflict];
         });
 
         await rollBack(ids(first), ids(second));
-        expect((await record<AuthoredPhoto>('photo', photoId)).conflicts).toEqual([titleConflict, { field: 'caption', base: 'The caption revision 2 publishes.', active: null }]);
+        expect((await record<AuthoredPhoto>('photo', photoId)).conflicts).toEqual([{ field: 'caption', base: 'The caption revision 2 publishes.', active: null }]);
+        expect((await record<AuthoredSeries>('series', draft)).conflicts).toEqual([titleConflict]);
     });
 
     it('skips records already on the target, and only moves a record whose base revision is gone', async () => {

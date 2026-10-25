@@ -17,7 +17,9 @@ import { readWorkingLayer } from './working-layer';
  * the target, and the record as it is now. A field the curator left alone
  * takes the target's value, a curator change stays, and a field both sides
  * changed, differently, keeps the curator's value and gets a `conflicts`
- * entry, which blocks publish until someone settles it. #8's
+ * entry, which blocks publish until someone settles it. A later rebase that
+ * compares the field again replaces that entry, or drops it when the two
+ * sides no longer disagree. #8's
  * rebaseSeriesOrder() merges the Work order.
  *
  * Fields compare as compile publishes them: blank optional text counts as
@@ -63,11 +65,19 @@ function threeWay<T>(field: string, mine: T, base: T, target: T): Merge<T> {
 
 const presentText = (value: string | undefined) => (value !== undefined && /\S/.test(value) ? value : undefined);
 
-/** A record's conflicts with `added` replacing any older entry for the same field. */
-function withConflicts(existing: readonly Conflict[] | undefined, added: readonly Conflict[]): Conflict[] | undefined {
-    if (added.length === 0) return existing ? [...existing] : undefined;
-    const fields = new Set(added.map((conflict) => conflict.field));
-    return [...(existing ?? []).filter((conflict) => !fields.has(conflict.field)), ...added];
+/** What a record's merge found: the merged record, the conflicts it raised, and every field it compared. */
+type Merged<R> = { record: R; conflicts: Conflict[]; compared: string[] };
+
+/**
+ * A record's conflicts after a merge: an older entry for a field the merge
+ * compared goes, since the merge either raised that field's conflict again,
+ * against the new target, or found it settled. An entry for a field the merge
+ * couldn't compare stays.
+ */
+function withConflicts(existing: readonly Conflict[] | undefined, merged: Pick<Merged<unknown>, 'conflicts' | 'compared'>): Conflict[] | undefined {
+    const fields = new Set([...merged.compared, ...merged.conflicts.map((conflict) => conflict.field)]);
+    const next = [...(existing ?? []).filter((conflict) => !fields.has(conflict.field)), ...merged.conflicts];
+    return next.length > 0 ? next : undefined;
 }
 
 // Photos.
@@ -113,12 +123,14 @@ function publishedPhotoView(photo: PublicPhotoRecord): PhotoView {
     return view;
 }
 
-function mergePhoto(photo: AuthoredPhoto, base: PhotoView | null, target: PhotoView | null, registry: Registry | null): { record: AuthoredPhoto; conflicts: Conflict[] } {
-    if (base === null || target === null) return { record: photo, conflicts: [] };
+function mergePhoto(photo: AuthoredPhoto, base: PhotoView | null, target: PhotoView | null, registry: Registry | null): Merged<AuthoredPhoto> {
+    if (base === null || target === null) return { record: photo, conflicts: [], compared: [] };
     const mine = authoredPhotoView(photo, registry);
     const next: AuthoredPhoto = { ...photo };
     const conflicts: Conflict[] = [];
+    const compared: string[] = [];
     const take = <K extends keyof PhotoView>(field: K, apply: (value: PhotoView[K]) => void) => {
+        compared.push(field);
         const merged = threeWay(field, mine[field], base[field], target[field]);
         if (merged.conflict) conflicts.push(merged.conflict);
         if (merged.changed) apply(merged.value);
@@ -141,7 +153,7 @@ function mergePhoto(photo: AuthoredPhoto, base: PhotoView | null, target: PhotoV
         if (value === undefined || value === registryDate(registry, next.id, next.assetRevision)) delete next.capturedAt;
         else next.capturedAt = value;
     });
-    return { record: next, conflicts };
+    return { record: next, conflicts, compared };
 }
 
 // Series.
@@ -162,16 +174,18 @@ function publishedSeriesView(series: SeriesRecord | undefined): SeriesView {
     return series ? { published: true, values: Object.fromEntries(SERIES_FIELDS.map((field) => [field, series[field]])) } : { published: false, values: null };
 }
 
-function mergeSeries(series: AuthoredSeries, base: SeriesView, target: SeriesView): { record: AuthoredSeries; conflicts: Conflict[] } {
+function mergeSeries(series: AuthoredSeries, base: SeriesView, target: SeriesView): Merged<AuthoredSeries> {
     const mine = authoredSeriesView(series);
     const next: AuthoredSeries = { ...series };
     const conflicts: Conflict[] = [];
+    const compared: string[] = ['visibility'];
     const published = threeWay('visibility', mine.published, base.published, target.published);
     if (published.conflict) conflicts.push({ field: 'visibility', base: base.published ? 'published' : null, active: target.published ? 'published' : null });
     // Unpublished by the target, a once-public series is hidden; one the curator kept as a draft stays a draft.
     if (published.changed) next.visibility = published.value ? 'published' : series.visibility === 'published' ? 'hidden' : series.visibility;
     if (base.values !== null && target.values !== null && mine.values !== null) {
         for (const field of SERIES_FIELDS) {
+            compared.push(field);
             const merged = threeWay(field, mine.values[field], base.values[field], target.values[field]);
             if (merged.conflict) conflicts.push(merged.conflict);
             if (!merged.changed) continue;
@@ -179,7 +193,7 @@ function mergeSeries(series: AuthoredSeries, base: SeriesView, target: SeriesVie
             else (next as Record<string, unknown>)[field] = merged.value;
         }
     }
-    return { record: next, conflicts };
+    return { record: next, conflicts, compared };
 }
 
 // The site.
@@ -208,11 +222,14 @@ type SiteBase =
  * the owner's and raises a conflict: the conflict only fires when a base
  * should exist and can't be read.
  */
-function mergeSite(site: AuthoredSite, base: SiteBase, target: RevisionFile, snapshot: AuthoredSite | null): { record: AuthoredSite; conflicts: Conflict[] } {
+function mergeSite(site: AuthoredSite, base: SiteBase, target: RevisionFile, snapshot: AuthoredSite | null): Merged<AuthoredSite> {
     const next: AuthoredSite = { ...site };
     const conflicts: Conflict[] = [];
+    // rebaseSeriesOrder() always compares the order. It returns no conflict once the owner's order and the target's agree.
+    const compared: string[] = ['seriesOrder'];
     const targetIds = target.content.series.map((series) => series.id);
     if (base.kind === 'known') {
+        compared.push('featuredSeriesIds');
         const featured = threeWay('featuredSeriesIds', site.featuredSeriesIds, base.featuredSeriesIds, target.content.site.featuredSeriesIds);
         if (featured.conflict) conflicts.push(featured.conflict);
         if (featured.changed) next.featuredSeriesIds = [...featured.value];
@@ -227,7 +244,7 @@ function mergeSite(site: AuthoredSite, base: SiteBase, target: RevisionFile, sna
     // writeRebasedRecord() stores it, the one write that does.
     next.baseSeriesOrder = order.baseSeriesOrder;
     if (order.conflict) conflicts.push(order.conflict);
-    return { record: next, conflicts };
+    return { record: next, conflicts, compared };
 }
 
 const EMPTY_BASE: Pick<RevisionFile, 'content'> = { content: { site: { featuredSeriesIds: [] }, series: [], photos: [] } };
@@ -264,8 +281,8 @@ export async function rebaseWorkingLayer(options: RebaseOptions): Promise<Rebase
         const targetSeries = new Map(target.content.series.map((series) => [series.id, series]));
         const targetPhotos = new Map(target.content.photos.map((photo) => [photo.id, photo]));
         const report: RebaseReport = { rebased: 0, conflicts: [] };
-        const write = async <R extends AuthoredSite | AuthoredSeries | AuthoredPhoto>(record: R, merged: { record: R; conflicts: Conflict[] }) => {
-            const conflicts = withConflicts(record.conflicts, merged.conflicts);
+        const write = async <R extends AuthoredSite | AuthoredSeries | AuthoredPhoto>(record: R, merged: Merged<R>) => {
+            const conflicts = withConflicts(record.conflicts, merged);
             const next = { ...merged.record } as R;
             if (conflicts) next.conflicts = conflicts;
             else delete next.conflicts;
