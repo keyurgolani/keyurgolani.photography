@@ -40,7 +40,8 @@ beforeAll(async () => {
                 crop: 'cover',
                 capturedAt: '2023-03-04',
                 sourcePath: 'private/fixture-source-one.jpg',
-                technical: { Make: 'Fixture Make', Model: 'Fixture Model', LensModel: 'Fixture Lens', FocalLength: '35', FNumber: '2.8', ExposureTime: '1/250', ISO: '200' },
+                // Out of allowlist order, so the projection's order is its own.
+                technical: { ISO: '200', ExposureTime: '1/250', Model: 'Fixture Model', FNumber: '2.8', Make: 'Fixture Make', FocalLength: '35', LensModel: 'Fixture Lens' },
             },
             { id: P[1] },
             { id: P[2], alt: { kind: 'decorative' } },
@@ -256,7 +257,7 @@ describe('the Viewer projection', () => {
     it('drops missing metadata instead of filling it', () => {
         const reader = createCatalogReader(content, { revisionId: REVISION_A, revisionNumber: 3 });
         const bare = viewer(reader.getViewerPhoto('fixture-a', P[4])).photo;
-        expect(bare.technical).toEqual({});
+        expect(Object.keys(bare.technical)).toEqual([]);
         expect([bare.title, bare.caption, bare.accent]).toEqual([null, null, null]);
         const noAccent = viewer(reader.getViewerPhoto('fixture-b', P[5]));
         expect(noAccent.series.accent).toBeNull();
@@ -294,12 +295,15 @@ describe('the Viewer projection', () => {
     });
 
     it('keeps a stored accent only in #rrggbb form', () => {
-        const odd = structuredClone(content);
-        odd.series[0].accent = 'red; background: url(https://example.test/x)';
-        const photo = odd.photos.find((entry) => entry.id === P[0]);
-        if (photo) photo.accent = '#c0804';
-        const result = viewer(createCatalogReader(odd, { revisionId: REVISION_A, revisionNumber: 3 }).getViewerPhoto('fixture-a', P[0]));
-        expect([result.series.accent, result.photo.accent]).toEqual([null, null]);
+        // The last two pin each anchor: a valid accent with a declaration after it, and one with a prefix.
+        for (const bad of ['red; background: url(https://example.test/x)', '#c0804', '#c08040; background: url(https://example.test/x)', 'x#c08040']) {
+            const odd = structuredClone(content);
+            odd.series[0].accent = bad;
+            const photo = odd.photos.find((entry) => entry.id === P[0]);
+            if (photo) photo.accent = bad;
+            const result = viewer(createCatalogReader(odd, { revisionId: REVISION_A, revisionNumber: 3 }).getViewerPhoto('fixture-a', P[0]));
+            expect([result.series.accent, result.photo.accent], bad).toEqual([null, null]);
+        }
     });
 
     it('copies the variant ladder, so a caller can\'t edit the revision through it', () => {
