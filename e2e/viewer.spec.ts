@@ -172,7 +172,9 @@ test('a former series slug answers 308 to the canonical URL, and nothing it can\
         const html = await response.text();
         // A notFound() inside a nested segment sends Next's error shell, with the not-found title, and the page in its payload.
         expect(html, path).toContain('<title>Page not found · Keyur Golani Photography</title>');
-        for (const text of ['Fixture harbor', 'Fixture ridge', 'data-surface="viewer"', ...SENTINELS]) expect(html, `${path}: ${text}`).not.toContain(text);
+        // The payload echoes the requested path, so a segment the visitor sent isn't a leak.
+        const leaks = ['Fixture harbor', 'Fixture ridge', 'data-surface="viewer"', ...SENTINELS].filter((text) => !path.includes(text));
+        for (const text of leaks) expect(html, `${path}: ${text}`).not.toContain(text);
     }
 });
 

@@ -10,6 +10,7 @@
   /* Room the fitted photograph leaves for the stage's padding, so it fits the first screen with the header. */
   --viewer-stage-chrome: 4rem;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   min-height: 100dvh;
   background: var(--cc-bands), var(--cc-ground);
@@ -19,9 +20,8 @@
 }
 
 .header {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  grid-template-areas: 'close heading zoom';
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem 1rem;
   min-height: var(--viewer-header);
@@ -30,13 +30,9 @@
   background: var(--cc-chrome);
 }
 
-.header > a {
-  grid-area: close;
-}
-
 .heading {
-  grid-area: heading;
   display: flex;
+  flex: 1 1 8rem;
   flex-wrap: wrap;
   align-items: baseline;
   justify-content: center;
@@ -62,13 +58,13 @@
   white-space: nowrap;
 }
 
+/* At 200% text a label can be wider than a phone, so it wraps inside the control instead of pushing past the edge. */
 .control {
   display: inline-flex;
-  width: max-content;
+  max-width: 100%;
   min-width: 44px;
   min-height: 44px;
   align-items: center;
-  justify-self: start;
   gap: 0.5rem;
   padding: 0 0.75rem;
   border: 1px solid var(--cc-rule);
@@ -77,13 +73,17 @@
   color: var(--cc-ink);
   font: inherit;
   font-size: var(--gah-type-ui);
+  text-align: start;
   text-decoration: none;
   cursor: pointer;
 }
 
+.control > svg {
+  flex: none;
+}
+
 .zoom {
-  grid-area: zoom;
-  justify-self: end;
+  margin-left: auto;
 }
 
 .zoom[aria-pressed='true'] {
@@ -94,6 +94,7 @@
 
 .main {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr) auto;
   min-width: 0;
 }
@@ -269,7 +270,7 @@
 /* Narrow screens: the photograph takes the width, and Previous and Next sit in a row under it, at the edges. */
 @media (max-width: 47.99rem) {
   .stage {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     grid-template-areas:
       'viewport viewport'
       'previous next';
@@ -288,16 +289,5 @@
 
   .image {
     max-height: 72dvh;
-  }
-}
-
-/* The title and position take their own row once Close and Zoom leave no room beside them. */
-@media (max-width: 29.99rem) {
-  .header {
-    grid-template-columns: 1fr 1fr;
-    grid-template-areas:
-      'close zoom'
-      'heading heading';
-    padding-block: 0.5rem;
   }
 }
