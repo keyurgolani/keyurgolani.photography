@@ -5,6 +5,7 @@ import sharp from 'sharp';
 import { CACHE_FOLDER, DERIVATIVE_FOLDERS } from '../lib/derivativeFolders.mjs';
 import { foldName } from '../lib/foldName';
 import { keyOf } from '../lib/identity/scan';
+import { atomicWriteFile } from '../lib/storage/atomicWrite';
 import { libraryRoot } from '../lib/storage/config';
 import { hasErrorCode } from '../lib/storage/fsx';
 
@@ -394,7 +395,7 @@ export async function writeVariants(
     // the source the set showed before, and the next start rebuilds the set even if the source it took over from
     // is gone by then.
     try {
-        recordSetSource(filename, paths, { finished: false });
+        await recordSetSource(filename, paths, { finished: false });
     } catch (error) {
         // Without the record, a build stopped partway over a set last built whole from another source that's
         // still here would leave it part each, while the old record still says the other built it, and once that
@@ -430,7 +431,7 @@ export async function writeVariants(
     // A fill of only the missing outputs leaves a set some other source may have built the rest of.
     if (order.length === VARIANTS.length) {
         try {
-            recordSetSource(filename, paths, { finished: true });
+            await recordSetSource(filename, paths, { finished: true });
         } catch (error) {
             // The record still says the build didn't finish, so the next start rebuilds the set.
             console.error(`[imageOptimizer] Couldn't record that ${filename}'s set was built from it: ${error instanceof Error ? error.message : String(error)}`);
@@ -783,12 +784,17 @@ export function readSetSource(filename: string, paths: LibraryPaths = libraryPat
 /**
  * Record that a build of `filename`'s set from it starts, or with `finished`
  * that it just wrote the whole set. Creates the folders under the library
- * root, never the root.
+ * root, never the root. Replaces the record atomically and fsyncs it and its
+ * folder, so once it returns the record is on disk ahead of any rename that
+ * follows, and a write torn by a crash leaves the old record, not an empty one.
+ * Readable like the set's outputs, not only by its owner, and staged under
+ * the outputs' fixed-length temp name, which images:cleanup knows.
  */
-function recordSetSource(filename: string, paths: LibraryPaths, { finished }: { finished: boolean }): void {
+async function recordSetSource(filename: string, paths: LibraryPaths, { finished }: { finished: boolean }): Promise<void> {
     const file = setSourceFile(filename, paths);
     makeFolders(path.dirname(path.dirname(file)), path.dirname(file));
-    fs.writeFileSync(file, `${JSON.stringify(finished ? { source: filename } : { source: filename, complete: false })}\n`);
+    const record = finished ? { source: filename } : { source: filename, complete: false };
+    await atomicWriteFile(file, `${JSON.stringify(record)}\n`, { mode: 0o666, tempPath: tempPathFor(file, baseNameOf(filename)) });
 }
 
 /** Drop `filename`'s set's record, when the set may no longer be all its own. */
