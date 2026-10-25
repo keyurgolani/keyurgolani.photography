@@ -108,7 +108,12 @@ done
 if ! jq -e '.services.web.ports | length > 0' <<<"$resolved" >/dev/null; then
   fail "web must publish its port on 127.0.0.1."
 fi
-echo "Every published port is on 127.0.0.1."
+# A service on the host's network has no ports: to check, and web listens on
+# every interface inside its container.
+if ! jq -e 'all(.services[]; (.network_mode // "") != "host")' <<<"$resolved" >/dev/null; then
+  fail "No service may use network_mode: host, since it would bypass the 127.0.0.1 publish."
+fi
+echo "Every published port is on 127.0.0.1, and no service shares the host's network."
 
 # 7. web mounts the data root read-only, and no bind of the data root or the
 #    library is ever created when its source is missing. How Compose writes
@@ -136,13 +141,20 @@ short_syntax=$(jq -c '.services.probe.volumes[] | select(.target == "/created") 
 if [ "$never_created" = "$short_syntax" ]; then
   fail "This Compose writes create_host_path the same way for a long-syntax bind with false and a short-syntax bind ($never_created), so the check can't tell them apart."
 fi
-if ! jq -e '[.services.web.volumes[]? | select(.target == "/data/portfolio")]
-    | length == 1 and all(.type == "bind" and .read_only == true)' <<<"$resolved" >/dev/null; then
-  fail "web must mount the data root at /data/portfolio once, as a bind with read_only: true."
+# A data root mount is one at /data/portfolio, however its target is spelled,
+# or one of ./portfolio-data wherever it lands, so a second read-write bind of
+# the same folder can't slip past.
+DATA_ROOT_MOUNT='((.target // "") | rtrimstr("/")) == "/data/portfolio" or ((.source // "") | rtrimstr("/") | endswith("/portfolio-data"))'
+if ! jq -e "[.services.web.volumes[]? | select($DATA_ROOT_MOUNT)]
+    | length == 1 and all(.type == \"bind\" and .target == \"/data/portfolio\" and .read_only == true)" <<<"$resolved" >/dev/null; then
+  fail "web must mount the data root once, at /data/portfolio, as a bind with read_only: true."
 fi
-if ! jq -e --argjson never "$never_created" '
-    [.services[] | (.volumes // [])[] | select(.target == "/data/portfolio" or .target == "/app/public/assets/photos")]
-    | length > 0 and all(.type == "bind" and .bind.create_host_path == $never)' <<<"$resolved" >/dev/null; then
-  fail "Every mount of /data/portfolio or /app/public/assets/photos must be a long-syntax bind with bind.create_host_path: false."
+if ! jq -e '.services.web.environment.PHOTOGRAPHY_DATA_DIR == "/data/portfolio"' <<<"$resolved" >/dev/null; then
+  fail "web must set PHOTOGRAPHY_DATA_DIR=/data/portfolio, the read-only mount."
+fi
+if ! jq -e --argjson never "$never_created" "
+    [.services[] | (.volumes // [])[] | select(($DATA_ROOT_MOUNT) or ((.target // \"\") | rtrimstr(\"/\")) == \"/app/public/assets/photos\")]
+    | length > 0 and all(.type == \"bind\" and .bind.create_host_path == \$never)" <<<"$resolved" >/dev/null; then
+  fail "Every mount of the data root or /app/public/assets/photos must be a long-syntax bind with bind.create_host_path: false."
 fi
 echo "web mounts the data root read-only, and no data root or library bind is created when missing."
