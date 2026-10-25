@@ -10,7 +10,7 @@ The registry in it names every photo by its path in the library and by the SHA-2
 |---|---|---|
 | `data-root.json` | The marker that says the folder is an initialized data root | `migrate --apply`, once |
 | `identity/registry/v<N>.json` | Every photo ID, the photo's path, and its revisions, with the state of each revision's `/media` set. A [version folder](#version-folders): the highest `v<N>.json` is the registry. | The watcher, `migrate --apply`, and `identity` decisions |
-| `authored/site/v<N>.json`, `authored/<kind>/<id>/v<N>.json` | The authored catalog records: the site record, and one version folder per series (`authored/series/<seriesId>/`) and per photo (`authored/photos/<photoId>/`) | Hand edits for now, and `photos.mjs publish` when it rebases them |
+| `authored/site/v<N>.json`, `authored/<kind>/<id>/v<N>.json` | The authored catalog records: the site record, and one version folder per series (`authored/series/<seriesId>/`) and per photo (`authored/photos/<photoId>/`) | `photos.mjs` `draft:init`, `describe`, `sequence`, `series`, and `edit`, a hand-made copy at the next version as [Editing a document by hand](#editing-a-document-by-hand) describes, and `photos.mjs publish` when it rebases them |
 | `identity/stat-cache.json` | File sizes and times, so a pass doesn't hash files that haven't changed. Safe to delete, though the next pass then reads every photo again, as [Health](#health) says. | The watcher |
 | `identity/decisions/` | `identity` decisions waiting for a pass, then filed under `applied/` or `rejected/` | `photos.mjs identity` |
 | `identity/migration/` | Dry-run plans and reports, and the mapping each apply wrote from paths and legacy URLs to photo IDs | `photos.mjs migrate` |
@@ -22,6 +22,7 @@ The registry in it names every photo by its path in the library and by the SHA-2
 | `catalog/active/v<N>.json` | The pointer to the active revision. A [version folder](#version-folders), so a publish moves it by adding the next version. | `photos.mjs publish` |
 | `catalog/candidates/`, `catalog/diagnostics/` | The last compile of each candidate, its issues, and how the last publish ended | `photos.mjs publish` |
 | `locks/` | The locks writers take on the registry, the authored records, and the catalog | The watcher and `photos.mjs` |
+| `edits/` | `photos.mjs edit`'s working copies, and edits it kept because they couldn't be saved, which `edit <id> --file <path> --expect-version <N>` saves once fixed. Private, like the rest (0700, files 0600). Nothing reads them as records, and `references()` doesn't list them, so the cleanup #15 adds has to leave the folder alone. Delete a kept edit once it's saved or no longer wanted. | `photos.mjs edit` |
 
 Everything in it belongs to uid 1001, the user both containers run as, and only that user can read it, since the registry keeps curator-only details such as GPS. To read a file, go through the container instead of `sudo`:
 
