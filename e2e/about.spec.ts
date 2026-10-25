@@ -293,6 +293,9 @@ test.describe('the statement and portrait at set sizes', () => {
             await page.evaluate(() => document.documentElement.style.setProperty('font-size', '200%'));
             expect(await readabilityProblems(page)).toEqual([]);
             await expectNoOverlap(page);
+            // The caption grows the frame below the photo instead of covering the face.
+            const [photo, band] = [await boxOf(portrait(page).locator('img')), await boxOf(portrait(page).locator('figcaption'))];
+            expect(band.top, 'the caption starts at or below the photo').toBeGreaterThanOrEqual(photo.bottom - SLACK);
         });
     }
 
