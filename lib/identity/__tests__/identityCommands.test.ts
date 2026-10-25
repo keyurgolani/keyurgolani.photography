@@ -297,6 +297,18 @@ describe('photos identity decisions', { timeout: 120_000 }, () => {
         expect(s.filed('rejected')).toHaveLength(1);
     });
 
+    it("says the decision is saved when its pass can't read the library, so it isn't made twice", async () => {
+        const s = await setup({ 'a.jpg': 'A' });
+        const x = await s.photoAt('a.jpg');
+        const missing = path.join(s.lib.root, 'unmounted');
+        const run = await cli(s, ['archive', x], { PHOTOGRAPHY_LIBRARY_DIR: missing });
+        expect(run.code).toBe(1);
+        const [saved] = s.pending();
+        expect(saved).toBeDefined();
+        expect(run.stderr).toContain(`Check the mount or PHOTOGRAPHY_LIBRARY_DIR. The decision is saved in ${path.join(identityPaths(s.data.root).decisions, saved)}, and the next pass that runs applies it. Don't run the command again.`);
+        expect(run.stderr).not.toContain('Nothing was written');
+    });
+
     it('saves the decision for the watcher when the registry is busy', async () => {
         const s = await setup({ 'a.jpg': 'A' });
         const x = await s.photoAt('a.jpg');
