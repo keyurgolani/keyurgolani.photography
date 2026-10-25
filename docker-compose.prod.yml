@@ -153,7 +153,8 @@ services:
       # answers to, when 3001 is taken on the owner's machine.
       - CURATOR_TUNNEL_PORT=${CURATOR_TUNNEL_PORT:-}
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
+      # With the flag on, every path answers only the curator's Host.
+      test: ["CMD", "wget", "-q", "--spider", "--header", "Host: localhost:3001", "http://localhost:3000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3

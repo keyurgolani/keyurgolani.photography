@@ -110,19 +110,53 @@ describe('proxy.ts with CURATION_ENABLED=true', () => {
         }
     });
 
-    it('leaves the public site to anyone, on any Host', () => {
-        expect(passes(send('/', { headers: { host: 'keyurgolani.photography' } }))).toBe(true);
-        expect(passes(send('/api/photos', { headers: { host: 'keyurgolani.photography' } }))).toBe(true);
+    it('holds every path on the curator process to the Host allowlist, the public ones too', () => {
+        for (const pathname of ['/', '/gallery', '/api/photos', '/api/health', '/media/p/r/w/x.webp', '/assets/photos/optimized/a.webp']) {
+            for (const host of ['keyurgolani.photography', 'rebound.example:3001', '127.0.0.1:3000']) {
+                const response = send(pathname, { headers: { host } });
+                expect(response.status, `${pathname} on ${host}`).toBe(421);
+                expect(response.headers.get('cache-control')).toBe('no-store');
+            }
+            expect(passes(send(pathname)), pathname).toBe(true);
+        }
+    });
+
+    it('serves its public paths to an allowed Host, read-only as on web', () => {
+        expect(passes(send('/api/health', { headers: { host: 'localhost:3001' } }))).toBe(true);
+        expect(send('/', { method: 'POST', headers: { origin: CURATOR_ORIGIN } }).status).toBe(404);
+    });
+
+    it('503s every path while the bind is wrong', () => {
+        vi.stubEnv('HOSTNAME', '0.0.0.0');
+        expect(send('/api/health').status).toBe(503);
+    });
+});
+
+describe('proxy.ts on web, with CURATION_ENABLED off', () => {
+    it('leaves the public site to any Host', () => {
+        vi.stubEnv('CURATION_ENABLED', 'false');
+        for (const host of ['keyurgolani.photography', 'rebound.example:3001', 'localhost:3000']) {
+            expect(passes(send('/', { headers: { host } })), host).toBe(true);
+            expect(passes(send('/api/photos', { headers: { host } })), host).toBe(true);
+        }
     });
 });
 
 describe('a curator action ID posted outside the curator paths', () => {
-    it.each(['false', 'true'])('404s with CURATION_ENABLED=%s, whatever its Host and Origin', (flag) => {
+    it.each([
+        ['false', 404],
+        ['true', 421],
+    ])('is refused with CURATION_ENABLED=%s, whatever its Host and Origin', (flag, otherHost) => {
         vi.stubEnv('CURATION_ENABLED', flag);
         for (const pathname of ['/', '/gallery', '/about', '/api/photos', '/media/p/r/w/x.webp']) {
-            for (const headers of [{}, { origin: CURATOR_ORIGIN }, { host: 'keyurgolani.photography', origin: 'https://keyurgolani.photography' }] as Record<string, string>[]) {
+            const cases: [Record<string, string>, number][] = [
+                [{}, 404],
+                [{ origin: CURATOR_ORIGIN }, 404],
+                [{ host: 'keyurgolani.photography', origin: 'https://keyurgolani.photography' }, otherHost],
+            ];
+            for (const [headers, status] of cases) {
                 const response = send(pathname, { method: 'POST', headers: { 'next-action': ACTION_ID, ...headers } });
-                expect(response.status, `${pathname} ${JSON.stringify(headers)}`).toBe(404);
+                expect(response.status, `${pathname} ${JSON.stringify(headers)}`).toBe(status);
             }
         }
     });

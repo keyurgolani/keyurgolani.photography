@@ -207,8 +207,10 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the curator boundary on the
         }
         expect(snapshot()).toEqual(before);
 
-        // The public site still answers the curator, as anyone.
+        // Its public paths answer the curator's Host, and no other.
         expect((await send(port, '/api/health')).status).toBe(200);
+        expect((await send(port, '/api/health', { headers: { host: `rebound.example:${port}` } })).status).toBe(421);
+        expect((await send(port, '/', { headers: { host: 'keyurgolani.photography' } })).status).toBe(421);
         await server.stop();
     }, 120_000);
 
