@@ -113,12 +113,15 @@ describe('StoryViewer', () => {
 
         const first = renderViewer({ previousHref: null });
         expect(screen.queryByRole('link', { name: 'Previous photograph' })).toBeNull();
-        expect(screen.getByRole('button', { name: 'Previous photograph' })).toBeDisabled();
+        // An end stays a focusable button (#9): aria-disabled, never the disabled attribute, which drops focus.
+        expect(screen.getByRole('button', { name: 'Previous photograph' })).toHaveAttribute('aria-disabled', 'true');
+        expect(screen.getByRole('button', { name: 'Previous photograph' })).toBeEnabled();
         expect(screen.getByRole('link', { name: 'Next photograph' })).toBeInTheDocument();
         first.unmount();
 
         renderViewer({ nextHref: null });
-        expect(screen.getByRole('button', { name: 'Next photograph' })).toBeDisabled();
+        expect(screen.getByRole('button', { name: 'Next photograph' })).toHaveAttribute('aria-disabled', 'true');
+        expect(screen.getByRole('button', { name: 'Next photograph' })).toBeEnabled();
         expect(screen.getByRole('link', { name: 'Previous photograph' })).toBeInTheDocument();
     });
 
@@ -194,16 +197,20 @@ describe('StoryViewer', () => {
         expect(missing).toHaveTextContent(UNAVAILABLE_LABEL);
         expect(UNAVAILABLE_LABEL).toBe('Photograph unavailable');
         const zoom = screen.getByRole('button', { name: 'Zoom' });
-        expect(zoom).toBeDisabled();
+        // Unavailable but focusable, so a move onto such a photo keeps focus on Zoom (#9).
+        expect(zoom).toHaveAttribute('aria-disabled', 'true');
+        expect(zoom).toBeEnabled();
         expect(zoom).toHaveAttribute('aria-pressed', 'false');
         fireEvent.click(zoom);
+        expect(zoom).toHaveAttribute('aria-pressed', 'false');
         expect(screen.queryByRole('region', { name: 'Zoomed photograph' })).toBeNull();
-        // Previous and Next stay links in the stage, either side of the box.
-        const stage = missing?.parentElement?.parentElement;
+        // Previous and Next stay links on the Viewer's grid, beside the box's own stage cell.
+        const root = container.querySelector('[data-surface="viewer"]');
+        expect(missing?.parentElement?.parentElement).toBe(root);
         for (const name of ['Previous photograph', 'Next photograph']) {
             const link = screen.getByRole('link', { name });
             expect(link).toHaveAttribute('data-replace', 'true');
-            expect(link.parentElement).toBe(stage);
+            expect(link.parentElement).toBe(root);
         }
         const reading = screen.getByRole('region', { name: 'Fixture title' });
         expect(within(reading).getByText('An authored fixture caption.')).toBeInTheDocument();
