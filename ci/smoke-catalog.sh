@@ -5,8 +5,9 @@
 #    checkout's test/fixtures/makeLibrary.ts, `photos migrate` gives each
 #    photo its ID in an empty data root, and the watcher's --once run builds
 #    every derivative. web then reports legacy mode at /api/ready, lists each
-#    photo once at /api/photos in the legacy item shape, serves the WebP each
-#    item names, and answers the same after a restart.
+#    photo once at /api/photos in the legacy item shape, 404s the WebP each
+#    item names and refuses it at /_next/image, and answers the same after a
+#    restart.
 # 2. A published catalog. ci/publish-fixture.ts publishes a small test
 #    catalog into a second data root. web names its revision at /api/ready
 #    and /api/photos, serves a set the revision holds from /media with 200,
@@ -130,10 +131,14 @@ check_legacy() {
   [ "$(header x-catalog-mode)" = legacy ] && [ "$(header x-catalog-revision)" = legacy ] ||
     fail "GET /api/photos sent X-Catalog-Mode '$(header x-catalog-mode)' and X-Catalog-Revision '$(header x-catalog-revision)', expected legacy and legacy."
   cp "$TMP/body.json" "$1"
+  # The legacy basename URLs are closed: each listed WebP 404s, and /_next/image refuses it.
   for src in $(jq -r '.[].src' "$1"); do
     code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$BASE_URL$src") || fail "GET $src failed."
-    [ "$code" = 200 ] || fail "GET $src, which /api/photos lists, returned $code, expected 200."
-    [ "$(header content-type)" = image/webp ] || fail "GET $src sent Content-Type: $(header content-type)."
+    [ "$code" = 404 ] || fail "GET $src, which /api/photos lists, returned $code, expected 404."
+    [ "$(header cache-control)" = no-store ] || fail "The 404 for $src sent Cache-Control: $(header cache-control)."
+    code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$BASE_URL/_next/image?url=$(jq -rn --arg src "$src" '$src | @uri')&w=400&q=75") ||
+      fail "GET /_next/image for $src failed."
+    [ "$code" = 400 ] || fail "GET /_next/image for $src returned $code, expected 400."
   done
 }
 
@@ -172,7 +177,7 @@ wait_for_web
 check_legacy "$TMP/legacy-after.json"
 diff -u "$TMP/legacy-before.json" "$TMP/legacy-after.json" || fail "/api/photos changed when web restarted."
 stop_web
-echo "Legacy mode: /api/ready and /api/photos answered the same before and after a restart, and every listed WebP served."
+echo "Legacy mode: /api/ready and /api/photos answered the same before and after a restart, and every listed WebP returned 404, and 400 through /_next/image."
 
 # 5. A published test catalog in a second data root. web reads it as the
 #    image's user, so make it readable.
