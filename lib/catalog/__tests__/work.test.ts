@@ -164,8 +164,6 @@ describe('the Work summary', () => {
                 variants: Object.fromEntries(VARIANT_WIDTHS.map((width) => [width, Object.fromEntries(VARIANT_FORMATS.map((format) => [format, {
                     url: variants[width][format].url,
                     width: variants[width][format].width,
-                    height: variants[width][format].height,
-                    bytes: variants[width][format].bytes,
                 }]))])),
                 focalPoint: { x: 0.2, y: 0.3 },
                 crop: 'cover',
@@ -233,7 +231,7 @@ describe('serialization', () => {
             expect(Object.keys(summary.derived)).toEqual(['photoCount']);
             expect(Object.keys(summary.cover ?? {}).sort()).toEqual(['crop', 'focalPoint', 'height', 'photoId', 'variants', 'width']);
             for (const width of VARIANT_WIDTHS) {
-                for (const format of VARIANT_FORMATS) expect(Object.keys(summary.cover?.variants[width][format] ?? {}).sort()).toEqual(['bytes', 'height', 'url', 'width']);
+                for (const format of VARIANT_FORMATS) expect(Object.keys(summary.cover?.variants[width][format] ?? {}).sort()).toEqual(['url', 'width']);
             }
         }
     });

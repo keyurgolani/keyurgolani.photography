@@ -25,7 +25,7 @@ function variants(): ViewerImage['variants'] {
         ladder[width] = {} as (typeof ladder)[typeof width];
         for (const format of VARIANT_FORMATS) {
             const pixels = Number(width.slice(1));
-            ladder[width][format] = { url: mediaUrl(REF, width, format), width: pixels, height: Math.round((pixels * 2) / 3), bytes: 1_000 };
+            ladder[width][format] = { url: mediaUrl(REF, width, format), width: pixels };
         }
     }
     return ladder;
@@ -43,6 +43,7 @@ function model(photo: Partial<PublishedViewerPhoto['photo']> = {}, rest: Partial
             alt: 'A fixture description of the visible scene.',
             descriptionPending: false,
             image: { width: 2400, height: 1600, assetRevision: REF.assetRevision, variants: variants() },
+            shareImage: { url: mediaUrl(REF, 'w1200', 'webp'), width: 1200, height: 800 },
             accent: '#c08040',
             technical: { Make: 'Fixture Make', Model: 'Fixture Model', FNumber: '2.8', ISO: '200' },
             ...photo,

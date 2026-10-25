@@ -24,10 +24,6 @@ interface ViewerRouteProps {
  */
 const viewerFor = cache((slug: string, photoId: string) => viewerPhotoFrom(getActiveCatalog, slug, photoId));
 
-/** The share image: the 1200 px WebP, a published `/media` variant whose path carries the asset revision. */
-const SHARE_WIDTH = 'w1200';
-const SHARE_FORMAT = 'webp';
-
 /**
  * Share metadata from the published photo and its series only. Every
  * not-found, redirect, legacy, and unavailable answer gets `{}`, so title and
@@ -44,7 +40,8 @@ export async function generateMetadata({ params }: ViewerRouteProps): Promise<Me
     const { series, photo, position, total } = result.viewer;
     const hasOrigin = getSiteOrigin() !== null;
     const canonical = publicRoutes.photoHref(series.slug, photo.id);
-    const share = photo.image?.variants[SHARE_WIDTH][SHARE_FORMAT] ?? null;
+    // The 1200 px WebP, a published `/media` variant whose path carries the asset revision.
+    const share = photo.shareImage;
     const description = photo.caption ?? photo.description;
     return {
         title: viewerTitle(photo.title, series.title, position, total),
