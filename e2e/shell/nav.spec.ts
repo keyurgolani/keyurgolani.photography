@@ -123,6 +123,37 @@ for (const width of [320, 1280]) {
     });
 }
 
+test.describe("on /about over the page's fixed portrait", () => {
+    // On short screens About's fixed bottom portrait reaches up behind SiteNav, and it used to paint over the links.
+    const portraitImages = (page: Page) => page.locator('main .fixed img');
+
+    for (const [width, height] of [[844, 390], [568, 320]] as const) {
+        test(`at ${width} by ${height} each control keeps its ring clear of the portrait, and each link takes a click or tap at its centre`, async ({ page }, testInfo) => {
+            await page.setViewportSize({ width, height });
+            await open(page, '/about');
+            await expect(portraitImages(page)).not.toHaveCount(0);
+
+            for (const control of await navControls(page).all()) await expectNotObscured(control, [portraitImages(page)]);
+
+            for (const [name, path] of [['Home', '/'], ['Work', '/gallery'], ['About', '/about']] as const) {
+                const link = primary(page).getByRole('link', { name, exact: true });
+                const atCentre = await link.evaluate((el) => {
+                    const { left, top, width: w, height: h } = el.getBoundingClientRect();
+                    const hit = document.elementFromPoint(left + w / 2, top + h / 2);
+                    return hit !== null && el.contains(hit);
+                });
+                expect(atCentre, `${name} is the element at its own centre`).toBe(true);
+                if (testInfo.project.name === 'mobile') await link.tap();
+                else await link.click();
+                await expect(page).toHaveURL(path);
+                if (path === '/about') continue;
+                await page.goto('/about');
+                await waitForHydration(page);
+            }
+        });
+    }
+});
+
 test.describe('on / over the settled portrait', () => {
     // On these screens the settled portrait reaches up behind SiteNav, and before the chrome sat over it, it took the hit at every link's centre.
     const SHORT_SCREENS = [[640, 400], [667, 375], [568, 320], [740, 360], [736, 414], [768, 400]] as const;
