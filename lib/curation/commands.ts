@@ -60,17 +60,23 @@ export type CurationCommand =
     | { command: 'defer' | 'reopen' | 'retry'; eventId: string; version: number; base?: string | null; reason?: string }
     | { command: 'dismiss'; eventId: string; version: number; base?: string | null; reason: string };
 
-export const CURATION_USAGE = `  npx tsx scripts/photos.ts curation list [--status <status> | --all] [--json]
-  npx tsx scripts/photos.ts curation show <eventId> [--json]
-  npx tsx scripts/photos.ts curation edit <eventId> --version <n> [--series <seriesId> | --unassigned]
+/** The program the CLI runs as when none is given: the source under tsx. */
+export const DEFAULT_PROGRAM = 'npx tsx scripts/photos.ts';
+
+/** The curation lines of the usage text, under the name `program` was started as (10C's PROGRAM). */
+export function curationUsage(program: string = DEFAULT_PROGRAM): string {
+    return `  ${program} curation list [--status <status> | --all] [--json]
+  ${program} curation show <eventId> [--json]
+  ${program} curation edit <eventId> --version <n> [--series <seriesId> | --unassigned]
         [--start | --end | --after <photoId>] [--description <text> | --decorative | --clear-description]
-  npx tsx scripts/photos.ts curation approve <eventId> --version <n> [the same choices as edit]
-  npx tsx scripts/photos.ts curation defer <eventId> --version <n> [--reason <text>]
-  npx tsx scripts/photos.ts curation dismiss <eventId> --version <n> --reason <text>
-  npx tsx scripts/photos.ts curation retry <eventId> --version <n> [--reason <text>]
-  npx tsx scripts/photos.ts curation reopen <eventId> --version <n> [--reason <text>]
+  ${program} curation approve <eventId> --version <n> [the same choices as edit]
+  ${program} curation defer <eventId> --version <n> [--reason <text>]
+  ${program} curation dismiss <eventId> --version <n> --reason <text>
+  ${program} curation retry <eventId> --version <n> [--reason <text>]
+  ${program} curation reopen <eventId> --version <n> [--reason <text>]
     Every item command also takes --base <revisionId|none> (the active revision it was reviewed against) and --actor <name>.
     approve needs --base once a revision is active.`;
+}
 
 export class CurationUsageError extends Error {}
 
@@ -448,14 +454,14 @@ export async function runCurationCommand(context: CurationContext, command: Cura
 }
 
 /** Parse and run `curation <args>`, as scripts/photos.ts does. */
-export async function runCurationCli(args: readonly string[], context: Omit<CurationContext, 'actor'>, env: Readonly<Record<string, string | undefined>> = process.env): Promise<CommandResult> {
+export async function runCurationCli(args: readonly string[], context: Omit<CurationContext, 'actor'> & { program?: string }, env: Readonly<Record<string, string | undefined>> = process.env): Promise<CommandResult> {
     let command: CurationCommand;
     let actor: string;
     try {
         command = parseCurationArgs(args);
         actor = actorFrom(args, env);
     } catch (error) {
-        if (error instanceof CurationUsageError) return { exitCode: 2, output: scrub(`Usage error: ${error.message}\nUsage:\n${CURATION_USAGE}\n`, [context.dataRoot, context.libraryRoot]) };
+        if (error instanceof CurationUsageError) return { exitCode: 2, output: scrub(`Usage error: ${error.message}\nUsage:\n${curationUsage(context.program)}\n`, [context.dataRoot, context.libraryRoot]) };
         throw error;
     }
     return runCurationCommand({ ...context, actor }, command);

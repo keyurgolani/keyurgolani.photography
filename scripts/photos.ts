@@ -176,7 +176,7 @@ import { issueLines, photoIdArg, publishReport, sequenceArgs, seriesArgs, parseF
 import { publish, PUBLISH_EXIT_CODES, validateWorkingLayer, VALIDATE_EXIT_CODES } from '../lib/catalog/publish';
 import { REVISION_ID_RE } from '../lib/catalog/schema';
 import { runSequenceCommand, type CommandResult, type SequenceCommand } from '../lib/catalog/sequence-commands';
-import { CURATION_USAGE, runCurationCli } from '../lib/curation/commands';
+import { curationUsage, runCurationCli } from '../lib/curation/commands';
 import { ApplyRefusedError, migrateApply } from '../lib/identity/apply';
 import { createDecision, decisionFileName, isLibraryPath, writeDecision, type DecisionInput } from '../lib/identity/decisions';
 import { ASSET_REVISION_RE } from '../lib/identity/ids';
@@ -220,7 +220,7 @@ const USAGE = `Usage:
   ${PROGRAM} publish [--actor <name>] [--reason <text>] [--expect <candidateId>] [--dry-run] [--confirm-launch] [--reprofile]
   ${PROGRAM} history
   ${PROGRAM} rollback --to <number | revisionId> --reason <text> [--actor <name>] [--expect-active <revisionId>] [--yes]
-${CURATION_USAGE}
+${curationUsage(PROGRAM)}
 A flag given twice is refused. An argument that starts with - goes after --.
 In production: docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs <command>
 The README's "Curating the catalog" section has the commands, the hand-edit rules, and the launch checklist.`;
@@ -537,7 +537,7 @@ async function main(argv: string[]): Promise<number> {
         if (command === 'history') return await historyCommand(args);
         if (command === 'rollback') return await rollbackCommand(args);
         if (command === 'curation') {
-            const result = await runCurationCli(args, { dataRoot: dataRoot(), libraryRoot: libraryRoot() });
+            const result = await runCurationCli(args, { dataRoot: dataRoot(), libraryRoot: libraryRoot(), program: PROGRAM });
             (result.exitCode === 0 ? process.stdout : process.stderr).write(result.output);
             return result.exitCode;
         }

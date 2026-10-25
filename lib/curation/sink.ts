@@ -167,6 +167,10 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                     await writeEvent(root, event, expected, hold);
                     return true;
                 } catch (error) {
+                    if (error instanceof EventUnusableError && error.problem.reason !== 'unreadable') {
+                        logger.error(`[curation] ${error.message}. This fact is skipped and not delivered again. Fix that event's folder.`);
+                        return false;
+                    }
                     if (!(error instanceof InvalidEventError)) throw error;
                     skip(fact, 'it does not make a valid inbox event');
                     return false;

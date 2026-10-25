@@ -139,6 +139,13 @@ describe('curation arguments', () => {
         expect(() => parseCurationArgs(args as string[])).toThrow(message as RegExp);
     });
 
+    it('names the program it runs as in its usage text, as 10C\'s PROGRAM does', async () => {
+        const bundled = await runCurationCli(['show'], { dataRoot: '/nowhere', program: 'node dist/scripts/photos.mjs' }, {});
+        expect(bundled.output).toContain('  node dist/scripts/photos.mjs curation list');
+        expect(bundled.output).not.toContain('npx tsx');
+        expect((await runCurationCli(['show'], { dataRoot: '/nowhere' }, {})).output).toContain('  npx tsx scripts/photos.ts curation list');
+    });
+
     it('exits 2 with the usage text, and needs a data root to act', async () => {
         expect(await runCurationCli(['show'], { dataRoot: '/nowhere' }, {})).toMatchObject({ exitCode: 2, output: expect.stringContaining('Usage:') });
         expect(await runCurationCli(['list'], { dataRoot: null }, {})).toMatchObject({ exitCode: 3, output: expect.stringMatching(/PHOTOGRAPHY_DATA_DIR is not set/) });

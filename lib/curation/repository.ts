@@ -6,10 +6,11 @@ import {
     MisnamedVersionError,
     readVersionedDocument,
     StaleVersionError,
+    VersionLimitError,
     writeVersionedDocument,
     type VersionedWriteHooks,
 } from '../storage/document';
-import { hasErrorCode, PRIVATE_DIR_MODE } from '../storage/fsx';
+import { ensureDirectory, hasErrorCode, pathExists } from '../storage/fsx';
 import { withLock, type LockContext } from '../storage/lock';
 import { EVENT_ID_RE, parseEvent, type CurationEvent } from './events';
 
@@ -57,8 +58,37 @@ export class EventUnusableError extends Error {
 
 type Loaded = { event: CurationEvent } | { problem: EventProblem } | null;
 
+const SYMLINKED = "its folder is a symlink, and symlinked event folders aren't supported. Put the folder itself there, not a link to it";
+const ONE_FILE = 'it is stored as one .json file, but an event is a folder holding v<N>.json. Move the file there as v1.json while no command runs';
+
+/**
+ * Why an event's folder can't be read or written as the event, or null when
+ * it can, as #49's rules for record folders: the folder is a symlink,
+ * dangling or not, since a link could alias another event's folder; or the
+ * event sits beside it as one `<eventId>.json` file. Errors other than a
+ * missing path are thrown, as I/O.
+ */
+export async function eventFolderProblem(root: string, id: string): Promise<string | null> {
+    const dir = eventDir(root, id);
+    if (await pathExists(`${dir}.json`)) return ONE_FILE;
+    try {
+        if ((await fs.promises.lstat(dir)).isSymbolicLink()) return SYMLINKED;
+    } catch (error) {
+        if (!hasErrorCode(error, 'ENOENT', 'ENOTDIR')) throw error;
+    }
+    return null;
+}
+
 async function load(root: string, id: string): Promise<Loaded> {
     const problem = (reason: EventProblem['reason'], message: string): Loaded => ({ problem: { id, reason, message } });
+    let folder: string | null;
+    try {
+        folder = await eventFolderProblem(root, id);
+    } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        return problem('unreadable', code ? `it can't be read (${code})` : "it can't be read");
+    }
+    if (folder !== null) return problem('file-name', folder);
     let stored: Awaited<ReturnType<typeof readVersionedDocument>>;
     try {
         stored = await readVersionedDocument(eventDir(root, id));
@@ -97,8 +127,16 @@ export async function listEvents(root: string): Promise<{ events: CurationEvent[
     }
     const events: CurationEvent[] = [];
     const problems: EventProblem[] = [];
+    // An event kept as one file, or a folder in another case, would be passed over, so it is listed as a problem.
+    const ids = new Set(names.filter((entry) => EVENT_ID_RE.test(entry)));
+    for (const name of names) {
+        const bare = name.replace(/\.json$/i, '');
+        if (ids.has(name) || !EVENT_ID_RE.test(bare.toLowerCase())) continue;
+        if (bare !== name && EVENT_ID_RE.test(bare)) ids.add(bare);
+        else problems.push({ id: name, reason: 'file-name', message: bare !== name ? ONE_FILE : 'an event folder is named for its ID, in lower case' });
+    }
     // Dot-files are OS metadata. Anything else not named as an event is left alone.
-    for (const name of names.filter((entry) => EVENT_ID_RE.test(entry)).sort()) {
+    for (const name of [...ids].sort()) {
         const loaded = await load(root, name);
         if (loaded === null) continue;
         if ('problem' in loaded) problems.push(loaded.problem);
@@ -106,14 +144,6 @@ export async function listEvents(root: string): Promise<{ events: CurationEvent[
     }
     events.sort((a, b) => (a.observedAt < b.observedAt ? -1 : a.observedAt > b.observedAt ? 1 : a.id < b.id ? -1 : 1));
     return { events, problems };
-}
-
-async function ensureFolder(dir: string): Promise<void> {
-    try {
-        await fs.promises.mkdir(dir, { mode: PRIVATE_DIR_MODE });
-    } catch (error) {
-        if (!hasErrorCode(error, 'EEXIST')) throw error;
-    }
 }
 
 /** An event that doesn't match the schema, so it is never written. */
@@ -150,12 +180,17 @@ export async function writeEvent(root: string, event: CurationEvent, expectedVer
     const parsed = parseEvent({ ...event, version: expectedVersion + 1 });
     if (!parsed.ok) throw new InvalidEventError(String(event.id), parsed.issues);
     const paths = curationPaths(root);
-    await ensureFolder(paths.dir);
-    await ensureFolder(paths.events);
+    // A first version survives a crash only with every folder above it synced, including ones another writer made.
+    const syncParent = expectedVersion === 0;
+    await ensureDirectory(paths.dir, { syncParent });
+    await ensureDirectory(paths.events, { syncParent });
+    const folder = await eventFolderProblem(root, event.id);
+    if (folder !== null) throw new EventUnusableError({ id: event.id, reason: 'file-name', message: folder });
     try {
         return await writeVersionedDocument(eventDir(root, event.id), parsed.event, expectedVersion, { hooks });
     } catch (error) {
         if (error instanceof StaleVersionError) throw new EventMovedError(event.id, expectedVersion, error.found);
+        if (error instanceof VersionLimitError) throw new EventUnusableError({ id: event.id, reason: 'invalid', message: `it is at version ${error.version}, the highest a version can be` });
         throw error;
     }
 }

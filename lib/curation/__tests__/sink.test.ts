@@ -5,6 +5,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { folderBytes } from '../../../test/helpers/folderBytes';
+import { recordDirectorySyncs } from '../../../test/helpers/directorySyncs';
 import { setDataDir } from '../../../test/helpers/tempDataRoot';
 import { createTempLibrary } from '../../../test/helpers/tempLibrary';
 import { catalogPaths, readAuthoredRecord } from '../../catalog/working-layer';
@@ -370,5 +371,61 @@ describe('round 2', () => {
         const before = folderBytes(curationPaths(f.root).events);
         await sinkFor(f.root)([f.fact('renamed', null, { path: 'trips/other.heic', folder: 'trips', fromPath: 'trips/raw.heic' })]);
         expect(folderBytes(curationPaths(f.root).events)).toEqual(before);
+    });
+});
+
+describe('event folders, as #49 hardens version folders', () => {
+    it('refuses a symlinked event folder, reading or writing, and skips its fact', async () => {
+        const f = await fixture();
+        const fact = f.fact('new', f.fresh[0]);
+        await sinkFor(f.root)([fact]);
+        const id = eventIdOf(eventKey('new', fact));
+        const dir = eventDir(f.root, id);
+        const elsewhere = path.join(f.root, 'elsewhere');
+        fs.renameSync(dir, elsewhere);
+        fs.symlinkSync(elsewhere, dir);
+        const before = folderBytes(elsewhere);
+        await expect(readEvent(f.root, id)).rejects.toThrow(/symlink/);
+        expect((await listEvents(f.root)).problems).toEqual([expect.objectContaining({ id, reason: 'file-name', message: expect.stringMatching(/symlink/) })]);
+        const errors: string[] = [];
+        await createCurationSink({ root: f.root, logger: { ...quiet, error: (line: string) => errors.push(line) } })([{ ...fact, factId: 'through-link' }]);
+        expect(folderBytes(elsewhere)).toEqual(before);
+        expect(errors.join('\n')).toMatch(/symlink/);
+        expect(errors.join('\n')).not.toContain(f.root);
+    });
+
+    it('refuses a dangling symlink in place of an event folder, and writes nothing through it', async () => {
+        const f = await fixture();
+        const fact = f.fact('new', f.fresh[0]);
+        const id = eventIdOf(eventKey('new', fact));
+        fs.mkdirSync(curationPaths(f.root).events, { recursive: true });
+        const target = path.join(f.root, 'nowhere');
+        fs.symlinkSync(target, eventDir(f.root, id));
+        await createCurationSink({ root: f.root, logger: quiet })([fact]);
+        expect(fs.existsSync(target)).toBe(false);
+        expect((await listEvents(f.root)).problems).toEqual([expect.objectContaining({ id, reason: 'file-name' })]);
+    });
+
+    it('refuses an event stored as one file, as an old layout would have it', async () => {
+        const f = await fixture();
+        const fact = f.fact('new', f.fresh[0]);
+        const id = eventIdOf(eventKey('new', fact));
+        fs.mkdirSync(curationPaths(f.root).events, { recursive: true });
+        fs.writeFileSync(`${eventDir(f.root, id)}.json`, '{}');
+        await expect(readEvent(f.root, id)).rejects.toThrow(/folder holding v<N>\.json/);
+        expect((await listEvents(f.root)).problems).toEqual([expect.objectContaining({ id, reason: 'file-name' })]);
+        await createCurationSink({ root: f.root, logger: quiet })([fact]);
+        expect(fs.existsSync(eventDir(f.root, id))).toBe(false);
+    });
+
+    it('fsyncs every folder above a first event, even ones another writer made', async () => {
+        const f = await fixture();
+        // Another writer made curation/events/ and crashed before syncing anything.
+        fs.mkdirSync(curationPaths(f.root).events, { recursive: true });
+        const synced = recordDirectorySyncs();
+        const fact = f.fact('new', f.fresh[0]);
+        await sinkFor(f.root)([fact]);
+        const dir = eventDir(f.root, eventIdOf(eventKey('new', fact)));
+        expect(synced).toEqual(expect.arrayContaining([dir, curationPaths(f.root).events, curationPaths(f.root).dir, path.resolve(f.root)]));
     });
 });

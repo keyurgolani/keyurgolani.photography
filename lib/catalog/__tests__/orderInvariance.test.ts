@@ -397,6 +397,9 @@ describe('the watcher never authors order', () => {
             run('regenerating every derivative', () => undefined, '--force'),
         ]);
         expect(fs.existsSync(lib.file('optimized', 'square.webp'))).toBe(true);
+        // The watcher's own --once run delivered to #14's curation sink: the new photograph is an inbox item.
+        const { events } = await listEvents(fixture.data.root);
+        expect(events.filter((event) => event.type === 'new').map((event) => event.derivedFacts.sourcePath)).toContain('added.jpg');
     }, 180_000);
 
     it('leaves them alone at startup against an uninitialized data root too', async () => {
