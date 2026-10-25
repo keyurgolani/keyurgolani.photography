@@ -214,6 +214,6 @@ export function homeRouteOf<Reason extends string>(catalog: HomeActiveCatalog<Re
     if (catalog.mode === 'legacy') return { kind: 'legacy' };
     if (catalog.state === 'unavailable') return { kind: 'unavailable', reason: catalog.reason };
     const { reader } = catalog;
-    const source: HomeSource = { revisionId: reader.revision().revisionId, site: reader.site, listSeries: reader.listSeries, photosOf: (seriesId) => reader.photosOf(seriesId) };
+    const source: HomeSource = { revisionId: reader.revision().revisionId, site: () => reader.site(), listSeries: () => reader.listSeries(), photosOf: (seriesId) => reader.photosOf(seriesId) };
     return { kind: 'home', home: publishedHomeOf(source, routes) };
 }
