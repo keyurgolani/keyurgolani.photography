@@ -7,7 +7,7 @@ import type { FSWatcherEventMap } from 'chokidar';
 import sharp, { type Sharp } from 'sharp';
 import { dominantChannel, fixtureFiles, type Channel } from '../../test/fixtures/makeLibrary';
 import { fakeCaseInsensitiveDisk, fakeCaseSensitiveDisk } from '../../test/helpers/caseDisk';
-import { REPO_ROOT } from '../../test/helpers/runTsx';
+import { REPO_ROOT, runTsx } from '../../test/helpers/runTsx';
 import { createTempLibrary, derivativePaths, type TempLibrary } from '../../test/helpers/tempLibrary';
 import { baseNameOf, ownerOf, processImage } from '../imageOptimizer';
 import {
@@ -311,6 +311,37 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
             await handlers.onChange(lib.file('portrait.jpg'));
             expect(await outputChannels('portrait')).toEqual(Array(7).fill('green'));
             expect(logs).toContain('[ImageWatcher] Rebuilt the set portrait.jpg shared from portrait.png, which owns it now.');
+        });
+
+        it('rebuilds from the next source when another job decoded the changed owner between two saves of it', async () => {
+            fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+            await handlers.onAdd(lib.file('portrait.jpg'));
+            expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
+            fs.writeFileSync(lib.file('portrait.jpg'), corrupt);
+            // A job for a third source of the set decodes it between the two writes of one save.
+            fs.copyFileSync(lib.file('portrait.png'), lib.file('portrait.webp'));
+            expect(await ownerOf('portrait.webp')).toBe('portrait.png');
+            fs.writeFileSync(lib.file('portrait.jpg'), Buffer.concat([corrupt, Buffer.from([0])]));
+            await handlers.onChange(lib.file('portrait.jpg'));
+            expect(await outputChannels('portrait')).toEqual(Array(7).fill('green'));
+            expect(logs).toContain('[ImageWatcher] Rebuilt the set portrait.jpg shared from portrait.png, which owns it now.');
+        });
+
+        it('rebuilds from the next source when the owner went bad while the watcher was down', async () => {
+            fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+            // Another process built the set, so this one doesn't know what built it.
+            const run = await runTsx('scripts/imageWatcher.ts', ['--once'], {
+                env: { PHOTOGRAPHY_LIBRARY_DIR: lib.root, PHOTOGRAPHY_DATA_DIR: path.join(lib.root, '..', 'no-data-root') },
+            });
+            expect(run.code, run.stderr).toBe(0);
+            expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
+            fs.writeFileSync(lib.file('portrait.jpg'), corrupt);
+            // The restarted watcher decodes it at startup, before the next save of it brings a change event.
+            const restarted = newHandlers();
+            expect(await ownerOf('portrait.png')).toBe('portrait.png');
+            fs.writeFileSync(lib.file('portrait.jpg'), Buffer.concat([corrupt, Buffer.from([0])]));
+            await restarted.onChange(lib.file('portrait.jpg'));
+            expect(await outputChannels('portrait')).toEqual(Array(7).fill('green'));
         });
 
         it('writes nothing for an add or a change of a source whose set another owns', async () => {

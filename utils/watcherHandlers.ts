@@ -2,10 +2,10 @@ import type { EventEmitter } from 'events';
 import path from 'path';
 import type { FSWatcherEventMap } from 'chokidar';
 import {
-    decodedBeforeChange,
     generatedFolderNames,
     hasErrorCode,
     isSourceFile,
+    lastBuiltFrom,
     libraryPaths,
     ownerAfterRemoval,
     ownerOf,
@@ -206,21 +206,24 @@ export function createWatcherHandlers(
             const key = setKeyOf(filename);
             const force = dropStartupJobs((job) => job.key === key && sharesSet(job.label, filename)).some((job) => job.force);
             let owner = filename;
-            let tookBack = false;
+            let rebuilt = false;
             const outcome = await enqueue(filename, true, async () => {
-                // Asked before ownerOf() decodes it again: one that didn't decode before never owned the set
-                const decodedBefore = await decodedBeforeChange(filename);
                 owner = await ownerOf(filename);
-                // It owned the set until this change, as when it no longer decodes, so the set may show its old pixels
-                tookBack = filename < owner && decodedBefore !== false;
-                if (owner === filename) await reprocessImage(filename);
-                else if (tookBack) await reprocessImage(owner);
+                if (owner === filename) {
+                    await reprocessImage(filename);
+                    return;
+                }
+                // The set shows what last built it. Unless that was its owner, as when the changed source owned it
+                // until it stopped decoding, or another process built it, it may show other pixels, so rebuild it.
+                rebuilt = lastBuiltFrom(owner) !== owner;
+                if (rebuilt) await reprocessImage(owner);
                 // The owner's startup job may have just been dropped
                 else await refreshImage(owner, { force });
             });
             if (outcome !== 'done') return;
             if (owner === filename) logger.log(`[ImageWatcher] Reprocessed: ${filename}`);
-            else if (tookBack) logger.log(`[ImageWatcher] Rebuilt the set ${filename} shared from ${owner}, which owns it now.`);
+            else if (rebuilt && filename < owner) logger.log(`[ImageWatcher] Rebuilt the set ${filename} shared from ${owner}, which owns it now.`);
+            else if (rebuilt) logger.log(`[ImageWatcher] Rebuilt the set ${filename} shares from its owner, ${owner}.`);
             else logger.log(`[ImageWatcher] Skipping ${filename}: it shares its derivatives with ${owner}.`);
         },
 

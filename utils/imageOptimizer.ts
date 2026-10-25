@@ -393,6 +393,7 @@ export async function writeVariants(
             renamed++;
         }
     } catch (error) {
+        builtFrom.delete(builtKey(filename, paths));
         await removeQuietly(order.slice(renamed).map(({ temp }) => temp));
         console.error(
             `[imageOptimizer] Renaming ${filename}'s new outputs failed after replacing ${renamed} of ${order.length}.` +
@@ -401,6 +402,9 @@ export async function writeVariants(
         throw error;
     }
 
+    // A fill of only the missing outputs leaves a set some other source may have built the rest of.
+    if (order.length === VARIANTS.length) builtFrom.set(builtKey(filename, paths), filename);
+    else builtFrom.delete(builtKey(filename, paths));
     if (overwrite) purgeDynamicCache(baseName, paths);
     return order.map(({ target }) => target);
 }
@@ -542,21 +546,27 @@ export function setMembers(filename: string, paths: LibraryPaths = libraryPaths(
     return getPhotoFiles(paths.root).filter((file) => sharesSet(filename, file, paths.root)).sort();
 }
 
-/**
- * What decodes() found for each path, kept while the file keeps its inode,
- * size, and times, with what it found for the version before, null when it
- * saw none.
- */
-const decoded = new Map<string, { version: string; ok: boolean; okBefore: boolean | null }>();
+/** What decodes() found for each path, kept while the file keeps its inode, size, and times. */
+const decoded = new Map<string, { version: string; ok: boolean }>();
 
-/** A source's inode, size, and times, which say when decodes() must look again. Null when it can't be read. */
-async function decodeVersion(filePath: string): Promise<string | null> {
-    try {
-        const { dev, ino, size, mtimeMs, ctimeMs } = await fs.promises.stat(filePath);
-        return `${dev}:${ino}:${size}:${mtimeMs}:${ctimeMs}`;
-    } catch {
-        return null;
-    }
+/**
+ * The source that last wrote each set whole, by library root and set key.
+ * Kept in memory only, so a set written by another process, or before a
+ * restart, has no known builder.
+ */
+const builtFrom = new Map<string, string>();
+
+const builtKey = (filename: string, paths: LibraryPaths) => `${paths.root}\0${setKeyOf(filename)}`;
+
+/**
+ * The source that last wrote `owner`'s set whole in this process, or null
+ * when that's unknown, as after a partial fill, a rename that failed, or a
+ * restart. A builder that only shares the set's key, as two spellings do on a
+ * case-sensitive disk, doesn't count.
+ */
+export function lastBuiltFrom(owner: string, paths: LibraryPaths = libraryPaths()): string | null {
+    const builder = builtFrom.get(builtKey(owner, paths));
+    return builder !== undefined && sharesSet(builder, owner, paths.root) ? builder : null;
 }
 
 /**
@@ -566,8 +576,13 @@ async function decodeVersion(filePath: string): Promise<string | null> {
  */
 async function decodes(file: string, paths: LibraryPaths): Promise<boolean> {
     const filePath = path.join(paths.root, file);
-    const version = await decodeVersion(filePath);
-    if (version === null) return false;
+    let version: string;
+    try {
+        const { dev, ino, size, mtimeMs, ctimeMs } = await fs.promises.stat(filePath);
+        version = `${dev}:${ino}:${size}:${mtimeMs}:${ctimeMs}`;
+    } catch {
+        return false;
+    }
     const cached = decoded.get(filePath);
     if (cached?.version === version) return cached.ok;
     let ok: boolean;
@@ -577,20 +592,8 @@ async function decodes(file: string, paths: LibraryPaths): Promise<boolean> {
     } catch {
         ok = false;
     }
-    decoded.set(filePath, { version, ok, okBefore: cached ? cached.ok : null });
+    decoded.set(filePath, { version, ok });
     return ok;
-}
-
-/**
- * Whether a source decoded at the last version decodes() saw before its
- * current one, so whether it could have owned its set before it changed.
- * Null when decodes() saw no earlier version.
- */
-export async function decodedBeforeChange(filename: string, paths: LibraryPaths = libraryPaths()): Promise<boolean | null> {
-    const filePath = path.join(paths.root, filename);
-    const cached = decoded.get(filePath);
-    if (!cached) return null;
-    return cached.version === (await decodeVersion(filePath)) ? cached.okBefore : cached.ok;
 }
 
 /**
