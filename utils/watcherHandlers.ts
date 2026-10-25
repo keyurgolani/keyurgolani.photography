@@ -351,15 +351,17 @@ export function createWatcherHandlers(
                 logger.log('[ImageWatcher] Checking for unprocessed images...');
                 const { files, reowned, upright, shared } = await planSources({ force });
                 if (!cacheFolderWritable()) {
-                    logger.error(`[ImageWatcher] ${path.dirname(uprightMarkerPath())} can't be written, so the watcher can't record which sets it rebuilt. Until it can, every start rebuilds the orientation-tagged photos and the shared sets again.`);
+                    logger.error(`[ImageWatcher] ${path.dirname(uprightMarkerPath())} can't be written, so the watcher can't record which sets it rebuilt. Until it can, every start rebuilds the orientation-tagged photos again, and a set two sources share keeps its old outputs.`);
                 }
                 for (const { file, owner, undecodable } of shared) {
                     logger.log(`[ImageWatcher] Skipping ${file}: ${undecodable ? `it can't be decoded, so ${owner} has the derivatives they share` : `it shares its derivatives with ${owner}`}.`);
                 }
-                for (const { file, from } of reowned) {
-                    logger.log(from === null
-                        ? `[ImageWatcher] Rebuilding ${file}'s set, which it shares, since nothing records which source it was built from.`
-                        : `[ImageWatcher] Rebuilding ${file}'s set, which was last built from ${from}.`);
+                for (const { file, from, unfinished } of reowned) {
+                    logger.log(unfinished
+                        ? `[ImageWatcher] Rebuilding ${file}'s set, since a build of it from ${from} didn't finish.`
+                        : from === null
+                            ? `[ImageWatcher] Rebuilding ${file}'s set, which it shares, since nothing records which source it was built from.`
+                            : `[ImageWatcher] Rebuilding ${file}'s set, which was last built from ${from}.`);
                 }
                 const turned = new Set(upright ?? []);
                 if (turned.size > 0) {
