@@ -1,12 +1,14 @@
 // @vitest-environment node
+import fs from 'node:fs';
+import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { LockTimeoutError, withLock } from '../../storage/lock';
 import { activateRevision, publish, rebaseWorkingLayer, type PublishOptions, type PublishResult } from '../publish';
-import { CATALOG_LOCK } from '../repository';
+import { CATALOG_LOCK, readRevisionFile, revisionFilePath } from '../repository';
 import { createTestCatalog, type TestCatalog, type TestCatalogOptions } from '../testing';
 import type { AuthoredPhoto, AuthoredRecord, AuthoredSeries, AuthoredSite } from '../types';
 import { AUTHORED_LOCK, writeAuthoredRecord, writeRebasedRecord } from '../working-layer-writer';
-import { readWorkingLayer } from '../working-layer';
+import { readActivePointer, readWorkingLayer } from '../working-layer';
 import { VARIANT_BYTES } from './catalogFixtures';
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -150,6 +152,106 @@ describe('rebaseWorkingLayer', { timeout: 30_000 }, () => {
                 { field: 'featuredSeriesIds', base: [b], active: [a] },
                 { field: 'seriesOrder', base: [b, a, c], active: [a, b, c] },
             ],
+        });
+    });
+
+    it('keeps the owner\'s move of a series the base revision hid through a rollback, with a conflict that blocks publish', async () => {
+        // #8's review, P3: as #15 will call it, through publish(), activateRevision() and rebaseWorkingLayer().
+        const { catalog, root, run, edit, record, rollBack } = await setup({ seed: 104, photos: 6, series: 3 });
+        const [a, b, c] = catalog.series.map((series) => series.id);
+        const first = await run();
+        await edit<AuthoredSeries>('series', c, (series) => {
+            series.visibility = 'hidden';
+        });
+        const second = await run();
+        await edit<AuthoredSite>('site', 'site', (site) => {
+            site.seriesOrder = [c, a, b];
+        });
+
+        const report = await rollBack(ids(first), ids(second));
+        expect(report.conflicts).toContainEqual({ kind: 'site', id: 'site', field: 'seriesOrder' });
+        expect(await record<AuthoredSite>('site', 'site')).toMatchObject({
+            seriesOrder: [c, a, b],
+            baseRevisionId: first.revisionId,
+            conflicts: [{ field: 'seriesOrder', base: [a, b], active: [a, b, c] }],
+        });
+        const blocked = await publish({ dataRoot: root, actor: 'test', logger: quiet });
+        expect(blocked.outcome).toBe('VALIDATION_FAILED');
+        expect(blocked.issues).toContainEqual(expect.objectContaining({ code: 'working.conflicts' }));
+        expect((await readActivePointer(root))?.revisionId).toBe(first.revisionId);
+    });
+
+    it('keeps a Work order and featured edit made after a first publish that couldn\'t rebase, and publishes them with no conflict', async () => {
+        // 13B's review, finding 1: the site's base is null, since nothing was published before it.
+        const { catalog, root, run, edit, record } = await setup({ seed: 105, photos: 6, series: 3 });
+        const [a, b, c] = catalog.series.map((series) => series.id);
+        let release = () => undefined as void;
+        const held = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let holding: Promise<void> | null = null;
+        const first = await run({
+            authoredWaitMs: 100,
+            hooks: {
+                async afterStep(step) {
+                    if (step !== 12) return;
+                    // A tool holds the working layer, so step 13 can't get the authored lock.
+                    let taken = () => undefined as void;
+                    const holds = new Promise<void>((resolve) => {
+                        taken = resolve;
+                    });
+                    holding = withLock(AUTHORED_LOCK, { root }, async () => {
+                        taken();
+                        await held;
+                    });
+                    await holds;
+                },
+            },
+        });
+        release();
+        await holding;
+        expect(first.rebased).toBe(false);
+        expect((await record<AuthoredSite>('site', 'site')).baseRevisionId).toBeNull();
+
+        await edit<AuthoredSite>('site', 'site', (site) => {
+            site.seriesOrder = [c, a, b];
+            site.featuredSeriesIds = [b];
+        });
+        const second = await run();
+        expect(second.recovery?.rebased?.conflicts).toEqual([]);
+        const site = await record<AuthoredSite>('site', 'site');
+        expect(site).toMatchObject({ seriesOrder: [c, a, b], featuredSeriesIds: [b], baseSeriesOrder: [c, a, b], baseRevisionId: second.revisionId });
+        expect(site).not.toHaveProperty('conflicts');
+        const published = await readRevisionFile(root, ids(second));
+        expect(published?.content.series.map((series) => series.id)).toEqual([c, a, b]);
+        expect(published?.content.site.featuredSeriesIds).toEqual([b]);
+    });
+
+    it.each([
+        ['missing', () => undefined],
+        ['damaged', (file: string) => {
+            fs.mkdirSync(path.dirname(file), { recursive: true });
+            fs.writeFileSync(file, '{ not json');
+        }],
+    ])('keeps the owner\'s Work order with a conflict when the site\'s base revision is %s, and leaves the active revision live', async (_label, damage) => {
+        const { catalog, root, run, record } = await setup({ seed: 106, photos: 6, series: 3 });
+        const [a, b, c] = catalog.series.map((series) => series.id);
+        const first = await run();
+        const site = await record<AuthoredSite>('site', 'site');
+        // A base that should exist and can't be read, on a record that never learned its base order.
+        const lost = `rev_${'9'.repeat(64)}`;
+        damage(revisionFilePath(root, lost));
+        await withLock(AUTHORED_LOCK, { root }, (lock) => writeRebasedRecord({ ...site, seriesOrder: [c, a, b], baseSeriesOrder: null }, { expectedVersion: site.version, lock, baseRevisionId: lost }));
+
+        const result = await publish({ dataRoot: root, actor: 'test', logger: quiet });
+        expect(result.outcome).toBe('VALIDATION_FAILED');
+        expect(result.issues).toContainEqual(expect.objectContaining({ code: 'working.conflicts' }));
+        expect((await readActivePointer(root))?.revisionId).toBe(first.revisionId);
+        expect(await record<AuthoredSite>('site', 'site')).toMatchObject({
+            seriesOrder: [c, a, b],
+            featuredSeriesIds: site.featuredSeriesIds,
+            baseRevisionId: first.revisionId,
+            conflicts: [{ field: 'seriesOrder', base: [], active: [a, b, c] }],
         });
     });
 

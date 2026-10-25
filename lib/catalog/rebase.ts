@@ -185,27 +185,43 @@ function mergeSeries(series: AuthoredSeries, base: SeriesView, target: SeriesVie
 // The site.
 
 /**
- * The site record's merge. `base` is what the record is merged against: the
- * publish's snapshot, or else the record's base revision (none when that
- * revision is null, missing, or damaged). `snapshot` is the snapshot's site
- * record, whose `seriesOrder` the target was compiled from.
+ * What the site record merges against. `known`: the publish's snapshot, or the
+ * record's base revision. `none`: the record's base is null, so nothing was
+ * published before it and there is no published order or featured list to
+ * conflict with. `unreadable`: the base revision should exist but is missing
+ * or damaged.
  */
-function mergeSite(
-    site: AuthoredSite,
-    base: { featuredSeriesIds: string[]; seriesIds: string[] },
-    target: RevisionFile,
-    snapshot: AuthoredSite | null,
-): { record: AuthoredSite; conflicts: Conflict[] } {
+type SiteBase =
+    | { kind: 'known'; featuredSeriesIds: string[]; seriesIds: string[] }
+    | { kind: 'none' }
+    | { kind: 'unreadable' };
+
+/**
+ * The site record's merge. `snapshot` is the snapshot's site record, whose
+ * `seriesOrder` the target was compiled from.
+ *
+ * With no known base, the featured list stays as authored, as a series' or a
+ * photo's fields do. The Work order goes through #8's rebaseSeriesOrder()
+ * either way. On a null base it compares against the target itself, so the
+ * owner's order stays with no conflict. On an unreadable one it compares
+ * against an empty base, so an order that differs from the target's keeps
+ * the owner's and raises a conflict: the conflict only fires when a base
+ * should exist and can't be read.
+ */
+function mergeSite(site: AuthoredSite, base: SiteBase, target: RevisionFile, snapshot: AuthoredSite | null): { record: AuthoredSite; conflicts: Conflict[] } {
     const next: AuthoredSite = { ...site };
     const conflicts: Conflict[] = [];
-    const featured = threeWay('featuredSeriesIds', site.featuredSeriesIds, base.featuredSeriesIds, target.content.site.featuredSeriesIds);
-    if (featured.conflict) conflicts.push(featured.conflict);
-    if (featured.changed) next.featuredSeriesIds = [...featured.value];
+    const targetIds = target.content.series.map((series) => series.id);
+    if (base.kind === 'known') {
+        const featured = threeWay('featuredSeriesIds', site.featuredSeriesIds, base.featuredSeriesIds, target.content.site.featuredSeriesIds);
+        if (featured.conflict) conflicts.push(featured.conflict);
+        if (featured.changed) next.featuredSeriesIds = [...featured.value];
+    }
     const order = rebaseSeriesOrder({
         authored: site.seriesOrder,
         baseAuthored: snapshot ? snapshot.seriesOrder : site.baseSeriesOrder,
-        base: base.seriesIds,
-        target: target.content.series.map((series) => series.id),
+        base: base.kind === 'known' ? base.seriesIds : base.kind === 'none' ? targetIds : [],
+        target: targetIds,
     });
     next.seriesOrder = order.seriesOrder;
     // writeRebasedRecord() stores it, the one write that does.
@@ -221,7 +237,8 @@ const EMPTY_BASE: Pick<RevisionFile, 'content'> = { content: { site: { featuredS
  * Throws LockTimeoutError when it can't get the lock, and
  * CatalogIntegrityError when the target revision is missing or damaged. A
  * base revision that is gone counts as empty, so its records keep their
- * fields and only move their base.
+ * fields and only move their base, except that the site's Work order then
+ * conflicts with a target order that differs (see mergeSite()).
  */
 export async function rebaseWorkingLayer(options: RebaseOptions): Promise<RebaseReport> {
     const root = path.resolve(options.root);
@@ -259,12 +276,15 @@ export async function rebaseWorkingLayer(options: RebaseOptions): Promise<Rebase
         };
 
         if (layer.site && layer.site.baseRevisionId !== target.revisionId) {
-            const base = snapshot?.site
-                ? { featuredSeriesIds: snapshot.site.featuredSeriesIds, seriesIds: target.content.series.map((series) => series.id) }
-                : await baseOf(layer.site.baseRevisionId).then((revision) => ({
-                    featuredSeriesIds: revision.content.site.featuredSeriesIds,
-                    seriesIds: revision.content.series.map((series) => series.id),
-                }));
+            let base: SiteBase;
+            if (snapshot?.site) base = { kind: 'known', featuredSeriesIds: snapshot.site.featuredSeriesIds, seriesIds: target.content.series.map((series) => series.id) };
+            else if (layer.site.baseRevisionId === null) base = { kind: 'none' };
+            else {
+                const revision = await readRevisionFile(root, layer.site.baseRevisionId).catch(() => null);
+                base = revision
+                    ? { kind: 'known', featuredSeriesIds: revision.content.site.featuredSeriesIds, seriesIds: revision.content.series.map((series) => series.id) }
+                    : { kind: 'unreadable' };
+            }
             await write(layer.site, mergeSite(layer.site, base, target, snapshot?.site ?? null));
         }
         for (const series of layer.series) {
