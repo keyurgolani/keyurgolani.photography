@@ -2,6 +2,7 @@ import path from 'node:path';
 import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { PHOTO_ID_RE } from '../identity/ids';
 import type { PublishResult } from './publish';
+import { codePointName, FIELD_LIMITS, plainText } from './plain-text';
 import type { PlacementArg, SequenceCommand } from './sequence-commands';
 import type { Issue } from './types';
 import { catalogPaths } from './working-layer';
@@ -74,6 +75,19 @@ function focalArg(value: string): { x: number; y: number } {
 }
 
 /** One positional count, or a usage error that names the form. */
+/** A chapter title, public copy like an imported title, so it takes the import's plain-text rules and `title`'s limit. */
+function chapterTitle(value: string): string {
+    const checked = plainText(value, { limit: FIELD_LIMITS.title });
+    if (!checked.ok) {
+        const { problem } = checked;
+        if (problem.kind === 'character') throw new UsageError(`The chapter title has ${codePointName(problem.codePoint)}, ${problem.why}, at character ${problem.index}. Remove it and run the command again.`);
+        if (problem.kind === 'line-break') throw new UsageError('The chapter title has a line break. Put it on one line.');
+        throw new UsageError(`The chapter title is ${problem.length} characters long, over its limit of ${problem.limit}.`);
+    }
+    if (checked.text === '') throw new UsageError('chapter add needs a title.');
+    return checked.text;
+}
+
 function exactly(positionals: string[], n: number, form: string): string[] {
     if (positionals.length !== n) throw new UsageError(`Usage: photos ${form}`);
     return positionals;
@@ -150,7 +164,7 @@ export function sequenceArgs(args: string[]): SequenceCommand {
                 const start = text(values.start);
                 if (start === undefined) throw new UsageError(`chapter ${action} needs --start <photoId>.`);
                 return action === 'add'
-                    ? { command: 'chapter-add', seriesId, title: second, startPhotoId: photoIdArg(start), expectVersion: expectVersion(values) }
+                    ? { command: 'chapter-add', seriesId, title: chapterTitle(second), startPhotoId: photoIdArg(start), expectVersion: expectVersion(values) }
                     : { command: 'chapter-move', seriesId, chapterId: second, startPhotoId: photoIdArg(start), expectVersion: expectVersion(values) };
             }
             if (action === 'remove') {

@@ -4,6 +4,7 @@ import { PHOTO_ID_RE } from '../identity/ids';
 import { dataRootStatus } from '../storage/config';
 import type { VersionedWriteOptions } from '../storage/document';
 import { LockLostError, LockTimeoutError, withLock } from '../storage/lock';
+import { codePointName, FIELD_LIMITS, plainText } from './plain-text';
 import type { CommandResult, LayerHandle } from './sequence-commands';
 import type { AuthoredPhoto } from './types';
 import { AUTHORED_LEASE_MS, AUTHORED_LOCK, AUTHORED_WAIT_MS, AuthoredWriteError, writeAuthoredRecord } from './working-layer-writer';
@@ -19,12 +20,14 @@ import { readAuthoredRecord } from './working-layer';
  *
  * CSV has a header row naming its columns, and JSON is an array of objects
  * with the same keys. Columns: photoId (required), alt, decorative, title,
- * caption. `decorative` is true or false.
+ * caption. `decorative` is true or false: true marks the photo decorative,
+ * and false with an empty alt takes a decorative flag off, leaving no
+ * description until one is imported.
  *
  * Since every imported description goes to the publish gate as reviewed, the
  * file is held to plain text: a regular file of at most
  * IMPORT_FILE_MAX_BYTES, strict UTF-8, no control, bidi, or zero-width
- * characters (refusedCharacter() lists them), NFC, a line break only in a
+ * characters (plain-text.ts lists them), NFC, a line break only in a
  * caption, and each field within FIELD_LIMITS.
  *
  * Exit codes follow sequence-commands.ts: 0 on success, 1 for a file it
@@ -37,11 +40,8 @@ export const DESCRIPTION_COLUMNS = ['photoId', 'alt', 'decorative', 'title', 'ca
 /** The largest file the import reads. */
 export const IMPORT_FILE_MAX_BYTES = 5 * 1024 * 1024;
 
-/**
- * The most characters (code points, after NFC) each text column takes. The
- * description rules still warn about alt text past 250.
- */
-export const FIELD_LIMITS = { alt: 1000, title: 200, caption: 2000 } as const;
+
+export { FIELD_LIMITS };
 
 type TextColumn = keyof typeof FIELD_LIMITS;
 
@@ -67,7 +67,6 @@ function listed(lines: string[]): string[] {
     return lines.length > LISTED ? [...lines.slice(0, LISTED), `  and ${lines.length - LISTED} more`] : lines;
 }
 
-const codePointName = (codePoint: number) => `U+${codePoint.toString(16).toUpperCase().padStart(4, '0')}`;
 
 /** Anything a terminal could act on or hide: controls, format characters, separators, surrogates, private use, and unassigned. */
 const UNPRINTABLE = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}]/u;
@@ -90,35 +89,6 @@ export function quoteCell(value: string): string {
 
 /** A value of any JSON type for a message. */
 const quoteValue = (value: unknown) => (typeof value === 'string' ? quoteCell(value) : printable(JSON.stringify(value) ?? String(value)));
-
-/**
- * The first character the import refuses in `value`, with why, or null. Kept:
- * ZWJ and ZWNJ, which emoji sequences and scripts such as Persian need, and
- * LRM and RLM, which right-to-left text uses. A line feed is a line break,
- * which textValue() judges by column.
- */
-export function refusedCharacter(value: string): { codePoint: number; index: number; why: string } | null {
-    let index = 0;
-    for (const character of value) {
-        index++;
-        const codePoint = character.codePointAt(0) ?? 0;
-        const why =
-            codePoint === 0x0a ? null
-                : codePoint < 0x20 || codePoint === 0x7f ? 'a control character'
-                    : codePoint >= 0x80 && codePoint <= 0x9f ? 'a C1 control character'
-                        : codePoint >= 0x202a && codePoint <= 0x202e ? 'a bidi embedding or override'
-                            : codePoint >= 0x2066 && codePoint <= 0x2069 ? 'a bidi isolate'
-                                : codePoint === 0x200b ? 'a zero-width space'
-                                    : codePoint === 0x2060 ? 'a word joiner'
-                                        : codePoint === 0xfeff ? 'a byte order mark'
-                                            : codePoint === 0x2028 || codePoint === 0x2029 ? 'a Unicode line or paragraph separator, where a plain line break goes'
-                                                : codePoint >= 0xd800 && codePoint <= 0xdfff ? 'half of a surrogate pair'
-                                                    : codePoint === 0xfffd ? 'the replacement character, which a broken text conversion leaves'
-                                                        : null;
-        if (why !== null) return { codePoint, index, why };
-    }
-    return null;
-}
 
 /**
  * RFC 4180 records: fields split by commas, records by LF, CRLF, or CR, and a
@@ -197,25 +167,16 @@ function textValue(value: unknown, column: TextColumn, at: string, errors: strin
         errors.push(`${at}: ${column} must be text, not ${quoteValue(value)}.`);
         return undefined;
     }
-    const text = value.replace(/\r\n?/g, '\n').trim();
-    if (text === '') return undefined;
+    const checked = plainText(value, { limit: FIELD_LIMITS[column], lineBreaks: column === 'caption' });
     const where = `${at}, ${column}:`;
-    const refused = refusedCharacter(text);
-    if (refused) {
-        errors.push(`${where} has ${codePointName(refused.codePoint)}, ${refused.why}, at character ${refused.index}. Remove it and import the file again.`);
+    if (!checked.ok) {
+        const { problem } = checked;
+        if (problem.kind === 'character') errors.push(`${where} has ${codePointName(problem.codePoint)}, ${problem.why}, at character ${problem.index}. Remove it and import the file again.`);
+        else if (problem.kind === 'line-break') errors.push(`${where} has a line break, which only caption can hold.`);
+        else errors.push(`${where} is ${problem.length} characters long, over its limit of ${problem.limit}.`);
         return undefined;
     }
-    if (column !== 'caption' && text.includes('\n')) {
-        errors.push(`${where} has a line break, which only caption can hold.`);
-        return undefined;
-    }
-    const normalized = text.normalize('NFC');
-    const length = [...normalized].length;
-    if (length > FIELD_LIMITS[column]) {
-        errors.push(`${where} is ${length} characters long, over its limit of ${FIELD_LIMITS[column]}.`);
-        return undefined;
-    }
-    return normalized;
+    return checked.text === '' ? undefined : checked.text;
 }
 
 /** One row's cells as a DescriptionRow, or null with its problems added to `errors`. */
@@ -393,6 +354,8 @@ function applyRow(record: AuthoredPhoto, row: DescriptionRow): AuthoredPhoto {
     const next: AuthoredPhoto = { ...record };
     if (row.alt !== undefined) next.alt = { kind: 'described', text: row.alt, reviewed: true };
     else if (row.decorative === true) next.alt = { kind: 'decorative' };
+    // false un-flags a decorative photo. With no alt it then has no description, so the description gate holds it.
+    else if (row.decorative === false && record.alt?.kind === 'decorative') next.alt = null;
     if (row.title !== undefined) next.title = row.title;
     if (row.caption !== undefined) next.caption = row.caption;
     return next;

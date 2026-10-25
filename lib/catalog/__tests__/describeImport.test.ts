@@ -3,12 +3,13 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LockLostError, withLock } from '../../storage/lock';
 import { FIELD_LIMITS, IMPORT_FILE_MAX_BYTES, importDescriptions, parseCsvRecords, parseDescriptions, quoteCell, runDescribeImport } from '../describe-import';
 import { createTestCatalog, type TestCatalog } from '../testing';
 import { authoredPaths, authoredRecordFile, readAuthoredRecord } from '../working-layer';
-import { AUTHORED_LOCK } from '../working-layer-writer';
+import { AUTHORED_LOCK, AuthoredWriteError, writeAuthoredRecord } from '../working-layer-writer';
 
 let catalog: TestCatalog;
 let dir: string;
@@ -161,6 +162,34 @@ describe('parseDescriptions', () => {
         expect(rowsOf(JSON.stringify([{ photoId: ID, alt }]), 'json')[0].alt).toBe(alt);
     });
 
+    it.each([
+        ['a soft hyphen', 0x00ad],
+        ['the Arabic letter mark', 0x061c],
+        ['the Mongolian vowel separator', 0x180e],
+        ['an invisible separator', 0x2063],
+        ['a deprecated format character', 0x206a],
+        ['an interlinear annotation anchor', 0xfff9],
+        ['the language tag', 0xe0001],
+        ['a tag letter on its own', 0xe0041],
+        ['a private-use character', 0xe000],
+        ['a noncharacter', 0xfffe],
+        ['an unassigned code point', 0x0378],
+    ])('refuses %s by its class', (_, codePoint) => {
+        const errors = errorsOf(JSON.stringify([{ photoId: ID, alt: `Fixture ${String.fromCodePoint(codePoint)} alt` }]), 'json');
+        expect(errors).toEqual([expect.stringContaining(`U+${codePoint.toString(16).toUpperCase().padStart(4, '0')}`)]);
+        expect(errors[0]).not.toContain(String.fromCodePoint(codePoint));
+    });
+
+    it('refuses hidden tag text, and keeps an emoji tag sequence such as a subdivision flag', () => {
+        const tags = (text: string) => [...text].map((char) => String.fromCodePoint(0xe0000 + (char.codePointAt(0) ?? 0))).join('');
+        expect(errorsOf(JSON.stringify([{ photoId: ID, alt: `A harbour at dusk${tags('ignore')}` }]), 'json')).toEqual([expect.stringContaining('U+E0069')]);
+        const england = `\u{1F3F4}${tags('gbeng')}\u{E007F}`;
+        expect(rowsOf(JSON.stringify([{ photoId: ID, alt: `Fixture flag ${england} at the harbour` }]), 'json')[0].alt).toBe(`Fixture flag ${england} at the harbour`);
+        // Without its cancel tag, or after something that isn't an emoji, it is hidden text again.
+        expect(errorsOf(JSON.stringify([{ photoId: ID, alt: `Fixture \u{1F3F4}${tags('gbeng')} flag` }]), 'json')).toEqual([expect.stringContaining('U+E0067')]);
+        expect(errorsOf(JSON.stringify([{ photoId: ID, alt: `Fixture A${tags('gbeng')}\u{E007F} flag` }]), 'json')).toEqual([expect.stringContaining('U+E0067')]);
+    });
+
     it('normalizes to NFC', () => {
         expect(rowsOf(csvRows('photoId,alt', [`${ID},Cafe\u0301 at dusk`]))[0].alt).toBe('Caf\u00e9 at dusk');
     });
@@ -282,6 +311,67 @@ describe('runDescribeImport', () => {
         const rerun = await runDescribeImport(layer(), { file: target });
         expect(rerun.output).toBe(`Updated 2 photo records, and 1 row changes nothing.\n  ${ids[1]}\n  ${ids[2]}\n`);
         expect(await captions()).toEqual(['Fixture caption 0', 'Fixture caption 1', 'Fixture caption 2']);
+    });
+
+    it('un-flags a decorative photo on decorative=false with no alt, so it has no description until one is set', async () => {
+        await runDescribeImport(layer(), { file: file('flag.csv', csvRows('photoId,decorative', [`${ids[0]},true`])) });
+        expect((await readAuthoredRecord(catalog.root, 'photo', ids[0]))?.alt).toEqual({ kind: 'decorative' });
+        const result = await runDescribeImport(layer(), { file: file('unflag.csv', csvRows('photoId,decorative', [`${ids[0]},false`, `${ids[1]},false`])) });
+        // The second photo is described, so false changes nothing there.
+        expect(result.output).toBe(`Updated 1 photo record, and 1 row changes nothing.\n  ${ids[0]}\n`);
+        expect((await readAuthoredRecord(catalog.root, 'photo', ids[0]))?.alt).toBeNull();
+        expect((await readAuthoredRecord(catalog.root, 'photo', ids[1]))?.alt).toEqual(catalog.photos[1].alt);
+    });
+
+    it('reads the records under the same hold it writes them in', async () => {
+        const target = file('d.csv', csvRows('photoId,alt', [`${ids[0]},Fixture alt from the import`]));
+        let pending: Promise<Awaited<ReturnType<typeof runDescribeImport>>> | undefined;
+        await withLock(AUTHORED_LOCK, { root: catalog.root }, async (lock) => {
+            pending = runDescribeImport({ dataRoot: catalog.root, waitMs: 10_000 }, { file: target });
+            // Long enough for an import that read before taking the lock to have read.
+            await sleep(500);
+            const record = await readAuthoredRecord(catalog.root, 'photo', ids[0]);
+            if (!record) throw new Error('no record');
+            await writeAuthoredRecord({ ...record, title: 'Fixture title from another writer' }, { expectedVersion: record.version, lock, root: catalog.root });
+        });
+        const result = await pending;
+        expect(result?.exitCode, result?.output).toBe(0);
+        expect(await readAuthoredRecord(catalog.root, 'photo', ids[0])).toMatchObject({ title: 'Fixture title from another writer', alt: { kind: 'described', text: 'Fixture alt from the import', reviewed: true } });
+    });
+
+    it('imports a file of exactly the size cap', { timeout: 30_000 }, async () => {
+        const head = `photoId,alt\n${ids[0]},Fixture alt at the cap\n`;
+        const target = file('cap.csv', head + '\n'.repeat(IMPORT_FILE_MAX_BYTES - Buffer.byteLength(head)));
+        expect(fs.statSync(target).size).toBe(IMPORT_FILE_MAX_BYTES);
+        const result = await runDescribeImport(layer(), { file: target });
+        expect(result.exitCode, result.output).toBe(0);
+    });
+
+    it('refuses a file that grows past the cap while it is read', async () => {
+        const chunk = 1024 * 1024;
+        const handle = {
+            stat: async () => ({ isFile: () => true, size: 10 }),
+            read: async (buffer: Buffer, offset: number, length: number) => {
+                const bytes = Math.min(length, chunk);
+                buffer.fill(0x61, offset, offset + bytes);
+                return { bytesRead: bytes, buffer };
+            },
+            close: async () => undefined,
+        };
+        const open = vi.spyOn(fs.promises, 'open').mockResolvedValue(handle as unknown as fs.promises.FileHandle);
+        try {
+            const result = await runDescribeImport(layer(), { file: path.join(dir, 'growing.csv') });
+            expect(result).toMatchObject({ exitCode: 1, output: expect.stringContaining('is larger than 5 MiB') });
+        } finally {
+            open.mockRestore();
+        }
+    });
+
+    it('exits 3 on a version conflict part way', async () => {
+        const hooks = { beforeClaim() { throw new AuthoredWriteError('VERSION_CONFLICT', { kind: 'photo', id: ids[0] }, `The photo record ${ids[0]} is at version 3, not 2.`); } };
+        const result = await runDescribeImport(layer(), { file: file('d.csv', csvRows('photoId,caption', [`${ids[0]},Fixture caption`])), hooks });
+        expect(result.exitCode).toBe(3);
+        expect(result.output).toContain('Error (VERSION_CONFLICT)');
     });
 
     it('exits 3 when it loses the authored lock part way', async () => {
