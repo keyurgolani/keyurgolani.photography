@@ -549,41 +549,59 @@ const VERSION_NAME_RE = /^v[1-9]\d*\.json$/;
 const TEMP_NAME_RE = /^\.v\d+\..+\.tmp$/;
 const sha256 = (file: string) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
+/** A snapshot entry. `label` is `file`, `temp`, `older version`, or a version folder's state (`v<N>`, `no version`, `unreadable: ...`). */
+interface SnapshotEntry {
+    label: string;
+    digest: string;
+    /** The SHA-256 of the file, or of a version folder's newest version. */
+    sha: string;
+}
+
+const isFolderEntry = (entry: SnapshotEntry) => !['file', 'temp', 'older version'].includes(entry.label);
+
 /**
  * What `catalog/` and `authored/` hold, by data-root-relative path. A version
  * folder (lib/storage/document.ts) counts as one entry, the version a reader
  * gets from it and that file's SHA-256, so a commit shows as that document
- * moving from one version to the next. A staged temp in it counts as a file
- * of its own, and older versions, which only a commit's prune removes, don't
- * count. Every other file counts by its SHA-256.
+ * moving from one version to the next. Each older version, each staged temp,
+ * and any other file in the folder counts as a file of its own. Every other
+ * file counts by its SHA-256.
  */
-async function orderSnapshot(dataRoot: string): Promise<Map<string, { label: string; digest: string }>> {
-    const entries = new Map<string, { label: string; digest: string }>();
+async function orderSnapshot(dataRoot: string): Promise<Map<string, SnapshotEntry>> {
+    const entries = new Map<string, SnapshotEntry>();
     const relative = (file: string) => path.relative(dataRoot, file).split(path.sep).join('/');
-    const visit = async (dir: string) => {
+    const visitEntry = async (file: string, label = 'file'): Promise<void> => {
+        const stat = fs.statSync(file);
+        if (stat.isDirectory()) await visit(file);
+        else if (stat.isFile()) {
+            const sha = sha256(file);
+            entries.set(relative(file), { label, digest: sha, sha });
+        }
+    };
+    const visit = async (dir: string): Promise<void> => {
         const names = fs.readdirSync(dir).sort();
-        if (names.some((name) => VERSION_NAME_RE.test(name) || TEMP_NAME_RE.test(name))) {
-            let label: string;
-            let digest: string;
-            try {
-                const newest = await readVersionedDocument(dir);
-                label = newest ? `v${newest.version}` : 'no version';
-                digest = newest ? sha256(newest.file) : '';
-            } catch (error) {
-                label = `unreadable: ${(error as Error).name}`;
-                digest = label;
-            }
-            entries.set(relative(dir), { label, digest: `${label} ${digest}` });
-            for (const name of names.filter((entry) => TEMP_NAME_RE.test(entry))) {
-                entries.set(relative(path.join(dir, name)), { label: 'temp', digest: sha256(path.join(dir, name)) });
-            }
+        const versions = names.filter((name) => VERSION_NAME_RE.test(name)).map((name) => Number(name.slice(1, -'.json'.length)));
+        if (versions.length === 0 && !names.some((name) => TEMP_NAME_RE.test(name))) {
+            for (const name of names) await visitEntry(path.join(dir, name));
             return;
         }
+        let label: string;
+        let sha: string;
+        try {
+            const newest = await readVersionedDocument(dir);
+            label = newest ? `v${newest.version}` : 'no version';
+            sha = newest ? sha256(newest.file) : '';
+        } catch (error) {
+            label = `unreadable: ${(error as Error).name}`;
+            sha = label;
+        }
+        entries.set(relative(dir), { label, digest: `${label} ${sha}`, sha });
+        // A reader takes the highest number, which the folder's entry covers.
+        const newestName = versions.length > 0 ? path.basename(versionFile(dir, Math.max(...versions))) : null;
         for (const name of names) {
-            const file = path.join(dir, name);
-            const stat = fs.statSync(file);
-            if (stat.isDirectory()) await visit(file);
-            else if (stat.isFile()) entries.set(relative(file), { label: 'file', digest: sha256(file) });
+            if (name === newestName) continue;
+            const label = VERSION_NAME_RE.test(name) ? 'older version' : TEMP_NAME_RE.test(name) ? 'temp' : 'file';
+            await visitEntry(path.join(dir, name), label);
         }
     };
     for (const dir of [catalogPaths(dataRoot).dir, authoredPaths(dataRoot).dir]) {
@@ -595,15 +613,15 @@ async function orderSnapshot(dataRoot: string): Promise<Map<string, { label: str
 /**
  * Run `steps` in order and throw if any of them commits a version of a
  * document under `catalog/` or `authored/`, stages one, or changes, adds, or
- * removes a file or a document there, naming the step and what it touched. This
- * is how the tests show that no ingestion path authors order: the reconcile
+ * removes a file or a document there, naming the step and what it touched. An
+ * older version may only disappear, as a prune removes it. This is how the tests show that no ingestion path authors order: the reconcile
  * fact types, the sinks, and the watcher all go through it, and #14 and #17
  * add rows for their sinks.
  */
 export async function assertOrderUntouched(dataRoot: string, steps: readonly OrderStep[]): Promise<void> {
     const before = await orderSnapshot(dataRoot);
     if (before.size === 0) throw new Error('catalog/ and authored/ hold no files, so there is nothing to compare.');
-    const versioned = (entry: { label: string }) => entry.label !== 'file' && entry.label !== 'temp';
+    const labelOf = (entry: SnapshotEntry) => (entry.label === 'file' || entry.label === 'temp' ? '' : ` (${entry.label})`);
     for (const step of steps) {
         await step.run();
         const after = await orderSnapshot(dataRoot);
@@ -611,10 +629,16 @@ export async function assertOrderUntouched(dataRoot: string, steps: readonly Ord
             ...[...before].flatMap(([name, was]) => {
                 const now = after.get(name);
                 if (!now || now.digest === was.digest) return [];
-                return [versioned(was) || versioned(now) ? `changed ${name} (${was.label} to ${now.label})` : `changed ${name}`];
+                return [isFolderEntry(was) || isFolderEntry(now) ? `changed ${name} (${was.label} to ${now.label})` : `changed ${name}${labelOf(was)}`];
             }),
-            ...[...after].filter(([name]) => !before.has(name)).map(([name, now]) => (versioned(now) ? `added ${name} (${now.label})` : `added ${name}`)),
-            ...[...before.keys()].filter((name) => !after.has(name)).map((name) => `removed ${name}`),
+            ...[...after].filter(([name]) => !before.has(name)).flatMap(([name, now]) => {
+                // The version that was newest before a commit becomes an older one. The folder's entry already shows the commit.
+                const folder = before.get(name.slice(0, name.lastIndexOf('/')));
+                if (now.label === 'older version' && folder && `${folder.label}.json` === path.posix.basename(name) && folder.sha === now.sha) return [];
+                return [`added ${name}${labelOf(now)}`];
+            }),
+            // A prune removes older versions, so only they may disappear.
+            ...[...before].filter(([name, was]) => !after.has(name) && was.label !== 'older version').map(([name]) => `removed ${name}`),
         ];
         if (changes.length > 0) throw new Error(`The step "${step.name}" touched authored order: ${changes.join(', ')}.`);
     }

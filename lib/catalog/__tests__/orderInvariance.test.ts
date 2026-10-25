@@ -220,6 +220,26 @@ describe('assertOrderUntouched', () => {
         expect(fs.existsSync(versionFile(dir, 1))).toBe(false);
     });
 
+    it('names a step that changes or adds an older version, or adds any other file to a version folder', async () => {
+        const catalog = await createTestCatalog({ seed: 83 });
+        cleanups.push(() => catalog.cleanup());
+        const seriesId = catalog.series[0].id;
+        await applySequenceOp({ dataRoot: catalog.root }, { kind: 'move', seriesId, photoId: catalog.series[0].photoIds[0], at: 'end' }, { expectedVersion: 1, actor: { kind: 'editor' } });
+        const dir = authoredRecordDir(catalog.root, 'series', seriesId);
+        const older = versionFile(dir, 1);
+        expect(fs.existsSync(versionFile(dir, 2))).toBe(true);
+        const rewritten = { name: 'a rewritten older version', run: () => fs.appendFileSync(older, '\n') };
+        await expect(assertOrderUntouched(catalog.root, [rewritten])).rejects.toThrow(`changed authored/series/${seriesId}/v1.json (older version).`);
+        const site = authoredRecordDir(catalog.root, 'site', 'site');
+        const sideFile = { name: 'a side file', run: () => fs.writeFileSync(path.join(site, 'notes.json'), '{}') };
+        await expect(assertOrderUntouched(catalog.root, [sideFile])).rejects.toThrow('added authored/site/notes.json.');
+        fs.rmSync(path.join(site, 'notes.json'));
+        const text = fs.readFileSync(older);
+        await pruneVersions(dir, { keep: 1 });
+        const restored = { name: 'a restored older version', run: () => fs.writeFileSync(older, text) };
+        await expect(assertOrderUntouched(catalog.root, [restored])).rejects.toThrow(`added authored/series/${seriesId}/v1.json (older version).`);
+    });
+
     it('refuses a data root with nothing to compare', async () => {
         const data = createTempDataRoot();
         cleanups.push(() => data.cleanup());
