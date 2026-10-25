@@ -206,6 +206,30 @@ describe('the public reader', { timeout: 60_000 }, () => {
         expect(await checkCatalogMode(root)).toEqual({ mode: 'catalog' });
     });
 
+    it('reads a revision once for concurrent cold requests, and tries again after a read that failed', async () => {
+        const { root, published } = await fixture(10);
+        const first = await published();
+        const file = revisionFilePath(root, first.revisionId ?? '');
+        const revisionReads = (reads: { mock: { calls: unknown[][] } }) => reads.mock.calls.filter(([read]) => String(read) === file).length;
+
+        const cold = await freshProcess();
+        const reads = vi.spyOn(fs.promises, 'readFile');
+        const loads = await Promise.all(Array.from({ length: 10 }, () => cold.loadActiveCatalog(root)));
+        expect(loads.every((load) => load.mode === 'catalog' && load.state === 'ok')).toBe(true);
+        expect(revisionReads(reads)).toBe(1);
+        reads.mockRestore();
+
+        // A failed read is dropped, so the read after it goes to the file again.
+        const restarted = await freshProcess();
+        vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        const bytes = fs.readFileSync(file);
+        fs.rmSync(file);
+        const missing = await Promise.all([restarted.loadActiveCatalog(root), restarted.loadActiveCatalog(root)]);
+        expect(missing).toEqual([{ mode: 'catalog', state: 'unavailable', reason: 'revision-unreadable' }, { mode: 'catalog', state: 'unavailable', reason: 'revision-unreadable' }]);
+        fs.writeFileSync(file, bytes);
+        expect(await restarted.loadActiveCatalog(root)).toMatchObject({ state: 'ok', active: { revisionId: first.revisionId } });
+    });
+
     it('is legacy without a data root', async () => {
         const { loadActiveCatalog, catalogMode } = await freshProcess();
         expect(await catalogMode(null)).toBe('legacy');
