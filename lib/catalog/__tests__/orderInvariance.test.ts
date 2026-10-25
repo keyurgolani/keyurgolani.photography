@@ -9,6 +9,8 @@ import { folderBytes } from '../../../test/helpers/folderBytes';
 import { runTsx } from '../../../test/helpers/runTsx';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempLibrary';
+import { migrateApply } from '../../identity/apply';
+import { watcherStatusFile } from '../../identity/heartbeat';
 import { migrateDryRun } from '../../identity/migration';
 import { jsonLogSink, runReconcilePass, type PassOptions } from '../../identity/pass';
 import { currentProfileId } from '../../identity/profile';
@@ -110,11 +112,13 @@ function publicPhoto(registry: Registry, photoId: string, index: number, profile
  * published revision of them as #13's publish would write it, and the
  * working layer that revision came from: a published series with a cover,
  * an opening photo, and two chapters, a draft series, and the site record.
+ * With `migrate`, the IDs come from a migration instead, the way an owner
+ * initializes a data root: a dry run, then an apply of its plan.
  */
-async function prepare(): Promise<Fixture> {
+async function prepare({ migrate = false }: { migrate?: boolean } = {}): Promise<Fixture> {
     const lib = await createTempLibrary();
     cleanups.push(() => lib.cleanup());
-    const data = createTempDataRoot();
+    const data = createTempDataRoot({ state: migrate ? 'uninitialized' : 'ready' });
     cleanups.push(() => data.cleanup());
     const put = (target: string, bytes: Buffer) => {
         fs.mkdirSync(path.dirname(lib.file(target)), { recursive: true });
@@ -137,7 +141,13 @@ async function prepare(): Promise<Fixture> {
         if (outcome.status !== 'committed') throw new Error(`The pass didn't commit: ${JSON.stringify(outcome)}`);
         return outcome.facts.map((fact) => fact.type);
     };
-    await pass();
+    if (migrate) {
+        // What `photos migrate --dry-run` and `--apply --plan <file>` run.
+        const dryRun = await migrateDryRun({ ...options(), settleMs: 0 });
+        await migrateApply({ planPath: dryRun.planPath, clock: options().clock, idGen: ids, logger: quiet });
+    } else {
+        await pass();
+    }
 
     const root = data.root;
     const registry = await readRegistry(root);
@@ -174,12 +184,26 @@ async function prepare(): Promise<Fixture> {
     return { lib, data, members, revision: parsed.value, options, pass, put };
 }
 
-/** The watcher run `npm run images:process` starts, against the temp roots. */
-async function runWatcherOnce(fixture: Fixture, ...args: string[]): Promise<void> {
+/** The watcher run `npm run images:process` starts, against the temp roots. Resolves its output. */
+async function runWatcherOnce(fixture: Fixture, ...args: string[]): Promise<string> {
     const run = await runTsx('scripts/imageWatcher.ts', ['--once', ...args], {
         env: { PHOTOGRAPHY_LIBRARY_DIR: fixture.lib.root, PHOTOGRAPHY_DATA_DIR: fixture.data.root },
     });
     if (run.code !== 0) throw new Error(`The watcher exited ${run.code}:\n${run.stdout}\n${run.stderr}`);
+    return `${run.stdout}${run.stderr}`;
+}
+
+/**
+ * A watcher run that also ran its identity step: the output never says the
+ * step is off, and the heartbeat records a committed pass. A run whose
+ * identity step was skipped would prove nothing about ingestion.
+ */
+async function runWatcherOnceWithIdentity(fixture: Fixture, name: string, ...args: string[]): Promise<void> {
+    const output = await runWatcherOnce(fixture, ...args);
+    expect(output, name).not.toContain('Identity step off');
+    expect(output, name).toContain(`[identity] Identity step on: data root ${fixture.data.root}.`);
+    const heartbeat = JSON.parse(fs.readFileSync(watcherStatusFile(fixture.data.root), 'utf8')) as { lastPassResult: unknown };
+    expect(heartbeat.lastPassResult, name).toBe('committed');
 }
 
 describe('assertOrderUntouched', () => {
@@ -347,13 +371,13 @@ describe('reconcile never authors order', () => {
 
 describe('the watcher never authors order', () => {
     it('leaves catalog/ and authored/ byte-identical at startup and after each kind of library edit', async () => {
-        const fixture = await prepare();
+        const fixture = await prepare({ migrate: true });
         const { lib, put } = fixture;
         const run = (name: string, edit: () => unknown, ...args: string[]): OrderStep => ({
             name,
             run: async () => {
                 await edit();
-                await runWatcherOnce(fixture, ...args);
+                await runWatcherOnceWithIdentity(fixture, name, ...args);
             },
         });
         await assertOrderUntouched(fixture.data.root, [
