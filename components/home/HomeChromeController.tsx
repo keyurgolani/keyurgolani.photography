@@ -364,6 +364,8 @@ export default function HomeChromeController({
     chrome.addEventListener('pointerover', onPointerOver);
     chrome.addEventListener('pointerout', onPointerOut);
     chrome.addEventListener('scroll', onScroll, { passive: true });
+    // Hydration fires no focusin, so focus a Tab put in the server HTML's chrome counts here, before any key.
+    if (document.activeElement && chrome.contains(document.activeElement)) onFocusIn();
     return () => {
       chrome.removeEventListener('focusin', onFocusIn);
       chrome.removeEventListener('focusout', onFocusOut);

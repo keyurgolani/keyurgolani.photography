@@ -1,6 +1,8 @@
 import { act, render } from '@testing-library/react';
 import { Profiler, StrictMode, useEffect } from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { hydrateRoot } from 'react-dom/client';
+import { renderToString } from 'react-dom/server';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { mediaListenerCounts, setPrefersReducedMotion } from '@/test/matchMedia';
 import { setDocumentVisibility } from '@/test/visibility';
 import HomeChromeController, { HomeChrome, HomeVignette } from '../HomeChromeController';
@@ -342,12 +344,73 @@ describe('HomeChromeController', () => {
       });
     }
 
+    for (const name of ['Enter', ' ']) {
+      it(`${name === ' ' ? 'Space' : name} with focus outside the chrome is never held back`, () => {
+        renderHome();
+        expect(document.activeElement).toBe(document.body);
+        const press = key('keydown', name, document.body);
+        expect(press.defaultPrevented).toBe(false);
+        expect(state()).toBe('interactive');
+        // A later activation the browser sends is not dropped either.
+        expect(click(document.body, { detail: 0 }).defaultPrevented).toBe(false);
+      });
+    }
+
     it('Enter on revealed chrome activates as usual', () => {
       focusVisible = false;
       const { next } = renderHome();
       act(() => next.focus());
       const press = key('keydown', 'Enter', next);
       expect(press.defaultPrevented).toBe(false);
+    });
+  });
+
+  describe('hydration', () => {
+    /** Server HTML for Home in the document, with `focus` run on it before React hydrates. */
+    function hydrateHome(focus: (container: HTMLElement) => void) {
+      const onNext = vi.fn();
+      const container = document.createElement('div');
+      container.innerHTML = renderToString(<Home onNext={onNext} />);
+      document.body.appendChild(container);
+      focus(container);
+      let root: ReturnType<typeof hydrateRoot> | undefined;
+      act(() => {
+        root = hydrateRoot(container, <Home onNext={onNext} />);
+      });
+      // Before any assertion, so a failing test leaves no second Home behind for the next.
+      onTestFinished(() => {
+        act(() => root?.unmount());
+        container.remove();
+      });
+      act(() => api.reportPhoto('shown'));
+      return { next: container.querySelector('button')!, onNext };
+    }
+
+    it('keyboard focus a Tab put in the server HTML holds the chrome, so the first Enter after hydration activates', () => {
+      const { next, onNext } = hydrateHome((container) => container.querySelector('button')!.focus());
+      expect(document.activeElement).toBe(next);
+      expect(state()).toBe('interactive');
+      expect(holds()).toBe('keyboard-focus');
+
+      const press = key('keydown', 'Enter', next);
+      expect(press.defaultPrevented).toBe(false);
+      expect(click(next, { detail: 0 }).defaultPrevented).toBe(false);
+      expect(onNext).toHaveBeenCalledTimes(1);
+    });
+
+    it('pointer focus in the server HTML reveals without holding, so the chrome still recedes', () => {
+      focusVisible = false;
+      const { next } = hydrateHome((container) => container.querySelector('button')!.focus());
+      expect(document.activeElement).toBe(next);
+      expect(state()).toBe('interactive');
+      expect(holds()).toBe('');
+      recede();
+    });
+
+    it('focus outside the chrome at hydration changes nothing', () => {
+      hydrateHome(() => {});
+      expect(state()).toBe('immersive');
+      expect(holds()).toBe('');
     });
   });
 
