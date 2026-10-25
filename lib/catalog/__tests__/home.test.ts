@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../../identity/variants';
+import { mediaUrl } from '../../media/url';
 import { homeRouteOf, publishedHomeOf, type HomeActiveCatalog, type HomeSeries, type HomeSource, type PublishedHome } from '../projections/home';
 import { publish } from '../publish';
 import { createCatalogReader, createRouteBuilder } from '../reader';
@@ -164,19 +165,25 @@ describe('order', () => {
         expect(series.photos.map((photo) => photo.id)).toEqual(ORDER_A);
     });
 
-    it('opens on the first photograph when no opening is stored, or the stored one doesn\'t resolve', () => {
+    it('opens on the first photograph when no opening is stored, or the stored one doesn\'t resolve, and gives it the LQIP', () => {
         const none = content();
         delete none.series[1].openingPhotoId;
         expect(none.series[1].id).toBe('ser_fixture-a');
-        expect(featured(homeOf(none)).openingPhotoId).toBe(P[4]);
 
         const unresolved = content();
         unresolved.series[1].openingPhotoId = P[9];
-        expect(featured(homeOf(unresolved)).openingPhotoId).toBe(P[4]);
 
         const outside = content();
         outside.series[1].openingPhotoId = P[5];
-        expect(featured(homeOf(outside)).openingPhotoId).toBe(P[4]);
+
+        for (const [name, held] of [['none stored', none], ['unresolved', unresolved], ['outside the series', outside]] as const) {
+            const series = featured(homeOf(held));
+            expect(series.openingPhotoId, name).toBe(P[4]);
+            const lqip = held.photos.find((photo) => photo.id === P[4])?.lqip;
+            expect(lqip, name).toMatch(/^data:image\/webp;base64,/);
+            expect(series.photos[0].image?.lqip, name).toBe(lqip);
+            expect(series.photos.slice(1).filter((photo) => photo.image !== null && 'lqip' in photo.image), name).toEqual([]);
+        }
     });
 
     it('skips members that resolve to nothing, as the series page counts them', () => {
@@ -288,6 +295,33 @@ describe('the Home projection', () => {
         expect(byId.get(P[0])).toEqual({ x: 0.5, y: 0.5 });
     });
 
+    it('keeps a focal point on either bound of either axis and centers one outside them', () => {
+        const focalOf = (value: unknown) => {
+            const held = content();
+            const target = held.photos.find((photo) => photo.id === P[0]);
+            if (!target) throw new Error('Missing fixture photo');
+            (target as { focalPoint: unknown }).focalPoint = value;
+            const photos = featured(homeOf(held)).photos;
+            expect(photos.map((photo) => photo.id)).toEqual(ORDER_A);
+            expect(photos.find((photo) => photo.id === P[4])?.focalPoint).toEqual({ x: 0.2, y: 0.8 });
+            return photos.find((photo) => photo.id === P[0])?.focalPoint;
+        };
+        // The bounds are inclusive.
+        expect(focalOf({ x: 0, y: 1 })).toEqual({ x: 0, y: 1 });
+        expect(focalOf({ x: 1, y: 0 })).toEqual({ x: 1, y: 0 });
+        const outside: [string, unknown][] = [
+            ['x above 1', { x: 1.01, y: 0.5 }],
+            ['x below 0', { x: -1, y: 0.5 }],
+            ['y above 1', { x: 0.5, y: 7 }],
+            ['y below 0', { x: 0.5, y: -0.1 }],
+            ['x a numeric string', { x: '0.3', y: 0.5 }],
+            ['y a numeric string', { x: 0.5, y: '0.3' }],
+            ['x not finite', { x: Number.NaN, y: 0.5 }],
+            ['null', null],
+        ];
+        for (const [name, value] of outside) expect(focalOf(value), name).toEqual({ x: 0.5, y: 0.5 });
+    });
+
     it('shows a missing image, never another file, when a set isn\'t the photo\'s own /media set', () => {
         const cases: [string, (photo: RevisionContent['photos'][number]) => void][] = [
             ['an original', (photo) => (photo.variants.w1920.avif.url = '/photos/original.jpg')],
@@ -297,6 +331,13 @@ describe('the Home projection', () => {
             ['a bad file size', (photo) => (photo.variants.w400.webp.bytes = 0)],
             ['a bad asset revision', (photo) => (photo.assetRevision = 'sha256-nope')],
             ['a bad photo size', (photo) => (photo.width = 0)],
+            ['a bad photo height', (photo) => (photo.height = 0)],
+            ['a bad file width', (photo) => (photo.variants.w1200.webp.width = 0)],
+            ['a bad file height', (photo) => (photo.variants.w1200.avif.height = 0)],
+            ['a fractional file size', (photo) => (photo.variants.w400.avif.bytes = 1.5)],
+            ['a fractional file width', (photo) => (photo.variants.w800.webp.width = 799.5)],
+            ['its own file under another asset revision', (photo) => (photo.variants.w800.webp.url = mediaUrl({ photoId: photo.id, assetRevision: `sha256-${'f'.repeat(64)}`, profileId: photo.profileId }, 'w800', 'webp'))],
+            ['its own file under another profile', (photo) => (photo.variants.w800.webp.url = mediaUrl({ photoId: photo.id, assetRevision: photo.assetRevision, profileId: `p_${'f'.repeat(16)}` }, 'w800', 'webp'))],
         ];
         for (const [name, damage] of cases) {
             const held = content();
@@ -311,13 +352,22 @@ describe('the Home projection', () => {
     });
 
     it('shows the opening photograph\'s set without an LQIP that isn\'t a WebP data URI', () => {
-        const held = content();
-        const opening = held.photos.find((photo) => photo.id === P[3]);
-        if (!opening) throw new Error('Missing fixture photo');
-        opening.lqip = 'data:image/webp;base64,AAAA");background:url("/x';
-        const image = featured(homeOf(held)).photos.find((photo) => photo.id === P[3])?.image;
-        expect(image?.variants).toEqual(ladder(P[3]));
-        expect(image).not.toHaveProperty('lqip');
+        const values: [string, string][] = [
+            ['a trailing CSS injection', 'data:image/webp;base64,AAAA");background:url("/x'],
+            ['a prefix before a valid data URI', '/x.png"),url("data:image/webp;base64,AAAA'],
+            ['another image type', 'data:image/png;base64,AAAA'],
+            ['a parenthesis in the base64', 'data:image/webp;base64,AA)AA'],
+            ['a quote in the base64', "data:image/webp;base64,AA'AA"],
+        ];
+        for (const [name, lqip] of values) {
+            const held = content();
+            const opening = held.photos.find((photo) => photo.id === P[3]);
+            if (!opening) throw new Error('Missing fixture photo');
+            opening.lqip = lqip;
+            const image = featured(homeOf(held)).photos.find((photo) => photo.id === P[3])?.image;
+            expect(image?.variants, name).toEqual(ladder(P[3]));
+            expect(image, name).not.toHaveProperty('lqip');
+        }
     });
 });
 
@@ -413,6 +463,26 @@ describe('homeRouteOf, the cutover gate', () => {
         const reader = createCatalogReader(content(), { revisionId: REVISION_B, revisionNumber: 9 });
         const result = homeRouteOf({ mode: 'catalog', state: 'degraded', reader }, routes);
         expect(result.kind === 'home' && result.home.catalogRevision).toBe(REVISION_B);
+    });
+
+    it('reads a reader whose methods need their this', () => {
+        const inner = createCatalogReader(content(), { revisionId: REVISION_A, revisionNumber: 3 });
+        class Reader {
+            constructor(private readonly of: typeof inner) {}
+            revision() {
+                return this.of.revision();
+            }
+            site() {
+                return this.of.site();
+            }
+            listSeries() {
+                return this.of.listSeries();
+            }
+            photosOf(seriesId: string) {
+                return this.of.photosOf(seriesId);
+            }
+        }
+        expect(homeRouteOf({ mode: 'catalog', state: 'ok', reader: new Reader(inner) }, routes)).toEqual({ kind: 'home', home: homeOf() });
     });
 
     it('builds the link with the routes it\'s handed', () => {
