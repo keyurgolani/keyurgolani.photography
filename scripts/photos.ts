@@ -137,6 +137,9 @@
  *                                      [--start | --end | --after <photoId>] [--description <text> | --decorative]
  *   npx tsx scripts/photos.ts curation (defer | retry | reopen) <eventId> --version <n> [--reason <text>]
  *   npx tsx scripts/photos.ts curation dismiss <eventId> --version <n> --reason <text>
+ *   npx tsx scripts/photos.ts curation confirm <eventId> --version <n>
+ *     #17's Confirm new asset revision, for a replacement whose new set is
+ *     ready (lib/curation/resolutions.ts). Needs --base once a revision is active.
  *     The curation inbox (lib/curation/commands.ts). New photographs wait
  *     here until approved into the draft; nothing here publishes. Item
  *     commands take the --version that list or show printed, and --base
