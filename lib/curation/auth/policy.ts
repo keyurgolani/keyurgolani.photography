@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { foldName } from '../../foldName';
 import { resolvedPathname } from '../../../utils/publicDerivatives';
@@ -42,6 +44,9 @@ export const BIND_SCOPE_SETTING = 'CURATION_BIND_SCOPE';
 
 /** The loopback names a curator may be told to listen on. */
 const LOOPBACK_BINDS = new Set(['127.0.0.1', '::1', 'localhost']);
+
+/** The addresses a listening loopback socket reports. */
+const LOOPBACK_SOCKETS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 
 /** The wildcard addresses accepted only inside a container whose publish is the boundary. */
 const WILDCARD_BINDS = new Set(['0.0.0.0', '::']);
@@ -113,41 +118,102 @@ export function inContainer(): boolean {
 }
 
 /**
- * Why a server with the curator on may not run where it was told to listen,
- * or null when it may. The rule, also in docs/curator.md:
+ * The addresses of the TCP servers this process listens on, from Node's
+ * active handles, or null when Node doesn't offer them. That's the socket
+ * itself, so it holds however the address was chosen, including under
+ * `next dev`, whose `--hostname` reaches its server over IPC.
+ */
+export function listeningAddresses(): string[] | null {
+    const active = (process as unknown as { _getActiveHandles?: () => unknown[] })._getActiveHandles;
+    if (typeof active !== 'function') return null;
+    const addresses: string[] = [];
+    for (const handle of active.call(process)) {
+        if (!(handle instanceof net.Server) || !handle.listening) continue;
+        const address = handle.address();
+        if (address !== null && typeof address === 'object') addresses.push(address.address);
+    }
+    return addresses;
+}
+
+/** How many network interfaces have an address beyond loopback. A container on its own network has one. */
+export function externalInterfaceCount(): number {
+    return Object.values(os.networkInterfaces()).filter((addresses) => (addresses ?? []).some((address) => !address.internal)).length;
+}
+
+/** What the bind checks read of the process. Tests pass their own. */
+export interface BindProbe {
+    containerized?: () => boolean;
+    sockets?: () => string[] | null;
+    interfaces?: () => number;
+}
+
+/** Whether this is the child process `next dev` forks to run the server. */
+const isNextDevChild = (env: CuratorEnv) => env.__NEXT_DEV_SERVER === '1' && env.NEXT_PRIVATE_WORKER === '1';
+
+/**
+ * Why a server with the curator on may not run where it listens, or null
+ * when it may. The rule, also in docs/curator.md:
  *
- * - The address must be `127.0.0.1`, `::1` or `localhost`. None at all counts
- *   as non-loopback, since server.js and `next start` then listen on every
- *   interface.
+ * - The address must be `127.0.0.1`, `::1` or `localhost`: the
+ *   `--hostname` (or `-H`) argument under `next start`, `HOSTNAME` under the
+ *   standalone server.js. None at all counts as non-loopback, since both
+ *   then listen on every interface.
+ * - Once the server listens, its sockets must be on loopback too, whatever
+ *   the settings said. Under `next dev`, whose child process gets
+ *   `--hostname` over IPC, the sockets are the only check, and a dev server
+ *   whose sockets can't be read is refused.
  * - The one exception is the compose `curator` service. Docker's port
  *   forward reaches a container on its network interface, so inside the
  *   container the server listens on `0.0.0.0`, and the publish to the host's
  *   127.0.0.1 is the boundary. That service sets
  *   `CURATION_BIND_SCOPE=container`, which accepts a wildcard address (`0.0.0.0`
- *   or `::`) and nothing else, and only where a container marker file exists.
+ *   or `::`) and nothing else, only where a container marker file exists, and
+ *   only while the process sees a single network interface beyond loopback,
+ *   as on its own Compose network and unlike under host networking.
  *   ci/check-compose.sh checks that the only service with it publishes on
  *   127.0.0.1 alone and shares no network with another service.
  */
-export function bindProblem(env: CuratorEnv, argv: readonly string[], containerized: () => boolean = inContainer): string | null {
-    const { address, source } = listenTarget(env, argv);
+export function bindProblem(env: CuratorEnv, argv: readonly string[], probe: BindProbe = {}): string | null {
+    const containerized = probe.containerized ?? inContainer;
+    const sockets = probe.sockets ?? listeningAddresses;
+    const interfaces = probe.interfaces ?? externalInterfaceCount;
     const scope = env[BIND_SCOPE_SETTING];
     if (scope !== undefined && scope !== '' && scope !== 'container') {
         return `${BIND_SCOPE_SETTING} may only be "container"`;
     }
-    if (address !== null && LOOPBACK_BINDS.has(address)) return null;
-    if (address !== null && scope === 'container' && WILDCARD_BINDS.has(address)) {
-        return containerized() ? null : `${BIND_SCOPE_SETTING}=container is set, but this process isn't in a container`;
+    const wildcardAllowed = (): string | null => {
+        if (!containerized()) return `${BIND_SCOPE_SETTING}=container is set, but this process isn't in a container`;
+        if (interfaces() > 1) return `${BIND_SCOPE_SETTING}=container is set, but this process sees more than one network interface, as under host networking`;
+        return null;
+    };
+    const dev = isNextDevChild(env);
+    if (!dev) {
+        const { address, source } = listenTarget(env, argv);
+        if (address === null) return `${source} is unset, so the server listens on every interface`;
+        if (!LOOPBACK_BINDS.has(address)) {
+            if (scope !== 'container' || !WILDCARD_BINDS.has(address)) return `${source} is not 127.0.0.1, ::1 or localhost`;
+            const problem = wildcardAllowed();
+            if (problem) return problem;
+        }
     }
-    if (address === null) return `${source} is unset, so the server listens on every interface`;
-    return `${source} is not 127.0.0.1, ::1 or localhost`;
+    const addresses = sockets();
+    if (addresses === null || addresses.length === 0) {
+        return dev ? "the dev server's listening address can't be read" : null;
+    }
+    for (const address of addresses) {
+        if (LOOPBACK_SOCKETS.has(address)) continue;
+        if (scope === 'container' && WILDCARD_BINDS.has(address) && wildcardAllowed() === null) continue;
+        return 'the server listens on an address other than 127.0.0.1, ::1 or localhost';
+    }
+    return null;
 }
 
 /** Why the curator can't start, or null when it's off or may run. The message names settings, never their values. */
-export function curatorStartupProblem(env: CuratorEnv, argv: readonly string[], containerized?: () => boolean): string | null {
+export function curatorStartupProblem(env: CuratorEnv, argv: readonly string[], probe?: BindProbe): string | null {
     if (!isCurationEnabled(env)) return null;
     const hosts = curatorHosts(env);
     if ('problem' in hosts) return hosts.problem;
-    return bindProblem(env, argv, containerized);
+    return bindProblem(env, argv, probe);
 }
 
 /** What a curator request carries that the checks read. Header values as sent, or null when missing. */
@@ -195,11 +261,11 @@ export function evaluateCuratorRequest(
     request: CuratorRequest,
     env: CuratorEnv,
     argv: readonly string[],
-    containerized?: () => boolean,
+    probe?: BindProbe,
 ): CuratorDenial | null {
     if (!isCurationEnabled(env)) return { status: 404, reason: 'off' };
     const allowed = curatorHosts(env);
-    if ('problem' in allowed || bindProblem(env, argv, containerized) !== null) return { status: 503, reason: 'misconfigured' };
+    if ('problem' in allowed || bindProblem(env, argv, probe) !== null) return { status: 503, reason: 'misconfigured' };
     const host = request.host?.toLowerCase() ?? null;
     if (host === null || !allowed.hosts.has(host)) return { status: 421, reason: 'host' };
     if (request.forwardedHost !== null && request.forwardedHost.toLowerCase() !== host) return { status: 421, reason: 'host' };
