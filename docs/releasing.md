@@ -131,6 +131,8 @@ Set the tag in the `.env` next to `docker-compose.prod.yml` on the host. Compose
 PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z
 ```
 
+To pin the exact image too, add the digest from the release's job summary: `PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z@sha256:<digest>`. Compose then pulls that digest whatever the tag names later.
+
 Then pull and restart:
 
 ```bash
@@ -193,11 +195,11 @@ If the diff shows changes made on this host, don't copy them into the new file:
 - A different host port goes in `.env` as `PHOTOGRAPHY_PORT=<port>`, never in an override.
 - Anything else, such as another service or photos path, goes in an override file that isn't in the repository, added to every command as `-f docker-compose.prod.yml -f <override>`, so the next release's file replaces cleanly. Compose adds an override's `ports:` to the file's instead of replacing them, so a `ports:` entry for `web` there has to start with `127.0.0.1:` and its list has to be tagged `!override` (Compose 2.24.4 or later), and `web` never takes `network_mode: host`. Otherwise `web` is published on every interface again. These rules are for `web` only. A reverse proxy service in the override may publish 80 and 443, or run with `network_mode: host` and point at `http://127.0.0.1:3000`.
 
-Then install the new file, set up the data root, and deploy. Do it this way instead of the plain `pull` and `up -d`, and only after the `.env` edit. Each half of the switch needs the other: the plain commands would start the old file on the new image, whose watcher command needs tsx, and this block run on the old tag would start the new file on the old image, which has no `dist/scripts`. Either way the watcher crash-loops. So the block checks `.env` first, and stops before it changes anything when the tag isn't there yet. The `exit` leaves only the block's subshell, not your shell:
+Then install the new file, set up the data root, and deploy. Do it this way instead of the plain `pull` and `up -d`, and only after the `.env` edit. Each half of the switch needs the other: the plain commands would start the old file on the new image, whose watcher command needs tsx, and this block run on the old tag would start the new file on the old image, which has no `dist/scripts`. Either way the watcher crash-loops. So the block checks `.env` first, and stops before it changes anything when the tag isn't there yet. The check takes the tag alone or pinned to a digest, `vX.Y.Z@sha256:<digest>`, as one line with no quotes or spaces. In the `grep` pattern, put the version's digits in place of `X`, `Y`, and `Z` and keep the `\.` between them. The `exit` leaves only the block's subshell, not your shell:
 
 ```bash
 (
-  grep -qx 'PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z' .env || { echo ".env doesn't set PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z yet. Nothing was changed." >&2; exit 1; }
+  grep -Eqx 'PHOTOGRAPHY_IMAGE_TAG=vX\.Y\.Z(@sha256:[0-9a-f]{64})?' .env || { echo ".env doesn't set PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z yet. Nothing was changed." >&2; exit 1; }
   mv docker-compose.prod.yml.new docker-compose.prod.yml
   mkdir -p portfolio-data .next-images-cache
   sudo chown -R 1001:1001 portfolio-data .next-images-cache
@@ -211,7 +213,7 @@ With an override, use this block instead. It also checks the merged file, the ne
 
 ```bash
 (
-  grep -qx 'PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z' .env || { echo ".env doesn't set PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z yet. Nothing was changed." >&2; exit 1; }
+  grep -Eqx 'PHOTOGRAPHY_IMAGE_TAG=vX\.Y\.Z(@sha256:[0-9a-f]{64})?' .env || { echo ".env doesn't set PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z yet. Nothing was changed." >&2; exit 1; }
   docker compose -f docker-compose.prod.yml.new -f <override> config --format json |
     jq -e '.services.web.network_mode == null and ([.services.web.ports[]?.host_ip] | unique) == ["127.0.0.1"]' >/dev/null ||
     { echo "With the override, web isn't published on 127.0.0.1 only. Fix the override. Nothing was changed." >&2; exit 1; }
