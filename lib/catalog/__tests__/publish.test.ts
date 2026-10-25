@@ -519,6 +519,18 @@ describe('activateRevision', { timeout: 30_000 }, () => {
         expect(await listActivations(root)).toHaveLength(1);
     });
 
+    it("refuses a value that isn't a revision ID before reading or writing anything, and so does the rebase", async () => {
+        const { root, first, catalogFiles } = await launched({ seed: 86 });
+        const files = catalogFiles();
+        for (const revisionId of ['../../authored/site', `${first.revisionId}/../../../authored/site`]) {
+            await expect(activate(root, { revisionId, expectedActiveRevisionId: first.revisionId ?? '' })).rejects.toThrow(/A revision ID is rev_ plus 64 hex/);
+            await expect(activate(root, { revisionId: first.revisionId ?? '', expectedActiveRevisionId: revisionId })).rejects.toThrow(TypeError);
+            await expect(rebaseWorkingLayer({ root, targetRevisionId: revisionId })).rejects.toThrow(TypeError);
+        }
+        expect(catalogFiles()).toEqual(files);
+        expect(await listActivations(root)).toHaveLength(1);
+    });
+
     it("takes its data root from the lock when it isn't given", async () => {
         const { catalog, root, run, editPhoto, first } = await launched({ seed: 84 });
         await editPhoto(catalog.photos[0].id, (photo) => {

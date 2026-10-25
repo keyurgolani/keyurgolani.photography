@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { atomicCreateJson, atomicWriteJson, type AtomicWriteFaults } from '../storage/atomicWrite';
 import { hasErrorCode, PRIVATE_DIR_MODE } from '../storage/fsx';
-import { CATALOG_SCHEMA_VERSION, parseActivation, parseRevisionFile, revisionIdOf, ACTIVATION_ID_RE } from './schema';
+import { CATALOG_SCHEMA_VERSION, parseActivation, parseRevisionFile, revisionIdOf, ACTIVATION_ID_RE, REVISION_ID_RE } from './schema';
 import type { Activation, ActivePointer, CandidateFile, Issue, RevisionFile } from './types';
 import { catalogPaths } from './working-layer';
 
@@ -51,7 +51,14 @@ async function readJson(file: string): Promise<{ json: true; value: unknown } | 
     }
 }
 
+/** Throw a TypeError for anything but a revision ID, so a caller's value never names another path. */
+export function assertRevisionId(revisionId: unknown): asserts revisionId is string {
+    if (typeof revisionId !== 'string' || !REVISION_ID_RE.test(revisionId)) throw new TypeError(`A revision ID is rev_ plus 64 hex, not ${JSON.stringify(revisionId)}.`);
+}
+
+/** Where `revisionId`'s file lives. Throws a TypeError for anything but a revision ID. */
 export function revisionFilePath(root: string, revisionId: string): string {
+    assertRevisionId(revisionId);
     return path.join(catalogPaths(root).revisionsDir, `${revisionId}.json`);
 }
 

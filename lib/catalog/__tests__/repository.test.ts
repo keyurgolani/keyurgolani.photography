@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
     activationFileName,
+    assertRevisionId,
     CatalogIntegrityError,
     lastCommitted,
     listActivations,
@@ -72,6 +73,12 @@ async function integrityError(fn: () => Promise<unknown>): Promise<CatalogIntegr
 describe('revision files', () => {
     it('reads null for a revision with no file', async () => {
         await expect(readRevisionFile(catalog.root, REV_A)).resolves.toBeNull();
+    });
+
+    it.each(['../../authored/site', `rev_${'0'.repeat(64)}/../../../authored/site`, `REV_${'0'.repeat(64)}`, `rev_${'0'.repeat(63)}`, '', 'rev_'])('refuses %j as a revision ID before it names a path', async (revisionId) => {
+        expect(() => assertRevisionId(revisionId)).toThrow(TypeError);
+        expect(() => revisionFilePath(catalog.root, revisionId)).toThrow(/A revision ID is rev_ plus 64 hex/);
+        await expect(readRevisionFile(catalog.root, revisionId)).rejects.toThrow(TypeError);
     });
 
     it('writes a revision once and leaves the file alone after that', async () => {

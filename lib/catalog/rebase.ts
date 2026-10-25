@@ -5,7 +5,7 @@ import type { Registry } from '../identity/types';
 import { withLock, type LockContext } from '../storage/lock';
 import { candidateAlt } from './compile';
 import { rebaseSeriesOrder } from './order';
-import { readRevisionFile } from './repository';
+import { assertRevisionId, readRevisionFile } from './repository';
 import type { AuthoredPhoto, AuthoredSeries, AuthoredSite, Conflict, PublicPhotoRecord, RevisionFile, SeriesRecord, WorkingLayer } from './types';
 import { AUTHORED_LEASE_MS, AUTHORED_LOCK, AUTHORED_WAIT_MS, writeRebasedRecord } from './working-layer-writer';
 import { readWorkingLayer } from './working-layer';
@@ -225,6 +225,7 @@ const EMPTY_BASE: Pick<RevisionFile, 'content'> = { content: { site: { featuredS
  */
 export async function rebaseWorkingLayer(options: RebaseOptions): Promise<RebaseReport> {
     const root = path.resolve(options.root);
+    assertRevisionId(options.targetRevisionId);
     const run = async (lock: LockContext): Promise<RebaseReport> => {
         const target = await readRevisionFile(root, options.targetRevisionId);
         if (target === null) throw new Error(`The revision ${options.targetRevisionId} has no revision file, so nothing can rebase onto it.`);

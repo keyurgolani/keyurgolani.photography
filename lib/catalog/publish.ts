@@ -10,6 +10,7 @@ import { candidateFile, compileCandidate, type CompileResult } from './compile';
 import { LAUNCH_ORDER_RULE_IDS } from './order-rules';
 import { rebaseWorkingLayer, type RebaseReport } from './rebase';
 import {
+    assertRevisionId,
     CATALOG_LOCK,
     CatalogIntegrityError,
     lastCommitted,
@@ -469,6 +470,8 @@ export async function activateRevision(options: ActivateOptions): Promise<Activa
     const { lock, clock = Date.now } = options;
     assertCatalogHold(lock, root);
     assertActorAndReason(options.actor, options.reason);
+    assertRevisionId(options.revisionId);
+    assertRevisionId(options.expectedActiveRevisionId);
     const pointer = await readActivePointer(root);
     if (pointer === null || lastCommitted(await listActivations(root)) === null) {
         return { outcome: 'NOTHING_ACTIVE', message: 'Nothing is active yet, so there is nothing to roll back from. Publish first.', activation: null };
