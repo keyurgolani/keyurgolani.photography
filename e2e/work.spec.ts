@@ -113,9 +113,10 @@ test.beforeAll(async () => {
     const cover = catalog.content.photos.find((record) => record.id === P[5]);
     if (!cover) throw new Error('The quarry cover is not in the published content');
     fs.rmSync(assetDir({ photoId: cover.id, assetRevision: cover.assetRevision, profileId: catalog.profileId }, catalog.root), { recursive: true, force: true });
-    // E2E_CATALOG_PORT pins a port per worker, for a machine that hands out ranges.
+    // E2E_CATALOG_PORT pins a port per worker, for a machine that hands out ranges. The config's
+    // catalog Home server listens on E2E_CATALOG_PORT itself, so the workers start one above it, as series.spec.ts does.
     const base = Number(process.env.E2E_CATALOG_PORT);
-    server = await startCatalogServer(catalog.root, Number.isInteger(base) && base > 0 ? base + test.info().parallelIndex : undefined);
+    server = await startCatalogServer(catalog.root, Number.isInteger(base) && base > 0 ? base + 1 + test.info().parallelIndex : undefined);
 });
 
 test.afterAll(async () => {
