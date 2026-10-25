@@ -1,19 +1,24 @@
 import type { Metadata } from 'next';
 import React from 'react';
 import SiteNav from '../../components/site/SiteNav';
-import AboutClient from './AboutClient';
+import { artist } from '../../data/artist';
+import portraitImage from '../../data/artistPortraitImage';
+import { assertPublishableCopy } from '../../utils/artistProfile';
+import AboutView from './AboutView';
+
+// At module scope on purpose: next build evaluates this file, so provisional
+// copy fails the build. Inside the component it would pass the build and
+// answer /about with a 500 instead.
+assertPublishableCopy(artist.profile);
 
 export const metadata: Metadata = { title: 'About' };
 
 export default function About() {
+  const { profile, destinations } = artist;
   return (
     <>
-      {/* The default variant until #12 gives About its paper ground. The wrapper stacks the nav over the page's
-          fixed z-50 portrait, which reaches up behind it on short screens. The nav itself stays in normal flow. */}
-      <div className="relative z-[60]">
-        <SiteNav />
-      </div>
-      <AboutClient />
+      <SiteNav surface="about" />
+      <AboutView profile={profile} portraitSrc={portraitImage} destinations={destinations} />
     </>
   );
 }

@@ -1,52 +1,167 @@
-/* Room for chrome that's still position: fixed. Since #21, SiteNav and the
-   theme toggle sit in normal flow above main, so neither needs any. #12 moves
-   these to about.css. The global scroll padding stays, so a link Tab scrolls
-   into view keeps its whole ring on screen. */
-:global(html):has(.root) {
-  --about-chrome-top: 0px;
-  --about-chrome-bottom: 0px;
+/* About on Light Takes Shape: warm paper ground, faint vertical ribs, and
+   dark ink, after Isamu Noguchi's Akari light sculptures, as the approved
+   mockup translates them. Only the paper, the ribs, and the ink come from the
+   reference. The --lts-* tokens live under [data-surface='about'] in
+   styles/surfaces/light-takes-shape.css, which main and the Primary nav carry
+   here, so nothing below reaches another route, even after a client-side move.
+   Paper and ink are the same in both themes: no theme variable or dark:
+   variant paints inside main. */
+
+/* The body under About is paper too, so overscroll and the strip below a short
+   page don't flash the theme's ground, and it doesn't fade in from it. The
+   body sits outside the surface, so this is --lts-paper's value. */
+:global(body):has(.root) {
+  background-color: #f4ecd7;
+  transition: none;
 }
 
-/* About's ground until #12: black with light ink in both themes, since the
-   page ignores the theme. #12 moves the tokens to [data-surface='about'] with
-   the Light Takes Shape values. Content flows portrait, name, then links, and
-   a short page fills the viewport below SiteNav without scrolling. The 2rem
-   above and below keeps the portrait off SiteNav and the last link's ring on
-   screen at scroll end. The inline padding keeps the ring and ParallaxCard's
-   10 px overhang inside 320 px. */
+/* The About tokens, which #11's ExternalLinks.module.css reads for its ink,
+   ground, rule, and focus ring. The rule is about 4.2:1 on paper. */
 .root {
-  --about-ground: #000;
-  --about-ink: #f0f0f0;
-  --about-rule: #808080;
+  --about-ground: var(--lts-paper);
+  --about-ink: var(--lts-ink);
+  --about-rule: #7d6e57;
+  min-height: calc(100svh - var(--site-nav-height, 0px));
+  padding-block-end: env(safe-area-inset-bottom, 0px);
+  background: var(--lts-ribs), var(--lts-paper);
+  color: var(--lts-ink);
+}
+
+/* One column in DOM order below 64rem: portrait, statement, links. The
+   mockup's 41% portrait column from 64rem, the article centered against it. */
+.layout {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 2rem;
-  min-height: calc(100svh - var(--site-nav-height, 0px));
-  padding: calc(var(--about-chrome-top, 0px) + 2rem) 1rem calc(var(--about-chrome-bottom, 0px) + 2rem);
-  background: var(--about-ground);
-  color: var(--about-ink);
+  gap: 1.5rem;
+  max-width: 90rem;
+  margin-inline: auto;
+  padding: 1.5rem 1.25rem 2rem;
 }
 
-/* The portrait sizes from here rather than from ProfilePicture's own w-64 box,
-   which 200% text grows past 320 px. Its photo runs about 1.5rem past the
-   bottom of the box, so the margin keeps the name clear of it. */
+@media (min-width: 40rem) {
+  .layout {
+    padding: 2.5rem 6% 3rem;
+  }
+}
+
+@media (min-width: 64rem) {
+  .layout {
+    display: grid;
+    grid-template-columns: 41% minmax(0, 1fr);
+    gap: 0;
+    padding: 6rem 6% 4rem;
+  }
+}
+
+/* The portrait sits on the mockup's near-black ground inside a 9 px paper
+   frame. Its caption is a band below the photo, in flow, so enlarged text
+   grows the frame instead of covering the face. */
 .portrait {
-  width: min(16rem, 100%);
-  aspect-ratio: 1 / 1;
-  margin-block-end: 1rem;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  border: 9px solid var(--lts-frame);
+  background: #101311;
+  box-shadow: var(--lts-shadow);
 }
 
-@media (min-width: 768px) {
-  .portrait {
-    width: min(20rem, 100%);
+.photo {
+  position: relative;
+  flex: 1 1 auto;
+  height: clamp(250px, 42svh, 380px);
+}
+
+@media (min-width: 64rem) {
+  .photo {
+    height: auto;
+    min-height: 420px;
   }
 }
 
-/* With no pointer events, ParallaxCard's tilt can't start. */
-@media (prefers-reduced-motion: reduce) {
-  .portrait {
-    pointer-events: none;
+/* The focal point from data/artist.ts is the object-position, set inline. */
+.image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.caption {
+  padding: 0.5rem 0.75rem;
+  background: rgba(41, 42, 40, 0.86);
+  color: var(--lts-paper);
+  font-family: var(--font-sans), sans-serif;
+  font-size: 0.875rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* A failed portrait: the same frame and height, with the name and alias as
+   text on paper instead of a broken image. */
+.fallback {
+  justify-content: center;
+  min-height: clamp(250px, 42svh, 380px);
+  padding: 1.5rem;
+  background: var(--lts-paper);
+}
+
+@media (min-width: 64rem) {
+  .fallback {
+    min-height: 420px;
   }
+}
+
+.fallbackName,
+.name {
+  margin: 0;
+  color: var(--lts-ink);
+  font-family: var(--font-sans), sans-serif;
+  font-size: 1rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.article {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+}
+
+@media (min-width: 64rem) {
+  .article {
+    padding: 2rem 0 2rem 9%;
+  }
+}
+
+.heading {
+  max-width: 16ch;
+  margin: 0 0 1.125rem;
+  font-family: var(--font-serif), serif;
+  font-size: clamp(2rem, 1.25rem + 2.4vw, 3.375rem);
+  font-weight: 400;
+  line-height: 1.02;
+  letter-spacing: -0.04em;
+  overflow-wrap: anywhere;
+}
+
+.paragraph {
+  max-width: 61ch;
+  margin: 0 0 0.75rem;
+  color: var(--lts-ink-soft);
+  font-family: var(--font-serif), serif;
+  font-size: clamp(1rem, 0.95rem + 0.2vw, 1.0625rem);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* The biography reads as a note under the statement. */
+.biography {
+  margin-block-start: 0.5rem;
+  font-size: 1rem;
+}
+
+.links {
+  margin-block-start: 1rem;
 }
