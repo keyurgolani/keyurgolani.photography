@@ -1097,7 +1097,7 @@ describe('the one-time rebuild of orientation-tagged photos', { timeout: 60_000 
         expect(await handlers.queueStartupBatch()).toEqual({ processed: ['turned.jpg'], skipped: [], errors: [] });
         expect(await optimizedSize('turned.jpg')).toEqual(UPRIGHT);
         // Said up front, before any build
-        const warning = `[ImageWatcher] ${path.dirname(marker())} can't be written, so the watcher can't record which sets it rebuilt. Until it can, every start rebuilds the orientation-tagged photos again, and a set last built from another source that's still in the library keeps that source's outputs.`;
+        const warning = `[ImageWatcher] ${path.dirname(marker())} can't be written, so the watcher can't record which sets it rebuilt. Until it can, every start rebuilds the orientation-tagged photos again. A set whose rebuild was refused, since another source still in the library last built it, keeps that source's outputs even after that source is edited, until cache/set-sources can be written again.`;
         expect(logs.indexOf(warning)).toBeGreaterThanOrEqual(0);
         expect(logs.indexOf(warning)).toBeLessThan(logs.findIndex((line) => line.startsWith('[ImageWatcher] Processing ')));
         expect(logs.some((line) => line.startsWith(`[ImageWatcher] Could not write ${marker()}: `) && line.endsWith('The next start rebuilds the orientation-tagged photos again.'))).toBe(true);
