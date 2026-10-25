@@ -35,7 +35,7 @@ export async function atomicWriteFile(file: string, data: string | Uint8Array, {
     const temp = tempPath ?? tempPathFor(file);
     let renamed = false;
     try {
-        const handle = await fs.promises.open(temp, 'wx', mode);
+        const handle = await fs.promises.open(/*turbopackIgnore: true*/ temp, 'wx', mode);
         try {
             await handle.writeFile(data);
             await handle.sync();
@@ -43,12 +43,12 @@ export async function atomicWriteFile(file: string, data: string | Uint8Array, {
             await handle.close();
         }
         await faults?.beforeRename?.(temp);
-        await fs.promises.rename(temp, file);
+        await fs.promises.rename(/*turbopackIgnore: true*/ temp, file);
         renamed = true;
         await faults?.afterRename?.();
         await fsyncDirectory(path.dirname(file));
     } catch (error) {
-        if (!renamed) await fs.promises.rm(temp, { force: true }).catch(() => undefined);
+        if (!renamed) await fs.promises.rm(/*turbopackIgnore: true*/ temp, { force: true }).catch(() => undefined);
         throw error;
     }
 }
