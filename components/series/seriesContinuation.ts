@@ -41,8 +41,13 @@ function isEntry(value: unknown): value is SeriesEntry {
     return typeof entry.photoId === 'string' && typeof entry.position === 'number' && typeof entry.href === 'string';
 }
 
-/** One continuation page from `href`, a path the server made. An abort rejects with the signal's reason, for the caller to drop. */
-export async function fetchSeriesPage(href: string, revisionId: string, signal: AbortSignal): Promise<PageAnswer> {
+/**
+ * One continuation page from `href`, a path the server made. An abort
+ * rejects with the signal's reason, for the caller to drop. The next page's
+ * path has to start with `pagesPath`: the public endpoint's, or a preview's
+ * mirror of it (#16), so a page never sends the sequence somewhere else.
+ */
+export async function fetchSeriesPage(href: string, revisionId: string, signal: AbortSignal, pagesPath: string = PAGES_PATH): Promise<PageAnswer> {
     let response: Response;
     try {
         response = await fetch(href, { signal, headers: { Accept: 'application/json' } });
@@ -61,7 +66,7 @@ export async function fetchSeriesPage(href: string, revisionId: string, signal: 
     }
     const { entries, nextHref } = body;
     if (body.revisionId !== revisionId || !Array.isArray(entries) || entries.length === 0 || !entries.every(isEntry)) return { kind: 'error' };
-    if (nextHref !== null && (typeof nextHref !== 'string' || !nextHref.startsWith(PAGES_PATH))) return { kind: 'error' };
+    if (nextHref !== null && (typeof nextHref !== 'string' || !nextHref.startsWith(pagesPath))) return { kind: 'error' };
     return { kind: 'ok', entries, nextHref };
 }
 

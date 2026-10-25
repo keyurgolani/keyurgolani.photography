@@ -39,9 +39,9 @@ export interface CatalogReader<Photo = CatalogContent['photos'][number]> {
     /** #7's Viewer read model for `/work/<slug>/photo/<photoId>`, from this reader's content alone. */
     getViewerPhoto(slug: string, photoId: string): ViewerPhotoResult;
     /** #5's series page read model for `/work/<slug>`, from this reader's content alone. Hrefs from `routes`, the public ones by default. */
-    getSeriesPage(slug: string, routes?: Pick<RouteBuilder, 'seriesHref' | 'photoHref' | 'workHref'>): SeriesPageResult;
+    getSeriesPage(slug: string, routes?: Pick<RouteBuilder, 'seriesHref' | 'photoHref' | 'workHref' | 'catalogApiHref'>): SeriesPageResult;
     /** #6's continuation page of `/work/<slug>` after its first, from this reader's content alone, when `cursor` names this revision. */
-    getSeriesContinuation(slug: string, cursor: string, routes?: Pick<RouteBuilder, 'seriesHref' | 'photoHref' | 'workHref'>): SeriesContinuationResult;
+    getSeriesContinuation(slug: string, cursor: string, routes?: Pick<RouteBuilder, 'seriesHref' | 'photoHref' | 'workHref' | 'catalogApiHref'>): SeriesContinuationResult;
 }
 
 interface Index {

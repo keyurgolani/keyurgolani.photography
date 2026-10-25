@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import LoadingState from '@/components/site/LoadingState';
+import { useSiteRoutes } from '@/components/site/siteRoutesContext';
 import { photoEntryName } from '@/lib/a11y/photoName';
 import type { SeriesChapter, SeriesEntry } from '@/lib/catalog/projections/series';
 import { sequenceSections } from '@/lib/catalog/series-sections';
@@ -118,6 +119,8 @@ export default function SeriesSequence({ revisionId, slug, href, entries: firstP
     const busy = useRef(false);
     const focusAfter = useRef<string | null>(null);
     const controllers = useRef(new Set<AbortController>());
+    // The continuation endpoint as this site serves it: the public one, or a preview's mirror (#16).
+    const pagesPath = useSiteRoutes().catalogApiHref('series/');
 
     /** An extent that arrived while another entry was current (#9's modal Viewer), for the series entry once it's back. */
     const unwritten = useRef<number | null>(null);
@@ -166,7 +169,7 @@ export default function SeriesSequence({ revisionId, slug, href, entries: firstP
             const controller = new AbortController();
             controllers.current.add(controller);
             try {
-                return await fetchSeriesPage(pageHref, revisionId, controller.signal);
+                return await fetchSeriesPage(pageHref, revisionId, controller.signal, pagesPath);
             } catch {
                 // Aborted: the sequence is gone, or its revision or series changed.
                 return null;
@@ -174,7 +177,7 @@ export default function SeriesSequence({ revisionId, slug, href, entries: firstP
                 controllers.current.delete(controller);
             }
         },
-        [revisionId],
+        [revisionId, pagesPath],
     );
 
     const showMore = useCallback(async () => {
