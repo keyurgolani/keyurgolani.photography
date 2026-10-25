@@ -236,7 +236,6 @@ function launchLines(result: PublishResult): string[] {
     return lines;
 }
 
-/** The lines `photos publish` prints for a result. */
 /** #17: what a publish takes off the site, which shows here before it publishes, until #16's preview does. */
 function removedLines(result: PublishResult): string[] {
     const { removed } = result;
@@ -249,6 +248,7 @@ function removedLines(result: PublishResult): string[] {
     ];
 }
 
+/** The lines `photos publish` prints for a result. */
 export function publishReport(result: PublishResult, root: string): string[] {
     const lines = [`[photos] ${result.outcome}: ${result.message}`];
     if (result.candidateId) lines.push(`Candidate: ${result.candidateId}`);
