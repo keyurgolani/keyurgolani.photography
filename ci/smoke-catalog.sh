@@ -11,7 +11,9 @@
 #    catalog into a second data root. web names its revision at /api/ready
 #    and /api/photos, serves a set the revision holds from /media with 200,
 #    `immutable`, and an ETag of its bytes, answers 304 to that ETag, and
-#    404s a set whose files exist but which no revision holds.
+#    404s a set whose files exist but which no revision holds. After a
+#    restart on the same published root, /api/ready answers exactly as before
+#    it, naming the same revision, and the set still serves.
 #
 #   ci/smoke-catalog.sh <tag>
 #
@@ -184,6 +186,7 @@ inactive=$(jq -r .inactive "$TMP/fixture.json")
 start_web "$EMPTY" "$PUBLISHED"
 # shellcheck disable=SC2016 # $revision and $active are jq's
 expect_json /api/ready 200 no-store '.mode == "catalog" and .state == "ok" and .revisionId == $revision and .revisionNumber == 1' --arg revision "$revision"
+cp "$TMP/body.json" "$TMP/ready-before.json"
 # shellcheck disable=SC2016
 expect_json /api/photos 200 no-cache 'type == "array" and length == 2 and any(.[]; .medium == $active)' --arg active "$active"
 [ "$(header x-catalog-mode)" = catalog ] && [ "$(header x-catalog-revision)" = "$revision" ] ||
@@ -206,4 +209,16 @@ code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code
 [ "$code" = 404 ] || fail "GET $inactive returned $code, expected 404."
 [ "$(header cache-control)" = no-store ] || fail "The 404 for $inactive sent Cache-Control: $(header cache-control)."
 echo "/media served the set $revision holds, with immutable, its ETag, and 304, and 404d a set no revision holds."
+
+# 8. A container restart on the published root. web reads the pointer again
+#    and must name the same revision, with the same number and time.
+docker restart "$WEB" >/dev/null
+wait_for_web
+# shellcheck disable=SC2016 # $revision is jq's
+expect_json /api/ready 200 no-store '.mode == "catalog" and .state == "ok" and .revisionId == $revision' --arg revision "$revision"
+diff -u "$TMP/ready-before.json" "$TMP/body.json" || fail "/api/ready changed when web restarted on the published root."
+code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$BASE_URL$active") || fail "GET $active after the restart failed."
+[ "$code" = 200 ] || fail "GET $active returned $code after the restart, expected 200."
+[ "$(header cache-control)" = 'public, max-age=31536000, immutable' ] || fail "GET $active sent Cache-Control: $(header cache-control) after the restart."
+echo "After a restart on the published root, /api/ready named $revision as before, and its set still served."
 echo "smoke-catalog passed."
