@@ -373,14 +373,15 @@ describe('approve, round 1', () => {
 });
 
 describe('approve, round 2', () => {
-    it('uses up a saved position, so reopen and approve again keeps a hand reorder', async () => {
+    it('uses up the saved choices, so reopen and approve again keeps the series that holds it and any hand reorder', async () => {
         const { f, event, input } = await opened((fx) => fx.fact('new', fx.fresh[0]));
         const photoId = event.photoId as string;
         await editEvent({ ...input, choices: { seriesId: DRAFT, placement: 'start' } });
         const approved = await approveEvent({ ...input, expectedVersion: 2, choices: {} });
         expect(approved).toMatchObject({ ok: true });
         expect(approved.ok && approved.event.edits?.placement).toBeUndefined();
-        expect(approved.ok && approved.event.edits?.seriesId).toBe(DRAFT);
+        // The series is used up too; a later approval takes the one that holds the photo.
+        expect(approved.ok && approved.event.edits?.seriesId).toBeUndefined();
         expect((await readAuthoredRecord(f.root, 'series', DRAFT))?.photoIds[0]).toBe(photoId);
         // The curator reorders by hand.
         const draft = await readAuthoredRecord(f.root, 'series', DRAFT);
