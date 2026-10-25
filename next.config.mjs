@@ -41,11 +41,13 @@ const nextConfig = {
     // A response over this limit hangs /_next/image instead of failing, so it stays
     // high. localPatterns below keeps the photo library out of /_next/image entirely.
     maximumResponseBody: 500_000_000,
-    // /_next/image optimizes no public file, so it answers 400 for anything
-    // under /assets/photos, originals and legacy derivatives alike. Photos
-    // come from /media sets and About's portrait from /about/portrait/, and
-    // neither goes through /_next/image. Next adds /_next/static/media for
-    // statically imported images itself.
+    // Of the public files, /_next/image optimizes none, so it answers 400 for
+    // every url under /assets/photos, originals and legacy derivatives alike.
+    // Photos come from /media sets and About's portrait from /about/portrait/,
+    // and neither goes through /_next/image. At load Next adds its own
+    // /_next/static/media patterns to this list for statically imported
+    // images. proxy.ts is what keeps a url under those from reaching
+    // /assets/photos.
     localPatterns: [
     ],
   },

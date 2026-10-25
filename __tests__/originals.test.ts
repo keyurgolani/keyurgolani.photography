@@ -165,11 +165,8 @@ describe('outputFileTracingExcludes', () => {
 describe('images.localPatterns', () => {
     const allows = (url: string) => hasLocalMatch(nextConfig.images?.localPatterns, url);
 
-    it('holds only the two exact portrait paths', () => {
-        expect(nextConfig.images?.localPatterns).toEqual([
-            { pathname: '/assets/profile/front.png', search: '' },
-            { pathname: '/assets/profile/back.png', search: '' },
-        ]);
+    it('holds no pattern, so no public file reaches /_next/image', () => {
+        expect(nextConfig.images?.localPatterns).toEqual([]);
     });
 
     it('refuses every legacy derivative, every original, and every other public file, so /_next/image answers 400 for one', () => {
@@ -199,13 +196,39 @@ describe('images.localPatterns', () => {
             expect(allows(url), url).toBe(false);
         }
     });
+});
 
-    it('names nothing outside the derivative folders, so no other public file reaches /_next/image', () => {
-        const patterns = (nextConfig.images?.localPatterns ?? []) as { pathname?: string; search?: string }[];
-        expect(patterns.length).toBeGreaterThan(0);
-        for (const pattern of patterns) {
-            expect(pattern.pathname, JSON.stringify(pattern)).toMatch(/^\/assets\/photos\/[a-z-]+\/\*\.(webp|avif)$/);
-            expect(pattern.search).toBe('');
+describe('images.localPatterns as Next loads them', () => {
+    // At load, Next adds its own static media patterns to the list, for statically imported images.
+    const { default: loadConfig } = createRequire(import.meta.url)('next/dist/server/config') as {
+        default(phase: string, dir: string, options?: { silent?: boolean }): Promise<{ images: { localPatterns?: unknown } }>;
+    };
+
+    it('refuses an encoded path under /assets/photos at /_next/image', async () => {
+        const loaded = await loadConfig('phase-production-server', process.cwd(), { silent: true });
+        const patterns = loaded.images.localPatterns;
+        expect(patterns).toEqual(expect.arrayContaining([
+            { pathname: '/_next/static/media/**', search: '' },
+        ]));
+        // Loading it leaves the module's own list as written.
+        expect(nextConfig.images?.localPatterns).toHaveLength(0);
+        for (const url of [
+            '/assets/photos/optimized/landscape.webp',
+            '/assets/photos/optimized/landscape%2Ewebp',
+            '/assets%2Fphotos%2Foptimized%2Flandscape.webp',
+            '/assets/photos/landscape.jpg',
+        ]) {
+            expect(hasLocalMatch(patterns, url), url).toBe(false);
+        }
+        // For a url under Next's own patterns, /_next/image fetches it internally, so the proxy
+        // has to run on that fetch and refuse anything that encodes its way out of the folder.
+        for (const url of [
+            '/_next/static/media/..%2F..%2F..%2Fassets%2Fphotos%2Foptimized%2Flandscape.webp',
+            '/_next/static/media/..%5C..%5C..%5Cassets%5Cphotos%5Coptimized%5Clandscape.webp',
+            '/_next/static/immutable/media/..%2F..%2F..%2F..%2Fassets%2Fphotos%2Flandscape.jpg',
+        ]) {
+            expect(unstable_doesMiddlewareMatch({ config, url }), url).toBe(true);
+            expectNotFound(url);
         }
     });
 });

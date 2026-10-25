@@ -25,6 +25,8 @@ TMP=$(mktemp -d)
 LIB=$TMP/library
 WEB=photography-smoke-watcher-$$
 WEB_STARTED=false
+# The body of /_next/image's 400 for a url images.localPatterns doesn't allow.
+NOT_ALLOWED='"url" parameter is not allowed'
 OUTPUTS=(
   thumbnails/%s.webp medium/%s.webp optimized/%s.webp
   thumbnails-avif/%s.avif medium-avif/%s.avif optimized-avif/%s.avif
@@ -147,7 +149,8 @@ echo "The removed image endpoints return 404."
 
 # 6. Nothing under /assets/photos serves, the derivatives the watcher just
 #    wrote included: every one 404s with a no-store response, and
-#    /_next/image refuses each with 400. Photos serve only from /media.
+#    /_next/image refuses each with 400, for the reason that images.localPatterns
+#    doesn't allow it. Photos serve only from /media.
 for asset in optimized/portrait.webp thumbnails-avif/square.avif lqip/landscape.txt portrait.png square.webp portrait%2Epng; do
   code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$BASE_URL/assets/photos/$asset") ||
     fail "GET /assets/photos/$asset failed."
@@ -155,8 +158,10 @@ for asset in optimized/portrait.webp thumbnails-avif/square.avif lqip/landscape.
   tr -d '\r' <"$TMP/headers.txt" | grep -qix 'cache-control: no-store' || fail "The 404 for /assets/photos/$asset did not send Cache-Control: no-store."
 done
 for url in %2Fassets%2Fphotos%2Foptimized%2Fportrait.webp %2Fassets%2Fphotos%2Fthumbnails-avif%2Fsquare.avif %2Fassets%2Fphotos%2Fportrait.png; do
-  code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$BASE_URL/_next/image?url=$url&w=400&q=75") ||
+  code=$(curl -sS --max-time 30 -o "$TMP/image-error.txt" -w '%{http_code}' "$BASE_URL/_next/image?url=$url&w=400&q=75") ||
     fail "GET /_next/image?url=$url failed."
   [ "$code" = 400 ] || fail "GET /_next/image?url=$url returned $code, expected 400."
+  [ "$(cat "$TMP/image-error.txt")" = "$NOT_ALLOWED" ] ||
+    fail "GET /_next/image?url=$url answered 400 with '$(cat "$TMP/image-error.txt")', expected '$NOT_ALLOWED'."
 done
 echo "Legacy derivatives and originals return 404, and /_next/image refuses both with 400."

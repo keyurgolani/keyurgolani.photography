@@ -40,6 +40,8 @@ EMPTY=$TMP/empty-library
 WEB=photography-smoke-catalog-$$
 WEB_STARTED=false
 BASE_URL=
+# The body of /_next/image's 400 for a url images.localPatterns doesn't allow.
+NOT_ALLOWED='"url" parameter is not allowed'
 # The keys of a legacy /api/photos item, as jq's keys sorts them.
 LEGACY_KEYS='["caption","date","height","id","lqip","medium","mediumAvif","optimized","optimizedAvif","optimizedHeight","optimizedWidth","src","thumbnail","thumbnailAvif","width"]'
 
@@ -136,9 +138,11 @@ check_legacy() {
     code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$BASE_URL$src") || fail "GET $src failed."
     [ "$code" = 404 ] || fail "GET $src, which /api/photos lists, returned $code, expected 404."
     [ "$(header cache-control)" = no-store ] || fail "The 404 for $src sent Cache-Control: $(header cache-control)."
-    code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$BASE_URL/_next/image?url=$(jq -rn --arg src "$src" '$src | @uri')&w=400&q=75") ||
+    code=$(curl -sS --max-time 30 -o "$TMP/image-error.txt" -w '%{http_code}' "$BASE_URL/_next/image?url=$(jq -rn --arg src "$src" '$src | @uri')&w=400&q=75") ||
       fail "GET /_next/image for $src failed."
     [ "$code" = 400 ] || fail "GET /_next/image for $src returned $code, expected 400."
+    [ "$(cat "$TMP/image-error.txt")" = "$NOT_ALLOWED" ] ||
+      fail "GET /_next/image for $src answered 400 with '$(cat "$TMP/image-error.txt")', expected '$NOT_ALLOWED'."
   done
 }
 
