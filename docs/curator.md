@@ -1,6 +1,6 @@
 # The curator
 
-The curator is the private side of the site, where you review new photographs before they reach the draft (#14). It runs as its own service, `curator`, from the same image as `web`. Only `/curation/**` and `/api/curation/**` are curator paths. Today there's only a placeholder page at `/curation` and the login at `/curation/login`; the inbox comes with #14's 14-3.
+The curator is the private side of the site, where you review new photographs before they reach the draft (#14). It runs as its own service, `curator`, from the same image as `web`. Only `/curation/**` and `/api/curation/**` are curator paths. You sign in at `/curation/login`, and `/curation` leads to the inbox, `/curation/inbox`, where each item the watcher opened waits for you: approve a new photograph into the draft, edit its suggestion, leave it in draft, dismiss it with a reason, retry processing, or reopen it. None of them publishes, and an item that changed since the page loaded is turned away with nothing written, so refresh and review it again. Photograph previews come from `/api/curation/media/`, which serves a derivative set to the curator only and is never cached.
 
 ## Who can reach it
 
