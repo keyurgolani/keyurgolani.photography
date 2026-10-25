@@ -145,14 +145,13 @@ describe('rebaseWorkingLayer', { timeout: 30_000 }, () => {
             { kind: 'site', id: 'site', field: 'featuredSeriesIds' },
             { kind: 'site', id: 'site', field: 'seriesOrder' },
         ]);
-        expect(await record<AuthoredSite>('site', 'site')).toMatchObject({
-            featuredSeriesIds: [c],
-            seriesOrder: [c, b, a],
-            conflicts: [
-                { field: 'featuredSeriesIds', base: [b], active: [a] },
-                { field: 'seriesOrder', base: [b, a, c], active: [a, b, c] },
-            ],
-        });
+        const site = await record<AuthoredSite>('site', 'site');
+        expect(site).toMatchObject({ featuredSeriesIds: [c], seriesOrder: [c, b, a] });
+        // Exact, so a known base never reads as one that couldn't be read.
+        expect(site.conflicts).toEqual([
+            { field: 'featuredSeriesIds', base: [b], active: [a] },
+            { field: 'seriesOrder', base: [b, a, c], active: [a, b, c] },
+        ]);
     });
 
     it('keeps the owner\'s move of a series the base revision hid through a rollback, with a conflict that blocks publish until a roll forward settles it', async () => {
@@ -170,11 +169,9 @@ describe('rebaseWorkingLayer', { timeout: 30_000 }, () => {
 
         const report = await rollBack(ids(first), ids(second));
         expect(report.conflicts).toContainEqual({ kind: 'site', id: 'site', field: 'seriesOrder' });
-        expect(await record<AuthoredSite>('site', 'site')).toMatchObject({
-            seriesOrder: [c, a, b],
-            baseRevisionId: first.revisionId,
-            conflicts: [{ field: 'seriesOrder', base: [a, b], active: [a, b, c] }],
-        });
+        const rolled = await record<AuthoredSite>('site', 'site');
+        expect(rolled).toMatchObject({ seriesOrder: [c, a, b], baseRevisionId: first.revisionId });
+        expect(rolled.conflicts).toEqual([{ field: 'seriesOrder', base: [a, b], active: [a, b, c] }]);
         const blocked = await publish({ dataRoot: root, actor: 'test', logger: quiet });
         expect(blocked.outcome).toBe('VALIDATION_FAILED');
         expect(blocked.issues).toContainEqual(expect.objectContaining({ code: 'working.conflicts' }));
