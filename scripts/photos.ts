@@ -102,14 +102,13 @@ import { parseArgs } from 'node:util';
 import { runDescribeImport } from '../lib/catalog/describe-import';
 import { runDraftInit } from '../lib/catalog/draft-init';
 import { runListCommand, runStatusCommand } from '../lib/catalog/owner-status';
-import { publish, PUBLISH_EXIT_CODES, validateWorkingLayer, VALIDATE_EXIT_CODES, type PublishResult } from '../lib/catalog/publish';
+import { issueLines, photoIdArg, publishReport, sequenceArgs, seriesArgs, strictly, UsageError } from '../lib/catalog/owner-cli';
+import { publish, PUBLISH_EXIT_CODES, validateWorkingLayer, VALIDATE_EXIT_CODES } from '../lib/catalog/publish';
 import { REVISION_ID_RE } from '../lib/catalog/schema';
-import { runSequenceCommand, type CommandResult, type PlacementArg, type SequenceCommand } from '../lib/catalog/sequence-commands';
-import type { Issue } from '../lib/catalog/types';
-import { catalogPaths } from '../lib/catalog/working-layer';
+import { runSequenceCommand, type CommandResult, type SequenceCommand } from '../lib/catalog/sequence-commands';
 import { ApplyRefusedError, migrateApply } from '../lib/identity/apply';
 import { createDecision, decisionFileName, isLibraryPath, writeDecision, type DecisionInput } from '../lib/identity/decisions';
-import { ASSET_REVISION_RE, PHOTO_ID_RE } from '../lib/identity/ids';
+import { ASSET_REVISION_RE } from '../lib/identity/ids';
 import { DryRunRefusedError, migrateDryRun } from '../lib/identity/migration';
 import { jsonLogSink, runReconcilePass } from '../lib/identity/pass';
 import { identityPaths } from '../lib/identity/registry';
@@ -147,16 +146,6 @@ const USAGE = `Usage:
   ${PROGRAM} validate [--reprofile]
   ${PROGRAM} publish [--actor <name>] [--reason <text>] [--expect <candidateId>] [--dry-run] [--confirm-launch] [--reprofile]`;
 
-class UsageError extends Error {}
-
-/** Parse flags strictly: an unknown flag, a stray argument, or a missing value is a usage error. */
-function strictly<T>(parse: () => T): T {
-    try {
-        return parse();
-    } catch (error) {
-        throw new UsageError(error instanceof Error ? error.message : String(error));
-    }
-}
 
 /** A path argument as a library-relative POSIX path. */
 function libraryPath(arg: string): string {
@@ -167,10 +156,6 @@ function libraryPath(arg: string): string {
     return posix;
 }
 
-function photoIdArg(arg: string): string {
-    if (!PHOTO_ID_RE.test(arg)) throw new UsageError(`${arg} is not a photo ID.`);
-    return arg;
-}
 
 async function migrate(args: string[]): Promise<number> {
     const { values } = strictly(() => parseArgs({
@@ -306,23 +291,12 @@ async function identity(args: string[]): Promise<number> {
     return status.dataRoot.state === 'ready' && !status.registryError ? 0 : 1;
 }
 
-/** How many issues the CLI prints. The diagnostics file holds every one. */
-const PRINTED_ISSUES = 200;
-
-const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 
 /** Lines for a command's report: stdout when it succeeded, stderr when it didn't, as the identity commands do. */
 function reporter(exitCode: number): (line: string) => void {
     return exitCode === 0 ? (line) => console.log(line) : (line) => console.error(line);
 }
 
-function printIssues(print: (line: string) => void, issues: readonly Issue[], rest: string): void {
-    for (const issue of issues.slice(0, PRINTED_ISSUES)) {
-        print(`${issue.severity} ${issue.record.kind} ${issue.record.id} ${issue.field}: ${issue.message} (${issue.code})`);
-        if (issue.hint) print(`    ${issue.hint}`);
-    }
-    if (issues.length > PRINTED_ISSUES) print(`${count(issues.length - PRINTED_ISSUES, 'more issue')} not shown. ${rest}`);
-}
 
 /** The data root to compile from, or an exit code after saying why there is none. */
 function catalogRoot(): string | number {
@@ -342,38 +316,10 @@ async function validate(args: string[]): Promise<number> {
     const print = reporter(exitCode);
     print(`[photos] ${result.outcome}: ${result.message}`);
     if (result.candidateId) print(`Candidate: ${result.candidateId}`);
-    printIssues(print, result.issues, 'publish --dry-run writes them all to the diagnostics file.');
+    for (const line of issueLines(result.issues, 'publish --dry-run writes them all to the diagnostics file.')) print(line);
     return exitCode;
 }
 
-/** What the first publish asks of the owner. docs/curation.md's launch checklist has the whole list. */
-const LAUNCH_CHECKLIST = [
-    'Launch checklist, from docs/curation.md:',
-    '  - The cutover milestone has shipped: Home, Work, the series pages, and the Viewer read the catalog (#4, #3, #5, #7), and a rollback works (#15 slice A).',
-    '  - Viewer hardening (#9) is recommended first.',
-    '  - A preview, this data root copied, published, and served on another port, looks right.',
-];
-
-function printPublish(print: (line: string) => void, result: PublishResult, root: string): void {
-    print(`[photos] ${result.outcome}: ${result.message}`);
-    if (result.candidateId) print(`Candidate: ${result.candidateId}`);
-    if (result.revisionId) print(`Active: ${result.revisionId}${result.revisionNumber === null ? '' : `, revision ${result.revisionNumber}`}`);
-    if (result.missingRules?.length) print(`Missing rules: ${result.missingRules.join(', ')}`);
-    if (result.launch) {
-        const { published, gone } = result.launch;
-        const leaving = gone === 0 ? 'Every photograph in the library is in it.' : `${count(gone, 'photograph')} in the library ${gone === 1 ? "isn't" : "aren't"} in it, so ${gone === 1 ? 'it leaves' : 'they leave'} the site.`;
-        print(`Launch: this revision replaces the legacy Home and Gallery with ${count(published, 'photograph')}. ${leaving}`);
-        for (const line of LAUNCH_CHECKLIST) print(line);
-        if (result.outcome === 'LAUNCH_CONFIRMATION_REQUIRED') print('Run it again with --confirm-launch to publish it.');
-    }
-    if (result.reprofiled) {
-        const { moved, kept } = result.reprofiled;
-        if (moved.length) print(`Moved to the current profile: ${moved.slice(0, PRINTED_ISSUES).join(', ')}${moved.length > PRINTED_ISSUES ? `, and ${moved.length - PRINTED_ISSUES} more` : ''}`);
-        if (kept.length) print(`Kept their profile, since the watcher can't rebuild them: ${kept.slice(0, PRINTED_ISSUES).join(', ')}${kept.length > PRINTED_ISSUES ? `, and ${kept.length - PRINTED_ISSUES} more` : ''}`);
-    }
-    const diagnostics = result.candidateId ? path.relative(root, path.join(catalogPaths(root).diagnosticsDir, `${result.candidateId}.json`)) : null;
-    printIssues(print, result.issues, diagnostics ? `All of them are in ${diagnostics}.` : '');
-}
 
 async function publishCommand(args: string[]): Promise<number> {
     const { values } = strictly(() => parseArgs({
@@ -404,7 +350,7 @@ async function publishCommand(args: string[]): Promise<number> {
         reprofile: values.reprofile,
     });
     const exitCode = PUBLISH_EXIT_CODES[result.outcome];
-    printPublish(reporter(exitCode), result, root);
+    for (const line of publishReport(result, root)) reporter(exitCode)(line);
     return exitCode;
 }
 
@@ -443,129 +389,6 @@ async function describeCommand(args: string[]): Promise<number> {
     return printed(await runDescribeImport({ dataRoot: root }, { file: values.import, dryRun: values['dry-run'] }));
 }
 
-/** `--expect-version`: the version the record must be at, the current one when omitted. */
-function expectVersionArg(value: string | undefined): number | undefined {
-    if (value === undefined) return undefined;
-    if (!/^\d+$/.test(value)) throw new UsageError('--expect-version takes a version from 0.');
-    return Number(value);
-}
-
-/** Where insert and move put a photo: exactly one of --start, --end, --after <photoId>, and --to <N>. */
-function placementArg(values: { start?: boolean; end?: boolean; after?: string; to?: string }): PlacementArg {
-    const given = [values.start === true, values.end === true, values.after !== undefined, values.to !== undefined].filter(Boolean).length;
-    if (given !== 1) throw new UsageError('Place the photo with exactly one of --start, --end, --after <photoId>, and --to <N>.');
-    if (values.start) return 'start';
-    if (values.end) return 'end';
-    if (values.after !== undefined) return { after: photoIdArg(values.after) };
-    if (!/^\d+$/.test(values.to ?? '')) throw new UsageError('--to takes a position from 1.');
-    return { to: Number(values.to) };
-}
-
-/** `--focal <x>,<y>`, each from 0 to 1. */
-function focalArg(value: string): { x: number; y: number } {
-    const match = /^\s*([0-9.]+)\s*,\s*([0-9.]+)\s*$/.exec(value);
-    const [x, y] = match ? [Number(match[1]), Number(match[2])] : [Number.NaN, Number.NaN];
-    if (!(x >= 0 && x <= 1 && y >= 0 && y <= 1)) throw new UsageError('--focal takes x,y, each from 0 to 1, such as --focal 0.5,0.4.');
-    return { x, y };
-}
-
-/** One positional count, or a usage error that names the form. */
-function exactly(positionals: string[], n: number, form: string): string[] {
-    if (positionals.length !== n) throw new UsageError(`Usage: photos ${form}`);
-    return positionals;
-}
-
-/** Parsed flags and positionals. Each command reads only the flags it declares. */
-interface Parsed {
-    values: Record<string, string | boolean | undefined>;
-    positionals: string[];
-}
-
-type Options = NonNullable<Parameters<typeof parseArgs>[0]>['options'];
-
-/** Strict parsing with --expect-version, which every changing command takes. */
-function parseOrder(args: string[], options: Options = {}): Parsed {
-    return strictly(() => parseArgs({ args, options: { 'expect-version': { type: 'string' }, ...options }, allowPositionals: true, strict: true })) as Parsed;
-}
-
-const text = (value: string | boolean | undefined): string | undefined => (typeof value === 'string' ? value : undefined);
-
-function sequenceArgs(args: string[]): SequenceCommand {
-    const [sub, ...rest] = args;
-    const expectVersion = (values: Parsed['values']) => expectVersionArg(text(values['expect-version']));
-    switch (sub) {
-        case 'show': {
-            const { values, positionals } = parseOrder(rest);
-            if (values['expect-version'] !== undefined) throw new UsageError('sequence show takes no --expect-version.');
-            const [seriesId] = exactly(positionals, 1, 'sequence show <seriesId>');
-            return { command: 'show', seriesId };
-        }
-        case 'set': {
-            const { values, positionals } = parseOrder(rest);
-            if (positionals.length < 1) throw new UsageError('Usage: photos sequence set <seriesId> <photoId>...');
-            const [seriesId, ...photoIds] = positionals;
-            return { command: 'set', seriesId, photoIds: photoIds.map(photoIdArg), expectVersion: expectVersion(values) };
-        }
-        case 'insert':
-        case 'move': {
-            const { values, positionals } = parseOrder(rest, { start: { type: 'boolean' }, end: { type: 'boolean' }, after: { type: 'string' }, to: { type: 'string' } });
-            const [seriesId, photoId] = exactly(positionals, 2, `sequence ${sub} <seriesId> <photoId> (--start | --end | --after <photoId> | --to <N>)`);
-            const at = placementArg({ start: values.start === true, end: values.end === true, after: text(values.after), to: text(values.to) });
-            return { command: sub, seriesId, photoId: photoIdArg(photoId), at, expectVersion: expectVersion(values) };
-        }
-        case 'remove': {
-            const { values, positionals } = parseOrder(rest);
-            const [seriesId, photoId] = exactly(positionals, 2, 'sequence remove <seriesId> <photoId>');
-            return { command: 'remove', seriesId, photoId: photoIdArg(photoId), expectVersion: expectVersion(values) };
-        }
-        case 'cover': {
-            const { values, positionals } = parseOrder(rest, { focal: { type: 'string' }, 'clear-focal': { type: 'boolean' } });
-            const [seriesId, photoId] = exactly(positionals, 2, 'sequence cover <seriesId> <photoId> [--focal <x>,<y> | --clear-focal]');
-            const focal = text(values.focal);
-            if (focal !== undefined && values['clear-focal'] === true) throw new UsageError('--focal and --clear-focal don\'t go together.');
-            const point = values['clear-focal'] === true ? 'clear' as const : focal === undefined ? undefined : focalArg(focal);
-            return { command: 'cover', seriesId, photoId: photoIdArg(photoId), ...(point === undefined ? {} : { focal: point }), expectVersion: expectVersion(values) };
-        }
-        case 'opening': {
-            const { values, positionals } = parseOrder(rest, { clear: { type: 'boolean' } });
-            const form = 'sequence opening <seriesId> (<photoId> | --clear)';
-            if (values.clear === true) {
-                const [seriesId] = exactly(positionals, 1, form);
-                return { command: 'opening', seriesId, photoId: null, expectVersion: expectVersion(values) };
-            }
-            const [seriesId, photoId] = exactly(positionals, 2, form);
-            return { command: 'opening', seriesId, photoId: photoIdArg(photoId), expectVersion: expectVersion(values) };
-        }
-        case 'chapter': {
-            const [action, ...tail] = rest;
-            if (action === 'add' || action === 'move') {
-                const { values, positionals } = parseOrder(tail, { start: { type: 'string' } });
-                const form = action === 'add' ? 'sequence chapter add <seriesId> <title> --start <photoId>' : 'sequence chapter move <seriesId> <chapterId> --start <photoId>';
-                const [seriesId, second] = exactly(positionals, 2, form);
-                const start = text(values.start);
-                if (start === undefined) throw new UsageError(`chapter ${action} needs --start <photoId>.`);
-                return action === 'add'
-                    ? { command: 'chapter-add', seriesId, title: second, startPhotoId: photoIdArg(start), expectVersion: expectVersion(values) }
-                    : { command: 'chapter-move', seriesId, chapterId: second, startPhotoId: photoIdArg(start), expectVersion: expectVersion(values) };
-            }
-            if (action === 'remove') {
-                const { values, positionals } = parseOrder(tail);
-                const [seriesId, chapterId] = exactly(positionals, 2, 'sequence chapter remove <seriesId> <chapterId>');
-                return { command: 'chapter-remove', seriesId, chapterId, expectVersion: expectVersion(values) };
-            }
-            throw new UsageError(action ? `Unknown chapter command: ${action}` : 'photos sequence chapter needs add, move, or remove.');
-        }
-        default:
-            throw new UsageError(sub ? `Unknown sequence command: ${sub}` : 'photos sequence needs a command.');
-    }
-}
-
-function seriesArgs(args: string[]): SequenceCommand {
-    const [sub, ...rest] = args;
-    if (sub !== 'order' && sub !== 'featured') throw new UsageError(sub ? `Unknown series command: ${sub}` : 'photos series needs order or featured.');
-    const { values, positionals } = parseOrder(rest);
-    return { command: sub === 'order' ? 'series-order' : 'series-featured', seriesIds: positionals, expectVersion: expectVersionArg(text(values['expect-version'])) };
-}
 
 async function orderCommand(parse: () => SequenceCommand): Promise<number> {
     const command = parse();
