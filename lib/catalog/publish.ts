@@ -10,6 +10,7 @@ import { onLegacySite } from './legacy-photos';
 import { LAUNCH_ORDER_RULE_IDS } from './order-rules';
 import { rebaseWorkingLayer, type RebaseReport } from './rebase';
 import type { ReviewContext } from './review';
+import { ensureReviewBackfill } from './review-backfill';
 import { readReviewContext } from './review-context';
 import {
     ActivePointerMovedError,
@@ -64,8 +65,9 @@ export { rebaseWorkingLayer, type RebaseOptions, type RebaseReport } from './reb
  *  13. Rebase the working layer onto the new revision.
  *
  * Steps 10 to 12 are commitActivation(), the only writer of the pointer.
- * Through step 9 a stop writes at most the candidate, its diagnostics, and
- * `last-publish.json`, so the pointer changes only when a publish lands,
+ * Through step 9 a stop writes at most the candidate, its diagnostics,
+ * `last-publish.json`, and, once after the upgrade, #16's review backfill
+ * marker (review-backfill.ts), so the pointer changes only when a publish lands,
  * or when step 1 settles an interrupted one. A retry after a crash at any
  * step gets the same revision ID and at most one committed activation.
  */
@@ -411,7 +413,11 @@ async function snapshotAndCompile(root: string, options: { lock: boolean; author
     let layer: WorkingLayer;
     try {
         layer = options.lock
-            ? await withLock(AUTHORED_LOCK, { root, leaseMs: AUTHORED_LEASE_MS, waitMs: options.authoredWaitMs ?? AUTHORED_WAIT_MS }, () => readWorkingLayer(root))
+            ? await withLock(AUTHORED_LOCK, { root, leaseMs: AUTHORED_LEASE_MS, waitMs: options.authoredWaitMs ?? AUTHORED_WAIT_MS }, async () => {
+                // #16's one-time review backfill, if no tool write has recorded it yet.
+                await ensureReviewBackfill(root);
+                return readWorkingLayer(root);
+            })
             : await readWorkingLayer(root);
     } catch (error) {
         if (error instanceof LockTimeoutError) throw new Stop('AUTHORED_LOCKED', error.message, { holder: error.holder });

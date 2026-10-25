@@ -3,6 +3,7 @@ import path from 'node:path';
 import { PHOTO_ID_RE } from '../identity/ids';
 import { CorruptDocumentError, EditedInPlaceError, MisnamedVersionError, readVersionedDocument } from '../storage/document';
 import { hasErrorCode, pathExists } from '../storage/fsx';
+import { noteHandMade } from './review';
 import { parseActivePointer, parseAuthoredRecord, SERIES_ID_RE, type AuthoredKind } from './schema';
 import type { ActivePointer, AuthoredPhoto, AuthoredSeries, AuthoredSite, RecordProblem, RecordProblemReason, WorkingLayer } from './types';
 
@@ -111,6 +112,7 @@ export async function recordFolderProblem(root: string, kind: AuthoredKind, id: 
 
 export type { RecordProblem, RecordProblemReason, WorkingLayer } from './types';
 
+
 type RecordOf<K extends AuthoredKind> = K extends 'site' ? AuthoredSite : K extends 'series' ? AuthoredSeries : AuthoredPhoto;
 
 type Loaded<K extends AuthoredKind> = { record: RecordOf<K> } | { problem: RecordProblem } | null;
@@ -149,6 +151,7 @@ async function load<K extends AuthoredKind>(dir: string, kind: K, id: string): P
         const message = `the record's id is ${JSON.stringify((record as AuthoredSeries | AuthoredPhoto).id)}, but its folder is named for ${JSON.stringify(id)}`;
         return { problem: { kind, id, reason: 'file-name', issues: [{ path: 'id', message }] } };
     }
+    noteHandMade(record, stored.handMade);
     return { record };
 }
 

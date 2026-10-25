@@ -24,15 +24,48 @@ import type { AuthoredPhoto, AuthoredRecord, AuthoredSeries, AuthoredSite, Field
  *   curator.
  *
  * Backfill: a record no tool has written since stamps were added carries no
- * `review`. It reads as stamped by `migration` (backfillFields()): every
- * field reviewed against the record's own base and pinned asset revision,
- * except a described alt with `reviewed: false`, which a #14 suggestion
- * leaves and which stays generated. The writer stores those stamps for the
- * fields its first write of the record leaves alone, so the backfill happens
- * once per record, and nothing writes for it otherwise.
+ * `review`. When its newest version was written by a tool, it reads as
+ * stamped by `migration` (backfillFields()): every field reviewed against
+ * the record's own base and pinned asset revision, except a described alt
+ * with `reviewed: false`, which a #14 suggestion leaves and which stays
+ * generated. The writer stores those stamps for the fields its first write
+ * of the record leaves alone, so the backfill happens once per record, and
+ * nothing writes for it otherwise. A newest version made by hand without
+ * `review` (a hand edit that dropped it, or a record folder made by hand)
+ * gets no backfill, so the gate refuses what it changed until a tool writes
+ * it.
  */
 
 export type ReviewOrigin = FieldReview['origin'];
+
+/** The one-time backfill marker (review-backfill.ts writes it). */
+export interface ReviewBackfill {
+    schemaVersion: 1;
+    backfilledAt: string;
+    /** Each record without `review` at the backfill, by `site`, `series:<id>`, or `photo:<id>`, at its version then. */
+    records: Record<string, number>;
+}
+
+export const backfillKey = (record: Pick<AuthoredRecord, 'kind'> & { id?: string }): string => (record.kind === 'site' ? 'site' : `${record.kind}:${record.id}`);
+
+/**
+ * Records read from a version made by hand: a copy whose stamp is missing or
+ * names another number (lib/storage/document.ts). working-layer.ts and the
+ * writer note it as they read. Kept beside the record rather than on it, so
+ * the record stays what its schema parses.
+ */
+const handMade = new WeakSet<object>();
+
+/** Note whether `record` was read from a version made by hand. */
+export function noteHandMade(record: object, made: boolean): void {
+    if (made) handMade.add(record);
+    else handMade.delete(record);
+}
+
+/** Whether `record` was read from a version made by hand. False for one built in memory. */
+export function isHandMade(record: object): boolean {
+    return handMade.has(record);
+}
 
 /** The fields a stamp can cover: every authored field but the managed ones, `kind`, and `id`. */
 const NOT_STAMPED = new Set(['schemaVersion', 'version', 'baseRevisionId', 'baseSeriesOrder', 'conflicts', 'review', 'kind', 'id']);
@@ -89,19 +122,36 @@ function assetFor(record: AuthoredRecord, field: string, coverAsset: string | nu
     return {};
 }
 
-/** A record's stamps: its own, or the backfill's when it has none, dated `at` when given. */
-export function stampsOf(record: AuthoredRecord, coverAsset?: string | null, at?: string): Record<string, FieldReview> {
+/**
+ * Whether a record without stamps reads as backfilled: its newest version
+ * was written by a tool, or `backfill`, the one-time marker
+ * (review-backfill.ts), doesn't exist yet (null or absent) or lists the
+ * record at this version. Otherwise it is a version made by hand after the
+ * backfill.
+ */
+export function backfilled(record: AuthoredRecord, backfill: ReviewBackfill | null | undefined): boolean {
+    return !isHandMade(record) || !backfill || backfill.records[backfillKey(record)] === record.version;
+}
+
+/**
+ * A record's stamps: its own, or the backfill's when it has none and
+ * backfilled() says so, dated `at` when given. A version made by hand after
+ * the backfill, without stamps, has none, so every field it holds reads as
+ * unreviewed until a tool writes it.
+ */
+export function stampsOf(record: AuthoredRecord, coverAsset?: string | null, at?: string, backfill?: ReviewBackfill | null): Record<string, FieldReview> {
     if (record.review) return record.review.fields;
+    if (!backfilled(record, backfill)) return {};
     if (at !== undefined) return backfillFields(record, coverAsset, at);
     // Read in memory, once per record and cover.
     const key = coverAsset ?? '';
-    const cached = backfilled.get(record);
+    const cached = memo.get(record);
     if (cached?.key === key) return cached.fields;
     const fields = backfillFields(record, coverAsset);
-    backfilled.set(record, { key, fields });
+    memo.set(record, { key, fields });
     return fields;
 }
-const backfilled = new WeakMap<AuthoredRecord, { key: string; fields: Record<string, FieldReview> }>();
+const memo = new WeakMap<AuthoredRecord, { key: string; fields: Record<string, FieldReview> }>();
 
 /** What a write was reviewed with. The writer fills in what a caller leaves out. */
 export interface StampInputs {
@@ -127,9 +177,9 @@ export function stampWrite(
     existing: AuthoredRecord | null,
     next: AuthoredRecord,
     inputs: StampInputs,
-    covers: { next?: string | null; existing?: string | null } = {},
+    covers: { next?: string | null; existing?: string | null; backfill?: ReviewBackfill | null } = {},
 ): ReviewStamp {
-    const prior = existing ? stampsOf(existing, covers.existing, inputs.reviewedAt) : {};
+    const prior = existing ? stampsOf(existing, covers.existing, inputs.reviewedAt, covers.backfill) : {};
     const remaining = new Set((next.conflicts ?? []).map((conflict) => conflict.field));
     const settled = new Set((existing?.conflicts ?? []).map((conflict) => conflict.field).filter((field) => !remaining.has(field)));
     const fields: Record<string, FieldReview> = {};
@@ -168,10 +218,10 @@ export function stampWrite(
  * stamps keep the base they were reviewed against, and a field the rollback
  * publishes differently from that base reads as stale.
  */
-export function rebaseStamps(existing: AuthoredRecord | null, next: AuthoredRecord, existingCover: string | null, at: string, publishedFrom?: string): ReviewStamp | undefined {
+export function rebaseStamps(existing: AuthoredRecord | null, next: AuthoredRecord, existingCover: string | null, at: string, publishedFrom?: string, backfill?: ReviewBackfill | null): ReviewStamp | undefined {
     if (!existing) return undefined;
     const fields: Record<string, FieldReview> = {};
-    for (const [field, stamp] of Object.entries(stampsOf(existing, existingCover, at))) {
+    for (const [field, stamp] of Object.entries(stampsOf(existing, existingCover, at, backfill))) {
         if (hashValue(valueOf(existing, field)) !== hashValue(valueOf(next, field))) continue;
         fields[field] = publishedFrom === undefined ? stamp : { ...stamp, baseRevisionId: publishedFrom };
     }
@@ -197,6 +247,8 @@ export interface ReviewContext {
     inbox: ReadonlyMap<string, InboxItem>;
     /** Inbox items whose files can't be read. */
     unreadable: ReadonlySet<string>;
+    /** The one-time backfill marker, or null before it exists (review-backfill.ts). Absent reads as null. */
+    backfill?: ReviewBackfill | null;
 }
 
 export type FieldReviewReason =
@@ -300,7 +352,7 @@ export function fieldReview(ref: FieldRef, env: ReviewEnv): FieldReviewState {
         return { ...ref, state: 'unreviewed', reason: 'no-record', detail: `The ${ref.record.kind} record ${ref.record.id} is gone from the working layer, which no tool does, so nothing on record reviewed the change.` };
     }
     const value = valueOf(record, ref.field);
-    const stamp = stampsOf(record, coverAssetOf(env.layer, record))[ref.field];
+    const stamp = stampsOf(record, coverAssetOf(env.layer, record), undefined, env.review?.backfill)[ref.field];
     if (!stamp) return { ...ref, state: 'unreviewed', reason: 'no-stamp', detail: `${ref.field} was written outside the tools, so nothing on record reviewed it.` };
     const seen = { origin: stamp.origin, by: stamp.actor, at: stamp.reviewedAt };
     if (stamp.valueHash !== hashValue(value)) {
