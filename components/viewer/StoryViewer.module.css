@@ -109,7 +109,8 @@
   align-items: center;
   gap: 0.5rem;
   padding: 0 0.75rem;
-  border: 1px solid var(--cc-rule);
+  /* #1's rule 8: a control's boundary keeps 3:1 on the ground, above the mockup's fainter rule (styles/__tests__/surfaces.test.ts). */
+  border: 1px solid var(--cc-rule-strong);
   border-radius: var(--gah-radius);
   background: transparent;
   color: var(--cc-ink);
@@ -149,13 +150,16 @@
   place-items: center;
   min-width: 0;
   padding-block: var(--viewer-stage-pad);
+  /* #9's swipe: the browser keeps vertical scroll and pinch zoom, and leaves a sideways drag to the Viewer. */
+  touch-action: pan-y pinch-zoom;
 }
 
-/* Zoomed, the photograph keeps the largest variant's width and the box scrolls. Pinch zoom is never turned off. */
+/* Zoomed, the photograph keeps the largest variant's width and the box scrolls, so a drag pans it both ways and never moves the Viewer. Pinch zoom is never turned off. */
 .viewport[data-zoomed] {
   max-height: calc(100dvh - var(--viewer-header) - var(--viewer-stage-chrome));
   overflow: auto;
   place-items: safe center;
+  touch-action: auto;
 }
 
 /* The fitted box, from the record's shape (--ratio, set inline) before a byte

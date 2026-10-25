@@ -5,6 +5,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import ViewerChrome, { type ViewerChromeActions } from './ViewerChrome';
 import { ViewerContext, type ViewerChromeState, type ViewerMode, type ViewerShellContext } from './viewerContext';
 import { stepForKey, type ViewerStep } from './viewerKeys';
+import { useSwipe } from './useSwipe';
 import { boundaryText, positionText } from './viewerLabels';
 import styles from './StoryViewer.module.css';
 
@@ -31,10 +32,14 @@ function sameChrome(a: ViewerChromeState | null, b: ViewerChromeState): boolean 
  *   series, once, however many Escape and close events arrive. The host puts
  *   focus back on the opener.
  *
- * In both, Left and Right move (see stepForKey), Previous and Next replace
- * the history entry without scrolling, an end announces itself and doesn't
- * move, and each move is announced in a polite live region that's empty at
- * mount. Zoom resets on every move.
+ * In both, Left and Right move (see stepForKey), and so does a horizontal
+ * swipe on the photograph (see useSwipe). Previous and Next replace the
+ * history entry without scrolling, an end announces itself and doesn't move,
+ * and each move is announced in a polite live region that's empty at mount.
+ * Zoom resets on every move. Nothing slides: the photograph never follows
+ * the finger, and the next one replaces it in place, so reduced motion has
+ * no slide to remove and the header and the region give the new position at
+ * once.
  */
 export default function ViewerShell({ mode, children }: { mode: ViewerMode; children: ReactNode }) {
     const router = useRouter();
@@ -45,7 +50,7 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
     const rootRef = useRef<HTMLElement | null>(null);
     const closing = useRef(false);
     const shownPhoto = useRef<string | null>(null);
-    const movedWith = useRef<ViewerStep | null>(null);
+    const movedWith = useRef<{ direction: ViewerStep; held: Element | null } | null>(null);
 
     const report = useCallback((state: ViewerChromeState) => {
         setChrome((current) => (sameChrome(current, state) ? current : state));
@@ -67,13 +72,14 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
                 return;
             }
             setZoomed(false);
-            movedWith.current = direction;
+            movedWith.current = { direction, held: document.activeElement };
             router.replace(href, { scroll: false });
         },
         [chrome, router],
     );
 
     // A new photograph: announce its position, and if focus was inside the photograph that left, put it on the control for the direction moved.
+    // Focus that was on the page itself (a swipe, or an arrow with nothing focused) stays there: a move never moves keyboard focus.
     useLayoutEffect(() => {
         if (chrome === null || chrome.photoId === shownPhoto.current) return;
         const first = shownPhoto.current === null;
@@ -82,11 +88,12 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         setZoomed(false);
         setMessage(positionText(chrome.position, chrome.total));
         const root = rootRef.current;
-        const direction = movedWith.current;
+        const moved = movedWith.current;
         movedWith.current = null;
         const active = document.activeElement;
-        if (root && direction && (active === null || active === document.body)) {
-            root.querySelector<HTMLElement>(`[data-viewer-step="${direction}"]`)?.focus();
+        const lost = moved !== null && moved.held !== null && moved.held !== document.body && !moved.held.isConnected;
+        if (root && moved && lost && (active === null || active === document.body)) {
+            root.querySelector<HTMLElement>(`[data-viewer-step="${moved.direction}"]`)?.focus();
         }
     }, [chrome]);
 
@@ -116,19 +123,27 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         stepRef.current = step;
     }, [zoomed, step]);
 
-    // Keys: on the dialog in the modal, so nothing behind it reacts, and on the document on a page.
+    // Keys come from the document in both modes, so they still work when focus falls to the body under the open
+    // modal (Tab past the end, or a tap on the photograph in WebKit). In the modal, a key aimed anywhere but the
+    // body or the dialog is someone else's; the inert page behind it can't hold focus anyway.
     useEffect(() => {
-        const target: EventTarget | null = mode === 'modal' ? rootRef.current : document;
-        if (target === null) return;
-        const onKey = (event: Event) => {
-            const direction = stepForKey(event as KeyboardEvent, zoomedRef.current);
+        const onKey = (event: KeyboardEvent) => {
+            if (mode === 'modal') {
+                const root = rootRef.current;
+                const target = event.target;
+                const inside = root !== null && target instanceof Node && root.contains(target);
+                if (!inside && target !== document.body) return;
+            }
+            const direction = stepForKey(event, zoomedRef.current);
             if (direction === null) return;
             event.preventDefault();
             stepRef.current(direction);
         };
-        target.addEventListener('keydown', onKey);
-        return () => target.removeEventListener('keydown', onKey);
+        document.addEventListener('keydown', onKey);
+        return () => document.removeEventListener('keydown', onKey);
     }, [mode]);
+
+    useSwipe(rootRef, { zoomed, photoId: chrome?.photoId ?? null, onStep: step });
 
     const actions = useMemo<ViewerChromeActions>(() => ({ step, close }), [step, close]);
     const context = useMemo<ViewerShellContext>(() => ({ mode, claimed: chrome !== null, zoomed, headingId, report }), [mode, chrome, zoomed, headingId, report]);

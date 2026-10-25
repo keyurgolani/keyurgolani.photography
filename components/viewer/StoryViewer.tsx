@@ -133,6 +133,8 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
             )}
             <div
                 className={styles.viewport}
+                // Where a swipe can start (#9's useSwipe), and only there: the controls and the reading area sit outside it.
+                data-viewer-stage=""
                 data-zoomed={zoomedIn ? 'true' : undefined}
                 // Zoomed, the photograph can overflow its box, and a scroll region has to be reachable by keyboard.
                 tabIndex={zoomedIn ? 0 : undefined}

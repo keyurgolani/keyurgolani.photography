@@ -100,3 +100,49 @@ describe('the Chromatic Chapters text', () => {
     },
   );
 });
+
+describe('the Chromatic Chapters controls', () => {
+  const values = new Map<string, string>();
+  read('surfaces/chromatic-chapters.css').walkDecls((decl) => {
+    if (!values.has(decl.prop)) values.set(decl.prop, decl.value);
+  });
+
+  /** A token as [r, g, b, alpha]. */
+  function rgba(token: string): number[] {
+    const value = values.get(token)!;
+    if (value.startsWith('#')) return [...hexToRgb(value), 1];
+    const parts = /^rgba\((\d+), (\d+), (\d+), ([\d.]+)\)$/.exec(value);
+    if (!parts) throw new Error(`${token} is neither #rrggbb nor rgba(): ${value}`);
+    return parts.slice(1).map(Number);
+  }
+  /** `top` painted over an opaque `under`. */
+  const over = (top: number[], under: number[]) => under.map((channel, i) => (i < 3 ? top[i] * top[3] + channel * (1 - top[3]) : 1));
+  const ratio = (a: number[], b: number[]) => {
+    const [x, y] = [luminance(a), luminance(b)].sort((m, n) => n - m);
+    return (x + 0.05) / (y + 0.05);
+  };
+  const grounds = ['--cc-ground', '--cc-band-edge', '--cc-band-mid'];
+
+  // #1's rule 8 on the Viewer's ground (#9): control boundaries and icons keep 3:1. Close, Zoom, and the
+  // technical toggle sit on --cc-chrome bars, and Previous and Next are --cc-chrome plates on the bare ground.
+  it.each(grounds)('keeps a control boundary at 3:1 against the bar it sits on, over %s', (ground) => {
+    const bar = over(rgba('--cc-chrome'), rgba(ground));
+    expect(ratio(over(rgba('--cc-rule-strong'), bar), bar)).toBeGreaterThanOrEqual(3);
+  });
+
+  it.each(grounds)('keeps the Previous and Next boundary at 3:1 against its plate and against %s around it', (ground) => {
+    const plate = over(rgba('--cc-chrome'), rgba(ground));
+    const boundary = over(rgba('--cc-rule-strong'), plate);
+    expect(ratio(boundary, plate)).toBeGreaterThanOrEqual(3);
+    expect(ratio(boundary, rgba(ground))).toBeGreaterThanOrEqual(3);
+  });
+
+  it.each(grounds)('keeps the icons, in --cc-ink, at 3:1 on a plate over %s', (ground) => {
+    expect(ratio(rgba('--cc-ink'), over(rgba('--cc-chrome'), rgba(ground)))).toBeGreaterThanOrEqual(3);
+  });
+
+  it('fails the fainter --cc-rule as a boundary, which is why the controls use --cc-rule-strong', () => {
+    const bar = over(rgba('--cc-chrome'), rgba('--cc-ground'));
+    expect(ratio(over(rgba('--cc-rule'), bar), bar)).toBeLessThan(3);
+  });
+});
