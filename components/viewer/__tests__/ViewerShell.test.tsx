@@ -297,6 +297,32 @@ describe('ViewerShell, as the modal', () => {
         expect(showModal).toHaveBeenCalledOnce();
     });
 
+    it('keeps #6\'s reserved box, adds no head preload, and keeps Previous, Next, and Close working when the file fails', () => {
+        const preloads = () => document.head.querySelectorAll('link[rel="preload"][as="image"]').length;
+        const before = preloads();
+        const view = render(<ViewerShell mode="modal">{photo(2, true)}</ViewerShell>);
+        const modal = dialog() as HTMLElement;
+        // A modal open is a client render: the box is reserved from the record, and nothing goes in the head.
+        expect(modal.querySelector('figure')?.getAttribute('style')).toContain('--ratio: 2400 / 1600');
+        expect(preloads()).toBe(before);
+        fireEvent.error(modal.querySelector('img') as HTMLImageElement);
+        const missing = modal.querySelector('[data-photo="unavailable"]');
+        expect(missing?.getAttribute('style')).toContain('--ratio: 2400 / 1600');
+        const next = step('Next photograph');
+        next.focus();
+        fireEvent.click(next);
+        expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
+        view.rerender(<ViewerShell mode="modal">{photo(3, true)}</ViewerShell>);
+        // The next photograph starts without the failure, focus stays on Next, and still no head link.
+        expect(modal.querySelector('[data-photo="unavailable"]')).toBeNull();
+        expect(document.activeElement).toBe(next);
+        expect(preloads()).toBe(before);
+        fireEvent.click(step('Previous photograph'));
+        expect(router.replace).toHaveBeenLastCalledWith(photoHref(2), { scroll: false });
+        fireEvent.click(within(modal).getByRole('button', { name: 'Close' }));
+        expect(router.back).toHaveBeenCalledOnce();
+    });
+
     it('closes the dialog when it unmounts without asking for a Back, and leaves no listener', () => {
         const { unmount } = renderShell('modal', 2);
         const element = dialog() as HTMLDialogElement;
