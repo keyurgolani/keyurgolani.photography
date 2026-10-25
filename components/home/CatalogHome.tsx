@@ -138,6 +138,7 @@ function FeaturedHome({ revisionId, series }: { revisionId: string; series: Home
           photoIds={photoIds}
           photos={photos}
           index={playback.index}
+          openingId={series.openingPhotoId}
           playbackState={playback.playbackState}
           attempts={attempts}
           onImageReady={handleImageReady}
