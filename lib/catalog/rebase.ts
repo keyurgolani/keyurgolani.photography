@@ -225,8 +225,7 @@ type SiteBase =
 function mergeSite(site: AuthoredSite, base: SiteBase, target: RevisionFile, snapshot: AuthoredSite | null): Merged<AuthoredSite> {
     const next: AuthoredSite = { ...site };
     const conflicts: Conflict[] = [];
-    // rebaseSeriesOrder() always compares the order. It returns no conflict once the owner's order and the target's agree.
-    const compared: string[] = ['seriesOrder'];
+    const compared: string[] = [];
     const targetIds = target.content.series.map((series) => series.id);
     if (base.kind === 'known') {
         compared.push('featuredSeriesIds');
@@ -234,12 +233,17 @@ function mergeSite(site: AuthoredSite, base: SiteBase, target: RevisionFile, sna
         if (featured.conflict) conflicts.push(featured.conflict);
         if (featured.changed) next.featuredSeriesIds = [...featured.value];
     }
-    const order = rebaseSeriesOrder({
+    const orderInput = {
         authored: site.seriesOrder,
         baseAuthored: snapshot ? snapshot.seriesOrder : site.baseSeriesOrder,
         base: base.kind === 'known' ? base.seriesIds : base.kind === 'none' ? targetIds : [],
         target: targetIds,
-    });
+    };
+    // With a repeated entry rebaseSeriesOrder() leaves the order as it is and decides nothing, so a stored conflict
+    // stays. Otherwise it compares the order, and returns no conflict once the owner's order and the target's agree.
+    const repeats = (list: readonly string[]) => new Set(list).size !== list.length;
+    if (!repeats(orderInput.authored) && !repeats(orderInput.base) && !repeats(orderInput.target)) compared.push('seriesOrder');
+    const order = rebaseSeriesOrder(orderInput);
     next.seriesOrder = order.seriesOrder;
     // writeRebasedRecord() stores it, the one write that does.
     next.baseSeriesOrder = order.baseSeriesOrder;

@@ -251,7 +251,9 @@ describe('rebaseWorkingLayer', { timeout: 30_000 }, () => {
         // A base that should exist and can't be read, on a record that never learned its base order.
         const lost = `rev_${'9'.repeat(64)}`;
         damage(revisionFilePath(root, lost));
-        await withLock(AUTHORED_LOCK, { root }, (lock) => writeRebasedRecord({ ...site, seriesOrder: [c, a, b], baseSeriesOrder: null }, { expectedVersion: site.version, lock, baseRevisionId: lost }));
+        // With no base to compare against, the rebase can't settle a featured conflict, so it stays.
+        const featured = { field: 'featuredSeriesIds', base: [b], active: [a] };
+        await withLock(AUTHORED_LOCK, { root }, (lock) => writeRebasedRecord({ ...site, seriesOrder: [c, a, b], baseSeriesOrder: null, conflicts: [featured] }, { expectedVersion: site.version, lock, baseRevisionId: lost }));
 
         const result = await publish({ dataRoot: root, actor: 'test', logger: quiet });
         expect(result.outcome).toBe('VALIDATION_FAILED');
@@ -261,8 +263,28 @@ describe('rebaseWorkingLayer', { timeout: 30_000 }, () => {
             seriesOrder: [c, a, b],
             featuredSeriesIds: site.featuredSeriesIds,
             baseRevisionId: first.revisionId,
-            conflicts: [{ field: 'seriesOrder', base: [], active: [a, b, c] }],
+            conflicts: [featured, { field: 'seriesOrder', base: [], active: [a, b, c] }],
         });
+    });
+
+    it('keeps a stored Work order conflict when a repeated entry leaves the order undecided', async () => {
+        const { catalog, run, edit, record, rollBack } = await setup({ seed: 108, photos: 6, series: 3 });
+        const [a, b, c] = catalog.series.map((series) => series.id);
+        const first = await run();
+        await edit<AuthoredSite>('site', 'site', (site) => {
+            site.seriesOrder = [b, a, c];
+        });
+        const second = await run();
+        const stored = { field: 'seriesOrder', base: [a, b, c], active: [b, a, c] };
+        await edit<AuthoredSite>('site', 'site', (site) => {
+            // A hand edit repeats a slot. refs.series-order blocks publish until it's fixed.
+            site.seriesOrder = [c, b, a, a];
+            site.conflicts = [stored];
+        });
+
+        const report = await rollBack(ids(first), ids(second));
+        expect(report.conflicts).toEqual([]);
+        expect(await record<AuthoredSite>('site', 'site')).toMatchObject({ seriesOrder: [c, b, a, a], conflicts: [stored] });
     });
 
     it('takes a target\'s alt as reviewed, and leaves a capture date #10 knows to #10', async () => {
