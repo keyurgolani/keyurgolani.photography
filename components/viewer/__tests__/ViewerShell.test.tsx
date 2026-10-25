@@ -2,7 +2,9 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { renderToString } from 'react-dom/server';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { PublishedViewerPhoto } from '@/lib/catalog/projections/viewer';
+import type { PublishedViewerPhoto, ViewerImage } from '@/lib/catalog/projections/viewer';
+import { VARIANT_FORMATS, VARIANT_WIDTHS } from '@/lib/identity/variants';
+import { mediaUrl } from '@/lib/media/url';
 import StoryViewer from '../StoryViewer';
 import ViewerShell from '../ViewerShell';
 import type { ViewerMode } from '../viewerContext';
@@ -45,8 +47,22 @@ afterEach(() => {
 const id = (n: number) => `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const photoHref = (n: number) => `/work/fixture/photo/${id(n)}`;
 
-/** Photo n of 3 in the fixture series, with its neighbors, and no image so nothing loads. */
-function model(n: number, technical = true): PublishedViewerPhoto {
+/** A /media set for photo n, for the cases that need Zoom to work. */
+function imageOf(n: number): ViewerImage {
+    const ref = { photoId: id(n), assetRevision: `sha256-${'3'.repeat(64)}`, profileId: 'p_0123456789abcdef' };
+    const variants = {} as ViewerImage['variants'];
+    for (const width of VARIANT_WIDTHS) {
+        variants[width] = {} as (typeof variants)[typeof width];
+        for (const format of VARIANT_FORMATS) {
+            const pixels = Number(width.slice(1));
+            variants[width][format] = { url: mediaUrl(ref, width, format), width: pixels, height: Math.round((pixels * 2) / 3), bytes: 1_000 };
+        }
+    }
+    return { width: 2400, height: 1600, assetRevision: ref.assetRevision, variants };
+}
+
+/** Photo n of 3 in the fixture series, with its neighbors, and no image unless asked, so nothing loads. */
+function model(n: number, technical = true, withImage = false): PublishedViewerPhoto {
     return {
         catalogRevision: `rev_${'a'.repeat(64)}`,
         series: { id: 'ser_fixture', slug: 'fixture', title: 'Fixture series', accent: '#a0b0c0' },
@@ -57,7 +73,7 @@ function model(n: number, technical = true): PublishedViewerPhoto {
             caption: null,
             alt: '',
             descriptionPending: false,
-            image: null,
+            image: withImage ? imageOf(n) : null,
             accent: null,
             technical: technical ? { Make: 'Fixture Make' } : {},
         },
@@ -69,8 +85,8 @@ function model(n: number, technical = true): PublishedViewerPhoto {
 }
 
 /** The route's output for photo n: the photograph, keyed by its id, so a move remounts it as Next does. */
-function photo(n: number) {
-    const viewer = model(n);
+function photo(n: number, withImage = false) {
+    const viewer = model(n, true, withImage);
     return (
         <StoryViewer
             key={viewer.photo.id}
@@ -180,6 +196,22 @@ describe('ViewerShell, on a page', () => {
         move(2);
         expect(screen.getByRole('button', { name: 'Zoom' })).toBe(zoom);
         expect(document.activeElement).toBe(zoom);
+    });
+
+    it('drops Zoom when the photograph changes by any route, Back and Forward included, and when Next is pressed', () => {
+        const view = render(<ViewerShell mode="page">{photo(1, true)}</ViewerShell>);
+        const zoom = screen.getByRole('button', { name: 'Zoom' });
+        fireEvent.click(zoom);
+        expect(zoom).toHaveAttribute('aria-pressed', 'true');
+        expect(screen.getByRole('region', { name: 'Zoomed photograph' })).toBeInTheDocument();
+        // A history traversal changes the photograph without Previous or Next.
+        view.rerender(<ViewerShell mode="page">{photo(2, true)}</ViewerShell>);
+        expect(zoom).toHaveAttribute('aria-pressed', 'false');
+        expect(screen.queryByRole('region', { name: 'Zoomed photograph' })).toBeNull();
+        fireEvent.click(zoom);
+        fireEvent.click(step('Next photograph'));
+        expect(zoom).toHaveAttribute('aria-pressed', 'false');
+        expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
     });
 
     it('sends whole server HTML: the photograph renders the header and the steps until the shell takes them', () => {
