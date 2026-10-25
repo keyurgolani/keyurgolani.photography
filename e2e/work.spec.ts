@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import type { Locator, Page, Response } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import { publish } from '../lib/catalog/publish';
 import { createTestCatalog, type TestCatalog } from '../lib/catalog/testing';
 import { assetDir } from '../lib/media/path';
@@ -153,18 +153,25 @@ test('nothing unpublished reaches the served HTML or the RSC payload of a client
     for (const series of PUBLISHED) expect(html, 'the check reads a rendered Work page').toContain(series.title);
     for (const sentinel of SENTINELS) expect(html, sentinel).not.toContain(sentinel);
 
-    const payloads: Promise<string>[] = [];
-    page.on('response', (response: Response) => {
-        const url = new URL(response.url());
-        if (url.pathname === '/work' && response.request().headers()['rsc'] === '1') payloads.push(response.text());
-    });
+    // Each RSC fetch of /work, prefetches included, passes through here, so its body is read before any navigation drops it.
+    const payloads: string[] = [];
+    await page.route(
+        (url) => url.pathname === '/work',
+        async (route) => {
+            if (route.request().headers()['rsc'] !== '1') return route.fallback();
+            const response = await route.fetch();
+            const body = await response.text();
+            payloads.push(body);
+            await route.fulfill({ response, body });
+        },
+    );
     await page.goto(`${origin()}/about`);
     await waitForHydration(page);
     await primary(page).getByRole('link', { name: 'Work', exact: true }).click();
     await expect(page).toHaveURL(`${origin()}/work`);
     await expect(entries(page)).toHaveCount(PUBLISHED.length);
     expect(payloads.length, 'the move fetched /work as an RSC payload').toBeGreaterThan(0);
-    const rsc = (await Promise.all(payloads)).join('\n');
+    const rsc = payloads.join('\n');
     expect(rsc, 'the payload holds Work').toContain(PUBLISHED[0].title);
     for (const sentinel of SENTINELS) expect(rsc, sentinel).not.toContain(sentinel);
 });
