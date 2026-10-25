@@ -170,9 +170,17 @@ test('a former series slug answers 308 to the canonical URL, and nothing it can\
         const response = await request.get(`${origin()}${path}`, { maxRedirects: 0 });
         expect(response.status(), path).toBe(404);
         const html = await response.text();
-        expect(html, path).toMatch(/<h1[^>]*>Page not found<\/h1>/);
+        // A notFound() inside a nested segment sends Next's error shell, with the not-found title, and the page in its payload.
+        expect(html, path).toContain('<title>Page not found · Keyur Golani Photography</title>');
         for (const text of ['Fixture harbor', 'Fixture ridge', 'data-surface="viewer"', ...SENTINELS]) expect(html, `${path}: ${text}`).not.toContain(text);
     }
+});
+
+test('a visitor on a photo the Viewer can\'t serve sees the not-found page', async ({ page }) => {
+    const response = await page.goto(`${origin()}${href(P[4], 'draft')}`);
+    expect(response?.status()).toBe(404);
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Page not found');
+    await expect(page.locator('[data-surface]')).toHaveCount(0);
 });
 
 test('nothing outside the allowlist reaches the served HTML or the RSC payload of a move', async ({ page, request }) => {
