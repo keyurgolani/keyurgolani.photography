@@ -57,6 +57,8 @@ public/assets/photos/optimized/
 
 # Temporary SDLC / planning artifacts
 .superpowers/
+# The Impeccable design hook's session cache: session IDs and local paths
+.impeccable/
 docs/plans/
 docs/specs/
 OPTIMIZATION_PLAN*
