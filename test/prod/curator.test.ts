@@ -268,7 +268,9 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the curator boundary on the
         const page = await send(port, '/curation', { headers: { cookie } });
         expect(page.status).toBe(200);
         expectCuratorHeaders(page, 'GET /curation, signed in');
-        expect((await send(port, '/curation', { headers: { cookie, rsc: '1' } })).status).toBe(200);
+        // With a session, an RSC request isn't sent to the login. (Next itself may redirect it to add its cache-busting query.)
+        const rsc = await send(port, '/curation', { headers: { cookie, rsc: '1' } });
+        expect(String(rsc.headers.location ?? '')).not.toContain('/curation/login');
         expect((await send(port, '/curation/login', { headers: { cookie } })).status).toBe(307);
 
         // Logout ends it, so the same cookie replayed is anonymous again.
