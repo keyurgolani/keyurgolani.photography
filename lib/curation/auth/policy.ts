@@ -168,7 +168,8 @@ const isNextDevChild = (env: CuratorEnv) => env.__NEXT_DEV_SERVER === '1' && env
  *   `CURATION_BIND_SCOPE=container`, which accepts a wildcard address (`0.0.0.0`
  *   or `::`) and nothing else, only where a container marker file exists, and
  *   only while the process sees a single network interface beyond loopback,
- *   as on its own Compose network and unlike under host networking.
+ *   as on its own Compose network. Host networking on a host with more than
+ *   one active interface fails it; on a host with one, it can't tell.
  *   ci/check-compose.sh checks that the only service with it publishes on
  *   127.0.0.1 alone and shares no network with another service.
  */
