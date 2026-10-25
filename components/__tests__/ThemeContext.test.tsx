@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
+import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ThemeProvider, useTheme } from '../ThemeContext';
 
@@ -25,18 +26,19 @@ describe('ThemeProvider', () => {
   });
 
   it('renders its children on the first pass, in the dark theme the server sends', () => {
+    // The server render runs no effects, so a gate that waits for a mount effect would send no child.
     let firstPass = '';
     function First() {
       const { theme } = useTheme();
       if (!firstPass) firstPass = theme;
       return <p>child</p>;
     }
-    render(
+    const markup = renderToString(
       <ThemeProvider>
         <First />
       </ThemeProvider>,
     );
-    expect(screen.getByText('child')).toBeInTheDocument();
+    expect(markup).toContain('<p>child</p>');
     expect(firstPass).toBe('dark');
   });
 
