@@ -1,4 +1,4 @@
-import { readActivePointer, readAuthoredRecord, readAuthoredSeries } from '../catalog/working-layer';
+import { readActivePointer, readAuthoredRecord, readAuthoredSeries, RecordUnusableError } from '../catalog/working-layer';
 import { ASSET_REVISION_RE, PHOTO_ID_RE } from '../identity/ids';
 import type { FactSink } from '../identity/pass';
 import { readRegistry } from '../identity/registry';
@@ -152,7 +152,8 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
         const root = status.root;
 
         const registry = await readRegistry(root).catch(() => null);
-        const context = relevant.some(({ type }) => type === 'new') ? await suggestContext(root, logger) : null;
+        // A replacement may move a new item to new bytes, and its suggestions with it.
+        const context = relevant.some(({ type }) => type === 'new' || type === 'replacement') ? await suggestContext(root, logger) : null;
         const producedAt = new Date(clock()).toISOString();
         const referenceCache: ReferenceCache = {};
 
@@ -177,7 +178,64 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                 }
             };
 
+            /** Whether the photo has a photo record. A damaged one counts as one; I/O fails the delivery. */
+            const hasPhotoRecord = async (photoId: string): Promise<boolean> => {
+                try {
+                    return (await readAuthoredRecord(root, 'photo', photoId)) !== null;
+                } catch (error) {
+                    if (error instanceof RecordUnusableError && error.problem.reason !== 'unreadable') return true;
+                    throw error;
+                }
+            };
+            const readOrSkip = (eventId: string) => readEvent(root, eventId).catch((error: unknown) => {
+                if (error instanceof EventUnusableError && error.problem.reason !== 'unreadable') return null;
+                throw error;
+            });
+            /** The new items by photo, listed once a replacement needs them, and kept current as this delivery opens more. */
+            let newByPhoto: Map<string, string[]> | null = null;
+            const newItemsOf = async (photoId: string): Promise<string[]> => {
+                if (newByPhoto === null) {
+                    newByPhoto = new Map();
+                    for (const event of (await listEvents(root)).events) {
+                        if (event.type === 'new' && event.photoId !== null) newByPhoto.set(event.photoId, [...(newByPhoto.get(event.photoId) ?? []), event.id]);
+                    }
+                }
+                return newByPhoto.get(photoId) ?? [];
+            };
+
+            /**
+             * New bytes for a photograph no one has approved yet fold into its open or deferred new item: the item
+             * moves to them, with suggestions for them, and its version goes up, so an approval reviewed against the
+             * older bytes is stale. No replacement item opens beside it. Once a photo record exists, only a confirm
+             * moves the photo, so the fact opens a replacement item as usual. Returns whether it folded.
+             */
+            const foldIntoNew = async (fact: IdentityFact): Promise<boolean> => {
+                const photoId = fact.photoId as string;
+                const ids = await newItemsOf(photoId);
+                if (ids.length === 0 || await hasPhotoRecord(photoId)) return false;
+                let folded = false;
+                for (const eventId of ids) {
+                    const current = await readOrSkip(eventId);
+                    if (current === null || current.type !== 'new' || (current.status !== 'open' && current.status !== 'deferred')) continue;
+                    folded = true;
+                    if (current.factIds.includes(fact.factId) || current.assetRevision === fact.assetRevision) continue;
+                    const derivedFacts = { ...derivedFactsOf(fact, registry), factType: current.derivedFacts.factType };
+                    const moved: CurationEvent = {
+                        ...current,
+                        assetRevision: fact.assetRevision,
+                        sourceFingerprint: fingerprintOf(fact.assetRevision),
+                        derivedFacts,
+                        suggestions: context ? suggestForNew({ ...context, sourcePath: fact.path, folder: fact.folder, capturedDate: derivedFacts.capturedDate ?? null, producedAt }) : current.suggestions,
+                        lastObservedAt: fact.observedAt > current.lastObservedAt ? fact.observedAt : current.lastObservedAt,
+                        factIds: [...current.factIds, fact.factId].slice(-KEPT_FACT_IDS),
+                    };
+                    if (await write(fact, moved, current.version)) updated++;
+                }
+                return folded;
+            };
+
             for (const { fact, type } of relevant) {
+                if (type === 'replacement' && fact.photoId !== null && await foldIntoNew(fact)) continue;
                 let id: string;
                 let fresh: CurationEvent;
                 try {
@@ -200,7 +258,13 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                     continue;
                 }
                 if (existing === null) {
-                    if (await write(fact, fresh, 0)) opened++;
+                    if (await write(fact, fresh, 0)) {
+                        opened++;
+                        if (type === 'new' && fact.photoId !== null && newByPhoto !== null) {
+                            const known: Map<string, string[]> = newByPhoto;
+                            known.set(fact.photoId, [...(known.get(fact.photoId) ?? []), fresh.id]);
+                        }
+                    }
                     continue;
                 }
                 if (existing.factIds.includes(fact.factId)) continue;
@@ -225,35 +289,6 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                 if (await write(fact, next, existing.version)) {
                     if (next.status !== existing.status) reopened++;
                     else updated++;
-                }
-            }
-
-            // New bytes for a photograph no one has approved yet: its open new item moves to them, and its version
-            // goes up, so an approval reviewed against the older bytes is stale. Once a photo record exists, only a
-            // confirm moves it.
-            const replaced = relevant.filter(({ type, fact }) => type === 'replacement' && fact.photoId !== null).map(({ fact }) => fact);
-            if (replaced.length > 0) {
-                const { events } = await listEvents(root);
-                for (const fact of replaced) {
-                    for (const event of events) {
-                        if (event.type !== 'new' || event.photoId !== fact.photoId || (event.status !== 'open' && event.status !== 'deferred')) continue;
-                        const authored = await readAuthoredRecord(root, 'photo', fact.photoId as string).then((record) => record !== null, () => true);
-                        if (authored) continue;
-                        const current = await readEvent(root, event.id).catch((error: unknown) => {
-                            if (error instanceof EventUnusableError && error.problem.reason !== 'unreadable') return null;
-                            throw error;
-                        });
-                        if (current === null || current.assetRevision === fact.assetRevision || current.factIds.includes(fact.factId)) continue;
-                        const moved: CurationEvent = {
-                            ...current,
-                            assetRevision: fact.assetRevision,
-                            sourceFingerprint: fingerprintOf(fact.assetRevision),
-                            derivedFacts: { ...derivedFactsOf(fact, registry), factType: current.derivedFacts.factType },
-                            lastObservedAt: fact.observedAt > current.lastObservedAt ? fact.observedAt : current.lastObservedAt,
-                            factIds: [...current.factIds, fact.factId].slice(-KEPT_FACT_IDS),
-                        };
-                        if (await write(fact, moved, current.version)) updated++;
-                    }
                 }
             }
 

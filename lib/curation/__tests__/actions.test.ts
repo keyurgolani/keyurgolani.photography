@@ -12,7 +12,7 @@ import { readVersionedDocument, versionFile, versionText, writeVersionedDocument
 import { withLock } from '../../storage/lock';
 import { approveEvent, deferEvent, dismissEvent, editEvent, reopenEvent, retryEvent, type ActionInput } from '../actions';
 import { eventIdOf, eventKey, type CurationEvent, type CurationEventType } from '../events';
-import { readEvent } from '../repository';
+import { listEvents, readEvent } from '../repository';
 import { createCurationSink } from '../sink';
 import { createCurationFixture, DRAFT, GPS, holdingCuration, PUBLISHED, SERIAL, writeRules, type CurationFixture } from './curationFixtures';
 
@@ -438,5 +438,66 @@ describe('round 3: a file replaced before its first approval', () => {
         const newer = await replaceBytes(f, event.photoId as string);
         await createCurationSink({ root: f.root, logger: quiet })([f.fact('replaced', event.photoId as string, { assetRevision: newer })]);
         expect(await readEvent(f.root, event.id)).toEqual(dismissed);
+    });
+});
+
+describe('round 4: folding a replacement into the new item', () => {
+    async function replaceBytes(f: CurationFixture, photoId: string, n: string): Promise<string> {
+        const registry = await readRegistry(f.root);
+        const photo = registry.photos[photoId];
+        const old = photo.revisions[photo.source.observedRevision];
+        const assetRevision = `sha256-${n.repeat(64)}`;
+        photo.revisions[assetRevision] = { ...old, assetRevision, width: 4000, height: 3000, profiles: { [f.catalog.profileId]: { state: 'pending', attempts: 0 } } };
+        photo.source.observedRevision = assetRevision;
+        await writeRegistry(f.root, registry, registry.version);
+        return assetRevision;
+    }
+
+    it('opens no replacement item beside an unapproved new item', async () => {
+        const { f, event } = await opened((fx) => fx.fact('new', fx.fresh[0]));
+        const photoId = event.photoId as string;
+        const newer = await replaceBytes(f, photoId, '6');
+        await createCurationSink({ root: f.root, logger: quiet })([f.fact('replaced', photoId, { assetRevision: newer }), f.fact('metadata-changed', photoId, { assetRevision: newer })]);
+        const { events } = await listEvents(f.root);
+        expect(events.map((entry) => [entry.id, entry.type, entry.assetRevision])).toEqual([[event.id, 'new', newer]]);
+    });
+
+    it('fails the delivery when the photo record can\'t be read, so the fact comes again and the item moves once it can', async () => {
+        const { f, event } = await opened((fx) => fx.fact('new', fx.fresh[0]));
+        const photoId = event.photoId as string;
+        const newer = await replaceBytes(f, photoId, '5');
+        const photos = path.join(f.root, 'authored', 'photos');
+        fs.chmodSync(photos, 0o000);
+        cleanups.push(async () => fs.chmodSync(photos, 0o700));
+        const fact = f.fact('replaced', photoId, { assetRevision: newer });
+        await expect(createCurationSink({ root: f.root, logger: quiet })([fact])).rejects.toThrow();
+        fs.chmodSync(photos, 0o700);
+        await createCurationSink({ root: f.root, logger: quiet })([fact]);
+        expect(await readEvent(f.root, event.id)).toMatchObject({ version: 2, assetRevision: newer });
+        expect((await listEvents(f.root)).events).toHaveLength(1);
+    });
+
+    it('treats a damaged photo record as one that exists: a replacement item opens and the new item stays', async () => {
+        const { f, event } = await opened((fx) => fx.fact('new', fx.fresh[0]));
+        const photoId = event.photoId as string;
+        const dir = path.join(f.root, 'authored', 'photos', photoId);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, 'v1.json'), '{ not json');
+        const newer = await replaceBytes(f, photoId, '4');
+        await createCurationSink({ root: f.root, logger: quiet })([f.fact('replaced', photoId, { assetRevision: newer })]);
+        expect(await readEvent(f.root, event.id)).toEqual(event);
+        expect((await listEvents(f.root)).events.map((entry) => entry.type).sort()).toEqual(['new', 'replacement']);
+    });
+
+    it('recomputes the suggestions for the moved bytes', async () => {
+        const rules = { schemaVersion: 1, series: [{ seriesId: DRAFT, folders: ['trips'] }, { seriesId: PUBLISHED, folders: ['moved'] }] };
+        const { f, event } = await opened((fx) => fx.fact('new', fx.fresh[0]), { rules });
+        expect(event.suggestions.series?.value).toBe(DRAFT);
+        const photoId = event.photoId as string;
+        const newer = await replaceBytes(f, photoId, '3');
+        await createCurationSink({ root: f.root, logger: quiet, clock: () => Date.parse('2026-05-01T00:00:00.000Z') })([f.fact('replaced', photoId, { assetRevision: newer, path: 'moved/harbor-1.jpg', folder: 'moved' })]);
+        const moved = await readEvent(f.root, event.id) as CurationEvent;
+        expect(moved.suggestions.series).toMatchObject({ value: PUBLISHED, producedAt: '2026-05-01T00:00:00.000Z' });
+        expect(moved.suggestions.placement).toMatchObject({ value: 'end', producedAt: '2026-05-01T00:00:00.000Z' });
     });
 });
