@@ -183,9 +183,12 @@ export type InboxView =
           missingSelection: string | null;
       };
 
-/** "N items require judgment", then what waits, what's already placed, and what's no longer placed, as `curation list` says it. */
-export function summaryText(view: { needsJudgment: number; waiting: number; placed?: number; unplaced?: number }): string {
-    const judgment = `${view.needsJudgment} ${view.needsJudgment === 1 ? 'item requires' : 'items require'} judgment`;
+/** "N items require judgment" (or "N of M items", once other items are listed too), then what waits, what's already placed, and what's no longer placed, counted as `curation list` counts them. */
+export function summaryText(view: { needsJudgment: number; waiting: number; placed?: number; unplaced?: number; items?: readonly unknown[] }): string {
+    // "All items (N)" counts every item, settled ones too, so once that differs from the count needing judgment, the summary names both.
+    const n = view.needsJudgment;
+    const total = view.items?.length ?? n;
+    const judgment = total === n ? `${n} ${n === 1 ? 'item requires' : 'items require'} judgment` : `${n} of ${total} ${total === 1 ? 'item requires' : n === 1 ? 'items requires' : 'items require'} judgment`;
     const rest = [
         ...(view.waiting > 0 ? [`${view.waiting} waiting`] : []),
         ...((view.placed ?? 0) > 0 ? [`${view.placed} already placed`] : []),
@@ -369,7 +372,7 @@ export function descriptionHint(detail: Pick<InboxDetail, 'edits' | 'placed'>): 
     return 'Nothing is suggested. What you type here is stored as reviewed, and publishing waits until the photograph has a description or is marked decorative.';
 }
 
-type StateFacts = Pick<InboxDetail, 'type' | 'status' | 'group' | 'unplacedSeries' | 'placed' | 'lastApprovedSeries'>;
+type StateFacts = Pick<InboxDetail, 'type' | 'status' | 'group' | 'unplacedSeries' | 'placed' | 'lastApprovedSeries' | 'references'>;
 
 /** The status beside the item's identity, from its status and where it sits now, so an approval nothing holds never reads approved. */
 export function statusLabel(item: Pick<InboxItem, 'status' | 'group'>): { text: string; tone: 'approved' | 'change' | null } {
@@ -389,8 +392,14 @@ export function systemResponse(item: StateFacts, labelOf: (seriesId: string) => 
         return `It was approved into ${labelOf(item.unplacedSeries)}, but nothing holds its photo now, so it sits in the draft unassigned. Nothing publishes.`;
     }
     if (item.status === 'approved') {
+        // Live only when the active revision is known to hold it; when the holders can't be read, it claims nothing about live.
+        const live = item.references?.some((ref) => ref.kind === 'revision') ?? false;
+        const held = item.placed?.seriesIds ?? [];
+        if (live) {
+            const draft = item.placed === null ? '' : held.length > 0 ? `, and in ${joined(held.map(labelOf))} in the draft` : ', and unassigned in the draft';
+            return `Live in the active revision${draft}. Draft changes publish only when you publish.`;
+        }
         if (item.placed === null) return 'Approved into the draft. Nothing publishes until you publish.';
-        const held = item.placed.seriesIds;
         return held.length > 0 ? `In the draft, in ${joined(held.map(labelOf))}. Nothing publishes until you publish.` : 'In the draft, unassigned. Nothing publishes until you publish.';
     }
     if (item.status === 'dismissed') return 'Dismissed, so it needs no judgment. Nothing a visitor sees changed.';

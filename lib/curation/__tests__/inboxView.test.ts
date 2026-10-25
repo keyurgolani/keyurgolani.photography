@@ -106,7 +106,7 @@ describe('the hint under the description', () => {
 });
 
 type Item = Parameters<typeof systemResponse>[0];
-const item = (overrides: Partial<Item> = {}): Item => ({ type: 'new', status: 'open', group: 'judgment', unplacedSeries: null, placed: null, lastApprovedSeries: null, ...overrides });
+const item = (overrides: Partial<Item> = {}): Item => ({ type: 'new', status: 'open', group: 'judgment', unplacedSeries: null, placed: null, lastApprovedSeries: null, references: [], ...overrides });
 
 describe('the status and the system response', () => {
     it('never calls an approval no longer placed approved, and says where it is', () => {
@@ -120,6 +120,18 @@ describe('the status and the system response', () => {
         expect(statusLabel(approved)).toEqual({ text: 'Suggestion approved', tone: 'approved' });
         expect(systemResponse(approved, labelOf)).toBe('In the draft, in Draft series. Nothing publishes until you publish.');
         expect(systemResponse(item({ status: 'approved', group: 'settled', placed: { alt: null, seriesIds: [] } }), labelOf)).toBe('In the draft, unassigned. Nothing publishes until you publish.');
+    });
+
+    it('leads with live for an approval the active revision already shows, and never says nothing publishes', () => {
+        const live = [{ kind: 'revision' as const, id: REV }, { kind: 'series' as const, id: 'ser_harbor' }];
+        const placed = item({ status: 'approved', group: 'settled', placed: { alt: null, seriesIds: ['ser_harbor'] }, references: live });
+        expect(systemResponse(placed, labelOf)).toBe('Live in the active revision, and in Harbor in the draft. Draft changes publish only when you publish.');
+        const unassigned = item({ status: 'approved', group: 'settled', placed: { alt: null, seriesIds: [] }, references: [{ kind: 'revision', id: REV }] });
+        expect(systemResponse(unassigned, labelOf)).toBe('Live in the active revision, and unassigned in the draft. Draft changes publish only when you publish.');
+        for (const text of [systemResponse(placed, labelOf), systemResponse(unassigned, labelOf)]) expect(text).not.toContain('Nothing publishes');
+        // A series that holds it in the draft alone is not live, and when the holders can't be read the line claims nothing about live.
+        expect(systemResponse(item({ status: 'approved', group: 'settled', placed: { alt: null, seriesIds: ['ser_harbor'] }, references: [{ kind: 'series', id: 'ser_harbor' }] }), labelOf)).toBe('In the draft, in Harbor. Nothing publishes until you publish.');
+        expect(systemResponse(item({ status: 'approved', group: 'settled', placed: { alt: null, seriesIds: ['ser_harbor'] }, references: null }), labelOf)).toBe('In the draft, in Harbor. Nothing publishes until you publish.');
     });
 
     it('names a file that produced nothing for what it is', () => {
