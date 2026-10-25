@@ -140,7 +140,10 @@ export class EditedInPlaceError extends CorruptDocumentError {
 /** A name in a version folder that looks like a version but isn't spelled as one, such as `V3.JSON` or `v03.json`. */
 export class MisnamedVersionError extends CorruptDocumentError {
     constructor(file: string) {
-        super(file, `${path.basename(file)} looks like a version, but versions are named v<N>.json in lower case, with no leading zeros. Rename it`);
+        super(
+            file,
+            `${path.basename(file)} looks like a version, but versions are named v<N>.json in lower case, with no leading zeros and at most ${MAX_VERSION_DIGITS} digits. Rename it`,
+        );
         this.name = 'MisnamedVersionError';
     }
 }
@@ -204,9 +207,16 @@ export const KEEP_VERSIONS = 2;
 /** How many times a reader lists a folder when the version it picked is pruned before it opens it. */
 export const READ_ATTEMPTS = 5;
 
-const VERSION_NAME = /^v([1-9]\d*)\.json$/;
-/** Anything a person could mean as a version, in another case or with leading zeros. */
-const VERSION_LIKE = /^v\d+\.json$/i;
+/** The most digits a version number has, so every one reads exactly (Number.MAX_SAFE_INTEGER has 16). */
+export const MAX_VERSION_DIGITS = 15;
+const MAX_VERSION = Number('9'.repeat(MAX_VERSION_DIGITS));
+const VERSION_NAME = new RegExp(`^v([1-9]\\d{0,${MAX_VERSION_DIGITS - 1}})\\.json$`);
+/**
+ * Anything a person, or a disk that folds names, could mean as a version: in
+ * another case, with leading zeros, or too long to read. `u` folds the way APFS
+ * does, so `v2.jſon` (U+017F) counts too.
+ */
+const VERSION_LIKE = /^v\d+\.json$/iu;
 const TEMP_NAME = /^\.v([1-9]\d*)\.\d+\.[0-9a-f-]+\.tmp$/;
 
 /** `<dir>/v<version>.json`. */
@@ -360,6 +370,7 @@ export async function writeVersionedDocument<T extends VersionedDocument>(
     { hooks, keep = KEEP_VERSIONS }: VersionedWriteOptions = {},
 ): Promise<T> {
     if (!Number.isInteger(expectedVersion) || expectedVersion < 0) throw new RangeError(`expectedVersion must be a non-negative integer, got ${expectedVersion}`);
+    if (expectedVersion >= MAX_VERSION) throw new RangeError(`${dir} is at version ${expectedVersion}, the highest a version can be`);
     let created = false;
     try {
         await fs.promises.mkdir(dir, { mode: PRIVATE_DIR_MODE });
