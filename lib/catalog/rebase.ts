@@ -42,6 +42,13 @@ export interface RebaseOptions {
     waitMs?: number;
     /** #10's registry, for capture dates. Read from the data root when absent. */
     registry?: Registry | null;
+    /**
+     * The target was published from this working layer: publish's step 13,
+     * or recover() settling a publish. #16's review stamps then move their
+     * base to it. After a rollback they keep theirs, so what it changed reads
+     * as stale.
+     */
+    published?: boolean;
 }
 
 export interface RebaseReport {
@@ -309,7 +316,7 @@ export async function rebaseWorkingLayer(options: RebaseOptions): Promise<Rebase
             const next = { ...merged.record } as R;
             if (conflicts) next.conflicts = conflicts;
             else delete next.conflicts;
-            await writeRebasedRecord(next as never, { expectedVersion: record.version, lock, baseRevisionId: target.revisionId });
+            await writeRebasedRecord(next as never, { expectedVersion: record.version, lock, baseRevisionId: target.revisionId, published: options.published === true });
             report.rebased++;
             const id = record.kind === 'site' ? 'site' : (record as AuthoredSeries | AuthoredPhoto).id;
             for (const conflict of merged.conflicts) report.conflicts.push({ kind: record.kind, id, field: conflict.field });

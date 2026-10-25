@@ -120,12 +120,21 @@ describe('a replacement that builds', { timeout: 60_000 }, () => {
             event: { status: 'approved', reviewedBy: ACTOR, decisions: [{ action: 'confirm', fromRevision: w.a, baseRevisionId: w.revisionId, writes: [{ record: `photo:${w.p}`, version: recordBefore.version + 1 }] }] },
         });
         // Only the photo record's asset revision moved. Its series, its position, and every authored field stay.
-        const { version: _before, assetRevision: _was, ...keptBefore } = recordBefore;
-        const { version, assetRevision, ...keptAfter } = await photoRecord(w);
+        const { version: _before, assetRevision: _was, review: reviewBefore, ...keptBefore } = recordBefore;
+        const { version, assetRevision, review: reviewAfter, ...keptAfter } = await photoRecord(w);
         void _before;
         void _was;
         expect({ version, assetRevision }).toEqual({ version: recordBefore.version + 1, assetRevision: w.b });
         expect(keptAfter).toEqual(keptBefore);
+        // #16: the writer stamps the asset revision with what the curator reviewed, and keeps every other field's stamp.
+        const { assetRevision: _stampBefore, ...otherStamps } = reviewBefore?.fields ?? {};
+        void _stampBefore;
+        const { assetRevision: stamp, ...otherStampsAfter } = reviewAfter?.fields ?? {};
+        expect(otherStampsAfter).toEqual(otherStamps);
+        expect(stamp).toMatchObject({
+            origin: 'curator', actor: ACTOR, baseRevisionId: w.revisionId, assetRevision: w.b,
+            event: { id: ready.id, version: ready.version }, asset: { from: w.a, to: w.b, profileId: w.profileId },
+        });
         expect(treeBytes(authoredRecordDir(w.root, 'series', SERIES))).toEqual(seriesBefore);
         expect(treeBytes(path.join(w.root, 'catalog'))).toEqual(catalogBefore);
         expect(await served(w)).toEqual({ ...before, other: null });
@@ -189,11 +198,14 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
             reviewedBy: ACTOR,
         }, item.version, hold));
     };
+    /** Everything but the asset revision, its #16 stamp, and the version. */
     const kept = (record: Awaited<ReturnType<typeof photoRecord>>) => {
-        const { version: _version, assetRevision: _revision, ...rest } = record;
+        const { version: _version, assetRevision: _revision, review, ...rest } = record;
         void _version;
         void _revision;
-        return rest;
+        const { assetRevision: _stamp, ...stamps } = review?.fields ?? {};
+        void _stamp;
+        return { ...rest, stamps };
     };
 
     it('puts the photo record back on the revision the confirm replaced, so the next publish ships it', async () => {
@@ -212,6 +224,8 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         const after = await photoRecord(w);
         expect(after.assetRevision).toBe(w.a);
         expect(kept(after)).toEqual(kept(before));
+        // #16: the put back is stamped as this item's, with the revision it put back as `to`, so it never reads as the confirm.
+        expect(after.review?.fields.assetRevision).toMatchObject({ event: { id: reopened.id }, asset: { from: w.b, to: w.a }, actor: ACTOR });
 
         const published = await publish({ dataRoot: w.root, actor: OWNER, logger: { log: () => undefined } });
         expect(['PUBLISHED', 'NO_CHANGES']).toContain(published.outcome);
@@ -341,27 +355,58 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         expect((await photoRecord(w)).assetRevision).toBe(w.b);
     });
 
-    it('after a crash between confirm\'s two writes, a confirm again records nothing to put back, so reopen and leave in draft keep the new bytes', async () => {
+    it('after a crash between confirm\'s two writes, a confirm again trusts its own review stamp, so reopen and leave in draft put back what it replaced', async () => {
         const w = await world();
         await approveP(w);
         await w.build(w.job(w.b));
         await expect(confirm(w, await w.event(), { faults: { afterWrite: () => { throw new Error('killed'); } } })).rejects.toThrow('killed');
+        // #16's stamp on assetRevision names this item's confirm and what it replaced, which tells this crash from a rollback or a photos edit.
+        expect((await photoRecord(w)).review?.fields.assetRevision).toMatchObject({ event: { id: w.eventId }, asset: { from: w.a, to: w.b } });
         const authored = treeBytes(path.join(w.root, 'authored'));
-        // Nothing on record tells this crash from a rollback or a photos edit onto B, so the confirm guesses no revision to put back.
         const again = await confirm(w, await w.event());
+        expect(again).toMatchObject({ ok: true, event: { status: 'approved' } });
+        expect(again.ok && again.event.decisions.at(-1)).toMatchObject({ action: 'confirm', fromRevision: w.a, writes: [] });
+        expect(again.ok && again.notes.join(' ')).toContain(`already pins ${w.b}: its review stamp shows a confirm of this item wrote it, in place of ${w.a}, and the item was never marked confirmed.`);
+        expect(again.ok && again.notes.join(' ')).toContain(`It is recorded as confirmed in place of ${w.a}, which leaving it in draft puts back.`);
+        expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
+        const reopened = await reopenEvent({ root: w.root, eventId: w.eventId, expectedVersion: (again as { event: CurationEvent }).event.version, expectedBase: w.revisionId, actor: ACTOR });
+        expect(reopened.ok && reopened.notes.join(' ')).toContain(`Leaving it in draft (defer) puts back ${w.a}, the revision this item's confirm replaced.`);
+        const left = await leave(w, (reopened as { event: CurationEvent }).event);
+        expect(left).toMatchObject({ ok: true, event: { status: 'deferred' } });
+        expect(left.ok && left.event.decisions.at(-1)).toMatchObject({ action: 'defer', fromRevision: w.a });
+        expect(left.ok && left.notes.join(' ')).toContain(`back on ${w.a}, in place of ${w.b}`);
+        expect((await photoRecord(w)).assetRevision).toBe(w.a);
+    });
+
+    it('after confirm, publish, and a rollback away and back, a confirm again carries no stale fromRevision', async () => {
+        const w = await world();
+        const log = { log: () => undefined };
+        const first = w.revisionId;
+        await w.build(w.job(w.b));
+        // B is confirmed in place of A and published.
+        const b = await confirm(w, await w.event());
+        expect(b.ok && b.event.decisions.at(-1)).toMatchObject({ action: 'confirm', fromRevision: w.a });
+        const servedB = await publish({ dataRoot: w.root, actor: OWNER, logger: log });
+        expect(servedB.outcome).toBe('PUBLISHED');
+        const bRevision = servedB.revisionId as string;
+        // The owner rolls back to A and then forward to B again. Each rebase moves assetRevision, so it drops the confirm's stamp.
+        expect(await rollback({ dataRoot: w.root, revisionId: first, expectedActiveRevisionId: bRevision, actor: OWNER, reason: 'back to A', logger: log })).toMatchObject({ outcome: 'ROLLED_BACK', rebased: true });
+        expect((await photoRecord(w)).assetRevision).toBe(w.a);
+        expect(await rollback({ dataRoot: w.root, revisionId: bRevision, expectedActiveRevisionId: first, actor: OWNER, reason: 'forward to B', logger: log })).toMatchObject({ outcome: 'ROLLED_BACK', rebased: true });
+        const record = await photoRecord(w);
+        expect(record.assetRevision).toBe(w.b);
+        expect(record.review?.fields.assetRevision).toBeUndefined();
+        // The record pins B because of the rollback, not the confirm, so confirming the item again records nothing to put back.
+        const reopened = await reopen(w, await w.event(), bRevision);
+        const authored = treeBytes(path.join(w.root, 'authored'));
+        const again = await confirm(w, reopened, { expectedBase: bRevision });
         expect(again).toMatchObject({ ok: true, event: { status: 'approved' } });
         expect(again.ok && again.event.decisions.at(-1)).toMatchObject({ action: 'confirm', writes: [] });
         expect(again.ok && again.event.decisions.at(-1)).not.toHaveProperty('fromRevision');
-        expect(again.ok && again.notes.join(' ')).toContain(`already pins ${w.b}, though the inbox last pinned ${w.a}, so nothing in the working layer changed.`);
-        expect(again.ok && again.notes.join(' ')).toContain(`recorded as confirmed with nothing to put back, and leaving it in draft later keeps ${w.b}. To use ${w.a} again, set assetRevision back with photos edit ${w.p}.`);
-        expect(again.ok && again.notes.join(' ')).not.toContain('puts back');
-        const reopened = await reopenEvent({ root: w.root, eventId: w.eventId, expectedVersion: (again as { event: CurationEvent }).event.version, expectedBase: w.revisionId, actor: ACTOR });
-        expect(reopened.ok && reopened.notes.join(' ')).toContain('recorded nothing to put back, so leaving it in draft (defer) keeps them too');
-        const left = await leave(w, (reopened as { event: CurationEvent }).event);
+        expect(again.ok && again.notes.join(' ')).toContain(`already pins ${w.b}, so nothing in the working layer changed, and leaving it in draft later puts nothing back.`);
+        const left = await leave(w, await reopen(w, (again as { event: CurationEvent }).event, bRevision), { expectedBase: bRevision });
         expect(left).toMatchObject({ ok: true, event: { status: 'deferred' } });
-        expect(left.ok && left.event.decisions.at(-1)).not.toHaveProperty('fromRevision');
         expect(left.ok && left.event.decisions.at(-1)).not.toHaveProperty('writes');
-        expect(left.ok && left.notes.join(' ')).toContain(`pins ${w.b}, as it did before this item's last confirm, which recorded nothing to put back, so the draft keeps it.`);
         expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
         expect((await photoRecord(w)).assetRevision).toBe(w.b);
     });

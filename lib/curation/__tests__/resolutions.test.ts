@@ -258,7 +258,7 @@ describe('leave in draft\'s guards', { timeout: 60_000 }, () => {
         expect(writer).not.toHaveBeenCalled();
     });
 
-    it('counts a put back as the inbox\'s pin, so a later confirm whose event a crash lost names A as the last pin, and puts nothing back', async () => {
+    it('counts a put back as the inbox\'s pin, and a confirm whose event a crash lost puts A back by its own review stamp', async () => {
         const w = await readyWorld();
         // B confirmed in place of A, then put back to A.
         const left = await leave(w, await confirmedAndReopened(w));
@@ -274,15 +274,12 @@ describe('leave in draft\'s guards', { timeout: 60_000 }, () => {
         await expect(confirm(w, item, { faults: { afterWrite: () => { throw new Error('killed'); } } })).rejects.toThrow('killed');
         expect((await photoRecord(w)).assetRevision).toBe(c);
 
-        // The inbox last pinned A, by the put back, not B, by the confirm it undid. Nothing shows C's confirm put the record
-        // on C, so confirm again records nothing to put back, and leave in draft keeps C.
+        // The inbox last pinned A, by the put back, not B, by the confirm it undid. #16's stamp on the record shows C's
+        // confirm wrote it in place of A, so confirm again records A, and leave in draft puts A back.
         const again = await confirm(w, await w.event(item.id));
-        expect(again.ok && again.event.decisions.at(-1)).toMatchObject({ action: 'confirm', writes: [] });
-        expect(again.ok && again.event.decisions.at(-1)).not.toHaveProperty('fromRevision');
-        expect(again.ok && again.notes.join(' ')).toContain(`already pins ${c}, though the inbox last pinned ${w.a}, so nothing in the working layer changed.`);
-        const before = authored(w);
-        expect(await leave(w, await reopen(w, (again as { event: CurationEvent }).event))).toMatchObject({ ok: true, event: { status: 'deferred' } });
-        expect((await photoRecord(w)).assetRevision).toBe(c);
-        expect(authored(w)).toEqual(before);
+        expect(again.ok && again.event.decisions.at(-1)).toMatchObject({ action: 'confirm', fromRevision: w.a, writes: [] });
+        expect(again.ok && again.notes.join(' ')).toContain(`already pins ${c}: its review stamp shows a confirm of this item wrote it, in place of ${w.a}`);
+        expect(await leave(w, await reopen(w, (again as { event: CurationEvent }).event))).toMatchObject({ ok: true, event: { status: 'deferred', decisions: expect.arrayContaining([expect.objectContaining({ action: 'defer', fromRevision: w.a })]) } });
+        expect((await photoRecord(w)).assetRevision).toBe(w.a);
     });
 });

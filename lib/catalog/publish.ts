@@ -380,7 +380,11 @@ export async function recover(options: RecoverOptions): Promise<RecoveryReport> 
     if (active !== null && options.rebase !== false) {
         const layer = await readWorkingLayer(root);
         const behind = [layer.site, ...layer.series, ...layer.photos].some((record) => record !== null && record.baseRevisionId !== active.revisionId);
-        if (behind) report.rebased = await rebaseWorkingLayer({ root, targetRevisionId: active.revisionId, waitMs: options.authoredWaitMs });
+        if (behind) {
+            // A publish's target came from this working layer, so #16's reviews move with it. A rollback's didn't.
+            const published = (await listActivations(root)).find((activation) => activation.activationId === active.activationId)?.kind === 'publish';
+            report.rebased = await rebaseWorkingLayer({ root, targetRevisionId: active.revisionId, waitMs: options.authoredWaitMs, published });
+        }
     }
     return report;
 }
@@ -804,7 +808,7 @@ export async function publish(options: PublishOptions): Promise<PublishResult> {
 
         // 13. Rebase onto the new revision, merging against the snapshot.
         try {
-            await rebaseWorkingLayer({ root, targetRevisionId: compiled.candidateId, snapshot: layer, registry, waitMs: options.authoredWaitMs });
+            await rebaseWorkingLayer({ root, targetRevisionId: compiled.candidateId, snapshot: layer, registry, waitMs: options.authoredWaitMs, published: true });
             result.rebased = true;
         } catch (error) {
             if (!(error instanceof LockTimeoutError)) throw error;

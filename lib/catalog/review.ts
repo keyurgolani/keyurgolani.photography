@@ -149,12 +149,19 @@ export function stampWrite(
  * moved to the target's value now holds what was published, not what anyone
  * reviewed here, so its stamp goes. So a rollback that puts a field back on
  * a value a review once stamped never revives that review.
+ *
+ * `publishedFrom`: the target was published from this working layer, so
+ * whatever it changed for visitors came from the curator's own drafts, and
+ * every kept stamp moves its base to it. A rollback's target wasn't, so its
+ * stamps keep the base they were reviewed against, and a field the rollback
+ * publishes differently from that base reads as stale.
  */
-export function rebaseStamps(existing: AuthoredRecord | null, next: AuthoredRecord, existingCover: string | null, at: string): ReviewStamp | undefined {
+export function rebaseStamps(existing: AuthoredRecord | null, next: AuthoredRecord, existingCover: string | null, at: string, publishedFrom?: string): ReviewStamp | undefined {
     if (!existing) return undefined;
     const fields: Record<string, FieldReview> = {};
     for (const [field, stamp] of Object.entries(stampsOf(existing, existingCover, at))) {
-        if (hashValue(valueOf(existing, field)) === hashValue(valueOf(next, field))) fields[field] = stamp;
+        if (hashValue(valueOf(existing, field)) !== hashValue(valueOf(next, field))) continue;
+        fields[field] = publishedFrom === undefined ? stamp : { ...stamp, baseRevisionId: publishedFrom };
     }
     return { fields };
 }

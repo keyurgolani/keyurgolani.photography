@@ -229,7 +229,7 @@ describe('writeAuthoredRecord', () => {
         type Managed = (typeof MANAGED_FIELDS)[number];
         const same: [ManagedField] extends [Managed] ? ([Managed] extends [ManagedField] ? true : false) : false = true;
         expect(same).toBe(true);
-        expect([...MANAGED_FIELDS].sort()).toEqual(['baseRevisionId', 'baseSeriesOrder', 'schemaVersion', 'version']);
+        expect([...MANAGED_FIELDS].sort()).toEqual(['baseRevisionId', 'baseSeriesOrder', 'review', 'schemaVersion', 'version']);
     });
 
     it.each([
