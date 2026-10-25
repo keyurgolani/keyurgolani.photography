@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { artist, EXTERNAL_DESTINATION_ICONS } from '../artist';
+import { artist, EXTERNAL_DESTINATION_ICONS, type ExternalDestinationIcon } from '../artist';
 
 const { destinations } = artist;
 
@@ -28,6 +28,22 @@ describe('artist.destinations', () => {
       expect(url.search, `${id} has a query string`).toBe('');
       expect(url.hash, `${id} has a fragment`).toBe('');
       expect(href, `${id} has an empty query or fragment`).not.toMatch(/[?#]/);
+    }
+  });
+
+  it('links each profile and the repository to its own known host', () => {
+    const hosts: Record<ExternalDestinationIcon, string> = {
+      instagram: 'www.instagram.com',
+      '500px': '500px.com',
+      flickr: 'www.flickr.com',
+      github: 'github.com',
+    };
+    for (const { id, kind, href, icon } of destinations) {
+      if (kind === 'contact') continue;
+      expect(icon, id).toBeDefined();
+      const url = new URL(href);
+      expect(url.host, id).toBe(hosts[icon as ExternalDestinationIcon]);
+      expect(url.username + url.password, `${id} has credentials`).toBe('');
     }
   });
 
