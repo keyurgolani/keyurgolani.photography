@@ -298,6 +298,26 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
         expect(Object.keys(lib.hashes(derivativePaths('portrait')))).toHaveLength(7);
     });
 
+    it.skipIf(isRoot)("looks a takedown's set-source record up by name when it can't list cache/set-sources", async () => {
+        const lib = await libraryWithOrphans();
+        const records = lib.file('cache', 'set-sources');
+        fs.chmodSync(records, 0o311);
+        try {
+            const { out, err, output } = capture();
+            expect(runImageCleanup(['--only', 'square'], output)).toBe(0);
+            expect(out).toContain(`Would delete ${record('square')} (no source named square.*)`);
+            expect(out).toContain("Skipped cache/set-sources/, which is a symlink, not a folder, or can't be listed, so only square's files were looked up in it, by name.");
+            expect(err).toEqual([]);
+
+            const hash = dryRunHash(['--only', 'square']);
+            expect(runImageCleanup(['--only', 'square', '--apply', '--plan', hash], capture().output)).toBe(0);
+            expect(fs.existsSync(lib.file(record('square')))).toBe(false);
+        } finally {
+            fs.chmodSync(records, 0o755);
+        }
+        expect(fs.existsSync(lib.file(record('portrait')))).toBe(true);
+    });
+
     it.skipIf(isRoot)("never takes another photo's file spelled in another case for the takedown's, in a folder it can't list", async (context) => {
         const lib = await newLibrary({ fixtures: 'basic' });
         if (!caseInsensitive(lib)) context.skip();
