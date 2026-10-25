@@ -33,7 +33,7 @@ describe('the lib/catalog import boundary', { timeout: 60_000 }, () => {
         ['lib/catalog/reader.ts', NEXT_SERVER],
         ['lib/catalog/working-layer.ts', SERVER_ONLY],
         ['lib/catalog/projections/home.ts', "import { cache } from 'next/dist/server/lib/cache';\nexport const probe = cache;\n"],
-        ['lib/catalog/projections/home.ts', SERVER_ONLY],
+        ['lib/catalog/working-layer-writer.ts', SERVER_ONLY],
         ['lib/catalog/projections/work.ts', NEXT_SERVER],
         ['lib/catalog/__tests__/probe.test.ts', NEXT_SERVER],
     ])('rejects %s importing Next or server-only', async (file, source) => {
