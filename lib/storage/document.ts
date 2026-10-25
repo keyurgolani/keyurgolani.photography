@@ -360,8 +360,10 @@ export async function writeVersionedDocument<T extends VersionedDocument>(
     { hooks, keep = KEEP_VERSIONS }: VersionedWriteOptions = {},
 ): Promise<T> {
     if (!Number.isInteger(expectedVersion) || expectedVersion < 0) throw new RangeError(`expectedVersion must be a non-negative integer, got ${expectedVersion}`);
+    let created = false;
     try {
         await fs.promises.mkdir(dir, { mode: PRIVATE_DIR_MODE });
+        created = true;
     } catch (error) {
         if (!hasErrorCode(error, 'EEXIST')) throw error;
     }
@@ -392,6 +394,8 @@ export async function writeVersionedDocument<T extends VersionedDocument>(
         }
         await hooks?.afterLink?.(file);
         await fsyncDirectory(dir);
+        // A folder this write created holds its first version only once the folder itself survives a crash.
+        if (created) await fsyncDirectory(path.dirname(dir));
     } finally {
         await fs.promises.rm(temp, { force: true }).catch(() => undefined);
     }
