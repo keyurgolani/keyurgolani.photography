@@ -122,7 +122,17 @@ export interface Registry {
     holds: Hold[];
     /** Facts committed with this registry and not yet delivered to every sink. */
     pendingFacts: IdentityFact[];
+    /**
+     * What became of each decision this registry applied or rejected whose
+     * file is still in `identity/decisions/`, by decisionId. A pass after a
+     * crash between the registry write and the move files those decisions
+     * as recorded here instead of applying them again. Absent when none.
+     */
+    decided?: Record<string, RecordedDecision>;
 }
+
+/** A decision's recorded result. */
+export type RecordedDecision = { status: 'applied'; detail: string } | { status: 'rejected'; reason: string };
 
 export interface VariantFile {
     width: number;

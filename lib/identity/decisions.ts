@@ -12,9 +12,11 @@ import { identityPaths } from './registry';
  * alone. `photos:identity` (and later #14's inbox) writes one file per
  * decision to `identity/decisions/`, and the next pass applies them in file
  * order, then moves each to `applied/`, or to `rejected/` with the reason.
- * Applying a decision twice changes nothing the second time, so a crash
- * between the registry write and the move is safe: the next pass applies it
- * again as a no-op and moves it.
+ * The registry write that applies them also records what became of each
+ * until its file moves, so after a crash between that write and the move the
+ * next pass files them as recorded instead of applying them again. Applying
+ * one again could come out otherwise, as when a later decision in the same
+ * batch changed what it found.
  */
 
 export const DECISION_SCHEMA_VERSION = 1;

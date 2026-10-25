@@ -68,6 +68,13 @@ function assertRegistry(file: string, value: Record<string, unknown>): asserts v
     for (const pending of value.pendingFacts as unknown[]) {
         if (!isRecord(pending) || typeof pending.factId !== 'string' || typeof pending.type !== 'string') fail('pendingFacts holds a malformed fact');
     }
+    if (value.decided !== undefined) {
+        if (!isRecord(value.decided)) fail('decided must be an object');
+        for (const recorded of Object.values(value.decided as Record<string, unknown>)) {
+            const ok = isRecord(recorded) && ((recorded.status === 'applied' && typeof recorded.detail === 'string') || (recorded.status === 'rejected' && typeof recorded.reason === 'string'));
+            if (!ok) fail('decided holds a malformed entry');
+        }
+    }
 }
 
 /**

@@ -164,7 +164,7 @@ describe('a pass with decision files', () => {
         const s = await setup({ 'a.jpg': 'A' });
         const x = await s.photoAt('a.jpg');
         fs.rmSync(s.lib.file('a.jpg'));
-        const { name } = await s.decide({ type: 'archive', photoId: x });
+        const { name, decisionId } = await s.decide({ type: 'archive', photoId: x });
         const dir = identityPaths(s.data.root).decisions;
         const warnings: string[] = [];
         fs.chmodSync(dir, 0o500);
@@ -178,11 +178,15 @@ describe('a pass with decision files', () => {
         expect((await readRegistry(s.data.root)).photos[x].sourceHealth).toBe('archived');
         expect(s.pending()).toEqual([name]);
         const again = await s.pass();
-        expect(again).toMatchObject({ status: 'committed', decisions: [{ name, status: 'applied', detail: `${x} was already archived` }] });
+        expect(again).toMatchObject({ status: 'committed', decisions: [{ name, status: 'applied', detail: `archived ${x}` }] });
         expect(s.filed('applied')).toEqual([name]);
+        // Recorded until a pass finds its file gone
+        expect((await readRegistry(s.data.root)).decided).toEqual({ [decisionId]: { status: 'applied', detail: `archived ${x}` } });
+        await s.pass();
+        expect((await readRegistry(s.data.root)).decided).toBeUndefined();
     }, 60_000);
 
-    it('applies a decision again as a no-op after a crash between the registry write and the move', async () => {
+    it('files a decision as it went after a crash between the registry write and the move, applying nothing again', async () => {
         const s = await setup({ 'a.jpg': 'A' });
         const x = await s.photoAt('a.jpg');
         fs.rmSync(s.lib.file('a.jpg'));
@@ -195,11 +199,39 @@ describe('a pass with decision files', () => {
 
         const again = await s.pass();
         if (again.status !== 'committed') throw new Error(JSON.stringify(again));
-        expect(again.decisions).toMatchObject([{ name, status: 'applied', detail: `z.jpg was already bound to ${x}` }]);
+        expect(again.decisions).toMatchObject([{ name, status: 'applied', detail: `bound z.jpg to ${x}` }]);
         expect(again.facts).toEqual([]);
         expect(s.pending()).toEqual([]);
         expect(s.filed('applied')).toEqual([name]);
         expect((await readRegistry(s.data.root)).version).toBe(version + 1);
+    }, 60_000);
+
+    it('replays a batch after a crash as it went, though its second decision changed what the first found', async () => {
+        const s = await setup({ 'a.jpg': 'A' });
+        const x = await s.photoAt('a.jpg');
+        fs.rmSync(s.lib.file('a.jpg'));
+        fs.writeFileSync(s.lib.file('z.jpg'), images.Z);
+        // Bind z.jpg to x, then change course: z.jpg is a photo of its own after all.
+        const bind = await s.decide({ type: 'bind', path: 'z.jpg', photoId: x });
+        const made = await s.decide({ type: 'new', path: 'z.jpg' });
+        await expect(s.pass({ faults: { beforeSettle: () => { throw new Error('the process died'); } } })).rejects.toThrow('the process died');
+        expect(await s.photoAt('z.jpg')).toBe(made.photoId);
+        expect(s.pending()).toEqual([bind.name, made.name]);
+
+        const again = await s.pass();
+        if (again.status !== 'committed') throw new Error(JSON.stringify(again));
+        expect(again.decisions).toEqual([
+            { name: bind.name, decisionId: bind.decisionId, status: 'applied', detail: `bound z.jpg to ${x}` },
+            { name: made.name, decisionId: made.decisionId, status: 'applied', detail: `gave z.jpg its own photo ${made.photoId}` },
+        ]);
+        expect(again.facts).toEqual([]);
+        expect(s.pending()).toEqual([]);
+        expect(s.filed('applied')).toEqual([bind.name, made.name]);
+        expect(s.filed('rejected')).toEqual([]);
+        const registry = await readRegistry(s.data.root);
+        expect(Object.keys(registry.photos).sort()).toEqual([x, made.photoId].sort());
+        expect(registry.photos[made.photoId]).toMatchObject({ sourceHealth: 'present', source: { path: 'z.jpg' } });
+        expect(registry.photos[x].sourceHealth).toBe('missing');
     }, 60_000);
 });
 
