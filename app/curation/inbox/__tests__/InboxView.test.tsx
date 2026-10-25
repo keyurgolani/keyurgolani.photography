@@ -60,6 +60,7 @@ function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
         },
         edits: null,
         placed: null,
+        lastApprovedSeries: null,
         decisions: [],
         reviewedAt: null,
         reviewedBy: null,
@@ -244,6 +245,16 @@ describe('the forms', () => {
         fireEvent.click(box);
         await press(screen.getByRole('button', { name: 'Review series suggestion' }));
         expect(sent.forms[0].fields).toMatchObject({ series: 'ser_harbor', decorative: 'off', descriptionWas: 'decorative', description: '' });
+    });
+
+    it('start a reopened item that is no longer placed on the series it was approved into, and send it', async () => {
+        const noRules = { series: { value: null, confidence: 'low' as const, producedBy: 'rules@none', producedAt: '2026-02-01T00:00:00.000Z', evidence: [] }, placement: null };
+        const approved = [{ action: 'approve', at: '2026-02-01T00:00:00.000Z', by: 'curator:web', detail: '' }, { action: 'reopen', at: '2026-02-01T00:01:00.000Z', by: 'curator:web', detail: '' }];
+        renderInbox(view({ selected: detail({ suggestions: noRules, decisions: approved, placed: { alt: null, seriesIds: [] }, lastApprovedSeries: 'ser_harbor' }) }));
+        expect(screen.getByRole('combobox', { name: 'Suggested series' })).toHaveValue('ser_harbor');
+        await press(screen.getByRole('button', { name: 'Review series suggestion' }));
+        expect(sent.forms[0].fields).toMatchObject({ series: 'ser_harbor', intent: 'approve' });
+        expect(sent.forms[0].fields.seriesTouched).toBeUndefined();
     });
 
     it('fill a reopened item with its reviewed description', () => {

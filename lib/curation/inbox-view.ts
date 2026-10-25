@@ -138,6 +138,8 @@ export interface InboxDetail extends InboxItem {
      * Null before any approval. A reopened form starts from it.
      */
     placed: { alt: { kind: 'described'; text: string } | { kind: 'decorative' } | null; seriesIds: string[] } | null;
+    /** The series the last approval on this item named, or null when none did or it left the photo unassigned. */
+    lastApprovedSeries: string | null;
     decisions: { action: string; at: string; by: string; detail: string }[];
     reviewedAt: string | null;
     reviewedBy: string | null;
@@ -208,6 +210,21 @@ export function defaultSeries(detail: Pick<InboxDetail, 'edits' | 'suggestions'>
     if (approvedBefore && detail.placed) return detail.placed.seriesIds[0] ?? null;
     if (detail.suggestions.series) return detail.suggestions.series.value;
     return undefined;
+}
+
+/**
+ * The series the page's form starts on: defaultSeries(), except that a
+ * reopened item whose photo no series holds now starts on the series its last
+ * approval named, while that series is still one of `seriesIds`. That's the
+ * series "No longer placed" says to approve it into. The form sends the series
+ * it shows, so the approval goes there only if the curator leaves it chosen;
+ * the CLI's bare approve still leaves it unassigned, and says to pass --series.
+ */
+export function formSeries(detail: Parameters<typeof defaultSeries>[0] & Pick<InboxDetail, 'lastApprovedSeries'>, seriesIds: readonly string[]): string | null | undefined {
+    const series = defaultSeries(detail);
+    const last = detail.lastApprovedSeries;
+    if (series === null && detail.edits?.seriesId === undefined && detail.placed?.seriesIds.length === 0 && last !== null && seriesIds.includes(last)) return last;
+    return series;
 }
 
 /** The description the form starts on: the saved edit, then what the photo record holds. */

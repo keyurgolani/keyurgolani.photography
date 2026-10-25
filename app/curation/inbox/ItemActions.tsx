@@ -7,7 +7,7 @@ import { approveItem, deferItem, dismissItem, editItem, reopenItem, retryItem } 
 import {
     defaultDescription,
     defaultPlacement,
-    defaultSeries,
+    formSeries,
     IDLE,
     parsePlacementValue,
     placementLabel,
@@ -80,7 +80,7 @@ function Notice({ state, detail }: { state: InboxActionState; detail: InboxDetai
 
 /** The suggestion a new photograph comes with, as fields the curator can change before approving. */
 function SuggestionFields({ detail, series, seriesProblem }: Pick<ItemActionsProps, 'detail' | 'series' | 'seriesProblem'>) {
-    const initialSeries = defaultSeries(detail);
+    const initialSeries = formSeries(detail, series.map((option) => option.id));
     const known = (id: string) => series.some((option) => option.id === id);
     const [seriesValue, setSeriesValue] = useState<string>(initialSeries === undefined ? '' : initialSeries === null ? 'unassigned' : known(initialSeries) ? initialSeries : '');
     const [seriesTouched, setSeriesTouched] = useState(false);
