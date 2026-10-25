@@ -1,6 +1,7 @@
 import { render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SiteNav from '../SiteNav';
+import SiteRoutesProvider from '../SiteRoutes';
 
 const navigation = vi.hoisted(() => ({ pathname: '/' }));
 
@@ -61,6 +62,19 @@ describe('SiteNav', () => {
     expect(within(primary()).getByRole('link', { name: 'Work' })).toHaveAttribute('href', '/work');
     expect(primary().querySelector('a[href="/gallery"]')).toBeNull();
     expect(within(primary()).getByRole('link', { name: 'KG, Keyur Golani' })).toHaveAttribute('href', '/');
+  });
+
+  it("keeps every link inside #16's preview, and marks the section under its base path", () => {
+    const base = `/curation/preview/rev_${'a'.repeat(64)}/site`;
+    navigation.pathname = `${base}/work/streets`;
+    render(
+      <SiteRoutesProvider basePath={base}>
+        <SiteNav />
+      </SiteRoutesProvider>,
+    );
+    const links = within(primary()).getAllByRole('link');
+    expect(links.map((link) => link.getAttribute('href'))).toEqual([base, base, `${base}/work`, `${base}/about`]);
+    expect(links.filter((link) => link.getAttribute('aria-current') === 'page').map((link) => link.textContent)).toEqual(['Work']);
   });
 
   it('puts data-surface="about" on the nav only for the paper variant', () => {
