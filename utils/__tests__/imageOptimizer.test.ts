@@ -488,6 +488,9 @@ describe('temp files', { timeout: 30_000 }, () => {
         expect(temps).toHaveLength(9);
         expect(temps.every((name) => name.length === temps[0].length && name.length < 64)).toBe(true);
         expect(readSetSource(`${base}.jpg`)).toEqual({ source: `${base}.jpg`, finished: true });
+        // Readable like the outputs, not only by its owner as other atomic writes are
+        const modeOf = (relativePath: string) => fs.statSync(lib.file(relativePath)).mode & 0o777;
+        expect(modeOf(`cache/set-sources/${base}.json`)).toBe(modeOf(`thumbnails/${base}.webp`));
     });
 });
 
