@@ -1,10 +1,11 @@
 import { REVISION_ID_RE, SERIES_ID_RE } from '../catalog/schema';
 import { PHOTO_ID_RE } from '../identity/ids';
 import { dataRootStatus, libraryRoot } from '../storage/config';
-import { approveEvent, deferEvent, dismissEvent, editEvent, reopenEvent, retryEvent, type ActionInput, type ActionOutcome, type Choices } from './actions';
+import { approveEvent, dismissEvent, editEvent, reopenEvent, retryEvent, type ActionInput, type ActionOutcome, type Choices } from './actions';
 import { scrub } from './commands';
 import { EVENT_ID_RE, type CuratorDescription } from './events';
 import { parsePlacementValue, type InboxActionKind, type InboxActionState } from './inbox-view';
+import { leaveInDraft } from './resolutions';
 import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from './text';
 
 /**
@@ -216,7 +217,9 @@ export async function runInboxAction(kind: InboxActionKind, form: unknown, optio
                 outcome = await editEvent({ ...input, choices: choicesFrom(form, 'edit') });
                 break;
             case 'defer':
-                outcome = await deferEvent({ ...input, reason: reasonFrom(form, false) });
+                // As the CLI's defer: #17's leaveInDraft(), which is 14-1's defer for every type but a replacement, and
+                // puts back what a reopened replacement's confirm replaced, as reopen's note promises.
+                outcome = await leaveInDraft({ ...input, reason: reasonFrom(form, false) });
                 break;
             case 'dismiss':
                 outcome = await dismissEvent({ ...input, reason: reasonFrom(form, true) as string });

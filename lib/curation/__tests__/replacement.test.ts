@@ -16,6 +16,7 @@ import { approveEvent, deferEvent, reopenEvent, retryEvent } from '../actions';
 import { createCandidateSink, replacementEventIds, settleCandidates, settlingAfterBuild } from '../candidates';
 import { curationUsage, runCurationCli } from '../commands';
 import { eventIdOf, eventKey, type CurationEvent } from '../events';
+import { runInboxAction } from '../inbox-form';
 import { listEvents, readEvent, withCurationLock, writeEvent } from '../repository';
 import { confirmReplacement, leaveInDraft } from '../resolutions';
 import { createCurationSink } from '../sink';
@@ -224,6 +225,19 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         // Confirm from there pins B again.
         expect(await confirm(w, (left as { event: CurationEvent }).event)).toMatchObject({ ok: true, event: { decisions: expect.arrayContaining([expect.objectContaining({ action: 'confirm', fromRevision: w.a })]) } });
         expect((await photoRecord(w)).assetRevision).toBe(w.b);
+    });
+
+    it('puts the revision back the same way when the inbox page leaves it in draft', async () => {
+        const w = await world();
+        await w.build(w.job(w.b));
+        const confirmed = await confirm(w, await w.event());
+        expect(confirmed).toMatchObject({ ok: true });
+        const reopened = await reopen(w, (confirmed as { event: CurationEvent }).event);
+        const form = new FormData();
+        for (const [name, value] of Object.entries({ eventId: reopened.id, version: String(reopened.version), base: w.revisionId ?? 'none' })) form.set(name, value);
+        expect(await runInboxAction('defer', form, { actor: ACTOR })).toMatchObject({ status: 'done' });
+        expect((await w.event(reopened.id)).decisions.at(-1)).toMatchObject({ action: 'defer', fromRevision: w.a });
+        expect((await photoRecord(w)).assetRevision).toBe(w.a);
     });
 
     it('puts A back after B went live, and the next publish ships A', async () => {
