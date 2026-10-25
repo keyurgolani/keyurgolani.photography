@@ -2,8 +2,9 @@ import type { BuildOptions, BuildOutcome } from '../identity/derivatives';
 import type { FactSink } from '../identity/pass';
 import { currentProfileId } from '../identity/profile';
 import { readRegistry } from '../identity/registry';
-import type { DerivativeJob, ProfileEntry, Registry } from '../identity/types';
+import type { DerivativeJob, IdentityFact, ProfileEntry, Registry } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
+import { ASSET_REVISION_RE, PHOTO_ID_RE } from '../identity/ids';
 import { eventIdOf, eventKey, type Candidate, type CandidateFailure, type CurationEvent } from './events';
 import { EventMovedError, EventUnusableError, InvalidEventError, listEvents, readEvent, withCurationLock, writeEvent } from './repository';
 import { SINK_WAIT_MS } from './sink';
@@ -20,9 +21,12 @@ import { SINK_WAIT_MS } from './sink';
  * An older revision's bytes coming back reuse the set already committed for
  * them, so that item is ready without a build.
  *
- * It runs after each build and on every pass, so a crash between the
- * registry's `ready` and the item's write is settled by the next pass. It
- * reads the registry without its lock and takes only the curation lock, so
+ * It runs after each build, and on each pass for the revisions that pass's
+ * facts name. A sink's first delivery, at the watcher's start, looks at every
+ * item once, so a crash between the registry's `ready` and the item's write
+ * is settled when the watcher comes back, without reading the whole inbox on
+ * every pass inside the registry hold. It reads the registry without its
+ * lock and takes only the curation lock, so
  * the lock order stays `registry` then `curation`. It writes only under
  * `curation/`, and never the working layer: confirming the new bytes is the
  * curator's (lib/curation/resolutions.ts), and only a #13 publish makes them
@@ -102,9 +106,11 @@ export function replacementEventIds(photoId: string, assetRevision: string): str
     return (['replaced', 'metadata-changed'] as const).map((type) => eventIdOf(eventKey('replacement', { photoId, assetRevision, key: `${type}:${photoId}:${assetRevision}` })));
 }
 
+export type RevisionRef = Pick<DerivativeJob, 'photoId' | 'assetRevision'>;
+
 export interface SettleOptions {
-    /** Settle only this revision's items, as after its build. Otherwise every open replacement item. */
-    only?: Pick<DerivativeJob, 'photoId' | 'assetRevision'>;
+    /** Settle only these revisions' items, as after a build or for a pass's facts. Otherwise every replacement item. */
+    only?: RevisionRef | readonly RevisionRef[];
     clock?: () => number;
     logger?: Logger;
     /** How long to wait for the curation lock. A busy lock throws LockTimeoutError, and nothing is written. */
@@ -120,15 +126,22 @@ export interface SettleResult {
     failed: string[];
 }
 
-/** The items to look at: `only`'s, or every one, damaged ones aside, as #14's sink leaves them. */
+/** One event, or null when it is absent or damaged, as #14's sink leaves a damaged one. An I/O error is thrown. */
+export async function readUsableEvent(root: string, id: string): Promise<CurationEvent | null> {
+    return readEvent(root, id).catch((error: unknown) => {
+        if (error instanceof EventUnusableError && error.problem.reason !== 'unreadable') return null;
+        throw error;
+    });
+}
+
+/** The items to look at: `only`'s, or every one, damaged ones aside. */
 async function eventsFor(root: string, only: SettleOptions['only']): Promise<CurationEvent[]> {
     if (!only) return (await listEvents(root)).events;
+    const refs = Array.isArray(only) ? only : [only as RevisionRef];
+    const ids = new Set(refs.flatMap((ref) => replacementEventIds(ref.photoId, ref.assetRevision)));
     const found: CurationEvent[] = [];
-    for (const id of replacementEventIds(only.photoId, only.assetRevision)) {
-        const event = await readEvent(root, id).catch((error: unknown) => {
-            if (error instanceof EventUnusableError && error.problem.reason !== 'unreadable') return null;
-            throw error;
-        });
+    for (const id of ids) {
+        const event = await readUsableEvent(root, id);
         if (event) found.push(event);
     }
     return found;
@@ -156,10 +169,7 @@ export async function settleCandidates(root: string, options: SettleOptions = {}
     await withCurationLock(root, { waitMs }, async (hold) => {
         const registry = await readRegistry(root);
         for (const { id } of due) {
-            const event = await readEvent(root, id).catch((error: unknown) => {
-                if (error instanceof EventUnusableError && error.problem.reason !== 'unreadable') return null;
-                throw error;
-            });
+            const event = await readUsableEvent(root, id);
             if (event === null || event.photoId === null || event.assetRevision === null) continue;
             const next = withCandidate(event, candidateOf(registry, event.photoId, event.assetRevision, profileId), at());
             if (next === null) continue;
@@ -199,14 +209,37 @@ function readyRoot(root: string | undefined): string {
     return status.root;
 }
 
+/** The revisions a pass's replacement facts name, each once. A fact #14's sink would skip is left out. */
+export function namedRevisions(facts: readonly IdentityFact[]): RevisionRef[] {
+    const refs = new Map<string, RevisionRef>();
+    for (const fact of facts) {
+        if (fact.type !== 'replaced' && fact.type !== 'metadata-changed') continue;
+        if (typeof fact.photoId !== 'string' || !PHOTO_ID_RE.test(fact.photoId) || typeof fact.assetRevision !== 'string' || !ASSET_REVISION_RE.test(fact.assetRevision)) continue;
+        refs.set(`${fact.photoId}/${fact.assetRevision}`, { photoId: fact.photoId, assetRevision: fact.assetRevision });
+    }
+    return [...refs.values()];
+}
+
 /**
- * A fact sink that settles every open replacement item on each pass, facts
- * or none, after #14's sink has opened the pass's items. Like that sink, an
- * I/O or lock error fails the delivery, so the pass delivers again.
+ * A fact sink that runs after #14's sink has opened the pass's items. Its
+ * first delivery settles every replacement item, which recovers what a crash
+ * left unrecorded; each later one settles only the revisions its facts name.
+ * The pass delivers its pending facts until every sink has them, so a fact
+ * whose delivery failed is named again on the next pass. Like #14's sink, an
+ * I/O or lock error fails the delivery, and a first delivery that fails
+ * looks at every item again on the next.
  */
 export function createCandidateSink(options: CandidateSinkOptions = {}): FactSink {
-    return async () => {
-        await settleCandidates(readyRoot(options.root), { clock: options.clock, logger: options.logger, waitMs: options.waitMs, profileId: options.profileId });
+    let swept = false;
+    return async (facts) => {
+        const settle = (only?: RevisionRef[]) => settleCandidates(readyRoot(options.root), { clock: options.clock, logger: options.logger, waitMs: options.waitMs, profileId: options.profileId, ...(only ? { only } : {}) });
+        if (!swept) {
+            await settle();
+            swept = true;
+            return;
+        }
+        const named = namedRevisions(facts);
+        if (named.length > 0) await settle(named);
     };
 }
 
