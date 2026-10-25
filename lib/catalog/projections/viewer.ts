@@ -1,3 +1,6 @@
+// The web process and the tests import this, never the CLI or a client
+// module. A client bundle that reaches it fails the build (#3).
+import 'server-only';
 import { PHOTO_ID_RE } from '../../identity/ids';
 import { TECHNICAL_KEYS, type TechnicalKey } from '../../identity/metadata';
 import { VARIANT_FORMATS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth } from '../../identity/variants';
