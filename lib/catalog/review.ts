@@ -91,8 +91,17 @@ function assetFor(record: AuthoredRecord, field: string, coverAsset: string | nu
 
 /** A record's stamps: its own, or the backfill's when it has none, dated `at` when given. */
 export function stampsOf(record: AuthoredRecord, coverAsset?: string | null, at?: string): Record<string, FieldReview> {
-    return record.review?.fields ?? backfillFields(record, coverAsset, at);
+    if (record.review) return record.review.fields;
+    if (at !== undefined) return backfillFields(record, coverAsset, at);
+    // Read in memory, once per record and cover.
+    const key = coverAsset ?? '';
+    const cached = backfilled.get(record);
+    if (cached?.key === key) return cached.fields;
+    const fields = backfillFields(record, coverAsset);
+    backfilled.set(record, { key, fields });
+    return fields;
 }
+const backfilled = new WeakMap<AuthoredRecord, { key: string; fields: Record<string, FieldReview> }>();
 
 /** What a write was reviewed with. The writer fills in what a caller leaves out. */
 export interface StampInputs {
@@ -245,17 +254,41 @@ export function publishedValue(content: RevisionContent, ref: FieldRef): unknown
     return photo ? (photo as unknown as Record<string, unknown>)[field] ?? null : null;
 }
 
+/** A working layer's records by ID, built once per layer, so a large diff doesn't search the layer for every row. */
+const layerIndex = new WeakMap<WorkingLayer, { series: Map<string, AuthoredSeries>; photos: Map<string, AuthoredPhoto> }>();
+function indexOf(layer: WorkingLayer) {
+    let index = layerIndex.get(layer);
+    if (!index) {
+        index = { series: new Map(layer.series.map((series) => [series.id, series])), photos: new Map(layer.photos.map((photo) => [photo.id, photo])) };
+        layerIndex.set(layer, index);
+    }
+    return index;
+}
+
 export function recordOf(layer: WorkingLayer, ref: IssueRecord): AuthoredRecord | null {
     if (ref.kind === 'site') return layer.site;
-    if (ref.kind === 'series') return layer.series.find((series) => series.id === ref.id) ?? null;
-    return layer.photos.find((photo) => photo.id === ref.id) ?? null;
+    return (ref.kind === 'series' ? indexOf(layer).series : indexOf(layer).photos).get(ref.id) ?? null;
 }
 
 /** The revision a series' cover photo record pins, or null. */
 export function coverAssetOf(layer: WorkingLayer, series: AuthoredSeries | AuthoredSite | AuthoredPhoto): string | null {
     if (series.kind !== 'series' || series.cover === null) return null;
-    const photoId = series.cover.photoId;
-    return layer.photos.find((photo) => photo.id === photoId)?.assetRevision ?? null;
+    return indexOf(layer).photos.get(series.cover.photoId)?.assetRevision ?? null;
+}
+
+/** Each photo's replacement items that still wait for the curator, built once per context. */
+const waitingIndex = new WeakMap<ReviewContext, Map<string, InboxItem[]>>();
+function waitingFor(review: ReviewContext, photoId: string): InboxItem[] {
+    let index = waitingIndex.get(review);
+    if (!index) {
+        index = new Map();
+        for (const item of review.inbox.values()) {
+            if (item.type !== 'replacement' || item.photoId === null || !NEEDS_JUDGMENT.has(item.status)) continue;
+            index.set(item.photoId, [...(index.get(item.photoId) ?? []), item]);
+        }
+        waitingIndex.set(review, index);
+    }
+    return index.get(photoId) ?? [];
 }
 
 const short = (id: string | null) => (id === null ? 'none' : id.slice(0, 12));
@@ -307,8 +340,8 @@ export function fieldReview(ref: FieldRef, env: ReviewEnv): FieldReviewState {
         if (!item) return { ...ref, ...seen, state: 'stale', reason: 'item-unreadable', eventId: id, detail: `It settled the inbox item ${id}, which is gone.` };
         if (NEEDS_JUDGMENT.has(item.status)) return { ...ref, ...seen, state: 'stale', reason: 'item-reopened', eventId: id, detail: `It settled the inbox item ${id}, which is ${item.status} again.` };
         if (item.photoId !== null) {
-            const newer = [...env.review.inbox.values()]
-                .filter((other) => other.id !== id && other.type === 'replacement' && other.photoId === item.photoId && NEEDS_JUDGMENT.has(other.status) && other.lastObservedAt > stamp.reviewedAt)
+            const newer = waitingFor(env.review, item.photoId)
+                .filter((other) => other.id !== id && other.lastObservedAt > stamp.reviewedAt)
                 .sort((a, b) => (a.lastObservedAt < b.lastObservedAt ? -1 : a.lastObservedAt > b.lastObservedAt ? 1 : a.id < b.id ? -1 : 1));
             if (newer.length > 0) {
                 const latest = newer[newer.length - 1];
