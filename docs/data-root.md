@@ -306,9 +306,9 @@ Every write through the tools stamps what it changed in the authored record's `r
 
 `photos.mjs validate` and `publish` compare the draft with the active revision and refuse a change visitors would see whose review is missing or stale (`review.authored-change`), naming the record, the field, and what to do. A review goes stale when:
 
-- a rollback publishes the field differently from the revision it was reviewed against. A publish never does: what it publishes came from your own draft;
+- a rollback publishes the field differently from the revision it was reviewed against. A publish never does: what it publishes came from your own draft. Approving an inbox item again, as `curation show` advises after a rollback, reviews its photograph's description and bytes against the active revision, unless the description is a suggestion or was changed by hand;
 - a photograph's description, title, caption, focal point, crop, or accent was reviewed for other bytes than the ones its record pins now, or a series cover for other bytes than its photograph's;
-- the inbox item it settled is open again, or a newer replacement of the same photograph waits in the inbox. Confirm it, or leave it in draft, and the publish goes through.
+- the inbox item it settled is open again, or a newer replacement of the same photograph waits in the inbox. Confirm it, or leave it in draft, and the publish goes through. A reopened new photograph that a series still holds counts as already placed in `curation list`, so the refusal names its `curation show`: approve it again or leave it in draft.
 
 A field changed by hand reads as not reviewed. To clear one, put the field back as it was, then make the change with `photos.mjs edit`. A stale review whose value is still right clears in the Publish screen's review once it ships. Until then, the way out is to change the value with `photos.mjs edit` and change it back. Settling a `conflicts` entry with `photos.mjs edit` reviews that field too. A publish of a draft that changes nothing visitors see stops with `NO_CHANGES` and writes no revision or activation (`review.empty-diff` refuses one that differs from the active revision but changes nothing visitors see). A rollback is never blocked by either rule: a stored revision was reviewed when it was first published.
 
