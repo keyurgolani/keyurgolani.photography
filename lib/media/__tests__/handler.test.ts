@@ -1,6 +1,8 @@
 // @vitest-environment node
+import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
@@ -63,6 +65,20 @@ function get(handler: ReturnType<typeof createMediaHandler>, params: Partial<Rec
 
 const handlerWith = (options: MediaHandlerOptions = {}) => createMediaHandler({ logger: quiet, ...options });
 const allowAll = () => 'public' as const;
+
+/** Whether this platform can make a FIFO: mkfifo runs and makes one in a temp folder. */
+const canMkfifo = (() => {
+    if (process.platform === 'win32') return false;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fifo-probe-'));
+    try {
+        execFileSync('mkfifo', [path.join(dir, 'probe')], { stdio: 'ignore' });
+        return fs.lstatSync(path.join(dir, 'probe')).isFIFO();
+    } catch {
+        return false;
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+})();
 
 describe('the media route handler', () => {
     it('serves a variant with its type, length, ETag, nosniff, and a year of immutable caching', async () => {
@@ -226,6 +242,30 @@ describe('the media route handler', () => {
         const response = await get(handlerWith({ access: allowAll }));
         expect(response.status).toBe(404);
         expect(response.headers.get('cache-control')).toBe('no-store');
+    });
+
+    it.skipIf(!canMkfifo).each(['w800.webp', MANIFEST_FILE])('404s at once when %s is a FIFO, instead of waiting for a writer', async (name) => {
+        const data = dataRoot();
+        writeSet(data.root);
+        const fifo = path.join(assetDir(REF, data.root), name);
+        fs.rmSync(fifo);
+        execFileSync('mkfifo', [fifo]);
+        let timer: NodeJS.Timeout | undefined;
+        try {
+            const answered = await Promise.race([
+                get(handlerWith({ access: allowAll })).then((response) => response.status),
+                new Promise<'hung'>((resolve) => { timer = setTimeout(() => resolve('hung'), 2_000); }),
+            ]);
+            expect(answered).toBe(404);
+        } finally {
+            clearTimeout(timer);
+            // Let an open still waiting on the FIFO finish, so no worker thread stays blocked.
+            try {
+                fs.closeSync(fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK));
+            } catch {
+                // No reader is waiting.
+            }
+        }
     });
 
     it('still serves a set when the data root itself is reached through a symlink', async () => {

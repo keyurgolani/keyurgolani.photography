@@ -69,11 +69,16 @@ export async function containedAssetDir(ref: AssetRef, root: string): Promise<st
     return real === path.join(store, ref.photoId, ref.assetRevision, ref.profileId) ? real : null;
 }
 
-/** Open a regular file for reading without following a symlink at its name. Null when it isn't there to serve. */
+/**
+ * Open a regular file for reading without following a symlink at its name.
+ * Null when it isn't there to serve. O_NONBLOCK changes nothing for a regular
+ * file, but keeps a FIFO from holding the open, and a worker thread, until
+ * something writes to it; the FIFO then fails the regular-file check.
+ */
 export async function openRegularFile(file: string): Promise<{ handle: fs.promises.FileHandle; size: number } | null> {
     let handle: fs.promises.FileHandle;
     try {
-        handle = await fs.promises.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+        handle = await fs.promises.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
     } catch (error) {
         if (hasErrorCode(error, ...NOT_SERVABLE)) return null;
         throw error;
