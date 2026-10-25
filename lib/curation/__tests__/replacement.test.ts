@@ -450,7 +450,7 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         expect(confirmed.ok && confirmed.event.decisions.at(-1)).toMatchObject({ action: 'confirm', writes: [] });
         expect(confirmed.ok && confirmed.event.decisions.at(-1)).not.toHaveProperty('fromRevision');
         expect(confirmed.ok && confirmed.notes.join(' ')).toContain(`already pins ${w.b}, though the inbox last pinned ${c}, so nothing in the working layer changed.`);
-        expect(confirmed.ok && confirmed.notes.join(' ')).toContain(`a rollback, a photos edit, and a confirm whose event a crash lost all leave it this way.`);
+        expect(confirmed.ok && confirmed.notes.join(' ')).toContain(`Its review stamp doesn't show a confirm of this item put it there: a rollback, a photos edit, and a hand edit all leave it this way.`);
         expect(confirmed.ok && confirmed.notes.join(' ')).toContain(`leaving it in draft later keeps ${w.b}. To use ${c} again, set assetRevision back with photos edit ${w.p}.`);
         expect(confirmed.ok && confirmed.notes.join(' ')).not.toContain('puts back');
         expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
