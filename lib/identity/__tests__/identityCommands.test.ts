@@ -160,6 +160,25 @@ describe('a pass with decision files', () => {
         expect((await readRegistry(s.data.root)).photos[x].sourceHealth).toBe('archived');
     }, 60_000);
 
+    it.skipIf(isRoot)("leaves a decision file it can't read where it is, and applies it once it can", async () => {
+        const s = await setup({ 'a.jpg': 'A' });
+        const x = await s.photoAt('a.jpg');
+        fs.rmSync(s.lib.file('a.jpg'));
+        const { name } = await s.decide({ type: 'archive', photoId: x });
+        const file = path.join(identityPaths(s.data.root).decisions, name);
+        fs.chmodSync(file, 0o000);
+        try {
+            const blocked = await s.pass();
+            expect(blocked).toMatchObject({ status: 'committed', decisions: [{ name, status: 'deferred', reason: expect.stringContaining("it can't be read") }] });
+        } finally {
+            fs.chmodSync(file, 0o600);
+        }
+        expect(s.pending()).toEqual([name]);
+        expect(s.filed('rejected')).toEqual([]);
+        const later = await s.pass();
+        expect(later).toMatchObject({ status: 'committed', decisions: [{ name, status: 'applied', detail: `archived ${x}` }] });
+    }, 60_000);
+
     it.skipIf(isRoot)("keeps the registry change and warns when the decision can't be filed, and files it next time", async () => {
         const s = await setup({ 'a.jpg': 'A' });
         const x = await s.photoAt('a.jpg');
