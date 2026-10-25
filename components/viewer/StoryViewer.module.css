@@ -269,6 +269,12 @@
 
 /* Narrow screens: the photograph takes the width, and Previous and Next sit in a row under it, at the edges. */
 @media (max-width: 47.99rem) {
+  /* The stage takes its own height, so the controls and the reading area follow the photograph without a gap. */
+  .main {
+    grid-template-rows: auto auto;
+    align-content: start;
+  }
+
   .stage {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     grid-template-areas:
