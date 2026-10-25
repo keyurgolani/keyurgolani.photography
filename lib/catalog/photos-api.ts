@@ -2,11 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DERIVATIVE_FOLDERS } from '../derivativeFolders.mjs';
 import { legacyUrls } from '../identity/legacyUrls';
-import { identityPaths, readStoredRegistry } from '../identity/registry';
+import { identityPaths, OldRegistryLayoutError, readStoredRegistry } from '../identity/registry';
 import type { TechnicalKey } from '../identity/metadata';
 import type { AssetRevisionRecord, PhotoRecord, Registry } from '../identity/types';
 import { libraryRoot } from '../storage/config';
-import { hasErrorCode } from '../storage/fsx';
+import { hasErrorCode, pathExists } from '../storage/fsx';
 import { baseNameOf, setGroups } from '../../utils/derivativeSets';
 import { cameraSettingsCaption } from './legacy-photos';
 import type { CatalogReader } from './reader';
@@ -81,8 +81,12 @@ export function catalogPhotos(reader: CatalogReader<PublicPhotoRecord>): ImageIt
     return items;
 }
 
-/** Why legacy mode can't list anything. A missing registry means the migration hasn't run. */
-export type LegacyUnavailableReason = 'registry-missing' | 'registry-unreadable';
+/**
+ * Why legacy mode can't list anything. A missing registry means the migration
+ * hasn't run. An old layout means #28's `identity/registry.json` is still
+ * there, which readRegistry() refuses until it's moved into the folder.
+ */
+export type LegacyUnavailableReason = 'registry-missing' | 'registry-old-layout' | 'registry-unreadable';
 
 export type LegacyPhotos = { ok: true; items: ImageItem[] } | { ok: false; reason: LegacyUnavailableReason };
 
@@ -185,7 +189,8 @@ const built = new Map<string, Built>();
  * which changes the folder's times, and a version saved in place changes the
  * file's, so the list is built again only when the registry changed since.
  * A folder with no version yet, as a write that stopped before its link
- * leaves it, is `registry-missing`, like no folder.
+ * leaves it, is `registry-missing`, like no folder. #28's one-file
+ * registry is `registry-old-layout`, as readRegistry() refuses it.
  */
 export async function legacyPhotos(root: string, library: string = libraryRoot()): Promise<LegacyPhotos> {
     const dir = identityPaths(root).registry;
@@ -193,7 +198,9 @@ export async function legacyPhotos(root: string, library: string = libraryRoot()
     try {
         folder = `${stampOf(await fs.promises.stat(/*turbopackIgnore: true*/ dir))}\0${library}`;
     } catch (error) {
-        return { ok: false, reason: hasErrorCode(error, 'ENOENT') ? 'registry-missing' : 'registry-unreadable' };
+        if (!hasErrorCode(error, 'ENOENT')) return { ok: false, reason: 'registry-unreadable' };
+        const old = await pathExists(`${dir}.json`).catch(() => null);
+        return { ok: false, reason: old === null ? 'registry-unreadable' : old ? 'registry-old-layout' : 'registry-missing' };
     }
     const cached = built.get(root);
     if (cached?.folder === folder) {
@@ -203,8 +210,8 @@ export async function legacyPhotos(root: string, library: string = libraryRoot()
     let stored: Awaited<ReturnType<typeof readStoredRegistry>>;
     try {
         stored = await readStoredRegistry(root);
-    } catch {
-        return { ok: false, reason: 'registry-unreadable' };
+    } catch (error) {
+        return { ok: false, reason: error instanceof OldRegistryLayoutError ? 'registry-old-layout' : 'registry-unreadable' };
     }
     if (stored === null) {
         built.delete(root);

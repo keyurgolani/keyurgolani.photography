@@ -278,6 +278,28 @@ describe('legacy /api/photos', { timeout: 60_000 }, () => {
         expect(await readiness.json()).toMatchObject({ mode: 'legacy', state: 'unavailable', reason: 'registry-missing' });
     });
 
+    it('refuses an old-layout identity/registry.json as registry-old-layout, alone or beside the folder, naming no path', async () => {
+        const paths = identityPaths(data.root);
+        fs.mkdirSync(paths.dir, { recursive: true });
+        fs.writeFileSync(`${paths.registry}.json`, '{}\n');
+        const check = async () => {
+            expect(await legacyPhotos(data.root, lib.root)).toEqual({ ok: false, reason: 'registry-old-layout' });
+            const photos = await GET();
+            expect(photos.status).toBe(503);
+            expect(await photos.json()).toEqual({ reason: 'registry-old-layout' });
+            const readiness = await ready();
+            expect(readiness.status).toBe(503);
+            const text = await readiness.text();
+            expect(JSON.parse(text)).toMatchObject({ mode: 'legacy', state: 'unavailable', reason: 'registry-old-layout' });
+            expect(text).not.toContain(data.root);
+        };
+        await check();
+        // A migrated folder beside it doesn't make it safe to pass over: readRegistry() refuses this layout too.
+        fs.mkdirSync(paths.registry, { recursive: true });
+        fs.writeFileSync(versionFile(paths.registry, 1), '{}\n');
+        await check();
+    });
+
     it('builds the list again for every new registry version once the folder keeps two', async () => {
         await pass();
         const dir = identityPaths(data.root).registry;

@@ -100,6 +100,17 @@ export async function readRegistry(root: string): Promise<Registry> {
     return (await readStoredRegistry(root))?.registry ?? emptyRegistry();
 }
 
+/** `identity/registry.json`, #28's one-file registry, is still in the data root. */
+export class OldRegistryLayoutError extends CorruptDocumentError {
+    constructor(file: string) {
+        super(
+            file,
+            'the data root\'s layout changed, and this build no longer reads identity/registry.json. The registry is now the folder identity/registry/, '
+                + 'with one v<N>.json per version. Move the file there as its next version (v1.json in an empty folder) while no command runs',
+        );
+    }
+}
+
 /**
  * readRegistry(), but null when `identity/registry/` holds no version, and
  * with the version file it read. Throws as readRegistry() does.
@@ -109,13 +120,7 @@ export async function readStoredRegistry(root: string): Promise<{ registry: Regi
     // #28 stored the registry as one file. Passing over it would read an empty registry, and the next pass would
     // mint new IDs for every photo.
     const old = `${paths.registry}.json`;
-    if (await pathExists(old)) {
-        throw new CorruptDocumentError(
-            old,
-            'the data root\'s layout changed, and this build no longer reads identity/registry.json. The registry is now the folder identity/registry/, '
-                + 'with one v<N>.json per version. Move the file there as its next version (v1.json in an empty folder) while no command runs',
-        );
-    }
+    if (await pathExists(old)) throw new OldRegistryLayoutError(old);
     const stored = await readVersionedDocument(paths.registry);
     if (stored === null) return null;
     checkSchemaVersion(stored.file, stored.value, REGISTRY_SCHEMA_VERSION);
