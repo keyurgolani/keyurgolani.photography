@@ -35,9 +35,12 @@ type Photo = CatalogContent['photos'][number];
  */
 export const SERIES_PAGE_SIZE = 100;
 
+/** Where the catalog endpoints start on the public site. */
+const API_CATALOG = '/api/catalog/';
+
 /** The continuation endpoint's path for one page. Server-made only: a client follows it and never builds one. */
 export function seriesPagesPath(slug: string, cursor: string): string {
-    return `/api/catalog/series/${encodeURIComponent(slug)}/pages/${cursor}`;
+    return `${API_CATALOG}series/${encodeURIComponent(slug)}/pages/${cursor}`;
 }
 
 /** One variant file, as `/media` serves it and a `srcset` names it. */
@@ -298,7 +301,7 @@ function factsOf(series: SeriesRecord, members: readonly Photo[], photoCount: nu
     };
 }
 
-type Routes = Pick<RouteBuilder, 'seriesHref' | 'photoHref' | 'workHref'>;
+type Routes = Pick<RouteBuilder, 'seriesHref' | 'photoHref' | 'workHref' | 'catalogApiHref'>;
 
 type Resolved =
     | { kind: 'ok'; series: SeriesRecord; canonical: boolean; members: readonly Photo[]; photoCount: number }
@@ -343,9 +346,9 @@ function pageOf(series: SeriesRecord, members: readonly Photo[], offset: number,
 }
 
 /** The continuation path of the page starting at member `offset`, or null when nothing is left. */
-function nextHrefOf(revisionId: string, series: SeriesRecord, offset: number, total: number): string | null {
+function nextHrefOf(revisionId: string, series: SeriesRecord, offset: number, total: number, routes: Routes): string | null {
     if (offset >= total) return null;
-    return seriesPagesPath(series.slug, encodeSeriesCursor({ revisionId, seriesId: series.id, offset }));
+    return routes.catalogApiHref(seriesPagesPath(series.slug, encodeSeriesCursor({ revisionId, seriesId: series.id, offset })).slice(API_CATALOG.length));
 }
 
 /**
@@ -355,8 +358,9 @@ function nextHrefOf(revisionId: string, series: SeriesRecord, offset: number, to
  * serves a series Work hides; a former slug redirects; anything else is the
  * projection, with the first page of entries and the path to the next.
  * Hrefs come from `routes`: #13's `publicRoutes` on the site, a preview's own
- * builder in a preview. The continuation path always names the public
- * endpoint, which serves only the active revision.
+ * builder in a preview. The continuation path comes from it too: the
+ * public endpoint, which serves only the active revision, or a preview's
+ * mirror of it.
  */
 export function seriesPageOf(source: SeriesSource, slug: unknown, routes: Routes): SeriesPageResult {
     const resolved = resolveSeries(source, slug);
@@ -403,7 +407,7 @@ export function seriesPageOf(source: SeriesSource, slug: unknown, routes: Routes
             cover,
             entries,
             total: members.length,
-            nextHref: nextHrefOf(source.revisionId, series, SERIES_PAGE_SIZE, members.length),
+            nextHref: nextHrefOf(source.revisionId, series, SERIES_PAGE_SIZE, members.length, routes),
             chapters: chaptersOf(series, members),
             metadata: {
                 canonicalPath: href,
@@ -445,7 +449,7 @@ export function seriesContinuationOf(source: SeriesSource, slug: unknown, cursor
         page: {
             revisionId: source.revisionId,
             entries: pageOf(series, members, position.offset, routes),
-            nextHref: nextHrefOf(source.revisionId, series, position.offset + SERIES_PAGE_SIZE, members.length),
+            nextHref: nextHrefOf(source.revisionId, series, position.offset + SERIES_PAGE_SIZE, members.length, routes),
         },
     };
 }
