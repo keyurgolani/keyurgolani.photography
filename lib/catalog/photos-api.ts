@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DERIVATIVE_FOLDERS } from '../derivativeFolders.mjs';
 import { legacyUrls } from '../identity/legacyUrls';
-import { readRegistry, identityPaths } from '../identity/registry';
+import { identityPaths, readStoredRegistry } from '../identity/registry';
 import type { TechnicalKey } from '../identity/metadata';
 import type { AssetRevisionRecord, PhotoRecord, Registry } from '../identity/types';
 import { libraryRoot } from '../storage/config';
@@ -163,33 +163,56 @@ export async function legacyList(registry: Registry, library: string): Promise<I
         .map(({ item }, id) => ({ id, ...item }));
 }
 
-/** The last list built per data root, kept while the registry's version folder is unchanged. */
-const built = new Map<string, { stamp: string; items: ImageItem[] }>();
+/** A file's identity, size and times, as a cache key. */
+const stampOf = (stat: fs.Stats) => `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+
+interface Built {
+    /** The registry folder's stamp, and the library, from before the build read the registry. */
+    folder: string;
+    /** The version file the build read, and its stamp just after. */
+    file: string;
+    fileStamp: string;
+    items: ImageItem[];
+}
+
+/** The last list built per data root. */
+const built = new Map<string, Built>();
 
 /**
- * Legacy mode's `/api/photos` list. One stat of the registry's version
- * folder, `identity/registry/`, per call: each write links a new version
- * into it and prunes old ones, which changes the folder's times, so the list
- * is built again only when the registry was written since.
+ * Legacy mode's `/api/photos` list. Two stats per call: the registry's
+ * version folder, `identity/registry/`, and the version file the last build
+ * read. A write links a new version into the folder and prunes old ones,
+ * which changes the folder's times, and a version saved in place changes the
+ * file's, so the list is built again only when the registry changed since.
+ * A folder with no version yet, as a write that stopped before its link
+ * leaves it, is `registry-missing`, like no folder.
  */
 export async function legacyPhotos(root: string, library: string = libraryRoot()): Promise<LegacyPhotos> {
-    const file = identityPaths(root).registry;
-    let stat: fs.Stats;
+    const dir = identityPaths(root).registry;
+    let folder: string;
     try {
-        stat = await fs.promises.stat(file);
+        folder = `${stampOf(await fs.promises.stat(/*turbopackIgnore: true*/ dir))}\0${library}`;
     } catch (error) {
         return { ok: false, reason: hasErrorCode(error, 'ENOENT') ? 'registry-missing' : 'registry-unreadable' };
     }
-    const stamp = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}\0${library}`;
     const cached = built.get(root);
-    if (cached?.stamp === stamp) return { ok: true, items: cached.items };
-    let registry: Registry;
+    if (cached?.folder === folder) {
+        const file = await fs.promises.stat(/*turbopackIgnore: true*/ cached.file).then(stampOf, () => null);
+        if (file === cached.fileStamp) return { ok: true, items: cached.items };
+    }
+    let stored: Awaited<ReturnType<typeof readStoredRegistry>>;
     try {
-        registry = await readRegistry(root);
+        stored = await readStoredRegistry(root);
     } catch {
         return { ok: false, reason: 'registry-unreadable' };
     }
-    const items = await legacyList(registry, library);
-    built.set(root, { stamp, items });
+    if (stored === null) {
+        built.delete(root);
+        return { ok: false, reason: 'registry-missing' };
+    }
+    // Pruned already: an empty stamp never matches, so the next call reads again.
+    const fileStamp = await fs.promises.stat(/*turbopackIgnore: true*/ stored.file).then(stampOf, () => '');
+    const items = await legacyList(stored.registry, library);
+    built.set(root, { folder, file: stored.file, fileStamp, items });
     return { ok: true, items };
 }
