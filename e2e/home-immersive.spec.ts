@@ -7,6 +7,7 @@ import { expectHomeImmersive, photoPoint } from './support/home';
 import { waitForHydration } from './support/hydration';
 import { expectReflow } from './support/reflow';
 import { checkSurface } from './support/surface';
+import { parkPointer, recordDispatchedEvents } from './support/synthetic';
 import { expect, setPhotoFixtures, test } from './support/test';
 
 // #18: Home rests on the photograph alone, and intent brings the chrome back.
@@ -91,20 +92,6 @@ async function recordVisibility(page: Page) {
         }).observe(document, { subtree: true, attributes: true, attributeFilter: ['data-interface-state'], childList: true });
     });
     return () => page.evaluate(() => (window as unknown as { __chromeStates: string[] }).__chromeStates);
-}
-
-/** UI events page scripts dispatch, which a synthetic wake would show up in. */
-async function recordSyntheticEvents(page: Page) {
-    await page.addInitScript(() => {
-        const dispatched: string[] = [];
-        (window as unknown as { __synthetic: string[] }).__synthetic = dispatched;
-        const dispatch = EventTarget.prototype.dispatchEvent;
-        EventTarget.prototype.dispatchEvent = function (event: Event) {
-            if (event instanceof UIEvent || event.type === 'click') dispatched.push(event.type);
-            return dispatch.call(this, event);
-        };
-    });
-    return () => page.evaluate(() => (window as unknown as { __synthetic: string[] }).__synthetic);
 }
 
 /**
@@ -274,17 +261,73 @@ async function roundTripToAbout(page: Page, isMobile: boolean) {
     await expect(page).toHaveURL('/');
 }
 
+type ReactQueue = { queued: Record<string, MouseEvent>; replay: () => void };
+
+/**
+ * Stands in for React DOM before Home hydrates, which no browser gives on cue.
+ * Until `replay` runs, the page doesn't see the pointer: every native mouse
+ * and pointer event stops at window, and the latest mouseover and pointerover
+ * are kept, as queueIfContinuousEvent keeps them. `replay` lets the pointer
+ * through and dispatches each as attemptReplayContinuousQueuedEvent does,
+ * mouse first: `target.dispatchEvent(new event.constructor(type, event))`.
+ * Needs recordDispatchedEvents first, so the recorder sees each hover before
+ * this stops it.
+ */
+async function queueLikeReact(page: Page) {
+    await page.addInitScript(() => {
+        const queue: ReactQueue = { queued: {}, replay: () => {} };
+        (window as unknown as ReactQueue).queued = queue.queued;
+        let queueing = true;
+        const hold = (event: Event) => {
+            if (!queueing || !event.isTrusted) return;
+            if (event.type === 'mouseover' || event.type === 'pointerover') queue.queued[event.type] = event as MouseEvent;
+            event.stopImmediatePropagation();
+        };
+        for (const type of ['mouseover', 'mouseout', 'mousemove', 'mouseenter', 'mouseleave', 'pointerover', 'pointerout', 'pointermove', 'pointerenter', 'pointerleave', 'pointerrawupdate']) {
+            window.addEventListener(type, hold, { capture: true });
+        }
+        (window as unknown as ReactQueue).replay = () => {
+            queueing = false;
+            for (const type of ['mouseover', 'pointerover']) {
+                const event = queue.queued[type];
+                if (event) event.target!.dispatchEvent(new (event.constructor as typeof MouseEvent)(event.type, event));
+            }
+        };
+    });
+}
+
 test.describe('at rest', () => {
     test('Home settles to the photograph alone, filling the viewport, with nothing waking it, and again after a trip to About', async ({ page, isMobile }, testInfo) => {
         runsOn(testInfo, 'desktop', 'mobile');
-        const synthetic = await recordSyntheticEvents(page);
+        const dispatched = await recordDispatchedEvents(page);
+        await parkPointer(page);
         await openHome(page);
         expect(await photoCoversViewport(page)).toBe(true);
-        expect(await synthetic()).toEqual([]);
+        expect((await dispatched()).synthetic).toEqual([]);
 
         await roundTripToAbout(page, isMobile);
         await expectHomeImmersive(page);
         await expect.poll(() => photoCoversViewport(page)).toBe(true);
+    });
+
+    test("a replay of a hover the way React DOM replays one that reached Home before it hydrated wakes nothing and isn't counted as synthetic, and an app dispatch is", async ({ page }, testInfo) => {
+        runsOn(testInfo, 'desktop');
+        const dispatched = await recordDispatchedEvents(page);
+        await queueLikeReact(page);
+        await openHome(page);
+
+        const { x, y } = await photoPoint(page);
+        await page.mouse.move(x, y, { steps: 2 });
+        await expect.poll(() => page.evaluate(() => Object.keys((window as unknown as ReactQueue).queued).sort()), {
+            message: 'The native hover reached Home and was queued',
+        }).toEqual(['mouseover', 'pointerover']);
+        await page.evaluate(() => (window as unknown as ReactQueue).replay());
+        // The recorder before this one counted both as synthetic.
+        expect(await dispatched()).toEqual({ synthetic: [], replayed: ['mouseover', 'pointerover'] });
+        await expectHomeImmersive(page);
+
+        await page.evaluate(() => document.querySelector('main')?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })));
+        expect((await dispatched()).synthetic).toEqual(['mouseover']);
     });
 
     test('under reduced motion, no intro layer or portrait shows at any frame, and Home settles the same way, there and back', async ({ page, isMobile }, testInfo) => {
