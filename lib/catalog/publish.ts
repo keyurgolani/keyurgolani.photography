@@ -269,7 +269,7 @@ async function commitActivation(input: CommitInput): Promise<CommitResult> {
 }
 
 /** Run every rule over a stored revision, as a rollback or a repair records it. */
-function validateStored(root: string, revision: RevisionFile, registry: Registry | null): { validation: Activation['validation']; issues: Issue[] } {
+export function validateStored(root: string, revision: RevisionFile, registry: Registry | null): { validation: Activation['validation']; issues: Issue[] } {
     const issues = runRules({ candidate: revision.content, authored: null, active: revision, registry, roots: { dataRoot: root, libraryRoot: libraryRoot() } });
     return { issues, validation: { rulesetVersion: rulesetVersion(), errors: countOf(issues, 'error'), warnings: countOf(issues, 'warning'), diagnosticsDigest: digestOf(issues) } };
 }
