@@ -71,9 +71,10 @@ COPY --from=deps /app/node_modules/detect-libc ./node_modules/detect-libc
 COPY --from=deps /app/node_modules/semver ./node_modules/semver
 RUN node -e "require('sharp')"
 
-# The data root's mount point, owned by the containers' user, so a named
-# volume mounted here starts out writable. docker-compose.prod.yml binds
-# ./portfolio-data over it.
+# The data root's mount point, owned by the containers' user.
+# docker-compose.prod.yml binds ./portfolio-data over it. Don't use a named
+# volume here: one is silently recreated empty after `down -v`, which leaves
+# an empty data root beside a library that had photo IDs.
 RUN mkdir -p /data/portfolio && chown nextjs:nodejs /data/portfolio
 
 USER nextjs
@@ -81,7 +82,8 @@ USER nextjs
 EXPOSE 3000
 
 ENV PORT=3000
-# set hostname to localhost
+# Bind every interface inside the container. The compose file decides what's
+# published, and it publishes on the host's loopback only.
 ENV HOSTNAME="0.0.0.0"
 
 CMD ["node", "server.js"]
