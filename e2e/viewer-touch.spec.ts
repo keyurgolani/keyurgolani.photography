@@ -65,6 +65,42 @@ async function focusPlace(page: Page): Promise<string> {
     });
 }
 
+/**
+ * Diagnostics for a Close tap CI once saw do nothing: from the next load on, every pointer event (its id, type,
+ * target, and whether the Viewer root holds its capture), capture changes, clicks, the dialog's toggle, cancel and
+ * close, `history.back`, and popstate. Returns a reader for the log.
+ */
+async function recordEvents(page: Page): Promise<() => Promise<string[]>> {
+    await page.addInitScript(() => {
+        const log: string[] = [];
+        (window as unknown as { kgEvents: string[] }).kgEvents = log;
+        const name = (target: EventTarget | null) =>
+            target instanceof Element ? `${target.tagName.toLowerCase()}${target.getAttribute('aria-label') ? `[${target.getAttribute('aria-label')}]` : ''}${target.textContent ? ` "${target.textContent.trim().slice(0, 12)}"` : ''}` : String(target);
+        const note = (text: string) => log.push(`${Math.round(performance.now())} ${text} @${location.pathname.slice(-6)}`);
+        const pointerTypes = ['pointerdown', 'pointerup', 'pointercancel', 'gotpointercapture', 'lostpointercapture'];
+        for (const type of [...pointerTypes, 'click', 'toggle', 'cancel', 'close', 'popstate']) {
+            window.addEventListener(
+                type,
+                (event) => {
+                    const root = document.querySelector('[data-surface="viewer"]');
+                    if (event instanceof PointerEvent) {
+                        note(`${type} id=${event.pointerId} ${event.pointerType} on ${name(event.target)} rootCapture=${root?.hasPointerCapture(event.pointerId) ?? 'none'}`);
+                    } else {
+                        note(`${type} on ${name(event.target)}${root instanceof HTMLDialogElement ? ` open=${root.open}` : ''}`);
+                    }
+                },
+                true,
+            );
+        }
+        const back = history.back.bind(history);
+        history.back = () => {
+            note(`history.back length=${history.length}`);
+            back();
+        };
+    });
+    return () => page.evaluate(() => (window as unknown as { kgEvents?: string[] }).kgEvents ?? ['no log']);
+}
+
 /** A one-finger swipe across the middle of the photograph. */
 async function swipe(page: Page, dx: number, { dy = 0, end = 'lift' as 'lift' | 'cancel', on = stage(page) } = {}): Promise<void> {
     const center = await centerOf(on);
@@ -101,16 +137,49 @@ test.describe('swipe', () => {
         expect(await focusPlace(page)).toBe('body');
     });
 
-    test('in the modal, a swipe moves too, and Close still puts focus back on the entry that opened it', async ({ page }, testInfo) => {
+    test('in the modal, a swipe moves too, focus stays on Close, and Close still puts focus back on the entry that opened it', async ({ page }, testInfo) => {
+        // CI on Linux once saw this Close tap do nothing. The log prints only on failure, to the job log.
+        const events = await recordEvents(page);
+        try {
+            await openFromSeries(page, P[0], testInfo);
+            await expect(button(page, 'Close')).toBeFocused();
+            await swipe(page, -150);
+            await expectStill(page, P[1], 2);
+            await expect(dialog(page)).toHaveAccessibleName(/Photograph 2 of 3$/);
+            // showModal() put focus on Close, and a swipe never moves it.
+            await expect(button(page, 'Close')).toBeFocused();
+            await button(page, 'Close').tap();
+            await expect(page).toHaveURL(`${origin()}/work/harbor`);
+            await expect(page.locator('dialog')).toHaveCount(0);
+            await expect(entry(page, P[0])).toBeFocused();
+        } catch (error) {
+            console.log(`viewer-touch modal swipe, ${testInfo.project.name}, events:\n${(await events()).join('\n')}`);
+            throw error;
+        }
+    });
+
+    test('Close during a slow move lands on the series with focus on the opener, never on a Viewer URL with no Viewer', async ({ page }, testInfo) => {
         await openFromSeries(page, P[0], testInfo);
+        // Photograph 2's payload takes a second and a half, so Close comes while the move is still in flight.
+        let held = 0;
+        await page.route(
+            (url) => url.pathname === href(P[1]),
+            async (route) => {
+                held += 1;
+                await new Promise((resolve) => setTimeout(resolve, 1500));
+                await route.fallback();
+            },
+        );
         await swipe(page, -150);
-        await expectStill(page, P[1], 2);
-        await expect(dialog(page)).toHaveAccessibleName(/Photograph 2 of 3$/);
-        expect(['viewer', 'body']).toContain(await focusPlace(page));
+        await expect.poll(() => held, 'the move asked for photograph 2').toBeGreaterThan(0);
         await button(page, 'Close').tap();
         await expect(page).toHaveURL(`${origin()}/work/harbor`);
         await expect(page.locator('dialog')).toHaveCount(0);
         await expect(entry(page, P[0])).toBeFocused();
+        // After the held payload would have landed, the visitor is still on the series.
+        await page.waitForTimeout(2000);
+        await expect(page).toHaveURL(`${origin()}/work/harbor`);
+        await expect(page.locator('dialog')).toHaveCount(0);
     });
 
     test('a short swipe and a mostly vertical drag never move, and the vertical drag still scrolls the page', async ({ page }) => {
@@ -129,6 +198,10 @@ test.describe('swipe', () => {
             await expect.poll(() => page.evaluate(() => window.scrollY), 'the drag scrolled the page').toBeGreaterThan(0);
         }
         await expect(announcer(page)).toHaveText('');
+        // The control: in the same short viewport, back at the top, a full swipe still moves.
+        await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+        await swipe(page, -150);
+        await expectStill(page, P[1], 2);
     });
 
     test('a cancelled touch never moves, and the next swipe does, so nothing is left stuck', async ({ page }) => {
@@ -139,13 +212,29 @@ test.describe('swipe', () => {
         await expectStill(page, P[2], 3);
     });
 
-    test('two fingers, as in a pinch, never move, and the next one-finger swipe does', async ({ page }) => {
+    test('two fingers, as in a pinch, never move; the pinch zooms, a drag on the pinched page pans it, and back at scale 1 a swipe moves', async ({ page }) => {
         await openPage(page, P[1]);
-        await twoFingerSpread(page, { from: await centerOf(stage(page)) });
+        const from = await centerOf(stage(page));
+        const scale = () => page.evaluate(() => window.visualViewport?.scale ?? 1);
+        await twoFingerSpread(page, { from });
         await expectStill(page, P[1], 2);
         await expect(announcer(page)).toHaveText('');
-        // A pinch may leave the page zoomed in; a fresh load starts at scale 1 for the swipe that proves nothing stuck.
-        await openPage(page, P[1]);
+        if (realTouches(page)) {
+            // The stage keeps pinch zoom (touch-action pinch-zoom), so the spread zoomed the page in.
+            await expect.poll(scale, 'the pinch zoomed the page').toBeGreaterThan(1.01);
+            await expect(viewer(page)).toHaveAttribute('data-pinched', '');
+            // Pinched in, a sideways drag on the photograph is the browser's pan, not a move. The pinch kept this point on the stage.
+            const offset = () => page.evaluate(() => window.visualViewport?.offsetLeft ?? 0);
+            const before = await offset();
+            await touchDrag(page, { from, dx: -150 });
+            await expectStill(page, P[1], 2);
+            await expect.poll(offset, 'the drag panned the pinched page').toBeGreaterThan(before);
+            // Pinch back out on the same page: two fingers closing in, until the page is at scale 1 again.
+            await twoFingerSpread(page, { from, gap: 220, spread: -100 });
+            await expect.poll(scale, 'the page is back at scale 1').toBeLessThanOrEqual(1.01);
+            await expect(viewer(page)).not.toHaveAttribute('data-pinched');
+        }
+        // No reload: the same page's recognizer, after the two fingers, takes the next swipe.
         await swipe(page, -150);
         await expectStill(page, P[2], 3);
     });
@@ -222,7 +311,7 @@ test.describe('presentation', () => {
                     const properties =
                         animation instanceof CSSTransition ? [animation.transitionProperty] : (effect?.getKeyframes() ?? []).flatMap((frame) => Object.keys(frame));
                     const moves = properties.some((property) => MOVES.test(property));
-                    if (duration > 1 || moves) {
+                    if (duration > 0.01 || moves) {
                         const target = effect?.target instanceof Element ? `${effect.target.tagName}.${effect.target.className}` : 'none';
                         record.animations.push(`${properties.join(',')} ${duration}ms on ${target}`);
                     }
