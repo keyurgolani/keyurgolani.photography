@@ -188,6 +188,7 @@ async function detailOf(root: string, event: CurationEvent, item: InboxItem, reg
               }
             : null,
         placed: await placedOf(root, event, series),
+        lastApprovedSeries: event.decisions.filter((decision) => decision.action === 'approve').at(-1)?.seriesId ?? null,
         decisions: event.decisions.map((decision) => ({ action: decision.action, at: decision.at, by: printable(decision.by), detail: decisionDetail(decision) })),
         reviewedAt: event.reviewedAt,
         reviewedBy: event.reviewedBy === null ? null : printable(event.reviewedBy),
