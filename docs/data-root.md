@@ -21,8 +21,10 @@ The registry in it names every photo by its path in the library and by the SHA-2
 | `catalog/activations/` | Each activation: every publish and rollback adds one | `photos.mjs publish` and `rollback` |
 | `catalog/active/v<N>.json` | The pointer to the active revision. A [version folder](#version-folders), so a publish or a rollback moves it by adding the next version. | `photos.mjs publish` and `rollback` |
 | `catalog/candidates/`, `catalog/diagnostics/` | The last compile of each candidate, its issues, and how the last publish ended | `photos.mjs publish` |
-| `locks/` | The locks writers take on the registry, the authored records, and the catalog | The watcher and `photos.mjs` |
+| `locks/` | The locks writers take on the registry, the authored records, the catalog, and the curation inbox | The watcher and `photos.mjs` |
 | `edits/` | `photos.mjs edit`'s working copies, and edits it kept because they couldn't be saved, which `edit <id> --file <path> --expect-version <N>` saves once fixed. Private, like the rest (0700, files 0600). Nothing reads them as records, and `references()` doesn't list them, so the cleanup #15 adds has to leave the folder alone. Delete a kept edit once it's saved or no longer wanted. | `photos.mjs edit` |
+| `curation/events/<eventId>/v<N>.json` | One [curation inbox](#curation-inbox) item. A [version folder](#version-folders). | The watcher, and `photos.mjs curation` |
+| `curation/rules.json` | Your series suggestion rules for the inbox, if you want any | You |
 
 Everything in it belongs to uid 1001, the user both containers run as, and only that user can read it, since the registry keeps curator-only details such as GPS. To read a file, go through the container instead of `sudo`:
 
@@ -32,7 +34,7 @@ docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher cat /
 
 ## Version folders
 
-Every document that two writers could change at once is a folder with one file per version: `identity/registry/`, `authored/site/`, `authored/series/<seriesId>/`, `authored/photos/<photoId>/`, and the active catalog pointer, `catalog/active/`. Inside each folder the versions are `v1.json`, `v2.json`, and so on. The highest number is the document. A write never changes an existing file. It adds the next number with `link()`, which fails if that number already exists, so two writers can't both store the same version. That's why the data root needs a filesystem with hard links.
+Every document that two writers could change at once is a folder with one file per version: `identity/registry/`, `authored/site/`, `authored/series/<seriesId>/`, `authored/photos/<photoId>/`, each curation inbox item's `curation/events/<eventId>/`, and the active catalog pointer, `catalog/active/`. Inside each folder the versions are `v1.json`, `v2.json`, and so on. The highest number is the document. A write never changes an existing file. It adds the next number with `link()`, which fails if that number already exists, so two writers can't both store the same version. That's why the data root needs a filesystem with hard links.
 
 Never edit the active pointer by hand: only `photos.mjs publish` and `photos.mjs rollback` move it. A version copied there by hand makes a revision live without the checks a publish runs, so the next command refuses to record it if the rules block that revision.
 
@@ -267,3 +269,21 @@ Run this once, on a library that never had a data root, to give every photo its 
    ```
 
    `Failed profiles` should be 0, and `Watcher heartbeat` under 120 s. An entry with `source-superseded` is fine. It means the photo's file changed after that revision was recorded, and the watcher builds the newer revision instead. For any other failure, fix the cause, then run `node dist/scripts/photos.mjs identity retry <photoId>` the same way.
+
+## Curation inbox
+
+New photographs wait in the curation inbox until you approve them into the draft. Nothing there publishes. List it the same way as the other commands:
+
+```bash
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs curation list
+```
+
+`curation/rules.json` lets a folder or a filename tag suggest a series, and an EXIF date range narrow it. It must be a regular file of at most 256 KiB:
+
+```json
+{ "schemaVersion": 1, "series": [
+  { "seriesId": "ser_example", "folders": ["trips/2024"], "filenameTags": ["harbor"],
+    "capturedBetween": { "from": "2024-01-01", "to": "2024-12-31" } } ] }
+```
+
+A suggestion is only a draft. Approving the item is what places the photograph, and it takes the series you pass, the one you saved with `curation edit`, or the suggestion, in that order.
