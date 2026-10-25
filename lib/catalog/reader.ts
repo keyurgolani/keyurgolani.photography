@@ -95,7 +95,7 @@ export function createCatalogReader<C extends CatalogContent>(content: C, meta: 
         },
         getWorkSummaries: (routes = publicRouteBuilder) => workCatalogOf({ revisionId: revision.revisionId, listSeries: reader.listSeries, photosOf: reader.photosOf }, routes),
         getViewerPhoto: (slug, photoId) => viewerPhotoOf({ revisionId: revision.revisionId, listSeries: reader.listSeries, seriesBySlug: reader.seriesBySlug, photo: reader.photo, photosOf: reader.photosOf }, slug, photoId),
-        getSeriesPage: (slug, routes = publicRouteBuilder) => seriesPageOf({ revisionId: revision.revisionId, seriesBySlug: reader.seriesBySlug, photosOf: reader.photosOf }, slug, routes),
+        getSeriesPage: (slug, routes = publicRouteBuilder) => seriesPageOf({ revisionId: revision.revisionId, listSeries: reader.listSeries, seriesBySlug: reader.seriesBySlug, photosOf: reader.photosOf }, slug, routes),
     };
     return reader;
 }

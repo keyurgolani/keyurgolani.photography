@@ -97,7 +97,7 @@ function trap(): SeriesSource {
     const fail = () => {
         throw new Error('The catalog was read');
     };
-    return { revisionId: REVISION_A, seriesBySlug: fail, photosOf: fail };
+    return { revisionId: REVISION_A, listSeries: fail, seriesBySlug: fail, photosOf: fail };
 }
 
 const photoOf = (content: CatalogContentLike, photoId: string) => {
@@ -263,6 +263,16 @@ describe('seriesPageOf on a revision', () => {
         const emptyAliased = structuredClone(empty);
         emptyAliased.series[1].slugAliases = ['old-fixture-b'];
         expect(readerOf(emptyAliased).getSeriesPage('old-fixture-b')).toEqual({ kind: 'not-found' });
+    });
+
+    it('answers a series whose ID appears more than once not-found, by slug or former slug, as Work leaves it out', () => {
+        const repeated = structuredClone(content);
+        // A hand-written revision: a second record under series A's ID, with its own slug and B's photo.
+        repeated.series.push({ ...structuredClone(repeated.series[1]), id: 'ser_fixture-a', slug: 'fixture-a-again', slugAliases: [] });
+        const reader = readerOf(repeated);
+        for (const slug of ['fixture-a', 'old-fixture-a', 'fixture-a-again']) expect(reader.getSeriesPage(slug), slug).toEqual({ kind: 'not-found' });
+        // Series B, held once, still resolves.
+        expect(page(reader.getSeriesPage('fixture-b')).id).toBe('ser_fixture-b');
     });
 
     it('answers a letter-case variant and other malformed slugs not-found, without reading the catalog', () => {
@@ -467,7 +477,11 @@ describe('derived facts', () => {
         undated.series[0].derived = { photoCount: 6 };
         for (const photo of undated.photos) delete photo.capturedAt;
         expect(page(readerOf(undated).getSeriesPage('fixture-a')).facts.captured).toBeNull();
-        for (const derived of [{ photoCount: 6, capturedFrom: '2021-01-01' }, { photoCount: 6, capturedFrom: '2022-01-01', capturedTo: '2021-01-01' }, { photoCount: 6, capturedFrom: 'yesterday', capturedTo: '2021-01-01' }]) {
+        // Dates the members don't carry are left out too: compile derives the range from them.
+        const unbacked = structuredClone(undated);
+        unbacked.series[0].derived = { photoCount: 6, capturedFrom: '2021-01-01', capturedTo: '2021-02-01' };
+        expect(page(readerOf(unbacked).getSeriesPage('fixture-a')).facts.captured).toBeNull();
+        for (const derived of [{ photoCount: 6, capturedFrom: '2021-01-01' }, { photoCount: 6, capturedFrom: '2019', capturedTo: '2021-01-01' }, { photoCount: 6, capturedFrom: '2019-01-01', capturedTo: '2021-01-01T00:00:00Z' }, { photoCount: 6, capturedFrom: '2022-01-01', capturedTo: '2021-01-01' }, { photoCount: 6, capturedFrom: 'yesterday', capturedTo: '2021-01-01' }]) {
             const odd = structuredClone(content);
             odd.series[0].derived = derived;
             expect(page(readerOf(odd).getSeriesPage('fixture-a')).facts.captured, JSON.stringify(derived)).toBeNull();

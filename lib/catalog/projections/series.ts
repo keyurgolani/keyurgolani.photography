@@ -150,6 +150,7 @@ export type SeriesPageResult =
 /** What seriesPageOf() reads. A CatalogReader has all of it. */
 export interface SeriesSource {
     revisionId: string;
+    listSeries(): readonly SeriesRecord[];
     seriesBySlug(slugOrAlias: string): { series: SeriesRecord; canonical: boolean } | null;
     photosOf(seriesId: string): readonly Photo[];
 }
@@ -276,9 +277,13 @@ function factsOf(series: SeriesRecord, members: readonly Photo[], photoCount: nu
 
 /**
  * Resolve `/work/<slug>` in one source, in this order: a malformed slug, an
- * unknown one, and a series with nothing to open (no positive published
- * count or no member that resolves, which Work leaves out too) are all
- * not-found; a former slug redirects; anything else is the projection.
+ * unknown one, a series ID that appears more than once, and a series with
+ * nothing to open (no positive published count or no member that resolves)
+ * are all not-found, the series #3's Work leaves out, so Work never links a
+ * missing page and the page never serves a series Work hides; a former slug
+ * redirects; anything else is the projection. Compile never writes a
+ * repeated ID. Only a hand-written revision can, and the reader indexes
+ * members by ID, so it would pair one record's copy with another's photos.
  * Entries are the members that resolve, in `photoIds` order, the list #7's
  * Viewer counts, so positions agree. Hrefs come from `routes`: #13's
  * `publicRoutes` on the site, a preview's own builder in a preview.
@@ -289,6 +294,8 @@ export function seriesPageOf(source: SeriesSource, slug: unknown, routes: Pick<R
     const hit = source.seriesBySlug(params.slug);
     if (hit === null) return NOT_FOUND;
     const { series } = hit;
+    // Work leaves out a series ID that appears more than once, so the page does too.
+    if (source.listSeries().filter((record) => record.id === series.id).length !== 1) return NOT_FOUND;
     const photoCount = series.derived?.photoCount;
     if (!dimension(photoCount)) return NOT_FOUND;
     // order.duplicate-photo blocks a repeated member at render, so no preview or revision holds one.
@@ -365,7 +372,7 @@ export function seriesSections(page: Pick<PublishedSeriesPage, 'entries' | 'chap
     const lead = page.entries.slice(0, starts[0] ?? page.entries.length);
     if (lead.length) sections.push({ chapter: null, entries: lead });
     page.chapters.forEach((chapter, index) => {
-        sections.push({ chapter, entries: page.entries.slice(starts[index], starts[index + 1] ?? page.entries.length) });
+        sections.push({ chapter, entries: page.entries.slice(starts[index], starts[index + 1]) });
     });
     return sections;
 }
