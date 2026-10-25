@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runTsx } from '../../../test/helpers/runTsx';
 import { folderBytes } from '../../../test/helpers/folderBytes';
 import { identityPaths, readRegistry, writeRegistry } from '../../identity/registry';
+import { versionFile, versionText } from '../../storage/document';
 import { withLock } from '../../storage/lock';
 import { runRules } from '../rules';
 import { applySeriesOp, applySequenceOp, sequenceContext, type Actor, type ApplyOptions, type SeriesOp, type SequenceOp } from '../sequence';
@@ -395,6 +396,21 @@ describe('compare-and-swap', () => {
         const after = await series();
         expect(after.version).toBe(expectedVersion + 1);
         expect(after.photoIds.filter((id) => id === P[8] || id === P[9])).toHaveLength(1);
+    });
+
+    it('turns the writer\'s own compare-and-swap failure into version-conflict, and writes nothing', async () => {
+        // A version lands after the in-hold check, while the op's write is staged: a hand copy, or a writer past its
+        // lease. Only the writer's compare-and-swap can see it, and its VERSION_CONFLICT must come back as a result.
+        const stored = await series();
+        const dir = authoredRecordDir(catalog.root, 'series', S1);
+        const handMade = versionText({ ...stored, title: 'Fixture hand edit' }, stored.version + 1);
+        const before = bytes('series', S1);
+        const result = await apply({ kind: 'move', seriesId: S1, photoId: P[1], at: 'end' }, {
+            hooks: { afterStage: () => fs.writeFileSync(versionFile(dir, stored.version + 1), handMade) },
+        });
+        expect(result).toEqual({ ok: false, error: expect.objectContaining({ code: 'version-conflict', recordId: S1, message: expect.stringContaining(`version ${stored.version + 1}`) }) });
+        expect(bytes('series', S1)).toEqual({ ...before, [`v${stored.version + 1}.json`]: handMade });
+        expect(await series()).toMatchObject({ version: stored.version + 1, title: 'Fixture hand edit', photoIds: stored.photoIds });
     });
 
     it('lets writers on different records both through', async () => {
