@@ -856,6 +856,61 @@ describe('archive, then publish', { timeout: 60_000 }, () => {
     });
 });
 
+describe("archiving a missing photo and its new item", { timeout: 60_000 }, () => {
+    const cli = async (w: MissingWorld, ...args: string[]) => runCurationCli(args, { dataRoot: w.root, libraryRoot: w.lib.root }, {});
+    const newItemOf = async (w: MissingWorld) => (await listEvents(w.root)).events.find((event) => event.type === 'new' && event.photoId === w.p) as CurationEvent;
+
+    /** Remove P, archive it from its missing item, let the watcher apply it, and publish the takedown. */
+    async function takeDown(w: MissingWorld): Promise<void> {
+        removeP(w);
+        await w.pass();
+        const item = await w.event(w.missingId);
+        expect(await archiveMissing({ root: w.root, eventId: item.id, expectedVersion: item.version, expectedBase: w.revisionId, actor: ACTOR })).toMatchObject({ ok: true });
+        await w.pass();
+        expect((await w.registry()).photos[w.p].sourceHealth).toBe('archived');
+        // The pass that applies the archive closes the new item, before any publish.
+        expect((await newItemOf(w)).status).toBe('resolved');
+        expect(await w.publish()).toMatchObject({ outcome: 'PUBLISHED', removed: [{ photoId: w.p, series: [SERIES] }] });
+        await w.pass();
+    }
+
+    for (const approved of [false, true]) {
+        it(`closes the photo's ${approved ? 'approved' : 'open'} new item, so nothing asks for judgment or advises approving an archived photo`, async () => {
+            const w = await world();
+            let item = await newItemOf(w);
+            expect(item.status).toBe('open');
+            if (approved) {
+                expect(await approveEvent({ root: w.root, eventId: item.id, expectedVersion: item.version, expectedBase: w.revisionId, actor: ACTOR, choices: { seriesId: SERIES, placement: 'end' } })).toMatchObject({ ok: true });
+            }
+            await takeDown(w);
+
+            item = await w.event(item.id);
+            expect(item).toMatchObject({ status: 'resolved' });
+            expect(item.decisions.at(-1)).toMatchObject({ action: 'close', by: 'watcher', reason: 'The photograph is archived.' });
+            const list = (await cli(w, 'list')).output;
+            expect(list).toContain('0 items require judgment');
+            expect(list).not.toContain('no longer placed');
+            const shown = (await cli(w, 'show', item.id)).output;
+            expect(shown).not.toContain('No longer placed');
+            expect(shown).not.toContain('curation approve');
+            expect(await w.publish({ dryRun: true })).toMatchObject({ outcome: 'NO_CHANGES' });
+        });
+    }
+
+    it('lets the curator reopen the closed item, as before', async () => {
+        const w = await world();
+        let item = await newItemOf(w);
+        expect(await approveEvent({ root: w.root, eventId: item.id, expectedVersion: item.version, expectedBase: w.revisionId, actor: ACTOR, choices: { seriesId: SERIES, placement: 'end' } })).toMatchObject({ ok: true });
+        await takeDown(w);
+        item = await w.event(item.id);
+        const run = await cli(w, 'reopen', item.id, '--version', String(item.version), '--base', (await readActivePointer(w.root))?.revisionId as string);
+        expect(run.exitCode).toBe(0);
+        expect(run.output).toContain('Reopened.');
+        expect((await w.event(item.id)).status).toBe('open');
+        expect(await w.publish({ dryRun: true })).toMatchObject({ outcome: 'NO_CHANGES' });
+    });
+});
+
 describe('a build that stays failed', { timeout: 60_000 }, () => {
     const R_PATH = 'harbor/third.jpg';
 
