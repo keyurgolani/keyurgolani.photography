@@ -177,7 +177,7 @@ docker compose -f docker-compose.prod.yml logs image-watcher | grep orientation-
 
 Once it logs that it rebuilt the sets of the orientation-tagged photos, clear `./.next-images-cache` the same way as above, so `/_next/image` drops the copies it made from the old derivatives. If it also names photos that failed to rebuild, fix or remove those files, and clear the cache again once it logs that it rebuilt them. If this is also the first release with Phase 0, this one clear, after the rebuild, covers both.
 
-The first release with slice C of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10) needs the new `docker-compose.prod.yml` on the host, and the data root, `./portfolio-data`, created and owned by uid 1001 before the first `up`. The old compose file runs the watcher with tsx, which the image no longer has, and the new one never creates a missing data root, so neither container starts without it. The new file also publishes `web` on the host's 127.0.0.1 only, port `PHOTOGRAPHY_PORT` or 3000, so whatever serves the site to the internet has to reach it there, such as a reverse proxy or a tunnel running directly on the host. A proxy or tunnel that runs in a container can't: the host's 127.0.0.1 isn't its 127.0.0.1. Run it as a service in the override below instead, so it joins this project's network, and point it at `http://web:3000`.
+The first release with slice C of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10) needs the new `docker-compose.prod.yml` on the host, and the data root, `./portfolio-data`, created and owned by uid 1001 before the first `up`. The old compose file runs the watcher with tsx, which the image no longer has, and the new one never creates a missing data root, so neither container starts without it. The new file also publishes `web` on the host's 127.0.0.1 only, port `PHOTOGRAPHY_PORT` or 3000, so whatever serves the site to the internet has to reach it there, such as a reverse proxy or a tunnel running directly on the host. A proxy or tunnel that runs in a container can't: the host's 127.0.0.1 isn't its 127.0.0.1. Run it as a service in the override below instead, so it joins this project's network, and point it at `http://web:3000`. That service may publish 80 and 443 itself.
 
 Keep the host's current file, and find what this host changed in it. Compare it with the repository's file for the release the host runs now, `v<current>`, the tag you noted before changing `.env`, not with the new one, which also has the repository's own changes. Then fetch the new file beside it. The `[ -e ... ] ||` keeps the first copy if you run these again:
 
@@ -191,18 +191,37 @@ curl -fsSL -o docker-compose.prod.yml.new https://raw.githubusercontent.com/keyu
 If the diff shows changes made on this host, don't copy them into the new file:
 
 - A different host port goes in `.env` as `PHOTOGRAPHY_PORT=<port>`, never in an override.
-- Anything else, such as another service or photos path, goes in an override file that isn't in the repository, added to every command as `-f docker-compose.prod.yml -f <override>`, so the next release's file replaces cleanly. Compose adds an override's `ports:` to the file's instead of replacing them, so a `ports:` entry there has to start with `127.0.0.1:` and its list has to be tagged `!override` (Compose 2.24.4 or later), and no service there takes `network_mode: host`. Otherwise `web` is published on every interface again.
+- Anything else, such as another service or photos path, goes in an override file that isn't in the repository, added to every command as `-f docker-compose.prod.yml -f <override>`, so the next release's file replaces cleanly. Compose adds an override's `ports:` to the file's instead of replacing them, so a `ports:` entry for `web` there has to start with `127.0.0.1:` and its list has to be tagged `!override` (Compose 2.24.4 or later), and `web` never takes `network_mode: host`. Otherwise `web` is published on every interface again. These rules are for `web` only. A reverse proxy service in the override may publish 80 and 443, or run with `network_mode: host` and point at `http://127.0.0.1:3000`.
 
-Then install the new file and set up the data root. With an override, add `-f <override>` to the `pull` and `up` lines too, and check the merged file before `up -d`: the `config` line has to print only `"127.0.0.1"`. Without one, skip that line.
+Then install the new file, set up the data root, and deploy. Do it this way instead of the plain `pull` and `up -d`, and only after the `.env` edit. Each half of the switch needs the other: the plain commands would start the old file on the new image, whose watcher command needs tsx, and this block run on the old tag would start the new file on the old image, which has no `dist/scripts`. Either way the watcher crash-loops. So the block checks `.env` first, and stops before it changes anything when the tag isn't there yet. The `exit` leaves only the block's subshell, not your shell:
 
 ```bash
-mv docker-compose.prod.yml.new docker-compose.prod.yml
-mkdir -p portfolio-data
-sudo chown -R 1001:1001 portfolio-data
-sudo chmod 700 portfolio-data
-docker compose -f docker-compose.prod.yml -f <override> config --format json | jq '[.services[].ports[]?.host_ip] | unique'
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d
+(
+  grep -qx 'PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z' .env || { echo ".env doesn't set PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z yet. Nothing was changed." >&2; exit 1; }
+  mv docker-compose.prod.yml.new docker-compose.prod.yml
+  mkdir -p portfolio-data
+  sudo chown -R 1001:1001 portfolio-data
+  sudo chmod 700 portfolio-data
+  docker compose -f docker-compose.prod.yml pull
+  docker compose -f docker-compose.prod.yml up -d
+)
+```
+
+With an override, use this block instead. It also checks the merged file, the new one with your override, before anything moves: `web` has to be published on 127.0.0.1 only and stay off the host's network. It needs `jq` on the host, and without it the check fails and stops the block too:
+
+```bash
+(
+  grep -qx 'PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z' .env || { echo ".env doesn't set PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z yet. Nothing was changed." >&2; exit 1; }
+  docker compose -f docker-compose.prod.yml.new -f <override> config --format json |
+    jq -e '.services.web.network_mode == null and ([.services.web.ports[]?.host_ip] | unique) == ["127.0.0.1"]' >/dev/null ||
+    { echo "With the override, web isn't published on 127.0.0.1 only. Fix the override. Nothing was changed." >&2; exit 1; }
+  mv docker-compose.prod.yml.new docker-compose.prod.yml
+  mkdir -p portfolio-data
+  sudo chown -R 1001:1001 portfolio-data
+  sudo chmod 700 portfolio-data
+  docker compose -f docker-compose.prod.yml -f <override> pull
+  docker compose -f docker-compose.prod.yml -f <override> up -d
+)
 ```
 
 Once it's up, check the site from the host, on `PHOTOGRAPHY_PORT` if you set one, and then through the public URL:
@@ -220,16 +239,20 @@ If the first answers and the second doesn't, the proxy or tunnel can't reach `we
 
 Before changing `.env`, note the tag the host runs now. To roll back, set `PHOTOGRAPHY_IMAGE_TAG` back to that tag and run the same two commands. That swaps the code, not the photo library. Rolling back to a release before Phase 0 of #17 brings back the watcher's startup cleanup, which deletes the derivative sets this release keeps for removed photos. That older release also refills `./.next-images-cache` under its year-long headers and writes new `cache/dynamic` files, so roll forward again the way Deploying describes for `v1.1.0`.
 
-Rolling back past the first release with slice C of #10 needs the compose file the host ran before it too, since that older image has no `dist/scripts` for this file's watcher command. Put back the copy that release's deploy step saved, `docker-compose.prod.yml.before-vX.Y.Z`, rather than the repository's older file, so the host's own changes come back with it. Leave out of the override whatever only moved there from that copy, since the copy already has it. Restore the file first, then set the older tag in `.env`, then run the two commands:
+Rolling back past the first release with slice C of #10 needs the compose file the host ran before it too, since that older image has no `dist/scripts` for this file's watcher command. Put back the copy that release's deploy step saved, `docker-compose.prod.yml.before-vX.Y.Z`, rather than the repository's older file, so the host's own changes come back with it. Leave out of the override whatever only moved there from that copy, since the copy already has it. Restore the file first, then set the older tag in `.env`, then run the two commands.
+
+That copy publishes `web` the way the host did before, which for the repository's older file is `"3000:3000"`, every interface. The older image doesn't care which address it's published on, so if the proxy or tunnel reaches `web` on the host's loopback, keep it there: the `sed` line changes `"3000:3000"` to `"127.0.0.1:3000:3000"` before `up -d`, and the `grep` after it shows the line it left. Leave both lines out only when something reaches `web` from another machine:
 
 ```bash
 cp -p docker-compose.prod.yml.before-vX.Y.Z docker-compose.prod.yml
+sed -i 's/^\([[:space:]]*- "\)3000:3000"/\1127.0.0.1:3000:3000"/' docker-compose.prod.yml
+grep -n '3000:3000' docker-compose.prod.yml
 # set PHOTOGRAPHY_IMAGE_TAG in .env back to the older tag
 docker compose -f docker-compose.prod.yml pull
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-That copy publishes `web` the way the host did before, which for the repository's older file is `"3000:3000"`, every interface. The older image doesn't care which address it's published on, so change that line to `"127.0.0.1:3000:3000"` before `up -d` if the proxy or tunnel reaches it on the host's loopback. Leave `./portfolio-data` where it is. Older releases never read it, and once you roll forward, the watcher's next pass catches up with what changed in the library meanwhile. A release that finds a data root written by a newer one, with a schema it doesn't know, treats it as unavailable and runs only the legacy step.
+Leave `./portfolio-data` where it is. Older releases never read it, and once you roll forward, the watcher's next pass catches up with what changed in the library meanwhile. A release that finds a data root written by a newer one, with a schema it doesn't know, treats it as unavailable and runs only the legacy step.
 
 Never roll back to `v1.0.0`. That image, on GHCR and on Docker Hub, is the initial commit and can't run under this compose file.
 
