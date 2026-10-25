@@ -162,11 +162,17 @@ function changeLines(plan: RollbackPlan): string[] {
     return lines;
 }
 
-/** The plan's lines: the two revisions, the impact list, and the issues on the target. */
-export function planLines(plan: RollbackPlan): string[] {
-    const lines = [`[photos] ${plan.outcome}: ${plan.message}`];
+/** The Active and Target lines. */
+function refLines(plan: RollbackPlan): string[] {
+    const lines: string[] = [];
     if (plan.active) lines.push(`Active: ${plan.active.revisionId}${plan.active.revisionNumber === null ? '' : `, revision ${plan.active.revisionNumber}`}`);
     if (plan.target) lines.push(`Target: ${plan.target.revisionId}${plan.target.revisionNumber === null ? '' : `, revision ${plan.target.revisionNumber}`}`);
+    return lines;
+}
+
+/** The plan's lines: the two revisions, the impact list, and the issues on the target. */
+export function planLines(plan: RollbackPlan): string[] {
+    const lines = [`[photos] ${plan.outcome}: ${plan.message}`, ...refLines(plan)];
     if (plan.outcome === 'READY' || plan.outcome === 'VALIDATION_FAILED') lines.push(...changeLines(plan));
     if (plan.editorial.length) lines.push(`Editorial errors, which a rollback doesn't block on and its activation records: ${plan.editorial.join(', ')}`);
     lines.push(...issueLines(plan.issues, 'Fix the first ones, then plan the rollback again.'));
@@ -203,7 +209,8 @@ export async function runRollbackCommand(dataRoot: string, args: RollbackArgs, i
     if (plan.outcome === 'NO_CHANGES' && plan.target) {
         const settled = await rollback({ ...options, dataRoot: root, revisionId: plan.target.revisionId, expectedActiveRevisionId: plan.target.revisionId, actor: args.actor, reason: args.reason, logger: io.logger ?? options.logger });
         const exitCode = ROLLBACK_EXIT_CODES[settled.outcome];
-        for (const line of resultLines(settled)) (exitCode === 0 ? io.out : io.err)(line);
+        const shown = settled.plan ?? plan;
+        for (const line of [...resultLines(settled), ...refLines(shown)]) (exitCode === 0 ? io.out : io.err)(line);
         return exitCode;
     }
     for (const line of planLines(plan)) (planExit === 0 ? io.out : io.err)(line);

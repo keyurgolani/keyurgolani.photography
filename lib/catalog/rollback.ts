@@ -3,7 +3,7 @@ import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
 import { LockTimeoutError, MAX_LEASE_MS, withLock, type LockContext, type LockHooks, type LockRecord } from '../storage/lock';
-import { changesBetween, knownGood, type RevisionChanges } from './history';
+import { changesBetween, historyState, knownGood, type RevisionChanges } from './history';
 import { activateRevision, blockingIssues, CATALOG_LEASE_MS, rebaseWorkingLayer, recover, validateStored, type CatalogLogger, type RecoveryReport } from './publish';
 import { assertRevisionId, CATALOG_LOCK, CatalogIntegrityError, listActivations, readRevisionFile } from './repository';
 import { registeredRules } from './ruleset';
@@ -153,11 +153,20 @@ const EMPTY_CONTENT: RevisionContent = { site: { featuredSeriesIds: [] }, series
 export function errorText(error: unknown, root: string): string {
     const errno = error as NodeJS.ErrnoException;
     if (error instanceof Error && typeof errno.code === 'string' && typeof errno.path === 'string') {
-        const relative = path.relative(root, path.resolve(errno.path));
-        const where = relative === '' ? 'the data root' : relative.startsWith('..') || path.isAbsolute(relative) ? 'a path outside the data root' : relative.split(path.sep).join('/');
-        return `${errno.code} on ${where}`;
+        return `${errno.code} on ${relativeName(root, errno.path)}`;
     }
+    // The storage layer's document errors, such as a damaged registry's, start with the file's absolute path.
+    const file = (error as { file?: unknown } | null)?.file;
+    if (error instanceof Error && typeof file === 'string' && path.isAbsolute(file)) return error.message.split(file).join(relativeName(root, file));
     return error instanceof Error ? error.message : String(error);
+}
+
+/** A path relative to the data root, POSIX style, or a stand-in for one outside it. */
+function relativeName(root: string, file: string): string {
+    const relative = path.relative(root, path.resolve(file));
+    if (relative === '') return 'the data root';
+    if (relative.startsWith('..') || path.isAbsolute(relative)) return 'a path outside the data root';
+    return relative.split(path.sep).join('/');
 }
 
 const named = (ref: RevisionRef) => (ref.revisionNumber === null ? ref.revisionId : `revision ${ref.revisionNumber} (${ref.revisionId})`);
@@ -271,11 +280,12 @@ export function holderText(holder: LockRecord | null): string {
 }
 
 /** When a holder's lease runs out unless it renews, for a message. */
-function leaseEnd(holder: LockRecord | null): string {
+function leaseEnd(holder: LockRecord | null, ownLeaseMs: number): string {
     const heartbeat = holder ? Date.parse(holder.heartbeatAt) : Number.NaN;
     if (!holder || Number.isNaN(heartbeat)) return '';
-    // withLock() judges a lease by the holder's claim capped at MAX_LEASE_MS, so the time printed is that one.
-    const lease = holder.leaseMs > 0 ? Math.min(holder.leaseMs, MAX_LEASE_MS) : MAX_LEASE_MS;
+    // withLock() judges a lease by the holder's claim capped at MAX_LEASE_MS, or by the waiter's own lease when the
+    // record claims none, so the time printed is that one.
+    const lease = typeof holder.leaseMs === 'number' && holder.leaseMs > 0 ? Math.min(holder.leaseMs, MAX_LEASE_MS) : ownLeaseMs;
     return ` Its lease runs until ${new Date(heartbeat + lease).toISOString()} unless it renews it. If that command crashed, run the rollback again after then.`;
 }
 
@@ -315,7 +325,7 @@ export async function rollback(options: RollbackOptions): Promise<RollbackResult
         });
     } catch (error) {
         if (error instanceof LockTimeoutError) {
-            return finish('CATALOG_LOCKED', `Another command holds the catalog lock: ${holderText(error.holder)}.${leaseEnd(error.holder)} Nothing was rolled back.`, { holder: error.holder });
+            return finish('CATALOG_LOCKED', `Another command holds the catalog lock: ${holderText(error.holder)}.${leaseEnd(error.holder, options.leaseMs ?? CATALOG_LEASE_MS)} Nothing was rolled back.`, { holder: error.holder });
         }
         return failed(error);
     }
@@ -338,11 +348,17 @@ export async function rollback(options: RollbackOptions): Promise<RollbackResult
      * running the rollback again after a crash settles it.
      */
     async function settle(lock: LockContext, message: string): Promise<RollbackResult> {
+        const pointer = await readActivePointer(root);
+        const unsettled = pointer !== null && (await listActivations(root)).some((activation) => historyState(activation, pointer).unsettled);
         let recovery: RecoveryReport;
         try {
             recovery = await recover({ dataRoot: root, lock, logger, clock, authoredWaitMs: options.authoredWaitMs });
         } catch (error) {
-            if (error instanceof LockTimeoutError) return finish('NO_CHANGES', `${message} The working layer was busy, so the next publish rebases it.`, { rebased: false });
+            if (error instanceof LockTimeoutError) {
+                // recover() records the activations before it rebases, so only the rebase is left.
+                const committed = unsettled ? ' Recorded the interrupted activation as committed.' : '';
+                return finish('NO_CHANGES', `${message}${committed} The working layer was busy, so the next publish rebases it.`, { rebased: false });
+            }
             // recover() refuses to record a pointer moved by hand to a revision the rules block, and says what to do.
             if (error instanceof CatalogIntegrityError) return finish('INTEGRITY_MISMATCH', error.message);
             if (!(await lock.isHeld().catch(() => false))) return finish('LOCK_LOST', `${sentence(errorText(error, root))} Nothing was rolled back.`);
@@ -366,7 +382,11 @@ export async function rollback(options: RollbackOptions): Promise<RollbackResult
         result.issues = planned.issues;
         if (planned.outcome === 'NO_CHANGES') return settle(lock, planned.message);
         if (planned.active && planned.active.revisionId !== options.expectedActiveRevisionId) {
-            return finish('ACTIVE_CHANGED', `${named(planned.active)} is active now, not ${options.expectedActiveRevisionId}, so the impact you confirmed is out of date. Nothing was rolled back. Check it again.`);
+            // With the target as the expected revision, the caller only meant to settle what was already live.
+            const why = options.expectedActiveRevisionId === options.revisionId
+                ? `${named(planned.active)} went live since ${options.revisionId} was checked, so nothing was settled or rolled back. Run the rollback again to see what it would change now.`
+                : `${named(planned.active)} is active now, not ${options.expectedActiveRevisionId}, so the impact you confirmed is out of date. Nothing was rolled back. Check it again.`;
+            return finish('ACTIVE_CHANGED', why);
         }
         if (planned.outcome !== 'READY') return finish(planned.outcome, planned.message);
 

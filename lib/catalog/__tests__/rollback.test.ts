@@ -8,7 +8,7 @@ import { mediaFilePath } from '../../media/path';
 import { MAX_LEASE_MS, withLock, type LockRecord } from '../../storage/lock';
 import { historyState, knownGood, readHistory } from '../history';
 import { historyLines, rollbackArgs, runHistoryCommand, runRollbackCommand, type RollbackArgs, type RollbackIo } from '../history-cli';
-import { publish, type PublishOptions, type PublishResult } from '../publish';
+import { CATALOG_LEASE_MS, publish, type PublishOptions, type PublishResult } from '../publish';
 import { CATALOG_LOCK, CatalogIntegrityError, listActivations, readRevisionFile, revisionFilePath } from '../repository';
 import { planRollback, rollback, ROLLBACK_EXIT_CODES, type RollbackOptions, type RollbackResult } from '../rollback';
 import { registerRule } from '../rules';
@@ -653,5 +653,53 @@ describe('fix round 1', { timeout: 60_000 }, () => {
         expect(historyState(pending, pointer)).toEqual({ state: 'interrupted', unsettled: false });
         expect(historyState(pending, { ...pointer, revisionId: 'rev_one' })).toEqual({ state: 'committed', unsettled: true });
         expect(knownGood([pending], pointer).size).toBe(0);
+    });
+});
+
+describe('fix round 2', { timeout: 60_000 }, () => {
+    const args = (overrides: Partial<RollbackArgs> = {}): RollbackArgs => ({ to: { revisionNumber: 1 }, reason: 'roll back', actor: 'curator', yes: false, ...overrides });
+
+    it('names a damaged registry relative to the data root', async () => {
+        const { root } = await twoRevisions({ seed: 261 });
+        const registryDir = path.join(root, 'identity', 'registry');
+        const newest = fs.readdirSync(registryDir).filter((name) => /^v\d+\.json$/.test(name)).sort((a, b) => Number(b.slice(1, -5)) - Number(a.slice(1, -5)))[0];
+        fs.writeFileSync(path.join(registryDir, newest), '{ not json');
+        const planned = await planRollback({ dataRoot: root, to: { revisionNumber: 1 } });
+        expect(planned.outcome).toBe('STORAGE_ERROR');
+        expect(planned.message).toContain(`identity/registry/${newest} is not a valid document`);
+        expect(planned.message).not.toContain(root);
+        expect(planned.message).not.toContain(fs.realpathSync(root));
+    });
+
+    it('prints a lease end from its own lease when the holder\'s record claims none', async () => {
+        const { root, rollTo, one, two } = await twoRevisions({ seed: 262 });
+        const heartbeat = new Date();
+        const record = { owner: 'old-owner', hostname: 'host', pid: 1, acquiredAt: heartbeat.toISOString(), heartbeatAt: heartbeat.toISOString() };
+        fs.writeFileSync(path.join(root, 'locks', `${CATALOG_LOCK}.lock`), `${JSON.stringify(record)}\n`);
+        const result = await rollTo(one, two, { waitMs: 100 });
+        expect(result.outcome).toBe('CATALOG_LOCKED');
+        expect(result.message).toContain(`Its lease runs until ${new Date(heartbeat.getTime() + CATALOG_LEASE_MS).toISOString()} unless it renews it.`);
+    });
+
+    it('says nothing was settled, without mentioning a confirmation, when another revision went live before a rerun took the lock', async () => {
+        const { rollTo, one, two } = await twoRevisions({ seed: 263 });
+        const result = await rollTo(one, one);
+        expect(result.outcome).toBe('ACTIVE_CHANGED');
+        expect(result.message).toBe(`revision 2 (${two}) went live since ${one} was checked, so nothing was settled or rolled back. Run the rollback again to see what it would change now.`);
+    });
+
+    it('prints the Active and Target lines when a rerun settles, and says it committed the record when the working layer is busy', async () => {
+        const { root, rollTo, one, two } = await twoRevisions({ seed: 264 });
+        await rollTo(one, two, { hooks: { afterStep: (step) => { if (step === 11) throw new Error('crash after step 11'); } } });
+        const terminal = io(null);
+        const code = await withLock(AUTHORED_LOCK, { root }, () => runRollbackCommand(root, args(), terminal, { authoredWaitMs: 50 }));
+        expect(code).toBe(0);
+        expect(terminal.lines).toEqual([
+            `[photos] NO_CHANGES: revision 1 (${one}) is already active. Recorded the interrupted activation as committed. The working layer was busy, so the next publish rebases it.`,
+            `Active: ${one}, revision 1`,
+            `Target: ${one}, revision 1`,
+        ]);
+        expect(await statuses(root)).toEqual(['1:publish:committed:1', '2:publish:committed:2', '3:rollback:committed:1']);
+        expect(await bases(root)).toEqual([two]);
     });
 });
