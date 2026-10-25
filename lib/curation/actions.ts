@@ -324,7 +324,13 @@ export function approveEvent(input: ActionInput & { choices: Choices; faults?: A
         const photoId = event.photoId as string;
         const assetRevision = event.assetRevision as string;
         const root = path.resolve(/*turbopackIgnore: true*/ input.root);
-        const { seriesId, placement, picked, description } = resolveChoices(event, input.choices);
+        // With no series chosen or saved, a photograph an approval already placed keeps the one series that holds it, as the page shows it.
+        let choices = input.choices;
+        if (choices.seriesId === undefined && event.edits?.seriesId === undefined) {
+            const holding = (await readAuthoredSeries(root)).series.filter((entry) => entry.photoIds.includes(photoId));
+            if (holding.length === 1) choices = { ...choices, seriesId: holding[0].id };
+        }
+        const { seriesId, placement, picked, description } = resolveChoices(event, choices);
         let kept = false;
 
         const registry = await readRegistry(root).catch((error: unknown) => fail('damaged', `The identity registry can't be read: ${(error as Error).message}. Nothing was written.`));
@@ -348,7 +354,11 @@ export function approveEvent(input: ActionInput & { choices: Choices; faults?: A
                 let series: AuthoredSeries | null = null;
                 if (seriesId === null) {
                     // Approving never takes a photograph out of a series, so "unassigned" can't be recorded for one a series holds.
-                    const holding = (await readAuthoredSeries(root)).series.filter((entry) => entry.photoIds.includes(photoId)).map((entry) => entry.id);
+                    const all = await readAuthoredSeries(root);
+                    const unreadable = all.problems.filter((problem) => problem.kind === 'series').map((problem) => problem.id);
+                    // As #8's membership check does: a series that can't be read might hold it, so nothing shows it's free.
+                    if (unreadable.length > 0) fail('refused', `The series ${unreadable.join(' and ')} can't be read, so nothing shows whether one holds ${photoId}. Fix the series first. Nothing was written.`);
+                    const holding = all.series.filter((entry) => entry.photoIds.includes(photoId)).map((entry) => entry.id);
                     if (holding.length > 0) fail('refused', `${photoId} is already in ${holding.join(' and ')}, and an approval doesn't take a photograph out of a series. Nothing was written.`);
                 }
                 if (seriesId !== null && placement !== null) {
@@ -409,11 +419,14 @@ export function approveEvent(input: ActionInput & { choices: Choices; faults?: A
         if (seriesId === null) notes.unshift('Approved and left unassigned: the photo record is in the draft, in no series.');
         else if (kept) notes.unshift(`Approved into ${seriesId}, where it kept its place, in the draft. Nothing is published until photos publish runs.`);
         else notes.unshift(`Approved into ${seriesId} at ${placementText(placement as Placement)}, in the draft. Nothing is published until photos publish runs.`);
-        // A saved position is used up by the approval that applied it, so a later reopen and approve keeps any hand reorder.
+        // Saved choices are used up by the approval: it took them or overrode them. So a later reopen starts from the
+        // working layer, and a reopen and approve keeps any hand reorder.
         let edits = event.edits;
-        if (edits?.placement !== undefined) {
-            const { placement: _used, ...rest } = edits;
-            void _used;
+        if (edits !== null) {
+            const { placement: _placement, seriesId: _series, description: _description, ...rest } = edits;
+            void _placement;
+            void _series;
+            void _description;
             edits = rest;
         }
         const next = decided(step, input, { action: 'approve', seriesId, ...(placement && !kept ? { placement } : {}), writes }, 'approved', { edits });
