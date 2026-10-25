@@ -449,6 +449,7 @@ export interface ActivateOptions {
     acceptedRules?: string[];
     lockTakeover?: Activation['lockTakeover'];
     hooks?: Pick<PublishHooks, 'afterStep'>;
+    logger?: CatalogLogger;
     clock?: () => number;
 }
 
@@ -456,14 +457,19 @@ export interface ActivateResult {
     outcome: ActivateOutcome;
     message: string;
     activation: Activation | null;
+    /** What settling an interrupted activation did first, when it got that far. */
+    recovery?: RecoveryReport;
 }
 
 /**
  * Point `active.json` at a stored revision through commitActivation(), under
- * the caller's catalog hold: #15's rollback, and later reactivations. Refuses
- * with NOTHING_ACTIVE before the first activation, and returns
- * ACTIVE_CHANGED, writing nothing, if `expectedActiveRevisionId` isn't the
- * active revision. The caller rebases the working layer afterwards.
+ * the caller's catalog hold: #15's rollback, and later reactivations. First
+ * it settles an interrupted activation as recover() does, without the
+ * rebase, so the activation that is live is committed before this one
+ * records it as the previous one. Then it refuses with NOTHING_ACTIVE before
+ * the first activation, and returns ACTIVE_CHANGED, writing nothing more, if
+ * `expectedActiveRevisionId` isn't the active revision. The caller rebases
+ * the working layer afterwards.
  */
 export async function activateRevision(options: ActivateOptions): Promise<ActivateResult> {
     const root = path.resolve(options.dataRoot ?? options.lock.root);
@@ -472,21 +478,29 @@ export async function activateRevision(options: ActivateOptions): Promise<Activa
     assertActorAndReason(options.actor, options.reason);
     assertRevisionId(options.revisionId);
     assertRevisionId(options.expectedActiveRevisionId);
+    let recovery: RecoveryReport;
+    try {
+        recovery = await recover({ dataRoot: root, lock, logger: options.logger, clock, rebase: false });
+    } catch (error) {
+        if (error instanceof Stop) return { outcome: 'LOCK_LOST', message: error.message, activation: null };
+        if (error instanceof CatalogIntegrityError) return { outcome: 'INTEGRITY_MISMATCH', message: error.message, activation: null };
+        throw error;
+    }
     const pointer = await readActivePointer(root);
     if (pointer === null || lastCommitted(await listActivations(root)) === null) {
-        return { outcome: 'NOTHING_ACTIVE', message: 'Nothing is active yet, so there is nothing to roll back from. Publish first.', activation: null };
+        return { outcome: 'NOTHING_ACTIVE', message: 'Nothing is active yet, so there is nothing to roll back from. Publish first.', activation: null, recovery };
     }
     if (pointer.revisionId !== options.expectedActiveRevisionId) {
-        return { outcome: 'ACTIVE_CHANGED', message: `${pointer.revisionId} is active, not ${options.expectedActiveRevisionId}. Nothing was activated.`, activation: null };
+        return { outcome: 'ACTIVE_CHANGED', message: `${pointer.revisionId} is active, not ${options.expectedActiveRevisionId}. Nothing was activated.`, activation: null, recovery };
     }
     let revision: RevisionFile | null;
     try {
         revision = await readRevisionFile(root, options.revisionId);
     } catch (error) {
-        if (error instanceof CatalogIntegrityError) return { outcome: 'INTEGRITY_MISMATCH', message: error.message, activation: null };
+        if (error instanceof CatalogIntegrityError) return { outcome: 'INTEGRITY_MISMATCH', message: error.message, activation: null, recovery };
         throw error;
     }
-    if (revision === null) return { outcome: 'INTEGRITY_MISMATCH', message: `${options.revisionId} has no revision file.`, activation: null };
+    if (revision === null) return { outcome: 'INTEGRITY_MISMATCH', message: `${options.revisionId} has no revision file.`, activation: null, recovery };
     const registry = await readRegistry(root).catch(() => null);
     const result = await commitActivation({
         root,
@@ -501,8 +515,8 @@ export async function activateRevision(options: ActivateOptions): Promise<Activa
         clock,
         afterStep: options.hooks?.afterStep,
     });
-    if (!result.ok) return { outcome: result.outcome, message: result.message, activation: null };
-    return { outcome: 'ACTIVATED', message: `Activated ${revision.revisionId} as revision ${result.activation.revisionNumber}.`, activation: result.activation };
+    if (!result.ok) return { outcome: result.outcome, message: result.message, activation: null, recovery };
+    return { outcome: 'ACTIVATED', message: `Activated ${revision.revisionId} as revision ${result.activation.revisionNumber}.`, activation: result.activation, recovery };
 }
 
 /** What a first activation takes away: present photographs #10 knows that the candidate doesn't publish. */

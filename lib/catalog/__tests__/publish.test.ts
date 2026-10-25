@@ -531,6 +531,42 @@ describe('activateRevision', { timeout: 30_000 }, () => {
         expect(await listActivations(root)).toHaveLength(1);
     });
 
+    it.each([
+        [10, 'abandons'],
+        [11, 'commits'],
+    ])('settles a publish that crashed after step %i first: it %s that activation before recording the rollback', async (crashAfter) => {
+        const { catalog, root, run, editPhoto, first } = await launched({ seed: 87 });
+        await editPhoto(catalog.photos[0].id, (photo) => {
+            photo.caption = 'A caption the crashed publish carries.';
+        });
+        const crashed = await run({
+            hooks: {
+                afterStep(step) {
+                    if (step === crashAfter) throw new Error(`crash after step ${crashAfter}`);
+                },
+            },
+        });
+        expect(crashed.outcome).toBe('STORAGE_ERROR');
+        const [pending] = (await listActivations(root)).filter((activation) => activation.status === 'pending');
+        const live = (await readActivePointer(root))?.revisionId ?? '';
+        expect(live).toBe(crashAfter === 11 ? pending.revisionId : first.revisionId);
+
+        const target = crashAfter === 11 ? first.revisionId ?? '' : pending.revisionId;
+        if (crashAfter === 10) {
+            // The crashed publish wrote its revision file at step 9, so it can be activated by hand.
+            expect(fs.existsSync(revisionFilePath(root, target))).toBe(true);
+        }
+        const result = await activate(root, { revisionId: target, expectedActiveRevisionId: live });
+        expect(result.outcome).toBe('ACTIVATED');
+        expect(result.recovery).toMatchObject(crashAfter === 11 ? { committed: pending.activationId, abandoned: [] } : { committed: null, abandoned: [pending.activationId] });
+        expect(result.activation?.previousActivationId).toBe(crashAfter === 11 ? pending.activationId : first.activationId);
+
+        const next = await run();
+        expect(next.recovery).toMatchObject({ committed: null, abandoned: [], repaired: null });
+        const statuses = (await listActivations(root)).map((activation) => `${activation.sequence}:${activation.kind}:${activation.status}`);
+        expect(statuses.slice(0, 3)).toEqual(['1:publish:committed', `2:publish:${crashAfter === 11 ? 'committed' : 'abandoned'}`, '3:rollback:committed']);
+    });
+
     it("takes its data root from the lock when it isn't given", async () => {
         const { catalog, root, run, editPhoto, first } = await launched({ seed: 84 });
         await editPhoto(catalog.photos[0].id, (photo) => {
