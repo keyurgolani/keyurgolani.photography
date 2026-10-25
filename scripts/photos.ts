@@ -36,11 +36,11 @@
  *     only when --merge names it, and only if it was minted at that path.
  *
  *   npx tsx scripts/photos.ts validate [--reprofile]
- *     Compile the working layer and run every rule, writing nothing. Prints
- *     the candidate ID and the first 200 issues. Exits 0 when only warnings
+ *     Compile the working layer and run every rule, taking no lock and
+ *     writing nothing, so it runs on a read-only data root too. Prints the
+ *     candidate ID and the first 200 issues. Exits 0 when only warnings
  *     remain, 1 on any error, 2 on a usage error, 4 when a catalog file is
- *     damaged or can't be read, and 3 on any other stop, such as a data
- *     root that isn't ready or a working layer that stays busy.
+ *     damaged or can't be read, and 3 when the data root isn't ready.
  *
  *   npx tsx scripts/photos.ts publish [--actor <name>] [--reason <text>] [--expect <candidateId>]
  *                                     [--dry-run] [--confirm-launch] [--reprofile]

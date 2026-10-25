@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -30,6 +31,24 @@ const photos = (root: string, args: string[], env: Record<string, string | undef
 const candidateOf = (output: string) => /^Candidate: (rev_[0-9a-f]{64})$/m.exec(output)?.[1] ?? null;
 const eventsOf = (stdout: string) => stdout.split('\n').filter((line) => line.startsWith('{')).map((line) => (JSON.parse(line) as { event: string; outcome?: string }));
 
+/** Every entry under `root`, with its type, mode, size, mtime, and a file's SHA-256, so any write shows. */
+function treeOf(root: string): Record<string, string> {
+    const tree: Record<string, string> = {};
+    for (const relative of fs.readdirSync(root, { recursive: true, encoding: 'utf8' }).sort()) {
+        const file = path.join(root, relative);
+        const stat = fs.lstatSync(file);
+        const digest = stat.isFile() ? createHash('sha256').update(fs.readFileSync(file)).digest('hex') : '';
+        tree[relative] = `${stat.isDirectory() ? 'dir' : 'file'} ${(stat.mode & 0o7777).toString(8)} ${stat.size} ${stat.mtimeMs} ${digest}`;
+    }
+    return tree;
+}
+
+/** Every directory under `root`, and `root` itself, deepest first. */
+const directoriesOf = (root: string): string[] => [
+    ...fs.readdirSync(root, { recursive: true, encoding: 'utf8' }).map((relative) => path.join(root, relative)).filter((entry) => fs.lstatSync(entry).isDirectory()).sort().reverse(),
+    root,
+];
+
 async function breakAlt(catalog: TestCatalog): Promise<string> {
     const photo = (await readWorkingLayer(catalog.root)).photos[0];
     await writeAuthoredRecord({ ...photo, alt: null }, { expectedVersion: photo.version, root: catalog.root });
@@ -37,13 +56,32 @@ async function breakAlt(catalog: TestCatalog): Promise<string> {
 }
 
 describe('photos validate', { timeout: 120_000 }, () => {
-    it('prints the candidate and exits 0 when nothing but warnings remain, writing nothing', async () => {
+    it('prints the candidate and exits 0 when nothing but warnings remain, writing nothing anywhere in the data root', async () => {
         const catalog = await fixture(101);
+        fs.rmSync(path.join(catalog.root, 'locks'), { recursive: true, force: true });
+        const before = treeOf(catalog.root);
         const run = await photos(catalog.root, ['validate']);
         expect(run.code, run.stderr).toBe(0);
         expect(run.stdout).toContain('[photos] VALID: The working layer passes, with 0 errors and 0 warnings.');
         expect(candidateOf(run.stdout)).toBe(catalog.revisionId);
+        expect(treeOf(catalog.root)).toEqual(before);
+        expect(fs.existsSync(path.join(catalog.root, 'locks'))).toBe(false);
         expect(fs.existsSync(path.join(catalog.root, 'catalog'))).toBe(false);
+    });
+
+    it.skipIf(process.getuid?.() === 0)('runs on a data root it can only read', async () => {
+        const catalog = await fixture(105);
+        fs.rmSync(path.join(catalog.root, 'locks'), { recursive: true, force: true });
+        const directories = directoriesOf(catalog.root);
+        const modes = new Map(directories.map((dir) => [dir, fs.statSync(dir).mode & 0o7777]));
+        cleanups.unshift(async () => {
+            for (const [dir, mode] of [...modes].reverse()) fs.chmodSync(dir, mode);
+        });
+        for (const dir of directories) fs.chmodSync(dir, 0o500);
+
+        const run = await photos(catalog.root, ['validate']);
+        expect(run.code, run.stderr).toBe(0);
+        expect(candidateOf(run.stdout)).toBe(catalog.revisionId);
     });
 
     it('prints each issue and exits 1 on an error', async () => {

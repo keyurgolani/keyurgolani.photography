@@ -346,15 +346,19 @@ interface Snapshot {
 }
 
 /**
- * Steps 2 and 3 without the writes: the working layer, read under the
- * authored lock so no tool write lands halfway, #10's registry, the active
- * revision, and the compiled candidate. Throws Stop for a busy working layer
- * and CatalogIntegrityError for a pointer to a missing revision.
+ * Steps 2 and 3 without the writes: the working layer, #10's registry, the
+ * active revision, and the compiled candidate. With `lock`, the working
+ * layer is read under the authored lock so no tool write lands halfway, and
+ * a busy working layer throws Stop. Without it, as validate reads, nothing
+ * is written, not even the lock file. Throws CatalogIntegrityError for a
+ * pointer to a missing revision.
  */
-async function snapshotAndCompile(root: string, options: { authoredWaitMs?: number; reprofile?: boolean; profileId?: string }): Promise<Snapshot> {
+async function snapshotAndCompile(root: string, options: { lock: boolean; authoredWaitMs?: number; reprofile?: boolean; profileId?: string }): Promise<Snapshot> {
     let layer: WorkingLayer;
     try {
-        layer = await withLock(AUTHORED_LOCK, { root, leaseMs: AUTHORED_LEASE_MS, waitMs: options.authoredWaitMs ?? AUTHORED_WAIT_MS }, () => readWorkingLayer(root));
+        layer = options.lock
+            ? await withLock(AUTHORED_LOCK, { root, leaseMs: AUTHORED_LEASE_MS, waitMs: options.authoredWaitMs ?? AUTHORED_WAIT_MS }, () => readWorkingLayer(root))
+            : await readWorkingLayer(root);
     } catch (error) {
         if (error instanceof LockTimeoutError) throw new Stop('AUTHORED_LOCKED', error.message, { holder: error.holder });
         throw error;
@@ -378,12 +382,11 @@ function ruleContext(root: string, snapshot: Snapshot) {
     };
 }
 
-export type ValidateOutcome = 'VALID' | 'VALIDATION_FAILED' | 'AUTHORED_LOCKED' | 'DATA_ROOT_NOT_READY' | 'INTEGRITY_MISMATCH' | 'STORAGE_ERROR';
+export type ValidateOutcome = 'VALID' | 'VALIDATION_FAILED' | 'DATA_ROOT_NOT_READY' | 'INTEGRITY_MISMATCH' | 'STORAGE_ERROR';
 
 export const VALIDATE_EXIT_CODES: Record<ValidateOutcome, 0 | 1 | 3 | 4> = {
     VALID: 0,
     VALIDATION_FAILED: 1,
-    AUTHORED_LOCKED: 3,
     DATA_ROOT_NOT_READY: 3,
     INTEGRITY_MISMATCH: 4,
     STORAGE_ERROR: 4,
@@ -396,21 +399,22 @@ export interface ValidateResult {
     issues: Issue[];
     errors: number;
     warnings: number;
-    holder?: LockRecord | null;
 }
 
 /**
  * `photos:validate`: compile the working layer and run every rule, as
- * publish's steps 2, 3, and 6 do, without the catalog lock and without
- * writing anything. Warnings alone pass.
+ * publish's steps 2, 3, and 6 do, taking no lock and writing nothing, so it
+ * runs on a read-only data root too. A tool write that lands while it reads
+ * can give a report that mixes the two states; publish reads under the
+ * authored lock. Warnings alone pass.
  */
-export async function validateWorkingLayer(options: { dataRoot: string; reprofile?: boolean; profileId?: string; authoredWaitMs?: number }): Promise<ValidateResult> {
+export async function validateWorkingLayer(options: { dataRoot: string; reprofile?: boolean; profileId?: string }): Promise<ValidateResult> {
     const root = path.resolve(options.dataRoot);
     const result: ValidateResult = { outcome: 'STORAGE_ERROR', message: '', candidateId: null, issues: [], errors: 0, warnings: 0 };
     const status = dataRootStatus({ root });
     if (status.state !== 'ready') return { ...result, outcome: 'DATA_ROOT_NOT_READY', message: `The data root is ${status.state}${status.detail ? `: ${status.detail}` : ''}.` };
     try {
-        const snapshot = await snapshotAndCompile(root, options);
+        const snapshot = await snapshotAndCompile(root, { ...options, lock: false });
         const issues = runRules(ruleContext(root, snapshot));
         const errors = countOf(issues, 'error');
         const warnings = countOf(issues, 'warning');
@@ -424,7 +428,6 @@ export async function validateWorkingLayer(options: { dataRoot: string; reprofil
             warnings,
         };
     } catch (error) {
-        if (error instanceof Stop) return { ...result, outcome: error.outcome as ValidateOutcome, message: error.message, holder: error.details.holder };
         if (error instanceof CatalogIntegrityError) return { ...result, outcome: 'INTEGRITY_MISMATCH', message: error.message };
         return { ...result, outcome: 'STORAGE_ERROR', message: error instanceof Error ? error.message : String(error) };
     }
@@ -570,7 +573,7 @@ export async function publish(options: PublishOptions): Promise<PublishResult> {
             await step(1);
 
             // 2. Snapshot the working layer and the registry, and compile them.
-            const snapshot = await snapshotAndCompile(root, options);
+            const snapshot = await snapshotAndCompile(root, { ...options, lock: true });
             const { layer, registry, pointer, compiled } = snapshot;
             await step(2);
 
