@@ -247,10 +247,12 @@ docker compose -f docker-compose.prod.yml run --rm --no-deps -v "$PWD/descriptio
 Opening an editor is for local use. In production, edit a host copy and save it with `--file`:
 
 ```bash
-# The newest version of the record, say v4.json, copied into the data root's edits/ folder as its owner, uid 1001:
-sudo -u '#1001' mkdir -p -m 700 portfolio-data/edits
-sudo -u '#1001' cp -n portfolio-data/authored/series/<seriesId>/v4.json portfolio-data/edits/<seriesId>.json
-sudoedit portfolio-data/edits/<seriesId>.json
+# As root, keeping the data root's owner, as docs/data-root.md's hand edits do. Say the newest version is v4.json.
+root=portfolio-data
+owner="$(sudo stat -c %u:%g "$root")"   # stat -f %u:%g on macOS
+sudo test -e "$root/edits" || sudo install -d -o "${owner%:*}" -g "${owner#*:}" -m 700 "$root/edits"
+sudo cp -n -p "$root/authored/series/<seriesId>/v4.json" "$root/edits/<seriesId>.json"
+sudoedit "$root/edits/<seriesId>.json"
 photos edit <seriesId> --file /data/portfolio/edits/<seriesId>.json --expect-version 4
 ```
 
@@ -261,7 +263,7 @@ Each record is a folder of versions under `authored/`: `site/`, `series/<seriesI
 - Only while no `photos` command runs. The commands hold a lock while they write, and an editor doesn't take it.
 - Never edit a version in place. A command that reads an edited newest version refuses it and names the copy that keeps the edit.
 - Never copy or edit the active pointer, `catalog/active/`. Only `photos publish` moves it.
-- Copy as the data root's owner, or `chown --reference` the copy to the version it came from. After an edit on the host, give the files back to the containers' user: `chown -R 1001:1001 ./portfolio-data/authored`, or the uid `docker-compose.prod.yml` runs the app as.
+- Copy and edit as root, keeping the owner: `sudo cp -n -p` keeps the owner and mode of the version it copies, and `sudoedit` writes back into the same file. A copy root owns can't be read by the app. If one already is, give it the owner of the version it came from with `chown --reference`, or `chown -R 1001:1001 ./portfolio-data/authored`, the uid `docker-compose.prod.yml` runs the app as.
 
 The first publish replaces the legacy Home and Gallery, so it stops and prints what it would change, with a checklist, until it's run with `--confirm-launch`. Run it again with the `--confirm-launch --expect <candidateId>` it prints, so it publishes exactly the candidate you checked. Before that:
 
