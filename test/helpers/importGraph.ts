@@ -22,9 +22,11 @@ const isFile = (candidate: string) => fs.existsSync(candidate) && fs.statSync(ca
 
 /** The file a relative or `@/` specifier names, or null for a package or built-in. Throws when a local one doesn't resolve. */
 function resolveLocal(from: string, specifier: string): string | null {
+    // A bundler loads `x?query` and `x#fragment` from the file `x` names.
+    const file = specifier.replace(/[?#].*$/, '');
     let base: string;
-    if (specifier.startsWith('@/')) base = path.join(REPO_ROOT, specifier.slice(2));
-    else if (specifier.startsWith('.') || path.isAbsolute(specifier)) base = path.resolve(path.dirname(from), specifier);
+    if (specifier.startsWith('@/')) base = path.join(REPO_ROOT, file.slice(2));
+    else if (specifier.startsWith('.') || path.isAbsolute(specifier)) base = path.resolve(path.dirname(from), file);
     else return null;
     const stem = base.replace(/\.(?:js|jsx|mjs|cjs)$/, '');
     const candidates = [
