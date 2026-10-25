@@ -173,6 +173,17 @@ describe('photos history', { timeout: 60_000 }, () => {
         expect(text).not.toContain(context.root);
     });
 
+    it('marks nothing live, and says so, when the pointer names an activation no committed record holds', async () => {
+        const { root, two, second } = await twoRevisions({ seed: 203 });
+        fs.rmSync(path.join(catalogPaths(root).activationsDir, `000002-${second.activationId}.json`));
+        const history = await readHistory(root);
+        expect(history.rows.map((row) => row.live)).toEqual([false]);
+        expect(historyLines(history)).toEqual(expect.arrayContaining([
+            '[photos] 1 activation, oldest first. No committed activation is live.',
+            `The active pointer names ${two} through ${second.activationId}, which no committed activation records. The next publish repairs it or says what blocks it.`,
+        ]));
+    });
+
     it('says nothing has been published on a data root with no activations', async () => {
         const { root } = await setup({ seed: 202 });
         expect(historyLines(await readHistory(root))).toEqual(['[photos] Nothing has been published yet.']);

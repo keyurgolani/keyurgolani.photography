@@ -153,7 +153,7 @@ export async function readHistory(root: string): Promise<History> {
             activation,
             state,
             unsettled,
-            live: pointer !== null && pointer.activationId === activation.activationId && state === 'committed',
+            live: state === 'committed' && pointer !== null && pointer.activationId === activation.activationId && pointer.revisionId === activation.revisionId,
             ...('problem' in summary ? { summary: null, problem: summary.problem } : { summary }),
         });
     }
