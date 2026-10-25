@@ -286,6 +286,8 @@ docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node 
     "capturedBetween": { "from": "2024-01-01", "to": "2024-12-31" } } ] }
 ```
 
+The watcher works out an item's suggestion once, when it opens the item, and again only if a replacement file comes in while the item is still open. A rule that names a series with no authored record yet is skipped. So create the series first, with `photos edit <seriesId>`, then add its rule. A rule applies only to items opened after it. Items opened before it, including the ones for the photos already in the library when the inbox arrived, need `--series <seriesId>` on `approve`, or a series saved with `curation edit`.
+
 A suggestion is only a draft. Approving the item is what places the photograph, and it takes the series you pass, the one you saved with `curation edit`, or the suggestion, in that order.
 
 ## Retention and cleanup
