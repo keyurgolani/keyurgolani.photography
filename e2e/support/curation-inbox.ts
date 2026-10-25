@@ -21,9 +21,15 @@ const id = (n: number) => `ph_00000000-0000-4000-8000-${String(n).padStart(12, '
 export const INBOX_SERIES = { published: { id: 'ser_e2e-inbox-harbor', slug: 'inbox-harbor', title: 'Inbox fixture harbor' }, draft: { id: 'ser_e2e-inbox-draft', slug: 'inbox-draft', title: 'Inbox fixture draft' } } as const;
 export const PUBLISHED_IDS = [id(1), id(2)] as const;
 export const DRAFT_ID = id(3);
-/** New photographs: the one the spec approves, and the one it moves behind the page's back. */
-export const FRESH = { approve: id(21), stale: id(22) } as const;
-export const FRESH_SOURCES: Record<string, string> = { [FRESH.approve]: 'inbox/arrival-approve.jpg', [FRESH.stale]: 'inbox/arrival-stale.jpg' };
+/** New photographs, one per case: approve, moved behind the page's back, a cleared decorative flag, a refused answer, and "Leave unassigned". */
+export const FRESH = { approve: id(21), stale: id(22), decorative: id(23), refused: id(24), unassigned: id(25) } as const;
+export const FRESH_SOURCES: Record<string, string> = {
+    [FRESH.approve]: 'inbox/arrival-approve.jpg',
+    [FRESH.stale]: 'inbox/arrival-stale.jpg',
+    [FRESH.decorative]: 'inbox/arrival-decorative.jpg',
+    [FRESH.refused]: 'inbox/arrival-refused.jpg',
+    [FRESH.unassigned]: 'inbox/arrival-unassigned.jpg',
+};
 export const FAILED_SOURCE = 'inbox/raw-frame.heic';
 
 export interface InboxFixture {
@@ -44,7 +50,7 @@ export async function createInboxFixture(): Promise<InboxFixture> {
         root,
         seed: 14,
         withAssets: true,
-        photos: [photo(PUBLISHED_IDS[0]), photo(PUBLISHED_IDS[1]), photo(DRAFT_ID), photo(FRESH.approve, FRESH_SOURCES[FRESH.approve]), photo(FRESH.stale, FRESH_SOURCES[FRESH.stale])],
+        photos: [photo(PUBLISHED_IDS[0]), photo(PUBLISHED_IDS[1]), photo(DRAFT_ID), ...Object.values(FRESH).map((photoId) => photo(photoId, FRESH_SOURCES[photoId]))],
         series: [
             { ...INBOX_SERIES.published, photoIds: [...PUBLISHED_IDS] },
             { ...INBOX_SERIES.draft, photoIds: [DRAFT_ID], visibility: 'draft' },
@@ -89,12 +95,15 @@ function fact(fixture: InboxFixture, type: IdentityFactType, photoId: string | n
     };
 }
 
-/** Open the spec's inbox items, as the watcher's next pass would: two new photographs, a missing published one, and a file the watcher can't read. */
+/** Open the spec's inbox items, as the watcher's next pass would: the new photographs, a missing published one, and a file the watcher can't read. */
 export async function openInboxItems(fixture: InboxFixture): Promise<void> {
     const quiet = { log: () => undefined, warn: () => undefined, error: () => undefined };
     await createCurationSink({ root: fixture.root, logger: quiet })([
         fact(fixture, 'new', FRESH.approve),
         fact(fixture, 'new', FRESH.stale, { observedAt: '2026-02-01T00:01:00.000Z' }),
+        fact(fixture, 'new', FRESH.decorative, { observedAt: '2026-02-01T00:01:10.000Z' }),
+        fact(fixture, 'new', FRESH.refused, { observedAt: '2026-02-01T00:01:20.000Z' }),
+        fact(fixture, 'new', FRESH.unassigned, { observedAt: '2026-02-01T00:01:30.000Z' }),
         fact(fixture, 'missing', PUBLISHED_IDS[1], { observedAt: '2026-02-01T00:02:00.000Z' }),
         fact(fixture, 'processing-failed', null, { reason: 'unsupported-format', observedAt: '2026-02-01T00:03:00.000Z' }),
     ]);
