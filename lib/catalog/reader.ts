@@ -91,7 +91,7 @@ export function createCatalogReader<C extends CatalogContent>(content: C, meta: 
             return members.slice(offset, limit === Infinity ? undefined : offset + limit);
         },
         getWorkSummaries: (routes = publicRouteBuilder) => workCatalogOf({ revisionId: revision.revisionId, listSeries: reader.listSeries, photosOf: reader.photosOf }, routes),
-        getViewerPhoto: (slug, photoId) => viewerPhotoOf({ revisionId: revision.revisionId, seriesBySlug: reader.seriesBySlug, photo: reader.photo, photosOf: reader.photosOf }, slug, photoId),
+        getViewerPhoto: (slug, photoId) => viewerPhotoOf({ revisionId: revision.revisionId, listSeries: reader.listSeries, seriesBySlug: reader.seriesBySlug, photo: reader.photo, photosOf: reader.photosOf }, slug, photoId),
     };
     return reader;
 }
