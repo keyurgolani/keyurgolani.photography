@@ -6,7 +6,10 @@ docker-compose.yml
 .git
 .gitignore
 README.md
-.env
+# Next loads .env, .env.production, and .env.local at build time, inlines
+# NEXT_PUBLIC_ values, and copies the files it loaded into the standalone output
+.env*
+!.env.example
 dist
 .github
 ci
