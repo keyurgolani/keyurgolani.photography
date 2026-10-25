@@ -333,6 +333,10 @@ export function bindReplacement(input: ActionInput & { path?: string; reason?: s
         if (!isLibraryPath(at)) fail('needs-choice', `${at} is not a path inside the library. Nothing was written.`);
         const holder = Object.values(registry.photos).find((other) => other.photoId !== photo.photoId && other.source.present
             && other.sourceHealth !== 'archived' && other.mergedInto === undefined && other.source.key === keyOf(at));
+        // #10 binds only a file its last pass saw, so a path it hasn't seen would only be rejected later, out of sight.
+        if (!holder && !registry.holds.some((held) => keyOf(held.path) === keyOf(at))) {
+            fail('refused', `The watcher hasn't seen a photograph at ${at}. Check the path, or wait for its next pass after copying the file. Nothing was written.`);
+        }
         if (holder) {
             // A merged photo is retired, so one that a series or the active revision shows would break them.
             const found = await photoHolders(root, holder.photoId);
