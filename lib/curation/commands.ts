@@ -23,6 +23,7 @@ import {
 import { currentProfileId } from '../identity/profile';
 import { EVENT_ID_RE, EVENT_STATUSES, FAILURE_TEXT, needsJudgment, shortPhotoId, waitingReason, type CurationEvent, type CurationEventStatus, type Placement } from './events';
 import { placedItems } from './placement';
+import { draftPlanText, readDraftPlan, replacedBy } from './pins';
 import { confirmReplacement, leaveInDraft } from './resolutions';
 import { EventUnusableError, listEvents, readEvent, type EventProblem } from './repository';
 import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from './text';
@@ -80,7 +81,9 @@ export function curationUsage(program: string = DEFAULT_PROGRAM): string {
   ${program} curation confirm <eventId> --version <n>
         Confirm new asset revision: a replacement's photo record takes the new bytes, once all derivatives succeed.
         To keep the revision the draft pins instead, leave it in draft with defer. On a confirmed
-        replacement, reopen and then defer put back the revision the confirm replaced.
+        replacement, reopen and then defer put back the revision the confirm replaced, while that
+        confirm is still the inbox's latest change to the photo's revision; reopen and show say
+        what defer will do.
     Every item command also takes --base <revisionId|none> (the active revision it was reviewed against) and --actor <name>.
     approve and confirm need --base once a revision is active.`;
 }
@@ -406,7 +409,7 @@ const CANDIDATE_FAILURE_TEXT = {
 } as const;
 
 /** #17's lines for a replacement: its derivative set, what the photo record pins now, and what confirming keeps. */
-async function replacementLines(root: string, event: CurationEvent): Promise<string[]> {
+async function replacementLines(root: string, event: CurationEvent, registry: Registry | null): Promise<string[]> {
     if (event.type !== 'replacement' || event.photoId === null) return [];
     const candidate = event.candidate;
     const set = !candidate
@@ -415,16 +418,27 @@ async function replacementLines(root: string, event: CurationEvent): Promise<str
             ? `ready under ${candidate.profileId}, every derivative built and checked.`
             : `failed under ${candidate.profileId}: ${CANDIDATE_FAILURE_TEXT[candidate.failure ?? 'build']}.`;
     let pinned: string;
+    // The revision the record pins, null for no record, undefined when it can't be read.
+    let revision: string | null | undefined;
     try {
         const record = await readAuthoredRecord(root, 'photo', event.photoId);
+        revision = record ? record.assetRevision : null;
         pinned = record ? record.assetRevision : 'nothing yet: the photograph has no photo record in the working layer';
     } catch {
         pinned = "can't tell: its photo record can't be read";
     }
+    // The plan leaveInDraft() acts on, so this says what defer does now.
+    let draft: string;
+    try {
+        if (revision === undefined || registry === null) throw new Error('unreadable');
+        draft = draftPlanText(await readDraftPlan(root, event, async () => revision, registry), replacedBy(event)) ?? '';
+    } catch {
+        draft = "What leaving it in draft (defer) would do can't be told now, since the photo record or the registry can't be read.";
+    }
     return [
         `New derivative set: ${set}`,
         `Photo record pins: ${pinned}`,
-        `Confirm new asset revision keeps ${event.photoId}'s series, position, title, description, and story. Leave in draft (defer) keeps the revision the record pinned before this item, and after a confirm puts that one back.`,
+        `Confirm new asset revision keeps ${event.photoId}'s series, position, title, description, and story. ${draft}`,
     ];
 }
 
@@ -452,7 +466,7 @@ async function show(root: string, command: Extract<CurationCommand, { command: '
         ...((series) => (series === undefined ? [] : unplacedLines(event, series, active)))(unplaced.get(event.id)),
         ...(unknown === null ? [] : [unknownPlacementLine(unknown)]),
         `Asset revision: ${event.assetRevision ?? 'none'}`,
-        ...(await replacementLines(root, event)),
+        ...(await replacementLines(root, event, registry)),
         `Observed: ${event.observedAt}${event.lastObservedAt !== event.observedAt ? `, last ${event.lastObservedAt}` : ''}`,
         ...factLines(event),
         ...suggestionLines(event),
