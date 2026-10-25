@@ -31,6 +31,24 @@ export async function pendingMergeOf(root: string, photoId: string): Promise<Pen
     return null;
 }
 
+export interface PendingBind {
+    decisionId: string;
+    path: string;
+}
+
+/**
+ * The pending bind decision that gives `photoId` a file, or null. A decision
+ * file that can't be read could be one, so it throws.
+ */
+export async function pendingBindOf(root: string, photoId: string): Promise<PendingBind | null> {
+    for (const file of await readPendingDecisions(root)) {
+        if (file.raw === null) throw new Error(`The identity decision ${file.name} can't be read, so nothing shows whether it binds ${photoId}`);
+        const decision = file.decision;
+        if (decision?.type === 'bind' && decision.photoId === photoId) return { decisionId: decision.decisionId, path: decision.path };
+    }
+    return null;
+}
+
 export type DecisionState =
     | { state: 'pending' }
     | { state: 'applied' }
