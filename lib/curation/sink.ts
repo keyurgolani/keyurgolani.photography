@@ -1,4 +1,3 @@
-import { references, ReferenceScanError, type AssetReference } from '../catalog/references';
 import { readActivePointer, readAuthoredSeries } from '../catalog/working-layer';
 import { ASSET_REVISION_RE, PHOTO_ID_RE } from '../identity/ids';
 import type { FactSink } from '../identity/pass';
@@ -17,18 +16,22 @@ import {
     type DerivedFacts,
     type Suggestions,
 } from './events';
+import { photoHolders, type ReferenceCache } from './holders';
 import { EventUnusableError, InvalidEventError, listEvents, readEvent, readRulesFile, RulesFileError, withCurationLock, writeEvent } from './repository';
 import { loadRules, suggestForNew, type LoadedRules } from './suggest';
 
 /**
  * The watcher's curation sink: each of #10's committed facts opens or
  * updates one inbox event. It writes only under `curation/`. It reads the
- * registry for the photo's public facts and the working layer's series
- * (through lib/catalog/working-layer.ts) for the suggestions, and never
- * imports the authored writer or the sequence operations, so ingestion never
- * authors anything: a new photograph waits in the inbox until the curator
- * approves it. Delivery is at least once, so a fact already folded into its
- * event writes nothing.
+ * registry for the photo's public facts, the working layer's series
+ * (through lib/catalog/working-layer.ts) for the suggestions, and, to decide
+ * the one reopen rule, the active pointer and what references() reads: the
+ * revisions, the candidates, and the working layer. It never imports the
+ * authored writer or the sequence operations, so ingestion never authors
+ * anything: a new photograph waits in the inbox until the curator approves
+ * it. Delivery is at least once, so a fact already folded into its event
+ * writes nothing. A fact it can't use is skipped; an I/O or lock error fails
+ * the delivery, so the pass delivers the facts again.
  */
 
 type Logger = Pick<Console, 'log' | 'warn' | 'error'>;
@@ -118,23 +121,6 @@ function shapeProblem(fact: IdentityFact): string | null {
     return null;
 }
 
-/** Who still shows a photograph: the active revision, or a working-layer series. Null when the data root can't tell. */
-async function holdersOf(root: string, photoId: string, cache: { list?: AssetReference[] | null }): Promise<string[] | null> {
-    if (cache.list === undefined) {
-        try {
-            cache.list = await references(root);
-        } catch (error) {
-            if (!(error instanceof ReferenceScanError)) throw error;
-            cache.list = null;
-        }
-    }
-    if (cache.list === null) return null;
-    const holders = cache.list
-        .filter((entry) => entry.photoId === photoId && (entry.source === 'active-revision' || entry.source === 'working-layer-series'))
-        .map((entry) => (entry.source === 'active-revision' ? `the active revision ${entry.holder}` : `the series ${entry.holder}`));
-    return [...new Set(holders)];
-}
-
 const STILL_OPEN = new Set(['open', 'deferred', 'failed']);
 
 export function createCurationSink(options: CurationSinkOptions = {}): FactSink {
@@ -156,8 +142,9 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                 skip(fact, problem);
                 continue;
             }
-            if (type === null) renames.push(fact);
-            else relevant.push({ fact, type });
+            if (type !== null) relevant.push({ fact, type });
+            // A rename of a file with no photo ID matches no item by identity, so it changes nothing.
+            else if (fact.photoId !== null) renames.push(fact);
         }
         if (relevant.length === 0 && renames.length === 0) return;
         const status = dataRootStatus({ versioned: true, ...(options.root === undefined ? {} : { root: options.root }) });
@@ -167,7 +154,7 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
         const registry = await readRegistry(root).catch(() => null);
         const context = relevant.some(({ type }) => type === 'new') ? await suggestContext(root, logger) : null;
         const producedAt = new Date(clock()).toISOString();
-        const referenceCache: { list?: AssetReference[] | null } = {};
+        const referenceCache: ReferenceCache = {};
 
         let opened = 0;
         let updated = 0;
@@ -203,7 +190,8 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                 try {
                     existing = await readEvent(root, id);
                 } catch (error) {
-                    if (!(error instanceof EventUnusableError)) throw error;
+                    // An errno is I/O: fail the delivery so the fact comes again. Only a damaged event is skipped.
+                    if (!(error instanceof EventUnusableError) || error.problem.reason === 'unreadable') throw error;
                     logger.error(`[curation] ${error.message}. This ${type} fact is skipped and not delivered again. Fix or remove that event's folder.`);
                     continue;
                 }
@@ -220,7 +208,8 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                 };
                 // One reopen rule only: a source missing again while something shows the photo can't stay silenced.
                 if (type === 'missing' && existing.photoId !== null && !STILL_OPEN.has(existing.status)) {
-                    const holders = await holdersOf(root, existing.photoId, referenceCache);
+                    const found = await photoHolders(root, existing.photoId, referenceCache);
+                    const holders = 'holders' in found ? found.holders : null;
                     if (holders === null || holders.length > 0) {
                         const active = await readActivePointer(root).then((pointer) => pointer?.revisionId ?? null, () => null);
                         const reason = holders === null
@@ -241,7 +230,10 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                 for (const fact of renames) {
                     for (const event of events) {
                         if (event.photoId !== fact.photoId || !STILL_OPEN.has(event.status) || event.derivedFacts.sourcePath === fact.path) continue;
-                        const current = await readEvent(root, event.id).catch(() => null);
+                        const current = await readEvent(root, event.id).catch((error: unknown) => {
+                            if (error instanceof EventUnusableError && error.problem.reason !== 'unreadable') return null;
+                            throw error;
+                        });
                         if (current === null || current.derivedFacts.sourcePath === fact.path) continue;
                         if (await write(fact, { ...current, derivedFacts: { ...current.derivedFacts, sourcePath: fact.path, folder: fact.folder } }, current.version)) updated++;
                     }

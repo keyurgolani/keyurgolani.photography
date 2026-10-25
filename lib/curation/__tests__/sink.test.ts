@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { folderBytes } from '../../../test/helpers/folderBytes';
 import { setDataDir } from '../../../test/helpers/tempDataRoot';
 import { createTempLibrary } from '../../../test/helpers/tempLibrary';
-import { readAuthoredRecord } from '../../catalog/working-layer';
+import { catalogPaths, readAuthoredRecord } from '../../catalog/working-layer';
 import { writeAuthoredRecord } from '../../catalog/working-layer-writer';
 import { runReconcilePass } from '../../identity/pass';
 import { readRegistry, writeRegistry } from '../../identity/registry';
@@ -324,3 +324,51 @@ describe('curation/rules.json', () => {
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
     return Promise.race([promise, new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`timed out after ${ms} ms`)), ms))]);
 }
+
+describe('round 2', () => {
+    it('fails the delivery on an I/O error reading an event, so the fact retries and the item reopens once it can be read', async () => {
+        const f = await fixture({ published: true });
+        const published = f.catalog.series[0].photoIds[0];
+        const first = f.fact('missing', published);
+        await sinkFor(f.root)([first]);
+        const id = eventIdOf(eventKey('missing', first));
+        const stored = await readEvent(f.root, id) as CurationEvent;
+        await holdingCuration(f.root, (hold) => writeEvent(f.root, { ...stored, status: 'dismissed' }, stored.version, hold));
+        const dir = eventDir(f.root, id);
+        fs.chmodSync(dir, 0o000);
+        cleanups.push(async () => fs.chmodSync(dir, 0o700));
+        const again = { ...first, factId: 'again-io' };
+        await expect(sinkFor(f.root)([again])).rejects.toThrow();
+        fs.chmodSync(dir, 0o700);
+        await sinkFor(f.root)([again]);
+        expect(await readEvent(f.root, id)).toMatchObject({ status: 'open', factIds: expect.arrayContaining(['again-io']), decisions: [expect.objectContaining({ action: 'reopen', by: 'watcher' })] });
+    });
+
+    it('reopens once when the data root can\'t tell whether anything references the photo', async () => {
+        const f = await fixture({ published: true });
+        const photoId = f.fresh[0];
+        const first = f.fact('missing', photoId);
+        await sinkFor(f.root)([first]);
+        const id = eventIdOf(eventKey('missing', first));
+        expect(await dismissEvent({ root: f.root, eventId: id, expectedVersion: 1, actor: 'curator:test', reason: 'Not used.' })).toMatchObject({ ok: true });
+        const candidates = catalogPaths(f.root).candidatesDir;
+        fs.mkdirSync(candidates, { recursive: true });
+        fs.writeFileSync(path.join(candidates, 'bad.json'), '{ not json');
+        await sinkFor(f.root)([{ ...first, factId: 'cant-tell-1' }]);
+        const reopened = await readEvent(f.root, id) as CurationEvent;
+        expect(reopened).toMatchObject({ status: 'open', version: 3 });
+        expect(reopened.decisions.at(-1)).toMatchObject({ action: 'reopen', by: 'watcher', reason: expect.stringMatching(/can't show whether anything still references/) });
+        await sinkFor(f.root)([{ ...first, factId: 'cant-tell-2' }]);
+        const later = await readEvent(f.root, id) as CurationEvent;
+        expect(later.decisions.filter((decision) => decision.action === 'reopen')).toHaveLength(1);
+        expect(await dismissEvent({ root: f.root, eventId: id, expectedVersion: later.version, actor: 'curator:test', reason: 'Still not used.' })).toMatchObject({ ok: false, code: 'damaged' });
+    });
+
+    it('rewrites nothing for a rename with no photo ID', async () => {
+        const f = await fixture();
+        await sinkFor(f.root)([f.fact('processing-failed', null, { reason: 'unsupported-format', path: 'trips/raw.heic' })]);
+        const before = folderBytes(curationPaths(f.root).events);
+        await sinkFor(f.root)([f.fact('renamed', null, { path: 'trips/other.heic', folder: 'trips', fromPath: 'trips/raw.heic' })]);
+        expect(folderBytes(curationPaths(f.root).events)).toEqual(before);
+    });
+});

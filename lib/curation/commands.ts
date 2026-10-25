@@ -219,18 +219,31 @@ export function scrub(output: string, [dataRootPath, libraryRootPath]: readonly 
 const UNPRINTABLE = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/gu;
 
 /**
- * One output line with every character that could forge a line or rewrite
- * the terminal escaped as `\n` or `\uXXXX`. File names come from the
- * owner's library, synced files included, and #10 doesn't filter them. JSON
- * output stays valid JSON: these are JSON escapes too.
+ * Every character that could forge a line or rewrite the terminal, as `\n`
+ * or `\uXXXX`.
  */
-export function printable(line: string): string {
-    return line.replace(UNPRINTABLE, (char) => (char === '\n' ? '\\n' : `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`));
+function escapeUnprintable(text: string): string {
+    return text.replace(UNPRINTABLE, (char) => (char === '\n' ? '\\n' : `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`));
 }
 
-/** Every line of `output` through printable(), keeping the line breaks between them. */
+/**
+ * A path or name for text output: backslashes doubled, so a literal `\n` in
+ * a name never reads as an escaped newline, then everything unprintable
+ * escaped. File names come from the owner's library, synced files included,
+ * and #10 doesn't filter them.
+ */
+export function printable(field: string): string {
+    return escapeUnprintable(field.replace(/\\/g, '\\\\'));
+}
+
+/**
+ * The last pass over all output, line by line, keeping the line breaks
+ * between them. It leaves backslashes alone, so the fields printable()
+ * already escaped and JSON output both stay as they are: what it escapes are
+ * JSON escapes too.
+ */
 function printableLines(output: string): string {
-    return output.split('\n').map(printable).join('\n');
+    return output.split('\n').map(escapeUnprintable).join('\n');
 }
 
 const STATUS_WIDTH = 8;

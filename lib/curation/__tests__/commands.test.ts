@@ -6,7 +6,7 @@ import { folderBytes } from '../../../test/helpers/folderBytes';
 import { runTsx } from '../../../test/helpers/runTsx';
 import { createTempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { readAuthoredRecord } from '../../catalog/working-layer';
-import { parseCurationArgs, runCurationCli, scrub, type CommandResult } from '../commands';
+import { parseCurationArgs, printable, runCurationCli, scrub, type CommandResult } from '../commands';
 import { listEvents } from '../repository';
 import { createCurationSink } from '../sink';
 import { createCurationFixture, DRAFT, writeRules, type CurationFixture } from './curationFixtures';
@@ -192,5 +192,22 @@ describe('curation output, round 1', () => {
             expect(output).toContain('\\u001b[2J\\u202e\\u0085\\u007f.jpg');
         }
         expect((await cli(f, 'list')).output.trimEnd().split('\n')).toHaveLength(2);
+    });
+});
+
+describe('printable, round 2', () => {
+    it('escapes a backslash, so a literal backslash-n never looks like a newline', () => {
+        expect(printable('a\\nb')).not.toBe(printable('a\nb'));
+        expect(printable('a\\nb')).toBe('a\\\\nb');
+        expect(printable('a\nb')).toBe('a\\nb');
+    });
+
+    it('keeps JSON output valid when a path holds a backslash and invisible characters', async () => {
+        const f = await fixture();
+        const hostile = 'trips/back\\slash\u202e\u2028.jpg';
+        await createCurationSink({ root: f.root, logger: quiet })([f.fact('new', f.fresh[0], { path: hostile, folder: 'trips' })]);
+        const listed = JSON.parse((await cli(f, 'list', '--json')).output) as { events: { sourcePath: string }[] };
+        expect(listed.events[0].sourcePath).toBe(hostile);
+        expect((await cli(f, 'list')).output).toContain('trips/back\\\\slash\\u202e\\u2028.jpg');
     });
 });

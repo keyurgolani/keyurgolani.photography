@@ -1,5 +1,4 @@
 import path from 'node:path';
-import { references, ReferenceScanError } from '../catalog/references';
 import { applySequenceOp, applySeriesOp, sequenceContext, type SeriesOp } from '../catalog/sequence';
 import type { AuthoredAlt, AuthoredPhoto, AuthoredSeries } from '../catalog/types';
 import { readActivePointer, readAuthoredRecord, readAuthoredSeries } from '../catalog/working-layer';
@@ -10,6 +9,7 @@ import type { Registry } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
 import { LockTimeoutError, withLock, type LockContext } from '../storage/lock';
 import type { CurationDecision, CurationEvent, CurationEventStatus, CuratorDescription, CuratorEdits, Placement } from './events';
+import { photoHolders } from './holders';
 import { EventMovedError, EventUnusableError, readEvent, withCurationLock, writeEvent } from './repository';
 
 /**
@@ -206,16 +206,9 @@ export function deferEvent(input: ActionInput & { reason?: string }): Promise<Ac
 
 /** The series and published revision that still show the photo. Fails closed when the data root can't tell. */
 async function publishedReferences(root: string, photoId: string): Promise<string[]> {
-    let list: Awaited<ReturnType<typeof references>>;
-    try {
-        list = await references(root);
-    } catch (error) {
-        if (error instanceof ReferenceScanError) return fail('damaged', `${error.message.replace(' Nothing was deleted.', '')} So nothing shows whether the photograph is still referenced. Nothing was written.`);
-        throw error;
-    }
-    const holders = list.filter((entry) => entry.photoId === photoId && (entry.source === 'active-revision' || entry.source === 'working-layer-series'))
-        .map((entry) => (entry.source === 'active-revision' ? `the active revision ${entry.holder}` : `the series ${entry.holder}`));
-    return [...new Set(holders)];
+    const found = await photoHolders(root, photoId);
+    if ('unknown' in found) return fail('damaged', `${found.unknown.message.replace(' Nothing was deleted.', '')} So nothing shows whether the photograph is still referenced. Nothing was written.`);
+    return found.holders;
 }
 
 /** Dismiss with a reason. A missing photograph that is still published or in a series can't be dismissed. */
@@ -240,7 +233,7 @@ export function reopenEvent(input: ActionInput & { reason?: string }): Promise<A
         const { event } = step;
         requireStatus(event, ['deferred', 'dismissed', 'approved'], 'reopened');
         const status: CurationEventStatus = event.type === 'processing-failure' ? 'failed' : 'open';
-        const notes = event.status === 'approved' ? ['Reopened. The draft placement stays in the working layer; approve again to move it.'] : ['Reopened.'];
+        const notes = event.status === 'approved' ? ['Reopened. The draft placement stays in the working layer; approve with a position flag to move it.'] : ['Reopened.'];
         return { event: decided(step, input, { action: 'reopen', ...(input.reason ? { reason: input.reason } : {}) }, status), notes };
     });
 }
@@ -410,7 +403,14 @@ export function approveEvent(input: ActionInput & { choices: Choices; faults?: A
         if (seriesId === null) notes.unshift('Approved and left unassigned: the photo record is in the draft, in no series.');
         else if (kept) notes.unshift(`Approved into ${seriesId}, where it kept its place, in the draft. Nothing is published until photos publish runs.`);
         else notes.unshift(`Approved into ${seriesId} at ${placementText(placement as Placement)}, in the draft. Nothing is published until photos publish runs.`);
-        const next = decided(step, input, { action: 'approve', seriesId, ...(placement && !kept ? { placement } : {}), writes }, 'approved');
+        // A saved position is used up by the approval that applied it, so a later reopen and approve keeps any hand reorder.
+        let edits = event.edits;
+        if (edits?.placement !== undefined) {
+            const { placement: _used, ...rest } = edits;
+            void _used;
+            edits = rest;
+        }
+        const next = decided(step, input, { action: 'approve', seriesId, ...(placement && !kept ? { placement } : {}), writes }, 'approved', { edits });
         return { event: next, notes };
     });
 }

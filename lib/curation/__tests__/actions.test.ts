@@ -371,3 +371,24 @@ describe('approve, round 1', () => {
         expect((await readAuthoredRecord(f.root, 'series', DRAFT))?.photoIds).toContain(photoId);
     });
 });
+
+describe('approve, round 2', () => {
+    it('uses up a saved position, so reopen and approve again keeps a hand reorder', async () => {
+        const { f, event, input } = await opened((fx) => fx.fact('new', fx.fresh[0]));
+        const photoId = event.photoId as string;
+        await editEvent({ ...input, choices: { seriesId: DRAFT, placement: 'start' } });
+        const approved = await approveEvent({ ...input, expectedVersion: 2, choices: {} });
+        expect(approved).toMatchObject({ ok: true });
+        expect(approved.ok && approved.event.edits?.placement).toBeUndefined();
+        expect(approved.ok && approved.event.edits?.seriesId).toBe(DRAFT);
+        expect((await readAuthoredRecord(f.root, 'series', DRAFT))?.photoIds[0]).toBe(photoId);
+        // The curator reorders by hand.
+        const draft = await readAuthoredRecord(f.root, 'series', DRAFT);
+        const reordered = [...(draft?.photoIds ?? []).filter((id) => id !== photoId), photoId];
+        await writeAuthoredRecord({ ...draft!, photoIds: reordered }, { expectedVersion: draft?.version ?? 0, root: f.root });
+        const reopened = await reopenEvent({ ...input, expectedVersion: 3 });
+        expect(reopened.ok && reopened.notes.join(' ')).toMatch(/approve with a position flag to move it/);
+        expect(await approveEvent({ ...input, expectedVersion: 4, choices: {} })).toMatchObject({ ok: true });
+        expect((await readAuthoredRecord(f.root, 'series', DRAFT))?.photoIds).toEqual(reordered);
+    });
+});
