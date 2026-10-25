@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import type { SeriesChapter, SeriesEntry } from '@/lib/catalog/projections/series';
+import SiteRoutesProvider from '@/components/site/SiteRoutes';
 import SeriesSequence, { type SeriesSequenceProps } from '../SeriesSequence';
 import { SERIES_PAGES_KEY, SERIES_RESTORED_EVENT } from '../seriesContinuation';
 import { allShownLabel, MORE_FAILED, RELOAD_SERIES, SERIES_UPDATED, SHOW_MORE, showingLabel, TRY_AGAIN } from '../seriesCopy';
@@ -216,6 +217,29 @@ describe('SeriesSequence', () => {
         fireEvent.click(screen.getByRole('button', { name: TRY_AGAIN }));
         await flush();
         expect(fetch.mock.calls.map(([url]) => String(url)).filter((url) => url !== PAGE_2)).toEqual([]);
+    });
+
+    it("follows only the preview's own mirror inside #16's preview, never the public endpoint", async () => {
+        const base = `/curation/preview/${REVISION}/site`;
+        const mirror2 = `${base}${PAGE_2}`;
+        const mirror3 = `${base}${PAGE_3}`;
+        const preview: Record<string, unknown> = { [mirror2]: { revisionId: REVISION, entries: range(101, 200), nextHref: mirror3 }, [mirror3]: { revisionId: REVISION, entries: range(201, 250), nextHref: PAGE_3 } };
+        fetch.mockImplementation(async (url) => (String(url) in preview ? json(preview[String(url)]) : json({}, 500)));
+        window.history.replaceState(null, '', `${base}/work/fixture-long`);
+        render(
+            <SiteRoutesProvider basePath={base}>
+                <SeriesSequence {...props({ href: `${base}/work/fixture-long`, nextHref: mirror2 })} />
+            </SiteRoutesProvider>,
+        );
+        fireEvent.click(more());
+        await flush();
+        expect(positions()).toHaveLength(200);
+        // The second mirror page names the public endpoint next: refused, so nothing leaves the preview.
+        fireEvent.click(more());
+        await flush();
+        expect(status()).toBe(MORE_FAILED);
+        expect(positions()).toHaveLength(200);
+        expect(fetch.mock.calls.map(([url]) => String(url)).every((url) => url.startsWith(`${base}/api/catalog/series/`))).toBe(true);
     });
 
     it('writes an extent that arrives while another entry is current (the modal Viewer) only once the series entry is back', async () => {
