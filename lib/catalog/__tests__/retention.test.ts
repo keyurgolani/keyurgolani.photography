@@ -806,7 +806,7 @@ describe('round 2: the protections a removal would otherwise leave untested', ()
         cleanups.push(() => fs.chmodSync(marker, 0o600));
         const result = await gc(catalog.root);
         expect(result.outcome).toBe('DATA_ROOT_NOT_READY');
-        expect(result.message).toMatch(/^The data root is unavailable: data-root\.json can't be read: EACCES.*Nothing was deleted\.$/);
+        expect(result.message).toBe('The data root is unavailable: data-root.json can\'t be read (EACCES). Nothing was deleted.');
         expect(result.message).not.toContain(path.dirname(catalog.root));
         expect(result.message).not.toContain(fs.realpathSync(path.dirname(catalog.root)));
     });
