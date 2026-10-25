@@ -350,7 +350,20 @@ Leave `./portfolio-data` where it is. Older releases never read it, and once you
 
 Rolling back past the first release with slice C of #13 lists `/api/photos` from the library again, and ignores any catalog revision published since. Rolling forward serves the active revision again.
 
+An image older than the first release with slice A of #10 serves photos the way that release replaced, without its privacy protections. After the catalog launch, roll the image back that far only as a last resort, and prefer `photos rollback` or a data-root restore, as [After the catalog launch](#after-the-catalog-launch) describes.
+
 Never roll back to `v1.0.0`. That image, on GHCR and on Docker Hub, is the initial commit and can't run under this compose file.
+
+### After the catalog launch
+
+`photos rollback` moves between published revisions only, to one that was live before. Right after the launch publish there is one revision, so it has no target. To get out of a bad launch revision, publish a corrected one. Once two revisions have gone live, a rollback can go back to the earlier one. No rollback brings back the legacy Home and Gallery.
+
+Once an activation is committed, the site stays in catalog mode. `web` switches as soon as `catalog/active/` holds a pointer or a committed activation exists, and the running process keeps catalog mode until it restarts, even if both go away. So the site never goes back to the legacy pages by itself.
+
+Only two things bring them back:
+
+- Restoring the data root from a backup made before the launch publish, as [Restoring](data-root.md#restoring) describes. Its blocks stop and start `web`, so it comes back reading the restored data root, which has no pointer and no committed activation, and `/api/ready` reports `"mode":"legacy"`. That costs every authored change, publish, and rollback made after the backup, though the blocks keep the current data root aside. Photos added since the backup also get new IDs at the watcher's next pass, so their shared Viewer URLs stop resolving. So make the backup, as [Backing up](data-root.md#backing-up) describes, after authoring, `validate`, and the dry run, just before `--confirm-launch`. Restoring that one keeps the authored records, since a candidate and its diagnostics alone don't count as a cutover.
+- Rolling the image back past the first release with slice C of #13, as above. Rolling forward serves the active revision again. An image older than the first release with slice A of #10 also goes without that release's privacy protections, as above, so roll back that far only as a last resort.
 
 ## What's running
 

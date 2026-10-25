@@ -214,7 +214,8 @@ const LAUNCH_CHECKLIST = [
     'Launch checklist, from the README\'s "Curating the catalog":',
     "  - The cutover milestone has shipped: Home, Work, the series pages, and the Viewer read the catalog (#4, #3, #5, #7), and #15's 15-1 and 15-2 are in, so a rollback works.",
     '  - Viewer hardening (#9) is recommended first.',
-    '  - A preview looks right: this data root copied, the copy published, and served on another port.',
+    '  - A preview looks right: copies of this data root and the library, the copy published and served on 127.0.0.1 on another port.',
+    '    Use a separate container or a source checkout, never the compose services, and check that publish names the copy. The README says how.',
 ];
 
 /**

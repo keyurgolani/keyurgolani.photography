@@ -185,19 +185,19 @@ Both have to be real folders next to `docker-compose.prod.yml`, not symlinks. `t
 
 ## Restoring
 
-Restore both folders from the same archive, so the registry describes the library beside it. Move the current folders aside instead of deleting them until the restored stack checks out. The timestamp keeps a second restore from moving them inside an earlier one's. Extracting as root with `-p` keeps the files' owners and modes:
+Restore both folders from the same archive, so the registry describes the library beside it. Move the current folders aside instead of deleting them until the restored stack checks out. The timestamp keeps a second restore from moving them inside an earlier one's. Extracting as root with `-p` keeps the files' owners and modes. The blocks stop and start only `web` and `image-watcher`, so a service an override adds keeps running:
 
 ```bash
 (
   for d in public/assets/photos portfolio-data; do
     [ ! -L "$d" ] || { echo "$d is a symlink. Nothing was moved or restored." >&2; exit 1; }
   done
-  docker compose -f docker-compose.prod.yml stop
+  docker compose -f docker-compose.prod.yml stop web image-watcher
   aside=before-restore-$(date -u +%Y%m%dT%H%M%SZ)
   sudo mv public/assets/photos "photos.$aside"
   sudo mv portfolio-data "portfolio-data.$aside"
   sudo tar -xzpf ~/photography-backups/photography-<timestamp>.tar.gz
-  docker compose -f docker-compose.prod.yml up -d
+  docker compose -f docker-compose.prod.yml up -d web image-watcher
 )
 ```
 
@@ -208,10 +208,10 @@ If only the data root was lost and the library is fine, restore just `portfolio-
 ```bash
 (
   [ ! -L portfolio-data ] || { echo "portfolio-data is a symlink. Nothing was moved or restored." >&2; exit 1; }
-  docker compose -f docker-compose.prod.yml stop
+  docker compose -f docker-compose.prod.yml stop web image-watcher
   sudo mv portfolio-data "portfolio-data.before-restore-$(date -u +%Y%m%dT%H%M%SZ)"
   sudo tar -xzpf ~/photography-backups/photography-<timestamp>.tar.gz portfolio-data
-  docker compose -f docker-compose.prod.yml up -d
+  docker compose -f docker-compose.prod.yml up -d web image-watcher
 )
 ```
 
@@ -285,6 +285,8 @@ docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node 
   { "seriesId": "ser_example", "folders": ["trips/2024"], "filenameTags": ["harbor"],
     "capturedBetween": { "from": "2024-01-01", "to": "2024-12-31" } } ] }
 ```
+
+The watcher works out an item's suggestion once, when it opens the item, and again only if a replacement file comes in while the item is still open. A rule that names a series with no authored record yet is skipped. So create the series first, with `photos edit <seriesId>`, then add its rule. A rule applies only to items opened after it. Items opened before it, including the ones for the photos already in the library when the inbox arrived, need `--series <seriesId>` on `approve`, or a series saved with `curation edit`.
 
 A suggestion is only a draft. Approving the item is what places the photograph, and it takes the series you pass, the one you saved with `curation edit`, or the suggestion, in that order.
 
