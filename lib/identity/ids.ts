@@ -7,6 +7,12 @@ export const DECISION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a
 export const PHOTO_ID_RE = /^ph_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** `sha256-` plus 64 lowercase hex of the source bytes, so a metadata edit is a new revision. */
 export const ASSET_REVISION_RE = /^sha256-[0-9a-f]{64}$/;
+
+/** A library-relative POSIX path with no empty, `.`, or `..` segment. */
+export function isLibraryPath(value: string): boolean {
+    // An empty path, an absolute one, and a doubled slash all split into an empty segment.
+    return !value.includes('\0') && value.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+}
 /** `sha256-` over the oriented raw pixels, dimensions, and channels. */
 export const PIXEL_DIGEST_RE = /^sha256-[0-9a-f]{64}$/;
 /** `p_` plus 16 hex of a SHA-256 over a derivative recipe and the Sharp and libvips versions. */

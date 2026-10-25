@@ -35,6 +35,16 @@ describe('atomicWriteJson', () => {
         expect(fs.statSync(file).mode & 0o777).toBe(0o600);
     });
 
+    it('stages under the temp path given and creates the file with the mode given, before the umask', async () => {
+        const file = data.file('doc.json');
+        const staged: string[] = [];
+        await atomicWriteFile(file, 'x\n', { mode: 0o666, tempPath: data.file('.short.tmp'), faults: { beforeRename: (temp) => { staged.push(temp); } } });
+        expect(staged).toEqual([data.file('.short.tmp')]);
+        expect(fs.readFileSync(file, 'utf8')).toBe('x\n');
+        expect(fs.statSync(file).mode & 0o777).toBe(0o666 & ~process.umask());
+        expect(data.files()).toEqual(['doc.json']);
+    });
+
     it('keeps the old contents and removes its temp file when a fault hits before the rename', async () => {
         const file = data.file('doc.json');
         await atomicWriteJson(file, { generation: 1 });

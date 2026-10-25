@@ -1,19 +1,22 @@
 // @vitest-environment node
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { withExifOrientation } from '../../../test/fixtures/makeLibrary';
+import { handEditRegistry, newestRegistryFile } from '../../../test/helpers/registryFiles';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempLibrary';
 import { resolveAsset } from '../../media/manifest';
 import { assetDir, mediaFilePath } from '../../media/path';
 import { withLock } from '../../storage/lock';
 import { IntegrityError } from '../../storage/publish';
-import { buildDerivativeSet, removeAbandonedStaging, stagingLockName, stagingRoot, type BuildOptions, type WriterFaults } from '../derivatives';
+import { buildDerivativeSet, removeAbandonedStaging, stagingLockName, stagingRoot, type BuildOptions, type BuildOutcome, type WriterFaults } from '../derivatives';
 import { runReconcilePass, type PassOptions } from '../pass';
 import { currentProfileId } from '../profile';
 import { readRegistry, writeRegistry } from '../registry';
+import { identityStatus } from '../status';
 import type { AssetManifest, DerivativeJob, Registry } from '../types';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../variants';
 import { sequentialIds } from './reconcileFixtures';
@@ -101,7 +104,96 @@ function snapshot(dir: string): Record<string, { bytes: string; mtimeMs: number 
     }));
 }
 
+describe('the reason a failed build records', () => {
+    const isRoot = process.getuid?.() === 0;
+
+    /** The absolute spellings of a temp root, as given and resolved, either of which an error could quote. */
+    const spellings = (root: string) => [root, fs.realpathSync(root)];
+
+    async function expectNoHostPaths(s: Setup, job: DerivativeJob, outcome: BuildOutcome, expected: RegExp): Promise<void> {
+        expect(outcome).toMatchObject({ status: 'failed', error: expect.stringMatching(expected) });
+        const stored = profileOf(await readRegistry(s.data.root), job).error ?? '';
+        expect(stored).toMatch(expected);
+        const status = await identityStatus();
+        expect(status.failedProfiles).toEqual([expect.objectContaining({ photoId: job.photoId, error: stored })]);
+        // As `photos identity status --json` prints it
+        const json = JSON.stringify(status, null, 2);
+        const registryText = fs.readFileSync(newestRegistryFile(s.data.root), 'utf8');
+        for (const root of [...spellings(s.lib.root), ...spellings(path.dirname(s.lib.root))]) {
+            expect(registryText).not.toContain(root);
+            expect(json).not.toContain(root);
+        }
+        for (const root of spellings(s.data.root)) {
+            expect(registryText).not.toContain(root);
+            expect(JSON.stringify(status.failedProfiles)).not.toContain(root);
+        }
+    }
+
+    it.skipIf(isRoot)("names a source it couldn't read relative to the library", async () => {
+        const s = await setup();
+        const job = await s.job('landscape.jpg');
+        fs.chmodSync(s.lib.file('landscape.jpg'), 0o000);
+        cleanups.push(async () => fs.chmodSync(s.lib.file('landscape.jpg'), 0o644));
+
+        await expectNoHostPaths(s, job, await s.build(job), /^source unreadable: EACCES: permission denied, open 'landscape\.jpg'$/);
+    });
+
+    it("names a staging file it couldn't write relative to the data root", async () => {
+        const s = await setup();
+        const job = await s.job('landscape.jpg');
+        const writeFile = async (file: string): Promise<void> => {
+            throw Object.assign(new Error(`ENOSPC: no space left on device, open '${file}'`), { code: 'ENOSPC', path: file });
+        };
+
+        await expectNoHostPaths(s, job, await s.build(job, { faults: { writeFile } }), /^ENOSPC: no space left on device, open 'staging\/[^/']+\/[^/']+'$/);
+    });
+
+    it('leaves the paths out of a reason recorded before builds did, when status prints it', async () => {
+        const s = await setup();
+        const job = await s.job('landscape.jpg');
+        handEditRegistry(s.data.root, (value) => {
+            const photo = (value.photos as Registry['photos'])[job.photoId];
+            photo.revisions[job.assetRevision].profiles[job.profileId] = {
+                state: 'failed',
+                attempts: 1,
+                error: `source unreadable: EIO: i/o error, open '${s.lib.file('landscape.jpg')}', then '${path.join(os.homedir(), 'elsewhere.jpg')}'`,
+            };
+        });
+
+        const status = await identityStatus();
+        expect(status.failedProfiles).toEqual([expect.objectContaining({ error: "source unreadable: EIO: i/o error, open 'landscape.jpg', then 'elsewhere.jpg'" })]);
+        expect(JSON.stringify(status)).not.toContain(s.lib.root);
+    });
+});
+
 describe('buildDerivativeSet', () => {
+    it.each([
+        ['a source path', (value: Record<string, unknown>, photoId: string, escape: string) => {
+            ((value.photos as Record<string, { source: { path: string } }>)[photoId]).source.path = escape;
+        }, /has a source path outside the library/],
+        ['a held path', (value: Record<string, unknown>, _photoId: string, escape: string) => {
+            (value.holds as unknown[]).push({ path: escape, assetRevision: `sha256-${'0'.repeat(64)}`, candidates: [] });
+        }, /holds holds a path outside the library/],
+    ])('refuses a hand-edited registry with %s outside the library, and reads nothing there', async (_, edit, refusal) => {
+        const s = await setup();
+        const job = await s.job('landscape.jpg');
+        // The same bytes beside the library, so the digest check alone wouldn't stop the read
+        const outside = path.join(path.dirname(s.lib.root), 'outside.jpg');
+        fs.writeFileSync(outside, landscape);
+        handEditRegistry(s.data.root, (value) => edit(value, job.photoId, '../outside.jpg'));
+        const reads: string[] = [];
+        const realReadFile = fs.promises.readFile.bind(fs.promises);
+        const spy = vi.spyOn(fs.promises, 'readFile').mockImplementation(((...args: Parameters<typeof fs.promises.readFile>) => {
+            reads.push(String(args[0]));
+            return realReadFile(...args);
+        }) as typeof fs.promises.readFile);
+        cleanups.push(async () => spy.mockRestore());
+
+        await expect(s.build(job)).rejects.toThrow(refusal);
+        expect(reads.filter((file) => path.resolve(file) === outside)).toEqual([]);
+        expect(fs.existsSync(assetDir(job, s.data.root))).toBe(false);
+    });
+
     it('builds a panorama taller than WebP can encode, narrower so no variant is over 16383 px tall', async () => {
         const tall = await sharp({ create: { width: 100, height: 17_000, channels: 3, background: { r: 90, g: 140, b: 200 } } }).jpeg().toBuffer();
         const s = await setup({ 'tall.jpg': tall });

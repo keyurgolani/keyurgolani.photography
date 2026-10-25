@@ -10,11 +10,12 @@ import { dominantChannel, fixtureFiles, withExifOrientation, type Channel } from
 import { fakeCaseInsensitiveDisk, fakeCaseSensitiveDisk } from '../../test/helpers/caseDisk';
 import { REPO_ROOT, runTsx } from '../../test/helpers/runTsx';
 import { createTempLibrary, derivativePaths, type TempLibrary } from '../../test/helpers/tempLibrary';
-import { baseNameOf, isOrientationTagged, optimizedSize, ownerOf, planOrphanCleanup, planSources, processImage, writeUprightMarker } from '../imageOptimizer';
+import { baseNameOf, isOrientationTagged, optimizedSize, ownerOf, planOrphanCleanup, planSources, processImage, readSetSource, writeUprightMarker } from '../imageOptimizer';
 import {
     attachWatcher,
     createIgnoreFilter,
     createWatcherHandlers,
+    createWatchModeHandlers,
     drainOrReport,
     processOnce,
     type WatcherHandlers,
@@ -79,6 +80,28 @@ vi.mock('sharp', async (importOriginal) => {
     return { ...actual, default: Object.assign(wrapped, actual.default) };
 });
 
+// The writes of cache/set-sources, in the order they finish, and which ones fail, as a full disk would.
+const recordWrites = vi.hoisted(() => ({
+    fail: null as ((data: string) => boolean) | null,
+    events: null as string[] | null,
+}));
+
+vi.mock('../../lib/storage/atomicWrite', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../../lib/storage/atomicWrite')>();
+    const isRecord = (file: string) => file.includes(`${path.sep}set-sources${path.sep}`);
+    return {
+        ...actual,
+        async atomicWriteFile(...args: Parameters<typeof actual.atomicWriteFile>) {
+            const [file, data] = args;
+            if (isRecord(file) && recordWrites.fail?.(String(data))) {
+                throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
+            }
+            await actual.atomicWriteFile(...args);
+            if (isRecord(file)) recordWrites.events?.push(`record ${String(data).trim()}`);
+        },
+    };
+});
+
 const LANDSCAPE = derivativePaths('landscape');
 const BASIC = ['landscape.jpg', 'portrait.png', 'square.webp'];
 
@@ -125,6 +148,8 @@ beforeEach(async () => {
 
 afterEach(async () => {
     gate.reset();
+    recordWrites.fail = null;
+    recordWrites.events = null;
     vi.restoreAllMocks();
     await Promise.all(handlerSets.splice(0).map((set) => set.idle()));
     await lib.cleanup();
@@ -146,7 +171,8 @@ function recordSourceReads(): string[] {
     const reads: string[] = [];
     const realOpen = fs.promises.open.bind(fs.promises);
     vi.spyOn(fs.promises, 'open').mockImplementation(((...args: Parameters<typeof fs.promises.open>) => {
-        if (args[1] === 'r') reads.push(path.basename(String(args[0])));
+        // A record's write opens its folder to fsync it, which reads no source.
+        if (args[1] === 'r' && /\.(jpe?g|png|webp)$/i.test(String(args[0]))) reads.push(path.basename(String(args[0])));
         return realOpen(...args);
     }) as typeof fs.promises.open);
     return reads;
@@ -438,6 +464,216 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
             expect(logs).toContain("[ImageWatcher] Rebuilding landscape.jpg's set, which it shares, since nothing records which source it was built from.");
             expect(await outputChannels('landscape')).toEqual(Array(7).fill('red'));
             expect(await newHandlers().queueStartupBatch()).toEqual({ processed: [], skipped: [], errors: [] });
+        });
+
+        describe('a build stopped partway', () => {
+            /** Builds every set and records each one finished. portrait.png's set is green. */
+            async function builtLibrary(): Promise<void> {
+                expect(await processOnce(handlers, { force: true, logger })).toBe(0);
+                expect(readSetSource('portrait.png')).toEqual({ source: 'portrait.png', finished: true });
+            }
+
+            /** Runs `run` in handlers that die after `renames` renames, as a watcher killed there would. */
+            async function killedAfter(renames: number, run: (killed: WatcherHandlers) => Promise<void>): Promise<void> {
+                const realRename = fs.promises.rename.bind(fs.promises);
+                let count = 0;
+                let reached = () => {};
+                const stopped = new Promise<void>((resolve) => { reached = resolve; });
+                const rename = vi.spyOn(fs.promises, 'rename').mockImplementation(async (...args: Parameters<typeof fs.promises.rename>) => {
+                    if (++count <= renames) return realRename(...args);
+                    reached();
+                    return new Promise<void>(() => {}); // Never settles, so nothing after it runs
+                });
+                // Not in handlerSets, since its job never finishes
+                const killed = createWatcherHandlers({ logger });
+                void run(killed);
+                await stopped;
+                rename.mockRestore();
+                killed.stop();
+            }
+
+            /** Fails each write to cache/set-sources that `matches` picks, as a full disk would, until the test ends. */
+            function failRecordWrites(matches: (data: string) => boolean): void {
+                recordWrites.fail = matches;
+            }
+            const unfinished = (data: string) => data.includes('"complete":false');
+
+            it('rebuilds at startup a set whose takeover was killed partway, once the source that took it over is removed while the watcher is down', async () => {
+                await builtLibrary();
+                handlers.stop();
+                fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+                await killedAfter(4, (killed) => killed.onAdd(lib.file('portrait.jpg')));
+                expect(new Set(await outputChannels('portrait'))).toEqual(new Set(['red', 'green']));
+                expect(readSetSource('portrait.png')).toEqual({ source: 'portrait.jpg', finished: false });
+
+                fs.unlinkSync(lib.file('portrait.jpg'));
+                expect(await newHandlers().queueStartupBatch()).toEqual({ processed: ['portrait.png'], skipped: [], errors: [] });
+                expect(logs).toContain("[ImageWatcher] Rebuilding portrait.png's set, since a build of it from portrait.jpg didn't finish.");
+                expect(await outputChannels('portrait')).toEqual(Array(7).fill('green'));
+                expect(readSetSource('portrait.png')).toEqual({ source: 'portrait.png', finished: true });
+            });
+
+            it('rebuilds at startup a set its one source was rebuilding when killed, whatever the thumbnail says', async () => {
+                fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+                expect(await processOnce(handlers, { force: true, logger })).toBe(0);
+                expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
+                handlers.stop();
+                // The live removal's rebuild from portrait.png, which owns the set now, is killed before the thumbnail.
+                fs.unlinkSync(lib.file('portrait.jpg'));
+                await killedAfter(4, (killed) => killed.onUnlink(lib.file('portrait.jpg')));
+                expect(readSetSource('portrait.png')).toEqual({ source: 'portrait.png', finished: false });
+
+                expect(await newHandlers().queueStartupBatch()).toEqual({ processed: ['portrait.png'], skipped: [], errors: [] });
+                expect(await outputChannels('portrait')).toEqual(Array(7).fill('green'));
+            });
+
+            it("rebuilds at startup a set whose takeover finished but couldn't record it, once the source that took it over is removed while the watcher is down", async () => {
+                await builtLibrary();
+                const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+                failRecordWrites((data) => !unfinished(data));
+                fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+                await handlers.onAdd(lib.file('portrait.jpg'));
+                expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
+                expect(errors).toHaveBeenCalledWith(expect.stringMatching(/^\[imageOptimizer\] Couldn't record that portrait\.jpg's set was built from it: /));
+                recordWrites.fail = null;
+                handlers.stop();
+
+                fs.unlinkSync(lib.file('portrait.jpg'));
+                expect(await newHandlers().queueStartupBatch()).toEqual({ processed: ['portrait.png'], skipped: [], errors: [] });
+                expect(await outputChannels('portrait')).toEqual(Array(7).fill('green'));
+            });
+
+            it('has the record that a build starts on disk, through atomicWriteFile, before its first rename', async () => {
+                await builtLibrary();
+                recordWrites.events = [];
+                const realRename = fs.promises.rename.bind(fs.promises);
+                vi.spyOn(fs.promises, 'rename').mockImplementation(async (...args: Parameters<typeof fs.promises.rename>) => {
+                    const target = String(args[1]);
+                    if (!target.includes(`${path.sep}set-sources${path.sep}`)) recordWrites.events?.push(`rename ${path.relative(lib.root, target)}`);
+                    return realRename(...args);
+                });
+                fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+                await handlers.onAdd(lib.file('portrait.jpg'));
+
+                // atomicWriteFile() resolves only after the record and its folder are fsynced.
+                const events = recordWrites.events;
+                expect(events[0]).toBe('record {"source":"portrait.jpg","complete":false}');
+                expect(events.slice(1, -1)).toHaveLength(7);
+                expect(events.slice(1, -1).every((event) => event.startsWith('rename '))).toBe(true);
+                expect(events.at(-1)).toBe('record {"source":"portrait.jpg"}');
+                expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
+            });
+
+            it("renames nothing in a set another source shares when it can't record that the build starts", async () => {
+                await builtLibrary();
+                const before = lib.hashes(derivativePaths('portrait'));
+                const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+                failRecordWrites(unfinished);
+                fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+                await handlers.onAdd(lib.file('portrait.jpg'));
+
+                expect(lib.hashes(derivativePaths('portrait'))).toEqual(before);
+                expect(lib.tempFiles()).toEqual([]);
+                expect(readSetSource('portrait.png')).toEqual({ source: 'portrait.png', finished: true });
+                expect(errors).toHaveBeenCalledWith(expect.stringMatching(/^\[imageOptimizer\] Couldn't record that portrait\.jpg's set is being rebuilt, so it keeps the outputs of portrait\.png, which built it last: /));
+            });
+
+            it("rebuilds a shared set from the owner that last built it whole when it can't record that the build starts", async () => {
+                fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+                expect(await processOnce(handlers, { force: true, logger })).toBe(0);
+                expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
+                expect(readSetSource('portrait.png')).toEqual({ source: 'portrait.jpg', finished: true });
+                vi.spyOn(console, 'error').mockImplementation(() => undefined);
+                failRecordWrites(unfinished);
+
+                // A build stopped partway could only mix the owner's own versions, which the thumbnail going last catches.
+                fs.writeFileSync(lib.file('portrait.jpg'), edited);
+                await handlers.onChange(lib.file('portrait.jpg'));
+                expect(await outputChannels('portrait')).toEqual(Array(7).fill('blue'));
+                expect(readSetSource('portrait.png')).toEqual({ source: 'portrait.jpg', finished: true });
+            });
+
+            it("rebuilds a shared set from the source that owns it once its owner is removed, live and at the next start, when cache/set-sources can't be written", async () => {
+                fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+                fs.copyFileSync(lib.file('square.webp'), lib.file('portrait.webp'));
+                expect(await processOnce(handlers, { force: true, logger })).toBe(0);
+                expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
+                expect(readSetSource('portrait.png')).toEqual({ source: 'portrait.jpg', finished: true });
+                vi.spyOn(console, 'error').mockImplementation(() => undefined);
+                failRecordWrites(() => true);
+
+                // The record still names portrait.jpg, which is gone, so its outputs show nothing the library has.
+                fs.unlinkSync(lib.file('portrait.jpg'));
+                await handlers.onUnlink(lib.file('portrait.jpg'));
+                expect(await outputChannels('portrait')).toEqual(Array(7).fill('green'));
+                handlers.stop();
+
+                expect(await newHandlers().queueStartupBatch()).toEqual({ processed: ['portrait.png'], skipped: [], errors: [] });
+                expect(await outputChannels('portrait')).toEqual(Array(7).fill('green'));
+            });
+
+            it("rebuilds a shared set nothing records from its owner when the owner is replaced and cache/set-sources can't be written", async () => {
+                fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+                expect(await processOnce(handlers, { force: true, logger })).toBe(0);
+                expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
+                // As every shared set on a library built before the record was kept
+                fs.rmSync(lib.file('cache', 'set-sources'), { recursive: true });
+                vi.spyOn(console, 'error').mockImplementation(() => undefined);
+                failRecordWrites(() => true);
+
+                fs.writeFileSync(lib.file('portrait.jpg'), edited);
+                await handlers.onChange(lib.file('portrait.jpg'));
+                expect(await outputChannels('portrait')).toEqual(Array(7).fill('blue'));
+            });
+
+            it('keeps the record that a build started after a rename fails, and rebuilds at startup once the source that took the set over is removed', async () => {
+                await builtLibrary();
+                vi.spyOn(console, 'error').mockImplementation(() => undefined);
+                const realRename = fs.promises.rename.bind(fs.promises);
+                let renames = 0;
+                const rename = vi.spyOn(fs.promises, 'rename').mockImplementation(async (...args: Parameters<typeof fs.promises.rename>) => {
+                    if (++renames === 4) throw Object.assign(new Error('EIO: i/o error, rename'), { code: 'EIO' });
+                    return realRename(...args);
+                });
+                fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+                await handlers.onAdd(lib.file('portrait.jpg'));
+                rename.mockRestore();
+                expect(readSetSource('portrait.png')).toEqual({ source: 'portrait.jpg', finished: false });
+                handlers.stop();
+
+                fs.unlinkSync(lib.file('portrait.jpg'));
+                expect(await newHandlers().queueStartupBatch()).toEqual({ processed: ['portrait.png'], skipped: [], errors: [] });
+                expect(await outputChannels('portrait')).toEqual(Array(7).fill('green'));
+            });
+
+            it('removes the record after a fill of only the missing outputs, since another source may have built the rest', async () => {
+                await builtLibrary();
+                fs.unlinkSync(lib.file('thumbnails', 'portrait.webp'));
+                await processImage('portrait.png');
+                expect(fs.existsSync(lib.file('thumbnails', 'portrait.webp'))).toBe(true);
+                expect(readSetSource('portrait.png')).toBeNull();
+            });
+
+            it("rebuilds on a change of a source the set shares when the record says the owner's build of it didn't finish", async () => {
+                fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+                expect(await processOnce(handlers, { force: true, logger })).toBe(0);
+                fs.writeFileSync(lib.file('cache', 'set-sources', 'portrait.json'), '{"source":"portrait.jpg","complete":false}\n');
+                const before = inodes(derivativePaths('portrait'));
+
+                await newHandlers().onChange(lib.file('portrait.png'));
+                expect(logs).toContain('[ImageWatcher] Rebuilt the set portrait.png shares from its owner, portrait.jpg.');
+                expect(inodes(derivativePaths('portrait')).filter((ino, index) => ino === before[index])).toEqual([]);
+            });
+
+            it("rebuilds on an add of a set's one source when the record says its build didn't finish", async () => {
+                await builtLibrary();
+                fs.writeFileSync(lib.file('cache', 'set-sources', 'landscape.json'), '{"source":"landscape.jpg","complete":false}\n');
+                const before = inodes(LANDSCAPE);
+
+                await newHandlers().onAdd(lib.file('landscape.jpg'));
+                expect(inodes(LANDSCAPE).filter((ino, index) => ino === before[index])).toEqual([]);
+                expect(readSetSource('landscape.jpg')).toEqual({ source: 'landscape.jpg', finished: true });
+            });
         });
     });
 
@@ -861,7 +1097,7 @@ describe('the one-time rebuild of orientation-tagged photos', { timeout: 60_000 
         expect(await handlers.queueStartupBatch()).toEqual({ processed: ['turned.jpg'], skipped: [], errors: [] });
         expect(await optimizedSize('turned.jpg')).toEqual(UPRIGHT);
         // Said up front, before any build
-        const warning = `[ImageWatcher] ${path.dirname(marker())} can't be written, so the watcher can't record which sets it rebuilt. Until it can, every start rebuilds the orientation-tagged photos and the shared sets again.`;
+        const warning = `[ImageWatcher] ${path.dirname(marker())} can't be written, so the watcher can't record which sets it rebuilt. Until it can, every start rebuilds the orientation-tagged photos again. A set whose rebuild was refused, since another source still in the library last built it, keeps that source's outputs even after that source is edited, until cache/set-sources can be written again.`;
         expect(logs.indexOf(warning)).toBeGreaterThanOrEqual(0);
         expect(logs.indexOf(warning)).toBeLessThan(logs.findIndex((line) => line.startsWith('[ImageWatcher] Processing ')));
         expect(logs.some((line) => line.startsWith(`[ImageWatcher] Could not write ${marker()}: `) && line.endsWith('The next start rebuilds the orientation-tagged photos again.'))).toBe(true);
@@ -1017,6 +1253,22 @@ describe('attachWatcher', { timeout: 60_000 }, () => {
 
         await vi.waitFor(() => expect(seen).toHaveLength(1), { timeout: 30_000 });
         expect(seen).toEqual([21]);
+    });
+
+    it("gives watch mode handlers that aren't idle before ready, and the watcher script's watch mode uses them", async () => {
+        const waiting = createWatchModeHandlers({ logger });
+        let idle = false;
+        void waiting.idle().then(() => { idle = true; });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(idle).toBe(false);
+        waiting.stop();
+        await vi.waitFor(() => expect(idle).toBe(true));
+
+        // The script runs when it's imported, so this reads it instead.
+        const script = fs.readFileSync(path.join(REPO_ROOT, 'scripts/imageWatcher.ts'), 'utf8');
+        const watchMode = script.slice(script.indexOf('function startWatcher('), script.indexOf('async function runOnce('));
+        expect(watchMode).toContain('const handlers = createWatchModeHandlers();');
+        expect(watchMode).not.toContain('createWatcherHandlers(');
     });
 
     it('with awaitStartup, is idle once stopped before ready, so shutdown never waits for a batch that won\'t come', async () => {

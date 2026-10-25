@@ -149,6 +149,15 @@ interface Job {
     settle: (outcome: Outcome) => void;
 }
 
+/**
+ * The handlers watch mode runs: with awaitStartup, so they aren't idle before
+ * chokidar's ready queues the startup batch, and the identity step's first
+ * pass, which waits on idle(), can't build alongside it.
+ */
+export function createWatchModeHandlers(options: { logger?: Logger } = {}): WatcherHandlers {
+    return createWatcherHandlers({ ...options, awaitStartup: true });
+}
+
 export function createWatcherHandlers(
     { logger = console, maxConcurrentJobs = 1, awaitStartup = false }: {
         logger?: Logger;
@@ -351,15 +360,17 @@ export function createWatcherHandlers(
                 logger.log('[ImageWatcher] Checking for unprocessed images...');
                 const { files, reowned, upright, shared } = await planSources({ force });
                 if (!cacheFolderWritable()) {
-                    logger.error(`[ImageWatcher] ${path.dirname(uprightMarkerPath())} can't be written, so the watcher can't record which sets it rebuilt. Until it can, every start rebuilds the orientation-tagged photos and the shared sets again.`);
+                    logger.error(`[ImageWatcher] ${path.dirname(uprightMarkerPath())} can't be written, so the watcher can't record which sets it rebuilt. Until it can, every start rebuilds the orientation-tagged photos again. A set whose rebuild was refused, since another source still in the library last built it, keeps that source's outputs even after that source is edited, until cache/set-sources can be written again.`);
                 }
                 for (const { file, owner, undecodable } of shared) {
                     logger.log(`[ImageWatcher] Skipping ${file}: ${undecodable ? `it can't be decoded, so ${owner} has the derivatives they share` : `it shares its derivatives with ${owner}`}.`);
                 }
-                for (const { file, from } of reowned) {
-                    logger.log(from === null
-                        ? `[ImageWatcher] Rebuilding ${file}'s set, which it shares, since nothing records which source it was built from.`
-                        : `[ImageWatcher] Rebuilding ${file}'s set, which was last built from ${from}.`);
+                for (const { file, from, unfinished } of reowned) {
+                    logger.log(unfinished
+                        ? `[ImageWatcher] Rebuilding ${file}'s set, since a build of it from ${from} didn't finish.`
+                        : from === null
+                            ? `[ImageWatcher] Rebuilding ${file}'s set, which it shares, since nothing records which source it was built from.`
+                            : `[ImageWatcher] Rebuilding ${file}'s set, which was last built from ${from}.`);
                 }
                 const turned = new Set(upright ?? []);
                 if (turned.size > 0) {

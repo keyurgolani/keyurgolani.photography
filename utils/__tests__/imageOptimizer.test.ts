@@ -21,6 +21,7 @@ import {
     planSources,
     processImage,
     refreshImage,
+    readSetSource,
     reprocessImage,
     setGroups,
     sharesSet,
@@ -109,6 +110,11 @@ function setMtime(relativePath: string, mtimeMs: number): void {
 
 function relativeToLibrary(target: fs.PathLike): string {
     return path.relative(lib.root, String(target)).split(path.sep).join('/');
+}
+
+/** Whether a rename or a temp file is part of a write to cache/set-sources, not of an output. */
+function isRecordWrite(target: fs.PathLike): boolean {
+    return relativeToLibrary(target).startsWith('cache/set-sources/');
 }
 
 /** Rename a source in two steps, so a case-only rename works on a case-insensitive disk too. */
@@ -304,7 +310,7 @@ describe('writeVariants', { timeout: 60_000 }, () => {
         const realRename = fs.promises.rename.bind(fs.promises);
         let renames = 0;
         vi.spyOn(fs.promises, 'rename').mockImplementation(async (...args: Parameters<typeof fs.promises.rename>) => {
-            if (++renames === 3) throw Object.assign(new Error('EIO: i/o error, rename'), { code: 'EIO' });
+            if (!isRecordWrite(args[1]) && ++renames === 3) throw Object.assign(new Error('EIO: i/o error, rename'), { code: 'EIO' });
             return realRename(...args);
         });
 
@@ -368,6 +374,7 @@ describe('writeVariants', { timeout: 60_000 }, () => {
         const renamed: string[] = [];
         const realRename = fs.promises.rename.bind(fs.promises);
         const renameSpy = vi.spyOn(fs.promises, 'rename').mockImplementation(async (...args: Parameters<typeof fs.promises.rename>) => {
+            if (isRecordWrite(args[1])) return realRename(...args);
             renamed.push(relativeToLibrary(args[1]));
             if (renamed.length === 7) throw Object.assign(new Error('EIO: i/o error, rename'), { code: 'EIO' });
             return realRename(...args);
@@ -477,8 +484,13 @@ describe('temp files', { timeout: 30_000 }, () => {
         await processImage(`${base}.jpg`);
 
         expect(Object.keys(lib.hashes(derivativePaths(base)))).toHaveLength(7);
-        expect(temps).toHaveLength(7);
+        // The seven outputs, and the two writes of the record of which source the set was built from
+        expect(temps).toHaveLength(9);
         expect(temps.every((name) => name.length === temps[0].length && name.length < 64)).toBe(true);
+        expect(readSetSource(`${base}.jpg`)).toEqual({ source: `${base}.jpg`, finished: true });
+        // Readable like the outputs, not only by its owner as other atomic writes are
+        const modeOf = (relativePath: string) => fs.statSync(lib.file(relativePath)).mode & 0o777;
+        expect(modeOf(`cache/set-sources/${base}.json`)).toBe(modeOf(`thumbnails/${base}.webp`));
     });
 });
 

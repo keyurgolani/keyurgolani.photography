@@ -5,6 +5,7 @@ import sharp from 'sharp';
 import { CACHE_FOLDER, DERIVATIVE_FOLDERS } from '../lib/derivativeFolders.mjs';
 import { foldName } from '../lib/foldName';
 import { keyOf } from '../lib/identity/scan';
+import { atomicWriteFile } from '../lib/storage/atomicWrite';
 import { libraryRoot } from '../lib/storage/config';
 import { hasErrorCode } from '../lib/storage/fsx';
 
@@ -326,6 +327,11 @@ async function matchSpelling(target: string, names: ReadonlySet<string> | undefi
  * as in a takedown, it discards the attempt the same way and throws an error
  * with `code` SOURCE_CHANGED. After a full regeneration it also deletes the
  * photo's `/api/image` cache files, which would still serve the old version.
+ * Before the first rename it records in `cache/set-sources` that a build
+ * from this source started, and after the last one that it finished, so a
+ * build killed partway is rebuilt at the next start. When that first record
+ * can't be written and the set was last built whole from another source
+ * that's still in the library, it renames nothing.
  *
  * Returns the paths it replaced or created.
  */
@@ -385,6 +391,25 @@ export async function writeVariants(
         ...staged.filter(({ dir }) => dir === 'thumbnails'),
     ];
 
+    // Recorded before the first rename, so a build killed or failed partway leaves a record that says so, not
+    // the source the set showed before, and the next start rebuilds the set even if the source it took over from
+    // is gone by then.
+    try {
+        await recordSetSource(filename, paths, { finished: false });
+    } catch (error) {
+        // Without the record, a build stopped partway over a set last built whole from another source that's
+        // still here would leave it part each, while the old record still says the other built it, and once that
+        // source is removed nothing says the set needs rebuilding. So that set keeps the other source's outputs.
+        // Any other set goes ahead: its old outputs show this source, or one that's gone or replaced, so keeping
+        // them protects nothing.
+        const built = lastBuiltFrom(filename, paths);
+        if (built !== null && built !== filename && setMembers(filename, paths).includes(built)) {
+            await removeQuietly(order.map(({ temp }) => temp));
+            console.error(`[imageOptimizer] Couldn't record that ${filename}'s set is being rebuilt, so it keeps the outputs of ${built}, which built it last: ${error instanceof Error ? error.message : String(error)}`);
+            throw error;
+        }
+    }
+
     let renamed = 0;
     try {
         for (const { temp, target, dir } of order) {
@@ -393,7 +418,7 @@ export async function writeVariants(
             renamed++;
         }
     } catch (error) {
-        forgetSetSource(filename, paths);
+        // The record still says the build didn't finish, so the next start rebuilds the set.
         await removeQuietly(order.slice(renamed).map(({ temp }) => temp));
         console.error(
             `[imageOptimizer] Renaming ${filename}'s new outputs failed after replacing ${renamed} of ${order.length}.` +
@@ -406,9 +431,9 @@ export async function writeVariants(
     // A fill of only the missing outputs leaves a set some other source may have built the rest of.
     if (order.length === VARIANTS.length) {
         try {
-            recordSetSource(filename, paths);
+            await recordSetSource(filename, paths, { finished: true });
         } catch (error) {
-            // Without it, the next start can't tell which source the set shows, and may rebuild it.
+            // The record still says the build didn't finish, so the next start rebuilds the set.
             console.error(`[imageOptimizer] Couldn't record that ${filename}'s set was built from it: ${error instanceof Error ? error.message : String(error)}`);
         }
     } else {
@@ -560,13 +585,13 @@ const decoded = new Map<string, { version: string; ok: boolean }>();
 /**
  * The source that last wrote `owner`'s set whole, from its record in
  * `cache/set-sources`, or null when that's unknown, as after a partial fill,
- * a rename that failed, or a set written before the record. A builder that
- * only shares the set's key, as two spellings do on a case-sensitive disk,
- * doesn't count.
+ * a build that failed or was killed partway, or a set written before the
+ * record. A builder that only shares the set's key, as two spellings do on a
+ * case-sensitive disk, doesn't count.
  */
 export function lastBuiltFrom(owner: string, paths: LibraryPaths = libraryPaths()): string | null {
-    const builder = readSetSource(owner, paths);
-    return builder !== null && sharesSet(builder, owner, paths.root) ? builder : null;
+    const record = readSetSource(owner, paths);
+    return record !== null && record.finished && sharesSet(record.source, owner, paths.root) ? record.source : null;
 }
 
 /**
@@ -735,21 +760,41 @@ function setSourceFile(filename: string, paths: LibraryPaths): string {
     return path.join(setSourcesDir(paths), `${baseNameOf(filename)}.json`);
 }
 
-/** The source the set `filename` writes was last built from, or null when nothing records it. */
-export function readSetSource(filename: string, paths: LibraryPaths = libraryPaths()): string | null {
+/**
+ * What `cache/set-sources` records for the set `filename` writes: the source
+ * a build of it started from, and whether that build finished. Null when
+ * nothing records it. An unfinished one may have left the set partly that
+ * source's and partly what it showed before.
+ */
+export interface SetSourceRecord {
+    source: string;
+    finished: boolean;
+}
+
+/** The record of the set `filename` writes, or null when nothing records it. */
+export function readSetSource(filename: string, paths: LibraryPaths = libraryPaths()): SetSourceRecord | null {
     try {
-        const value = JSON.parse(fs.readFileSync(setSourceFile(filename, paths), 'utf8')) as { source?: unknown } | null;
-        return typeof value?.source === 'string' ? value.source : null;
+        const value = JSON.parse(fs.readFileSync(setSourceFile(filename, paths), 'utf8')) as { source?: unknown; complete?: unknown } | null;
+        return typeof value?.source === 'string' ? { source: value.source, finished: value.complete !== false } : null;
     } catch {
         return null;
     }
 }
 
-/** Record that `filename`'s set was just built from it. Creates the folders under the library root, never the root. */
-function recordSetSource(filename: string, paths: LibraryPaths): void {
+/**
+ * Record that a build of `filename`'s set from it starts, or with `finished`
+ * that it just wrote the whole set. Creates the folders under the library
+ * root, never the root. Replaces the record atomically and fsyncs it and its
+ * folder, so once it returns the record is on disk ahead of any rename that
+ * follows, and a write torn by a crash leaves the old record, not an empty one.
+ * Readable like the set's outputs, not only by its owner, and staged under
+ * the outputs' fixed-length temp name, which images:cleanup knows.
+ */
+async function recordSetSource(filename: string, paths: LibraryPaths, { finished }: { finished: boolean }): Promise<void> {
     const file = setSourceFile(filename, paths);
     makeFolders(path.dirname(path.dirname(file)), path.dirname(file));
-    fs.writeFileSync(file, `${JSON.stringify({ source: filename })}\n`);
+    const record = finished ? { source: filename } : { source: filename, complete: false };
+    await atomicWriteFile(file, `${JSON.stringify(record)}\n`, { mode: 0o666, tempPath: tempPathFor(file, baseNameOf(filename)) });
 }
 
 /** Drop `filename`'s set's record, when the set may no longer be all its own. */
@@ -761,10 +806,14 @@ function forgetSetSource(filename: string, paths: LibraryPaths): void {
     }
 }
 
-/** Whether `filename`'s set was last built from another source, such as the owner before it. False when nothing records it. */
+/**
+ * Whether `filename`'s set may show another source: when it was last built
+ * from one, such as the owner before it, or a build of it didn't finish.
+ * False when nothing records it.
+ */
 function builtFromAnother(filename: string, paths: LibraryPaths): boolean {
-    const source = readSetSource(filename, paths);
-    return source !== null && source !== filename;
+    const record = readSetSource(filename, paths);
+    return record !== null && (!record.finished || record.source !== filename);
 }
 
 /** Whether a source's file carries an EXIF orientation other than 1, which its set turns upright. Null when it can't be read, so nobody knows. */
@@ -783,10 +832,12 @@ export interface SourcePlan {
     /**
      * The owners whose set shows another source, rebuilt whatever their state:
      * one last built from `from`, such as an owner removed while the watcher
-     * was down, and a shared set nothing records the source of, with `from`
-     * null, since sets written before the record could show either source.
+     * was down, one whose build from `from` didn't finish, marked
+     * `unfinished`, and a shared set nothing records the source of, with
+     * `from` null, since sets written before the record could show either
+     * source.
      */
-    reowned: { file: string; from: string | null }[];
+    reowned: { file: string; from: string | null; unfinished?: true }[];
     /**
      * The owners whose files carry an orientation tag, or can't be read to
      * tell, rebuilt once whatever their state: a set written before
@@ -815,9 +866,11 @@ export async function planSources({ force = false }: { force?: boolean } = {}): 
         const tagged = upright !== null && candidate(owner) && (await isOrientationTagged(owner, paths)) !== false;
         if (tagged) upright.push(owner);
         // A removal or an addition while the watcher was down can change a set's owner without touching its files.
+        // So can a build that didn't finish, even of a set that has one source now.
         const recorded = readSetSource(owner, paths);
-        const reowned = recorded === null ? group.length > 1 : recorded !== owner;
-        if (reowned) plan.reowned.push({ file: owner, from: recorded });
+        const unfinished = recorded !== null && !recorded.finished;
+        const reowned = recorded === null ? group.length > 1 : unfinished || recorded.source !== owner;
+        if (reowned) plan.reowned.push({ file: owner, from: recorded?.source ?? null, ...(unfinished ? { unfinished: true as const } : {}) });
         if (index === null || tagged || reowned || needsRefresh(owner, paths, index)) plan.files.push(owner);
     }
     return plan;
