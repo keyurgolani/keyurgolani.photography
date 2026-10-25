@@ -109,7 +109,7 @@ describe('/api/photos', () => {
             await processImage(name);
         }
         const read = async () => {
-            const response = await photosRoute();
+            const response = await photosRoute(new Request('http://127.0.0.1/api/photos'));
             return { status: response.status, headers: Object.fromEntries(response.headers), body: (await response.json()) as unknown };
         };
         // It lists from the registry the step writes, so there is nothing to list yet.
