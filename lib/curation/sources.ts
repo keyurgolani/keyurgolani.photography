@@ -372,7 +372,9 @@ export function createSourcesSink(options: SourcesSinkOptions = {}): FactSink {
  * worker, so a failure that stays shows without waiting for the next pass.
  * A build that throws settles nothing, and a settle that fails is logged and
  * added to `owed`, so the sources sink settles it on its next delivery, the
- * next pass's; with no `owed`, the watcher's next start does. Neither ever
+ * next pass's. When the process ends first, as `--once` can, or
+ * with no `owed`, the watcher's next start does, since its first delivery
+ * looks at every item. Neither ever
  * changes the build's outcome.
  */
 export function recordingFailuresAfterBuild(build: BuildFunction, options: Omit<SourcesSinkOptions, 'root'> = {}): BuildFunction {
@@ -384,7 +386,7 @@ export function recordingFailuresAfterBuild(build: BuildFunction, options: Omit<
             await settleSources(readyRoot(buildOptions.root), { ...settleOptions, logger, only: job });
         } catch (error) {
             owed?.add(job);
-            const when = owed ? 'the next pass settles it' : "the watcher's next start settles it";
+            const when = owed ? "the next pass settles it, or the watcher's next start if this process ends first, as --once can" : "the watcher's next start settles it";
             logger.warn(`[curation] Could not record the build of ${job.photoId} ${job.assetRevision} in the inbox yet; ${when}: ${error instanceof Error ? error.message : String(error)}`);
         }
         return outcome;

@@ -347,8 +347,9 @@ export type BuildFunction = (job: DerivativeJob, options: BuildOptions) => Promi
  * worker. A build that throws is a crash: it settles nothing, and the next
  * start's build or pass does. A settle that fails (a busy curation lock, say)
  * is logged and added to `owed`, so the candidate sink settles it on its
- * next delivery, the next pass's; with no `owed`, the watcher's next start
- * does. It never changes the build's outcome.
+ * next delivery, the next pass's. When the process ends first, as `--once`
+ * can, or with no `owed`, the watcher's next start does. It never changes
+ * the build's outcome.
  */
 export function settlingAfterBuild(build: BuildFunction, options: Omit<CandidateSinkOptions, 'root'> = {}): BuildFunction {
     const { logger = console, owed, ...settleOptions } = options;
@@ -359,7 +360,7 @@ export function settlingAfterBuild(build: BuildFunction, options: Omit<Candidate
             await settleCandidates(readyRoot(buildOptions.root), { ...settleOptions, logger, only: job });
         } catch (error) {
             owed?.add(job);
-            const when = owed ? 'the next pass settles it' : "the watcher's next start settles it";
+            const when = owed ? "the next pass settles it, or the watcher's next start if this process ends first, as --once can" : "the watcher's next start settles it";
             logger.warn(`[curation] Could not record the set for ${job.photoId} ${job.assetRevision} on its replacement item yet; ${when}: ${error instanceof Error ? error.message : String(error)}`);
         }
         return outcome;

@@ -21,7 +21,7 @@ import { inboxAlertLines, inboxAlerts } from '../alerts';
 import { parseCurationArgs, runCurationCli } from '../commands';
 import type { CurationEvent } from '../events';
 import { listEvents } from '../repository';
-import { archiveMissing, bindReplacement } from '../resolutions';
+import { archiveMissing, bindReplacement, holdRefusal } from '../resolutions';
 import { createSourcesSink, failureEventId, recordingFailuresAfterBuild, settleSources } from '../sources';
 import { clock, createMissingWorld, missingEventId, removeMissingTemplate, type MissingWorld } from './missingWorld';
 import { makeImages, P_PATH, Q_PATH, quiet, replacementEventId, SERIES, served, treeBytes, type Images } from './replacementWorld';
@@ -485,6 +485,39 @@ describe('a bind to a path #10 holds in doubt', { timeout: 60_000 }, () => {
         expect(after.photos[w.p].sourceHealth).toBe('missing');
     });
 
+    it('is refused when the hold names only the photo whose file may have moved, saying so, and writing nothing', async () => {
+        const w = await world();
+        fs.writeFileSync(w.lib.file(R_PATH), images.third);
+        await w.pass();
+        const r = newPhotoAt(await w.registry(), R_PATH);
+        removeP(w);
+        await w.pass();
+        // In one pass, R's file moves, and other bytes land where it was.
+        fs.renameSync(w.lib.file(R_PATH), w.lib.file('harbor/moved-third.jpg'));
+        fs.writeFileSync(w.lib.file(R_PATH), images.fresh);
+        await w.pass();
+        expect((await w.registry()).holds.find((hold) => hold.path === R_PATH)?.candidates).toEqual([r]);
+
+        const item = await w.event(w.missingId);
+        const bound = await bindReplacement({ root: w.root, eventId: item.id, expectedVersion: item.version, actor: ACTOR, path: R_PATH });
+        expect(bound).toMatchObject({ ok: false, code: 'refused', message: holdRefusal(R_PATH, [r], w.p) });
+        if (bound.ok) return;
+        expect(bound.message).toContain(`it may still be ${r}'s file, and a bind would merge ${r} into ${w.p}`);
+        expect(bound.message).not.toContain('between');
+        expect(pendingDecisions(w)).toEqual([]);
+        expect((await w.event(w.missingId)).version).toBe(item.version);
+    });
+
+    it('words the refusal for a hold that names no photo, one, or several', () => {
+        const none = holdRefusal('harbor/a.jpg', [], 'ph_p');
+        expect(none).toContain('#10 holds harbor/a.jpg without naming a photograph it might be');
+        expect(none).not.toMatch(/between\s*[,.]/);
+        expect(none).not.toContain('between');
+        expect(holdRefusal('harbor/a.jpg', ['ph_r'], 'ph_p')).toContain("#10 holds harbor/a.jpg in doubt: it may still be ph_r's file, and a bind would merge ph_r into ph_p.");
+        expect(holdRefusal('harbor/a.jpg', ['ph_r', 'ph_s'], 'ph_p')).toContain('in doubt between ph_r and ph_s, so it can\'t tell whose file it is, and a bind would merge one of them into ph_p.');
+        for (const text of [none, holdRefusal('x.jpg', ['ph_r'], 'ph_p')]) expect(text).toMatch(/Settle that path's ambiguous item first, with photos identity bind or photos identity new, then bind again\. Nothing was written\.$/);
+    });
+
     it("is refused when the path holds bytes the photo gave to another photo, writing nothing", async () => {
         const w = await world();
         fs.writeFileSync(w.lib.file(R_PATH), images.third);
@@ -749,7 +782,7 @@ describe('a build that stays failed', { timeout: 60_000 }, () => {
         await withCurationLock(w.root, {}, async () => {
             expect((await build(job, { logger: quiet, faults: { afterVariant: () => { throw new Error('Fixture encoder fault'); } } })).status).toBe('failed');
         });
-        expect(warn).toHaveBeenCalledWith(expect.stringContaining(`Could not record the build of ${r} ${job.assetRevision} in the inbox yet; the next pass settles it`));
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining(`Could not record the build of ${r} ${job.assetRevision} in the inbox yet; the next pass settles it, or the watcher's next start if this process ends first`));
         const id = failureEventId(r, job.assetRevision);
         expect((await listEvents(w.root)).events.find((event) => event.id === id)).toBeUndefined();
 
