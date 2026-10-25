@@ -5,7 +5,7 @@ import { isValidElement, type ReactElement } from 'react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { VARIANT_BYTES } from '@/lib/catalog/__tests__/catalogFixtures';
 import { encodeSeriesCursor } from '@/lib/catalog/cursor';
-import { currentDraftId, previewBasePath, resetPreviewReaderForTests } from '@/lib/catalog/preview-reader';
+import { currentDraftId, PREVIEW_READER_STATE_KEY, previewBasePath, resetPreviewReaderForTests } from '@/lib/catalog/preview-reader';
 import { publish } from '@/lib/catalog/publish';
 import { createTestCatalog, type TestCatalog } from '@/lib/catalog/testing';
 import { readWorkingLayer } from '@/lib/catalog/working-layer';
@@ -32,6 +32,7 @@ vi.mock('@/lib/catalog/preview-reader', async (importOriginal) => {
 });
 
 const publicReads = vi.hoisted(() => ({ calls: [] as string[] }));
+// eslint-disable-next-line no-restricted-syntax -- replaces the public reader with one that fails the test if the preview calls it
 vi.mock('@/lib/catalog/public-reader', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/lib/catalog/public-reader')>();
     const refuse = (name: string) => () => {
@@ -100,6 +101,8 @@ const pages = {
     series: await import('../[draftId]/site/work/[slug]/page'),
     viewer: await import('../[draftId]/site/work/[slug]/photo/[photoId]/page'),
     about: await import('../[draftId]/site/about/page'),
+    frameMissing: await import('../[draftId]/[...missing]/page'),
+    siteMissing: await import('../[draftId]/site/[...missing]/page'),
 };
 const layouts = {
     site: (await import('../[draftId]/site/layout')).default,
@@ -158,6 +161,10 @@ function surfaces(id: string): Record<string, () => unknown> {
         viewer: () => pages.viewer.default(params({ draftId: id, slug: LONG, photoId: photo.id })),
         'viewer metadata': () => pages.viewer.generateMetadata(params({ draftId: id, slug: LONG, photoId: photo.id })),
         about: () => pages.about.default(params({ draftId: id })),
+        'unmatched frame path': () => pages.frameMissing.default(),
+        'unmatched frame path metadata': () => pages.frameMissing.generateMetadata(),
+        'unmatched site path': () => pages.siteMissing.default(),
+        'unmatched site path metadata': () => pages.siteMissing.generateMetadata(),
         'load-more': () => handlers.pages(url(`${previewBase(id)}/api/catalog/series/${LONG}/pages/${cursor}`), params({ draftId: id, slug: LONG, cursor })),
         'home records': () => handlers.records(url(`${previewBase(id)}/api/catalog/home/photos/${photo.id}?revision=${id}`), params({ draftId: id, photoId: photo.id })),
         image: () => handlers.media(url(`${previewBase(id)}/media/${photo.id}/${photo.assetRevision}/${photo.profileId}/w400.avif`), params(media)),
@@ -167,18 +174,35 @@ function surfaces(id: string): Record<string, () => unknown> {
 const previewBase = (id: string) => `/curation/preview/${id}/site`;
 
 describe('without a session', () => {
-    it.each([null, `${SESSION_COOKIE}=forged`])('answers every preview entry point the same for an existing and an unknown draft, before any draft lookup (cookie %j)', async (cookie) => {
+    it.each([null, `${SESSION_COOKIE}=forged`])('answers every preview entry point the same for an existing, an unknown and a malformed draft, before any draft lookup (cookie %j)', async (cookie) => {
         for (const extra of [{}, { rsc: '1' }] as Record<string, string>[]) {
             as(cookie, extra);
             const existing = surfaces(draftId);
-            const unknown = surfaces(UNKNOWN);
-            for (const name of Object.keys(existing)) {
-                const a = await outcome(existing[name]);
-                const b = await outcome(unknown[name]);
-                expect(a, name).toEqual(b);
-                expect(a, name).toEqual({ kind: 'thrown', digest: LOGIN_REDIRECT });
+            for (const id of [UNKNOWN, ...MALFORMED]) {
+                const other = surfaces(id);
+                for (const name of Object.keys(existing)) {
+                    const a = await outcome(existing[name]);
+                    const b = await outcome(other[name]);
+                    expect(a, `${name} ${id}`).toEqual(b);
+                    expect(a, name).toEqual({ kind: 'thrown', digest: LOGIN_REDIRECT });
+                }
             }
         }
+        expect(loadPreviewCatalog).not.toHaveBeenCalled();
+    });
+
+    it('checks the session before any kept compile is read, so logout denies the subresources at once', async () => {
+        const cookie = secrets.cookie();
+        as(cookie);
+        // Warm the cache through the subresources themselves.
+        for (const name of ['load-more', 'home records', 'image']) expect(await outcome(surfaces(draftId)[name]), name).toMatchObject({ kind: 'response', status: 200 });
+        const state = (globalThis as Record<symbol, { kept: Map<string, unknown>; compiling: Map<string, unknown> }>)[PREVIEW_READER_STATE_KEY];
+        expect(state.kept.size).toBeGreaterThan(0);
+        deleteSession(sessionFromCookies(cookie, secrets.sessionKey)!);
+        const reads = [vi.spyOn(state.kept, 'get'), vi.spyOn(state.kept, 'has'), vi.spyOn(state.compiling, 'get')];
+        vi.mocked(loadPreviewCatalog).mockClear();
+        for (const name of ['load-more', 'home records', 'image']) expect(await outcome(surfaces(draftId)[name]), name).toEqual({ kind: 'thrown', digest: LOGIN_REDIRECT });
+        for (const spy of reads) expect(spy).not.toHaveBeenCalled();
         expect(loadPreviewCatalog).not.toHaveBeenCalled();
     });
 
@@ -271,6 +295,21 @@ describe('signed in', () => {
         expect(await outcome(unknown.image)).toMatchObject({ kind: 'response', status: 404 });
     });
 
+    it("answers a path no route matches with the preview's not-found page, for an existing and an unknown draft, reading nothing", async () => {
+        for (const id of [draftId, UNKNOWN]) {
+            for (const name of ['unmatched frame path', 'unmatched site path']) expect(await outcome(surfaces(id)[name]), `${name} ${id}`).toEqual({ kind: 'thrown', digest: NOT_FOUND });
+            for (const name of ['unmatched frame path metadata', 'unmatched site path metadata']) {
+                expect(await surfaces(id)[name](), name).toEqual({ title: 'Preview', robots: { index: false, follow: false }, openGraph: null, twitter: null, alternates: null });
+            }
+        }
+        expect(loadPreviewCatalog).not.toHaveBeenCalled();
+    });
+
+    it('frames the draft its URL names, under the preview marker', async () => {
+        const frame = await element(surfaces(draftId)['frame page']);
+        expect((frame.props.children as ReactElement<{ src: string }>).props.src).toBe(previewBasePath(draftId));
+    });
+
     it('serves load-more and the Home records from the draft, no-store with no ETag', async () => {
         for (const name of ['load-more', 'home records']) {
             const answer = await outcome(surfaces(draftId)[name]);
@@ -307,7 +346,7 @@ describe('proxy.ts on the preview paths', () => {
 
     const answer = async (response: Response) => ({ status: response.status, headers: [...response.headers.entries()].sort(), body: await response.text() });
 
-    it('answers an anonymous request byte for byte the same for an existing and an unknown draft, RSC included', async () => {
+    it('answers an anonymous request byte for byte the same for an existing, an unknown and a malformed draft, RSC and unmatched paths included', async () => {
         const photo = firstPhoto();
         const paths = (id: string) => [
             `/curation/preview/${id}`,
@@ -317,16 +356,23 @@ describe('proxy.ts on the preview paths', () => {
             `/curation/preview/${id}/site/api/catalog/series/${LONG}/pages/x`,
             `/curation/preview/${id}/site/api/catalog/home/photos/${photo.id}?revision=${id}`,
             `/curation/preview/${id}/site/media/${photo.id}/${photo.assetRevision}/${photo.profileId}/w400.avif`,
+            `/curation/preview/${id}/anything`,
+            `/curation/preview/${id}/site/gallery`,
+            `/curation/preview/${id}/site/work/${LONG}/photo/${photo.id}/more`,
         ];
+        // A malformed ID that survives URL parsing: `..` is resolved away before any request is sent.
+        const others = [UNKNOWN, ...MALFORMED.filter((id) => id !== '..')];
         for (const headers of [{}, { rsc: '1', 'next-router-state-tree': '%5B%22%22%5D' }, { cookie: `${SESSION_COOKIE}=forged` }] as Record<string, string>[]) {
             const existing = paths(draftId);
-            const unknown = paths(UNKNOWN);
-            for (let at = 0; at < existing.length; at += 1) {
-                const a = await answer(send(existing[at], headers));
-                const b = await answer(send(unknown[at], headers));
-                expect(a, existing[at]).toEqual(b);
-                expect(a.status, existing[at]).toBe(307);
-                expect(Object.fromEntries(a.headers).location, existing[at]).toBe(`http://${HOST}/curation/login`);
+            for (const id of others) {
+                const other = paths(id);
+                for (let at = 0; at < existing.length; at += 1) {
+                    const a = await answer(send(existing[at], headers));
+                    const b = await answer(send(other[at], headers));
+                    expect(a, other[at]).toEqual(b);
+                    expect(a.status, existing[at]).toBe(307);
+                    expect(Object.fromEntries(a.headers).location, existing[at]).toBe(`http://${HOST}/curation/login`);
+                }
             }
         }
         expect(loadPreviewCatalog).not.toHaveBeenCalled();
