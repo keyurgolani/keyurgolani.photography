@@ -17,7 +17,7 @@ import type { SeriesRecord } from '../types';
 
 type Photo = CatalogContent['photos'][number];
 
-/** The neutral copy a draft preview shows while a photo's description isn't reviewed. A published revision never needs it. */
+/** The neutral copy a draft preview shows while a photo's description is pending. A published revision never needs it. */
 export const DESCRIPTION_PENDING_COPY = 'Description pending editorial review';
 
 /** One variant file, as `/media` serves it. */
@@ -43,13 +43,22 @@ export interface PublishedViewerPhoto {
         id: string;
         /** Authored, or null. */
         title: string | null;
-        /** The reviewed accessible description of what is visible, or null when decorative or pending. */
+        /**
+         * The accessible description of what is visible, or null when decorative,
+         * pending, or blank. Compile drops the authored `reviewed` flag, so in a
+         * draft preview an unreviewed #14 suggestion shows here as the description.
+         * Visitors never see one, since `description.required` blocks the publish.
+         */
         description: string | null;
         /** Authored narrative, or null. Never camera facts. */
         caption: string | null;
         /** The image's alt: the description, or empty for a decorative photo or a pending one. */
         alt: string;
-        /** True only in a draft preview, for a photo whose description isn't reviewed yet. The Viewer then shows DESCRIPTION_PENDING_COPY. */
+        /**
+         * True only in a draft preview, for a photo whose alt is `pending` or whose
+         * described text is blank. The Viewer then shows DESCRIPTION_PENDING_COPY.
+         * An unreviewed suggestion isn't pending here (see `description`).
+         */
         descriptionPending: boolean;
         /** Oriented. */
         width: number;
@@ -111,7 +120,12 @@ function accent(value: unknown): string | null {
     return typeof value === 'string' && ACCENT_RE.test(value) ? value : null;
 }
 
-/** The description, from the alt alone. A candidate's empty described text counts as pending, as the description rules judge it. */
+/**
+ * The description, from the alt alone. Pending means a `pending` alt or blank
+ * described text. The candidate carries no `reviewed` flag, so an unreviewed
+ * suggestion reads as the description here; `description.required` stops it
+ * at publish.
+ */
 function described(alt: Photo['alt']): Pick<PublishedViewerPhoto['photo'], 'description' | 'alt' | 'descriptionPending'> {
     if (alt.kind === 'decorative') return { description: null, alt: '', descriptionPending: false };
     const description = alt.kind === 'described' ? text(alt.text) : null;
