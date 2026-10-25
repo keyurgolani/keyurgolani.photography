@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { randomBytes, scryptSync } from 'node:crypto';
+import { createHmac, randomBytes, scryptSync } from 'node:crypto';
 import fs from 'node:fs';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { makeCuratorSecrets, type TestCuratorSecrets } from '../../../../test/helpers/curatorSecrets';
@@ -230,6 +230,8 @@ describe('sessions', () => {
             ['no tag', idPart],
             ['an empty tag', `${idPart}.`],
             ['a tag under another secret', signSessionId(id, randomBytes(32))],
+            // The tag covers a context string too, so a plain HMAC of the ID under the same secret doesn't count.
+            ['a tag made without the context string', `${idPart}.${createHmac('sha256', key).update(idPart).digest('base64url')}`],
             ['another live session with this tag', `${other}.${tag}`],
             ['a tag padded out', `${idPart}.${tag}=`],
             ['a tag that decodes to the same bytes but is written otherwise', `${idPart}.${tag.slice(0, -1)}${B64URL[B64URL.indexOf(tag.at(-1)!) ^ 1]}`],
