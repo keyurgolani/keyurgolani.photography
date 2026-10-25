@@ -29,7 +29,8 @@
  *     Write an identity decision to identity/decisions/ and run a pass that
  *     applies it. If the registry is busy, the decision stays saved and the
  *     watcher applies it on its next pass. Exits 0 when applied or saved, 1
- *     when refused or the data root isn't ready, and 2 on a usage error.
+ *     when refused, when the data root isn't ready, or when the pass fails
+ *     after the decision is saved, and 2 on a usage error.
  *     <path> is relative to the library, or an absolute path inside it. A
  *     bind to a path another photo holds merges that photo into <photoId>
  *     only when --merge names it, and only if it was minted at that path.
@@ -174,7 +175,15 @@ async function decide(type: DecisionInput['type'], args: string[]): Promise<numb
     }
     const decision = createDecision(input);
     const file = await writeDecision(status.root, decision);
-    const outcome = await runReconcilePass({ lock: { waitMs: 0 }, sinks: [jsonLogSink()] });
+    let outcome: Awaited<ReturnType<typeof runReconcilePass>>;
+    try {
+        outcome = await runReconcilePass({ lock: { waitMs: 0 }, sinks: [jsonLogSink()] });
+    } catch (error) {
+        // The decision is saved, so running the command again would make a second one, and a second photo for `new`.
+        const why = error instanceof LibraryRootMissingError ? `${error.message}. Check the mount or PHOTOGRAPHY_LIBRARY_DIR` : `The pass failed: ${error instanceof Error ? error.message : String(error)}`;
+        console.error(`[photos] ${why}. The decision is saved in ${file}, and the next pass that runs applies it. Don't run the command again.`);
+        return 1;
+    }
     if (outcome.status === 'skipped') {
         if (outcome.reason === 'locked') {
             console.log(`[photos] Saved ${file}. The registry is busy, so the watcher applies it on its next pass.`);
