@@ -72,6 +72,16 @@ describe('sequence and series argv', () => {
         expect(usage(() => sequenceArgs(args))).toContain(message);
     });
 
+    it('holds a chapter title to the import\'s plain-text rules', () => {
+        expect(sequenceArgs(['chapter', 'add', S, '  Fixture Cafe\u0301 chapter  ', '--start', P1])).toMatchObject({ title: 'Fixture Caf\u00e9 chapter' });
+        const bidi = usage(() => sequenceArgs(['chapter', 'add', S, 'Fixture \u202Echapter', '--start', P1]));
+        expect(bidi).toBe('The chapter title has U+202E, a bidi embedding or override, at character 9. Remove it and run the command again.');
+        expect(usage(() => sequenceArgs(['chapter', 'add', S, `Fixture ${'\u{E0041}'} chapter`, '--start', P1]))).toContain('U+E0041');
+        expect(usage(() => sequenceArgs(['chapter', 'add', S, 'Two\nlines', '--start', P1]))).toBe('The chapter title has a line break. Put it on one line.');
+        expect(usage(() => sequenceArgs(['chapter', 'add', S, 'x'.repeat(201), '--start', P1]))).toBe('The chapter title is 201 characters long, over its limit of 200.');
+        expect(usage(() => sequenceArgs(['chapter', 'add', S, '   ', '--start', P1]))).toBe('chapter add needs a title.');
+    });
+
     it('parses series order and featured, and needs an ID or --clear', () => {
         expect(seriesArgs(['order', S, 'ser_two', '--expect-version', '4'])).toEqual({ command: 'series-order', seriesIds: [S, 'ser_two'], expectVersion: 4 });
         expect(seriesArgs(['featured', S])).toEqual({ command: 'series-featured', seriesIds: [S] });
