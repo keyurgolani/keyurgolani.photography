@@ -1,0 +1,166 @@
+/* Work, in Gallery After Hours: the photographs own each entry on the dark
+   ground, with restrained type under them. No series accent or tint, since
+   Chromatic Chapters stays in the Viewer. The copy sits under the cover, not
+   over it, so no text depends on a scrim over a bright photograph. */
+.page {
+  min-height: calc(100svh - var(--site-nav-height));
+  padding: 0 var(--site-gutter) clamp(3rem, 8vw, 6rem);
+  background: var(--gah-ground);
+  color: var(--gah-ink);
+}
+
+.header {
+  max-width: 40rem;
+  padding: clamp(3rem, 9vw, 7.5rem) 0 clamp(2rem, 4vw, 3.5rem);
+}
+
+/* The serif and its weight come from the global heading rule. */
+.title {
+  margin: 0;
+  font-size: var(--gah-type-display);
+  line-height: var(--gah-display-leading);
+  letter-spacing: var(--gah-display-tracking);
+}
+
+.empty {
+  margin: 0;
+  color: var(--gah-ink-soft);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-statement);
+  line-height: 1.5;
+}
+
+/* DOM order is the reading and Tab order: no dense packing and no CSS order. */
+.list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: clamp(2.5rem, 6vw, 4rem) clamp(1rem, 2.5vw, 2rem);
+  align-items: start;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  min-width: 0;
+}
+
+/* One link per entry, the whole entry its target. */
+.entry {
+  display: block;
+  border-radius: var(--gah-radius);
+  color: inherit;
+  text-decoration: none;
+}
+
+/* The cover's reserved box: it holds its shape on the ground while the image loads, fails, or is missing. */
+.frame {
+  position: relative;
+  overflow: hidden;
+  aspect-ratio: 4 / 3;
+  border-radius: var(--gah-radius);
+  background: var(--gah-surface);
+}
+
+.cover {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: var(--focal-x, 50%) var(--focal-y, 50%);
+}
+
+.frame[data-cover='contain'] .cover {
+  object-fit: contain;
+}
+
+.fallback {
+  display: flex;
+  align-items: flex-end;
+  padding: 1rem 1.125rem;
+  box-shadow: inset 0 0 0 1px var(--gah-rule);
+}
+
+.fallbackText {
+  color: var(--gah-ink-muted);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-label);
+  letter-spacing: var(--gah-label-tracking);
+  text-transform: uppercase;
+}
+
+.copy {
+  padding-top: 1rem;
+}
+
+/* Authored: the title and the short statement. */
+.seriesTitle {
+  margin: 0;
+  font-size: clamp(1.625rem, 1.2rem + 1.4vw, 2.5rem);
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  overflow-wrap: anywhere;
+}
+
+.statement {
+  max-width: 48ch;
+  margin: 0.5rem 0 0;
+  color: var(--gah-ink-soft);
+  font-family: var(--gah-font-sans);
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* Derived: the count reads as a label, apart from the authored copy. */
+.count {
+  margin: 0.75rem 0 0;
+  color: var(--gah-label);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-label);
+  letter-spacing: var(--gah-label-tracking);
+  text-transform: uppercase;
+}
+
+/* Hover parity: keyboard focus marks the title the same way a pointer does. */
+.entry:focus-visible .seriesTitle {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.15em;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .entry:hover .seriesTitle {
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0.15em;
+  }
+}
+
+/* Above 768 px the entries pair up, wide and narrow, alternating by row, so
+   they read as separate bodies of work rather than a uniform grid. */
+@media (min-width: 768px) {
+  .list {
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+  }
+
+  .item {
+    grid-column: span 5;
+  }
+
+  .item:nth-child(4n + 1),
+  .item:nth-child(4n) {
+    grid-column: span 7;
+  }
+
+  .item:nth-child(4n + 1) .frame,
+  .item:nth-child(4n) .frame {
+    aspect-ratio: 3 / 2;
+  }
+
+  .item:nth-child(4n + 2) .frame,
+  .item:nth-child(4n + 3) .frame {
+    aspect-ratio: 4 / 5;
+  }
+}

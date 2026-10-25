@@ -33,6 +33,8 @@ describe('the lib/catalog import boundary', { timeout: 60_000 }, () => {
         ['lib/catalog/reader.ts', NEXT_SERVER],
         ['lib/catalog/working-layer.ts', SERVER_ONLY],
         ['lib/catalog/projections/home.ts', "import { cache } from 'next/dist/server/lib/cache';\nexport const probe = cache;\n"],
+        ['lib/catalog/projections/home.ts', SERVER_ONLY],
+        ['lib/catalog/projections/work.ts', NEXT_SERVER],
         ['lib/catalog/__tests__/probe.test.ts', NEXT_SERVER],
     ])('rejects %s importing Next or server-only', async (file, source) => {
         expect(await restrictedImports(file, source)).toHaveLength(1);
@@ -43,6 +45,10 @@ describe('the lib/catalog import boundary', { timeout: 60_000 }, () => {
         ['lib/catalog/public-reader.ts', `${SERVER_ONLY}${NEXT_SERVER.replace('probe', 'other')}`],
     ])('lets %s, which only the web process imports, use them', async (file, source) => {
         expect(await restrictedImports(file, source)).toEqual([]);
+    });
+
+    it.each(['lib/catalog/reader.ts', 'lib/catalog/projections/work.ts'])('lets %s, which client code must not reach, import server-only', async (file) => {
+        expect(await restrictedImports(file, SERVER_ONLY)).toEqual([]);
     });
 
     it.each([

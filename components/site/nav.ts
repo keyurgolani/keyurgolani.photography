@@ -6,10 +6,14 @@ export interface NavItem {
   href: string;
 }
 
-/** The Primary links, in order. Work points at /gallery until #3 (series catalog) switches it to /work. */
+/**
+ * The Primary links, in order. Work points at /work in both modes: before the
+ * catalog cutover /work answers 307 to the legacy /gallery, and after it
+ * /gallery answers 308 to /work (#3).
+ */
 export const NAV_ITEMS: readonly NavItem[] = [
   { section: 'home', label: 'Home', href: '/' },
-  { section: 'work', label: 'Work', href: '/gallery' },
+  { section: 'work', label: 'Work', href: '/work' },
   { section: 'about', label: 'About', href: '/about' },
 ];
 

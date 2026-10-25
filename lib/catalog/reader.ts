@@ -1,4 +1,8 @@
+// Only the web process and the tests import this, never the CLI or a client
+// module. A client bundle that reaches it fails the build (#3).
+import 'server-only';
 import type { PublicAssetProjection } from '../identity/metadata';
+import { workCatalogOf, type WorkCatalog } from './projections/work';
 import type { CandidateContent, RevisionContent, SeriesRecord, SiteRecord } from './types';
 
 /**
@@ -27,6 +31,8 @@ export interface CatalogReader<Photo = CatalogContent['photos'][number]> {
     photo(photoId: string): Photo | null;
     /** A series' photos in `photoIds` order, skipping entries that resolve to nothing, from `offset`. */
     photosOf(seriesId: string, offset?: number, limit?: number): Photo[];
+    /** #3's Work read model for `/work`, from this reader's content alone. Hrefs from `routes`, the public ones by default. */
+    getWorkSummaries(routes?: Pick<RouteBuilder, 'seriesHref'>): WorkCatalog;
 }
 
 interface Index {
@@ -69,7 +75,7 @@ export function createCatalogReader<C extends CatalogContent>(content: C, meta: 
     type Photo = C['photos'][number];
     const index = indexOf(content);
     const revision = { revisionId: meta.revisionId, revisionNumber: meta.revisionNumber };
-    return {
+    const reader: CatalogReader<Photo> = {
         revision: () => ({ ...revision }),
         site: () => content.site,
         listSeries: () => content.series,
@@ -81,7 +87,9 @@ export function createCatalogReader<C extends CatalogContent>(content: C, meta: 
             const members = (index.members.get(seriesId) ?? []) as Photo[];
             return members.slice(offset, limit === Infinity ? undefined : offset + limit);
         },
+        getWorkSummaries: (routes = publicRouteBuilder) => workCatalogOf({ revisionId: revision.revisionId, listSeries: reader.listSeries, photosOf: reader.photosOf }, routes),
     };
+    return reader;
 }
 
 /**
@@ -125,3 +133,6 @@ export function createRouteBuilder({ basePath = '' }: { basePath?: string } = {}
         photoHref: (slug, photoId) => `${basePath}/work/${segment(slug)}/photo/${segment(photoId)}`,
     };
 }
+
+/** The public builder getWorkSummaries() defaults to. #13's `publicRoutes` is the same. */
+const publicRouteBuilder = createRouteBuilder();

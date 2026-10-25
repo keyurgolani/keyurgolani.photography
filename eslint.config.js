@@ -12,8 +12,13 @@ const handlers = ['onClick', 'onMouseDown', 'onMouseUp', 'onKeyPress', 'onKeyDow
 const NEXT_MESSAGE = 'This code runs outside Next. Keep Next imports in app/, proxy.ts, or lib/catalog/request.ts.'
 const NEXT_PATHS = [
   { name: 'next', message: NEXT_MESSAGE },
-  { name: 'server-only', message: 'This code runs under plain Node, where server-only throws. Only lib/catalog/public-reader.ts may import it.' },
+  { name: 'server-only', message: 'This code runs under plain Node, where server-only throws. Only lib/catalog/public-reader.ts, reader.ts, and projections/work.ts may import it.' },
 ]
+// The reader and the Work projection carry server-only so a client bundle
+// that reaches them fails the build (#3). Nothing the CLI, the watcher,
+// Playwright, or ci/publish-fixture.ts loads reaches them at runtime, which
+// lib/catalog/__tests__/clientImports.test.ts checks. They still may not use Next.
+const SERVER_ONLY_CATALOG = ['lib/catalog/reader.ts', 'lib/catalog/projections/work.ts']
 const NEXT_PATTERNS = [{ group: ['next/*'], message: NEXT_MESSAGE }]
 // Ingestion never authors order (#8). The watcher process may read the
 // working layer, but never load the sequence operations or the authored
@@ -147,6 +152,12 @@ export default tseslint.config(
     ignores: ['lib/catalog/request.ts', 'lib/catalog/public-reader.ts', ...TESTS_AND_RULESET],
     rules: {
       'no-restricted-imports': ['error', { paths: NEXT_PATHS, patterns: [...NEXT_PATTERNS, ...RULE_RUNNER_PATTERNS] }],
+    },
+  },
+  {
+    files: SERVER_ONLY_CATALOG,
+    rules: {
+      'no-restricted-imports': ['error', { paths: [NEXT_PATHS[0]], patterns: [...NEXT_PATTERNS, ...RULE_RUNNER_PATTERNS] }],
     },
   },
 )

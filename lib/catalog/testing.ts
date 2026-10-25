@@ -14,7 +14,6 @@ import { mediaUrl } from '../media/url';
 import { DATA_ROOT_FILE, DATA_ROOT_SCHEMA_VERSION } from '../storage/config';
 import { readVersionedDocument, versionFile, versionText } from '../storage/document';
 import { isInside, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, realpathLoose } from '../storage/fsx';
-import { createCatalogReader, type CatalogReader, type ReaderMeta } from './reader';
 import { parseAuthoredRecord, revisionIdOf, type AuthoredKind } from './schema';
 import type {
     AuthoredAlt,
@@ -36,7 +35,10 @@ import { authoredPaths, authoredRecordDir, catalogPaths, readWorkingLayer } from
 /**
  * Test catalogs: a data root with a working layer, #10's registry, and
  * optionally derivative sets, built from a seed so the same options always
- * give the same bytes. Test-only; nothing in the app imports it. All copy
+ * give the same bytes. Test-only; nothing in the app imports it. Playwright
+ * and ci/publish-fixture.ts load it under plain Node, so it must not reach
+ * the reader, which is server-only: tests build one with
+ * createCatalogReader(catalog.content, ...). All copy
  * reads as an obvious fixture, since no real series titles, statements,
  * descriptions, or locations exist yet.
  */
@@ -139,8 +141,6 @@ export interface TestCatalog {
     /** What compile would produce: published series in Work order with their photos, sorted by ID. */
     content: CandidateContent;
     revisionId: string;
-    /** A reader over `content`, with no revision number, as for a candidate. */
-    reader(meta?: Partial<ReaderMeta>): CatalogReader<CandidatePhotoRecord>;
     /**
      * A rule context for a candidate: a copy of `content`, the working layer
      * as read from disk, a copy of the registry, no active revision, and the
@@ -524,7 +524,6 @@ export async function createTestCatalog(options: TestCatalogOptions = {}): Promi
         registry: written,
         content,
         revisionId,
-        reader: (meta = {}) => createCatalogReader(content, { revisionId, revisionNumber: null, ...meta }),
         context: async (overrides = {}) => ({
             candidate: structuredClone(content),
             authored: await readWorkingLayer(root),
