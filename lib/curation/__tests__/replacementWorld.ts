@@ -57,11 +57,21 @@ export interface Images {
     second: Buffer;
     /** Other pixels again, for a second replacement. */
     third: Buffer;
+    /** A photograph added after the first publish, and other pixels for it. */
+    fresh: Buffer;
+    freshReplacement: Buffer;
 }
 
 export async function makeImages(): Promise<Images> {
     // Small, so every variant is the oriented width and the AVIF encodes stay quick.
-    return { original: await gradient(240, 160, 200), replacement: await gradient(240, 160, 40), second: await gradient(160, 240, 120), third: await gradient(240, 160, 90) };
+    return {
+        original: await gradient(240, 160, 200),
+        replacement: await gradient(240, 160, 40),
+        second: await gradient(160, 240, 120),
+        third: await gradient(240, 160, 90),
+        fresh: await gradient(180, 180, 10),
+        freshReplacement: await gradient(180, 180, 240),
+    };
 }
 
 export interface World {
