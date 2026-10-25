@@ -378,8 +378,12 @@ export const OWNER_FIELDS = {
     capturedAt: 'capture date',
 } as const satisfies Partial<Record<keyof AuthoredPhoto, string>>;
 
-/** The photo record fields the tools set: the record's identity, the asset revision draft:init pins, and the version and rebase fields. */
-export const MANAGED_PHOTO_FIELDS = ['schemaVersion', 'version', 'baseRevisionId', 'conflicts', 'kind', 'id', 'assetRevision'] as const satisfies readonly (keyof AuthoredPhoto)[];
+/**
+ * The photo record fields the tools set: the record's identity, the asset
+ * revision draft:init pins, the version and rebase fields, and #16's review
+ * stamps, which are the writer's metadata and never the owner's copy.
+ */
+export const MANAGED_PHOTO_FIELDS = ['schemaVersion', 'version', 'baseRevisionId', 'conflicts', 'review', 'kind', 'id', 'assetRevision'] as const satisfies readonly (keyof AuthoredPhoto)[];
 
 /** What the owner set on a photo record, which a merge would lose. Empty for the bare record draft:init writes. */
 export function ownerCopyOf(record: AuthoredPhoto): string[] {
