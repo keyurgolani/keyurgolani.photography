@@ -7,11 +7,18 @@ export async function register() {
     // with a bad CURATOR_TUNNEL_PORT, stops here. Next has already opened its
     // port by now, so every curator request is also refused on its own until
     // the process exits (lib/curation/auth/policy.ts).
-    const { curatorStartupProblem } = await import('./lib/curation/auth/policy');
+    const { curatorSecretsProblem, curatorStartupProblem } = await import('./lib/curation/auth/policy');
     const problem = curatorStartupProblem(process.env, process.argv);
     if (problem !== null) {
       console.error(`CURATION_ENABLED is true, but ${problem}. The curator listens on loopback only: see docs/curator.md. Stopping.`);
       process.exit(1);
+    }
+    // Missing or unusable secret files don't stop it: every curator path
+    // answers 503 until they're fixed, and it never runs without them. The
+    // message names the setting and the problem, never a value.
+    const secrets = curatorSecretsProblem(process.env);
+    if (secrets !== null) {
+      console.error(`CURATION_ENABLED is true, but ${secrets}. Every path answers 503 until the curator's secret files are in place: see docs/curator.md.`);
     }
   }
 }

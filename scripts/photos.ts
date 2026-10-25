@@ -147,6 +147,13 @@
  *     Exits 0 when done, 1 when
  *     refused, 2 on a usage error, 3 when stale, locked, or the data root
  *     isn't ready, and 4 when a file can't be read. Prints no absolute path.
+ *   npx tsx scripts/photos.ts curation hash-passphrase --out <file>
+ *   npx tsx scripts/photos.ts curation session-secret --out <file>
+ *     The curator's credential, made at deploy time (docs/curator.md):
+ *     the scrypt hash of a passphrase read from stdin without echo, and 32
+ *     random bytes that sign the session cookie. Each writes one file, mode
+ *     0400, and prints no secret. Exits 0 when written, 1 when refused or
+ *     the file can't be written, and 2 on a usage error.
  *
  *   npx tsx scripts/photos.ts gc [--apply <planDigest>]
  *     Plan the cleanup docs/data-root.md's retention rules allow: staging
@@ -194,6 +201,7 @@ import { issueLines, photoIdArg, publishReport, sequenceArgs, seriesArgs, parseF
 import { publish, PUBLISH_EXIT_CODES, validateWorkingLayer, VALIDATE_EXIT_CODES } from '../lib/catalog/publish';
 import { REVISION_ID_RE } from '../lib/catalog/schema';
 import { runSequenceCommand, type CommandResult, type SequenceCommand } from '../lib/catalog/sequence-commands';
+import { CREDENTIAL_COMMANDS, credentialUsage, runCredentialCommand } from '../lib/curation/auth/credential-cli';
 import { curationUsage, runCurationCli } from '../lib/curation/commands';
 import { ApplyRefusedError, migrateApply } from '../lib/identity/apply';
 import { createDecision, decisionFileName, isLibraryPath, writeDecision, type DecisionInput } from '../lib/identity/decisions';
@@ -240,6 +248,7 @@ const USAGE = `Usage:
   ${PROGRAM} rollback --to <number | revisionId> --reason <text> [--actor <name>] [--expect-active <revisionId>] [--yes]
 ${curationUsage(PROGRAM)}
   ${PROGRAM} gc [--apply <planDigest>]
+${credentialUsage(PROGRAM)}
 A flag given twice is refused. An argument that starts with - goes after --.
 In production: docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs <command>
 The README's "Curating the catalog" section has the commands, the hand-edit rules, and the launch checklist.`;
@@ -562,6 +571,11 @@ async function main(argv: string[]): Promise<number> {
         if (command === 'publish') return await publishCommand(args);
         if (command === 'history') return await historyCommand(args);
         if (command === 'rollback') return await rollbackCommand(args);
+        if (command === 'curation' && (CREDENTIAL_COMMANDS as readonly string[]).includes(args[0] ?? '')) {
+            const result = await runCredentialCommand(args[0] as (typeof CREDENTIAL_COMMANDS)[number], args.slice(1), { stdin: process.stdin, stderr: process.stderr });
+            (result.exitCode === 0 ? process.stdout : process.stderr).write(result.output);
+            return result.exitCode;
+        }
         if (command === 'curation') {
             const result = await runCurationCli(args, { dataRoot: dataRoot(), libraryRoot: libraryRoot(), program: PROGRAM });
             (result.exitCode === 0 ? process.stdout : process.stderr).write(result.output);
