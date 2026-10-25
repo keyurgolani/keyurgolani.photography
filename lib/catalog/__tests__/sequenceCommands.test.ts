@@ -2,10 +2,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { folderBytes } from '../../../test/helpers/folderBytes';
 import { withLock } from '../../storage/lock';
 import { runSequenceCommand, type SequenceCommand } from '../sequence-commands';
 import { createTestCatalog, type TestCatalog } from '../testing';
-import { authoredRecordFile, readAuthoredRecord } from '../working-layer';
+import { authoredRecordDir, readAuthoredRecord } from '../working-layer';
 import { writeAuthoredRecord } from '../working-layer-writer';
 
 const P = Array.from({ length: 8 }, (_, index) => `ph_00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`);
@@ -68,7 +69,7 @@ describe('sequence show', () => {
         if (!undescribed || !suggested) throw new Error('fixture records missing');
         await writeAuthoredRecord({ ...undescribed, alt: null }, { expectedVersion: undescribed.version, root: catalog.root });
         await writeAuthoredRecord({ ...suggested, alt: { kind: 'described', text: 'A fixture suggestion.', reviewed: false } }, { expectedVersion: suggested.version, root: catalog.root });
-        fs.rmSync(authoredRecordFile(catalog.root, 'photo', P[3]));
+        fs.rmSync(authoredRecordDir(catalog.root, 'photo', P[3]), { recursive: true });
         const { output } = await run({ command: 'show', seriesId: S1 });
         expect(output).toContain(`02  ${P[1]}  opening, no description`);
         expect(output).toContain(`03  ${P[2]}  description not reviewed`);
@@ -187,8 +188,8 @@ describe('exit codes', () => {
         ['a focal point outside 0 to 1', { command: 'cover', seriesId: S1, photoId: P[0], focal: { x: 1.5, y: 0 } }],
         ['a negative --expect-version', { command: 'remove', seriesId: S1, photoId: P[3], expectVersion: -1 }],
     ] as const)('exit 2 for %s, and write nothing', async (_label, command) => {
-        const before = fs.readFileSync(authoredRecordFile(catalog.root, 'series', S1));
+        const before = folderBytes(authoredRecordDir(catalog.root, 'series', S1));
         expect((await run(command as SequenceCommand)).exitCode).toBe(2);
-        expect(fs.readFileSync(authoredRecordFile(catalog.root, 'series', S1)).equals(before)).toBe(true);
+        expect(folderBytes(authoredRecordDir(catalog.root, 'series', S1))).toEqual(before);
     });
 });

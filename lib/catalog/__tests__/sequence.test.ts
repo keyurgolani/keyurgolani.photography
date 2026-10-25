@@ -3,13 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runTsx } from '../../../test/helpers/runTsx';
+import { folderBytes } from '../../../test/helpers/folderBytes';
 import { identityPaths, readRegistry, writeRegistry } from '../../identity/registry';
 import { withLock } from '../../storage/lock';
 import { runRules } from '../rules';
 import { applySeriesOp, applySequenceOp, sequenceContext, type Actor, type ApplyOptions, type SeriesOp, type SequenceOp } from '../sequence';
 import { createTestCatalog, type TestCatalog } from '../testing';
 import type { AuthoredSeries } from '../types';
-import { authoredRecordFile, readAuthoredRecord, readAuthoredSeries } from '../working-layer';
+import { authoredRecordDir, readAuthoredRecord, readAuthoredSeries } from '../working-layer';
 
 const P = Array.from({ length: 10 }, (_, index) => `ph_00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`);
 const UNKNOWN = 'ph_00000000-0000-4000-8000-000000000999';
@@ -65,19 +66,11 @@ async function apply(op: SequenceOp, options: Partial<ApplyOptions> = {}) {
     return applySequenceOp(layer(), op, { expectedVersion: await versionOf(kindOf(op), idOf(op)), actor: EDITOR, ...options });
 }
 
-function bytes(kind: 'series' | 'site', id: string): Buffer | null {
-    const file = authoredRecordFile(catalog.root, kind, id);
-    return fs.existsSync(file) ? fs.readFileSync(file) : null;
-}
+/** Every file in a record's version folder, or null when it has none. */
+const bytes = (kind: 'series' | 'site', id: string) => folderBytes(authoredRecordDir(catalog.root, kind, id));
 
-/** Every authored file's bytes, for checking an operation wrote nothing. */
-function authoredBytes(): Record<string, string> {
-    const dir = path.join(catalog.root, 'authored');
-    return Object.fromEntries(fs.readdirSync(dir, { recursive: true, encoding: 'utf8' })
-        .filter((name) => fs.statSync(path.join(dir, name)).isFile())
-        .sort()
-        .map((name) => [name, fs.readFileSync(path.join(dir, name), 'utf8')]));
-}
+/** Every authored file's bytes, version history included, for checking an operation wrote nothing. */
+const authoredBytes = () => folderBytes(path.join(catalog.root, 'authored'));
 
 async function expectRejected(op: SequenceOp, code: string, extra: Record<string, unknown> = {}, options: Partial<ApplyOptions> = {}) {
     const before = authoredBytes();
@@ -145,7 +138,7 @@ describe('insert', () => {
     });
 
     it('places a photo with no photo record yet, and an archived one: publication rules decide later', async () => {
-        fs.rmSync(authoredRecordFile(catalog.root, 'photo', P[8]));
+        fs.rmSync(authoredRecordDir(catalog.root, 'photo', P[8]), { recursive: true });
         const registry = await readRegistry(catalog.root);
         registry.photos[P[9]].sourceHealth = 'archived';
         await writeRegistry(catalog.root, registry, registry.version);
@@ -375,7 +368,7 @@ describe('Work order and featured order', () => {
     });
 
     it('creates the site record at version 0 when there is none', async () => {
-        fs.rmSync(authoredRecordFile(catalog.root, 'site', 'site'));
+        fs.rmSync(authoredRecordDir(catalog.root, 'site', 'site'), { recursive: true });
         expect(await apply({ kind: 'setSeriesOrder', seriesIds: [S1] }, { expectedVersion: 0 })).toMatchObject({ ok: true, changed: true, version: 1 });
         expect(await readAuthoredRecord(catalog.root, 'site', 'site')).toMatchObject({ seriesOrder: [S1], featuredSeriesIds: [] });
     });
@@ -483,9 +476,9 @@ describe('the operation contract', () => {
     });
 
     it('leaves the registry alone', async () => {
-        const before = fs.readFileSync(identityPaths(catalog.root).registry);
+        const before = folderBytes(identityPaths(catalog.root).registry);
         await apply({ kind: 'insert', seriesId: S1, photoId: P[8], at: 'end' });
-        expect(fs.readFileSync(identityPaths(catalog.root).registry).equals(before)).toBe(true);
+        expect(folderBytes(identityPaths(catalog.root).registry)).toEqual(before);
         expect(bytes('series', S2)).not.toBeNull();
     });
 });

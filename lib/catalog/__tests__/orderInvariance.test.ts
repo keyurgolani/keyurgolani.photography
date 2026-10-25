@@ -5,6 +5,7 @@ import sharp from 'sharp';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { buildExif, withSegments } from '../../../test/fixtures/exif';
 import { fixtureFiles } from '../../../test/fixtures/makeLibrary';
+import { folderBytes } from '../../../test/helpers/folderBytes';
 import { runTsx } from '../../../test/helpers/runTsx';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempLibrary';
@@ -15,12 +16,13 @@ import { readRegistry, writeRegistry } from '../../identity/registry';
 import type { IdentityFactType, Registry } from '../../identity/types';
 import { VARIANT_FORMATS, VARIANT_PIXELS, VARIANT_WIDTHS } from '../../identity/variants';
 import { mediaUrl } from '../../media/url';
+import { pruneVersions, versionFile } from '../../storage/document';
 import { runRules } from '../rules';
 import { parseRevisionFile, revisionIdOf } from '../schema';
 import { applySequenceOp } from '../sequence';
 import { assertOrderUntouched, createTestCatalog, type OrderStep } from '../testing';
 import type { CandidateContent, RevisionFile } from '../types';
-import { authoredPaths, catalogPaths, readAuthoredRecord, readWorkingLayer } from '../working-layer';
+import { authoredRecordDir, catalogPaths, readAuthoredRecord, readWorkingLayer } from '../working-layer';
 import { writeAuthoredRecord } from '../working-layer-writer';
 
 const SERIES = 'ser_invariance';
@@ -180,13 +182,14 @@ async function runWatcherOnce(fixture: Fixture, ...args: string[]): Promise<void
 }
 
 describe('assertOrderUntouched', () => {
-    it('names a step that changes, adds, or removes a file under catalog/ or authored/', async () => {
+    it('names a step that commits a version, stages one, or changes, adds, or removes a file or a document', async () => {
         const catalog = await createTestCatalog({ seed: 81 });
         cleanups.push(() => catalog.cleanup());
         const seriesId = catalog.series[0].id;
+        const seriesDir = authoredRecordDir(catalog.root, 'series', seriesId);
         const editor = { name: 'an editor operation', run: () => applySequenceOp({ dataRoot: catalog.root }, { kind: 'move', seriesId, photoId: catalog.series[0].photoIds[0], at: 'end' }, { expectedVersion: 1, actor: { kind: 'editor' } }) };
         await expect(assertOrderUntouched(catalog.root, [{ name: 'nothing', run: () => undefined }, editor]))
-            .rejects.toThrow(`The step "an editor operation" touched authored order: changed authored/series/${seriesId}.json.`);
+            .rejects.toThrow(`The step "an editor operation" touched authored order: changed authored/series/${seriesId} (v1 to v2).`);
         const added = {
             name: 'a stray candidate',
             run: () => {
@@ -195,8 +198,26 @@ describe('assertOrderUntouched', () => {
             },
         };
         await expect(assertOrderUntouched(catalog.root, [added])).rejects.toThrow('added catalog/candidates/x.json');
-        const removed = { name: 'a deleted photo record', run: () => fs.rmSync(path.join(authoredPaths(catalog.root).photosDir, `${catalog.photos[0].id}.json`)) };
-        await expect(assertOrderUntouched(catalog.root, [removed])).rejects.toThrow(`removed authored/photos/${catalog.photos[0].id}.json`);
+        const photoId = catalog.photos[0].id;
+        const removed = { name: 'a deleted photo record', run: () => fs.rmSync(authoredRecordDir(catalog.root, 'photo', photoId), { recursive: true }) };
+        await expect(assertOrderUntouched(catalog.root, [removed])).rejects.toThrow(`removed authored/photos/${photoId}.`);
+        const staged = { name: 'a staged version', run: () => fs.writeFileSync(path.join(seriesDir, '.v3.1.fixture.tmp'), '{}') };
+        await expect(assertOrderUntouched(catalog.root, [staged])).rejects.toThrow(`added authored/series/${seriesId}/.v3.1.fixture.tmp.`);
+        fs.rmSync(path.join(seriesDir, '.v3.1.fixture.tmp'));
+        const site = authoredRecordDir(catalog.root, 'site', 'site');
+        const inPlace = { name: 'an edit in place', run: () => fs.writeFileSync(versionFile(site, 1), JSON.stringify({ ...JSON.parse(fs.readFileSync(versionFile(site, 1), 'utf8')), seriesOrder: [] })) };
+        await expect(assertOrderUntouched(catalog.root, [inPlace])).rejects.toThrow('changed authored/site (v1 to unreadable: EditedInPlaceError).');
+    });
+
+    it('lets a prune remove versions older than the newest', async () => {
+        const catalog = await createTestCatalog({ seed: 82 });
+        cleanups.push(() => catalog.cleanup());
+        const seriesId = catalog.series[0].id;
+        await applySequenceOp({ dataRoot: catalog.root }, { kind: 'move', seriesId, photoId: catalog.series[0].photoIds[0], at: 'end' }, { expectedVersion: 1, actor: { kind: 'editor' } });
+        const dir = authoredRecordDir(catalog.root, 'series', seriesId);
+        expect(fs.existsSync(versionFile(dir, 1))).toBe(true);
+        await assertOrderUntouched(catalog.root, [{ name: 'a prune', run: () => pruneVersions(dir, { keep: 1 }) }]);
+        expect(fs.existsSync(versionFile(dir, 1))).toBe(false);
     });
 
     it('refuses a data root with nothing to compare', async () => {
@@ -284,8 +305,8 @@ describe('reconcile never authors order', () => {
         const fixture = await prepare();
         fs.renameSync(fixture.lib.file('portrait.png'), fixture.lib.file('portrait-renamed.png'));
         const before = await readAuthoredRecord(fixture.data.root, 'series', SERIES);
-        const others = ['authored/site.json', `authored/series/${DRAFT}.json`, ...fixture.members.map((id) => `authored/photos/${id}.json`)]
-            .map((file) => [file, fs.readFileSync(path.join(fixture.data.root, file), 'utf8')] as const);
+        const others = ['authored/site', `authored/series/${DRAFT}`, ...fixture.members.map((id) => `authored/photos/${id}`)]
+            .map((folder) => [folder, folderBytes(path.join(fixture.data.root, folder))] as const);
 
         const [types, result] = await Promise.all([
             fixture.pass(),
@@ -296,7 +317,10 @@ describe('reconcile never authors order', () => {
         expect(result).toMatchObject({ ok: true, changed: true });
         const after = await readAuthoredRecord(fixture.data.root, 'series', SERIES);
         expect(after).toEqual({ ...before, version: (before?.version ?? 0) + 1, photoIds: [fixture.members[0], fixture.members[2], fixture.members[1]] });
-        for (const [file, text] of others) expect(fs.readFileSync(path.join(fixture.data.root, file), 'utf8'), file).toBe(text);
+        for (const [folder, bytes] of others) {
+            expect(bytes, folder).not.toBeNull();
+            expect(folderBytes(path.join(fixture.data.root, folder)), folder).toEqual(bytes);
+        }
     }, 60_000);
 });
 

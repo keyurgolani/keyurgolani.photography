@@ -4,7 +4,7 @@ import { PHOTO_ID_RE } from '../identity/ids';
 import { CorruptDocumentError, EditedInPlaceError, MisnamedVersionError, readVersionedDocument } from '../storage/document';
 import { hasErrorCode } from '../storage/fsx';
 import { parseActivePointer, parseAuthoredRecord, SERIES_ID_RE, type AuthoredKind } from './schema';
-import type { ActivePointer, AuthoredPhoto, AuthoredSeries, AuthoredSite, RecordProblem, WorkingLayer } from './types';
+import type { ActivePointer, AuthoredPhoto, AuthoredSeries, AuthoredSite, RecordProblem, RecordProblemReason, WorkingLayer } from './types';
 
 /**
  * Read-only access to the authored working layer and the active pointer. Each
