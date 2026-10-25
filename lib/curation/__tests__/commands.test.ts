@@ -326,9 +326,49 @@ describe('a new photograph that is already placed', () => {
         expect(listed[0]).toBe('Curation inbox: 0 items require judgment, 1 approved but no longer placed, 2 in all.');
         expect(listed.slice(1)).toEqual([expect.stringMatching(new RegExp(`^${placedItem?.id}@2 .* approved .*unplaced: approved into ${DRAFT}, but no series or the live revision holds its photo now$`))]);
         expect(JSON.parse((await cli(f, 'list', '--json')).output)).toMatchObject({ needsJudgment: 0, unplaced: 1, events: [{ id: placedItem?.id, unplaced: DRAFT }] });
-        expect((await cli(f, 'show', placedItem?.id as string)).output).toContain(`No longer placed: it was approved into ${DRAFT}, but no series or the live revision holds its photo now, as after a rollback. To place it again, reopen it, then approve it.`);
+        expect((await cli(f, 'show', placedItem?.id as string)).output).toContain([
+            `No longer placed: it was approved into ${DRAFT}, but no series or the live revision holds its photo now. The photo record stays in the draft, unassigned. To put it back in ${DRAFT}, run:`,
+            `  curation reopen ${placedItem?.id} --version 2 --base none`,
+            `  curation approve ${placedItem?.id} --version 3 --series ${DRAFT} --base none`,
+        ].join('\n'));
+        expect(JSON.parse((await cli(f, 'show', placedItem?.id as string, '--json')).output)).toMatchObject({ unplaced: DRAFT });
         expect((await cli(f, 'show', loose?.id as string)).output).not.toContain('No longer placed');
         expect(folderBytes(path.join(f.root, 'curation'))).toEqual(before);
+
+        // Reopening it says there is no placement to keep, and names the series to approve it into.
+        expect((await cli(f, 'reopen', placedItem?.id as string, '--version', '2', '--base', 'none')).output).toBe(`Reopened. Nothing holds its photo now, so there is no draft placement to keep. Approve it with --series ${DRAFT} to place it again.\n${placedItem?.id} is open, now at version 3.\n`);
+    });
+
+    it('goes by the last approval, and flags nothing for a hidden series or a dismissed item', async () => {
+        const f = await fixture({ fresh: 3 });
+        await createCurationSink({ root: f.root, logger: quiet })(f.fresh.map((photoId) => f.fact('new', photoId)));
+        const { events } = await listEvents(f.root);
+        const [moved, gone, kept] = f.fresh.map((photoId) => events.find((event) => event.photoId === photoId));
+        const approve = (id: string, version: number, ...choice: string[]) => cli(f, 'approve', id, '--version', String(version), ...choice, '--description', 'A harbor.');
+
+        // Approved into the series, reopened, approved again left unassigned: once the series drops it, the last approval chose no series.
+        expect(await approve(moved?.id as string, 1, '--series', DRAFT)).toMatchObject({ exitCode: 0 });
+        expect(await cli(f, 'reopen', moved?.id as string, '--version', '2')).toMatchObject({ exitCode: 0, output: expect.stringContaining('The draft placement stays in the working layer') });
+        expect(await approve(moved?.id as string, 3, '--unassigned')).toMatchObject({ exitCode: 0 });
+        // Approved, reopened, and dismissed.
+        expect(await approve(gone?.id as string, 1, '--series', DRAFT)).toMatchObject({ exitCode: 0 });
+        expect(await cli(f, 'reopen', gone?.id as string, '--version', '2')).toMatchObject({ exitCode: 0 });
+        expect(await cli(f, 'dismiss', gone?.id as string, '--version', '3', '--reason', 'Not this one.')).toMatchObject({ exitCode: 0 });
+        // Approved into the series, and the series keeps it.
+        expect(await approve(kept?.id as string, 1, '--series', DRAFT)).toMatchObject({ exitCode: 0 });
+
+        // The series goes hidden and keeps its photos, as a rollback's rebase leaves a series only the rolled-away revision published.
+        const series = await readAuthoredRecord(f.root, 'series', DRAFT) as AuthoredSeries;
+        expect(series.photoIds).toEqual(expect.arrayContaining(f.fresh));
+        await writeAuthoredRecord({ ...series, visibility: 'hidden' }, { expectedVersion: series.version, root: f.root });
+        expect((await cli(f, 'list', '--all')).output).not.toContain('no longer placed');
+
+        const hidden = await readAuthoredRecord(f.root, 'series', DRAFT) as AuthoredSeries;
+        await writeAuthoredRecord({ ...hidden, photoIds: hidden.photoIds.filter((id) => id !== f.fresh[0] && id !== f.fresh[1]) }, { expectedVersion: hidden.version, root: f.root });
+        const listed = await cli(f, 'list', '--all');
+        expect(listed.output).toMatch(/^Curation inbox: 0 items require judgment, 3 in all\.\n/);
+        expect(listed.output).not.toContain('unplaced');
+        expect(JSON.parse((await cli(f, 'list', '--json', '--all')).output)).toMatchObject({ unplaced: 0 });
     });
 
     it('counts every item when the data root can\'t show what is placed, and says why', async () => {
@@ -338,7 +378,7 @@ describe('a new photograph that is already placed', () => {
         fs.writeFileSync(path.join(f.root, 'catalog', 'revisions', `${f.catalog.revisionId}.json`), '{');
         const listed = await cli(f, 'list');
         expect(listed.exitCode).toBe(0);
-        expect(listed.output).toMatch(/^Curation inbox: 1 item requires judgment, 1 in all\.\nCan't tell which new photographs are already placed, since catalog\/revisions\/rev_[0-9a-f]{64}\.json can't be used \(invalid-json\), so each one counts\.\n/);
+        expect(listed.output).toMatch(/^Curation inbox: 1 item requires judgment, 1 in all\.\nCan't tell which new photographs are placed, since catalog\/revisions\/rev_[0-9a-f]{64}\.json can't be used \(invalid-json\), so every item counts by its stored status: none reads as already placed or as no longer placed\.\n/);
         const [event] = (await listEvents(f.root)).events;
         expect(JSON.parse((await cli(f, 'show', event.id, '--json')).output)).toMatchObject({ placed: null, placementUnknown: { file: `catalog/revisions/${f.catalog.revisionId}.json`, reason: 'invalid-json' } });
     });

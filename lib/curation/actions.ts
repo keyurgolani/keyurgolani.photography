@@ -10,6 +10,7 @@ import { dataRootStatus } from '../storage/config';
 import { LockTimeoutError, withLock, type LockContext } from '../storage/lock';
 import type { CurationDecision, CurationEvent, CurationEventStatus, CuratorDescription, CuratorEdits, Placement } from './events';
 import { photoHolders } from './holders';
+import { placedItems } from './placement';
 import { EventMovedError, EventUnusableError, readEvent, withCurationLock, writeEvent } from './repository';
 
 /**
@@ -233,9 +234,18 @@ export function reopenEvent(input: ActionInput & { reason?: string }): Promise<A
         const { event } = step;
         requireStatus(event, ['deferred', 'dismissed', 'approved'], 'reopened');
         const status: CurationEventStatus = event.type === 'processing-failure' ? 'failed' : 'open';
-        const notes = event.status === 'approved' ? ['Reopened. The draft placement stays in the working layer; approve with a position flag to move it.'] : ['Reopened.'];
+        const unplaced = event.status === 'approved' ? await unplacedSeries(path.resolve(input.root), event) : null;
+        const notes = event.status !== 'approved' ? ['Reopened.'] : unplaced === null
+            ? ['Reopened. The draft placement stays in the working layer; approve with a position flag to move it.']
+            : [`Reopened. Nothing holds its photo now, so there is no draft placement to keep. Approve it with --series ${unplaced} to place it again.`];
         return { event: decided(step, input, { action: 'reopen', ...(input.reason ? { reason: input.reason } : {}) }, status), notes };
     });
+}
+
+/** The series an approval named when nothing holds its photo now (unplacedApproval()), or null, also when the data root can't tell. */
+async function unplacedSeries(root: string, event: CurationEvent): Promise<string | null> {
+    const { unplaced } = await placedItems(root, [event]);
+    return unplaced.get(event.id) ?? null;
 }
 
 /** Whether the registry shows a failed derivative build for this revision. */

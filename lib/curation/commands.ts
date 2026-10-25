@@ -273,7 +273,17 @@ function matches(filter: ListFilter, event: CurationEvent, placed: boolean, unpl
     return event.status === filter;
 }
 
-const unknownPlacementLine = (error: ReferenceScanError) => `Can't tell which new photographs are already placed, since ${error.file} can't be used (${error.reason}), so each one counts.`;
+const unknownPlacementLine = (error: ReferenceScanError) => `Can't tell which new photographs are placed, since ${error.file} can't be used (${error.reason}), so every item counts by its stored status: none reads as already placed or as no longer placed.`;
+
+/** What `show` prints for an approval whose photo nothing holds now: the two commands that put it back, ready to run. */
+function unplacedLines(event: CurationEvent, series: string, active: string | null): string[] {
+    const base = active ?? 'none';
+    return [
+        `No longer placed: it was approved into ${series}, but no series or the live revision holds its photo now. The photo record stays in the draft, unassigned. To put it back in ${series}, run:`,
+        `  curation reopen ${event.id} --version ${event.version} --base ${base}`,
+        `  curation approve ${event.id} --version ${event.version + 1} --series ${series} --base ${base}`,
+    ];
+}
 
 const items = (n: number) => `${n} item${n === 1 ? '' : 's'}`;
 
@@ -403,7 +413,7 @@ async function show(root: string, command: Extract<CurationCommand, { command: '
         ...identityLines(event, registry),
         ...((reason) => (reason === null ? [] : [`Waiting: ${reason}. Act on it once the set is ready.`]))(waitingReason(event, registry, currentProfileId())),
         ...((reason) => (reason === undefined ? [] : [`Already placed: ${reason}, so it needs no judgment while it stays there.`]))(placed.get(event.id)),
-        ...((series) => (series === undefined ? [] : [`No longer placed: it was approved into ${series}, but no series or the live revision holds its photo now, as after a rollback. To place it again, reopen it, then approve it.`]))(unplaced.get(event.id)),
+        ...((series) => (series === undefined ? [] : unplacedLines(event, series, active)))(unplaced.get(event.id)),
         ...(unknown === null ? [] : [unknownPlacementLine(unknown)]),
         `Asset revision: ${event.assetRevision ?? 'none'}`,
         `Observed: ${event.observedAt}${event.lastObservedAt !== event.observedAt ? `, last ${event.lastObservedAt}` : ''}`,
