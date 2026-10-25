@@ -179,11 +179,18 @@ The site listens on the host's 127.0.0.1 only, port 3000 unless `PHOTOGRAPHY_POR
   docker compose -f docker-compose.prod.yml start web image-watcher
   ```
 - **Take a photo down after the launch**, once a catalog revision is active. Do the steps above too, since its legacy derivatives stay reachable at their URLs until the legacy URLs close.
-  1. Remove the photo from every series that lists it: its `photoIds` entry, and the series' cover or a chapter start if it is one. Or hide the series. Then publish, with the same `run --rm --no-deps image-watcher` form as the commands above: `node dist/scripts/photos.mjs publish --actor <name>`.
+  1. Take the photo out of every series that lists it, then publish. Run each command with the same `run --rm --no-deps image-watcher` form as the commands above, as `node dist/scripts/photos.mjs <command>`. `list` shows the series that list the photo. In each one, `sequence remove <seriesId> <photoId>` takes it out, and a publish then needs these too:
+     - A published series needs a cover. If the photo was the cover, the remove clears it, so pick another with `sequence cover <seriesId> <otherPhotoId>`.
+     - If it was the opening photograph, the remove clears that too, and Home opens on the series' first photograph. Pick another with `sequence opening <seriesId> <otherPhotoId>` if you want one. A hand edit has to change or drop `openingPhotoId` itself.
+     - A chapter that starts on it moves to the next photograph. If it's the chapter's only one, the remove refuses, so remove the chapter first with `sequence chapter remove <seriesId> <chapterId>`.
+     - A published series needs a photograph. If it's the series' only one, hide the series instead: set its `visibility` to `"hidden"` by hand, as "Curating the catalog" below says.
+     - A hidden series can't stay featured, and at least one featured series has to stay published. If you hid a featured series, list the ones left with `series featured <seriesId>...`.
+
+     Then run `validate`, which names each record and field a publish would stop on, and publish with `publish --actor <name>`.
   2. Check that `GET /api/ready` answers `"state":"ok"` with the `revisionId` that publish printed. `degraded` means `web` couldn't read the new revision and still serves the one before, the photo included.
   3. Purge the photo's `/media` URLs from any CDN in front of the site. `/media` sends `max-age=31536000, immutable`, so a browser that loaded the photo can keep showing it for up to a year.
 
-  If the publish stops on errors in other records, the photo stays public until they're fixed. As a last resort, delete its sets, `assets/<photoId>/` in the data root, inside `image-watcher`. `/media` then answers 404 for them, and its page shows a broken image until a publish leaves the photo out.
+  If the publish stops on errors in other records, the photo stays public until they're fixed. `validate` lists them. As a last resort, delete its sets, `assets/<photoId>/` in the data root, inside `image-watcher`. `/media` then answers 404 for them, and its page shows a broken image until a publish leaves the photo out.
 - **List legacy derivatives whose photo is gone**, such as a deleted photo's or a renamed photo's earlier names. It prints each base name in `optimized/` that no photo in the library's top folder has. Only the extensions the watcher builds from count, in any case (`.jpg`, `.jpeg`, `.png`, `.webp`), so a sidecar such as `IMG_1.xmp` left behind doesn't hide a deleted photo's old images:
 
   ```bash
