@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { PHOTO_ID_RE } from '../identity/ids';
 import { dataRootStatus } from '../storage/config';
-import { LockTimeoutError, withLock } from '../storage/lock';
+import type { VersionedWriteOptions } from '../storage/document';
+import { LockLostError, LockTimeoutError, withLock } from '../storage/lock';
 import type { CommandResult, LayerHandle } from './sequence-commands';
 import type { AuthoredPhoto } from './types';
 import { AUTHORED_LEASE_MS, AUTHORED_LOCK, AUTHORED_WAIT_MS, AuthoredWriteError, writeAuthoredRecord } from './working-layer-writer';
@@ -20,12 +21,29 @@ import { readAuthoredRecord } from './working-layer';
  * with the same keys. Columns: photoId (required), alt, decorative, title,
  * caption. `decorative` is true or false.
  *
+ * Since every imported description goes to the publish gate as reviewed, the
+ * file is held to plain text: a regular file of at most
+ * IMPORT_FILE_MAX_BYTES, strict UTF-8, no control, bidi, or zero-width
+ * characters (refusedCharacter() lists them), NFC, a line break only in a
+ * caption, and each field within FIELD_LIMITS.
+ *
  * Exit codes follow sequence-commands.ts: 0 on success, 1 for a file it
  * refuses or a data root that isn't ready, 2 for a usage error, 3 when the
- * authored lock stays busy, and 4 for I/O.
+ * authored lock stays busy or is lost part way, and 4 for I/O.
  */
 
 export const DESCRIPTION_COLUMNS = ['photoId', 'alt', 'decorative', 'title', 'caption'] as const;
+
+/** The largest file the import reads. */
+export const IMPORT_FILE_MAX_BYTES = 5 * 1024 * 1024;
+
+/**
+ * The most characters (code points, after NFC) each text column takes. The
+ * description rules still warn about alt text past 250.
+ */
+export const FIELD_LIMITS = { alt: 1000, title: 200, caption: 2000 } as const;
+
+type TextColumn = keyof typeof FIELD_LIMITS;
 
 export interface DescriptionRow {
     /** Where the row is, for messages: `line 4` in CSV, `item 3` in JSON. */
@@ -42,12 +60,68 @@ export type ParsedDescriptions = { ok: true; rows: DescriptionRow[] } | { ok: fa
 /** How many problems or changes the output lists before it only counts the rest. */
 const LISTED = 200;
 
+/** How much of a cell a message quotes. */
+const QUOTED = 60;
+
 function listed(lines: string[]): string[] {
     return lines.length > LISTED ? [...lines.slice(0, LISTED), `  and ${lines.length - LISTED} more`] : lines;
 }
 
+const codePointName = (codePoint: number) => `U+${codePoint.toString(16).toUpperCase().padStart(4, '0')}`;
+
+/** Anything a terminal could act on or hide: controls, format characters, separators, surrogates, private use, and unassigned. */
+const UNPRINTABLE = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}]/u;
+
+/** Text for a message: at most `max` characters, with anything unprintable written as `\u{XXXX}`. */
+export function printable(value: string, max = QUOTED): string {
+    const characters = [...value];
+    const shown = characters.slice(0, max).map((character) => {
+        if (character === '"') return '\\"';
+        if (character === '\\') return '\\\\';
+        return UNPRINTABLE.test(character) ? `\\u{${(character.codePointAt(0) ?? 0).toString(16).toUpperCase()}}` : character;
+    });
+    return `${shown.join('')}${characters.length > max ? '...' : ''}`;
+}
+
+/** A cell quoted for a message, cut short and escaped by printable(). */
+export function quoteCell(value: string): string {
+    return `"${printable(value)}"`;
+}
+
+/** A value of any JSON type for a message. */
+const quoteValue = (value: unknown) => (typeof value === 'string' ? quoteCell(value) : printable(JSON.stringify(value) ?? String(value)));
+
 /**
- * RFC 4180 records: fields split by commas, records by LF or CRLF, and a
+ * The first character the import refuses in `value`, with why, or null. Kept:
+ * ZWJ and ZWNJ, which emoji sequences and scripts such as Persian need, and
+ * LRM and RLM, which right-to-left text uses. A line feed is a line break,
+ * which textValue() judges by column.
+ */
+export function refusedCharacter(value: string): { codePoint: number; index: number; why: string } | null {
+    let index = 0;
+    for (const character of value) {
+        index++;
+        const codePoint = character.codePointAt(0) ?? 0;
+        const why =
+            codePoint === 0x0a ? null
+                : codePoint < 0x20 || codePoint === 0x7f ? 'a control character'
+                    : codePoint >= 0x80 && codePoint <= 0x9f ? 'a C1 control character'
+                        : codePoint >= 0x202a && codePoint <= 0x202e ? 'a bidi embedding or override'
+                            : codePoint >= 0x2066 && codePoint <= 0x2069 ? 'a bidi isolate'
+                                : codePoint === 0x200b ? 'a zero-width space'
+                                    : codePoint === 0x2060 ? 'a word joiner'
+                                        : codePoint === 0xfeff ? 'a byte order mark'
+                                            : codePoint === 0x2028 || codePoint === 0x2029 ? 'a Unicode line or paragraph separator, where a plain line break goes'
+                                                : codePoint >= 0xd800 && codePoint <= 0xdfff ? 'half of a surrogate pair'
+                                                    : codePoint === 0xfffd ? 'the replacement character, which a broken text conversion leaves'
+                                                        : null;
+        if (why !== null) return { codePoint, index, why };
+    }
+    return null;
+}
+
+/**
+ * RFC 4180 records: fields split by commas, records by LF, CRLF, or CR, and a
  * quoted field may hold commas, line breaks, and `""` for a quote. Each
  * record comes with the line it starts on.
  */
@@ -79,7 +153,8 @@ export function parseCsvRecords(text: string): { records: { line: number; fields
                     afterQuote = true;
                 }
             } else {
-                if (char === '\n') line++;
+                // CRLF counts once, and a CR alone, as old Mac files write, counts too.
+                if (char === '\n' || (char === '\r' && source[i + 1] !== '\n')) line++;
                 field += char;
             }
             continue;
@@ -111,18 +186,36 @@ function decorativeValue(value: unknown, at: string, errors: string[]): boolean 
     if (value === undefined || value === null || value === '') return undefined;
     if (typeof value === 'boolean') return value;
     if (typeof value === 'string' && /^(true|false)$/i.test(value.trim())) return value.trim().toLowerCase() === 'true';
-    errors.push(`${at}: decorative is ${JSON.stringify(value)}, but it takes true or false.`);
+    errors.push(`${at}: decorative is ${quoteValue(value)}, but it takes true or false.`);
     return undefined;
 }
 
-function textValue(value: unknown, column: string, at: string, errors: string[]): string | undefined {
+/** A text cell as it is stored: line breaks as LF, trimmed, NFC, and checked against the column's rules. */
+function textValue(value: unknown, column: TextColumn, at: string, errors: string[]): string | undefined {
     if (value === undefined || value === null) return undefined;
     if (typeof value !== 'string') {
-        errors.push(`${at}: ${column} must be text, not ${JSON.stringify(value)}.`);
+        errors.push(`${at}: ${column} must be text, not ${quoteValue(value)}.`);
         return undefined;
     }
-    const trimmed = value.trim();
-    return trimmed === '' ? undefined : trimmed;
+    const text = value.replace(/\r\n?/g, '\n').trim();
+    if (text === '') return undefined;
+    const where = `${at}, ${column}:`;
+    const refused = refusedCharacter(text);
+    if (refused) {
+        errors.push(`${where} has ${codePointName(refused.codePoint)}, ${refused.why}, at character ${refused.index}. Remove it and import the file again.`);
+        return undefined;
+    }
+    if (column !== 'caption' && text.includes('\n')) {
+        errors.push(`${where} has a line break, which only caption can hold.`);
+        return undefined;
+    }
+    const normalized = text.normalize('NFC');
+    const length = [...normalized].length;
+    if (length > FIELD_LIMITS[column]) {
+        errors.push(`${where} is ${length} characters long, over its limit of ${FIELD_LIMITS[column]}.`);
+        return undefined;
+    }
+    return normalized;
 }
 
 /** One row's cells as a DescriptionRow, or null with its problems added to `errors`. */
@@ -130,7 +223,7 @@ function toRow(cells: Record<string, unknown>, at: string, errors: string[]): De
     const before = errors.length;
     const photoId = typeof cells.photoId === 'string' ? cells.photoId.trim() : '';
     if (photoId === '') errors.push(`${at}: there is no photoId.`);
-    else if (!PHOTO_ID_RE.test(photoId)) errors.push(`${at}: ${JSON.stringify(photoId)} is not a photo ID.`);
+    else if (!PHOTO_ID_RE.test(photoId)) errors.push(`${at}: ${quoteCell(photoId)} is not a photo ID.`);
     const row: DescriptionRow = { at, photoId };
     const alt = textValue(cells.alt, 'alt', at, errors);
     const decorative = decorativeValue(cells.decorative, at, errors);
@@ -146,12 +239,17 @@ function toRow(cells: Record<string, unknown>, at: string, errors: string[]): De
 
 function checkColumns(names: readonly string[], where: string, errors: string[]): void {
     for (const name of names) {
-        if (!(DESCRIPTION_COLUMNS as readonly string[]).includes(name)) errors.push(`${where} names ${JSON.stringify(name)}, which isn't one of ${DESCRIPTION_COLUMNS.join(', ')}.`);
+        if (!(DESCRIPTION_COLUMNS as readonly string[]).includes(name)) errors.push(`${where} names ${quoteCell(name)}, which isn't one of ${DESCRIPTION_COLUMNS.join(', ')}.`);
     }
 }
 
-/** Read a description file's rows. `format` comes from the file name; anything else is sniffed from the text. */
-export function parseDescriptions(text: string, format: 'csv' | 'json'): ParsedDescriptions {
+/**
+ * Read a description file's rows from its decoded text. `format` comes from
+ * the file name; anything else is sniffed from the text. A duplicate key in a
+ * JSON object keeps its last value, as JSON.parse does.
+ */
+export function parseDescriptions(input: string, format: 'csv' | 'json'): ParsedDescriptions {
+    const text = input.startsWith('\uFEFF') ? input.slice(1) : input;
     const errors: string[] = [];
     const rows: DescriptionRow[] = [];
     if (format === 'json') {
@@ -159,7 +257,7 @@ export function parseDescriptions(text: string, format: 'csv' | 'json'): ParsedD
         try {
             value = JSON.parse(text);
         } catch (error) {
-            return { ok: false, errors: [`The file is not valid JSON: ${(error as Error).message}`] };
+            return { ok: false, errors: [`The file is not valid JSON: ${printable((error as Error).message, 200)}`] };
         }
         if (!Array.isArray(value)) return { ok: false, errors: ['The JSON must be an array of objects, one per photo.'] };
         value.forEach((item, index) => {
@@ -180,7 +278,7 @@ export function parseDescriptions(text: string, format: 'csv' | 'json'): ParsedD
         const names = header.fields.map((name) => name.trim());
         checkColumns(names, 'The header', errors);
         const duplicate = names.find((name, index) => names.indexOf(name) !== index);
-        if (duplicate !== undefined) errors.push(`The header names ${JSON.stringify(duplicate)} twice.`);
+        if (duplicate !== undefined) errors.push(`The header names ${quoteCell(duplicate)} twice.`);
         if (!names.includes('photoId')) errors.push('The header has no photoId column.');
         if (errors.length > 0) return { ok: false, errors };
         for (const record of records) {
@@ -210,6 +308,86 @@ export function formatOf(file: string, text: string): 'csv' | 'json' {
     return /^\s*\[/.test(text.replace(/^\uFEFF/, '')) ? 'json' : 'csv';
 }
 
+/** The offset of the first byte that isn't part of well-formed UTF-8, or -1. */
+function firstInvalidByte(bytes: Uint8Array): number {
+    for (let i = 0; i < bytes.length;) {
+        const lead = bytes[i];
+        if (lead < 0x80) {
+            i++;
+            continue;
+        }
+        const [need, initial, min] = lead >= 0xc2 && lead <= 0xdf ? [1, lead & 0x1f, 0x80] : lead >= 0xe0 && lead <= 0xef ? [2, lead & 0x0f, 0x800] : lead >= 0xf0 && lead <= 0xf4 ? [3, lead & 0x07, 0x10000] : [0, 0, 0];
+        if (need === 0) return i;
+        let codePoint = initial;
+        for (let k = 1; k <= need; k++) {
+            const next = bytes[i + k];
+            if (next === undefined || (next & 0xc0) !== 0x80) return i;
+            codePoint = (codePoint << 6) | (next & 0x3f);
+        }
+        if (codePoint < min || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)) return i;
+        i += need + 1;
+    }
+    return -1;
+}
+
+/** The 1-based line `offset` is on, counting LF, CRLF, and CR breaks. */
+function lineAt(bytes: Uint8Array, offset: number): number {
+    let line = 1;
+    for (let i = 0; i < offset; i++) {
+        if (bytes[i] === 0x0a || (bytes[i] === 0x0d && bytes[i + 1] !== 0x0a)) line++;
+    }
+    return line;
+}
+
+type ReadFile = { ok: true; text: string } | { ok: false; output: string };
+
+/**
+ * Read an import file as text: a regular file of at most
+ * IMPORT_FILE_MAX_BYTES, checked on the opened handle, decoded as strict
+ * UTF-8 with a leading BOM dropped. Opened non-blocking, so a FIFO is
+ * refused rather than waited on.
+ */
+export async function readImportFile(file: string): Promise<ReadFile> {
+    const refuse = (why: string): ReadFile => ({ ok: false, output: `Error: ${file} ${why} Nothing was written.\n` });
+    let handle: fs.promises.FileHandle;
+    try {
+        handle = await fs.promises.open(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    } catch (error) {
+        return refuse(`can't be read (${(error as NodeJS.ErrnoException).code ?? (error as Error).message}).`);
+    }
+    let bytes: Buffer;
+    try {
+        const stat = await handle.stat();
+        if (!stat.isFile()) return refuse('is not a regular file.');
+        const cap = `${IMPORT_FILE_MAX_BYTES / (1024 * 1024)} MiB`;
+        if (stat.size > IMPORT_FILE_MAX_BYTES) return refuse(`is larger than ${cap}. Split it into smaller files.`);
+        // Read one byte past the cap, so a file that grew since the stat is caught too.
+        const buffer = Buffer.alloc(IMPORT_FILE_MAX_BYTES + 1);
+        let length = 0;
+        for (;;) {
+            const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+            if (bytesRead === 0) break;
+            length += bytesRead;
+            if (length > IMPORT_FILE_MAX_BYTES) return refuse(`is larger than ${cap}. Split it into smaller files.`);
+        }
+        bytes = buffer.subarray(0, length);
+    } catch (error) {
+        return refuse(`can't be read (${(error as NodeJS.ErrnoException).code ?? (error as Error).message}).`);
+    } finally {
+        await handle.close();
+    }
+    try {
+        return { ok: true, text: new TextDecoder('utf-8', { fatal: true }).decode(bytes) };
+    } catch {
+        const offset = firstInvalidByte(bytes);
+        const where = offset < 0 ? 'The file' : `line ${lineAt(bytes, offset)}`;
+        return {
+            ok: false,
+            output: `Nothing was written, since the file has problems:\n  ${where} is not UTF-8 text. Save the file as "CSV UTF-8" (Excel's plain "CSV" and "CSV (Macintosh)" aren't), or as UTF-8 text, and import it again.\n`,
+        };
+    }
+}
+
 /** The record a row turns `record` into. Equal to it when the row changes nothing. */
 function applyRow(record: AuthoredPhoto, row: DescriptionRow): AuthoredPhoto {
     const next: AuthoredPhoto = { ...record };
@@ -229,6 +407,12 @@ export interface DescribeImportResult {
     unchanged: number;
 }
 
+export interface DescribeImportOptions {
+    dryRun?: boolean;
+    /** Test hooks, passed to every writeAuthoredRecord() call. */
+    hooks?: VersionedWriteOptions['hooks'];
+}
+
 class ImportRefused extends Error {
     readonly problems: string[];
 
@@ -238,54 +422,108 @@ class ImportRefused extends Error {
     }
 }
 
-/** Apply parsed rows under one authored hold, so the import is checked and written against one snapshot. */
-export async function importDescriptions({ dataRoot, waitMs = AUTHORED_WAIT_MS }: LayerHandle, rows: readonly DescriptionRow[], { dryRun = false }: { dryRun?: boolean } = {}): Promise<DescribeImportResult> {
+/** A write failed after the import checked every row: `written` landed, and `failed` and the rows after it didn't. */
+export class ImportStoppedError extends Error {
+    readonly written: string[];
+    readonly failed: DescriptionRow;
+    readonly total: number;
+    readonly cause: unknown;
+
+    constructor(written: string[], failed: DescriptionRow, total: number, cause: unknown) {
+        super(cause instanceof Error ? cause.message : String(cause));
+        this.name = 'ImportStoppedError';
+        this.written = written;
+        this.failed = failed;
+        this.total = total;
+        this.cause = cause;
+    }
+}
+
+type Plan = { row: DescriptionRow; record: AuthoredPhoto; next: AuthoredPhoto };
+
+/** Every row's record and what it becomes, or ImportRefused with every problem. Reads only. */
+async function plan(root: string, rows: readonly DescriptionRow[]): Promise<{ plans: Plan[]; unchanged: number }> {
+    const problems: string[] = [];
+    const plans: Plan[] = [];
+    let unchanged = 0;
+    for (const row of rows) {
+        let record: AuthoredPhoto | null;
+        try {
+            record = await readAuthoredRecord(root, 'photo', row.photoId);
+        } catch (error) {
+            problems.push(`${row.at}: ${(error as Error).message}`);
+            continue;
+        }
+        if (!record) {
+            problems.push(`${row.at}: there is no photo record ${row.photoId}. photos list shows the IDs, and photos draft:init creates a record for every photo.`);
+            continue;
+        }
+        const next = applyRow(record, row);
+        if (sameRecord(record, next)) unchanged++;
+        else plans.push({ row, record, next });
+    }
+    if (problems.length > 0) throw new ImportRefused(problems);
+    return { plans, unchanged };
+}
+
+/**
+ * Apply parsed rows under one authored hold, so the import is checked and
+ * written against one snapshot. A dry run reads without the lock and writes
+ * nothing at all, as `photos validate` does, so it also runs on a data root
+ * it can only read.
+ */
+export async function importDescriptions({ dataRoot, waitMs = AUTHORED_WAIT_MS }: LayerHandle, rows: readonly DescriptionRow[], { dryRun = false, hooks }: DescribeImportOptions = {}): Promise<DescribeImportResult> {
     const root = path.resolve(dataRoot);
-    return withLock(AUTHORED_LOCK, { root, leaseMs: AUTHORED_LEASE_MS, waitMs }, async (lock) => {
-        const problems: string[] = [];
-        const plans: { record: AuthoredPhoto; next: AuthoredPhoto }[] = [];
-        let unchanged = 0;
-        for (const row of rows) {
-            let record: AuthoredPhoto | null;
-            try {
-                record = await readAuthoredRecord(root, 'photo', row.photoId);
-            } catch (error) {
-                problems.push(`${row.at}: ${(error as Error).message}`);
-                continue;
-            }
-            if (!record) {
-                problems.push(`${row.at}: there is no photo record ${row.photoId}. photos list shows the IDs, and photos draft:init creates a record for every photo.`);
-                continue;
-            }
-            const next = applyRow(record, row);
-            if (sameRecord(record, next)) unchanged++;
-            else plans.push({ record, next });
-        }
-        if (problems.length > 0) throw new ImportRefused(problems);
-        if (!dryRun) {
-            for (const { record, next } of plans) {
-                lock.signal.throwIfAborted();
-                await writeAuthoredRecord(next, { expectedVersion: record.version, lock, root });
-            }
-        }
+    if (dryRun) {
+        const { plans, unchanged } = await plan(root, rows);
         return { changed: plans.map(({ record }) => record.id), unchanged };
+    }
+    return withLock(AUTHORED_LOCK, { root, leaseMs: AUTHORED_LEASE_MS, waitMs }, async (lock) => {
+        const { plans, unchanged } = await plan(root, rows);
+        const written: string[] = [];
+        for (const { row, record, next } of plans) {
+            try {
+                lock.signal.throwIfAborted();
+                await writeAuthoredRecord(next, { expectedVersion: record.version, lock, root, hooks });
+            } catch (error) {
+                throw new ImportStoppedError(written, row, plans.length, error);
+            }
+            written.push(record.id);
+        }
+        return { changed: written, unchanged };
     });
 }
 
+/** The exit code for an error that stopped the writes: 3 for a lock or version race, 1 for a record refused, 4 for I/O. */
+function stoppedExitCode(cause: unknown): CommandResult['exitCode'] {
+    if (cause instanceof LockLostError) return 3;
+    if (cause instanceof AuthoredWriteError) return ['VERSION_CONFLICT', 'AUTHORED_LOCKED', 'LOCK_NOT_HELD'].includes(cause.code) ? 3 : 1;
+    return 4;
+}
+
+function stoppedOutput(error: ImportStoppedError): string {
+    const { cause, written, failed, total } = error;
+    const code = cause instanceof AuthoredWriteError ? cause.code : cause instanceof LockLostError ? 'LOCK_LOST' : null;
+    const issues = cause instanceof AuthoredWriteError ? cause.issues?.map((issue) => ` ${issue.path}: ${issue.message}`).join(';') ?? '' : '';
+    const head = `Error${code ? ` (${code})` : ''}: ${error.message}${issues}`;
+    if (written.length === 0) return `${head}\nNothing was written.\n`;
+    return [
+        head,
+        `It wrote ${written.length} of ${total} records before it stopped at ${failed.photoId} (${failed.at}). Run the same import again to finish it: rows it already applied change nothing.`,
+        '',
+    ].join('\n');
+}
+
 /** `photos describe --import <file> [--dry-run]`. Never throws: every outcome is an exit code and the text to print. */
-export async function runDescribeImport(layer: LayerHandle, { file, dryRun = false }: { file: string; dryRun?: boolean }): Promise<CommandResult> {
-    let text: string;
-    try {
-        text = await fs.promises.readFile(file, 'utf8');
-    } catch (error) {
-        return { exitCode: 1, output: `Error: ${file} can't be read (${(error as NodeJS.ErrnoException).code ?? (error as Error).message}). Nothing was written.\n` };
-    }
-    const parsed = parseDescriptions(text, formatOf(file, text));
+export async function runDescribeImport(layer: LayerHandle, { file, dryRun = false, hooks }: { file: string } & DescribeImportOptions): Promise<CommandResult> {
+    const read = await readImportFile(file);
+    if (!read.ok) return { exitCode: 1, output: read.output };
+    const parsed = parseDescriptions(read.text, formatOf(file, read.text));
     if (!parsed.ok) return { exitCode: 1, output: `${['Nothing was written, since the file has problems:', ...listed(parsed.errors.map((error) => `  ${error}`))].join('\n')}\n` };
     const status = dataRootStatus({ write: !dryRun, root: path.resolve(layer.dataRoot) });
     if (status.state !== 'ready') return { exitCode: 1, output: `Error: The data root is ${status.state}${status.detail ? `: ${status.detail}` : ''}. Nothing was written.\n` };
     try {
-        const result = await importDescriptions(layer, parsed.rows, { dryRun });
+        const result = await importDescriptions(layer, parsed.rows, { dryRun, hooks });
         const verb = dryRun ? 'Would update' : 'Updated';
         const lines = [
             `${verb} ${result.changed.length} photo record${result.changed.length === 1 ? '' : 's'}, and ${result.unchanged} ${result.unchanged === 1 ? 'row changes' : 'rows change'} nothing.`,
@@ -295,12 +533,8 @@ export async function runDescribeImport(layer: LayerHandle, { file, dryRun = fal
         return { exitCode: 0, output: `${lines.join('\n')}\n` };
     } catch (error) {
         if (error instanceof ImportRefused) return { exitCode: 1, output: `${['Nothing was written:', ...listed(error.problems.map((problem) => `  ${problem}`))].join('\n')}\n` };
-        if (error instanceof LockTimeoutError) return { exitCode: 3, output: `Error (authored-locked): ${error.message}\n` };
-        if (error instanceof AuthoredWriteError) {
-            const exitCode = error.code === 'VERSION_CONFLICT' || error.code === 'AUTHORED_LOCKED' ? 3 : 1;
-            const issues = error.issues?.map((issue) => ` ${issue.path}: ${issue.message}`).join(';') ?? '';
-            return { exitCode, output: `Error (${error.code}): ${error.message}${issues} Records written before it stay as written.\n` };
-        }
+        if (error instanceof LockTimeoutError) return { exitCode: 3, output: `Error (authored-locked): ${error.message} Nothing was written.\n` };
+        if (error instanceof ImportStoppedError) return { exitCode: stoppedExitCode(error.cause), output: stoppedOutput(error) };
         return { exitCode: 4, output: `Error: ${(error as Error).message}\n` };
     }
 }
