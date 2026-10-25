@@ -144,7 +144,7 @@ docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher \
   find /app/public/assets/photos \( ! -exec test -r {} \; -o -type d ! -exec test -x {} \; \) -print
 ```
 
-If the tool can leave folders out, leave out the derivative folders and `cache/` too. The watcher builds them from the originals, and a copy the tool writes as its own user is one the watcher can't replace.
+If the tool can leave folders out, leave out the derivative folders and `cache/` too. The watcher builds them from the originals. A subfolder the tool creates in one, as its own user, is one the watcher can't write into, and the tool would sync the watcher's output back and forth for nothing.
 
 ## Never migrate into an empty data root beside a library that had IDs
 

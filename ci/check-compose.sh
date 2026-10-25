@@ -2,9 +2,9 @@
 # Checks that docker-compose.prod.yml runs every service on the one release
 # tag in PHOTOGRAPHY_IMAGE_TAG, that ci/smoke-image.sh starts every service
 # Compose starts by default, that every published port is on the host's
-# loopback, and that the data root and the library mounts keep their
-# guarantees. Compose runs from an empty project directory so a local .env
-# can't leak in.
+# loopback, and that the data root, the library, and web's image cache
+# mounts keep their guarantees. Compose runs from an empty project
+# directory so a local .env can't leak in.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
