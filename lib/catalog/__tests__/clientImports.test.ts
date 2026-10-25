@@ -9,11 +9,11 @@ import { REPO_ROOT } from '../../../test/helpers/runTsx';
 // the projections import lib/media/url.ts, which pulls in node:crypto through
 // lib/identity/ids.ts, so client code takes only types from them (#3), and
 // any module it imports at runtime must not reach them either. Server
-// components may import them freely. reader.ts and projections/work.ts carry
-// server-only, so a client bundle that reaches them also fails the build;
-// this walk keeps the rule for the modules that don't, and checks the other
-// direction too: nothing loaded under plain Node, where server-only throws,
-// reaches a module that imports it.
+// components may import them freely. reader.ts, projections/work.ts and
+// projections/series.ts carry server-only, so a client bundle that reaches
+// them also fails the build; this walk keeps the rule for the modules that
+// don't, and checks the other direction too: nothing loaded under plain Node,
+// where server-only throws, reaches a module that imports it.
 
 const GUARDED = /^lib\/catalog\/(reader|public-reader|projections\/[^/]+)$/;
 const SOURCE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
@@ -153,9 +153,10 @@ describe('client modules and the catalog read path', () => {
     const files = CLIENT_ROOTS.flatMap(sourceFiles);
     const clients = files.filter((file) => isClientModule(file, disk(file) ?? ''));
 
-    it('finds the client modules under app/ and components/, WorkCoverImage among them', () => {
-        expect(clients).toEqual(expect.arrayContaining(['components/work/WorkCoverImage.tsx', 'components/site/SiteNav.tsx', 'app/error.tsx']));
+    it('finds the client modules under app/ and components/, WorkCoverImage and SeriesPhoto among them', () => {
+        expect(clients).toEqual(expect.arrayContaining(['components/work/WorkCoverImage.tsx', 'components/series/SeriesPhoto.tsx', 'components/site/SiteNav.tsx', 'app/error.tsx']));
         expect(clients).not.toContain('components/work/SeriesCatalog.tsx');
+        expect(clients).not.toContain('components/series/SeriesPage.tsx');
     });
 
     it('take only types from the reader and the projections, directly or through any module they import', () => {
@@ -233,8 +234,8 @@ describe('plain Node and server-only', () => {
     // specs and config, and the smoke tests' fixture publisher.
     const entries = [...sourceFiles('scripts'), ...sourceFiles('e2e'), 'playwright.config.ts', 'ci/publish-fixture.ts', 'lib/catalog/testing.ts'];
 
-    it('finds the reader and the Work projection carrying server-only', () => {
-        for (const file of ['lib/catalog/reader.ts', 'lib/catalog/projections/work.ts', 'lib/catalog/public-reader.ts']) {
+    it('finds the reader and the Work and series projections carrying server-only', () => {
+        for (const file of ['lib/catalog/reader.ts', 'lib/catalog/projections/work.ts', 'lib/catalog/projections/series.ts', 'lib/catalog/public-reader.ts']) {
             expect(importsServerOnly(file, disk(file) ?? '')).toBe(true);
         }
         expect(entries).toEqual(expect.arrayContaining(['scripts/photos.ts', 'e2e/work.spec.ts', 'e2e/support/catalogServer.ts']));

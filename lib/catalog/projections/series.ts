@@ -1,3 +1,5 @@
+// A client bundle that reaches this fails the build. Client code takes only types from it (#3, #5).
+import 'server-only';
 import { VARIANT_FORMATS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth } from '../../identity/variants';
 import { mediaUrl } from '../../media/url';
 import type { CatalogContent, CatalogReader, RouteBuilder } from '../reader';
