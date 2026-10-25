@@ -222,8 +222,9 @@ function replayDecisions(files: readonly DecisionFile[], recorded: Readonly<Reco
 
 /** `registry` carrying `decided`, or without the field when it is empty. */
 function withDecided(registry: Registry, decided: Record<string, RecordedDecision>): Registry {
-    const { decided: _previous, ...rest } = registry;
-    return Object.keys(decided).length > 0 ? { ...rest, decided } : rest;
+    const next: Registry = { ...registry };
+    delete next.decided;
+    return Object.keys(decided).length > 0 ? { ...next, decided } : next;
 }
 
 function dedupeByFactId(facts: readonly IdentityFact[]): IdentityFact[] {

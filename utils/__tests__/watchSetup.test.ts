@@ -132,7 +132,8 @@ describe('watchSetup with a data root', () => {
         const { ignored, ...options } = setup.options;
 
         expect(setup.path).toBe(real);
-        const { depth: _depth, ...before } = OPTIONS_BEFORE_IDENTITY;
+        const before: Partial<typeof OPTIONS_BEFORE_IDENTITY> = { ...OPTIONS_BEFORE_IDENTITY };
+        delete before.depth;
         expect(options).toStrictEqual({ ...before, followSymlinks: true });
         expect(typeof ignored).toBe('function');
     });
