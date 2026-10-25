@@ -169,6 +169,10 @@ describe('an identity pass', { timeout: 60_000 }, () => {
         const report = s.step.pass('startup');
         await new Promise((resolve) => setTimeout(resolve, 200));
         expect(fs.existsSync(s.data.file('identity', 'registry'))).toBe(false);
+        // A first start's legacy backlog can take hours, so the wait for it
+        // isn't part of the pass the healthcheck times.
+        await s.step.check();
+        expect(s.heartbeat()).toMatchObject({ passStartedAt: null });
 
         legacy.resolve();
         expect((await report).status).toBe('committed');
