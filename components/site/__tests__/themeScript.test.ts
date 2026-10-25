@@ -1,3 +1,4 @@
+import vm from 'node:vm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { THEME_INIT_SCRIPT } from '../themeScript';
 
@@ -29,6 +30,18 @@ describe('THEME_INIT_SCRIPT', () => {
     document.documentElement.setAttribute('data-theme', 'dark');
     run();
     expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
+  });
+
+  it('leaves no global behind when it runs as a classic script at global scope', () => {
+    // A classic inline script's top-level `var` lands on `window`. `new Function` scopes it, so run it in a
+    // global context of its own, with the test document's storage and root.
+    document.documentElement.setAttribute('data-theme', 'dark');
+    localStorage.setItem('theme', 'light');
+    const global = { localStorage, document };
+    vm.createContext(global);
+    vm.runInContext(THEME_INIT_SCRIPT, global);
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light');
+    expect(Object.keys(global)).toEqual(['localStorage', 'document']);
   });
 
   it('keeps the server default when localStorage throws', () => {
