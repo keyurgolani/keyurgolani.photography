@@ -57,7 +57,7 @@ export interface WatcherHandlers {
      * finds again on disk. Queued live jobs still run.
      */
     stop(): void;
-    /** Resolve once every queued job has finished. */
+    /** Resolve once every queued job has finished and no startup batch is still working out its jobs. */
     idle(): Promise<void>;
     /** Wait up to `timeoutMs` for queued jobs. Resolves false if some were still running. */
     drain(timeoutMs: number): Promise<boolean>;
@@ -164,6 +164,9 @@ export function createWatcherHandlers(
     let liveQueued = 0;
     let idleWaiters: (() => void)[] = [];
     let stopped = false;
+    // Startup batches still listing the library. Until they queue their jobs, the handlers aren't idle.
+    let planning = 0;
+    const isIdle = () => running.size === 0 && queue.length === 0 && planning === 0;
 
     function unqueue(job: Job): void {
         queue.splice(queue.indexOf(job), 1);
@@ -209,7 +212,7 @@ export function createWatcherHandlers(
                     pump();
                 });
         }
-        if (running.size === 0 && queue.length === 0) {
+        if (isIdle()) {
             const waiters = idleWaiters;
             idleWaiters = [];
             waiters.forEach((resolve) => resolve());
@@ -235,7 +238,7 @@ export function createWatcherHandlers(
     }
 
     function idle(): Promise<void> {
-        if (running.size === 0 && queue.length === 0) return Promise.resolve();
+        if (isIdle()) return Promise.resolve();
         return new Promise((resolve) => idleWaiters.push(resolve));
     }
 
@@ -323,57 +326,72 @@ export function createWatcherHandlers(
         async queueStartupBatch({ force = false } = {}) {
             const result: StartupBatchResult = { processed: [], skipped: [], errors: [] };
             if (stopped) return result;
-            logger.log('[ImageWatcher] Checking for unprocessed images...');
-            const { files, reowned, upright, shared } = await planSources({ force });
-            if (!cacheFolderWritable()) {
-                logger.error(`[ImageWatcher] ${path.dirname(uprightMarkerPath())} can't be written, so the watcher can't record which sets it rebuilt. Until it can, every start rebuilds the orientation-tagged photos and the shared sets again.`);
-            }
-            for (const { file, owner, undecodable } of shared) {
-                logger.log(`[ImageWatcher] Skipping ${file}: ${undecodable ? `it can't be decoded, so ${owner} has the derivatives they share` : `it shares its derivatives with ${owner}`}.`);
-            }
-            for (const { file, from } of reowned) {
-                logger.log(from === null
-                    ? `[ImageWatcher] Rebuilding ${file}'s set, which it shares, since nothing records which source it was built from.`
-                    : `[ImageWatcher] Rebuilding ${file}'s set, which was last built from ${from}.`);
-            }
-            const turned = new Set(upright ?? []);
-            if (turned.size > 0) {
-                logger.log(`[ImageWatcher] Rebuilding the sets of ${photos(turned.size, 'orientation-tagged photo')} once, since a set written before derivatives were turned upright shows its photo turned or mirrored.`);
-            }
-            // Rebuilt whatever their state, since their sets can look current
-            const forced = new Set([...turned, ...reowned.map(({ file }) => file)]);
-            if (files.length === 0) {
-                if (upright !== null) recordUpright(0);
-                logger.log('[ImageWatcher] All images are processed.');
+            // Busy from here until the jobs are queued, so a step waiting on idle() comes after them, not before.
+            planning++;
+            let planned = false;
+            const queued = () => {
+                if (planned) return;
+                planned = true;
+                planning--;
+                pump();
+            };
+            try {
+                logger.log('[ImageWatcher] Checking for unprocessed images...');
+                const { files, reowned, upright, shared } = await planSources({ force });
+                if (!cacheFolderWritable()) {
+                    logger.error(`[ImageWatcher] ${path.dirname(uprightMarkerPath())} can't be written, so the watcher can't record which sets it rebuilt. Until it can, every start rebuilds the orientation-tagged photos and the shared sets again.`);
+                }
+                for (const { file, owner, undecodable } of shared) {
+                    logger.log(`[ImageWatcher] Skipping ${file}: ${undecodable ? `it can't be decoded, so ${owner} has the derivatives they share` : `it shares its derivatives with ${owner}`}.`);
+                }
+                for (const { file, from } of reowned) {
+                    logger.log(from === null
+                        ? `[ImageWatcher] Rebuilding ${file}'s set, which it shares, since nothing records which source it was built from.`
+                        : `[ImageWatcher] Rebuilding ${file}'s set, which was last built from ${from}.`);
+                }
+                const turned = new Set(upright ?? []);
+                if (turned.size > 0) {
+                    logger.log(`[ImageWatcher] Rebuilding the sets of ${photos(turned.size, 'orientation-tagged photo')} once, since a set written before derivatives were turned upright shows its photo turned or mirrored.`);
+                }
+                // Rebuilt whatever their state, since their sets can look current
+                const forced = new Set([...turned, ...reowned.map(({ file }) => file)]);
+                if (files.length === 0) {
+                    if (upright !== null) recordUpright(0);
+                    logger.log('[ImageWatcher] All images are processed.');
+                    return result;
+                }
+
+                logger.log(`[ImageWatcher] Found ${files.length} unprocessed images.`);
+                const pending = Promise.all(files.map((file, index) => {
+                    // Each job's own force, which a live change that drops the job takes on.
+                    const jobForce = force || forced.has(file);
+                    return enqueue(file, false, async () => {
+                        logger.log(`[ImageWatcher] Processing ${index + 1}/${files.length}: ${file}`);
+                        await refreshImage(file, { force: jobForce });
+                    }, jobForce);
+                }));
+                queued();
+                const outcomes = await pending;
+
+                const lists: Record<Outcome, string[]> = { done: result.processed, skipped: result.skipped, failed: result.errors };
+                files.forEach((file, index) => lists[outcomes[index]].push(file));
+                logger.log(
+                    `[ImageWatcher] Completed: ${result.processed.length} processed, ` +
+                    `${result.skipped.length} skipped, ${result.errors.length} errors`,
+                );
+                if (upright !== null) {
+                    // A photo that changed meanwhile, or a stop, leaves the whole rebuild to the next start. One that
+                    // failed doesn't hold it back: it is recorded to retry, so the others aren't rebuilt at every start.
+                    const outcome = (file: string) => outcomes[files.indexOf(file)];
+                    const left = upright.filter((file) => outcome(file) === 'skipped');
+                    const failed = upright.filter((file) => outcome(file) === 'failed');
+                    if (left.length === 0) recordUpright(upright.length - failed.length, failed);
+                    else logger.log(`[ImageWatcher] These orientation-tagged photos weren't rebuilt, so the next start tries again: ${left.join(', ')}.`);
+                }
                 return result;
+            } finally {
+                queued();
             }
-
-            logger.log(`[ImageWatcher] Found ${files.length} unprocessed images.`);
-            const outcomes = await Promise.all(files.map((file, index) => {
-                // Each job's own force, which a live change that drops the job takes on.
-                const jobForce = force || forced.has(file);
-                return enqueue(file, false, async () => {
-                    logger.log(`[ImageWatcher] Processing ${index + 1}/${files.length}: ${file}`);
-                    await refreshImage(file, { force: jobForce });
-                }, jobForce);
-            }));
-
-            const lists: Record<Outcome, string[]> = { done: result.processed, skipped: result.skipped, failed: result.errors };
-            files.forEach((file, index) => lists[outcomes[index]].push(file));
-            logger.log(
-                `[ImageWatcher] Completed: ${result.processed.length} processed, ` +
-                `${result.skipped.length} skipped, ${result.errors.length} errors`,
-            );
-            if (upright !== null) {
-                // A photo that changed meanwhile, or a stop, leaves the whole rebuild to the next start. One that
-                // failed doesn't hold it back: it is recorded to retry, so the others aren't rebuilt at every start.
-                const outcome = (file: string) => outcomes[files.indexOf(file)];
-                const left = upright.filter((file) => outcome(file) === 'skipped');
-                const failed = upright.filter((file) => outcome(file) === 'failed');
-                if (left.length === 0) recordUpright(upright.length - failed.length, failed);
-                else logger.log(`[ImageWatcher] These orientation-tagged photos weren't rebuilt, so the next start tries again: ${left.join(', ')}.`);
-            }
-            return result;
         },
 
         stop() {
