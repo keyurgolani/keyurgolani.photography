@@ -219,7 +219,12 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
     const liveHolds: Hold[] = registry.holds.map((held) => ({ ...held, candidates: [...held.candidates] }));
     const decisionOutcomes: DecisionOutcome[] = [];
     for (const file of context.decisions ?? []) {
-        const outcome: Decided = file.decision ? decide(file.decision) : { status: 'rejected', reason: file.invalid ?? 'it is not a valid decision' };
+        // A file that can't be read right now waits: rejecting it would replace it with a record of nothing.
+        const outcome: Decided = file.decision
+            ? decide(file.decision)
+            : file.raw === null
+                ? decided.deferred(file.invalid ?? "it can't be read")
+                : decided.rejected(file.invalid ?? 'it is not a valid decision');
         decisionOutcomes.push({ name: file.name, decisionId: file.decision?.decisionId ?? null, ...outcome });
     }
     // Decisions can move bindings, so the rows below start from what they left.

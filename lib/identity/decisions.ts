@@ -53,7 +53,7 @@ export interface DecisionFile {
     decision: IdentityDecision | null;
     /** Why it isn't valid. */
     invalid?: string;
-    /** The file's text, kept in the rejected record when it doesn't parse. Null when unreadable. */
+    /** The file's text, kept in the rejected record when it doesn't parse. Null when unreadable, and then the file waits for a later pass. */
     raw: string | null;
 }
 
