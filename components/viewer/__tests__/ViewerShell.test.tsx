@@ -55,7 +55,7 @@ function imageOf(n: number): ViewerImage {
         variants[width] = {} as (typeof variants)[typeof width];
         for (const format of VARIANT_FORMATS) {
             const pixels = Number(width.slice(1));
-            variants[width][format] = { url: mediaUrl(ref, width, format), width: pixels, height: Math.round((pixels * 2) / 3), bytes: 1_000 };
+            variants[width][format] = { url: mediaUrl(ref, width, format), width: pixels };
         }
     }
     return { width: 2400, height: 1600, assetRevision: ref.assetRevision, variants };
@@ -74,6 +74,7 @@ function model(n: number, technical = true, withImage = false): PublishedViewerP
             alt: '',
             descriptionPending: false,
             image: withImage ? imageOf(n) : null,
+            shareImage: null,
             accent: null,
             technical: technical ? { Make: 'Fixture Make' } : {},
         },
