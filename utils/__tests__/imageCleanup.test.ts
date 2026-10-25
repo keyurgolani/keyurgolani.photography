@@ -296,6 +296,25 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
         expect(Object.keys(lib.hashes(derivativePaths('portrait')))).toHaveLength(7);
     });
 
+    it.skipIf(isRoot)("never takes another photo's file spelled in another case for the takedown's, in a folder it can't list", async (context) => {
+        const lib = await newLibrary({ fixtures: 'basic' });
+        if (!caseInsensitive(lib)) context.skip();
+        fs.renameSync(lib.file('square.webp'), lib.file('Square.webp'));
+        await processImage('Square.webp');
+        expect(fs.readdirSync(lib.file('optimized'))).toContain('Square.webp');
+        fs.chmodSync(lib.file('optimized'), 0o311);
+        try {
+            // This disk finds optimized/Square.webp under square.webp, but it is the live photo Square's.
+            const { out, err, output } = capture();
+            expect(runImageCleanup(['--only', 'square'], output)).toBe(0);
+            expect(out).toContain('Nothing to delete.');
+            expect(err).toEqual([]);
+        } finally {
+            fs.chmodSync(lib.file('optimized'), 0o755);
+        }
+        expect(fs.readdirSync(lib.file('optimized'))).toContain('Square.webp');
+    });
+
     it.skipIf(isRoot)("fails a takedown, naming the folder, where it can't look the photo's files up by name", async () => {
         const lib = await libraryWithOrphans();
         const unchecked = "Skipped optimized/, which is a symlink, not a folder, or can't be listed, and square's files couldn't be looked up in it by name either, so some may be left there. Check it by hand.";
@@ -582,5 +601,12 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
         expect(run.status, run.stderr).toBe(2);
         expect(run.stderr).toContain('Refusing to clean up: library root not found');
         expect(fs.existsSync(lib.root)).toBe(false);
+    });
+});
+
+describe('the takedown steps', () => {
+    it.each(['README.md', 'public/assets/photos/README.md'])('in %s say what to do when a step exits 1 naming a folder', (guide) => {
+        const text = fs.readFileSync(path.join(REPO_ROOT, guide), 'utf8');
+        expect(text).toContain("If either step exits 1 and names a folder it couldn't look in, remove the photo's files from that folder by hand.");
     });
 });

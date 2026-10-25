@@ -841,8 +841,10 @@ function scannedFolders(paths: LibraryPaths): { dir: string; guards: string[]; e
  * With `only`, look up the photo's derivatives by their exact names in a
  * folder cleanup can't list, since a takedown mustn't leave one there. Looks
  * up `requested` as given and without a source extension, the two names
- * `only` can resolve to. Returns the files found, or null when the folder
- * can't be searched either.
+ * `only` can resolve to. A case-insensitive disk also finds `Square.webp`
+ * under `square.webp`, so a file counts only when the disk spells it the way
+ * it was asked for. Returns the files found, or null when the folder can't be
+ * searched either, or an entry resolves somewhere else, as a symlink does.
  */
 function lookUpByName(dir: string, ext: string | null, requested: string): string[] | null {
     if (ext === null) return null;
@@ -851,10 +853,21 @@ function lookUpByName(dir: string, ext: string | null, requested: string): strin
         const file = path.join(dir, `${base}${ext}`);
         try {
             fs.lstatSync(file);
-            found.push(file);
         } catch (error) {
-            if (!hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return null;
+            if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) continue;
+            return null;
         }
+        let stored: string;
+        try {
+            stored = fs.realpathSync.native(file);
+            if (path.dirname(stored) !== fs.realpathSync.native(dir)) return null;
+        } catch {
+            // A dangling symlink, or one that leads somewhere unreadable
+            return null;
+        }
+        // Another photo's file, spelled differently
+        if (path.basename(stored) !== path.basename(file)) continue;
+        found.push(file);
     }
     return found;
 }
