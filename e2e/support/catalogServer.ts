@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 
@@ -52,6 +53,44 @@ export interface CatalogServerOptions {
      * away while the harness's servers keep theirs. Defaults to theirs.
      */
     siteConfig?: string;
+    /**
+     * Serve `.next/standalone/server.js`, as the image does, instead of
+     * `next start`: config headers, `/_next/image`, and `public/` behave
+     * there as in production (#16 checks them). Its `.next/static` and
+     * `public/` (without the default photo library) are copied in as the
+     * Dockerfile copies them, once per build.
+     */
+    standalone?: boolean;
+}
+
+const STANDALONE = path.join(process.cwd(), '.next', 'standalone');
+
+/** Copy `from` to `to` through a temp sibling and a rename, so parallel workers never see half a copy. */
+function copyOnce(from: string, to: string, filter?: (source: string) => boolean): void {
+    const temp = `${to}.copy-${process.pid}-${Math.random().toString(36).slice(2)}`;
+    fs.cpSync(from, temp, { recursive: true, filter });
+    try {
+        fs.renameSync(temp, to);
+    } catch (error) {
+        fs.rmSync(temp, { recursive: true, force: true });
+        // Another worker got there first.
+        if (!fs.existsSync(to)) throw error;
+    }
+}
+
+/** The standalone build, with this build's static files and `public/` in place. */
+function standaloneDir(): string {
+    if (!fs.existsSync(path.join(STANDALONE, 'server.js'))) throw new Error('There is no .next/standalone/server.js. Run npm run build first.');
+    const buildId = fs.readFileSync(path.join(process.cwd(), '.next', 'BUILD_ID'), 'utf8').trim();
+    const marker = path.join(STANDALONE, '.e2e-build-id');
+    if (!fs.existsSync(marker) || fs.readFileSync(marker, 'utf8') !== buildId) {
+        for (const stale of [path.join(STANDALONE, '.next', 'static'), path.join(STANDALONE, 'public')]) fs.rmSync(stale, { recursive: true, force: true });
+        copyOnce(path.join(process.cwd(), '.next', 'static'), path.join(STANDALONE, '.next', 'static'));
+        const library = path.join(process.cwd(), 'public', 'assets', 'photos');
+        copyOnce(path.join(process.cwd(), 'public'), path.join(STANDALONE, 'public'), (source) => source !== library && !source.startsWith(`${library}${path.sep}`));
+        fs.writeFileSync(marker, buildId);
+    }
+    return STANDALONE;
 }
 
 /** The settings that turn a server into the curator. A plain catalog server never inherits them from this shell. */
@@ -78,8 +117,10 @@ export async function startCatalogServer(dataRoot: string, port?: number, option
     delete env.SITE_URL;
     if (options.siteUrl) env.SITE_URL = options.siteUrl;
     const next = path.join(process.cwd(), 'node_modules', 'next', 'dist', 'bin', 'next');
-    // Its own process group, so stopping it also stops any process it starts.
-    const child = spawn(process.execPath, [next, 'start', '--port', String(listen), '--hostname', '127.0.0.1'], { cwd: process.cwd(), env, detached: true });
+    // Its own process group, so stopping it also stops any process it starts. Either way it listens on 127.0.0.1 only.
+    const child = options.standalone
+        ? spawn(process.execPath, ['server.js'], { cwd: standaloneDir(), env: { ...env, PORT: String(listen), HOSTNAME: '127.0.0.1' }, detached: true })
+        : spawn(process.execPath, [next, 'start', '--port', String(listen), '--hostname', '127.0.0.1'], { cwd: process.cwd(), env, detached: true });
     let output = '';
     child.stdout.on('data', (chunk) => (output += chunk));
     child.stderr.on('data', (chunk) => (output += chunk));
