@@ -36,12 +36,30 @@ export interface PhotoListing {
     w400: string | null;
 }
 
+/**
+ * The revision the site serves: the one `active.json` names, whatever its
+ * activation's status, since the public reader follows the pointer alone.
+ * Without a pointer, the last committed activation's.
+ */
+export interface LiveRevision {
+    revisionId: string;
+    /** Null when no activation record names the pointer's activation. */
+    revisionNumber: number | null;
+    activationId: string | null;
+    /** The activation's `NNNNNN` number. */
+    sequence: number | null;
+    /** `missing` when no activation record names the pointer's activation. */
+    status: Activation['status'] | 'missing';
+    kind: Activation['kind'] | null;
+    actor: string | null;
+    committedAt: string | null;
+}
+
 export interface OwnerStatus {
     identity: IdentityStatus;
     catalog: {
         mode: CatalogMode;
-        /** The committed activation `active.json` names, or the last committed one. */
-        active: Pick<Activation, 'revisionId' | 'revisionNumber' | 'kind' | 'actor' | 'committedAt'> | null;
+        active: LiveRevision | null;
         lastPublish: LastPublishFile | null;
         /** Why a catalog file couldn't be read, if one couldn't. */
         error?: string;
@@ -106,18 +124,52 @@ function workingSummary(layer: WorkingLayer, registry: Registry): NonNullable<Ow
     };
 }
 
-export async function ownerStatus({ dataRoot }: LayerHandle): Promise<OwnerStatus> {
-    const root = path.resolve(dataRoot);
-    const identity = await identityStatus({ root });
+/** `photos status` with no data root: PHOTOGRAPHY_DATA_DIR unset in production. */
+function unsetIdentity(): IdentityStatus {
+    return {
+        dataRoot: { state: 'unset', root: null, detail: 'PHOTOGRAPHY_DATA_DIR is not set' },
+        registry: null,
+        photos: { total: 0, bySourceHealth: { present: 0, missing: 0, ambiguous: 0, archived: 0 } },
+        holds: [],
+        failedProfiles: [],
+        pendingJobs: 0,
+        pendingFacts: 0,
+        watcher: null,
+    };
+}
+
+function live(activation: Activation): LiveRevision {
+    const { revisionId, revisionNumber, activationId, sequence, status, kind, actor } = activation;
+    return { revisionId, revisionNumber, activationId, sequence, status, kind, actor, committedAt: activation.committedAt ?? null };
+}
+
+export interface StatusHandle {
+    /** Null when PHOTOGRAPHY_DATA_DIR is unset in production. */
+    dataRoot: string | null;
+    /** For the watcher heartbeat's age. */
+    clock?: () => number;
+}
+
+export async function ownerStatus({ dataRoot, clock }: StatusHandle): Promise<OwnerStatus> {
+    const identity = dataRoot === null ? unsetIdentity() : await identityStatus({ root: path.resolve(dataRoot), clock });
     const status: OwnerStatus = { identity, catalog: { mode: 'legacy', active: null, lastPublish: null }, working: null };
-    if (identity.dataRoot.state !== 'ready') return status;
+    if (dataRoot === null || identity.dataRoot.state !== 'ready') return status;
+    const root = path.resolve(dataRoot);
     try {
         status.catalog.mode = await catalogMode(root);
         const activations = await listActivations(root);
         const pointer = await readActivePointer(root);
-        const named = pointer && activations.find((activation) => activation.activationId === pointer.activationId && activation.status === 'committed');
-        const active = named || lastCommitted(activations);
-        if (active) status.catalog.active = { revisionId: active.revisionId, revisionNumber: active.revisionNumber, kind: active.kind, actor: active.actor, committedAt: active.committedAt };
+        if (pointer) {
+            // After a crash between the pointer switch and the commit, the pointer names a pending activation, and
+            // the site already serves its revision.
+            const named = activations.find((activation) => activation.activationId === pointer.activationId);
+            status.catalog.active = named
+                ? live(named)
+                : { revisionId: pointer.revisionId, revisionNumber: null, activationId: pointer.activationId, sequence: null, status: 'missing', kind: null, actor: null, committedAt: null };
+        } else {
+            const last = lastCommitted(activations);
+            if (last) status.catalog.active = live(last);
+        }
         status.catalog.lastPublish = await readLastPublish(root);
     } catch (error) {
         status.catalog.error = message(error);
@@ -136,8 +188,24 @@ function formatStatus(status: OwnerStatus): string {
     if (catalog.error) {
         lines.push(`Catalog: can't be read (${catalog.error})`);
     } else if (catalog.active) {
-        const { revisionId, revisionNumber, kind, actor, committedAt } = catalog.active;
-        lines.push(`Catalog: ${catalog.mode} mode, revision ${revisionNumber} (${revisionId}) active since ${committedAt ?? 'an unknown time'}, a ${kind} by ${actor}`);
+        const { revisionId, revisionNumber, kind, actor, committedAt, sequence } = catalog.active;
+        switch (catalog.active.status) {
+            case 'committed':
+                lines.push(`Catalog: ${catalog.mode} mode, revision ${revisionNumber} (${revisionId}) active since ${committedAt ?? 'an unknown time'}, a ${kind} by ${actor}`);
+                break;
+            case 'pending':
+                lines.push(`Catalog: ${catalog.mode} mode, revision ${revisionNumber} (${revisionId}) is live, from a ${kind} by ${actor} that didn't finish`);
+                lines.push(`  Activation ${sequence} is pending. The next photos publish settles it.`);
+                break;
+            case 'abandoned':
+                lines.push(`Catalog: ${catalog.mode} mode, revision ${revisionNumber} (${revisionId}) is live, though its activation was abandoned`);
+                lines.push(`  Activation ${sequence} is abandoned, but the pointer names it. The next photos publish repairs it.`);
+                break;
+            case 'missing':
+                lines.push(`Catalog: ${catalog.mode} mode, ${revisionId} is live, but no activation record names it`);
+                lines.push('  The next photos publish repairs the record.');
+                break;
+        }
     } else {
         lines.push(`Catalog: ${catalog.mode} mode, nothing published yet, so the site lists the registry's photos`);
     }
@@ -164,9 +232,9 @@ function formatStatus(status: OwnerStatus): string {
 }
 
 /** `photos status [--json]`. */
-export async function runStatusCommand(layer: LayerHandle, { json = false }: { json?: boolean } = {}): Promise<CommandResult> {
+export async function runStatusCommand(layer: StatusHandle, { json = false, clock }: { json?: boolean; clock?: () => number } = {}): Promise<CommandResult> {
     try {
-        const status = await ownerStatus(layer);
+        const status = await ownerStatus({ ...layer, clock: clock ?? layer.clock });
         const ok = status.identity.dataRoot.state === 'ready' && status.working !== null && status.catalog.error === undefined;
         return { exitCode: ok ? 0 : 1, output: json ? `${JSON.stringify(status, null, 2)}\n` : formatStatus(status) };
     } catch (error) {
