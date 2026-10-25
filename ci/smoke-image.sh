@@ -139,6 +139,7 @@ identity_status() {
 # running watcher can add a version and prune an old one meanwhile, so a
 # version that's gone by the time it's read means reading the list again.
 read_registry() {
+  # shellcheck disable=SC2016 # the ${...} are JavaScript template strings
   in_watcher node -e '
     const fs = require("fs");
     const dir = "/data/portfolio/identity/registry";
