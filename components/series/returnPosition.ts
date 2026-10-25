@@ -120,14 +120,12 @@ export function scheduleRestore(record: SeriesReturn, series: { slug: string; re
         restoreReturn(record);
         return () => undefined;
     }
-    let pending = true;
+    // Whichever comes first, the event or the timeout, removes both, so the restore runs once.
     const stop = () => {
-        pending = false;
         window.removeEventListener(ENTRIES_RESTORED_EVENT, finish);
         window.clearTimeout(timer);
     };
     function finish() {
-        if (!pending) return;
         stop();
         restoreReturn(record);
     }

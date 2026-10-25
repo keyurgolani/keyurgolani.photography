@@ -94,36 +94,42 @@ async function expectReturned(page: Page, opener: Locator, offset: number): Prom
     expect(await inView(opener)).toBe(true);
 }
 
-/** Opens the Viewer from `opener` with Enter, as the modal over the series. */
-async function enter(page: Page, opener: Locator, photoId: string): Promise<void> {
+/**
+ * Opens the Viewer from `opener` with Enter, as the modal over the series,
+ * and returns the page's offset when Enter went down. Focusing a link can
+ * scroll it into view, so that's the place the return has to restore.
+ */
+async function enter(page: Page, opener: Locator, photoId: string): Promise<number> {
     await opener.focus();
+    const offset = await scrollY(page);
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(`${origin()}${viewerPath(photoId)}`);
     await expect(dialog(page)).toBeVisible();
+    return offset;
 }
 
 test.describe('the intercepted Viewer over the series page', () => {
     test('Enter on the cover opens its photograph, and Escape puts focus back on the cover, not its entry', async ({ page }) => {
         await openSeries(page);
         await expect(cover(page)).toHaveAttribute('href', viewerPath(COVER));
-        await enter(page, cover(page), COVER);
+        const offset = await enter(page, cover(page), COVER);
         await expect(dialog(page)).toHaveAccessibleName(new RegExp(`Photograph 3 of ${COUNT}$`));
         await page.keyboard.press('Escape');
-        await expectReturned(page, cover(page), 0);
+        await expectReturned(page, cover(page), offset);
     });
 
     test('Enter on an entry far down opens its photograph, and Close lands on the series at the same place with focus on that entry', async ({ page }) => {
         await openSeries(page);
-        const offset = await scrollTo(page, entry(page, DEEP));
-        await enter(page, entry(page, DEEP), DEEP);
+        await scrollTo(page, entry(page, DEEP));
+        const offset = await enter(page, entry(page, DEEP), DEEP);
         await dialog(page).getByRole('button', { name: 'Close' }).click();
         await expectReturned(page, entry(page, DEEP), offset);
     });
 
     test('Back after moves inside the modal is one step to the series, at the same place, with focus on the original opener', async ({ page }) => {
         await openSeries(page);
-        const offset = await scrollTo(page, entry(page, DEEP));
-        await enter(page, entry(page, DEEP), DEEP);
+        await scrollTo(page, entry(page, DEEP));
+        const offset = await enter(page, entry(page, DEEP), DEEP);
         const length = await page.evaluate(() => history.length);
         await page.keyboard.press('ArrowRight');
         await expect(page).toHaveURL(`${origin()}${viewerPath(P[COUNT - 2])}`);
@@ -137,8 +143,8 @@ test.describe('the intercepted Viewer over the series page', () => {
 
     test('the page moved under the modal comes back to where it was when the modal closes', async ({ page }) => {
         await openSeries(page);
-        const offset = await scrollTo(page, entry(page, DEEP));
-        await enter(page, entry(page, DEEP), DEEP);
+        await scrollTo(page, entry(page, DEEP));
+        const offset = await enter(page, entry(page, DEEP), DEEP);
         // The document behind a modal dialog still scrolls (a wheel over the backdrop, or a script). Move it to the top.
         await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
         expect(await scrollY(page)).toBe(0);
@@ -162,8 +168,8 @@ test.describe('the intercepted Viewer over the series page', () => {
 test.describe('Back to the series from a Viewer page', () => {
     test('a reload on the Viewer, a move, then Back loads the series at the same place with focus on the entry that opened it', async ({ page }) => {
         await openSeries(page);
-        const offset = await scrollTo(page, entry(page, DEEP));
-        await enter(page, entry(page, DEEP), DEEP);
+        await scrollTo(page, entry(page, DEEP));
+        const offset = await enter(page, entry(page, DEEP), DEEP);
         await page.reload();
         await waitForHydration(page);
         // A reload makes the Viewer a page (#9).
@@ -177,12 +183,12 @@ test.describe('Back to the series from a Viewer page', () => {
 
     test('opened from the cover, a reload on the Viewer and Back put focus back on the cover', async ({ page }) => {
         await openSeries(page);
-        await enter(page, cover(page), COVER);
+        const offset = await enter(page, cover(page), COVER);
         await page.reload();
         await waitForHydration(page);
         await page.goBack();
         await waitForHydration(page);
-        await expectReturned(page, cover(page), 0);
+        await expectReturned(page, cover(page), offset);
     });
 
     test('a reload of the series page itself moves no focus, even with a return record in its entry', async ({ page }) => {
