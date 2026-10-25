@@ -143,7 +143,7 @@ export async function act(input: ActionInput, change: (step: Step) => Promise<Ch
 
 export function requireStatus(event: CurationEvent, allowed: readonly CurationEventStatus[], action: string): void {
     if (allowed.includes(event.status)) return;
-    const hint = event.status === 'approved' || event.status === 'dismissed' ? ' Reopen it first.' : '';
+    const hint = event.status === 'approved' || event.status === 'dismissed' || event.status === 'resolved' ? ' Reopen it first.' : '';
     fail('refused', `The event ${event.id} is ${event.status}, so it can't be ${action}.${hint}`);
 }
 
@@ -230,11 +230,11 @@ export function dismissEvent(input: ActionInput & { reason: string }): Promise<A
     });
 }
 
-/** Put a deferred, dismissed, or approved event back in the inbox. An approval's working-layer writes stay. */
+/** Put a deferred, dismissed, approved, or resolved event back in the inbox. An approval's working-layer writes stay. */
 export function reopenEvent(input: ActionInput & { reason?: string }): Promise<ActionOutcome> {
     return act(input, async (step) => {
         const { event } = step;
-        requireStatus(event, ['deferred', 'dismissed', 'approved'], 'reopened');
+        requireStatus(event, ['deferred', 'dismissed', 'approved', 'resolved'], 'reopened');
         const status: CurationEventStatus = event.type === 'processing-failure' ? 'failed' : 'open';
         const notes = event.status !== 'approved'
             ? ['Reopened.']
