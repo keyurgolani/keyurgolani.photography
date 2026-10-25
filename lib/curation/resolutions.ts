@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { applySeriesOp, applySequenceOp, sequenceContext, type Consequence } from '../catalog/sequence';
+import { hashValue, stampsOf } from '../catalog/review';
 import type { AuthoredPhoto } from '../catalog/types';
 import { readActivePointer, readAuthoredSeries } from '../catalog/working-layer';
 import { AUTHORED_LEASE_MS, AUTHORED_LOCK, AUTHORED_WAIT_MS, AuthoredWriteError, writeAuthoredRecord, type WriteAuthoredOptions } from '../catalog/working-layer-writer';
@@ -114,6 +115,18 @@ async function underAuthoredLock(root: string, step: Step, input: ActionInput, w
     }
 }
 
+/**
+ * The revision a confirm of `eventId` replaced, when the record's #16 stamp
+ * on `assetRevision` shows that confirm wrote the bytes it pins, or null.
+ * Leave in draft's put back writes a stamp naming the item too, but with the
+ * revision it put back as `to`, so it never reads as the confirm.
+ */
+export function confirmStampOf(record: AuthoredPhoto, eventId: string, assetRevision: string): string | null {
+    const stamp = record.review?.fields.assetRevision;
+    if (!stamp || stamp.event?.id !== eventId || !stamp.asset || stamp.asset.to !== assetRevision || stamp.asset.from === assetRevision) return null;
+    return record.assetRevision === assetRevision && stamp.valueHash === hashValue(assetRevision) ? stamp.asset.from : null;
+}
+
 /** Point the photo record at `to`, in place of `from`, through #13's writer with compare-and-swap, passing what was reviewed for #16. */
 async function pinRecord(record: AuthoredPhoto, to: string, profileId: string, step: Step, input: ActionInput, authored: LockContext, root: string): Promise<WrittenRecord> {
     const review: WriteAuthoredOptions['review'] = {
@@ -165,6 +178,8 @@ export function confirmReplacement(input: ActionInput & { faults?: ConfirmFaults
         // When the record already pins these bytes though the inbox last pinned another revision, that one.
         let unexplained: string | null = null;
         let again = false;
+        // This item's confirm wrote the record, by its #16 stamp, though no decision of the item records it: a crash between the two writes.
+        let recovered = false;
         await input.faults?.beforeAuthoredLock?.();
         await underAuthoredLock(root, step, input, 'confirm', async (authored) => {
             const existing = await readAuthored<AuthoredPhoto>(root, 'photo', photoId);
@@ -175,16 +190,23 @@ export function confirmReplacement(input: ActionInput & { faults?: ConfirmFaults
             fromRevision = record.assetRevision;
             if (record.assetRevision === assetRevision) {
                 const pin = await latestPin(root, registry, photoId);
-                if (pin && pin.revision === assetRevision && pin.action === 'confirm' && pin.fromRevision) {
-                    // Confirmed again, as after a reopen: keep what the earlier confirm replaced, so leaving it in draft still puts that back.
+                const own = pin !== null && pin.eventId === event.id && pin.action === 'confirm' && pin.revision === assetRevision;
+                const stamped = confirmStampOf(record, event.id, assetRevision);
+                if (stamped !== null) {
+                    // #16's stamp shows a confirm of this item wrote the record, so keep what that confirm replaced, and leaving
+                    // it in draft still puts that back. Confirmed again, as after a reopen, or once more after a crash between
+                    // confirm's two writes. A #15 rollback's rebase or a hand edit that moved the record drops or breaks the
+                    // stamp, so a record they put back on these bytes is never taken for this item's.
+                    fromRevision = stamped;
+                    again = own;
+                    recovered = !own;
+                } else if (own && pin.fromRevision && stampsOf(record).assetRevision?.origin === 'migration') {
+                    // A record no tool has written since the stamps were added, so no stamp tells: the pins decide, as before.
                     fromRevision = pin.fromRevision;
                     again = true;
                 } else if (pin && pin.revision !== assetRevision) {
-                    // Pinned already, though the inbox last pinned another. A confirm whose event a crash lost leaves this, and so
-                    // do a #15 rollback's rebase and a photos edit. Until 16-1 stamps the reviewed event on the record, nothing on
-                    // record tells them apart: the writer stores no review inputs, and the record keeps only its two newest
-                    // versions, in which a photos edit of assetRevision alone reads the same as confirm's write. So record no
-                    // fromRevision, and leaving it in draft later puts nothing back.
+                    // Pinned already, though the inbox last pinned another, and no stamp of this item's confirm: a #15 rollback's
+                    // rebase, a photos edit, or a hand edit. Record no fromRevision, and leaving it in draft later puts nothing back.
                     unexplained = pin.revision;
                 }
                 return;
@@ -203,7 +225,9 @@ export function confirmReplacement(input: ActionInput & { faults?: ConfirmFaults
                 ]
                 : again
                     ? [`${photoId}'s photo record already pins ${assetRevision}, as the last confirm left it, so nothing in the working layer changed. It is recorded as confirmed in place of ${fromRevision}, which that confirm replaced and leaving it in draft puts back.`]
-                    : [`${photoId}'s photo record already pins ${assetRevision}, so nothing in the working layer changed, and leaving it in draft later puts nothing back.`];
+                    : recovered
+                        ? [`${photoId}'s photo record already pins ${assetRevision}: its review stamp shows a confirm of this item wrote it, in place of ${fromRevision}, and the item was never marked confirmed. So nothing in the working layer changed. It is recorded as confirmed in place of ${fromRevision}, which leaving it in draft puts back.`]
+                        : [`${photoId}'s photo record already pins ${assetRevision}, so nothing in the working layer changed, and leaving it in draft later puts nothing back.`];
         const next = decided(step, input, { action: 'confirm', writes, ...(fromRevision !== assetRevision ? { fromRevision } : {}) }, 'approved');
         return { event: next, notes };
     });
@@ -567,7 +591,8 @@ export function archiveMissing(input: ActionInput & { reason?: string; faults?: 
             }
             await input.faults?.beforeWrite?.();
             for (const series of listing) {
-                const result = await applySequenceOp({ dataRoot: root }, { kind: 'remove', seriesId: series.id, photoId }, { expectedVersion: series.version, actor: { kind: 'inbox-approval', ref: event.id }, lock: authored });
+                const review = { baseRevisionId: step.active, event: { id: event.id, version: event.version }, actor: input.actor, reviewedAt: step.at };
+                const result = await applySequenceOp({ dataRoot: root }, { kind: 'remove', seriesId: series.id, photoId }, { expectedVersion: series.version, actor: { kind: 'inbox-approval', ref: event.id }, lock: authored, review });
                 if (!result.ok) {
                     const code = result.error.code === 'version-conflict' || result.error.code === 'authored-locked' ? 'stale' : 'refused';
                     // Every removal was checked first, so only a writer past its lease or a hand edit gets here.
