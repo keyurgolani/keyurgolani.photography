@@ -148,7 +148,7 @@ export function createDecision(input: DecisionInput, { idGen = randomUUID, clock
 export async function writeDecision(root: string, decision: IdentityDecision): Promise<string> {
     const dir = identityPaths(root).decisions;
     await fs.promises.mkdir(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
-    const file = path.join(dir, decisionFileName(decision));
+    const file = path.join(/*turbopackIgnore: true*/ dir, decisionFileName(decision));
     await atomicWriteJson(file, decision);
     return file;
 }
@@ -168,7 +168,7 @@ export async function readPendingDecisions(root: string): Promise<DecisionFile[]
     for (const name of names) {
         let raw: string;
         try {
-            raw = await fs.promises.readFile(path.join(dir, name), 'utf8');
+            raw = await fs.promises.readFile(path.join(/*turbopackIgnore: true*/ dir, name), 'utf8');
         } catch (error) {
             if (hasErrorCode(error, 'ENOENT')) continue; // Moved away since the listing.
             files.push({ name, decision: null, invalid: `it can't be read: ${(error as Error).message}`, raw: null });
@@ -200,16 +200,16 @@ export async function settleDecisions(root: string, files: readonly DecisionFile
         // Only a file this pass listed is moved or replaced, whatever name an outcome carries.
         const file = byName.get(outcome.name);
         if (outcome.status === 'deferred' || file === undefined) continue;
-        const source = path.join(dir, outcome.name);
-        const targetDir = path.join(dir, outcome.status);
+        const source = path.join(/*turbopackIgnore: true*/ dir, outcome.name);
+        const targetDir = path.join(/*turbopackIgnore: true*/ dir, outcome.status);
         await fs.promises.mkdir(targetDir, { recursive: true, mode: PRIVATE_DIR_MODE });
         if (outcome.status === 'applied') {
-            await fs.promises.rename(source, path.join(targetDir, outcome.name)).catch((error: unknown) => {
+            await fs.promises.rename(source, path.join(/*turbopackIgnore: true*/ targetDir, outcome.name)).catch((error: unknown) => {
                 if (!hasErrorCode(error, 'ENOENT')) throw error;
             });
             continue;
         }
-        await atomicWriteJson(path.join(targetDir, outcome.name), {
+        await atomicWriteJson(path.join(/*turbopackIgnore: true*/ targetDir, outcome.name), {
             rejectedAt: at,
             reason: outcome.reason,
             ...(file.decision ? { decision: file.decision } : { raw: file.raw }),
