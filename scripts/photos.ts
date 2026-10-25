@@ -61,6 +61,14 @@
  *     5 MiB in UTF-8, and describe-import.ts lists the characters and field
  *     lengths it refuses. --dry-run takes no lock and writes nothing.
  *
+ *   npx tsx scripts/photos.ts edit (<photoId> | <seriesId> | site) [--file <path>]
+ *     Open a record's newest version in $VISUAL or $EDITOR, check it, and
+ *     commit it as the next version. A series without a record opens as a
+ *     draft to fill in. --file commits a file instead of opening an editor.
+ *     Exits 0 when saved or unchanged, 1 when the edit or the record can't be
+ *     used, 2 on a usage error, 3 when the record changed meanwhile or the
+ *     authored lock stays busy, and 4 for I/O.
+ *
  *   npx tsx scripts/photos.ts sequence <command> <seriesId> ...
  *   npx tsx scripts/photos.ts series order <seriesId>...
  *   npx tsx scripts/photos.ts series featured (<seriesId>... | --clear)
@@ -111,6 +119,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runDescribeImport } from '../lib/catalog/describe-import';
 import { runDraftInit } from '../lib/catalog/draft-init';
+import { recordRef, runEditRecord } from '../lib/catalog/edit-record';
 import { runListCommand, runStatusCommand } from '../lib/catalog/owner-status';
 import { issueLines, photoIdArg, publishReport, sequenceArgs, seriesArgs, parseFlags, UsageError } from '../lib/catalog/owner-cli';
 import { publish, PUBLISH_EXIT_CODES, validateWorkingLayer, VALIDATE_EXIT_CODES } from '../lib/catalog/publish';
@@ -143,6 +152,7 @@ const USAGE = `Usage:
   ${PROGRAM} list [--unassigned] [--json]
   ${PROGRAM} draft:init
   ${PROGRAM} describe --import <file> [--dry-run]
+  ${PROGRAM} edit (<photoId> | <seriesId> | site) [--file <path>]
   ${PROGRAM} sequence show <seriesId>
   ${PROGRAM} sequence set <seriesId> <photoId>... [--expect-version <N>]
   ${PROGRAM} sequence (insert | move) <seriesId> <photoId> (--start | --end | --after <photoId> | --to <N>) [--expect-version <N>]
@@ -407,6 +417,17 @@ async function describeCommand(args: string[]): Promise<number> {
     return printed(await runDescribeImport({ dataRoot: root }, { file: values.import, dryRun: values['dry-run'] }));
 }
 
+async function editCommand(args: string[]): Promise<number> {
+    const { values, positionals } = parseFlags({ args, options: { file: { type: 'string' } }, allowPositionals: true });
+    if (positionals.length !== 1) throw new UsageError('photos edit needs one record: a photo ID, a series ID, or site.');
+    const ref = recordRef(positionals[0]);
+    if (ref === null) throw new UsageError(`${positionals[0]} is not a photo ID, a series ID, or site.`);
+    if (values.file === '') throw new UsageError('--file needs a path.');
+    const root = ownerRoot();
+    if (typeof root === 'number') return root;
+    return printed(await runEditRecord({ dataRoot: root }, ref, { file: values.file }));
+}
+
 async function orderCommand(parse: () => SequenceCommand): Promise<number> {
     const command = parse();
     const root = ownerRoot();
@@ -423,6 +444,7 @@ async function main(argv: string[]): Promise<number> {
         if (command === 'list') return await listCommand(args);
         if (command === 'draft:init') return await draftInitCommand(args);
         if (command === 'describe') return await describeCommand(args);
+        if (command === 'edit') return await editCommand(args);
         if (command === 'sequence') return await orderCommand(() => sequenceArgs(args));
         if (command === 'series') return await orderCommand(() => seriesArgs(args));
         if (command === 'validate') return await validate(args);
