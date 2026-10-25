@@ -1,6 +1,10 @@
 import { render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { VARIANT_BYTES } from '@/lib/catalog/__tests__/catalogFixtures';
 import { catalogPhotos } from '@/lib/catalog/photos-api';
+import { publish } from '@/lib/catalog/publish';
+import { createCatalogReader } from '@/lib/catalog/reader';
+import { readRevisionFile } from '@/lib/catalog/repository';
 import { createTestCatalog } from '@/lib/catalog/testing';
 import Gallery from '../Gallery';
 import { mediaImageLoader } from '../mediaImageLoader';
@@ -88,10 +92,13 @@ describe('Gallery', () => {
         expect(screen.getAllByRole('button')[0].querySelector('img')?.getAttribute('src')).toMatch(/^\/_next\/image\?url=%2Fassets%2Fphotos%2F/);
     });
 
-    it("fills a catalog item's tile from its own /media set, never through /_next/image", async () => {
-        const catalog = await createTestCatalog({ seed: 131, photos: 2, series: 1 });
+    it("fills a published catalog item's tile from its own /media set, never through /_next/image", { timeout: 30_000 }, async () => {
+        const catalog = await createTestCatalog({ seed: 131, photos: 2, series: 1, variantBytes: VARIANT_BYTES });
         try {
-            const items = catalogPhotos(catalog.reader());
+            const published = await publish({ dataRoot: catalog.root, actor: 'test', confirmLaunch: true, logger: { log: () => undefined } });
+            const revision = await readRevisionFile(catalog.root, published.revisionId ?? '');
+            if (!revision) throw new Error(`The publish ended ${published.outcome}: ${published.message}`);
+            const items = catalogPhotos(createCatalogReader(revision.content, { revisionId: revision.revisionId, revisionNumber: 1 }));
             expect(items[0].src).toMatch(/^\/media\/.+\/w1920\.webp$/);
             render(<Gallery images={items} />);
             const set = items[0].src.replace(/w1920\.webp$/, '');
