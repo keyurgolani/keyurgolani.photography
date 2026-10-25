@@ -229,12 +229,25 @@ test('the page opens with the title, the statement as text, the derived facts ap
     await expect(main.locator('figure figcaption')).toHaveText('Photograph 3 of 5');
 });
 
-/** The cover's frame box, and its image's computed fit and position. */
+type Box = { x: number; y: number; width: number; height: number } | null;
+
+/** The image fills its own frame, within 1 px on each edge, so it never paints past the frame onto the text beside it. */
+function expectFillsFrame(image: Box, frame: Box, label: string) {
+    expect(image, `${label} image box`).not.toBeNull();
+    expect(frame, `${label} frame box`).not.toBeNull();
+    if (!image || !frame) return;
+    for (const key of ['x', 'y', 'width', 'height'] as const) {
+        expect(Math.abs(image[key] - frame[key]), `${label} image ${key} ${image[key]} vs frame ${frame[key]}`).toBeLessThanOrEqual(1);
+    }
+}
+
+/** The cover's frame box, its image's box, and the image's computed fit and position. */
 async function coverOf(page: Page) {
     const frame = page.getByRole('main').locator('figure [data-photo]');
     const box = await frame.boundingBox();
+    const imageBox = await frame.locator('img').boundingBox();
     const image = await frame.locator('img').evaluate((element) => ({ fit: getComputedStyle(element).objectFit, position: getComputedStyle(element).objectPosition }));
-    return { box, ...image };
+    return { box, imageBox, ...image };
 }
 
 test('each cover keeps its own aspect ratio under the height cap, around its focal point or whole when authored contain', async ({ page }, testInfo) => {
@@ -247,8 +260,9 @@ test('each cover keeps its own aspect ratio under the height cap, around its foc
             const label = `${cover.slug} at ${size.width}x${size.height}`;
             await page.goto(`${origin()}/work/${cover.slug}`);
             await waitForHydration(page);
-            const { box, fit, position } = await coverOf(page);
+            const { box, imageBox, fit, position } = await coverOf(page);
             expect(box, label).not.toBeNull();
+            expectFillsFrame(imageBox, box, label);
             const height = box?.height ?? 0;
             expect(height, `${label} has a height`).toBeGreaterThan(0);
             // Within 1% of the photograph's ratio, so the box crops nothing away from its shape.
@@ -269,6 +283,7 @@ test('each sequence thumbnail keeps its 4:3 box and shows the whole photograph',
         expect(box?.height ?? 0, `${photoId} has a height`).toBeGreaterThan(0);
         expect((box?.width ?? 0) / (box?.height ?? 1), `${photoId} keeps 4:3`).toBeCloseTo(4 / 3, 1);
         if (photoId === BROKEN) continue;
+        expectFillsFrame(await link.locator('img').boundingBox(), box, photoId);
         expect(await link.locator('img').evaluate((image) => getComputedStyle(image).objectFit), photoId).toBe('contain');
     }
 });
