@@ -148,6 +148,14 @@ docker compose -f docker-compose.prod.yml up -d
 
 Both services switch together. Every `docker compose -f docker-compose.prod.yml` command needs `PHOTOGRAPHY_IMAGE_TAG`, not just `up`, so `pull`, `ps`, `logs`, and `down` refuse to run without it too. A `PHOTOGRAPHY_IMAGE_TAG` exported in your shell overrides `.env`. Nothing pulls `:latest` anymore, so every release needs this `.env` edit.
 
+The first release with #16's review stamps (#16's 16-1) needs one step after `up -d`, before any hand edit of `authored/`: run a dry run once, so the one-time review backfill records what the records hold now. Until a command writes it, a hand edit still counts as made before the upgrade. A dry run publishes nothing. Besides the marker, `authored/review-backfill.json`, it writes only the candidate and its diagnostics:
+
+```bash
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs publish --dry-run --actor <name>
+```
+
+Take the usual data-root backup before this upgrade: an image rollback past it needs that copy of `authored/` to edit or publish again, as [Rollback](#rollback) says.
+
 `v1.1.0`, the first release with Phase 0 of [replacement and missing files (#17)](https://github.com/keyurgolani/keyurgolani.photography/issues/17), needs two one-time steps, and only with the new image running them. Before it, derivative URLs were marked `immutable` for a year, so `./.next-images-cache` holds `/_next/image` copies made under that header, and an older image refills it and has no `images:cleanup`. Deploy `v1.1.0` this way instead of the plain `pull` and `up -d`. The cache files belong to the container's uid 1001, and a host user's `rm` can fail on them, so the `rm` runs inside the new `web` image:
 
 ```bash

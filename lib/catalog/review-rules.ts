@@ -28,6 +28,7 @@ export function ruleDiff(ctx: RuleContext): CatalogDiff {
 const HINTS: Record<string, string> = {
     'no-record': 'Restore the record from a backup, or publish without the change.',
     'no-stamp': 'A change made by hand is not reviewed. Put the field back as it was, then make the change with photos edit, which reviews what it writes.',
+    'backfill-unreadable': 'Restore authored/review-backfill.json from the data-root backup, or ask the owner. Never edit or delete it: the next command would write a new one, taking every hand edit made since the upgrade as reviewed.',
     edited: 'A change made by hand is not reviewed. Put the field back as it was, then make the change with photos edit, which reviews what it writes.',
     generated: 'Read the suggestion, and write the value you want with photos edit.',
     'active-moved': 'The active revision changed since this was reviewed. Check the field against what is live. If it needs a change, make it with photos edit. If it is still right, the Publish screen\'s review clears it; until that ships, change it with photos edit and change it back.',
