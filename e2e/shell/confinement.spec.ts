@@ -110,7 +110,7 @@ test.describe('the Viewer surface', () => {
         await waitForHydration(page);
         await expectViewerSurface(page);
         // It holds after a client-side move to the next photograph.
-        await page.getByRole('link', { name: 'Next photograph' }).click();
+        await page.getByRole('button', { name: 'Next photograph' }).click();
         await expect(page).toHaveURL(`${server.origin}/work/confined/photo/${id(2)}`);
         await expectViewerSurface(page);
     });
