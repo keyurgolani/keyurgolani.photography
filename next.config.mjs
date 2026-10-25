@@ -1,9 +1,32 @@
 import { DERIVATIVE_FOLDERS } from './lib/derivativeFolders.mjs';
 
+// #14's curator paths. proxy.ts 404s them unless CURATION_ENABLED is true.
+const CURATOR_SOURCES = ['/curation/:path*', '/api/curation/:path*'];
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
+  // Every curator response: never cached, indexed, framed, or sent as a
+  // referrer. The framing policy is its own entry, so #16's preview can
+  // override it for its own path. lib/curation/auth/policy.ts holds the same
+  // values, and proxy.ts sends them on the responses it refuses.
+  async headers() {
+    return [
+      ...CURATOR_SOURCES.map((source) => ({
+        source,
+        headers: [
+          { key: 'Cache-Control', value: 'no-store' },
+          { key: 'X-Robots-Tag', value: 'noindex, nofollow' },
+          { key: 'Referrer-Policy', value: 'no-referrer' },
+        ],
+      })),
+      ...CURATOR_SOURCES.map((source) => ({
+        source,
+        headers: [{ key: 'Content-Security-Policy', value: "frame-ancestors 'none'" }],
+      })),
+    ];
+  },
   // lib/storage/config.ts keeps its run-time paths out of the trace. These
   // excludes keep out the default data root, whose registry holds curator-only
   // metadata, and the library's original photos, should anything else reach them.

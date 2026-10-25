@@ -49,4 +49,21 @@ describe('/media under the catalog', { timeout: 60_000 }, () => {
             expect(refused.headers.get('cache-control')).toBe('no-store');
         }
     });
+
+    // #14's 14-2: the curator boundary grants no asset. Any curator-only
+    // asset access comes through requireCurator() on curator routes, never
+    // through /media, so the curator's own process 404s an unpublished set too.
+    it('404s an unpublished set with the curator on and a curator Host and Origin', async () => {
+        const catalog = await createTestCatalog({ variantBytes: VARIANT_BYTES, seed: 32 });
+        cleanups.push(() => catalog.cleanup());
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', catalog.root);
+        vi.stubEnv('CURATION_ENABLED', 'true');
+        vi.stubEnv('HOSTNAME', '127.0.0.1');
+        const [photo] = catalog.content.photos;
+        const url = `http://127.0.0.1:3001/media/${photo.id}/${photo.assetRevision}/${photo.profileId}/w800.webp`;
+        const segments = { photoId: photo.id, assetRevision: photo.assetRevision, profileId: photo.profileId, variant: 'w800.webp' };
+        const response = await GET(new Request(url, { headers: { host: '127.0.0.1:3001', origin: 'http://127.0.0.1:3001' } }), { params: Promise.resolve(segments) });
+        expect(response.status).toBe(404);
+        expect(response.headers.get('cache-control')).toBe('no-store');
+    });
 });
