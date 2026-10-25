@@ -5,11 +5,12 @@ import path from 'node:path';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FSWatcherEventMap } from 'chokidar';
 import sharp, { type Sharp } from 'sharp';
-import { dominantChannel, fixtureFiles, type Channel } from '../../test/fixtures/makeLibrary';
+import { scanLibrary } from '../../lib/identity/scan';
+import { dominantChannel, fixtureFiles, withExifOrientation, type Channel } from '../../test/fixtures/makeLibrary';
 import { fakeCaseInsensitiveDisk, fakeCaseSensitiveDisk } from '../../test/helpers/caseDisk';
 import { REPO_ROOT, runTsx } from '../../test/helpers/runTsx';
 import { createTempLibrary, derivativePaths, type TempLibrary } from '../../test/helpers/tempLibrary';
-import { baseNameOf, ownerOf, processImage } from '../imageOptimizer';
+import { baseNameOf, isOrientationTagged, optimizedSize, ownerOf, planOrphanCleanup, planSources, processImage, writeUprightMarker } from '../imageOptimizer';
 import {
     attachWatcher,
     createIgnoreFilter,
@@ -84,6 +85,8 @@ const BASIC = ['landscape.jpg', 'portrait.png', 'square.webp'];
 let edited: Buffer; // blue-dominant re-export of landscape.jpg
 let green: Buffer; // a third version
 let corrupt: Buffer; // a JPEG header Sharp can't decode
+let turned: Buffer; // landscape.jpg stored as it is, with EXIF Orientation 6
+let turnedEdited: Buffer; // edited, with EXIF Orientation 6
 let lib: TempLibrary;
 let logs: string[];
 let handlers: WatcherHandlers;
@@ -105,6 +108,8 @@ beforeAll(async () => {
     const extras = await fixtureFiles({ extras: true });
     edited = extras.get('landscape-edited.jpg') as Buffer;
     corrupt = extras.get('corrupt.jpg') as Buffer;
+    turned = extras.get('landscape-rot6.jpg') as Buffer;
+    turnedEdited = withExifOrientation(edited, 6);
     green = await sharp({ create: { width: 960, height: 640, channels: 3, background: { r: 30, g: 190, b: 60 } } })
         .jpeg({ quality: 90 })
         .toBuffer();
@@ -344,6 +349,22 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
             expect(await outputChannels('portrait')).toEqual(Array(7).fill('green'));
         });
 
+        it('leaves a set alone on a change of a source it shares, when the record says another process built it from its owner', async () => {
+            fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+            const run = await runTsx('scripts/imageWatcher.ts', ['--once'], {
+                env: { PHOTOGRAPHY_LIBRARY_DIR: lib.root, PHOTOGRAPHY_DATA_DIR: path.join(lib.root, '..', 'no-data-root') },
+            });
+            expect(run.code, run.stderr).toBe(0);
+            expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
+            const before = lib.hashes(derivativePaths('portrait'));
+
+            // A watcher started since knows from cache/set-sources that the owner built the set, so it has nothing to rebuild.
+            const restarted = newHandlers();
+            await restarted.onChange(lib.file('portrait.png'));
+            expect(lib.hashes(derivativePaths('portrait'))).toEqual(before);
+            expect(logs).toContain('[ImageWatcher] Skipping portrait.png: it shares its derivatives with portrait.jpg.');
+        });
+
         it('writes nothing for an add or a change of a source whose set another owns', async () => {
             await handlers.onAdd(lib.file('landscape.jpg'));
             const before = lib.hashes(LANDSCAPE);
@@ -372,6 +393,51 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
             await handlers.onUnlink(lib.file('landscape.png'));
             expect(lib.hashes(LANDSCAPE)).toEqual(before);
             expect(logs.filter((line) => line.includes('Rebuilt'))).toEqual([]);
+        });
+
+        it('rebuilds at startup a set whose owner was removed while the watcher was down', async () => {
+            fs.copyFileSync(lib.file('portrait.png'), lib.file('landscape.png'));
+            expect(await processOnce(handlers, { force: true, logger })).toBe(0);
+            handlers.stop();
+
+            // No unlink event: the watcher is down. landscape.png is older than the set, which looks current.
+            fs.unlinkSync(lib.file('landscape.jpg'));
+            expect(await newHandlers().queueStartupBatch()).toEqual({ processed: ['landscape.png'], skipped: [], errors: [] });
+            expect(await outputChannels('landscape')).toEqual(Array(7).fill('green'));
+            expect(logs).toContain("[ImageWatcher] Rebuilding landscape.png's set, which was last built from landscape.jpg.");
+
+            expect(await newHandlers().queueStartupBatch()).toEqual({ processed: [], skipped: [], errors: [] });
+        });
+
+        it('rebuilds at startup a set that a source sorting first took over while the watcher was down, whatever its mtime', async () => {
+            expect(await processOnce(handlers, { force: true, logger })).toBe(0);
+            handlers.stop();
+
+            fs.copyFileSync(lib.file('portrait.png'), lib.file('landscape.jpeg'));
+            setMtime('landscape.jpeg', Date.parse('2001-01-01T00:00:00Z'));
+            expect(await newHandlers().queueStartupBatch()).toEqual({ processed: ['landscape.jpeg'], skipped: [], errors: [] });
+            expect(await outputChannels('landscape')).toEqual(Array(7).fill('green'));
+        });
+
+        it('rebuilds a set a source sorting first takes over live, whatever its mtime', async () => {
+            await handlers.onAdd(lib.file('landscape.jpg'));
+            fs.copyFileSync(lib.file('portrait.png'), lib.file('landscape.jpeg'));
+            setMtime('landscape.jpeg', Date.parse('2001-01-01T00:00:00Z'));
+
+            await handlers.onAdd(lib.file('landscape.jpeg'));
+            expect(await outputChannels('landscape')).toEqual(Array(7).fill('green'));
+        });
+
+        it('rebuilds once a shared set nothing records the source of, and leaves a set with one source alone', async () => {
+            fs.copyFileSync(lib.file('portrait.png'), lib.file('landscape.png'));
+            expect(await processOnce(handlers, { force: true, logger })).toBe(0);
+            // As a set written before the record was kept
+            fs.rmSync(lib.file('cache', 'set-sources'), { recursive: true });
+
+            expect(await newHandlers().queueStartupBatch()).toEqual({ processed: ['landscape.jpg'], skipped: [], errors: [] });
+            expect(logs).toContain("[ImageWatcher] Rebuilding landscape.jpg's set, which it shares, since nothing records which source it was built from.");
+            expect(await outputChannels('landscape')).toEqual(Array(7).fill('red'));
+            expect(await newHandlers().queueStartupBatch()).toEqual({ processed: [], skipped: [], errors: [] });
         });
     });
 
@@ -658,6 +724,152 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
     });
 });
 
+describe('the one-time rebuild of orientation-tagged photos', { timeout: 60_000 }, () => {
+    const marker = () => lib.file('cache', 'upright-rebuild.json');
+    const OTHERS = [...LANDSCAPE, ...derivativePaths('portrait'), ...derivativePaths('square')];
+    // Without autoOrient(), as derivatives were written before they were turned upright
+    const sideways = () => sharp(turned).webp().toBuffer();
+    const UPRIGHT = { width: 640, height: 960 };
+
+    /** Current sets for the basic photos, and one for turned.jpg from before derivatives were turned upright: sideways, and newer than its source. */
+    async function oldLibrary(): Promise<void> {
+        for (const name of BASIC) await processImage(name);
+        fs.writeFileSync(lib.file('turned.jpg'), turned);
+        await processImage('turned.jpg');
+        fs.writeFileSync(lib.file('optimized/turned.webp'), await sideways());
+        expect(await optimizedSize('turned.jpg')).toEqual({ width: 960, height: 640 });
+    }
+
+    it('turns upright a tagged photo whose set looks current, records it, and leaves it alone on later starts', async () => {
+        await oldLibrary();
+        const others = lib.hashes(OTHERS);
+
+        expect(await handlers.queueStartupBatch()).toEqual({ processed: ['turned.jpg'], skipped: [], errors: [] });
+        expect(await optimizedSize('turned.jpg')).toEqual(UPRIGHT);
+        expect(lib.hashes(OTHERS)).toEqual(others);
+        expect(JSON.parse(fs.readFileSync(marker(), 'utf8'))).toMatchObject({ photos: 1 });
+        expect(logs).toContain('[ImageWatcher] Rebuilt the sets of 1 orientation-tagged photo. Clear the /_next/image cache, so it drops what it made from the old sets.');
+        // images:cleanup leaves the record alone
+        expect(planOrphanCleanup().entries.map((entry) => entry.relativePath)).toEqual([]);
+
+        fs.writeFileSync(lib.file('optimized/turned.webp'), await sideways());
+        expect(await newHandlers().queueStartupBatch()).toEqual({ processed: [], skipped: [], errors: [] });
+        expect((await optimizedSize('turned.jpg')).width).toBe(960);
+    });
+
+    it("keeps a startup job's own force, here the upright rebuild, when a change to a later source of its set drops the job", async () => {
+        await oldLibrary();
+        fs.copyFileSync(lib.file('turned.jpg'), lib.file('turned.png'));
+        // landscape.jpg's job goes first, and the gate holds it, so turned.jpg's job is still queued when the change comes.
+        fs.rmSync(lib.file(LANDSCAPE[0]));
+        expect(await ownerOf('turned.png')).toBe('turned.jpg');
+        const single = newHandlers();
+        const held = gate.arm();
+        const batch = single.queueStartupBatch();
+        await held.reached;
+        const change = single.onChange(lib.file('turned.png'));
+        held.release();
+
+        expect(await batch).toEqual({ processed: ['landscape.jpg'], skipped: ['turned.jpg'], errors: [] });
+        await change;
+        expect(await optimizedSize('turned.jpg')).toEqual(UPRIGHT);
+    });
+
+    it('records nothing while a tagged photo is left unbuilt, so the next start tries again', async () => {
+        await oldLibrary();
+        const held = gate.arm();
+        const batch = handlers.queueStartupBatch();
+        await held.reached; // turned.jpg is the one photo to process, and it is mid-encode
+        fs.writeFileSync(lib.file('turned.jpg'), turnedEdited);
+        held.release();
+
+        expect(await batch).toEqual({ processed: [], skipped: ['turned.jpg'], errors: [] });
+        expect(fs.existsSync(marker())).toBe(false);
+        expect(logs).toContain("[ImageWatcher] These orientation-tagged photos weren't rebuilt, so the next start tries again: turned.jpg.");
+
+        expect(await newHandlers().queueStartupBatch()).toEqual({ processed: ['turned.jpg'], skipped: [], errors: [] });
+        expect(await outputChannels('turned')).toEqual(Array(7).fill('blue'));
+        expect(fs.existsSync(marker())).toBe(true);
+    });
+
+    it('records the rebuild when a tagged photo fails, and later starts retry only that one', async () => {
+        await oldLibrary();
+        // Its header, orientation tag included, is intact, but it doesn't decode
+        const broken = turned.subarray(0, Math.floor(turned.length * 0.6));
+        await expect(sharp(broken).metadata()).resolves.toMatchObject({ orientation: 6 });
+        fs.writeFileSync(lib.file('broken.jpg'), broken);
+
+        expect(await handlers.queueStartupBatch()).toEqual({ processed: ['turned.jpg'], skipped: [], errors: ['broken.jpg'] });
+        expect(await optimizedSize('turned.jpg')).toEqual(UPRIGHT);
+        expect(JSON.parse(fs.readFileSync(marker(), 'utf8'))).toEqual({ rebuiltAt: expect.any(String), photos: 1, retry: ['broken.jpg'] });
+        expect(logs).toContain('[ImageWatcher] Rebuilt the sets of 1 orientation-tagged photo. Clear the /_next/image cache, so it drops what it made from the old sets.');
+        expect(logs).toContain('[ImageWatcher] These orientation-tagged photos failed to rebuild, so each start tries them again until they build: broken.jpg.');
+
+        // The next start leaves turned.jpg's set alone, sideways or not, and tries broken.jpg again
+        fs.writeFileSync(lib.file('optimized/turned.webp'), await sideways());
+        expect(await newHandlers().queueStartupBatch()).toEqual({ processed: [], skipped: [], errors: ['broken.jpg'] });
+        expect((await optimizedSize('turned.jpg')).width).toBe(960);
+        expect(JSON.parse(fs.readFileSync(marker(), 'utf8'))).toMatchObject({ retry: ['broken.jpg'] });
+
+        // Once it builds, nothing is left to retry
+        fs.writeFileSync(lib.file('broken.jpg'), turned);
+        expect(await newHandlers().queueStartupBatch()).toEqual({ processed: ['broken.jpg'], skipped: [], errors: [] });
+        expect(await optimizedSize('broken.jpg')).toEqual(UPRIGHT);
+        expect(JSON.parse(fs.readFileSync(marker(), 'utf8'))).toEqual({ rebuiltAt: expect.any(String), photos: 1 });
+        expect(await newHandlers().queueStartupBatch()).toEqual({ processed: [], skipped: [], errors: [] });
+    });
+
+    it("rebuilds a photo whose orientation can't be read, since it may be tagged", async () => {
+        for (const name of BASIC) await processImage(name);
+        fs.writeFileSync(lib.file('unknown.jpg'), 'not an image');
+
+        expect(await isOrientationTagged('unknown.jpg')).toBeNull();
+        expect(await isOrientationTagged('landscape.jpg')).toBe(false);
+        expect((await planSources()).upright).toEqual(['unknown.jpg']);
+    });
+
+    it('records it at once when no photo is tagged, and after a forced run too', async () => {
+        // Orientation 1 is upright already
+        fs.writeFileSync(lib.file('level.jpg'), withExifOrientation(fs.readFileSync(lib.file('landscape.jpg')), 1));
+        for (const name of [...BASIC, 'level.jpg']) await processImage(name);
+        expect(await handlers.queueStartupBatch()).toEqual({ processed: [], skipped: [], errors: [] });
+        expect(JSON.parse(fs.readFileSync(marker(), 'utf8'))).toMatchObject({ photos: 0 });
+
+        fs.rmSync(marker());
+        fs.writeFileSync(lib.file('turned.jpg'), turned);
+        expect(await processOnce(newHandlers(), { force: true, logger })).toBe(0);
+        expect(JSON.parse(fs.readFileSync(marker(), 'utf8'))).toMatchObject({ photos: 1 });
+    });
+
+    it('never creates a missing library root to write the record', async () => {
+        const missing = await createTempLibrary({ missingRoot: true });
+        try {
+            expect(() => writeUprightMarker(0)).toThrow(/ENOENT/);
+            expect(fs.existsSync(missing.root)).toBe(false);
+        } finally {
+            await missing.cleanup();
+        }
+    });
+
+    it('logs a record it could not write, and still rebuilds', async () => {
+        await oldLibrary();
+        fs.rmSync(lib.file('cache'), { recursive: true, force: true });
+        fs.writeFileSync(lib.file('cache'), 'a file where the cache folder goes');
+        // The set's own record can't be written either, and that is logged too
+        const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+        expect(await handlers.queueStartupBatch()).toEqual({ processed: ['turned.jpg'], skipped: [], errors: [] });
+        expect(await optimizedSize('turned.jpg')).toEqual(UPRIGHT);
+        // Said up front, before any build
+        const warning = `[ImageWatcher] ${path.dirname(marker())} can't be written, so the watcher can't record which sets it rebuilt. Until it can, every start rebuilds the orientation-tagged photos and the shared sets again.`;
+        expect(logs.indexOf(warning)).toBeGreaterThanOrEqual(0);
+        expect(logs.indexOf(warning)).toBeLessThan(logs.findIndex((line) => line.startsWith('[ImageWatcher] Processing ')));
+        expect(logs.some((line) => line.startsWith(`[ImageWatcher] Could not write ${marker()}: `) && line.endsWith('The next start rebuilds the orientation-tagged photos again.'))).toBe(true);
+        expect(logs.some((line) => line.startsWith('[ImageWatcher] Rebuilt the sets'))).toBe(false);
+        expect(errors).toHaveBeenCalledWith(expect.stringMatching(/^\[imageOptimizer\] Couldn't record that turned\.jpg's set was built from it: /));
+    });
+});
+
 describe("the web process's libvips setting", () => {
     it('leaves the cache on in the watcher, which loads nothing that turns it off', () => {
         // The modules this file loads are the ones the watcher runs.
@@ -734,6 +946,103 @@ describe('attachWatcher', { timeout: 60_000 }, () => {
         expect(onChange.mock.calls).toEqual([[lib.file('b.jpg')]]);
         expect(onUnlink.mock.calls).toEqual([[lib.file('c.jpg')]]);
     });
+
+    it('hands the legacy handlers only files directly in the root, and reports every change in the library', () => {
+        const watcher = new EventEmitter<FSWatcherEventMap>();
+        const onAdd = vi.spyOn(handlers, 'onAdd').mockResolvedValue(undefined);
+        const onChange = vi.spyOn(handlers, 'onChange').mockResolvedValue(undefined);
+        const onUnlink = vi.spyOn(handlers, 'onUnlink').mockResolvedValue(undefined);
+        const changes: [string, string][] = [];
+        const onRootRemoved = vi.fn();
+        attachWatcher(watcher, handlers, {
+            root: lib.root,
+            logger,
+            onRootRemoved,
+            onLibraryChange: (event, changed) => { changes.push([event, changed]); },
+        });
+
+        watcher.emit('add', lib.file('a.jpg'));
+        watcher.emit('add', lib.file('trips', 'b.jpg'));
+        watcher.emit('change', lib.file('trips', 'b.jpg'));
+        watcher.emit('unlink', lib.file('trips', 'c.jpg'));
+        watcher.emit('addDir', lib.file('series'));
+        watcher.emit('unlinkDir', lib.file('series'));
+        // The root itself is no change in the library: its removal shuts the watcher down instead.
+        watcher.emit('addDir', lib.root);
+        watcher.emit('unlinkDir', lib.root);
+
+        expect(onAdd.mock.calls).toEqual([[lib.file('a.jpg')]]);
+        expect(onChange).not.toHaveBeenCalled();
+        expect(onUnlink).not.toHaveBeenCalled();
+        expect(onRootRemoved).toHaveBeenCalledTimes(1);
+        expect(changes).toEqual([
+            ['add', lib.file('a.jpg')],
+            ['add', lib.file('trips', 'b.jpg')],
+            ['change', lib.file('trips', 'b.jpg')],
+            ['unlink', lib.file('trips', 'c.jpg')],
+            ['addDir', lib.file('series')],
+            ['unlinkDir', lib.file('series')],
+        ]);
+    });
+
+    it("isn't idle while the startup batch works out its jobs, so what onReady waits for comes after them", async () => {
+        const watcher = new EventEmitter<FSWatcherEventMap>();
+        const outputs = ['landscape', 'portrait', 'square'].flatMap(derivativePaths);
+        const seen: number[] = [];
+        attachWatcher(watcher, handlers, {
+            root: lib.root,
+            logger,
+            onRootRemoved: () => undefined,
+            onReady: () => { void handlers.idle().then(() => { seen.push(Object.keys(lib.hashes(outputs)).length); }); },
+        });
+
+        watcher.emit('ready');
+
+        await vi.waitFor(() => expect(seen).toHaveLength(1), { timeout: 30_000 });
+        expect(seen).toEqual([21]);
+    });
+
+    it("with awaitStartup, isn't idle before ready queues the startup batch, so nothing waiting on idle() runs alongside it", async () => {
+        const watcher = new EventEmitter<FSWatcherEventMap>();
+        const waiting = createWatcherHandlers({ logger, awaitStartup: true });
+        const outputs = ['landscape', 'portrait', 'square'].flatMap(derivativePaths);
+        const seen: number[] = [];
+        attachWatcher(watcher, waiting, { root: lib.root, logger, onRootRemoved: () => undefined });
+        // Asked before chokidar's initial scan is done, as the identity step's first heartbeat can.
+        void waiting.idle().then(() => { seen.push(Object.keys(lib.hashes(outputs)).length); });
+
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(seen).toEqual([]);
+        watcher.emit('ready');
+
+        await vi.waitFor(() => expect(seen).toHaveLength(1), { timeout: 30_000 });
+        expect(seen).toEqual([21]);
+    });
+
+    it('with awaitStartup, is idle once stopped before ready, so shutdown never waits for a batch that won\'t come', async () => {
+        const waiting = createWatcherHandlers({ logger, awaitStartup: true });
+        let idle = false;
+        void waiting.idle().then(() => { idle = true; });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(idle).toBe(false);
+        waiting.stop();
+        await vi.waitFor(() => expect(idle).toBe(true));
+        expect(await waiting.queueStartupBatch()).toEqual({ processed: [], skipped: [], errors: [] });
+    });
+
+    it('on ready, queues the startup batch and then calls onReady', () => {
+        const watcher = new EventEmitter<FSWatcherEventMap>();
+        const order: string[] = [];
+        vi.spyOn(handlers, 'queueStartupBatch').mockImplementation(async () => {
+            order.push('startup batch');
+            return { processed: [], skipped: [], errors: [] };
+        });
+        attachWatcher(watcher, handlers, { root: lib.root, logger, onRootRemoved: () => undefined, onReady: () => { order.push('onReady'); } });
+
+        watcher.emit('ready');
+
+        expect(order).toEqual(['startup batch', 'onReady']);
+    });
 });
 
 describe('createIgnoreFilter', () => {
@@ -748,5 +1057,39 @@ describe('createIgnoreFilter', () => {
         expect(ignored('/srv/cache/photos/lqip')).toBe(true);
         expect(ignored('/srv/cache/photos/cache')).toBe(true);
         expect(ignored('/srv/cache')).toBe(false);
+    });
+
+    it('skips dot-entries at any depth and watches nested folders, even ones named like a generated folder', () => {
+        const ignored = createIgnoreFilter('/srv/photos');
+
+        expect(ignored('/srv/photos/.DS_Store')).toBe(true);
+        expect(ignored('/srv/photos/._landscape.jpg')).toBe(true);
+        expect(ignored('/srv/photos/trips/.hidden')).toBe(true);
+        expect(ignored('/srv/photos/trips/.hidden/x.jpg')).toBe(true);
+        expect(ignored('/srv/photos/trips')).toBe(false);
+        expect(ignored('/srv/photos/trips/x.jpg')).toBe(false);
+        expect(ignored('/srv/photos/trips/thumbnails/x.webp')).toBe(false);
+        expect(ignored('/srv/photos/cache-1.jpg')).toBe(false);
+    });
+
+    it('skips exactly what the identity scan skips', async () => {
+        const files = [
+            'a.jpg', '.b.jpg', 'cache-1.jpg', 'medium-format.jpg', 'notes.txt', 'raw.heic',
+            'trips/c.jpg', 'trips/.d.jpg', 'trips/deep/e.png', 'trips/thumbnails/f.webp',
+            '.hidden/g.jpg', 'thumbnails/h.webp', 'cache/dynamic/i.webp', 'optimized-avif/j.avif',
+        ];
+        for (const relativePath of files) {
+            fs.mkdirSync(path.dirname(lib.file(relativePath)), { recursive: true });
+            fs.writeFileSync(lib.file(relativePath), 'not decoded by a scan');
+        }
+        const ignored = createIgnoreFilter(lib.root);
+        // chokidar never descends into an ignored folder, so a file counts as watched only if it and every folder above it are.
+        const watched = (relativePath: string) => relativePath.split('/').every((_, index, segments) => !ignored(lib.file(...segments.slice(0, index + 1))));
+
+        const scanned = (await scanLibrary(lib.root)).entries.map((entry) => entry.path).sort();
+        // Every file with an extension the scan reads, the fixtures from beforeEach included.
+        const scannable = [...BASIC, ...files].filter((relativePath) => !relativePath.endsWith('.txt'));
+        expect(scannable.filter(watched).sort()).toEqual(scanned);
+        expect(scanned).toEqual([...BASIC, 'a.jpg', 'cache-1.jpg', 'medium-format.jpg', 'raw.heic', 'trips/c.jpg', 'trips/deep/e.png', 'trips/thumbnails/f.webp'].sort());
     });
 });

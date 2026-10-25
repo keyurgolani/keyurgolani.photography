@@ -5,7 +5,9 @@ import { profileIdOf } from './ids';
  * Derivative profile 1: processImage()'s encoder settings plus autoOrient()
  * and a 1200 px size. WebP is quality 80 at 400 px and 85 above, AVIF is
  * quality 60 at effort 4, nothing is enlarged, the LQIP is a 20 px WebP, and
- * no metadata is kept. Changing anything here, or upgrading Sharp or libvips,
+ * no metadata is kept. No variant is taller than `maxHeight`, since WebP
+ * can't encode a side over 16383 px, so a tall panorama gets a narrower
+ * variant instead of failing, as the legacy derivatives do. Changing anything here, or upgrading Sharp or libvips,
  * makes a new profileId, which applies to revisions first seen after it.
  */
 export const PROFILE_1 = {
@@ -13,6 +15,7 @@ export const PROFILE_1 = {
     autoOrient: true,
     metadata: 'none',
     resize: { fit: 'inside', withoutEnlargement: true },
+    maxHeight: 16383,
     variants: {
         w400: { width: 400, webp: { quality: 80 }, avif: { quality: 60, effort: 4 } },
         w800: { width: 800, webp: { quality: 85 }, avif: { quality: 60, effort: 4 } },

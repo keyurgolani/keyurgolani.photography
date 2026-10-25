@@ -2,13 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { dataRootStatus, libraryRoot, type DataRootState } from '../storage/config';
 import { UnsupportedSchemaError, type VersionedWriteHooks } from '../storage/document';
 import { LockTimeoutError, withLock, type LockRecord } from '../storage/lock';
+import { readPendingDecisions, settleDecisions, type DecisionFile, type DecisionOutcome } from './decisions';
 import { namedUuid, sha256, type Hasher } from './ids';
 import { inspectEntry, type Inspection } from './inspect';
 import { currentProfileId } from './profile';
 import { isStillChanging, reconcile, type FactDraft, type ReconcileReport } from './reconcile';
 import { emptyStatCache, readRegistry, readStatCache, writeRegistry, writeStatCache, type StatCache, type StatCacheEntry } from './registry';
 import { scanLibrary, type LibraryScan } from './scan';
-import type { DerivativeJob, IdentityFact, Registry } from './types';
+import type { DerivativeJob, IdentityFact, RecordedDecision, Registry } from './types';
 
 type Logger = Pick<Console, 'log' | 'warn' | 'error'>;
 
@@ -42,6 +43,8 @@ export interface ObservedLibrary {
     report: ReconcileReport;
     retryAfterMs: number | null;
     statCache: StatCache;
+    /** What became of each decision, in order. */
+    decisions: DecisionOutcome[];
 }
 
 /**
@@ -91,7 +94,7 @@ export function withReportedFailures(latest: StatCache, committed: StatCache): S
  * changed since the stat cache saw them, and reconcile. Writes nothing.
  */
 export async function observeLibrary(
-    { root, registry, statCache = emptyStatCache(), deps = {} }: { root: string; registry: Registry; statCache?: StatCache; deps?: PassDeps },
+    { root, registry, statCache = emptyStatCache(), deps = {}, decisions = [] }: { root: string; registry: Registry; statCache?: StatCache; deps?: PassDeps; decisions?: readonly DecisionFile[] },
 ): Promise<ObservedLibrary> {
     const { hasher = sha256, idGen = randomUUID, clock = Date.now } = deps;
     const profileId = deps.profileId ?? currentProfileId();
@@ -121,7 +124,7 @@ export async function observeLibrary(
         }
     }
 
-    const result = reconcile(scan, registry, (entry) => inspections.get(entry.path), { idGen, profileId });
+    const result = reconcile(scan, registry, (entry) => inspections.get(entry.path), { idGen, profileId, decisions });
 
     // An unsupported file or a digest collision changes no registry state, so report it once per version of the file.
     const facts = result.facts.filter((fact) => {
@@ -142,6 +145,7 @@ export async function observeLibrary(
         report: result.report,
         retryAfterMs: result.retryAfterMs,
         statCache: { schemaVersion: statCache.schemaVersion, version: statCache.version + 1, entries },
+        decisions: result.decisions,
     };
 }
 
@@ -150,6 +154,8 @@ export interface PassFaults {
     /** After reconciling, before the registry write. A test can write the registry here as a foreign writer. */
     beforeRegistryWrite?(): void | Promise<void>;
     registryWrite?: VersionedWriteHooks;
+    /** After the registry and stat cache are written, before decision files move to applied/ or rejected/. */
+    beforeSettle?(): void | Promise<void>;
     /** After the registry and stat cache are written, before any fact is delivered. */
     beforeDelivery?(): void | Promise<void>;
     /** After delivery, before delivered facts are cleared. */
@@ -179,9 +185,61 @@ export type PassOutcome =
         jobs: DerivativeJob[];
         report: ReconcileReport;
         retryAfterMs: number | null;
+        /** What became of each decision file, in order. */
+        decisions: DecisionOutcome[];
     }
     | { status: 'skipped'; reason: 'data-root'; state: DataRootState; detail?: string }
     | { status: 'skipped'; reason: 'locked'; holder: LockRecord | null };
+
+/** Only the fields a recorded decision has. */
+function recordOf(outcome: RecordedDecision | Exclude<DecisionOutcome, { status: 'deferred' }>): RecordedDecision {
+    return outcome.status === 'applied' ? { status: 'applied', detail: outcome.detail } : { status: 'rejected', reason: outcome.reason };
+}
+
+/**
+ * Split the waiting decision files into those to apply now and those an
+ * earlier registry write already applied or rejected, which a crash kept
+ * from being filed. Returns the outcomes in file order, given what the new
+ * ones came to, and the record the next registry write carries: every
+ * waiting decision that is applied or rejected now, until its file moves.
+ * When `files` may not be every waiting decision, because the folder
+ * couldn't be listed or a file couldn't be read, the record also keeps each
+ * earlier entry this listing didn't find, so a decision whose file is back
+ * next time is still filed as it went. Exported for tests.
+ */
+export function replayDecisions(files: readonly DecisionFile[], recorded: Readonly<Record<string, RecordedDecision>>, { complete = true }: { complete?: boolean } = {}) {
+    const isRecorded = (file: DecisionFile) => file.decision !== null && Object.hasOwn(recorded, file.decision.decisionId);
+    const fresh = files.filter((file) => !isRecorded(file));
+    const settle = (outcomesOfFresh: readonly DecisionOutcome[]) => {
+        const byName = new Map(outcomesOfFresh.map((outcome) => [outcome.name, outcome]));
+        const outcomes: DecisionOutcome[] = [];
+        const decided: Record<string, RecordedDecision> = {};
+        if (!complete) {
+            const listed = new Set(files.flatMap((file) => (file.decision ? [file.decision.decisionId] : [])));
+            for (const [decisionId, entry] of Object.entries(recorded)) if (!listed.has(decisionId)) decided[decisionId] = recordOf(entry);
+        }
+        for (const file of files) {
+            const decisionId = file.decision?.decisionId ?? null;
+            // Built from the listed file and the entry's checked fields, never by copying the stored entry.
+            const outcome: DecisionOutcome | undefined = decisionId !== null && isRecorded(file)
+                ? { name: file.name, decisionId, ...recordOf(recorded[decisionId]) }
+                : byName.get(file.name);
+            if (!outcome) continue;
+            outcomes.push(outcome);
+            if (decisionId === null || outcome.status === 'deferred') continue;
+            decided[decisionId] = recordOf(outcome);
+        }
+        return { outcomes, decided };
+    };
+    return { fresh, settle };
+}
+
+/** `registry` carrying `decided`, or without the field when it is empty. */
+function withDecided(registry: Registry, decided: Record<string, RecordedDecision>): Registry {
+    const next: Registry = { ...registry };
+    delete next.decided;
+    return Object.keys(decided).length > 0 ? { ...next, decided } : next;
+}
 
 function dedupeByFactId(facts: readonly IdentityFact[]): IdentityFact[] {
     const seen = new Set<string>();
@@ -209,17 +267,34 @@ export async function runReconcilePass(options: PassOptions = {}): Promise<PassO
         // The lease runs on real time even when a test injects the pass clock.
         return await withLock('registry', { root, waitMs: options.lock?.waitMs, leaseMs: options.lock?.leaseMs }, async ({ signal }) => {
             const before = await readRegistry(root);
-            const observed = await observeLibrary({ root: libraryRoot(), registry: before, statCache: await readStatCache(root), deps: options });
+            let listed = true;
+            const decisions = await readPendingDecisions(root).catch((error: unknown) => {
+                logger.warn(`[identity] Could not read identity/decisions/, so this pass applies none: ${(error as Error).message}`);
+                listed = false;
+                return [];
+            });
+            // A decision an earlier write recorded is filed as it went then, never applied twice.
+            const complete = listed && decisions.every((file) => file.raw !== null);
+            const replay = replayDecisions(decisions, before.decided ?? {}, { complete });
+            const observed = await observeLibrary({ root: libraryRoot(), registry: before, statCache: await readStatCache(root), deps: options, decisions: replay.fresh });
+            const { outcomes, decided } = replay.settle(observed.decisions);
             signal.throwIfAborted();
             for (const skipped of observed.report.unreadable) logger.warn(`[identity] Skipped ${skipped}: it can't be read.`);
             for (const folder of observed.scan.unreadableDirs) logger.warn(`[identity] Skipped folder ${folder}: it can't be listed.`);
 
             const facts: IdentityFact[] = observed.facts.map((draft) => ({ ...draft, factId: factIdFor(draft, idGen) }));
             await faults?.beforeRegistryWrite?.();
-            const written = await writeRegistry(root, { ...observed.registry, pendingFacts: [...before.pendingFacts, ...facts] }, before.version, faults?.registryWrite);
+            const next = withDecided({ ...observed.registry, pendingFacts: [...before.pendingFacts, ...facts] }, decided);
+            const written = await writeRegistry(root, next, before.version, faults?.registryWrite);
             await writeStatCache(root, observed.statCache).catch((error: unknown) => {
                 logger.warn(`[identity] Could not write the stat cache, so the next pass reads every file again: ${(error as Error).message}`);
             });
+            // Only now that the registry holds their effect. After a crash before this, the next pass files them as recorded.
+            await faults?.beforeSettle?.();
+            await settleDecisions(root, decisions, outcomes, written.updatedAt ?? new Date((options.clock ?? Date.now)()).toISOString()).catch((error: unknown) => {
+                logger.warn(`[identity] Could not file the applied and rejected decisions, so the next pass applies them again: ${(error as Error).message}`);
+            });
+            for (const outcome of outcomes) logger.log(JSON.stringify({ event: 'identity-decision', ...outcome }));
             await faults?.beforeDelivery?.();
 
             const delivered = dedupeByFactId(written.pendingFacts);
@@ -248,6 +323,7 @@ export async function runReconcilePass(options: PassOptions = {}): Promise<PassO
                 jobs: observed.jobs,
                 report: observed.report,
                 retryAfterMs: observed.retryAfterMs,
+                decisions: outcomes,
             };
         });
     } catch (error) {

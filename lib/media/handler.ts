@@ -1,0 +1,128 @@
+import path from 'node:path';
+import { ASSET_REVISION_RE, PHOTO_ID_RE, PROFILE_ID_RE } from '../identity/ids';
+import type { AssetManifest } from '../identity/types';
+import { dataRootStatus } from '../storage/config';
+import { mediaAccess, mediaAccessMode, type MediaAccessPolicy } from './access';
+import { containedAssetDir, openRegularFile, readAssetManifest } from './manifest';
+import { parseVariantFile } from './path';
+import type { AssetRef } from './url';
+
+/**
+ * `GET /media/<photoId>/<assetRevision>/<profileId>/<variant>.<format>`.
+ * Serves one file of a derivative set from the data root, read at each
+ * request, since the standalone server's `public/` is a snapshot taken at
+ * startup. It reads only the set's manifest and the file, never the registry
+ * or the library. A malformed segment, a denied or missing set, and a data
+ * root that isn't ready all give 404, and every 404 and 410 is `no-store`.
+ * Found manifests are kept, since a published set never changes; a missing
+ * one is read again next time, so a set built later is served. Each request
+ * still finds the set's folder and opens the file, so a set gone since gets
+ * 404, never a 304 from what was kept, and nothing is served through a
+ * symlink below the asset store.
+ */
+
+type Logger = Pick<Console, 'warn'>;
+
+export interface MediaHandlerOptions {
+    /** Who may fetch a set. Defaults to mediaAccess(), with a warning, once, when it serves everything. */
+    access?: MediaAccessPolicy;
+    logger?: Logger;
+    /** How many found manifests to keep. */
+    cacheSize?: number;
+}
+
+export interface MediaRouteContext {
+    params: Promise<{ photoId: string; assetRevision: string; profileId: string; variant: string }>;
+}
+
+const CACHE_CONTROL = { public: 'public, max-age=31536000, immutable', private: 'private, no-store' } as const;
+
+function refused(status: 404 | 410): Response {
+    return new Response(null, { status, headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' } });
+}
+
+/** Whether If-None-Match names `etag`, compared weakly, as RFC 9110 asks of a GET. */
+function matches(header: string | null, etag: string): boolean {
+    if (header === null) return false;
+    return header.split(',').some((candidate) => {
+        const tag = candidate.trim();
+        return tag === '*' || tag.replace(/^W\//, '') === etag;
+    });
+}
+
+export function createMediaHandler(options: MediaHandlerOptions = {}): (request: Request, context: MediaRouteContext) => Promise<Response> {
+    const { logger = console, cacheSize = 2_000 } = options;
+    let warned = false;
+    const access: MediaAccessPolicy = options.access ?? ((ref, request) => {
+        const { mode, unknown } = mediaAccessMode();
+        if (!warned && (mode === 'all' || unknown !== undefined)) {
+            warned = true;
+            logger.warn(mode === 'all'
+                ? '[media] PHOTOGRAPHY_MEDIA_ACCESS=all: every derivative set is public until the catalog decides who sees what.'
+                : `[media] PHOTOGRAPHY_MEDIA_ACCESS=${unknown} isn't deny or all, so every set is denied.`);
+        }
+        return mediaAccess(ref, request);
+    });
+    const manifests = new Map<string, AssetManifest>();
+
+    return async (request, { params }) => {
+        const { photoId, assetRevision, profileId, variant } = await params;
+        const file = parseVariantFile(variant);
+        if (!PHOTO_ID_RE.test(photoId) || !ASSET_REVISION_RE.test(assetRevision) || !PROFILE_ID_RE.test(profileId) || file === null) return refused(404);
+        const ref: AssetRef = { photoId, assetRevision, profileId };
+        const decision = await access(ref, request);
+        if (decision === 'deny') return refused(404);
+        if (decision === 'gone') return refused(410);
+
+        const status = dataRootStatus();
+        if (status.state !== 'ready' || status.root === null) return refused(404);
+        const key = `${status.root}\0${photoId}/${assetRevision}/${profileId}`;
+        let manifest = manifests.get(key);
+        if (manifest === undefined) {
+            const found = await readAssetManifest(ref, { root: status.root });
+            if (found === null) return refused(404);
+            manifest = found;
+            manifests.set(key, found);
+            if (manifests.size > cacheSize) manifests.delete(manifests.keys().next().value as string);
+        }
+
+        const listed = manifest.variants[file.variant][file.format];
+        const etag = `"${listed.sha256}"`;
+        const headers = { 'Cache-Control': CACHE_CONTROL[decision], ETag: etag, 'X-Content-Type-Options': 'nosniff' };
+        const name = `${photoId}/${assetRevision}/${profileId}/${variant}`;
+
+        let data: Buffer;
+        try {
+            const dir = await containedAssetDir(ref, status.root);
+            const opened = dir === null ? null : await openRegularFile(path.join(/*turbopackIgnore: true*/ dir, `${file.variant}.${file.format}`));
+            if (opened === null) {
+                manifests.delete(key);
+                return refused(404);
+            }
+            try {
+                if (opened.size !== listed.bytes) {
+                    logger.warn(`[media] ${name} is ${opened.size} bytes, but its manifest says ${listed.bytes}, so it isn't served.`);
+                    return refused(404);
+                }
+                // The file is there, so a client's copy of it is still current.
+                if (matches(request.headers.get('if-none-match'), etag)) return new Response(null, { status: 304, headers });
+                data = await opened.handle.readFile();
+            } finally {
+                await opened.handle.close();
+            }
+        } catch (error) {
+            logger.warn(`[media] Could not read ${name}: ${(error as Error).message}`);
+            manifests.delete(key);
+            return refused(404);
+        }
+        if (data.length !== listed.bytes) {
+            logger.warn(`[media] ${name} is ${data.length} bytes, but its manifest says ${listed.bytes}, so it isn't served.`);
+            return refused(404);
+        }
+        // readFile() fills a plain ArrayBuffer, never a shared one.
+        return new Response(data as Uint8Array<ArrayBuffer>, {
+            status: 200,
+            headers: { ...headers, 'Content-Type': `image/${file.format}`, 'Content-Length': String(data.length) },
+        });
+    };
+}

@@ -62,11 +62,22 @@ export function isUnder(relativePath: string, dir: string): boolean {
     return dir === '' || relativePath === dir || relativePath.startsWith(`${dir}/`);
 }
 
-function classify(name: string): ScanEntry['kind'] | null {
+/** What the scan makes of a file by its name: a source, an unsupported image, or nothing it reads. */
+export function scanKind(name: string): ScanEntry['kind'] | null {
     const extension = path.extname(name).toLowerCase();
     if ((SOURCE_EXTENSIONS as readonly string[]).includes(extension)) return 'source';
     if ((UNSUPPORTED_EXTENSIONS as readonly string[]).includes(extension)) return 'unsupported';
     return null;
+}
+
+/**
+ * Whether the scan skips a library-relative POSIX path, file or folder,
+ * without looking at it: a dot-entry at any depth, or a root-level legacy
+ * output folder by exact name. The watcher skips the same paths.
+ */
+export function isScanExcluded(relativePath: string): boolean {
+    const segments = relativePath.split('/');
+    return segments.some((segment) => segment.startsWith('.')) || LEGACY_OUTPUT_DIRS.includes(segments[0]);
 }
 
 /**
@@ -97,9 +108,8 @@ export async function scanLibrary(root: string, { clock = Date.now }: { clock?: 
             continue;
         }
         for (const name of names) {
-            if (name.startsWith('.')) continue;
-            if (relativeDir === '' && LEGACY_OUTPUT_DIRS.includes(name)) continue;
             const relativePath = relativeDir === '' ? name : `${relativeDir}/${name}`;
+            if (isScanExcluded(relativePath)) continue;
             let stat: fs.Stats;
             try {
                 stat = await fs.promises.lstat(path.join(root, relativePath));
@@ -114,7 +124,7 @@ export async function scanLibrary(root: string, { clock = Date.now }: { clock?: 
                 continue;
             }
             if (!stat.isFile()) continue;
-            const kind = classify(name);
+            const kind = scanKind(name);
             if (!kind) continue;
             entries.push({
                 path: relativePath,

@@ -1,7 +1,10 @@
 import type { EventEmitter } from 'events';
+import fs from 'fs';
 import path from 'path';
-import type { FSWatcherEventMap } from 'chokidar';
+import type { ChokidarOptions, FSWatcherEventMap } from 'chokidar';
+import { isScanExcluded } from '../lib/identity/scan';
 import {
+    cacheFolderWritable,
     generatedFolderNames,
     hasErrorCode,
     isSourceFile,
@@ -16,9 +19,16 @@ import {
     setMembers,
     sharesSet,
     SOURCE_CHANGED,
+    uprightMarkerPath,
+    writeUprightMarker,
 } from './imageOptimizer';
 
 type Logger = Pick<Console, 'log' | 'error'>;
+
+/** `1 photo`, `2 photos`. */
+function photos(count: number, noun: string): string {
+    return `${count} ${noun}${count === 1 ? '' : 's'}`;
+}
 
 export interface StartupBatchResult {
     processed: string[];
@@ -47,7 +57,7 @@ export interface WatcherHandlers {
      * finds again on disk. Queued live jobs still run.
      */
     stop(): void;
-    /** Resolve once every queued job has finished. */
+    /** Resolve once every queued job has finished and no startup batch is still working out its jobs. */
     idle(): Promise<void>;
     /** Wait up to `timeoutMs` for queued jobs. Resolves false if some were still running. */
     drain(timeoutMs: number): Promise<boolean>;
@@ -56,21 +66,75 @@ export interface WatcherHandlers {
 }
 
 /**
- * The chokidar `ignored` filter: skip the generated folders directly under the
- * root, matched by exact name on the first path segment, never by substring,
- * so a root like `/srv/cache/photos` or a photo named `thumbnails-beach.jpg`
- * is still watched.
+ * The chokidar `ignored` filter. It always skips the generated folders
+ * directly under the root, matched by exact name on the first path segment,
+ * never by substring, so a root like `/srv/cache/photos`, a photo named
+ * `thumbnails-beach.jpg`, and a nested `trips/thumbnails/` folder are still
+ * watched. With `identity`, the default, it also skips what the identity scan
+ * skips: dot-entries at any depth, every symlink below the root, and a
+ * symlink in the root to a folder, since the scan reads nothing through a
+ * symlink. A symlink in the root to a file is still watched through the link,
+ * the way the legacy step reads it.
  */
-export function createIgnoreFilter(root: string): (watchedPath: string) => boolean {
+export function createIgnoreFilter(root: string, { identity = true }: { identity?: boolean } = {}): (watchedPath: string, stats?: fs.Stats) => boolean {
     const generated = new Set(generatedFolderNames());
     const resolvedRoot = path.resolve(root);
-    return (watchedPath) => {
+    return (watchedPath, stats) => {
         const relative = path.relative(resolvedRoot, path.resolve(watchedPath));
         if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
             return false;
         }
-        return generated.has(relative.split(path.sep)[0]);
+        const posix = relative.split(path.sep).join('/');
+        if (generated.has(posix.split('/')[0])) return true;
+        if (!identity) return false;
+        if (isScanExcluded(posix)) return true;
+        // chokidar passes lstat's stats while it lists a folder, so a symlink shows as one there.
+        if (!stats?.isSymbolicLink()) return false;
+        if (posix.includes('/')) return true;
+        try {
+            return fs.statSync(watchedPath).isDirectory();
+        } catch {
+            return false; // A link to nothing, which chokidar passes over by itself.
+        }
     };
+}
+
+/** What the watcher hands chokidar: the path to watch, and the options. */
+export interface WatchSetup {
+    path: string;
+    options: ChokidarOptions;
+}
+
+/**
+ * How the watcher watches the library, polling either way, as Docker bind
+ * mounts need. Without a data root the identity step never runs, so it
+ * watches exactly as it did before that step: the root's own files, through
+ * symlinks, skipping the generated folders. With one, it watches every depth
+ * for the identity step, from the root's real path, so a symlinked root still
+ * reports its changes, and createIgnoreFilter() keeps it out of everything
+ * reached through a symlink but a file in the root.
+ */
+export function watchSetup(root: string, { identity }: { identity: boolean }): WatchSetup {
+    const polling = {
+        persistent: true,
+        ignoreInitial: true, // Don't fire events for existing files on startup
+        usePolling: true, // Reliable in Docker bind mounts
+        interval: 2000, // Poll every 2 seconds
+        binaryInterval: 3000, // Poll binary files every 3 seconds
+        alwaysStat: true, // Always provide stats
+        awaitWriteFinish: {
+            stabilityThreshold: 3000, // Wait until file size is stable for 3 seconds
+            pollInterval: 500, // Check size every 500ms
+        },
+    };
+    if (!identity) return { path: root, options: { ...polling, depth: 0, ignored: createIgnoreFilter(root, { identity: false }) } };
+    const real = fs.realpathSync(root);
+    return { path: real, options: { ...polling, followSymlinks: true, ignored: createIgnoreFilter(real) } };
+}
+
+/** Whether `filePath` sits directly in the library root, the only folder the legacy step reads sources from. */
+function inRoot(root: string, filePath: string): boolean {
+    return path.dirname(path.resolve(filePath)) === path.resolve(root);
 }
 
 type Outcome = 'done' | 'skipped' | 'failed';
@@ -86,7 +150,16 @@ interface Job {
 }
 
 export function createWatcherHandlers(
-    { logger = console, maxConcurrentJobs = 1 }: { logger?: Logger; maxConcurrentJobs?: number } = {},
+    { logger = console, maxConcurrentJobs = 1, awaitStartup = false }: {
+        logger?: Logger;
+        maxConcurrentJobs?: number;
+        /**
+         * Not idle until the first startup batch has queued its jobs, as in watch
+         * mode, where that batch waits for chokidar's `ready`. Without it, a step
+         * waiting on idle() before `ready` would run alongside that batch.
+         */
+        awaitStartup?: boolean;
+    } = {},
 ): WatcherHandlers {
     // One queue, in arrival order. A job starts only when no job for its set,
     // setKeyOf() of its name, is running or queued ahead of it, so the jobs of
@@ -100,6 +173,10 @@ export function createWatcherHandlers(
     let liveQueued = 0;
     let idleWaiters: (() => void)[] = [];
     let stopped = false;
+    // Startup batches still listing the library, or still to come with awaitStartup. Until they queue their jobs, the handlers aren't idle.
+    let planning = awaitStartup ? 1 : 0;
+    let startupAwaited = awaitStartup;
+    const isIdle = () => running.size === 0 && queue.length === 0 && planning === 0;
 
     function unqueue(job: Job): void {
         queue.splice(queue.indexOf(job), 1);
@@ -145,7 +222,7 @@ export function createWatcherHandlers(
                     pump();
                 });
         }
-        if (running.size === 0 && queue.length === 0) {
+        if (isIdle()) {
             const waiters = idleWaiters;
             idleWaiters = [];
             waiters.forEach((resolve) => resolve());
@@ -171,8 +248,24 @@ export function createWatcherHandlers(
     }
 
     function idle(): Promise<void> {
-        if (running.size === 0 && queue.length === 0) return Promise.resolve();
+        if (isIdle()) return Promise.resolve();
         return new Promise((resolve) => idleWaiters.push(resolve));
+    }
+
+    /** Record the one-time upright rebuild done, so later starts skip it, apart from `retry`, which failed. */
+    function recordUpright(rebuilt: number, retry: readonly string[] = []): void {
+        try {
+            writeUprightMarker(rebuilt, undefined, undefined, retry);
+        } catch (error) {
+            logger.error(`[ImageWatcher] Could not write ${uprightMarkerPath()}: ${error instanceof Error ? error.message : String(error)}. The next start rebuilds the orientation-tagged photos again.`);
+            return;
+        }
+        if (rebuilt > 0) {
+            logger.log(`[ImageWatcher] Rebuilt the sets of ${photos(rebuilt, 'orientation-tagged photo')}. Clear the /_next/image cache, so it drops what it made from the old sets.`);
+        }
+        if (retry.length > 0) {
+            logger.log(`[ImageWatcher] These orientation-tagged photos failed to rebuild, so each start tries them again until they build: ${retry.join(', ')}.`);
+        }
     }
 
     return {
@@ -243,33 +336,84 @@ export function createWatcherHandlers(
         async queueStartupBatch({ force = false } = {}) {
             const result: StartupBatchResult = { processed: [], skipped: [], errors: [] };
             if (stopped) return result;
-            logger.log('[ImageWatcher] Checking for unprocessed images...');
-            const { files, shared } = await planSources({ force });
-            for (const { file, owner, undecodable } of shared) {
-                logger.log(`[ImageWatcher] Skipping ${file}: ${undecodable ? `it can't be decoded, so ${owner} has the derivatives they share` : `it shares its derivatives with ${owner}`}.`);
-            }
-            if (files.length === 0) {
-                logger.log('[ImageWatcher] All images are processed.');
+            // Busy from here until the jobs are queued, so a step waiting on idle() comes after them, not before.
+            // The first batch with awaitStartup takes over the count held since creation.
+            if (startupAwaited) startupAwaited = false;
+            else planning++;
+            let planned = false;
+            const queued = () => {
+                if (planned) return;
+                planned = true;
+                planning--;
+                pump();
+            };
+            try {
+                logger.log('[ImageWatcher] Checking for unprocessed images...');
+                const { files, reowned, upright, shared } = await planSources({ force });
+                if (!cacheFolderWritable()) {
+                    logger.error(`[ImageWatcher] ${path.dirname(uprightMarkerPath())} can't be written, so the watcher can't record which sets it rebuilt. Until it can, every start rebuilds the orientation-tagged photos and the shared sets again.`);
+                }
+                for (const { file, owner, undecodable } of shared) {
+                    logger.log(`[ImageWatcher] Skipping ${file}: ${undecodable ? `it can't be decoded, so ${owner} has the derivatives they share` : `it shares its derivatives with ${owner}`}.`);
+                }
+                for (const { file, from } of reowned) {
+                    logger.log(from === null
+                        ? `[ImageWatcher] Rebuilding ${file}'s set, which it shares, since nothing records which source it was built from.`
+                        : `[ImageWatcher] Rebuilding ${file}'s set, which was last built from ${from}.`);
+                }
+                const turned = new Set(upright ?? []);
+                if (turned.size > 0) {
+                    logger.log(`[ImageWatcher] Rebuilding the sets of ${photos(turned.size, 'orientation-tagged photo')} once, since a set written before derivatives were turned upright shows its photo turned or mirrored.`);
+                }
+                // Rebuilt whatever their state, since their sets can look current
+                const forced = new Set([...turned, ...reowned.map(({ file }) => file)]);
+                if (files.length === 0) {
+                    if (upright !== null) recordUpright(0);
+                    logger.log('[ImageWatcher] All images are processed.');
+                    return result;
+                }
+
+                logger.log(`[ImageWatcher] Found ${files.length} unprocessed images.`);
+                const pending = Promise.all(files.map((file, index) => {
+                    // Each job's own force, which a live change that drops the job takes on.
+                    const jobForce = force || forced.has(file);
+                    return enqueue(file, false, async () => {
+                        logger.log(`[ImageWatcher] Processing ${index + 1}/${files.length}: ${file}`);
+                        await refreshImage(file, { force: jobForce });
+                    }, jobForce);
+                }));
+                queued();
+                const outcomes = await pending;
+
+                const lists: Record<Outcome, string[]> = { done: result.processed, skipped: result.skipped, failed: result.errors };
+                files.forEach((file, index) => lists[outcomes[index]].push(file));
+                if (upright !== null) {
+                    // A photo that changed meanwhile, or a stop, leaves the whole rebuild to the next start. One that
+                    // failed doesn't hold it back: it is recorded to retry, so the others aren't rebuilt at every start.
+                    const outcome = (file: string) => outcomes[files.indexOf(file)];
+                    const left = upright.filter((file) => outcome(file) === 'skipped');
+                    const failed = upright.filter((file) => outcome(file) === 'failed');
+                    if (left.length === 0) recordUpright(upright.length - failed.length, failed);
+                    else logger.log(`[ImageWatcher] These orientation-tagged photos weren't rebuilt, so the next start tries again: ${left.join(', ')}.`);
+                }
+                // Last, once the batch has written everything, marker included.
+                logger.log(
+                    `[ImageWatcher] Completed: ${result.processed.length} processed, ` +
+                    `${result.skipped.length} skipped, ${result.errors.length} errors`,
+                );
                 return result;
+            } finally {
+                queued();
             }
-
-            logger.log(`[ImageWatcher] Found ${files.length} unprocessed images.`);
-            const outcomes = await Promise.all(files.map((file, index) => enqueue(file, false, async () => {
-                logger.log(`[ImageWatcher] Processing ${index + 1}/${files.length}: ${file}`);
-                await refreshImage(file, { force });
-            }, force)));
-
-            const lists: Record<Outcome, string[]> = { done: result.processed, skipped: result.skipped, failed: result.errors };
-            files.forEach((file, index) => lists[outcomes[index]].push(file));
-            logger.log(
-                `[ImageWatcher] Completed: ${result.processed.length} processed, ` +
-                `${result.skipped.length} skipped, ${result.errors.length} errors`,
-            );
-            return result;
         },
 
         stop() {
             stopped = true;
+            // No startup batch comes after stop(), so stop waiting for one.
+            if (startupAwaited) {
+                startupAwaited = false;
+                planning--;
+            }
             dropStartupJobs(() => true);
             pump();
         },
@@ -329,42 +473,60 @@ export async function processOnce(
     return 0;
 }
 
+/** A chokidar event under the library root. */
+export type LibraryChange = 'add' | 'change' | 'unlink' | 'addDir' | 'unlinkDir';
+
 export interface AttachOptions {
     root: string;
     force?: boolean;
     logger?: Logger;
     /** Called when chokidar reports the library root itself removed. */
     onRootRemoved: () => void;
+    /** Called for every file or folder change in the library, at any depth. The identity step schedules a pass here. */
+    onLibraryChange?: (event: LibraryChange, changedPath: string) => void;
+    /** Called on `ready`, after the startup batch is queued. */
+    onReady?: () => void;
 }
 
 /**
- * Wire chokidar's events to the handlers. The startup batch is queued on
- * `ready`, once chokidar has its baseline: it reports no event for a file it
- * finds during the initial scan, so only a batch that lists the library after
- * that scan catches a file saved before it finished.
+ * Wire chokidar's events to the handlers. Only files directly in the root
+ * reach them, since the legacy step reads sources from there alone, and
+ * every change, nested ones included, goes to `onLibraryChange`. The
+ * startup batch is queued on `ready`, once chokidar has its baseline: it
+ * reports no event for a file it finds during the initial scan, so only a
+ * batch that lists the library after that scan catches a file saved before
+ * it finished.
  */
 export function attachWatcher(
     watcher: Pick<EventEmitter<FSWatcherEventMap>, 'on'>,
     handlers: WatcherHandlers,
-    { root, force = false, logger = console, onRootRemoved }: AttachOptions,
+    { root, force = false, logger = console, onRootRemoved, onLibraryChange, onReady }: AttachOptions,
 ): void {
     // New files regenerate only when their set is incomplete or older than them
     watcher.on('add', (filePath: string) => {
-        void handlers.onAdd(filePath);
+        onLibraryChange?.('add', filePath);
+        if (inRoot(root, filePath)) void handlers.onAdd(filePath);
     });
 
     // Changed files, including a save-by-rename, regenerate in place
     watcher.on('change', (filePath: string) => {
-        void handlers.onChange(filePath);
+        onLibraryChange?.('change', filePath);
+        if (inRoot(root, filePath)) void handlers.onChange(filePath);
     });
 
     // Removing a source keeps its derivatives
     watcher.on('unlink', (filePath: string) => {
-        void handlers.onUnlink(filePath);
+        onLibraryChange?.('unlink', filePath);
+        if (inRoot(root, filePath)) void handlers.onUnlink(filePath);
+    });
+
+    watcher.on('addDir', (dirPath: string) => {
+        if (path.resolve(dirPath) !== path.resolve(root)) onLibraryChange?.('addDir', dirPath);
     });
 
     watcher.on('unlinkDir', (dirPath: string) => {
         if (path.resolve(dirPath) === path.resolve(root)) onRootRemoved();
+        else onLibraryChange?.('unlinkDir', dirPath);
     });
 
     watcher.on('error', (error) => {
@@ -376,5 +538,6 @@ export function attachWatcher(
         handlers.queueStartupBatch({ force }).catch((error: unknown) => {
             logger.error('[ImageWatcher] Startup batch failed:', error);
         });
+        onReady?.();
     });
 }

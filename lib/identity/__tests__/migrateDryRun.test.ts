@@ -458,15 +458,17 @@ describe('scripts/photos.ts', { timeout: 120_000 }, () => {
     });
 
     it.each([
-        [['migrate'], /only with --dry-run/],
+        [['migrate'], /photos migrate needs --dry-run or --apply/],
         [['migrate', '--dry-run', '--out'], /Option '--out <value>' argument missing/],
         [['migrate', '--dry-run', '--out='], /--out needs a value/],
         [['migrate', '--dry-run', '--out', '--json'], /Option '--out' argument is ambiguous/],
-        [['migrate', '--dry-run', '--apply'], /Unknown option '--apply'/],
+        [['migrate', '--dry-run', '--apply'], /--dry-run and --apply don't go together/],
+        [['migrate', '--dry-run', '--force'], /Unknown option '--force'/],
         [['migrate', '--dry-run', 'extra'], /Unexpected argument 'extra'/],
         [['identity', 'status', '--verbose'], /Unknown option '--verbose'/],
         [['identity', 'status', 'extra'], /Unexpected argument 'extra'/],
-        [['identity', 'bind'], /Unknown identity command/],
+        [['identity', 'merge'], /Unknown identity command: merge/],
+        [['identity', 'bind'], /identity bind needs a path and a photo ID/],
         [[], /No command given/],
     ])('exits 2 with usage for %j', async (args, message) => {
         const run = await runTsx('scripts/photos.ts', args);

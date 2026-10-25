@@ -376,6 +376,8 @@ describe('the watcher never authors order', () => {
             name: 'startup',
             run: () => runWatcherOnce({ ...fixture, data: uninitialized }),
         }]);
-        expect(fs.readdirSync(uninitialized.root).sort()).toEqual(['authored', 'catalog']);
+        // The watcher writes its heartbeat to any data root it can write, initialized or not, and nothing else.
+        expect(fs.readdirSync(uninitialized.root).sort()).toEqual(['authored', 'catalog', 'status']);
+        expect(fs.readdirSync(path.join(uninitialized.root, 'status'))).toEqual(['watcher.json']);
     }, 60_000);
 });
