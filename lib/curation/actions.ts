@@ -410,9 +410,11 @@ export function approveEvent(input: ActionInput & { choices: Choices; faults?: A
                 }
                 const alt: AuthoredAlt = description ? altOf(description) : existing?.alt ?? null;
                 const unchanged = existing !== null && JSON.stringify(existing.alt) === JSON.stringify(alt);
+                // #16: what the curator reviewed, stamped on every field these writes change.
+                const review = { baseRevisionId: step.active, event: { id: event.id, version: event.version }, actor: input.actor, reviewedAt: step.at };
                 if (!unchanged) {
                     const record = existing ? { ...existing, alt } : { kind: 'photo' as const, id: photoId, assetRevision, alt };
-                    const written = await writeAuthoredRecord(record, { expectedVersion: existing?.version ?? 0, lock: authored, root });
+                    const written = await writeAuthoredRecord(record, { expectedVersion: existing?.version ?? 0, lock: authored, root, review });
                     writes.push({ record: `photo:${photoId}`, version: written.version });
                 }
                 if (alt === null) notes.push('It has no description yet, so publishing it waits until one is added and reviewed.');
@@ -420,7 +422,7 @@ export function approveEvent(input: ActionInput & { choices: Choices; faults?: A
 
                 if (op !== null && series !== null) {
                     await input.faults?.beforePlacement?.();
-                    const result = await applySequenceOp({ dataRoot: root }, op, { expectedVersion: series.version, actor: { kind: 'inbox-approval', ref: event.id }, lock: authored });
+                    const result = await applySequenceOp({ dataRoot: root }, op, { expectedVersion: series.version, actor: { kind: 'inbox-approval', ref: event.id }, lock: authored, review });
                     if (!result.ok) {
                         const code = result.error.code === 'version-conflict' || result.error.code === 'authored-locked' ? 'stale' : 'refused';
                         // The placement was checked before anything was written, so only a writer past its lease or a hand edit gets here.
