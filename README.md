@@ -163,12 +163,12 @@ The site listens on the host's 127.0.0.1 only, port 3000 unless `PHOTOGRAPHY_POR
 ### Replacing and Removing Photos
 - **Replace** a photo by saving over it under the same name. The watcher regenerates its derivatives from the new file and swaps them in only once all seven are written, so a failed run keeps the old ones. Visitors can still see the old version for a while: `/_next/image` can serve its copy for up to a day, and a browser that cached it under the old `immutable` header may keep it for up to a year.
 - **Accepted risk:** a different photo saved under a removed photo's name, with an older modification time, shows the old images until you `touch` it or run `--force`. Copy tools that keep modification times, such as `cp -p` and `rsync -a`, do this. A photo that takes over a set another photo built, such as `IMG_1.jpg` added next to `IMG_1.png`, doesn't have this problem. Each set records the source it was built from, so the watcher rebuilds it when the file arrives, or at its next start if it was stopped.
-- **Delete** a photo to hide it from the gallery. `/api/photos` stops listing it once the watcher's next pass records it missing. Nothing deletes its derivative files, which stay reachable at their URLs, so restoring the file brings the photo back with nothing to rebuild. To take it offline, follow the next item.
+- **Delete** a photo to hide it from the gallery, before the launch. `/api/photos` stops listing it once the watcher's next pass records it missing. Nothing deletes its derivative files, which stay reachable at their URLs, so restoring the file brings the photo back with nothing to rebuild. To take it offline, follow the next item. After the launch, deleting the file hides nothing: the active catalog revision keeps listing the photo, and `/media` keeps serving it. Take it down as the item after next describes.
 - **Take a photo down** with the watcher stopped, so a job already running can't write its derivatives back:
   1. Stop `image-watcher`, then delete the photo.
-  2. Delete its seven derivatives and `cache/set-sources/<name>.json`, the record of which source its set was built from, where `<name>` is the photo's file name without its extension, such as `landscape`. Do the same for each earlier name the photo had. If another photo has the same name with another extension, the watcher builds the set again from that one when it starts.
+  2. Delete its seven derivatives and `cache/set-sources/<name>.json`, the record of which source its set was built from, where `<name>` is the photo's file name without its extension, such as `landscape`. Do the same for each earlier name the photo had, which the listing below finds. If another photo has the same name with another extension, the watcher builds the set again from that one when it starts.
   3. Purge Next's image cache with `web` stopped, then start the stack. The deletes and the purge run inside the containers, since the files belong to the containers' user and a host user's `rm` can fail.
-  4. Check that `/api/photos` no longer lists the photo. Once a catalog revision is active, it keeps serving the photo from `/media` until you publish one without it.
+  4. Check that `/api/photos` no longer lists the photo. Once a catalog revision is active, `/media` keeps serving it until a publish leaves it out, as the next item describes.
 
   ```bash
   docker compose -f docker-compose.prod.yml stop image-watcher
@@ -177,6 +177,17 @@ The site listens on the host's 127.0.0.1 only, port 3000 unless `PHOTOGRAPHY_POR
   docker compose -f docker-compose.prod.yml stop web
   docker compose -f docker-compose.prod.yml run --rm --no-deps web sh -c 'rm -rf /app/.next/cache/images/*'
   docker compose -f docker-compose.prod.yml start web image-watcher
+  ```
+- **Take a photo down after the launch**, once a catalog revision is active. Do the steps above too, since its legacy derivatives stay reachable at their URLs until the legacy URLs close.
+  1. Remove the photo from every series that lists it: its `photoIds` entry, and the series' cover or a chapter start if it is one. Or hide the series. Then publish, with the same `run --rm --no-deps image-watcher` form as the commands above: `node dist/scripts/photos.mjs publish --actor <name>`.
+  2. Check that `GET /api/ready` answers `"state":"ok"` with the `revisionId` that publish printed. `degraded` means `web` couldn't read the new revision and still serves the one before, the photo included.
+  3. Purge the photo's `/media` URLs from any CDN in front of the site. `/media` sends `max-age=31536000, immutable`, so a browser that loaded the photo can keep showing it for up to a year.
+
+  If the publish stops on errors in other records, the photo stays public until they're fixed. As a last resort, delete its sets, `assets/<photoId>/` in the data root, inside `image-watcher`. `/media` then answers 404 for them, and its page shows a broken image until a publish leaves the photo out.
+- **List legacy derivatives whose photo is gone**, such as a deleted photo's or a renamed photo's earlier names. It prints each base name in `optimized/` that no file in the library's top folder has:
+
+  ```bash
+  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher sh -c 'cd /app/public/assets/photos && for f in optimized/*.webp; do n=${f#optimized/}; n=${n%.webp}; set -- "$n".*; [ -e "$1" ] || echo "$n"; done'
   ```
 - **Regenerate everything** locally with `npm run images:process -- --force`. The production image has no tsx or npm scripts, so there, run the bundled watcher with `--force`, and stop `image-watcher` first so the two never write at once. Photos with an EXIF orientation tag need none of this after an upgrade: the watcher rebuilds them by itself at its first start, as [docs/releasing.md](docs/releasing.md) describes for slice A of #10.
 
