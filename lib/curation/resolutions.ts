@@ -15,6 +15,7 @@ import { verifyDirectory } from '../storage/publish';
 import { act, decided, fail, readAuthored, requireStatus, type ActionInput, type ActionOutcome, type Change, type Step, type WrittenRecord } from './actions';
 import { candidateOf } from './candidates';
 import type { CandidateFailure, CurationEvent } from './events';
+import { pendingMergeOf } from './binds';
 import { photoHolders } from './holders';
 import { draftPlan, latestPin } from './pins';
 import { listEvents } from './repository';
@@ -86,8 +87,13 @@ async function requireSet(root: string, ref: AssetRef, what: string): Promise<vo
     }
 }
 
-/** `fn` under the authored lock, once the active revision is still the one reviewed. Lock and writer errors become action failures. */
-async function underAuthoredLock(root: string, step: Step, input: ActionInput, what: string, fn: (authored: LockContext) => Promise<void>): Promise<void> {
+/**
+ * `fn` under the authored lock, once the active revision is still the one
+ * reviewed. Lock and writer errors become action failures. When `fn` can
+ * write more than one record, `landed` holds what it wrote so far, and a
+ * failure after the first write says so and how to finish.
+ */
+async function underAuthoredLock(root: string, step: Step, input: ActionInput, what: string, fn: (authored: LockContext) => Promise<void>, landed?: { writes: readonly WrittenRecord[]; again: string }): Promise<void> {
     try {
         await withLock(AUTHORED_LOCK, { root, leaseMs: AUTHORED_LEASE_MS, waitMs: input.waitMs ?? AUTHORED_WAIT_MS }, async (authored) => {
             // A publish may have moved the active revision while this waited for the hold.
@@ -97,10 +103,12 @@ async function underAuthoredLock(root: string, step: Step, input: ActionInput, w
             await fn(authored);
         });
     } catch (error) {
-        if (error instanceof LockTimeoutError) fail('locked', 'The authored lock is busy. Nothing was written. Try again shortly.');
+        const writes = landed?.writes ?? [];
+        const after = writes.length > 0 ? ` ${writes.map((entry) => `${entry.record} v${entry.version}`).join(', ')} landed first. ${landed?.again}` : ' Nothing was written.';
+        if (error instanceof LockTimeoutError) fail('locked', `The authored lock is busy.${after}${writes.length > 0 ? '' : ' Try again shortly.'}`, writes.length > 0 ? [...writes] : undefined);
         if (error instanceof AuthoredWriteError) {
             const code = error.code === 'VERSION_CONFLICT' || error.code === 'AUTHORED_LOCKED' || error.code === 'LOCK_NOT_HELD' ? 'stale' : error.code === 'DATA_ROOT_NOT_READY' ? 'not-ready' : 'damaged';
-            fail(code, `${error.message} Nothing was written.`);
+            fail(code, `${error.message}${after}`, writes.length > 0 ? [...writes] : undefined);
         }
         throw error;
     }
@@ -296,31 +304,104 @@ function missingPhoto(event: CurationEvent, registry: Registry, action: string):
     return photo;
 }
 
-/** The open `new` items for other bytes at this photo's last path, which #10 marked with `samePathAs`. */
-export async function linkedNewItems(root: string, photoId: string): Promise<CurationEvent[]> {
+/**
+ * The open `new` items for other bytes at this photo's last path, which #10
+ * marked with `samePathAs`, whose photo is still present there: a file gone
+ * since links nothing.
+ */
+export async function linkedNewItems(root: string, photoId: string, registry: Registry): Promise<CurationEvent[]> {
     const { events } = await listEvents(root);
-    return events.filter((event) => event.type === 'new' && (MISSING_STATES as readonly string[]).includes(event.status) && event.derivedFacts.samePathAs === photoId);
+    return events.filter((event) => {
+        if (event.type !== 'new' || !(MISSING_STATES as readonly string[]).includes(event.status) || event.derivedFacts.samePathAs !== photoId || event.photoId === null) return false;
+        const photo = Object.hasOwn(registry.photos, event.photoId) ? registry.photos[event.photoId] : undefined;
+        return photo !== undefined && photo.sourceHealth !== 'archived' && photo.mergedInto === undefined && photo.source.present && photo.source.path === event.derivedFacts.sourcePath;
+    });
+}
+
+interface BindPlan {
+    /** The photo the decision names to merge, when #10 needs it named. */
+    merge?: string;
+    /** The photo #10 unbinds from the path instead, when its hold already lists both. */
+    unbinds?: string;
+    /** Whether the bytes at the path are a revision the missing photo has. */
+    ownBytes: boolean;
+}
+
+/**
+ * The bind decision #10's reconcile would accept for `photo` at `at`, or a
+ * failure saying why it wouldn't, before anything is written. It follows
+ * #10's rules (lib/identity/reconcile.ts, bind()):
+ *
+ * - A path #10's hold lists both the holder and the photo for is given up
+ *   by the holder, which keeps its identity. The decision names no merge,
+ *   since naming one there would retire the holder instead.
+ * - Any other present holder must be named to merge, and #10 merges only a
+ *   photo with one revision of its own, first seen at that path. This also
+ *   refuses one a series or the active revision shows, which a merge would
+ *   leave pointing at a retired photo, and one a pending bind already merges.
+ * - Bytes the photo gave to another photo come back only with that photo merged.
+ */
+async function bindPlan(root: string, registry: Registry, photo: PhotoRecord, at: string): Promise<BindPlan> {
+    const key = keyOf(at);
+    const held = registry.holds.find((entry) => keyOf(entry.path) === key);
+    const holder = Object.values(registry.photos).find((other) => other.photoId !== photo.photoId && other.source.present
+        && other.sourceHealth !== 'archived' && other.mergedInto === undefined && other.source.key === key);
+    // #10 binds only a file its last pass saw, so a path it hasn't seen would only be rejected later, out of sight.
+    if (!holder && !held) {
+        fail('refused', `The watcher hasn't seen a photograph at ${at}. Check the path, or wait for its next pass after copying the file. Nothing was written.`);
+    }
+    const bytes = held?.assetRevision ?? (holder as PhotoRecord).source.observedRevision;
+    const own = photo.revisions[bytes];
+    const plan: BindPlan = { ownBytes: own !== undefined && !own.reassignedTo };
+    let merged: string | null = null;
+    if (holder) {
+        if (held?.candidates.includes(holder.photoId) && held.candidates.includes(photo.photoId)) {
+            plan.unbinds = holder.photoId;
+        } else {
+            const revisions = Object.values(holder.revisions).filter((revision) => !revision.reassignedTo);
+            if (revisions.length !== 1 || keyOf(revisions[0].firstSeenPath) !== key) {
+                fail('refused', `${at} is ${holder.photoId}, which has more than the one revision first seen there, so the watcher would refuse to merge it into ${photo.photoId}. Keep it as its own photograph, or bind another file. Nothing was written.`);
+            }
+            merged = revisions[0].assetRevision;
+            const pending = await pendingMergeOf(root, holder.photoId).catch((error: unknown) => fail('damaged', `${(error as Error).message}. Nothing was written.`));
+            if (pending) {
+                fail('refused', `${holder.photoId} is already merged into ${pending.into} by the pending bind decision ${pending.decisionId}. Wait for the watcher's next pass. Nothing was written.`);
+            }
+            // A merged photo is retired, so one that a series or the active revision shows would break them.
+            const found = await photoHolders(root, holder.photoId);
+            if ('unknown' in found) fail('damaged', `${found.unknown.message.replace(' Nothing was deleted.', '')} So nothing shows whether ${holder.photoId} is in use. Nothing was written.`);
+            const holders = 'holders' in found ? found.holders : [];
+            if (holders.length > 0) {
+                fail('refused', `${at} is ${holder.photoId}, which ${holders.join(' and ')} already ${holders.length === 1 ? 'shows' : 'show'}. Take it out first, or keep it as its own photograph. Nothing was written.`);
+            }
+            plan.merge = holder.photoId;
+        }
+    }
+    if (own?.reassignedTo !== undefined && merged !== bytes) {
+        fail('refused', `${at} holds ${bytes}, which ${photo.photoId} gave to ${own.reassignedTo}, so the watcher would refuse the bind. Nothing was written.`);
+    }
+    return plan;
 }
 
 /**
  * Bind an intentional replacement: write #10's `bind` decision giving the
- * missing photo the file at `path`, or at the one linked item's path. When
- * another photo holds that path, the decision merges it, which #10 accepts
- * only for a photo first seen there, and which this refuses for a photo a
- * series or the active revision shows. Writes only the decision and the event.
+ * missing photo the file at `path`, or at the one linked item's path, in the
+ * form #10 accepts (bindPlan()). Writes only the decision and the event.
+ * Approving a photo the decision merges is refused until the watcher has
+ * applied or rejected it (lib/curation/actions.ts, approveEvent()).
  */
 export function bindReplacement(input: ActionInput & { path?: string; reason?: string }): Promise<ActionOutcome> {
     return act(input, async (step) => {
         const { event } = step;
         requireStatus(event, MISSING_STATES, 'bound');
         const root = path.resolve(input.root);
-        const registry = await readRegistry(root).catch((error: unknown) => fail('damaged', `The identity registry can't be read: ${(error as Error).message}. Nothing was written.`));
+        const registry = await readRegistryOrFail(root);
         const photo = missingPhoto(event, registry, 'bind');
         if (photo.sourceHealth === 'archived') fail('refused', `${photo.photoId} is archived, so nothing can be bound to it. Nothing was written.`);
 
         let target = input.path;
         if (target === undefined) {
-            const linked = await linkedNewItems(root, photo.photoId);
+            const linked = await linkedNewItems(root, photo.photoId, registry);
             if (linked.length === 0) {
                 fail('needs-choice', `No file is linked to ${photo.photoId}. Other bytes at its last path link here by themselves; for a file anywhere else, pass --path <library path>. Nothing was written.`);
             }
@@ -331,37 +412,27 @@ export function bindReplacement(input: ActionInput & { path?: string; reason?: s
         }
         const at = target as string;
         if (!isLibraryPath(at)) fail('needs-choice', `${at} is not a path inside the library. Nothing was written.`);
-        const holder = Object.values(registry.photos).find((other) => other.photoId !== photo.photoId && other.source.present
-            && other.sourceHealth !== 'archived' && other.mergedInto === undefined && other.source.key === keyOf(at));
-        // #10 binds only a file its last pass saw, so a path it hasn't seen would only be rejected later, out of sight.
-        if (!holder && !registry.holds.some((held) => keyOf(held.path) === keyOf(at))) {
-            fail('refused', `The watcher hasn't seen a photograph at ${at}. Check the path, or wait for its next pass after copying the file. Nothing was written.`);
-        }
-        if (holder) {
-            // A merged photo is retired, so one that a series or the active revision shows would break them.
-            const found = await photoHolders(root, holder.photoId);
-            if ('unknown' in found) fail('damaged', `${found.unknown.message.replace(' Nothing was deleted.', '')} So nothing shows whether ${holder.photoId} is in use. Nothing was written.`);
-            const holders = 'holders' in found ? found.holders : [];
-            if (holders.length > 0) {
-                fail('refused', `${at} is ${holder.photoId}, which ${holders.join(' and ')} already ${holders.length === 1 ? 'shows' : 'show'}. Take it out first, or keep it as its own photograph. Nothing was written.`);
-            }
-        }
+        const plan = await bindPlan(root, registry, photo, at);
         const decision = createDecision({
             type: 'bind',
             path: at,
             photoId: photo.photoId,
-            ...(holder ? { merge: holder.photoId } : {}),
+            ...(plan.merge === undefined ? {} : { merge: plan.merge }),
             actor: input.actor,
             reason: input.reason ?? `curation ${event.id}`,
         }, { clock: input.clock });
         await writeDecision(root, decision);
         const next = decided(step, input, { action: 'bind', path: at, identityDecisionId: decision.decisionId, ...(input.reason ? { reason: input.reason } : {}) }, event.status);
-        const merged = holder ? `, merging ${holder.photoId}, the photo #10 made of that file,` : '';
+        const holder = plan.merge !== undefined
+            ? `, merging ${plan.merge}, the photo #10 made of that file, into it`
+            : plan.unbinds !== undefined ? `, and ${plan.unbinds}, which #10 holds that path in doubt for, gives it up and keeps its own identity` : '';
         return {
             event: next,
             notes: [
-                `Wrote the bind decision ${decision.decisionId}: ${at} becomes ${photo.photoId}'s source${merged} on the watcher's next pass, and this item closes then.`,
-                'A replacement item opens for the new bytes. Confirm the new asset revision there once all its derivatives succeed. Visitors keep the current image until photos publish runs.',
+                `Wrote the bind decision ${decision.decisionId}. If the watcher accepts it, on its next pass unless the file is still changing, ${at} becomes ${photo.photoId}'s source${holder}, and this item closes. If it refuses it, curation show ${event.id} says why.`,
+                plan.ownBytes
+                    ? `${at} holds ${photo.photoId}'s own bytes, so nothing new needs confirming. Visitors keep the current image until photos publish runs.`
+                    : 'A replacement item opens for the new bytes. Confirm the new asset revision there once all its derivatives succeed. Visitors keep the current image until photos publish runs.',
             ],
         };
     });
@@ -387,7 +458,7 @@ function consequenceText(consequence: Consequence): string {
  * so a refused one leaves the working layer as it was. Leaves `catalog/`
  * byte-identical and deletes nothing.
  */
-export function archiveMissing(input: ActionInput & { reason?: string }): Promise<ActionOutcome> {
+export function archiveMissing(input: ActionInput & { reason?: string; faults?: ConfirmFaults }): Promise<ActionOutcome> {
     return act(input, async (step) => {
         const { event } = step;
         requireStatus(event, MISSING_STATES, 'archived');
@@ -395,7 +466,7 @@ export function archiveMissing(input: ActionInput & { reason?: string }): Promis
             fail('needs-choice', `archive needs --base ${step.active}, the active revision it was reviewed against. Show it again if that isn't the one. Nothing was written.`);
         }
         const root = path.resolve(input.root);
-        const registry = await readRegistry(root).catch((error: unknown) => fail('damaged', `The identity registry can't be read: ${(error as Error).message}. Nothing was written.`));
+        const registry = await readRegistryOrFail(root);
         const photo = missingPhoto(event, registry, 'archive');
         const photoId = photo.photoId;
 
@@ -403,48 +474,37 @@ export function archiveMissing(input: ActionInput & { reason?: string }): Promis
         const removedFrom: string[] = [];
         const consequences: string[] = [];
         const landed = () => writes.map((entry) => `${entry.record} v${entry.version}`).join(', ');
-        try {
-            await withLock(AUTHORED_LOCK, { root, leaseMs: AUTHORED_LEASE_MS, waitMs: input.waitMs ?? AUTHORED_WAIT_MS }, async (authored) => {
-                // A publish may have moved the active revision while this waited for the hold.
-                if (((await readActivePointer(root))?.revisionId ?? null) !== step.active) {
-                    fail('stale', 'The active revision moved while the archive waited for the authored lock. Show it again and review it. Nothing was written.');
-                }
-                const all = await readAuthoredSeries(root).catch((error: unknown) => fail('damaged', `The series can't be read: ${(error as Error).message}. Nothing was written.`));
-                const unreadable = all.problems.filter((problem) => problem.kind === 'series');
-                if (unreadable.length > 0) {
-                    fail('damaged', `These series records can't be read, so nothing shows whether they list ${photoId}: ${unreadable.map((problem) => problem.id).join(', ')}. Fix them first. Nothing was written.`);
-                }
-                const listing = all.series.filter((series) => series.photoIds.includes(photoId)).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-                const context = sequenceContext({ registry, series: all.series });
-                for (const series of listing) {
-                    const checked = applySeriesOp(series, { kind: 'remove', seriesId: series.id, photoId }, context);
-                    if (!checked.ok) fail('refused', `${checked.error.message} (${checked.error.code}). Nothing was written.`);
-                }
-                for (const series of listing) {
-                    const result = await applySequenceOp({ dataRoot: root }, { kind: 'remove', seriesId: series.id, photoId }, { expectedVersion: series.version, actor: { kind: 'inbox-approval', ref: event.id }, lock: authored });
-                    if (!result.ok) {
-                        const code = result.error.code === 'version-conflict' || result.error.code === 'authored-locked' ? 'stale' : 'refused';
-                        // Every removal was checked first, so only a writer past its lease or a hand edit gets here.
-                        fail(code, writes.length > 0
-                            ? `${landed()} landed, but ${series.id} did not change: ${result.error.message} (${result.error.code}). The event is unchanged. Archive again to finish it.`
-                            : `${result.error.message} (${result.error.code}). Nothing was written.`, writes);
-                    }
-                    if (result.ok && result.changed) {
-                        writes.push({ record: `series:${series.id}`, version: result.version });
-                        removedFrom.push(series.id);
-                        consequences.push(...result.consequences.map(consequenceText));
-                    }
-                }
-            });
-        } catch (error) {
-            const after = writes.length > 0 ? ` ${landed()} landed first. Archive again to finish it.` : ' Nothing was written.';
-            if (error instanceof LockTimeoutError) fail('locked', `The authored lock is busy.${after}`, writes);
-            if (error instanceof AuthoredWriteError) {
-                const code = error.code === 'VERSION_CONFLICT' || error.code === 'AUTHORED_LOCKED' || error.code === 'LOCK_NOT_HELD' ? 'stale' : error.code === 'DATA_ROOT_NOT_READY' ? 'not-ready' : 'damaged';
-                fail(code, `${error.message}${after}`, writes);
+        await input.faults?.beforeAuthoredLock?.();
+        await underAuthoredLock(root, step, input, 'archive', async (authored) => {
+            const all = await readAuthoredSeries(root).catch((error: unknown) => fail('damaged', `The series can't be read: ${(error as Error).message}. Nothing was written.`));
+            const unreadable = all.problems.filter((problem) => problem.kind === 'series');
+            if (unreadable.length > 0) {
+                fail('damaged', `These series records can't be read, so nothing shows whether they list ${photoId}: ${unreadable.map((problem) => problem.id).join(', ')}. Fix them first. Nothing was written.`);
             }
-            throw error;
-        }
+            const listing = all.series.filter((series) => series.photoIds.includes(photoId)).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+            const context = sequenceContext({ registry, series: all.series });
+            for (const series of listing) {
+                const checked = applySeriesOp(series, { kind: 'remove', seriesId: series.id, photoId }, context);
+                if (!checked.ok) fail('refused', `${checked.error.message} (${checked.error.code}). Nothing was written.`);
+            }
+            await input.faults?.beforeWrite?.();
+            for (const series of listing) {
+                const result = await applySequenceOp({ dataRoot: root }, { kind: 'remove', seriesId: series.id, photoId }, { expectedVersion: series.version, actor: { kind: 'inbox-approval', ref: event.id }, lock: authored });
+                if (!result.ok) {
+                    const code = result.error.code === 'version-conflict' || result.error.code === 'authored-locked' ? 'stale' : 'refused';
+                    // Every removal was checked first, so only a writer past its lease or a hand edit gets here.
+                    fail(code, writes.length > 0
+                        ? `${landed()} landed, but ${series.id} did not change: ${result.error.message} (${result.error.code}). The event is unchanged. Archive again to finish it.`
+                        : `${result.error.message} (${result.error.code}). Nothing was written.`, writes);
+                }
+                if (result.ok && result.changed) {
+                    writes.push({ record: `series:${series.id}`, version: result.version });
+                    removedFrom.push(series.id);
+                    consequences.push(...result.consequences.map(consequenceText));
+                }
+            }
+            await input.faults?.afterWrite?.();
+        }, { writes, again: 'Archive again to finish it.' });
 
         let decisionId: string | undefined;
         if (photo.sourceHealth !== 'archived') {
