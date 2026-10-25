@@ -16,7 +16,7 @@ import { act, decided, fail, readAuthored, requireStatus, type ActionInput, type
 import { candidateOf } from './candidates';
 import type { CandidateFailure, CurationEvent } from './events';
 import { pendingBindOf, pendingMergeOf } from './binds';
-import { photoHolders } from './holders';
+import { mergeBlockers, type MergeBlockers } from './holders';
 import { draftPlan, latestPin } from './pins';
 import { listEvents } from './repository';
 
@@ -350,7 +350,9 @@ interface BindPlan {
  * - Any other present holder must be named to merge, and #10 merges only a
  *   photo with one revision of its own, first seen at that path. This also
  *   refuses one a series or the active revision shows, which a merge would
- *   leave pointing at a retired photo, and one a pending bind already merges.
+ *   leave pointing at a retired photo, one a retained revision lists, which
+ *   rollback could then never bring back, one with a photo record, whose
+ *   copy a merge would drop, and one a pending bind already merges.
  * - Bytes the photo gave to another photo come back only with that photo merged.
  */
 async function bindPlan(root: string, registry: Registry, photo: PhotoRecord, at: string): Promise<BindPlan> {
@@ -387,12 +389,20 @@ async function bindPlan(root: string, registry: Registry, photo: PhotoRecord, at
             if (pending) {
                 fail('refused', `${holder.photoId} is already merged into ${pending.into} by the pending bind decision ${pending.decisionId}. Wait for the watcher's next pass. Nothing was written.`);
             }
-            // A merged photo is retired, so one that a series or the active revision shows would break them.
-            const found = await photoHolders(root, holder.photoId);
+            // A merged photo is retired: one that a series or the active revision shows would break them, a retained
+            // revision that lists it could no longer be rolled back to, and its photo record's copy would be dropped.
+            const found = await mergeBlockers(root, holder.photoId);
             if ('unknown' in found) fail('damaged', `${found.unknown.message.replace(' Nothing was deleted.', '')} So nothing shows whether ${holder.photoId} is in use. Nothing was written.`);
-            const holders = 'holders' in found ? found.holders : [];
-            if (holders.length > 0) {
-                fail('refused', `${at} is ${holder.photoId}, which ${holders.join(' and ')} already ${holders.length === 1 ? 'shows' : 'show'}. Take it out first, or keep it as its own photograph. Nothing was written.`);
+            const { shown, retained, record } = found as MergeBlockers;
+            if (shown.length > 0) {
+                fail('refused', `${at} is ${holder.photoId}, which ${shown.join(' and ')} already ${shown.length === 1 ? 'shows' : 'show'}. Take it out first, or keep it as its own photograph. Nothing was written.`);
+            }
+            if (retained.length > 0) {
+                const named = retained.length === 1 ? `the retained catalog revision ${retained[0]} lists` : `the retained catalog revisions ${retained.join(', ')} list`;
+                fail('refused', `${at} is ${holder.photoId}, which ${named}. A merge retires it and moves its asset revision to ${photo.photoId}, so photos rollback could never bring ${retained.length === 1 ? 'that revision' : 'those revisions'} back. Keep it as its own photograph, or bind another file. Nothing was written.`);
+            }
+            if (record) {
+                fail('refused', `${at} is ${holder.photoId}, which has a photo record in the draft. A merge retires it and drops that record's title, description, and story. Keep it as its own photograph, or bind another file. Nothing was written.`);
             }
             plan.merge = holder.photoId;
         }
