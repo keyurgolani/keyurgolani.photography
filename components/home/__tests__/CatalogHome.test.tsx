@@ -91,6 +91,16 @@ async function renderHome(home: PublishedHome = published()) {
   return { ...view, rerender };
 }
 
+/** A second Home in the same tab, in the module graph the first one used, so the intro flag carries over. */
+async function renderSecondVisit(home: PublishedHome = published()) {
+  const { default: CatalogHome } = await import('../CatalogHome');
+  return render(
+    <StrictMode>
+      <CatalogHome home={home} />
+    </StrictMode>,
+  );
+}
+
 const main = () => document.querySelector('main')!;
 const loading = () => main().getAttribute('data-home-loading');
 const holds = () => main().getAttribute('data-chrome-holds');
@@ -192,6 +202,19 @@ describe('CatalogHome', () => {
       expect(host.querySelector('source[type="image/avif"]')?.getAttribute('srcset')).toContain(`/media/${id(3)}/a3/p1/w1920.avif 1920w`);
     });
 
+    it('with nothing loaded yet, a move puts the new photograph on screen, since there is nothing to keep', async () => {
+      await renderHome();
+      click('Next photograph');
+      expect(shownSlide()).toHaveAttribute('data-photo-id', id(0));
+      expect(within(shownSlide() as HTMLElement).getByRole('img')).toHaveAttribute('alt', 'Described photograph 0');
+      // The opening loading late, off screen, doesn't end loading: the photograph on screen hasn't come.
+      load(3);
+      expect(shownSlide()).toHaveAttribute('data-photo-id', id(0));
+      expect(loading()).toBe('true');
+      load(0);
+      expect(loading()).toBe('false');
+    });
+
     it('mounts the next photograph only once one has loaded', async () => {
       await renderHome();
       expect(mountedIds()).toEqual([id(3)]);
@@ -226,6 +249,7 @@ describe('CatalogHome', () => {
       home.featuredSeries!.shortStatement = null;
       await renderHome(home);
       expect(screen.queryByText('Fixture short statement A.')).toBeNull();
+      expect(document.querySelector('[data-chrome-region="story"] p')).toBeNull();
       expect(screen.getByRole('link', { name: 'Enter the series' })).toBeInTheDocument();
     });
   });
@@ -252,6 +276,21 @@ describe('CatalogHome', () => {
       expect(position()).toBe('04 / 04');
     });
 
+    it('a return visit skips loading and the intro, and the sequence still waits for the photograph', async () => {
+      const first = await renderHome();
+      load(3);
+      first.unmount();
+      const second = await renderSecondVisit();
+      expect(loading()).toBe('false');
+      expect(screen.queryByTestId('hero-reveal')).toBeNull();
+      expect(playback()).toBe('not-ready');
+      advance(HOME_AUTO_ADVANCE_MS * 2);
+      expect(position()).toBe('03 / 04');
+      load(3);
+      expect(playback()).toBe('advancing');
+      second.unmount();
+    });
+
     it('a stalled opening ends loading at #18\'s bound, with the chrome held up', async () => {
       await renderHome();
       advance(HOME_LOADING_TIMEOUT_MS);
@@ -260,6 +299,22 @@ describe('CatalogHome', () => {
       load(3);
       expect(holds()).toBe('');
     });
+
+    for (const [settled, naturalWidth] of [['loaded', 2400], ['failed', 0]] as const) {
+      it(`counts an image that ${settled} before hydration, which fires no event`, async () => {
+        vi.spyOn(HTMLImageElement.prototype, 'complete', 'get').mockReturnValue(true);
+        vi.spyOn(HTMLImageElement.prototype, 'naturalWidth', 'get').mockReturnValue(naturalWidth);
+        await renderHome();
+        expect(loading()).toBe('false');
+        if (naturalWidth > 0) {
+          expect(holds()).toBe('');
+          expect(screen.getByRole('status').textContent).toBe('');
+        } else {
+          expect(holds()).toBe('no-photo');
+          expect(failure()).toBe('Photograph 03 of 04 couldn’t load.');
+        }
+      });
+    }
 
     it('Pause stops the authored sequence, and Play starts it a full interval later', async () => {
       await renderHome();
@@ -364,6 +419,26 @@ describe('CatalogHome', () => {
       expect(holds()).toBe('');
       expect(shownSlide()).toHaveAttribute('data-photo-id', id(0));
       expect(playback()).toBe('advancing');
+    });
+
+    it('a load after an error, with no Retry, clears the failure', async () => {
+      await renderHome();
+      load(3);
+      click('Next photograph');
+      fail(0);
+      expect(failure()).toBe('Photograph 04 of 04 couldn’t load.');
+      load(0);
+      expect(failure()).toBe('');
+      expect(shownSlide()).toHaveAttribute('data-photo-id', id(0));
+    });
+
+    it('a missing opening set is already offered in the server HTML', async () => {
+      const { default: CatalogHome } = await import('../CatalogHome');
+      const photos = ORDER.map((n) => photo(n, n === 3 ? { image: null } : {}));
+      const host = document.createElement('div');
+      host.innerHTML = renderToString(<CatalogHome home={published({ photos })} />);
+      expect(host.querySelector('[role="status"]')?.textContent).toBe('Photograph 03 of 04 couldn’t load.');
+      expect([...host.querySelectorAll('button')].map((button) => button.textContent)).toContain('Skip');
     });
 
     it('a missing derivative set shows the missing image with Skip, and no Retry', async () => {
