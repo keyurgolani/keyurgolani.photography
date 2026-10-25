@@ -180,15 +180,20 @@ describe('the Viewer route', () => {
         expect(html(await answer('route-a', P[2]))).toContain('03 / 03');
     });
 
-    it('stops at the ends of the series', async () => {
+    it('stops at the ends of the series, with each end a focusable button marked aria-disabled', async () => {
+        // The server's form, before the shell takes the controls over: a direction with a photograph is a link, an end a button (#9).
+        const end = (step: string) => new RegExp(`<button(?=[^>]*aria-label="${step} photograph")(?=[^>]*aria-disabled="true")(?![^>]*disabled="")[^>]*>`);
+        const link = (step: string) => new RegExp(`<a[^>]*aria-label="${step} photograph"`);
         const first = html(await answer('route-a', P[0]));
-        expect(first).toMatch(/<button[^>]*aria-label="Previous photograph"[^>]*disabled=""/);
-        expect(first).toMatch(/<a[^>]*aria-label="Next photograph"/);
+        expect(first).toMatch(end('Previous'));
+        expect(first).toMatch(link('Next'));
         const last = html(await answer('route-a', P[2]));
-        expect(last).toMatch(/<a[^>]*aria-label="Previous photograph"/);
-        expect(last).toMatch(/<button[^>]*aria-label="Next photograph"[^>]*disabled=""/);
+        expect(last).toMatch(link('Previous'));
+        expect(last).toMatch(end('Next'));
         const only = html(await answer('route-b', P[3]));
         expect(only).toContain('01 / 01');
+        expect(only).toMatch(end('Previous'));
+        expect(only).toMatch(end('Next'));
         expect(only).not.toMatch(/<a[^>]*aria-label="(Previous|Next) photograph"/);
     });
 
@@ -210,10 +215,11 @@ describe('the Viewer route', () => {
         const page = html(await answer('route-a', P[1]));
         expect(page).toContain('02 / 03');
         expect(page).toContain('Route caption two.');
-        expect(page).toContain(`aria-label="Previous photograph" href="/work/route-a/photo/${P[0]}"`);
-        expect(page).toContain(`aria-label="Next photograph" href="/work/route-a/photo/${P[2]}"`);
+        expect(page).toMatch(new RegExp(`<a(?=[^>]*aria-label="Previous photograph")(?=[^>]*href="/work/route-a/photo/${P[0]}")`));
+        expect(page).toMatch(new RegExp(`<a(?=[^>]*aria-label="Next photograph")(?=[^>]*href="/work/route-a/photo/${P[2]}")`));
         expect(page).toMatch(/data-photo="unavailable"[^>]*>.*Photograph unavailable/);
-        expect(page).toMatch(/<button[^>]*disabled=""[^>]*>.*Zoom/);
+        // Zoom is unavailable but stays focusable (#9).
+        expect(page).toMatch(/<button[^>]*aria-disabled="true"[^>]*>(?:(?!<\/button>).)*Zoom/);
         expect(page).not.toMatch(/<img|<picture|\/media\/|SENTINEL-broken/);
         // A prior slug still 308s to it, and its share metadata has no image.
         expect(await answer('sentinel-old-slug', P[1])).toEqual({ redirect: `/work/route-a/photo/${P[1]}` });
