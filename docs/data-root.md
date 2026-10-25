@@ -31,7 +31,7 @@ Every document that two writers could change at once is a folder with one file p
 
 Each write keeps the two newest versions and removes older ones. Files that start with `.v` and end in `.tmp` are writes in progress, or left by a write that crashed. The next write in that folder removes them. Leave them alone.
 
-A record's folder is a real folder, never a symlink: the catalog refuses a linked one, dangling or not, and says so. The data root itself may be a symlink.
+A record's folder is a real folder, never a symlink: the catalog refuses a linked one, dangling or not, and says so. The data root itself may be a symlink for the app, but [Backing up](#backing-up) and [Restoring](#restoring) need it to be a real folder.
 
 Every version carries a `stamp` with its own number and a hash of its content. That's how a command notices a file that was edited in place.
 
@@ -116,28 +116,40 @@ If `./portfolio-data` is lost or comes up empty on a host whose library had IDs,
 
 ## Backing up
 
-While the stack runs, the watcher is the only process that writes the data root, and it writes the legacy derivatives in the library too. Stop it, archive both folders together, and start it again:
+While the stack runs, the watcher is the only process that writes the data root, and it writes the legacy derivatives in the library too. Stop it, archive both folders together, and start it again.
+
+Both have to be real folders next to `docker-compose.prod.yml`, not symlinks. `tar` stores a symlink named on its command line as the link itself, not the files behind it, so the archive would hold no registry, and a restore's `mv` would move only the link. This block and the ones in [Restoring](#restoring) check that first, and stop before anything else runs. The `exit` leaves only the block's subshell, not your shell:
 
 ```bash
-mkdir -m 700 -p ~/photography-backups
-docker compose -f docker-compose.prod.yml stop image-watcher
-(umask 077 && sudo tar -czf - public/assets/photos portfolio-data >~/photography-backups/photography-$(date -u +%Y%m%dT%H%M%SZ).tar.gz)
-docker compose -f docker-compose.prod.yml start image-watcher
+(
+  for d in public/assets/photos portfolio-data; do
+    [ -d "$d" ] && [ ! -L "$d" ] || { echo "$d must be a real folder, not a symlink. Nothing was archived." >&2; exit 1; }
+  done
+  mkdir -m 700 -p ~/photography-backups
+  docker compose -f docker-compose.prod.yml stop image-watcher
+  (umask 077 && sudo tar -czf - public/assets/photos portfolio-data >~/photography-backups/photography-$(date -u +%Y%m%dT%H%M%SZ).tar.gz)
+  docker compose -f docker-compose.prod.yml start image-watcher
+)
 ```
 
-`sudo` lets `tar` read the uid 1001 files. Your own shell writes the archive, so it belongs to you, and `umask 077` and the 0700 folder keep it readable by you only, since it holds the registry and its curator-only details. Copy it off the host the same way, into a folder only you can read. If `tar` reports an error, delete that archive and run the line again, since the redirect leaves a partial file behind. `web` keeps serving meanwhile, since it only reads, but don't run `photos.mjs` commands while `tar` runs. `./.next-images-cache` needs no backup.
+`sudo` lets `tar` read the uid 1001 files. Your own shell writes the archive, so it belongs to you, and `umask 077` and the 0700 folder keep it readable by you only, since it holds the registry and its curator-only details. Copy it off the host the same way, into a folder only you can read. If `tar` reports an error, delete that archive and run the block again, since the redirect leaves a partial file behind. `web` keeps serving meanwhile, since it only reads, but don't run `photos.mjs` commands while `tar` runs. `./.next-images-cache` needs no backup.
 
 ## Restoring
 
 Restore both folders from the same archive, so the registry describes the library beside it. Move the current folders aside instead of deleting them until the restored stack checks out. The timestamp keeps a second restore from moving them inside an earlier one's. Extracting as root with `-p` keeps the files' owners and modes:
 
 ```bash
-docker compose -f docker-compose.prod.yml stop
-aside=before-restore-$(date -u +%Y%m%dT%H%M%SZ)
-sudo mv public/assets/photos "photos.$aside"
-sudo mv portfolio-data "portfolio-data.$aside"
-sudo tar -xzpf ~/photography-backups/photography-<timestamp>.tar.gz
-docker compose -f docker-compose.prod.yml up -d
+(
+  for d in public/assets/photos portfolio-data; do
+    [ ! -L "$d" ] || { echo "$d is a symlink. Nothing was moved or restored." >&2; exit 1; }
+  done
+  docker compose -f docker-compose.prod.yml stop
+  aside=before-restore-$(date -u +%Y%m%dT%H%M%SZ)
+  sudo mv public/assets/photos "photos.$aside"
+  sudo mv portfolio-data "portfolio-data.$aside"
+  sudo tar -xzpf ~/photography-backups/photography-<timestamp>.tar.gz
+  docker compose -f docker-compose.prod.yml up -d
+)
 ```
 
 Then check that `photos.mjs identity status` counts the photos you expect, as in step 6 of the runbook, and that `GET /api/health` reports `ready`.
@@ -145,10 +157,13 @@ Then check that `photos.mjs identity status` counts the photos you expect, as in
 If only the data root was lost and the library is fine, restore just `portfolio-data` from the newest archive and keep the current library. Move whatever is left of `./portfolio-data` aside first, as above. `tar` overwrites only the files the archive has and keeps the rest, so files written after the archive would otherwise stay beside the restored ones. A newer decision would apply to the older state, and a newer registry version, with the highest number in `identity/registry/`, would still be the registry:
 
 ```bash
-docker compose -f docker-compose.prod.yml stop
-sudo mv portfolio-data "portfolio-data.before-restore-$(date -u +%Y%m%dT%H%M%SZ)"
-sudo tar -xzpf ~/photography-backups/photography-<timestamp>.tar.gz portfolio-data
-docker compose -f docker-compose.prod.yml up -d
+(
+  [ ! -L portfolio-data ] || { echo "portfolio-data is a symlink. Nothing was moved or restored." >&2; exit 1; }
+  docker compose -f docker-compose.prod.yml stop
+  sudo mv portfolio-data "portfolio-data.before-restore-$(date -u +%Y%m%dT%H%M%SZ)"
+  sudo tar -xzpf ~/photography-backups/photography-<timestamp>.tar.gz portfolio-data
+  docker compose -f docker-compose.prod.yml up -d
+)
 ```
 
 The watcher's next pass keeps the ID of every photo that archive knew, follows a photo renamed since by its bytes, marks one deleted since as missing, and gives new IDs only to photos added after the archive was made. That loses far less than migrating again.
