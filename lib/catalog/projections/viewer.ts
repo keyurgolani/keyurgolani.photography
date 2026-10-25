@@ -29,6 +29,17 @@ export interface ViewerVariant {
     bytes: number;
 }
 
+/** One photograph's #10 derivative set, as ResponsivePhoto takes it. #5's `SeriesImage`, with the asset revision. */
+export interface ViewerImage {
+    /** Oriented. */
+    width: number;
+    height: number;
+    assetRevision: string;
+    /** The stored WebP data URI. Absent when it isn't one, so nothing else reaches the CSS `url()` that ResponsivePhoto writes it into. */
+    lqip?: string;
+    variants: Record<VariantWidth, Record<VariantFormat, ViewerVariant>>;
+}
+
 /** The approved sketch's `PublishedViewerPhoto`, with the approved detail's title, and the variant ladder in place of one URL. */
 export interface PublishedViewerPhoto {
     /** The revision (or candidate) every field below came from. */
@@ -61,13 +72,14 @@ export interface PublishedViewerPhoto {
          * An unreviewed suggestion isn't pending here (see `description`).
          */
         descriptionPending: boolean;
-        /** Oriented. */
-        width: number;
-        height: number;
-        assetRevision: string;
-        /** The stored WebP data URI. Absent when it isn't one, so nothing else reaches the CSS `url()` that ResponsivePhoto writes it into. */
-        lqip?: string;
-        variants: Record<VariantWidth, Record<VariantFormat, ViewerVariant>>;
+        /**
+         * Null when the set can't be shown (a hand-written revision: a size
+         * that isn't a positive integer, or a file that isn't this photo's own
+         * `/media` URL). The photo keeps its text, position, and neighbors, and
+         * the Viewer shows its missing-image state, never another file. None of
+         * a broken set's fields ships, so nothing from it reaches the client.
+         */
+        image: ViewerImage | null;
         /** The photo's stored `#rrggbb` accent, or null. */
         accent: string | null;
         /** Derived camera facts: only #10's allowlisted keys, in allowlist order. */
@@ -86,7 +98,12 @@ export type ViewerPhotoResult =
     | { kind: 'ok'; viewer: PublishedViewerPhoto }
     /** The slug is a prior alias of the series holding the photo. The route answers 308 to the canonical URL. */
     | { kind: 'redirect'; slug: string; photoId: string }
-    /** Malformed, unknown, unpublished, outside that series, or in a series the series page answers not-found. The route renders the one public not-found page. */
+    /**
+     * Malformed, unknown, unpublished, outside that series, or in a series the
+     * series page answers not-found. The route renders the one public
+     * not-found page. A photo whose set fails the `/media` check isn't one of
+     * these: it renders with `image: null`, as the series page lists it.
+     */
     | { kind: 'not-found' };
 
 /** What viewerPhotoOf() reads. A CatalogReader has all of it. */
@@ -131,9 +148,6 @@ function accent(value: unknown): string | null {
     return typeof value === 'string' && ACCENT_RE.test(value) ? value : null;
 }
 
-function lqip(value: unknown): { lqip?: string } {
-    return typeof value === 'string' && LQIP_RE.test(value) ? { lqip: value } : {};
-}
 
 /**
  * The description, from the alt alone. Pending means a `pending` alt or blank
@@ -158,15 +172,17 @@ function technical(facts: Photo['technical']): Partial<Record<TechnicalKey, stri
 }
 
 /**
- * The ladder, field by field, when every file is the `/media` URL #10 builds
- * for this photo's set and declares a positive size, else null. The same
- * check as #6's ladderOf() on the other screens, copied until that lands;
- * one shared helper later. Field by field, so the Viewer gets only what the
- * ladder names and a caller can't edit the cached revision through it.
+ * The photo's set, field by field, when the photo has positive integer
+ * dimensions and every file is the `/media` URL #10 builds for this photo's
+ * set and declares a positive size, else null. The same checks as #5's
+ * imageOf() and #6's ladderOf() on the other screens, copied until those
+ * land; one shared helper later. Field by field, so the Viewer gets only
+ * what the set names and a caller can't edit the cached revision through it.
  */
-function variants(photo: Photo): PublishedViewerPhoto['photo']['variants'] | null {
+function imageOf(photo: Photo): ViewerImage | null {
+    if (!dimension(photo.width) || !dimension(photo.height)) return null;
     const stored = photo.variants as Partial<Record<VariantWidth, Partial<Record<VariantFormat, Partial<ViewerVariant>>>>> | undefined;
-    const projected = {} as PublishedViewerPhoto['photo']['variants'];
+    const projected = {} as ViewerImage['variants'];
     for (const width of VARIANT_WIDTHS) {
         projected[width] = {} as Record<VariantFormat, ViewerVariant>;
         for (const format of VARIANT_FORMATS) {
@@ -182,22 +198,26 @@ function variants(photo: Photo): PublishedViewerPhoto['photo']['variants'] | nul
             projected[width][format] = { url: file.url, width: file.width, height: file.height, bytes: file.bytes };
         }
     }
-    return projected;
+    const image: ViewerImage = { width: photo.width, height: photo.height, assetRevision: photo.assetRevision, variants: projected };
+    if (typeof photo.lqip === 'string' && LQIP_RE.test(photo.lqip)) image.lqip = photo.lqip;
+    return image;
 }
 
 /**
  * Resolve `/work/<slug>/photo/<photoId>` in one source, in this order:
  * malformed params, an unknown slug, a series ID that appears more than
- * once, a series with no positive published count, an unknown photo, a
- * photo the series doesn't hold, and a photo without positive dimensions or
- * a ladder of its own `/media` files are all not-found, and so is a prior
- * slug whose canonical slug the route would refuse; a prior slug redirects;
+ * once, a series with no positive published count, an unknown photo, and a
+ * photo the series doesn't hold are all not-found, and so is a prior slug
+ * whose canonical slug the route would refuse; a prior slug redirects;
  * anything else is the projection. The series guards are #5's series page
  * guards, copied, so a photo URL is not-found exactly when its series page
- * is, and #3's Work never links either. Compile never writes a repeated ID
- * or a zero count; only a hand-written revision can. Position and neighbors
- * come from #8's sequencePosition() over the members that resolve, the list
- * #5's series page shows, so the two always agree.
+ * is, and #3's Work never links either. A photo without positive dimensions
+ * or a set of its own `/media` files still resolves, with `image: null`, as
+ * #5's series page lists it with its missing-image state. Compile never
+ * writes a repeated ID, a zero count, or a bad set; only a hand-written
+ * revision can. Position and neighbors come from #8's sequencePosition()
+ * over the members that resolve, the list #5's series page shows, so the
+ * two always agree.
  */
 export function viewerPhotoOf(source: ViewerSource, slug: unknown, photoId: unknown): ViewerPhotoResult {
     const params = viewerParams(slug, photoId);
@@ -213,11 +233,6 @@ export function viewerPhotoOf(source: ViewerSource, slug: unknown, photoId: unkn
     // Membership also covers the series page's other guard, a series with no member that resolves.
     const position = sequencePosition({ photoIds: source.photosOf(series.id).map((member) => member.id) }, record.id);
     if (position === null) return NOT_FOUND;
-    // Compile never writes a bad set; a hand-written revision can. The Viewer never points outside the revision's derivatives,
-    // and a prior slug never redirects to a photo that would be not-found.
-    if (!dimension(record.width) || !dimension(record.height)) return NOT_FOUND;
-    const ladder = variants(record);
-    if (ladder === null) return NOT_FOUND;
     if (!hit.canonical) {
         // The series page's rule: a 308 to a canonical slug the route refuses would point at a page that is always not-found.
         if (viewerParams(series.slug, record.id) === null) return NOT_FOUND;
@@ -233,11 +248,8 @@ export function viewerPhotoOf(source: ViewerSource, slug: unknown, photoId: unkn
                 title: text(record.title),
                 ...described(record.alt),
                 caption: text(record.caption),
-                width: record.width,
-                height: record.height,
-                assetRevision: record.assetRevision,
-                ...lqip(record.lqip),
-                variants: ladder,
+                // Compile never writes a bad set; a hand-written revision can. The Viewer never points outside the revision's derivatives.
+                image: imageOf(record),
                 accent: accent(record.accent),
                 technical: technical(record.technical),
             },
