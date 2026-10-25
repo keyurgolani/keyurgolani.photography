@@ -663,11 +663,61 @@ function makeFolders(...dirs: string[]): void {
     }
 }
 
-/** Record that the one-time rebuild is done. Creates the cache folder, never the library root. */
-export function writeUprightMarker(photos: number, paths: LibraryPaths = libraryPaths(), now: Date = new Date()): void {
+/**
+ * Record that the one-time rebuild is done, apart from `retry`, the photos
+ * whose rebuild failed, which later starts rebuild until it works. Creates
+ * the cache folder, never the library root.
+ */
+export function writeUprightMarker(photos: number, paths: LibraryPaths = libraryPaths(), now: Date = new Date(), retry: readonly string[] = []): void {
     const file = uprightMarkerPath(paths);
     makeFolders(path.dirname(file));
-    fs.writeFileSync(file, `${JSON.stringify({ rebuiltAt: now.toISOString(), photos }, null, 2)}\n`);
+    const record = { rebuiltAt: now.toISOString(), photos, ...(retry.length > 0 ? { retry: [...retry].sort() } : {}) };
+    fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`);
+}
+
+/**
+ * The photos the one-time rebuild still has to turn upright: null when it
+ * never ran, so every orientation-tagged photo needs it, else the ones its
+ * record lists to retry. A record that can't be parsed counts as done with
+ * nothing to retry, as a record written before the list was.
+ */
+export function readUprightRetry(paths: LibraryPaths = libraryPaths()): string[] | null {
+    const file = uprightMarkerPath(paths);
+    let text: string;
+    try {
+        text = fs.readFileSync(file, 'utf8');
+    } catch (error) {
+        if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return null;
+        return [];
+    }
+    try {
+        const { retry } = JSON.parse(text) as { retry?: unknown };
+        return Array.isArray(retry) ? retry.filter((file): file is string => typeof file === 'string') : [];
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * Whether the watcher can write the library's cache folder, where it records
+ * the one-time rebuild and the source each shared set was built from: the
+ * folder is writable, or it doesn't exist yet and the library root is.
+ */
+export function cacheFolderWritable(paths: LibraryPaths = libraryPaths()): boolean {
+    const dir = path.dirname(paths.dynamicCache);
+    try {
+        if (!fs.statSync(dir).isDirectory()) return false;
+        fs.accessSync(dir, fs.constants.W_OK);
+        return true;
+    } catch (error) {
+        if (!hasErrorCode(error, 'ENOENT')) return false;
+    }
+    try {
+        fs.accessSync(paths.root, fs.constants.W_OK);
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 /** `cache/set-sources`, where each set records the source it was last built from. */
@@ -717,13 +767,13 @@ function builtFromAnother(filename: string, paths: LibraryPaths): boolean {
     return source !== null && source !== filename;
 }
 
-/** Whether a source's file carries an EXIF orientation other than 1, which its set turns upright. False when it can't be read. */
-export async function isOrientationTagged(filename: string, paths: LibraryPaths = libraryPaths()): Promise<boolean> {
+/** Whether a source's file carries an EXIF orientation other than 1, which its set turns upright. Null when it can't be read, so nobody knows. */
+export async function isOrientationTagged(filename: string, paths: LibraryPaths = libraryPaths()): Promise<boolean | null> {
     try {
         const { orientation } = await sharp(path.join(paths.root, filename)).metadata();
         return orientation !== undefined && orientation !== 1;
     } catch {
-        return false;
+        return null;
     }
 }
 
@@ -738,10 +788,11 @@ export interface SourcePlan {
      */
     reowned: { file: string; from: string | null }[];
     /**
-     * The owners whose files carry an orientation tag, rebuilt once whatever
-     * their state: a set written before derivatives were turned upright shows
-     * its photo turned or mirrored, and still looks current. Null once the
-     * marker records the rebuild done.
+     * The owners whose files carry an orientation tag, or can't be read to
+     * tell, rebuilt once whatever their state: a set written before
+     * derivatives were turned upright shows its photo turned or mirrored, and
+     * still looks current. Once the marker records the rebuild done, only the
+     * ones it lists to retry, and null when it lists none.
      */
     upright: string[] | null;
     /** The sources left out because another one owns their set, and whether each was passed over for not decoding. */
@@ -752,13 +803,16 @@ export interface SourcePlan {
 export async function planSources({ force = false }: { force?: boolean } = {}): Promise<SourcePlan> {
     const paths = libraryPaths();
     ensureDirectories(paths);
-    const upright: string[] | null = fs.existsSync(uprightMarkerPath(paths)) ? null : [];
+    // Null: the rebuild never ran, so every owner is a candidate.
+    const retry = readUprightRetry(paths);
+    const upright: string[] | null = retry === null || retry.length > 0 ? [] : null;
+    const candidate = (owner: string) => retry === null || retry.includes(owner);
     const plan: SourcePlan = { files: [], reowned: [], upright, shared: [] };
     const index = force ? null : readDerivativeIndex(paths);
     for (const group of setGroups(getPhotoFiles(paths.root), paths.root)) {
         const { owner, undecodable } = await pickOwner(group, paths);
         for (const file of group) if (file !== owner) plan.shared.push({ file, owner, undecodable: undecodable.includes(file) });
-        const tagged = upright !== null && await isOrientationTagged(owner, paths);
+        const tagged = upright !== null && candidate(owner) && (await isOrientationTagged(owner, paths)) !== false;
         if (tagged) upright.push(owner);
         // A removal or an addition while the watcher was down can change a set's owner without touching its files.
         const recorded = readSetSource(owner, paths);

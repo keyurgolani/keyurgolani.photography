@@ -10,7 +10,7 @@ import { dominantChannel, fixtureFiles, withExifOrientation, type Channel } from
 import { fakeCaseInsensitiveDisk, fakeCaseSensitiveDisk } from '../../test/helpers/caseDisk';
 import { REPO_ROOT, runTsx } from '../../test/helpers/runTsx';
 import { createTempLibrary, derivativePaths, type TempLibrary } from '../../test/helpers/tempLibrary';
-import { baseNameOf, optimizedSize, ownerOf, planOrphanCleanup, processImage, writeUprightMarker } from '../imageOptimizer';
+import { baseNameOf, isOrientationTagged, optimizedSize, ownerOf, planOrphanCleanup, planSources, processImage, writeUprightMarker } from '../imageOptimizer';
 import {
     attachWatcher,
     createIgnoreFilter,
@@ -758,6 +758,42 @@ describe('the one-time rebuild of orientation-tagged photos', { timeout: 60_000 
         expect(fs.existsSync(marker())).toBe(true);
     });
 
+    it('records the rebuild when a tagged photo fails, and later starts retry only that one', async () => {
+        await oldLibrary();
+        // Its header, orientation tag included, is intact, but it doesn't decode
+        const broken = turned.subarray(0, Math.floor(turned.length * 0.6));
+        await expect(sharp(broken).metadata()).resolves.toMatchObject({ orientation: 6 });
+        fs.writeFileSync(lib.file('broken.jpg'), broken);
+
+        expect(await handlers.queueStartupBatch()).toEqual({ processed: ['turned.jpg'], skipped: [], errors: ['broken.jpg'] });
+        expect(await optimizedSize('turned.jpg')).toEqual(UPRIGHT);
+        expect(JSON.parse(fs.readFileSync(marker(), 'utf8'))).toEqual({ rebuiltAt: expect.any(String), photos: 1, retry: ['broken.jpg'] });
+        expect(logs).toContain('[ImageWatcher] Rebuilt the sets of 1 orientation-tagged photo. Clear the /_next/image cache, so it drops what it made from the old sets.');
+        expect(logs).toContain('[ImageWatcher] These orientation-tagged photos failed to rebuild, so each start tries them again until they build: broken.jpg.');
+
+        // The next start leaves turned.jpg's set alone, sideways or not, and tries broken.jpg again
+        fs.writeFileSync(lib.file('optimized/turned.webp'), await sideways());
+        expect(await newHandlers().queueStartupBatch()).toEqual({ processed: [], skipped: [], errors: ['broken.jpg'] });
+        expect((await optimizedSize('turned.jpg')).width).toBe(960);
+        expect(JSON.parse(fs.readFileSync(marker(), 'utf8'))).toMatchObject({ retry: ['broken.jpg'] });
+
+        // Once it builds, nothing is left to retry
+        fs.writeFileSync(lib.file('broken.jpg'), turned);
+        expect(await newHandlers().queueStartupBatch()).toEqual({ processed: ['broken.jpg'], skipped: [], errors: [] });
+        expect(await optimizedSize('broken.jpg')).toEqual(UPRIGHT);
+        expect(JSON.parse(fs.readFileSync(marker(), 'utf8'))).toEqual({ rebuiltAt: expect.any(String), photos: 1 });
+        expect(await newHandlers().queueStartupBatch()).toEqual({ processed: [], skipped: [], errors: [] });
+    });
+
+    it("rebuilds a photo whose orientation can't be read, since it may be tagged", async () => {
+        for (const name of BASIC) await processImage(name);
+        fs.writeFileSync(lib.file('unknown.jpg'), 'not an image');
+
+        expect(await isOrientationTagged('unknown.jpg')).toBeNull();
+        expect(await isOrientationTagged('landscape.jpg')).toBe(false);
+        expect((await planSources()).upright).toEqual(['unknown.jpg']);
+    });
+
     it('records it at once when no photo is tagged, and after a forced run too', async () => {
         // Orientation 1 is upright already
         fs.writeFileSync(lib.file('level.jpg'), withExifOrientation(fs.readFileSync(lib.file('landscape.jpg')), 1));
@@ -790,6 +826,10 @@ describe('the one-time rebuild of orientation-tagged photos', { timeout: 60_000 
 
         expect(await handlers.queueStartupBatch()).toEqual({ processed: ['turned.jpg'], skipped: [], errors: [] });
         expect(await optimizedSize('turned.jpg')).toEqual(UPRIGHT);
+        // Said up front, before any build
+        const warning = `[ImageWatcher] ${path.dirname(marker())} can't be written, so the watcher can't record which sets it rebuilt. Until it can, every start rebuilds the orientation-tagged photos and the shared sets again.`;
+        expect(logs.indexOf(warning)).toBeGreaterThanOrEqual(0);
+        expect(logs.indexOf(warning)).toBeLessThan(logs.findIndex((line) => line.startsWith('[ImageWatcher] Processing ')));
         expect(logs.some((line) => line.startsWith(`[ImageWatcher] Could not write ${marker()}: `) && line.endsWith('The next start rebuilds the orientation-tagged photos again.'))).toBe(true);
         expect(logs.some((line) => line.startsWith('[ImageWatcher] Rebuilt the sets'))).toBe(false);
         expect(errors).toHaveBeenCalledWith(expect.stringMatching(/^\[imageOptimizer\] Couldn't record that turned\.jpg's set was built from it: /));

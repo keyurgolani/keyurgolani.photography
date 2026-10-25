@@ -4,6 +4,7 @@ import path from 'path';
 import type { ChokidarOptions, FSWatcherEventMap } from 'chokidar';
 import { isScanExcluded } from '../lib/identity/scan';
 import {
+    cacheFolderWritable,
     generatedFolderNames,
     hasErrorCode,
     isSourceFile,
@@ -238,16 +239,19 @@ export function createWatcherHandlers(
         return new Promise((resolve) => idleWaiters.push(resolve));
     }
 
-    /** Record the one-time upright rebuild done, so later starts skip it. */
-    function recordUpright(rebuilt: number): void {
+    /** Record the one-time upright rebuild done, so later starts skip it, apart from `retry`, which failed. */
+    function recordUpright(rebuilt: number, retry: readonly string[] = []): void {
         try {
-            writeUprightMarker(rebuilt);
+            writeUprightMarker(rebuilt, undefined, undefined, retry);
         } catch (error) {
             logger.error(`[ImageWatcher] Could not write ${uprightMarkerPath()}: ${error instanceof Error ? error.message : String(error)}. The next start rebuilds the orientation-tagged photos again.`);
             return;
         }
         if (rebuilt > 0) {
             logger.log(`[ImageWatcher] Rebuilt the sets of ${photos(rebuilt, 'orientation-tagged photo')}. Clear the /_next/image cache, so it drops what it made from the old sets.`);
+        }
+        if (retry.length > 0) {
+            logger.log(`[ImageWatcher] These orientation-tagged photos failed to rebuild, so each start tries them again until they build: ${retry.join(', ')}.`);
         }
     }
 
@@ -321,6 +325,9 @@ export function createWatcherHandlers(
             if (stopped) return result;
             logger.log('[ImageWatcher] Checking for unprocessed images...');
             const { files, reowned, upright, shared } = await planSources({ force });
+            if (!cacheFolderWritable()) {
+                logger.error(`[ImageWatcher] ${path.dirname(uprightMarkerPath())} can't be written, so the watcher can't record which sets it rebuilt. Until it can, every start rebuilds the orientation-tagged photos and the shared sets again.`);
+            }
             for (const { file, owner, undecodable } of shared) {
                 logger.log(`[ImageWatcher] Skipping ${file}: ${undecodable ? `it can't be decoded, so ${owner} has the derivatives they share` : `it shares its derivatives with ${owner}`}.`);
             }
@@ -358,9 +365,12 @@ export function createWatcherHandlers(
                 `${result.skipped.length} skipped, ${result.errors.length} errors`,
             );
             if (upright !== null) {
-                // Recorded only once every one of them is rebuilt, so a failure or a stop leaves it to the next start.
-                const left = upright.filter((file) => outcomes[files.indexOf(file)] !== 'done');
-                if (left.length === 0) recordUpright(upright.length);
+                // A photo that changed meanwhile, or a stop, leaves the whole rebuild to the next start. One that
+                // failed doesn't hold it back: it is recorded to retry, so the others aren't rebuilt at every start.
+                const outcome = (file: string) => outcomes[files.indexOf(file)];
+                const left = upright.filter((file) => outcome(file) === 'skipped');
+                const failed = upright.filter((file) => outcome(file) === 'failed');
+                if (left.length === 0) recordUpright(upright.length - failed.length, failed);
                 else logger.log(`[ImageWatcher] These orientation-tagged photos weren't rebuilt, so the next start tries again: ${left.join(', ')}.`);
             }
             return result;
