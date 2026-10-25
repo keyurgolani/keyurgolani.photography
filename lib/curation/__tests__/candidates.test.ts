@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import { emptyRegistry, type AssetRevisionRecord, type ProfileEntry, type Registry } from '../../identity/types';
-import { candidateOf, failureOf, replacementEventIds, withCandidate, type CandidateView } from '../candidates';
+import { candidateOf, failureOf, owedSettles, replacementEventIds, withCandidate, type CandidateView } from '../candidates';
 import type { CurationEvent } from '../events';
 
 const PHOTO = 'ph_00000000-0000-4000-8000-000000000001';
@@ -108,5 +108,31 @@ describe('withCandidate', () => {
         expect(withCandidate({ ...event('open'), type: 'missing' }, ready, AT)).toBeNull();
         expect(withCandidate(event('open'), { state: 'pending' }, AT)).toBeNull();
         expect(withCandidate(event('open'), { state: 'gone' }, AT)).toBeNull();
+    });
+});
+
+describe('owedSettles', () => {
+    const other = `sha256-${'c'.repeat(64)}`;
+
+    it('hands each owed revision once, and clears only what a settle covered', () => {
+        const owed = owedSettles();
+        owed.add({ photoId: PHOTO, assetRevision: REV });
+        owed.add({ photoId: PHOTO, assetRevision: REV });
+        const taken = owed.take();
+        expect(taken.refs).toEqual([{ photoId: PHOTO, assetRevision: REV }]);
+        // Until a settle covers it, it stays owed.
+        expect(owed.take().refs).toEqual([{ photoId: PHOTO, assetRevision: REV }]);
+        taken.settled();
+        expect(owed.take().refs).toEqual([]);
+    });
+
+    it('keeps a revision owed again while a settle ran, since that settle may have read the registry before it', () => {
+        const owed = owedSettles();
+        owed.add({ photoId: PHOTO, assetRevision: REV });
+        const taken = owed.take();
+        owed.add({ photoId: PHOTO, assetRevision: REV });
+        owed.add({ photoId: PHOTO, assetRevision: other });
+        taken.settled();
+        expect(owed.take().refs).toEqual([{ photoId: PHOTO, assetRevision: REV }, { photoId: PHOTO, assetRevision: other }]);
     });
 });

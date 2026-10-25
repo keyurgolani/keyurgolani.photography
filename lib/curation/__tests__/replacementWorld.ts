@@ -18,7 +18,7 @@ import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../../identity/variants';
 import { createMediaHandler } from '../../media/handler';
 import { assetDir } from '../../media/path';
 import { mediaUrl, type AssetRef } from '../../media/url';
-import { createCandidateSink, settlingAfterBuild } from '../candidates';
+import { createCandidateSink, owedSettles, settlingAfterBuild, type OwedSettles } from '../candidates';
 import { eventIdOf, eventKey, type CurationEvent } from '../events';
 import { readEvent } from '../repository';
 import { createCurationSink } from '../sink';
@@ -96,6 +96,8 @@ export interface World {
     pass(): Promise<IdentityFact[]>;
     /** Pass with new sinks, as a restarted watcher does. */
     restartPass(): Promise<IdentityFact[]>;
+    /** What the world's build owes its sinks, shared as the watcher shares it. */
+    owed: OwedSettles;
     /** Build one set as the watcher's worker does: the writer, then the item settled. */
     build(job: DerivativeJob, faults?: WriterFaults, options?: Partial<BuildOptions>): ReturnType<typeof buildDerivativeSet>;
     job(assetRevision: string): DerivativeJob;
@@ -107,8 +109,8 @@ let ids = 0;
 const nextId = () => `00000000-0000-4000-8000-${String(++ids).padStart(12, '0')}`;
 const clock = () => Date.now() + 60_000;
 
-function sinks(): FactSink[] {
-    return [createCurationSink({ logger: quiet }), createCandidateSink({ logger: quiet })];
+function sinks(owed?: OwedSettles): FactSink[] {
+    return [createCurationSink({ logger: quiet }), createCandidateSink({ logger: quiet, owed })];
 }
 
 async function passIn(delivering: FactSink[] = sinks()): Promise<IdentityFact[]> {
@@ -125,7 +127,7 @@ interface Template {
     parent: string;
     data: string;
     library: string;
-    facts: Omit<World, 'lib' | 'data' | 'root' | 'pass' | 'restartPass' | 'build' | 'job' | 'event' | 'cleanup'>;
+    facts: Omit<World, 'lib' | 'data' | 'root' | 'pass' | 'restartPass' | 'owed' | 'build' | 'job' | 'event' | 'cleanup'>;
 }
 
 let template: Template | null = null;
@@ -206,8 +208,9 @@ export async function createWorld(images: Images): Promise<World> {
     fs.cpSync(template.library, lib.root, { recursive: true });
     fs.cpSync(template.data, data.root, { recursive: true });
     const facts = template.facts;
-    const build = settlingAfterBuild(buildDerivativeSet, { logger: quiet });
-    const processSinks = sinks();
+    const owed = owedSettles();
+    const build = settlingAfterBuild(buildDerivativeSet, { logger: quiet, owed });
+    const processSinks = sinks(owed);
     const job = (assetRevision: string): DerivativeJob => ({ photoId: facts.p, assetRevision, profileId: facts.profileId, path: P_PATH });
     return {
         ...facts,
@@ -216,6 +219,7 @@ export async function createWorld(images: Images): Promise<World> {
         root: data.root,
         pass: () => passIn(processSinks),
         restartPass: () => passIn(),
+        owed,
         job,
         build: (target, faults = {}, options = {}) => build(target, { logger: quiet, faults, ...options }),
         async event(id = facts.eventId) {
