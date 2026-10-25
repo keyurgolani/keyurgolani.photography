@@ -121,6 +121,13 @@ export interface InboxDetail extends InboxItem {
         editedAt: string;
         editedBy: string;
     } | null;
+    /**
+     * What the working layer already holds for this photograph, once an
+     * approval placed it: its reviewed description or the decorative flag
+     * (an unreviewed description shows as none), and the series that hold it.
+     * Null before any approval. A reopened form starts from it.
+     */
+    placed: { alt: { kind: 'described'; text: string } | { kind: 'decorative' } | null; seriesIds: string[] } | null;
     decisions: { action: string; at: string; by: string; detail: string }[];
     reviewedAt: string | null;
     reviewedBy: string | null;
@@ -169,11 +176,18 @@ export function parsePlacementValue(value: string): Placement | null {
     return { after: value.slice('after:'.length) };
 }
 
-/** The series an approval would use with no new choice: the saved edit, then the suggestion. Undefined when neither names one. */
-export function defaultSeries(detail: Pick<InboxDetail, 'edits' | 'suggestions'>): string | null | undefined {
+/** The series the form starts on: the saved edit, then the series that already holds the photo, then the suggestion. Undefined when none names one. */
+export function defaultSeries(detail: Pick<InboxDetail, 'edits' | 'suggestions'> & { placed?: InboxDetail['placed'] }): string | null | undefined {
     if (detail.edits?.seriesId !== undefined) return detail.edits.seriesId;
+    if (detail.placed && detail.placed.seriesIds.length > 0) return detail.placed.seriesIds[0];
     if (detail.suggestions.series) return detail.suggestions.series.value;
     return undefined;
+}
+
+/** The description the form starts on: the saved edit, then what the photo record holds. */
+export function defaultDescription(detail: Pick<InboxDetail, 'edits' | 'placed'>): { kind: 'described'; text: string } | { kind: 'decorative' } | null {
+    if (detail.edits?.description !== undefined) return detail.edits.description;
+    return detail.placed?.alt ?? null;
 }
 
 /**

@@ -236,6 +236,51 @@ describe('runInboxAction', () => {
         expect((await readAuthoredRecord(f.root, 'photo', event.photoId!))?.alt).toBeNull();
     });
 
+    it('clears a decorative flag on a reopened item, whose photo record already holds it', async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])], { published: true });
+        let event = (await readEvent(f.root, ids[0]))!;
+        // Approved as decorative without saving edits first, then reopened.
+        done(await runInboxAction('approve', itemForm(event, f.catalog.revisionId, { series: PUBLISHED, decorative: 'on' })));
+        event = (await readEvent(f.root, ids[0]))!;
+        done(await runInboxAction('reopen', itemForm(event, f.catalog.revisionId)));
+        // The page fills the reopened form from the photo record.
+        const detail = ready(await loadInbox(ids[0])).selected!;
+        expect(detail.placed).toEqual({ alt: { kind: 'decorative' }, seriesIds: [PUBLISHED] });
+        event = (await readEvent(f.root, ids[0]))!;
+        const approved = await runInboxAction('approve', itemForm(event, f.catalog.revisionId, { series: PUBLISHED, decorative: 'off', description: '', descriptionWas: 'decorative' }));
+        done(approved);
+        expect(approved).toMatchObject({ message: expect.stringMatching(/no description yet/) });
+        expect((await readAuthoredRecord(f.root, 'photo', event.photoId!))?.alt).toBeNull();
+    });
+
+    it('refuses to leave a reopened photo unassigned while a series still holds it, in page words', async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])]);
+        let event = (await readEvent(f.root, ids[0]))!;
+        done(await runInboxAction('approve', itemForm(event, null, { series: DRAFT, decorative: 'off' })));
+        event = (await readEvent(f.root, ids[0]))!;
+        done(await runInboxAction('reopen', itemForm(event, null)));
+        event = (await readEvent(f.root, ids[0]))!;
+        expect(ready(await loadInbox(ids[0])).selected?.placed?.seriesIds).toEqual([DRAFT]);
+        const state = await runInboxAction('approve', itemForm(event, null, { series: 'unassigned', decorative: 'off' }));
+        expect(state).toMatchObject({ status: 'refused', message: expect.stringMatching(/already in a series/) });
+        expect(state.status !== 'idle' && state.message).not.toMatch(/evt_|ph_|rev_|ser_|sha256-/);
+        expect((await readEvent(f.root, ids[0]))?.version).toBe(event.version);
+    });
+
+    it('answers stale and other refusals without internal IDs or CLI phrasing', async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])], { published: true });
+        const event = (await readEvent(f.root, ids[0]))!;
+        const answers = [
+            await runInboxAction('defer', itemForm({ ...event, version: 99 }, f.catalog.revisionId)),
+            await runInboxAction('defer', itemForm(event, `rev_${'0'.repeat(64)}`)),
+            await runInboxAction('retry', itemForm(event, f.catalog.revisionId)),
+            await runInboxAction('approve', itemForm(event, f.catalog.revisionId, { series: 'ser_nope-nope', decorative: 'off' })),
+            await runInboxAction('reopen', itemForm(event, f.catalog.revisionId)),
+        ];
+        expect(answers.map((state) => state.status)).toEqual(['stale', 'stale', 'refused', 'refused', 'refused']);
+        for (const state of answers) expect(state.status !== 'idle' && state.message).not.toMatch(/evt_|ph_|rev_|ser_|sha256-|Show it again|--[a-z]/);
+    });
+
     it('approves "Leave unassigned" when no rules file suggests a series and the page shows it as the choice', async () => {
         const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])]);
         const event = (await readEvent(f.root, ids[0]))!;
