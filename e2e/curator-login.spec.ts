@@ -62,7 +62,7 @@ for (const name of ['localhost', '127.0.0.1']) {
             await waitForHydration(page);
             await page.getByLabel('Passphrase').fill('not the passphrase');
             await page.getByRole('button', { name: 'Sign in' }).click();
-            await expect(page.getByRole('alert')).toContainText("That didn't sign you in.");
+            await expect(page.getByRole('main').getByRole('alert')).toContainText("That didn't sign you in.");
             expect((await context.cookies()).filter((cookie) => cookie.name === 'curator_session')).toEqual([]);
 
             await signIn(page, origin, server().passphrase);
