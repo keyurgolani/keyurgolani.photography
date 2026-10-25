@@ -6,6 +6,7 @@ import { mediaUrl } from '@/lib/media/url';
 import type { PublishedViewerPhoto, ViewerImage } from '@/lib/catalog/projections/viewer';
 import StoryViewer, { type StoryViewerProps } from '../StoryViewer';
 import { fitSizes } from '../viewerSizes';
+import { preloadsIn, serverHtml } from '@/test/helpers/serverHtml';
 import { HIDE_TECHNICAL, SHOW_TECHNICAL, TECHNICAL_SOURCE, UNAVAILABLE_LABEL, accentValue, positionLabel, positionText, viewerTitle } from '../viewerLabels';
 
 // The props Link gets, as attributes, so a test can see a move replaces the history entry and nothing prefetches.
@@ -195,9 +196,11 @@ describe('StoryViewer', () => {
     it('reserves the box from the record\'s shape before the file arrives, and preloads the fitted rung (#6)', () => {
         const { container } = renderViewer();
         expect(container.querySelector('figure')?.getAttribute('style')).toContain('--ratio: 2400 / 1600');
-        const link = document.head.querySelector('link[rel="preload"][as="image"]');
-        expect(link?.getAttribute('imagesizes')).toBe(fitSizes(2400, 1600));
-        expect(link?.getAttribute('imagesrcset')).toBe(container.querySelector('source[type="image/avif"]')?.getAttribute('srcset'));
+        const props = { viewer: model(), closeHref: '/work/fixture', previousHref: null, nextHref: null, pendingCopy: null };
+        const links = preloadsIn(serverHtml(<StoryViewer {...props} />));
+        expect(links).toHaveLength(1);
+        expect(links[0].getAttribute('imagesizes')).toBe(fitSizes(2400, 1600));
+        expect(links[0].getAttribute('imagesrcset')).toBe(container.querySelector('source[type="image/avif"]')?.getAttribute('srcset'));
     });
 
     it('keeps the box, in the photograph\'s shape, with the moves and the reading area, when its file fails (#6)', () => {

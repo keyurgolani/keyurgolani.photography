@@ -5,6 +5,7 @@ import { mediaUrl } from '@/lib/media/url';
 import type { WorkCatalog, WorkCover, WorkSeriesSummary } from '@/lib/catalog/projections/work';
 import SeriesCatalog, { WORK_TITLE } from '../SeriesCatalog';
 import WorkCoverImage, { COVER_SIZES } from '../WorkCoverImage';
+import { preloadsIn, serverHtml } from '@/test/helpers/serverHtml';
 
 const REF = (n: number) => ({ photoId: `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, assetRevision: `sha256-${String(n % 10).repeat(64)}`, profileId: 'p_0123456789abcdef' });
 
@@ -173,16 +174,15 @@ describe('WorkCoverImage', () => {
     });
 
     it('preloads only the first cover, at high priority, with the srcset and sizes its <picture> has (#6)', () => {
-        const preloadOf = (n: number) =>
-            [...document.head.querySelectorAll('link[rel="preload"][as="image"]')].filter((link) => link.getAttribute('imagesrcset')?.includes(REF(n).photoId));
         const lazy = render(<WorkCoverImage cover={cover(6)} />).container;
         expect(lazy.querySelector('img')?.hasAttribute('fetchpriority')).toBe(false);
-        expect(preloadOf(6)).toHaveLength(0);
+        expect(preloadsIn(serverHtml(<WorkCoverImage cover={cover(6)} />))).toHaveLength(0);
         const eager = render(<WorkCoverImage cover={cover(7)} eager />).container;
         expect(eager.querySelector('img')).toHaveAttribute('fetchpriority', 'high');
-        const [link] = preloadOf(7);
-        expect(link.getAttribute('imagesrcset')).toBe(eager.querySelector('source[type="image/avif"]')?.getAttribute('srcset'));
-        expect(link.getAttribute('imagesizes')).toBe(COVER_SIZES);
+        const links = preloadsIn(serverHtml(<WorkCoverImage cover={cover(7)} eager />));
+        expect(links).toHaveLength(1);
+        expect(links[0].getAttribute('imagesrcset')).toBe(eager.querySelector('source[type="image/avif"]')?.getAttribute('srcset'));
+        expect(links[0].getAttribute('imagesizes')).toBe(COVER_SIZES);
     });
 
     it('swaps in the text fallback when the image fails, never leaving a broken image', () => {

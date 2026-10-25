@@ -6,6 +6,7 @@ import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../../lib/identity/variants';
 import { mediaUrl } from '../../lib/media/url';
 import ResponsivePhoto from '../ResponsivePhoto';
 import { stopFetching } from '../stopFetching';
+import { preloadsIn, serverHtml } from '@/test/helpers/serverHtml';
 
 const REF = { photoId: 'ph_00000000-0000-4000-8000-000000000001', assetRevision: `sha256-${'b'.repeat(64)}`, profileId: 'p_0123456789abcdef' };
 const LQIP = 'data:image/webp;base64,UklGRhIAAABXRUJQVlA4';
@@ -97,14 +98,16 @@ describe('ResponsivePhoto', () => {
   });
 
   describe('the preload (#6)', () => {
-    const preloads = () => [...document.head.querySelectorAll<HTMLLinkElement>('link[rel="preload"][as="image"]')];
-    afterEach(() => preloads().forEach((link) => link.remove()));
+    const headPreloads = () => [...document.head.querySelectorAll<HTMLLinkElement>('link[rel="preload"][as="image"]')];
 
-    it('puts one typed AVIF preload in the head with the srcset and sizes the <picture> has', () => {
-      const { container } = render(<ResponsivePhoto asset={asset(3000, 2000)} alt="Lead" sizes="(min-width: 48rem) 80vw, 100vw" loading="eager" preload />);
-      const avif = container.querySelector('source[type="image/avif"]')!;
-      const [link] = preloads();
-      expect(preloads()).toHaveLength(1);
+    it('puts one typed AVIF preload in the server HTML with the srcset and sizes the <picture> has', () => {
+      const html = serverHtml(<ResponsivePhoto asset={asset(3000, 2000)} alt="Lead" sizes="(min-width: 48rem) 80vw, 100vw" loading="eager" preload />);
+      const host = document.createElement('div');
+      host.innerHTML = html;
+      const avif = host.querySelector('source[type="image/avif"]')!;
+      const links = preloadsIn(html);
+      expect(links).toHaveLength(1);
+      const [link] = links;
       expect(link.getAttribute('type')).toBe('image/avif');
       expect(link.getAttribute('imagesrcset')).toBe(avif.getAttribute('srcset'));
       expect(link.getAttribute('imagesizes')).toBe(avif.getAttribute('sizes'));
@@ -113,12 +116,23 @@ describe('ResponsivePhoto', () => {
       expect(link.hasAttribute('href')).toBe(false);
     });
 
-    it('adds no preload unless asked, and only one for the same photograph and sizes', () => {
-      render(<ResponsivePhoto asset={asset(3000, 2000)} alt="Not lead" sizes="100vw" />);
-      expect(preloads()).toHaveLength(0);
-      render(<ResponsivePhoto asset={asset(3000, 2000)} alt="Lead" sizes="100vw" preload />);
-      render(<ResponsivePhoto asset={asset(3000, 2000)} alt="Lead again" sizes="100vw" preload />);
-      expect(preloads()).toHaveLength(1);
+    it('adds no preload unless asked, and one for the same photograph and sizes rendered twice', () => {
+      expect(preloadsIn(serverHtml(<ResponsivePhoto asset={asset(3000, 2000)} alt="Not lead" sizes="100vw" />))).toHaveLength(0);
+      const twice = serverHtml(
+        <>
+          <ResponsivePhoto asset={asset(3000, 2000)} alt="Lead" sizes="100vw" preload />
+          <ResponsivePhoto asset={asset(3000, 2000)} alt="Lead again" sizes="100vw" preload />
+        </>,
+      );
+      expect(preloadsIn(twice)).toHaveLength(1);
+    });
+
+    it('adds nothing to the head in a client render, so no link keeps a passed photograph downloading', () => {
+      const before = headPreloads().length;
+      const { unmount } = render(<ResponsivePhoto asset={asset(3000, 2000)} alt="Client lead" sizes="100vw" loading="eager" preload />);
+      expect(headPreloads()).toHaveLength(before);
+      unmount();
+      expect(headPreloads()).toHaveLength(before);
     });
   });
 
