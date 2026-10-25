@@ -21,12 +21,13 @@ function modules(dir: string): string[] {
         .sort();
 }
 
-const WEB_ENTRIES = [...modules('app'), ...modules('components'), 'proxy.ts'];
+/** The web process: its routes and pages, the proxy, the server's register() hook, and the Next config it loads. */
+const WEB_ENTRIES = [...modules('app'), ...modules('components'), 'proxy.ts', 'instrumentation.ts', 'next.config.mjs'];
 const WATCHER_ENTRIES = ['scripts/imageWatcher.ts', 'lib/identity/worker.ts', 'lib/identity/pass.ts'];
 
 describe('the retention module boundary', () => {
     it('covers every route handler and page', () => {
-        expect(WEB_ENTRIES).toEqual(expect.arrayContaining(['app/api/photos/route.ts', 'app/api/ready/route.ts', 'app/page.tsx', 'proxy.ts']));
+        expect(WEB_ENTRIES).toEqual(expect.arrayContaining(['app/api/photos/route.ts', 'app/api/ready/route.ts', 'app/page.tsx', 'proxy.ts', 'instrumentation.ts', 'next.config.mjs']));
         expect(WEB_ENTRIES.some((file) => file.startsWith('app/media/'))).toBe(true);
     });
 
@@ -36,6 +37,10 @@ describe('the retention module boundary', () => {
 
     it.each(WATCHER_ENTRIES)('keeps the watcher entry %s from reaching it', (entry) => {
         expect(reaches(entry)).toEqual([]);
+    });
+
+    it("follows instrumentation.ts's dynamic import, so a retention import behind it would show", () => {
+        expect(importGraph('instrumentation.ts').files).toContain('lib/site/config.ts');
     });
 
     it('is reached from the photos CLI, so the walk would see it', () => {
