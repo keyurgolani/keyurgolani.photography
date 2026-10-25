@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { applySeriesOp, applySequenceOp, sequenceContext, type Consequence } from '../catalog/sequence';
-import { hashValue, stampsOf } from '../catalog/review';
+import { stampsOf } from '../catalog/review';
 import type { AuthoredPhoto } from '../catalog/types';
 import { readActivePointer, readAuthoredSeries } from '../catalog/working-layer';
 import { AUTHORED_LEASE_MS, AUTHORED_LOCK, AUTHORED_WAIT_MS, AuthoredWriteError, writeAuthoredRecord, type WriteAuthoredOptions } from '../catalog/working-layer-writer';
