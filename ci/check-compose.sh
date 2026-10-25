@@ -2,9 +2,11 @@
 # Checks that docker-compose.prod.yml runs every service on the one release
 # tag in PHOTOGRAPHY_IMAGE_TAG, that ci/smoke-image.sh starts every service
 # Compose starts by default, that every published port is on the host's
-# loopback, and that the data root, the library, and web's image cache
-# mounts keep their guarantees. Compose runs from an empty project
-# directory so a local .env can't leak in.
+# loopback, that the data root, the library, and web's image cache mounts
+# keep their guarantees, and that the curator (#14) is the only service with
+# CURATION_ENABLED, starts only by name, and publishes on 127.0.0.1:3001
+# alone. Compose runs from an empty project directory so a local .env can't
+# leak in.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -161,3 +163,50 @@ if ! jq -e --argjson never "$never_created" "
   fail "Every mount of the data root, /app/public/assets/photos, or /app/.next/cache/images must be a long-syntax bind with bind.create_host_path: false."
 fi
 echo "web mounts the data root read-only, and no data root, library, or image cache bind is created when missing."
+
+# 8. web can't write the library or the data root: it mounts both read-only.
+LIBRARY_MOUNT='((.target // "") | rtrimstr("/")) == "/app/public/assets/photos"'
+if ! jq -e "[.services.web.volumes[]? | select($LIBRARY_MOUNT)]
+    | length == 1 and all(.type == \"bind\" and .read_only == true)" <<<"$resolved" >/dev/null; then
+  fail "web must mount the library once, at /app/public/assets/photos, as a bind with read_only: true."
+fi
+echo "web mounts the library and the data root read-only."
+
+# 9. CURATION_ENABLED and CURATION_BIND_SCOPE are set on curator alone, and
+#    no service but curator sets either, through environment or env_file,
+#    which Compose resolves into environment.
+if ! jq -e '.services.curator' <<<"$resolved" >/dev/null; then
+  fail "docker-compose.prod.yml must define the curator service."
+fi
+if ! jq -e '[.services | to_entries[] | select(.key != "curator") | .value.environment // {} | has("CURATION_ENABLED", "CURATION_BIND_SCOPE")] | any | not' <<<"$resolved" >/dev/null; then
+  fail "Only curator may set CURATION_ENABLED or CURATION_BIND_SCOPE."
+fi
+if ! jq -e '.services.curator.environment | .CURATION_ENABLED == "true" and .CURATION_BIND_SCOPE == "container" and .PHOTOGRAPHY_DATA_DIR == "/data/portfolio"' <<<"$resolved" >/dev/null; then
+  fail "curator must set CURATION_ENABLED=true, CURATION_BIND_SCOPE=container, and PHOTOGRAPHY_DATA_DIR=/data/portfolio."
+fi
+echo "Only curator sets CURATION_ENABLED and CURATION_BIND_SCOPE."
+
+# 10. curator is off by default, publishes one port on the host's
+#     127.0.0.1:3001 alone, shares no network with another service, runs as
+#     the watcher's uid, mounts the library read-only and the data root
+#     read-write.
+if ! jq -e '.services.curator.profiles == ["curator"]' <<<"$resolved" >/dev/null; then
+  fail "curator must sit behind the curator profile, so it starts only by name."
+fi
+if ! jq -e '.services.curator.ports | length == 1 and all(.host_ip == "127.0.0.1" and (.published | tostring) == "3001" and .target == 3000)' <<<"$resolved" >/dev/null; then
+  fail "curator must publish exactly \"127.0.0.1:3001:3000\"."
+fi
+if ! jq -e '(.services.curator.network_mode // "") == "" and (.services.curator.networks // {} | keys) == ["curator"]
+    and ([.services | to_entries[] | select(.key != "curator") | (.value.networks // {"default": null}) | keys[]] | index("curator") == null)' <<<"$resolved" >/dev/null; then
+  fail "curator must be on the curator network alone, and no other service may join it."
+fi
+if ! jq -e '.services.curator.user == "1001:1001"' <<<"$resolved" >/dev/null; then
+  fail "curator must run as user 1001:1001, the watcher's uid."
+fi
+if ! jq -e "[.services.curator.volumes[]? | select($LIBRARY_MOUNT)] | length == 1 and all(.type == \"bind\" and .read_only == true)" <<<"$resolved" >/dev/null; then
+  fail "curator must mount the library once, at /app/public/assets/photos, read-only."
+fi
+if ! jq -e "[.services.curator.volumes[]? | select($DATA_ROOT_MOUNT)] | length == 1 and all(.type == \"bind\" and .target == \"/data/portfolio\" and (.read_only // false) == false)" <<<"$resolved" >/dev/null; then
+  fail "curator must mount the data root once, at /data/portfolio, read-write."
+fi
+echo "curator starts only by name, publishes 127.0.0.1:3001 alone on a network of its own, and runs as uid 1001."

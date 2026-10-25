@@ -15,7 +15,11 @@ dist-ssr
 # Host settings for docker-compose.prod.yml, such as PHOTOGRAPHY_IMAGE_TAG,
 # and every other env file Next might load
 .env*
+*.env
 !.env.example
+
+# Secret files for docker-compose.prod.yml, never committed
+secrets/
 
 # Next.js
 .next*/
