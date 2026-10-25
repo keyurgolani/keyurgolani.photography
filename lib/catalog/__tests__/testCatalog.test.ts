@@ -18,9 +18,10 @@ import { readWorkingLayer } from '../working-layer';
 
 const catalogs: TestCatalog[] = [];
 
+// Removing the 5,000-photo catalog can take well over the default 10 s on a loaded machine.
 afterEach(async () => {
     for (const catalog of catalogs.splice(0)) await catalog.cleanup();
-});
+}, 60_000);
 
 async function build(options: TestCatalogOptions = {}): Promise<TestCatalog> {
     const catalog = await createTestCatalog(options);
