@@ -173,6 +173,7 @@ export function confirmReplacement(input: ActionInput & { faults?: ConfirmFaults
         const writes: WrittenRecord[] = [];
         let fromRevision = assetRevision;
         let recovered = false;
+        let again = false;
         await input.faults?.beforeAuthoredLock?.();
         await underAuthoredLock(root, step, input, 'confirm', async (authored) => {
             const existing = await readAuthored<AuthoredPhoto>(root, 'photo', photoId);
@@ -182,9 +183,13 @@ export function confirmReplacement(input: ActionInput & { faults?: ConfirmFaults
             const record = existing as AuthoredPhoto;
             fromRevision = record.assetRevision;
             if (record.assetRevision === assetRevision) {
-                // Pinned already, though the inbox last pinned another: a confirm whose event a crash lost. Keep what it replaced.
                 const pin = await latestPin(root, registry, photoId);
-                if (pin && pin.revision !== assetRevision) {
+                if (pin && pin.revision === assetRevision && pin.action === 'confirm' && pin.fromRevision) {
+                    // Confirmed again, as after a reopen: keep what the earlier confirm replaced, so leaving it in draft still puts that back.
+                    fromRevision = pin.fromRevision;
+                    again = true;
+                } else if (pin && pin.revision !== assetRevision) {
+                    // Pinned already, though the inbox last pinned another: a confirm whose event a crash lost. Keep what it replaced.
                     fromRevision = pin.revision;
                     recovered = true;
                 }
@@ -199,7 +204,9 @@ export function confirmReplacement(input: ActionInput & { faults?: ConfirmFaults
             ? [`Confirmed ${assetRevision} for ${photoId} in the draft, in place of ${fromRevision}. Its series, position, title, description, and story stay as they were. Visitors keep the current image until photos publish runs.`]
             : recovered
                 ? [`${photoId}'s photo record already pins ${assetRevision}, though the inbox last pinned ${fromRevision}, so nothing in the working layer changed. It is recorded as confirmed in place of ${fromRevision}, which leaving it in draft puts back.`]
-                : [`${photoId}'s photo record already pins ${assetRevision}, so nothing in the working layer changed.`];
+                : again
+                    ? [`${photoId}'s photo record already pins ${assetRevision}, as the last confirm left it, so nothing in the working layer changed. It is recorded as confirmed in place of ${fromRevision}, which that confirm replaced and leaving it in draft puts back.`]
+                    : [`${photoId}'s photo record already pins ${assetRevision}, so nothing in the working layer changed.`];
         const next = decided(step, input, { action: 'confirm', writes, ...(fromRevision !== assetRevision ? { fromRevision } : {}) }, 'approved');
         return { event: next, notes };
     });
