@@ -29,8 +29,9 @@ import { SINK_WAIT_MS } from './sink';
  *   or while the watcher was stopped, rebind the photo through #10's rows, so
  *   this is the same-content close. Other bytes come back only through the
  *   curator's `bind`, after which #10 reports `replaced` and the photo's
- *   replacement item reviews them. A resolved item whose source goes missing
- *   again opens again.
+ *   replacement item reviews them. An item the watcher closed, here or in
+ *   #14's sink, whose source goes missing again opens again, whether or not
+ *   anything shows the photo.
  * - A `new` item closes once a `bind` merged its photo into the missing one.
  * - A build #10's worker left failed, after its retry at start, gets a
  *   `processing-failure` item, unless a replacement item already carries it.
@@ -87,8 +88,9 @@ const withDecision = (event: CurationEvent, decision: CurationDecision, extra: P
 
 /**
  * A missing item with the registry's news, or null when nothing changes:
- * resolved once the photo is present again, and open again once a resolved
- * item's source is missing again with the revision the item names.
+ * resolved once the photo is present again, and open again once the source
+ * of an item the watcher closed is missing again with the revision the item
+ * names. #14's sink reopens one only while something shows the photo.
  */
 export function missingChange(event: CurationEvent, registry: Registry, at: string): CurationEvent | null {
     if (event.type !== 'missing') return null;
@@ -101,9 +103,11 @@ export function missingChange(event: CurationEvent, registry: Registry, at: stri
             : `The source is back ${where} with other bytes, which its replacement item reviews.`;
         return withDecision(event, watcherDecision('close', at, reason), { status: 'resolved' });
     }
+    // Closed by the watcher: resolved here, or dismissed by #14's sink when the same bytes came back at the same path.
     const last = event.decisions.at(-1);
-    if (event.status === 'resolved' && last?.action === 'close' && last.by === 'watcher'
-        && photo.sourceHealth === 'missing' && photo.source.observedRevision === event.assetRevision) {
+    const closedByWatcher = last?.by === 'watcher'
+        && ((event.status === 'resolved' && last.action === 'close') || (event.status === 'dismissed' && last.action === 'dismiss'));
+    if (closedByWatcher && photo.sourceHealth === 'missing' && photo.source.observedRevision === event.assetRevision) {
         return withDecision(event, watcherDecision('reopen', at, 'The source went missing again.'), { status: 'open' });
     }
     return null;
