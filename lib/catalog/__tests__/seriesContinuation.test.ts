@@ -91,6 +91,17 @@ describe('the first page', () => {
         expect(decodeSeriesCursor(cursorOf(page.nextHref as string))).toEqual({ revisionId: fixture.revisionId, seriesId: 'ser_fixture-long', offset: 100 });
     });
 
+    it("names a preview's own mirror of the endpoint under its basePath (#16), on the first page and each after it", () => {
+        const preview = createRouteBuilder({ basePath: `/curation/preview/${REVISION_B}/site` });
+        const page = readerOf().getSeriesPage('fixture-long', preview);
+        if (page.kind !== 'ok') throw new Error(`Expected the page, got ${page.kind}`);
+        expect(page.page.nextHref).toBe(`${preview.basePath}${seriesPagesPath('fixture-long', cursor(100))}`);
+        const next = readerOf().getSeriesContinuation('fixture-long', cursor(100), preview);
+        if (next.kind !== 'ok') throw new Error(`Expected a page, got ${next.kind}`);
+        expect(next.page.nextHref).toBe(`${preview.basePath}${seriesPagesPath('fixture-long', cursor(200))}`);
+        expect(next.page.entries.every((entry) => entry.href.startsWith(`${preview.basePath}/work/fixture-long/photo/`))).toBe(true);
+    });
+
     it('has no continuation when one page holds the whole series', () => {
         const page = firstPage(readerOf(), 'fixture-short');
         expect([page.entries.length, page.total, page.nextHref]).toEqual([10, 10, null]);
