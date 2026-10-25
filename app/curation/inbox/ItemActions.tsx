@@ -1,18 +1,22 @@
 'use client';
 
-import { startTransition, useActionState, useState, type FormEvent, type ReactNode } from 'react';
+import { startTransition, useActionState, useEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactNode } from 'react';
 import { Save } from 'lucide-react';
 import styles from '../curator.module.css';
 import { approveItem, deferItem, dismissItem, editItem, reopenItem, retryItem } from './actions';
 import {
     defaultDescription,
     defaultPlacement,
-    formSeries,
+    descriptionHint,
+    formStart,
     IDLE,
     parsePlacementValue,
     placementLabel,
     placementValue,
     PRIMARY_ACTION,
+    seriesCaption,
+    seriesName,
+    suggestionEvidence,
     type InboxActionKind,
     type InboxActionState,
     type InboxDetail,
@@ -64,13 +68,25 @@ const TONE: Record<Exclude<InboxActionState, { status: 'idle' }>['status'], 'don
     failed: 'alert',
 };
 
+/**
+ * Reload the item. A link to the URL the page is already on, `#item` and all,
+ * would only scroll to the fragment and read nothing again, so once the page
+ * is hydrated this puts the item's URL in place and reloads it. Before that,
+ * the plain link still works from any URL that differs in more than its fragment.
+ */
+function reloadItem(event: MouseEvent<HTMLAnchorElement>) {
+    event.preventDefault();
+    window.history.replaceState(window.history.state, '', event.currentTarget.href);
+    window.location.reload();
+}
+
 function Notice({ state, detail }: { state: InboxActionState; detail: InboxDetail }) {
     if (state.status === 'idle') return null;
     return (
         <div className={styles.notice} data-tone={TONE[state.status]} data-state={state.status}>
             <p>{state.message}</p>
             {state.status === 'stale' ? (
-                <a className={styles.linkButton} href={`/curation/inbox?item=${detail.id}`}>
+                <a className={styles.linkButton} href={`/curation/inbox?item=${detail.id}#item`} onClick={reloadItem}>
                     Refresh and review again
                 </a>
             ) : null}
@@ -78,11 +94,33 @@ function Notice({ state, detail }: { state: InboxActionState; detail: InboxDetai
     );
 }
 
+/** Where an answer shows: by the field it's about, inside Dismiss for a dismissal Dismiss can still take, or under the action buttons. */
+type AnswerSlot = 'description' | 'dismiss' | 'actions';
+
+function slotOf(state: InboxActionState, canDismiss: boolean): AnswerSlot | null {
+    if (state.status === 'idle') return null;
+    if (state.field === 'description') return 'description';
+    // A dismissal that went through leaves no Dismiss to show it in, so its answer shows under the buttons, by Reopen.
+    if (state.action === 'dismiss' && canDismiss) return 'dismiss';
+    return 'actions';
+}
+
+/** A polite live region, there from the start, so an answer put in it is read out. */
+function AnswerRegion({ show, state, detail }: { show: boolean; state: InboxActionState; detail: InboxDetail }) {
+    return (
+        <div role="status" aria-live="polite" className={styles.answer}>
+            {show ? <Notice state={state} detail={detail} /> : null}
+        </div>
+    );
+}
+
 /** The suggestion a new photograph comes with, as fields the curator can change before approving. */
-function SuggestionFields({ detail, series, seriesProblem }: Pick<ItemActionsProps, 'detail' | 'series' | 'seriesProblem'>) {
-    const initialSeries = formSeries(detail, series.map((option) => option.id));
+function SuggestionFields({ detail, series, seriesProblem, answer }: Pick<ItemActionsProps, 'detail' | 'series' | 'seriesProblem'> & { answer: InboxActionState }) {
+    const start = formStart(detail, series.map((option) => option.id));
+    const initialSeries = start.series;
     const known = (id: string) => series.some((option) => option.id === id);
-    const [seriesValue, setSeriesValue] = useState<string>(initialSeries === undefined ? '' : initialSeries === null ? 'unassigned' : known(initialSeries) ? initialSeries : '');
+    const initialValue = initialSeries === undefined ? '' : initialSeries === null ? 'unassigned' : known(initialSeries) ? initialSeries : '';
+    const [seriesValue, setSeriesValue] = useState<string>(initialValue);
     const [seriesTouched, setSeriesTouched] = useState(false);
     const chosen = series.find((option) => option.id === seriesValue) ?? null;
     const initialPlacement = chosen ? placementValue(defaultPlacement(detail, chosen.id)) : 'end';
@@ -97,6 +135,20 @@ function SuggestionFields({ detail, series, seriesProblem }: Pick<ItemActionsPro
     const suggested = detail.suggestions.series;
     const suggestedPlacement = detail.suggestions.placement;
     const unknownSuggestion = suggested?.value && !known(suggested.value) ? suggested.value : null;
+    const labelOf = (seriesId: string) => seriesName(series, seriesId);
+    // While the select still shows where the form started, the caption says where that is; once the curator picks, it gives the suggestion.
+    const caption =
+        seriesValue === initialValue && initialValue !== ''
+            ? seriesCaption(detail, start, labelOf)
+            : seriesCaption(detail, suggested ? { series: suggested.value, from: 'suggestion' } : { series: undefined, from: 'none' }, labelOf);
+    const evidence = suggestionEvidence(suggested);
+    // A refused description shows by the field, and the field takes focus, so the curator is where the fix goes.
+    const descriptionError = answer.status === 'invalid' && answer.field === 'description' ? answer.message : null;
+    const descriptionRef = useRef<HTMLInputElement>(null);
+    const answerSerial = answer.status === 'idle' ? 0 : answer.serial;
+    useEffect(() => {
+        if (descriptionError) descriptionRef.current?.focus();
+    }, [answerSerial, descriptionError]);
     // A position chosen for one series means nothing in another, so a new series starts from its own default.
     const pickSeries = (value: string) => {
         setSeriesValue(value);
@@ -131,17 +183,10 @@ function SuggestionFields({ detail, series, seriesProblem }: Pick<ItemActionsPro
                     <option value="unassigned">Leave unassigned</option>
                 </select>
             </label>
-            {suggested ? (
-                <p className={styles.hint}>
-                    Suggested {suggested.value === null ? 'leaving it unassigned' : (series.find((option) => option.id === suggested.value)?.label ?? suggested.value)}, {suggested.confidence}{' '}
-                    confidence, by {suggested.producedBy}.
-                </p>
-            ) : (
-                <p className={styles.hint}>No series is suggested. Choose one, or leave it unassigned.</p>
-            )}
-            {suggested && suggested.evidence.length > 0 ? (
+            <p className={styles.hint}>{caption}</p>
+            {evidence.length > 0 ? (
                 <ul className={styles.evidence}>
-                    {suggested.evidence.map((line, index) => (
+                    {evidence.map((line, index) => (
                         <li key={index}>{line}</li>
                     ))}
                 </ul>
@@ -153,6 +198,7 @@ function SuggestionFields({ detail, series, seriesProblem }: Pick<ItemActionsPro
                 Draft description
                 {/* One line, as the server stores it: a description can't hold a line break. */}
                 <input
+                    ref={descriptionRef}
                     type="text"
                     className={styles.control}
                     name="description"
@@ -160,13 +206,19 @@ function SuggestionFields({ detail, series, seriesProblem }: Pick<ItemActionsPro
                     disabled={decorative}
                     autoComplete="off"
                     onChange={(event) => setDescription(event.target.value)}
-                    aria-describedby="description-hint"
+                    aria-invalid={descriptionError ? true : undefined}
+                    aria-describedby={descriptionError ? 'description-error description-hint' : 'description-hint'}
                 />
             </label>
             {/* What was saved, so an emptied field or an unchecked box clears it. */}
             {saved ? <input type="hidden" name="descriptionWas" value={saved.kind} /> : null}
+            {descriptionError ? (
+                <p className={styles.fieldError} id="description-error" data-state="invalid">
+                    {descriptionError}
+                </p>
+            ) : null}
             <p className={styles.hint} id="description-hint">
-                Nothing is suggested. What you type here is stored as reviewed, and publishing waits until the photograph has a description or is marked decorative.
+                {descriptionHint(detail)}
             </p>
             <label className={styles.check}>
                 <input type="checkbox" checked={decorative} onChange={(event) => setDecorative(event.target.checked)} />
@@ -250,16 +302,24 @@ export default function ItemActions({ detail, activeRevisionId, series, seriesPr
     };
     const primary = PRIMARY_ACTION[detail.type];
     const { can } = detail;
-    const anyItemAction = can.edit || can.defer || can.approve;
+    const unavailable = primary !== undefined && detail.type !== 'new' && detail.primaryUnavailable !== null;
+    const anyButton = unavailable || (detail.type === 'new' && (can.edit || can.approve)) || can.defer;
+    const slot = slotOf(state, can.dismiss);
     return (
         <>
             <form method="post" onSubmit={submit} aria-label="Review">
                 <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
                 {/* The form version the page showed, so a form left open across a refresh never reads as another item's. */}
-                {detail.type === 'new' && can.edit ? <SuggestionFields key={detail.version} detail={detail} series={series} seriesProblem={seriesProblem} /> : null}
+                {detail.type === 'new' && can.edit ? <SuggestionFields key={detail.version} detail={detail} series={series} seriesProblem={seriesProblem} answer={state} /> : null}
                 {note}
-                {anyItemAction || primary ? (
+                {anyButton ? (
                     <div className={styles.actions}>
+                        {/* An action the inbox can't take yet stays visible with its reason, before the live ones and quieter than them. */}
+                        {unavailable ? (
+                            <button type="button" className={`${styles.button} ${styles.unavailable}`} disabled aria-describedby="primary-unavailable">
+                                {primary}
+                            </button>
+                        ) : null}
                         {detail.type === 'new' && can.edit ? (
                             <button type="submit" name="intent" value="edit" className={styles.button} disabled={pending}>
                                 Save edits
@@ -275,10 +335,6 @@ export default function ItemActions({ detail, activeRevisionId, series, seriesPr
                                 <Save size={16} aria-hidden="true" />
                                 {primary}
                             </button>
-                        ) : primary && detail.primaryUnavailable ? (
-                            <button type="button" className={`${styles.button} ${styles.primary}`} disabled aria-describedby="primary-unavailable">
-                                {primary}
-                            </button>
                         ) : null}
                     </div>
                 ) : null}
@@ -287,7 +343,7 @@ export default function ItemActions({ detail, activeRevisionId, series, seriesPr
                         {detail.primaryUnavailable}
                     </p>
                 ) : null}
-                {detail.status === 'approved' ? <p className={styles.hint}>Approved into the draft. Reopen it to change its series or description.</p> : null}
+                {detail.status === 'approved' ? <p className={styles.hint}>Reopen it to change its series or description.</p> : null}
             </form>
 
             {can.retry ? (
@@ -308,6 +364,9 @@ export default function ItemActions({ detail, activeRevisionId, series, seriesPr
                 </form>
             ) : null}
 
+            {/* Every answer but a dismissal or a refused description lands here, right under the buttons that produced it. */}
+            <AnswerRegion show={slot === 'actions'} state={state} detail={detail} />
+
             {can.dismiss ? (
                 <details className={styles.more}>
                     <summary>Dismiss with a reason</summary>
@@ -323,12 +382,9 @@ export default function ItemActions({ detail, activeRevisionId, series, seriesPr
                             </button>
                         </div>
                     </form>
+                    <AnswerRegion show={slot === 'dismiss'} state={state} detail={detail} />
                 </details>
             ) : null}
-
-            <div role="status" aria-live="polite">
-                <Notice state={state} detail={detail} />
-            </div>
         </>
     );
 }

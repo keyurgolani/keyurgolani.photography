@@ -54,7 +54,8 @@ export const PRIMARY_ACTION: Partial<Record<CurationEventType, string>> = {
 
 export const STATUS_LABELS: Record<CurationEventStatus, string> = {
     open: 'Draft only',
-    failed: 'Draft only',
+    // A file that produced nothing isn't a draft of anything.
+    failed: 'Not processed',
     deferred: 'Left in draft',
     dismissed: 'Dismissed',
     approved: 'Suggestion approved',
@@ -90,12 +91,21 @@ export interface InboxItem {
     group: ItemGroup;
     title: string;
     photoId: string | null;
+    /** The photo ID's head and tail, as the mockup shows it (`ph_7f3a…91c2`). */
     shortId: string;
+    /** Library-relative, with anything unprintable escaped. What tells one row from the next. */
+    sourcePath: string;
     waiting: string | null;
     /** What holds its photo, for an item settled by placement, or null. */
     placedBy: string | null;
     /** The series its last approval named, for an approval whose photo nothing holds now, or null. */
     unplacedSeries: string | null;
+}
+
+/** One thing that holds a photograph: the active revision, or a working-layer series, by ID. */
+export interface HolderRef {
+    kind: 'revision' | 'series';
+    id: string;
 }
 
 export interface SeriesOption {
@@ -111,8 +121,8 @@ export interface InboxDetail extends InboxItem {
     assetRevision: string | null;
     observedAt: string;
     lastObservedAt: string;
-    /** Library-relative, with anything unprintable escaped. */
-    sourcePath: string;
+    /** The capture date the file holds, or null when it holds none or nothing was read. */
+    capturedDate: string | null;
     fromPath: string | null;
     identity: string;
     derivatives: string;
@@ -122,7 +132,7 @@ export interface InboxDetail extends InboxItem {
     failure: string | null;
     candidates: string[];
     /** Who still shows it: the active revision, or a working-layer series. Null when it can't be told. */
-    references: string[] | null;
+    references: HolderRef[] | null;
     suggestions: { series: InboxSuggestion | null; placement: InboxPlacementSuggestion | null };
     edits: {
         seriesId?: string | null;
@@ -212,19 +222,37 @@ export function defaultSeries(detail: Pick<InboxDetail, 'edits' | 'suggestions'>
     return undefined;
 }
 
+/** Where the page's form takes its starting series from, so the caption under it can say so. */
+export type FormStartSource = 'edit' | 'placed' | 'approved' | 'suggestion' | 'none';
+
 /**
- * The series the page's form starts on: defaultSeries(), except that a
- * reopened item whose photo no series holds now starts on the series its last
- * approval named, while that series is still one of `seriesIds`. That's the
- * series "No longer placed" says to approve it into. The form sends the series
- * it shows, so the approval goes there only if the curator leaves it chosen;
- * the CLI's bare approve still leaves it unassigned, and says to pass --series.
+ * The series the page's form starts on, and where it comes from:
+ * defaultSeries(), except that a reopened item whose photo no series holds
+ * now starts on the series its last approval named, while that series is
+ * still one of `seriesIds`. That's the series "No longer placed" says to
+ * approve it into. The form sends the series it shows, so the approval goes
+ * there only if the curator leaves it chosen; the CLI's bare approve still
+ * leaves it unassigned, and says to pass --series.
  */
-export function formSeries(detail: Parameters<typeof defaultSeries>[0] & Pick<InboxDetail, 'lastApprovedSeries'>, seriesIds: readonly string[]): string | null | undefined {
-    const series = defaultSeries(detail);
-    const last = detail.lastApprovedSeries;
-    if (series === null && detail.edits?.seriesId === undefined && detail.placed?.seriesIds.length === 0 && last !== null && seriesIds.includes(last)) return last;
-    return series;
+export function formStart(
+    detail: Parameters<typeof defaultSeries>[0] & Pick<InboxDetail, 'lastApprovedSeries'>,
+    seriesIds: readonly string[],
+): { series: string | null | undefined; from: FormStartSource } {
+    if (detail.edits?.seriesId !== undefined) return { series: detail.edits.seriesId, from: 'edit' };
+    const approvedBefore = detail.decisions?.some((decision) => decision.action === 'approve') ?? false;
+    if (approvedBefore && detail.placed) {
+        const now = detail.placed.seriesIds[0] ?? null;
+        const last = detail.lastApprovedSeries;
+        if (now === null && last !== null && seriesIds.includes(last)) return { series: last, from: 'approved' };
+        return { series: now, from: 'placed' };
+    }
+    if (detail.suggestions.series) return { series: detail.suggestions.series.value, from: 'suggestion' };
+    return { series: undefined, from: 'none' };
+}
+
+/** The series the page's form starts on (formStart() without its source). */
+export function formSeries(detail: Parameters<typeof formStart>[0], seriesIds: readonly string[]): string | null | undefined {
+    return formStart(detail, seriesIds).series;
 }
 
 /** The description the form starts on: the saved edit, then what the photo record holds. */
@@ -255,6 +283,146 @@ export function placementLabel(placement: Placement, members: readonly { photoId
     return `After photograph ${String(index + 1).padStart(2, '0')} (${members[index].shortId})`;
 }
 
+/** `ph_7f3a…91c2`: an ID's prefix, then the first and last four characters, as the mockup shows IDs and revisions. */
+export function headTail(id: string): string {
+    const prefix = /^[a-z0-9]+?[_-]/i.exec(id)?.[0] ?? '';
+    const rest = id.slice(prefix.length);
+    return rest.length <= 10 ? id : `${prefix}${rest.slice(0, 4)}…${rest.slice(-4)}`;
+}
+
+/** A photo ID as the list and the detail show it. */
+export function shortIdOf(photoId: string | null): string {
+    return photoId === null ? 'no photo ID' : headTail(photoId);
+}
+
+/** A library path's file name, and its folder when it has one. */
+export function fileParts(sourcePath: string): { name: string; folder: string | null } {
+    const slash = sourcePath.lastIndexOf('/');
+    return slash < 0 ? { name: sourcePath, folder: null } : { name: sourcePath.slice(slash + 1), folder: sourcePath.slice(0, slash) };
+}
+
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+/** The line under the file name: its folder and its capture date, which tell the owner which photograph this is. */
+export function identityLine(sourcePath: string, capturedDate: string | null): string {
+    const { folder } = fileParts(sourcePath);
+    const match = capturedDate === null ? null : /^(\d{4})-(\d{2})-(\d{2})$/.exec(capturedDate);
+    const date = match ? `captured ${Number(match[3])} ${MONTHS[Number(match[2]) - 1]} ${match[1]}` : 'no capture date read';
+    return `${folder === null ? 'At the top of the library' : `In ${folder}`}, ${date}`;
+}
+
+/** A series by its authored title, or its ID when the working layer doesn't hold it now. */
+export function seriesName(series: readonly SeriesOption[], seriesId: string): string {
+    return series.find((option) => option.id === seriesId)?.label ?? seriesId;
+}
+
+const NO_RULES = 'No series rule is set up (curation/rules.json), so nothing is suggested.';
+
+/** A suggestion the rules file couldn't make (none, or not valid), which is a fact about the setup and not a suggestion. */
+function rulesProblem(suggested: InboxSuggestion | null): string | null {
+    if (suggested === null || suggested.value !== null) return null;
+    if (suggested.producedBy === 'rules@none') return NO_RULES;
+    if (suggested.producedBy === 'rules@invalid') return suggested.evidence[0] ?? 'curation/rules.json is not valid, so no series is suggested.';
+    return null;
+}
+
+/** The suggestion's evidence lines, except where rulesProblem() already says the one thing they hold. */
+export function suggestionEvidence(suggested: InboxSuggestion | null): string[] {
+    return suggested === null || rulesProblem(suggested) !== null ? [] : suggested.evidence;
+}
+
+/**
+ * The caption under the series select: where the form starts, in words, and
+ * what the rules suggested when the start isn't the suggestion. So a reopened
+ * form on a chosen series never reads as if it held the suggestion.
+ */
+export function seriesCaption(
+    detail: Pick<InboxDetail, 'suggestions'>,
+    start: { series: string | null | undefined; from: FormStartSource },
+    labelOf: (seriesId: string) => string,
+): string {
+    const suggested = detail.suggestions.series;
+    const problem = rulesProblem(suggested);
+    const named = (value: string | null) => (value === null ? 'leaving it unassigned' : labelOf(value));
+    const rules = problem ?? (suggested ? `The rules suggested ${named(suggested.value)}.` : null);
+    const withRules = (lead: string) => (rules ? `${lead} ${rules}` : lead);
+    switch (start.from) {
+        case 'suggestion':
+            return problem ?? `Suggested ${named(suggested?.value ?? null)}, ${suggested?.confidence} confidence, by ${suggested?.producedBy}.`;
+        case 'edit':
+            return withRules(start.series ? `Starts on your saved choice, ${labelOf(start.series)}.` : 'Starts unassigned, as you saved it.');
+        case 'placed':
+            return withRules(start.series ? `Starts on ${labelOf(start.series)}, where it is now.` : 'Starts unassigned, as it is now.');
+        case 'approved':
+            return withRules(`Starts on ${labelOf(start.series as string)}, where it was approved.`);
+        case 'none':
+            return 'No series is suggested. Choose one, or leave it unassigned.';
+    }
+}
+
+/** The hint under the description field: what the field starts with, and how to withdraw it. */
+export function descriptionHint(detail: Pick<InboxDetail, 'edits' | 'placed'>): string {
+    const fromEdit = detail.edits?.description !== undefined;
+    const saved = defaultDescription(detail);
+    if (saved?.kind === 'described') return fromEdit ? 'Your saved description. Clear it to withdraw it.' : 'The description it was approved with, stored as reviewed. Clear it to withdraw it.';
+    if (saved?.kind === 'decorative') return fromEdit ? 'Saved as decorative. Uncheck Decorative to withdraw it.' : 'Marked decorative when it was approved. Uncheck Decorative to withdraw it.';
+    return 'Nothing is suggested. What you type here is stored as reviewed, and publishing waits until the photograph has a description or is marked decorative.';
+}
+
+type StateFacts = Pick<InboxDetail, 'type' | 'status' | 'group' | 'unplacedSeries' | 'placed' | 'lastApprovedSeries'>;
+
+/** The status beside the item's identity, from its status and where it sits now, so an approval nothing holds never reads approved. */
+export function statusLabel(item: Pick<InboxItem, 'status' | 'group'>): { text: string; tone: 'approved' | 'change' | null } {
+    if (item.group === 'unplaced') return { text: 'Approved, no longer placed', tone: 'change' };
+    if (item.status === 'approved') return { text: STATUS_LABELS.approved, tone: 'approved' };
+    return { text: STATUS_LABELS[item.status], tone: null };
+}
+
+/** "and"-joined, for a short list of names. */
+function joined(names: string[]): string {
+    return names.length <= 1 ? (names[0] ?? '') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+}
+
+/** What the system did with the item, from its status as well as its type. Never a claim about what a visitor sees changing. */
+export function systemResponse(item: StateFacts, labelOf: (seriesId: string) => string): string {
+    if (item.group === 'unplaced' && item.unplacedSeries) {
+        return `It was approved into ${labelOf(item.unplacedSeries)}, but nothing holds its photo now, so it sits in the draft unassigned. Nothing publishes.`;
+    }
+    if (item.status === 'approved') {
+        if (item.placed === null) return 'Approved into the draft. Nothing publishes until you publish.';
+        const held = item.placed.seriesIds;
+        return held.length > 0 ? `In the draft, in ${joined(held.map(labelOf))}. Nothing publishes until you publish.` : 'In the draft, unassigned. Nothing publishes until you publish.';
+    }
+    if (item.status === 'dismissed') return 'Dismissed, so it needs no judgment. Nothing a visitor sees changed.';
+    return SYSTEM_RESPONSE[item.type];
+}
+
+const visibilityNote = (option: SeriesOption | undefined) => (option && option.visibility !== 'published' ? ` (${option.visibility})` : '');
+
+/** What holds a photograph, by title: the live revision apart from the working layer's series, and a draft series marked as one. */
+export function referencedByText(references: readonly HolderRef[] | null, series: readonly SeriesOption[]): string {
+    if (references === null) return "Can't tell: a revision or working-layer file can't be read.";
+    if (references.length === 0) return 'Nothing';
+    const revision = references.find((ref) => ref.kind === 'revision');
+    const names = references.filter((ref) => ref.kind === 'series').map((ref) => `${seriesName(series, ref.id)}${visibilityNote(series.find((option) => option.id === ref.id))}`);
+    const live = revision ? `The live revision (${headTail(revision.id)})` : null;
+    if (names.length === 0) return live as string;
+    return live ? `${live}; series ${joined(names)}` : `Series ${joined(names)}, not published`;
+}
+
+/** A replacement's series, by title and position, as the mockup words it ("At the Waterline, position 05"). */
+export function seriesMembershipText(photoId: string | null, references: readonly HolderRef[] | null, series: readonly SeriesOption[]): string {
+    if (references === null) return "Can't tell: a revision or working-layer file can't be read.";
+    const rows = references
+        .filter((ref) => ref.kind === 'series')
+        .map((ref) => {
+            const option = series.find((entry) => entry.id === ref.id);
+            const index = option?.members.findIndex((member) => member.photoId === photoId) ?? -1;
+            return index < 0 ? seriesName(series, ref.id) : `${option?.label}, position ${String(index + 1).padStart(2, '0')}`;
+        });
+    return rows.length === 0 ? 'In no series' : rows.join('; ');
+}
+
 /** What a curator action answered, as the page shows it. */
 export type InboxActionKind = 'approve' | 'edit' | 'defer' | 'dismiss' | 'retry' | 'reopen';
 
@@ -266,6 +434,8 @@ export type InboxActionState =
           action: InboxActionKind;
           eventId: string | null;
           message: string;
+          /** The form field the answer is about, when it's about one, so the page shows it there. */
+          field?: 'description' | 'reason';
           /** Counts up, so the page can tell one answer from the next. */
           serial: number;
       };

@@ -1,0 +1,145 @@
+// @vitest-environment node
+import { describe, expect, it } from 'vitest';
+import {
+    descriptionHint,
+    fileParts,
+    formStart,
+    headTail,
+    identityLine,
+    referencedByText,
+    seriesCaption,
+    seriesMembershipText,
+    statusLabel,
+    systemResponse,
+    type SeriesOption,
+} from '../inbox-view';
+
+// The words the Inbox page puts beside an item, from what the item holds:
+// pure, so each case reads here without the page or a data root.
+
+const P = (n: number) => `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+const REV = `rev_${'b'.repeat(60)}1234`;
+const SERIES: SeriesOption[] = [
+    { id: 'ser_harbor', label: 'Harbor', visibility: 'published', members: [{ photoId: P(1), shortId: headTail(P(1)) }, { photoId: P(9), shortId: headTail(P(9)) }] },
+    { id: 'ser_draft', label: 'Draft series', visibility: 'draft', members: [] },
+];
+const labelOf = (id: string) => SERIES.find((option) => option.id === id)?.label ?? id;
+const NO_RULES = { value: null, confidence: 'low' as const, producedBy: 'rules@none', producedAt: '2026-02-01T00:00:00.000Z', evidence: ['There is no curation/rules.json, so no series is suggested.'] };
+const RULES = { value: 'ser_harbor', confidence: 'high' as const, producedBy: 'rules@abc', producedAt: '2026-02-01T00:00:00.000Z', evidence: ['folder trips'] };
+const APPROVED_THEN_REOPENED = [
+    { action: 'approve', at: '2026-02-01T00:00:00.000Z', by: 'curator:web', detail: '' },
+    { action: 'reopen', at: '2026-02-01T00:01:00.000Z', by: 'curator:web', detail: '' },
+];
+
+type Start = Parameters<typeof formStart>[0];
+const start = (overrides: Partial<Start> = {}): Start => ({ edits: null, suggestions: { series: RULES, placement: null }, placed: null, decisions: [], lastApprovedSeries: null, ...overrides });
+
+describe('short IDs', () => {
+    it('keep the head and the tail, as the mockup shows them', () => {
+        expect(headTail(P(21))).toBe('ph_0000…0021');
+        expect(headTail(`sha256-b6f8${'0'.repeat(56)}6cb7`)).toBe('sha256-b6f8…6cb7');
+        expect(headTail(REV)).toBe('rev_bbbb…1234');
+        expect(headTail('ser_harbor')).toBe('ser_harbor');
+    });
+
+    it('split a library path into the file name and its folder', () => {
+        expect(fileParts('inbox/arrival-approve.jpg')).toEqual({ name: 'arrival-approve.jpg', folder: 'inbox' });
+        expect(fileParts('trips/2024/harbor-1.jpg')).toEqual({ name: 'harbor-1.jpg', folder: 'trips/2024' });
+        expect(fileParts('loose.jpg')).toEqual({ name: 'loose.jpg', folder: null });
+    });
+
+    it('say where the file is and when it was taken', () => {
+        expect(identityLine('trips/harbor-1.jpg', '2024-06-01')).toBe('In trips, captured 1 June 2024');
+        expect(identityLine('loose.jpg', null)).toBe('At the top of the library, no capture date read');
+    });
+});
+
+describe('where the form starts, and the caption under the series', () => {
+    it('starts on the suggestion and names who made it', () => {
+        expect(formStart(start(), ['ser_harbor'])).toEqual({ series: 'ser_harbor', from: 'suggestion' });
+        expect(seriesCaption(start(), { series: 'ser_harbor', from: 'suggestion' }, labelOf)).toBe('Suggested Harbor, high confidence, by rules@abc.');
+    });
+
+    it('says once that no rule is set up, instead of a suggestion from rules@none', () => {
+        const detail = start({ suggestions: { series: NO_RULES, placement: null } });
+        const from = formStart(detail, []);
+        expect(from).toEqual({ series: null, from: 'suggestion' });
+        expect(seriesCaption(detail, from, labelOf)).toBe('No series rule is set up (curation/rules.json), so nothing is suggested.');
+    });
+
+    it('says a reopened item starts where it was approved, and what the rules suggested', () => {
+        const detail = start({ suggestions: { series: NO_RULES, placement: null }, decisions: APPROVED_THEN_REOPENED, placed: { alt: null, seriesIds: [] }, lastApprovedSeries: 'ser_draft' });
+        const from = formStart(detail, ['ser_harbor', 'ser_draft']);
+        expect(from).toEqual({ series: 'ser_draft', from: 'approved' });
+        expect(seriesCaption(detail, from, labelOf)).toBe('Starts on Draft series, where it was approved. No series rule is set up (curation/rules.json), so nothing is suggested.');
+    });
+
+    it('says a reopened item starts where a series holds it now', () => {
+        const detail = start({ decisions: APPROVED_THEN_REOPENED, placed: { alt: null, seriesIds: ['ser_draft'] } });
+        const from = formStart(detail, ['ser_harbor', 'ser_draft']);
+        expect(from).toEqual({ series: 'ser_draft', from: 'placed' });
+        expect(seriesCaption(detail, from, labelOf)).toBe('Starts on Draft series, where it is now. The rules suggested Harbor.');
+        const unassigned = start({ decisions: APPROVED_THEN_REOPENED, placed: { alt: null, seriesIds: [] } });
+        expect(seriesCaption(unassigned, formStart(unassigned, []), labelOf)).toBe('Starts unassigned, as it is now. The rules suggested Harbor.');
+    });
+
+    it('says a saved choice is the curator’s', () => {
+        const detail = start({ edits: { seriesId: 'ser_draft', editedAt: '2026-02-01T00:00:00.000Z', editedBy: 'curator:web' } });
+        const from = formStart(detail, ['ser_harbor', 'ser_draft']);
+        expect(from).toEqual({ series: 'ser_draft', from: 'edit' });
+        expect(seriesCaption(detail, from, labelOf)).toBe('Starts on your saved choice, Draft series. The rules suggested Harbor.');
+    });
+});
+
+describe('the hint under the description', () => {
+    it('says nothing is suggested when nothing is written', () => {
+        expect(descriptionHint({ edits: null, placed: null })).toMatch(/^Nothing is suggested\./);
+    });
+
+    it('says what a saved edit or the photo record holds, and how to withdraw it', () => {
+        const edits = { description: { kind: 'described' as const, text: 'Mine.' }, editedAt: '2026-02-01T00:00:00.000Z', editedBy: 'curator:web' };
+        expect(descriptionHint({ edits, placed: null })).toBe('Your saved description. Clear it to withdraw it.');
+        expect(descriptionHint({ edits: { ...edits, description: { kind: 'decorative' as const } }, placed: null })).toBe('Saved as decorative. Uncheck Decorative to withdraw it.');
+        expect(descriptionHint({ edits: null, placed: { alt: { kind: 'described', text: 'At approval.' }, seriesIds: [] } })).toBe('The description it was approved with, stored as reviewed. Clear it to withdraw it.');
+        expect(descriptionHint({ edits: null, placed: { alt: { kind: 'decorative' }, seriesIds: [] } })).toBe('Marked decorative when it was approved. Uncheck Decorative to withdraw it.');
+    });
+});
+
+type Item = Parameters<typeof systemResponse>[0];
+const item = (overrides: Partial<Item> = {}): Item => ({ type: 'new', status: 'open', group: 'judgment', unplacedSeries: null, placed: null, lastApprovedSeries: null, ...overrides });
+
+describe('the status and the system response', () => {
+    it('never calls an approval no longer placed approved, and says where it is', () => {
+        const unplaced = item({ status: 'approved', group: 'unplaced', unplacedSeries: 'ser_draft', placed: { alt: null, seriesIds: [] }, lastApprovedSeries: 'ser_draft' });
+        expect(statusLabel(unplaced)).toEqual({ text: 'Approved, no longer placed', tone: 'change' });
+        expect(systemResponse(unplaced, labelOf)).toBe('It was approved into Draft series, but nothing holds its photo now, so it sits in the draft unassigned. Nothing publishes.');
+    });
+
+    it('says an approval is in the draft, in its series', () => {
+        const approved = item({ status: 'approved', group: 'settled', placed: { alt: null, seriesIds: ['ser_draft'] }, lastApprovedSeries: 'ser_draft' });
+        expect(statusLabel(approved)).toEqual({ text: 'Suggestion approved', tone: 'approved' });
+        expect(systemResponse(approved, labelOf)).toBe('In the draft, in Draft series. Nothing publishes until you publish.');
+        expect(systemResponse(item({ status: 'approved', group: 'settled', placed: { alt: null, seriesIds: [] } }), labelOf)).toBe('In the draft, unassigned. Nothing publishes until you publish.');
+    });
+
+    it('names a file that produced nothing for what it is', () => {
+        expect(statusLabel(item({ type: 'processing-failure', status: 'failed' }))).toEqual({ text: 'Not processed', tone: null });
+        expect(statusLabel(item())).toEqual({ text: 'Draft only', tone: null });
+        expect(systemResponse(item({ status: 'dismissed', group: 'settled' }), labelOf)).toBe('Dismissed, so it needs no judgment. Nothing a visitor sees changed.');
+        expect(systemResponse(item(), labelOf)).toBe('It has a stable ID and waits here as a draft suggestion. Nothing publishes.');
+    });
+});
+
+describe('what refers to a photograph', () => {
+    it('names series by title and keeps the live revision apart from draft series', () => {
+        expect(referencedByText([{ kind: 'revision', id: REV }, { kind: 'series', id: 'ser_harbor' }, { kind: 'series', id: 'ser_draft' }], SERIES)).toBe('The live revision (rev_bbbb…1234); series Harbor and Draft series (draft)');
+        expect(referencedByText([{ kind: 'series', id: 'ser_draft' }], SERIES)).toBe('Series Draft series (draft), not published');
+        expect(referencedByText([], SERIES)).toBe('Nothing');
+        expect(referencedByText(null, SERIES)).toMatch(/^Can't tell/);
+    });
+
+    it('gives a series membership by title and position', () => {
+        expect(seriesMembershipText(P(9), [{ kind: 'revision', id: REV }, { kind: 'series', id: 'ser_harbor' }], SERIES)).toBe('Harbor, position 02');
+        expect(seriesMembershipText(P(9), [], SERIES)).toBe('In no series');
+    });
+});

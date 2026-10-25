@@ -9,6 +9,9 @@ import { references, ReferenceScanError, type AssetReference } from '../catalog/
 
 export type Holders = { holders: string[] } | { unknown: ReferenceScanError };
 
+/** The same holders by kind and ID, for the curator's page, which names a series by its title. */
+export type HolderEntries = { entries: { kind: 'revision' | 'series'; id: string }[] } | { unknown: ReferenceScanError };
+
 /** A references() scan, kept for one call site's lifetime. Undefined until the first use. */
 export interface ReferenceCache {
     list?: AssetReference[] | ReferenceScanError;
@@ -20,6 +23,13 @@ export interface ReferenceCache {
  * treat unknown as referenced. Any other error is thrown.
  */
 export async function photoHolders(root: string, photoId: string, cache: ReferenceCache = {}): Promise<Holders> {
+    const found = await photoHolderEntries(root, photoId, cache);
+    if ('unknown' in found) return found;
+    return { holders: found.entries.map((entry) => (entry.kind === 'revision' ? `the active revision ${entry.id}` : `the series ${entry.id}`)) };
+}
+
+/** photoHolders(), by kind and ID: one scan, one rule, so the page and the CLI never disagree about who holds a photograph. */
+export async function photoHolderEntries(root: string, photoId: string, cache: ReferenceCache = {}): Promise<HolderEntries> {
     if (cache.list === undefined) {
         try {
             cache.list = await references(root);
@@ -29,8 +39,14 @@ export async function photoHolders(root: string, photoId: string, cache: Referen
         }
     }
     if (cache.list instanceof ReferenceScanError) return { unknown: cache.list };
-    const holders = cache.list
-        .filter((entry) => entry.photoId === photoId && (entry.source === 'active-revision' || entry.source === 'working-layer-series'))
-        .map((entry) => (entry.source === 'active-revision' ? `the active revision ${entry.holder}` : `the series ${entry.holder}`));
-    return { holders: [...new Set(holders)] };
+    const seen = new Set<string>();
+    const entries: { kind: 'revision' | 'series'; id: string }[] = [];
+    for (const entry of cache.list) {
+        if (entry.photoId !== photoId || (entry.source !== 'active-revision' && entry.source !== 'working-layer-series')) continue;
+        const kind = entry.source === 'active-revision' ? 'revision' : 'series';
+        if (seen.has(`${kind}:${entry.holder}`)) continue;
+        seen.add(`${kind}:${entry.holder}`);
+        entries.push({ kind, id: entry.holder });
+    }
+    return { entries };
 }
