@@ -10,7 +10,7 @@ This directory is where gallery photos should be placed.
 
 ## Replacing and Removing Photos
 
-- Saving over a photo under the same name regenerates its derivatives. The old ones stay until all seven new ones are written. The site doesn't serve any of these files: `/assets/photos` answers 404 and `/_next/image` refuses it. A browser or cache that fetched a copy before that release may keep it, for up to a day from `/_next/image`, or up to a year under the old `immutable` header.
+- Saving over a photo under the same name regenerates its derivatives. The old ones stay until all seven new ones are written. The site doesn't serve any of these files: `/assets/photos` answers 404 and `/_next/image` refuses it. A browser or cache that fetched a copy before these URLs closed may keep it, for up to a day from `/_next/image`, or up to a year under the old `immutable` header.
 - Accepted risk: a different photo saved under a removed photo's name, with an older modification time, shows the old images until you `touch` it or run `--force`. Copy tools that keep modification times, such as `cp -p` and `rsync -a`, do this.
 - Before the launch, deleting a photo hides it from the gallery once the watcher's next pass records it missing. Nothing deletes its derivative files, which stay reachable at their URLs, so restoring the file brings it back with nothing to rebuild. After the launch, deleting the file hides nothing: the active catalog revision keeps listing the photo, and `/media` keeps serving it.
 - To take a photo down:
