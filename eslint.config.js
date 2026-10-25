@@ -12,7 +12,7 @@ const handlers = ['onClick', 'onMouseDown', 'onMouseUp', 'onKeyPress', 'onKeyDow
 const NEXT_MESSAGE = 'This code runs outside Next. Keep Next imports in app/, proxy.ts, or lib/catalog/request.ts.'
 const NEXT_PATHS = [
   { name: 'next', message: NEXT_MESSAGE },
-  { name: 'server-only', message: 'This code runs under plain Node, where server-only throws. Only lib/catalog/public-reader.ts, reader.ts, projections/work.ts, projections/home.ts, projections/viewer.ts, and projections/series.ts may import it.' },
+  { name: 'server-only', message: 'This code runs under plain Node, where server-only throws. Only lib/catalog/public-reader.ts, preview-reader.ts, reader.ts, projections/work.ts, projections/home.ts, projections/viewer.ts, and projections/series.ts may import it.' },
 ]
 // The reader and the Work, Home, Viewer, and series projections carry
 // server-only so a client bundle that reaches them fails the build (#3, #4, #7,
@@ -47,6 +47,24 @@ const RULE_RUNNER_PATTERNS = [
 ]
 const PRODUCTION_CODE = ['lib/**', 'app/**', 'scripts/**', 'components/**', 'utils/**', 'proxy.ts']
 const TESTS_AND_RULESET = ['**/__tests__/**', 'lib/catalog/ruleset.ts']
+// #16's preview reader compiles the working layer, which holds drafts, so
+// only the curator's routes and the catalog itself may import it, and the
+// preview's routes never import the public reader, so draft and public data
+// never mix in one response. Like the patterns above, every entry that sets
+// no-restricted-imports outside those two folders repeats PREVIEW_READER_PATTERNS.
+const PREVIEW_READER_PATTERNS = [
+  {
+    regex: '(^|/)catalog/preview-reader(\\.ts)?$',
+    message: 'Only app/curation/** and lib/catalog/** may import the preview reader, which reads drafts.',
+  },
+]
+const PUBLIC_READER_PATTERNS = [
+  {
+    regex: '(^|/)catalog/public-reader(\\.ts)?$',
+    message: 'The preview renders the draft through lib/catalog/preview-reader.ts and never reads the public catalog.',
+  },
+]
+const PREVIEW_READERS = ['app/curation/**', 'lib/catalog/**']
 
 export default tseslint.config(
   {
@@ -105,11 +123,33 @@ export default tseslint.config(
     },
   },
   {
+    // Tests and tooling too: only the curator's routes and the catalog reach the preview reader.
+    files: ['**/*.{ts,tsx,js,mjs,cjs}'],
+    ignores: PREVIEW_READERS,
+    rules: {
+      'no-restricted-imports': ['error', { patterns: PREVIEW_READER_PATTERNS }],
+    },
+  },
+  {
     // Every process runs the whole ruleset.
     files: PRODUCTION_CODE,
+    ignores: [...TESTS_AND_RULESET, ...PREVIEW_READERS],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [...RULE_RUNNER_PATTERNS, ...PREVIEW_READER_PATTERNS] }],
+    },
+  },
+  {
+    files: PREVIEW_READERS,
     ignores: TESTS_AND_RULESET,
     rules: {
       'no-restricted-imports': ['error', { patterns: RULE_RUNNER_PATTERNS }],
+    },
+  },
+  {
+    // #16's preview subtree renders the draft only.
+    files: ['app/curation/**/preview/**'],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [...RULE_RUNNER_PATTERNS, ...PUBLIC_READER_PATTERNS] }],
     },
   },
   {
@@ -118,7 +158,7 @@ export default tseslint.config(
     // watcher process must not reach the order writers.
     files: ['lib/storage/**', 'lib/identity/**', 'lib/media/**'],
     rules: {
-      'no-restricted-imports': ['error', { paths: NEXT_PATHS, patterns: [...NEXT_PATTERNS, ...ORDER_WRITER_PATTERNS, ...RULE_RUNNER_PATTERNS] }],
+      'no-restricted-imports': ['error', { paths: NEXT_PATHS, patterns: [...NEXT_PATTERNS, ...ORDER_WRITER_PATTERNS, ...RULE_RUNNER_PATTERNS, ...PREVIEW_READER_PATTERNS] }],
     },
   },
   {
@@ -134,15 +174,15 @@ export default tseslint.config(
       'lib/curation/auth/**',
     ],
     rules: {
-      'no-restricted-imports': ['error', { patterns: [...ORDER_WRITER_PATTERNS, ...RULE_RUNNER_PATTERNS] }],
+      'no-restricted-imports': ['error', { patterns: [...ORDER_WRITER_PATTERNS, ...RULE_RUNNER_PATTERNS, ...PREVIEW_READER_PATTERNS] }],
     },
   },
   {
-    // Catalog code runs in the CLI too, so only request.ts and
-    // public-reader.ts, which only the web process imports, may use Next or
+    // Catalog code runs in the CLI too, so only request.ts, preview-reader.ts and
+    // public-reader.ts, which only the web and curator processes import, may use Next or
     // server-only. sequence.ts and its callers import the writer.
     files: ['lib/catalog/**'],
-    ignores: ['lib/catalog/request.ts', 'lib/catalog/public-reader.ts'],
+    ignores: ['lib/catalog/request.ts', 'lib/catalog/public-reader.ts', 'lib/catalog/preview-reader.ts'],
     rules: {
       'no-restricted-imports': ['error', { paths: NEXT_PATHS, patterns: NEXT_PATTERNS }],
     },
@@ -150,7 +190,7 @@ export default tseslint.config(
   {
     // The same, outside the tests and ruleset.ts, which also run the whole ruleset.
     files: ['lib/catalog/**'],
-    ignores: ['lib/catalog/request.ts', 'lib/catalog/public-reader.ts', ...TESTS_AND_RULESET],
+    ignores: ['lib/catalog/request.ts', 'lib/catalog/public-reader.ts', 'lib/catalog/preview-reader.ts', ...TESTS_AND_RULESET],
     rules: {
       'no-restricted-imports': ['error', { paths: NEXT_PATHS, patterns: [...NEXT_PATTERNS, ...RULE_RUNNER_PATTERNS] }],
     },

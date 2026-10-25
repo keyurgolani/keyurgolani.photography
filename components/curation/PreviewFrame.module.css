@@ -1,0 +1,36 @@
+.frame {
+  display: flex;
+  flex-direction: column;
+  height: 100svh;
+  background: var(--gah-ground);
+  color: var(--gah-ink);
+}
+
+.toolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  min-height: 44px;
+  margin: 0;
+  padding: 0 var(--site-gutter);
+  border-bottom: 1px solid var(--gah-rule-strong);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-ui);
+}
+
+.marker {
+  font-size: var(--gah-type-label);
+  font-weight: 600;
+  letter-spacing: var(--gah-label-tracking);
+  text-transform: uppercase;
+  color: var(--gah-ink);
+}
+
+.site {
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  background: var(--gah-ground);
+}
