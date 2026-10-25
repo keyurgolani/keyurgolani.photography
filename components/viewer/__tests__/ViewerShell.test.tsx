@@ -110,6 +110,18 @@ const announcer = () => document.querySelector('[data-viewer-announcer]');
 const step = (name: 'Previous photograph' | 'Next photograph') => screen.getByRole('button', { name });
 const stage = () => document.querySelector<HTMLElement>('[data-viewer-stage]') as HTMLElement;
 
+/**
+ * A touchmove at `dx` across and `dy` down from the swipe's 200, 300 start, with `fingers` touches down, and whether the
+ * page cancelled it. jsdom's TouchEvent wants real Touch objects, so this is a plain cancelable event with `touches` set.
+ */
+function touchMove(target: HTMLElement, dx: number, dy = 0, { fingers = 1, cancelable = true } = {}): boolean {
+    const event = new Event('touchmove', { bubbles: true, cancelable });
+    const touch = { clientX: 200 + dx, clientY: 300 + dy };
+    Object.defineProperty(event, 'touches', { value: Array.from({ length: fingers }, () => touch) });
+    target.dispatchEvent(event);
+    return event.defaultPrevented;
+}
+
 /** One finger down on `target` and up `dx` across and `dy` down, as the root sees it once it holds the capture. */
 function swipe(target: HTMLElement, dx: number, dy = 0) {
     fireEvent.pointerDown(target, { pointerId: 1, isPrimary: true, clientX: 200, clientY: 300 });
@@ -466,6 +478,85 @@ describe('ViewerShell, swipes', () => {
         swipe(document.querySelector('header') as HTMLElement, -80);
         swipe(screen.getByRole('button', { name: 'Show technical details' }), -80);
         expect(router.replace).not.toHaveBeenCalled();
+    });
+
+    describe('claims a sideways touch from the browser, so it leaves no fling to swallow the next tap', () => {
+        const down = (target: HTMLElement, pointerId = 1, isPrimary = true) =>
+            fireEvent.pointerDown(target, { pointerId, isPrimary, clientX: 200, clientY: 300 });
+
+        it('cancels every move of a touch that settles sideways, from the slop on, and still moves at the lift', () => {
+            renderShell('page', 2);
+            down(stage());
+            expect(touchMove(stage(), -4, 1), 'under the slop').toBe(false);
+            expect(touchMove(stage(), -12, 3)).toBe(true);
+            // Settled: a later move that turns down is still the Viewer's, and so is one aimed outside the photograph.
+            expect(touchMove(stage(), -20, 40)).toBe(true);
+            expect(touchMove(root() as HTMLElement, -150, 0)).toBe(true);
+            // A move the browser already made uncancelable is left alone.
+            expect(touchMove(stage(), -150, 0, { cancelable: false })).toBe(false);
+            fireEvent.pointerUp(root() as HTMLElement, { pointerId: 1, clientX: 50, clientY: 300 });
+            expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
+        });
+
+        it('leaves a touch that settles downward to the browser to scroll, however it turns later', () => {
+            renderShell('page', 2);
+            down(stage());
+            expect(touchMove(stage(), 3, -12)).toBe(false);
+            expect(touchMove(stage(), -150, -14)).toBe(false);
+        });
+
+        it('settles each touch afresh', () => {
+            renderShell('page', 2);
+            down(stage());
+            expect(touchMove(stage(), -30)).toBe(true);
+            fireEvent.pointerUp(root() as HTMLElement, { pointerId: 1, clientX: 170, clientY: 300 });
+            down(stage(), 2);
+            expect(touchMove(stage(), 0, 30)).toBe(false);
+            fireEvent.pointerUp(root() as HTMLElement, { pointerId: 2, clientX: 200, clientY: 330 });
+            down(stage(), 3);
+            expect(touchMove(stage(), 30)).toBe(true);
+        });
+
+        it('claims nothing it doesn\'t follow: a touch off the photograph, on the zoomed photograph, a second finger, after a lift or cancel', () => {
+            render(<ViewerShell mode="page">{photo(2, true)}</ViewerShell>);
+            down(step('Next photograph'));
+            expect(touchMove(step('Next photograph'), -30)).toBe(false);
+            fireEvent.pointerUp(step('Next photograph'), { pointerId: 1, clientX: 170, clientY: 300 });
+            down(stage());
+            expect(touchMove(stage(), -30, 0, { fingers: 2 })).toBe(false);
+            down(stage(), 2, false);
+            expect(touchMove(stage(), -40)).toBe(false);
+            fireEvent.pointerUp(stage(), { pointerId: 2, clientX: 160, clientY: 300 });
+            fireEvent.pointerUp(stage(), { pointerId: 1, clientX: 160, clientY: 300 });
+            down(stage(), 3);
+            fireEvent.pointerUp(root() as HTMLElement, { pointerId: 3, clientX: 200, clientY: 300 });
+            expect(touchMove(stage(), -30)).toBe(false);
+            down(stage(), 4);
+            fireEvent.pointerCancel(stage(), { pointerId: 4 });
+            expect(touchMove(stage(), -30)).toBe(false);
+            const zoom = screen.getByRole('button', { name: 'Zoom' });
+            fireEvent.click(zoom);
+            down(stage(), 5);
+            expect(touchMove(stage(), -30)).toBe(false);
+            expect(router.replace).not.toHaveBeenCalled();
+        });
+
+        it('listens actively, since a passive listener can\'t cancel, on the root, and stops when it unmounts', () => {
+            const add = vi.spyOn(HTMLElement.prototype, 'addEventListener');
+            const remove = vi.spyOn(HTMLElement.prototype, 'removeEventListener');
+            try {
+                const { unmount } = renderShell('page', 2);
+                // React adds its own passive touchmove listeners on the container, so only the root's count.
+                const added = add.mock.calls.filter(([type], index) => type === 'touchmove' && add.mock.contexts[index] === root());
+                expect(added).toHaveLength(1);
+                expect(added[0][2]).toEqual({ passive: false });
+                unmount();
+                expect(remove.mock.calls.filter(([type, listener]) => type === 'touchmove' && listener === added[0][1])).toHaveLength(1);
+            } finally {
+                add.mockRestore();
+                remove.mockRestore();
+            }
+        });
     });
 
     it('leaves a drag on the zoomed photograph to its scroll region, and drops a gesture when Zoom changes mid-way', () => {

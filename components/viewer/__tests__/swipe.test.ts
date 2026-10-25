@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { PINCH_SCALE, SWIPE_DISTANCE, SWIPE_IDLE, SWIPE_RATIO, isPinched, reduceSwipe, swipeStep, type SwipeInput, type SwipeState } from '../swipe';
+import { CLAIM_SLOP, PINCH_SCALE, SWIPE_DISTANCE, SWIPE_IDLE, SWIPE_RATIO, claimsTouch, isPinched, reduceSwipe, swipeStep, type SwipeInput, type SwipeState } from '../swipe';
 
 /** Runs inputs from idle and returns the moves they asked for, and the state they left. */
 function run(inputs: SwipeInput[], from: SwipeState = SWIPE_IDLE) {
@@ -48,6 +48,26 @@ describe('swipeStep', () => {
         [-30, -500, null],
     ])('dx %d, dy %d asks for %s', (dx, dy, expected) => {
         expect(swipeStep(dx, dy)).toBe(expected);
+    });
+});
+
+describe('claimsTouch', () => {
+    it.each([
+        // Under the slop the axis isn't settled yet, whichever way the finger has gone.
+        [0, 0, null],
+        [-9.9, 0, null],
+        [0, 9.9, null],
+        [7, -7, null],
+        // Past it, more across than down is the Viewer's, as the browser's own pan test has it, and a tie isn't.
+        [-10, 0, true],
+        [10, 9.9, true],
+        [30, -29, true],
+        [0, 10, false],
+        [10, 10, false],
+        [-20, 21, false],
+    ])('a touch %s across and %s down is claimed: %s', (dx, dy, expected) => {
+        expect(CLAIM_SLOP).toBe(10);
+        expect(claimsTouch(dx, dy)).toBe(expected);
     });
 });
 

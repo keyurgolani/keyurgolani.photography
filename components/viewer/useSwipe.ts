@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, type RefObject } from 'react';
-import { SWIPE_IDLE, isPinched, reduceSwipe, type SwipeInput, type SwipeState } from './swipe';
+import { SWIPE_IDLE, claimsTouch, isPinched, reduceSwipe, type SwipeInput, type SwipeState } from './swipe';
 import type { ViewerStep } from './viewerKeys';
 
 /** The photograph's box, where a swipe can start. Controls sit outside it. */
@@ -19,7 +19,9 @@ export const STAGE_SELECTOR = '[data-viewer-stage]';
  * pinch-zoomed, the returned flag goes on the shell root as `data-pinched`,
  * which gives the stage `touch-action: auto`, so a sideways drag pans the
  * zoomed page instead. A new photograph (any route), Zoom, a pinch, and
- * unmount drop the gesture in flight.
+ * unmount drop the gesture in flight. A followed touch that settles sideways
+ * has its `touchmove`s cancelled (claimsTouch), so Chromium leaves no fling
+ * behind it to swallow the next tap.
  *
  * `zoomedRef` and `stepRef` are the shell's, kept current by it; `zoomed`
  * and `photoId` are there for the reset.
@@ -34,6 +36,8 @@ export function useSwipe(
     }: { zoomed: boolean; zoomedRef: RefObject<boolean>; stepRef: RefObject<(step: ViewerStep) => void>; photoId: string | null },
 ): boolean {
     const state = useRef<SwipeState>(SWIPE_IDLE);
+    /** Whether the touch the gesture follows is claimed from the browser: null until its axis is settled (claimsTouch). */
+    const claim = useRef<boolean | null>(null);
     const [pinched, setPinched] = useState(false);
 
     useEffect(() => {
@@ -54,6 +58,7 @@ export function useSwipe(
             if (result.step !== null) stepRef.current(result.step);
         };
         const onDown = (event: PointerEvent) => {
+            claim.current = null;
             const target = event.target instanceof Element ? event.target : null;
             const onStage = target !== null && target.closest(STAGE_SELECTOR) !== null;
             const eligible = onStage && !zoomedRef.current && !isPinched(window.visualViewport?.scale);
@@ -67,16 +72,29 @@ export function useSwipe(
         };
         const onUp = (event: PointerEvent) => apply({ type: 'up', pointerId: event.pointerId, x: event.clientX, y: event.clientY });
         const onCancel = (event: PointerEvent) => apply({ type: 'cancel', pointerId: event.pointerId });
+        // A sideways drag the swipe follows is the Viewer's: its moves are cancelled, so the browser starts no fling at
+        // the lift that would swallow the next tap (claimsTouch). The browser fires each pointer event before its touch
+        // event, so the gesture's start is already set here.
+        const onTouchMove = (event: TouchEvent) => {
+            const { start } = state.current;
+            if (start === null || event.touches.length !== 1) return;
+            const touch = event.touches[0];
+            claim.current ??= claimsTouch(touch.clientX - start.x, touch.clientY - start.y);
+            if (claim.current === true && event.cancelable) event.preventDefault();
+        };
         root.addEventListener('pointerdown', onDown);
         root.addEventListener('pointerup', onUp);
         root.addEventListener('pointercancel', onCancel);
         root.addEventListener('lostpointercapture', onCancel);
+        root.addEventListener('touchmove', onTouchMove, { passive: false });
         return () => {
             root.removeEventListener('pointerdown', onDown);
             root.removeEventListener('pointerup', onUp);
             root.removeEventListener('pointercancel', onCancel);
             root.removeEventListener('lostpointercapture', onCancel);
+            root.removeEventListener('touchmove', onTouchMove);
             state.current = SWIPE_IDLE;
+            claim.current = null;
         };
     }, [rootRef, zoomedRef, stepRef]);
 

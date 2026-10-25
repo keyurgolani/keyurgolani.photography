@@ -137,6 +137,16 @@ test.describe('swipe', () => {
         expect(await focusPlace(page)).toBe('body');
     });
 
+    test('a tap on Next right after a swipe moves again, so the swipe leaves no browser fling behind to swallow it', async ({ page }) => {
+        // Chromium flings at the lift of a fast drag even where touch-action forbids the pan, and on Linux a
+        // tap during that fling only stops it. The swipe cancels its own touchmoves, so there's no fling.
+        await openPage(page, P[0]);
+        await swipe(page, -150);
+        await expectStill(page, P[1], 2);
+        await button(page, 'Next photograph').tap();
+        await expectStill(page, P[2], 3);
+    });
+
     test('in the modal, a swipe moves too, focus stays on Close, and Close still puts focus back on the entry that opened it', async ({ page }, testInfo) => {
         // CI on Linux once saw this Close tap do nothing. The log prints only on failure, to the job log.
         const events = await recordEvents(page);

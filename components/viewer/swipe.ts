@@ -8,6 +8,24 @@ export const SWIPE_RATIO = 1.25;
 /** Above this page scale the visitor has pinched in, and a sideways drag pans the page instead of moving. */
 export const PINCH_SCALE = 1.01;
 
+/** Travel in CSS px before a touch's axis is settled, about the browser's own slop before it picks a pan's axis. */
+export const CLAIM_SLOP = 10;
+
+/**
+ * Whether the Viewer claims the touch it follows from the browser, by its net
+ * travel so far: null until it's gone CLAIM_SLOP, then true for more across
+ * than down (the browser's own test for a horizontal pan, which the stage's
+ * `pan-y` never scrolls), false otherwise. The swipe cancels a claimed
+ * touch's moves, so the browser doesn't start an inertial fling at the lift.
+ * Chromium starts that fling even where `touch-action` forbids the pan, and
+ * it's invisible, but a tap during it only stops the fling: the next tap on
+ * Close or Next right after a swipe would do nothing.
+ */
+export function claimsTouch(dx: number, dy: number): boolean | null {
+    if (Math.max(Math.abs(dx), Math.abs(dy)) < CLAIM_SLOP) return null;
+    return Math.abs(dx) > Math.abs(dy);
+}
+
 /** Whether the page is pinch-zoomed, from `visualViewport.scale`, which is undefined where the browser has none. */
 export function isPinched(scale: number | undefined): boolean {
     return (scale ?? 1) > PINCH_SCALE;
