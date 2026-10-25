@@ -484,11 +484,13 @@ describe('ViewerShell, swipes', () => {
     });
 
     it('drops a gesture in flight when the photograph changes by another route', () => {
-        const { move } = renderShell('page', 2);
+        // From the first photograph to the second, which still has a Next, so a gesture that survived would move.
+        const { move } = renderShell('page', 1);
         fireEvent.pointerDown(stage(), { pointerId: 1, isPrimary: true, clientX: 200, clientY: 300 });
-        move(3);
+        move(2);
         fireEvent.pointerUp(root() as HTMLElement, { pointerId: 1, clientX: 20, clientY: 300 });
         expect(router.replace).not.toHaveBeenCalled();
+        expect(announcer()).toHaveTextContent('Photograph 2 of 3');
     });
 
     it('stops listening when it unmounts', () => {
