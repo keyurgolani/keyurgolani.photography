@@ -21,6 +21,7 @@ import type { IdentityFactType, Registry } from '../../identity/types';
 import { VARIANT_FORMATS, VARIANT_PIXELS, VARIANT_WIDTHS } from '../../identity/variants';
 import { mediaUrl } from '../../media/url';
 import { pruneVersions, versionFile, versionText } from '../../storage/document';
+import { hashValue } from '../review';
 import { runRules } from '../rules';
 import { parseRevisionFile, revisionIdOf } from '../schema';
 import { applySequenceOp } from '../sequence';
@@ -370,7 +371,10 @@ describe('reconcile never authors order', () => {
         expect(types).toEqual(['renamed']);
         expect(result).toMatchObject({ ok: true, changed: true });
         const after = await readAuthoredRecord(fixture.data.root, 'series', SERIES);
-        expect(after).toEqual({ ...before, version: (before?.version ?? 0) + 1, photoIds: [fixture.members[0], fixture.members[2], fixture.members[1]] });
+        const photoIds = [fixture.members[0], fixture.members[2], fixture.members[1]];
+        // #16: the move restamps only photoIds, as the CLI's, and keeps every other field's stamp.
+        const stamps = { ...before?.review?.fields, photoIds: expect.objectContaining({ valueHash: hashValue(photoIds), origin: 'curator', actor: 'cli' }) };
+        expect(after).toEqual({ ...before, version: (before?.version ?? 0) + 1, photoIds, review: { fields: stamps } });
         for (const [folder, bytes] of others) {
             expect(bytes, folder).not.toBeNull();
             expect(folderBytes(path.join(fixture.data.root, folder)), folder).toEqual(bytes);

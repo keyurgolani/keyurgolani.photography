@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { folderBytes } from '../../../test/helpers/folderBytes';
+import { hashValue } from '../../catalog/review';
 import { authoredRecordDir, catalogPaths, readAuthoredRecord } from '../../catalog/working-layer';
 import { AUTHORED_LOCK, writeAuthoredRecord } from '../../catalog/working-layer-writer';
 import { readPendingDecisions } from '../../identity/decisions';
@@ -59,9 +60,15 @@ describe('approve', () => {
         expect(layers(f.root).catalog).toEqual(catalogBefore);
         const photoId = event.photoId as string;
         const photo = await readAuthoredRecord(f.root, 'photo', photoId);
-        expect(photo).toEqual({ schemaVersion: 1, version: 1, baseRevisionId: f.catalog.revisionId, kind: 'photo', id: photoId, assetRevision: event.assetRevision, alt: null });
+        // #16: each field the approval wrote is stamped with the item the curator reviewed.
+        const stamp = { origin: 'curator', baseRevisionId: f.catalog.revisionId, event: { id: event.id, version: event.version }, actor: ACTOR, reviewedAt: expect.any(String) };
+        expect(photo).toEqual({
+            schemaVersion: 1, version: 1, baseRevisionId: f.catalog.revisionId, kind: 'photo', id: photoId, assetRevision: event.assetRevision, alt: null,
+            review: { fields: { assetRevision: { ...stamp, valueHash: hashValue(event.assetRevision), assetRevision: event.assetRevision } } },
+        });
         const draft = await readAuthoredRecord(f.root, 'series', DRAFT);
         expect(draft?.photoIds).toEqual([...(draftBefore?.photoIds ?? []), photoId]);
+        expect(draft?.review?.fields.photoIds).toEqual({ ...stamp, valueHash: hashValue(draft?.photoIds) });
         expect(draft?.version).toBe((draftBefore?.version ?? 0) + 1);
         const decision = result.ok ? result.event.decisions.at(-1) : null;
         expect(decision).toMatchObject({ action: 'approve', seriesId: DRAFT, placement: 'end', baseRevisionId: f.catalog.revisionId, writes: [{ record: `photo:${photoId}`, version: 1 }, { record: `series:${DRAFT}`, version: 2 }] });
