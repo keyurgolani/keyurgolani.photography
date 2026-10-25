@@ -28,8 +28,8 @@ function readSiteUrl(): { origin: URL } | { problem: string } {
 /**
  * The origin in `SITE_URL`: an absolute http or https URL with no path beyond
  * `/`, and no query, hash, or credentials. A trailing slash is dropped.
- * Returns `null` for anything else, and callers then omit canonical and share
- * URLs.
+ * Returns `null` for anything else, and `getMetadataBase()` then falls back
+ * to `http://localhost:3000`.
  */
 export function getSiteOrigin(): URL | null {
   const read = readSiteUrl();

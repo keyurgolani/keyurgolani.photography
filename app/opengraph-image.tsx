@@ -7,6 +7,14 @@ export const size = { width: 1200, height: 630 };
 export const contentType = 'image/png';
 
 /**
+ * The name the image sets its TTF under, which names the TTF's version. Next
+ * puts a hash of this source file, not of the font, into the image's URL, and
+ * serves the image as immutable, so this has to change whenever the TTF does,
+ * or the old image stays cached under the old URL.
+ */
+const SHARE_FONT = 'Newsreader-1-003-static-400-16pt';
+
+/**
  * The site's share image: the KG monogram, the name, and "Photography" on the
  * ground. The build renders it once. ImageResponse can't read WOFF2, so it
  * sets the type in the static Newsreader TTF.
@@ -25,7 +33,7 @@ export default async function OpenGraphImage() {
           justifyContent: 'center',
           background: '#080a09',
           color: '#f4f6f5',
-          fontFamily: 'Newsreader',
+          fontFamily: SHARE_FONT,
         }}
       >
         <div
@@ -46,6 +54,6 @@ export default async function OpenGraphImage() {
         <div style={{ marginTop: 24, fontSize: 32, letterSpacing: '0.08em', color: 'rgba(244, 246, 245, 0.62)' }}>Photography</div>
       </div>
     ),
-    { ...size, fonts: [{ name: 'Newsreader', data: newsreader, weight: 400, style: 'normal' }] },
+    { ...size, fonts: [{ name: SHARE_FONT, data: newsreader, weight: 400, style: 'normal' }] },
   );
 }
