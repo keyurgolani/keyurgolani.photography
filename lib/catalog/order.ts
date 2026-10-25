@@ -65,47 +65,81 @@ export function sequencePosition(series: Pick<SeriesRecord, 'photoIds'>, photoId
 export interface SeriesOrderRebase {
     seriesOrder: string[];
     /**
-     * Set when the curator and the target both reordered published series,
-     * differently. The curator's order stays, and #13's rebase records this
-     * as a conflict that blocks publish.
+     * What the rebase stores as the site record's `baseSeriesOrder`: the Work
+     * order without the owner's pending changes, placed in the target's
+     * order. It equals `seriesOrder` unless the owner has a move the target
+     * doesn't publish, so the next rebase still sees that move as the
+     * owner's. Null only when a repeated entry left nothing to decide and the
+     * base was unknown.
+     */
+    baseSeriesOrder: string[] | null;
+    /**
+     * Set when the owner and the target both changed the order of the series
+     * they share, differently. The owner's order stays, and #13's rebase
+     * records this as a conflict that blocks publish.
      */
     conflict: { field: 'seriesOrder'; base: string[]; active: string[] } | null;
 }
 
 const sameOrder = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((id, index) => id === b[index]);
 
+export interface SeriesOrderRebaseInput {
+    /** The site record's `seriesOrder`. */
+    authored: readonly string[];
+    /**
+     * The site record's `baseSeriesOrder`, or, for a rebase onto what a
+     * publish just compiled, the `seriesOrder` it compiled from. Null when
+     * unknown, which counts as an owner's change.
+     */
+    baseAuthored: readonly string[] | null;
+    /** The series IDs in `content.series` of the revision the record was based on, or none when it can't be read. */
+    base: readonly string[];
+    /** The series IDs in `content.series` of the revision becoming active. */
+    target: readonly string[];
+}
+
 /**
  * Rebase the working layer's Work order onto a newly active revision.
- * Revisions don't carry `seriesOrder`, so this works from ID lists: `authored`
- * is the site record's `seriesOrder`, and `base` and `target` are the series
- * IDs in `content.series` of the revision the record was based on and of the
- * one becoming active.
+ * Revisions don't carry `seriesOrder`, so this works from ID lists.
  *
- * If the curator kept the base's order, the series the target publishes take
- * the target's order within the slots they already hold, and draft, hidden,
- * and unpublished series stay where they are. If the curator reordered, that
- * order stays, and it is a conflict when the target reordered too, some other
- * way.
+ * The owner changed the order when `authored` differs from `baseAuthored`
+ * anywhere, draft and hidden slots included, or when `baseAuthored` is
+ * unknown. If the owner didn't, the series the target publishes take the
+ * target's order within the slots they already hold, and draft, hidden, and
+ * unpublished series stay where they are. If the owner did, the owner's order
+ * stays. It is a conflict when the target changed too (it reorders the base's
+ * series or publishes one the base didn't) and the two orders of the series
+ * they share differ.
  */
-export function rebaseSeriesOrder({ authored, base, target }: { authored: readonly string[]; base: readonly string[]; target: readonly string[] }): SeriesOrderRebase {
+export function rebaseSeriesOrder({ authored, baseAuthored, base, target }: SeriesOrderRebaseInput): SeriesOrderRebase {
     const inAuthored = new Set(authored);
     const inBase = new Set(base);
     const inTarget = new Set(target);
     // A repeated entry has two slots and one place in a revision. refs.series-order reports it, and the order stays as it is.
-    const repeats = (list: readonly string[], set: Set<string>) => set.size !== list.length;
-    if (repeats(authored, inAuthored) || repeats(base, inBase) || repeats(target, inTarget)) return { seriesOrder: [...authored], conflict: null };
+    const repeats = (list: readonly string[]) => new Set(list).size !== list.length;
+    if (repeats(authored) || repeats(base) || repeats(target)) {
+        return { seriesOrder: [...authored], baseSeriesOrder: baseAuthored && !repeats(baseAuthored) ? [...baseAuthored] : null, conflict: null };
+    }
+    const known = baseAuthored && !repeats(baseAuthored) ? baseAuthored : null;
 
-    const curatorChanged = !sameOrder(authored.filter((id) => inBase.has(id)), base.filter((id) => inAuthored.has(id)));
-    if (!curatorChanged) {
-        const queue = target.filter((id) => inAuthored.has(id));
+    /** `list` with the series the target publishes in the target's order, in the slots they hold. */
+    const placed = (list: readonly string[]) => {
+        const members = new Set(list);
+        const queue = target.filter((id) => members.has(id));
         let next = 0;
-        return { seriesOrder: authored.map((id) => (inTarget.has(id) ? queue[next++] : id)), conflict: null };
+        return list.map((id) => (inTarget.has(id) ? queue[next++] : id));
+    };
+
+    if (known !== null && sameOrder(authored, known)) {
+        const seriesOrder = placed(authored);
+        return { seriesOrder, baseSeriesOrder: [...seriesOrder], conflict: null };
     }
 
-    const targetChanged = !sameOrder(target.filter((id) => inBase.has(id)), base.filter((id) => inTarget.has(id)));
+    const targetChanged = target.some((id) => !inBase.has(id)) || !sameOrder(target.filter((id) => inBase.has(id)), base.filter((id) => inTarget.has(id)));
     const agree = sameOrder(authored.filter((id) => inTarget.has(id)), target.filter((id) => inAuthored.has(id)));
     return {
         seriesOrder: [...authored],
+        baseSeriesOrder: placed(known ?? authored),
         conflict: targetChanged && !agree ? { field: 'seriesOrder', base: [...base], active: [...target] } : null,
     };
 }

@@ -74,7 +74,7 @@ export interface WriteAuthoredOptions {
     hooks?: VersionedWriteHooks;
 }
 
-const MANAGED = new Set(['schemaVersion', 'version', 'baseRevisionId']);
+const MANAGED = new Set(['schemaVersion', 'version', 'baseRevisionId', 'baseSeriesOrder']);
 
 function withoutManaged(record: AuthoredRecordInput): Record<string, unknown> {
     return Object.fromEntries(Object.entries(record).filter(([key]) => !MANAGED.has(key)));
@@ -136,7 +136,9 @@ async function commit(
 
     // An existing record keeps its base until a rebase moves it. A new one starts on the active revision.
     const baseRevisionId = existing ? existing.baseRevisionId : (await readActivePointer(root))?.revisionId ?? null;
-    const next = { ...withoutManaged(record), schemaVersion: CATALOG_SCHEMA_VERSION, version: expectedVersion + 1, baseRevisionId };
+    // The site record's base Work order moves with its base, so only a rebase sets it. A new record's is unknown.
+    const site = ref.kind === 'site' ? { baseSeriesOrder: (existing as AuthoredSite | null)?.baseSeriesOrder ?? null } : {};
+    const next = { ...withoutManaged(record), schemaVersion: CATALOG_SCHEMA_VERSION, version: expectedVersion + 1, baseRevisionId, ...site };
     const parsed = parseAuthoredRecord(ref.kind, next);
     if (!parsed.ok) throw new AuthoredWriteError('INVALID_RECORD', ref, `The ${ref.kind} record ${ref.id} is not valid.`, { issues: parsed.error.issues });
 
@@ -162,7 +164,8 @@ async function commit(
  * writers that read one version only one stores the next, even when one of
  * them lost the lock. A record edited in place is INVALID_RECORD. An
  * existing record keeps its `baseRevisionId`; a new one takes the active
- * revision, or null before the first activation.
+ * revision, or null before the first activation. The site record keeps its
+ * `baseSeriesOrder` the same way, and a new one starts at null (unknown).
  */
 export function writeAuthoredRecord(record: AuthoredSiteInput, options: WriteAuthoredOptions): Promise<AuthoredSite>;
 export function writeAuthoredRecord(record: AuthoredSeriesInput, options: WriteAuthoredOptions): Promise<AuthoredSeries>;
