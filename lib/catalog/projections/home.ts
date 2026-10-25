@@ -150,10 +150,8 @@ function imageOf(photo: Photo, withLqip: boolean): HomeImage | null {
  */
 export function publishedHomeOf(source: HomeSource, routes: Pick<RouteBuilder, 'seriesHref'>): PublishedHome {
     const empty: PublishedHome = { catalogRevision: source.revisionId, featuredSeries: null };
-    const held = new Map<string, SeriesRecord>();
-    for (const series of source.listSeries()) if (!held.has(series.id)) held.set(series.id, series);
-    const featuredId = source.site().featuredSeriesIds.find((seriesId) => held.has(seriesId));
-    const series = featuredId === undefined ? undefined : held.get(featuredId);
+    const listed = source.listSeries();
+    const series = source.site().featuredSeriesIds.map((seriesId) => listed.find((entry) => entry.id === seriesId)).find((entry) => entry !== undefined);
     if (!series) return empty;
     // order.duplicate-photo blocks a repeated member at render, so no preview or revision holds one.
     const members = source.photosOf(series.id);
