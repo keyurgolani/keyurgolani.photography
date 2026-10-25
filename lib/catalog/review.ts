@@ -101,9 +101,9 @@ function generatedAlt(field: string, value: unknown): boolean {
 /** The stamps a record without `review` reads as. `coverAsset` is the cover photo's pinned revision, for a series. */
 export function backfillFields(record: AuthoredRecord, coverAsset?: string | null, at: string = BACKFILL_AT): Record<string, FieldReview> {
     const fields: Record<string, FieldReview> = {};
+    // Absent fields too, so dropping one reads as reviewed where a tool dropped it before the backfill.
     for (const field of STAMPED_FIELDS[record.kind]) {
         const value = valueOf(record, field);
-        if (value === undefined) continue;
         fields[field] = {
             valueHash: hashValue(value),
             origin: generatedAlt(field, value) ? 'generated' : 'migration',

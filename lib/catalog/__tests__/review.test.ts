@@ -327,7 +327,7 @@ describe('the review publish gate', { timeout: 60_000 }, () => {
             photo.title = 'Fixture title.';
         });
         published(await f.publish());
-        // By hand: the title a tool stamped, and a caption no tool ever wrote.
+        // By hand: the title a tool wrote, and a caption only the backfill stamped, while it was absent.
         await f.handEdit<AuthoredPhoto>('photo', id, (photo) => {
             photo.title = 'Fixture title, by hand.';
             photo.caption = 'Fixture caption, by hand.';
@@ -337,7 +337,7 @@ describe('the review publish gate', { timeout: 60_000 }, () => {
         expect(refused.outcome).toBe('VALIDATION_FAILED');
         for (const result of [validated, refused]) {
             expect(reviewIssues(result)).toEqual([
-                expect.objectContaining({ code: 'review.authored-change', severity: 'error', record: { kind: 'photo', id }, field: 'caption', message: expect.stringContaining('was written outside the tools') }),
+                expect.objectContaining({ code: 'review.authored-change', severity: 'error', record: { kind: 'photo', id }, field: 'caption', message: expect.stringContaining('changed outside the tools since it was last reviewed') }),
                 expect.objectContaining({ code: 'review.authored-change', severity: 'error', record: { kind: 'photo', id }, field: 'title', message: expect.stringContaining('changed outside the tools since it was last reviewed') }),
             ]);
         }

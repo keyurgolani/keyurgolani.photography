@@ -342,7 +342,11 @@ export function diffCatalog(input: DiffInput): CatalogDiff {
                 summary: `${id} gets new bytes, ${now.assetRevision}, in place of ${was.assetRevision}.`,
             });
         }
-        const capturedAuthored = working?.capturedAt !== undefined;
+        // A capture date is authored while the record overrides it, and so is dropping an override: the record has a
+        // stamp for it, or the active revision published a date #10 didn't read.
+        const registryDate = registry?.photos[id]?.revisions[was.assetRevision]?.derived.capturedDate?.value;
+        const overridden = was.capturedAt !== undefined && registryDate !== undefined && was.capturedAt !== registryDate;
+        const capturedAuthored = working?.capturedAt !== undefined || working?.review?.fields.capturedAt !== undefined || overridden;
         const authoredFields: string[] = [...AUTHORED_PHOTO_FIELDS, ...(capturedAuthored ? ['capturedAt'] : [])];
         for (const field of authoredFields) {
             const a = (was as Record<string, unknown>)[field];

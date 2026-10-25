@@ -302,7 +302,7 @@ A derivative build that still fails after the watcher's retry at start gets a `p
 
 ## Review state
 
-Every write through the tools stamps what it changed in the authored record's `review`: a hash of the value, the active revision it was reviewed against, the photo's asset revision, the inbox item it settled, who wrote it, and when. A value you type or choose is reviewed as it is written. A suggested description (`"reviewed": false`) stays a suggestion until you mark it reviewed. A record no tool has written since this field was added counts as reviewed against its own `baseRevisionId`, except such a suggestion, and its first write keeps that for the fields it doesn't change.
+Every write through the tools stamps what it changed in the authored record's `review`: a hash of the value, the active revision it was reviewed against, the photo's asset revision, the inbox item it settled, who wrote it, and when. A value you type or choose is reviewed as it is written. A suggested description (`"reviewed": false`) stays a suggestion until you mark it reviewed. The first command after the upgrade that takes the authored lock records a one-time backfill in `authored/review-backfill.json`: every record without `review` at that point, records you made by hand included, counts as reviewed against its own `baseRevisionId`, except such a suggestion, and its first write keeps that for the fields it doesn't change. A version made by hand after that, without `review`, and a record folder made by hand after it, read as not reviewed.
 
 `photos.mjs validate` and `publish` compare the draft with the active revision and refuse a change visitors would see whose review is missing or stale (`review.authored-change`), naming the record, the field, and what to do. A review goes stale when:
 
@@ -310,7 +310,7 @@ Every write through the tools stamps what it changed in the authored record's `r
 - a photograph's description, title, caption, focal point, crop, or accent was reviewed for other bytes than the ones its record pins now, or a series cover for other bytes than its photograph's;
 - the inbox item it settled is open again, or a newer replacement of the same photograph waits in the inbox. Confirm it, or leave it in draft, and the publish goes through.
 
-A field changed by hand reads as not reviewed. To clear one, put the field back as it was, then make the change with `photos.mjs edit`. Settling a `conflicts` entry with `photos.mjs edit` reviews that field too. A publish of a draft that changes nothing visitors see stops with `NO_CHANGES` and writes no revision or activation (`review.empty-diff` refuses one that differs from the active revision but changes nothing visitors see). A rollback is never blocked by either rule: a stored revision was reviewed when it was first published.
+A field changed by hand reads as not reviewed. To clear one, put the field back as it was, then make the change with `photos.mjs edit`. A stale review whose value is still right clears in the Publish screen's review once it ships. Until then, the way out is to change the value with `photos.mjs edit` and change it back. Settling a `conflicts` entry with `photos.mjs edit` reviews that field too. A publish of a draft that changes nothing visitors see stops with `NO_CHANGES` and writes no revision or activation (`review.empty-diff` refuses one that differs from the active revision but changes nothing visitors see). A rollback is never blocked by either rule: a stored revision was reviewed when it was first published.
 
 ## Retention and cleanup
 
