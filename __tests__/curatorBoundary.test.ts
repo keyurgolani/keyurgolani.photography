@@ -312,18 +312,42 @@ describe("next.config.mjs's curator headers", () => {
         expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
     });
 
-    it('keeps frame-ancestors in an entry of its own, so #16 can override it', async () => {
+    it("keeps frame-ancestors in entries of their own, 'none' everywhere but #16's preview site", async () => {
         const entries = await nextConfig.headers!();
         const framing = entries.filter((entry) => entry.headers.some((header) => header.key === 'Content-Security-Policy'));
         expect(framing.length).toBeGreaterThan(0);
-        for (const entry of framing) expect(entry.headers).toEqual([{ key: 'Content-Security-Policy', value: "frame-ancestors 'none'" }]);
+        for (const entry of framing) {
+            const value = entry.source.startsWith('/curation/preview/:draftId/site') ? "frame-ancestors 'self'" : "frame-ancestors 'none'";
+            expect(entry.headers, entry.source).toEqual([{ key: 'Content-Security-Policy', value }]);
+        }
+        expect(framing.filter((entry) => entry.headers[0].value === "frame-ancestors 'self'").map((entry) => entry.source))
+            .toEqual(['/curation/preview/:draftId/site', '/curation/preview/:draftId/site/:path*']);
     });
 
     it('holds the same values as lib/curation/auth/policy.ts', async () => {
         const entries = await nextConfig.headers!();
-        const sent = Object.fromEntries(entries.flatMap((entry) => entry.headers.map((header) => [header.key, header.value])));
+        const curator = entries.filter((entry) => !entry.source.startsWith('/curation/preview/'));
+        const sent = Object.fromEntries(curator.flatMap((entry) => entry.headers.map((header) => [header.key, header.value])));
         expect(sent).toEqual({ ...CURATOR_RESPONSE_HEADERS, ...CURATOR_FRAME_POLICY });
     });
+
+    it.each(['/curation/preview/rev_x/site', '/curation/preview/rev_x/site/work/a', '/curation/preview/rev_x/site/media/a/b/c/w400.avif'])(
+        "lets the same origin frame #16's preview site at %s, with every other curator header",
+        async (pathname) => {
+            const response = await unstable_getResponseFromNextConfig({ url: `http://${CURATOR_HOST}${pathname}`, nextConfig });
+            expectCuratorHeaders(response);
+            expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'self'");
+        },
+    );
+
+    it.each(['/curation/preview', '/curation/preview/rev_x', '/curation/preview/rev_x/sitex', '/curation/preview/rev_x/other/site', '/curation/previews/rev_x/site'])(
+        "keeps frame-ancestors 'none' on %s, outside the preview site",
+        async (pathname) => {
+            const response = await unstable_getResponseFromNextConfig({ url: `http://${CURATOR_HOST}${pathname}`, nextConfig });
+            expectCuratorHeaders(response);
+            expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
+        },
+    );
 
     it('adds no curator header to the public site', async () => {
         for (const pathname of ['/', '/gallery', '/api/photos']) {

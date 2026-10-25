@@ -2,12 +2,20 @@
 
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSiteRoutes } from '@/components/site/siteRoutesContext';
 // Types only: the projection is server-only.
 import type { HomePhoto } from '@/lib/catalog/projections/home';
+import { createRouteBuilder, type RouteBuilder } from '@/lib/catalog/routes';
 
-/** Home's records endpoint for the window around `photoId`, bound to the revision Home rendered. */
-export function homePhotosHref(photoId: string, revisionId: string): string {
-  return `/api/catalog/home/photos/${encodeURIComponent(photoId)}?revision=${encodeURIComponent(revisionId)}`;
+const PUBLIC_ROUTES = createRouteBuilder();
+
+/**
+ * Home's records endpoint for the window around `photoId`, bound to the
+ * revision Home rendered: the public one, or a preview's mirror (#16) under
+ * the site's `basePath`.
+ */
+export function homePhotosHref(photoId: string, revisionId: string, routes: Pick<RouteBuilder, 'catalogApiHref'> = PUBLIC_ROUTES): string {
+  return routes.catalogApiHref(`home/photos/${encodeURIComponent(photoId)}?revision=${encodeURIComponent(revisionId)}`);
 }
 
 export interface HomeRecords {
@@ -49,6 +57,7 @@ const mod = (value: number, count: number) => ((value % count) + count) % count;
  */
 export function useHomeRecords({ revisionId, photoIds, initial, index }: Options): HomeRecords {
   const router = useRouter();
+  const routes = useSiteRoutes();
   const [records, setRecords] = useState<ReadonlyMap<string, HomePhoto>>(() => new Map(initial.map((record) => [record.id, record] as const)));
   const [failed, setFailed] = useState<ReadonlySet<string>>(new Set());
   /** IDs a live request is fetching, each with the request's controller. */
@@ -90,7 +99,7 @@ export function useHomeRecords({ revisionId, photoIds, initial, index }: Options
         });
       };
       const known = new Set(photoIds);
-      fetch(homePhotosHref(centerId, revisionId), { signal: controller.signal, headers: { Accept: 'application/json' } })
+      fetch(homePhotosHref(centerId, revisionId, routes), { signal: controller.signal, headers: { Accept: 'application/json' } })
         .then(async (response) => {
           // Aborted (unmounted, or React's development remount): free the IDs so a live request can ask for them.
           if (controller.signal.aborted) return settle();
@@ -132,7 +141,7 @@ export function useHomeRecords({ revisionId, photoIds, initial, index }: Options
           if (!controller.signal.aborted) fail();
         });
     },
-    [photoIds, revisionId, router],
+    [photoIds, revisionId, router, routes],
   );
 
   useEffect(() => {

@@ -1,5 +1,7 @@
 // #14's curator paths. proxy.ts 404s them unless CURATION_ENABLED is true.
 const CURATOR_SOURCES = ['/curation/:path*', '/api/curation/:path*'];
+// #16's preview site subtree, the one curator path a same-origin frame may embed.
+const PREVIEW_SITE_SOURCES = ['/curation/preview/:draftId/site', '/curation/preview/:draftId/site/:path*'];
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -22,6 +24,13 @@ const nextConfig = {
       ...CURATOR_SOURCES.map((source) => ({
         source,
         headers: [{ key: 'Content-Security-Policy', value: "frame-ancestors 'none'" }],
+      })),
+      // #16's preview: only the draft's visitor site may be framed, by the
+      // curator frame on the same origin. Later entries win for the same
+      // header, so each response still carries one CSP.
+      ...PREVIEW_SITE_SOURCES.map((source) => ({
+        source,
+        headers: [{ key: 'Content-Security-Policy', value: "frame-ancestors 'self'" }],
       })),
     ];
   },
