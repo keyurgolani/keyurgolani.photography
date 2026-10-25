@@ -86,7 +86,7 @@ body {
     line-height: 1.6;
 }
 
-/* The serif at its one weight. The legacy font-bold h1 on /gallery and /about keeps 700 until #3 and #12. */
+/* The serif at its one weight. The legacy font-bold h1 on /gallery keeps 700 until #3. */
 h1, h2, h3, h4, h5, h6 {
     font-family: var(--font-primary);
     font-weight: 400;

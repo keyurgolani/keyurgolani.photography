@@ -38,7 +38,8 @@ async function startServer(siteUrl: string | undefined): Promise<Server> {
     const library = process.env.E2E_EMPTY_LIBRARY;
     if (!library) throw new Error('playwright.config.ts sets E2E_EMPTY_LIBRARY, so the server never reads a real photo library');
     const port = await freePort();
-    const env: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: 'production', PHOTOGRAPHY_LIBRARY_DIR: library };
+    // ALLOW_PROVISIONAL_COPY as in playwright.config.ts: /about runs the copy gate per request too.
+    const env: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: 'production', PHOTOGRAPHY_LIBRARY_DIR: library, ALLOW_PROVISIONAL_COPY: '1' };
     delete env.SITE_URL;
     if (siteUrl) env.SITE_URL = siteUrl;
     const next = path.join(process.cwd(), 'node_modules', 'next', 'dist', 'bin', 'next');
