@@ -597,30 +597,47 @@ test.describe('on the desktop project', () => {
         });
     }
 
-    /** Moves the pointer corner to corner across the target, the way that starts ParallaxCard's tilt. */
+    /** Moves the pointer corner to corner across the target, the way a tilt or parallax effect would start. */
     async function sweep(page: Page, target: Locator) {
         const box = await target.boundingBox();
         if (!box) throw new Error(`${target} isn't rendered`);
         await page.mouse.move(box.x + 4, box.y + 4);
         await page.mouse.move(box.x + box.width - 4, box.y + box.height - 4, { steps: 12 });
     }
-    /** Inline transforms on anything inside the target. */
-    const inlineTransforms = (target: Locator) =>
-        target.evaluate((el) => Array.from(el.querySelectorAll<HTMLElement>('*'), (node) => node.style.transform).filter(Boolean));
+    /** Inline and computed transforms, animations, and transitions on the target and everything inside it. */
+    const movementIn = (target: Locator) =>
+        target.evaluate((el) =>
+            [el, ...Array.from(el.querySelectorAll<HTMLElement>('*'))].flatMap((node) => {
+                const style = getComputedStyle(node);
+                const name = node.tagName.toLowerCase();
+                const found: string[] = [];
+                if (node instanceof HTMLElement && node.style.transform) found.push(`${name} has inline transform ${node.style.transform}`);
+                for (const property of ['transform', 'translate', 'scale', 'rotate'] as const) {
+                    if (style[property] !== 'none') found.push(`${name} has ${property} ${style[property]}`);
+                }
+                if (style.animationName !== 'none') found.push(`${name} animates ${style.animationName}`);
+                for (const value of style.transitionDuration.split(',')) {
+                    const text = value.trim();
+                    const ms = text.endsWith('ms') ? parseFloat(text) : parseFloat(text) * 1000;
+                    if (ms > 0.01) found.push(`${name} transitions for ${text}`);
+                }
+                return found;
+            }),
+        );
 
-    test('under reduced motion, a pointer across the portrait leaves it untilted', async ({ page }) => {
-        await page.emulateMedia({ reducedMotion: 'reduce' });
-        await openAbout(page);
-        await sweep(page, portrait(page));
-        expect(await inlineTransforms(portrait(page))).toEqual([]);
-    });
-
-    test('without reduced motion, the same sweep tilts the portrait, so the check above can fail', async ({ page }) => {
-        await page.emulateMedia({ reducedMotion: 'no-preference' });
-        await openAbout(page);
-        await sweep(page, portrait(page));
-        expect(await inlineTransforms(portrait(page))).not.toEqual([]);
-    });
+    // #12's portrait has no tilt, parallax, or hover scale, so a pointer across
+    // it moves nothing at either motion setting.
+    for (const reducedMotion of ['reduce', 'no-preference'] as const) {
+        test(`with reducedMotion ${reducedMotion}, a pointer across the portrait leaves it and everything in it still`, async ({ page }) => {
+            await page.emulateMedia({ reducedMotion });
+            await openAbout(page);
+            expect(await movementIn(portrait(page)), 'at rest').toEqual([]);
+            await sweep(page, portrait(page));
+            expect(await movementIn(portrait(page)), 'after the sweep').toEqual([]);
+            await portrait(page).hover();
+            expect(await movementIn(portrait(page)), 'on hover').toEqual([]);
+        });
+    }
 
     test('loading /about requests nothing from another origin', async ({ page }) => {
         const requested: string[] = [];
