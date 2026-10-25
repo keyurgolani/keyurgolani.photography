@@ -567,7 +567,12 @@ export async function publish(options: PublishOptions): Promise<PublishResult> {
     const reason = options.reason ?? 'publish';
     assertActorAndReason(actor, reason);
     const result: PublishResult = { outcome: 'STORAGE_ERROR', message: '', candidateId: null, revisionId: null, revisionNumber: null, activationId: null, issues: [], errors: 0, warnings: 0 };
-    const finish = async (outcome: PublishOutcome, message: string, details: Partial<PublishResult> = {}): Promise<PublishResult> => {
+    /**
+     * Fill in the result and log how it ended. With `summarize`, which only a
+     * caller still holding the catalog lock passes, also write
+     * `last-publish.json`, so two publishes never write it out of order.
+     */
+    const finish = async (outcome: PublishOutcome, message: string, details: Partial<PublishResult>, summarize: boolean): Promise<PublishResult> => {
         Object.assign(result, details, { outcome, message });
         try {
             const pointer = await readActivePointer(root);
@@ -578,26 +583,41 @@ export async function publish(options: PublishOptions): Promise<PublishResult> {
         } catch {
             // The outcome already says what went wrong.
         }
-        try {
-            await writeLastPublish(root, {
-                schemaVersion: CATALOG_SCHEMA_VERSION,
-                outcome,
-                at: iso(clock()),
-                actor,
-                candidateId: result.candidateId,
-                revisionId: result.revisionId,
-                revisionNumber: result.revisionNumber,
-                errors: result.errors,
-                warnings: result.warnings,
-                message,
-            });
-        } catch {
-            // A summary that can't be written changes nothing about the publish.
+        if (summarize) {
+            try {
+                await writeLastPublish(root, {
+                    schemaVersion: CATALOG_SCHEMA_VERSION,
+                    outcome,
+                    at: iso(clock()),
+                    actor,
+                    candidateId: result.candidateId,
+                    revisionId: result.revisionId,
+                    revisionNumber: result.revisionNumber,
+                    errors: result.errors,
+                    warnings: result.warnings,
+                    message,
+                });
+            } catch {
+                // A summary that can't be written changes nothing about the publish.
+            }
         }
         const fields = { outcome, candidateId: result.candidateId, revisionId: result.revisionId, revisionNumber: result.revisionNumber, activationId: result.activationId };
         if (outcome === 'PUBLISHED') logEvent(logger, 'catalog.publish.activated', fields);
         else if (PUBLISH_EXIT_CODES[outcome] !== 0) logEvent(logger, 'catalog.publish.failed', fields);
         return result;
+    };
+
+    /** What an error that ended the publish means, as an outcome. */
+    const stopFor = async (error: unknown): Promise<{ outcome: PublishOutcome; message: string; details: Partial<PublishResult> }> => {
+        if (error instanceof Stop) return { outcome: error.outcome, message: error.message, details: error.details };
+        // Inside the catalog hold, the only lock a publish waits for is the authored one.
+        if (error instanceof LockTimeoutError) return { outcome: 'AUTHORED_LOCKED', message: error.message, details: { holder: error.holder } };
+        if (error instanceof CatalogIntegrityError) return { outcome: 'INTEGRITY_MISMATCH', message: error.message, details: {} };
+        // After step 11 the new revision is live even though the publish didn't finish.
+        const pointer = await readActivePointer(root).catch(() => null);
+        const live = pointer !== null && pointer.revisionId === result.candidateId ? await liveNote(root, pointer) : '';
+        const message = error instanceof Error ? error.message : String(error);
+        return { outcome: 'STORAGE_ERROR', message: live ? `${message}${/[.!?]$/.test(message) ? '' : '.'}${live}` : message, details: {} };
     };
 
     const status = dataRootStatus({ write: true, root });
@@ -606,118 +626,125 @@ export async function publish(options: PublishOptions): Promise<PublishResult> {
 
     try {
         return await withLock(CATALOG_LOCK, { root, leaseMs: options.leaseMs ?? CATALOG_LEASE_MS, waitMs: 0, hooks: hooks.lock }, async (lock) => {
-            const step = async (number: number) => hooks.afterStep?.(number);
-            if (lock.takeover) logEvent(logger, 'catalog.lock.takeover', { lock: CATALOG_LOCK, ...lock.takeover });
-
-            // 1. Recover.
             try {
-                result.recovery = await recover({ dataRoot: root, lock, logger, clock, authoredWaitMs: options.authoredWaitMs });
+                return await publishHeld(lock);
             } catch (error) {
-                if (error instanceof LockTimeoutError) throw new Stop('AUTHORED_LOCKED', error.message, { holder: error.holder });
-                throw error;
+                const stop = await stopFor(error);
+                // A holder that lost the lock leaves the summary to the process that has it now.
+                return finish(stop.outcome, stop.message, stop.details, stop.outcome !== 'LOCK_LOST' && !lock.signal.aborted);
             }
-            await step(1);
-
-            // 2. Snapshot the working layer and the registry, and compile them.
-            const snapshot = await snapshotAndCompile(root, { ...options, lock: true });
-            const { layer, registry, pointer, compiled } = snapshot;
-            await step(2);
-
-            // 3. Write the candidate, for #16.
-            result.candidateId = compiled.candidateId;
-            result.reprofiled = compiled.reprofiled;
-            const compiledAt = iso(clock());
-            const candidate = candidateFile(compiled, { baseRevisionId: pointer?.revisionId ?? null, compiledAt });
-            await writeCandidate(root, candidate);
-            await step(3);
-
-            // 4. The candidate the caller reviewed.
-            if (options.expectedRevisionId !== undefined && options.expectedRevisionId !== compiled.candidateId) {
-                throw new Stop('CANDIDATE_CHANGED', `The working layer compiles to ${compiled.candidateId}, not ${options.expectedRevisionId}. Review the new candidate first.`);
-            }
-            await step(4);
-
-            // 5. Already active.
-            if (pointer?.revisionId === compiled.candidateId) throw new Stop('NO_CHANGES', `${compiled.candidateId} is already active.`);
-            await step(5);
-
-            // 6. Validate.
-            const issues = runRules(ruleContext(root, snapshot));
-            const errors = countOf(issues, 'error');
-            const warnings = countOf(issues, 'warning');
-            const ruleset = rulesetVersion();
-            Object.assign(result, { issues, errors, warnings });
-            await writeDiagnostics(root, { schemaVersion: CATALOG_SCHEMA_VERSION, candidateId: compiled.candidateId, rulesetVersion: ruleset, checkedAt: iso(clock()), errors, warnings, issues });
-            logEvent(logger, 'catalog.publish.validated', { candidateId: compiled.candidateId, errors, warnings, rulesetVersion: ruleset });
-            if (errors > 0) throw new Stop('VALIDATION_FAILED', `${errors} ${errors === 1 ? 'error blocks' : 'errors block'} the publish.`);
-            await step(6);
-
-            // 7. The first activation replaces the legacy site.
-            const activations = await listActivations(root);
-            if (lastCommitted(activations) === null) {
-                const registered = new Set(registeredRules().map((rule) => rule.id));
-                const missingRules = (options.launchRuleIds ?? LAUNCH_ORDER_RULE_IDS).filter((id) => !registered.has(id));
-                if (missingRules.length > 0) throw new Stop('LAUNCH_RULES_MISSING', `The first publish needs these rules registered: ${missingRules.join(', ')}.`, { missingRules });
-                result.launch = launchImpact(registry, compiled.content.photos.length, new Set(compiled.content.photos.map((photo) => photo.id)));
-                if (!confirmLaunch && !dryRun) {
-                    const { published, gone } = result.launch;
-                    const leaving = gone > 0 ? `, and ${photographs(gone)} in the library ${gone === 1 ? 'leaves' : 'leave'} the site` : '';
-                    throw new Stop('LAUNCH_CONFIRMATION_REQUIRED', `This is the first publish: ${photographs(published)} ${published === 1 ? 'replaces' : 'replace'} the legacy Home and Gallery${leaving}. Confirm the launch to go ahead.`);
-                }
-            }
-            await step(7);
-
-            // 8. A dry run stops here.
-            if (dryRun) throw new Stop('DRY_RUN_OK', `${compiled.candidateId} passes validation. Nothing was written but the candidate and its diagnostics.`);
-            await step(8);
-
-            // 9. The revision file, written once.
-            const parsed = parseRevisionFile({ revisionId: compiled.candidateId, schemaVersion: CATALOG_SCHEMA_VERSION, baseRevisionId: pointer?.revisionId ?? null, compiledAt, content: compiled.content });
-            if (!parsed.ok) throw new Error(`The candidate passed validation but isn't a valid revision: ${parsed.error.issues.slice(0, 3).map((issue) => `${issue.path} ${issue.message}`).join('; ')}`);
-            await writeRevisionIfAbsent(root, parsed.value);
-            await step(9);
-
-            // 10 to 12. Activate.
-            const committed = await commitActivation({
-                root,
-                lock,
-                revisionId: compiled.candidateId,
-                kind: 'publish',
-                actor,
-                reason,
-                validation: { rulesetVersion: ruleset, errors, warnings, diagnosticsDigest: digestOf(issues) },
-                acceptedRules: [],
-                lockTakeover: lock.takeover,
-                clock,
-                afterStep: step,
-            });
-            if (!committed.ok) throw new Stop('LOCK_LOST', committed.message);
-            Object.assign(result, { revisionId: committed.activation.revisionId, revisionNumber: committed.activation.revisionNumber, activationId: committed.activation.activationId });
-
-            // 13. Rebase onto the new revision, merging against the snapshot.
-            try {
-                await rebaseWorkingLayer({ root, targetRevisionId: compiled.candidateId, snapshot: layer, registry, waitMs: options.authoredWaitMs });
-                result.rebased = true;
-            } catch (error) {
-                if (!(error instanceof LockTimeoutError)) throw error;
-                result.rebased = false;
-            }
-            await step(13);
-            const rebaseNote = result.rebased ? '' : ' The working layer was busy, so the next publish rebases it.';
-            return finish('PUBLISHED', `Published ${compiled.candidateId} as revision ${committed.activation.revisionNumber}.${rebaseNote}`);
         });
     } catch (error) {
-        if (error instanceof Stop) return finish(error.outcome, error.message, error.details);
+        // Nothing here holds the catalog lock, so nothing writes the summary.
         if (error instanceof LockTimeoutError) {
             const who = error.holder ? `${error.holder.owner} (pid ${error.holder.pid} on ${error.holder.hostname}, since ${error.holder.acquiredAt})` : 'another process';
-            return finish('CATALOG_LOCKED', `Another publish holds the catalog lock: ${who}.`, { holder: error.holder });
+            return finish('CATALOG_LOCKED', `Another publish holds the catalog lock: ${who}.`, { holder: error.holder }, false);
         }
-        if (error instanceof CatalogIntegrityError) return finish('INTEGRITY_MISMATCH', error.message);
-        // After step 11 the new revision is live even though the publish didn't finish.
-        const pointer = await readActivePointer(root).catch(() => null);
-        const live = pointer !== null && pointer.revisionId === result.candidateId ? await liveNote(root, pointer) : '';
-        const message = error instanceof Error ? error.message : String(error);
-        return finish('STORAGE_ERROR', live ? `${message}${/[.!?]$/.test(message) ? '' : '.'}${live}` : message);
+        const stop = await stopFor(error);
+        return finish(stop.outcome, stop.message, stop.details, false);
+    }
+
+    /** Steps 1 to 13, under the catalog hold. Throws Stop for an expected stop. */
+    async function publishHeld(lock: LockContext): Promise<PublishResult> {
+        const step = async (number: number) => hooks.afterStep?.(number);
+        if (lock.takeover) logEvent(logger, 'catalog.lock.takeover', { lock: CATALOG_LOCK, ...lock.takeover });
+
+        // 1. Recover.
+        try {
+            result.recovery = await recover({ dataRoot: root, lock, logger, clock, authoredWaitMs: options.authoredWaitMs });
+        } catch (error) {
+            if (error instanceof LockTimeoutError) throw new Stop('AUTHORED_LOCKED', error.message, { holder: error.holder });
+            throw error;
+        }
+        await step(1);
+
+        // 2. Snapshot the working layer and the registry, and compile them.
+        const snapshot = await snapshotAndCompile(root, { ...options, lock: true });
+        const { layer, registry, pointer, compiled } = snapshot;
+        await step(2);
+
+        // 3. Write the candidate, for #16.
+        result.candidateId = compiled.candidateId;
+        result.reprofiled = compiled.reprofiled;
+        const compiledAt = iso(clock());
+        const candidate = candidateFile(compiled, { baseRevisionId: pointer?.revisionId ?? null, compiledAt });
+        await writeCandidate(root, candidate);
+        await step(3);
+
+        // 4. The candidate the caller reviewed.
+        if (options.expectedRevisionId !== undefined && options.expectedRevisionId !== compiled.candidateId) {
+            throw new Stop('CANDIDATE_CHANGED', `The working layer compiles to ${compiled.candidateId}, not ${options.expectedRevisionId}. Review the new candidate first.`);
+        }
+        await step(4);
+
+        // 5. Already active.
+        if (pointer?.revisionId === compiled.candidateId) throw new Stop('NO_CHANGES', `${compiled.candidateId} is already active.`);
+        await step(5);
+
+        // 6. Validate.
+        const issues = runRules(ruleContext(root, snapshot));
+        const errors = countOf(issues, 'error');
+        const warnings = countOf(issues, 'warning');
+        const ruleset = rulesetVersion();
+        Object.assign(result, { issues, errors, warnings });
+        await writeDiagnostics(root, { schemaVersion: CATALOG_SCHEMA_VERSION, candidateId: compiled.candidateId, rulesetVersion: ruleset, checkedAt: iso(clock()), errors, warnings, issues });
+        logEvent(logger, 'catalog.publish.validated', { candidateId: compiled.candidateId, errors, warnings, rulesetVersion: ruleset });
+        if (errors > 0) throw new Stop('VALIDATION_FAILED', `${errors} ${errors === 1 ? 'error blocks' : 'errors block'} the publish.`);
+        await step(6);
+
+        // 7. The first activation replaces the legacy site.
+        const activations = await listActivations(root);
+        if (lastCommitted(activations) === null) {
+            const registered = new Set(registeredRules().map((rule) => rule.id));
+            const missingRules = (options.launchRuleIds ?? LAUNCH_ORDER_RULE_IDS).filter((id) => !registered.has(id));
+            if (missingRules.length > 0) throw new Stop('LAUNCH_RULES_MISSING', `The first publish needs these rules registered: ${missingRules.join(', ')}.`, { missingRules });
+            result.launch = launchImpact(registry, compiled.content.photos.length, new Set(compiled.content.photos.map((photo) => photo.id)));
+            if (!confirmLaunch && !dryRun) {
+                const { published, gone } = result.launch;
+                const leaving = gone > 0 ? `, and ${photographs(gone)} in the library ${gone === 1 ? 'leaves' : 'leave'} the site` : '';
+                throw new Stop('LAUNCH_CONFIRMATION_REQUIRED', `This is the first publish: ${photographs(published)} ${published === 1 ? 'replaces' : 'replace'} the legacy Home and Gallery${leaving}. Confirm the launch to go ahead.`);
+            }
+        }
+        await step(7);
+
+        // 8. A dry run stops here.
+        if (dryRun) throw new Stop('DRY_RUN_OK', `${compiled.candidateId} passes validation. Nothing was written but the candidate and its diagnostics.`);
+        await step(8);
+
+        // 9. The revision file, written once.
+        const parsed = parseRevisionFile({ revisionId: compiled.candidateId, schemaVersion: CATALOG_SCHEMA_VERSION, baseRevisionId: pointer?.revisionId ?? null, compiledAt, content: compiled.content });
+        if (!parsed.ok) throw new Error(`The candidate passed validation but isn't a valid revision: ${parsed.error.issues.slice(0, 3).map((issue) => `${issue.path} ${issue.message}`).join('; ')}`);
+        await writeRevisionIfAbsent(root, parsed.value);
+        await step(9);
+
+        // 10 to 12. Activate.
+        const committed = await commitActivation({
+            root,
+            lock,
+            revisionId: compiled.candidateId,
+            kind: 'publish',
+            actor,
+            reason,
+            validation: { rulesetVersion: ruleset, errors, warnings, diagnosticsDigest: digestOf(issues) },
+            acceptedRules: [],
+            lockTakeover: lock.takeover,
+            clock,
+            afterStep: step,
+        });
+        if (!committed.ok) throw new Stop('LOCK_LOST', committed.message);
+        Object.assign(result, { revisionId: committed.activation.revisionId, revisionNumber: committed.activation.revisionNumber, activationId: committed.activation.activationId });
+
+        // 13. Rebase onto the new revision, merging against the snapshot.
+        try {
+            await rebaseWorkingLayer({ root, targetRevisionId: compiled.candidateId, snapshot: layer, registry, waitMs: options.authoredWaitMs });
+            result.rebased = true;
+        } catch (error) {
+            if (!(error instanceof LockTimeoutError)) throw error;
+            result.rebased = false;
+        }
+        await step(13);
+        const rebaseNote = result.rebased ? '' : ' The working layer was busy, so the next publish rebases it.';
+        return finish('PUBLISHED', `Published ${compiled.candidateId} as revision ${committed.activation.revisionNumber}.${rebaseNote}`, {}, !lock.signal.aborted);
     }
 }
 

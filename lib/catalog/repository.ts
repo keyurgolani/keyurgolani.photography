@@ -204,7 +204,11 @@ export async function writeDiagnostics(root: string, diagnostics: DiagnosticsFil
     await atomicWriteJson(path.join(dir, `${diagnostics.candidateId}.json`), diagnostics);
 }
 
-/** `catalog/diagnostics/last-publish.json`: how the last publish attempt ended, for `photos status` and #16. */
+/**
+ * `catalog/diagnostics/last-publish.json`: how the last publish attempt that
+ * held the catalog lock ended, for `photos status` and #16. A publish that
+ * never got the lock, or lost it, writes none.
+ */
 export interface LastPublishFile {
     schemaVersion: typeof CATALOG_SCHEMA_VERSION;
     outcome: string;

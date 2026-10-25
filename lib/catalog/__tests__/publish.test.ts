@@ -85,6 +85,8 @@ async function setup(options: TestCatalogOptions = {}): Promise<Setup> {
     };
 }
 
+const lastPublishFile = (root: string) => path.join(catalogPaths(root).diagnosticsDir, 'last-publish.json');
+
 /** Publish the fixture as revision 1, then forget its log lines. */
 async function launched(options: TestCatalogOptions = {}): Promise<Setup & { first: PublishResult }> {
     const context = await setup(options);
@@ -346,10 +348,42 @@ describe('an interrupted publish', { timeout: 30_000 }, () => {
 });
 
 describe('the catalog lock', { timeout: 30_000 }, () => {
+    it.each([
+        ['PUBLISHED', true],
+        ['NO_CHANGES', false],
+        ['VALIDATION_FAILED', false],
+    ] as const)('writes last-publish.json for %s before it releases the lock', async (outcome, edit) => {
+        const { catalog, root, run, editPhoto } = await launched({ seed: 90 });
+        if (edit) {
+            await editPhoto(catalog.photos[0].id, (photo) => {
+                photo.caption = 'A caption revision 2 publishes.';
+            });
+        } else if (outcome === 'VALIDATION_FAILED') {
+            await editPhoto(catalog.photos[0].id, (photo) => {
+                photo.alt = null;
+            });
+        }
+        fs.rmSync(lastPublishFile(root));
+        const atRelease: unknown[] = [];
+        const result = await run({
+            hooks: {
+                lock: {
+                    beforeRelease() {
+                        atRelease.push(JSON.parse(fs.readFileSync(lastPublishFile(root), 'utf8')));
+                    },
+                },
+            },
+        });
+        expect(result.outcome).toBe(outcome);
+        expect(atRelease).toEqual([expect.objectContaining({ outcome, candidateId: result.candidateId })]);
+    });
+
     it('makes a second publish fail fast with CATALOG_LOCKED, naming the holder', async () => {
         const { root, run } = await setup({ seed: 72 });
         const result = await withLock(CATALOG_LOCK, { root }, () => run());
         expect(result.outcome).toBe('CATALOG_LOCKED');
+        // It never held the lock, so it leaves last-publish.json to the holder.
+        expect(fs.existsSync(lastPublishFile(root))).toBe(false);
         expect(PUBLISH_EXIT_CODES[result.outcome]).toBe(3);
         expect(result.holder).toMatchObject({ pid: process.pid, hostname: os.hostname() });
         expect(result.message).toContain(`pid ${process.pid} on ${os.hostname()}, since ${result.holder?.acquiredAt}`);
@@ -374,6 +408,7 @@ describe('the catalog lock', { timeout: 30_000 }, () => {
             photo.caption = 'A fixture caption.';
         });
         const pointer = fs.readFileSync(catalogPaths(root).active);
+        const summary = fs.readFileSync(lastPublishFile(root));
         let pause = false;
         const paused = deferred();
         const resume = deferred();
@@ -411,6 +446,7 @@ describe('the catalog lock', { timeout: 30_000 }, () => {
         expect(result.outcome).toBe('LOCK_LOST');
         expect(PUBLISH_EXIT_CODES[result.outcome]).toBe(3);
         expect(fs.readFileSync(catalogPaths(root).active)).toEqual(pointer);
+        expect(fs.readFileSync(lastPublishFile(root))).toEqual(summary);
         const pending = (await listActivations(root)).filter((activation) => activation.status === 'pending');
         expect(pending).toHaveLength(1);
 
