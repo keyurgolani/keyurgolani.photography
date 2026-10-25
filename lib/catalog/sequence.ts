@@ -357,7 +357,7 @@ async function applyUnderHold(root: string, op: SequenceOp, options: ApplyOption
     const [registry, { series }] = await Promise.all([readRegistry(root), readAuthoredSeries(root)]);
     const context = sequenceContext({ registry, series });
     const result = isSiteOp(op)
-        ? applySiteOp((current as AuthoredSite | null) ?? { schemaVersion: 1, version: 0, baseRevisionId: null, kind: 'site', featuredSeriesIds: [], seriesOrder: [] }, op, context)
+        ? applySiteOp((current as AuthoredSite | null) ?? { schemaVersion: 1, version: 0, baseRevisionId: null, kind: 'site', featuredSeriesIds: [], seriesOrder: [], baseSeriesOrder: null }, op, context)
         : applySeriesOp(current as AuthoredSeries, op, context);
     if (!result.ok) return result;
     if (!result.changed) return { ok: true, changed: false, version: found, actor: options.actor, consequences: [] };

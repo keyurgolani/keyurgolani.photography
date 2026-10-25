@@ -202,7 +202,11 @@ describe('authored records', () => {
 
     it('parse a site with its featured list and Work order', () => {
         const site = { ...base, kind: 'site', featuredSeriesIds: ['ser_fixture-one'], seriesOrder: ['ser_fixture-one', 'ser_fixture-two'] };
-        expect(parseAuthoredRecord('site', site)).toEqual({ ok: true, value: site });
+        // A site without a base Work order, as every one written before the field is, has an unknown one.
+        expect(parseAuthoredRecord('site', site)).toEqual({ ok: true, value: { ...site, baseSeriesOrder: null } });
+        const rebased = { ...site, baseSeriesOrder: ['ser_fixture-two', 'ser_fixture-one'] };
+        expect(parseAuthoredRecord('site', rebased)).toEqual({ ok: true, value: rebased });
+        expect(parseAuthoredRecord('site', { ...site, baseSeriesOrder: [''] }).ok).toBe(false);
     });
 
     it('default a series to review-required with empty copy, and allow a null cover', () => {

@@ -159,6 +159,24 @@ describe('writeAuthoredRecord', () => {
         expect(await readAuthoredRecord(data.root, 'series', 'ser_fixture')).toEqual(updated);
     });
 
+    it('keeps the site record\'s baseSeriesOrder, which only a rebase sets, and starts a new one at null', async () => {
+        const data = dataRoot();
+        const site = { kind: 'site' as const, featuredSeriesIds: [], seriesOrder: ['ser_fixture-a', 'ser_fixture-b'] };
+        const created = await writeAuthoredRecord({ ...site, baseSeriesOrder: ['ser_fixture-b'] }, { expectedVersion: 0, root: data.root });
+        expect(created).toMatchObject({ version: 1, baseSeriesOrder: null });
+
+        // A record written before the field reads as unknown.
+        const dir = authoredPaths(data.root).site;
+        writeVersion(dir, 2, { schemaVersion: 1, version: 2, baseRevisionId: null, ...site });
+        expect(await readAuthoredRecord(data.root, 'site', 'site')).toMatchObject({ version: 2, baseSeriesOrder: null });
+
+        // One a rebase wrote keeps it through an owner's write that names another.
+        writeVersion(dir, 3, { schemaVersion: 1, version: 3, baseRevisionId: ACTIVE, ...site, baseSeriesOrder: ['ser_fixture-a', 'ser_fixture-b'] });
+        const updated = await writeAuthoredRecord({ ...site, seriesOrder: ['ser_fixture-b', 'ser_fixture-a'], baseSeriesOrder: ['ser_fixture-b', 'ser_fixture-a'] }, { expectedVersion: 3, root: data.root });
+        expect(updated).toMatchObject({ version: 4, baseRevisionId: ACTIVE, seriesOrder: ['ser_fixture-b', 'ser_fixture-a'], baseSeriesOrder: ['ser_fixture-a', 'ser_fixture-b'] });
+        expect(await readAuthoredRecord(data.root, 'site', 'site')).toEqual(updated);
+    });
+
     it.each([
         ['an existing record expected at version 0', 0],
         ['an existing record expected at an old version', 1],

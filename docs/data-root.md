@@ -31,7 +31,7 @@ Only while no command runs: stop the `image-watcher` container, and don't run `p
    cp -n v4.json v5.json
    ```
 
-2. Edit `v5.json`. Leave its `stamp` as it is. A stamp that names another number marks the file as made by hand, and the next write stamps the version after it again.
+2. Edit `v5.json`. Leave its `stamp` as it is. A stamp that names another number marks the file as made by hand, and the next write stamps the version after it again. Leave `baseRevisionId` alone too, and in the site record `baseSeriesOrder`: publishing manages them, and they're how it tells your edits from the published ones.
 3. Start the watcher again.
 
 Never edit a version in place. A command that reads an edited newest version refuses it: `photos:identity status` reports the registry as unreadable and exits 1, the catalog lists the record as edited in place, and nothing writes on top of it. The message names the copy that recovers it (`cp -n v4.json v5.json`). Run that to keep the edit as a new version, or restore the file from a backup.
