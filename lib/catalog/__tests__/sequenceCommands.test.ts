@@ -1,13 +1,29 @@
 // @vitest-environment node
 import fs from 'node:fs';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { folderBytes } from '../../../test/helpers/folderBytes';
 import { withLock } from '../../storage/lock';
+import { applySequenceOp } from '../sequence';
 import { runSequenceCommand, type SequenceCommand } from '../sequence-commands';
 import { createTestCatalog, type TestCatalog } from '../testing';
 import { authoredRecordDir, readAuthoredRecord } from '../working-layer';
 import { writeAuthoredRecord } from '../working-layer-writer';
+
+/** Runs once, right after the next readAuthoredRecord() returns, as a write landing between a command's reads would. */
+const afterNextRead = vi.hoisted(() => ({ run: null as null | (() => Promise<unknown>) }));
+
+vi.mock('../working-layer', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../working-layer')>();
+    const readAuthoredRecord = async (...args: Parameters<typeof actual.readAuthoredRecord>) => {
+        const record = await actual.readAuthoredRecord(...args);
+        const { run } = afterNextRead;
+        afterNextRead.run = null;
+        if (run) await run();
+        return record;
+    };
+    return { ...actual, readAuthoredRecord: readAuthoredRecord as typeof actual.readAuthoredRecord };
+});
 
 const P = Array.from({ length: 8 }, (_, index) => `ph_00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`);
 const S1 = 'ser_fixture-01';
@@ -37,6 +53,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+    afterNextRead.run = null;
     await catalog.cleanup();
 });
 
@@ -108,6 +125,30 @@ describe('--to N', () => {
         const result = await run({ command, seriesId: S1, photoId, at: { to } });
         expect(result).toEqual({ exitCode: 1, output: expect.stringContaining('position-out-of-range') });
         expect(await order()).toEqual(before);
+    });
+
+    it('exits 3 with version-conflict, writing nothing, when the series changes between the read and the write', async () => {
+        // move P3 --to 2 reads [P0, P1, P2, P3] and anchors after P0. Then a policy moves P0 to the end. Placed after
+        // P0 now, P3 would end up at position 4, so the op must fail on the version its anchor came from.
+        let between: Record<string, string> | null = null;
+        afterNextRead.run = async () => {
+            await applySequenceOp({ dataRoot: catalog.root }, { kind: 'move', seriesId: S1, photoId: P[0], at: 'end' }, { expectedVersion: 1, actor: { kind: 'policy' } });
+            between = folderBytes(authoredRecordDir(catalog.root, 'series', S1));
+        };
+
+        const result = await run({ command: 'move', seriesId: S1, photoId: P[3], at: { to: 2 } });
+        expect(result).toEqual({ exitCode: 3, output: expect.stringContaining('version-conflict') });
+        expect(between).not.toBeNull();
+        expect(folderBytes(authoredRecordDir(catalog.root, 'series', S1))).toEqual(between);
+        expect(await order()).toEqual([P[1], P[2], P[3], P[0]]);
+    });
+
+    it('exits 3 with version-conflict when --expect-version isn\'t the version the anchor was read at', async () => {
+        const before = folderBytes(authoredRecordDir(catalog.root, 'series', S1));
+        expect(await run({ command: 'move', seriesId: S1, photoId: P[3], at: { to: 2 }, expectVersion: 2 })).toEqual({ exitCode: 3, output: expect.stringContaining('version-conflict') });
+        expect(folderBytes(authoredRecordDir(catalog.root, 'series', S1))).toEqual(before);
+        expect((await run({ command: 'move', seriesId: S1, photoId: P[3], at: { to: 2 }, expectVersion: 1 })).exitCode).toBe(0);
+        expect(await order()).toEqual([P[0], P[3], P[1], P[2]]);
     });
 
     it.each([0, -1, 1.5])('exits 2 for a position of %s, which is not a position', async (to) => {
