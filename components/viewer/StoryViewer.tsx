@@ -15,6 +15,7 @@ import {
     SHOW_TECHNICAL,
     TECHNICAL_LABELS,
     TECHNICAL_SOURCE,
+    UNAVAILABLE_LABEL,
     ZOOM_LABEL,
     accentValue,
     positionLabel,
@@ -64,7 +65,10 @@ function Step({ href, label, icon, className }: { href: string | null; label: st
  * the photograph at decisive scale, Previous and Next beside it, and a
  * bounded reading area that keeps authored copy apart from the camera facts,
  * which stay collapsed until asked for. Its own dark ground under both site
- * themes, and no SiteNav. Authored text renders as text nodes only.
+ * themes, and no SiteNav. Authored text renders as text nodes only. When the
+ * revision holds no usable set for the photo, the stage keeps a reserved box
+ * with the series page's missing-image copy, Previous and Next stay beside it,
+ * and Zoom is disabled, since there's nothing to enlarge.
  */
 export default function StoryViewer({ viewer, closeHref, previousHref, nextHref, pendingCopy }: StoryViewerProps) {
     const { series, photo, position, total } = viewer;
@@ -79,7 +83,9 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
         const value = photo.technical[key];
         return typeof value === 'string' ? [{ key, label: TECHNICAL_LABELS[key], value }] : [];
     });
-    const largest = photo.variants.w1920.webp.width;
+    const { image } = photo;
+    const largest = image === null ? null : image.variants.w1920.webp.width;
+    const zoomedIn = zoomed && largest !== null;
 
     return (
         <div data-surface="viewer" className={styles.viewer} style={surface}>
@@ -95,7 +101,13 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
                         <span className="sr-only">{positionText(position, total)}</span>
                     </p>
                 </div>
-                <button type="button" className={`${styles.control} ${styles.zoom}`} aria-pressed={zoomed} onClick={() => setZoomed((value) => !value)}>
+                <button
+                    type="button"
+                    className={`${styles.control} ${styles.zoom}`}
+                    aria-pressed={zoomedIn}
+                    disabled={image === null}
+                    onClick={() => setZoomed((value) => !value)}
+                >
                     <ZoomIn aria-hidden="true" size={18} />
                     {ZOOM_LABEL}
                 </button>
@@ -106,22 +118,28 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
                     <Step href={previousHref} label={PREVIOUS_LABEL} icon={<ArrowLeft aria-hidden="true" size={20} />} className={styles.previous} />
                     <div
                         className={styles.viewport}
-                        data-zoomed={zoomed ? 'true' : undefined}
+                        data-zoomed={zoomedIn ? 'true' : undefined}
                         // Zoomed, the photograph can overflow its box, and a scroll region has to be reachable by keyboard.
-                        tabIndex={zoomed ? 0 : undefined}
-                        role={zoomed ? 'region' : undefined}
-                        aria-label={zoomed ? 'Zoomed photograph' : undefined}
+                        tabIndex={zoomedIn ? 0 : undefined}
+                        role={zoomedIn ? 'region' : undefined}
+                        aria-label={zoomedIn ? 'Zoomed photograph' : undefined}
                     >
-                        <figure className={styles.frame} style={zoomed ? ({ '--zoom-width': `${largest}px` } as CSSProperties) : undefined}>
-                            <ResponsivePhoto
-                                asset={photo}
-                                alt={photo.alt}
-                                sizes={zoomed ? `${largest}px` : FIT_SIZES}
-                                loading="eager"
-                                fetchPriority="high"
-                                className={styles.image}
-                            />
-                        </figure>
+                        {image === null ? (
+                            <div className={styles.missing} data-photo="unavailable">
+                                <span className={styles.missingLabel}>{UNAVAILABLE_LABEL}</span>
+                            </div>
+                        ) : (
+                            <figure className={styles.frame} style={zoomedIn ? ({ '--zoom-width': `${largest}px` } as CSSProperties) : undefined}>
+                                <ResponsivePhoto
+                                    asset={image}
+                                    alt={photo.alt}
+                                    sizes={zoomedIn ? `${largest}px` : FIT_SIZES}
+                                    loading="eager"
+                                    fetchPriority="high"
+                                    className={styles.image}
+                                />
+                            </figure>
+                        )}
                     </div>
                     <Step href={nextHref} label={NEXT_LABEL} icon={<ArrowRight aria-hidden="true" size={20} />} className={styles.next} />
                 </div>
