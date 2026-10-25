@@ -1,4 +1,6 @@
 // @vitest-environment node
+import fs from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { artist, EXTERNAL_DESTINATION_ICONS, type ExternalDestinationIcon } from '../artist';
 
@@ -56,6 +58,48 @@ describe('artist.destinations', () => {
   it('uses only icons ExternalLinkIcon draws', () => {
     for (const { id, icon } of destinations) {
       if (icon !== undefined) expect(EXTERNAL_DESTINATION_ICONS, id).toContain(icon);
+    }
+  });
+});
+
+describe('artist.profile', () => {
+  const { profile } = artist;
+
+  // copyStatus isn't pinned here, so the owner's copy commit touches only
+  // data/artist.ts. app/about/__tests__/copyGate.test.ts checks that a
+  // provisional profile never loads under production.
+  it('has a known copy status', () => {
+    expect(['provisional', 'approved']).toContain(profile.copyStatus);
+  });
+
+  it('leaves out the claim that the work is edited and sequenced, which is false before the catalog cutover', () => {
+    const copy = [profile.statementHeading, ...profile.statementParagraphs, profile.shortBiography ?? ''].join(' ');
+    expect(copy).not.toMatch(/edited and sequenced/i);
+  });
+
+  it('has a heading, at least one paragraph, and no markup in any copy', () => {
+    expect(profile.statementHeading.trim()).not.toBe('');
+    expect(profile.statementParagraphs.length).toBeGreaterThan(0);
+    for (const text of [profile.name, profile.alias ?? '', profile.statementHeading, ...profile.statementParagraphs, profile.shortBiography ?? '', profile.portrait?.alt ?? '']) {
+      expect(text.trim(), 'empty copy').toBe(text);
+      expect(text).not.toMatch(/[<>]/);
+    }
+  });
+
+  it("gives the portrait the size of the PNG data/artistPortraitImage.ts imports, an alt, and a focal point inside the frame", () => {
+    const { portrait } = profile;
+    expect(portrait).toBeDefined();
+    if (!portrait) return;
+    const module = fs.readFileSync(path.join(import.meta.dirname, '../artistPortraitImage.ts'), 'utf8');
+    const imported = /from '([^']+\.png)'/.exec(module)?.[1];
+    expect(imported, 'data/artistPortraitImage.ts imports a .png').toBeDefined();
+    // The PNG header: width and height are the big-endian words at bytes 16 and 20.
+    const header = fs.readFileSync(path.join(import.meta.dirname, '..', imported ?? '')).subarray(0, 24);
+    expect({ width: portrait.width, height: portrait.height }).toEqual({ width: header.readUInt32BE(16), height: header.readUInt32BE(20) });
+    expect(portrait.alt.trim()).not.toBe('');
+    for (const value of [portrait.focalPoint?.x ?? 50, portrait.focalPoint?.y ?? 50]) {
+      expect(value).toBeGreaterThanOrEqual(0);
+      expect(value).toBeLessThanOrEqual(100);
     }
   });
 });

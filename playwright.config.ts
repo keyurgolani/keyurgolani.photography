@@ -60,6 +60,10 @@ export default defineConfig({
     url: origin,
     timeout: 240_000,
     reuseExistingServer: !process.env.CI,
-    env: { PHOTOGRAPHY_LIBRARY_DIR: emptyLibrary() },
+    // The command builds and serves under this env. ALLOW_PROVISIONAL_COPY lets
+    // both run on About's placeholder copy, which fails any other production
+    // build (utils/artistProfile.ts). It belongs here and in metadata.spec.ts's
+    // own server only, never in the Dockerfile, Compose files, or workflows.
+    env: { PHOTOGRAPHY_LIBRARY_DIR: emptyLibrary(), ALLOW_PROVISIONAL_COPY: '1' },
   },
 });
