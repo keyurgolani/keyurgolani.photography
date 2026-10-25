@@ -87,11 +87,13 @@ describe('the watcher process import graph', () => {
         expect(files.filter((file) => /^lib\/curation\/(?:actions|commands)\.ts$/.test(file))).toEqual([]);
     });
 
-    it('hands the curation sink to the identity step in both watch and --once', () => {
+    it('hands the curation and candidate sinks, and the settling build, to the identity step in both watch and --once', () => {
         const source = fs.readFileSync(path.join(REPO_ROOT, 'scripts/imageWatcher.ts'), 'utf8');
-        expect(source).toMatch(/function factSinks\(\) \{\n\s+return \[jsonLogSink\(\), createCurationSink\(\)\];/);
-        expect(source).toMatch(/createIdentityStep\(\{\n\s+sinks: factSinks\(\),/);
-        expect(source).toMatch(/runIdentityOnce\(\{ sinks: factSinks\(\),/);
+        expect(source).toMatch(/function factSinks\(\) \{\n\s+return \[jsonLogSink\(\), createCurationSink\(\), createCandidateSink\(\)\];/);
+        expect(source).toMatch(/createIdentityStep\(\{\n\s+sinks: factSinks\(\),\n\s+worker: workerBuilds\(\),/);
+        expect(source).toMatch(/runIdentityOnce\(\{ sinks: factSinks\(\), worker: workerBuilds\(\),/);
+        // #17: every build records its set on the revision's replacement item.
+        expect(source).toMatch(/function workerBuilds\(\) \{\n\s+return \{ build: settlingAfterBuild\(buildDerivativeSet\) \};/);
     });
 
     it('lets a watcher module read the working layer and the catalog reader', () => {
