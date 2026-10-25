@@ -119,17 +119,10 @@ test.beforeAll(async () => {
     const broken = catalog.content.photos.find((record) => record.id === BROKEN);
     if (!broken) throw new Error('The broken entry is not in the published content');
     fs.rmSync(assetDir({ photoId: broken.id, assetRevision: broken.assetRevision, profileId: catalog.profileId }, catalog.root), { recursive: true, force: true });
-    // E2E_CATALOG_PORT pins a port per worker, for a machine that hands out ranges.
+    // E2E_CATALOG_PORT pins a port per worker, for a machine that hands out ranges. The config's
+    // catalog Home server listens on E2E_CATALOG_PORT itself, so the workers start one above it.
     const base = Number(process.env.E2E_CATALOG_PORT);
-    // catalogServer.ts passes this process's env on, so SITE_URL reaches that server only.
-    const previous = process.env.SITE_URL;
-    process.env.SITE_URL = SITE_URL;
-    try {
-        server = await startCatalogServer(catalog.root, Number.isInteger(base) && base > 0 ? base + test.info().parallelIndex : undefined);
-    } finally {
-        if (previous === undefined) delete process.env.SITE_URL;
-        else process.env.SITE_URL = previous;
-    }
+    server = await startCatalogServer(catalog.root, Number.isInteger(base) && base > 0 ? base + 1 + test.info().parallelIndex : undefined, { siteUrl: SITE_URL });
 });
 
 test.afterAll(async () => {

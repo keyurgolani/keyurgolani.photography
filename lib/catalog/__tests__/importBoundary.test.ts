@@ -37,6 +37,7 @@ describe('the lib/catalog import boundary', { timeout: 60_000 }, () => {
         ['lib/catalog/working-layer-writer.ts', SERVER_ONLY],
         ['lib/catalog/projections/work.ts', NEXT_SERVER],
         ['lib/catalog/projections/viewer.ts', NEXT_SERVER],
+        ['lib/catalog/projections/series.ts', NEXT_SERVER],
         ['lib/catalog/__tests__/probe.test.ts', NEXT_SERVER],
     ])('rejects %s importing Next or server-only', async (file, source) => {
         expect(await restrictedImports(file, source)).toHaveLength(1);
@@ -49,7 +50,7 @@ describe('the lib/catalog import boundary', { timeout: 60_000 }, () => {
         expect(await restrictedImports(file, source)).toEqual([]);
     });
 
-    it.each(['lib/catalog/reader.ts', 'lib/catalog/projections/work.ts', 'lib/catalog/projections/home.ts', 'lib/catalog/projections/viewer.ts'])('lets %s, which client code must not reach, import server-only', async (file) => {
+    it.each(['lib/catalog/reader.ts', 'lib/catalog/projections/work.ts', 'lib/catalog/projections/home.ts', 'lib/catalog/projections/viewer.ts', 'lib/catalog/projections/series.ts'])('lets %s, which client code must not reach, import server-only', async (file) => {
         expect(await restrictedImports(file, SERVER_ONLY)).toEqual([]);
     });
 
@@ -58,9 +59,9 @@ describe('the lib/catalog import boundary', { timeout: 60_000 }, () => {
         expect(await restrictedImports('lib/catalog/projections/probe.ts', SERVER_ONLY)).toHaveLength(1);
     });
 
-    it('finds server-only in the reader and the Viewer projection, and no runtime reader import in the test catalog Playwright loads', () => {
+    it('finds server-only in the reader and the Viewer and series projections, and no runtime reader import in the test catalog Playwright loads', () => {
         const read = (file: string) => fs.readFileSync(path.join(REPO_ROOT, file), 'utf8');
-        for (const file of ['lib/catalog/reader.ts', 'lib/catalog/projections/viewer.ts']) expect(read(file), file).toMatch(/^import 'server-only';$/m);
+        for (const file of ['lib/catalog/reader.ts', 'lib/catalog/projections/viewer.ts', 'lib/catalog/projections/series.ts']) expect(read(file), file).toMatch(/^import 'server-only';$/m);
         // Playwright and ci/publish-fixture.ts load testing.ts under plain Node, where server-only throws.
         expect(read('lib/catalog/testing.ts')).not.toMatch(/^import (?!type )[^;]*from '\.\/reader';$/m);
     });
