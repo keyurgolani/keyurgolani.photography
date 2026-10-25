@@ -10,7 +10,7 @@ Every pull request runs `.github/workflows/ci.yml`, whether it targets `main` or
 |---|---|
 | `Lint, unit tests, build` | Checks that `.nvmrc` holds a bare Node major and the `Dockerfile` base image matches it, then runs `npm ci`, `npm run lint`, `npm test -- --run`, `npm run build`, `ci/check-standalone.sh`, and `npm run smoke:media`. `ci/check-standalone.sh` fails if the build copied project sources, the default data root, or the library into `.next/standalone`. `npm run smoke:media` migrates a generated fixture library into a temp data root, builds its sets with the watcher's `--once`, and checks that the build's `/media` route serves them, including one built after the server started. |
 | `Browser tests` | Runs `npm run test:e2e`, which builds and serves the site against an empty temp photo library and runs `e2e/` in Chromium on a desktop and a Pixel 7 project, and `e2e/home-immersive.spec.ts` in WebKit on an iPhone 13 project, `mobile-webkit`. A failed run uploads `playwright-report/` and `test-results/`. |
-| `Image smoke test` | Runs `ci/check-compose.sh`, builds the image, checks that it runs the Node major in `.nvmrc`, and runs `ci/smoke-image.sh` against it. Then it runs `ci/smoke-watcher-once.sh`, which has the image generate a fixture library from the checkout's `test/fixtures`, runs the image's watcher with `--once` on it, checks that it deletes nothing after a photo is removed and exits 1 on a missing library, and checks the web server's image routes. |
+| `Image smoke test` | Runs `ci/check-compose.sh`, builds the image, checks that it runs the Node major in `.nvmrc`, and runs `ci/smoke-image.sh` against it. Then it runs `ci/smoke-watcher-once.sh`, which checks that the image ships the bundled scripts and no dev dependencies or tsx, has the image's node generate a fixture library from the checkout's `test/fixtures`, runs the image's watcher with `--once` on it, checks that it deletes nothing after a photo is removed and exits 1 on a missing library, and checks the web server's image routes. |
 | `Production audit` | Runs `ci/audit-gate.mjs`, which runs `npm audit --omit=dev` and fails on a high or critical advisory that `.github/audit-allowlist.json` doesn't list. It reads only the lockfile, so it skips `npm ci`. |
 | `CI result` | Fails unless all four jobs above succeeded. |
 
@@ -18,14 +18,14 @@ Every pull request runs `.github/workflows/ci.yml`, whether it targets `main` or
 
 `Production audit` can also turn CI red with no code change. That happens when the npm advisory service is unreachable, when a new high or critical advisory lands on a production dependency, or when an allowlist entry expires. Each of these also fails the `ci` job of a `main` publish, so nothing publishes and no release can be cut until it's fixed. [When the audit blocks `main`](#when-the-audit-blocks-main) covers the recovery.
 
-`ci/check-compose.sh` checks that every image line in `docker-compose.prod.yml` is exactly `ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?...}`, that Compose resolves every service to that one tag and refuses the file when the variable is unset, that the file has no `:latest`, and that the services Compose starts by default are exactly the ones in `ci/smoke-services`, the list `ci/smoke-image.sh` starts. A PR that adds a service lists it there and extends the smoke test to check it.
+`ci/check-compose.sh` checks that every image line in `docker-compose.prod.yml` is exactly `ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?...}`, that Compose resolves every service to that one tag and refuses the file when the variable is unset, that the file has no `:latest`, that the services Compose starts by default are exactly the ones in `ci/smoke-services`, the list `ci/smoke-image.sh` starts, that every published port is on the host's 127.0.0.1 whatever `PHOTOGRAPHY_PORT` says and no service uses `network_mode: host`, that `web` mounts the data root once, read-only, and points `PHOTOGRAPHY_DATA_DIR` at it, and that every bind of the data root, the library, or `web`'s image cache has `create_host_path: false`. A PR that adds a service lists it in `ci/smoke-services` and extends the smoke test to check it.
 
-`ci/smoke-image.sh` starts `web` and `image-watcher` from `docker-compose.prod.yml` on the image under test, with the two photos in `ci/fixtures/library/` as the library. It checks that `/` returns HTML, `/api/photos` returns a JSON array, and the watcher writes all seven derivatives for each photo, picks up a photo added while it runs, and never restarts. CI runs it on the image the PR built, and `Publish to GHCR` runs it again on the exact digest it pushed. To run it locally you need Docker and a free port 3000:
+`ci/smoke-image.sh` starts `web` and `image-watcher` from `docker-compose.prod.yml` on the image under test, with the two photos in `ci/fixtures/library/` as the library and an empty data root. It checks that `/` returns HTML, `/api/photos` returns a JSON array, `/api/health` answers, and the watcher passes its healthcheck, writes all seven derivatives for each photo, picks up a photo added while it runs, and never restarts. Then it runs the migration runbook in [data-root.md](data-root.md) as uid 1001, waits for the watcher to build every `/media` set, checks that `/media` serves them and an original 404s, and that recreating the containers keeps every photo ID and ETag. Last, it runs the watcher with `PHOTOGRAPHY_DATA_DIR` unset and checks that it writes the legacy derivatives and no registry. Its only change to the Compose file is an override that turns on `PHOTOGRAPHY_MEDIA_ACCESS=all` and binds `web` to 127.0.0.1. CI runs it on the image the PR built, and `Publish to GHCR` runs it again on the exact digest it pushed. To run it locally you need Docker with Compose 2.24.4 or later, for the override's `!override` tag, and a free port, 3000 unless you set `SMOKE_IMAGE_PORT`:
 
 ```bash
 docker build -t ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke .
 ci/check-compose.sh
-ci/smoke-image.sh ci-smoke
+npm run smoke:image
 ```
 
 A PR runs its own copy of `ci.yml` and `ci/`, so a PR that edits `.github/workflows/`, `ci/`, or `.github/audit-allowlist.json` can weaken the check that gates it. Read those diffs by hand.
@@ -131,6 +131,8 @@ Set the tag in the `.env` next to `docker-compose.prod.yml` on the host. Compose
 PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z
 ```
 
+To pin the exact image too, add the digest from the release's job summary: `PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z@sha256:<digest>`. Compose then pulls that digest whatever the tag names later.
+
 Then pull and restart:
 
 ```bash
@@ -156,13 +158,16 @@ docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx t
 docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts --apply --plan <hash>
 ```
 
+Those commands are for the `v1.1.0` image and the releases before slice C of #10. From the first release with slice C on, the image has no tsx, so run `node dist/scripts/imageCleanup.mjs` with the same flags.
+
 The first release with slice A of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10) needs a step too. The Gallery grid and lightbox now show the derivatives instead of the original files, and derivatives written before it ignored the EXIF orientation, so a photo whose file carries an orientation tag shows turned or mirrored until its derivatives are rebuilt. The watcher rebuilds them by itself. The first time it starts on a library, it rebuilds the set of every photo with an orientation tag, and once each of them is written or has failed it records that in `cache/upright-rebuild.json` in the library, so later starts skip it. A photo that failed is listed there, and each start tries it again until it builds. If the watcher stops first, or a photo changes while it is rebuilt, the next start rebuilds them all again. The watcher has to be able to write `cache/`; it logs at start when it can't. The old derivatives keep serving until each photo's new set is written.
 
-To see which photos it rebuilds, run the dry run after `up -d`. It changes nothing in the library and prints the path of its report:
+On a host that already ran a release with slice A, the watcher has already rebuilt them, so skip the rest of this step.
+
+To see which photos it rebuilds, run the migration dry run the way the [migration runbook](data-root.md#migration-runbook) does, with `run --rm --no-deps` while the watcher is stopped, before the new watcher first starts. The deploy blocks for the first release with slice C, below, do that between their `pull` and their `up -d`, with `node dist/scripts/photos.mjs migrate --dry-run`, since that image has no tsx. It changes nothing in the library, adds only a plan and a report under `identity/migration/` in the data root, and prints the report's path. Read the report once the block is done:
 
 ```bash
-docker compose -f docker-compose.prod.yml exec image-watcher npm run photos:migrate -- --dry-run --out /tmp/photo-migration
-docker compose -f docker-compose.prod.yml exec image-watcher cat <report path>
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher cat <report path>
 ```
 
 Its "Orientation-tagged files" section lists them, except any the library reaches through a symlink, since the dry run reads no file through one. If it says "None." and no photo in the library's top folder is a symlink, skip the rest. Otherwise wait for the watcher to log that it rebuilt them:
@@ -173,9 +178,136 @@ docker compose -f docker-compose.prod.yml logs image-watcher | grep orientation-
 
 Once it logs that it rebuilt the sets of the orientation-tagged photos, clear `./.next-images-cache` the same way as above, so `/_next/image` drops the copies it made from the old derivatives. If it also names photos that failed to rebuild, fix or remove those files, and clear the cache again once it logs that it rebuilt them. If this is also the first release with Phase 0, this one clear, after the rebuild, covers both.
 
+The first release with slice C of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10) needs the new `docker-compose.prod.yml` on the host, and the data root, `./portfolio-data`, and `./.next-images-cache` created and owned by uid 1001 before the first `up`. The old compose file runs the watcher with tsx, which the image no longer has, and the new one never creates a missing data root or image cache, so the containers don't start without them. A `./.next-images-cache` that Docker created for the old file belongs to root, and the `chown` in the blocks below hands it to uid 1001. The new file also publishes `web` on the host's 127.0.0.1 only, port `PHOTOGRAPHY_PORT` or 3000, so whatever serves the site to the internet has to reach it there, such as a reverse proxy or a tunnel running directly on the host. A proxy or tunnel that runs in a container can't: the host's 127.0.0.1 isn't its 127.0.0.1. Run it as a service in the override below instead, so it joins this project's network, and point it at `http://web:3000`. That service may publish 80 and 443 itself.
+
+On that network, the proxy or tunnel reaches `web` by its service name or by a network alias. If its configured origin names another host, such as the service name an older compose file used, give `web` that name as an alias in the override, rather than changing the proxy's own configuration:
+
+```yaml
+services:
+  web:
+    networks:
+      default:
+        aliases:
+          - <origin name>
+```
+
+`web` stays on the same `default` network, and the alias only adds a name for it there. A proxy that stays in a Compose project of its own has to join this project's `default` network as an external network before either name resolves.
+
+Keep the host's current file, and find what this host changed in it. Compare it with the repository's file for the release the host runs now, `v<current>`, the tag you noted before changing `.env`, not with the new one, which also has the repository's own changes. Then fetch the new file beside it. The `[ -e ... ] ||` keeps the first copy if you run these again:
+
+```bash
+[ -e docker-compose.prod.yml.before-vX.Y.Z ] || cp -p docker-compose.prod.yml docker-compose.prod.yml.before-vX.Y.Z
+curl -fsSL -o docker-compose.prod.yml.current https://raw.githubusercontent.com/keyurgolani/keyurgolani.photography/v<current>/docker-compose.prod.yml
+diff -u docker-compose.prod.yml.current docker-compose.prod.yml.before-vX.Y.Z
+curl -fsSL -o docker-compose.prod.yml.new https://raw.githubusercontent.com/keyurgolani/keyurgolani.photography/vX.Y.Z/docker-compose.prod.yml
+```
+
+If the diff shows changes made on this host, don't copy them into the new file:
+
+- A different host port goes in `.env` as `PHOTOGRAPHY_PORT=<port>`, never in an override.
+- Anything else, such as another service or photos path, goes in an override file that isn't in the repository, added to every command as `-f docker-compose.prod.yml -f <override>`, so the next release's file replaces cleanly. Compose adds an override's `ports:` to the file's instead of replacing them, so a `ports:` entry for `web` there has to start with `127.0.0.1:` and its list has to be tagged `!override` (Compose 2.24.4 or later), and `web` never takes `network_mode: host`. Otherwise `web` is published on every interface again. These rules are for `web` only. A reverse proxy service in the override may publish 80 and 443, or run with `network_mode: host` and point at `http://127.0.0.1:3000`.
+
+A host whose boot service runs a plain `docker compose up`, with no `-f`, loads `docker-compose.yml`, and `docker-compose.override.yml` beside it whenever that exists. Keep that service and every command here on the same project: install the repository's file as `docker-compose.prod.yml`, as above, point `docker-compose.yml` at it with a symlink in the same folder, and name the override `docker-compose.override.yml`, which Compose loads on its own. This layout is for a deploy folder that isn't a git checkout of the repository. In a checkout, `docker-compose.yml` is the repository's dev stack, and a later `git pull`, `checkout`, or `reset` puts it back in place of the symlink, so the next boot starts the dev stack, as root, on the production library and data root.
+
+If the host's file is a real `docker-compose.yml` today, rename it to `docker-compose.prod.yml` before the steps above, so the saved copy and the diff use it. The `-n` leaves a `docker-compose.prod.yml` that's already there alone, and the `ln` below then refuses too, so check which of the two is the host's file before going on:
+
+```bash
+mv -n docker-compose.yml docker-compose.prod.yml
+```
+
+Leave no `compose.yaml` or `compose.yml` in that folder, since Compose prefers them, and no `compose.override.yml` or `compose.override.yaml`, since Compose loads that one instead of `docker-compose.override.yml` when both exist. The `ln` refuses to replace a file that's there:
+
+```bash
+[ -L docker-compose.yml ] || ln -s docker-compose.prod.yml docker-compose.yml
+```
+
+The block's `mv` replaces the file the link points at, so the link keeps working. With this layout, use the override block below with `docker-compose.override.yml` as `<override>`, and run every other command in this guide either as plain `docker compose` or with both files, `-f docker-compose.prod.yml -f docker-compose.override.yml`. `-f docker-compose.prod.yml` alone leaves the override out, so its services don't start. Once the new file is in place, check that the plain command loads the override. This has to list `web`, `image-watcher`, and every service in the override, and `docker compose config` shows each one's settings:
+
+```bash
+docker compose config --services
+```
+
+If the host's file named a service differently from the repository's, for example, a name from a hand-written compose file, such as `<old-service>` where the repository's file has `web`, that service's container outlives the switch. Compose manages only the services its files name, so `up -d` leaves the old container running, still holding the port it published, and a new `web` on the same port fails to start. Before the block below, list this project's containers with their service names, and the services the new files name. Add `-f <override>` to the second command when you use one:
+
+```bash
+docker ps -a --filter "label=com.docker.compose.project=$(docker compose -f docker-compose.prod.yml.new config --format json | jq -r .name)" \
+  --format '{{.ID}}\t{{.Label "com.docker.compose.service"}}\t{{.Names}}\t{{.Status}}'
+docker compose -f docker-compose.prod.yml.new config --services
+```
+
+A container whose service the second list doesn't name is left from an old service name. Remove each one by its ID before the block, which takes the site down until the block's `up -d`. Removing a container leaves the photos, the data root, and the image cache alone, since they're folders on the host:
+
+```bash
+docker rm -f <ID>
+```
+
+For an old `web`, you can instead add `--remove-orphans` to the block's `up -d`, deliberately. It removes every container of this project whose service the files don't name, including one an earlier override started that this override no longer has. It runs only at the end, though, so remove a watcher left from an old service name with `docker rm -f` before the block either way. The block's `stop image-watcher` doesn't reach it, and it would keep writing the library while the dry run reads it.
+
+Then install the new file, set up the data root and the image cache, stop the old watcher, run the slice A dry run above, and deploy. Do it this way instead of the plain `pull` and `up -d`, and only after the `.env` edit. Each half of the switch needs the other: the plain commands would start the old file on the new image, whose watcher command needs tsx, and this block run on the old tag would start the new file on the old image, which has no `dist/scripts`. Either way the watcher crash-loops. So the block checks `.env` first, and stops before it changes anything when the tag isn't there yet. The check takes the tag alone or pinned to a digest, `vX.Y.Z@sha256:<digest>`, as one line with no quotes or spaces. In the `grep` pattern, put the version's digits in place of `X`, `Y`, and `Z` and keep the `\.` between them. The `exit` leaves only the block's subshell, not your shell. On a large library the dry run reads every photo and can take as long as a full identity pass, while the watcher is stopped and the old `web` keeps serving, so let it finish. If you stop it, the block stops before `up -d`. Run the block again: its `mv` reports that the `.new` file is gone, since the first run moved it in, and the rest runs as before:
+
+```bash
+(
+  grep -Eqx 'PHOTOGRAPHY_IMAGE_TAG=vX\.Y\.Z(@sha256:[0-9a-f]{64})?' .env || { echo ".env doesn't set PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z yet. Nothing was changed." >&2; exit 1; }
+  mv docker-compose.prod.yml.new docker-compose.prod.yml
+  mkdir -p portfolio-data .next-images-cache
+  sudo chown -R 1001:1001 portfolio-data .next-images-cache
+  sudo chmod 700 portfolio-data
+  docker compose -f docker-compose.prod.yml pull
+  docker compose -f docker-compose.prod.yml stop image-watcher
+  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs migrate --dry-run
+  docker compose -f docker-compose.prod.yml up -d
+)
+```
+
+With an override, use this block instead. It also checks the merged file, the new one with your override, before anything moves: `web` has to be published on 127.0.0.1 only and stay off the host's network. It needs `jq` on the host, and without it the check fails and stops the block too. The check reads the `.new` file, so when an earlier run already moved it in, as one stopped during the dry run did, the block says so and stops. Fetch the new file again with the `curl` line above and run the block again:
+
+```bash
+(
+  grep -Eqx 'PHOTOGRAPHY_IMAGE_TAG=vX\.Y\.Z(@sha256:[0-9a-f]{64})?' .env || { echo ".env doesn't set PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z yet. Nothing was changed." >&2; exit 1; }
+  [ -e docker-compose.prod.yml.new ] || { echo "docker-compose.prod.yml.new is gone, so an earlier run already moved it in. Fetch it again and rerun this block. Nothing was changed." >&2; exit 1; }
+  docker compose -f docker-compose.prod.yml.new -f <override> config --format json |
+    jq -e '.services.web.network_mode == null and ([.services.web.ports[]?.host_ip] | unique) == ["127.0.0.1"]' >/dev/null ||
+    { echo "With the override, web isn't published on 127.0.0.1 only. Fix the override. Nothing was changed." >&2; exit 1; }
+  mv docker-compose.prod.yml.new docker-compose.prod.yml
+  mkdir -p portfolio-data .next-images-cache
+  sudo chown -R 1001:1001 portfolio-data .next-images-cache
+  sudo chmod 700 portfolio-data
+  docker compose -f docker-compose.prod.yml -f <override> pull
+  docker compose -f docker-compose.prod.yml -f <override> stop image-watcher
+  docker compose -f docker-compose.prod.yml -f <override> run --rm --no-deps image-watcher node dist/scripts/photos.mjs migrate --dry-run
+  docker compose -f docker-compose.prod.yml -f <override> up -d
+)
+```
+
+Once it's up, check the site from the host, on `PHOTOGRAPHY_PORT` if you set one, and then through the public URL:
+
+```bash
+curl -fsS http://127.0.0.1:3000/api/health
+curl -fsS https://<public host>/api/health
+```
+
+If the first answers and the second doesn't, the proxy or tunnel can't reach `web`. One in a container needs the `http://web:3000` setup above.
+
+[Setting it up](data-root.md#setting-it-up) in data-root.md is the same step. The site keeps serving the legacy derivatives, and the watcher's identity step stays off until the [migration runbook](data-root.md#migration-runbook) there initializes the data root. Back up first, then run it whenever you're ready.
+
 ## Rollback
 
-Before changing `.env`, note the tag the host runs now. To roll back, set `PHOTOGRAPHY_IMAGE_TAG` back to that tag and run the same two commands. That swaps the code, not the photo library. Rolling back to a release before Phase 0 of #17 brings back the watcher's startup cleanup, which deletes the derivative sets this release keeps for removed photos. That older release also refills `./.next-images-cache` under its year-long headers and writes new `cache/dynamic` files, so roll forward again the way Deploying describes for `v1.1.0`. Whether an older release can read data a newer one wrote is part of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10).
+Before changing `.env`, note the tag the host runs now. To roll back, set `PHOTOGRAPHY_IMAGE_TAG` back to that tag and run the same two commands. That swaps the code, not the photo library. Rolling back to a release before Phase 0 of #17 brings back the watcher's startup cleanup, which deletes the derivative sets this release keeps for removed photos. That older release also refills `./.next-images-cache` under its year-long headers and writes new `cache/dynamic` files, so roll forward again the way Deploying describes for `v1.1.0`.
+
+Rolling back past the first release with slice C of #10 needs the compose file the host ran before it too, since that older image has no `dist/scripts` for this file's watcher command. Put back the copy that release's deploy step saved, `docker-compose.prod.yml.before-vX.Y.Z`, rather than the repository's older file, so the host's own changes come back with it. Leave out of the override whatever only moved there from that copy, since the copy already has it. Restore the file first, then set the older tag in `.env`, then run the two commands.
+
+That copy publishes `web` the way the host did before, which for the repository's older file is `"3000:3000"`, every interface. The older image doesn't care which address it's published on, so if the proxy or tunnel reaches `web` on the host's loopback, keep it there: the `sed` line changes `"3000:3000"` to `"127.0.0.1:3000:3000"` before `up -d`, and the `grep` after it shows the line it left. Leave both lines out only when something reaches `web` from another machine:
+
+```bash
+cp -p docker-compose.prod.yml.before-vX.Y.Z docker-compose.prod.yml
+sed -i 's/^\([[:space:]]*- "\)3000:3000"/\1127.0.0.1:3000:3000"/' docker-compose.prod.yml
+grep -n '3000:3000' docker-compose.prod.yml
+# set PHOTOGRAPHY_IMAGE_TAG in .env back to the older tag
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d
+```
+
+Leave `./portfolio-data` where it is. Older releases never read it, and once you roll forward, the watcher's next pass catches up with what changed in the library meanwhile. A release that finds a data root written by a newer one, with a schema it doesn't know, treats it as unavailable and runs only the legacy step.
 
 Never roll back to `v1.0.0`. That image, on GHCR and on Docker Hub, is the initial commit and can't run under this compose file.
 

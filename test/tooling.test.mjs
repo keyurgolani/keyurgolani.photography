@@ -49,7 +49,8 @@ describe('npm test', () => {
 
 describe('local servers', () => {
   // `npm run dev`, `npm start` and the e2e server listen on loopback, and the
-  // dev compose and the image smoke test publish their ports to loopback only.
+  // dev and production compose files and the image smoke test publish their
+  // ports to loopback only.
   it('stay on 127.0.0.1', async () => {
     const { scripts } = JSON.parse(await fs.readFile(path.join(REPO_ROOT, 'package.json'), 'utf8'));
     expect(scripts.dev).toMatch(/--hostname 127\.0\.0\.1(\s|$)/);
@@ -64,8 +65,13 @@ describe('local servers', () => {
     expect(config).toContain("const host = '127.0.0.1';");
     expect(config).toContain('npm run start -- --hostname ${host}');
 
+    const prod = await fs.readFile(path.join(REPO_ROOT, 'docker-compose.prod.yml'), 'utf8');
+    const prodPublished = [...prod.matchAll(/^\s*-\s*"(\S+:3000)"\s*$/gm)].map(([, entry]) => entry);
+    expect(prodPublished).toEqual(['127.0.0.1:${PHOTOGRAPHY_PORT:-3000}:3000']);
+
     const smoke = await fs.readFile(path.join(REPO_ROOT, 'ci', 'smoke-image.sh'), 'utf8');
-    expect(smoke).toMatch(/ports: !override\n\s*- "127\.0\.0\.1:3000:3000"/);
+    expect(smoke).toMatch(/ports: !override\n\s*- "127\.0\.0\.1:\$PORT:3000"/);
+    expect(smoke).toContain('PORT=${SMOKE_IMAGE_PORT:-3000}');
     expect(smoke).toContain('-f "$OVERRIDE"');
   });
 });

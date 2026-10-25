@@ -1,27 +1,43 @@
-# The data root: version folders and hand edits
+# The data root
 
-`PHOTOGRAPHY_DATA_DIR` holds private state: the identity registry and the authored catalog records. This page covers only how those documents are stored and how to edit one by hand.
+The data root is `./portfolio-data` next to `docker-compose.prod.yml` on the host. It holds what the site knows about each photo beyond the file itself: a stable photo ID, every revision of the file's bytes, and the `/media` sets built from each revision. Both containers mount it at `/data/portfolio`, which `PHOTOGRAPHY_DATA_DIR` names. Only the watcher and `photos.mjs` write it, and `web` mounts it read-only.
 
-## One folder per document
+The registry in it names every photo by its path in the library and by the SHA-256 of its bytes, so the library and the data root only make sense together. Back them up together and restore them together.
 
-Every document that two writers could change at once is a folder with one file per version:
+## Layout
 
-| Document | Folder |
-|---|---|
-| Identity registry | `identity/registry/` |
-| Site record | `authored/site/` |
-| Series record | `authored/series/<seriesId>/` |
-| Photo record | `authored/photos/<photoId>/` |
+| Path | What it holds | Written by |
+|---|---|---|
+| `data-root.json` | The marker that says the folder is an initialized data root | `migrate --apply`, once |
+| `identity/registry/v<N>.json` | Every photo ID, the photo's path, and its revisions, with the state of each revision's `/media` set. A [version folder](#version-folders): the highest `v<N>.json` is the registry. | The watcher, `migrate --apply`, and `identity` decisions |
+| `authored/site/v<N>.json`, `authored/<kind>/<id>/v<N>.json` | The authored catalog records: the site record, and one version folder per series (`authored/series/<seriesId>/`) and per photo (`authored/photos/<photoId>/`) | Nothing yet. The catalog commands of #13 will. |
+| `identity/stat-cache.json` | File sizes and times, so a pass doesn't hash files that haven't changed. Safe to delete, though the next pass then reads every photo again, as [Health](#health) says. | The watcher |
+| `identity/decisions/` | `identity` decisions waiting for a pass, then filed under `applied/` or `rejected/` | `photos.mjs identity` |
+| `identity/migration/` | Dry-run plans and reports, and the mapping each apply wrote from paths and legacy URLs to photo IDs | `photos.mjs migrate` |
+| `assets/<photoId>/<assetRevision>/<profileId>/` | One `/media` set: its WebP and AVIF files and `manifest.json`. A set never changes once it's written. | The watcher |
+| `staging/` | Sets still being built | The watcher |
+| `status/watcher.json` | The watcher's heartbeat, which its healthcheck reads | The watcher, every 30 s |
+| `locks/` | The locks writers take on the registry and the authored records | The watcher and `photos.mjs` |
 
-Inside each folder the versions are `v1.json`, `v2.json`, and so on. The highest number is the document. A write never changes an existing file. It adds the next number with `link()`, which fails if that number already exists, so two writers can't both store the same version. That's why the data root needs a filesystem with hard links (not exFAT or FAT).
+Everything in it belongs to uid 1001, the user both containers run as, and only that user can read it, since the registry keeps curator-only details such as GPS. To read a file, go through the container instead of `sudo`:
+
+```bash
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher cat /data/portfolio/<path>
+```
+
+## Version folders
+
+Every document that two writers could change at once is a folder with one file per version: `identity/registry/`, `authored/site/`, `authored/series/<seriesId>/`, and `authored/photos/<photoId>/`. Inside each folder the versions are `v1.json`, `v2.json`, and so on. The highest number is the document. A write never changes an existing file. It adds the next number with `link()`, which fails if that number already exists, so two writers can't both store the same version. That's why the data root needs a filesystem with hard links.
 
 Each write keeps the two newest versions and removes older ones. Files that start with `.v` and end in `.tmp` are writes in progress, or left by a write that crashed. The next write in that folder removes them. Leave them alone.
 
-A record's folder is a real folder, never a symlink: the catalog refuses a linked one, dangling or not, and says so. The data root itself may be a symlink.
+A record's folder is a real folder, never a symlink: the catalog refuses a linked one, dangling or not, and says so. The data root itself may be a symlink for the app, but [Backing up](#backing-up) and [Restoring](#restoring) need it to be a real folder.
 
 Every version carries a `stamp` with its own number and a hash of its content. That's how a command notices a file that was edited in place.
 
-An older build stored each of these as one file: `identity/registry.json`, `authored/site.json`, `authored/series/<seriesId>.json`, `authored/photos/<photoId>.json`. This build refuses to read or write a document while its old file is there, and the message names the file. While no command runs (see below), move it into a new folder as `v1.json`. The folder takes the file's owner and group, read from the file itself, so the app can write the next version there:
+An older build stored each of these as one file: `identity/registry.json`, `authored/site.json`, `authored/series/<seriesId>.json`, `authored/photos/<photoId>.json`. This build refuses to read or write a document while its old file is there, and the message names the file. While no command runs (see below), move it into a new folder as `v1.json`. The folder takes the file's owner and group, read from the file itself, so the app can write the next version there.
+
+On the production host, run it from the folder with `docker-compose.prod.yml`, after `PHOTOGRAPHY_DATA_DIR="$PWD/portfolio-data"`. Compose sets the variable only inside the containers, where it's `/data/portfolio`.
 
 ```bash
 file="$PHOTOGRAPHY_DATA_DIR/authored/photos/<photoId>.json"   # or any old file above
@@ -36,21 +52,207 @@ On macOS, use `stat -f %u` and `stat -f %g` in place of `stat -c %u` and `stat -
 
 ## Editing a document by hand
 
-Only while no command runs: stop the `image-watcher` container, and don't run `photos:*` commands until you're done.
+Only while no command runs: stop the watcher, and don't run `photos.mjs` commands until you're done. The folders are 0700 and the files 0600, owned by the user the app runs as (uid 1001 in the containers), so the new version has to keep that owner and mode. A copy root owns can't be read by the app: the registry then reads as unreadable, and a record as `unreadable`. With the containers, edit as uid 1001 from a shell in the watcher's image:
 
-1. Copy the newest version to the next number, and edit the copy. Do both as root, keeping the owner: the folders are 0700 and the files 0600, owned by the user the app runs as (uid 1001 in the container setup), so a copy root owns can't be read by the app. The registry then reads as unreadable, and a record as `unreadable`. `cp -p` keeps the owner and mode of the file it copies, and `sudoedit` writes back into the same file, so the copy keeps both:
+1. Stop the watcher and open a shell:
 
    ```bash
-   dir="$PHOTOGRAPHY_DATA_DIR/authored/photos/<photoId>"
-   sudo ls "$dir"                                    # say v3.json and v4.json
-   sudo test ! -e "$dir/v5.json" && sudo cp -n -p "$dir/v4.json" "$dir/v5.json" && sudoedit "$dir/v5.json"
+   docker compose -f docker-compose.prod.yml stop image-watcher
+   docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher sh
    ```
 
-   The `test` and `cp -n` refuse to touch a `v5.json` that already exists, so a typo can't replace a version, and `sudoedit` runs only on a copy just made. `sudoedit` refuses a file in a folder you can write yourself, as when the app runs as your own user, and a path through a symlink in a folder you can write, as when `PHOTOGRAPHY_DATA_DIR` is a link in your home folder. The copy is then still an exact copy of `v4.json`, so nothing is lost: edit `v5.json` as the user who owns it (with your own editor when that's you), or for a link, run `sudoedit` on the resolved path, `sudoedit "$(sudo realpath "$dir/v5.json")"`. If you already copied it with a plain `sudo cp`, give the copy the owner of the version it came from: `owner="$(sudo stat -c %u:%g "$dir/v4.json")" && sudo chown "$owner" "$dir/v5.json"` (`stat -f %u:%g` on macOS).
+2. Copy the newest version to the next number, and edit the copy. The newest is the highest number, not the last name `ls` prints: `v10.json` sorts before `v9.json`. The `test` and `cp -n` refuse to touch a `v5.json` that already exists, so a typo can't replace a version, and `vi` runs only on a copy just made:
 
-2. While you edit, leave the `stamp` as it is. A stamp that names another number marks the file as made by hand, and the next write stamps the version after it again. Leave `baseRevisionId` alone too, and in the site record `baseSeriesOrder`: publishing manages them, and they're how it tells your edits from the published ones.
-3. Start the watcher again.
+   ```bash
+   cd /data/portfolio/authored/photos/<photoId>
+   ls                          # say v3.json and v4.json
+   test ! -e v5.json && cp -n v4.json v5.json && vi v5.json
+   ```
 
-Never edit a version in place. A command that reads an edited newest version refuses it: `photos:identity status` reports the registry as unreadable and exits 1, the catalog lists the record as edited in place, and nothing writes on top of it. The message names the copy that recovers it (`cp -n v4.json v5.json`). Make that copy as in step 1, with `sudo cp -n -p`, to keep the edit as a new version, or restore the file from a backup.
+3. While you edit, leave the `stamp` as it is. A stamp that names another number marks the file as made by hand, and the next write stamps the version after it again. Leave `baseRevisionId` alone too, and in the site record `baseSeriesOrder`: publishing manages them, and they're how it tells your edits from the published ones.
+4. Leave the shell with `exit`, and start the watcher again:
+
+   ```bash
+   docker compose -f docker-compose.prod.yml start image-watcher
+   ```
+
+Without the containers, as with the npm scripts' data root, do steps 2 and 3 on the host as root, keeping the owner and mode. `cp -p` keeps the owner and mode of the file it copies, and `sudoedit` writes back into the same file, so the copy keeps both. On the production host, set `PHOTOGRAPHY_DATA_DIR="$PWD/portfolio-data"` first, from the folder with `docker-compose.prod.yml`:
+
+```bash
+dir="$PHOTOGRAPHY_DATA_DIR/authored/photos/<photoId>"
+sudo ls "$dir"                                    # say v3.json and v4.json
+sudo test ! -e "$dir/v5.json" && sudo cp -n -p "$dir/v4.json" "$dir/v5.json" && sudoedit "$dir/v5.json"
+```
+
+The `test` and `cp -n` refuse to touch a `v5.json` that already exists, so a typo can't replace a version, and `sudoedit` runs only on a copy just made. `sudoedit` refuses a file in a folder you can write yourself, as when the app runs as your own user, and a path through a symlink in a folder you can write, as when `PHOTOGRAPHY_DATA_DIR` is a link in your home folder. The copy is then still an exact copy of `v4.json`, so nothing is lost: edit `v5.json` as the user who owns it (with your own editor when that's you), or for a link, run `sudoedit` on the resolved path, `sudoedit "$(sudo realpath "$dir/v5.json")"`. If you already copied it with a plain `sudo cp`, give the copy the owner of the version it came from: `owner="$(sudo stat -c %u:%g "$dir/v4.json")" && sudo chown "$owner" "$dir/v5.json"` (`stat -f %u:%g` on macOS).
+
+Never edit a version in place. A command that reads an edited newest version refuses it: `photos.mjs identity status` reports the registry as unreadable and exits 1, the catalog lists the record as edited in place, and nothing writes on top of it. The message names the copy that recovers it (`cp -n v4.json v5.json`). Make that copy as in step 2, in the watcher's shell or with `sudo cp -n -p` on the host, to keep the edit as a new version, or restore the file from a backup.
 
 An edit that also changes or removes the stamp isn't caught. It reads as a version made by hand. An in-place edit of a hand-made copy isn't caught either, since its stamp already names another number. So finish the edit before the watcher starts again. Once the next write stamps a new version, that one is checked again.
+
+## Where it can live
+
+- On a local POSIX filesystem on the same host as the containers, such as ext4 or XFS. The writers depend on atomic renames, hard links, `O_EXCL` lock files, and `fsync`, which NFS, SMB, and synced folders like Dropbox don't guarantee, and exFAT and FAT have no hard links at all. The watcher also refuses to build sets when `assets/` and `staging/` sit on different filesystems.
+- Outside `public/` and the photo library. The containers treat a data root inside either one as `unavailable`, since anything under `public/` can end up served.
+- In a folder that already exists. `docker-compose.prod.yml` never creates `./portfolio-data`, so if it goes missing, neither container starts. Compose won't quietly start over with an empty one.
+
+## Setting it up
+
+Before the first `up -d` with this compose file, decide who owns the photos. If another process writes them, such as a file sync tool running as another user, don't `chown` them here. Run the block below as it is and follow [Who owns the photos](#who-owns-the-photos) for the photos folder:
+
+```bash
+mkdir -p portfolio-data .next-images-cache
+sudo chown -R 1001:1001 portfolio-data .next-images-cache
+sudo chmod 700 portfolio-data
+```
+
+On a host where nothing else writes the photos, also hand the whole folder to uid 1001:
+
+```bash
+sudo chown -R 1001:1001 public/assets/photos
+```
+
+`./.next-images-cache` is where `web` keeps the `/_next/image` copies it makes, so it has to belong to uid 1001 too. `docker-compose.prod.yml` never creates it, like the other two folders: a short-syntax bind of a missing folder has the Docker daemon create it, owned by root when the daemon runs as root, and `web` then can't write it. A host that ran the older compose file may already have one that Docker created that way, and the `chown` fixes it.
+
+Until the migration below initializes the data root, the watcher writes only its heartbeat there, logs once that the identity step is off, and keeps writing the legacy derivatives the site serves today. `GET /api/health` reports `uninitialized`.
+
+### Who owns the photos
+
+Both containers run as uid 1001, and each needs only part of the photos folder:
+
+| Container | Reads | Writes |
+|---|---|---|
+| `web` | The originals, for their size and EXIF, and the derivatives it serves | Only `./.next-images-cache`, outside the photos folder |
+| `image-watcher` | The originals, in every folder of the library | The derivative folders (`thumbnails`, `medium`, `optimized`, `thumbnails-avif`, `medium-avif`, `optimized-avif`, `lqip`) and `cache/`, all at the top of the photos folder, and the data root |
+
+When nothing else writes the photos, the second `chown -R` in [Setting it up](#setting-it-up) is the simple way to give uid 1001 all of that.
+
+When another process writes them, such as a file sync tool running as another user, a `chown -R` takes the originals away from it. The tool may then fail to update them, or hand them back to its own user on its next pass, and every change of owner makes the watcher's next identity pass read every photo again, as [Health](#health) says. Leave the originals with their owner, and hand uid 1001 only the folders the watcher writes, creating any that are missing:
+
+```bash
+(
+  cd public/assets/photos || exit 1
+  sudo mkdir -p thumbnails medium optimized thumbnails-avif medium-avif optimized-avif lqip cache
+  sudo chown -R 1001:1001 thumbnails medium optimized thumbnails-avif medium-avif optimized-avif lqip cache
+)
+```
+
+That works only if uid 1001 can still read the originals: every folder in the library readable and searchable, and every photo readable. The containers share no group with the tool unless you set one up, so in practice that means the world bits, folders at least `0755` and photos at least `0644`, and a tool set to create new files that way. A photo that arrives as `0600` stays out of the Gallery, since neither container can read it. This prints every file or folder in the library that uid 1001 can't read, so no output means it can read them all:
+
+```bash
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher \
+  find /app/public/assets/photos \( ! -exec test -r {} \; -o -type d ! -exec test -x {} \; \) -print
+```
+
+If the tool can leave folders out, leave out the derivative folders and `cache/` too. The watcher builds them from the originals. A subfolder the tool creates in one, as its own user, is one the watcher can't write into, and the tool would sync the watcher's output back and forth for nothing.
+
+## Never migrate into an empty data root beside a library that had IDs
+
+`migrate --apply` gives a new photo ID to every photo the registry doesn't know. If a library already had a data root, migrating it again into an empty one gives every photo a new ID, and every link and catalog entry that names an old ID stops resolving. Afterwards, nothing tells the new IDs apart from a first migration's.
+
+If `./portfolio-data` is lost or comes up empty on a host whose library had IDs, stop the watcher and restore the data root from a backup, as [Restoring](#restoring) describes. Run the migration only on a library that never had a data root.
+
+## Backing up
+
+While the stack runs, the watcher is the only process that writes the data root, and it writes the legacy derivatives in the library too. Stop it, archive both folders together, and start it again.
+
+Both have to be real folders next to `docker-compose.prod.yml`, not symlinks. `tar` stores a symlink named on its command line as the link itself, not the files behind it, so the archive would hold no registry, and a restore's `mv` would move only the link. This block and the ones in [Restoring](#restoring) check that first, and stop before anything else runs. The `exit` leaves only the block's subshell, not your shell:
+
+```bash
+(
+  for d in public/assets/photos portfolio-data; do
+    [ -d "$d" ] && [ ! -L "$d" ] || { echo "$d must be a real folder, not a symlink. Nothing was archived." >&2; exit 1; }
+  done
+  mkdir -m 700 -p ~/photography-backups
+  docker compose -f docker-compose.prod.yml stop image-watcher
+  (umask 077 && sudo tar -czf - public/assets/photos portfolio-data >~/photography-backups/photography-$(date -u +%Y%m%dT%H%M%SZ).tar.gz)
+  docker compose -f docker-compose.prod.yml start image-watcher
+)
+```
+
+`sudo` lets `tar` read the uid 1001 files. Your own shell writes the archive, so it belongs to you, and `umask 077` and the 0700 folder keep it readable by you only, since it holds the registry and its curator-only details. Copy it off the host the same way, into a folder only you can read. If `tar` reports an error, delete that archive and run the block again, since the redirect leaves a partial file behind. `web` keeps serving meanwhile, since it only reads, but don't run `photos.mjs` commands while `tar` runs. `./.next-images-cache` needs no backup.
+
+## Restoring
+
+Restore both folders from the same archive, so the registry describes the library beside it. Move the current folders aside instead of deleting them until the restored stack checks out. The timestamp keeps a second restore from moving them inside an earlier one's. Extracting as root with `-p` keeps the files' owners and modes:
+
+```bash
+(
+  for d in public/assets/photos portfolio-data; do
+    [ ! -L "$d" ] || { echo "$d is a symlink. Nothing was moved or restored." >&2; exit 1; }
+  done
+  docker compose -f docker-compose.prod.yml stop
+  aside=before-restore-$(date -u +%Y%m%dT%H%M%SZ)
+  sudo mv public/assets/photos "photos.$aside"
+  sudo mv portfolio-data "portfolio-data.$aside"
+  sudo tar -xzpf ~/photography-backups/photography-<timestamp>.tar.gz
+  docker compose -f docker-compose.prod.yml up -d
+)
+```
+
+Then check that `photos.mjs identity status` counts the photos you expect, as in step 6 of the runbook, and that `GET /api/health` reports `ready`.
+
+If only the data root was lost and the library is fine, restore just `portfolio-data` from the newest archive and keep the current library. Move whatever is left of `./portfolio-data` aside first, as above. `tar` overwrites only the files the archive has and keeps the rest, so files written after the archive would otherwise stay beside the restored ones. A newer decision would apply to the older state, and a newer registry version, with the highest number in `identity/registry/`, would still be the registry:
+
+```bash
+(
+  [ ! -L portfolio-data ] || { echo "portfolio-data is a symlink. Nothing was moved or restored." >&2; exit 1; }
+  docker compose -f docker-compose.prod.yml stop
+  sudo mv portfolio-data "portfolio-data.before-restore-$(date -u +%Y%m%dT%H%M%SZ)"
+  sudo tar -xzpf ~/photography-backups/photography-<timestamp>.tar.gz portfolio-data
+  docker compose -f docker-compose.prod.yml up -d
+)
+```
+
+The watcher's next pass keeps the ID of every photo that archive knew, follows a photo renamed since by its bytes, marks one deleted since as missing, and gives new IDs only to photos added after the archive was made. That loses far less than migrating again.
+
+## Health
+
+`GET /api/health` answers 200 whenever `web` is up, with the data root's state: `ready`, `uninitialized`, `unavailable`, or `unset`. Both `web` healthchecks call it.
+
+The watcher's healthcheck runs `node dist/scripts/watcherHealth.mjs`, which passes while `status/watcher.json` is at most 120 s old, isn't stamped more than 120 s ahead of the container's clock, and shows no identity pass running longer than 30 minutes. The watcher rewrites it every 30 s, so a watcher whose loop stopped, a data root uid 1001 can't write, or an identity pass that never ends turns it unhealthy. It doesn't catch a legacy derivative job that never finishes: a pass starts only once the legacy step is idle, and the legacy backlog on a first start can rightly take hours, so the healthcheck doesn't time it. The 30-minute limit can also flag a pass that's working as it should. A pass reads, hashes, and decodes every file whose size, inode, or times changed, so after a restore, after `identity/stat-cache.json` is deleted, or after a `chown -R` of the library, the first pass reads every photo again, and on a large library that can take longer than 30 minutes. The watcher shows unhealthy until that pass ends, so check its logs before acting on it. If `/media` sets stop appearing while the watcher reads healthy, check its logs for the last photo it processed. `restart: always` doesn't act on unhealthy, so this only changes what `ps` and a dashboard show. `docker compose -f docker-compose.prod.yml ps` shows the state, and the healthcheck's last lines say why:
+
+```bash
+docker inspect --format '{{json .State.Health}}' "$(docker compose -f docker-compose.prod.yml ps -q image-watcher)"
+```
+
+## Migration runbook
+
+Run this once, on a library that never had a data root, to give every photo its ID. Nothing on the site uses the IDs yet, and the legacy derivatives keep serving throughout.
+
+1. Stop the watcher, so the library holds still:
+
+   ```bash
+   docker compose -f docker-compose.prod.yml stop image-watcher
+   ```
+
+2. Back up both folders, as [Backing up](#backing-up) describes. The watcher is already stopped, so skip its `stop` and `start`.
+
+3. Dry-run the migration in `image-watcher`. It proposes an ID for every photo, writes only a plan and a report to `identity/migration/`, and prints both paths. Then read the report:
+
+   ```bash
+   docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs migrate --dry-run
+   docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher cat <report path>
+   ```
+
+   Check its duplicate-byte groups, basename collisions, unreadable, unsupported, and undecodable files, and ambiguous items. An ambiguous file gets no ID until you decide with `photos.mjs identity bind` or `new`.
+
+4. Apply the plan the dry run printed. It writes the registry with exactly the plan's IDs, and `data-root.json`, after which `GET /api/health` reports `ready`. If the library or the registry changed since the dry run, it refuses, so run the dry run again and apply that plan. Applying a plan twice prints that it's already applied and exits 0.
+
+   ```bash
+   docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs migrate --apply --plan <plan path>
+   ```
+
+5. Start the watcher. `--apply` builds no derivatives. The watcher builds every photo's `/media` set:
+
+   ```bash
+   docker compose -f docker-compose.prod.yml start image-watcher
+   ```
+
+6. Check progress the same way, every minute or so, until it says `Pending jobs: 0`:
+
+   ```bash
+   docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs identity status
+   ```
+
+   `Failed profiles` should be 0, and `Watcher heartbeat` under 120 s. An entry with `source-superseded` is fine. It means the photo's file changed after that revision was recorded, and the watcher builds the newer revision instead. For any other failure, fix the cause, then run `node dist/scripts/photos.mjs identity retry <photoId>` the same way.

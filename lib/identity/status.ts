@@ -1,7 +1,6 @@
 import { dataRootStatus, libraryRoot, type DataRootStatus } from '../storage/config';
-import { readJsonFile } from '../storage/document';
 import { withoutAbsolutePaths } from '../storage/fsx';
-import { watcherStatusFile } from './heartbeat';
+import { watcherHeartbeatAge } from './heartbeat';
 import { readRegistry } from './registry';
 import type { Hold, SourceHealth } from './types';
 
@@ -67,15 +66,8 @@ export async function identityStatus({ clock = Date.now }: { clock?: () => numbe
         status.registryError = error instanceof Error ? error.message : String(error);
     }
 
-    try {
-        const heartbeat = await readJsonFile(watcherStatusFile(dataRoot.root));
-        const at = typeof heartbeat === 'object' && heartbeat !== null ? (heartbeat as { heartbeatAt?: unknown }).heartbeatAt : undefined;
-        if (typeof at === 'string' && !Number.isNaN(Date.parse(at))) {
-            status.watcher = { heartbeatAt: at, ageSeconds: Math.max(0, Math.round((clock() - Date.parse(at)) / 1000)) };
-        }
-    } catch {
-        status.watcher = null;
-    }
+    const heartbeat = await watcherHeartbeatAge(dataRoot.root, clock);
+    if (heartbeat.found) status.watcher = { heartbeatAt: heartbeat.heartbeatAt, ageSeconds: Math.max(0, Math.round(heartbeat.ageMs / 1000)) };
     return status;
 }
 

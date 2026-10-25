@@ -28,6 +28,9 @@ COPY . .
 # ENV NEXT_TELEMETRY_DISABLED 1
 
 RUN npm run build
+# The watcher and the photo CLIs, bundled into dist/scripts with everything
+# but Sharp, so the runner needs no dev node_modules and no tsx
+RUN npm run build:scripts
 
 # Production image, copy all the files and run next
 FROM base AS runner
@@ -51,25 +54,36 @@ RUN chown nextjs:nodejs .next
 
 # Automatically leverage output traces to reduce image size
 # https://nextjs.org/docs/advanced-features/output-file-tracing
+# The standalone output carries package.json too.
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
-# Copy package.json and node_modules for image watcher script
-COPY --from=builder /app/package.json ./package.json
-COPY --from=deps /app/node_modules ./node_modules
+# The image watcher, its healthcheck, and the photo CLIs, run with plain node
+COPY --from=builder /app/dist/scripts ./dist/scripts
 
-# Copy scripts, utils, and the lib/ modules they import, for the image watcher
-COPY --from=builder --chown=nextjs:nodejs /app/scripts ./scripts
-COPY --from=builder --chown=nextjs:nodejs /app/utils ./utils
-COPY --from=builder --chown=nextjs:nodejs /app/lib ./lib
-COPY --from=builder --chown=nextjs:nodejs /app/tsconfig.json ./tsconfig.json
+# Sharp stays out of those bundles, since it loads the libvips build for this
+# platform from @img. Copy it whole, with the packages it needs at run time,
+# whatever the web server's trace picked up, and fail the build here if one
+# is missing. A new Sharp release can change that list.
+COPY --from=deps /app/node_modules/sharp ./node_modules/sharp
+COPY --from=deps /app/node_modules/@img ./node_modules/@img
+COPY --from=deps /app/node_modules/detect-libc ./node_modules/detect-libc
+COPY --from=deps /app/node_modules/semver ./node_modules/semver
+RUN node -e "require('sharp')"
+
+# The data root's mount point, owned by the containers' user.
+# docker-compose.prod.yml binds ./portfolio-data over it. Don't use a named
+# volume here: one is silently recreated empty after `down -v`, which leaves
+# an empty data root beside a library that had photo IDs.
+RUN mkdir -p /data/portfolio && chown nextjs:nodejs /data/portfolio
 
 USER nextjs
 
 EXPOSE 3000
 
 ENV PORT=3000
-# set hostname to localhost
+# Bind every interface inside the container. The compose file decides what's
+# published, and it publishes on the host's loopback only.
 ENV HOSTNAME="0.0.0.0"
 
 CMD ["node", "server.js"]

@@ -4,7 +4,9 @@ services:
   web:
     image: ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?Set PHOTOGRAPHY_IMAGE_TAG to a release tag, for example v1.1.0}
     ports:
-      - "3000:3000"
+      # Loopback only. A reverse proxy or tunnel on the host serves it to the
+      # internet. PHOTOGRAPHY_PORT changes the host port.
+      - "127.0.0.1:${PHOTOGRAPHY_PORT:-3000}:3000"
     volumes:
       # Never created when missing, so a lost photos folder keeps the container
       # from starting instead of serving an empty library
@@ -13,21 +15,48 @@ services:
         target: /app/public/assets/photos
         bind:
           create_host_path: false
-      - ./.next-images-cache:/app/.next/cache/images
+      # The private data root: photo identity state and the /media sets. Only
+      # the watcher writes it. Never created when missing either, since an
+      # empty one beside a library that had photo IDs would mint new ones.
+      # docs/data-root.md covers backing it up with the library.
+      - type: bind
+        source: ./portfolio-data
+        target: /data/portfolio
+        read_only: true
+        bind:
+          create_host_path: false
+      # /_next/image's cache, which web writes as uid 1001. Never created when
+      # missing either: the Docker daemon would create it, owned by root under
+      # a root daemon, and web couldn't write it. Create it first, owned by
+      # uid 1001 (docs/data-root.md, Setting it up).
+      - type: bind
+        source: ./.next-images-cache
+        target: /app/.next/cache/images
+        bind:
+          create_host_path: false
     restart: always
     environment:
       - NODE_ENV=production
+      - PHOTOGRAPHY_DATA_DIR=/data/portfolio
       - SITE_URL=https://keyurgolani.photography  # Public origin for share links, read at runtime
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/photos"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
 
   # Image optimization watcher - processes new photos automatically
-  # Note: Ensure photos directory is writable by uid 1001 (nextjs user)
-  # Run on host: chown -R 1001:1001 ./public/assets/photos
+  # Both containers run as uid 1001 (nextjs user). web reads the photos and
+  # their derivatives and writes only ./.next-images-cache. The watcher reads
+  # the photos, writes the derivative folders and cache/ in the photos folder,
+  # and writes the data root. When nothing else writes the photos, run on host:
+  #   mkdir -p ./portfolio-data ./.next-images-cache
+  #   chown -R 1001:1001 ./public/assets/photos ./portfolio-data ./.next-images-cache
+  #   chmod 700 ./portfolio-data
+  # When another process, such as a file sync tool, writes the photos, hand
+  # uid 1001 only the derivative folders and cache/ instead, and keep the
+  # photos readable to it (docs/data-root.md, Who owns the photos).
   image-watcher:
     image: ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?Set PHOTOGRAPHY_IMAGE_TAG to a release tag, for example v1.1.0}
     user: "1001:1001"
@@ -37,10 +66,28 @@ services:
         target: /app/public/assets/photos
         bind:
           create_host_path: false
+      - type: bind
+        source: ./portfolio-data
+        target: /data/portfolio
+        bind:
+          create_host_path: false
     restart: always
     environment:
       - NODE_ENV=production
-    command: ["npx", "tsx", "scripts/imageWatcher.ts", "--watch"]
+      - PHOTOGRAPHY_DATA_DIR=/data/portfolio
+    command: ["node", "dist/scripts/imageWatcher.mjs", "--watch"]
+    # Healthy while status/watcher.json in the data root is at most 120 s old
+    # and no identity pass has run longer than 30 minutes. The watcher rewrites
+    # it every 30 s, so a stopped event loop, a data root it can't write, or a
+    # pass that never ends turns unhealthy. A stuck legacy derivative job
+    # doesn't (docs/data-root.md, Health).
+    healthcheck:
+      test: ["CMD", "node", "dist/scripts/watcherHealth.mjs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    # The watcher doesn't need web to serve anything, so it starts alongside it.
     depends_on:
       web:
-        condition: service_healthy
+        condition: service_started

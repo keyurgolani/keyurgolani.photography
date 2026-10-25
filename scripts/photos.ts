@@ -38,9 +38,13 @@
  * The library is PHOTOGRAPHY_LIBRARY_DIR, or public/assets/photos under the
  * working directory. The data root is PHOTOGRAPHY_DATA_DIR, or portfolio-data
  * under the working directory outside production.
+ *
+ * The image has no tsx, so it runs the bundle `npm run build:scripts` writes,
+ * with the same arguments: node dist/scripts/photos.mjs <command>.
  */
 
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { ApplyRefusedError, migrateApply } from '../lib/identity/apply';
 import { createDecision, decisionFileName, isLibraryPath, writeDecision, type DecisionInput } from '../lib/identity/decisions';
@@ -53,15 +57,18 @@ import { formatStatus, identityStatus } from '../lib/identity/status';
 import { dataRootStatus, libraryRoot } from '../lib/storage/config';
 import { isInside } from '../lib/storage/fsx';
 
+/** This CLI the way it was started: the bundle in the image, or the source under tsx. */
+const PROGRAM = fileURLToPath(import.meta.url).endsWith('.mjs') ? 'node dist/scripts/photos.mjs' : 'npx tsx scripts/photos.ts';
+
 const USAGE = `Usage:
-  npx tsx scripts/photos.ts migrate --dry-run [--out <dir>]
-  npx tsx scripts/photos.ts migrate --apply --plan <file>
-  npx tsx scripts/photos.ts identity status [--json]
-  npx tsx scripts/photos.ts identity bind <path> <photoId> [--merge <photoId>] [--reason <text>]
-  npx tsx scripts/photos.ts identity new <path> [--reason <text>]
-  npx tsx scripts/photos.ts identity archive <photoId> [--reason <text>]
-  npx tsx scripts/photos.ts identity retry <photoId> [<assetRevision>] [--reason <text>]
-  npx tsx scripts/photos.ts identity reprofile (<photoId> | --all) [--reason <text>]`;
+  ${PROGRAM} migrate --dry-run [--out <dir>]
+  ${PROGRAM} migrate --apply --plan <file>
+  ${PROGRAM} identity status [--json]
+  ${PROGRAM} identity bind <path> <photoId> [--merge <photoId>] [--reason <text>]
+  ${PROGRAM} identity new <path> [--reason <text>]
+  ${PROGRAM} identity archive <photoId> [--reason <text>]
+  ${PROGRAM} identity retry <photoId> [<assetRevision>] [--reason <text>]
+  ${PROGRAM} identity reprofile (<photoId> | --all) [--reason <text>]`;
 
 class UsageError extends Error {}
 
