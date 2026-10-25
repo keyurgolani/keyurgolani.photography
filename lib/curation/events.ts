@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { ASSET_REVISION_RE, PHOTO_ID_RE } from '../identity/ids';
+import { ASSET_REVISION_RE, PHOTO_ID_RE, PROFILE_ID_RE } from '../identity/ids';
 import type { IdentityFact, IdentityFactType, Registry } from '../identity/types';
 import { SERIES_ID_RE } from '../catalog/schema';
 
@@ -19,10 +19,17 @@ export const CURATION_SCHEMA_VERSION = 1;
 export const EVENT_TYPES = ['new', 'replacement', 'missing', 'reappeared', 'ambiguous', 'processing-failure'] as const;
 export type CurationEventType = (typeof EVENT_TYPES)[number];
 
-export const EVENT_STATUSES = ['open', 'deferred', 'dismissed', 'approved', 'failed'] as const;
+/** `resolved` is #17's: the watcher closed the item because what it reported is over, such as a missing source back again. */
+export const EVENT_STATUSES = ['open', 'deferred', 'dismissed', 'approved', 'failed', 'resolved'] as const;
 export type CurationEventStatus = (typeof EVENT_STATUSES)[number];
 
-export const ACTIONS = ['edit', 'approve', 'defer', 'dismiss', 'retry', 'reopen'] as const;
+/**
+ * `confirm` is #17's "Confirm new asset revision", for a replacement. `bind`
+ * and `archive` are #17's "Bind an intentional replacement" and "Archive
+ * after removing series references", for a missing source. `close` is the
+ * watcher's, when it resolves an item.
+ */
+export const ACTIONS = ['edit', 'approve', 'defer', 'dismiss', 'retry', 'reopen', 'confirm', 'bind', 'archive', 'close'] as const;
 export type CurationAction = (typeof ACTIONS)[number];
 
 /** `evt_` plus 24 hex of the SHA-256 of the event's key. Event folders are named only by this. */
@@ -130,8 +137,32 @@ export const decisionSchema = z.strictObject({
     writes: z.array(writeSchema).optional(),
     /** The #10 identity decision a retry wrote. */
     identityDecisionId: z.string().optional(),
+    /** For a confirm: the asset revision the photo record pinned before it, which the event's replaces. For a defer: the one it put back. */
+    fromRevision: z.string().regex(ASSET_REVISION_RE).optional(),
+    /** For a bind: the library-relative path the #10 `bind` decision gives the photo. */
+    path: libraryPath.optional(),
 });
 export type CurationDecision = z.infer<typeof decisionSchema>;
+
+/** Why a replacement's derivative set wasn't built: #10's writer's failure, without its text, which may name a host path. */
+export const CANDIDATE_FAILURES = ['superseded', 'integrity', 'undecodable', 'build'] as const;
+export type CandidateFailure = (typeof CANDIDATE_FAILURES)[number];
+
+/**
+ * #17: what became of a replacement's derivative set, once #10's registry
+ * says. Absent while the set is still building. `ready` means the set is
+ * committed with its manifest, under `profileId`; only then can the
+ * replacement be confirmed. A `processing-failure` item for a build that
+ * failed carries one too (lib/curation/sources.ts).
+ */
+export const candidateSchema = z.strictObject({
+    state: z.enum(['ready', 'failed']),
+    profileId: z.string().regex(PROFILE_ID_RE),
+    failure: z.enum(CANDIDATE_FAILURES).optional(),
+    /** When the inbox recorded it. */
+    at: timestamp,
+});
+export type Candidate = z.infer<typeof candidateSchema>;
 
 export const curationEventSchema = z.strictObject({
     schemaVersion: z.literal(CURATION_SCHEMA_VERSION),
@@ -152,6 +183,8 @@ export const curationEventSchema = z.strictObject({
     derivedFacts: derivedFactsSchema,
     suggestions: suggestionsSchema,
     edits: editsSchema.nullable(),
+    /** A replacement's derivative set, once it is ready or failed, or a failed build's (#17). Other types never have one. */
+    candidate: candidateSchema.optional(),
     /** Every curator action, oldest first. */
     decisions: z.array(decisionSchema),
     reviewedAt: timestamp.nullable(),

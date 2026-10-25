@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { restampable, STAMPED_FIELDS } from '../catalog/review';
 import { applySequenceOp, applySeriesOp, sequenceContext, type SeriesOp } from '../catalog/sequence';
 import type { AuthoredAlt, AuthoredPhoto, AuthoredSeries } from '../catalog/types';
 import { readActivePointer, readAuthoredRecord, readAuthoredSeries } from '../catalog/working-layer';
@@ -8,9 +9,11 @@ import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
 import { LockTimeoutError, withLock, type LockContext } from '../storage/lock';
+import { pendingMergeOf } from './binds';
 import { unplacedApproval, type CurationDecision, type CurationEvent, type CurationEventStatus, type CuratorDescription, type CuratorEdits, type Placement } from './events';
 import { photoHolders } from './holders';
 import { placementIndex } from './placement';
+import { draftPlanText, readDraftPlan, replacedBy } from './pins';
 import { EventMovedError, EventUnusableError, readEvent, withCurationLock, writeEvent } from './repository';
 
 /**
@@ -84,21 +87,22 @@ class ActionFailure extends Error {
     }
 }
 
-const fail = (code: ActionErrorCode, message: string, writes?: WrittenRecord[]): never => {
+/** Stop an action with `code`. Exported for #17's resolutions, which share these steps. */
+export const fail = (code: ActionErrorCode, message: string, writes?: WrittenRecord[]): never => {
     throw new ActionFailure(code, message, writes);
 };
 
-interface Step {
+export interface Step {
     event: CurationEvent;
     active: string | null;
     at: string;
     hold: LockContext;
 }
 
-type Change = { event: CurationEvent; notes?: string[] };
+export type Change = { event: CurationEvent; notes?: string[] };
 
 /** The checks every action shares, then `change`, then the event write, all under the curation lock. */
-async function act(input: ActionInput, change: (step: Step) => Promise<Change>): Promise<ActionOutcome> {
+export async function act(input: ActionInput, change: (step: Step) => Promise<Change>): Promise<ActionOutcome> {
     const root = path.resolve(/*turbopackIgnore: true*/ input.root);
     const status = dataRootStatus({ versioned: true, root });
     if (status.state !== 'ready') return { ok: false, code: 'not-ready', message: `The data root is ${status.state}. Nothing was written.` };
@@ -139,13 +143,13 @@ async function act(input: ActionInput, change: (step: Step) => Promise<Change>):
     }
 }
 
-function requireStatus(event: CurationEvent, allowed: readonly CurationEventStatus[], action: string): void {
+export function requireStatus(event: CurationEvent, allowed: readonly CurationEventStatus[], action: string): void {
     if (allowed.includes(event.status)) return;
-    const hint = event.status === 'approved' || event.status === 'dismissed' ? ' Reopen it first.' : '';
+    const hint = event.status === 'approved' || event.status === 'dismissed' || event.status === 'resolved' ? ' Reopen it first.' : '';
     fail('refused', `The event ${event.id} is ${event.status}, so it can't be ${action}.${hint}`);
 }
 
-function decided(step: Step, input: ActionInput, decision: Omit<CurationDecision, 'at' | 'by' | 'baseRevisionId'>, status: CurationEventStatus, extra: Partial<CurationEvent> = {}): CurationEvent {
+export function decided(step: Step, input: ActionInput, decision: Omit<CurationDecision, 'at' | 'by' | 'baseRevisionId'>, status: CurationEventStatus, extra: Partial<CurationEvent> = {}): CurationEvent {
     return {
         ...step.event,
         ...extra,
@@ -197,7 +201,7 @@ export function editEvent(input: ActionInput & { choices: Choices }): Promise<Ac
     });
 }
 
-/** Leave in draft. */
+/** Leave in draft. The CLI's defer runs #17's leaveInDraft(), which is this for every type but a confirmed replacement. */
 export function deferEvent(input: ActionInput & { reason?: string }): Promise<ActionOutcome> {
     return act(input, async (step) => {
         requireStatus(step.event, ['open', 'failed'], 'deferred');
@@ -228,13 +232,17 @@ export function dismissEvent(input: ActionInput & { reason: string }): Promise<A
     });
 }
 
-/** Put a deferred, dismissed, or approved event back in the inbox. An approval's working-layer writes stay. */
+/** Put a deferred, dismissed, approved, or resolved event back in the inbox. An approval's working-layer writes stay. */
 export function reopenEvent(input: ActionInput & { reason?: string }): Promise<ActionOutcome> {
     return act(input, async (step) => {
         const { event } = step;
-        requireStatus(event, ['deferred', 'dismissed', 'approved'], 'reopened');
+        requireStatus(event, ['deferred', 'dismissed', 'approved', 'resolved'], 'reopened');
         const status: CurationEventStatus = event.type === 'processing-failure' ? 'failed' : 'open';
-        const notes = event.status === 'approved' ? [await reopenedApprovalNote(path.resolve(input.root), event)] : ['Reopened.'];
+        const notes = event.status !== 'approved'
+            ? ['Reopened.']
+            : event.type === 'replacement'
+                ? [`Reopened. The photo record keeps the revision it pins. ${await draftNote(path.resolve(/*turbopackIgnore: true*/ input.root), event)}`]
+                : [await reopenedApprovalNote(path.resolve(/*turbopackIgnore: true*/ input.root), event)];
         return { event: decided(step, input, { action: 'reopen', ...(input.reason ? { reason: input.reason } : {}) }, status), notes };
     });
 }
@@ -253,6 +261,16 @@ async function reopenedApprovalNote(root: string, event: CurationEvent): Promise
     if ((index.get(event.photoId)?.seriesIds.length ?? 0) > 0) return 'Reopened. The draft placement stays in the working layer; approve with a position flag to move it.';
     const series = unplacedApproval({ ...event, status: 'approved' }, []);
     return `Reopened. No series in the draft holds its photo, so there is no draft placement to keep.${series === null ? '' : ` Approve it with --series ${series} to place it again, at the end.`}`;
+}
+
+/** #17: what leaving a replacement in draft would do now, from the plan leaveInDraft() acts on, so the two can't disagree. */
+async function draftNote(root: string, event: CurationEvent): Promise<string> {
+    try {
+        const plan = await readDraftPlan(root, event, (photoId) => readAuthoredRecord(root, 'photo', photoId));
+        return draftPlanText(plan, replacedBy(event)) ?? '';
+    } catch (error) {
+        return `What leaving it in draft (defer) would do can't be told now: ${(error as Error).message.replace(/\.$/, '')}.`;
+    }
 }
 
 /** Whether the registry shows a failed derivative build for this revision. */
@@ -363,10 +381,17 @@ export function approveEvent(
         let resolved!: ReturnType<typeof resolveChoices>;
         let kept = false;
 
+        // #17's bind writes its decision under the curation lock this holds, so no new one appears from here on. This
+        // looks first: the watcher commits a merge to the registry before it files the decision as applied, so a
+        // pending decision is either seen here or already a merge in the registry read below, which is then stale.
+        const merge = await pendingMergeOf(root, photoId).catch((error: unknown) => fail('damaged', `${(error as Error).message}. Nothing was written.`));
+        if (merge) {
+            fail('refused', `${photoId} is merged into ${merge.into} by the bind decision ${merge.decisionId}, which the watcher applies on its next pass. A series would then list a retired photograph, so it can't be approved. If the watcher refuses the bind, approve it then. Nothing was written.`);
+        }
         const registry = await readRegistry(root).catch((error: unknown) => fail('damaged', `The identity registry can't be read: ${(error as Error).message}. Nothing was written.`));
         const photo = registry.photos[photoId];
-        if (!photo || photo.sourceHealth !== 'present' || photo.source.observedRevision !== assetRevision) {
-            const now = !photo ? 'is not in the registry' : photo.sourceHealth !== 'present' ? `is ${photo.sourceHealth}` : `is now ${photo.source.observedRevision}`;
+        if (!photo || photo.mergedInto !== undefined || photo.sourceHealth !== 'present' || photo.source.observedRevision !== assetRevision) {
+            const now = !photo ? 'is not in the registry' : photo.mergedInto !== undefined ? `was merged into ${photo.mergedInto}` : photo.sourceHealth !== 'present' ? `is ${photo.sourceHealth}` : `is now ${photo.source.observedRevision}`;
             fail('stale', `The source changed since this event: ${photoId} ${now}. Review the newer event instead. Nothing was written.`);
         }
 
@@ -432,9 +457,14 @@ export function approveEvent(
                 // A clear wins over what the photo record holds, so a reopened item can withdraw a description or the decorative flag.
                 const alt: AuthoredAlt = description === null ? null : description ? altOf(description) : existing?.alt ?? null;
                 const unchanged = existing !== null && JSON.stringify(existing.alt) === JSON.stringify(alt);
-                if (!unchanged) {
+                // #16: what the curator reviewed, stamped on every field these writes change. The approval also vouches
+                // again for the photo record it places, so each field reviewed against another base, as after a
+                // rollback, is stamped against this one. A hand edit, a suggestion, or a confirm's bytes stay as they were.
+                const restamp = existing ? restampable(existing, STAMPED_FIELDS.photo, step.active) : [];
+                const review = { baseRevisionId: step.active, event: { id: event.id, version: event.version }, actor: input.actor, reviewedAt: step.at, ...(restamp.length > 0 ? { restamp } : {}) };
+                if (!unchanged || restamp.length > 0) {
                     const record = existing ? { ...existing, alt } : { kind: 'photo' as const, id: photoId, assetRevision, alt };
-                    const written = await writeAuthoredRecord(record, { expectedVersion: existing?.version ?? 0, lock: authored, root });
+                    const written = await writeAuthoredRecord(record, { expectedVersion: existing?.version ?? 0, lock: authored, root, review });
                     writes.push({ record: `photo:${photoId}`, version: written.version });
                 }
                 if (alt === null) notes.push('It has no description yet, so publishing it waits until one is added and reviewed.');
@@ -442,7 +472,7 @@ export function approveEvent(
 
                 if (op !== null && series !== null) {
                     await input.faults?.beforePlacement?.();
-                    const result = await applySequenceOp({ dataRoot: root }, op, { expectedVersion: series.version, actor: { kind: 'inbox-approval', ref: event.id }, lock: authored });
+                    const result = await applySequenceOp({ dataRoot: root }, op, { expectedVersion: series.version, actor: { kind: 'inbox-approval', ref: event.id }, lock: authored, review });
                     if (!result.ok) {
                         const code = result.error.code === 'version-conflict' || result.error.code === 'authored-locked' ? 'stale' : 'refused';
                         // The placement was checked before anything was written, so only a writer past its lease or a hand edit gets here.
@@ -483,7 +513,7 @@ export function approveEvent(
 }
 
 /** A working-layer record, or a damaged-data failure naming it. */
-async function readAuthored<T>(root: string, kind: 'photo' | 'series', id: string): Promise<T | null> {
+export async function readAuthored<T>(root: string, kind: 'photo' | 'series', id: string): Promise<T | null> {
     try {
         return (await readAuthoredRecord(root, kind, id)) as T | null;
     } catch (error) {

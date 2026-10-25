@@ -126,6 +126,8 @@ describe('the status and the system response', () => {
         expect(statusLabel(item({ type: 'processing-failure', status: 'failed' }))).toEqual({ text: 'Not processed', tone: null });
         expect(statusLabel(item())).toEqual({ text: 'Draft only', tone: null });
         expect(systemResponse(item({ status: 'dismissed', group: 'settled' }), labelOf)).toBe('Dismissed, so it needs no judgment. Nothing a visitor sees changed.');
+        expect(statusLabel(item({ status: 'resolved', group: 'settled' }))).toEqual({ text: 'Resolved', tone: null });
+        expect(systemResponse(item({ status: 'resolved', group: 'settled' }), labelOf)).toBe('Resolved, so it needs no judgment.');
         expect(systemResponse(item(), labelOf)).toBe('It has a stable ID and waits here as a draft suggestion. Nothing publishes.');
     });
 });

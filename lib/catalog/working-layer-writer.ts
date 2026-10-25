@@ -23,7 +23,9 @@ import type {
     AuthoredSite,
     AuthoredSiteInput,
 } from './types';
-import { authoredPaths, authoredRecordDir, isRecordId, readActivePointer, recordFolderProblem } from './working-layer';
+import { backfillUnknown, noteHandMade, rebaseStamps, stampWrite } from './review';
+import { ensureReviewBackfill } from './review-backfill';
+import { authoredPaths, authoredRecordDir, isRecordId, readActivePointer, readAuthoredRecord, recordFolderProblem } from './working-layer';
 
 /**
  * The one writer of the authored working layer. The public reader, the
@@ -72,10 +74,41 @@ export interface WriteAuthoredOptions {
     waitMs?: number;
     /** Test hooks, passed to writeVersionedDocument(). */
     hooks?: VersionedWriteHooks;
+    /**
+     * What the curator reviewed before this write, for #16's staleness
+     * model. The writer stamps every field the write changes with it, under
+     * the same hold (lib/catalog/review.ts). Without it, the stamp names the
+     * active revision at the write, the actor `cli`, and the time of the write.
+     */
+    review?: ReviewInputs;
+}
+
+/** The inputs a reviewed write passes for #16: what was reviewed, against which active revision, and by whom. */
+export interface ReviewInputs {
+    /** The active revision the curator reviewed against, null before the first activation. */
+    baseRevisionId: string | null;
+    /** `generated` for a write nobody reviewed, such as #14's auto-include policy. Defaults to curator. */
+    origin?: 'curator' | 'generated';
+    /** The inbox event and the version of it the curator reviewed, when the write settles one. */
+    event?: { id: string; version: number };
+    /** For a confirmed replacement: the asset revision the record pinned, the one it pins now, and the set's profile. */
+    asset?: { from: string; to: string; profileId: string };
+    /**
+     * Fields this write leaves as they are but the curator reviewed again,
+     * from review.ts's restampable(). Each gets a fresh stamp only while its
+     * stamp still covers the value it holds, so a hand edit or a suggestion
+     * stays unreviewed.
+     */
+    restamp?: readonly string[];
+    actor: string;
+    reviewedAt: string;
 }
 
 /** The fields the writer owns, as ManagedField names them. */
-export const MANAGED_FIELDS = ['schemaVersion', 'version', 'baseRevisionId', 'baseSeriesOrder'] as const;
+export const MANAGED_FIELDS = ['schemaVersion', 'version', 'baseRevisionId', 'baseSeriesOrder', 'review'] as const;
+
+/** The actor a stamp names when the caller passes no review inputs: one of #13 slice D's commands. */
+export const DEFAULT_REVIEW_ACTOR = 'cli';
 const MANAGED = new Set<string>(MANAGED_FIELDS);
 
 function withoutManaged(record: AuthoredRecordInput): Record<string, unknown> {
@@ -108,6 +141,16 @@ async function readStored(dir: string, ref: { kind: AuthoredKind; id: string }):
     }
 }
 
+/** The revision a series' cover photo record pins, or null when there is no cover or no readable record. */
+async function coverAsset(root: string, record: { kind: string; cover?: { photoId: string } | null } | null): Promise<string | null> {
+    if (record?.kind !== 'series' || !record.cover) return null;
+    try {
+        return (await readAuthoredRecord(root, 'photo', record.cover.photoId))?.assetRevision ?? null;
+    } catch {
+        return null;
+    }
+}
+
 async function commit(
     root: string,
     record: AuthoredRecordInput,
@@ -115,6 +158,8 @@ async function commit(
     expectedVersion: number,
     hooks: VersionedWriteHooks | undefined,
     rebaseTo?: string,
+    review?: ReviewInputs,
+    published?: boolean,
 ): Promise<AuthoredRecord> {
     const dir = authoredRecordDir(root, ref.kind, ref.id);
     const folder = await recordFolderProblem(root, ref.kind, ref.id);
@@ -130,6 +175,8 @@ async function commit(
             throw new AuthoredWriteError('INVALID_RECORD', ref, message, { issues: parsed.error.issues });
         }
         existing = parsed.value;
+        // #16: a version made by hand gets no review backfill.
+        noteHandMade(existing, stored.handMade);
         // As the reader does: a folder holding another record's versions is never extended as this one.
         if (ref.kind !== 'site' && (existing as AuthoredSeries | AuthoredPhoto).id !== ref.id) {
             const message = `its folder holds the record ${JSON.stringify((existing as AuthoredSeries | AuthoredPhoto).id)}`;
@@ -143,14 +190,43 @@ async function commit(
     }
 
     // An existing record keeps its base until a rebase moves it. A new one starts on the active revision.
-    const baseRevisionId = rebaseTo ?? (existing ? existing.baseRevisionId : (await readActivePointer(root))?.revisionId ?? null);
+    const active = rebaseTo === undefined && existing === null ? (await readActivePointer(root))?.revisionId ?? null : null;
+    const baseRevisionId = rebaseTo ?? (existing ? existing.baseRevisionId : active);
+    // What #16's stamps were reviewed against without review inputs: the active revision, read as a new record's base
+    // is. An existing record's write never failed on the pointer before stamps, so one that can't be read gives its base.
+    const reviewedAgainst = rebaseTo !== undefined || review
+        ? review?.baseRevisionId ?? null
+        : existing === null ? active : await readActivePointer(root).then((pointer) => pointer?.revisionId ?? null, () => existing.baseRevisionId);
     // The site record's base Work order moves with its base, so only a rebase sets it, from the record it merged.
     // Any other write keeps the stored value, and a new record's is unknown.
     const site = ref.kind === 'site'
         ? { baseSeriesOrder: rebaseTo !== undefined ? rebasedSeriesOrder(record) : (existing as AuthoredSite | null)?.baseSeriesOrder ?? null }
         : {};
     const next = { ...withoutManaged(record), schemaVersion: CATALOG_SCHEMA_VERSION, version: expectedVersion + 1, baseRevisionId, ...site };
-    const parsed = parseAuthoredRecord(ref.kind, next);
+    const unstamped = parseAuthoredRecord(ref.kind, next);
+    if (!unstamped.ok) throw new AuthoredWriteError('INVALID_RECORD', ref, `The ${ref.kind} record ${ref.id} is not valid.`, { issues: unstamped.error.issues });
+    // #16's stamps, under the same hold: a rebase keeps those of the fields it left alone, and any other write stamps
+    // what it changed with what the curator reviewed, keeping the rest as they were. The first write after the upgrade
+    // records the one-time backfill first, while this hold keeps every other tool write out.
+    const backfill = await ensureReviewBackfill(root);
+    // A record made by hand with no stamps reads against the marker. While the marker can't be read, a write would
+    // store none for the fields it leaves alone, so the record would lose its backfill for good. A rebase keeps the
+    // record unstamped instead (rebaseStamps()), and any other write refuses until the marker is restored.
+    if (existing && rebaseTo === undefined && backfillUnknown(existing, backfill)) {
+        throw new AuthoredWriteError('INVALID_RECORD', ref, `authored/review-backfill.json can't be read, so nothing shows what the ${ref.kind} record ${ref.id}, made by hand, held at the upgrade, and writing it would take that for unreviewed. Restore authored/review-backfill.json from the data-root backup, then write again. Nothing was written.`);
+    }
+    const stamps = rebaseTo !== undefined
+        ? rebaseStamps(existing, unstamped.value, await coverAsset(root, existing), new Date().toISOString(), published ? rebaseTo : undefined, backfill)
+        : stampWrite(existing, unstamped.value, {
+            baseRevisionId: reviewedAgainst,
+            ...(review?.origin ? { origin: review.origin } : {}),
+            ...(review?.event ? { event: review.event } : {}),
+            ...(review?.asset ? { asset: review.asset } : {}),
+            ...(review?.restamp ? { restamp: review.restamp } : {}),
+            actor: review?.actor ?? DEFAULT_REVIEW_ACTOR,
+            reviewedAt: review?.reviewedAt ?? new Date().toISOString(),
+        }, { next: await coverAsset(root, unstamped.value), existing: await coverAsset(root, existing), backfill });
+    const parsed = parseAuthoredRecord(ref.kind, stamps ? { ...unstamped.value, review: stamps } : unstamped.value);
     if (!parsed.ok) throw new AuthoredWriteError('INVALID_RECORD', ref, `The ${ref.kind} record ${ref.id} is not valid.`, { issues: parsed.error.issues });
 
     const paths = authoredPaths(root);
@@ -182,6 +258,9 @@ async function commit(
  * existing record keeps its `baseRevisionId`; a new one takes the active
  * revision, or null before the first activation. The site record keeps its
  * `baseSeriesOrder` the same way, and a new one starts at null (unknown).
+ * Under the same hold it stamps #16's `review` on every field the write
+ * changes, with `options.review` or the CLI's defaults, and keeps every
+ * other field's stamp (lib/catalog/review.ts's stampWrite()).
  */
 export function writeAuthoredRecord(record: AuthoredSiteInput, options: WriteAuthoredOptions): Promise<AuthoredSite>;
 export function writeAuthoredRecord(record: AuthoredSeriesInput, options: WriteAuthoredOptions): Promise<AuthoredSeries>;
@@ -211,12 +290,12 @@ export async function writeAuthoredRecord(record: AuthoredRecordInput, options: 
         if (lock.name !== AUTHORED_LOCK || realpathLoose(lock.root) !== realpathLoose(root) || lock.signal.aborted) {
             throw new AuthoredWriteError('LOCK_NOT_HELD', ref, 'The lock passed in is not a live hold on this data root\'s authored lock.');
         }
-        return commit(root, record, ref, expectedVersion, hooks);
+        return commit(root, record, ref, expectedVersion, hooks, undefined, options.review);
     }
     try {
         return await withLock(AUTHORED_LOCK, { root, leaseMs: AUTHORED_LEASE_MS, waitMs }, async ({ signal }) => {
             signal.throwIfAborted();
-            return commit(root, record, ref, expectedVersion, hooks);
+            return commit(root, record, ref, expectedVersion, hooks, undefined, options.review);
         });
     } catch (error) {
         if (error instanceof LockTimeoutError) throw new AuthoredWriteError('AUTHORED_LOCKED', ref, error.message, { holder: error.holder });
@@ -231,6 +310,8 @@ export interface WriteRebasedOptions {
     lock: LockContext;
     /** The revision the record is now based on. */
     baseRevisionId: string;
+    /** That revision was published from this working layer, so #16's stamps move their base to it too (rebaseStamps()). */
+    published?: boolean;
     hooks?: VersionedWriteHooks;
 }
 
@@ -239,18 +320,20 @@ export interface WriteRebasedOptions {
  * only write that moves an existing record's base. It checks `version` the
  * way writeAuthoredRecord() does, under the caller's authored hold. For the
  * site record it also stores the `baseSeriesOrder` the rebase merged against,
- * the one write that sets that field.
+ * the one write that sets that field. It reviews nothing: it keeps #16's
+ * stamps of the fields it left alone and drops those of the fields it moved
+ * (rebaseStamps()).
  */
 export function writeRebasedRecord(record: AuthoredSiteInput, options: WriteRebasedOptions): Promise<AuthoredSite>;
 export function writeRebasedRecord(record: AuthoredSeriesInput, options: WriteRebasedOptions): Promise<AuthoredSeries>;
 export function writeRebasedRecord(record: AuthoredPhotoInput, options: WriteRebasedOptions): Promise<AuthoredPhoto>;
 export async function writeRebasedRecord(record: AuthoredRecordInput, options: WriteRebasedOptions): Promise<AuthoredRecord> {
-    const { expectedVersion, lock, baseRevisionId, hooks } = options;
+    const { expectedVersion, lock, baseRevisionId, hooks, published } = options;
     const kind = record.kind as AuthoredKind;
     const id = kind === 'site' ? 'site' : String((record as { id?: unknown }).id);
     const ref = { kind, id };
     if (lock.name !== AUTHORED_LOCK || lock.signal.aborted) {
         throw new AuthoredWriteError('LOCK_NOT_HELD', ref, 'A rebase writes only under a live hold on the authored lock.');
     }
-    return commit(path.resolve(lock.root), record, ref, expectedVersion, hooks, baseRevisionId);
+    return commit(path.resolve(lock.root), record, ref, expectedVersion, hooks, baseRevisionId, undefined, published);
 }

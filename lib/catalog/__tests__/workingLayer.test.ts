@@ -229,7 +229,7 @@ describe('writeAuthoredRecord', () => {
         type Managed = (typeof MANAGED_FIELDS)[number];
         const same: [ManagedField] extends [Managed] ? ([Managed] extends [ManagedField] ? true : false) : false = true;
         expect(same).toBe(true);
-        expect([...MANAGED_FIELDS].sort()).toEqual(['baseRevisionId', 'baseSeriesOrder', 'schemaVersion', 'version']);
+        expect([...MANAGED_FIELDS].sort()).toEqual(['baseRevisionId', 'baseSeriesOrder', 'review', 'schemaVersion', 'version']);
     });
 
     it.each([
@@ -548,7 +548,9 @@ describe('writeAuthoredRecord', () => {
         await withLock('authored', { root: data.root }, async (hold) => {
             const synced = recordDirectorySyncs();
             const first = await writeAuthoredRecord(photo(PHOTO_A), { expectedVersion: 0, root: data.root, lock: hold });
-            expect(synced).toEqual([data.root, paths.dir, dir, paths.photosDir]);
+            // The first write also creates #16's one-time review backfill marker in authored/, synced first.
+            expect(synced).toEqual([paths.dir, data.root, paths.dir, dir, paths.photosDir]);
+            expect(fs.existsSync(path.join(paths.dir, 'review-backfill.json'))).toBe(true);
             synced.length = 0;
             await writeAuthoredRecord({ ...first, title: 'Fixture title' }, { expectedVersion: 1, root: data.root, lock: hold });
             expect(synced).toEqual([dir]);

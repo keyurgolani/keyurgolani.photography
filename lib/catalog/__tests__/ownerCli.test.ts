@@ -157,6 +157,18 @@ describe('the publish report', () => {
         expect(after).not.toContain('checklist');
         expect(after).not.toContain('--confirm-launch');
     });
+
+    it('lists what a publish takes off the site under Removed, once a revision is active (#17)', () => {
+        const base: PublishResult = { outcome: 'DRY_RUN_OK', message: 'Fixture.', candidateId: null, revisionId: null, revisionNumber: null, activationId: null, issues: [], errors: 0, warnings: 0 };
+        expect(report(base, '/root')).not.toContain('Removed');
+        expect(report({ ...base, removed: [] }, '/root')).toContain('Removed: nothing. Every photograph the active revision shows stays on the site.');
+        const one = report({ ...base, removed: [{ photoId: P1, series: [S] }] }, '/root');
+        expect(one).toContain(`Removed: 1 photograph the active revision shows leaves the site if this publishes:\n  ${P1}, from ${S}`);
+        const done = report({ ...base, outcome: 'PUBLISHED', removed: [{ photoId: P1, series: [] }, { photoId: P2, series: [S] }] }, '/root');
+        expect(done).toContain(`Removed: 2 photographs the active revision shows leave the site:\n  ${P1}\n  ${P2}, from ${S}`);
+        const many = Array.from({ length: 202 }, (_, n) => ({ photoId: `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, series: [] }));
+        expect(report({ ...base, removed: many }, '/root')).toContain('  and 2 more');
+    });
 });
 
 describe('scripts/photos.ts', { timeout: 120_000 }, () => {

@@ -16,7 +16,7 @@ import { runCurationCli } from '../commands';
 import { loadInbox } from '../inbox';
 import { runInboxAction, WEB_ACTOR } from '../inbox-form';
 import { defaultDescription, defaultPlacement, defaultSeries, formSeries, parsePlacementValue, placementValue, summaryText, type InboxActionState, type InboxView } from '../inbox-view';
-import { eventDir, readEvent, withCurationLock } from '../repository';
+import { eventDir, readEvent, withCurationLock, writeEvent } from '../repository';
 import { createCurationSink } from '../sink';
 import { createCurationFixture, DRAFT, GPS, PUBLISHED, SERIAL, writeRules, type CurationFixture } from './curationFixtures';
 
@@ -557,6 +557,18 @@ describe('runInboxAction', () => {
         done(await runInboxAction('dismiss', itemForm(event, null, { reason: 'A duplicate of a frame already in the series.' })));
         event = (await readEvent(f.root, ids[0]))!;
         expect(event).toMatchObject({ status: 'dismissed', decisions: [expect.anything(), expect.objectContaining({ action: 'dismiss', reason: 'A duplicate of a frame already in the series.' })] });
+        done(await runInboxAction('reopen', itemForm(event, null)));
+        expect((await readEvent(f.root, ids[0]))?.status).toBe('open');
+    });
+
+    it('lists an item #17 resolved as settled, and reopens it', async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])]);
+        const stored = (await readEvent(f.root, ids[0]))!;
+        await withCurationLock(f.root, {}, (hold) => writeEvent(f.root, { ...stored, status: 'resolved' }, stored.version, hold));
+        const view = ready(await loadInbox(ids[0]));
+        expect(view.selected).toMatchObject({ status: 'resolved', group: 'settled', can: { approve: false, edit: false, defer: false, dismiss: false, reopen: true } });
+        expect(view.needsJudgment).toBe(0);
+        const event = (await readEvent(f.root, ids[0]))!;
         done(await runInboxAction('reopen', itemForm(event, null)));
         expect((await readEvent(f.root, ids[0]))?.status).toBe('open');
     });

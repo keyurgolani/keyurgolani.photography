@@ -38,7 +38,7 @@ export function curatorPreviewUrl(photoId: string, assetRevision: string, profil
 /** Where an item sits, the way `curation list` counts it, from D6's shared placement lookup (lib/curation/placement.ts). */
 function groupOf(event: CurationEvent, waiting: string | null, placed: boolean, unplaced: boolean): ItemGroup {
     if (unplaced) return 'unplaced';
-    if (event.status === 'approved' || event.status === 'dismissed') return 'settled';
+    if (event.status === 'approved' || event.status === 'dismissed' || event.status === 'resolved') return 'settled';
     if (placed) return 'placed';
     if (event.status === 'deferred') return 'deferred';
     return needsJudgment(event, waiting, placed) ? 'judgment' : 'waiting';
@@ -133,7 +133,8 @@ function abilities(event: CurationEvent, registry: Registry | null): InboxDetail
         dismiss: open,
         // As retryEvent() decides: an identified photograph whose file couldn't be decoded, or whose build failed.
         retry: open && event.photoId !== null && event.assetRevision !== null && failure !== 'unsupported-format' && failure !== 'digest-collision' && (failure === 'undecodable' || failedBuild),
-        reopen: event.status === 'deferred' || event.status === 'dismissed' || event.status === 'approved',
+        // #17's reopen takes a resolved item back too.
+        reopen: event.status === 'deferred' || event.status === 'dismissed' || event.status === 'approved' || event.status === 'resolved',
     };
 }
 
