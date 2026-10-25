@@ -344,7 +344,7 @@ The production setup uses two containers, which both mount the photos folder and
 - **web** - Next.js application server. Its healthcheck calls `/api/health`, which answers 200 with the data root's state. `/api/ready` says whether the photos can be served, and from which catalog revision, and answers 503 when they can't, such as before `photos:migrate --apply` has written the registry.
 - **image-watcher** - Background photo processor, run from the bundled `dist/scripts/imageWatcher.mjs`. Its healthcheck passes while the heartbeat it writes to the data root every 30 s is under 120 s old.
 
-A third, **curator**, is off unless you start it by name. It serves the private curation pages on the host's `127.0.0.1:3001` only, and from another machine you reach it through an SSH tunnel, `ssh -L 3001:127.0.0.1:3001 <host>`, which is its authentication. [docs/curator.md](docs/curator.md) covers who can reach it, turning it on and off, and its settings.
+A third, **curator**, is off unless you start it by name. It serves the private curation pages on the host's `127.0.0.1:3001` only, and from another machine you reach it through an SSH tunnel, `ssh -L 3001:127.0.0.1:3001 <host>`, then sign in with the passphrase you set when you deployed it. [docs/curator.md](docs/curator.md) covers who can reach it, making and rotating the login credential, turning it on and off, and its settings.
 
 | Variable | Description | Default |
 |----------|-------------|---------|

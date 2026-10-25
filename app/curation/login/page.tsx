@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
+import SameOriginPostForm from '@/components/site/SameOriginPostForm';
 import { hasCuratorSession, requireCuratorLogin } from '@/lib/curation/auth';
 import { loginLocked } from '@/lib/curation/auth/login';
 import styles from './login.module.css';
@@ -7,8 +8,9 @@ import styles from './login.module.css';
 /**
  * The curator's login (#14's 14-2): the one curator page that asks for no
  * session. It still gets the flag, the bind and secrets, and the `Host`
- * checks, and the curator headers. Its form posts to
- * /api/curation/login, which checks the `Origin`, and answers a wrong
+ * checks, and the curator headers. Its form posts to /api/curation/login
+ * with fetch, so the browser sends the `Origin` that handler checks (see
+ * SameOriginPostForm), and that handler answers a wrong
  * passphrase and the lock the same way, so the only thing this page adds is
  * whether the lock is on. It reads nothing from the data root.
  */
@@ -32,7 +34,7 @@ export default async function CuratorLoginPage({ searchParams }: { searchParams:
             {locked ? <p>Login is paused for 15 minutes after five failed tries. Try again later.</p> : null}
           </div>
         ) : null}
-        <form className={styles.form} method="post" action="/api/curation/login">
+        <SameOriginPostForm className={styles.form} buttonClassName={styles.button} action="/api/curation/login" submitLabel="Sign in">
           <label className={styles.label} htmlFor="curator-passphrase">
             Passphrase
           </label>
@@ -45,10 +47,7 @@ export default async function CuratorLoginPage({ searchParams }: { searchParams:
             required
             autoFocus
           />
-          <button className={styles.button} type="submit">
-            Sign in
-          </button>
-        </form>
+        </SameOriginPostForm>
       </div>
     </main>
   );

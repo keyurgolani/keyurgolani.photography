@@ -1,6 +1,7 @@
 import { expect, type Page } from '@playwright/test';
 import { makeCuratorSecrets } from '../../test/helpers/curatorSecrets';
 import { startCatalogServer, type CatalogServer, type CatalogServerOptions } from './catalogServer';
+import { waitForHydration } from './hydration';
 
 /**
  * The curator (#14) for e2e: a catalog server with the flag on and test
@@ -35,6 +36,7 @@ export async function startCuratorServer(dataRoot: string, port?: number, option
 /** Opens `origin`'s login page and signs in with `passphrase`, ending on /curation. */
 export async function signIn(page: Page, origin: string, passphrase: string): Promise<void> {
     await page.goto(`${origin}/curation/login`);
+    await waitForHydration(page);
     await page.getByLabel('Passphrase').fill(passphrase);
     await page.getByRole('button', { name: 'Sign in' }).click();
     await expect(page).toHaveURL(`${origin}/curation`);

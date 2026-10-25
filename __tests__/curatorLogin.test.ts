@@ -166,10 +166,11 @@ describe('the login page', () => {
         return renderToStaticMarkup(await LoginPage({ searchParams: Promise.resolve(search) }));
     }
 
-    it('is a form that posts the passphrase to /api/curation/login', async () => {
+    it('is a form that posts the passphrase to /api/curation/login, with a button that waits for the page to hydrate', async () => {
         const html = await render();
         expect(html).toContain('action="/api/curation/login"');
         expect(html).toContain('method="post"');
+        expect(html).toMatch(/<button[^>]*type="submit"[^>]*disabled=""[^>]*>Sign in<\/button>/);
         expect(html).toMatch(/<label[^>]*for="curator-passphrase"/);
         expect(html).toMatch(/<input[^>]*type="password"[^>]*>/);
         expect(html).toMatch(/<input[^>]*name="passphrase"/);

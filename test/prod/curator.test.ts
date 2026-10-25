@@ -207,20 +207,21 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the curator boundary on the
         const before = snapshot();
         const origin = `http://127.0.0.1:${port}`;
 
-        // Without a session: the page goes to the login, and everything else is a 401.
-        const anonymous = await send(port, '/curation');
-        expect(anonymous.status).toBe(307);
-        expect(anonymous.headers.location).toBe('/curation/login');
-        expectCuratorHeaders(anonymous, 'GET /curation, anonymous');
+        // Without a session: a page, and its RSC payload, go to the login, and a handler is a 401.
         for (const [pathname, headers] of [
+            ['/curation', {}],
             ['/curation', { rsc: '1' }],
             ['/curation/inbox', { rsc: '1', 'next-router-prefetch': '1' }],
-            ['/api/curation/events', {}],
-            ['/api/curation/media/ph_x/sha256-x/p_x/w800.webp', {}],
         ] as [string, Record<string, string>][]) {
-            const answer = await send(port, pathname, { headers });
-            expect(answer.status, `GET ${pathname} ${JSON.stringify(headers)}`).toBe(401);
-            expect(answer.body).not.toContain('Curation');
+            const anonymous = await send(port, pathname, { headers });
+            expect(anonymous.status, `GET ${pathname} ${JSON.stringify(headers)}`).toBe(307);
+            expect(new URL(String(anonymous.headers.location), origin).href).toBe(`${origin}/curation/login`);
+            expect(anonymous.body).not.toContain('signed in');
+            expectCuratorHeaders(anonymous, `GET ${pathname}, anonymous`);
+        }
+        for (const pathname of ['/api/curation/events', '/api/curation/media/ph_x/sha256-x/p_x/w800.webp']) {
+            const answer = await send(port, pathname);
+            expect(answer.status, `GET ${pathname}`).toBe(401);
         }
         const login = await send(port, '/curation/login');
         expect(login.status).toBe(200);
