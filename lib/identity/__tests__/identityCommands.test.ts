@@ -290,6 +290,45 @@ describe('a pass with decision files', () => {
         fs.writeFileSync(file, JSON.stringify(registry));
         await expect(s.pass()).rejects.toThrow('decided is keyed by something other than a decision ID');
     }, 60_000);
+
+    it.skipIf(isRoot)("keeps the record of a decision whose file it can't read after a crash, so it is filed as it went once it can", async () => {
+        const { s, x, n, bind, made } = await crashedBatch();
+        const file = path.join(identityPaths(s.data.root).decisions, bind.name);
+        fs.chmodSync(file, 0o000);
+        try {
+            const blocked = await s.pass();
+            expect(blocked).toMatchObject({ status: 'committed', decisions: [{ name: bind.name, status: 'deferred' }, { name: made.name, status: 'applied' }] });
+        } finally {
+            fs.chmodSync(file, 0o600);
+        }
+        expect((await readRegistry(s.data.root)).decided?.[bind.decisionId]).toEqual({ status: 'applied', detail: `bound z.jpg to ${x}` });
+        const later = await s.pass();
+        expect(later).toMatchObject({ status: 'committed', decisions: [{ name: bind.name, status: 'applied', detail: `bound z.jpg to ${x}` }], facts: [] });
+        expect(s.filed('applied')).toEqual([bind.name, made.name]);
+        expect(s.filed('rejected')).toEqual([]);
+        expect(await s.photoAt('z.jpg')).toBe(n);
+    }, 60_000);
+
+    it.skipIf(isRoot)("keeps every record when the decisions folder can't be listed after a crash", async () => {
+        const { s, x, n, bind, made } = await crashedBatch();
+        const recorded = (await readRegistry(s.data.root)).decided;
+        expect(Object.keys(recorded ?? {}).sort()).toEqual([bind.decisionId, made.decisionId].sort());
+        const dir = identityPaths(s.data.root).decisions;
+        fs.chmodSync(dir, 0o000);
+        try {
+            expect(await s.pass()).toMatchObject({ status: 'committed', decisions: [] });
+        } finally {
+            fs.chmodSync(dir, 0o700);
+        }
+        expect((await readRegistry(s.data.root)).decided).toEqual(recorded);
+        const later = await s.pass();
+        expect(later).toMatchObject({
+            status: 'committed',
+            decisions: [{ name: bind.name, status: 'applied', detail: `bound z.jpg to ${x}` }, { name: made.name, status: 'applied', detail: `gave z.jpg its own photo ${n}` }],
+            facts: [],
+        });
+        expect(s.filed('rejected')).toEqual([]);
+    }, 60_000);
 });
 
 describe('photos identity decisions', { timeout: 120_000 }, () => {

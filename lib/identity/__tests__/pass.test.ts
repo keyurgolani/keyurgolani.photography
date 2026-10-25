@@ -459,4 +459,12 @@ describe('replayDecisions', () => {
             decided: { [decisionId]: { status: 'rejected', reason: 'no' } },
         });
     });
+
+    it("keeps the entries this listing didn't find when it may be missing some, and drops them after a full one", () => {
+        const recorded: Record<string, RecordedDecision> = { [decisionId]: { status: 'applied', detail: 'archived' }, [other]: { status: 'applied', detail: 'bound' } };
+        const unreadable: DecisionFile = { name: `20260601T110000000Z-${other}.json`, decision: null, invalid: "it can't be read", raw: null };
+        expect(replayDecisions([unreadable, file], recorded, { complete: false }).settle([]).decided).toEqual(recorded);
+        expect(replayDecisions([], recorded, { complete: false }).settle([]).decided).toEqual(recorded);
+        expect(replayDecisions([file], recorded).settle([]).decided).toEqual({ [decisionId]: { status: 'applied', detail: 'archived' } });
+    });
 });

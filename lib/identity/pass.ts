@@ -202,15 +202,22 @@ function recordOf(outcome: RecordedDecision | Exclude<DecisionOutcome, { status:
  * from being filed. Returns the outcomes in file order, given what the new
  * ones came to, and the record the next registry write carries: every
  * waiting decision that is applied or rejected now, until its file moves.
- * Exported for tests.
+ * When `files` may not be every waiting decision, because the folder
+ * couldn't be listed or a file couldn't be read, the record also keeps each
+ * earlier entry this listing didn't find, so a decision whose file is back
+ * next time is still filed as it went. Exported for tests.
  */
-export function replayDecisions(files: readonly DecisionFile[], recorded: Readonly<Record<string, RecordedDecision>>) {
+export function replayDecisions(files: readonly DecisionFile[], recorded: Readonly<Record<string, RecordedDecision>>, { complete = true }: { complete?: boolean } = {}) {
     const isRecorded = (file: DecisionFile) => file.decision !== null && Object.hasOwn(recorded, file.decision.decisionId);
     const fresh = files.filter((file) => !isRecorded(file));
     const settle = (outcomesOfFresh: readonly DecisionOutcome[]) => {
         const byName = new Map(outcomesOfFresh.map((outcome) => [outcome.name, outcome]));
         const outcomes: DecisionOutcome[] = [];
         const decided: Record<string, RecordedDecision> = {};
+        if (!complete) {
+            const listed = new Set(files.flatMap((file) => (file.decision ? [file.decision.decisionId] : [])));
+            for (const [decisionId, entry] of Object.entries(recorded)) if (!listed.has(decisionId)) decided[decisionId] = recordOf(entry);
+        }
         for (const file of files) {
             const decisionId = file.decision?.decisionId ?? null;
             // Built from the listed file and the entry's checked fields, never by copying the stored entry.
@@ -260,12 +267,15 @@ export async function runReconcilePass(options: PassOptions = {}): Promise<PassO
         // The lease runs on real time even when a test injects the pass clock.
         return await withLock('registry', { root, waitMs: options.lock?.waitMs, leaseMs: options.lock?.leaseMs }, async ({ signal }) => {
             const before = await readRegistry(root);
+            let listed = true;
             const decisions = await readPendingDecisions(root).catch((error: unknown) => {
                 logger.warn(`[identity] Could not read identity/decisions/, so this pass applies none: ${(error as Error).message}`);
+                listed = false;
                 return [];
             });
             // A decision an earlier write recorded is filed as it went then, never applied twice.
-            const replay = replayDecisions(decisions, before.decided ?? {});
+            const complete = listed && decisions.every((file) => file.raw !== null);
+            const replay = replayDecisions(decisions, before.decided ?? {}, { complete });
             const observed = await observeLibrary({ root: libraryRoot(), registry: before, statCache: await readStatCache(root), deps: options, decisions: replay.fresh });
             const { outcomes, decided } = replay.settle(observed.decisions);
             signal.throwIfAborted();
