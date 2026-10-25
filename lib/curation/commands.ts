@@ -69,7 +69,8 @@ export const CURATION_USAGE = `  npx tsx scripts/photos.ts curation list [--stat
   npx tsx scripts/photos.ts curation dismiss <eventId> --version <n> --reason <text>
   npx tsx scripts/photos.ts curation retry <eventId> --version <n> [--reason <text>]
   npx tsx scripts/photos.ts curation reopen <eventId> --version <n> [--reason <text>]
-    Every item command also takes --base <revisionId|none> (the active revision it was reviewed against) and --actor <name>.`;
+    Every item command also takes --base <revisionId|none> (the active revision it was reviewed against) and --actor <name>.
+    approve needs --base once a revision is active.`;
 
 export class CurationUsageError extends Error {}
 
@@ -213,11 +214,30 @@ export function scrub(output: string, [dataRootPath, libraryRootPath]: readonly 
     return scrubbed;
 }
 
+/** C0, C1, DEL, the bidi controls, line and paragraph separators, and zero-width characters. */
+// eslint-disable-next-line no-control-regex
+const UNPRINTABLE = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/gu;
+
+/**
+ * One output line with every character that could forge a line or rewrite
+ * the terminal escaped as `\n` or `\uXXXX`. File names come from the
+ * owner's library, synced files included, and #10 doesn't filter them. JSON
+ * output stays valid JSON: these are JSON escapes too.
+ */
+export function printable(line: string): string {
+    return line.replace(UNPRINTABLE, (char) => (char === '\n' ? '\\n' : `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`));
+}
+
+/** Every line of `output` through printable(), keeping the line breaks between them. */
+function printableLines(output: string): string {
+    return output.split('\n').map(printable).join('\n');
+}
+
 const STATUS_WIDTH = 8;
 const TYPE_WIDTH = 18;
 
 function listLine(event: CurationEvent): string {
-    return `${`${event.id}@${event.version}`.padEnd(32)}  ${event.type.padEnd(TYPE_WIDTH)}  ${event.status.padEnd(STATUS_WIDTH)}  ${shortPhotoId(event.photoId).padEnd(11)}  ${event.derivedFacts.sourcePath}`;
+    return `${`${event.id}@${event.version}`.padEnd(32)}  ${event.type.padEnd(TYPE_WIDTH)}  ${event.status.padEnd(STATUS_WIDTH)}  ${shortPhotoId(event.photoId).padEnd(11)}  ${printable(event.derivedFacts.sourcePath)}`;
 }
 
 function matches(filter: ListFilter, event: CurationEvent): boolean {
@@ -229,7 +249,7 @@ function matches(filter: ListFilter, event: CurationEvent): boolean {
 const items = (n: number) => `${n} item${n === 1 ? '' : 's'}`;
 
 function problemLine(problem: EventProblem): string {
-    return `Unreadable: ${problem.id} (${problem.reason}): ${problem.message}`;
+    return `Unreadable: ${problem.id} (${problem.reason}): ${printable(problem.message)}`;
 }
 
 async function list(root: string, command: Extract<CurationCommand, { command: 'list' }>): Promise<CommandResult> {
@@ -287,11 +307,11 @@ function suggestionLines(event: CurationEvent): string[] {
     const lines = ['Reviewable suggestion (generated, not reviewed):'];
     if (series) {
         lines.push(`  Suggested series: ${series.value ?? 'Leave unassigned'} (${series.confidence}, ${series.producedBy}, ${series.producedAt})`);
-        for (const line of series.evidence) lines.push(`    ${line}`);
+        for (const line of series.evidence) lines.push(`    ${printable(line)}`);
     }
     if (placement) {
         lines.push(`  Proposed sequence position: ${placementOf(placement.value)} (${placement.confidence}, ${placement.producedBy}, ${placement.producedAt})`);
-        for (const line of placement.evidence) lines.push(`    ${line}`);
+        for (const line of placement.evidence) lines.push(`    ${printable(line)}`);
     }
     lines.push('  Draft description: none suggested.');
     return lines;
@@ -303,14 +323,14 @@ function editLines(event: CurationEvent): string[] {
     const parts = [
         ...(edits.seriesId === undefined ? [] : [`series ${edits.seriesId ?? 'Leave unassigned'}`]),
         ...(edits.placement === undefined ? [] : [`position ${placementOf(edits.placement)}`]),
-        ...(edits.description === undefined ? [] : [edits.description === null ? 'description cleared' : edits.description.kind === 'decorative' ? 'decorative' : `description "${edits.description.text}"`]),
+        ...(edits.description === undefined ? [] : [edits.description === null ? 'description cleared' : edits.description.kind === 'decorative' ? 'decorative' : `description "${printable(edits.description.text)}"`]),
     ];
-    return [`Your edits: ${parts.join(', ') || 'none'} (${edits.editedBy}, ${edits.editedAt})`];
+    return [`Your edits: ${parts.join(', ') || 'none'} (${printable(edits.editedBy)}, ${edits.editedAt})`];
 }
 
 function factLines(event: CurationEvent): string[] {
     const facts = event.derivedFacts;
-    const lines = [`Source: ${facts.sourcePath}${facts.fromPath ? `, from ${facts.fromPath}` : ''} (${facts.factType})`];
+    const lines = [`Source: ${printable(facts.sourcePath)}${facts.fromPath ? `, from ${printable(facts.fromPath)}` : ''} (${facts.factType})`];
     const details = [
         ...(facts.capturedDate ? [`captured ${facts.capturedDate}`] : facts.capturedDate === null ? ['no capture date'] : []),
         ...(facts.width && facts.height ? [`${facts.width}x${facts.height}`] : []),
@@ -353,11 +373,11 @@ async function show(root: string, command: Extract<CurationCommand, { command: '
             const extra = [
                 ...(decision.seriesId !== undefined ? [decision.seriesId ?? 'unassigned'] : []),
                 ...(decision.placement ? [placementOf(decision.placement)] : []),
-                ...(decision.reason ? [`"${decision.reason}"`] : []),
+                ...(decision.reason ? [`"${printable(decision.reason)}"`] : []),
                 ...(decision.writes?.length ? [`wrote ${decision.writes.map((entry) => `${entry.record} v${entry.version}`).join(', ')}`] : []),
                 ...(decision.identityDecisionId ? [`identity decision ${decision.identityDecisionId}`] : []),
             ];
-            lines.push(`  ${decision.at} ${decision.action} by ${decision.by}${extra.length ? `: ${extra.join(', ')}` : ''}`);
+            lines.push(`  ${decision.at} ${decision.action} by ${printable(decision.by)}${extra.length ? `: ${extra.join(', ')}` : ''}`);
         }
     }
     lines.push(`To act on it: --version ${event.version} --base ${active ?? 'none'}`);
@@ -411,7 +431,7 @@ export async function runCurationCommand(context: CurationContext, command: Cura
     } catch (error) {
         result = { exitCode: 4, output: `Error (storage): ${error instanceof Error ? error.message : String(error)}\n` };
     }
-    return { ...result, output: scrub(result.output, [context.dataRoot, context.libraryRoot]) };
+    return { ...result, output: printableLines(scrub(result.output, [context.dataRoot, context.libraryRoot])) };
 }
 
 /** Parse and run `curation <args>`, as scripts/photos.ts does. */

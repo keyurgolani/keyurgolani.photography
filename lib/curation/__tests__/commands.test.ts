@@ -164,3 +164,33 @@ describe('npm run photos -- curation', () => {
         expect(usage.code).toBe(2);
     }, 60_000);
 });
+
+describe('curation output, round 1', () => {
+    it('scrubs the data root from a storage error on the command path', async () => {
+        const f = await fixture();
+        await createCurationSink({ root: f.root, logger: quiet })([f.fact('new', f.fresh[0])]);
+        const events = path.join(f.root, 'curation', 'events');
+        fs.chmodSync(events, 0o000);
+        cleanups.push(async () => fs.chmodSync(events, 0o700));
+        const listed = await cli(f, 'list');
+        expect(listed.exitCode).toBe(4);
+        expect(listed.output).toContain('<data root>');
+        expect(listed.output).not.toContain(f.root);
+        fs.chmodSync(events, 0o700);
+    });
+
+    it('escapes control and bidi characters in every path and name it prints', async () => {
+        const f = await fixture();
+        writeRules(f.root, { schemaVersion: 1, series: [{ seriesId: DRAFT, folders: ['trips'] }] });
+        const hostile = 'trips/evil\nevt_000000000000000000000000@1  new  open\u001b[2J\u202e\u0085\u007f.jpg';
+        await createCurationSink({ root: f.root, logger: quiet })([f.fact('new', f.fresh[0], { path: hostile, folder: 'trips' })]);
+        const [event] = (await listEvents(f.root)).events;
+        for (const output of [(await cli(f, 'list')).output, (await cli(f, 'show', event.id)).output]) {
+            // eslint-disable-next-line no-control-regex
+            expect(output).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u);
+            expect(output).toContain('trips/evil\\nevt_');
+            expect(output).toContain('\\u001b[2J\\u202e\\u0085\\u007f.jpg');
+        }
+        expect((await cli(f, 'list')).output.trimEnd().split('\n')).toHaveLength(2);
+    });
+});

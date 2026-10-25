@@ -107,7 +107,7 @@ describe('event keys', () => {
 describe('owner text', () => {
     it('is trimmed plain text with something in it', () => {
         expect(ownerText('  A quiet harbor at dawn.  ', { field: 'd', max: 100 })).toEqual({ ok: true, text: 'A quiet harbor at dawn.' });
-        for (const bad of ['', '   ', 'line\nbreak', 'tab\there', 'bidi\u202espoof', '<b>bold</b>', 'x'.repeat(101)]) {
+        for (const bad of ['', '   ', 'line\nbreak', 'tab\there', 'bidi\u202espoof', 'line\u2028sep', 'para\u2029sep', 'zero\u200bwidth', 'joiner\u200djoin', 'mark\u200eltr', 'word\u2060joiner', 'bom\ufeffhere', '<b>bold</b>', 'x'.repeat(101)]) {
             expect(ownerText(bad, { field: 'd', max: 100 }).ok, JSON.stringify(bad)).toBe(false);
         }
     });

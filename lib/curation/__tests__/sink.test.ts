@@ -1,13 +1,20 @@
 // @vitest-environment node
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { folderBytes } from '../../../test/helpers/folderBytes';
-import type { IdentityFactType } from '../../identity/types';
-import { deferEvent } from '../actions';
+import { setDataDir } from '../../../test/helpers/tempDataRoot';
+import { createTempLibrary } from '../../../test/helpers/tempLibrary';
+import { readAuthoredRecord } from '../../catalog/working-layer';
+import { writeAuthoredRecord } from '../../catalog/working-layer-writer';
+import { runReconcilePass } from '../../identity/pass';
+import { readRegistry, writeRegistry } from '../../identity/registry';
+import type { IdentityFact, IdentityFactType } from '../../identity/types';
+import { deferEvent, dismissEvent } from '../actions';
 import { eventIdOf, eventKey, EVENT_TYPE_FOR_FACT, type CurationEvent } from '../events';
-import { curationPaths, eventDir, listEvents, readEvent } from '../repository';
+import { curationPaths, eventDir, listEvents, readEvent, writeEvent } from '../repository';
 import { createCurationSink } from '../sink';
 import { createCurationFixture, DRAFT, GPS, holdingCuration, PUBLISHED, SERIAL, writeRules, type CurationFixture } from './curationFixtures';
 
@@ -188,7 +195,7 @@ describe('the curation sink', () => {
         fs.writeFileSync(path.join(dir, 'v1.json'), '{ not json');
         const errors: string[] = [];
         await createCurationSink({ root: f.root, logger: { ...quiet, error: (line: string) => errors.push(line) } })([{ ...factA, factId: 'again' }, f.fact('new', b)]);
-        expect(errors).toEqual([expect.stringMatching(/can't be used.*not recorded until it is fixed/)]);
+        expect(errors).toEqual([expect.stringMatching(/can't be used.*skipped and not delivered again/)]);
         expect(errors[0]).not.toContain(f.root);
         const { events, problems } = await listEvents(f.root);
         expect(events.map((event) => event.photoId)).toEqual([b]);
@@ -202,3 +209,118 @@ describe('the curation sink', () => {
         expect(fs.existsSync(path.join(f.root, '..', 'escape'))).toBe(false);
     });
 });
+
+describe('a fact the sink can\'t shape', () => {
+    it('is skipped by factId while the rest deliver, so a pass clears it and asks for no other', async () => {
+        const f = await fixture();
+        const errors: string[] = [];
+        const good = f.fact('new', f.fresh[0]);
+        const unknownType = { ...f.fact('new', f.fresh[1]), type: 'future-type' } as unknown as IdentityFact;
+        const badRevision = { ...f.fact('new', f.fresh[1]), assetRevision: 'sha256-short', key: 'new:x:sha256-short' };
+        const noPath = { ...f.fact('missing', f.catalog.photos[0].id), path: undefined } as unknown as IdentityFact;
+        const sink = createCurationSink({ root: f.root, logger: { ...quiet, error: (line: string) => errors.push(line), warn: (line: string) => errors.push(line) } });
+        await expect(sink([unknownType, good, badRevision, noPath])).resolves.toBeUndefined();
+        const { events } = await listEvents(f.root);
+        expect(events.map((event) => event.photoId)).toEqual([f.fresh[0]]);
+        expect(events[0].factIds).toEqual([good.factId]);
+        for (const fact of [unknownType, badRevision, noPath]) expect(errors.join('\n')).toContain(fact.factId);
+        expect(errors.join('\n')).not.toContain(f.root);
+    });
+
+    it('leaves no pending fact behind after a watcher pass, so check() asks for no 30 s re-pass', async () => {
+        const f = await fixture();
+        const lib = await createTempLibrary();
+        cleanups.push(() => lib.cleanup());
+        const restore = setDataDir(f.root);
+        cleanups.push(async () => restore());
+        const registry = await readRegistry(f.root);
+        const bad = { ...f.fact('new', f.fresh[0]), type: 'future-type' } as unknown as IdentityFact;
+        const odd = { ...f.fact('new', f.fresh[1]), assetRevision: 'sha256-short' };
+        await writeRegistry(f.root, { ...registry, pendingFacts: [bad, odd, f.fact('new', f.fresh[0])] }, registry.version);
+        const outcome = await runReconcilePass({ sinks: [createCurationSink({ logger: quiet })], clearDelivered: true, logger: quiet, clock: () => Date.now() + 60_000 });
+        expect(outcome.status).toBe('committed');
+        expect((await readRegistry(f.root)).pendingFacts).toEqual([]);
+        expect((await listEvents(f.root)).events.some((event) => event.photoId === f.fresh[0] && event.type === 'new')).toBe(true);
+    });
+});
+
+describe('a missing source that comes back as missing', () => {
+    it('reopens a dismissed item once something references the photo, and says why', async () => {
+        const f = await fixture({ published: true });
+        const photoId = f.fresh[0];
+        const first = f.fact('missing', photoId);
+        await sinkFor(f.root)([first]);
+        const id = eventIdOf(eventKey('missing', first));
+        expect(await dismissEvent({ root: f.root, eventId: id, expectedVersion: 1, actor: 'curator:test', reason: 'Not used anywhere.' })).toMatchObject({ ok: true });
+        // Unreferenced, a repeat stays dismissed.
+        await sinkFor(f.root)([{ ...first, factId: 'again-1' }]);
+        expect(await readEvent(f.root, id)).toMatchObject({ status: 'dismissed', version: 3 });
+        const draft = await readAuthoredRecord(f.root, 'series', DRAFT);
+        await writeAuthoredRecord({ ...draft!, photoIds: [...(draft?.photoIds ?? []), photoId] }, { expectedVersion: draft?.version ?? 0, root: f.root });
+        await sinkFor(f.root)([{ ...first, factId: 'again-2' }]);
+        const event = await readEvent(f.root, id);
+        expect(event).toMatchObject({ status: 'open', version: 4 });
+        expect(event?.decisions.at(-1)).toMatchObject({ action: 'reopen', by: 'watcher', baseRevisionId: f.catalog.revisionId, reason: expect.stringMatching(new RegExp(`series ${DRAFT}`)) });
+    });
+
+    it('reopens for the active revision too, and leaves other dismissed types alone', async () => {
+        const f = await fixture({ published: true });
+        const published = f.catalog.series[0].photoIds[0];
+        const missing = f.fact('missing', published);
+        const replaced = f.fact('replaced', published, { assetRevision: `sha256-${'e'.repeat(64)}` });
+        await sinkFor(f.root)([missing, replaced]);
+        // Written by hand as dismissed, as an older build or a hand edit could leave it.
+        for (const [fact, type] of [[missing, 'missing'], [replaced, 'replacement']] as const) {
+            const id = eventIdOf(eventKey(type, fact));
+            const stored = await readEvent(f.root, id) as CurationEvent;
+            await holdingCuration(f.root, (hold) => writeEvent(f.root, { ...stored, status: 'dismissed' }, stored.version, hold));
+        }
+        await sinkFor(f.root)([{ ...missing, factId: 'again-m' }, { ...replaced, factId: 'again-r' }]);
+        expect(await readEvent(f.root, eventIdOf(eventKey('missing', missing)))).toMatchObject({ status: 'open', decisions: [expect.objectContaining({ action: 'reopen', reason: expect.stringMatching(/active revision/) })] });
+        expect(await readEvent(f.root, eventIdOf(eventKey('replacement', replaced)))).toMatchObject({ status: 'dismissed' });
+    });
+});
+
+describe('a rename', () => {
+    it('refreshes the source path of the photo\'s open items, and of no closed one', async () => {
+        const f = await fixture();
+        const [a, b] = f.fresh;
+        await sinkFor(f.root)([f.fact('new', a), f.fact('new', b)]);
+        const idB = eventIdOf(eventKey('new', f.fact('new', b)));
+        await dismissEvent({ root: f.root, eventId: idB, expectedVersion: 1, actor: 'curator:test', reason: 'No.' });
+        await sinkFor(f.root)([f.fact('renamed', a, { path: 'trips/renamed/a.jpg', folder: 'trips/renamed', fromPath: 'trips/harbor-1.jpg' }), f.fact('renamed', b, { path: 'trips/b.jpg', folder: 'trips', fromPath: 'trips/harbor-2.jpg' })]);
+        const { events } = await listEvents(f.root);
+        expect(events.find((event) => event.photoId === a)?.derivedFacts).toMatchObject({ sourcePath: 'trips/renamed/a.jpg', folder: 'trips/renamed' });
+        expect(events.find((event) => event.photoId === b)?.derivedFacts).toMatchObject({ sourcePath: 'trips/harbor-2.jpg' });
+        expect(events).toHaveLength(2);
+    });
+});
+
+describe('curation/rules.json', () => {
+    it.each([
+        ['a FIFO', (file: string) => execFileSync('mkfifo', [file])],
+        ['a folder', (file: string) => fs.mkdirSync(file)],
+        ['a file over the size cap', (file: string) => fs.writeFileSync(file, `{"schemaVersion":1,"series":[]}${' '.repeat(300 * 1024)}`)],
+        ['a symlink to a device', (file: string) => fs.symlinkSync('/dev/zero', file)],
+    ])('is treated as invalid when it is %s, without blocking the delivery', async (_label, make) => {
+        const f = await fixture();
+        fs.mkdirSync(curationPaths(f.root).dir, { recursive: true });
+        make(curationPaths(f.root).rules);
+        const warnings: string[] = [];
+        await withTimeout(Promise.resolve(createCurationSink({ root: f.root, logger: { ...quiet, warn: (line: string) => warnings.push(line) } })([f.fact('new', f.fresh[0])])), 5_000);
+        const [event] = (await listEvents(f.root)).events;
+        expect(event.suggestions.series).toMatchObject({ value: null, producedBy: 'rules@invalid' });
+        expect(warnings.join('\n')).toMatch(/rules\.json/);
+    });
+
+    it('caps how many series, folders, and tags it holds', async () => {
+        const f = await fixture();
+        writeRules(f.root, { schemaVersion: 1, series: Array.from({ length: 501 }, (_, index) => ({ seriesId: `ser_s${index}`, folders: ['trips'] })) });
+        await sinkFor(f.root)([f.fact('new', f.fresh[0])]);
+        expect((await listEvents(f.root)).events[0].suggestions.series).toMatchObject({ producedBy: 'rules@invalid' });
+    });
+});
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+    return Promise.race([promise, new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`timed out after ${ms} ms`)), ms))]);
+}

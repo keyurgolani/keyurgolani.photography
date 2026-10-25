@@ -141,7 +141,10 @@
  *     here until approved into the draft; nothing here publishes. Item
  *     commands take the --version that list or show printed, and --base
  *     <revisionId|none> for the active revision they were reviewed against,
- *     and write nothing when either moved. Exits 0 when done, 1 when
+ *     which approve requires once a revision is active, and write nothing
+ *     when either moved. An approval keeps a photograph already in the
+ *     series where it is unless a position flag or a saved edit picks one.
+ *     Exits 0 when done, 1 when
  *     refused, 2 on a usage error, 3 when stale, locked, or the data root
  *     isn't ready, and 4 when a file can't be read. Prints no absolute path.
  *

@@ -4,7 +4,6 @@ import {
     CorruptDocumentError,
     EditedInPlaceError,
     MisnamedVersionError,
-    readJsonFile,
     readVersionedDocument,
     StaleVersionError,
     writeVersionedDocument,
@@ -117,6 +116,14 @@ async function ensureFolder(dir: string): Promise<void> {
     }
 }
 
+/** An event that doesn't match the schema, so it is never written. */
+export class InvalidEventError extends Error {
+    constructor(eventId: string, issues: readonly string[]) {
+        super(`The event ${eventId} is not valid: ${issues.join('; ')}`);
+        this.name = 'InvalidEventError';
+    }
+}
+
 /** The stored event moved since the caller read it. */
 export class EventMovedError extends Error {
     readonly eventId: string;
@@ -141,7 +148,7 @@ export class EventMovedError extends Error {
 export async function writeEvent(root: string, event: CurationEvent, expectedVersion: number, hold: LockContext, hooks?: VersionedWriteHooks): Promise<CurationEvent> {
     if (hold.name !== CURATION_LOCK || hold.signal.aborted) throw new Error('An event is written only under a live hold on the curation lock.');
     const parsed = parseEvent({ ...event, version: expectedVersion + 1 });
-    if (!parsed.ok) throw new Error(`The event ${event.id} is not valid: ${parsed.issues.join('; ')}`);
+    if (!parsed.ok) throw new InvalidEventError(String(event.id), parsed.issues);
     const paths = curationPaths(root);
     await ensureFolder(paths.dir);
     await ensureFolder(paths.events);
@@ -158,7 +165,44 @@ export function withCurationLock<T>(root: string, options: { waitMs?: number; le
     return withLock(CURATION_LOCK, { root, waitMs: options.waitMs ?? CURATION_WAIT_MS, leaseMs: options.leaseMs ?? CURATION_LEASE_MS }, fn);
 }
 
-/** `curation/rules.json` as parsed JSON, or null when there is none. Throws CorruptDocumentError when it isn't JSON. */
-export function readRulesFile(root: string): Promise<unknown | null> {
-    return readJsonFile(curationPaths(root).rules);
+/** The most `curation/rules.json` may hold. */
+export const RULES_MAX_BYTES = 256 * 1024;
+
+/** `curation/rules.json` can't be used. The reason never names a path. */
+export class RulesFileError extends Error {
+    constructor(reason: string) {
+        super(reason);
+        this.name = 'RulesFileError';
+    }
+}
+
+/**
+ * `curation/rules.json` as parsed JSON, or null when there is none. The
+ * watcher reads it inside the registry hold, so it is opened without
+ * blocking and checked on the open handle first: anything but a regular
+ * file of at most RULES_MAX_BYTES, such as a FIFO, a device, or a folder, is
+ * a RulesFileError and is never read. So is a file that isn't JSON.
+ */
+export async function readRulesFile(root: string): Promise<unknown | null> {
+    let handle: fs.promises.FileHandle;
+    try {
+        handle = await fs.promises.open(curationPaths(root).rules, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    } catch (error) {
+        if (hasErrorCode(error, 'ENOENT')) return null;
+        throw new RulesFileError(`it can't be opened (${(error as NodeJS.ErrnoException).code ?? 'an I/O error'})`);
+    }
+    try {
+        const stat = await handle.stat();
+        if (!stat.isFile()) throw new RulesFileError('it is not a regular file');
+        if (stat.size > RULES_MAX_BYTES) throw new RulesFileError(`it is ${stat.size} bytes, and the most is ${RULES_MAX_BYTES}`);
+        const buffer = Buffer.alloc(stat.size);
+        const { bytesRead } = stat.size === 0 ? { bytesRead: 0 } : await handle.read(buffer, 0, stat.size, 0);
+        try {
+            return JSON.parse(buffer.subarray(0, bytesRead).toString('utf8')) as unknown;
+        } catch {
+            throw new RulesFileError('it is not valid JSON');
+        }
+    } finally {
+        await handle.close();
+    }
 }

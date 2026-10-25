@@ -282,7 +282,7 @@ function altOf(description: CuratorDescription): AuthoredAlt {
 }
 
 /** The series and position an approval uses: the command's, then the saved edits, then the suggestion for that same series. */
-function resolveChoices(event: CurationEvent, choices: Choices): { seriesId: string | null; placement: Placement | null; description: CuratorDescription | null | undefined } {
+function resolveChoices(event: CurationEvent, choices: Choices): { seriesId: string | null; placement: Placement | null; picked: boolean; description: CuratorDescription | null | undefined } {
     const edits = event.edits;
     let seriesId = choices.seriesId;
     let fromSuggestion = false;
@@ -296,13 +296,15 @@ function resolveChoices(event: CurationEvent, choices: Choices): { seriesId: str
     }
     if (seriesId === null) {
         if (choices.placement !== undefined) fail('needs-choice', 'A photograph left unassigned has no position.');
-        return { seriesId: null, placement: null, description: choices.description !== undefined ? choices.description : edits?.description };
+        return { seriesId: null, placement: null, picked: false, description: choices.description !== undefined ? choices.description : edits?.description };
     }
     let placement = choices.placement;
     // Edits made without picking a series apply to the suggested one.
     if (placement === undefined && edits?.placement !== undefined && (edits.seriesId ?? event.suggestions.series?.value) === seriesId) placement = edits.placement;
+    // Only the command or a saved edit picks a position. A generated one is a suggestion, never an authored move.
+    const picked = placement !== undefined;
     if (placement === undefined && (fromSuggestion || event.suggestions.series?.value === seriesId)) placement = event.suggestions.placement?.value;
-    return { seriesId, placement: placement ?? 'end', description: choices.description !== undefined ? choices.description : edits?.description };
+    return { seriesId, placement: placement ?? 'end', picked, description: choices.description !== undefined ? choices.description : edits?.description };
 }
 
 /**
@@ -310,7 +312,12 @@ function resolveChoices(event: CurationEvent, choices: Choices): { seriesId: str
  * asset revision, and, unless it's left unassigned, its place in the chosen
  * series. Never publishes, and leaves `catalog/` byte-identical.
  */
-export function approveEvent(input: ActionInput & { choices: Choices }): Promise<ActionOutcome> {
+export interface ApproveFaults {
+    /** After the photo record is written, before the placement. A test can commit the series here as a writer past its lease would. */
+    beforePlacement?(): void | Promise<void>;
+}
+
+export function approveEvent(input: ActionInput & { choices: Choices; faults?: ApproveFaults }): Promise<ActionOutcome> {
     return act(input, async (step) => {
         const { event } = step;
         if (event.type !== 'new') {
@@ -318,10 +325,14 @@ export function approveEvent(input: ActionInput & { choices: Choices }): Promise
             fail('refused', `Only a new photograph is approved into the draft. A ${event.type} event is settled with ${owner}.`);
         }
         requireStatus(event, ['open', 'deferred'], 'approved');
+        if (input.expectedBase === undefined && step.active !== null) {
+            fail('needs-choice', `approve needs --base ${step.active}, the active revision it was reviewed against. Show it again if that isn't the one. Nothing was written.`);
+        }
         const photoId = event.photoId as string;
         const assetRevision = event.assetRevision as string;
         const root = path.resolve(input.root);
-        const { seriesId, placement, description } = resolveChoices(event, input.choices);
+        const { seriesId, placement, picked, description } = resolveChoices(event, input.choices);
+        let kept = false;
 
         const registry = await readRegistry(root).catch((error: unknown) => fail('damaged', `The identity registry can't be read: ${(error as Error).message}. Nothing was written.`));
         const photo = registry.photos[photoId];
@@ -346,14 +357,18 @@ export function approveEvent(input: ActionInput & { choices: Choices }): Promise
                     series = await readAuthored<AuthoredSeries>(root, 'series', seriesId);
                     if (series === null) fail('refused', `There is no series ${seriesId}. Nothing was written.`);
                     const target = series as AuthoredSeries;
-                    op = target.photoIds.includes(photoId)
-                        ? { kind: 'move', seriesId, photoId, at: placement }
-                        : { kind: 'insert', seriesId, photoId, at: placement };
-                    const all = await readAuthoredSeries(root);
-                    const context = sequenceContext({ registry, series: all.series, unreadable: all.problems.filter((problem) => problem.kind === 'series').map((problem) => problem.id) });
-                    const checked = applySeriesOp(target, op, context);
-                    if (!checked.ok) fail('refused', `${checked.error.message} (${checked.error.code}). Nothing was written.`);
-                    if (checked.ok && !checked.changed) op = null;
+                    const member = target.photoIds.includes(photoId);
+                    if (member && !picked) {
+                        // Already placed, and nobody picked a position: it keeps its place.
+                        kept = true;
+                    } else {
+                        op = member ? { kind: 'move', seriesId, photoId, at: placement } : { kind: 'insert', seriesId, photoId, at: placement };
+                        const all = await readAuthoredSeries(root);
+                        const context = sequenceContext({ registry, series: all.series, unreadable: all.problems.filter((problem) => problem.kind === 'series').map((problem) => problem.id) });
+                        const checked = applySeriesOp(target, op, context);
+                        if (!checked.ok) fail('refused', `${checked.error.message} (${checked.error.code}). Nothing was written.`);
+                        if (checked.ok && !checked.changed) op = null;
+                    }
                 }
 
                 if (existing && existing.assetRevision !== assetRevision) {
@@ -370,10 +385,15 @@ export function approveEvent(input: ActionInput & { choices: Choices }): Promise
                 else if (alt.kind === 'described' && !alt.reviewed) notes.push('Its description is not reviewed yet, so publishing it waits until it is.');
 
                 if (op !== null && series !== null) {
+                    await input.faults?.beforePlacement?.();
                     const result = await applySequenceOp({ dataRoot: root }, op, { expectedVersion: series.version, actor: { kind: 'inbox-approval', ref: event.id }, lock: authored });
                     if (!result.ok) {
                         const code = result.error.code === 'version-conflict' || result.error.code === 'authored-locked' ? 'stale' : 'refused';
-                        fail(code, `${result.error.message} (${result.error.code}).${writes.length ? ` The photo record was written (${writes.map((entry) => `${entry.record} v${entry.version}`).join(', ')}).` : ' Nothing was written.'}`, writes);
+                        // The placement was checked before anything was written, so only a writer past its lease or a hand edit gets here.
+                        const landed = writes.length > 0
+                            ? `${writes.map((entry) => `${entry.record} v${entry.version}`).join(', ')} landed, but ${op.seriesId} did not change: ${result.error.message} (${result.error.code}). The event is unchanged. Approve again to finish it.`
+                            : `${result.error.message} (${result.error.code}). Nothing was written.`;
+                        fail(code, landed, writes);
                     }
                     if (result.ok && result.changed) writes.push({ record: `series:${op.seriesId}`, version: result.version });
                 }
@@ -388,8 +408,9 @@ export function approveEvent(input: ActionInput & { choices: Choices }): Promise
         }
 
         if (seriesId === null) notes.unshift('Approved and left unassigned: the photo record is in the draft, in no series.');
+        else if (kept) notes.unshift(`Approved into ${seriesId}, where it kept its place, in the draft. Nothing is published until photos publish runs.`);
         else notes.unshift(`Approved into ${seriesId} at ${placementText(placement as Placement)}, in the draft. Nothing is published until photos publish runs.`);
-        const next = decided(step, input, { action: 'approve', seriesId, ...(placement ? { placement } : {}), writes }, 'approved');
+        const next = decided(step, input, { action: 'approve', seriesId, ...(placement && !kept ? { placement } : {}), writes }, 'approved');
         return { event: next, notes };
     });
 }

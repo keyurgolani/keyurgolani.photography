@@ -1,13 +1,15 @@
 // @vitest-environment node
 import fs from 'node:fs';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { folderBytes } from '../../../test/helpers/folderBytes';
-import { readAuthoredRecord } from '../../catalog/working-layer';
-import { writeAuthoredRecord } from '../../catalog/working-layer-writer';
+import { authoredRecordDir, catalogPaths, readAuthoredRecord } from '../../catalog/working-layer';
+import { AUTHORED_LOCK, writeAuthoredRecord } from '../../catalog/working-layer-writer';
 import { readPendingDecisions } from '../../identity/decisions';
 import { readRegistry, writeRegistry } from '../../identity/registry';
 import type { IdentityFact } from '../../identity/types';
+import { readVersionedDocument, versionFile, versionText, writeVersionedDocument } from '../../storage/document';
+import { withLock } from '../../storage/lock';
 import { approveEvent, deferEvent, dismissEvent, editEvent, reopenEvent, retryEvent, type ActionInput } from '../actions';
 import { eventIdOf, eventKey, type CurationEvent, type CurationEventType } from '../events';
 import { readEvent } from '../repository';
@@ -52,7 +54,7 @@ describe('approve', () => {
         const { f, event, input } = await opened((fx) => fx.fact('new', fx.fresh[0]), { published: true, rules: { schemaVersion: 1, series: [{ seriesId: DRAFT, folders: ['trips'] }] } });
         const catalogBefore = layers(f.root).catalog;
         const draftBefore = await readAuthoredRecord(f.root, 'series', DRAFT);
-        const result = await approveEvent({ ...input, choices: {} });
+        const result = await approveEvent({ ...input, expectedBase: f.catalog.revisionId, choices: {} });
         expect(result).toMatchObject({ ok: true, event: { status: 'approved', version: 2, reviewedBy: ACTOR } });
         expect(layers(f.root).catalog).toEqual(catalogBefore);
         const photoId = event.photoId as string;
@@ -269,7 +271,7 @@ describe('every action', () => {
             () => editEvent({ ...input, choices: { seriesId: DRAFT } }),
             () => deferEvent({ ...input, expectedVersion: 2 }),
             () => reopenEvent({ ...input, expectedVersion: 3 }),
-            () => approveEvent({ ...input, expectedVersion: 4, choices: {} }),
+            () => approveEvent({ ...input, expectedVersion: 4, expectedBase: f.catalog.revisionId, choices: {} }),
             () => reopenEvent({ ...input, expectedVersion: 5 }),
             () => dismissEvent({ ...input, expectedVersion: 6, reason: 'Changed my mind.' }),
         ];
@@ -282,5 +284,90 @@ describe('every action', () => {
     it('reports an unknown event without writing', async () => {
         const { f } = await opened((fx) => fx.fact('new', fx.fresh[0]));
         expect(await deferEvent({ root: f.root, eventId: `evt_${'0'.repeat(24)}`, expectedVersion: 1, actor: ACTOR })).toMatchObject({ ok: false, code: 'not-found' });
+    });
+});
+
+describe('approve, round 1', () => {
+    it('keeps a photograph already in the series where it is, unless a position flag or a saved edit picks one', async () => {
+        const { f, event, input } = await opened((fx) => fx.fact('new', fx.fresh[0]), { rules: { schemaVersion: 1, series: [{ seriesId: DRAFT, folders: ['trips'] }] } });
+        const photoId = event.photoId as string;
+        const draft = await readAuthoredRecord(f.root, 'series', DRAFT);
+        // The owner placed it by hand first, at the start.
+        await writeAuthoredRecord({ ...draft!, photoIds: [photoId, ...(draft?.photoIds ?? [])] }, { expectedVersion: draft?.version ?? 0, root: f.root });
+        const placed = await readAuthoredRecord(f.root, 'series', DRAFT);
+        const result = await approveEvent({ ...input, choices: {} });
+        expect(result).toMatchObject({ ok: true });
+        expect(result.ok && result.notes.join(' ')).toMatch(/kept its place/);
+        expect(await readAuthoredRecord(f.root, 'series', DRAFT)).toEqual(placed);
+        // Reopened and approved again with nothing picked, it still stays.
+        await reopenEvent({ ...input, expectedVersion: 2 });
+        expect(await approveEvent({ ...input, expectedVersion: 3, choices: {} })).toMatchObject({ ok: true });
+        expect(await readAuthoredRecord(f.root, 'series', DRAFT)).toEqual(placed);
+        // A flag moves it.
+        await reopenEvent({ ...input, expectedVersion: 4 });
+        expect(await approveEvent({ ...input, expectedVersion: 5, choices: { placement: 'end' } })).toMatchObject({ ok: true });
+        expect((await readAuthoredRecord(f.root, 'series', DRAFT))?.photoIds.at(-1)).toBe(photoId);
+        // So does a saved edit.
+        await reopenEvent({ ...input, expectedVersion: 6 });
+        await editEvent({ ...input, expectedVersion: 7, choices: { placement: 'start' } });
+        expect(await approveEvent({ ...input, expectedVersion: 8, choices: {} })).toMatchObject({ ok: true });
+        expect((await readAuthoredRecord(f.root, 'series', DRAFT))?.photoIds[0]).toBe(photoId);
+    });
+
+    it('needs --base once an active revision exists, and names it', async () => {
+        const { f, input } = await opened((fx) => fx.fact('new', fx.fresh[0]), { published: true });
+        const before = layers(f.root);
+        const result = await approveEvent({ ...input, choices: { seriesId: DRAFT } });
+        expect(result).toMatchObject({ ok: false, code: 'needs-choice', message: expect.stringContaining(`--base ${f.catalog.revisionId}`) });
+        expect(layers(f.root)).toEqual(before);
+    });
+
+    it('fails as stale when the active pointer moves while it waits for the authored lock', async () => {
+        const { f, input } = await opened((fx) => fx.fact('new', fx.fresh[0]), { published: true });
+        let result: Awaited<ReturnType<typeof approveEvent>> | undefined;
+        await withLock(AUTHORED_LOCK, { root: f.root, waitMs: 1_000 }, async () => {
+            void approveEvent({ ...input, expectedBase: f.catalog.revisionId, waitMs: 10_000, choices: { seriesId: DRAFT } }).then((value) => {
+                result = value;
+            });
+            await new Promise((resolve) => setTimeout(resolve, 400));
+            expect(result).toBeUndefined();
+            const active = catalogPaths(f.root).active;
+            fs.writeFileSync(versionFile(active, 2), versionText({ schemaVersion: 1, revisionId: `rev_${'9'.repeat(64)}`, activationId: 'act_00000000-0000-4000-8000-000000000002' }, 2));
+        });
+        await vi.waitFor(() => expect(result).toBeDefined(), { timeout: 5_000 });
+        expect(result).toMatchObject({ ok: false, code: 'stale', message: expect.stringMatching(/active revision moved/) });
+        expect(fs.existsSync(path.join(f.root, 'authored', 'photos', f.fresh[0]))).toBe(false);
+    });
+
+    it('refuses when the photo record pins another revision, and writes nothing', async () => {
+        const { f, event, input } = await opened((fx) => fx.fact('new', fx.fresh[0]));
+        await writeAuthoredRecord({ kind: 'photo', id: event.photoId as string, assetRevision: `sha256-${'f'.repeat(64)}`, alt: null }, { expectedVersion: 0, root: f.root });
+        const before = layers(f.root);
+        expect(await approveEvent({ ...input, choices: { seriesId: DRAFT } })).toMatchObject({ ok: false, code: 'refused', message: expect.stringMatching(/pins sha256-f+, not this event's/) });
+        expect(layers(f.root)).toEqual(before);
+    });
+
+    it('says exactly what landed when the series write fails after the photo record, and approving again finishes it', async () => {
+        const { f, event, input } = await opened((fx) => fx.fact('new', fx.fresh[0]));
+        const photoId = event.photoId as string;
+        const dir = authoredRecordDir(f.root, 'series', DRAFT);
+        const result = await approveEvent({
+            ...input,
+            choices: { seriesId: DRAFT },
+            faults: {
+                // A writer past its lease commits the series between the photo record and the placement.
+                async beforePlacement() {
+                    const stored = await readVersionedDocument(dir);
+                    await writeVersionedDocument(dir, { ...(stored?.value as { version: number; schemaVersion: number }), title: 'Fixture title from elsewhere' }, stored?.version ?? 0);
+                },
+            },
+        });
+        expect(result).toMatchObject({ ok: false, code: 'stale', writes: [{ record: `photo:${photoId}`, version: 1 }] });
+        expect(!result.ok && result.message).toMatch(new RegExp(`photo:${photoId} v1 landed.*${DRAFT} did not change.*Approve again`));
+        expect(await readEvent(f.root, event.id)).toMatchObject({ version: 1, status: 'open' });
+        const again = await approveEvent({ ...input, choices: { seriesId: DRAFT } });
+        expect(again).toMatchObject({ ok: true, event: { status: 'approved' } });
+        expect(again.ok && again.event.decisions.at(-1)?.writes).toEqual([{ record: `series:${DRAFT}`, version: 3 }]);
+        expect((await readAuthoredRecord(f.root, 'series', DRAFT))?.photoIds).toContain(photoId);
     });
 });

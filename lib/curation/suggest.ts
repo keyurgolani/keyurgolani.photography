@@ -20,6 +20,9 @@ import type { Suggestions } from './events';
  */
 
 export const RULES_SCHEMA_VERSION = 1;
+/** The most series rules.json may configure, and the most folders or tags one may list. */
+export const MAX_RULE_SERIES = 500;
+export const MAX_RULE_ENTRIES = 100;
 
 const tag = z.string().regex(/^[\p{L}\p{N}]+$/u, 'must be letters and digits only');
 const folder = z.string().refine(isLibraryPath, 'must be a library-relative folder');
@@ -28,10 +31,10 @@ export const rulesSchema = z.strictObject({
     schemaVersion: z.literal(RULES_SCHEMA_VERSION),
     series: z.array(z.strictObject({
         seriesId: z.string().regex(SERIES_ID_RE, 'must be a series ID'),
-        folders: z.array(folder).default([]),
-        filenameTags: z.array(tag).default([]),
+        folders: z.array(folder).max(MAX_RULE_ENTRIES).default([]),
+        filenameTags: z.array(tag).max(MAX_RULE_ENTRIES).default([]),
         capturedBetween: z.strictObject({ from: z.iso.date().optional(), to: z.iso.date().optional() }).optional(),
-    })),
+    })).max(MAX_RULE_SERIES),
 });
 export type CurationRules = z.infer<typeof rulesSchema>;
 
