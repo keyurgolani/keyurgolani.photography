@@ -91,7 +91,7 @@ function trap(): ViewerSource {
     const fail = () => {
         throw new Error('The catalog was read');
     };
-    return { revisionId: REVISION_A, seriesBySlug: fail, photo: fail, photosOf: fail };
+    return { revisionId: REVISION_A, listSeries: fail, seriesBySlug: fail, photo: fail, photosOf: fail };
 }
 
 describe('viewerParams', () => {
@@ -208,6 +208,48 @@ describe('viewerPhotoOf on a revision', () => {
         expect(reader.getViewerPhoto('fixture-hidden', P[7])).toEqual({ kind: 'not-found' });
         expect(reader.getViewerPhoto('fixture-draft', P[0])).toEqual({ kind: 'not-found' });
         expect(reader.getViewerPhoto('fixture-z', P[0])).toEqual({ kind: 'not-found' });
+    });
+
+    it('answers not-found in a series whose ID appears more than once, by slug or prior slug, as the series page does', () => {
+        const repeated = structuredClone(content);
+        // A hand-written revision: a second record under series A's ID, with its own slug and B's photo.
+        repeated.series.push({ ...structuredClone(repeated.series[1]), id: 'ser_fixture-a', slug: 'fixture-a-again', slugAliases: [] });
+        const twice = createCatalogReader(repeated, { revisionId: REVISION_B, revisionNumber: 4 });
+        for (const [slug, photoId] of [['fixture-a', P[0]], ['fixture-a', P[1]], ['old-fixture-a', P[1]], ['fixture-a-again', P[0]], ['fixture-a-again', P[5]]]) {
+            expect(twice.getViewerPhoto(slug, photoId), `${slug} ${photoId}`).toEqual({ kind: 'not-found' });
+        }
+        // Series B, held once, still resolves.
+        expect(viewer(twice.getViewerPhoto('fixture-b', P[5])).series.id).toBe('ser_fixture-b');
+    });
+
+    it('answers not-found in a series with no positive published count, by slug or prior slug, as the series page does', () => {
+        for (const photoCount of [0, -1, 1.5, Number.NaN, undefined]) {
+            const uncounted = structuredClone(content);
+            (uncounted.series[0].derived as { photoCount: unknown }).photoCount = photoCount;
+            const counted = createCatalogReader(uncounted, { revisionId: REVISION_B, revisionNumber: 4 });
+            expect(counted.getViewerPhoto('fixture-a', P[0]), String(photoCount)).toEqual({ kind: 'not-found' });
+            expect(counted.getViewerPhoto('old-fixture-a', P[1]), String(photoCount)).toEqual({ kind: 'not-found' });
+            expect(viewer(counted.getViewerPhoto('fixture-b', P[5])).series.id).toBe('ser_fixture-b');
+        }
+        // A series with no derived block at all reads the same.
+        const underived = structuredClone(content);
+        delete (underived.series[0] as { derived?: unknown }).derived;
+        expect(createCatalogReader(underived, { revisionId: REVISION_B, revisionNumber: 4 }).getViewerPhoto('fixture-a', P[0])).toEqual({ kind: 'not-found' });
+    });
+
+    it('answers not-found in a series none of whose members resolve, as the series page does', () => {
+        const empty = structuredClone(content);
+        empty.series[1].photoIds = [id(99)];
+        const reader = createCatalogReader(empty, { revisionId: REVISION_B, revisionNumber: 4 });
+        expect(reader.getViewerPhoto('fixture-b', P[5])).toEqual({ kind: 'not-found' });
+        expect(reader.getViewerPhoto('fixture-b', id(99))).toEqual({ kind: 'not-found' });
+    });
+
+    it('does not redirect a prior slug to a canonical slug the route would refuse', () => {
+        const odd = structuredClone(content);
+        odd.series[0].slug = 'Fixture_A';
+        const reader = createCatalogReader(odd, { revisionId: REVISION_B, revisionNumber: 4 });
+        expect(reader.getViewerPhoto('old-fixture-a', P[1])).toEqual({ kind: 'not-found' });
     });
 
     it('answers a letter-case variant and other malformed params not-found, without reading the catalog', () => {

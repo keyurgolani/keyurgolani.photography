@@ -85,12 +85,13 @@ export type ViewerPhotoResult =
     | { kind: 'ok'; viewer: PublishedViewerPhoto }
     /** The slug is a prior alias of the series holding the photo. The route answers 308 to the canonical URL. */
     | { kind: 'redirect'; slug: string; photoId: string }
-    /** Malformed, unknown, unpublished, or outside that series. The route renders the one public not-found page. */
+    /** Malformed, unknown, unpublished, outside that series, or in a series the series page answers not-found. The route renders the one public not-found page. */
     | { kind: 'not-found' };
 
 /** What viewerPhotoOf() reads. A CatalogReader has all of it. */
 export interface ViewerSource {
     revisionId: string;
+    listSeries(): readonly SeriesRecord[];
     seriesBySlug(slugOrAlias: string): { series: SeriesRecord; canonical: boolean } | null;
     photo(photoId: string): Photo | null;
     photosOf(seriesId: string): readonly Photo[];
@@ -122,6 +123,8 @@ export function viewerParams(slug: unknown, photoId: unknown): { slug: string; p
 function text(value: unknown): string | null {
     return typeof value === 'string' && /\S/.test(value) ? value : null;
 }
+
+const dimension = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n > 0;
 
 function accent(value: unknown): string | null {
     return typeof value === 'string' && ACCENT_RE.test(value) ? value : null;
@@ -168,23 +171,36 @@ function variants(ladder: Photo['variants']): PublishedViewerPhoto['photo']['var
 
 /**
  * Resolve `/work/<slug>/photo/<photoId>` in one source, in this order:
- * malformed params, an unknown slug, an unknown photo, and a photo the
- * series doesn't hold are all not-found; a prior slug redirects; anything
- * else is the projection. Position and neighbors come from #8's
- * sequencePosition() over the members that resolve, the list #5's series
- * page shows, so the two always agree.
+ * malformed params, an unknown slug, a series ID that appears more than
+ * once, a series with no positive published count, an unknown photo, and a
+ * photo the series doesn't hold are all not-found, and so is a prior slug
+ * whose canonical slug the route would refuse; a prior slug redirects;
+ * anything else is the projection. The series guards are #5's series page
+ * guards, copied, so a photo URL is not-found exactly when its series page
+ * is, and #3's Work never links either. Compile never writes a repeated ID
+ * or a zero count; only a hand-written revision can. Position and neighbors
+ * come from #8's sequencePosition() over the members that resolve, the list
+ * #5's series page shows, so the two always agree.
  */
 export function viewerPhotoOf(source: ViewerSource, slug: unknown, photoId: unknown): ViewerPhotoResult {
     const params = viewerParams(slug, photoId);
     if (params === null) return NOT_FOUND;
     const hit = source.seriesBySlug(params.slug);
     if (hit === null) return NOT_FOUND;
+    const { series } = hit;
+    // Work and the series page leave out a series ID that appears more than once, so the Viewer does too.
+    if (source.listSeries().filter((entry) => entry.id === series.id).length !== 1) return NOT_FOUND;
+    if (!dimension(series.derived?.photoCount)) return NOT_FOUND;
     const record = source.photo(params.photoId);
     if (record === null) return NOT_FOUND;
-    const { series } = hit;
+    // Membership also covers the series page's other guard, a series with no member that resolves.
     const position = sequencePosition({ photoIds: source.photosOf(series.id).map((member) => member.id) }, record.id);
     if (position === null) return NOT_FOUND;
-    if (!hit.canonical) return { kind: 'redirect', slug: series.slug, photoId: record.id };
+    if (!hit.canonical) {
+        // The series page's rule: a 308 to a canonical slug the route refuses would point at a page that is always not-found.
+        if (viewerParams(series.slug, record.id) === null) return NOT_FOUND;
+        return { kind: 'redirect', slug: series.slug, photoId: record.id };
+    }
     return {
         kind: 'ok',
         viewer: {
