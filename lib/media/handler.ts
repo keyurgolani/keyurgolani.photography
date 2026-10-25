@@ -94,7 +94,7 @@ export function createMediaHandler(options: MediaHandlerOptions = {}): (request:
         let data: Buffer;
         try {
             const dir = await containedAssetDir(ref, status.root);
-            const opened = dir === null ? null : await openRegularFile(path.join(dir, `${file.variant}.${file.format}`));
+            const opened = dir === null ? null : await openRegularFile(path.join(/*turbopackIgnore: true*/ dir, `${file.variant}.${file.format}`));
             if (opened === null) {
                 manifests.delete(key);
                 return refused(404);
