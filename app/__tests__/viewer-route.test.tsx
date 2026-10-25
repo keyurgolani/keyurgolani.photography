@@ -163,6 +163,14 @@ describe('the Viewer route', () => {
         expect(page).toMatch(/<img[^>]*src="\/media\/[^"]+\/w1200\.webp"/);
     });
 
+    it('passes the pending copy only for a pending description, never for a decorative photo', async () => {
+        const decorative = html(await answer('route-a', P[1]));
+        expect(decorative).toMatch(/<img[^>]*alt=""/);
+        expect(decorative).not.toContain('Description pending editorial review');
+        expect(decorative).not.toMatch(/>Description</);
+        expect(html(await answer('route-a', P[0]))).not.toContain('Description pending editorial review');
+    });
+
     it('serves a degraded catalog\'s revision the same way', async () => {
         state.catalog = served('degraded');
         expect(html(await answer('route-a', P[2]))).toContain('03 / 03');
