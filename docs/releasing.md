@@ -162,13 +162,13 @@ Those commands are for the `v1.1.0` image and the releases before slice C of #10
 
 The first release with slice A of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10) needs a step too. The Gallery grid and lightbox now show the derivatives instead of the original files, and derivatives written before it ignored the EXIF orientation, so a photo whose file carries an orientation tag shows turned or mirrored until its derivatives are rebuilt. The watcher rebuilds them by itself. The first time it starts on a library, it rebuilds the set of every photo with an orientation tag, and once each of them is written or has failed it records that in `cache/upright-rebuild.json` in the library, so later starts skip it. A photo that failed is listed there, and each start tries it again until it builds. If the watcher stops first, or a photo changes while it is rebuilt, the next start rebuilds them all again. The watcher has to be able to write `cache/`; it logs at start when it can't. The old derivatives keep serving until each photo's new set is written.
 
+On a host that already ran a release with slice A, the watcher has already rebuilt them, so skip the rest of this step.
+
 To see which photos it rebuilds, run the migration dry run the way the [migration runbook](data-root.md#migration-runbook) does, with `run --rm --no-deps` while the watcher is stopped, before the new watcher first starts. The deploy blocks for the first release with slice C, below, do that between their `pull` and their `up -d`, with `node dist/scripts/photos.mjs migrate --dry-run`, since that image has no tsx. It changes nothing in the library, adds only a plan and a report under `identity/migration/` in the data root, and prints the report's path. Read the report once the block is done:
 
 ```bash
 docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher cat <report path>
 ```
-
-On a host that already ran a release with slice A, the watcher has already rebuilt them, so skip the rest of this step.
 
 Its "Orientation-tagged files" section lists them, except any the library reaches through a symlink, since the dry run reads no file through one. If it says "None." and no photo in the library's top folder is a symlink, skip the rest. Otherwise wait for the watcher to log that it rebuilt them:
 
