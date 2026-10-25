@@ -148,6 +148,17 @@ export class MisnamedVersionError extends CorruptDocumentError {
     }
 }
 
+/** A document at the highest version a name can hold, which can't take another. */
+export class VersionLimitError extends CorruptDocumentError {
+    readonly version: number;
+
+    constructor(dir: string, version: number) {
+        super(dir, `it is at version ${version}, the highest a version can be, so it can't take another`);
+        this.name = 'VersionLimitError';
+        this.version = version;
+    }
+}
+
 /** A compare-and-swap write found another version on disk than the one it read. */
 export class StaleVersionError extends Error {
     /** The document's folder. */
@@ -372,7 +383,7 @@ export async function writeVersionedDocument<T extends VersionedDocument>(
     { hooks, keep = KEEP_VERSIONS }: VersionedWriteOptions = {},
 ): Promise<T> {
     if (!Number.isInteger(expectedVersion) || expectedVersion < 0) throw new RangeError(`expectedVersion must be a non-negative integer, got ${expectedVersion}`);
-    if (expectedVersion >= MAX_VERSION) throw new RangeError(`${dir} is at version ${expectedVersion}, the highest a version can be`);
+    if (expectedVersion >= MAX_VERSION) throw new VersionLimitError(dir, expectedVersion);
     let created = false;
     try {
         await fs.promises.mkdir(dir, { mode: PRIVATE_DIR_MODE });

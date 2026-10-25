@@ -18,6 +18,7 @@ import {
     readVersionedDocument,
     StaleVersionError,
     UnsupportedSchemaError,
+    VersionLimitError,
     versionFile,
     versionText,
     writeVersionedDocument,
@@ -132,7 +133,7 @@ describe('readVersionedDocument', () => {
         expect(Number.isSafeInteger(longest)).toBe(true);
         fs.writeFileSync(versionFile(dir, longest), JSON.stringify(counter(5)));
         expect(await readVersionedDocument(dir)).toMatchObject({ version: longest, value: { count: 5 } });
-        await expect(writeVersionedDocument(dir, counter(6), longest)).rejects.toThrow(RangeError);
+        await expect(writeVersionedDocument(dir, counter(6), longest)).rejects.toThrow(VersionLimitError);
     });
 
     it('throws CorruptDocumentError for a newest version that is not a JSON object', async () => {
