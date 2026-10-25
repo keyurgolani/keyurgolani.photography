@@ -135,9 +135,11 @@ test('Enter and Space on the theme toggle flip the theme', async ({ page }) => {
     await expect(html).toHaveAttribute('data-theme', 'dark');
 });
 
-for (const [name, path] of [['Work', '/gallery'], ['About', '/about']] as const) {
+// Work links to /work, which before the cutover sends this legacy-mode server on to /gallery.
+for (const [name, href, path] of [['Work', '/work', '/gallery'], ['About', '/about', '/about']] as const) {
     test(`Enter on the ${name} link goes to ${path}`, async ({ page }) => {
         await openHome(page);
+        await expect(primary(page).getByRole('link', { name, exact: true })).toHaveAttribute('href', href);
         await primary(page).getByRole('link', { name, exact: true }).focus();
         await page.keyboard.press('Enter');
         await expect(page).toHaveURL(path);

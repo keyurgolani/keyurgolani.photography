@@ -39,7 +39,7 @@ test('passes axe', async ({ page }) => {
 
 test('Tab goes through SiteNav, its toggle last, then the external links, and Shift+Tab walks back', async ({ page }) => {
     await openAbout(page);
-    const stops = ['KG, Keyur Golani', '/', '/gallery', '/about', 'Switch to light mode', ...ENABLED.map((destination) => destination.href)];
+    const stops = ['KG, Keyur Golani', '/', '/work', '/about', 'Switch to light mode', ...ENABLED.map((destination) => destination.href)];
     const forward: (string | undefined)[] = [];
     for (let press = 0; press < stops.length; press++) {
         await page.keyboard.press('Tab');
@@ -64,9 +64,11 @@ test('Enter and Space on the theme toggle flip the theme', async ({ page }) => {
     await expect(html).toHaveAttribute('data-theme', 'dark');
 });
 
-for (const [name, path] of [['Work', '/gallery'], ['Home', '/']] as const) {
+// Work links to /work, which before the cutover sends this legacy-mode server on to /gallery.
+for (const [name, href, path] of [['Work', '/work', '/gallery'], ['Home', '/', '/']] as const) {
     test(`Enter on the ${name} link goes to ${path}`, async ({ page }) => {
         await openAbout(page);
+        await expect(primary(page).getByRole('link', { name, exact: true })).toHaveAttribute('href', href);
         await primary(page).getByRole('link', { name, exact: true }).focus();
         await page.keyboard.press('Enter');
         await expect(page).toHaveURL(path);
