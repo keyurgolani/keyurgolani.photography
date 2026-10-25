@@ -2,12 +2,12 @@ import path from 'node:path';
 import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
-import { LockTimeoutError, withLock, type LockContext, type LockHooks, type LockRecord } from '../storage/lock';
+import { LockTimeoutError, MAX_LEASE_MS, withLock, type LockContext, type LockHooks, type LockRecord } from '../storage/lock';
 import { changesBetween, knownGood, type RevisionChanges } from './history';
-import { activateRevision, blockingIssues, CATALOG_LEASE_MS, rebaseWorkingLayer, validateStored, type CatalogLogger, type RecoveryReport } from './publish';
+import { activateRevision, blockingIssues, CATALOG_LEASE_MS, rebaseWorkingLayer, recover, validateStored, type CatalogLogger, type RecoveryReport } from './publish';
 import { assertRevisionId, CATALOG_LOCK, CatalogIntegrityError, listActivations, readRevisionFile } from './repository';
 import { registeredRules } from './ruleset';
-import type { Activation, Issue, RevisionFile } from './types';
+import type { Activation, Issue, RevisionContent, RevisionFile } from './types';
 import { readActivePointer } from './working-layer';
 
 /**
@@ -85,8 +85,14 @@ export interface RollbackPlan {
     message: string;
     target: RevisionRef | null;
     active: RevisionRef | null;
-    /** What the target brings back, removes, and changes against the active revision. */
+    /**
+     * What the target brings back, removes, and changes against the active
+     * revision. When the active revision can't be read, everything the target
+     * publishes counts as brought back.
+     */
     impact: RevisionChanges | null;
+    /** Why the active revision's file can't be read. The rollback still plans, since moving off it is what a rollback is for. */
+    activeProblem?: string;
     /** Series titles from both revisions, by ID, for the impact list. */
     seriesTitles: Record<string, string>;
     /** Every issue on the stored target, the blocking ones first. */
@@ -136,6 +142,24 @@ export interface RollbackResult {
 const jsonLogger: CatalogLogger = { log: (line) => console.log(line) };
 const logEvent = (logger: CatalogLogger, event: string, fields: Record<string, unknown>) => logger.log(JSON.stringify({ event, ...fields }));
 const sentence = (text: string) => (/[.!?]$/.test(text) ? text : `${text}.`);
+const EMPTY_CONTENT: RevisionContent = { site: { featuredSeriesIds: [] }, series: [], photos: [] };
+
+/**
+ * An error for a message, without the absolute path a Node fs error carries:
+ * its code and the path relative to the data root, or "a path outside the
+ * data root". Other errors keep their message, which catalog code writes
+ * relative already.
+ */
+export function errorText(error: unknown, root: string): string {
+    const errno = error as NodeJS.ErrnoException;
+    if (error instanceof Error && typeof errno.code === 'string' && typeof errno.path === 'string') {
+        const relative = path.relative(root, path.resolve(errno.path));
+        const where = relative === '' ? 'the data root' : relative.startsWith('..') || path.isAbsolute(relative) ? 'a path outside the data root' : relative.split(path.sep).join('/');
+        return `${errno.code} on ${where}`;
+    }
+    return error instanceof Error ? error.message : String(error);
+}
+
 const named = (ref: RevisionRef) => (ref.revisionNumber === null ? ref.revisionId : `revision ${ref.revisionNumber} (${ref.revisionId})`);
 
 function emptyPlan(outcome: RollbackOutcome, message: string, fields: Partial<RollbackPlan> = {}): RollbackPlan {
@@ -173,7 +197,7 @@ export async function planRollback(options: { dataRoot: string; to: RollbackTarg
         return await plan(root, options.to);
     } catch (error) {
         if (error instanceof CatalogIntegrityError) return emptyPlan('INTEGRITY_MISMATCH', `${sentence(error.message)} Nothing was rolled back.`);
-        return emptyPlan('STORAGE_ERROR', `${sentence(error instanceof Error ? error.message : String(error))} Nothing was rolled back.`);
+        return emptyPlan('STORAGE_ERROR', `${sentence(errorText(error, root))} Nothing was rolled back.`);
     }
 }
 
@@ -198,18 +222,27 @@ async function plan(root: string, to: RollbackTarget): Promise<RollbackPlan> {
 
     const targetRevision = await stored(root, target.revisionId);
     if (!('content' in targetRevision)) return { ...targetRevision, target, active };
-    const activeRevision = await stored(root, active.revisionId);
-    if (!('content' in activeRevision)) return { ...activeRevision, target, active };
-    const impact = changesBetween(activeRevision.content, targetRevision.content);
-    const seriesTitles = Object.fromEntries([...activeRevision.content.series, ...targetRevision.content.series].map((series) => [series.id, series.title]));
-    const base = { target, active, impact, seriesTitles };
+    // A live revision that can't be read is a reason to roll back, not to refuse: warn, list everything the target
+    // publishes, and leave the decision to activateRevision(), which never reads the revision it replaces.
+    let activeProblem: string | undefined;
+    let activeContent: RevisionContent = EMPTY_CONTENT;
+    try {
+        const activeRevision = await stored(root, active.revisionId);
+        if ('content' in activeRevision) activeContent = activeRevision.content;
+        else activeProblem = activeRevision.message.replace(/\.? Nothing was rolled back\.$/, '');
+    } catch (error) {
+        activeProblem = errorText(error, root);
+    }
+    const impact = changesBetween(activeContent, targetRevision.content);
+    const seriesTitles = Object.fromEntries([...activeContent.series, ...targetRevision.content.series].map((series) => [series.id, series.title]));
+    const base = { target, active, impact, seriesTitles, ...(activeProblem === undefined ? {} : { activeProblem }) };
 
     // Without #10's registry the readiness and source-name rules can't run, so refuse, as activateRevision() does.
     let registry: Registry;
     try {
         registry = await readRegistry(root);
     } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
+        const reason = errorText(error, root);
         return emptyPlan('STORAGE_ERROR', `The identity registry can't be read, so ${target.revisionId}'s sets can't be checked: ${sentence(reason)} Nothing was rolled back.`, base);
     }
     const { issues } = validateStored(root, targetRevision, registry);
@@ -240,8 +273,10 @@ export function holderText(holder: LockRecord | null): string {
 /** When a holder's lease runs out unless it renews, for a message. */
 function leaseEnd(holder: LockRecord | null): string {
     const heartbeat = holder ? Date.parse(holder.heartbeatAt) : Number.NaN;
-    if (!holder || Number.isNaN(heartbeat) || !(holder.leaseMs > 0)) return '';
-    return ` Its lease runs until ${new Date(heartbeat + holder.leaseMs).toISOString()} unless it renews it. If that command crashed, run the rollback again after then.`;
+    if (!holder || Number.isNaN(heartbeat)) return '';
+    // withLock() judges a lease by the holder's claim capped at MAX_LEASE_MS, so the time printed is that one.
+    const lease = holder.leaseMs > 0 ? Math.min(holder.leaseMs, MAX_LEASE_MS) : MAX_LEASE_MS;
+    return ` Its lease runs until ${new Date(heartbeat + lease).toISOString()} unless it renews it. If that command crashed, run the rollback again after then.`;
 }
 
 /**
@@ -288,12 +323,39 @@ export async function rollback(options: RollbackOptions): Promise<RollbackResult
 
     /** An error that ended the rollback, as an outcome. */
     async function failed(error: unknown): Promise<RollbackResult> {
-        if (error instanceof CatalogIntegrityError) return finish('INTEGRITY_MISMATCH', error.message);
-        const message = sentence(error instanceof Error ? error.message : String(error));
-        // After the pointer moved, the target is live even though the rollback didn't finish.
+        const message = sentence(errorText(error, root));
+        // After the pointer moved, the target is live even though the rollback didn't finish. A target that was
+        // already live before, as when a rerun settles a crashed rollback, says so too.
         const pointer = await readActivePointer(root).catch(() => null);
         const live = pointer?.revisionId === options.revisionId ? ` ${options.revisionId} is live, and the next publish or rollback finishes recording it.` : ' Nothing was rolled back.';
-        return finish('STORAGE_ERROR', `${message}${live}`);
+        return finish(error instanceof CatalogIntegrityError ? 'INTEGRITY_MISMATCH' : 'STORAGE_ERROR', `${message}${live}`);
+    }
+
+    /**
+     * The target is already live: finish what an interrupted activation left,
+     * as the next publish would. recover() commits a pending record the
+     * pointer names, sets aside the others, and rebases the working layer, so
+     * running the rollback again after a crash settles it.
+     */
+    async function settle(lock: LockContext, message: string): Promise<RollbackResult> {
+        let recovery: RecoveryReport;
+        try {
+            recovery = await recover({ dataRoot: root, lock, logger, clock, authoredWaitMs: options.authoredWaitMs });
+        } catch (error) {
+            if (error instanceof LockTimeoutError) return finish('NO_CHANGES', `${message} The working layer was busy, so the next publish rebases it.`, { rebased: false });
+            // recover() refuses to record a pointer moved by hand to a revision the rules block, and says what to do.
+            if (error instanceof CatalogIntegrityError) return finish('INTEGRITY_MISMATCH', error.message);
+            if (!(await lock.isHeld().catch(() => false))) return finish('LOCK_LOST', `${sentence(errorText(error, root))} Nothing was rolled back.`);
+            throw error;
+        }
+        const done = [
+            recovery.committed ? 'Recorded the interrupted activation as committed' : '',
+            recovery.abandoned.length ? `set aside ${recovery.abandoned.length === 1 ? 'an interrupted activation' : `${recovery.abandoned.length} interrupted activations`}` : '',
+            recovery.repaired ? 'recorded a repair activation for the active pointer' : '',
+            recovery.rebased ? 'rebased the working layer onto it' : '',
+        ].filter(Boolean);
+        const note = done.length ? ` ${done.join(', ').replace(/^./, (first) => first.toUpperCase()).replace(/, ([^,]+)$/, ', and $1')}.` : '';
+        return finish('NO_CHANGES', `${message}${note}`, { recovery, ...(recovery.rebased ? { rebased: true } : {}) });
     }
 
     async function rollbackHeld(lock: LockContext): Promise<RollbackResult> {
@@ -302,7 +364,7 @@ export async function rollback(options: RollbackOptions): Promise<RollbackResult
         const planned = await planRollback({ dataRoot: root, to: { revisionId: options.revisionId } });
         result.plan = planned;
         result.issues = planned.issues;
-        if (planned.outcome === 'NO_CHANGES') return finish('NO_CHANGES', planned.message);
+        if (planned.outcome === 'NO_CHANGES') return settle(lock, planned.message);
         if (planned.active && planned.active.revisionId !== options.expectedActiveRevisionId) {
             return finish('ACTIVE_CHANGED', `${named(planned.active)} is active now, not ${options.expectedActiveRevisionId}, so the impact you confirmed is out of date. Nothing was rolled back. Check it again.`);
         }

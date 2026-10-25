@@ -3,7 +3,8 @@ import { dataRootStatus } from '../storage/config';
 import { readHistory, type ChangeSet, type History, type HistoryRow, type RevisionChanges } from './history';
 import { count, issueLines, parseFlags, PRINTED_ISSUES, UsageError } from './owner-cli';
 import type { CatalogLogger } from './publish';
-import { planRollback, rollback, ROLLBACK_EXIT_CODES, type RollbackOptions, type RollbackPlan, type RollbackResult, type RollbackTarget } from './rollback';
+import { errorText, planRollback, rollback, ROLLBACK_EXIT_CODES, type RollbackOptions, type RollbackPlan, type RollbackResult, type RollbackTarget } from './rollback';
+import { CatalogIntegrityError } from './repository';
 import { REVISION_ID_RE } from './schema';
 import type { CommandResult } from './sequence-commands';
 
@@ -43,6 +44,8 @@ export function rollbackArgs(args: string[], env: Record<string, string | undefi
 }
 
 // History.
+
+const sentence = (text: string) => (/[.!?]$/.test(text) ? text : `${text}.`);
 
 const capped = (ids: readonly string[], label: (id: string) => string = (id) => id) =>
     `${ids.slice(0, PRINTED_ISSUES).map(label).join(', ')}${ids.length > PRINTED_ISSUES ? `, and ${ids.length - PRINTED_ISSUES} more` : ''}`;
@@ -120,7 +123,9 @@ export async function runHistoryCommand(dataRoot: string): Promise<CommandResult
     try {
         history = await readHistory(root);
     } catch (error) {
-        return { exitCode: 4, output: `[photos] INTEGRITY_MISMATCH: ${error instanceof Error ? error.message : String(error)}\n` };
+        // A damaged record is INTEGRITY_MISMATCH, anything else, such as a folder it can't read, STORAGE_ERROR. Both exit 4.
+        const outcome = error instanceof CatalogIntegrityError ? 'INTEGRITY_MISMATCH' : 'STORAGE_ERROR';
+        return { exitCode: 4, output: `[photos] ${outcome}: ${sentence(errorText(error, root))}\n` };
     }
     const lines = historyLines(history);
     const damaged = history.rows.filter((row) => row.summary === null).length;
@@ -138,6 +143,14 @@ function changeLines(plan: RollbackPlan): string[] {
         return text ? `${id} "${text}"` : id;
     };
     const lines: string[] = [];
+    if (plan.activeProblem !== undefined) {
+        // Nothing to compare against, so list everything the target publishes.
+        lines.push(`The live revision can't be read (${plan.activeProblem}), so this lists everything the target publishes.`);
+        if (impact.series.added.length) lines.push(`Publishes ${impact.series.added.length} series: ${capped(impact.series.added, title)}`);
+        if (impact.photos.added.length) lines.push(`Publishes ${count(impact.photos.added.length, 'photo')}: ${capped(impact.photos.added)}`);
+        if (lines.length === 1) lines.push('It publishes no series and no photos.');
+        return lines;
+    }
     if (impact.series.added.length) lines.push(`Brings back ${impact.series.added.length} series: ${capped(impact.series.added, title)}`);
     if (impact.photos.added.length) lines.push(`Brings back ${count(impact.photos.added.length, 'photo')}: ${capped(impact.photos.added)}`);
     if (impact.series.removed.length) lines.push(`Removes ${impact.series.removed.length} series: ${capped(impact.series.removed, title)}`);
@@ -185,6 +198,14 @@ export async function runRollbackCommand(dataRoot: string, args: RollbackArgs, i
     const root = path.resolve(dataRoot);
     const plan = await planRollback({ dataRoot: root, to: args.to });
     const planExit = ROLLBACK_EXIT_CODES[plan.outcome];
+    // The target is live already. Nothing changes what visitors see, so no confirmation, but rollback() still takes
+    // the lock and finishes what a crashed activation left: a pending record, or a working layer on another base.
+    if (plan.outcome === 'NO_CHANGES' && plan.target) {
+        const settled = await rollback({ ...options, dataRoot: root, revisionId: plan.target.revisionId, expectedActiveRevisionId: plan.target.revisionId, actor: args.actor, reason: args.reason, logger: io.logger ?? options.logger });
+        const exitCode = ROLLBACK_EXIT_CODES[settled.outcome];
+        for (const line of resultLines(settled)) (exitCode === 0 ? io.out : io.err)(line);
+        return exitCode;
+    }
     for (const line of planLines(plan)) (planExit === 0 ? io.out : io.err)(line);
     if (plan.outcome !== 'READY' || !plan.target || !plan.active) return planExit;
 

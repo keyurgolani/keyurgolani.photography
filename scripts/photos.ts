@@ -121,7 +121,10 @@
  *     --expect-active naming the active revision the list was made
  *     against. The actor is --actor or PHOTOS_ACTOR, and one is required.
  *     It waits up to 30 s for another command's catalog lock and names the
- *     holder if it can't get it. Exits 0 when rolled back or already
+ *     holder if it can't get it. A target that is already active needs no
+ *     confirmation: it finishes what a crashed activation left undone. A
+ *     live revision that can't be read is no reason to refuse: the list is
+ *     then everything the target publishes. Exits 0 when rolled back or already
  *     active, 1 when the target was never active or its rules stop it, 2 on
  *     a usage error, 4 when a catalog file is damaged or an I/O error stops
  *     it, and 3 on any other stop, such as no confirmation, another
