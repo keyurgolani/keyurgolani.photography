@@ -14,8 +14,8 @@ export const SERIES_PAGES_KEY = 'kgSeriesPages';
  * Fired on the sequence `<section>` (it bubbles) when a restore after Back
  * ends, whether it reached the extent or stopped early. While the restore
  * runs the section is `aria-busy="true"`. #5's return waits for this when
- * its photograph isn't in the DOM and the section is busy, then looks once
- * more.
+ * its photograph isn't in the DOM and the entry holds an extent
+ * readSeriesPages() accepts, then looks once more.
  */
 export const SERIES_RESTORED_EVENT = 'kg:series-entries-restored';
 

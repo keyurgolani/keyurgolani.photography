@@ -1,7 +1,7 @@
 // The series page's return position (#5): what it keeps in the series' own
 // history entry when a photograph opens the Viewer, and how it puts the
-// visitor back. No React. The return contract with #6 (the stored extent,
-// `aria-busy`, and the restored event) comes from seriesContinuation.ts.
+// visitor back. No React. The return contract with #6 (the stored extent
+// and the restored event) comes from seriesContinuation.ts.
 import { readSeriesPages, SERIES_RESTORED_EVENT } from './seriesContinuation';
 
 /** The key in `history.state`. Next keeps its router keys in the same object, so every write spreads it. */
@@ -111,9 +111,12 @@ export function restoreReturn(record: SeriesReturn, { scroll = true, onlyIfIdle 
     const target = openerElement(record, doc);
     if (target === null) return null;
     if (onlyIfIdle && !focusIsIdle(doc)) return null;
-    if (scroll) {
-        const box = target.getBoundingClientRect();
-        if (box.top < 0 || box.bottom > (view?.innerHeight ?? 0)) target.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+    const box = target.getBoundingClientRect();
+    const whollyInView = box.top >= 0 && box.bottom <= (view?.innerHeight ?? 0);
+    if (!whollyInView) {
+        // With the scroll off (the visitor has moved), an opener out of view keeps its focus off too, so nothing jumps.
+        if (!scroll) return null;
+        target.scrollIntoView({ block: 'nearest', behavior: 'instant' });
     }
     target.focus({ preventScroll: true });
     return target;

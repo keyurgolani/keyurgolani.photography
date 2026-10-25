@@ -172,12 +172,25 @@ describe('restoreReturn and scheduleRestore', () => {
         expect(scrollIntoView).not.toHaveBeenCalled();
     });
 
-    it('with scroll off, leaves the page where it is and only focuses', () => {
-        inView(document.getElementById(`photo-${PHOTO}`), -200);
+    it('with scroll off, leaves the page where it is and focuses an opener wholly in view', () => {
+        inView(document.getElementById(`photo-${PHOTO}`), 300);
         restoreReturn({ photoId: PHOTO, opener: 'entry', scrollY: 640 }, { scroll: false });
         expect(scrollTo).not.toHaveBeenCalled();
         expect(scrollIntoView).not.toHaveBeenCalled();
         expect(document.activeElement?.id).toBe(`photo-${PHOTO}`);
+    });
+
+    it.each([
+        ['above the viewport', -200],
+        ['cut off at the top', -1],
+        ['cut off at the bottom', 701],
+        ['below the viewport', 800],
+    ])('with scroll off, leaves focus alone for an opener %s, since focusing it would move the page', (_label, top) => {
+        inView(document.getElementById(`photo-${PHOTO}`), top);
+        expect(restoreReturn({ photoId: PHOTO, opener: 'entry', scrollY: 640 }, { scroll: false })).toBeNull();
+        expect(scrollTo).not.toHaveBeenCalled();
+        expect(scrollIntoView).not.toHaveBeenCalled();
+        expect(document.activeElement).toBe(document.body);
     });
 
     it('with onlyIfIdle, takes focus only from the body', () => {
@@ -275,12 +288,24 @@ describe('restoreReturn and scheduleRestore', () => {
         ['a key', () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab' }))],
         ['a pointer press', () => document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }))],
         ['the wheel', () => document.body.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 120 }))],
-    ])('skips the scroll of a delayed restore after %s, and still focuses the opener from the body', (_label, input) => {
+    ])('skips the scroll of a delayed restore after %s, and leaves focus alone when the opener is off screen', (_label, input) => {
         extent();
         scheduleRestore(record(LATE, 'entry', 4800), SERIES);
         input();
         const late = appendLate();
         inView(late, -500);
+        restored();
+        expect(scrollTo).not.toHaveBeenCalled();
+        expect(scrollIntoView).not.toHaveBeenCalled();
+        expect(document.activeElement).toBe(document.body);
+    });
+
+    it('skips the scroll of a delayed restore after input, and still focuses an opener wholly in view from the body', () => {
+        extent();
+        scheduleRestore(record(LATE, 'entry', 4800), SERIES);
+        document.body.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 120 }));
+        const late = appendLate();
+        inView(late, 200);
         restored();
         expect(scrollTo).not.toHaveBeenCalled();
         expect(scrollIntoView).not.toHaveBeenCalled();

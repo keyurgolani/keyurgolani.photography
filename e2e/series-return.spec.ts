@@ -312,10 +312,15 @@ test.describe('an entry past the first page', () => {
         await waitForHydration(page);
         await expect(page.locator('[data-surface="viewer"]')).toHaveAttribute('data-viewer-mode', 'page');
         // Count the event wherever Back renders the series: this document (a same-document traversal), or a new one.
+        // This listener is added before SeriesReturn's, so a task queued from it reads focus after SeriesReturn has
+        // handled the same event. That ties the focus to #6's event, not to the 10 s timeout, however slow #6 is.
         const count = () => {
-            const counted = window as unknown as { kgRestored?: number };
+            const counted = window as unknown as { kgRestored?: number; kgFocusAfter?: string };
             window.addEventListener('kg:series-entries-restored', () => {
                 counted.kgRestored = (counted.kgRestored ?? 0) + 1;
+                setTimeout(() => {
+                    counted.kgFocusAfter = document.activeElement?.id;
+                }, 0);
             });
         };
         await page.evaluate(count);
@@ -323,6 +328,7 @@ test.describe('an entry past the first page', () => {
         await page.goBack();
         await expectBackOnLate(page, offset);
         await expect.poll(() => page.evaluate(() => (window as unknown as { kgRestored?: number }).kgRestored ?? 0)).toBe(1);
+        await expect.poll(() => page.evaluate(() => (window as unknown as { kgFocusAfter?: string }).kgFocusAfter ?? null)).toBe(`photo-${LATE}`);
         await expect(page.locator('section[aria-labelledby="series-sequence"]')).not.toHaveAttribute('aria-busy', 'true');
         // Used up, beside #6's extent and Next's keys.
         const state = await page.evaluate(() => history.state as Record<string, unknown>);
