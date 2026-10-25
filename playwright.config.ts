@@ -69,9 +69,10 @@ export default defineConfig({
     {
       // WebKit targets the click after a tap differently from Chromium, so Home's first-tap rule runs on both,
       // and it can leave focus on the body after a tap, so the Viewer's swipes and keys under its modal (#9) do too.
+      // The curator's Secure cookie over http on loopback runs on both too, since browsers differ there.
       name: 'mobile-webkit',
       use: { ...devices['iPhone 13'] },
-      testMatch: /(home-immersive|viewer-touch)\.spec\.ts/,
+      testMatch: /(?:home-immersive|viewer-touch|curator-login)\.spec\.ts/,
     },
   ],
   webServer: [

@@ -3,8 +3,8 @@
 # dependencies, runs its watcher with --once against a generated fixture
 # library and checks that it never deletes a derivative, then starts the web
 # server on that library and checks that the removed image endpoints return
-# 404, legacy derivatives no longer send `immutable`, and original source
-# files are never served, directly or through /_next/image.
+# 404, and that nothing under /assets/photos is served, legacy derivatives
+# and original source files alike, directly or through /_next/image.
 #
 #   IMAGE=ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke ci/smoke-watcher-once.sh
 #
@@ -25,6 +25,8 @@ TMP=$(mktemp -d)
 LIB=$TMP/library
 WEB=photography-smoke-watcher-$$
 WEB_STARTED=false
+# The body of /_next/image's 400 for a url images.localPatterns doesn't allow.
+NOT_ALLOWED='"url" parameter is not allowed'
 OUTPUTS=(
   thumbnails/%s.webp medium/%s.webp optimized/%s.webp
   thumbnails-avif/%s.avif medium-avif/%s.avif optimized-avif/%s.avif
@@ -145,25 +147,21 @@ code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$BASE_URL/api/imag
 [ "$code" = 404 ] || fail "GET /api/image?src=portrait.png returned $code, expected 404."
 echo "The removed image endpoints return 404."
 
-code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' \
-  "$BASE_URL/assets/photos/optimized/portrait.webp") || fail "GET optimized/portrait.webp failed."
-[ "$code" = 200 ] || fail "GET optimized/portrait.webp returned $code, expected 200."
-cache_control=$(tr -d '\r' <"$TMP/headers.txt" | grep -i '^cache-control:' || true)
-case $cache_control in
-  *immutable*) fail "optimized/portrait.webp still sends immutable ($cache_control)." ;;
-esac
-echo "optimized/portrait.webp returned 200 with ${cache_control:-no Cache-Control header}."
-
-# 6. Original source files 404, and /_next/image refuses them with 400.
-for original in portrait.png square.webp portrait%2Epng; do
-  code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$BASE_URL/assets/photos/$original") ||
-    fail "GET /assets/photos/$original failed."
-  [ "$code" = 404 ] || fail "GET /assets/photos/$original returned $code, expected 404."
+# 6. Nothing under /assets/photos serves, the derivatives the watcher just
+#    wrote included: every one 404s with a no-store response, and
+#    /_next/image refuses each with 400, for the reason that images.localPatterns
+#    doesn't allow it. Photos serve only from /media.
+for asset in optimized/portrait.webp thumbnails-avif/square.avif lqip/landscape.txt portrait.png square.webp portrait%2Epng; do
+  code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$BASE_URL/assets/photos/$asset") ||
+    fail "GET /assets/photos/$asset failed."
+  [ "$code" = 404 ] || fail "GET /assets/photos/$asset returned $code, expected 404."
+  tr -d '\r' <"$TMP/headers.txt" | grep -qix 'cache-control: no-store' || fail "The 404 for /assets/photos/$asset did not send Cache-Control: no-store."
 done
-code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$BASE_URL/_next/image?url=%2Fassets%2Fphotos%2Fportrait.png&w=400&q=75") ||
-  fail "GET /_next/image for portrait.png failed."
-[ "$code" = 400 ] || fail "GET /_next/image for portrait.png returned $code, expected 400."
-code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$BASE_URL/_next/image?url=%2Fassets%2Fphotos%2Foptimized%2Fportrait.webp&w=400&q=75") ||
-  fail "GET /_next/image for optimized/portrait.webp failed."
-[ "$code" = 200 ] || fail "GET /_next/image for optimized/portrait.webp returned $code, expected 200."
-echo "Originals return 404, and /_next/image serves derivatives but refuses originals."
+for url in %2Fassets%2Fphotos%2Foptimized%2Fportrait.webp %2Fassets%2Fphotos%2Fthumbnails-avif%2Fsquare.avif %2Fassets%2Fphotos%2Fportrait.png; do
+  code=$(curl -sS --max-time 30 -o "$TMP/image-error.txt" -w '%{http_code}' "$BASE_URL/_next/image?url=$url&w=400&q=75") ||
+    fail "GET /_next/image?url=$url failed."
+  [ "$code" = 400 ] || fail "GET /_next/image?url=$url returned $code, expected 400."
+  [ "$(cat "$TMP/image-error.txt")" = "$NOT_ALLOWED" ] ||
+    fail "GET /_next/image?url=$url answered 400 with '$(cat "$TMP/image-error.txt")', expected '$NOT_ALLOWED'."
+done
+echo "Legacy derivatives and originals return 404, and /_next/image refuses both with 400."

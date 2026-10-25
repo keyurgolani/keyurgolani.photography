@@ -1,0 +1,212 @@
+import { Check } from 'lucide-react';
+import styles from '../curator.module.css';
+import EventBadge from './EventBadge';
+import ItemActions from './ItemActions';
+import LandOnItem from './LandOnItem';
+import {
+    fileParts,
+    headTail,
+    identityLine,
+    referencedByText,
+    seriesMembershipText,
+    seriesName,
+    statusLabel,
+    systemResponse,
+    type InboxDetail,
+    type InboxView,
+} from '@/lib/curation/inbox-view';
+
+type ReadyView = Extract<InboxView, { state: 'ready' }>;
+
+interface FactRow {
+    label: string;
+    value: string;
+    /** An ID or a hash, set in the mono face. */
+    mono?: boolean;
+}
+
+function Facts({ rows }: { rows: FactRow[] }) {
+    return (
+        <dl className={styles.facts}>
+            {rows.map((row) => (
+                <div key={row.label}>
+                    <dt>{row.label}</dt>
+                    <dd className={row.mono ? styles.mono : undefined}>{row.value}</dd>
+                </div>
+            ))}
+        </dl>
+    );
+}
+
+/** What the watcher saw, kept apart from anything the curator decides, with every ID and hash in full. */
+function SourceFacts({ view, detail }: { view: ReadyView; detail: InboxDetail }) {
+    const rows: FactRow[] = [
+        { label: 'Source file', value: detail.sourcePath },
+        ...(detail.fromPath ? [{ label: 'Moved from', value: detail.fromPath }] : []),
+        { label: 'Identity status', value: detail.identity },
+        ...(detail.assetRevision ? [{ label: 'Asset revision', value: detail.assetRevision, mono: true }] : []),
+        { label: 'Derivatives', value: detail.derivatives },
+        ...detail.facts,
+        ...(detail.failure ? [{ label: 'Failure', value: detail.failure }] : []),
+        ...(detail.candidates.length > 0 ? [{ label: 'Candidates', value: detail.candidates.join(', ') }] : []),
+        { label: 'Referenced by', value: referencedByText(detail.references, view.series) },
+        { label: 'Active revision', value: view.activeRevisionId ?? 'None yet', mono: view.activeRevisionId !== null },
+        { label: 'Observed', value: detail.lastObservedAt !== detail.observedAt ? `${detail.observedAt}, last ${detail.lastObservedAt}` : detail.observedAt },
+        ...(detail.reviewedAt ? [{ label: 'Reviewed', value: `${detail.reviewedAt} by ${detail.reviewedBy ?? 'unknown'}` }] : []),
+    ];
+    return (
+        <section className={styles.box} aria-labelledby="source-facts">
+            <h3 className={styles.boxTitle} id="source-facts">
+                Source facts
+            </h3>
+            <Facts rows={rows} />
+        </section>
+    );
+}
+
+function TypeBox({ view, detail }: { view: ReadyView; detail: InboxDetail }) {
+    if (detail.type === 'replacement') {
+        return (
+            <section className={styles.box} aria-labelledby="type-box">
+                <h3 className={styles.boxTitle} id="type-box">
+                    Identity-preserving replacement
+                </h3>
+                <Facts
+                    rows={[
+                        { label: 'Series membership', value: seriesMembershipText(detail.photoId, detail.references, view.series) },
+                        { label: 'Authored fields', value: `Title, description, and story stay attached to ${detail.shortId}` },
+                        { label: 'Switch policy', value: 'Use the new bytes only after all derivatives succeed' },
+                    ]}
+                />
+            </section>
+        );
+    }
+    if (detail.type === 'missing') {
+        return (
+            <section className={styles.box} aria-labelledby="type-box">
+                <h3 className={styles.boxTitle} id="type-box">
+                    Published output protected
+                </h3>
+                <p>The source binding is unresolved. The current catalog and its derivatives keep serving while you choose how to recover it.</p>
+                <ul className={styles.history}>
+                    <li>Locate or restore source file</li>
+                    <li>Bind an intentional replacement</li>
+                    <li>Archive after removing series references</li>
+                </ul>
+            </section>
+        );
+    }
+    if (detail.type === 'ambiguous') {
+        return (
+            <section className={styles.box} aria-labelledby="type-box">
+                <h3 className={styles.boxTitle} id="type-box">
+                    Identity question
+                </h3>
+                <p>
+                    Bind it to one of the candidates with <code>photos identity bind</code>, or make it a new photograph with <code>photos identity new</code>. The next
+                    watcher pass updates this item.
+                </p>
+            </section>
+        );
+    }
+    return null;
+}
+
+const sentence = (text: string) => `${text[0].toUpperCase()}${text.slice(1)}`;
+
+/**
+ * The detail side of the Inbox: what identifies the photograph first (the
+ * photograph, its file name, folder and capture date), then its short IDs,
+ * what the system did, the suggestion, and the actions. Every full ID and
+ * hash sits in Source facts below.
+ */
+export default function InboxDetailView({ view }: { view: ReadyView }) {
+    const detail = view.selected;
+    if (detail === null) {
+        // An empty inbox says so once, in the list.
+        if (view.items.length === 0 && !view.missingSelection) return null;
+        return (
+            <section className={styles.state} aria-label="Item">
+                {view.missingSelection ? <p role="status">That item isn&apos;t in the inbox any more. Pick another from the list.</p> : <p>Pick an item from the list to review it.</p>}
+            </section>
+        );
+    }
+    const labelOf = (seriesId: string) => seriesName(view.series, seriesId);
+    const file = fileParts(detail.sourcePath);
+    const status = statusLabel(detail);
+    return (
+        // `id="item"` is where every row's link lands, so a phone shows the item and not the top of the list.
+        // tabIndex -1: LandOnItem focuses it on arrival, and it stays out of the tab order.
+        <section className={styles.detail} id="item" aria-labelledby="item-heading" tabIndex={-1}>
+            <LandOnItem targetId="item" />
+            <a className={styles.backToList} href="#inbox-list">
+                All items ({view.items.length})
+            </a>
+            <div className={styles.photo}>
+                {/* Sticky on a wide screen, so the photograph stays in view while the curator describes it. */}
+                <div className={styles.photoFrame}>
+                    <EventBadge type={detail.type} />
+                    {detail.previewUrl ? (
+                        // A private, uncached preview of one derivative, so next/image's optimizer and its cache stay out of it.
+                        <img src={detail.previewUrl} alt={`Candidate photograph ${file.name}`} width={800} decoding="async" />
+                    ) : (
+                        <p className={styles.noPreview}>{detail.photoId === null ? 'No photograph: nothing was made from this file.' : 'No preview yet: no derivative set is ready.'}</p>
+                    )}
+                </div>
+            </div>
+            <div className={styles.fields}>
+                <header className={styles.fieldsHeader}>
+                    <div>
+                        <h2 id="item-heading">{file.name}</h2>
+                        <p className={styles.identityLine}>{identityLine(detail.sourcePath, detail.capturedDate)}</p>
+                    </div>
+                    <span className={styles.status} data-tone={status.tone ?? undefined}>
+                        {status.text}
+                    </span>
+                </header>
+                <Facts
+                    rows={[
+                        { label: 'Stable photo identity', value: detail.shortId, mono: detail.photoId !== null },
+                        { label: 'Asset revision', value: detail.assetRevision ? headTail(detail.assetRevision) : 'None', mono: detail.assetRevision !== null },
+                        { label: 'System response', value: systemResponse(detail, labelOf) },
+                        ...(detail.waiting ? [{ label: 'Waiting', value: `${sentence(detail.waiting)}. Act on it once the set is ready.` }] : []),
+                        // As `curation show` says it, from the same placement lookup.
+                        ...(detail.placedBy ? [{ label: 'Already placed', value: `${sentence(detail.placedBy)}, so it needs no judgment while it stays there.` }] : []),
+                        ...(detail.unplacedSeries ? [{ label: 'No longer placed', value: `To put it back, reopen it and approve it into ${labelOf(detail.unplacedSeries)}.` }] : []),
+                    ]}
+                />
+                <TypeBox view={view} detail={detail} />
+                <ItemActions
+                    key={detail.id}
+                    detail={detail}
+                    activeRevisionId={view.activeRevisionId}
+                    series={view.series}
+                    seriesProblem={view.seriesProblem}
+                    note={
+                        <div className={styles.lock}>
+                            <Check size={17} aria-hidden="true" />
+                            <p>
+                                <strong>Published statement remains unchanged.</strong>
+                                Automatic analysis can draft a revision, but it cannot edit the public series or its order.
+                            </p>
+                        </div>
+                    }
+                />
+                <SourceFacts view={view} detail={detail} />
+                {detail.decisions.length > 0 ? (
+                    <details className={styles.more}>
+                        <summary>History ({detail.decisions.length})</summary>
+                        <ol className={styles.history}>
+                            {detail.decisions.map((decision, index) => (
+                                <li key={index}>
+                                    {decision.at} {decision.action} by {decision.by}
+                                    {decision.detail ? `: ${decision.detail}` : ''}
+                                </li>
+                            ))}
+                        </ol>
+                    </details>
+                ) : null}
+            </div>
+        </section>
+    );
+}

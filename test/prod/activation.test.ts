@@ -10,7 +10,8 @@
  * same server process, and that the /api/photos ETag answers If-None-Match
  * with 304 only while the same revision and build are served. It then scans
  * the public JSON and pages for legacy and original paths, checks the cache
- * headers of /media and a legacy derivative, and restarts the server, once
+ * headers of /media, checks that a legacy derivative on disk 404s directly
+ * and gets a 400 from /_next/image, and restarts the server, once
  * as it was and once with a new build ID. The copy is what lets it add a
  * legacy file and change the build ID without touching the build.
  *
@@ -295,7 +296,7 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         expect(server!.process.pid).toBe(pid);
     }, 120_000);
 
-    it('names no legacy derivative or original path in public JSON or pages, and caches only /media as immutable', async () => {
+    it('names no legacy derivative or original path in public JSON or pages, and serves no legacy derivative', async () => {
         expect(first, 'the first test published').toBeDefined();
         const forbidden = ['/assets/photos/', '%2Fassets%2Fphotos', '\\/assets\\/photos'];
         for (const photo of Object.values(catalog!.registry.photos)) {
@@ -319,11 +320,16 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
             for (const needle of forbidden) expect(text.includes(needle), `${url} names ${needle}`).toBe(false);
         }
 
-        // A legacy basename derivative is served, but never as immutable.
-        const legacy = await fetch(`${base}/assets/photos/optimized/${encodeURIComponent(legacyBase)}.webp`);
-        expect(legacy.status).toBe(200);
-        expect(legacy.headers.get('cache-control') ?? '').not.toContain('immutable');
+        // A legacy basename derivative on disk 404s with nothing cached, and /_next/image refuses it.
+        const legacyUrl = `/assets/photos/optimized/${encodeURIComponent(legacyBase)}.webp`;
+        const legacy = await fetch(`${base}${legacyUrl}`);
+        expect(legacy.status).toBe(404);
+        expect(legacy.headers.get('cache-control')).toBe('no-store');
         await legacy.arrayBuffer();
+        const optimized = await fetch(`${base}/_next/image?url=${encodeURIComponent(legacyUrl)}&w=400&q=75`);
+        expect(optimized.status).toBe(400);
+        // Refused by images.localPatterns, before Next reads the file.
+        expect(await optimized.text()).toBe('"url" parameter is not allowed');
 
         // /api/image is gone.
         const image = await fetch(`${base}/api/image?src=${encodeURIComponent(`${legacyBase}.jpg`)}&w=800`);

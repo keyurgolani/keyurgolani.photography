@@ -24,8 +24,8 @@ const PHOTOS_AT_BUILD_TIME = {
 };
 
 describe('prerenderedPaths', () => {
-  it('lists Home and the catalog API routes', () => {
-    expect(DYNAMIC_PATHS).toEqual(expect.arrayContaining(['/', '/api/photos', '/api/ready']));
+  it('lists Home, the catalog API routes and the curator page', () => {
+    expect(DYNAMIC_PATHS).toEqual(expect.arrayContaining(['/', '/api/photos', '/api/ready', '/curation']));
   });
 
   it('lists Work and the legacy Gallery, whose cutover gate reads the catalog per request', () => {
@@ -131,7 +131,7 @@ describe('check-prerender.mjs run directly', () => {
   it('exits 0 and names the paths it checked when the build prerendered none of them', () => {
     const result = run(file(manifest()));
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('The build prerendered none of: /, /api/photos, /api/ready, /work, /gallery, /work/[slug], /work/[slug]/photo/[photoId], /api/catalog/series/[slug]/pages/[cursor], /api/catalog/home/photos/[photoId].');
+    expect(result.stdout).toContain('The build prerendered none of: /, /api/photos, /api/ready, /work, /gallery, /work/[slug], /work/[slug]/photo/[photoId], /api/catalog/series/[slug]/pages/[cursor], /api/catalog/home/photos/[photoId], /curation.');
   });
 
   it('exits 1 with the fix when the build prerendered /api/photos', () => {
