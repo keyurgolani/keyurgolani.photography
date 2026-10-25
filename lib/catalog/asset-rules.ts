@@ -1,22 +1,28 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../identity/variants';
-import { mediaFilePath } from '../media/path';
-import { mediaUrl } from '../media/url';
+import { NOT_SERVABLE, parseAssetManifest } from '../media/manifest';
+import { assetDir, assetsRoot, mediaFilePath } from '../media/path';
+import { mediaUrl, type AssetRef } from '../media/url';
 import { hasErrorCode } from '../storage/fsx';
+import { MANIFEST_FILE } from '../storage/publish';
 import { registerRule, shared } from './rules';
 import type { CandidatePhotoRecord, ExcludedMember, ExclusionReason, Rule, RuleContext, RuleFinding } from './types';
 
 /**
  * The asset rules, slice B's: each published photo's derivative set is the
  * one #10's registry calls ready, each variant file is there at its
- * manifest's size, and each URL is the media route's. They stat files and
- * read nothing. Importing this module registers them. ruleset.ts imports
+ * manifest's size, and each URL is the media route's. They stat files, and
+ * on a stored revision `assets.manifest` also reads each set's manifest, as
+ * /media does. Importing this module registers them. ruleset.ts imports
  * it, so every process that runs rules through ruleset.ts runs these too,
  * and the slice A and #8 rule tests, which import rules.ts, stay free of
  * asset fixtures.
  *
  * They check the candidate's photos, and the members compile left out
- * (`ctx.excluded`). On a stored revision they check its photos.
+ * (`ctx.excluded`). On a stored revision, which has no `excluded`, they check
+ * its photos: compile read a candidate's manifests itself, but a stored
+ * revision's sets may have broken since it was published.
  */
 
 const photoRecord = (id: string) => ({ kind: 'photo' as const, id });
@@ -63,6 +69,26 @@ function filesOf(ctx: RuleContext, photo: CandidatePhotoRecord): ReturnType<type
         bySet.set(key, files);
     }
     return files;
+}
+
+/**
+ * The manifest of `ref`'s set read the way /media reads it, synchronously: a
+ * set reached through a symlink below the asset store, or a manifest that
+ * isn't a regular file, is missing. Otherwise why there is no valid one.
+ */
+function storedManifest(ref: AssetRef, root: string): { manifest: NonNullable<ReturnType<typeof parseAssetManifest>> } | { problem: string } {
+    const none = { problem: 'has no valid manifest' };
+    try {
+        const real = fs.realpathSync(assetDir(ref, root));
+        if (real !== path.join(fs.realpathSync(assetsRoot(root)), ref.photoId, ref.assetRevision, ref.profileId)) return none;
+        const file = path.join(real, MANIFEST_FILE);
+        if (!fs.lstatSync(file).isFile()) return none;
+        const manifest = parseAssetManifest(JSON.parse(fs.readFileSync(file, 'utf8')), ref);
+        return manifest ? { manifest } : none;
+    } catch (error) {
+        if (error instanceof SyntaxError || hasErrorCode(error, ...NOT_SERVABLE)) return none;
+        return { problem: `has a manifest that can't be read (${(error as NodeJS.ErrnoException).code ?? 'an I/O error'})` };
+    }
 }
 
 const rule = (definition: Omit<Rule, 'version' | 'rollbackClass' | 'severity' | 'gate'>): Rule => ({
@@ -114,12 +140,29 @@ export const ASSET_RULES: readonly Rule[] = [
     }),
     rule({
         id: 'assets.manifest',
-        check: (ctx) => excludedFor(ctx, 'no-manifest', (member) => ({
-            record: photoRecord(member.photoId),
-            field: 'profileId',
-            message: `Its derivative set for ${member.profileId} is ready in the registry, but has no valid manifest.`,
-            hint: 'Run photos:identity retry for it, so the watcher builds the set again.',
-        })),
+        check: (ctx) => {
+            const hint = 'Run photos:identity retry for it, so the watcher builds the set again.';
+            if (ctx.excluded !== undefined) {
+                return excludedFor(ctx, 'no-manifest', (member) => ({
+                    record: photoRecord(member.photoId),
+                    field: 'profileId',
+                    message: `Its derivative set for ${member.profileId} is ready in the registry, but has no valid manifest.`,
+                    hint,
+                }));
+            }
+            const root = ctx.roots.dataRoot;
+            if (root === null) return [];
+            return eachPhoto(ctx, (photo) => {
+                const read = storedManifest({ photoId: photo.id, assetRevision: photo.assetRevision, profileId: photo.profileId }, root);
+                if ('problem' in read) return [{ record: photoRecord(photo.id), field: 'profileId', message: `Its derivative set for ${photo.profileId} ${read.problem}, so /media serves none of it.`, hint }];
+                return VARIANT_WIDTHS.flatMap((width) => VARIANT_FORMATS.flatMap((format) => {
+                    const listed = read.manifest.variants[width][format].bytes;
+                    const published = photo.variants[width][format].bytes;
+                    if (listed === published) return [];
+                    return [{ record: photoRecord(photo.id), field: `variants.${width}.${format}.bytes`, message: `The set's manifest says ${listed} bytes, but the revision says ${published}.`, hint }];
+                }));
+            });
+        },
     }),
     rule({
         id: 'assets.variant',

@@ -102,8 +102,13 @@ describe('the asset rules', () => {
         fs.chmodSync(dir, 0o000);
         try {
             const issues = assetIssues(ctx);
-            expect(issues).toHaveLength(8);
-            expect(issues.every((issue) => issue.code === 'assets.variant' && /can't be read \(EACCES\)/.test(issue.message))).toBe(true);
+            const variants = issues.filter((issue) => issue.code === 'assets.variant');
+            expect(variants).toHaveLength(8);
+            expect(variants.every((issue) => /can't be read \(EACCES\)/.test(issue.message))).toBe(true);
+            // A stored revision's manifest is read too, and one that can't be is reported, never thrown.
+            expect(issues.filter((issue) => issue.code !== 'assets.variant')).toEqual([
+                expect.objectContaining({ code: 'assets.manifest', field: 'profileId', message: expect.stringContaining('has a manifest that can\'t be read (EACCES)') }),
+            ]);
         } finally {
             fs.chmodSync(dir, 0o700);
         }

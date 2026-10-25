@@ -7,7 +7,7 @@ import { folderBytes } from '../../../test/helpers/folderBytes';
 import { withLock, type LockContext, type LockRecord } from '../../storage/lock';
 import { activateRevision, blockingIssues, publish, PUBLISH_EXIT_CODES, rebaseWorkingLayer, recover, type ActivateOptions, type PublishOptions, type PublishResult } from '../publish';
 import { references } from '../references';
-import { mediaFilePath } from '../../media/path';
+import { assetDir, mediaFilePath } from '../../media/path';
 import { CATALOG_LOCK, listActivations, readRevisionFile, revisionFilePath, writeActivePointer } from '../repository';
 import { registerRule } from '../rules';
 import { createTestCatalog, type TestCatalog, type TestCatalogOptions } from '../testing';
@@ -719,6 +719,34 @@ describe('activateRevision', { timeout: 30_000 }, () => {
             expect(result.message).toMatch(/1 error keeps rev_[0-9a-f]{64} from going live \(assets\.variant\)\. Nothing was activated\./);
             expect(result.issues?.[0]).toMatchObject({ code: 'assets.variant', severity: 'error', field: 'variants.w400.webp' });
         }
+        expect(folderBytes(catalogPaths(root).active)).toEqual(pointer);
+        expect(catalogFiles()).toEqual(files);
+    });
+
+    it.each([
+        ['has no manifest', (file: string) => fs.rmSync(file), 'profileId'],
+        ['has a manifest that is not JSON', (file: string) => fs.writeFileSync(file, '{ not json'), 'profileId'],
+        ['has a manifest that disagrees with the revision on a size', (file: string) => {
+            const manifest = JSON.parse(fs.readFileSync(file, 'utf8')) as { variants: Record<string, Record<string, { bytes: number }>> };
+            manifest.variants.w400.webp.bytes += 1;
+            fs.writeFileSync(file, JSON.stringify(manifest));
+        }, 'variants.w400.webp.bytes'],
+    ])('refuses a stored revision whose photo\'s set %s, which /media would serve none of', async (_label, damage, field) => {
+        const { catalog, root, run, editPhoto, first, catalogFiles } = await launched({ seed: 90 });
+        await editPhoto(catalog.photos[0].id, (photo) => {
+            photo.caption = 'A caption revision 2 publishes.';
+        });
+        const second = await run();
+        const photo = (await readRevisionFile(root, first.revisionId ?? ''))?.content.photos[0];
+        if (!photo) throw new Error('Revision 1 has no photo.');
+        damage(path.join(assetDir({ photoId: photo.id, assetRevision: photo.assetRevision, profileId: photo.profileId }, root), 'manifest.json'));
+        const pointer = folderBytes(catalogPaths(root).active);
+        const files = catalogFiles();
+
+        const result = await activate(root, { revisionId: first.revisionId ?? '', expectedActiveRevisionId: second.revisionId ?? '' });
+        expect(result).toMatchObject({ outcome: 'VALIDATION_FAILED', activation: null });
+        expect(result.message).toContain('(assets.manifest)');
+        expect(result.issues?.[0]).toMatchObject({ code: 'assets.manifest', severity: 'error', record: { kind: 'photo', id: photo.id }, field });
         expect(folderBytes(catalogPaths(root).active)).toEqual(pointer);
         expect(catalogFiles()).toEqual(files);
     });
