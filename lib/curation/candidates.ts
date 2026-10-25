@@ -25,10 +25,11 @@ import { SINK_WAIT_MS } from './sink';
  * for them opens again when the photo record has moved on (settleOne()).
  *
  * It runs after each build, and on each pass for the revisions that pass's
- * facts name. A sink's first delivery, at the watcher's start, looks at every
- * item once, so a crash between the registry's `ready` and the item's write
- * is settled when the watcher comes back, without reading the whole inbox on
- * every pass inside the registry hold. It reads the registry without its
+ * facts name and those whose settle after a build failed. A sink's first
+ * delivery, at the watcher's start, looks at every item once, so a crash
+ * between the registry's `ready` and the item's write is settled when the
+ * watcher comes back, without reading the whole inbox on every pass inside
+ * the registry hold. It reads the registry without its
  * lock and takes only the curation lock, so the lock order stays `registry`
  * then `curation`. It reads the working layer's photo records and writes
  * only under `curation/`: confirming the new bytes is the curator's
@@ -253,6 +254,37 @@ export async function settleCandidates(root: string, options: SettleOptions = {}
     return result;
 }
 
+/**
+ * The revisions whose settle after a build failed, owed to the candidate
+ * sink's next delivery. The watcher makes one and hands it to both the sink
+ * and settlingAfterBuild(), since no later pass names a revision whose fact
+ * it already delivered.
+ */
+export interface OwedSettles {
+    add(ref: RevisionRef): void;
+    /** What is owed now, and `settled()` to clear those once a settle covered them. One owed again since stays owed. */
+    take(): { refs: RevisionRef[]; settled(): void };
+}
+
+export function owedSettles(): OwedSettles {
+    const owed = new Map<string, { ref: RevisionRef; seq: number }>();
+    let seq = 0;
+    return {
+        add(ref) {
+            owed.set(`${ref.photoId}/${ref.assetRevision}`, { ref: { photoId: ref.photoId, assetRevision: ref.assetRevision }, seq: ++seq });
+        },
+        take() {
+            const taken = [...owed.entries()];
+            return {
+                refs: taken.map(([, entry]) => entry.ref),
+                settled() {
+                    for (const [key, entry] of taken) if (owed.get(key)?.seq === entry.seq) owed.delete(key);
+                },
+            };
+        },
+    };
+}
+
 export interface CandidateSinkOptions {
     /** Defaults to the data root at each delivery. */
     root?: string;
@@ -260,6 +292,8 @@ export interface CandidateSinkOptions {
     logger?: Logger;
     waitMs?: number;
     profileId?: string;
+    /** Shared with settlingAfterBuild(), so a build whose settle failed is settled on the sink's next delivery. */
+    owed?: OwedSettles;
 }
 
 function readyRoot(root: string | undefined): string {
@@ -282,23 +316,27 @@ export function namedRevisions(facts: readonly IdentityFact[]): RevisionRef[] {
 /**
  * A fact sink that runs after #14's sink has opened the pass's items. Its
  * first delivery settles every replacement item, which recovers what a crash
- * left unrecorded; each later one settles only the revisions its facts name.
- * The pass delivers its pending facts until every sink has them, so a fact
- * whose delivery failed is named again on the next pass. Like #14's sink, an
- * I/O or lock error fails the delivery, and a first delivery that fails
- * looks at every item again on the next.
+ * left unrecorded; each later one settles only the revisions its facts name,
+ * and those `owed` holds, whose settle after a build failed. The pass
+ * delivers its pending facts until every sink has them, so a fact whose
+ * delivery failed is named again on the next pass, and an owed revision
+ * stays owed until a delivery settles it. Like #14's sink, an I/O or lock
+ * error fails the delivery, and a first delivery that fails looks at every
+ * item again on the next.
  */
 export function createCandidateSink(options: CandidateSinkOptions = {}): FactSink {
     let swept = false;
     return async (facts) => {
         const settle = (only?: RevisionRef[]) => settleCandidates(readyRoot(options.root), { clock: options.clock, logger: options.logger, waitMs: options.waitMs, profileId: options.profileId, ...(only ? { only } : {}) });
+        const owed = options.owed?.take();
         if (!swept) {
             await settle();
             swept = true;
-            return;
+        } else {
+            const named = [...namedRevisions(facts), ...(owed?.refs ?? [])];
+            if (named.length > 0) await settle(named);
         }
-        const named = namedRevisions(facts);
-        if (named.length > 0) await settle(named);
+        owed?.settled();
     };
 }
 
@@ -307,18 +345,22 @@ export type BuildFunction = (job: DerivativeJob, options: BuildOptions) => Promi
 /**
  * `build`, then settle the built revision's replacement items, for #10's
  * worker. A build that throws is a crash: it settles nothing, and the next
- * start's build or pass does. A settle that fails is logged and left to the
- * next pass, and never changes the build's outcome.
+ * start's build or pass does. A settle that fails (a busy curation lock, say)
+ * is logged and added to `owed`, so the candidate sink settles it on its
+ * next delivery, the next pass's; with no `owed`, the watcher's next start
+ * does. It never changes the build's outcome.
  */
 export function settlingAfterBuild(build: BuildFunction, options: Omit<CandidateSinkOptions, 'root'> = {}): BuildFunction {
-    const { logger = console } = options;
+    const { logger = console, owed, ...settleOptions } = options;
     return async (job, buildOptions) => {
         const outcome = await build(job, buildOptions);
         if (outcome.status !== 'ready' && outcome.status !== 'failed') return outcome;
         try {
-            await settleCandidates(readyRoot(buildOptions.root), { ...options, only: job });
+            await settleCandidates(readyRoot(buildOptions.root), { ...settleOptions, logger, only: job });
         } catch (error) {
-            logger.warn(`[curation] Could not record the set for ${job.photoId} ${job.assetRevision} on its replacement item yet; the next pass does: ${error instanceof Error ? error.message : String(error)}`);
+            owed?.add(job);
+            const when = owed ? 'the next pass settles it' : "the watcher's next start settles it";
+            logger.warn(`[curation] Could not record the set for ${job.photoId} ${job.assetRevision} on its replacement item yet; ${when}: ${error instanceof Error ? error.message : String(error)}`);
         }
         return outcome;
     };
