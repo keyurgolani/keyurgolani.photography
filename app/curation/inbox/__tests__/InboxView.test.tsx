@@ -59,6 +59,7 @@ function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
             placement: { value: { after: P(1) }, confidence: 'low', producedBy: 'rules@abc', producedAt: '2026-02-01T00:00:00.000Z', evidence: [] },
         },
         edits: null,
+        placed: null,
         decisions: [],
         reviewedAt: null,
         reviewedBy: null,
@@ -231,6 +232,30 @@ describe('the forms', () => {
         await press(screen.getByRole('button', { name: 'Review series suggestion' }));
         expect(sent.forms[0].fields).toMatchObject({ series: 'unassigned', intent: 'approve' });
         expect(sent.forms[0].fields.seriesTouched).toBeUndefined();
+    });
+
+    it('fill a reopened item from its photo record and series, so unchecking the flag clears it', async () => {
+        const noRules = { series: { value: null, confidence: 'low' as const, producedBy: 'rules@none', producedAt: '2026-02-01T00:00:00.000Z', evidence: [] }, placement: null };
+        renderInbox(view({ selected: detail({ suggestions: noRules, placed: { alt: { kind: 'decorative' }, seriesIds: ['ser_harbor'] } }) }));
+        expect(screen.getByRole('combobox', { name: 'Suggested series' })).toHaveValue('ser_harbor');
+        const box = screen.getByRole('checkbox', { name: /Decorative/ });
+        expect(box).toBeChecked();
+        fireEvent.click(box);
+        await press(screen.getByRole('button', { name: 'Review series suggestion' }));
+        expect(sent.forms[0].fields).toMatchObject({ series: 'ser_harbor', decorative: 'off', descriptionWas: 'decorative', description: '' });
+    });
+
+    it('fill a reopened item with its reviewed description', () => {
+        renderInbox(view({ selected: detail({ placed: { alt: { kind: 'described', text: 'Typed at the first approval.' }, seriesIds: [] } }) }));
+        expect(screen.getByRole('textbox', { name: 'Draft description' })).toHaveValue('Typed at the first approval.');
+    });
+
+    it('post every form, so a click before hydration never puts the typed text in a URL', () => {
+        renderInbox();
+        for (const form of document.querySelectorAll('form')) {
+            if (form.querySelector('[aria-label="Refresh inbox"]')) continue;
+            expect(form.getAttribute('method')).toBe('post');
+        }
     });
 
     it('take the description on one line, as the server stores it', () => {

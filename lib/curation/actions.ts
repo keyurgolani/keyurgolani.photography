@@ -346,6 +346,11 @@ export function approveEvent(input: ActionInput & { choices: Choices; faults?: A
                 // Check the placement before writing anything, so a refused one leaves the working layer as it was.
                 let op: SeriesOp | null = null;
                 let series: AuthoredSeries | null = null;
+                if (seriesId === null) {
+                    // Approving never takes a photograph out of a series, so "unassigned" can't be recorded for one a series holds.
+                    const holding = (await readAuthoredSeries(root)).series.filter((entry) => entry.photoIds.includes(photoId)).map((entry) => entry.id);
+                    if (holding.length > 0) fail('refused', `${photoId} is already in ${holding.join(' and ')}, and an approval doesn't take a photograph out of a series. Nothing was written.`);
+                }
                 if (seriesId !== null && placement !== null) {
                     series = await readAuthored<AuthoredSeries>(root, 'series', seriesId);
                     if (series === null) fail('refused', `There is no series ${seriesId}. Nothing was written.`);
@@ -367,7 +372,8 @@ export function approveEvent(input: ActionInput & { choices: Choices; faults?: A
                 if (existing && existing.assetRevision !== assetRevision) {
                     fail('refused', `${photoId}'s photo record pins ${existing.assetRevision}, not this event's ${assetRevision}. Confirming new bytes for a photograph is #17's. Nothing was written.`);
                 }
-                const alt: AuthoredAlt = description ? altOf(description) : existing?.alt ?? null;
+                // A clear wins over what the photo record holds, so a reopened item can withdraw a description or the decorative flag.
+                const alt: AuthoredAlt = description === null ? null : description ? altOf(description) : existing?.alt ?? null;
                 const unchanged = existing !== null && JSON.stringify(existing.alt) === JSON.stringify(alt);
                 if (!unchanged) {
                     const record = existing ? { ...existing, alt } : { kind: 'photo' as const, id: photoId, assetRevision, alt };

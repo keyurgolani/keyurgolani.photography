@@ -86,9 +86,9 @@ test('the curator header leads, and an empty inbox says nothing requires judgmen
 test('lists what the watcher opened, and shows the selected photograph from the curator-only route', async ({ page }) => {
     await openInboxItems(data());
     await openInbox(page);
-    await expect(summary(page)).toHaveText('7 items require judgment');
+    await expect(summary(page)).toHaveText('8 items require judgment');
     const list = page.getByRole('list', { name: 'Requires judgment' });
-    await expect(list.getByRole('link')).toHaveCount(7);
+    await expect(list.getByRole('link')).toHaveCount(8);
     await list.getByRole('link', { name: /Uncurated photograph/ }).first().click();
     await waitForHydration(page);
     await expect(page.getByRole('heading', { level: 2, name: FRESH.approve })).toBeVisible();
@@ -177,6 +177,27 @@ test('approves "Leave unassigned" when no rules file suggests a series', async (
     await page.getByRole('button', { name: 'Review series suggestion' }).click();
     await expect(answer(page, 'done')).toBeVisible();
     expect((await readEvent(data().root, eventOf(FRESH.unassigned)))?.decisions.at(-1)).toMatchObject({ action: 'approve', seriesId: null });
+});
+
+test('clears a decorative flag on a reopened item, so the description gate holds the photo back', async ({ page }) => {
+    await openInbox(page, eventOf(FRESH.reopen));
+    await page.getByRole('combobox', { name: 'Suggested series' }).selectOption(INBOX_SERIES.published.id);
+    await page.getByRole('checkbox', { name: /Decorative/ }).check();
+    await page.getByRole('button', { name: 'Review series suggestion' }).click();
+    await expect(answer(page, 'done')).toHaveText(/^Approved into the draft/);
+    await page.getByRole('button', { name: 'Reopen' }).click();
+    await expect(answer(page, 'done')).toHaveText('Reopened.');
+    // The reopened form starts from the photo record and the series that holds it.
+    await openInbox(page, eventOf(FRESH.reopen));
+    await expect(page.getByRole('combobox', { name: 'Suggested series' })).toHaveValue(INBOX_SERIES.published.id);
+    const box = page.getByRole('checkbox', { name: /Decorative/ });
+    await expect(box).toBeChecked();
+    await box.uncheck();
+    await page.getByRole('button', { name: 'Review series suggestion' }).click();
+    await expect(answer(page, 'done')).toContainText('no description yet');
+    expect((await readAuthoredRecord(data().root, 'photo', FRESH.reopen))?.alt).toBeNull();
+    const validation = await validateWorkingLayer({ dataRoot: data().root });
+    expect(validation.issues.filter((issue) => issue.code === 'description.required' && issue.record.id === FRESH.reopen)).toHaveLength(1);
 });
 
 test('dismisses an unreadable file with a reason, then reopens it', async ({ page }) => {

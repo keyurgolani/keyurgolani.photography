@@ -139,11 +139,43 @@ const PAGE_WORDING: [RegExp, string][] = [
     [/^dismiss needs a reason/, 'Dismissing needs a reason.'],
 ];
 
-/** A refusal in the curator's words: never a CLI flag or command, which the page has no use for. */
-export function pageWording(message: string): string {
+/** Refusals 14-1 words with IDs, in the page's words. The page already says which item. */
+const REFUSAL_WORDING: [RegExp, (match: RegExpMatchArray) => string][] = [
+    [/is already in .*an approval doesn't take a photograph out of a series/, () => "This photograph is already in a series, and approving doesn't take it out of one. Keep its series to approve it. Nothing was written."],
+    [/^There is no series /, () => "That series isn't in the working layer any more. Refresh the inbox. Nothing was written."],
+    [/ is (open|deferred|dismissed|approved|failed), so it can't be ([a-z]+)\./, (match) => `This item is ${match[1]}, so it can't be ${match[2]}. Refresh the inbox.`],
+    [/^Nothing failed for /, () => "Nothing failed for this photograph, so there's nothing to retry."],
+    [/has no photo ID, so there is nothing to retry/, () => "This file has no photo ID, so there's nothing to retry."],
+    [/can't be dismissed/, () => "Something still shows this photograph, so it can't be dismissed. Restore the source, or take it out of its series and publish first. Nothing was written."],
+    [/photo record pins /, () => "Its photo record holds other bytes, and confirming new bytes isn't an inbox step yet. Nothing was written."],
+];
+
+/** What a refusal says when nothing more specific fits: no internal ID, no flag, no command. */
+const FALLBACK: Record<'refused' | 'invalid' | 'failed', string> = {
+    refused: "The inbox can't do that with this item as it stands. Nothing was written.",
+    invalid: 'That needs another choice first. Nothing was written.',
+    failed: "Something in the data root can't be read, so nothing was written. The server log names it.",
+};
+
+/** Internal IDs, CLI flags and commands, and the CLI's "show it again". */
+const NOT_FOR_THE_PAGE = /\b(evt|ph|rev|ser|act|fp|p)_[0-9a-z]|sha256-|(^|\s)--[a-z]|\bphotos (identity|publish|curation)\b|Show it again/;
+
+/** A refusal in the curator's words: never an internal ID, a CLI flag or command, or CLI phrasing. */
+export function pageWording(message: string, status: 'refused' | 'invalid' | 'failed' = 'refused'): string {
     for (const [pattern, wording] of PAGE_WORDING) if (pattern.test(message)) return wording;
-    if (/(^|\s)--[a-z]|\bphotos (identity|publish|curation)\b/.test(message)) return "That can't be done from the inbox as it stands. Refresh and review it again. Nothing was written.";
-    return message;
+    for (const [pattern, wording] of REFUSAL_WORDING) {
+        const match = message.match(pattern);
+        if (match) return wording(match);
+    }
+    return NOT_FOR_THE_PAGE.test(message) ? FALLBACK[status] : message;
+}
+
+/** A stale answer, by what moved. 14-1's own text names IDs and the CLI, so none of it shows. */
+function staleWording(code: 'stale' | 'not-found', message: string): string {
+    if (code === 'not-found') return "This item isn't in the inbox any more, so nothing was written. Refresh the inbox.";
+    if (/active revision/.test(message)) return 'A publish or rollback happened since the page loaded, so nothing was written. Refresh and review it again.';
+    if (/source changed/.test(message)) return "The photograph's source changed since the page loaded, so nothing was written. Refresh and review the newer item.";
+    return 'This item changed since the page loaded, so nothing was written. Refresh and review it again.';
 }
 
 let serial = 0;
@@ -198,9 +230,10 @@ export async function runInboxAction(kind: InboxActionKind, form: unknown, optio
         const extra = kind === 'approve' ? outcome.notes.slice(1) : [];
         return answer('done', outcome.event.id, [DONE[kind], ...extra].join(' '));
     }
-    if (outcome.code === 'stale' || outcome.code === 'not-found') {
-        return answer('stale', input.eventId, `This item changed since the page loaded, so nothing was written. Refresh and review it again. (${outcome.message})`);
-    }
+    if (outcome.code === 'stale' || outcome.code === 'not-found') return answer('stale', input.eventId, staleWording(outcome.code, outcome.message));
     if (outcome.code === 'locked') return answer('busy', input.eventId, 'Another change is being written right now, so nothing was written. Try again in a moment.');
-    return answer(STATUS_FOR[outcome.code], input.eventId, pageWording(outcome.message));
+    const status = STATUS_FOR[outcome.code] as 'refused' | 'invalid' | 'failed';
+    // 14-1's own words, IDs and all, stay in the server log.
+    if (status === 'failed') console.warn(`[curation] The inbox ${kind} on ${input.eventId} failed: ${outcome.message}`);
+    return answer(status, input.eventId, pageWording(outcome.message, status));
 }
