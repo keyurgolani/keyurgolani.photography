@@ -78,13 +78,23 @@ const advance = (ms: number) =>
   });
 
 let lastX = 0;
-/** A mouse move that moved, unless the init says otherwise. */
+/**
+ * A mouse that moved a pixel: a move at its last point, then one a pixel on, since a move only counts from a
+ * position the document saw. With `clientX` in the init, the one move it describes.
+ */
 function move(init: PointerEventInit = {}) {
-  lastX += 1;
-  act(() => {
+  const dispatch = (clientX: number) =>
     main().dispatchEvent(
-      new PointerEvent('pointermove', { pointerType: 'mouse', pointerId: 1, isPrimary: true, clientX: lastX, clientY: 300, movementX: 1, bubbles: true, ...init }),
+      new PointerEvent('pointermove', { pointerType: 'mouse', pointerId: 1, isPrimary: true, clientX, clientY: 300, movementX: 1, bubbles: true, ...init }),
     );
+  act(() => {
+    if (init.clientX !== undefined) {
+      dispatch(init.clientX);
+      return;
+    }
+    dispatch(lastX);
+    lastX += 1;
+    dispatch(lastX);
   });
 }
 
@@ -201,6 +211,20 @@ describe('HomeChromeController', () => {
       move({ movementX: 0, movementY: 0, clientX: 50, clientY: 50 });
       expect(state()).toBe('immersive');
       move({ movementX: 0, movementY: 0, clientX: 51, clientY: 50 });
+      expect(state()).toBe('interactive');
+    });
+
+    // Chromium measures movementX/Y from the last position it recorded, which can be a mouse move it never
+    // dispatched, so a resting mouse's first move, and later ones, can report movement they didn't make.
+    it('reported movement with no new position changes nothing, the first move included', () => {
+      renderHome();
+      move({ movementX: 640, movementY: 400, clientX: 640, clientY: 400 });
+      expect(state()).toBe('immersive');
+      move({ movementX: 0, movementY: 0, clientX: 640, clientY: 400 });
+      expect(state()).toBe('immersive');
+      move({ movementX: 3, movementY: -2, clientX: 640, clientY: 400 });
+      expect(state()).toBe('immersive');
+      move({ movementX: 0, movementY: 0, clientX: 641, clientY: 400 });
       expect(state()).toBe('interactive');
     });
 

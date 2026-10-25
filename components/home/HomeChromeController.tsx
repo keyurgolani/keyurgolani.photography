@@ -209,11 +209,12 @@ export default function HomeChromeController({
       clickGuard = null;
     };
 
-    // A mouse or pen that actually moved. Chromium reports no movement on a document's first pointer event.
+    // A mouse or pen that actually moved: a new position since the last move this document saw. The first move only
+    // fixes the position, and movementX/Y never count, since Chromium measures them from the last position it
+    // recorded, which can be a mouse move it never dispatched, so a resting mouse can report movement.
     const onPointerMove = (event: PointerEvent) => {
       if (!holdsPointer(event)) return;
-      const moved =
-        event.movementX !== 0 || event.movementY !== 0 || (lastPoint !== null && (lastPoint.x !== event.clientX || lastPoint.y !== event.clientY));
+      const moved = lastPoint !== null && (lastPoint.x !== event.clientX || lastPoint.y !== event.clientY);
       lastPoint = { x: event.clientX, y: event.clientY };
       if (moved) activity();
     };

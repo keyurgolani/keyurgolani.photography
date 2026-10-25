@@ -86,7 +86,7 @@ async function pressUntilFocused(page: Page, key: 'Tab' | 'Shift+Tab', target: L
 
 /**
  * Shows the chrome with a pointer: mouse moves onto the photograph, more than
- * one since Chromium gives a document's first move no movement, or a tap on
+ * one since a document's first move only fixes the position, or a tap on
  * it. With the page clock paused, `clocked` runs a frame so a tap's gesture ends.
  */
 async function revealByPointer(page: Page, isMobile: boolean, { clocked = false } = {}) {

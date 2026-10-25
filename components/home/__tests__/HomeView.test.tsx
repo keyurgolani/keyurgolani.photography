@@ -108,13 +108,16 @@ const advance = (ms: number) =>
   });
 
 let lastX = 0;
-/** A real mouse move over Home, which is what reveals the chrome. */
+/** A real mouse move over Home, from its last point to a pixel on, which is what reveals the chrome. */
 function reveal() {
-  lastX += 1;
-  act(() => {
+  const dispatch = (clientX: number) =>
     document
       .querySelector('main')!
-      .dispatchEvent(new PointerEvent('pointermove', { pointerType: 'mouse', isPrimary: true, clientX: lastX, clientY: 200, movementX: 1, bubbles: true }));
+      .dispatchEvent(new PointerEvent('pointermove', { pointerType: 'mouse', isPrimary: true, clientX, clientY: 200, movementX: 1, bubbles: true }));
+  act(() => {
+    dispatch(lastX);
+    lastX += 1;
+    dispatch(lastX);
   });
   expect(state()).toBe('interactive');
 }

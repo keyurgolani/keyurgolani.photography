@@ -184,7 +184,7 @@ const focusedControl = (page: Page) =>
 
 /**
  * Mouse moves onto the photograph, ending on the photo point. There's more
- * than one, since Chromium gives a document's first move no movement, and the
+ * than one, since a document's first move only fixes the position, and the
  * first goes elsewhere, so a reveal with the mouse already there moves too.
  */
 async function revealByMouse(page: Page) {
@@ -347,7 +347,8 @@ test.describe('the pointer', () => {
     test('a mouse move with no movement changes nothing', async ({ page }) => {
         await openHome(page, { clock: true });
         const { x, y } = await photoPoint(page);
-        // The document's first pointer event, which Chromium reports with no movement.
+        // The document's first pointer event, and one more at the same point. Chromium can report the first with
+        // movement from a position it recorded but never dispatched, so reported movement mustn't count.
         await page.mouse.move(x, y);
         await page.mouse.move(x, y);
         await runFor(page, 100);
