@@ -49,7 +49,7 @@ export type AuthoredRecordInput = AuthoredSiteInput | AuthoredSeriesInput | Auth
 
 export type RecordProblemReason = 'unreadable' | 'invalid-json' | 'unknown-schema-version' | 'invalid' | 'file-name' | 'edited-in-place';
 
-/** A working-layer record that isn't usable. It names the record, never a path. */
+/** A working-layer record that isn't usable. It names the record. A message may name a file or folder relative to the data root, never an absolute path. */
 export interface RecordProblem {
     kind: schema.AuthoredKind;
     /** The record ID its folder name gives, or `site`. */
