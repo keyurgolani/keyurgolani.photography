@@ -82,6 +82,8 @@ const profileState = async (w: World, assetRevision: string) => (await readRegis
 
 const otherRef = (w: World) => ({ photoId: w.p, assetRevision: w.b, profileId: w.profileId });
 
+const NOTHING_SETTLED = { ready: [], failed: [], reopened: [] };
+
 describe('a replacement that builds', { timeout: 60_000 }, () => {
     it('opens as building, turns ready once its set is committed, and confirms onto the same photo, series, and position', async () => {
         const w = await world();
@@ -267,7 +269,7 @@ describe('a replacement whose build fails', { timeout: 60_000 }, () => {
         expect(deferred).toMatchObject({ ok: true, event: { status: 'deferred' } });
         const before = layers(w);
         await w.pass();
-        expect(await settleCandidates(w.root, { logger: quiet })).toEqual({ ready: [], failed: [] });
+        expect(await settleCandidates(w.root, { logger: quiet })).toEqual(NOTHING_SETTLED);
         expect(layers(w)).toEqual(before);
     });
 });
@@ -374,6 +376,49 @@ describe('an older revision\'s bytes', { timeout: 60_000 }, () => {
         expect((await photoRecord(w)).assetRevision).toBe(w.a);
     });
 
+    it('reopen the item confirmed for them when they come back while the record pins another: B confirmed, A confirmed, B copied back', async () => {
+        const w = await world();
+        await w.build(w.job(w.b));
+        expect(await confirm(w, await w.event())).toMatchObject({ ok: true });
+        fs.writeFileSync(w.lib.file(P_PATH), images.original);
+        await w.pass();
+        expect(await confirm(w, await w.event(replacementEventId(w.p, w.a)))).toMatchObject({ ok: true });
+        expect((await photoRecord(w)).assetRevision).toBe(w.a);
+        const confirmed = await w.event();
+        expect(confirmed).toMatchObject({ status: 'approved', candidate: { state: 'ready' } });
+        const served0 = await served(w);
+
+        fs.writeFileSync(w.lib.file(P_PATH), images.replacement);
+        expect(await w.pass()).toEqual([expect.objectContaining({ type: 'replaced', photoId: w.p, assetRevision: w.b, revert: true })]);
+        // The fact folds into B's item, and the settle opens it again with a fresh candidate.
+        const reopened = await w.event();
+        expect(reopened).toMatchObject({ status: 'open', version: confirmed.version + 2, candidate: { state: 'ready', profileId: w.profileId } });
+        expect(reopened.candidate?.at).not.toBe(confirmed.candidate?.at);
+        expect(reopened.decisions.at(-1)).toMatchObject({ action: 'reopen', by: 'watcher', reason: `The source holds ${w.b} again, while the photo record pins ${w.a}.` });
+        // Reopening reads the working layer only: the record keeps A, and visitors keep what they had.
+        expect((await photoRecord(w)).assetRevision).toBe(w.a);
+        expect(await served(w)).toEqual(served0);
+        // A pass that names it again changes nothing more.
+        const before = layers(w);
+        await w.restartPass();
+        expect(await settleCandidates(w.root, { logger: quiet, only: w.job(w.b) })).toEqual(NOTHING_SETTLED);
+        expect(layers(w)).toEqual(before);
+        expect(await confirm(w, reopened)).toMatchObject({ ok: true, event: { status: 'approved', decisions: expect.arrayContaining([expect.objectContaining({ action: 'confirm', fromRevision: w.a })]) } });
+        expect((await photoRecord(w)).assetRevision).toBe(w.b);
+    });
+
+    it('leave the item confirmed for them approved when they come back while the record still pins them', async () => {
+        const w = await world();
+        await w.build(w.job(w.b));
+        expect(await confirm(w, await w.event())).toMatchObject({ ok: true });
+        fs.writeFileSync(w.lib.file(P_PATH), images.original);
+        await w.pass();
+        fs.writeFileSync(w.lib.file(P_PATH), images.replacement);
+        await w.pass();
+        expect(await w.event()).toMatchObject({ status: 'approved' });
+        expect((await photoRecord(w)).assetRevision).toBe(w.b);
+    });
+
     it('that the photo record still pins confirm with nothing written', async () => {
         const w = await world();
         await w.build(w.job(w.b));
@@ -422,7 +467,7 @@ describe('rename, duplicate, and simultaneous events', { timeout: 60_000 }, () =
         // That fact again, and a settle again, change nothing.
         const before = layers(w);
         await deliver();
-        expect(await settleCandidates(w.root, { logger: quiet, only: w.job(w.b) })).toEqual({ ready: [], failed: [] });
+        expect(await settleCandidates(w.root, { logger: quiet, only: w.job(w.b) })).toEqual(NOTHING_SETTLED);
         expect(layers(w)).toEqual(before);
         const { events } = await listEvents(w.root);
         expect(events.filter((entry) => entry.type === 'replacement')).toHaveLength(1);
@@ -455,7 +500,7 @@ describe('rename, duplicate, and simultaneous events', { timeout: 60_000 }, () =
         await w.pass();
         const before = layers(w);
         expect(await w.pass()).toEqual([]);
-        expect(await settleCandidates(w.root, { logger: quiet })).toEqual({ ready: [], failed: [] });
+        expect(await settleCandidates(w.root, { logger: quiet })).toEqual(NOTHING_SETTLED);
         expect(await w.build(w.job(w.b))).toEqual({ status: 'skipped', reason: 'not-pending' });
         expect(layers(w)).toEqual(before);
     });
