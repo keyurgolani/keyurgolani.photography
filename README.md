@@ -272,7 +272,7 @@ photos edit <seriesId> --file /data/portfolio/edits/<seriesId>.json --expect-ver
 
 The copy can keep its `stamp` and managed fields: `edit` ignores them. `--file` needs `--expect-version` whenever the record exists, so a copy can't replace a version written after it was made.
 
-Each record is a folder of versions under `authored/`: `site/`, `series/<seriesId>/`, and `photos/<photoId>/`, each holding `v1.json`, `v2.json`, and so on, where the highest number is the record. Edit a record only through `photos edit`, or by copying its newest version to the next number and editing the copy, as [docs/data-root.md](docs/data-root.md) describes:
+Each record is a folder of versions under `authored/`: `site/`, `series/<seriesId>/`, and `photos/<photoId>/`, each holding `v1.json`, `v2.json`, and so on, where the highest number is the record. Edit a record only through `photos edit`, or by copying its newest version to the next number and editing the copy, as [docs/data-root.md](docs/data-root.md) describes. `validate` and `publish` refuse a field visitors would see that a hand copy changed, since nothing reviewed it, so make a change you mean to publish with `photos edit`. For a hand copy:
 
 - Only while no `photos` command runs. The commands hold a lock while they write, and an editor doesn't take it.
 - Never edit a version in place. A command that reads an edited newest version refuses it and names the copy that keeps the edit.
