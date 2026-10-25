@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { recordDirectorySyncs } from '../../../test/helpers/directorySyncs';
 import { runTsx } from '../../../test/helpers/runTsx';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import {
@@ -254,6 +255,17 @@ describe('writeVersionedDocument', () => {
 
         await commitNext(2);
         expect(names()).toEqual(['v1.json', 'v2.json']);
+    });
+
+    it('fsyncs the folder and its parent on a first write, though another writer made the folder, and only the folder after', async () => {
+        // Another writer's mkdir, which it never synced the parent for: it lost, or crashed.
+        fs.mkdirSync(dir, { mode: 0o700 });
+        const synced = recordDirectorySyncs();
+        await writeVersionedDocument(dir, counter(1), 0);
+        expect(synced).toEqual([dir, data.root]);
+        synced.length = 0;
+        await writeVersionedDocument(dir, counter(2), 1);
+        expect(synced).toEqual([dir]);
     });
 
     it('creates only the document folder, never a missing parent', async () => {

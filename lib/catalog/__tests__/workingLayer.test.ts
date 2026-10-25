@@ -1,7 +1,8 @@
 // @vitest-environment node
 import fs from 'node:fs';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { recordDirectorySyncs } from '../../../test/helpers/directorySyncs';
 import { importGraph } from '../../../test/helpers/importGraph';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { withLock } from '../../storage/lock';
@@ -20,6 +21,7 @@ const LATER = `rev_${'2'.repeat(64)}`;
 const roots: TempDataRoot[] = [];
 
 afterEach(async () => {
+    vi.restoreAllMocks();
     // Newest first, so each cleanup puts back the PHOTOGRAPHY_DATA_DIR from before its own root
     for (const root of roots.splice(0).reverse()) await root.cleanup();
 });
@@ -330,6 +332,28 @@ describe('writeAuthoredRecord', () => {
         const paths = authoredPaths(data.root);
         const dir = path.join(paths.photosDir, PHOTO_A);
         expect([mode(paths.dir), mode(paths.photosDir), mode(dir), mode(path.join(dir, 'v1.json'))]).toEqual([0o700, 0o700, 0o700, 0o600]);
+    });
+
+    it('fsyncs every folder a first write needs up to the data root, though another writer made them, and only the record folder after', async () => {
+        const data = dataRoot();
+        const paths = authoredPaths(data.root);
+        const dir = path.join(paths.photosDir, PHOTO_A);
+        // Another writer's mkdirs, which it never synced: it lost, or crashed.
+        fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+        await withLock('authored', { root: data.root }, async (hold) => {
+            const synced = recordDirectorySyncs();
+            const first = await writeAuthoredRecord(photo(PHOTO_A), { expectedVersion: 0, root: data.root, lock: hold });
+            expect(synced).toEqual([data.root, paths.dir, dir, paths.photosDir]);
+            synced.length = 0;
+            await writeAuthoredRecord({ ...first, title: 'Fixture title' }, { expectedVersion: 1, root: data.root, lock: hold });
+            expect(synced).toEqual([dir]);
+        });
+        // The site record's folder sits right under authored/.
+        await withLock('authored', { root: data.root }, async (hold) => {
+            const synced = recordDirectorySyncs();
+            await writeAuthoredRecord({ kind: 'site', featuredSeriesIds: [], seriesOrder: [] }, { expectedVersion: 0, root: data.root, lock: hold });
+            expect(synced).toEqual([data.root, paths.site, paths.dir]);
+        });
     });
 
     it('lets exactly one of two writers with the same expectedVersion through', async () => {

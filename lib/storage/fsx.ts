@@ -39,6 +39,24 @@ export async function fsyncDirectory(dir: string): Promise<void> {
 }
 
 /**
+ * Make `dir`, readable by its owner only, unless it exists, and fsync its
+ * parent when this call made it. With `syncParent`, fsync the parent even when
+ * it already existed: a first write calls it so, since the writer that made
+ * the folder may have crashed or lost before it synced the parent. The parent
+ * must exist.
+ */
+export async function ensureDirectory(dir: string, { syncParent = false }: { syncParent?: boolean } = {}): Promise<void> {
+    let created = false;
+    try {
+        await fs.promises.mkdir(dir, { mode: PRIVATE_DIR_MODE });
+        created = true;
+    } catch (error) {
+        if (!hasErrorCode(error, 'EEXIST')) throw error;
+    }
+    if (created || syncParent) await fsyncDirectory(path.dirname(dir));
+}
+
+/**
  * Resolve symlinks in the longest existing prefix of `target`, so it works for
  * paths that don't exist yet. Uses the native realpath, which also returns the
  * on-disk case, so `Public/` and `public/` compare equal on a case-insensitive disk.
