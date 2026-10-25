@@ -214,23 +214,24 @@ describe('a pass with decision files', () => {
         // Bind z.jpg to x, then change course: z.jpg is a photo of its own after all.
         const bind = await s.decide({ type: 'bind', path: 'z.jpg', photoId: x });
         const made = await s.decide({ type: 'new', path: 'z.jpg' });
+        const n = made.photoId as string;
         await expect(s.pass({ faults: { beforeSettle: () => { throw new Error('the process died'); } } })).rejects.toThrow('the process died');
-        expect(await s.photoAt('z.jpg')).toBe(made.photoId);
+        expect(await s.photoAt('z.jpg')).toBe(n);
         expect(s.pending()).toEqual([bind.name, made.name]);
 
         const again = await s.pass();
         if (again.status !== 'committed') throw new Error(JSON.stringify(again));
         expect(again.decisions).toEqual([
             { name: bind.name, decisionId: bind.decisionId, status: 'applied', detail: `bound z.jpg to ${x}` },
-            { name: made.name, decisionId: made.decisionId, status: 'applied', detail: `gave z.jpg its own photo ${made.photoId}` },
+            { name: made.name, decisionId: made.decisionId, status: 'applied', detail: `gave z.jpg its own photo ${n}` },
         ]);
         expect(again.facts).toEqual([]);
         expect(s.pending()).toEqual([]);
         expect(s.filed('applied')).toEqual([bind.name, made.name]);
         expect(s.filed('rejected')).toEqual([]);
         const registry = await readRegistry(s.data.root);
-        expect(Object.keys(registry.photos).sort()).toEqual([x, made.photoId].sort());
-        expect(registry.photos[made.photoId]).toMatchObject({ sourceHealth: 'present', source: { path: 'z.jpg' } });
+        expect(Object.keys(registry.photos).sort()).toEqual([x, n].sort());
+        expect(registry.photos[n]).toMatchObject({ sourceHealth: 'present', source: { path: 'z.jpg' } });
         expect(registry.photos[x].sourceHealth).toBe('missing');
     }, 60_000);
 });
