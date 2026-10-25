@@ -1,0 +1,273 @@
+/* A series page, in Gallery After Hours: the title and statement first, one
+   decisive photograph on the dark ground, then the authored sequence. No
+   series accent or tint, since Chromatic Chapters stays in the Viewer. Text
+   never sits on a photograph, so none depends on a scrim. */
+.page {
+  min-height: calc(100svh - var(--site-nav-height));
+  padding: 0 var(--site-gutter) clamp(3rem, 8vw, 6rem);
+  background: var(--gah-ground);
+  color: var(--gah-ink);
+}
+
+.header {
+  max-width: 44rem;
+  padding: clamp(3rem, 9vw, 7.5rem) 0 clamp(2rem, 4vw, 3.5rem);
+}
+
+/* The serif and its weight come from the global heading rule. */
+.title {
+  margin: 0;
+  font-size: var(--gah-type-display);
+  line-height: var(--gah-display-leading);
+  letter-spacing: var(--gah-display-tracking);
+  overflow-wrap: anywhere;
+}
+
+/* Authored: the statement, plain-text paragraphs in the serif. */
+.statement {
+  max-width: 62ch;
+  margin-top: clamp(1.25rem, 2.5vw, 2rem);
+  color: var(--gah-ink-soft);
+  font-family: var(--gah-font-serif);
+  font-size: var(--gah-type-statement);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.statement p {
+  margin: 0;
+}
+
+.statement p + p {
+  margin-top: 1em;
+}
+
+/* Derived: set in the sans at label size, under a rule, so the facts never read as authored copy. */
+.facts {
+  margin-top: clamp(1.75rem, 3vw, 2.5rem);
+  padding-top: 1rem;
+  border-top: 1px solid var(--gah-rule);
+  font-family: var(--gah-font-sans);
+}
+
+.factsHeading {
+  margin: 0;
+  color: var(--gah-label);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-label);
+  font-weight: 500;
+  letter-spacing: var(--gah-label-tracking);
+  text-transform: uppercase;
+}
+
+.factList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem clamp(1.5rem, 4vw, 3rem);
+  margin: 0.875rem 0 0;
+}
+
+.fact dt {
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+  letter-spacing: var(--gah-label-tracking);
+  text-transform: uppercase;
+}
+
+.fact dd {
+  margin: 0.25rem 0 0;
+  color: var(--gah-ink);
+  font-size: var(--gah-type-ui);
+  overflow-wrap: anywhere;
+}
+
+.source {
+  display: block;
+  margin-top: 0.125rem;
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}
+
+/* The cover at its own aspect ratio, capped so a tall photograph still leaves the sequence in reach. */
+.stage {
+  margin: 0;
+}
+
+.coverFrame {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  width: 100%;
+  max-height: 82svh;
+  border-radius: var(--gah-radius);
+  background: var(--gah-surface);
+}
+
+.coverFrame .image {
+  object-position: var(--focal-x, 50%) var(--focal-y, 50%);
+}
+
+.coverFrame[data-photo='contain'] .image {
+  object-fit: contain;
+}
+
+.coverFrame.fallback {
+  aspect-ratio: 3 / 2;
+}
+
+.stageNote {
+  margin-top: 0.75rem;
+  color: var(--gah-ink-muted);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-label);
+  letter-spacing: var(--gah-label-tracking);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Placed on the box, not the <picture>, which has no size of its own. */
+.image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.fallback {
+  display: flex;
+  align-items: flex-end;
+  padding: 0.75rem 0.875rem;
+  box-shadow: inset 0 0 0 1px var(--gah-rule);
+}
+
+.fallbackText {
+  color: var(--gah-ink-muted);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-label);
+  letter-spacing: var(--gah-label-tracking);
+  text-transform: uppercase;
+}
+
+.sequence {
+  margin-top: clamp(3rem, 7vw, 5.5rem);
+}
+
+.sequenceHeading,
+.chapterTitle {
+  margin: 0 0 1.25rem;
+  font-size: clamp(1.5rem, 1.1rem + 1.2vw, 2.25rem);
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+}
+
+.chapter {
+  margin-top: clamp(2.5rem, 5vw, 4rem);
+}
+
+.chapterTitle {
+  font-size: clamp(1.25rem, 1rem + 0.8vw, 1.75rem);
+}
+
+/* DOM order is the reading and Tab order: rows fill left to right, with no dense packing or CSS order. */
+.entries {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 9.5rem), 1fr));
+  gap: clamp(1.25rem, 3vw, 2rem) clamp(0.75rem, 2vw, 1.25rem);
+  align-items: start;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+@media (min-width: 40rem) {
+  .entries {
+    grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
+  }
+}
+
+.item {
+  min-width: 0;
+}
+
+/* One link per entry: the thumbnail and its number. */
+.entry {
+  position: relative;
+  display: block;
+  border-radius: var(--gah-radius);
+  color: inherit;
+  text-decoration: none;
+}
+
+/* A fixed box, so rows line up while images load, fail, or are missing. The whole photograph shows, uncropped. */
+.thumbFrame {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  aspect-ratio: 4 / 3;
+  border-radius: var(--gah-radius);
+  background: var(--gah-surface);
+}
+
+.thumbFrame[data-photo='contain'] .image {
+  object-fit: contain;
+}
+
+.position {
+  display: block;
+  margin-top: 0.5rem;
+  color: var(--gah-label);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-label);
+  letter-spacing: var(--gah-label-tracking);
+  font-variant-numeric: tabular-nums;
+}
+
+.caption {
+  margin: 0.25rem 0 0;
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-ui);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.entryTitle {
+  display: block;
+  color: var(--gah-ink);
+}
+
+.description {
+  display: block;
+  color: var(--gah-ink-soft);
+}
+
+/* Hover parity: focus marks the entry the same way a pointer does. No scaling either way. */
+.entry:focus-visible .thumbFrame {
+  box-shadow: 0 0 0 1px var(--gah-rule-strong);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .entry:hover .thumbFrame {
+    box-shadow: 0 0 0 1px var(--gah-rule-strong);
+  }
+}
+
+/* The sequence ends here. Nothing wraps, and there's no next-series link. */
+.end {
+  margin: clamp(3rem, 7vw, 5rem) 0 0;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--gah-rule);
+}
+
+.allWork {
+  display: inline-flex;
+  min-width: 44px;
+  min-height: 44px;
+  align-items: center;
+  color: var(--gah-ink);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-ui);
+  letter-spacing: var(--gah-label-tracking);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+}

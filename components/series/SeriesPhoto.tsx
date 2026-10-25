@@ -1,0 +1,75 @@
+'use client';
+
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import ResponsivePhoto from '@/components/ResponsivePhoto';
+// Types only: the projection pulls node:crypto in through lib/media/url.ts, which must stay out of the client bundle.
+import type { SeriesImage } from '@/lib/catalog/projections/series';
+import styles from './SeriesPage.module.css';
+
+export interface SeriesPhotoProps {
+    /** The projection's image, or null when its set can't be shown. */
+    image: SeriesImage | null;
+    /** The image's own alt. Empty inside a named link. */
+    alt: string;
+    sizes: string;
+    /** The cover loads at once at high priority. Sequence thumbnails load as they near the viewport. */
+    priority?: boolean;
+    /** Where the crop centers, 0 to 1 on each axis. */
+    focalPoint?: { x: number; y: number };
+    crop?: 'cover' | 'contain';
+    /** What the box says when there's no image. */
+    fallbackLabel: string;
+    /** Inside a named link the fallback text is visual only, since the link's name already says which photograph it is. */
+    fallbackHidden?: boolean;
+    /** The box's class, which reserves its shape. */
+    frameClassName: string;
+    /** Size the box from the photograph's own aspect ratio, as the cover does. Otherwise the class sets it. */
+    intrinsic?: boolean;
+}
+
+/**
+ * One series photograph in a reserved box on the dark ground. When the set
+ * can't be shown, or the image fails to load, the box holds a plain text
+ * fallback instead of a broken image, and whatever surrounds it (position,
+ * text, Viewer link) stays put. An image that fails before hydration never
+ * fires onError, so the mount check looks too. An empty currentSrc is a lazy
+ * image that hasn't started, which isn't a failure.
+ */
+export default function SeriesPhoto({ image, alt, sizes, priority = false, focalPoint, crop = 'cover', fallbackLabel, fallbackHidden = false, frameClassName, intrinsic = false }: SeriesPhotoProps) {
+    const element = useRef<HTMLImageElement>(null);
+    const [failed, setFailed] = useState(false);
+
+    useEffect(() => {
+        const img = element.current;
+        if (img && img.complete && img.naturalWidth === 0 && img.currentSrc !== '') setFailed(true);
+    }, []);
+
+    if (image === null || failed) {
+        return (
+            <span className={`${frameClassName} ${styles.fallback}`} data-photo="unavailable">
+                <span className={styles.fallbackText} aria-hidden={fallbackHidden ? 'true' : undefined}>
+                    {fallbackLabel}
+                </span>
+            </span>
+        );
+    }
+
+    const style = {
+        ...(intrinsic ? { aspectRatio: `${image.width} / ${image.height}` } : {}),
+        ...(focalPoint ? { '--focal-x': `${focalPoint.x * 100}%`, '--focal-y': `${focalPoint.y * 100}%` } : {}),
+    } as CSSProperties;
+    return (
+        <span className={frameClassName} style={style} data-photo={crop}>
+            <ResponsivePhoto
+                ref={element}
+                asset={image}
+                alt={alt}
+                sizes={sizes}
+                loading={priority ? 'eager' : 'lazy'}
+                fetchPriority={priority ? 'high' : undefined}
+                onError={() => setFailed(true)}
+                className={styles.image}
+            />
+        </span>
+    );
+}

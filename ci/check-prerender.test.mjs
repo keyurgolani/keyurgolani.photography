@@ -40,6 +40,17 @@ describe('prerenderedPaths', () => {
     expect(prerenderedPaths(manifest({ routes }))).toEqual(['/gallery', '/work']);
   });
 
+  it('lists the series route by its pattern, since the page reads the catalog per request', () => {
+    expect(DYNAMIC_PATHS).toContain('/work/[slug]');
+  });
+
+  it('finds the series route when the build prerendered a series page or kept its pattern', () => {
+    const throughPath = manifest({ routes: { '/work/fixture-a': { initialRevalidateSeconds: false, srcRoute: '/work/[slug]', dataRoute: '/work/fixture-a.rsc' } } });
+    expect(prerenderedPaths(throughPath)).toEqual(['/work/[slug]']);
+    const asPattern = manifest({ dynamicRoutes: { '/work/[slug]': { routeRegex: '^/work/([^/]+?)(?:/)?$', fallback: null } } });
+    expect(prerenderedPaths(asPattern)).toEqual(['/work/[slug]']);
+  });
+
   it('lists the Viewer route by its pattern, since the page reads the catalog per request', () => {
     expect(DYNAMIC_PATHS).toContain('/work/[slug]/photo/[photoId]');
   });
@@ -110,7 +121,7 @@ describe('check-prerender.mjs run directly', () => {
   it('exits 0 and names the paths it checked when the build prerendered none of them', () => {
     const result = run(file(manifest()));
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('The build prerendered none of: /, /api/photos, /api/ready, /work, /gallery, /work/[slug]/photo/[photoId].');
+    expect(result.stdout).toContain('The build prerendered none of: /, /api/photos, /api/ready, /work, /gallery, /work/[slug], /work/[slug]/photo/[photoId].');
   });
 
   it('exits 1 with the fix when the build prerendered /api/photos', () => {
