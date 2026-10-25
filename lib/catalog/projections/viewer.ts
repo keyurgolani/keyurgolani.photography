@@ -6,9 +6,9 @@ import { TECHNICAL_KEYS, type TechnicalKey } from '../../identity/metadata';
 import type { VariantFormat, VariantWidth } from '../../identity/variants';
 import { sequencePosition } from '../order';
 import type { CatalogContent, CatalogReader } from '../reader';
-import { MAX_SLUG_LENGTH, SLUG_RE } from '../schema';
 import type { SeriesRecord } from '../types';
-import { ladderOf, type Ladder, type LadderVariant } from './ladder';
+import { imageOf, type Ladder } from './ladder';
+import { openableSeries, seriesParams, text, type ScreenCatalog } from './shared';
 
 /**
  * #7's Viewer read model: one photograph in one series, from one compiled
@@ -23,9 +23,6 @@ type Photo = CatalogContent['photos'][number];
 
 /** The neutral copy a draft preview shows while a photo's description is pending. A published revision never needs it. */
 export const DESCRIPTION_PENDING_COPY = 'Description pending editorial review';
-
-/** One variant file, as `/media` serves it and a `srcset` names it. */
-export type ViewerVariant = LadderVariant;
 
 /** One photograph's #10 derivative set, as ResponsivePhoto takes it. #5's `SeriesImage`, with the asset revision. */
 export interface ViewerImage {
@@ -123,31 +120,18 @@ export interface ViewerSource {
 const NOT_FOUND: ViewerPhotoResult = Object.freeze({ kind: 'not-found' });
 /** The shape accent.format checks at publish. A preview's candidate hasn't passed it yet. */
 const ACCENT_RE = /^#[0-9a-f]{6}$/i;
-/**
- * The shape the revision schema checks, checked again because ResponsivePhoto
- * puts it in a CSS `url()`. The same check as #4's Home projection; one
- * shared helper once both land.
- */
-const LQIP_RE = /^data:image\/webp;base64,[A-Za-z0-9+/]+={0,2}$/;
 
 /**
- * The route params when both are well formed: a series slug in #13's shape
- * and a photo ID in #10's. Exact, so a letter-case variant fails. Nothing
- * here reads the catalog, and a param never reaches a path.
+ * The route params when both are well formed: a series slug that
+ * seriesParams() accepts, the series page's own check, and a photo ID in
+ * #10's shape. Exact, so a letter-case variant fails. Nothing here reads the
+ * catalog, and a param never reaches a path.
  */
 export function viewerParams(slug: unknown, photoId: unknown): { slug: string; photoId: string } | null {
-    if (typeof slug !== 'string' || typeof photoId !== 'string') return null;
-    if (slug.length > MAX_SLUG_LENGTH || !SLUG_RE.test(slug)) return null;
-    if (!PHOTO_ID_RE.test(photoId)) return null;
-    return { slug, photoId };
+    const series = seriesParams(slug);
+    if (series === null || typeof photoId !== 'string' || !PHOTO_ID_RE.test(photoId)) return null;
+    return { slug: series.slug, photoId };
 }
-
-/** Authored text only when it holds something. */
-function text(value: unknown): string | null {
-    return typeof value === 'string' && /\S/.test(value) ? value : null;
-}
-
-const dimension = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n > 0;
 
 function accent(value: unknown): string | null {
     return typeof value === 'string' && ACCENT_RE.test(value) ? value : null;
@@ -177,25 +161,24 @@ function technical(facts: Photo['technical']): Partial<Record<TechnicalKey, stri
 }
 
 /**
- * The photo's set when the photo has positive integer dimensions and its
- * ladder is usable (see ladderOf(), the same check Home, Work, and Series
- * use), else null. ladderOf() copies field by field, so the Viewer gets only
- * what the set names and a caller can't edit the cached revision through it.
+ * The photo's set from imageOf(), the check Home, Work, and Series use, with
+ * its LQIP and the asset revision, else null. ladderOf() copies field by
+ * field, so the Viewer gets only what the set names and a caller can't edit
+ * the cached revision through it.
  */
-function imageOf(photo: Photo): ViewerImage | null {
-    if (!dimension(photo.width) || !dimension(photo.height)) return null;
-    const variants = ladderOf(photo);
-    if (variants === null) return null;
-    const image: ViewerImage = { width: photo.width, height: photo.height, assetRevision: photo.assetRevision, variants };
-    if (typeof photo.lqip === 'string' && LQIP_RE.test(photo.lqip)) image.lqip = photo.lqip;
-    return image;
+function viewerImageOf(photo: Photo): ViewerImage | null {
+    const image = imageOf(photo, true);
+    if (image === null) return null;
+    // The asset revision goes right after the size, where the Viewer has always shipped it.
+    const { width, height, ...rest } = image;
+    return { width, height, assetRevision: photo.assetRevision, ...rest };
 }
 
 /** The share image: the 1200 px WebP, a published `/media` variant whose path carries the asset revision. */
 const SHARE_WIDTH: VariantWidth = 'w1200';
 const SHARE_FORMAT: VariantFormat = 'webp';
 
-/** The share file, field by field, for a photo whose set imageOf() accepted, so every field is already checked. */
+/** The share file, field by field, for a photo whose set viewerImageOf() accepted, so every field is already checked. */
 function shareOf(photo: Photo): NonNullable<PublishedViewerPhoto['photo']['shareImage']> {
     const file = photo.variants[SHARE_WIDTH][SHARE_FORMAT];
     return { url: file.url, width: file.width, height: file.height };
@@ -208,8 +191,9 @@ function shareOf(photo: Photo): NonNullable<PublishedViewerPhoto['photo']['share
  * photo the series doesn't hold are all not-found, and so is a prior slug
  * whose canonical slug the route would refuse; a prior slug redirects;
  * anything else is the projection. The series guards are #5's series page
- * guards, copied, so a photo URL is not-found exactly when its series page
- * is, and #3's Work never links either. A photo without positive dimensions
+ * guards, openableSeries() and the same redirect rule, so a photo URL is
+ * not-found exactly when its series page is, and #3's Work never links
+ * either. A photo without positive dimensions
  * or a set of its own `/media` files still resolves, with `image: null`, as
  * #5's series page lists it with its missing-image state. Compile never
  * writes a repeated ID, a zero count, or a bad set; only a hand-written
@@ -223,20 +207,17 @@ export function viewerPhotoOf(source: ViewerSource, slug: unknown, photoId: unkn
     const hit = source.seriesBySlug(params.slug);
     if (hit === null) return NOT_FOUND;
     const { series } = hit;
-    // Work and the series page leave out a series ID that appears more than once, so the Viewer does too.
-    if (source.listSeries().filter((entry) => entry.id === series.id).length !== 1) return NOT_FOUND;
-    if (!dimension(series.derived?.photoCount)) return NOT_FOUND;
+    if (!openableSeries(source, series)) return NOT_FOUND;
     const record = source.photo(params.photoId);
     if (record === null) return NOT_FOUND;
-    // Membership also covers the series page's other guard, a series with no member that resolves.
     const position = sequencePosition({ photoIds: source.photosOf(series.id).map((member) => member.id) }, record.id);
     if (position === null) return NOT_FOUND;
     if (!hit.canonical) {
         // The series page's rule: a 308 to a canonical slug the route refuses would point at a page that is always not-found.
-        if (viewerParams(series.slug, record.id) === null) return NOT_FOUND;
+        if (seriesParams(series.slug) === null) return NOT_FOUND;
         return { kind: 'redirect', slug: series.slug, photoId: record.id };
     }
-    const image = imageOf(record);
+    const image = viewerImageOf(record);
     return {
         kind: 'ok',
         viewer: {
@@ -261,14 +242,8 @@ export function viewerPhotoOf(source: ViewerSource, slug: unknown, photoId: unkn
     };
 }
 
-/**
- * The parts of #13's ActiveCatalog that viewerPhotoFrom() reads, so this
- * module stays clear of the server-only public reader.
- */
-export type ViewerCatalog<Reason extends string = string> =
-    | { mode: 'legacy' }
-    | { mode: 'catalog'; state: 'ok' | 'degraded'; reader: Pick<CatalogReader, 'getViewerPhoto'> }
-    | { mode: 'catalog'; state: 'unavailable'; reason: Reason };
+/** The parts of #13's ActiveCatalog that viewerPhotoFrom() reads. */
+export type ViewerCatalog<Reason extends string = string> = ScreenCatalog<Pick<CatalogReader, 'getViewerPhoto'>, Reason>;
 
 /**
  * The Viewer's answer for the site as it stands, for the route to call with

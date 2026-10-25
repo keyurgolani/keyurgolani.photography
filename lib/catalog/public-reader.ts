@@ -2,7 +2,7 @@ import 'server-only';
 import path from 'node:path';
 import { dataRoot } from '../storage/config';
 import { checkCatalogMode, readPointer } from './mode';
-import { createCatalogReader, createRouteBuilder, type CatalogReader } from './reader';
+import { createCatalogReader, type CatalogReader } from './reader';
 import { listActivations, readRevisionFile } from './repository';
 import { forRequest } from './request';
 import type { PublicPhotoRecord, RevisionFile } from './types';
@@ -14,8 +14,8 @@ import type { PublicPhotoRecord, RevisionFile } from './types';
  * two revisions. The web process imports it; the CLI never does.
  */
 
-/** The public routes: `/`, `/work`, `/work/<slug>`, and `/work/<slug>/photo/<photoId>`. */
-export const publicRoutes = createRouteBuilder();
+/** The public routes: `/`, `/work`, `/work/<slug>`, and `/work/<slug>/photo/<photoId>`. The reader's own builder, so pages and the reader's defaults agree. */
+export { publicRoutes } from './reader';
 
 /**
  * Why nothing can be served, with no revision loaded before: `catalog/`

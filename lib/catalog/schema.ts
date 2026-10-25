@@ -22,7 +22,8 @@ export const RESERVED_SLUGS = ['api', 'curation', 'media', 'new', 'photo', 'prev
 export const REVISION_ID_RE = /^rev_[0-9a-f]{64}$/;
 export const ACTIVATION_ID_RE = /^act_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const HEX_64_RE = /^[0-9a-f]{64}$/;
-const LQIP_RE = /^data:image\/webp;base64,[A-Za-z0-9+/]+={0,2}$/;
+/** A photo's LQIP: a WebP data URI. The screens check it again (projections/ladder.ts lqipOf()), since ResponsivePhoto writes it into a CSS `url()`. */
+export const LQIP_RE = /^data:image\/webp;base64,[A-Za-z0-9+/]+={0,2}$/;
 
 const positiveInt = z.number().int().positive();
 const count = z.number().int().nonnegative();

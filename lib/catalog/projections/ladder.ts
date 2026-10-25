@@ -1,6 +1,8 @@
 import { VARIANT_FORMATS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth } from '../../identity/variants';
 import { mediaUrl } from '../../media/url';
 import type { CatalogContent } from '../reader';
+import { LQIP_RE } from '../schema';
+import { dimension } from './shared';
 
 /**
  * The derivative ladder as a screen ships it. ResponsivePhoto, the one
@@ -13,15 +15,13 @@ import type { CatalogContent } from '../reader';
 
 type Photo = CatalogContent['photos'][number];
 
-/** One variant file, as `/media` serves it and a `srcset` names it. */
+/** One variant file, as `/media` serves it and a `srcset` names it. Every screen ships this shape. */
 export interface LadderVariant {
     url: string;
     width: number;
 }
 
 export type Ladder = Record<VariantWidth, Record<VariantFormat, LadderVariant>>;
-
-const dimension = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n > 0;
 
 /**
  * The photo's ladder, field by field, when every file is the `/media` URL
@@ -50,4 +50,40 @@ export function ladderOf(photo: Photo): Ladder | null {
         }
     }
     return ladder;
+}
+
+/**
+ * The photo's stored LQIP when it is in the shape the revision schema
+ * checks, else undefined. Checked again here because ResponsivePhoto puts it
+ * in a CSS `url()`, so nothing else may pass, and a preview's candidate
+ * hasn't been through the schema.
+ */
+export function lqipOf(photo: Photo): string | undefined {
+    return typeof photo.lqip === 'string' && LQIP_RE.test(photo.lqip) ? photo.lqip : undefined;
+}
+
+/** One photograph's #10 derivative set, as ResponsivePhoto takes it. */
+export interface LadderImage {
+    /** Oriented. */
+    width: number;
+    height: number;
+    variants: Ladder;
+    /** Only when the caller asks for it and lqipOf() accepts it. */
+    lqip?: string;
+}
+
+/**
+ * The photo's set when it has positive integer dimensions and its ladder is
+ * usable (see ladderOf()), else null, with the LQIP only when `withLqip`.
+ * Home, Work's cover, the series page, and the Viewer all build their image
+ * here, so none of them ships a set another would refuse.
+ */
+export function imageOf(photo: Photo, withLqip: boolean): LadderImage | null {
+    if (!dimension(photo.width) || !dimension(photo.height)) return null;
+    const variants = ladderOf(photo);
+    if (variants === null) return null;
+    const image: LadderImage = { width: photo.width, height: photo.height, variants };
+    const lqip = withLqip ? lqipOf(photo) : undefined;
+    if (lqip !== undefined) image.lqip = lqip;
+    return image;
 }

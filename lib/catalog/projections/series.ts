@@ -3,10 +3,12 @@ import 'server-only';
 import type { VariantFormat, VariantWidth } from '../../identity/variants';
 import { decodeSeriesCursor, encodeSeriesCursor } from '../cursor';
 import type { CatalogContent, CatalogReader, RouteBuilder } from '../reader';
-import { MAX_SLUG_LENGTH, SLUG_RE } from '../schema';
 import { sequenceSections, type SequenceSection } from '../series-sections';
 import type { Crop, FocalPoint, SeriesRecord } from '../types';
-import { ladderOf, type Ladder, type LadderVariant } from './ladder';
+import { imageOf, type Ladder } from './ladder';
+import { CENTER, focal, openableSeries, seriesParams, text, type ScreenCatalog } from './shared';
+
+export { seriesParams } from './shared';
 
 /**
  * #5's series page read model: one series on `/work/<slug>`, from one
@@ -39,9 +41,6 @@ export const SERIES_PAGE_SIZE = 100;
 export function seriesPagesPath(slug: string, cursor: string): string {
     return `/api/catalog/series/${encodeURIComponent(slug)}/pages/${cursor}`;
 }
-
-/** One variant file, as `/media` serves it and a `srcset` names it. */
-export type SeriesVariant = LadderVariant;
 
 /** One photograph's #10 derivative set, as ResponsivePhoto takes it. */
 export interface SeriesImage {
@@ -199,53 +198,15 @@ export interface SeriesSource {
 }
 
 const NOT_FOUND = Object.freeze({ kind: 'not-found' as const });
-const CENTER: FocalPoint = Object.freeze({ x: 0.5, y: 0.5 });
-/** The shape the revision schema checks. ResponsivePhoto puts it in a CSS `url()`, so nothing else passes. */
-const LQIP_RE = /^data:image\/webp;base64,[A-Za-z0-9+/]+={0,2}$/;
 /** The shape the revision schema's dates take. Checked whole, though only the year leaves here. */
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 /** The share image variant: wide enough for link previews, and a format every current one reads. */
 const SHARE_WIDTH: VariantWidth = 'w1200';
 const SHARE_FORMAT: VariantFormat = 'webp';
 
-/**
- * The route's slug param when it is in #13's shape, the same check #7's
- * viewerParams() makes. Exact, so a letter-case variant fails. Nothing here
- * reads the catalog, and a param never reaches a path.
- */
-export function seriesParams(slug: unknown): { slug: string } | null {
-    if (typeof slug !== 'string') return null;
-    if (slug.length > MAX_SLUG_LENGTH || !SLUG_RE.test(slug)) return null;
-    return { slug };
-}
-
-/** Authored text only when it holds something. */
-function text(value: unknown): string | null {
-    return typeof value === 'string' && /\S/.test(value) ? value : null;
-}
-
-function focal(value: unknown): FocalPoint | null {
-    if (typeof value !== 'object' || value === null) return null;
-    const { x, y } = value as Record<string, unknown>;
-    const unit = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 1;
-    return unit(x) && unit(y) ? { x, y } : null;
-}
-
-const dimension = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n > 0;
-
 /** The described text, from the alt union alone. Decorative, pending, or blank gives null. */
 function descriptionOf(alt: Photo['alt'] | undefined): string | null {
     return alt?.kind === 'described' ? text(alt.text) : null;
-}
-
-/** The photo's derivative set when its ladder is usable (see ladderOf(), #3's cover rule), else null. */
-function imageOf(photo: Photo, withLqip: boolean): SeriesImage | null {
-    if (!dimension(photo.width) || !dimension(photo.height)) return null;
-    const variants = ladderOf(photo);
-    if (variants === null) return null;
-    const image: SeriesImage = { width: photo.width, height: photo.height, variants };
-    if (withLqip && typeof photo.lqip === 'string' && LQIP_RE.test(photo.lqip)) image.lqip = photo.lqip;
-    return image;
 }
 
 /** Paragraphs split on blank lines, each trimmed, blanks dropped. */
@@ -306,13 +267,10 @@ type Resolved =
 
 /**
  * The series `slug` names in one source, for the page and its continuation
- * alike, in this order: a malformed slug, an unknown one, a series ID that
- * appears more than once, and a series with nothing to open (no positive
- * published count or no member that resolves) are all not-found. Compile
- * never writes a repeated ID. Only a hand-written revision can, and the
- * reader indexes members by ID, so it would pair one record's copy with
- * another's photos. Members are the ones that resolve, in `photoIds` order,
- * the list #7's Viewer counts, so positions agree.
+ * alike: a malformed slug, an unknown one, and a series openableSeries()
+ * refuses (a repeated ID, no positive published count, or no member that
+ * resolves) are all not-found. Members are the ones that resolve, in
+ * `photoIds` order, the list #7's Viewer counts, so positions agree.
  */
 function resolveSeries(source: SeriesSource, slug: unknown): Resolved {
     const params = seriesParams(slug);
@@ -320,14 +278,9 @@ function resolveSeries(source: SeriesSource, slug: unknown): Resolved {
     const hit = source.seriesBySlug(params.slug);
     if (hit === null) return NOT_FOUND;
     const { series } = hit;
-    // Work leaves out a series ID that appears more than once, so the page does too.
-    if (source.listSeries().filter((record) => record.id === series.id).length !== 1) return NOT_FOUND;
-    const photoCount = series.derived?.photoCount;
-    if (!dimension(photoCount)) return NOT_FOUND;
-    // order.duplicate-photo blocks a repeated member at render, so no preview or revision holds one.
-    const members = source.photosOf(series.id);
-    if (members.length === 0) return NOT_FOUND;
-    return { kind: 'ok', series, canonical: hit.canonical, members, photoCount };
+    // Work's rule, so Work never links a page that is not-found and the page never serves a series Work leaves out.
+    if (!openableSeries(source, series)) return NOT_FOUND;
+    return { kind: 'ok', series, canonical: hit.canonical, members: source.photosOf(series.id), photoCount: series.derived.photoCount };
 }
 
 /** The entries of one page, from member `offset` on, with their absolute positions. */
@@ -463,15 +416,8 @@ export function seriesSections(page: Pick<PublishedSeriesPage, 'entries' | 'chap
     return sequenceSections(page.entries, page.chapters);
 }
 
-/**
- * The parts of #13's ActiveCatalog that seriesPageFrom() and
- * seriesContinuationFrom() read, so this module stays clear of the
- * server-only public reader.
- */
-export type SeriesActiveCatalog<Reason extends string = string> =
-    | { mode: 'legacy' }
-    | { mode: 'catalog'; state: 'ok' | 'degraded'; reader: Pick<CatalogReader, 'getSeriesPage' | 'getSeriesContinuation'> }
-    | { mode: 'catalog'; state: 'unavailable'; reason: Reason };
+/** The parts of #13's ActiveCatalog that seriesPageFrom() and seriesContinuationFrom() read. */
+export type SeriesActiveCatalog<Reason extends string = string> = ScreenCatalog<Pick<CatalogReader, 'getSeriesPage' | 'getSeriesContinuation'>, Reason>;
 
 /**
  * The series page's answer for the site as it stands, for the route and its

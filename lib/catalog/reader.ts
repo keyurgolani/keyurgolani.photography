@@ -95,11 +95,13 @@ export function createCatalogReader<C extends CatalogContent>(content: C, meta: 
             const members = (index.members.get(seriesId) ?? []) as Photo[];
             return members.slice(offset, limit === Infinity ? undefined : offset + limit);
         },
-        getWorkSummaries: (routes = publicRouteBuilder) => workCatalogOf({ revisionId: revision.revisionId, listSeries: reader.listSeries, photosOf: reader.photosOf }, routes),
-        getViewerPhoto: (slug, photoId) => viewerPhotoOf({ revisionId: revision.revisionId, listSeries: reader.listSeries, seriesBySlug: reader.seriesBySlug, photo: reader.photo, photosOf: reader.photosOf }, slug, photoId),
-        getSeriesPage: (slug, routes = publicRouteBuilder) => seriesPageOf({ revisionId: revision.revisionId, listSeries: reader.listSeries, seriesBySlug: reader.seriesBySlug, photosOf: reader.photosOf }, slug, routes),
-        getSeriesContinuation: (slug, cursor, routes = publicRouteBuilder) => seriesContinuationOf({ revisionId: revision.revisionId, listSeries: reader.listSeries, seriesBySlug: reader.seriesBySlug, photosOf: reader.photosOf }, slug, cursor, routes),
+        getWorkSummaries: (routes = publicRoutes) => workCatalogOf(source, routes),
+        getViewerPhoto: (slug, photoId) => viewerPhotoOf(source, slug, photoId),
+        getSeriesPage: (slug, routes = publicRoutes) => seriesPageOf(source, slug, routes),
+        getSeriesContinuation: (slug, cursor, routes = publicRoutes) => seriesContinuationOf(source, slug, cursor, routes),
     };
+    // The reader itself is every projection's source (WorkSource, SeriesSource, ViewerSource), with the revision ID beside its lookups.
+    const source = { ...reader, revisionId: revision.revisionId };
     return reader;
 }
 
@@ -145,5 +147,9 @@ export function createRouteBuilder({ basePath = '' }: { basePath?: string } = {}
     };
 }
 
-/** The public builder getWorkSummaries() and getSeriesPage() default to. #13's `publicRoutes` is the same. */
-const publicRouteBuilder = createRouteBuilder();
+/**
+ * The public routes: `/`, `/work`, `/work/<slug>`, and
+ * `/work/<slug>/photo/<photoId>`. The reader's projections default to it,
+ * and #13's public reader re-exports it, so the site has one builder.
+ */
+export const publicRoutes = createRouteBuilder();
