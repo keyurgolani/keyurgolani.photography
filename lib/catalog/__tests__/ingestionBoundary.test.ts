@@ -80,6 +80,12 @@ describe('the watcher process import graph', () => {
         expect(files).toEqual(expect.arrayContaining(['utils/watcherHandlers.ts', 'utils/imageOptimizer.ts', 'lib/storage/config.ts']));
     });
 
+    it('reaches #14\'s curation sink, and none of the curator\'s commands', () => {
+        const { files } = importGraph('scripts/imageWatcher.ts');
+        expect(files).toEqual(expect.arrayContaining(['lib/curation/sink.ts', 'lib/curation/repository.ts', 'lib/catalog/working-layer.ts']));
+        expect(files.filter((file) => /^lib\/curation\/(?:actions|commands)\.ts$/.test(file))).toEqual([]);
+    });
+
     it('lets a watcher module read the working layer and the catalog reader', () => {
         const { files } = importGraph('lib/ingest/probe.ts', { source: `${importing('../catalog/working-layer')}import { createCatalogReader } from '../catalog/reader';\nexport { createCatalogReader };\n` });
         expect(files).toEqual(expect.arrayContaining(['lib/catalog/working-layer.ts', 'lib/catalog/reader.ts']));

@@ -9,6 +9,8 @@ import { folderBytes } from '../../../test/helpers/folderBytes';
 import { runTsx } from '../../../test/helpers/runTsx';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempLibrary';
+import { listEvents } from '../../curation/repository';
+import { createCurationSink } from '../../curation/sink';
 import { migrateApply } from '../../identity/apply';
 import { watcherStatusFile } from '../../identity/heartbeat';
 import { migrateDryRun } from '../../identity/migration';
@@ -133,7 +135,8 @@ async function prepare({ migrate = false }: { migrate?: boolean } = {}): Promise
         clock: () => Date.now() + 60_000,
         idGen: ids,
         logger: quiet,
-        sinks: [jsonLogSink(quiet)],
+        // #14's inbox sink rides along on every pass, so each row below runs it too.
+        sinks: [jsonLogSink(quiet), createCurationSink({ logger: quiet })],
         ...extra,
     });
     const pass = async () => {
@@ -342,6 +345,10 @@ describe('reconcile never authors order', () => {
         ]);
 
         expect([...seen].sort()).toEqual([...ALL_FACT_TYPES].sort());
+        // The curation sink saw every one of them and opened an inbox item for each type but a rename, writing only under curation/.
+        const { events, problems } = await listEvents(fixture.data.root);
+        expect(problems).toEqual([]);
+        expect([...new Set(events.map((event) => event.type))].sort()).toEqual(['ambiguous', 'missing', 'new', 'processing-failure', 'reappeared', 'replacement']);
         // Identity moved underneath, but the published members keep their IDs and positions.
         expect((await readAuthoredRecord(fixture.data.root, 'series', SERIES))?.photoIds).toEqual([landscape, portrait, square]);
     }, 120_000);
