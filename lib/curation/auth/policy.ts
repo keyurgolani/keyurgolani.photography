@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { foldName } from '../../foldName';
 import { resolvedPathname } from '../../../utils/publicDerivatives';
+import { readCuratorSecrets } from './secrets';
+import { sessionFromCookies } from './sessions';
 
 /**
  * The curator access boundary (#14's 14-2), as pure checks on a request's
@@ -14,14 +16,16 @@ import { resolvedPathname } from '../../../utils/publicDerivatives';
  *
  * Who may reach the curator: whoever can open the loopback port on the host,
  * which from another machine means an SSH local port forward
- * (`ssh -L 3001:127.0.0.1:3001 <host>`). That tunnel is the authentication.
- * The checks here keep that true: the flag keeps every curator path a 404
- * unless the operator turned it on, the bind rule keeps the listener on
- * loopback, the Host allowlist turns away a DNS-rebound name, and the Origin
- * check turns away a cross-site form or fetch from the owner's own browser.
- * None of them proves who is calling, so none of them may ever widen the
- * listener. The passphrase and session layer is held for the owner
- * (docs/curator.md).
+ * (`ssh -L 3001:127.0.0.1:3001 <host>`), and then signs in with the
+ * passphrase the owner set at deploy time. The tunnel is the way in; the
+ * passphrase session is defense in depth on top of it, which the owner
+ * approved on 2026-10-25 ("Allow user to define a login credential at
+ * deployment time."). The flag keeps every curator path a 404 unless the
+ * operator turned it on, the bind rule keeps the listener on loopback, the
+ * Host allowlist turns away a DNS-rebound name, the Origin check turns away
+ * a cross-site form or fetch from the owner's own browser, and the session
+ * check turns away anyone who hasn't signed in. None of them may ever widen
+ * the listener.
  *
  * Every value is read on each call, never at build time, so one image serves
  * both states and the flag is a restart away.
@@ -216,6 +220,17 @@ export function curatorStartupProblem(env: CuratorEnv, argv: readonly string[], 
     return bindProblem(env, argv, probe);
 }
 
+/**
+ * Why the curator's secret files can't be used, or null when they can or
+ * the curator is off. The server keeps running and answers 503 on every
+ * path until they're fixed and it restarts; it never runs without them.
+ */
+export function curatorSecretsProblem(env: CuratorEnv): string | null {
+    if (!isCurationEnabled(env)) return null;
+    const secrets = readCuratorSecrets(env);
+    return 'problem' in secrets ? secrets.problem : null;
+}
+
 /** What a curator request carries that the checks read. Header values as sent, or null when missing. */
 export interface CuratorRequest {
     host: string | null;
@@ -223,20 +238,29 @@ export interface CuratorRequest {
     forwardedHost: string | null;
     /** True for anything that can change state: every method but GET and HEAD, and any server action call. */
     mutation: boolean;
+    /**
+     * The request's `Cookie` header, for the session check, or
+     * `'not-checked'` where no session is asked: the login page and its
+     * form's POST, and the public paths on the curator process. Every caller
+     * has to say which.
+     */
+    session: { cookie: string | null } | 'not-checked';
 }
 
 /**
  * A refused curator request.
  * - 404 `off`: the flag is off, so curator paths don't exist.
- * - 503 `misconfigured`: the flag is on, but the bind or the tunnel port setting is wrong.
+ * - 503 `misconfigured`: the flag is on, but the bind, the tunnel port setting, or a secret file is wrong.
  * - 421 `host`: the `Host` isn't one the curator answers to, as after a DNS rebinding.
  * - 403 `origin`: a mutation without an `Origin` naming the same allowed host, as from another site's form.
+ * - 401 `session`: no live curator session: no `curator_session` cookie, one whose tag doesn't match, or one for a session that ended.
  */
 export type CuratorDenial =
     | { status: 404; reason: 'off' }
     | { status: 503; reason: 'misconfigured' }
     | { status: 421; reason: 'host' }
-    | { status: 403; reason: 'origin' };
+    | { status: 403; reason: 'origin' }
+    | { status: 401; reason: 'session' };
 
 /** The host and port of an `Origin` header naming an http origin, or null. `null` and anything with a path count as none. */
 function originHost(origin: string): string | null {
@@ -252,20 +276,24 @@ function originHost(origin: string): string | null {
 
 /**
  * Whether a curator request may go on, or why not. Checked in this order:
- * the flag, the bind and tunnel settings, the `Host` (and an
- * `X-Forwarded-Host`, which must match it), and for a mutation an `Origin`
- * whose host and port equal `Host`. The session check, when the owner adds
- * one, goes after these, in requireCurator().
+ * the flag; the bind, the tunnel port setting and the secret files; the
+ * `Host` (and an `X-Forwarded-Host`, which must match it); for a mutation,
+ * an `Origin` whose host and port equal `Host`; and last, unless the caller
+ * says `'not-checked'`, a live session from the `curator_session` cookie.
+ * `now` is for tests.
  */
 export function evaluateCuratorRequest(
     request: CuratorRequest,
     env: CuratorEnv,
     argv: readonly string[],
     probe?: BindProbe,
+    now: number = Date.now(),
 ): CuratorDenial | null {
     if (!isCurationEnabled(env)) return { status: 404, reason: 'off' };
     const allowed = curatorHosts(env);
     if ('problem' in allowed || bindProblem(env, argv, probe) !== null) return { status: 503, reason: 'misconfigured' };
+    const secrets = readCuratorSecrets(env);
+    if ('problem' in secrets) return { status: 503, reason: 'misconfigured' };
     const host = request.host?.toLowerCase() ?? null;
     if (host === null || !allowed.hosts.has(host)) return { status: 421, reason: 'host' };
     if (request.forwardedHost !== null && request.forwardedHost.toLowerCase() !== host) return { status: 421, reason: 'host' };
@@ -273,7 +301,29 @@ export function evaluateCuratorRequest(
         const fromOrigin = request.origin === null ? null : originHost(request.origin);
         if (fromOrigin === null || fromOrigin !== host) return { status: 403, reason: 'origin' };
     }
+    if (request.session !== 'not-checked' && sessionFromCookies(request.session.cookie, secrets.secrets.sessionKey, now) === null) {
+        return { status: 401, reason: 'session' };
+    }
     return null;
+}
+
+/** The login page, the one curator page that asks for no session. */
+export const LOGIN_PAGE = '/curation/login';
+/** Where the login page's form posts. It asks for no session either, and still needs the Origin. */
+export const LOGIN_HANDLER = '/api/curation/login';
+
+/**
+ * Whether a request is one of the two that skip the session check: a read
+ * of the login page, or a POST of its form. Exact paths, as sent, and never
+ * a server action call, so no other curator code runs without a session.
+ * Any other spelling of these paths needs a session like the rest.
+ */
+export function isLoginRequest(pathname: string, method: string, isAction: boolean): boolean {
+    if (isAction) return false;
+    const upper = method.toUpperCase();
+    if (pathname === LOGIN_PAGE) return upper === 'GET' || upper === 'HEAD';
+    if (pathname === LOGIN_HANDLER) return upper === 'POST';
+    return false;
 }
 
 /**

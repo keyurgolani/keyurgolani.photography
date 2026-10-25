@@ -1,9 +1,17 @@
 import fs from 'node:fs';
 import { NextResponse, type NextRequest } from 'next/server';
 import { catalogMode } from './lib/catalog/mode';
-import { CURATOR_FRAME_POLICY, CURATOR_RESPONSE_HEADERS, evaluateCuratorRequest, isCurationEnabled, isCuratorPath } from './lib/curation/auth/policy';
+import {
+    CURATOR_FRAME_POLICY,
+    CURATOR_RESPONSE_HEADERS,
+    evaluateCuratorRequest,
+    isCurationEnabled,
+    isCuratorPath,
+    isLoginRequest,
+    LOGIN_PAGE,
+} from './lib/curation/auth/policy';
 import { dataRoot } from './lib/storage/config';
-import { hasEncodedSeparator, isPublicDerivativePath, isUnderPhotos } from './utils/publicDerivatives';
+import { hasEncodedSeparator, isPublicDerivativePath, isUnderPhotos, resolvedPathname } from './utils/publicDerivatives';
 
 /** The body Next's /_next/image sends for a `url` images.localPatterns doesn't allow. */
 export const IMAGE_URL_NOT_ALLOWED = '"url" parameter is not allowed';
@@ -59,7 +67,7 @@ function reachesPhotos(url: string): boolean {
     return hasEncodedSeparator(pathname) || isUnderPhotos(pathname);
 }
 
-const DENIAL_TEXT: Record<number, string> = { 403: 'Forbidden', 404: 'Not Found', 421: 'Misdirected Request', 503: 'Service Unavailable' };
+const DENIAL_TEXT: Record<number, string> = { 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 421: 'Misdirected Request', 503: 'Service Unavailable' };
 
 /** A refused curator request, with every curator response header. */
 function curatorDenial(status: number): NextResponse {
@@ -69,8 +77,19 @@ function curatorDenial(status: number): NextResponse {
     });
 }
 
+/** A curator page asked for without a session: on to the login page, same origin, with every curator header. */
+function toLogin(): NextResponse {
+    return new NextResponse(null, {
+        status: 307,
+        headers: { Location: LOGIN_PAGE, ...CURATOR_RESPONSE_HEADERS, ...CURATOR_FRAME_POLICY },
+    });
+}
+
 /** Methods that only read. Anything else can reach a server action or a mutating handler. */
 const READ_METHODS = new Set(['GET', 'HEAD']);
+
+/** Headers the App Router's client sends when it fetches a page's RSC payload instead of its HTML. */
+const RSC_HEADERS = ['rsc', 'next-router-prefetch', 'next-router-state-tree'];
 
 /**
  * Keeps original photos private, the curator behind its boundary, and every
@@ -79,9 +98,12 @@ const READ_METHODS = new Set(['GET', 'HEAD']);
  * - Any path that encodes a slash or a backslash gets a 404.
  * - `/curation/**` and `/api/curation/**` get a 404 while `CURATION_ENABLED`
  *   isn't exactly `true`, read on every request. With it on, they pass only
- *   the checks in lib/curation/auth/policy.ts (bind, `Host`, and `Origin` on
- *   a mutation), and each page, handler and action runs requireCurator()
- *   again.
+ *   the checks in lib/curation/auth/policy.ts (the bind and the secret
+ *   files, `Host`, `Origin` on a mutation, and a live session), and each
+ *   page, handler and action runs requireCurator() again. Without a session,
+ *   a page is sent to `/curation/login`, and a route handler, a server
+ *   action or an RSC request gets 401. Only a read of `/curation/login` and
+ *   a POST to `/api/curation/login` skip the session.
  * - `/_next/image` is checked only for its `url`: unless the legacy
  *   derivatives serve, it refuses one that reaches /assets/photos with a 400
  *   before its own cache can answer. Otherwise it passes.
@@ -109,17 +131,24 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
     }
     const method = request.method.toUpperCase();
     if (isCuratorPath(pathname)) {
+        const action = request.headers.has('next-action');
+        const mutation = !READ_METHODS.has(method) || action;
         const denial = evaluateCuratorRequest(
             {
                 host: request.headers.get('host'),
                 origin: request.headers.get('origin'),
                 forwardedHost: request.headers.get('x-forwarded-host'),
-                mutation: !READ_METHODS.has(method) || request.headers.has('next-action'),
+                mutation,
+                session: isLoginRequest(pathname, method, action) ? 'not-checked' : { cookie: request.headers.get('cookie') },
             },
             process.env,
             process.argv,
         );
-        if (denial !== null) return curatorDenial(denial.status);
+        if (denial !== null) {
+            const page = !resolvedPathname(pathname).toLowerCase().startsWith('/api') && !RSC_HEADERS.some((name) => request.headers.has(name));
+            if (denial.reason === 'session' && !mutation && page) return toLogin();
+            return curatorDenial(denial.status);
+        }
         const response = NextResponse.next();
         for (const [name, value] of Object.entries(CURATOR_RESPONSE_HEADERS)) response.headers.set(name, value);
         return response;
@@ -128,7 +157,7 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
     // Host too, so nothing it serves differs by Host from what the tunnel sees.
     if (isCurationEnabled(process.env)) {
         const denial = evaluateCuratorRequest(
-            { host: request.headers.get('host'), origin: null, forwardedHost: request.headers.get('x-forwarded-host'), mutation: false },
+            { host: request.headers.get('host'), origin: null, forwardedHost: request.headers.get('x-forwarded-host'), mutation: false, session: 'not-checked' },
             process.env,
             process.argv,
         );

@@ -10,8 +10,8 @@ import { REPO_ROOT } from '../../../test/helpers/runTsx';
  * No page, route handler, or the proxy may load a curation module other than
  * 14-2's `lib/curation/auth/`, the boundary itself, so no public route or API
  * can reveal an inbox item or offer a curator control. The curator's own
- * pages, under app/curation/, hold only 14-2's placeholder until 14-3 builds
- * the inbox there behind requireCurator(), and the route-inventory test
+ * pages, under app/curation/, hold only 14-2's placeholder and login until
+ * 14-3 builds the inbox there behind requireCurator(), and the route-inventory test
  * (__tests__/routeInventory.test.ts) checks every one of them is guarded.
  */
 
@@ -36,12 +36,12 @@ describe('the public routes', () => {
     });
 
     it('reach an auth boundary that loads no other curation module', () => {
-        for (const entry of ['lib/curation/auth/index.ts', 'lib/curation/auth/policy.ts']) expect(curationModules(entry)).toEqual([]);
+        for (const entry of ['lib/curation/auth/index.ts', 'lib/curation/auth/policy.ts', 'lib/curation/auth/login.ts']) expect(curationModules(entry)).toEqual([]);
     });
 
     // By URL, as the route inventory decides it, so a route group or a parallel slot counts too.
-    it('have no curation route but the placeholder, until 14-3', () => {
+    it('have no curation route but the placeholder and the login, until 14-3', () => {
         const curator = publicEntries().filter(isCuratorFile);
-        expect(curator).toEqual(['app/curation/page.tsx']);
+        expect(curator).toEqual(['app/api/curation/login/route.ts', 'app/api/curation/logout/route.ts', 'app/curation/login/page.tsx', 'app/curation/page.tsx']);
     });
 });

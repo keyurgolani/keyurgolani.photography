@@ -57,6 +57,17 @@ describe('register() with the curator on', () => {
         await register();
         expect(exit).not.toHaveBeenCalled();
     });
+
+    it("keeps running without its secret files, and says every path answers 503, naming the setting and no path's contents", async () => {
+        vi.stubEnv('CURATION_ENABLED', 'true');
+        vi.stubEnv('HOSTNAME', '127.0.0.1');
+        vi.stubEnv('CURATOR_PASSPHRASE_HASH_FILE', '/nonexistent/curator-passphrase.hash');
+        await register();
+        expect(exit).not.toHaveBeenCalled();
+        const [message] = error.mock.calls.at(-1) as [string];
+        expect(message).toContain('CURATOR_PASSPHRASE_HASH_FILE');
+        expect(message).toContain('503');
+    });
 });
 
 describe('register() under next dev', () => {

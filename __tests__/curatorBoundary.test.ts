@@ -6,12 +6,15 @@ import { NextRequest } from 'next/server';
 import { unstable_doesMiddlewareMatch, unstable_getResponseFromNextConfig } from 'next/experimental/testing/server';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import nextConfig from '../next.config.mjs';
+import { makeCuratorSecrets, type TestCuratorSecrets } from '../test/helpers/curatorSecrets';
+import { resetLoginForTests } from '../lib/curation/auth/login';
 import { CURATOR_FRAME_POLICY, CURATOR_RESPONSE_HEADERS } from '../lib/curation/auth/policy';
+import { deleteSession, resetSessionsForTests, SESSION_COOKIE, signSessionId, createSession } from '../lib/curation/auth/sessions';
 import { config, proxy } from '../proxy';
 
 // proxy.ts on the curator paths (#14's 14-2): the flag, the Host allowlist,
-// the Origin on a mutation, the curator headers, and every other path
-// refusing anything but a read.
+// the Origin on a mutation, the session, the curator headers, and every
+// other path refusing anything but a read.
 
 /** A 42-hex server action ID, the shape Next sends in Next-Action. */
 const ACTION_ID = '7f'.repeat(21);
@@ -30,14 +33,28 @@ function expectCuratorHeaders(response: Response) {
     for (const [name, value] of Object.entries(CURATOR_RESPONSE_HEADERS)) expect(response.headers.get(name)).toBe(value);
 }
 
+let secrets: TestCuratorSecrets;
+/** A Cookie header for a live session under the test secret. */
+let signedIn: string;
+
+beforeAll(async () => {
+    secrets = await makeCuratorSecrets();
+});
+
+afterAll(() => secrets.cleanup());
+
 beforeEach(() => {
     vi.stubEnv('HOSTNAME', '127.0.0.1');
     vi.stubEnv('CURATOR_TUNNEL_PORT', '');
     vi.stubEnv('CURATION_BIND_SCOPE', '');
+    for (const [name, value] of Object.entries(secrets.env)) vi.stubEnv(name, value);
+    signedIn = secrets.cookie();
 });
 
 afterEach(() => {
     vi.unstubAllEnvs();
+    resetSessionsForTests();
+    resetLoginForTests();
 });
 
 describe('proxy.ts with CURATION_ENABLED off', () => {
@@ -57,7 +74,7 @@ describe('proxy.ts with CURATION_ENABLED off', () => {
         vi.stubEnv('CURATION_ENABLED', 'false');
         expect((await send('/curation')).status).toBe(404);
         vi.stubEnv('CURATION_ENABLED', 'true');
-        expect(passes(await send('/curation'))).toBe(true);
+        expect(passes(await send('/curation', { headers: { cookie: signedIn } }))).toBe(true);
         vi.stubEnv('CURATION_ENABLED', 'false');
         expect((await send('/curation')).status).toBe(404);
     });
@@ -80,7 +97,7 @@ describe('proxy.ts with CURATION_ENABLED=true', () => {
 
     it('passes a read on an allowed Host, with the curator headers', async () => {
         for (const host of ['127.0.0.1:3001', 'localhost:3001']) {
-            const response = await send('/curation', { headers: { host } });
+            const response = await send('/curation', { headers: { host, cookie: signedIn } });
             expect(passes(response)).toBe(true);
             expectCuratorHeaders(response);
         }
@@ -114,7 +131,7 @@ describe('proxy.ts with CURATION_ENABLED=true', () => {
     });
 
     it('passes a mutation whose Origin names the same allowed host', async () => {
-        expect(passes(await send('/curation/inbox', { method: 'POST', headers: { origin: CURATOR_ORIGIN, 'next-action': ACTION_ID } }))).toBe(true);
+        expect(passes(await send('/curation/inbox', { method: 'POST', headers: { origin: CURATOR_ORIGIN, 'next-action': ACTION_ID, cookie: signedIn } }))).toBe(true);
     });
 
     it('503s every curator request while the bind is wrong', async () => {
@@ -145,6 +162,107 @@ describe('proxy.ts with CURATION_ENABLED=true', () => {
     it('503s every path while the bind is wrong', async () => {
         vi.stubEnv('HOSTNAME', '0.0.0.0');
         expect((await send('/api/health')).status).toBe(503);
+    });
+});
+
+describe('proxy.ts and the curator session', () => {
+    beforeEach(() => {
+        vi.stubEnv('CURATION_ENABLED', 'true');
+    });
+
+    const anonymous: [string, Record<string, string>][] = [
+        ['no cookie', {}],
+        ['an empty cookie', { cookie: `${SESSION_COOKIE}=` }],
+        ['a made-up cookie', { cookie: `${SESSION_COOKIE}=${'A'.repeat(43)}.${'B'.repeat(43)}` }],
+    ];
+
+    it.each(anonymous)('sends a page request with %s to the login page, with the curator headers', async (_, headers) => {
+        for (const pathname of ['/curation', '/curation/inbox', '/Curation', '/curation/login/', '/curation/Login', '/curation/%6cogin']) {
+            for (const method of ['GET', 'HEAD']) {
+                const response = await send(pathname, { method, headers });
+                expect(response.status, `${method} ${pathname}`).toBe(307);
+                expect(response.headers.get('location')).toBe('/curation/login');
+                expectCuratorHeaders(response);
+            }
+        }
+    });
+
+    it.each(anonymous)('401s an RSC request, a route handler, /api/curation/media and a server action with %s', async (_, headers) => {
+        const cases: [string, string, Record<string, string>][] = [
+            ['GET', '/curation', { rsc: '1' }],
+            ['GET', '/curation/inbox', { 'next-router-prefetch': '1', rsc: '1' }],
+            ['GET', '/curation/inbox', { 'next-router-state-tree': '%5B%5D' }],
+            ['GET', '/api/curation/events', {}],
+            ['GET', '/api/curation/media/ph_x/sha256-x/p_x/w800.webp', {}],
+            ['HEAD', '/api/curation/media/ph_x/sha256-x/p_x/w800.webp', {}],
+            ['POST', '/api/curation/logout', { origin: CURATOR_ORIGIN }],
+            ['POST', '/curation/inbox', { origin: CURATOR_ORIGIN, 'next-action': ACTION_ID }],
+            // An action ID posted to the login page needs a session like any other.
+            ['POST', '/curation/login', { origin: CURATOR_ORIGIN, 'next-action': ACTION_ID }],
+            ['GET', '/curation/login', { 'next-action': ACTION_ID, origin: CURATOR_ORIGIN }],
+            ['DELETE', '/api/curation/login', { origin: CURATOR_ORIGIN }],
+            ['POST', '/api/curation/login', { origin: CURATOR_ORIGIN, 'next-action': ACTION_ID }],
+        ];
+        for (const [method, pathname, extra] of cases) {
+            const response = await send(pathname, { method, headers: { ...headers, ...extra } });
+            expect(response.status, `${method} ${pathname} ${JSON.stringify(extra)}`).toBe(401);
+            expectCuratorHeaders(response);
+        }
+    });
+
+    it('lets the login page and its form through without a session, and nothing else', async () => {
+        expect(passes(await send('/curation/login'))).toBe(true);
+        expect(passes(await send('/curation/login', { method: 'HEAD' }))).toBe(true);
+        expect(passes(await send('/curation/login', { headers: { rsc: '1' } }))).toBe(true);
+        expect(passes(await send('/api/curation/login', { method: 'POST', headers: { origin: CURATOR_ORIGIN } }))).toBe(true);
+        // The form still needs its Origin, and the page its Host.
+        expect((await send('/api/curation/login', { method: 'POST' })).status).toBe(403);
+        expect((await send('/api/curation/login', { method: 'POST', headers: { origin: 'https://attacker.example' } })).status).toBe(403);
+        expect((await send('/curation/login', { headers: { host: 'rebound.example:3001' } })).status).toBe(421);
+        expect((await send('/api/curation/login')).status).toBe(401);
+    });
+
+    it('passes a page, a handler and an action with a live session', async () => {
+        expect(passes(await send('/curation', { headers: { cookie: signedIn } }))).toBe(true);
+        expect(passes(await send('/curation', { headers: { cookie: signedIn, rsc: '1' } }))).toBe(true);
+        expect(passes(await send('/api/curation/media/ph_x/sha256-x/p_x/w800.webp', { headers: { cookie: signedIn } }))).toBe(true);
+        expect(passes(await send('/api/curation/logout', { method: 'POST', headers: { cookie: signedIn, origin: CURATOR_ORIGIN } }))).toBe(true);
+    });
+
+    it('refuses a cookie once its session ends, replayed or not', async () => {
+        const id = createSession();
+        const cookie = `${SESSION_COOKIE}=${signSessionId(id, secrets.sessionKey)}`;
+        expect(passes(await send('/curation', { headers: { cookie } }))).toBe(true);
+        deleteSession(id);
+        expect((await send('/curation', { headers: { cookie } })).status).toBe(307);
+        expect((await send('/api/curation/events', { headers: { cookie } })).status).toBe(401);
+    });
+
+    it('refuses a cookie past its 12 hours', async () => {
+        const cookie = secrets.cookie(Date.now() - 12 * 3600_000 - 1);
+        expect((await send('/curation', { headers: { cookie } })).status).toBe(307);
+        expect((await send('/api/curation/events', { headers: { cookie } })).status).toBe(401);
+    });
+
+    it('refuses a cookie signed under another secret', async () => {
+        const cookie = `${SESSION_COOKIE}=${signSessionId(createSession(), Buffer.alloc(32, 7))}`;
+        expect((await send('/api/curation/events', { headers: { cookie } })).status).toBe(401);
+    });
+
+    it('checks Host and Origin before the session, so a cross-site post without one is a 403, not a 401', async () => {
+        expect((await send('/curation/inbox', { method: 'POST', headers: { 'next-action': ACTION_ID } })).status).toBe(403);
+        expect((await send('/curation', { headers: { host: 'rebound.example:3001' } })).status).toBe(421);
+    });
+
+    it('503s every path, the login page and the public ones too, while a secret file is missing', async () => {
+        vi.stubEnv('CURATOR_SESSION_SECRET_FILE', `${secrets.dir}/missing.key`);
+        for (const pathname of ['/curation', '/curation/login', '/api/curation/login', '/api/curation/media/x', '/', '/api/health']) {
+            const response = await send(pathname, { headers: { cookie: signedIn } });
+            expect(response.status, pathname).toBe(503);
+        }
+        expect((await send('/api/curation/login', { method: 'POST', headers: { origin: CURATOR_ORIGIN } })).status).toBe(503);
+        vi.stubEnv('CURATION_ENABLED', 'false');
+        expect((await send('/curation')).status).toBe(404);
     });
 });
 

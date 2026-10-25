@@ -34,9 +34,10 @@
   margin-top: 2rem;
 }
 
-/* Every action, link or button, gets the same plain treatment. */
+/* Every action, link or button, gets the same plain treatment. A button in a form of its own counts too. */
 .actions > a,
-.actions > button {
+.actions > button,
+.actions > form > button {
   display: inline-flex;
   align-items: center;
   min-height: 44px;
@@ -53,7 +54,9 @@
   transition: background-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
 }
 
-.actions > :first-child {
+.actions > a:first-child,
+.actions > button:first-child,
+.actions > form:first-child > button {
   border-color: var(--gah-action);
   background: var(--gah-action);
   color: var(--gah-action-ink);
@@ -61,12 +64,15 @@
 
 @media (hover: hover) and (pointer: fine) {
   .actions > a:hover,
-  .actions > button:hover {
+  .actions > button:hover,
+  .actions > form > button:hover {
     background: var(--gah-surface);
     color: var(--gah-ink);
   }
 
-  .actions > :first-child:hover {
+  .actions > a:first-child:hover,
+  .actions > button:first-child:hover,
+  .actions > form:first-child > button:hover {
     background: var(--gah-ink);
     color: var(--gah-action-ink);
   }

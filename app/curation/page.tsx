@@ -14,8 +14,15 @@ export const metadata: Metadata = { title: 'Curation', robots: { index: false, f
 export default async function CurationPage() {
   await requireCurator({ read: true });
   return (
-    <StatusPage heading="Curation" actions={null}>
-      The curator is on. The inbox isn&apos;t built yet.
+    <StatusPage
+      heading="Curation"
+      actions={
+        <form method="post" action="/api/curation/logout">
+          <button type="submit">Sign out</button>
+        </form>
+      }
+    >
+      The curator is on, and you&apos;re signed in. The inbox isn&apos;t built yet.
     </StatusPage>
   );
 }
