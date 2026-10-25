@@ -5,6 +5,7 @@ import { Save } from 'lucide-react';
 import styles from '../curator.module.css';
 import { approveItem, deferItem, dismissItem, editItem, reopenItem, retryItem } from './actions';
 import {
+    defaultDescription,
     defaultPlacement,
     defaultSeries,
     IDLE,
@@ -88,7 +89,8 @@ function SuggestionFields({ detail, series, seriesProblem }: Pick<ItemActionsPro
     const [placement, setPlacement] = useState<string | null>(null);
     const [editor, setEditor] = useState(false);
     const placementShown = placement ?? initialPlacement;
-    const saved = detail.edits?.description;
+    // A saved edit, or for a reopened item what its photo record already holds, so a clear can withdraw either.
+    const saved = defaultDescription(detail);
     const [description, setDescription] = useState(saved?.kind === 'described' ? saved.text : '');
     const [decorative, setDecorative] = useState(saved?.kind === 'decorative');
 
@@ -251,7 +253,7 @@ export default function ItemActions({ detail, activeRevisionId, series, seriesPr
     const anyItemAction = can.edit || can.defer || can.approve;
     return (
         <>
-            <form onSubmit={submit} aria-label="Review">
+            <form method="post" onSubmit={submit} aria-label="Review">
                 <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
                 {/* The form version the page showed, so a form left open across a refresh never reads as another item's. */}
                 {detail.type === 'new' && can.edit ? <SuggestionFields key={detail.version} detail={detail} series={series} seriesProblem={seriesProblem} /> : null}
@@ -289,7 +291,7 @@ export default function ItemActions({ detail, activeRevisionId, series, seriesPr
             </form>
 
             {can.retry ? (
-                <form onSubmit={submit} className={styles.actions}>
+                <form method="post" onSubmit={submit} className={styles.actions}>
                     <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
                     <button type="submit" name="intent" value="retry" className={styles.button} disabled={pending}>
                         Retry processing
@@ -298,7 +300,7 @@ export default function ItemActions({ detail, activeRevisionId, series, seriesPr
             ) : null}
 
             {can.reopen ? (
-                <form onSubmit={submit} className={styles.actions}>
+                <form method="post" onSubmit={submit} className={styles.actions}>
                     <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
                     <button type="submit" name="intent" value="reopen" className={styles.button} disabled={pending}>
                         Reopen
@@ -309,7 +311,7 @@ export default function ItemActions({ detail, activeRevisionId, series, seriesPr
             {can.dismiss ? (
                 <details className={styles.more}>
                     <summary>Dismiss with a reason</summary>
-                    <form onSubmit={submit}>
+                    <form method="post" onSubmit={submit}>
                         <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
                         <label className={styles.label}>
                             Reason

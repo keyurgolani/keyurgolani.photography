@@ -1,4 +1,4 @@
-import { readActivePointer, readAuthoredSeries } from '../catalog/working-layer';
+import { readActivePointer, readAuthoredRecord, readAuthoredSeries } from '../catalog/working-layer';
 import { currentProfileId } from '../identity/profile';
 import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
@@ -129,7 +129,21 @@ function primaryUnavailable(event: CurationEvent): string | null {
         : "Locating, binding, and archiving aren't in the inbox yet. Leave it in draft until they are; the published output stays protected.";
 }
 
-async function detailOf(root: string, event: CurationEvent, item: InboxItem, registry: Registry | null, scrubbed: (text: string) => string): Promise<InboxDetail> {
+/** The photo record and the series holding it, for a photograph an approval already placed. */
+async function placedOf(root: string, event: CurationEvent, series: readonly SeriesOption[]): Promise<InboxDetail['placed']> {
+    if (event.type !== 'new' || event.photoId === null) return null;
+    const photoId = event.photoId;
+    const record = await readAuthoredRecord(root, 'photo', photoId);
+    if (record === null) return null;
+    const alt = record.alt;
+    return {
+        // Only a reviewed description fills the form, since the form sends what it shows as reviewed text.
+        alt: alt === null ? null : alt.kind === 'decorative' ? { kind: 'decorative' } : alt.reviewed ? { kind: 'described', text: alt.text } : null,
+        seriesIds: series.filter((option) => option.members.some((member) => member.photoId === photoId)).map((option) => option.id),
+    };
+}
+
+async function detailOf(root: string, event: CurationEvent, item: InboxItem, registry: Registry | null, scrubbed: (text: string) => string, series: readonly SeriesOption[]): Promise<InboxDetail> {
     const derivatives = derivativeText(event, registry);
     let references: string[] | null = null;
     if (event.photoId !== null) {
@@ -138,7 +152,7 @@ async function detailOf(root: string, event: CurationEvent, item: InboxItem, reg
     } else {
         references = [];
     }
-    const series = event.suggestions.series;
+    const suggestedSeries = event.suggestions.series;
     const placement = event.suggestions.placement;
     return {
         ...item,
@@ -155,7 +169,7 @@ async function detailOf(root: string, event: CurationEvent, item: InboxItem, reg
         candidates: event.derivedFacts.candidates ?? [],
         references,
         suggestions: {
-            series: series ? { value: series.value, confidence: series.confidence, producedBy: series.producedBy, producedAt: series.producedAt, evidence: series.evidence.map((line) => scrubbed(printable(line))) } : null,
+            series: suggestedSeries ? { value: suggestedSeries.value, confidence: suggestedSeries.confidence, producedBy: suggestedSeries.producedBy, producedAt: suggestedSeries.producedAt, evidence: suggestedSeries.evidence.map((line) => scrubbed(printable(line))) } : null,
             placement: placement ? { value: placement.value, confidence: placement.confidence, producedBy: placement.producedBy, producedAt: placement.producedAt, evidence: placement.evidence.map((line) => scrubbed(printable(line))) } : null,
         },
         edits: event.edits
@@ -167,6 +181,7 @@ async function detailOf(root: string, event: CurationEvent, item: InboxItem, reg
                   editedBy: printable(event.edits.editedBy),
               }
             : null,
+        placed: await placedOf(root, event, series),
         decisions: event.decisions.map((decision) => ({ action: decision.action, at: decision.at, by: printable(decision.by), detail: decisionDetail(decision) })),
         reviewedAt: event.reviewedAt,
         reviewedBy: event.reviewedBy === null ? null : printable(event.reviewedBy),
@@ -222,7 +237,7 @@ export async function loadInbox(selectedId: string | null): Promise<InboxView> {
         problems: problems.map((entry) => ({ id: entry.id, message: scrubbed(printable(`${entry.reason}: ${entry.message}`)) })),
         series,
         seriesProblem: problem,
-        selected: event && chosen ? await detailOf(root, event, chosen, registry, scrubbed) : null,
+        selected: event && chosen ? await detailOf(root, event, chosen, registry, scrubbed, series) : null,
         missingSelection: selectedId !== null && chosen === null ? (wanted ?? 'that item') : null,
     };
 }

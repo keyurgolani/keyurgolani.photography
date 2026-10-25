@@ -22,13 +22,14 @@ export const INBOX_SERIES = { published: { id: 'ser_e2e-inbox-harbor', slug: 'in
 export const PUBLISHED_IDS = [id(1), id(2)] as const;
 export const DRAFT_ID = id(3);
 /** New photographs, one per case: approve, moved behind the page's back, a cleared decorative flag, a refused answer, and "Leave unassigned". */
-export const FRESH = { approve: id(21), stale: id(22), decorative: id(23), refused: id(24), unassigned: id(25) } as const;
+export const FRESH = { approve: id(21), stale: id(22), decorative: id(23), refused: id(24), unassigned: id(25), reopen: id(26) } as const;
 export const FRESH_SOURCES: Record<string, string> = {
     [FRESH.approve]: 'inbox/arrival-approve.jpg',
     [FRESH.stale]: 'inbox/arrival-stale.jpg',
     [FRESH.decorative]: 'inbox/arrival-decorative.jpg',
     [FRESH.refused]: 'inbox/arrival-refused.jpg',
     [FRESH.unassigned]: 'inbox/arrival-unassigned.jpg',
+    [FRESH.reopen]: 'inbox/arrival-reopen.jpg',
 };
 export const FAILED_SOURCE = 'inbox/raw-frame.heic';
 
@@ -104,6 +105,7 @@ export async function openInboxItems(fixture: InboxFixture): Promise<void> {
         fact(fixture, 'new', FRESH.decorative, { observedAt: '2026-02-01T00:01:10.000Z' }),
         fact(fixture, 'new', FRESH.refused, { observedAt: '2026-02-01T00:01:20.000Z' }),
         fact(fixture, 'new', FRESH.unassigned, { observedAt: '2026-02-01T00:01:30.000Z' }),
+        fact(fixture, 'new', FRESH.reopen, { observedAt: '2026-02-01T00:01:40.000Z' }),
         fact(fixture, 'missing', PUBLISHED_IDS[1], { observedAt: '2026-02-01T00:02:00.000Z' }),
         fact(fixture, 'processing-failed', null, { reason: 'unsupported-format', observedAt: '2026-02-01T00:03:00.000Z' }),
     ]);
