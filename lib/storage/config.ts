@@ -127,6 +127,15 @@ function linkProblem(root: string, stat: fs.Stats): string | null {
     }
 }
 
+/**
+ * Why a read failed, by its error code. A system error's message names the
+ * full path, and these details reach every command's output and the logs.
+ */
+function failure(error: unknown): string {
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    return typeof code === 'string' ? code : 'an unexpected error';
+}
+
 type MarkerCheck = { kind: 'valid' } | { kind: 'absent' | 'invalid'; detail: string } | { kind: 'future' | 'unreadable'; detail: string };
 
 function checkMarker(root: string): MarkerCheck {
@@ -136,7 +145,7 @@ function checkMarker(root: string): MarkerCheck {
         text = fs.readFileSync(file, 'utf8');
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT')) return { kind: 'absent', detail: `${DATA_ROOT_FILE} is missing` };
-        return { kind: 'unreadable', detail: `${DATA_ROOT_FILE} can't be read: ${(error as Error).message}` };
+        return { kind: 'unreadable', detail: `${DATA_ROOT_FILE} can't be read (${failure(error)})` };
     }
     let marker: unknown;
     try {
@@ -183,7 +192,7 @@ export function dataRootStatus(
         stat = fs.statSync(/*turbopackIgnore: true*/ root);
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return { state: 'unavailable', root, cause: 'missing', detail: 'it does not exist' };
-        return { state: 'unavailable', root, cause: 'not-readable', detail: `it can't be read: ${(error as Error).message}` };
+        return { state: 'unavailable', root, cause: 'not-readable', detail: `it can't be read (${failure(error)})` };
     }
     if (!stat.isDirectory()) return { state: 'unavailable', root, cause: 'not-a-directory', detail: 'it is not a directory' };
 

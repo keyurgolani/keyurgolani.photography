@@ -172,6 +172,19 @@ describe('dataRootState', () => {
     it.skipIf(isRoot)('is unavailable when data-root.json exists but cannot be read', () => {
         const data = tempDataRoot();
         fs.chmodSync(data.file(DATA_ROOT_FILE), 0o000);
-        expect(dataRootStatus()).toMatchObject({ state: 'unavailable', cause: 'marker-unreadable' });
+        const status = dataRootStatus();
+        expect(status).toMatchObject({ state: 'unavailable', cause: 'marker-unreadable', detail: `${DATA_ROOT_FILE} can't be read (EACCES)` });
+        expect(status.detail).not.toContain(data.root);
+    });
+
+    it('names a data root it can\'t stat by the error code, not by a message that carries its path', () => {
+        // A symlink to itself: stat fails with ELOOP, even as root.
+        const data = tempDataRoot();
+        const loop = data.file('loop');
+        fs.symlinkSync(loop, loop);
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', loop);
+        const status = dataRootStatus();
+        expect(status).toMatchObject({ state: 'unavailable', cause: 'not-readable', detail: 'it can\'t be read (ELOOP)' });
+        expect(status.detail).not.toContain(data.root);
     });
 });
