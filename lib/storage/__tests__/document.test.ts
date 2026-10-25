@@ -18,6 +18,7 @@ import {
     StaleVersionError,
     UnsupportedSchemaError,
     versionFile,
+    versionText,
     writeVersionedDocument,
 } from '../document';
 
@@ -273,6 +274,46 @@ describe('pruneVersions', () => {
         expect(names()).toEqual(['.v5.77.bbbb.tmp', 'notes.txt', 'v3.json', 'v4.json']);
         expect(await pruneVersions(dir, { keep: 1 })).toEqual(['v3.json']);
         await expect(pruneVersions(dir, { keep: 0 })).rejects.toThrow(RangeError);
+    });
+
+    it('fails a writer whose temp it swept, and lets a new writer and a reader work, while paused before deleting versions', async () => {
+        const hold = { keep: 10 };
+        await writeVersionedDocument(dir, counter(1), 0, hold);
+        // A writer passed its listing at version 1 and waits to link v2.json.
+        let paused!: () => void;
+        let resume!: () => void;
+        const stalled = new Promise<void>((resolve) => { paused = resolve; });
+        const old = writeVersionedDocument(dir, counter(99), 1, {
+            ...hold,
+            hooks: { beforeLink: () => new Promise<void>((resolve) => { resume = resolve; paused(); }) },
+        });
+        await stalled;
+        // Others commit 2 and 3 without a prune of their own, so the old writer's temp is still there for this one.
+        for (const version of [2, 3]) fs.writeFileSync(versionFile(dir, version), versionText(counter(version), version));
+        expect(temps()).toHaveLength(1);
+
+        let gap = false;
+        const removed = await pruneVersions(dir, {
+            keep: 1,
+            hooks: {
+                async afterSweep() {
+                    gap = true;
+                    expect(await readVersionedDocument(dir)).toMatchObject({ version: 3, value: { count: 3 } });
+                    // Its temp is swept, so it can't link v2.json, whether or not that version is deleted yet.
+                    resume();
+                    await expect(old).rejects.toMatchObject({ name: 'StaleVersionError', expected: 1 });
+                    expect(names()).toEqual(['v1.json', 'v2.json', 'v3.json']);
+                    // A writer that read version 3 commits 4, which is above the newest this prune listed.
+                    await expect(writeVersionedDocument(dir, counter(4), 3, hold)).resolves.toMatchObject({ version: 4 });
+                    expect(await readVersionedDocument(dir)).toMatchObject({ version: 4, value: { count: 4 } });
+                },
+            },
+        });
+        expect(gap).toBe(true);
+        // It deletes only below the newest it listed, so version 3 stays, and the old writer's v2.json is never linked again.
+        expect(removed).toEqual([expect.stringMatching(/^\.v2\./), 'v2.json', 'v1.json']);
+        expect(names()).toEqual(['v3.json', 'v4.json']);
+        expect(await readVersionedDocument(dir)).toMatchObject({ version: 4, value: { count: 4 } });
     });
 });
 
