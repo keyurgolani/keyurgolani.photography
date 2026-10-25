@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import HeroReveal from '@/components/HeroReveal';
 import { usePrefersReducedMotion } from '@/components/motion/usePrefersReducedMotion';
 import LoadingState from '@/components/site/LoadingState';
@@ -13,11 +13,13 @@ import HomeChromeController, { HomeChrome, HomeVignette } from './HomeChromeCont
 import HomeSequenceControls from './HomeSequenceControls';
 import { useHomeChrome } from './useHomeChrome';
 import { useHomePlayback } from './useHomePlayback';
+import { useHomeRecords } from './useHomeRecords';
 import { usePlaybackHolds } from './usePlaybackHolds';
 import styles from './CatalogHome.module.css';
 
 /**
- * Home after the cutover, from one revision's PublishedHome and nothing
+ * Home after the cutover, from one revision's PublishedHome and the later
+ * records useHomeRecords() asks that same revision for (#6), and nothing
  * else: no /api/photos, no legacy photo list, no shuffle. The featured
  * series plays in its authored order from its opening photograph inside
  * #18's chrome, with #2's playback as the only timer. Nothing featured is
@@ -37,7 +39,7 @@ export default function CatalogHome({ home }: { home: PublishedHome }) {
   return (
     <HomeChromeController initialLoading={!introCompleted} initialIntro={introCompleted ? 'settled' : 'loading'}>
       {/* A new revision starts over on its own opening photograph, so no screen mixes two revisions. */}
-      <FeaturedHome key={home.catalogRevision} series={series} />
+      <FeaturedHome key={home.catalogRevision} revisionId={home.catalogRevision} series={series} />
     </HomeChromeController>
   );
 }
@@ -70,7 +72,7 @@ const withoutId = (set: ReadonlySet<string>, id: string) => {
   return next;
 };
 
-function FeaturedHome({ series }: { series: HomeSeries }) {
+function FeaturedHome({ revisionId, series }: { revisionId: string; series: HomeSeries }) {
   const { reportPhoto, reportIntro, loading } = useHomeChrome();
   const reducedMotion = usePrefersReducedMotion();
   const [isSettled, setIsSettled] = useState(hasCompletedHomeHeroIntro);
@@ -78,15 +80,18 @@ function FeaturedHome({ series }: { series: HomeSeries }) {
   const [failed, setFailed] = useState<ReadonlySet<string>>(new Set());
   const [attempts, setAttempts] = useState<Readonly<Record<string, number>>>({});
 
-  const photoIds = useMemo(() => series.photos.map((photo) => photo.id), [series]);
-  const photos = useMemo(() => new Map(series.photos.map((photo) => [photo.id, photo] as const)), [series]);
+  const photoIds = series.photoIds;
   const opening = Math.max(0, photoIds.indexOf(series.openingPhotoId));
   const playback = useHomePlayback({ photoIds, ready: shown && isSettled, initialIndex: opening });
   const pointerHandlers = usePlaybackHolds(playback.setHold);
+  // The server sent three records; the rest arrive as Home moves, from the revision it rendered (#6).
+  const { records: photos, failed: recordFailed, retry: retryRecord } = useHomeRecords({ revisionId, photoIds, initial: series.records, index: playback.index });
 
   const currentId = photoIds[playback.index];
   const current = currentId === undefined ? undefined : photos.get(currentId);
-  const currentFailed = currentId !== undefined && (failed.has(currentId) || !current?.image);
+  // A record still on its way isn't a failure: the photograph before it stays on screen meanwhile.
+  const currentRecordFailed = currentId !== undefined && recordFailed.has(currentId);
+  const currentFailed = currentId !== undefined && (failed.has(currentId) || currentRecordFailed || current?.image === null);
 
   // The first photograph on screen ends loading, marks the intro done for the tab, and releases any no-photo hold.
   const handleImageReady = useCallback(
@@ -111,9 +116,13 @@ function FeaturedHome({ series }: { series: HomeSeries }) {
 
   const retry = useCallback(() => {
     if (currentId === undefined) return;
+    if (currentRecordFailed) {
+      retryRecord(currentId);
+      return;
+    }
     setAttempts((current) => ({ ...current, [currentId]: (current[currentId] ?? 0) + 1 }));
     setFailed((set) => withoutId(set, currentId));
-  }, [currentId]);
+  }, [currentId, currentRecordFailed, retryRecord]);
 
   const handleSettled = useCallback(() => setIsSettled(true), []);
   const count = photoIds.length;
@@ -167,7 +176,7 @@ function FeaturedHome({ series }: { series: HomeSeries }) {
             </div>
             {currentFailed && (
               <div className={styles.failureActions}>
-                {current?.image && (
+                {(current?.image || currentRecordFailed) && (
                   <button type="button" className={styles.action} onClick={retry}>
                     Retry
                   </button>

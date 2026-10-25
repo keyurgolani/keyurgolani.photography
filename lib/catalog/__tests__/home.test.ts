@@ -2,7 +2,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../../identity/variants';
 import { mediaUrl } from '../../media/url';
-import { homeRouteOf, publishedHomeOf, type HomeActiveCatalog, type HomeSeries, type HomeSource, type PublishedHome } from '../projections/home';
+import { homePhotosFrom, homePhotosOf, homeRouteOf, publishedHomeOf, type HomeActiveCatalog, type HomePhoto, type HomeSeries, type HomeSource, type PublishedHome } from '../projections/home';
 import { publish } from '../publish';
 import { createCatalogReader, createRouteBuilder } from '../reader';
 import { createTestCatalog, type TestCatalog } from '../testing';
@@ -126,6 +126,26 @@ function featured(home: PublishedHome): HomeSeries {
     return home.featuredSeries;
 }
 
+/**
+ * Every record Home can show for `from`, in authored order: the server's
+ * window, then what homePhotosOf() gives around each later photograph (#6),
+ * so the field checks below cover every record whichever way it ships.
+ */
+function everyRecord(from: CandidateContent = content(), revisionId = REVISION_A): HomePhoto[] {
+    const series = featured(homeOf(from, revisionId));
+    const byId = new Map(series.records.map((record) => [record.id, record] as const));
+    for (const photoId of series.photoIds) {
+        const result = homePhotosOf(source(from, revisionId), photoId);
+        if (result.kind !== 'ok') throw new Error(`Expected a window around ${photoId}, got ${result.kind}`);
+        for (const record of result.window.photos) if (!byId.has(record.id)) byId.set(record.id, record);
+    }
+    return series.photoIds.map((photoId) => {
+        const record = byId.get(photoId);
+        if (!record) throw new Error(`No record for ${photoId}`);
+        return record;
+    });
+}
+
 /** The photo's ladder as Home ships it: each file's `url` and `width` (#6). */
 function ladder(photoId: string) {
     const photo = catalog.content.photos.find((record) => record.id === photoId);
@@ -143,7 +163,7 @@ describe('order', () => {
         // File names never reach a revision at all.
         expect(JSON.stringify(held)).not.toMatch(/e-last\.jpg|SENTINEL-source/);
 
-        expect(featured(homeOf(held)).photos.map((photo) => photo.id)).toEqual(ORDER_A);
+        expect(featured(homeOf(held)).photoIds).toEqual(ORDER_A);
     });
 
     it('gives the same sequence and opening photograph every time for one revision', () => {
@@ -157,13 +177,13 @@ describe('order', () => {
         const held = content();
         held.photos.reverse();
         for (const [n, photo] of held.photos.entries()) photo.capturedAt = `2030-01-${String(n + 1).padStart(2, '0')}`;
-        expect(featured(homeOf(held)).photos.map((photo) => photo.id)).toEqual(ORDER_A);
+        expect(featured(homeOf(held)).photoIds).toEqual(ORDER_A);
     });
 
     it('opens on the authored opening photograph, keeping the authored order around it', () => {
         const series = featured(homeOf());
         expect(series.openingPhotoId).toBe(P[3]);
-        expect(series.photos.map((photo) => photo.id)).toEqual(ORDER_A);
+        expect(series.photoIds).toEqual(ORDER_A);
     });
 
     it('opens on the first photograph when no opening is stored, or the stored one doesn\'t resolve, and gives it the LQIP', () => {
@@ -182,15 +202,15 @@ describe('order', () => {
             expect(series.openingPhotoId, name).toBe(P[4]);
             const lqip = held.photos.find((photo) => photo.id === P[4])?.lqip;
             expect(lqip, name).toMatch(/^data:image\/webp;base64,/);
-            expect(series.photos[0].image?.lqip, name).toBe(lqip);
-            expect(series.photos.slice(1).filter((photo) => photo.image !== null && 'lqip' in photo.image), name).toEqual([]);
+            expect(series.records.find((photo) => photo.id === series.openingPhotoId)?.image?.lqip, name).toBe(lqip);
+            expect(everyRecord(held).filter((photo) => photo.id !== P[4] && photo.image !== null && 'lqip' in photo.image), name).toEqual([]);
         }
     });
 
     it('skips members that resolve to nothing, as the series page counts them', () => {
         const held = content();
         held.series[1].photoIds = [P[9], ...ORDER_A.slice(0, 2), P[7]];
-        expect(featured(homeOf(held)).photos.map((photo) => photo.id)).toEqual(ORDER_A.slice(0, 2));
+        expect(featured(homeOf(held)).photoIds).toEqual(ORDER_A.slice(0, 2));
     });
 });
 
@@ -206,7 +226,7 @@ describe('the featured series', () => {
         held.site.featuredSeriesIds = ['ser_fixture-draft', 'ser_fixture-hidden', 'ser_fixture-b', 'ser_fixture-a'];
         const series = featured(homeOf(held));
         expect(series.id).toBe('ser_fixture-b');
-        expect(series.photos.map((photo) => photo.id)).toEqual([P[5], P[6]]);
+        expect(series.photoIds).toEqual([P[5], P[6]]);
     });
 
     it('holds nothing unpublished or unfeatured', () => {
@@ -234,9 +254,11 @@ describe('the featured series', () => {
 describe('the Home projection', () => {
     it('returns only the approved fields', () => {
         const series = featured(homeOf());
-        expect(Object.keys(series).sort()).toEqual(['href', 'id', 'openingPhotoId', 'photos', 'shortStatement', 'slug', 'title']);
-        for (const photo of series.photos) {
+        expect(Object.keys(series).sort()).toEqual(['href', 'id', 'openingPhotoId', 'photoIds', 'records', 'shortStatement', 'slug', 'title']);
+        for (const photo of [...series.records, ...everyRecord()]) {
             expect(Object.keys(photo).sort()).toEqual(['alt', 'focalPoint', 'id', 'image']);
+        }
+        for (const photo of series.records) {
             expect(Object.keys(photo.image ?? {}).sort()).toEqual(photo.id === series.openingPhotoId ? ['height', 'lqip', 'variants', 'width'] : ['height', 'variants', 'width']);
         }
         const serialized = JSON.stringify(series);
@@ -246,7 +268,7 @@ describe('the Home projection', () => {
 
     it('takes the alt from the alt union: described text, else empty', () => {
         const held = content();
-        const byId = new Map(featured(homeOf(held)).photos.map((photo) => [photo.id, photo.alt]));
+        const byId = new Map(everyRecord(held).map((photo) => [photo.id, photo.alt]));
         const described = held.photos.find((photo) => photo.id === P[0])?.alt;
         expect(described?.kind).toBe('described');
         expect(byId.get(P[0])).toBe(described?.kind === 'described' ? described.text : null);
@@ -260,13 +282,13 @@ describe('the Home projection', () => {
         if (!pending || !blank) throw new Error('Missing fixture photos');
         pending.alt = { kind: 'pending' };
         blank.alt = { kind: 'described', text: '   ' };
-        const byId = new Map(featured(homeOf(draft)).photos.map((photo) => [photo.id, photo.alt]));
+        const byId = new Map(everyRecord(draft).map((photo) => [photo.id, photo.alt]));
         expect([byId.get(P[0]), byId.get(P[2])]).toEqual(['', '']);
     });
 
     it('gives each photograph its #10 set, oriented, and the LQIP only to the opening one', () => {
         const held = content();
-        for (const photo of featured(homeOf(held)).photos) {
+        for (const photo of everyRecord(held)) {
             const record = held.photos.find((entry) => entry.id === photo.id);
             expect(photo.image).toEqual({ width: record?.width, height: record?.height, variants: ladder(photo.id), ...(photo.id === P[3] ? { lqip: record?.lqip } : {}) });
             for (const width of VARIANT_WIDTHS) for (const format of VARIANT_FORMATS) expect(photo.image?.variants[width][format].url).toMatch(new RegExp(`^/media/${photo.id}/`));
@@ -275,14 +297,13 @@ describe('the Home projection', () => {
 
     it('copies the set and focal point, so a caller can\'t edit the revision through them', () => {
         const held = content();
-        const series = featured(homeOf(held));
-        const first = series.photos[0];
+        const first = everyRecord(held)[0];
         if (!first.image) throw new Error('Expected an image');
         first.image.variants.w400.webp.url = '/elsewhere.webp';
         first.focalPoint.x = 0;
         expect(held.photos.find((photo) => photo.id === P[4])?.variants.w400.webp.url).not.toBe('/elsewhere.webp');
         expect(held.photos.find((photo) => photo.id === P[4])?.focalPoint).toEqual({ x: 0.2, y: 0.8 });
-        expect(featured(homeOf(held)).photos[0].image?.variants.w400.webp.url).not.toBe('/elsewhere.webp');
+        expect(everyRecord(held)[0].image?.variants.w400.webp.url).not.toBe('/elsewhere.webp');
     });
 
     it('takes the authored focal point, else the center', () => {
@@ -290,7 +311,7 @@ describe('the Home projection', () => {
         const bad = held.photos.find((photo) => photo.id === P[0]);
         if (!bad) throw new Error('Missing fixture photo');
         (bad as { focalPoint: unknown }).focalPoint = { x: 2, y: 0.5 };
-        const byId = new Map(featured(homeOf(held)).photos.map((photo) => [photo.id, photo.focalPoint]));
+        const byId = new Map(everyRecord(held).map((photo) => [photo.id, photo.focalPoint]));
         expect(byId.get(P[4])).toEqual({ x: 0.2, y: 0.8 });
         expect(byId.get(P[1])).toEqual({ x: 0.5, y: 0.5 });
         expect(byId.get(P[0])).toEqual({ x: 0.5, y: 0.5 });
@@ -302,7 +323,7 @@ describe('the Home projection', () => {
             const target = held.photos.find((photo) => photo.id === P[0]);
             if (!target) throw new Error('Missing fixture photo');
             (target as { focalPoint: unknown }).focalPoint = value;
-            const photos = featured(homeOf(held)).photos;
+            const photos = everyRecord(held);
             expect(photos.map((photo) => photo.id)).toEqual(ORDER_A);
             expect(photos.find((photo) => photo.id === P[4])?.focalPoint).toEqual({ x: 0.2, y: 0.8 });
             return photos.find((photo) => photo.id === P[0])?.focalPoint;
@@ -345,7 +366,7 @@ describe('the Home projection', () => {
             const target = held.photos.find((photo) => photo.id === P[1]);
             if (!target) throw new Error('Missing fixture photo');
             damage(target);
-            const photos = featured(homeOf(held)).photos;
+            const photos = everyRecord(held);
             expect(photos.map((photo) => photo.id), name).toEqual(ORDER_A);
             expect(photos.find((photo) => photo.id === P[1])?.image, name).toBeNull();
             expect(photos.filter((photo) => photo.image === null), name).toHaveLength(1);
@@ -365,7 +386,7 @@ describe('the Home projection', () => {
             const opening = held.photos.find((photo) => photo.id === P[3]);
             if (!opening) throw new Error('Missing fixture photo');
             opening.lqip = lqip;
-            const image = featured(homeOf(held)).photos.find((photo) => photo.id === P[3])?.image;
+            const image = everyRecord(held).find((photo) => photo.id === P[3])?.image;
             expect(image?.variants, name).toEqual(ladder(P[3]));
             expect(image, name).not.toHaveProperty('lqip');
         }
@@ -414,7 +435,7 @@ describe('the empty state', () => {
         // One photograph is enough, and the count needn't match the members that resolve.
         const one = content();
         one.series[1].derived.photoCount = 1;
-        expect(featured(homeOf(one)).photos.map((photo) => photo.id)).toEqual(ORDER_A);
+        expect(featured(homeOf(one)).photoIds).toEqual(ORDER_A);
     });
 
     it('is a null featured series when its slug is one the series route refuses', () => {
@@ -455,8 +476,8 @@ describe('catalog revision consistency', () => {
 
         const fromA = at(readerA);
         const fromB = at(readerB);
-        expect([fromA.catalogRevision, featured(fromA).title, featured(fromA).openingPhotoId, featured(fromA).photos.map((photo) => photo.id)]).toEqual([REVISION_A, 'Fixture series A', P[3], ORDER_A]);
-        expect([fromB.catalogRevision, featured(fromB).title, featured(fromB).openingPhotoId, featured(fromB).photos.map((photo) => photo.id)]).toEqual([REVISION_B, 'Fixture series A, renamed', P[2], [P[0], P[2], P[3], P[4]]]);
+        expect([fromA.catalogRevision, featured(fromA).title, featured(fromA).openingPhotoId, featured(fromA).photoIds]).toEqual([REVISION_A, 'Fixture series A', P[3], ORDER_A]);
+        expect([fromB.catalogRevision, featured(fromB).title, featured(fromB).openingPhotoId, featured(fromB).photoIds]).toEqual([REVISION_B, 'Fixture series A, renamed', P[2], [P[0], P[2], P[3], P[4]]]);
         // Reading B didn't change what A answers.
         expect(at(readerA)).toEqual(fromA);
     });
@@ -555,7 +576,7 @@ describe('Home on published revisions', { timeout: 60_000 }, () => {
         expect(one.outcome).toBe('PUBLISHED');
         const atOne = await homeAt();
         if (atOne.kind !== 'home') throw new Error(`Expected Home, got ${atOne.kind}`);
-        expect([atOne.home.catalogRevision, featured(atOne.home).photos.map((photo) => photo.id), featured(atOne.home).openingPhotoId]).toEqual([one.revisionId, authored, authored[0]]);
+        expect([atOne.home.catalogRevision, featured(atOne.home).photoIds, featured(atOne.home).openingPhotoId]).toEqual([one.revisionId, authored, authored[0]]);
 
         // A new order in the working layer changes nothing until it's published.
         const record = (await readWorkingLayer(root)).series.find((series) => series.id === published.series[0].id);
@@ -569,6 +590,99 @@ describe('Home on published revisions', { timeout: 60_000 }, () => {
         expect(two.revisionId).not.toBe(one.revisionId);
         const atTwo = await homeAt();
         if (atTwo.kind !== 'home') throw new Error(`Expected Home, got ${atTwo.kind}`);
-        expect([atTwo.home.catalogRevision, featured(atTwo.home).photos.map((photo) => photo.id), featured(atTwo.home).openingPhotoId]).toEqual([two.revisionId, reordered, reordered[1]]);
+        expect([atTwo.home.catalogRevision, featured(atTwo.home).photoIds, featured(atTwo.home).openingPhotoId]).toEqual([two.revisionId, reordered, reordered[1]]);
+    });
+});
+
+describe('the narrowed Home (#6)', () => {
+    const ids = (photos: readonly HomePhoto[]) => photos.map((photo) => photo.id);
+
+    it('ships every ID but records only for the opening photograph and its neighbors', () => {
+        const series = featured(homeOf());
+        expect(series.photoIds).toEqual(ORDER_A);
+        // ORDER_A opens on P[3], third: its neighbors are the second and fourth.
+        expect(ids(series.records)).toEqual([P[1], P[3], P[0]]);
+        const serialized = JSON.stringify(series.records);
+        for (const outside of [P[4], P[2]]) expect(serialized).not.toContain(`"${outside}"`);
+    });
+
+    it('wraps the window around the ends, as Home plays from the last photograph to the first', () => {
+        const first = content();
+        first.series[1].openingPhotoId = P[4];
+        expect(ids(featured(homeOf(first)).records)).toEqual([P[2], P[4], P[1]]);
+        const last = content();
+        last.series[1].openingPhotoId = P[2];
+        expect(ids(featured(homeOf(last)).records)).toEqual([P[0], P[2], P[4]]);
+    });
+
+    it('lists each record once in a one- or two-photograph series', () => {
+        const one = content();
+        one.series[1].photoIds = [P[3]];
+        expect(ids(featured(homeOf(one)).records)).toEqual([P[3]]);
+        const two = content();
+        two.series[1].photoIds = [P[3], P[0]];
+        expect(ids(featured(homeOf(two)).records)).toEqual([P[0], P[3]]);
+    });
+});
+
+describe('homePhotosOf, the window Home asks for as it moves', () => {
+    const window = (photoId: string, from: CandidateContent = content()) => {
+        const result = homePhotosOf(source(from), photoId);
+        if (result.kind !== 'ok') throw new Error(`Expected a window, got ${result.kind}`);
+        return result.window;
+    };
+
+    it('gives the photograph and its neighbors in authored order, wrapping, from the source\'s revision, built as Home builds records', () => {
+        const byId = new Map(everyRecord().map((photo) => [photo.id, photo] as const));
+        const expected = (order: string[]) => order.map((photoId) => ({ ...byId.get(photoId), image: byId.get(photoId)?.image && { ...byId.get(photoId)?.image, lqip: undefined } }));
+        expect(window(P[0]).revisionId).toBe(REVISION_A);
+        expect(window(P[0]).photos.map((photo) => photo.id)).toEqual([P[3], P[0], P[2]]);
+        expect(window(P[4]).photos.map((photo) => photo.id)).toEqual([P[2], P[4], P[1]]);
+        expect(window(P[2]).photos.map((photo) => photo.id)).toEqual([P[0], P[2], P[4]]);
+        expect(JSON.parse(JSON.stringify(window(P[1]).photos))).toEqual(JSON.parse(JSON.stringify(expected([P[4], P[1], P[3]]))));
+    });
+
+    it('never ships an LQIP, the opening photograph\'s included', () => {
+        for (const photoId of ORDER_A) {
+            for (const photo of window(photoId).photos) expect(photo.image === null || !('lqip' in photo.image), photoId).toBe(true);
+        }
+    });
+
+    it('answers not-found for a photo the featured series doesn\'t hold, a malformed ID, or an empty Home', () => {
+        // P[5] is in fixture-b, P[7] in the draft series, P[9] in no series.
+        for (const photoId of [P[5], P[7], P[9], 'ph_x', '', P[0].toUpperCase(), `${P[0]}/..`]) {
+            expect(homePhotosOf(source(), photoId), photoId).toEqual({ kind: 'not-found' });
+        }
+        const empty = content();
+        empty.site.featuredSeriesIds = [];
+        expect(homePhotosOf(source(empty), P[0])).toEqual({ kind: 'not-found' });
+    });
+});
+
+describe('homePhotosFrom, the records endpoint\'s answer', () => {
+    const served = (state: 'ok' | 'degraded' = 'ok'): HomeActiveCatalog => ({ mode: 'catalog', state, reader: createCatalogReader(content(), { revisionId: REVISION_A, revisionNumber: 3 }) });
+
+    it('answers a malformed photo ID not-found and a missing or malformed revision as a bad request, before reading the catalog', async () => {
+        const load = vi.fn(async () => served());
+        expect(await homePhotosFrom(load, 'ph_x', REVISION_A)).toEqual({ kind: 'not-found' });
+        for (const revision of [null, '', 'rev_a', REVISION_A.toUpperCase(), `${REVISION_A} `]) {
+            expect(await homePhotosFrom(load, P[0], revision), String(revision)).toEqual({ kind: 'bad-request' });
+        }
+        expect(load).not.toHaveBeenCalled();
+    });
+
+    it('answers legacy mode not-found and passes an unavailable catalog on', async () => {
+        expect(await homePhotosFrom(async () => ({ mode: 'legacy' }), P[0], REVISION_A)).toEqual({ kind: 'not-found' });
+        expect(await homePhotosFrom(async () => ({ mode: 'catalog', state: 'unavailable', reason: 'active-unreadable' }), P[0], REVISION_A)).toEqual({ kind: 'unavailable', reason: 'active-unreadable' });
+    });
+
+    it('answers revision-changed for any revision but the served one, whatever the photo', async () => {
+        for (const photoId of [P[0], P[5], P[9]]) expect(await homePhotosFrom(async () => served(), photoId, REVISION_B), photoId).toEqual({ kind: 'revision-changed' });
+    });
+
+    it('serves the window from the served revision, ok or degraded', async () => {
+        for (const state of ['ok', 'degraded'] as const) {
+            expect(await homePhotosFrom(async () => served(state), P[0], REVISION_A), state).toEqual(homePhotosOf(source(), P[0]));
+        }
     });
 });
