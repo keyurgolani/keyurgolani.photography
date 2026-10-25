@@ -33,7 +33,7 @@ Every visitor and curator surface follows these rules. #1 added them with the br
 | About, `/about` | `e2e/about.spec.ts` from #1 slice 4, and `e2e/about-links.spec.ts` from #11 | #1 for the subset below, #11 for the links, then #12 for the artist statement |
 | The focus token on `SiteNav`, its theme toggle, and in the lightbox | `e2e/focus-ring.spec.ts` from #1 slice 2, moved onto `SiteNav` by #21 | #1, with #21 for `SiteNav` |
 | Work catalog, `/work` | `e2e/work.spec.ts` from #3, on a published fixture catalog its own server serves | #3 |
-| Series pages | Added by #5 | #5 |
+| Series pages, `/work/<slug>` | `e2e/series.spec.ts` and `e2e/series-return.spec.ts` from #5, the second for Viewer entry from the cover and the sequence and the return to it | #5 |
 | Viewer, `/work/<slug>/photo/<photoId>` | `e2e/viewer.spec.ts` from #7, `e2e/viewer-modal.spec.ts` from #9 | #7, then #9 |
 | Site navigation, `SiteNav` | `e2e/shell/nav.spec.ts` from #21, with `server-html`, `theme`, and `confinement` in `e2e/shell/` | #21, then #18 for its reveal on Home |
 | Curation inbox | Added by #14 | #14 |

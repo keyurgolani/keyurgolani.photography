@@ -331,7 +331,7 @@ test('the page passes the #1 checks, with SiteNav outside main, Work current, an
     await openHarbor(page);
     await checkSurface(page, {
         entries: entries(page),
-        controls: [primary(page).locator('a, button'), page.getByRole('main').getByRole('link', { name: 'All work' })],
+        controls: [primary(page).locator('a, button'), page.locator('#series-cover'), page.getByRole('main').getByRole('link', { name: 'All work' })],
     });
     await expectHoverRulesGated(page);
     await expect(page.locator('main nav')).toHaveCount(0);
@@ -339,19 +339,19 @@ test('the page passes the #1 checks, with SiteNav outside main, Work current, an
     await expect(page.locator('[data-surface]')).toHaveCount(0);
 });
 
-test('Tab reaches the entries right after SiteNav, in order, then All work, and Enter opens the focused photograph\'s Viewer URL', async ({ page }) => {
+test('Tab reaches the cover right after SiteNav, then the entries in order, then All work, and Enter opens the focused photograph\'s Viewer URL', async ({ page }) => {
     await openHarbor(page);
     // The wordmark, Home, Work, About, and the theme toggle come first.
     for (let press = 0; press < 5; press++) await page.keyboard.press('Tab');
     const hrefs: (string | null)[] = [];
-    for (let press = 0; press <= HARBOR.length; press++) {
+    for (let press = 0; press <= HARBOR.length + 1; press++) {
         await page.keyboard.press('Tab');
         hrefs.push(await page.evaluate(() => document.activeElement?.getAttribute('href') ?? null));
     }
-    expect(hrefs).toEqual([...HARBOR.map(viewerPath), '/work']);
+    expect(hrefs).toEqual([viewerPath(P[1]), ...HARBOR.map(viewerPath), '/work']);
     await entry(page, P[0]).focus();
     await page.keyboard.press('Enter');
-    // #7's Viewer page isn't here yet, so the URL is the check.
+    // e2e/series-return.spec.ts covers the Viewer this opens and the return from it.
     await expect(page).toHaveURL(`${origin()}${viewerPath(P[0])}`);
 });
 
