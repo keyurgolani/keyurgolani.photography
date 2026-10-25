@@ -1,6 +1,7 @@
 import { PHOTO_ID_RE } from '../../identity/ids';
 import { TECHNICAL_KEYS, type TechnicalKey } from '../../identity/metadata';
 import { VARIANT_FORMATS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth } from '../../identity/variants';
+import { mediaUrl } from '../../media/url';
 import { sequencePosition } from '../order';
 import type { CatalogContent, CatalogReader } from '../reader';
 import { MAX_SLUG_LENGTH, SLUG_RE } from '../schema';
@@ -156,13 +157,28 @@ function technical(facts: Photo['technical']): Partial<Record<TechnicalKey, stri
     return projected;
 }
 
-/** Field by field, so the Viewer gets only what the ladder names, and a caller can't edit the cached revision through it. */
-function variants(ladder: Photo['variants']): PublishedViewerPhoto['photo']['variants'] {
+/**
+ * The ladder, field by field, when every file is the `/media` URL #10 builds
+ * for this photo's set and declares a positive size, else null. The same
+ * check as #6's ladderOf() on the other screens, copied until that lands;
+ * one shared helper later. Field by field, so the Viewer gets only what the
+ * ladder names and a caller can't edit the cached revision through it.
+ */
+function variants(photo: Photo): PublishedViewerPhoto['photo']['variants'] | null {
+    const stored = photo.variants as Partial<Record<VariantWidth, Partial<Record<VariantFormat, Partial<ViewerVariant>>>>> | undefined;
     const projected = {} as PublishedViewerPhoto['photo']['variants'];
     for (const width of VARIANT_WIDTHS) {
         projected[width] = {} as Record<VariantFormat, ViewerVariant>;
         for (const format of VARIANT_FORMATS) {
-            const file = ladder[width][format];
+            const file = stored?.[width]?.[format];
+            if (!file || !dimension(file.width) || !dimension(file.height) || !dimension(file.bytes)) return null;
+            let expected: string;
+            try {
+                expected = mediaUrl({ photoId: photo.id, assetRevision: photo.assetRevision, profileId: photo.profileId }, width, format);
+            } catch {
+                return null;
+            }
+            if (file.url !== expected) return null;
             projected[width][format] = { url: file.url, width: file.width, height: file.height, bytes: file.bytes };
         }
     }
@@ -172,9 +188,10 @@ function variants(ladder: Photo['variants']): PublishedViewerPhoto['photo']['var
 /**
  * Resolve `/work/<slug>/photo/<photoId>` in one source, in this order:
  * malformed params, an unknown slug, a series ID that appears more than
- * once, a series with no positive published count, an unknown photo, and a
- * photo the series doesn't hold are all not-found, and so is a prior slug
- * whose canonical slug the route would refuse; a prior slug redirects;
+ * once, a series with no positive published count, an unknown photo, a
+ * photo the series doesn't hold, and a photo without positive dimensions or
+ * a ladder of its own `/media` files are all not-found, and so is a prior
+ * slug whose canonical slug the route would refuse; a prior slug redirects;
  * anything else is the projection. The series guards are #5's series page
  * guards, copied, so a photo URL is not-found exactly when its series page
  * is, and #3's Work never links either. Compile never writes a repeated ID
@@ -196,6 +213,11 @@ export function viewerPhotoOf(source: ViewerSource, slug: unknown, photoId: unkn
     // Membership also covers the series page's other guard, a series with no member that resolves.
     const position = sequencePosition({ photoIds: source.photosOf(series.id).map((member) => member.id) }, record.id);
     if (position === null) return NOT_FOUND;
+    // Compile never writes a bad set; a hand-written revision can. The Viewer never points outside the revision's derivatives,
+    // and a prior slug never redirects to a photo that would be not-found.
+    if (!dimension(record.width) || !dimension(record.height)) return NOT_FOUND;
+    const ladder = variants(record);
+    if (ladder === null) return NOT_FOUND;
     if (!hit.canonical) {
         // The series page's rule: a 308 to a canonical slug the route refuses would point at a page that is always not-found.
         if (viewerParams(series.slug, record.id) === null) return NOT_FOUND;
@@ -215,7 +237,7 @@ export function viewerPhotoOf(source: ViewerSource, slug: unknown, photoId: unkn
                 height: record.height,
                 assetRevision: record.assetRevision,
                 ...lqip(record.lqip),
-                variants: variants(record.variants),
+                variants: ladder,
                 accent: accent(record.accent),
                 technical: technical(record.technical),
             },
