@@ -159,9 +159,11 @@
  *     whole run, waiting up to 30 s for each. It never deletes an asset,
  *     a revision, an activation, a record, or anything in edits/. Exits 0
  *     when planned or applied, 1 when a folder it would delete in is a
- *     symlink, 2 on a usage error, 4 when a catalog file is damaged or an
- *     I/O error stops it, and 3 on any other stop, such as a changed plan
- *     or a busy lock. --apply logs one JSON line per path it deletes.
+ *     symlink, isn't a folder, resolves somewhere else, or changes just
+ *     before a delete, 2 on a usage error, 4 when a catalog file is
+ *     damaged or an I/O error stops it, and 3 on any other stop, such as a
+ *     changed plan or a busy lock. --apply logs one JSON line per path it
+ *     deletes.
  *
  * The library is PHOTOGRAPHY_LIBRARY_DIR, or public/assets/photos under the
  * working directory. The data root is PHOTOGRAPHY_DATA_DIR, or portfolio-data
