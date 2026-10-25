@@ -5,6 +5,7 @@ import type { PublicAssetProjection } from '../identity/metadata';
 import { workCatalogOf, type WorkCatalog } from './projections/work';
 import { viewerPhotoOf, type ViewerPhotoResult } from './projections/viewer';
 import { seriesContinuationOf, seriesPageOf, type SeriesContinuationResult, type SeriesPageResult } from './projections/series';
+import { createRouteBuilder, type RouteBuilder } from './routes';
 import type { CandidateContent, RevisionContent, SeriesRecord, SiteRecord } from './types';
 
 /**
@@ -122,28 +123,7 @@ export function toAssetProjection(photo: CatalogContent['photos'][number]): Publ
     };
 }
 
-/** Builds the site's hrefs. Serializable as `{basePath}`, which is '' publicly and a prefix in a preview. */
-export interface RouteBuilder {
-    readonly basePath: string;
-    homeHref(): string;
-    workHref(): string;
-    seriesHref(slug: string): string;
-    photoHref(slug: string, photoId: string): string;
-}
-
-export function createRouteBuilder({ basePath = '' }: { basePath?: string } = {}): RouteBuilder {
-    if (basePath !== '' && !/^\/[^/](?:.*[^/])?$/.test(basePath)) {
-        throw new TypeError(`basePath must be '' or start with one / and not end with one, got ${JSON.stringify(basePath)}`);
-    }
-    const segment = encodeURIComponent;
-    return {
-        basePath,
-        homeHref: () => basePath || '/',
-        workHref: () => `${basePath}/work`,
-        seriesHref: (slug) => `${basePath}/work/${segment(slug)}`,
-        photoHref: (slug, photoId) => `${basePath}/work/${segment(slug)}/photo/${segment(photoId)}`,
-    };
-}
+export { createRouteBuilder, type RouteBuilder } from './routes';
 
 /** The public builder getWorkSummaries() and getSeriesPage() default to. #13's `publicRoutes` is the same. */
 const publicRouteBuilder = createRouteBuilder();
