@@ -276,7 +276,7 @@ async function reopenedApprovalNote(root: string, event: CurationEvent): Promise
 /** #17: what leaving a replacement in draft would do now, from the plan leaveInDraft() acts on, so the two can't disagree. */
 async function draftNote(root: string, event: CurationEvent): Promise<string> {
     try {
-        const plan = await readDraftPlan(root, event, async (photoId) => (await readAuthoredRecord(root, 'photo', photoId))?.assetRevision ?? null);
+        const plan = await readDraftPlan(root, event, (photoId) => readAuthoredRecord(root, 'photo', photoId));
         return draftPlanText(plan, replacedBy(event)) ?? '';
     } catch (error) {
         return `What leaving it in draft (defer) would do can't be told now: ${(error as Error).message.replace(/\.$/, '')}.`;

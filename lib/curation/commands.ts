@@ -2,6 +2,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { references, ReferenceScanError } from '../catalog/references';
 import { REVISION_ID_RE, SERIES_ID_RE } from '../catalog/schema';
+import type { AuthoredPhoto } from '../catalog/types';
 import { readActivePointer, readAuthoredRecord } from '../catalog/working-layer';
 import { isLibraryPath } from '../identity/decisions';
 import { PHOTO_ID_RE } from '../identity/ids';
@@ -435,8 +436,10 @@ async function replacementLines(root: string, event: CurationEvent, registry: Re
     let pinned: string;
     // The revision the record pins, null for no record, undefined when it can't be read.
     let revision: string | null | undefined;
+    let photoRecord: AuthoredPhoto | null = null;
     try {
         const record = await readAuthoredRecord(root, 'photo', event.photoId);
+        photoRecord = record;
         revision = record ? record.assetRevision : null;
         pinned = record ? record.assetRevision : 'nothing yet: the photograph has no photo record in the working layer';
     } catch {
@@ -446,7 +449,7 @@ async function replacementLines(root: string, event: CurationEvent, registry: Re
     let draft: string;
     try {
         if (revision === undefined || registry === null) throw new Error('unreadable');
-        draft = draftPlanText(await readDraftPlan(root, event, async () => revision, registry), replacedBy(event)) ?? '';
+        draft = draftPlanText(await readDraftPlan(root, event, async () => photoRecord, registry), replacedBy(event)) ?? '';
     } catch {
         draft = "What leaving it in draft (defer) would do can't be told now, since the photo record or the registry can't be read.";
     }

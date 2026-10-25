@@ -326,14 +326,17 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         expect((await photoRecord(w)).assetRevision).toBe(w.b);
         expect(await w.event()).toEqual(open);
 
-        // Pins alone can't tell this from a hand edit or a rollback, so leave in draft guesses nothing.
+        // Pins alone can't tell this from a hand edit or a rollback, so leave in draft writes nothing. #16's stamp shows
+        // the lost confirm, so curation show and the defer say to confirm again.
+        const shown = (await runCurationCli(['show', open.id], { dataRoot: w.root }, { PHOTOS_ACTOR: ACTOR })).output;
+        expect(shown).toContain(`the inbox records no confirm of this item, though its review stamp shows one put ${w.p}'s photo record there in place of ${w.a}. Run curation confirm again to record what it replaced, and then defer puts that back.`);
         const authored = treeBytes(path.join(w.root, 'authored'));
         const left = await leave(w, open);
         expect(left).toMatchObject({ ok: true, event: { status: 'deferred' } });
         expect(left.ok && left.event.decisions.at(-1)).toMatchObject({ action: 'defer' });
         expect(left.ok && left.event.decisions.at(-1)).not.toHaveProperty('fromRevision');
         expect(left.ok && left.event.decisions.at(-1)).not.toHaveProperty('writes');
-        expect(left.ok && left.notes.join(' ')).toContain(`already pins ${w.b}, by an edit or rollback this item didn't make, or a confirm of it that was never recorded, so nothing was put back. The inbox last pinned ${w.a}.`);
+        expect(left.ok && left.notes.join(' ')).toContain(`already pins ${w.b}: its review stamp shows a confirm of this item wrote it, in place of ${w.a}, though the inbox never recorded that confirm, so nothing was put back. Run curation confirm again to record what it replaced, and then reopen and defer put ${w.a} back.`);
         expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
     });
 
@@ -477,7 +480,7 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         const authored = treeBytes(path.join(w.root, 'authored'));
         const left = await leave(w, await w.event());
         expect(left).toMatchObject({ ok: true, event: { status: 'deferred' } });
-        expect(left.ok && left.notes.join(' ')).toContain(`already pins ${w.b}, by an edit or rollback this item didn't make, or a confirm of it that was never recorded, so nothing was put back. The draft keeps ${w.b}`);
+        expect(left.ok && left.notes.join(' ')).toContain(`already pins ${w.b}: its review stamp shows a confirm of this item wrote it, in place of ${w.a}, though the inbox never recorded that confirm, so nothing was put back.`);
         expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
     });
 
