@@ -10,10 +10,10 @@ import { runIdentityOnce } from '../../identity/watcherStep';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../../identity/variants';
 import { MANIFEST_FILE } from '../../storage/publish';
 import { writeVersionedDocument } from '../../storage/document';
-import { deferEvent, retryEvent } from '../actions';
-import { createCandidateSink, settleCandidates, settlingAfterBuild } from '../candidates';
+import { approveEvent, deferEvent, retryEvent } from '../actions';
+import { createCandidateSink, replacementEventIds, settleCandidates, settlingAfterBuild } from '../candidates';
 import { runCurationCli } from '../commands';
-import type { CurationEvent } from '../events';
+import { eventIdOf, eventKey, type CurationEvent } from '../events';
 import { listEvents, readEvent, withCurationLock } from '../repository';
 import { confirmReplacement } from '../resolutions';
 import { createCurationSink } from '../sink';
@@ -433,6 +433,35 @@ describe('an older revision\'s bytes', { timeout: 60_000 }, () => {
         expect(result).toMatchObject({ ok: true, event: { status: 'approved', decisions: [{ action: 'confirm', writes: [] }] } });
         expect(result.ok && result.notes.join(' ')).toMatch(/already pins/);
         expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
+    });
+});
+
+describe('a file replaced before its first approval', { timeout: 60_000 }, () => {
+    it('folds into its new item, so the approval pins the new bytes and nothing is left for confirm or the settle', async () => {
+        const w = await world();
+        fs.writeFileSync(w.lib.file('harbor/fresh.jpg'), images.fresh);
+        const [added] = await w.pass();
+        expect(added).toMatchObject({ type: 'new' });
+        const photoId = added.photoId as string;
+        const newId = eventIdOf(eventKey('new', added));
+        fs.writeFileSync(w.lib.file('harbor/fresh.jpg'), images.freshReplacement);
+        const [replaced] = await w.pass();
+        expect(replaced).toMatchObject({ type: 'replaced', photoId });
+        const moved = await w.event(newId);
+        expect(moved).toMatchObject({ type: 'new', status: 'open', assetRevision: replaced.assetRevision });
+        // No replacement item opened beside it.
+        for (const id of replacementEventIds(photoId, replaced.assetRevision)) expect(await readEvent(w.root, id)).toBeNull();
+
+        const approved = await approveEvent({ root: w.root, eventId: newId, expectedVersion: moved.version, expectedBase: w.revisionId, actor: ACTOR, choices: { seriesId: null } });
+        expect(approved).toMatchObject({ ok: true, event: { status: 'approved', assetRevision: replaced.assetRevision } });
+        expect((await readAuthoredRecord(w.root, 'photo', photoId))?.assetRevision).toBe(replaced.assetRevision);
+        // The new bytes' build, a settle of them, and a restarted watcher's look at every item find nothing to do.
+        const job = { photoId, assetRevision: replaced.assetRevision, profileId: w.profileId, path: 'harbor/fresh.jpg' };
+        expect(await w.build(job)).toEqual({ status: 'ready', reused: false });
+        expect(await settleCandidates(w.root, { logger: quiet, only: job })).toEqual(NOTHING_SETTLED);
+        await w.restartPass();
+        const { events } = await listEvents(w.root);
+        expect(events.filter((event) => event.photoId === photoId).map((event) => [event.type, event.status])).toEqual([['new', 'approved']]);
     });
 });
 
