@@ -279,7 +279,7 @@ const unknownPlacementLine = (error: ReferenceScanError) => `Can't tell which ne
 function unplacedLines(event: CurationEvent, series: string, active: string | null): string[] {
     const base = active ?? 'none';
     return [
-        `No longer placed: it was approved into ${series}, but no series or the live revision holds its photo now. The photo record stays in the draft, unassigned. To put it back in ${series}, run:`,
+        `No longer placed: it was approved into ${series}, but no series or the live revision holds its photo now. The photo record stays in the draft, unassigned. To put it back at the end of ${series}, run:`,
         `  curation reopen ${event.id} --version ${event.version} --base ${base}`,
         `  curation approve ${event.id} --version ${event.version + 1} --series ${series} --base ${base}`,
     ];

@@ -17,6 +17,8 @@ export interface Placement {
     holders: string[];
     /** The asset revisions those holders pin: the active revision's, and the photo record's when a series holds it. */
     assetRevisions: Set<string>;
+    /** The working-layer series whose sequence holds it, by ID. */
+    seriesIds: string[];
 }
 
 /** Placements by photo ID. A photo with no entry has no holder. */
@@ -32,7 +34,7 @@ export function buildPlacementIndex(list: readonly AssetReference[], series: rea
     const index: PlacementIndex = new Map();
     const placement = (photoId: string): Placement => {
         let found = index.get(photoId);
-        if (!found) index.set(photoId, (found = { holders: [], assetRevisions: new Set() }));
+        if (!found) index.set(photoId, (found = { holders: [], assetRevisions: new Set(), seriesIds: [] }));
         return found;
     };
     const pinned = new Map<string, string>();
@@ -48,6 +50,7 @@ export function buildPlacementIndex(list: readonly AssetReference[], series: rea
         for (const photoId of new Set(record.photoIds)) {
             const found = placement(photoId);
             found.holders.push(`the series ${record.id}`);
+            found.seriesIds.push(record.id);
             const pin = pinned.get(photoId);
             if (pin !== undefined) found.assetRevisions.add(pin);
         }

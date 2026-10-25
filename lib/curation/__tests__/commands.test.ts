@@ -15,7 +15,7 @@ import { needsJudgment } from '../events';
 import { placedItems } from '../placement';
 import { listEvents } from '../repository';
 import { createCurationSink } from '../sink';
-import { createCurationFixture, DRAFT, writeRules, type CurationFixture } from './curationFixtures';
+import { createCurationFixture, DRAFT, PUBLISHED, writeRules, type CurationFixture } from './curationFixtures';
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -327,7 +327,7 @@ describe('a new photograph that is already placed', () => {
         expect(listed.slice(1)).toEqual([expect.stringMatching(new RegExp(`^${placedItem?.id}@2 .* approved .*unplaced: approved into ${DRAFT}, but no series or the live revision holds its photo now$`))]);
         expect(JSON.parse((await cli(f, 'list', '--json')).output)).toMatchObject({ needsJudgment: 0, unplaced: 1, events: [{ id: placedItem?.id, unplaced: DRAFT }] });
         expect((await cli(f, 'show', placedItem?.id as string)).output).toContain([
-            `No longer placed: it was approved into ${DRAFT}, but no series or the live revision holds its photo now. The photo record stays in the draft, unassigned. To put it back in ${DRAFT}, run:`,
+            `No longer placed: it was approved into ${DRAFT}, but no series or the live revision holds its photo now. The photo record stays in the draft, unassigned. To put it back at the end of ${DRAFT}, run:`,
             `  curation reopen ${placedItem?.id} --version 2 --base none`,
             `  curation approve ${placedItem?.id} --version 3 --series ${DRAFT} --base none`,
         ].join('\n'));
@@ -336,7 +336,20 @@ describe('a new photograph that is already placed', () => {
         expect(folderBytes(path.join(f.root, 'curation'))).toEqual(before);
 
         // Reopening it says there is no placement to keep, and names the series to approve it into.
-        expect((await cli(f, 'reopen', placedItem?.id as string, '--version', '2', '--base', 'none')).output).toBe(`Reopened. Nothing holds its photo now, so there is no draft placement to keep. Approve it with --series ${DRAFT} to place it again.\n${placedItem?.id} is open, now at version 3.\n`);
+        expect((await cli(f, 'reopen', placedItem?.id as string, '--version', '2', '--base', 'none')).output).toBe(`Reopened. No series in the draft holds its photo, so there is no draft placement to keep. Approve it with --series ${DRAFT} to place it again, at the end.\n${placedItem?.id} is open, now at version 3.\n`);
+    });
+
+    it('says on reopen that no draft placement is left when only the live revision still shows the photo', async () => {
+        const f = await fixture({ published: true });
+        const photoId = f.catalog.series[0].photoIds[1];
+        await createCurationSink({ root: f.root, logger: quiet })([f.fact('new', photoId)]);
+        const [event] = (await listEvents(f.root)).events;
+        expect(await cli(f, 'approve', event.id, '--version', '1', '--series', PUBLISHED, '--base', f.catalog.revisionId)).toMatchObject({ exitCode: 0, output: expect.stringContaining('where it kept its place') });
+        const series = await readAuthoredRecord(f.root, 'series', PUBLISHED) as AuthoredSeries;
+        expect(await applySequenceOp({ dataRoot: f.root }, { kind: 'remove', seriesId: PUBLISHED, photoId }, { expectedVersion: series.version, actor: editor })).toMatchObject({ ok: true, changed: true });
+        // The live revision still holds it, so the item isn't flagged, but no draft series does.
+        expect((await cli(f, 'list', '--all')).output).not.toContain('no longer placed');
+        expect((await cli(f, 'reopen', event.id, '--version', '2', '--base', f.catalog.revisionId)).output).toBe(`Reopened. No series in the draft holds its photo, so there is no draft placement to keep. Approve it with --series ${PUBLISHED} to place it again, at the end.\n${event.id} is open, now at version 3.\n`);
     });
 
     it('goes by the last approval, and flags nothing for a hidden series or a dismissed item', async () => {

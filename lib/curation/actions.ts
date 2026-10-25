@@ -8,9 +8,9 @@ import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
 import { LockTimeoutError, withLock, type LockContext } from '../storage/lock';
-import type { CurationDecision, CurationEvent, CurationEventStatus, CuratorDescription, CuratorEdits, Placement } from './events';
+import { unplacedApproval, type CurationDecision, type CurationEvent, type CurationEventStatus, type CuratorDescription, type CuratorEdits, type Placement } from './events';
 import { photoHolders } from './holders';
-import { placedItems } from './placement';
+import { placementIndex } from './placement';
 import { EventMovedError, EventUnusableError, readEvent, withCurationLock, writeEvent } from './repository';
 
 /**
@@ -234,18 +234,25 @@ export function reopenEvent(input: ActionInput & { reason?: string }): Promise<A
         const { event } = step;
         requireStatus(event, ['deferred', 'dismissed', 'approved'], 'reopened');
         const status: CurationEventStatus = event.type === 'processing-failure' ? 'failed' : 'open';
-        const unplaced = event.status === 'approved' ? await unplacedSeries(path.resolve(input.root), event) : null;
-        const notes = event.status !== 'approved' ? ['Reopened.'] : unplaced === null
-            ? ['Reopened. The draft placement stays in the working layer; approve with a position flag to move it.']
-            : [`Reopened. Nothing holds its photo now, so there is no draft placement to keep. Approve it with --series ${unplaced} to place it again.`];
+        const notes = event.status === 'approved' ? [await reopenedApprovalNote(path.resolve(input.root), event)] : ['Reopened.'];
         return { event: decided(step, input, { action: 'reopen', ...(input.reason ? { reason: input.reason } : {}) }, status), notes };
     });
 }
 
-/** The series an approval named when nothing holds its photo now (unplacedApproval()), or null, also when the data root can't tell. */
-async function unplacedSeries(root: string, event: CurationEvent): Promise<string | null> {
-    const { unplaced } = await placedItems(root, [event]);
-    return unplaced.get(event.id) ?? null;
+/**
+ * What reopening an approved item says about its draft placement: it stays
+ * while a working-layer series holds the photo. When none does, after a
+ * rollback or a `sequence remove`, even with the live revision still showing
+ * it, there is none to keep, and it names the series the last approval chose.
+ * When the data root can't tell, it says only that.
+ */
+async function reopenedApprovalNote(root: string, event: CurationEvent): Promise<string> {
+    if (event.photoId === null) return 'Reopened.';
+    const index = await placementIndex(root);
+    if ('unknown' in index) return `Reopened. Can't tell whether a series in the draft still holds its photo, since ${index.unknown.file} can't be used (${index.unknown.reason}).`;
+    if ((index.get(event.photoId)?.seriesIds.length ?? 0) > 0) return 'Reopened. The draft placement stays in the working layer; approve with a position flag to move it.';
+    const series = unplacedApproval({ ...event, status: 'approved' }, []);
+    return `Reopened. No series in the draft holds its photo, so there is no draft placement to keep.${series === null ? '' : ` Approve it with --series ${series} to place it again, at the end.`}`;
 }
 
 /** Whether the registry shows a failed derivative build for this revision. */
