@@ -269,7 +269,7 @@ test.describe('a failed derivative keeps its box and the way on', () => {
         await expect(page).toHaveURL(`${origin()}/work/${featured().slug}`);
     });
 
-    test('Work and the series: every failed image keeps its box, and an entry still opens', async ({ page }) => {
+    test('Work, the series, and the modal Viewer: every failed image keeps its box, and the way on still works', async ({ page }) => {
         await page.goto(`${origin()}/work`);
         await waitForHydration(page);
         const cover = page.locator('[data-cover="unavailable"]').first();
@@ -285,8 +285,18 @@ test.describe('a failed derivative keeps its box and the way on', () => {
             spans.slice(0, 10).map((span) => span.getBoundingClientRect()).map((box) => box.height / box.width),
         );
         for (const ratio of frames) expect(ratio).toBeCloseTo(0.75, 1);
+        // From the series the Viewer opens as #9's modal, a client render: the failed box keeps its shape, and Next and Close still work.
         await page.locator(`#photo-${featured().photoIds[0]}`).click();
         await expect(page).toHaveURL(`${origin()}/work/${featured().slug}/photo/${featured().photoIds[0]}`);
+        const dialog = page.getByRole('dialog');
+        const missing = dialog.locator('[data-photo="unavailable"]');
+        await expect(missing).toBeVisible();
+        const box = await missing.boundingBox();
+        expect(box && box.width / box.height).toBeCloseTo(1.5, 1);
+        await dialog.getByRole('button', { name: 'Next photograph', exact: true }).click();
+        await expect(page).toHaveURL(`${origin()}/work/${featured().slug}/photo/${featured().photoIds[1]}`);
+        await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+        await expect(page).toHaveURL(`${origin()}/work/${featured().slug}`);
     });
 
     test('the Viewer: the box keeps the photograph\'s shape, and Next still moves', async ({ page }) => {
@@ -297,7 +307,8 @@ test.describe('a failed derivative keeps its box and the way on', () => {
         const box = await missing.boundingBox();
         // The first photograph is 2400 by 1600.
         expect(box && box.width / box.height).toBeCloseTo(1.5, 1);
-        await page.getByRole('link', { name: 'Next photograph' }).click();
+        // A direct load is the full-page Viewer; once hydrated, #9's shell renders Next as a button.
+        await page.getByRole('button', { name: 'Next photograph', exact: true }).click();
         await expect(page).toHaveURL(`${origin()}/work/${featured().slug}/photo/${featured().photoIds[1]}`);
     });
 });
