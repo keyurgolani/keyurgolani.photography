@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { FileCheck2, Inbox } from 'lucide-react';
+import SameOriginPostForm from '@/components/site/SameOriginPostForm';
 import styles from './curator.module.css';
 
 export type CuratorScreen = 'inbox' | 'publish';
@@ -13,7 +14,8 @@ interface CuratorHeaderProps {
 /**
  * The curator's header, from the approved Gallery After Hours mockup
  * (`CuratorHeader`): "Portfolio curation" back to the site, the Inbox and
- * "Preview & publish" screens, and where the data lives. #14's Inbox renders
+ * "Preview & publish" screens, and where the data lives, plus 14-2b's Sign
+ * out. #14's Inbox renders
  * it first, and #16's Publish screen reuses it with `active="publish"`.
  */
 export default function CuratorHeader({ active, publishHref }: CuratorHeaderProps) {
@@ -42,7 +44,10 @@ export default function CuratorHeader({ active, publishHref }: CuratorHeaderProp
                     </span>
                 )}
             </nav>
-            <span className={styles.volume}>Local self-hosted volume</span>
+            <div className={styles.headerEnd}>
+                <span className={styles.volume}>Local self-hosted volume</span>
+                <SameOriginPostForm action="/api/curation/logout" submitLabel="Sign out" buttonClassName={styles.signOut} />
+            </div>
         </header>
     );
 }

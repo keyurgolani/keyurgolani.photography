@@ -236,7 +236,8 @@ describe('the forms', () => {
 
     it('fill a reopened item from its photo record and series, so unchecking the flag clears it', async () => {
         const noRules = { series: { value: null, confidence: 'low' as const, producedBy: 'rules@none', producedAt: '2026-02-01T00:00:00.000Z', evidence: [] }, placement: null };
-        renderInbox(view({ selected: detail({ suggestions: noRules, placed: { alt: { kind: 'decorative' }, seriesIds: ['ser_harbor'] } }) }));
+        const approved = [{ action: 'approve', at: '2026-02-01T00:00:00.000Z', by: 'curator:web', detail: '' }, { action: 'reopen', at: '2026-02-01T00:01:00.000Z', by: 'curator:web', detail: '' }];
+        renderInbox(view({ selected: detail({ suggestions: noRules, decisions: approved, placed: { alt: { kind: 'decorative' }, seriesIds: ['ser_harbor'] } }) }));
         expect(screen.getByRole('combobox', { name: 'Suggested series' })).toHaveValue('ser_harbor');
         const box = screen.getByRole('checkbox', { name: /Decorative/ });
         expect(box).toBeChecked();
