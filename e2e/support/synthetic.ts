@@ -54,7 +54,6 @@ export async function recordDispatchedEvents(page: Page): Promise<() => Promise<
         (window as unknown as { __dispatched: DispatchedEvents }).__dispatched = record;
 
         const pending = new Map<string, Event>();
-        (window as unknown as { __queued: () => string[] }).__queued = () => [...pending.values()].map((event) => event.type).sort();
         const key = (type: string, event: Event, byPointer: boolean) =>
             byPointer ? `${type} ${(event as PointerEvent).pointerId}` : type;
         for (const { over, out, byPointer } of kinds) {
@@ -100,13 +99,4 @@ export async function recordDispatchedEvents(page: Page): Promise<() => Promise<
         };
     }, { kinds: REPLAYED, copied: COPIED });
     return () => page.evaluate(() => (window as unknown as { __dispatched: DispatchedEvents }).__dispatched);
-}
-
-/**
- * The types of the native events React holds in its queue as the recorder
- * sees them: trusted, stopped before they got back to window, and not yet
- * replayed or cleared by their out event. Needs recordDispatchedEvents first.
- */
-export function queuedEvents(page: Page): Promise<string[]> {
-    return page.evaluate(() => (window as unknown as { __queued: () => string[] }).__queued());
 }
