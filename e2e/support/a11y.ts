@@ -12,10 +12,16 @@ export const DISABLED_RULES: readonly { id: string; reason: string; removedBy: s
 
 const BLOCKING = new Set(['serious', 'critical']);
 
+export interface A11yOptions {
+    /** A selector to limit the run to, for a page whose other parts another issue owns. */
+    include?: string;
+}
+
 /** Runs axe with the WCAG 2.2 A and AA tags and fails on any serious or critical violation. */
-export async function expectNoA11yViolations(page: Page): Promise<void> {
+export async function expectNoA11yViolations(page: Page, { include }: A11yOptions = {}): Promise<void> {
     await waitForHydration(page);
     let builder = new AxeBuilder({ page }).withTags(WCAG_TAGS);
+    if (include) builder = builder.include(include);
     if (DISABLED_RULES.length > 0) builder = builder.disableRules(DISABLED_RULES.map((rule) => rule.id));
     const { violations } = await builder.analyze();
     const blocking = violations

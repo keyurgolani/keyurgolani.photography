@@ -1,12 +1,13 @@
-/* Interim placement until #18 and #21 settle the Home layout: top right on the
-   theme toggle's row, under that row below 768 px, and above the nav pill on a
-   short screen. One scrim keeps the white text and icons legible over any
-   photograph, white included. */
+/* Bottom right, under SiteNav at the top of the chrome and clear of the
+   portrait at the bottom center, until #18 settles the Home layout. One scrim
+   keeps the white text and icons legible over any photograph, white included.
+   The chrome layer lets the pointer through, so the controls take it back. */
 .controls {
   position: absolute;
-  top: 1.5rem;
   right: 1.5rem;
+  bottom: 1.5rem;
   z-index: 20;
+  pointer-events: auto;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -24,44 +25,6 @@
   align-items: center;
   justify-content: flex-end;
   gap: 0.25rem;
-}
-
-@media (max-width: 767px) {
-  .controls {
-    top: calc(3.5rem + 22px);
-  }
-}
-
-/* On a short screen the settled portrait reaches the top right and covers
-   Previous. Under 850 px wide, which takes in a phone on its side up to
-   844 px, the controls move down above the nav pill, with the hint over the
-   buttons. Wider, the top right clears the portrait. */
-@media (max-width: 849px) and (max-height: 519px) {
-  .controls {
-    top: auto;
-    bottom: 6.75rem;
-    flex-direction: column-reverse;
-  }
-}
-
-/* Under 800 px wide, one row would put Previous within a few px of the bottom
-   of the portrait, less in a wider font. The playback button takes a second
-   row instead, and the narrower controls sit 1rem from the edge. */
-@media (max-width: 799px) and (max-height: 519px) {
-  .controls {
-    right: 1rem;
-  }
-
-  .row {
-    display: grid;
-    grid-template-columns: repeat(3, auto);
-    justify-content: end;
-  }
-
-  .playback {
-    grid-column: 1 / -1;
-    justify-self: end;
-  }
 }
 
 /* The buttons draw no fill or border of their own. The focus token draws the ring. */

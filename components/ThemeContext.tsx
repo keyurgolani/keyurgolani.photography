@@ -2,41 +2,41 @@
 
 import {createContext, ReactNode, useContext, useEffect, useState} from 'react';
 
+type Theme = 'dark' | 'light';
+
 interface ThemeContextType {
-    theme: string;
+    theme: Theme;
     toggleTheme: () => void;
 }
 
 const ThemeContext = createContext<ThemeContextType | null>(null);
 
 export const ThemeProvider = ({children}: { children: ReactNode }) => {
-    const [theme, setTheme] = useState('dark');
-    const [mounted, setMounted] = useState(false);
+    // Dark matches the server HTML, so the first client render does too. The inline
+    // script in app/layout.tsx may already have put a stored light theme on <html>.
+    const [theme, setTheme] = useState<Theme>('dark');
 
+    // A parent's effect runs after its children's, so this lands once the page has committed.
+    // Browser tests wait on html[data-hydrated].
     useEffect(() => {
-        setMounted(true);
-        // Check for saved theme or preference
-        const savedTheme = localStorage.getItem('theme') || 'dark';
-        setTheme(savedTheme);
-        document.documentElement.setAttribute('data-theme', savedTheme);
+        const root = document.documentElement;
+        const current = root.getAttribute('data-theme');
+        if (current === 'light' || current === 'dark') setTheme(current);
+        root.dataset.hydrated = 'true';
     }, []);
 
-    // Its own effect, so it runs after the children commit. Browser tests wait on html[data-hydrated].
-    useEffect(() => {
-        if (mounted) document.documentElement.dataset.hydrated = 'true';
-    }, [mounted]);
-
+    // The page's own attribute decides the next theme, and storage that throws (site data blocked) only loses the
+    // choice on reload, so the toggle still flips both ways.
     const toggleTheme = () => {
-        const newTheme = theme === 'light' ? 'dark' : 'light';
-        const root = document.documentElement;
-        root.setAttribute('data-theme', newTheme);
-        localStorage.setItem('theme', newTheme);
+        const newTheme = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', newTheme);
         setTheme(newTheme);
+        try {
+            localStorage.setItem('theme', newTheme);
+        } catch {
+            // Nothing to keep it in.
+        }
     };
-
-    if (!mounted) {
-        return null; // or a loading spinner to prevent hydration mismatch
-    }
 
     return (
         <ThemeContext.Provider value={{theme, toggleTheme}}>

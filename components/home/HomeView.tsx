@@ -1,9 +1,9 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import BottomBar from '@/components/BottomBar';
 import HeroReveal from '@/components/HeroReveal';
 import RevealingContents from '@/components/RevealingContents';
+import SiteNav from '@/components/site/SiteNav';
 import { hasCompletedHomeHeroIntro, markHomeHeroIntroCompleted } from '@/utils/homeHeroCache';
 import type { HomePhoto } from './homePhoto';
 import HomeSequence from './HomeSequence';
@@ -86,10 +86,11 @@ export default function HomeView({ photos }: HomeViewProps) {
 
   return (
     <main className="relative w-full h-screen bg-black overflow-hidden" data-playback={playback.playbackState}>
-      {/* HeroReveal: grain overlay, ripples, and the portrait's travel */}
+      {/* HeroReveal: grain overlay, ripples, and the portrait's travel. Settled, the portrait sits between the photograph and the chrome. */}
       <HeroReveal isLoading={isLoading} onSettled={handleSettled} />
 
-      <div className="absolute inset-0 z-0">
+      {/* The chrome lets the pointer through, and this layer takes it instead of the photograph, so a drag or a long press never picks up the image. */}
+      <div className="absolute inset-0 z-0 [&>*]:pointer-events-none">
         <HomeSequence
           photos={photos}
           index={playback.index}
@@ -99,8 +100,12 @@ export default function HomeView({ photos }: HomeViewProps) {
       </div>
 
       <RevealingContents onVisibleChange={setChromeVisible}>
-        {/* Keyboard focus anywhere in here holds the slideshow. */}
-        <div ref={holdRef} className="relative flex flex-col items-center justify-end h-full pb-8" onFocus={handleFocus} onBlur={handleBlur}>
+        {/* Keyboard focus anywhere in here holds the slideshow, the theme toggle in SiteNav included. */}
+        <div ref={holdRef} className="relative h-full" onFocus={handleFocus} onBlur={handleBlur}>
+          {/* Until the intro settles, SiteNav stays in the DOM, out of sight and out of the pointer's way. Then it takes the pointer back from the chrome layer. */}
+          <div className={`transition-opacity duration-[var(--motion-base)] ${isSettled ? 'pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
+            <SiteNav />
+          </div>
           <HomeSequenceControls
             index={playback.index}
             count={playback.count}
@@ -113,7 +118,6 @@ export default function HomeView({ photos }: HomeViewProps) {
             }}
             onPointerLeave={() => setPointerOver(false)}
           />
-          <BottomBar visible={isSettled} />
         </div>
       </RevealingContents>
     </main>

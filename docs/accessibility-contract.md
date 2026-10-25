@@ -5,7 +5,7 @@ Every visitor and curator surface follows these rules. #1 added them with the br
 ## Rules
 
 1. Semantics. URL changes use a Next `Link` or `<a href>`. In-page state changes use `<button type="button">`, with `aria-pressed`, `aria-current="true"`, or `aria-expanded` when it toggles, selects, or discloses. The focusable element owns the handler and the name, with no handlers on non-interactive elements, no nested interactive elements, and `alt=""` on an `img` inside a named control.
-2. Names. Names come from `photoEntryName()` and `photoImageAlt()`, never a filename, extension, raw index, EXIF or camera string, or unreviewed suggestion. They exist before the image loads, are unique, and start with any visible label (WCAG 2.5.3). `aria-describedby` text is a description. `ThemeToggle`'s name doesn't start with its label, an exception until #21 drops the label. Catalog surfaces always have a reviewed description or `decorative` (the #13 gate), so position-only names are for legacy surfaces and decorative photos.
+2. Names. Names come from `photoEntryName()` and `photoImageAlt()`, never a filename, extension, raw index, EXIF or camera string, or unreviewed suggestion. They exist before the image loads, are unique, and start with any visible label (WCAG 2.5.3). `aria-describedby` text is a description. Catalog surfaces always have a reviewed description or `decorative` (the #13 gate), so position-only names are for legacy surfaces and decorative photos.
 3. Hover parity. Whatever hover reveals, `:focus-visible` reveals too. Nothing required is hover-only. A tap never leaves hover styles behind, so app hover styles apply only under `(hover: hover) and (pointer: fine)`. That's the target: `hoverOnlyWhenSupported` in `tailwind.config.ts` gates every `hover:` and `group-hover:` utility, and #1's slices 3 and 4 gate the raw `:hover` rules in `app/globals.css` and the CSS modules.
 4. Focus. Use the focus token. No ancestor's overflow clips the ring, so pad clip and scroll containers by ring width plus offset or use an inset ring. Fixed chrome never entirely hides the ring, and leaves it fully clear when the element fits between the scroll paddings. Focus-revealed controls appear at full opacity with no fade.
 5. Targets. Every standalone link, button, toggle, or thumbnail is at least 44 by 44 CSS px on its bounding box. Inline links in running text are exempt. This overrides the mockup's 42 px primary, 43 px Home rail, and 38 px sequence buttons.
@@ -31,11 +31,11 @@ Every visitor and curator surface follows these rules. #1 added them with the br
 | Gallery, `/gallery` | `e2e/gallery.spec.ts` from #1 slice 3 | #1, until #3 retires the page |
 | Lightbox on `/gallery` | `e2e/lightbox.spec.ts` from #1 slice 3 | #1, until #3 retires the page |
 | About, `/about` | `e2e/about.spec.ts` from #1 slice 4 | #1 for the subset below, then #11 for the links and #12 for the artist statement |
-| The focus token on the site chrome and in the lightbox | `e2e/focus-ring.spec.ts` from #1 slice 2 | #1, until #21 replaces the chrome |
+| The focus token on `SiteNav`, its theme toggle, and in the lightbox | `e2e/focus-ring.spec.ts` from #1 slice 2, moved onto `SiteNav` by #21 | #1, with #21 for `SiteNav` |
 | Work catalog | Added by #3 | #3 |
 | Series pages | Added by #5 | #5 |
 | Viewer | Added by #7 | #7, then #9 |
-| Site navigation | Added by #21 | #21 |
+| Site navigation, `SiteNav` | `e2e/shell/nav.spec.ts` from #21, with `server-html`, `theme`, and `confinement` in `e2e/shell/` | #21, then #18 for its reveal on Home |
 | Curation inbox | Added by #14 | #14 |
 | Publish preview | Added by #16 | #16 |
 | Revision history | Added by #15 | #15 |
@@ -48,7 +48,7 @@ On `/about`, #1 checks the navigation links and theme control in full, Tab reach
 
 The token's outline beats YARL's `outline: none`. The app's own `!important` lightbox rules beat the token's `transition: none`, and some of their `box-shadow` rules tie the token and come later. So the end of `app/globals.css` restates the band and `transition: none` for `.yarl__button` and `.yarl__thumbnails_thumbnail`, and lifts inactive thumbnails from `opacity: 0.5`. YARL also focuses its container to take arrow keys, and the thumbnail track when a focused thumbnail leaves it. Neither is a control, so neither draws the token. In a focused track, the active thumbnail draws it instead.
 
-`html` has `scroll-padding-top: 6rem` and `scroll-padding-bottom: 8rem`, so a focused element that fits between them scrolls clear of `ThemeToggle` and `BottomBar`. Taller elements fall back to WCAG 2.4.11, which only asks that chrome doesn't hide them entirely.
+`html` has `scroll-padding-top: 6rem` and `scroll-padding-bottom: 8rem`, so a focused element that fits between them scrolls into view with room around it. Outside Home, `SiteNav` sits in normal flow, so no chrome covers a focused element. On Home it's part of the chrome, which keyboard focus inside holds open and which sits over the settled portrait.
 
 ## Names
 

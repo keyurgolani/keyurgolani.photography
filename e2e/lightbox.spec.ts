@@ -13,7 +13,7 @@ const control = (page: Page, name: string) => lightbox(page).getByRole('button',
 const enabledControls = (page: Page) => lightbox(page).getByRole('button', { disabled: false });
 const currentThumbnail = (page: Page) => page.locator('.yarl__thumbnails_thumbnail[aria-current="true"]');
 
-// ThemeToggle and BottomBar paint under the YARL portal, so the lightbox's own toolbar and thumbnail strip are its chrome.
+// SiteNav paints under the YARL portal, so the lightbox's own toolbar and thumbnail strip are its chrome.
 const chrome = (page: Page) => [page.locator('.yarl__toolbar'), page.locator('.yarl__thumbnails_container')];
 
 /** The scale() of the current slide's zoom wrapper. */

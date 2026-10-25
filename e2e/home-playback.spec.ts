@@ -87,7 +87,7 @@ async function pressUntilFocused(page: Page, key: 'Tab' | 'Shift+Tab', target: L
 async function revealByPointer(page: Page, isMobile: boolean) {
     const { width, height } = page.viewportSize()!;
     if (isMobile) {
-        // Left of center, clear of the controls, the nav pill, and the portrait.
+        // Left of center, clear of the controls, SiteNav, and the portrait.
         await page.touchscreen.tap(24, Math.round(height / 2));
     } else {
         await page.mouse.move(width / 2 - 200, height / 2 - 150);
@@ -131,6 +131,50 @@ const box = (target: Locator) => target.evaluate((el): Box => {
     return { left, top, right, bottom };
 });
 const overlaps = (a: Box, b: Box) => Math.min(a.right, b.right) - Math.max(a.left, b.left) > 0.5 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 0.5;
+
+/**
+ * The five short screens where the settled portrait still covered Previous's
+ * ring, or at 360 by 320 its centre, before the chrome sat over it.
+ */
+const NARROW_SHORT_SCREENS = [[533, 320], [512, 384], [480, 320], [360, 320], [568, 520]] as const;
+/** Short screens where the settled portrait once covered Previous, phones on their side included. */
+const SHORT_SCREENS = [
+    [640, 400], [667, 375], [568, 320], [740, 360], [736, 414], [768, 400], [780, 420], [800, 480], [812, 375], [820, 400], [844, 390], [896, 414], [932, 430],
+    ...NARROW_SHORT_SCREENS,
+] as const;
+/** Points around Previous's centre. The square layers once took a click 10 px left of and 12 px above it. */
+const PROBES = [[0, 0], [-10, -12], [10, -12], [-10, 12], [10, 12], [-18, 0], [18, 0], [0, -18], [0, 18]] as const;
+
+/**
+ * The chrome sits over the portrait now, so at each of `screens` Previous
+ * keeps its ring and its hit, once Home has opened in `state`.
+ */
+function shortScreenChecks(state: 'advancing' | 'reduced-motion', screens: readonly (readonly [number, number])[]) {
+    for (const [width, height] of screens) {
+        test(`at ${width} by ${height} Previous keeps its ring clear of the painted portrait and takes a click or tap anywhere on it`, async ({ page, isMobile }) => {
+            await page.setViewportSize({ width, height });
+            await openHome(page, { state });
+            await expect(position(page)).toHaveText('01 / 03');
+            await pressUntilFocused(page, 'Tab', previous(page));
+            // Activity brings the portrait back, so check once it's fully shown.
+            await page.keyboard.press('Shift');
+            await expect.poll(() => portrait(page).evaluate((el) => parseFloat(getComputedStyle(el).opacity))).toBe(1);
+            await expectNotObscured(previous(page), [paintedPortrait(page)]);
+
+            const missed = await previous(page).evaluate((el, probes) => {
+                const { left, top, width: w, height: h } = el.getBoundingClientRect();
+                return probes.filter(([dx, dy]) => {
+                    const hit = document.elementFromPoint(left + w / 2 + dx, top + h / 2 + dy);
+                    return !(hit && el.contains(hit));
+                }).map(([dx, dy]) => `${dx}, ${dy}`);
+            }, PROBES);
+            expect(missed, 'points on Previous that something else takes').toEqual([]);
+            if (isMobile) await previous(page).tap();
+            else await previous(page).click();
+            await expect(position(page)).toHaveText('03 / 03');
+        });
+    }
+}
 
 test.describe('normal motion', () => {
     test('Pause holds the photo and the zoom, Play moves once a full interval later, and holds never change the choice', async ({ page, isMobile }) => {
@@ -180,12 +224,12 @@ test.describe('normal motion', () => {
         expect(await chromeOpacity(page)).toBe(1);
         await expect(position(page)).toHaveText('02 / 03');
 
-        // Focus outside the chrome doesn't hold, and a move leaves it where it was.
+        // The toggle sits in SiteNav inside the chrome, so focus there holds too, and nothing moves.
         await pressUntilFocused(page, 'Shift+Tab', themeToggle(page));
-        await expect(main(page)).toHaveAttribute('data-playback', 'advancing');
+        await expect(main(page)).toHaveAttribute('data-playback', 'held');
         await settle(page);
         await runFor(page, INTERVAL);
-        await expect(position(page)).toHaveText('03 / 03');
+        await expect(position(page)).toHaveText('02 / 03');
         await expect(themeToggle(page)).toBeFocused();
     });
 
@@ -221,102 +265,7 @@ test.describe('normal motion', () => {
     });
 
     test.describe('on a short screen', () => {
-        // Where the settled portrait reached Previous before the controls moved: the first three 100% covered, the
-        // rest by its square layers or its painted image, and 820 and 844 px wide with the controls at the top right.
-        // Past 849 px the controls keep the top right, which a phone on its side at 896 or 932 px shows clear.
-        const SHORT_SCREENS = [[640, 400], [667, 375], [568, 320], [740, 360], [736, 414], [768, 400], [780, 420], [800, 480], [812, 375], [820, 400], [844, 390], [896, 414], [932, 430]] as const;
-        /** Points around Previous's centre. The square layers once took a click 10 px left of and 12 px above it. */
-        const PROBES = [[0, 0], [-10, -12], [10, -12], [-10, 12], [10, 12], [-18, 0], [18, 0], [0, -18], [0, 18]] as const;
-
-        for (const [width, height] of SHORT_SCREENS) {
-            test(`at ${width} by ${height} Previous keeps its ring clear of the painted portrait and takes a click or tap anywhere on it`, async ({ page, isMobile }) => {
-                await page.setViewportSize({ width, height });
-                await openHome(page);
-                await expect(position(page)).toHaveText('01 / 03');
-                await pressUntilFocused(page, 'Tab', previous(page));
-                // Activity brings the portrait back, so check once it's fully shown.
-                await page.keyboard.press('Shift');
-                await expect.poll(() => portrait(page).evaluate((el) => parseFloat(getComputedStyle(el).opacity))).toBe(1);
-                await expectNotObscured(previous(page), [paintedPortrait(page)]);
-
-                const missed = await previous(page).evaluate((el, probes) => {
-                    const { left, top, width: w, height: h } = el.getBoundingClientRect();
-                    return probes.filter(([dx, dy]) => {
-                        const hit = document.elementFromPoint(left + w / 2 + dx, top + h / 2 + dy);
-                        return !(hit && el.contains(hit));
-                    }).map(([dx, dy]) => `${dx}, ${dy}`);
-                }, PROBES);
-                expect(missed, 'points on Previous that something else takes').toEqual([]);
-                if (isMobile) await previous(page).tap();
-                else await previous(page).click();
-                await expect(position(page)).toHaveText('03 / 03');
-            });
-
-            test(`at ${width} by ${height} no nav label lands on the controls, and the pointer crosses from About to Previous`, async ({ page }, testInfo) => {
-                test.skip(testInfo.project.name === 'mobile', 'Hover runs on the desktop project, where focus shows the same labels.');
-                await page.setViewportSize({ width, height });
-                await openHome(page);
-                const controls = await box(group(page));
-                // Where the controls sit above the pill, each label shows under its icon, away from them.
-                const below = width < 850 && height < 520;
-                for (const name of ['Gallery', 'Home', 'About']) {
-                    const link = primary(page).getByRole('link', { name, exact: true });
-                    const label = link.getByText(name, { exact: true });
-                    for (const show of ['hover', 'focus'] as const) {
-                        if (show === 'hover') await link.hover();
-                        else await pressUntilFocused(page, 'Tab', link, 12);
-                        await expect(label).toHaveCSS('opacity', '1');
-                        const [shown, icon] = [await box(label), await box(link)];
-                        expect(overlaps(shown, controls), `${name}'s label on ${show} overlaps the controls`).toBe(false);
-                        if (below) expect(shown.top, `${name}'s label on ${show} sits under its icon`).toBeGreaterThanOrEqual(icon.bottom);
-                        else expect(shown.bottom, `${name}'s label on ${show} sits over its icon`).toBeLessThanOrEqual(icon.top);
-                    }
-                }
-                // From About up to Previous, which must take the click, not About's label.
-                await primary(page).getByRole('link', { name: 'About', exact: true }).hover();
-                await previous(page).click();
-                await expect(page).toHaveURL('/');
-                await expect(position(page)).toHaveText('03 / 03');
-            });
-
-            test(`at ${width} by ${height} a mouse moving down to a label off the icon's centre keeps the label`, async ({ page }, testInfo) => {
-                test.skip(testInfo.project.name === 'mobile', 'Hover runs on the desktop project.');
-                test.skip(!(width < 850 && height < 520), 'Labels sit under their icons only below 850 by 520 px.');
-                await page.setViewportSize({ width, height });
-                await openHome(page);
-                for (const name of ['Gallery', 'Home', 'About']) {
-                    const link = primary(page).getByRole('link', { name, exact: true });
-                    const label = link.getByText(name, { exact: true });
-                    await link.hover();
-                    await expect(label).toHaveCSS('opacity', '1');
-                    // Straight down from the icon to the label, 5 and 10 px either side of its centre, the pointer stays on
-                    // the round link, the bridge, or the label, so the link never loses :hover on the way.
-                    const misses = await link.evaluate((el, offsets) => {
-                        const icon = el.getBoundingClientRect();
-                        const shown = el.querySelector('span')!.getBoundingClientRect();
-                        const centre = icon.left + icon.width / 2;
-                        const found: string[] = [];
-                        for (const dx of offsets) {
-                            for (let y = icon.top + icon.height / 2; y <= shown.top + shown.height / 2; y += 0.25) {
-                                const hit = document.elementFromPoint(centre + dx, y);
-                                if (hit && el.contains(hit)) continue;
-                                found.push(`${dx} px off centre, ${(y - icon.bottom).toFixed(2)} px below the icon`);
-                                break;
-                            }
-                        }
-                        return found;
-                    }, [-10, -5, 0, 5, 10]);
-                    expect(misses, `points on the way down to ${name}'s label that leave the link`).toEqual([]);
-
-                    // A real mouse 10 px off centre moving down onto the label keeps it shown.
-                    const [icon, shown] = [await box(link), await box(label)];
-                    const x = (icon.left + icon.right) / 2 + 10;
-                    await page.mouse.move(x, (icon.top + icon.bottom) / 2);
-                    await page.mouse.move(x, (shown.top + shown.bottom) / 2, { steps: 12 });
-                    await expect(label).toHaveCSS('opacity', '1');
-                }
-            });
-        }
+        shortScreenChecks('advancing', SHORT_SCREENS);
     });
 
     test('a Pause survives client navigation away and back, and a reload forgets it', async ({ page }) => {
@@ -325,7 +274,7 @@ test.describe('normal motion', () => {
         await page.keyboard.press('Enter');
         await expect(play(page)).toBeVisible();
 
-        await primary(page).getByRole('link', { name: 'Gallery', exact: true }).focus();
+        await primary(page).getByRole('link', { name: 'Work', exact: true }).focus();
         await page.keyboard.press('Enter');
         await expect(page).toHaveURL('/gallery');
         await primary(page).getByRole('link', { name: 'Home', exact: true }).focus();
@@ -417,31 +366,36 @@ test.describe('reduced motion', () => {
         await checkSurface(page, { controls: [sequenceControls(page), navLinks(page)], chrome: [primary(page), themeToggle(page)] });
     });
 
-    test('over white, the controls keep their contrast, reflow, and clear the toggle, the nav pill, and the portrait', async ({ page }) => {
+    test('over white, the controls keep their contrast, reflow, and clear SiteNav and the portrait', async ({ page }) => {
         await serveTwoWhitePhotos(page);
         await openHome(page, { state: 'reduced-motion' });
         // Keyboard focus in the nav keeps the chrome up through the checks, with its ring clear of the controls.
         await themeToggle(page).focus();
-        await pressUntilFocused(page, 'Tab', navLinks(page).first());
+        await pressUntilFocused(page, 'Shift+Tab', navLinks(page).first());
 
         for (const text of [position(page), playbackLabel(page), hint(page)]) await expectContrastOverImage(text, { min: 4.5 });
         for (const control of [previous(page), next(page), playback(page)]) await expectContrastOverImage(control.locator('svg'), { min: 3 });
 
         const controls = await box(group(page));
-        for (const [name, other] of [['portrait', paintedPortrait(page).first()], ['theme toggle', themeToggle(page)], ['nav pill', primary(page)]] as const) {
+        for (const [name, other] of [['portrait', paintedPortrait(page).first()], ['theme toggle', themeToggle(page)], ['SiteNav', primary(page)]] as const) {
             expect(overlaps(controls, await box(other)), `the controls overlap the ${name}`).toBe(false);
         }
         await expectReflow(sequenceControls(page).or(group(page)).or(themeToggle(page)).or(primary(page)));
     });
 
-    test('at 320 by 640 with 100% text, the controls clear the settled portrait, the toggle, and the nav pill', async ({ page }) => {
+    test('at 320 by 640 with 100% text, the controls clear the settled portrait and SiteNav', async ({ page }) => {
         await page.setViewportSize({ width: 320, height: 640 });
         await openHome(page, { state: 'reduced-motion' });
 
         const controls = await box(group(page));
-        for (const [name, other] of [['portrait', paintedPortrait(page).first()], ['theme toggle', themeToggle(page)], ['nav pill', primary(page)]] as const) {
+        for (const [name, other] of [['portrait', paintedPortrait(page).first()], ['theme toggle', themeToggle(page)], ['SiteNav', primary(page)]] as const) {
             expect(overlaps(controls, await box(other)), `the controls overlap the ${name}`).toBe(false);
         }
+    });
+
+    test.describe('on a short screen', () => {
+        // Under reduce the portrait settles at once and takes no pointer, which the ring check now places beneath.
+        shortScreenChecks('reduced-motion', NARROW_SHORT_SCREENS);
     });
 
     for (const path of ['/gallery', '/about']) {

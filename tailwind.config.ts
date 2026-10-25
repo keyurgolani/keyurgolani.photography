@@ -21,8 +21,9 @@ const config: Config = {
         secondary: "var(--secondary-color)",
       },
       fontFamily: {
-        sans: ["var(--font-inter)"],
-        primary: ["var(--font-montserrat)"],
+        sans: ["var(--font-sans)", "sans-serif"],
+        serif: ["var(--font-serif)", "serif"],
+        primary: ["var(--font-serif)", "serif"],
       },
       keyframes: {
         fadeIn: {

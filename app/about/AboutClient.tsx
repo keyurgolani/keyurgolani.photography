@@ -2,7 +2,6 @@
 
 import React from 'react';
 import { Github } from 'lucide-react';
-import BottomBar from '../../components/BottomBar';
 import ProfilePicture from '../../components/ProfilePicture';
 import PhotographerProfile from '../../components/PhotographerProfile';
 import profileBack from '../../public/assets/profile/back.png';
@@ -10,7 +9,7 @@ import profileFront from '../../public/assets/profile/front.png';
 
 export default function AboutClient() {
   return (
-    <main className="relative w-full h-screen bg-black overflow-hidden">
+    <main className="relative w-full h-[calc(100svh-var(--site-nav-height))] bg-black overflow-hidden">
         {/* Background gradient */}
         <div className="absolute inset-0 bg-gradient-to-b from-black via-neutral-900 to-black z-0" />
         
@@ -23,15 +22,15 @@ export default function AboutClient() {
             <p className="text-lg text-white/70 font-light tracking-wide drop-shadow-md">aka ISerialClicker</p>
         </div>
         
-        {/* Navigation & Profile - same position as home page */}
-        <BottomBar>
+        {/* Portrait, bottom center */}
+        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50">
             <div className="transform transition-transform hover:scale-105 duration-500">
                 <ProfilePicture 
                     profileBack={profileBack} 
                     profileFront={profileFront} 
                 />
             </div>
-        </BottomBar>
+        </div>
         
         {/* GitHub link - bottom right corner */}
         <a

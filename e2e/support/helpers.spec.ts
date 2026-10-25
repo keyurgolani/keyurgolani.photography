@@ -54,6 +54,12 @@ test.describe('expectNoA11yViolations', () => {
         await load(page, '<button type="button"></button>');
         await expect(expectNoA11yViolations(page)).rejects.toThrow(/button-name \(critical\)/);
     });
+
+    test('with include, checks only that part of the page', async ({ page }) => {
+        await load(page, '<nav aria-label="Primary"><a href="/">Home</a></nav><button type="button"></button>');
+        await expectNoA11yViolations(page, { include: 'nav[aria-label="Primary"]' });
+        await expect(expectNoA11yViolations(page, { include: 'button' })).rejects.toThrow(/button-name \(critical\)/);
+    });
 });
 
 test.describe('expectMinTargetSize', () => {
@@ -158,11 +164,13 @@ test.describe('expectRingNotClipped', () => {
 });
 
 test.describe('expectNotObscured', () => {
-    const bottomBar = '<div id="bar" style="position: fixed; left: 0; right: 0; bottom: 0; height: 80px; background: #222"></div>';
+    // Each bar's z-index puts it over the buttons, which come later in the tree and would paint over a bar without one.
+    const bottomBar = '<div id="bar" style="position: fixed; left: 0; right: 0; bottom: 0; height: 80px; z-index: 1; background: #222"></div>';
+    const bottomBarNoPointer = '<div id="bar" style="position: fixed; left: 0; right: 0; bottom: 0; height: 80px; z-index: 1; pointer-events: none; background: #222"></div>';
     // 800 px viewport minus 300 px paddings leaves 200 px, so a 300 px element is tall.
     const tallPage = 'html { scroll-padding: 300px 0; }';
     const tall = '<button type="button" style="position: absolute; top: 60px; left: 100px; width: 200px; height: 300px">Tall</button>';
-    const topBar = (height: number) => `<div id="bar" style="position: fixed; left: 0; right: 0; top: 0; height: ${height}px; background: #222"></div>`;
+    const topBar = (height: number) => `<div id="bar" style="position: fixed; left: 0; right: 0; top: 0; height: ${height}px; z-index: 1; background: #222"></div>`;
 
     test('passes a short element clear of a fixed bar', async ({ page }) => {
         await load(page, `${bottomBar}<button type="button" style="position: absolute; top: 100px; left: 100px">Clear</button>`);
@@ -172,6 +180,41 @@ test.describe('expectNotObscured', () => {
     test('fails a short element whose ring a fixed bar partly covers', async ({ page }) => {
         await load(page, `${bottomBar}<button type="button" style="position: absolute; top: 740px; left: 100px">Covered</button>`);
         await expect(expectNotObscured(page.getByRole('button'), page.locator('#bar'))).rejects.toThrow(/fits between the scroll paddings, so its focus ring must be fully clear/);
+    });
+
+    test('passes a short element that paints over the fixed bar where they meet', async ({ page }) => {
+        await load(page, `${bottomBar}<button type="button" style="position: absolute; top: 740px; left: 100px; z-index: 2">Over</button>`);
+        await expectNotObscured(page.getByRole('button'), page.locator('#bar'));
+    });
+
+    test('fails a short element under a fixed bar that takes no pointer', async ({ page }) => {
+        await load(page, `${bottomBarNoPointer}<button type="button" style="position: absolute; top: 740px; left: 100px">Covered</button>`);
+        await expect(expectNotObscured(page.getByRole('button'), page.locator('#bar'))).rejects.toThrow(/fits between the scroll paddings, so its focus ring must be fully clear/);
+    });
+
+    test('passes a short element that paints over a fixed bar that takes no pointer, and puts the styles back', async ({ page }) => {
+        // Without pointer events the hit test can't place the bar, so it would count as a cover.
+        await load(page, `${bottomBarNoPointer}<button type="button" style="position: absolute; top: 740px; left: 100px; z-index: 2">Over</button>`);
+        const styles = () => page.locator('#bar, button').evaluateAll((elements) => elements.map((el) => el.getAttribute('style')));
+        const before = await styles();
+        await expectNotObscured(page.getByRole('button'), page.locator('#bar'));
+        expect(await styles()).toEqual(before);
+        await expect(page.locator('#bar')).toHaveCSS('pointer-events', 'none');
+    });
+
+    test('fails chrome that paints beneath the element at one point and over it at another', async ({ page }) => {
+        // The chrome has no stacking context of its own, so its children stack with the button: #under (z-index 0)
+        // beneath all of it, #over (z-index 2) on its bottom right grid cell. The first grid point sees only #under.
+        await load(page, `
+            <div id="chrome" style="position: absolute; top: 0; left: 0; width: 400px; height: 400px">
+                <div id="under" style="position: absolute; inset: 0; z-index: 0; background: #ccc"></div>
+                <div id="over" style="position: absolute; top: 140px; left: 180px; width: 20px; height: 10px; z-index: 2; background: #222"></div>
+            </div>
+            <button type="button" style="position: absolute; top: 100px; left: 100px; width: 100px; height: 50px; z-index: 1">Mixed</button>`);
+        await expect(expectNotObscured(page.getByRole('button'), page.locator('#chrome'))).rejects.toThrow(/fits between the scroll paddings, so its focus ring must be fully clear/);
+        // With #over gone, the chrome paints beneath the button everywhere they meet.
+        await page.locator('#over').evaluate((el) => el.remove());
+        await expectNotObscured(page.getByRole('button'), page.locator('#chrome'));
     });
 
     test('fails a short element when a fixed bar covers only the outer 2 px of its ring', async ({ page }) => {
