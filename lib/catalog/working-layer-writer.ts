@@ -151,6 +151,7 @@ async function commit(
     hooks: VersionedWriteHooks | undefined,
     rebaseTo?: string,
     review?: ReviewInputs,
+    published?: boolean,
 ): Promise<AuthoredRecord> {
     const dir = authoredRecordDir(root, ref.kind, ref.id);
     const folder = await recordFolderProblem(root, ref.kind, ref.id);
@@ -192,7 +193,7 @@ async function commit(
     // #16's stamps, under the same hold: a rebase keeps those of the fields it left alone, and any other write stamps
     // what it changed with what the curator reviewed, keeping the rest as they were.
     const stamps = rebaseTo !== undefined
-        ? rebaseStamps(existing, unstamped.value, await coverAsset(root, existing), new Date().toISOString())
+        ? rebaseStamps(existing, unstamped.value, await coverAsset(root, existing), new Date().toISOString(), published ? rebaseTo : undefined)
         : stampWrite(existing, unstamped.value, {
             baseRevisionId: review ? review.baseRevisionId : active,
             ...(review?.origin ? { origin: review.origin } : {}),
@@ -282,6 +283,8 @@ export interface WriteRebasedOptions {
     lock: LockContext;
     /** The revision the record is now based on. */
     baseRevisionId: string;
+    /** That revision was published from this working layer, so #16's stamps move their base to it too (rebaseStamps()). */
+    published?: boolean;
     hooks?: VersionedWriteHooks;
 }
 
@@ -296,12 +299,12 @@ export function writeRebasedRecord(record: AuthoredSiteInput, options: WriteReba
 export function writeRebasedRecord(record: AuthoredSeriesInput, options: WriteRebasedOptions): Promise<AuthoredSeries>;
 export function writeRebasedRecord(record: AuthoredPhotoInput, options: WriteRebasedOptions): Promise<AuthoredPhoto>;
 export async function writeRebasedRecord(record: AuthoredRecordInput, options: WriteRebasedOptions): Promise<AuthoredRecord> {
-    const { expectedVersion, lock, baseRevisionId, hooks } = options;
+    const { expectedVersion, lock, baseRevisionId, hooks, published } = options;
     const kind = record.kind as AuthoredKind;
     const id = kind === 'site' ? 'site' : String((record as { id?: unknown }).id);
     const ref = { kind, id };
     if (lock.name !== AUTHORED_LOCK || lock.signal.aborted) {
         throw new AuthoredWriteError('LOCK_NOT_HELD', ref, 'A rebase writes only under a live hold on the authored lock.');
     }
-    return commit(path.resolve(lock.root), record, ref, expectedVersion, hooks, baseRevisionId);
+    return commit(path.resolve(lock.root), record, ref, expectedVersion, hooks, baseRevisionId, undefined, published);
 }
