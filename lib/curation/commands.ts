@@ -3,6 +3,7 @@ import { parseArgs } from 'node:util';
 import { references, ReferenceScanError } from '../catalog/references';
 import { REVISION_ID_RE, SERIES_ID_RE } from '../catalog/schema';
 import { readActivePointer, readAuthoredRecord } from '../catalog/working-layer';
+import { isLibraryPath } from '../identity/decisions';
 import { PHOTO_ID_RE } from '../identity/ids';
 import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
@@ -24,7 +25,7 @@ import { currentProfileId } from '../identity/profile';
 import { EVENT_ID_RE, EVENT_STATUSES, FAILURE_TEXT, needsJudgment, shortPhotoId, waitingReason, type CurationEvent, type CurationEventStatus, type Placement } from './events';
 import { placedItems } from './placement';
 import { draftPlanText, readDraftPlan, replacedBy } from './pins';
-import { confirmReplacement, leaveInDraft } from './resolutions';
+import { archiveMissing, bindReplacement, confirmReplacement, leaveInDraft, linkedNewItems } from './resolutions';
 import { EventUnusableError, listEvents, readEvent, type EventProblem } from './repository';
 import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from './text';
 
@@ -62,6 +63,8 @@ export type CurationCommand =
     | { command: 'edit' | 'approve'; eventId: string; version: number; base?: string | null; choices: Choices }
     | { command: 'defer' | 'reopen' | 'retry'; eventId: string; version: number; base?: string | null; reason?: string }
     | { command: 'confirm'; eventId: string; version: number; base?: string | null }
+    | { command: 'archive'; eventId: string; version: number; base?: string | null; reason?: string }
+    | { command: 'bind'; eventId: string; version: number; base?: string | null; path?: string; reason?: string }
     | { command: 'dismiss'; eventId: string; version: number; base?: string | null; reason: string };
 
 /** The program the CLI runs as when none is given: the source under tsx. */
@@ -84,8 +87,12 @@ export function curationUsage(program: string = DEFAULT_PROGRAM): string {
         replacement, reopen and then defer put back the revision the confirm replaced, while that
         confirm is still the inbox's latest change to the photo's revision; reopen and show say
         what defer will do.
+  ${program} curation bind <eventId> --version <n> [--path <library path>] [--reason <text>]
+        Bind an intentional replacement to a missing photograph: the file at --path, or the other bytes found at its last path.
+  ${program} curation archive <eventId> --version <n> [--reason <text>]
+        Archive after removing series references: the takedown of a missing photograph, which photos publish then makes public.
     Every item command also takes --base <revisionId|none> (the active revision it was reviewed against) and --actor <name>.
-    approve and confirm need --base once a revision is active.`;
+    approve, confirm, and archive need --base once a revision is active.`;
 }
 
 export class CurationUsageError extends Error {}
@@ -94,7 +101,7 @@ const usage = (message: string): never => {
     throw new CurationUsageError(message);
 };
 
-const ITEM_COMMANDS = ['edit', 'approve', 'defer', 'dismiss', 'retry', 'reopen', 'confirm'] as const;
+const ITEM_COMMANDS = ['edit', 'approve', 'defer', 'dismiss', 'retry', 'reopen', 'confirm', 'bind', 'archive'] as const;
 
 function text(value: string, field: string, max: number): string {
     const checked = ownerText(value, { field, max });
@@ -125,6 +132,7 @@ export function parseCurationArgs(args: readonly string[]): CurationCommand {
                 'clear-description': { type: 'boolean' },
                 reason: { type: 'string' },
                 actor: { type: 'string' },
+                path: { type: 'string' },
             },
             allowPositionals: true,
             strict: true,
@@ -158,7 +166,7 @@ export function parseCurationArgs(args: readonly string[]): CurationCommand {
     }
     const choiceFlags = ['series', 'unassigned', 'start', 'end', 'after', 'description', 'decorative', 'clear-description'];
     const common = ['version', 'base', 'actor'];
-    only(command === 'edit' || command === 'approve' ? [...common, ...choiceFlags] : command === 'confirm' ? common : [...common, 'reason']);
+    only(command === 'edit' || command === 'approve' ? [...common, ...choiceFlags] : command === 'confirm' ? common : command === 'bind' ? [...common, 'reason', 'path'] : [...common, 'reason']);
     if (positionals.length !== 1) usage(`curation ${command} needs one event ID.`);
     const [eventId] = positionals;
     if (!EVENT_ID_RE.test(eventId)) usage(`${eventId} is not an event ID.`);
@@ -206,6 +214,12 @@ export function parseCurationArgs(args: readonly string[]): CurationCommand {
         if (reason === undefined) usage('curation dismiss needs --reason <text>.');
         return { command, ...item, reason: reason as string };
     }
+    if (command === 'bind') {
+        const target = values.path as string | undefined;
+        if (target !== undefined && !isLibraryPath(target)) usage(`--path takes a path relative to the library, such as harbor/landscape.jpg.`);
+        return { command, ...item, ...(target === undefined ? {} : { path: target }), ...(reason === undefined ? {} : { reason }) };
+    }
+    if (command === 'archive') return { command, ...item, ...(reason === undefined ? {} : { reason }) };
     return { command: command as 'defer' | 'reopen' | 'retry', ...item, ...(reason === undefined ? {} : { reason }) };
 }
 
@@ -442,6 +456,42 @@ async function replacementLines(root: string, event: CurationEvent, registry: Re
     ];
 }
 
+/**
+ * #17's lines for a missing source: that the published output is protected,
+ * the files linked to it, and the three ways to settle it.
+ */
+async function missingLines(root: string, event: CurationEvent, registry: Registry | null): Promise<string[]> {
+    if (event.type !== 'missing' || event.photoId === null) return [];
+    const photo = registry?.photos[event.photoId];
+    const lines = [
+        'Published output protected: the active revision keeps serving this photograph from its derivative set, which the source file is no longer needed for. Deleting, moving, or renaming a file never takes a photograph down.',
+    ];
+    if (event.status === 'resolved') return lines;
+    if (photo?.sourceHealth === 'present' && photo.source.present) {
+        lines.push(`Its source is back at ${printable(photo.source.path)}. The watcher closes this item on its next pass.`);
+        return lines;
+    }
+    const linked = await linkedNewItems(root, event.photoId).catch(() => []);
+    for (const item of linked) {
+        lines.push(`Linked: ${printable(item.derivedFacts.sourcePath)} holds other bytes at its last path, the new photograph ${shortPhotoId(item.photoId)} (${item.id}). curation bind gives them to ${event.photoId}.`);
+    }
+    lines.push(
+        'To settle it:',
+        '  Locate or restore source file: put the same file back anywhere in the library, and the watcher closes this item.',
+        `  Bind an intentional replacement: curation bind ${event.id}${linked.length === 1 ? '' : ' --path <library path>'}, then confirm the new asset revision on its replacement item.`,
+        `  Archive after removing series references: curation archive ${event.id}, then photos publish. That is the takedown. Copies already served as immutable can stay in browsers and caches.`,
+    );
+    return lines;
+}
+
+/** #17's line for a failed build's item. */
+function failedBuildLines(event: CurationEvent): string[] {
+    if (event.type !== 'processing-failure' || !event.candidate) return [];
+    const { candidate } = event;
+    if (candidate.state === 'ready') return [`Derivative set: built under ${candidate.profileId}.`];
+    return [`Derivative set: failed under ${candidate.profileId}: ${CANDIDATE_FAILURE_TEXT[candidate.failure ?? 'build']}. The previous published image, if any, keeps serving. curation retry builds it again.`];
+}
+
 async function show(root: string, command: Extract<CurationCommand, { command: 'show' }>): Promise<CommandResult> {
     let event: CurationEvent | null;
     try {
@@ -467,6 +517,8 @@ async function show(root: string, command: Extract<CurationCommand, { command: '
         ...(unknown === null ? [] : [unknownPlacementLine(unknown)]),
         `Asset revision: ${event.assetRevision ?? 'none'}`,
         ...(await replacementLines(root, event, registry)),
+        ...(await missingLines(root, event, registry)),
+        ...failedBuildLines(event),
         `Observed: ${event.observedAt}${event.lastObservedAt !== event.observedAt ? `, last ${event.lastObservedAt}` : ''}`,
         ...factLines(event),
         ...suggestionLines(event),
@@ -485,6 +537,7 @@ async function show(root: string, command: Extract<CurationCommand, { command: '
                 ...(decision.writes?.length ? [`wrote ${decision.writes.map((entry) => `${entry.record} v${entry.version}`).join(', ')}`] : []),
                 ...(decision.identityDecisionId ? [`identity decision ${decision.identityDecisionId}`] : []),
                 ...(decision.fromRevision ? [decision.action === 'defer' ? `put back ${decision.fromRevision}` : `in place of ${decision.fromRevision}`] : []),
+                ...(decision.path ? [`path ${printable(decision.path)}`] : []),
             ];
             lines.push(`  ${decision.at} ${decision.action} by ${printable(decision.by)}${extra.length ? `: ${extra.join(', ')}` : ''}`);
         }
@@ -532,6 +585,10 @@ async function run(context: CurationContext, command: CurationCommand): Promise<
             return report(await reopenEvent({ ...input, reason: command.reason }));
         case 'confirm':
             return report(await confirmReplacement(input));
+        case 'bind':
+            return report(await bindReplacement({ ...input, path: command.path, reason: command.reason }));
+        case 'archive':
+            return report(await archiveMissing({ ...input, reason: command.reason }));
     }
 }
 
