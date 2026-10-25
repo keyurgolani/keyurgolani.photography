@@ -47,8 +47,13 @@ describe('the lib/catalog import boundary', { timeout: 60_000 }, () => {
         expect(await restrictedImports(file, source)).toEqual([]);
     });
 
-    it.each(['lib/catalog/reader.ts', 'lib/catalog/projections/work.ts'])('lets %s, which client code must not reach, import server-only', async (file) => {
+    it.each(['lib/catalog/reader.ts', 'lib/catalog/projections/work.ts', 'lib/catalog/projections/home.ts'])('lets %s, which client code must not reach, import server-only', async (file) => {
         expect(await restrictedImports(file, SERVER_ONLY)).toEqual([]);
+    });
+
+    it("keeps Next out of lib/catalog/projections/home.ts, and server-only out of other projections", async () => {
+        expect(await restrictedImports('lib/catalog/projections/home.ts', NEXT_SERVER)).toHaveLength(1);
+        expect(await restrictedImports('lib/catalog/projections/probe.ts', SERVER_ONLY)).toHaveLength(1);
     });
 
     it.each([
