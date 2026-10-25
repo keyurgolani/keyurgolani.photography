@@ -360,7 +360,9 @@ export interface VersionedWriteOptions {
  * StaleVersionError otherwise and commits nothing. Callers hold the
  * document's lock, which only serializes their work: this is what stops a
  * writer that lost its lock, or never took it, from losing an update. `dir`
- * is created, readable by its owner only, and its parent must exist. Returns
+ * is created, readable by its owner only, and its parent must exist. A first
+ * write (expectedVersion 0) fsyncs that parent too; callers that make the
+ * levels above use ensureDirectory() with syncParent the same way. Returns
  * `next` at its new version.
  */
 export async function writeVersionedDocument<T extends VersionedDocument>(
@@ -405,8 +407,9 @@ export async function writeVersionedDocument<T extends VersionedDocument>(
         }
         await hooks?.afterLink?.(file);
         await fsyncDirectory(dir);
-        // A folder this write created holds its first version only once the folder itself survives a crash.
-        if (created) await fsyncDirectory(path.dirname(dir));
+        // A first version survives a crash only with its folder's entry in the parent. Another writer may have made
+        // the folder and then lost or crashed before it synced the parent, so a first write syncs it either way.
+        if (created || expectedVersion === 0) await fsyncDirectory(path.dirname(dir));
     } finally {
         await fs.promises.rm(temp, { force: true }).catch(() => undefined);
     }

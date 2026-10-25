@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import { dataRoot, dataRootStatus } from '../storage/config';
 import {
@@ -10,7 +9,7 @@ import {
     type StoredVersion,
     type VersionedWriteHooks,
 } from '../storage/document';
-import { hasErrorCode, PRIVATE_DIR_MODE, realpathLoose } from '../storage/fsx';
+import { ensureDirectory, realpathLoose } from '../storage/fsx';
 import { LockTimeoutError, withLock, type LockContext, type LockRecord } from '../storage/lock';
 import { CATALOG_SCHEMA_VERSION, parseAuthoredRecord, type AuthoredKind, type SchemaIssue } from './schema';
 import type {
@@ -82,14 +81,6 @@ function withoutManaged(record: AuthoredRecordInput): Record<string, unknown> {
     return Object.fromEntries(Object.entries(record).filter(([key]) => !MANAGED.has(key)));
 }
 
-async function ensureFolder(dir: string): Promise<void> {
-    try {
-        await fs.promises.mkdir(dir, { mode: PRIVATE_DIR_MODE });
-    } catch (error) {
-        if (!hasErrorCode(error, 'EEXIST')) throw error;
-    }
-}
-
 /** The newest stored version of a record, or null. A version that can't be used is INVALID_RECORD, with how to fix it. */
 async function readStored(dir: string, ref: { kind: AuthoredKind; id: string }): Promise<StoredVersion | null> {
     try {
@@ -145,8 +136,10 @@ async function commit(
     if (!parsed.ok) throw new AuthoredWriteError('INVALID_RECORD', ref, `The ${ref.kind} record ${ref.id} is not valid.`, { issues: parsed.error.issues });
 
     const paths = authoredPaths(root);
-    await ensureFolder(paths.dir);
-    if (ref.kind !== 'site') await ensureFolder(path.dirname(dir));
+    // A first version survives a crash only with every folder above it synced, including ones another writer made.
+    const syncParent = expectedVersion === 0;
+    await ensureDirectory(paths.dir, { syncParent });
+    if (ref.kind !== 'site') await ensureDirectory(path.dirname(dir), { syncParent });
     // The lock keeps writers apart only while it holds. One past its lease may still be between its read and its
     // commit, so the commit is a compare-and-swap too, and of two writers at one version only one gets through.
     try {

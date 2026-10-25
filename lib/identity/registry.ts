@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteJson } from '../storage/atomicWrite';
 import {
@@ -10,7 +9,7 @@ import {
     writeVersionedDocument,
     type VersionedWriteHooks,
 } from '../storage/document';
-import { hasErrorCode, PRIVATE_DIR_MODE } from '../storage/fsx';
+import { ensureDirectory } from '../storage/fsx';
 import { ASSET_REVISION_RE, DECISION_ID_RE, PHOTO_ID_RE } from './ids';
 import type { ImageInspection, UnsupportedInspection } from './inspect';
 import { EXTRACTOR_VERSION } from './metadata';
@@ -97,17 +96,10 @@ export async function readRegistry(root: string): Promise<Registry> {
     return stored.value as unknown as Registry;
 }
 
-async function ensureIdentityDir(root: string): Promise<void> {
-    try {
-        await fs.promises.mkdir(identityPaths(root).dir, { mode: PRIVATE_DIR_MODE });
-    } catch (error) {
-        if (!hasErrorCode(error, 'EEXIST')) throw error;
-    }
-}
-
 /** Compare-and-swap write of the registry's next version. The caller holds the registry lock. */
 export async function writeRegistry(root: string, registry: Registry, expectedVersion: number, hooks?: VersionedWriteHooks): Promise<Registry> {
-    await ensureIdentityDir(root);
+    // The first version survives a crash only with `identity/` in the root, which the stat cache may have made unsynced.
+    await ensureDirectory(identityPaths(root).dir, { syncParent: expectedVersion === 0 });
     return writeVersionedDocument(identityPaths(root).registry, registry, expectedVersion, { hooks });
 }
 
@@ -153,6 +145,6 @@ export async function readStatCache(root: string): Promise<StatCache> {
 }
 
 export async function writeStatCache(root: string, cache: StatCache): Promise<void> {
-    await ensureIdentityDir(root);
+    await ensureDirectory(identityPaths(root).dir);
     await atomicWriteJson(identityPaths(root).statCache, cache);
 }
