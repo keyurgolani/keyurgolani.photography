@@ -166,11 +166,22 @@ describe('the record', () => {
 describe('a series page that mounts again', () => {
     const stored = (record: object, extra: object = {}) => window.history.replaceState({ ...NEXT_KEYS, ...extra, [RETURN_KEY]: record }, '');
 
-    it('restores the offset and focuses the entry that opened the Viewer', () => {
+    it('restores the offset and focuses the entry that opened the Viewer, then uses the record up', () => {
         stored({ photoId: B, opener: 'entry', scrollY: 900 });
         mount();
         expect(scrollTo).toHaveBeenCalledWith({ top: 900, left: 0, behavior: 'instant' });
         expect(document.activeElement).toBe(byId(`photo-${B}`));
+        expect(window.history.state).toEqual(NEXT_KEYS);
+    });
+
+    it('moves nothing on a second mount from the same entry, since the first one used the record', () => {
+        stored({ photoId: B, opener: 'entry', scrollY: 900 });
+        mount().unmount();
+        byId(`photo-${B}`).blur();
+        scrollTo.mockClear();
+        mount();
+        expect(scrollTo).not.toHaveBeenCalled();
+        expect(document.activeElement).toBe(document.body);
     });
 
     it('focuses the cover when the cover opened it', () => {
@@ -193,12 +204,13 @@ describe('a series page that mounts again', () => {
         expect(document.activeElement).toBe(byId(`photo-${A}`));
     });
 
-    it('restores nothing when the visitor reloaded the series page itself', () => {
+    it('restores nothing when the visitor reloaded the series page itself, and drops the record', () => {
         stored({ photoId: A, opener: 'entry', scrollY: 300 });
         navigationType = 'reload';
         hydrate();
         expect(scrollTo).not.toHaveBeenCalled();
         expect(document.activeElement).toBe(document.body);
+        expect(window.history.state).toEqual(NEXT_KEYS);
     });
 
     it('restores on a client render even in a document that was reloaded earlier, since that render is a return', () => {
@@ -249,6 +261,8 @@ describe('a series page that mounts again', () => {
         stored({ photoId: B, opener: 'entry', scrollY: 900 });
         const view = mount();
         expect(scrollTo).toHaveBeenCalledTimes(1);
+        // A record written since (another click) is for the next return, not for a refresh in place.
+        stored({ photoId: A, opener: 'entry', scrollY: 100 });
         view.rerender(<SeriesReturn {...PROPS} revisionId="rev_b" />);
         expect(scrollTo).toHaveBeenCalledTimes(1);
     });
@@ -273,6 +287,26 @@ describe('closing the intercepted Viewer over the mounted page', () => {
         view.rerender(<SeriesReturn {...PROPS} />);
         expect(scrollTo).toHaveBeenCalledWith({ top: 700, left: 0, behavior: 'instant' });
         expect(document.activeElement).toBe(byId(`photo-${A}`));
+        expect(returnState()).toBeUndefined();
+    });
+
+    it('moves nothing when the visitor closes the Viewer, scrolls on, goes to Work, and comes Back', () => {
+        const view = mount();
+        setScrollY(700);
+        fireEvent.click(byId(`photo-${A}`));
+        viewerOpen(A);
+        view.rerender(<SeriesReturn {...PROPS} />);
+        navigation.pathname = '/work/harbor';
+        view.rerender(<SeriesReturn {...PROPS} />);
+        expect(scrollTo).toHaveBeenCalledTimes(1);
+        // Scrolls on to 4000, then follows Work: a push, so the [slug] layout unmounts.
+        setScrollY(4000);
+        byId(`photo-${A}`).blur();
+        view.unmount();
+        // Back renders the series page afresh from the same entry.
+        mount();
+        expect(scrollTo).toHaveBeenCalledTimes(1);
+        expect(document.activeElement).toBe(document.body);
     });
 
     it('does nothing when the series path changes without a Viewer between', () => {

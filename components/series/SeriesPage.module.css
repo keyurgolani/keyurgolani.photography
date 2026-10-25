@@ -119,8 +119,15 @@
   text-decoration: none;
 }
 
+/* Inside the link the frame takes the link's --ratio, so a cover whose image
+   fails keeps the photograph's shape, and with it the 82svh cap. */
 .coverLink .coverFrame {
+  --ratio: inherit;
   width: 100%;
+}
+
+.coverLink .coverFrame.fallback {
+  aspect-ratio: var(--ratio);
 }
 
 .coverFrame .image {

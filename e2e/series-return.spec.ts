@@ -152,16 +152,16 @@ test.describe('the intercepted Viewer over the series page', () => {
         await expectReturned(page, entry(page, DEEP), offset);
     });
 
-    test('the series\' history entry keeps Next\'s router keys beside the return record', async ({ page }) => {
+    test('the return uses the record up and keeps Next\'s router keys in the series\' history entry', async ({ page }) => {
         await openSeries(page);
         await scrollTo(page, entry(page, DEEP));
         await enter(page, entry(page, DEEP), DEEP);
         await page.goBack();
         await expect(entry(page, DEEP)).toBeFocused();
-        const state = await page.evaluate(() => history.state as { __NA?: unknown; __PRIVATE_NEXTJS_INTERNALS_TREE?: unknown; kgSeriesReturn?: { photoId?: unknown; opener?: unknown } });
+        const state = await page.evaluate(() => history.state as Record<string, unknown>);
         expect(state.__NA).toBe(true);
         expect(state.__PRIVATE_NEXTJS_INTERNALS_TREE).toBeTruthy();
-        expect(state.kgSeriesReturn).toEqual(expect.objectContaining({ photoId: DEEP, opener: 'entry' }));
+        expect(state).not.toHaveProperty('kgSeriesReturn');
     });
 });
 
@@ -191,17 +191,14 @@ test.describe('Back to the series from a Viewer page', () => {
         await expectReturned(page, cover(page), offset);
     });
 
-    test('a reload of the series page itself moves no focus, even with a return record in its entry', async ({ page }) => {
+    test('a reload of the series page itself moves no focus with a return record in its entry, and drops the record', async ({ page }) => {
         await openSeries(page);
-        await scrollTo(page, entry(page, DEEP));
-        await enter(page, entry(page, DEEP), DEEP);
-        await page.goBack();
-        await expect(entry(page, DEEP)).toBeFocused();
+        // A record the entry still holds, as when the visitor activated an entry and the Viewer never opened.
+        await page.evaluate((photoId) => history.replaceState({ ...history.state, kgSeriesReturn: { photoId, opener: 'entry', scrollY: 900 } }, ''), DEEP);
         await page.reload();
         await waitForHydration(page);
-        expect(await page.evaluate(() => (history.state as { kgSeriesReturn?: unknown } | null)?.kgSeriesReturn)).toBeTruthy();
-        // Give a restore that shouldn't happen time to run.
-        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        await expect.poll(() => page.evaluate(() => 'kgSeriesReturn' in ((history.state as object | null) ?? {}))).toBe(false);
+        expect(await page.evaluate(() => (history.state as { __NA?: unknown }).__NA)).toBe(true);
         expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
     });
 });

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { COVER_ID, RESTORE_WAIT_MS, RETURN_KEY, openerOf, readReturn, restoreReturn, scheduleRestore, withReturn } from '../returnPosition';
+import { COVER_ID, RESTORE_WAIT_MS, RETURN_KEY, clearReturn, openerOf, readReturn, restoreReturn, scheduleRestore, withReturn } from '../returnPosition';
 import { SERIES_PAGES_KEY, SERIES_RESTORED_EVENT } from '../seriesContinuation';
 
 // The series page's return record (#5): what goes into the series' history
@@ -151,20 +151,43 @@ describe('restoreReturn and scheduleRestore', () => {
     it.each([
         ['above the viewport', -200],
         ['below the viewport', 800],
-    ])('scrolls an opener %s at that offset into view before focusing it', (_label, top) => {
+        ['cut off at the top', -1],
+        ['cut off at the bottom', 701],
+    ])('scrolls an opener %s at that offset the least distance into view before focusing it', (_label, top) => {
         const entry = document.getElementById(`photo-${PHOTO}`);
         inView(entry, top);
         restoreReturn({ photoId: PHOTO, opener: 'entry', scrollY: 0 });
         expect(scrollIntoView).toHaveBeenCalledTimes(1);
         expect(scrollIntoView.mock.contexts[0]).toBe(entry);
-        expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'instant' });
+        expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest', behavior: 'instant' });
         expect(document.activeElement).toBe(entry);
     });
 
-    it('keeps an opener that is partly in view where it is', () => {
-        inView(document.getElementById(`photo-${PHOTO}`), -50);
+    it.each([
+        ['at the top edge', 0],
+        ['at the bottom edge', 700],
+    ])('keeps an opener wholly in view %s where it is', (_label, top) => {
+        inView(document.getElementById(`photo-${PHOTO}`), top);
         restoreReturn({ photoId: PHOTO, opener: 'entry', scrollY: 0 });
         expect(scrollIntoView).not.toHaveBeenCalled();
+    });
+
+    it('with scroll off, leaves the page where it is and only focuses', () => {
+        inView(document.getElementById(`photo-${PHOTO}`), -200);
+        restoreReturn({ photoId: PHOTO, opener: 'entry', scrollY: 640 }, { scroll: false });
+        expect(scrollTo).not.toHaveBeenCalled();
+        expect(scrollIntoView).not.toHaveBeenCalled();
+        expect(document.activeElement?.id).toBe(`photo-${PHOTO}`);
+    });
+
+    it('with onlyIfIdle, takes focus only from the body', () => {
+        const other = document.getElementById(`photo-${OTHER}`) as HTMLElement;
+        other.focus();
+        expect(restoreReturn({ photoId: PHOTO, opener: 'entry', scrollY: 0 }, { onlyIfIdle: true })).toBeNull();
+        expect(document.activeElement).toBe(other);
+        other.blur();
+        restoreReturn({ photoId: PHOTO, opener: 'entry', scrollY: 0 }, { onlyIfIdle: true });
+        expect(document.activeElement?.id).toBe(`photo-${PHOTO}`);
     });
 
     it('only scrolls when the photograph is gone from the page', () => {
@@ -187,25 +210,30 @@ describe('restoreReturn and scheduleRestore', () => {
         return late;
     };
     const restored = () => document.querySelector('section')?.dispatchEvent(new Event(SERIES_RESTORED_EVENT, { bubbles: true }));
+    const record = (photoId: string, opener: 'entry' | 'cover' = 'entry', scrollY = 640) => ({ photoId, opener, scrollY });
+    /** The record in the entry, beside Next's keys, as SeriesReturn leaves it before a restore. */
+    const storeRecord = (photoId: string, extra: object = {}) => window.history.replaceState({ ...NEXT_KEYS, ...extra, [RETURN_KEY]: record(photoId) }, '');
+    const state = () => window.history.state as Record<string, unknown>;
 
-    it('restores at once when no extent is stored and the sequence isn\'t busy', () => {
+    it('restores at once when no extent is stored, and takes the record out of the entry, keeping every other key', () => {
+        storeRecord(PHOTO);
         inView(document.getElementById(`photo-${PHOTO}`), 100);
-        scheduleRestore({ photoId: PHOTO, opener: 'entry', scrollY: 640 }, SERIES);
+        scheduleRestore(record(PHOTO), SERIES);
         expect(document.activeElement?.id).toBe(`photo-${PHOTO}`);
+        expect(state()).toEqual(NEXT_KEYS);
     });
 
     it('restores at once, with an extent stored, when the opener is already on the page', () => {
         extent();
         inView(document.getElementById(`photo-${PHOTO}`), 100);
-        scheduleRestore({ photoId: PHOTO, opener: 'entry', scrollY: 640 }, SERIES);
+        scheduleRestore(record(PHOTO), SERIES);
         expect(document.activeElement?.id).toBe(`photo-${PHOTO}`);
     });
 
     it('restores the cover at once, whatever #6 is loading, since the cover is never paged', () => {
         extent();
-        document.querySelector('section')?.setAttribute('aria-busy', 'true');
         inView(document.getElementById(COVER_ID), 100);
-        scheduleRestore({ photoId: LATE, opener: 'cover', scrollY: 0 }, SERIES);
+        scheduleRestore(record(LATE, 'cover', 0), SERIES);
         expect(document.activeElement?.id).toBe(COVER_ID);
     });
 
@@ -216,56 +244,127 @@ describe('restoreReturn and scheduleRestore', () => {
         ['no', () => undefined],
     ])('only scrolls, at once, when the opener is missing and the entry holds %s extent, which #6 won\'t load', (_label, store) => {
         store();
-        scheduleRestore({ photoId: LATE, opener: 'entry', scrollY: 4800 }, SERIES);
+        scheduleRestore(record(LATE, 'entry', 4800), SERIES);
         expect(scrollTo).toHaveBeenCalledWith({ top: 4800, left: 0, behavior: 'instant' });
         expect(document.activeElement).toBe(document.body);
     });
 
-    it('waits for #6\'s event when the opener is missing and this series\' extent is stored, then restores scroll and focus once', () => {
-        extent();
-        scheduleRestore({ photoId: LATE, opener: 'entry', scrollY: 4800 }, SERIES);
+    it('waits for #6\'s event when the opener is missing and this series\' extent is stored, then restores scroll and focus once and uses the record up', () => {
+        const pages = { revisionId: 'rev_a', slug: 'harbor', loaded: 200 };
+        storeRecord(LATE, { [SERIES_PAGES_KEY]: pages });
+        scheduleRestore(record(LATE, 'entry', 4800), SERIES);
         expect(scrollTo).not.toHaveBeenCalled();
         expect(document.activeElement).toBe(document.body);
+        expect(state()).toHaveProperty(RETURN_KEY);
         const late = appendLate();
         restored();
         expect(scrollTo).toHaveBeenCalledWith({ top: 4800, left: 0, behavior: 'instant' });
         expect(document.activeElement).toBe(late);
+        expect(state()).toEqual({ ...NEXT_KEYS, [SERIES_PAGES_KEY]: pages });
         restored();
         expect(scrollTo).toHaveBeenCalledTimes(1);
     });
 
-    it('waits while the sequence section is aria-busy, even before an extent shows in the state', () => {
+    it('does not wait for a busy section alone, which #6 can\'t have marked by the time the page mounts', () => {
         document.querySelector('section')?.setAttribute('aria-busy', 'true');
-        scheduleRestore({ photoId: LATE, opener: 'entry', scrollY: 0 }, SERIES);
-        expect(scrollTo).not.toHaveBeenCalled();
-        const late = appendLate();
-        window.dispatchEvent(new Event(SERIES_RESTORED_EVENT));
+        scheduleRestore(record(LATE, 'entry', 0), SERIES);
         expect(scrollTo).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+        ['a key', () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab' }))],
+        ['a pointer press', () => document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }))],
+        ['the wheel', () => document.body.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 120 }))],
+    ])('skips the scroll of a delayed restore after %s, and still focuses the opener from the body', (_label, input) => {
+        extent();
+        scheduleRestore(record(LATE, 'entry', 4800), SERIES);
+        input();
+        const late = appendLate();
+        inView(late, -500);
+        restored();
+        expect(scrollTo).not.toHaveBeenCalled();
+        expect(scrollIntoView).not.toHaveBeenCalled();
         expect(document.activeElement).toBe(late);
     });
 
-    it('stops waiting after RESTORE_WAIT_MS and restores with what is there', () => {
-        vi.useFakeTimers();
+    it('never takes focus from where the visitor went while it waited', () => {
         extent();
-        scheduleRestore({ photoId: LATE, opener: 'entry', scrollY: 640 }, SERIES);
+        scheduleRestore(record(LATE, 'entry', 4800), SERIES);
+        const other = document.getElementById(`photo-${OTHER}`) as HTMLElement;
+        other.focus();
+        appendLate();
+        restored();
+        expect(document.activeElement).toBe(other);
+    });
+
+    it('scrolls with what is there after RESTORE_WAIT_MS, then focuses the opener when #6 finishes later', () => {
+        vi.useFakeTimers();
+        storeRecord(LATE, { [SERIES_PAGES_KEY]: { revisionId: 'rev_a', slug: 'harbor', loaded: 200 } });
+        scheduleRestore(record(LATE), SERIES);
         vi.advanceTimersByTime(RESTORE_WAIT_MS - 1);
         expect(scrollTo).not.toHaveBeenCalled();
         vi.advanceTimersByTime(1);
         expect(scrollTo).toHaveBeenCalledWith({ top: 640, left: 0, behavior: 'instant' });
-        // The event after the timeout restores nothing more.
+        expect(document.activeElement).toBe(document.body);
+        expect(state()).not.toHaveProperty(RETURN_KEY);
+        const late = appendLate();
         restored();
+        expect(document.activeElement).toBe(late);
+        // Then it's done: another event moves nothing.
+        restored();
+        expect(scrollTo).toHaveBeenCalledTimes(2);
+    });
+
+    it('focuses nothing on a late event once the visitor has focused something after the timeout', () => {
+        vi.useFakeTimers();
+        extent();
+        scheduleRestore(record(LATE), SERIES);
+        vi.advanceTimersByTime(RESTORE_WAIT_MS);
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab' }));
+        const other = document.getElementById(`photo-${OTHER}`) as HTMLElement;
+        other.focus();
+        appendLate();
+        restored();
+        expect(document.activeElement).toBe(other);
         expect(scrollTo).toHaveBeenCalledTimes(1);
     });
 
-    it('restores nothing once cancelled, by the event or the timeout', () => {
+    it('restores nothing once cancelled, and keeps the record, by the event or the timeout', () => {
         vi.useFakeTimers();
-        extent();
-        const cancel = scheduleRestore({ photoId: LATE, opener: 'entry', scrollY: 640 }, SERIES);
+        storeRecord(LATE, { [SERIES_PAGES_KEY]: { revisionId: 'rev_a', slug: 'harbor', loaded: 200 } });
+        const cancel = scheduleRestore(record(LATE), SERIES);
         cancel();
         appendLate();
         restored();
         vi.advanceTimersByTime(RESTORE_WAIT_MS);
         expect(scrollTo).not.toHaveBeenCalled();
         expect(document.activeElement).toBe(document.body);
+        expect(state()).toHaveProperty(RETURN_KEY);
+    });
+
+    it('stops listening for input once cancelled', () => {
+        extent();
+        const remove = vi.spyOn(window, 'removeEventListener');
+        scheduleRestore(record(LATE), SERIES)();
+        expect(remove.mock.calls.map(([type, , options]) => [type, options])).toEqual(expect.arrayContaining([['keydown', true], ['pointerdown', true], ['wheel', true]]));
     });
 });
+
+describe('clearReturn', () => {
+    afterEach(() => window.history.replaceState(null, ''));
+
+    it('takes only the record out, with a spread', () => {
+        window.history.replaceState({ ...NEXT_KEYS, [SERIES_PAGES_KEY]: { loaded: 2 }, [RETURN_KEY]: { photoId: PHOTO, opener: 'entry', scrollY: 1 } }, '');
+        clearReturn();
+        expect(window.history.state).toEqual({ ...NEXT_KEYS, [SERIES_PAGES_KEY]: { loaded: 2 } });
+    });
+
+    it('writes nothing when there is no record', () => {
+        window.history.replaceState({ ...NEXT_KEYS }, '');
+        const replace = vi.spyOn(window.history, 'replaceState');
+        clearReturn();
+        expect(replace).not.toHaveBeenCalled();
+        replace.mockRestore();
+    });
+});
+

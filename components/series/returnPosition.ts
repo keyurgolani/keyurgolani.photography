@@ -83,55 +83,94 @@ function openerElement(record: SeriesReturn, doc: Document): HTMLElement | null 
     return (record.opener === 'cover' ? doc.getElementById(COVER_ID) : null) ?? doc.getElementById(entryId(record.photoId));
 }
 
+export interface RestoreOptions {
+    /** Put the scroll offset back. Off once the visitor has moved the page themselves. */
+    scroll?: boolean;
+    /** Focus the opener only when nothing else has focus, so a late restore never takes it from where the visitor went. */
+    onlyIfIdle?: boolean;
+}
+
+/** Whether focus is on nothing in particular: the body, or no element at all. */
+function focusIsIdle(doc: Document): boolean {
+    return doc.activeElement === null || doc.activeElement === doc.body;
+}
+
 /**
  * Puts the visitor back where `record` says: the scroll offset first, then
  * focus on the link that opened the Viewer, without moving the page again.
- * If the layout changed so that link is out of view at that offset (another
- * viewport size after a reload), it's scrolled into view. A cover link that's
- * gone falls back to the photograph's entry. When neither is on the page
- * (the photograph left the revision) only the scroll offset comes back; the
+ * If the layout changed so that link isn't wholly in view at that offset
+ * (another viewport size after a reload), it's scrolled the least distance
+ * that shows it, within the page's scroll padding. A cover link that's gone
+ * falls back to the photograph's entry. When neither is on the page (the
+ * photograph left the revision) only the scroll offset comes back; the
  * heading fallback is deferred.
  */
-export function restoreReturn(record: SeriesReturn, doc: Document = document): HTMLElement | null {
+export function restoreReturn(record: SeriesReturn, { scroll = true, onlyIfIdle = false }: RestoreOptions = {}, doc: Document = document): HTMLElement | null {
     const view = doc.defaultView;
-    view?.scrollTo({ top: record.scrollY, left: 0, behavior: 'instant' });
+    if (scroll) view?.scrollTo({ top: record.scrollY, left: 0, behavior: 'instant' });
     const target = openerElement(record, doc);
     if (target === null) return null;
-    const box = target.getBoundingClientRect();
-    const height = view?.innerHeight ?? 0;
-    if (box.bottom <= 0 || box.top >= height) target.scrollIntoView({ block: 'center', behavior: 'instant' });
+    if (onlyIfIdle && !focusIsIdle(doc)) return null;
+    if (scroll) {
+        const box = target.getBoundingClientRect();
+        if (box.top < 0 || box.bottom > (view?.innerHeight ?? 0)) target.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+    }
     target.focus({ preventScroll: true });
     return target;
 }
 
-/** The sequence section, which #6 marks `aria-busy` while it loads a stored extent again. */
-function sequenceSection(doc: Document): Element | null {
-    return doc.getElementById('series-sequence')?.closest('section') ?? null;
+/** Takes the record out of the series' entry with the same spread, so it's used once: a later Back that isn't from the Viewer moves nothing. */
+export function clearReturn(): void {
+    const state: unknown = window.history.state;
+    if (!isRecord(state) || !(RETURN_KEY in state)) return;
+    const rest = { ...state };
+    delete rest[RETURN_KEY];
+    window.history.replaceState(rest, '');
 }
 
+/** What the visitor does that means they've taken over: a key, a press, or the wheel. */
+const INPUT_EVENTS = ['keydown', 'pointerdown', 'wheel'] as const;
+
 /**
- * Restores `record` now, or, when its opener isn't on the page yet and #6
- * is loading this history entry's pages again (the section is `aria-busy`,
- * or the entry holds an extent for this series, which #6 starts loading in
- * the same commit), once #6 fires SERIES_RESTORED_EVENT. RESTORE_WAIT_MS
- * caps the wait, so focus never waits forever. Returns the cancel.
+ * Restores `record` and uses it up. It restores at once unless its opener
+ * isn't on the page yet and #6 is loading this history entry's pages again
+ * (the entry holds an extent readSeriesPages() accepts for this series,
+ * which #6 starts loading in the same commit). Then it waits for #6's
+ * SERIES_RESTORED_EVENT. RESTORE_WAIT_MS caps that wait with what's there,
+ * and a later event still focuses the opener. Either way a delayed restore
+ * skips the scroll once the visitor has pressed a key, pressed a pointer or
+ * turned the wheel, and moves focus only from the body. Returns the cancel.
  */
 export function scheduleRestore(record: SeriesReturn, series: SeriesOnPage): () => void {
-    const restoring = sequenceSection(document)?.getAttribute('aria-busy') === 'true' || readSeriesPages(window.history.state, series.revisionId, series.slug, series.total) !== null;
+    const restoring = readSeriesPages(window.history.state, series.revisionId, series.slug, series.total) !== null;
     if (openerElement(record, document) !== null || !restoring) {
         restoreReturn(record);
+        clearReturn();
         return () => undefined;
     }
-    // Whichever comes first, the event or the timeout, removes both, so the restore runs once.
-    const stop = () => {
-        window.removeEventListener(SERIES_RESTORED_EVENT, finish);
-        window.clearTimeout(timer);
+    let moved = false;
+    const onInput = () => {
+        moved = true;
     };
-    function finish() {
+    const late = () => restoreReturn(record, { scroll: !moved, onlyIfIdle: true });
+    const stop = () => {
+        window.removeEventListener(SERIES_RESTORED_EVENT, onRestored);
+        window.clearTimeout(timer);
+        for (const type of INPUT_EVENTS) window.removeEventListener(type, onInput, true);
+    };
+    function onRestored() {
         stop();
-        restoreReturn(record);
+        late();
+        clearReturn();
     }
-    window.addEventListener(SERIES_RESTORED_EVENT, finish);
-    const timer = window.setTimeout(finish, RESTORE_WAIT_MS);
+    // The timeout restores what it can and keeps listening, so #6 finishing later still brings focus back.
+    function onTimeout() {
+        late();
+        clearReturn();
+    }
+    for (const type of INPUT_EVENTS) window.addEventListener(type, onInput, { capture: true, passive: true });
+    window.addEventListener(SERIES_RESTORED_EVENT, onRestored);
+    const timer = window.setTimeout(onTimeout, RESTORE_WAIT_MS);
     return stop;
 }
+

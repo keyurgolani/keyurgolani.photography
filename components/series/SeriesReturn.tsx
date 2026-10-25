@@ -3,7 +3,7 @@
 import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 import { isViewerPath } from '@/components/viewer/viewerKeys';
-import { openerOf, readReturn, restoreReturn, scheduleRestore, withReturn } from './returnPosition';
+import { clearReturn, openerOf, readReturn, restoreReturn, scheduleRestore, withReturn } from './returnPosition';
 
 export interface SeriesReturnProps {
     /** The series path, `/work/<slug>`, whose Viewer links count. */
@@ -40,14 +40,16 @@ function navigationType(): string | undefined {
  * - Closing the intercepted Viewer (#9), by Close, Escape, or Back, leaves
  *   this page mounted. #9's host puts focus back on the opener; this puts the
  *   scroll offset back too, in case the page moved under the modal.
+ * - Every restore, and the reload that skips one, takes the record out of the
+ *   entry. So a later Back to the series from anywhere but the Viewer (Work,
+ *   another site) leaves the visitor where the browser puts them. Forward to
+ *   the Viewer and Back again doesn't refocus either.
  */
 export default function SeriesReturn({ path, slug, revisionId, total }: SeriesReturnProps) {
     const pathname = usePathname();
     // True only while this render hydrates server HTML, so the mount can tell a document load from a client render.
     const hydrating = useSyncExternalStore(subscribeNever, () => false, () => true);
     const hydrated = useRef(hydrating);
-    // The series this mount arrived on. A later refresh in place is no return.
-    const arrivedOn = useRef({ slug, revisionId, total });
     const previousPath = useRef<string | null>(null);
 
     useEffect(() => {
@@ -67,9 +69,11 @@ export default function SeriesReturn({ path, slug, revisionId, total }: SeriesRe
     useEffect(() => {
         const record = readReturn(window.history.state);
         if (record === null) return;
-        // The visitor reloaded the series page: the browser keeps its own place, and nothing was just closed.
-        if (hydrated.current && navigationType() === 'reload') return;
-        return scheduleRestore(record, arrivedOn.current);
+        // The visitor reloaded the series page: the browser keeps its own place, nothing was just closed, and the record is spent.
+        if (hydrated.current && navigationType() === 'reload') return clearReturn();
+        return scheduleRestore(record, { slug, revisionId, total });
+        // Once per mount, with the props it arrived on: a refresh in place is no return.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     useEffect(() => {
@@ -77,7 +81,9 @@ export default function SeriesReturn({ path, slug, revisionId, total }: SeriesRe
         previousPath.current = pathname;
         if (previous === null || pathname !== path || !isViewerPath(previous)) return;
         const record = readReturn(window.history.state);
-        if (record !== null) restoreReturn(record);
+        if (record === null) return;
+        restoreReturn(record);
+        clearReturn();
     }, [pathname, path]);
 
     return null;
