@@ -90,11 +90,13 @@ export interface SeriesFacts {
     /** Published photographs, from compile's `derived.photoCount`, the number Work shows. */
     photoCount: { value: number; source: 'published-sequence' };
     /**
-     * The capture date range, from compile's `derived` (members' `capturedAt`:
+     * The capture year range, from compile's `derived` (members' `capturedAt`:
      * EXIF `DateTimeOriginal` or an authored date, never a file time), with how
-     * many entries carry a date. Null when none is dated.
+     * many entries carry a date. Years only: the Viewer withholds per-photo
+     * dates, and a one-photo series would otherwise ship its exact day. Null
+     * when none is dated.
      */
-    captured: { from: string; to: string; datedCount: number; source: 'capture-dates' } | null;
+    captured: { fromYear: number; toYear: number; datedCount: number; source: 'capture-dates' } | null;
     /** Distinct authored `location` values in sequence order. Null when no member has one. Never from GPS. */
     locations: { values: string[]; source: 'photograph-records' } | null;
 }
@@ -159,7 +161,7 @@ const NOT_FOUND: SeriesPageResult = Object.freeze({ kind: 'not-found' });
 const CENTER: FocalPoint = Object.freeze({ x: 0.5, y: 0.5 });
 /** The shape the revision schema checks. ResponsivePhoto puts it in a CSS `url()`, so nothing else passes. */
 const LQIP_RE = /^data:image\/webp;base64,[A-Za-z0-9+/]+={0,2}$/;
-/** The shape the revision schema's dates take. */
+/** The shape the revision schema's dates take. Checked whole, though only the year leaves here. */
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 /** The share image variant: wide enough for link previews, and a format every current one reads. */
 const SHARE_WIDTH: VariantWidth = 'w1200';
@@ -261,7 +263,7 @@ function factsOf(series: SeriesRecord, members: readonly Photo[], photoCount: nu
     const to = series.derived?.capturedTo;
     const datedCount = members.filter((photo) => typeof photo.capturedAt === 'string' && DATE_RE.test(photo.capturedAt)).length;
     const captured = typeof from === 'string' && typeof to === 'string' && DATE_RE.test(from) && DATE_RE.test(to) && from <= to && datedCount > 0
-        ? { from, to, datedCount, source: 'capture-dates' as const }
+        ? { fromYear: Number(from.slice(0, 4)), toYear: Number(to.slice(0, 4)), datedCount, source: 'capture-dates' as const }
         : null;
     const values: string[] = [];
     for (const photo of members) {
@@ -279,7 +281,8 @@ function factsOf(series: SeriesRecord, members: readonly Photo[], photoCount: nu
  * Resolve `/work/<slug>` in one source, in this order: a malformed slug, an
  * unknown one, a series ID that appears more than once, and a series with
  * nothing to open (no positive published count or no member that resolves)
- * are all not-found, the series #3's Work leaves out, so Work never links a
+ * are all not-found, and so is a former slug whose canonical slug the route
+ * would refuse, the series #3's Work leaves out, so Work never links a
  * missing page and the page never serves a series Work hides; a former slug
  * redirects; anything else is the projection. Compile never writes a
  * repeated ID. Only a hand-written revision can, and the reader indexes
@@ -301,7 +304,12 @@ export function seriesPageOf(source: SeriesSource, slug: unknown, routes: Pick<R
     // order.duplicate-photo blocks a repeated member at render, so no preview or revision holds one.
     const members = source.photosOf(series.id);
     if (members.length === 0) return NOT_FOUND;
-    if (!hit.canonical) return { kind: 'redirect', slug: series.slug, location: routes.seriesHref(series.slug) };
+    if (!hit.canonical) {
+        // Only route.slug-format, at render, checks a canonical slug's shape. If the route's own check would refuse it, the
+        // 308 would be permanent and point at a page that is always not-found, so a series the route can't serve has no former slugs.
+        if (seriesParams(series.slug) === null) return NOT_FOUND;
+        return { kind: 'redirect', slug: series.slug, location: routes.seriesHref(series.slug) };
+    }
 
     const coverId = series.cover?.photoId;
     const entries: SeriesEntry[] = members.map((photo, index) => ({

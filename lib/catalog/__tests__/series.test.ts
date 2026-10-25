@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { mediaUrl } from '../../media/url';
 import { seriesPageFrom, seriesPageOf, seriesParams, seriesSections, type PublishedSeriesPage, type SeriesActiveCatalog, type SeriesSource } from '../projections/series';
 import { publish } from '../publish';
 import { createCatalogReader, createRouteBuilder } from '../reader';
@@ -100,6 +101,9 @@ function trap(): SeriesSource {
     return { revisionId: REVISION_A, listSeries: fail, seriesBySlug: fail, photosOf: fail };
 }
 
+/** The year a `YYYY-MM-DD` date falls in. */
+const yearOf = (date: string | undefined) => Number(date?.slice(0, 4));
+
 const photoOf = (content: CatalogContentLike, photoId: string) => {
     const photo = content.photos.find((entry) => entry.id === photoId);
     if (!photo) throw new Error(`No ${photoId} in the content`);
@@ -168,7 +172,7 @@ describe('seriesPageOf on a revision', () => {
                 },
                 facts: {
                     photoCount: { value: 6, source: 'published-sequence' },
-                    captured: { from: content.series[0].derived.capturedFrom, to: content.series[0].derived.capturedTo, datedCount: 5, source: 'capture-dates' },
+                    captured: { fromYear: yearOf(content.series[0].derived.capturedFrom), toYear: yearOf(content.series[0].derived.capturedTo), datedCount: 5, source: 'capture-dates' },
                     locations: { values: ['Fixture location one', 'Fixture location two'], source: 'photograph-records' },
                 },
                 cover: {
@@ -221,6 +225,20 @@ describe('seriesPageOf on a revision', () => {
 
     it('redirects a former slug to the canonical one, with its path', () => {
         expect(reader.getSeriesPage('old-fixture-a')).toEqual({ kind: 'redirect', slug: 'fixture-a', location: '/work/fixture-a' });
+    });
+
+    it('never redirects a former slug to a canonical slug the route would refuse', () => {
+        // A hand-written revision: only route.slug-format, at render, checks a canonical slug's shape.
+        for (const canonical of ['Fixture-A', 'fixture-a/..', '//example.test/x', 'fixture-a\n', 'a'.repeat(65)]) {
+            const odd = structuredClone(content);
+            odd.series[0].slug = canonical;
+            odd.series[0].slugAliases = ['old-fixture-a'];
+            const oddReader = readerOf(odd);
+            expect(oddReader.getSeriesPage('old-fixture-a'), JSON.stringify(canonical)).toBe(reader.getSeriesPage('fixture-z'));
+            expect(oddReader.getSeriesPage(canonical), JSON.stringify(canonical)).toEqual({ kind: 'not-found' });
+            // The rest of the revision still resolves.
+            expect(page(oddReader.getSeriesPage('fixture-b')).id).toBe('ser_fixture-b');
+        }
     });
 
     it('lets a current slug win over another series\' alias', () => {
@@ -334,6 +352,7 @@ describe('chapters over the one order', () => {
             { id: 'ch-unknown', title: 'Starts on nothing', startPhotoId: id(99) },
             { id: 'ch-back', title: 'Starts before the one above', startPhotoId: P[3] },
             { id: 'ch-same', title: 'Starts with the one above', startPhotoId: P[1] },
+            { id: '  ', title: 'A blank ID', startPhotoId: P[2] },
             { id: 'ch-blank', title: '   ', startPhotoId: P[2] },
             { id: 'ch-one', title: 'A repeated ID', startPhotoId: P[2] },
             { id: 'ch-two', title: 'Fixture chapter two', startPhotoId: P[4] },
@@ -389,6 +408,34 @@ describe('missing photographs and images', () => {
         expect(JSON.stringify(result)).not.toContain('example.test');
     });
 
+    it('drops only that entry\'s image when a field of its set is off, or the set is its own under another revision or profile', () => {
+        const baseline = page(readerOf(content).getSeriesPage('fixture-a'));
+        expect(baseline.entries[0].photoId).toBe(P[0]);
+        expect(baseline.entries[0].image).not.toBeNull();
+        const cases: [string, (photo: ReturnType<typeof photoOf>) => void][] = [
+            ['a bad photo width', (photo) => (photo.width = 0)],
+            ['a bad photo height', (photo) => (photo.height = 0)],
+            ['a fractional photo width', (photo) => (photo.width = 1600.5)],
+            ['a bad file width', (photo) => (photo.variants.w1200.webp.width = 0)],
+            ['a string file width', (photo) => ((photo.variants.w800.webp as { width: unknown }).width = `800w, https://example.test/x.webp 1600`)],
+            ['a fractional file width', (photo) => (photo.variants.w800.webp.width = 799.5)],
+            ['a bad file height', (photo) => (photo.variants.w1200.avif.height = 0)],
+            ['a bad file size', (photo) => (photo.variants.w400.webp.bytes = 0)],
+            ['a fractional file size', (photo) => (photo.variants.w400.avif.bytes = 1.5)],
+            ['its own file under another asset revision', (photo) => (photo.variants.w800.webp.url = mediaUrl({ photoId: photo.id, assetRevision: `sha256-${'f'.repeat(64)}`, profileId: photo.profileId }, 'w800', 'webp'))],
+            ['its own file under another profile', (photo) => (photo.variants.w800.webp.url = mediaUrl({ photoId: photo.id, assetRevision: photo.assetRevision, profileId: `p_${'f'.repeat(16)}` }, 'w800', 'webp'))],
+            // mediaUrl() throws on this; only the one entry loses its image, and the page still answers.
+            ['a bad asset revision', (photo) => (photo.assetRevision = 'bad')],
+        ];
+        for (const [name, damage] of cases) {
+            const held = structuredClone(content);
+            damage(photoOf(held, P[0]));
+            const expected = structuredClone(baseline);
+            expected.entries[0].image = null;
+            expect(page(readerOf(held).getSeriesPage('fixture-a')), name).toEqual(expected);
+        }
+    });
+
     it('gives no cover, and no share image, when the cover is outside the sequence or its set is unusable', () => {
         const outside = structuredClone(content);
         outside.series[0].cover = { photoId: P[6] };
@@ -403,13 +450,32 @@ describe('missing photographs and images', () => {
         expect(fromUnusable.entries.find((entry) => entry.photoId === P[1])?.image).toBeNull();
     });
 
-    it('keeps an LQIP only on the cover, and only in the schema\'s shape', () => {
+    it('keeps an LQIP only on the cover', () => {
         const result = page(readerOf(content).getSeriesPage('fixture-a'));
         expect(result.cover?.image.lqip).toMatch(/^data:image\/webp;base64,/);
         for (const entry of result.entries) expect(entry.image && 'lqip' in entry.image).toBe(false);
-        const odd = structuredClone(content);
-        photoOf(odd, P[1]).lqip = 'data:image/webp;base64,AAAA"); background: url(https://example.test/x';
-        expect(page(readerOf(odd).getSeriesPage('fixture-a')).cover?.image).not.toHaveProperty('lqip');
+    });
+
+    it('keeps the cover and drops an LQIP that isn\'t a WebP data URI', () => {
+        const baseline = page(readerOf(content).getSeriesPage('fixture-a'));
+        expect(baseline.cover?.image.lqip).toBe(photoOf(content, P[1]).lqip);
+        const values: [string, unknown][] = [
+            ['a trailing CSS injection', 'data:image/webp;base64,AAAA");background:url("/x'],
+            ['a prefix before a valid data URI', '/x.png"),url("data:image/webp;base64,AAAA'],
+            ['another image type', 'data:image/png;base64,AAAA'],
+            ['a parenthesis in the base64', 'data:image/webp;base64,AA)AA'],
+            ['a quote in the base64', "data:image/webp;base64,AA'AA"],
+            ['a non-string holding a valid data URI', ['data:image/webp;base64,AAAA']],
+        ];
+        for (const [name, lqip] of values) {
+            const held = structuredClone(content);
+            (photoOf(held, P[1]) as { lqip: unknown }).lqip = lqip;
+            const expected = structuredClone(baseline);
+            delete expected.cover?.image.lqip;
+            const result = page(readerOf(held).getSeriesPage('fixture-a'));
+            expect(result.cover?.image, name).not.toHaveProperty('lqip');
+            expect(result, name).toEqual(expected);
+        }
     });
 
     it('takes the cover\'s focal point, else the photo\'s, else the center, and its crop', () => {
@@ -420,6 +486,50 @@ describe('missing photographs and images', () => {
         const center = structuredClone(content);
         center.series[0].cover = { photoId: P[5], focalPoint: { x: 2, y: 0.5 } };
         expect(page(readerOf(center).getSeriesPage('fixture-a')).cover?.focalPoint).toEqual({ x: 0.5, y: 0.5 });
+    });
+
+    it('keeps a focal point on either bound of either axis, and falls back past one outside them', () => {
+        const inside: [string, unknown][] = [
+            ['x 0, y 1', { x: 0, y: 1 }],
+            ['x 1, y 0', { x: 1, y: 0 }],
+        ];
+        const outside: [string, unknown][] = [
+            ['x above 1', { x: 1.01, y: 0.5 }],
+            ['x below 0', { x: -1, y: 0.5 }],
+            ['y above 1', { x: 0.5, y: 7 }],
+            ['y below 0', { x: 0.5, y: -0.1 }],
+            ['x a numeric string', { x: '0.3', y: 0.5 }],
+            ['y a numeric string', { x: 0.5, y: '0.3' }],
+            ['x not finite', { x: Number.NaN, y: 0.5 }],
+            ['null', null],
+        ];
+        // On the series cover: kept, else the photo's own point.
+        const fromSeries = (value: unknown) => {
+            const held = structuredClone(content);
+            (held.series[0].cover as { focalPoint: unknown }).focalPoint = value;
+            return page(readerOf(held).getSeriesPage('fixture-a')).cover?.focalPoint;
+        };
+        // On the photo, with no series point: kept, else the center.
+        const fromPhoto = (value: unknown) => {
+            const held = structuredClone(content);
+            held.series[0].cover = { photoId: P[1] };
+            (photoOf(held, P[1]) as { focalPoint: unknown }).focalPoint = value;
+            return page(readerOf(held).getSeriesPage('fixture-a')).cover?.focalPoint;
+        };
+        for (const [name, value] of inside) {
+            expect(fromSeries(value), name).toEqual(value);
+            expect(fromPhoto(value), name).toEqual(value);
+        }
+        for (const [name, value] of outside) {
+            expect(fromSeries(value), name).toEqual({ x: 0.1, y: 0.9 });
+            expect(fromPhoto(value), name).toEqual({ x: 0.5, y: 0.5 });
+        }
+    });
+
+    it('narrows the crop to contain or cover', () => {
+        const fill = structuredClone(content);
+        (photoOf(fill, P[1]) as { crop: unknown }).crop = 'fill';
+        expect(page(readerOf(fill).getSeriesPage('fixture-a')).cover?.crop).toBe('cover');
     });
 
     it('copies the image set, so a caller can\'t edit the revision through it', () => {
@@ -463,13 +573,32 @@ describe('derived facts', () => {
         content = revisionContent();
     });
 
-    it('take the count and the date range from compile\'s derived record, and count the dated entries', () => {
+    it('take the count and the year range from compile\'s derived record, and count the dated entries', () => {
         const result = page(readerOf(content).getSeriesPage('fixture-a'));
         expect(content.series[0].derived.capturedFrom).toBe('2023-03-04');
-        expect(result.facts.captured).toEqual({ from: '2023-03-04', to: content.series[0].derived.capturedTo, datedCount: 5, source: 'capture-dates' });
+        expect(result.facts.captured).toEqual({ fromYear: 2023, toYear: yearOf(content.series[0].derived.capturedTo), datedCount: 5, source: 'capture-dates' });
         const changed = structuredClone(content);
         changed.series[0].derived = { photoCount: 6, capturedFrom: '2019-05-01', capturedTo: '2021-07-02' };
-        expect(page(readerOf(changed).getSeriesPage('fixture-a')).facts.captured).toEqual({ from: '2019-05-01', to: '2021-07-02', datedCount: 5, source: 'capture-dates' });
+        expect(page(readerOf(changed).getSeriesPage('fixture-a')).facts.captured).toEqual({ fromYear: 2019, toYear: 2021, datedCount: 5, source: 'capture-dates' });
+        const oneYear = structuredClone(content);
+        oneYear.series[0].derived = { photoCount: 6, capturedFrom: '2021-01-01', capturedTo: '2021-12-31' };
+        expect(page(readerOf(oneYear).getSeriesPage('fixture-a')).facts.captured).toEqual({ fromYear: 2021, toYear: 2021, datedCount: 5, source: 'capture-dates' });
+    });
+
+    it('ship years only, never a capture day, even for a one-photo series', () => {
+        for (const slug of ['fixture-a', 'fixture-b']) {
+            const result = page(readerOf(content).getSeriesPage(slug));
+            const series = content.series.find((record) => record.slug === slug);
+            const days = [series?.derived.capturedFrom, series?.derived.capturedTo, ...content.photos.map((photo) => photo.capturedAt)].filter((day): day is string => typeof day === 'string');
+            expect(days.length, slug).toBeGreaterThan(0);
+            expect(result.facts.captured, slug).not.toBeNull();
+            expect(Object.keys(result.facts.captured ?? {}).sort(), slug).toEqual(['datedCount', 'fromYear', 'source', 'toYear']);
+            const json = JSON.stringify(result);
+            for (const day of days) expect(json, `${slug} ${day}`).not.toContain(day);
+        }
+        const single = page(readerOf(content).getSeriesPage('fixture-b')).facts.captured;
+        expect(single?.fromYear).toBe(single?.toYear);
+        expect(single?.datedCount).toBe(1);
     });
 
     it('leave the date range out when nothing is dated or the record is malformed', () => {
@@ -481,7 +610,7 @@ describe('derived facts', () => {
         const unbacked = structuredClone(undated);
         unbacked.series[0].derived = { photoCount: 6, capturedFrom: '2021-01-01', capturedTo: '2021-02-01' };
         expect(page(readerOf(unbacked).getSeriesPage('fixture-a')).facts.captured).toBeNull();
-        for (const derived of [{ photoCount: 6, capturedFrom: '2021-01-01' }, { photoCount: 6, capturedFrom: '2019', capturedTo: '2021-01-01' }, { photoCount: 6, capturedFrom: '2019-01-01', capturedTo: '2021-01-01T00:00:00Z' }, { photoCount: 6, capturedFrom: '2022-01-01', capturedTo: '2021-01-01' }, { photoCount: 6, capturedFrom: 'yesterday', capturedTo: '2021-01-01' }]) {
+        for (const derived of [{ photoCount: 6, capturedFrom: '2021-01-01' }, { photoCount: 6, capturedFrom: '2019', capturedTo: '2021-01-01' }, { photoCount: 6, capturedFrom: '2019-01-01', capturedTo: '2021-01-01T00:00:00Z' }, { photoCount: 6, capturedFrom: '2022-01-01', capturedTo: '2021-01-01' }, { photoCount: 6, capturedFrom: 'yesterday', capturedTo: '2021-01-01' }, { photoCount: 6, capturedFrom: '2019-01-01', capturedTo: 'x2021-01-01' }]) {
             const odd = structuredClone(content);
             odd.series[0].derived = derived;
             expect(page(readerOf(odd).getSeriesPage('fixture-a')).facts.captured, JSON.stringify(derived)).toBeNull();
