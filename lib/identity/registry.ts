@@ -97,6 +97,14 @@ function assertRegistry(file: string, value: Record<string, unknown>): asserts v
  * EditedInPlaceError, a CorruptDocumentError, for one edited in place.
  */
 export async function readRegistry(root: string): Promise<Registry> {
+    return (await readStoredRegistry(root))?.registry ?? emptyRegistry();
+}
+
+/**
+ * readRegistry(), but null when `identity/registry/` holds no version, and
+ * with the version file it read. Throws as readRegistry() does.
+ */
+export async function readStoredRegistry(root: string): Promise<{ registry: Registry; file: string } | null> {
     const paths = identityPaths(root);
     // #28 stored the registry as one file. Passing over it would read an empty registry, and the next pass would
     // mint new IDs for every photo.
@@ -109,10 +117,10 @@ export async function readRegistry(root: string): Promise<Registry> {
         );
     }
     const stored = await readVersionedDocument(paths.registry);
-    if (stored === null) return emptyRegistry();
+    if (stored === null) return null;
     checkSchemaVersion(stored.file, stored.value, REGISTRY_SCHEMA_VERSION);
     assertRegistry(stored.file, stored.value);
-    return stored.value as unknown as Registry;
+    return { registry: stored.value as unknown as Registry, file: stored.file };
 }
 
 /** Compare-and-swap write of the registry's next version. The caller holds the registry lock. */

@@ -10,8 +10,9 @@ import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempL
 import { optimizedSize, processImage } from '../../../utils/imageOptimizer';
 import { sequentialIds } from '../../identity/__tests__/reconcileFixtures';
 import { runReconcilePass } from '../../identity/pass';
-import { identityPaths, readRegistry } from '../../identity/registry';
-import { versionFile } from '../../storage/document';
+import { identityPaths, readRegistry, writeRegistry } from '../../identity/registry';
+import type { Registry } from '../../identity/types';
+import { readVersionedDocument, versionFile } from '../../storage/document';
 import { catalogPhotos, legacyPhotos, type ImageItem } from '../photos-api';
 import { createCatalogReader } from '../reader';
 import { publish } from '../publish';
@@ -78,6 +79,33 @@ afterEach(async () => {
     await data.cleanup();
     await lib.cleanup();
 });
+
+/** Folder contents with no registry version in them, as a write that stopped before its link leaves them. */
+const NO_VERSION: Record<string, (dir: string) => void> = {
+    'no file': (dir) => fs.mkdirSync(dir, { recursive: true }),
+    'only a temp file': (dir) => {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, '.v1.4242.00000000-0000-4000-8000-000000000000.tmp'), '{}');
+    },
+};
+
+/** Commit the next registry version, changed by `change`. */
+async function rewrite(change: (registry: Registry) => Registry): Promise<void> {
+    const registry = await readRegistry(data.root);
+    await writeRegistry(data.root, change(structuredClone(registry)), registry.version);
+}
+
+/** The photo ID of the top-level photo named `<base>.*`. */
+async function photoIdOf(base: string): Promise<string> {
+    const photo = Object.values((await readRegistry(data.root)).photos).find((entry) => entry.source.path.replace(/\.[^.]+$/, '') === base);
+    if (!photo) throw new Error(`No photo named ${base}`);
+    return photo.photoId;
+}
+
+function setHealth(registry: Registry, photoId: string, health: 'present' | 'missing'): Registry {
+    registry.photos[photoId].sourceHealth = health;
+    return registry;
+}
 
 /** Overwrite the newest version in the pointer's folder, the one readActivePointer() reads, with something that isn't JSON. */
 async function damagePointer(root: string): Promise<void> {
@@ -237,6 +265,55 @@ describe('legacy /api/photos', { timeout: 60_000 }, () => {
         fs.mkdirSync(identityPaths(data.root).registry, { recursive: true });
         fs.writeFileSync(versionFile(identityPaths(data.root).registry, 1), 'not json');
         expect(await legacyPhotos(data.root, lib.root)).toEqual({ ok: false, reason: 'registry-unreadable' });
+    });
+
+    it.each(Object.entries(NO_VERSION))('is unavailable as registry-missing while identity/registry/ holds %s', async (_, lay) => {
+        lay(identityPaths(data.root).registry);
+        expect(await legacyPhotos(data.root, lib.root)).toEqual({ ok: false, reason: 'registry-missing' });
+        const photos = await GET();
+        expect(photos.status).toBe(503);
+        expect(await photos.json()).toEqual({ reason: 'registry-missing' });
+        const readiness = await ready();
+        expect(readiness.status).toBe(503);
+        expect(await readiness.json()).toMatchObject({ mode: 'legacy', state: 'unavailable', reason: 'registry-missing' });
+    });
+
+    it('builds the list again for every new registry version once the folder keeps two', async () => {
+        await pass();
+        const dir = identityPaths(data.root).registry;
+        // Each write adds one version and prunes one, so from here the folder keeps its count of names and its size.
+        for (let index = 0; index < 3; index += 1) await rewrite((registry) => registry);
+        const target = await photoIdOf('landscape');
+        expect(bases(await listLegacy())).toContain('landscape');
+
+        const before = fs.statSync(dir);
+        await rewrite((registry) => setHealth(registry, target, 'missing'));
+        expect(fs.statSync(dir).size).toBe(before.size);
+        expect(bases(await listLegacy())).not.toContain('landscape');
+        await rewrite((registry) => setHealth(registry, target, 'present'));
+        expect(bases(await listLegacy())).toContain('landscape');
+    });
+
+    it('sees a hand-made copy of the newest version saved in place after a list was built from it', async () => {
+        await pass();
+        const dir = identityPaths(data.root).registry;
+        const stored = await readVersionedDocument(dir);
+        if (!stored) throw new Error('The pass wrote no registry');
+        const copy = versionFile(dir, stored.version + 1);
+        // The documented hand edit: copy the newest to the next number, then edit the copy.
+        fs.copyFileSync(stored.file, copy, fs.constants.COPYFILE_EXCL);
+        expect(bases(await listLegacy())).toContain('landscape');
+
+        // An editor that saves in place: the same file at the same size, so the folder doesn't change.
+        const folder = fs.statSync(dir);
+        const target = await photoIdOf('landscape');
+        const text = fs.readFileSync(copy, 'utf8');
+        const edited = text.replace(new RegExp(`("photoId": "${target}"[\\s\\S]*?"sourceHealth": )"present"`), '$1"missing"');
+        expect(edited).not.toBe(text);
+        expect(edited.length).toBe(text.length);
+        fs.writeFileSync(copy, edited);
+        expect(fs.statSync(dir).mtimeMs).toBe(folder.mtimeMs);
+        expect(bases(await listLegacy())).not.toContain('landscape');
     });
 });
 
