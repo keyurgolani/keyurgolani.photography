@@ -1,7 +1,7 @@
 // @vitest-environment node
 import fs from 'node:fs';
 import path from 'node:path';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { runTsx } from '../../../test/helpers/runTsx';
 import { readRevisionFile } from '../../catalog/repository';
 import { applySequenceOp } from '../../catalog/sequence';
@@ -10,17 +10,27 @@ import { authoredRecordDir, readActivePointer, readAuthoredRecord } from '../../
 import { writeAuthoredRecord } from '../../catalog/working-layer-writer';
 import { runReconcilePass } from '../../identity/pass';
 import { runStatusCommand } from '../../catalog/owner-status';
+import { createDecision, writeDecision } from '../../identity/decisions';
 import { identityPaths } from '../../identity/registry';
-import type { DerivativeJob, IdentityFact } from '../../identity/types';
+import { buildDerivativeSet } from '../../identity/derivatives';
+import type { DerivativeJob, IdentityFact, Registry } from '../../identity/types';
 import { approveEvent, retryEvent } from '../actions';
+import { pendingMergeOf } from '../binds';
+import { withCurationLock } from '../repository';
 import { inboxAlertLines, inboxAlerts } from '../alerts';
 import { parseCurationArgs, runCurationCli } from '../commands';
 import type { CurationEvent } from '../events';
-import { listEvents, withCurationLock } from '../repository';
+import { listEvents } from '../repository';
 import { archiveMissing, bindReplacement } from '../resolutions';
-import { createSourcesSink, failureEventId, settleSources } from '../sources';
+import { createSourcesSink, failureEventId, recordingFailuresAfterBuild, settleSources } from '../sources';
 import { clock, createMissingWorld, missingEventId, removeMissingTemplate, type MissingWorld } from './missingWorld';
 import { makeImages, P_PATH, Q_PATH, quiet, replacementEventId, SERIES, served, treeBytes, type Images } from './replacementWorld';
+
+// The real pendingMergeOf, which a test can wrap once to land a watcher pass inside a curator action.
+vi.mock('../binds', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../binds')>();
+    return { ...actual, pendingMergeOf: vi.fn(actual.pendingMergeOf) };
+});
 
 /**
  * #17-2 on temp roots, through #10's real reconcile, writer, and worker,
@@ -318,6 +328,58 @@ describe('other bytes back', { timeout: 60_000 }, () => {
         expect(await w.event(newItem.id)).toMatchObject({ status: 'resolved' });
     });
 
+    it('refuse approving the photo a pending bind merges when the watcher applies the bind during the approval', async () => {
+        const w = await world();
+        const { n, newItem } = await otherBytes(w);
+        const item = await w.event(w.missingId);
+        expect(await bindReplacement({ root: w.root, eventId: item.id, expectedVersion: item.version, actor: ACTOR })).toMatchObject({ ok: true });
+        const authored = treeBytes(path.join(w.root, 'authored'));
+        // The watcher commits the bind's merge just as approve looks for a pending one.
+        const actual = (await vi.importActual<typeof import('../binds')>('../binds')).pendingMergeOf;
+        vi.mocked(pendingMergeOf).mockImplementationOnce(async (root, photoId) => {
+            await w.bareRegistryPass();
+            return actual(root, photoId);
+        });
+        const approved = await approveEvent({ root: w.root, eventId: newItem.id, expectedVersion: newItem.version, expectedBase: w.revisionId, actor: ACTOR, choices: { seriesId: SERIES, placement: 'end' } });
+        expect((await w.registry()).photos[n].mergedInto).toBe(w.p);
+        expect(approved).toMatchObject({ ok: false, code: 'stale' });
+        expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
+        expect((await series(w)).photoIds).not.toContain(n);
+    });
+
+    it('refuse archiving the photo while a bind for it waits for the watcher, writing nothing', async () => {
+        const w = await world();
+        await otherBytes(w);
+        const item = await w.event(w.missingId);
+        const bound = await bindReplacement({ root: w.root, eventId: item.id, expectedVersion: item.version, actor: ACTOR });
+        expect(bound).toMatchObject({ ok: true });
+        const after = await w.event(w.missingId);
+        const before = layers(w);
+        const decisions = pendingDecisions(w);
+        const archived = await archiveMissing({ root: w.root, eventId: after.id, expectedVersion: after.version, expectedBase: w.revisionId, actor: ACTOR });
+        expect(archived).toMatchObject({ ok: false, code: 'refused', message: expect.stringContaining(`A bind for ${w.p} waits for the watcher's next pass`) });
+        expect(layers(w)).toEqual(before);
+        expect(pendingDecisions(w)).toEqual(decisions);
+        expect((await w.event(w.missingId)).version).toBe(after.version);
+    });
+
+    it('refuse a second bind that would merge the photo a pending bind already merges, writing nothing', async () => {
+        const w = await world();
+        const { n } = await otherBytes(w);
+        // Q goes missing too.
+        fs.rmSync(w.lib.file(Q_PATH));
+        await w.pass();
+        const qItem = await w.event(missingEventId(w.q, w.qa));
+        const item = await w.event(w.missingId);
+        expect(await bindReplacement({ root: w.root, eventId: item.id, expectedVersion: item.version, actor: ACTOR })).toMatchObject({ ok: true });
+        // Before the watcher's next pass, the owner points Q's bind at the same file.
+        const decisions = pendingDecisions(w);
+        const bound = await bindReplacement({ root: w.root, eventId: qItem.id, expectedVersion: qItem.version, actor: ACTOR, path: P_PATH });
+        expect(bound).toMatchObject({ ok: false, code: 'refused', message: expect.stringContaining(`${n} is already merged into ${w.p} by the pending bind decision`) });
+        expect(pendingDecisions(w)).toEqual(decisions);
+        expect((await w.event(qItem.id)).version).toBe(qItem.version);
+    });
+
     it('say when #10 refuses the bind, and offer it again', async () => {
         const w = await world();
         await otherBytes(w);
@@ -385,6 +447,68 @@ describe('a file copied over another photo', { timeout: 60_000 }, () => {
         expect(rNew.status).not.toBe('resolved');
         expect(JSON.stringify(rNew.decisions)).not.toContain('A bind gave these bytes');
         expect(await w.event(missingEventId(r, rRevision))).toMatchObject({ status: 'open', photoId: r });
+    });
+});
+
+describe('a bind to a path #10 holds in doubt', { timeout: 60_000 }, () => {
+    const R_PATH = 'harbor/third.jpg';
+    const S_PATH = 'harbor/fourth.jpg';
+    const newPhotoAt = (registry: Registry, at: string) => Object.values(registry.photos).find((photo) => photo.source.path === at && photo.source.present)?.photoId as string;
+
+    it('is refused when the hold lists two other photos, writing nothing, so neither is merged', async () => {
+        const w = await world();
+        fs.writeFileSync(w.lib.file(R_PATH), images.third);
+        fs.writeFileSync(w.lib.file(S_PATH), images.fresh);
+        await w.pass();
+        const registry = await w.registry();
+        const [r, s] = [newPhotoAt(registry, R_PATH), newPhotoAt(registry, S_PATH)];
+        removeP(w);
+        await w.pass();
+        // S's file goes, and a copy of it lands over R's.
+        fs.rmSync(w.lib.file(S_PATH));
+        await w.pass();
+        fs.writeFileSync(w.lib.file(R_PATH), images.fresh);
+        await w.pass();
+        const held = (await w.registry()).holds.find((hold) => hold.path === R_PATH);
+        expect(held?.candidates).toEqual(expect.arrayContaining([s, r]));
+        expect(held?.candidates).not.toContain(w.p);
+
+        const item = await w.event(w.missingId);
+        const bound = await bindReplacement({ root: w.root, eventId: item.id, expectedVersion: item.version, actor: ACTOR, path: R_PATH });
+        expect(bound).toMatchObject({ ok: false, code: 'refused', message: expect.stringContaining(`#10 holds ${R_PATH} in doubt`) });
+        expect(pendingDecisions(w)).toEqual([]);
+        expect((await w.event(w.missingId)).version).toBe(item.version);
+        await w.pass();
+        const after = await w.registry();
+        expect(after.photos[r].mergedInto).toBeUndefined();
+        expect(after.photos[r].sourceHealth).not.toBe('archived');
+        expect(after.photos[w.p].sourceHealth).toBe('missing');
+    });
+
+    it("is refused when the path holds bytes the photo gave to another photo, writing nothing", async () => {
+        const w = await world();
+        fs.writeFileSync(w.lib.file(R_PATH), images.third);
+        await w.pass();
+        const r = newPhotoAt(await w.registry(), R_PATH);
+        // #10's new gives P's file, and its bytes, a photo of its own, M.
+        await writeDecision(w.root, createDecision({ type: 'new', path: P_PATH, actor: ACTOR, reason: 'Fixture split' }, { clock }));
+        await w.pass();
+        const m = newPhotoAt(await w.registry(), P_PATH);
+        expect(m).not.toBe(w.p);
+        expect((await w.registry()).photos[w.p].revisions[w.a].reassignedTo).toBe(m);
+        expect((await w.event(w.missingId)).status).toBe('open');
+        // M's file goes, and a copy of it lands over R's.
+        removeP(w);
+        await w.pass();
+        fs.writeFileSync(w.lib.file(R_PATH), images.original);
+        await w.pass();
+
+        const item = await w.event(w.missingId);
+        const bound = await bindReplacement({ root: w.root, eventId: item.id, expectedVersion: item.version, actor: ACTOR, path: R_PATH });
+        expect(bound).toMatchObject({ ok: false, code: 'refused', message: expect.stringContaining(`which ${w.p} gave to ${m}`) });
+        expect(pendingDecisions(w)).toEqual([]);
+        expect((await w.event(w.missingId)).version).toBe(item.version);
+        expect((await w.registry()).photos[r].mergedInto).toBeUndefined();
     });
 });
 
@@ -611,6 +735,31 @@ describe('a build that stays failed', { timeout: 60_000 }, () => {
         expect((await w.registry()).photos[r].revisions[job.assetRevision].profiles[w.profileId].state).toBe('pending');
         expect((await w.build(job)).status).toBe('ready');
         expect(await w.event(id)).toMatchObject({ status: 'resolved', candidate: { state: 'ready' }, decisions: expect.arrayContaining([expect.objectContaining({ action: 'close', by: 'watcher' })]) });
+    });
+
+    it('gets its item on the next pass when the settle after the build finds the curation lock busy', async () => {
+        const w = await world();
+        fs.writeFileSync(w.lib.file(R_PATH), images.third);
+        const facts = await w.pass();
+        const r = facts.find((fact) => fact.type === 'new')?.photoId as string;
+        const job: DerivativeJob = { photoId: r, assetRevision: (await w.registry()).photos[r].source.observedRevision, profileId: w.profileId, path: R_PATH };
+        const warn = vi.fn();
+        const build = recordingFailuresAfterBuild(buildDerivativeSet, { logger: { ...quiet, warn }, clock, waitMs: 100, owed: w.owedSources });
+        // A curator action holds the curation lock through the build's settle.
+        await withCurationLock(w.root, {}, async () => {
+            expect((await build(job, { logger: quiet, faults: { afterVariant: () => { throw new Error('Fixture encoder fault'); } } })).status).toBe('failed');
+        });
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining(`Could not record the build of ${r} ${job.assetRevision} in the inbox yet; the next pass settles it`));
+        const id = failureEventId(r, job.assetRevision);
+        expect((await listEvents(w.root)).events.find((event) => event.id === id)).toBeUndefined();
+
+        // The next pass names no fact for R, and opens the item all the same.
+        expect((await w.pass()).filter((fact) => fact.photoId === r)).toEqual([]);
+        expect(await w.event(id)).toMatchObject({ status: 'failed', candidate: { state: 'failed', failure: 'build' } });
+        // Owed no longer, so a pass after that writes nothing.
+        const before = layers(w);
+        await w.pass();
+        expect(layers(w)).toEqual(before);
     });
 
     it("closes once #10's worker retries it at start and it builds", async () => {

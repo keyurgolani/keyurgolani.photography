@@ -15,7 +15,7 @@ import { verifyDirectory } from '../storage/publish';
 import { act, decided, fail, readAuthored, requireStatus, type ActionInput, type ActionOutcome, type Change, type Step, type WrittenRecord } from './actions';
 import { candidateOf } from './candidates';
 import type { CandidateFailure, CurationEvent } from './events';
-import { pendingMergeOf } from './binds';
+import { pendingBindOf, pendingMergeOf } from './binds';
 import { photoHolders } from './holders';
 import { draftPlan, latestPin } from './pins';
 import { listEvents } from './repository';
@@ -334,7 +334,9 @@ interface BindPlan {
  *
  * - A path #10's hold lists both the holder and the photo for is given up
  *   by the holder, which keeps its identity. The decision names no merge,
- *   since naming one there would retire the holder instead.
+ *   since naming one there would retire the holder instead. A hold that
+ *   doesn't list the photo is refused: #10 is unsure which other photo the
+ *   file is, so the curator settles that first.
  * - Any other present holder must be named to merge, and #10 merges only a
  *   photo with one revision of its own, first seen at that path. This also
  *   refuses one a series or the active revision shows, which a merge would
@@ -353,6 +355,14 @@ async function bindPlan(root: string, registry: Registry, photo: PhotoRecord, at
     const bytes = held?.assetRevision ?? (holder as PhotoRecord).source.observedRevision;
     const own = photo.revisions[bytes];
     const plan: BindPlan = { ownBytes: own !== undefined && !own.reassignedTo };
+    const givenAway = () => fail('refused', `${at} holds ${bytes}, which ${photo.photoId} gave to ${own?.reassignedTo}, so the watcher would refuse the bind. Nothing was written.`);
+    // Said first when no merge could bring them back: only merging a holder whose one revision is these bytes does.
+    const holderOwn = holder ? Object.values(holder.revisions).filter((revision) => !revision.reassignedTo) : [];
+    if (own?.reassignedTo !== undefined && !(holderOwn.length === 1 && holderOwn[0].assetRevision === bytes)) givenAway();
+    // A hold that doesn't list the photo is #10 unsure which other photo the file is, and a bind would merge one of them.
+    if (held && !held.candidates.includes(photo.photoId)) {
+        fail('refused', `#10 holds ${at} in doubt between ${held.candidates.join(' and ')}, so it can't tell whose file it is, and a bind would merge one of them into ${photo.photoId}. Settle that path's ambiguous item first, with photos identity bind or photos identity new, then bind again. Nothing was written.`);
+    }
     let merged: string | null = null;
     if (holder) {
         if (held?.candidates.includes(holder.photoId) && held.candidates.includes(photo.photoId)) {
@@ -377,9 +387,7 @@ async function bindPlan(root: string, registry: Registry, photo: PhotoRecord, at
             plan.merge = holder.photoId;
         }
     }
-    if (own?.reassignedTo !== undefined && merged !== bytes) {
-        fail('refused', `${at} holds ${bytes}, which ${photo.photoId} gave to ${own.reassignedTo}, so the watcher would refuse the bind. Nothing was written.`);
-    }
+    if (own?.reassignedTo !== undefined && merged !== bytes) givenAway();
     return plan;
 }
 
@@ -466,6 +474,15 @@ export function archiveMissing(input: ActionInput & { reason?: string; faults?: 
             fail('needs-choice', `archive needs --base ${step.active}, the active revision it was reviewed against. Show it again if that isn't the one. Nothing was written.`);
         }
         const root = path.resolve(input.root);
+        // The bind writes under the curation lock this holds, and the watcher commits the registry before it files
+        // the decision as applied, so this looks first: a bind still waiting shows here, and one applied since shows
+        // in the registry read below as the photo present again.
+        if (event.type === 'missing' && event.photoId !== null) {
+            const bind = await pendingBindOf(root, event.photoId).catch((error: unknown) => fail('damaged', `${(error as Error).message}. Nothing was written.`));
+            if (bind) {
+                fail('refused', `A bind for ${event.photoId} waits for the watcher's next pass: the decision ${bind.decisionId} gives it ${bind.path}. Archive after the watcher applies it, or once it refuses it; curation show ${event.id} says which. Nothing was written.`);
+            }
+        }
         const registry = await readRegistryOrFail(root);
         const photo = missingPhoto(event, registry, 'archive');
         const photoId = photo.photoId;

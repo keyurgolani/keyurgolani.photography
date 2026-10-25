@@ -361,16 +361,18 @@ export function approveEvent(input: ActionInput & { choices: Choices; faults?: A
         const { seriesId, placement, picked, description } = resolveChoices(event, input.choices);
         let kept = false;
 
-        const registry = await readRegistry(root).catch((error: unknown) => fail('damaged', `The identity registry can't be read: ${(error as Error).message}. Nothing was written.`));
-        const photo = registry.photos[photoId];
-        if (!photo || photo.sourceHealth !== 'present' || photo.source.observedRevision !== assetRevision) {
-            const now = !photo ? 'is not in the registry' : photo.sourceHealth !== 'present' ? `is ${photo.sourceHealth}` : `is now ${photo.source.observedRevision}`;
-            fail('stale', `The source changed since this event: ${photoId} ${now}. Review the newer event instead. Nothing was written.`);
-        }
-        // #17's bind writes its decision under the curation lock this holds, so a merge can't land between this check and the writes.
+        // #17's bind writes its decision under the curation lock this holds, so no new one appears from here on. This
+        // looks first: the watcher commits a merge to the registry before it files the decision as applied, so a
+        // pending decision is either seen here or already a merge in the registry read below, which is then stale.
         const merge = await pendingMergeOf(root, photoId).catch((error: unknown) => fail('damaged', `${(error as Error).message}. Nothing was written.`));
         if (merge) {
             fail('refused', `${photoId} is merged into ${merge.into} by the bind decision ${merge.decisionId}, which the watcher applies on its next pass. A series would then list a retired photograph, so it can't be approved. If the watcher refuses the bind, approve it then. Nothing was written.`);
+        }
+        const registry = await readRegistry(root).catch((error: unknown) => fail('damaged', `The identity registry can't be read: ${(error as Error).message}. Nothing was written.`));
+        const photo = registry.photos[photoId];
+        if (!photo || photo.mergedInto !== undefined || photo.sourceHealth !== 'present' || photo.source.observedRevision !== assetRevision) {
+            const now = !photo ? 'is not in the registry' : photo.mergedInto !== undefined ? `was merged into ${photo.mergedInto}` : photo.sourceHealth !== 'present' ? `is ${photo.sourceHealth}` : `is now ${photo.source.observedRevision}`;
+            fail('stale', `The source changed since this event: ${photoId} ${now}. Review the newer event instead. Nothing was written.`);
         }
 
         const writes: WrittenRecord[] = [];
