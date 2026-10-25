@@ -23,6 +23,7 @@ import {
 } from './actions';
 import { currentProfileId } from '../identity/profile';
 import { EVENT_ID_RE, EVENT_STATUSES, FAILURE_TEXT, needsJudgment, shortPhotoId, waitingReason, type CurationEvent, type CurationEventStatus, type Placement } from './events';
+import { placedItems } from './placement';
 import { EventUnusableError, listEvents, readEvent, type EventProblem } from './repository';
 import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from './text';
 
@@ -256,16 +257,19 @@ function printableLines(output: string): string {
 const STATUS_WIDTH = 8;
 const TYPE_WIDTH = 18;
 
-function listLine(event: CurationEvent, waiting: string | null = null): string {
+function listLine(event: CurationEvent, waiting: string | null = null, placed: string | null = null): string {
     const line = `${`${event.id}@${event.version}`.padEnd(32)}  ${event.type.padEnd(TYPE_WIDTH)}  ${event.status.padEnd(STATUS_WIDTH)}  ${shortPhotoId(event.photoId).padEnd(11)}  ${printable(event.derivedFacts.sourcePath)}`;
-    return waiting === null ? line : `${line}  waiting: ${waiting}`;
+    return `${line}${waiting === null ? '' : `  waiting: ${waiting}`}${placed === null ? '' : `  placed: ${placed}`}`;
 }
 
-function matches(filter: ListFilter, event: CurationEvent): boolean {
+/** The default list leaves out items settled by placement; `--status` and `--all` go by the stored status. */
+function matches(filter: ListFilter, event: CurationEvent, placed: boolean): boolean {
     if (filter === 'all') return true;
-    if (filter === 'active') return event.status === 'open' || event.status === 'failed' || event.status === 'deferred';
+    if (filter === 'active') return !placed && (event.status === 'open' || event.status === 'failed' || event.status === 'deferred');
     return event.status === filter;
 }
+
+const unknownPlacementLine = (error: ReferenceScanError) => `Can't tell which new photographs are already placed, since ${error.file} can't be used (${error.reason}), so each one counts.`;
 
 const items = (n: number) => `${n} item${n === 1 ? '' : 's'}`;
 
@@ -275,23 +279,29 @@ function problemLine(problem: EventProblem): string {
 
 async function list(root: string, command: Extract<CurationCommand, { command: 'list' }>): Promise<CommandResult> {
     const { events, problems } = await listEvents(root);
-    const shown = events.filter((event) => matches(command.filter, event));
     const registry = events.length > 0 ? await readRegistry(root).catch(() => null) : null;
     const profileId = currentProfileId();
     const waiting = new Map(events.map((event) => [event.id, waitingReason(event, registry, profileId)]));
-    const judgment = events.filter((event) => needsJudgment(event, waiting.get(event.id) ?? null)).length;
+    const { placed, unknown } = await placedItems(root, events);
+    const shown = events.filter((event) => matches(command.filter, event, placed.has(event.id)));
+    const judgment = events.filter((event) => needsJudgment(event, waiting.get(event.id) ?? null, placed.has(event.id))).length;
     const waitingCount = [...waiting.values()].filter((reason) => reason !== null).length;
     if (command.json) {
-        const summary = shown.map((event) => ({ id: event.id, version: event.version, type: event.type, status: event.status, photoId: event.photoId, sourcePath: event.derivedFacts.sourcePath, observedAt: event.observedAt, waiting: waiting.get(event.id) ?? null }));
-        return { exitCode: problems.length > 0 ? 4 : 0, output: `${JSON.stringify({ needsJudgment: judgment, waiting: waitingCount, total: events.length, events: summary, problems }, null, 2)}\n` };
+        const summary = shown.map((event) => ({ id: event.id, version: event.version, type: event.type, status: event.status, photoId: event.photoId, sourcePath: event.derivedFacts.sourcePath, observedAt: event.observedAt, waiting: waiting.get(event.id) ?? null, placed: placed.get(event.id) ?? null }));
+        return { exitCode: problems.length > 0 ? 4 : 0, output: `${JSON.stringify({ needsJudgment: judgment, waiting: waitingCount, placed: placed.size, total: events.length, events: summary, problems }, null, 2)}\n` };
     }
     const lines: string[] = [];
     if (events.length === 0 && problems.length === 0) {
         lines.push('Curation inbox: empty. Nothing requires judgment.');
     } else {
-        lines.push(`Curation inbox: ${items(judgment)} ${judgment === 1 ? 'requires' : 'require'} judgment${waitingCount > 0 ? `, ${waitingCount} waiting` : ''}, ${events.length} in all.`);
-        if (shown.length === 0) lines.push(`Nothing matches ${command.filter === 'active' ? 'open, failed, or deferred' : command.filter}.`);
-        for (const event of shown) lines.push(listLine(event, waiting.get(event.id) ?? null));
+        lines.push(`Curation inbox: ${items(judgment)} ${judgment === 1 ? 'requires' : 'require'} judgment${waitingCount > 0 ? `, ${waitingCount} waiting` : ''}${placed.size > 0 ? `, ${placed.size} already placed` : ''}, ${events.length} in all.`);
+        if (unknown !== null) lines.push(unknownPlacementLine(unknown));
+        if (shown.length === 0) {
+            lines.push(command.filter === 'active' && placed.size > 0
+                ? `Nothing matches open, failed, or deferred but the ${items(placed.size)} already placed. --all lists them.`
+                : `Nothing matches ${command.filter === 'active' ? 'open, failed, or deferred' : command.filter}.`);
+        }
+        for (const event of shown) lines.push(listLine(event, waiting.get(event.id) ?? null, placed.get(event.id) ?? null));
     }
     for (const problem of problems) lines.push(problemLine(problem));
     return { exitCode: problems.length > 0 ? 4 : 0, output: `${lines.join('\n')}\n` };
@@ -379,11 +389,17 @@ async function show(root: string, command: Extract<CurationCommand, { command: '
     if (event === null) return { exitCode: 1, output: `Error (not-found): There is no event ${command.eventId}.\n` };
     const active = (await readActivePointer(root))?.revisionId ?? null;
     const registry = await readRegistry(root).catch(() => null);
-    if (command.json) return { exitCode: 0, output: `${JSON.stringify({ event, activeRevisionId: active }, null, 2)}\n` };
+    const { placed, unknown } = await placedItems(root, [event]);
+    if (command.json) {
+        const placementUnknown = unknown === null ? null : { file: unknown.file, reason: unknown.reason };
+        return { exitCode: 0, output: `${JSON.stringify({ event, activeRevisionId: active, placed: placed.get(event.id) ?? null, placementUnknown }, null, 2)}\n` };
+    }
     const lines = [
         `${event.id}, version ${event.version}: ${event.type}, ${event.status}`,
         ...identityLines(event, registry),
         ...((reason) => (reason === null ? [] : [`Waiting: ${reason}. Act on it once the set is ready.`]))(waitingReason(event, registry, currentProfileId())),
+        ...((reason) => (reason === undefined ? [] : [`Already placed: ${reason}, so it needs no judgment while it stays there.`]))(placed.get(event.id)),
+        ...(unknown === null ? [] : [unknownPlacementLine(unknown)]),
         `Asset revision: ${event.assetRevision ?? 'none'}`,
         `Observed: ${event.observedAt}${event.lastObservedAt !== event.observedAt ? `, last ${event.lastObservedAt}` : ''}`,
         ...factLines(event),

@@ -5,9 +5,14 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { folderBytes } from '../../../test/helpers/folderBytes';
 import { runTsx } from '../../../test/helpers/runTsx';
 import { createTempDataRoot } from '../../../test/helpers/tempDataRoot';
+import { applySequenceOp } from '../../catalog/sequence';
+import type { AuthoredSeries } from '../../catalog/types';
 import { readAuthoredRecord } from '../../catalog/working-layer';
+import { writeAuthoredRecord } from '../../catalog/working-layer-writer';
 import { readRegistry, writeRegistry } from '../../identity/registry';
 import { parseCurationArgs, printable, runCurationCli, scrub, type CommandResult } from '../commands';
+import { needsJudgment } from '../events';
+import { placedItems } from '../placement';
 import { listEvents } from '../repository';
 import { createCurationSink } from '../sink';
 import { createCurationFixture, DRAFT, writeRules, type CurationFixture } from './curationFixtures';
@@ -31,7 +36,7 @@ describe('curation list', () => {
     it('says the inbox is empty when it is', async () => {
         const f = await fixture();
         expect(await cli(f, 'list')).toEqual({ exitCode: 0, output: 'Curation inbox: empty. Nothing requires judgment.\n' });
-        expect(JSON.parse((await cli(f, 'list', '--json')).output)).toEqual({ needsJudgment: 0, waiting: 0, total: 0, events: [], problems: [] });
+        expect(JSON.parse((await cli(f, 'list', '--json')).output)).toEqual({ needsJudgment: 0, waiting: 0, placed: 0, total: 0, events: [], problems: [] });
     });
 
     it('counts what needs judgment and lists each item with its version, type, status, and short photo ID', async () => {
@@ -254,5 +259,114 @@ describe('round 3: a replacement whose set is still building', () => {
         await writeRegistry(f.root, registry, registry.version);
         await createCurationSink({ root: f.root, logger: quiet })([f.fact('replaced', photoId, { assetRevision: newer })]);
         expect((await cli(f, 'list')).output).toMatch(/^Curation inbox: 1 item requires judgment, 1 in all\./);
+    });
+});
+
+describe('a new photograph that is already placed', () => {
+    const editor = { kind: 'editor' } as const;
+
+    it('needs no judgment while a series holds it, and comes back when it leaves', async () => {
+        const f = await fixture();
+        const placedPhoto = f.catalog.series[0].photoIds[0];
+        await createCurationSink({ root: f.root, logger: quiet })([f.fact('new', placedPhoto), f.fact('new', f.fresh[0])]);
+        const { events } = await listEvents(f.root);
+        const placedItem = events.find((event) => event.photoId === placedPhoto);
+        const freshItem = events.find((event) => event.photoId === f.fresh[0]);
+
+        const listed = (await cli(f, 'list')).output.trimEnd().split('\n');
+        expect(listed[0]).toBe('Curation inbox: 1 item requires judgment, 1 already placed, 2 in all.');
+        expect(listed.slice(1).map((line) => line.split(' ')[0])).toEqual([`${freshItem?.id}@1`]);
+        expect((await cli(f, 'list', '--all')).output).toContain(`placed: its photo is in the series ${f.catalog.series[0].id}`);
+        expect((await cli(f, 'list', '--status', 'open')).output.trimEnd().split('\n')).toHaveLength(3);
+        expect(JSON.parse((await cli(f, 'list', '--json')).output)).toMatchObject({ needsJudgment: 1, placed: 1, total: 2 });
+        expect((await cli(f, 'show', placedItem?.id as string)).output).toContain(`Already placed: its photo is in the series ${f.catalog.series[0].id}, so it needs no judgment while it stays there.`);
+        expect((await cli(f, 'show', freshItem?.id as string)).output).not.toContain('Already placed');
+        expect(JSON.parse((await cli(f, 'show', placedItem?.id as string, '--json')).output)).toMatchObject({ placed: `its photo is in the series ${f.catalog.series[0].id}`, placementUnknown: null });
+        expect(JSON.parse((await cli(f, 'show', freshItem?.id as string, '--json')).output)).toMatchObject({ placed: null, placementUnknown: null });
+
+        // `sequence insert`, as the owner runs it, settles the other one too. Nothing is written to either item.
+        const before = folderBytes(path.join(f.root, 'curation'));
+        expect(await applySequenceOp({ dataRoot: f.root }, { kind: 'insert', seriesId: DRAFT, photoId: f.fresh[0], at: 'end' }, { expectedVersion: 1, actor: editor })).toMatchObject({ ok: true, changed: true });
+        expect((await cli(f, 'list')).output).toBe('Curation inbox: 0 items require judgment, 2 already placed, 2 in all.\nNothing matches open, failed, or deferred but the 2 items already placed. --all lists them.\n');
+        expect(folderBytes(path.join(f.root, 'curation'))).toEqual(before);
+
+        // Taken out again, it needs judgment again, still at the version it was shown at.
+        expect(await applySequenceOp({ dataRoot: f.root }, { kind: 'remove', seriesId: DRAFT, photoId: f.fresh[0] }, { expectedVersion: 2, actor: editor })).toMatchObject({ ok: true, changed: true });
+        expect((await cli(f, 'list')).output).toMatch(new RegExp(`^Curation inbox: 1 item requires judgment, 1 already placed, 2 in all\\.\\n${freshItem?.id}@1 `));
+    });
+
+    it('keeps a missing or replacement item for a placed photo open, and approve still works on a placed one', async () => {
+        const f = await fixture();
+        const [first, second] = f.catalog.series[1].photoIds;
+        const registry = await readRegistry(f.root);
+        const photo = registry.photos[second];
+        const newer = `sha256-${'7'.repeat(64)}`;
+        photo.revisions[newer] = { ...photo.revisions[photo.source.observedRevision], assetRevision: newer, profiles: { [f.catalog.profileId]: { state: 'ready', attempts: 1, readyAt: '2026-02-01T00:00:00.000Z' } } };
+        await writeRegistry(f.root, registry, registry.version);
+        await createCurationSink({ root: f.root, logger: quiet })([f.fact('new', first), f.fact('missing', first), f.fact('replaced', second, { assetRevision: newer })]);
+        expect((await cli(f, 'list')).output).toMatch(/^Curation inbox: 2 items require judgment, 1 already placed, 3 in all\./);
+        const fresh = (await listEvents(f.root)).events.find((event) => event.type === 'new');
+        const approved = await cli(f, 'approve', fresh?.id as string, '--version', '1', '--series', DRAFT, '--base', 'none');
+        expect(approved).toMatchObject({ exitCode: 0, output: expect.stringContaining(`Approved into ${DRAFT}, where it kept its place`) });
+        expect((await cli(f, 'list')).output).toMatch(/^Curation inbox: 2 items require judgment, 3 in all\./);
+    });
+
+    it('counts every item when the data root can\'t show what is placed, and says why', async () => {
+        const f = await fixture({ published: true });
+        await createCurationSink({ root: f.root, logger: quiet })([f.fact('new', f.catalog.series[0].photoIds[0])]);
+        expect((await cli(f, 'list')).output).toMatch(/^Curation inbox: 0 items require judgment, 1 already placed, 1 in all\./);
+        fs.writeFileSync(path.join(f.root, 'catalog', 'revisions', `${f.catalog.revisionId}.json`), '{');
+        const listed = await cli(f, 'list');
+        expect(listed.exitCode).toBe(0);
+        expect(listed.output).toMatch(/^Curation inbox: 1 item requires judgment, 1 in all\.\nCan't tell which new photographs are already placed, since catalog\/revisions\/rev_[0-9a-f]{64}\.json can't be used \(invalid-json\), so each one counts\.\n/);
+        const [event] = (await listEvents(f.root)).events;
+        expect(JSON.parse((await cli(f, 'show', event.id, '--json')).output)).toMatchObject({ placed: null, placementUnknown: { file: `catalog/revisions/${f.catalog.revisionId}.json`, reason: 'invalid-json' } });
+    });
+
+    it('stops settling an item that new bytes moved, since no photo record pins the bytes it was placed with', async () => {
+        const f = await fixture();
+        const photoId = f.fresh[0];
+        await createCurationSink({ root: f.root, logger: quiet })([f.fact('new', photoId)]);
+        expect(await applySequenceOp({ dataRoot: f.root }, { kind: 'insert', seriesId: DRAFT, photoId, at: 'end' }, { expectedVersion: 1, actor: editor })).toMatchObject({ ok: true, changed: true });
+        expect(await readAuthoredRecord(f.root, 'photo', photoId)).toBeNull();
+        expect((await cli(f, 'list')).output).toMatch(/^Curation inbox: 0 items require judgment, 1 already placed, 1 in all\./);
+
+        const registry = await readRegistry(f.root);
+        const photo = registry.photos[photoId];
+        const newer = `sha256-${'8'.repeat(64)}`;
+        photo.revisions[newer] = { ...photo.revisions[photo.source.observedRevision], assetRevision: newer };
+        photo.source.observedRevision = newer;
+        await writeRegistry(f.root, registry, registry.version);
+        await createCurationSink({ root: f.root, logger: quiet })([f.fact('replaced', photoId, { assetRevision: newer })]);
+        const { events } = await listEvents(f.root);
+        expect(events.map((event) => [event.type, event.status, event.version, event.assetRevision])).toEqual([['new', 'open', 2, newer]]);
+        const listed = await cli(f, 'list');
+        expect(listed.output).toMatch(new RegExp(`^Curation inbox: 1 item requires judgment, 1 in all\\.\\n${events[0].id}@2 `));
+        expect((await cli(f, 'show', events[0].id)).output).not.toContain('Already placed');
+
+        // A photo record that pins the new bytes, as draft:init writes one, places them, so the moved item settles again.
+        await writeAuthoredRecord({ kind: 'photo', id: photoId, assetRevision: newer, alt: null }, { expectedVersion: 0, root: f.root });
+        expect((await cli(f, 'list')).output).toMatch(/^Curation inbox: 0 items require judgment, 1 already placed, 1 in all\./);
+    });
+
+    it('counts only a series sequence as a placement, not a cover outside it', async () => {
+        const f = await fixture();
+        await createCurationSink({ root: f.root, logger: quiet })([f.fact('new', f.fresh[0])]);
+        const series = await readAuthoredRecord(f.root, 'series', DRAFT) as AuthoredSeries;
+        await writeAuthoredRecord({ ...series, cover: { photoId: f.fresh[0] } }, { expectedVersion: series.version, root: f.root });
+        expect((await readAuthoredRecord(f.root, 'series', DRAFT) as AuthoredSeries).photoIds).not.toContain(f.fresh[0]);
+        expect((await cli(f, 'list')).output).toMatch(/^Curation inbox: 1 item requires judgment, 1 in all\./);
+    });
+
+    it('is the one placement rule, exported for every view of the inbox', async () => {
+        const f = await fixture();
+        const placedPhoto = f.catalog.series[0].photoIds[0];
+        await createCurationSink({ root: f.root, logger: quiet })([f.fact('new', placedPhoto), f.fact('new', f.fresh[0])]);
+        const { events } = await listEvents(f.root);
+        const { placed, unknown } = await placedItems(f.root, events);
+        expect(unknown).toBeNull();
+        expect([...placed.keys()]).toEqual([events.find((event) => event.photoId === placedPhoto)?.id]);
+        // @ts-expect-error The placement argument is required, so a view that hasn't adopted placedItems() doesn't compile.
+        expect(needsJudgment({ status: 'open' }, null)).toBe(true);
     });
 });
