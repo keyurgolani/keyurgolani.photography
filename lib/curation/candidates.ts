@@ -1,10 +1,12 @@
+import type { AuthoredPhoto } from '../catalog/types';
+import { readActivePointer, readAuthoredRecord } from '../catalog/working-layer';
 import type { BuildOptions, BuildOutcome } from '../identity/derivatives';
+import { ASSET_REVISION_RE, PHOTO_ID_RE } from '../identity/ids';
 import type { FactSink } from '../identity/pass';
 import { currentProfileId } from '../identity/profile';
 import { readRegistry } from '../identity/registry';
 import type { DerivativeJob, IdentityFact, ProfileEntry, Registry } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
-import { ASSET_REVISION_RE, PHOTO_ID_RE } from '../identity/ids';
 import { eventIdOf, eventKey, type Candidate, type CandidateFailure, type CurationEvent } from './events';
 import { EventMovedError, EventUnusableError, InvalidEventError, listEvents, readEvent, withCurationLock, writeEvent } from './repository';
 import { SINK_WAIT_MS } from './sink';
@@ -19,18 +21,18 @@ import { SINK_WAIT_MS } from './sink';
  * confirm, or `failed` (an open item turns `failed`, and #14's retry
  * applies; a deferred one stays deferred).
  * An older revision's bytes coming back reuse the set already committed for
- * them, so that item is ready without a build.
+ * them, so that item is ready without a build, and an item already confirmed
+ * for them opens again when the photo record has moved on (settleOne()).
  *
  * It runs after each build, and on each pass for the revisions that pass's
  * facts name. A sink's first delivery, at the watcher's start, looks at every
  * item once, so a crash between the registry's `ready` and the item's write
  * is settled when the watcher comes back, without reading the whole inbox on
  * every pass inside the registry hold. It reads the registry without its
- * lock and takes only the curation lock, so
- * the lock order stays `registry` then `curation`. It writes only under
- * `curation/`, and never the working layer: confirming the new bytes is the
- * curator's (lib/curation/resolutions.ts), and only a #13 publish makes them
- * public.
+ * lock and takes only the curation lock, so the lock order stays `registry`
+ * then `curation`. It reads the working layer's photo records and writes
+ * only under `curation/`: confirming the new bytes is the curator's
+ * (lib/curation/resolutions.ts), and only a #13 publish makes them public.
  */
 
 type Logger = Pick<Console, 'log' | 'warn' | 'error'>;
@@ -124,6 +126,8 @@ export interface SettleResult {
     ready: string[];
     /** Item IDs given a failed one. */
     failed: string[];
+    /** Approved item IDs opened again, because their bytes came back while the photo record pins others. */
+    reopened: string[];
 }
 
 /** One event, or null when it is absent or damaged, as #14's sink leaves a damaged one. An I/O error is thrown. */
@@ -132,6 +136,57 @@ export async function readUsableEvent(root: string, id: string): Promise<Curatio
         if (error instanceof EventUnusableError && error.problem.reason !== 'unreadable') return null;
         throw error;
     });
+}
+
+/** The photo record, null for none, or undefined when it can't be read, which settles nothing on it. */
+function photoRecordOf(root: string, photoId: string): Promise<AuthoredPhoto | null | undefined> {
+    return readAuthoredRecord(root, 'photo', photoId).catch(() => undefined);
+}
+
+const activeRevision = (root: string) => readActivePointer(root).then((pointer) => pointer?.revisionId ?? null, () => null);
+
+type Settled = { next: CurationEvent; kind: keyof SettleResult };
+
+/**
+ * What a settle does to one replacement item, or null for nothing.
+ *
+ * An approved item opens again, as a new version with a fresh candidate,
+ * when its bytes came back after it was confirmed (the source observes its
+ * revision and a fact folded into it since) while the photo record pins
+ * another revision: B confirmed, then A, then B copied back. Its decision is
+ * the watcher's `reopen`, as #14's sink records one for a missing source.
+ * Otherwise an open, deferred, or failed item takes its candidate, as
+ * withCandidate() says. The working layer is only read.
+ */
+async function settleOne(root: string, event: CurationEvent, registry: Registry, profileId: string, at: string): Promise<Settled | null> {
+    if (event.type !== 'replacement' || event.photoId === null || event.assetRevision === null) return null;
+    const photoId = event.photoId;
+    const revision = event.assetRevision;
+    const view = candidateOf(registry, photoId, revision, profileId);
+    if (event.status === 'approved') {
+        const photo = Object.hasOwn(registry.photos, photoId) ? registry.photos[photoId] : undefined;
+        if (!photo || photo.mergedInto || photo.sourceHealth !== 'present' || photo.source.observedRevision !== revision) return null;
+        const confirmed = event.decisions.findLast((decision) => decision.action === 'confirm');
+        if (!confirmed || event.lastObservedAt <= confirmed.at) return null;
+        const record = await photoRecordOf(root, photoId);
+        if (!record || record.assetRevision === revision) return null;
+        const { candidate: _earlier, ...rest } = event;
+        void _earlier;
+        const reopened: CurationEvent = {
+            ...rest,
+            status: 'open',
+            decisions: [...event.decisions, {
+                action: 'reopen',
+                at,
+                by: 'watcher',
+                baseRevisionId: await activeRevision(root),
+                reason: `The source holds ${revision} again, while the photo record pins ${record.assetRevision}.`,
+            }],
+        };
+        return { next: withCandidate(reopened, view, at) ?? reopened, kind: 'reopened' };
+    }
+    const next = withCandidate(event, view, at);
+    return next === null ? null : { next, kind: next.candidate?.state === 'ready' ? 'ready' : 'failed' };
 }
 
 /** The items to look at: `only`'s, or every one, damaged ones aside. */
@@ -148,8 +203,9 @@ async function eventsFor(root: string, only: SettleOptions['only']): Promise<Cur
 }
 
 /**
- * Record what #10's registry says on each open replacement item whose
- * candidate it changes. It looks first without the curation lock, and takes
+ * Settle each replacement item settleOne() changes: record what #10's
+ * registry says of its set, or open one whose bytes came back. It looks
+ * first without the curation lock, and takes
  * the lock only when an item needs a write, so an unchanged run writes
  * nothing at all. Under the lock it reads the registry and each item again
  * and writes with compare-and-swap. A damaged item is skipped, as the sink
@@ -158,21 +214,24 @@ async function eventsFor(root: string, only: SettleOptions['only']): Promise<Cur
 export async function settleCandidates(root: string, options: SettleOptions = {}): Promise<SettleResult> {
     const { clock = Date.now, logger = console, waitMs = SINK_WAIT_MS } = options;
     const profileId = options.profileId ?? currentProfileId();
-    const result: SettleResult = { ready: [], failed: [] };
+    const result: SettleResult = { ready: [], failed: [], reopened: [] };
     const at = () => new Date(clock()).toISOString();
 
     const looked = await readRegistry(root);
-    const due = (await eventsFor(root, options.only)).filter((event) => event.photoId !== null && event.assetRevision !== null
-        && withCandidate(event, candidateOf(looked, event.photoId, event.assetRevision, profileId), at()) !== null);
+    const due: CurationEvent[] = [];
+    for (const event of await eventsFor(root, options.only)) {
+        if (await settleOne(root, event, looked, profileId, at()) !== null) due.push(event);
+    }
     if (due.length === 0) return result;
 
     await withCurationLock(root, { waitMs }, async (hold) => {
         const registry = await readRegistry(root);
         for (const { id } of due) {
             const event = await readUsableEvent(root, id);
-            if (event === null || event.photoId === null || event.assetRevision === null) continue;
-            const next = withCandidate(event, candidateOf(registry, event.photoId, event.assetRevision, profileId), at());
-            if (next === null) continue;
+            if (event === null) continue;
+            const settled = await settleOne(root, event, registry, profileId, at());
+            if (settled === null) continue;
+            const { next, kind } = settled;
             hold.signal.throwIfAborted();
             try {
                 await writeEvent(root, next, event.version, hold);
@@ -185,11 +244,11 @@ export async function settleCandidates(root: string, options: SettleOptions = {}
                 }
                 throw error;
             }
-            (next.candidate?.state === 'ready' ? result.ready : result.failed).push(id);
+            result[kind].push(id);
         }
     });
-    if (result.ready.length > 0 || result.failed.length > 0) {
-        logger.log(`[curation] Replacements: ${result.ready.length} ready to confirm, ${result.failed.length} failed.`);
+    if (result.ready.length > 0 || result.failed.length > 0 || result.reopened.length > 0) {
+        logger.log(`[curation] Replacements: ${result.ready.length} ready to confirm, ${result.failed.length} failed, ${result.reopened.length} reopened.`);
     }
     return result;
 }
