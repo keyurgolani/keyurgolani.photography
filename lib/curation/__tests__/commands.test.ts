@@ -127,7 +127,7 @@ describe('curation arguments', () => {
         [['defer', `evt_${'0'.repeat(24)}`], /needs --version/],
         [['defer', `evt_${'0'.repeat(24)}`, '--version', '0'], /from 1/],
         [['dismiss', `evt_${'0'.repeat(24)}`, '--version', '1'], /needs --reason/],
-        [['dismiss', `evt_${'0'.repeat(24)}`, '--version', '1', '--reason', 'two\nlines'], /control characters/],
+        [['dismiss', `evt_${'0'.repeat(24)}`, '--version', '1', '--reason', 'two\nlines'], /line break/],
         [['approve', `evt_${'0'.repeat(24)}`, '--version', '1', '--series', 'harbor'], /not a series ID/],
         [['approve', `evt_${'0'.repeat(24)}`, '--version', '1', '--unassigned', '--start'], /no position/],
         [['approve', `evt_${'0'.repeat(24)}`, '--version', '1', '--start', '--end'], /one of --start/],

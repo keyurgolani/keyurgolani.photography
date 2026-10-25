@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { eventIdOf, eventKey, fingerprintOf, parseEvent } from '../events';
 import { filenameTokens, loadRules, suggestForNew, type SuggestInput } from '../suggest';
-import { ownerText } from '../text';
+import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from '../text';
 
 const AT = '2026-02-01T00:00:00.000Z';
 const known = new Set(['ser_harbor', 'ser_city', 'ser_winter']);
@@ -105,10 +105,22 @@ describe('event keys', () => {
 });
 
 describe('owner text', () => {
-    it('is trimmed plain text with something in it', () => {
+    it('is trimmed plain text with something in it, under #13\'s plain-text rules', () => {
         expect(ownerText('  A quiet harbor at dawn.  ', { field: 'd', max: 100 })).toEqual({ ok: true, text: 'A quiet harbor at dawn.' });
-        for (const bad of ['', '   ', 'line\nbreak', 'tab\there', 'bidi\u202espoof', 'line\u2028sep', 'para\u2029sep', 'zero\u200bwidth', 'joiner\u200djoin', 'mark\u200eltr', 'word\u2060joiner', 'bom\ufeffhere', '<b>bold</b>', 'x'.repeat(101)]) {
+        for (const bad of ['', '   ', 'line\nbreak', 'tab\there', 'bidi\u202espoof', 'line\u2028sep', 'para\u2029sep', 'zero\u200bwidth', 'word\u2060joiner', 'bom\ufeffhere', 'soft\u00adhyphen', 'private\ue000use', '<b>bold</b>', 'x'.repeat(101)]) {
             expect(ownerText(bad, { field: 'd', max: 100 }).ok, JSON.stringify(bad)).toBe(false);
         }
+    });
+
+    it('takes what #13 allows, such as an emoji joined with ZWJ, and names a refused character', () => {
+        expect(ownerText('A family \u{1F468}\u200d\u{1F469}\u200d\u{1F467} at the pier.', { field: 'd', max: 100 }).ok).toBe(true);
+        expect(ownerText('ab\u202ecd', { field: '--reason', max: 100 })).toEqual({ ok: false, problem: "--reason can't hold a bidi embedding or override (U+202E at character 3)." });
+        expect(ownerText('two\nlines', { field: '--reason', max: 100 })).toEqual({ ok: false, problem: "--reason can't hold a line break." });
+    });
+
+    it('keeps the inbox limits: a description takes alt\'s 1,000 characters, a reason 500', () => {
+        expect(MAX_DESCRIPTION_LENGTH).toBe(1000);
+        expect(MAX_REASON_LENGTH).toBe(500);
+        expect(ownerText('x'.repeat(501), { field: '--reason', max: MAX_REASON_LENGTH })).toEqual({ ok: false, problem: '--reason is 501 characters, and the most is 500.' });
     });
 });
