@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process';
 import net from 'node:net';
 import path from 'node:path';
-import { expect } from '@playwright/test';
 
 /**
  * A second `next start` from the build the harness made, on 127.0.0.1, with
@@ -50,6 +49,9 @@ export async function startCatalogServer(dataRoot: string, port?: number): Promi
     let output = '';
     child.stdout.on('data', (chunk) => (output += chunk));
     child.stderr.on('data', (chunk) => (output += chunk));
+    let spawnError: Error | undefined;
+    child.once('error', (error) => (spawnError = error));
+    const exited = () => child.exitCode !== null || child.signalCode !== null;
     const signal = (name: NodeJS.Signals) => {
         try {
             if (child.pid) process.kill(-child.pid, name);
@@ -57,9 +59,14 @@ export async function startCatalogServer(dataRoot: string, port?: number): Promi
             // The group is already gone.
         }
     };
+    // The group is detached, so Ctrl-C or a worker that dies before afterAll
+    // wouldn't reach it. Exit handlers run synchronously, so this kills outright.
+    const killOnExit = () => signal('SIGKILL');
+    process.once('exit', killOnExit);
+    child.once('exit', () => process.removeListener('exit', killOnExit));
     const stop = () =>
         new Promise<void>((resolve) => {
-            if (child.exitCode !== null || child.signalCode !== null) return resolve();
+            if (exited() || !child.pid) return resolve();
             const force = setTimeout(() => signal('SIGKILL'), STOP_TIMEOUT);
             child.once('exit', () => {
                 clearTimeout(force);
@@ -69,20 +76,44 @@ export async function startCatalogServer(dataRoot: string, port?: number): Promi
         });
     const origin = `http://127.0.0.1:${listen}`;
     try {
-        await expect
-            .poll(async () => {
-                try {
-                    // /api/ready answers 200 only once the catalog it serves is readable.
-                    return (await fetch(`${origin}/api/ready`)).status;
-                } catch {
-                    return 0;
-                }
-            }, { timeout: READY_TIMEOUT })
-            .toBe(200);
+        await waitUntilReady(origin, () => {
+            if (spawnError) return `could not start: ${spawnError.message}`;
+            if (exited()) return `exited (${child.exitCode ?? child.signalCode}) before it answered`;
+            return null;
+        }, () => LISTENING.test(output));
     } catch (error) {
         // No hook gets the server back to stop it, so a failed start stops its own.
         await stop();
         throw new Error(`The catalog server did not get ready:\n${output}`, { cause: error });
     }
     return { origin, output: () => output, stop };
+}
+
+/** What `next start` logs once its own server listens. A port taken by something else exits it before this. */
+const LISTENING = /Ready in /;
+const POLL_INTERVAL = 250;
+
+/**
+ * Poll `/api/ready` until it answers 200 while the child is still running
+ * and has logged that it listens, so a 200 from whatever else holds a pinned
+ * port never counts. Fails as soon as `failure` names a reason.
+ */
+async function waitUntilReady(origin: string, failure: () => string | null, listening: () => boolean): Promise<void> {
+    const deadline = Date.now() + READY_TIMEOUT;
+    while (Date.now() < deadline) {
+        const before = failure();
+        if (before) throw new Error(`next start ${before}`);
+        let status = 0;
+        try {
+            // /api/ready answers 200 only once the catalog it serves is readable.
+            status = (await fetch(`${origin}/api/ready`, { signal: AbortSignal.timeout(POLL_INTERVAL * 8) })).status;
+        } catch {
+            // Not listening yet.
+        }
+        const after = failure();
+        if (after) throw new Error(`next start ${after}`);
+        if (status === 200 && listening()) return;
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
+    }
+    throw new Error(`next start did not answer 200 on /api/ready within ${READY_TIMEOUT} ms`);
 }

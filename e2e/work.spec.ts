@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import type { Locator, Page } from '@playwright/test';
+import type { Locator, Page, Route } from '@playwright/test';
 import { publish } from '../lib/catalog/publish';
 import { createTestCatalog, type TestCatalog } from '../lib/catalog/testing';
 import { assetDir } from '../lib/media/path';
@@ -39,9 +39,11 @@ const SENTINELS = [
     'SENTINEL chapter',
     'private/SENTINEL-source.jpg',
     '#5e7173',
-    // The draft and hidden series' photos.
+    // The draft and hidden series' photos, and their IDs, which would reach the RSC payload as React keys.
     P[6],
     P[7],
+    'ser_e2e-draft',
+    'ser_e2e-hidden',
 ];
 
 /** The published series in authored Work order, which neither spec order nor ID order gives. */
@@ -53,6 +55,10 @@ const PUBLISHED = [
 ] as const;
 /** Its cover's files are removed after the publish, so /media can't serve them. */
 const BROKEN_COVER = 'quarry';
+/** The first cover's authored focal point, off center so the CSS has to carry it. */
+const FIRST_FOCAL = { x: 0.25, y: 0.75 };
+/** Its cover is authored `contain`. */
+const CONTAIN_COVER = 'ridge';
 
 let catalog: TestCatalog | undefined;
 let server: CatalogServer | undefined;
@@ -65,9 +71,17 @@ test.beforeAll(async () => {
         seed: 31,
         withAssets: true,
         photos: [
-            { ...photo(0), caption: 'SENTINEL caption', alt: { kind: 'described', text: 'SENTINEL alt', reviewed: true }, location: 'SENTINEL location', sourcePath: 'private/SENTINEL-source.jpg', accent: '#5e7173' },
+            {
+                ...photo(0),
+                caption: 'SENTINEL caption',
+                alt: { kind: 'described', text: 'SENTINEL alt', reviewed: true },
+                location: 'SENTINEL location',
+                sourcePath: 'private/SENTINEL-source.jpg',
+                accent: '#5e7173',
+                focalPoint: FIRST_FOCAL,
+            },
             photo(1),
-            photo(2),
+            { ...photo(2), crop: 'contain' },
             photo(3),
             photo(4),
             photo(5),
@@ -206,6 +220,38 @@ test('one tap on an entry opens its series', async ({ page }, testInfo) => {
     const target = entry(page, PUBLISHED[2].slug);
     await target.scrollIntoViewIfNeeded();
     await expectSingleTapActivates(target, () => expect(page).toHaveURL(`${origin()}/work/${PUBLISHED[2].slug}`));
+});
+
+/** The reserved box's width over height for the entry at `index`: 4:3 below 768 px, then wide 3:2 and narrow 4:5 alternating by row. */
+const frameRatio = (index: number, width: number) => (width < 768 ? 4 / 3 : index % 4 === 0 || index % 4 === 3 ? 3 / 2 : 4 / 5);
+
+test('each cover holds its reserved box before its image loads, cropped at its focal point, and contain keeps the whole photo', async ({ page }) => {
+    // Hold every /media response, so the boxes are measured with no image painted.
+    const held: Route[] = [];
+    await page.route((url) => url.pathname.startsWith('/media/'), (route) => void held.push(route));
+    // The held eager cover would keep the load event from firing.
+    await page.goto(`${origin()}/work`, { waitUntil: 'domcontentloaded' });
+    await waitForHydration(page);
+    await expect(entries(page)).toHaveCount(PUBLISHED.length);
+    const first = entry(page, PUBLISHED[0].slug);
+    await expect.poll(() => held.length, 'the eager cover was requested and is held').toBeGreaterThan(0);
+    expect(await first.locator('img').evaluate((image: HTMLImageElement) => image.naturalWidth), 'nothing painted yet').toBe(0);
+
+    const width = page.viewportSize()?.width ?? 0;
+    for (const [index, series] of PUBLISHED.entries()) {
+        const box = await entry(page, series.slug).locator('[data-cover]').boundingBox();
+        expect(box, series.slug).not.toBeNull();
+        expect(box?.height ?? 0, `${series.slug} keeps its height`).toBeGreaterThan(0);
+        expect((box?.width ?? 0) / (box?.height ?? 1), `${series.slug} keeps its ratio`).toBeCloseTo(frameRatio(index, width), 1);
+    }
+
+    const fit = (link: Locator) => link.locator('img').evaluate((image) => ({ fit: getComputedStyle(image).objectFit, position: getComputedStyle(image).objectPosition }));
+    expect(await fit(first)).toEqual({ fit: 'cover', position: `${FIRST_FOCAL.x * 100}% ${FIRST_FOCAL.y * 100}%` });
+    expect((await fit(entry(page, CONTAIN_COVER))).fit).toBe('contain');
+
+    await page.unrouteAll({ behavior: 'ignoreErrors' });
+    for (const route of held) await route.continue().catch(() => undefined);
+    await expect.poll(() => coverLoaded(first)).toBe(true);
 });
 
 /** Whether `link`'s cover image has loaded and painted. */
