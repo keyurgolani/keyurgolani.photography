@@ -119,6 +119,24 @@ describe('photos status', () => {
     });
 });
 
+describe('photos status with a pointer its activation disagrees with', () => {
+    it('reports the revision the pointer names, which the site serves, with a note', async () => {
+        const catalog = await fixture();
+        expect((await run(catalog)).outcome).toBe('PUBLISHED');
+        await editCaption(catalog, 'Fixture caption, edited.');
+        const second = await run(catalog);
+        expect(second.outcome).toBe('PUBLISHED');
+        // A torn restore: the pointer names revision 1 but still names activation 2.
+        const pointer = await readActivePointer(catalog.root);
+        fs.writeFileSync(path.join(catalog.root, 'catalog', 'active.json'), `${JSON.stringify({ ...pointer, revisionId: catalog.revisionId }, null, 2)}\n`);
+        const status = await ownerStatus({ dataRoot: catalog.root });
+        expect(status.catalog.active).toMatchObject({ revisionId: catalog.revisionId, activationId: pointer?.activationId, status: 'mismatch' });
+        const { output } = await runStatusCommand({ dataRoot: catalog.root });
+        expect(output).toContain(`Catalog: catalog mode, ${catalog.revisionId} is live, but the pointer names activation 2, which activated ${second.revisionId}`);
+        expect(output).toContain('  The pointer and its activation record disagree. The next photos publish repairs them.');
+    });
+});
+
 describe('photos list', () => {
     it('lists each photo with its source, date, series, description state, and set, relative to the data root', async () => {
         const catalog = await fixture();

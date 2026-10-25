@@ -43,13 +43,19 @@ export interface PhotoListing {
  */
 export interface LiveRevision {
     revisionId: string;
-    /** Null when no activation record names the pointer's activation. */
+    /** Null when no activation record names the pointer's activation, or that activation is of another revision. */
     revisionNumber: number | null;
     activationId: string | null;
     /** The activation's `NNNNNN` number. */
     sequence: number | null;
-    /** `missing` when no activation record names the pointer's activation. */
-    status: Activation['status'] | 'missing';
+    /**
+     * `missing` when no activation record names the pointer's activation, and
+     * `mismatch` when that activation is of another revision, as a hand edit
+     * or a torn restore can leave it. The site still serves `revisionId`.
+     */
+    status: Activation['status'] | 'missing' | 'mismatch';
+    /** For `mismatch`: the revision the pointer's activation names. */
+    activationRevisionId?: string;
     kind: Activation['kind'] | null;
     actor: string | null;
     committedAt: string | null;
@@ -163,9 +169,14 @@ export async function ownerStatus({ dataRoot, clock }: StatusHandle): Promise<Ow
             // After a crash between the pointer switch and the commit, the pointer names a pending activation, and
             // the site already serves its revision.
             const named = activations.find((activation) => activation.activationId === pointer.activationId);
-            status.catalog.active = named
-                ? live(named)
-                : { revisionId: pointer.revisionId, revisionNumber: null, activationId: pointer.activationId, sequence: null, status: 'missing', kind: null, actor: null, committedAt: null };
+            // The public reader follows the pointer's revisionId, so that is what's live even when its activation names another.
+            if (!named) {
+                status.catalog.active = { revisionId: pointer.revisionId, revisionNumber: null, activationId: pointer.activationId, sequence: null, status: 'missing', kind: null, actor: null, committedAt: null };
+            } else if (named.revisionId !== pointer.revisionId) {
+                status.catalog.active = { ...live(named), revisionId: pointer.revisionId, revisionNumber: null, status: 'mismatch', activationRevisionId: named.revisionId };
+            } else {
+                status.catalog.active = live(named);
+            }
         } else {
             const last = lastCommitted(activations);
             if (last) status.catalog.active = live(last);
@@ -204,6 +215,10 @@ function formatStatus(status: OwnerStatus): string {
             case 'missing':
                 lines.push(`Catalog: ${catalog.mode} mode, ${revisionId} is live, but no activation record names it`);
                 lines.push('  The next photos publish repairs the record.');
+                break;
+            case 'mismatch':
+                lines.push(`Catalog: ${catalog.mode} mode, ${revisionId} is live, but the pointer names activation ${sequence}, which activated ${catalog.active.activationRevisionId}`);
+                lines.push('  The pointer and its activation record disagree. The next photos publish repairs them.');
                 break;
         }
     } else {
