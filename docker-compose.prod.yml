@@ -25,7 +25,15 @@ services:
         read_only: true
         bind:
           create_host_path: false
-      - ./.next-images-cache:/app/.next/cache/images
+      # /_next/image's cache, which web writes as uid 1001. Never created when
+      # missing either: the Docker daemon would create it, owned by root under
+      # a root daemon, and web couldn't write it. Create it first, owned by
+      # uid 1001 (docs/data-root.md, Setting it up).
+      - type: bind
+        source: ./.next-images-cache
+        target: /app/.next/cache/images
+        bind:
+          create_host_path: false
     restart: always
     environment:
       - NODE_ENV=production
@@ -40,9 +48,9 @@ services:
 
   # Image optimization watcher - processes new photos automatically
   # Note: Ensure the photos directory and the data root are writable by uid
-  # 1001 (nextjs user). Run on host:
-  #   mkdir -p ./portfolio-data
-  #   chown -R 1001:1001 ./public/assets/photos ./portfolio-data
+  # 1001 (nextjs user), and the image cache too. Run on host:
+  #   mkdir -p ./portfolio-data ./.next-images-cache
+  #   chown -R 1001:1001 ./public/assets/photos ./portfolio-data ./.next-images-cache
   #   chmod 700 ./portfolio-data
   image-watcher:
     image: ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?Set PHOTOGRAPHY_IMAGE_TAG to a release tag, for example v1.1.0}

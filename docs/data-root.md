@@ -101,10 +101,12 @@ An edit that also changes or removes the stamp isn't caught. It reads as a versi
 Before the first `up -d` with this compose file:
 
 ```bash
-mkdir -p portfolio-data
-sudo chown -R 1001:1001 public/assets/photos portfolio-data
+mkdir -p portfolio-data .next-images-cache
+sudo chown -R 1001:1001 public/assets/photos portfolio-data .next-images-cache
 sudo chmod 700 portfolio-data
 ```
+
+`./.next-images-cache` is where `web` keeps the `/_next/image` copies it makes, so it has to belong to uid 1001 too. `docker-compose.prod.yml` never creates it, like the other two folders: a short-syntax bind of a missing folder has the Docker daemon create it, owned by root when the daemon runs as root, and `web` then can't write it. A host that ran the older compose file may already have one that Docker created that way, and the `chown` fixes it.
 
 Until the migration below initializes it, the watcher writes only its heartbeat there, logs once that the identity step is off, and keeps writing the legacy derivatives the site serves today. `GET /api/health` reports `uninitialized`.
 
