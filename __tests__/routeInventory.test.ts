@@ -137,6 +137,14 @@ describe('the route inventory', () => {
             ['an unguarded curator handler in a route group', 'app/(curator)/api/curation/x/route.ts', `${DYN}export async function GET() { return new Response(); }\n`, 'curator handler'],
             ['a top-level dynamic segment, which can serve curator paths', 'app/[section]/page.tsx', 'export default async function P() { return null; }\n', 'can serve curator paths'],
             ['a dynamic segment under /api, which can serve curator paths', 'app/api/[name]/route.ts', 'export async function GET() { return new Response(); }\n', 'can serve curator paths'],
+            // A folder Next serves at another level's URL still counts by the URL it serves.
+            ['an unguarded page Next serves at /curation from one level down', 'app/photos/(..)curation/page.tsx', `${DYN}export default async function P() { return null; }\n`, 'renders curator content'],
+            ['an unguarded page Next serves at /curation from two levels down', 'app/a/b/(..)(..)curation/page.tsx', `${DYN}export default async function P() { return null; }\n`, 'renders curator content'],
+            ['an unguarded page Next serves at /curation from deep in the tree', 'app/gallery/x/(...)curation/page.tsx', `${DYN}export default async function P() { return null; }\n`, 'renders curator content'],
+            ['an unguarded page Next serves at /curation/inbox from a route group', 'app/(shop)/photos/(..)curation/inbox/page.tsx', `${DYN}export default async function P() { return null; }\n`, 'renders curator content'],
+            ['an unguarded page Next serves at a curator path from its own level', 'app/curation/(.)inbox/page.tsx', `${DYN}export default async function P() { return null; }\n`, 'renders curator content'],
+            ['an unguarded page in a curator folder Next serves elsewhere', 'app/curation/(..)photos/page.tsx', `${DYN}export default async function P() { return null; }\n`, 'renders curator content'],
+            ['a top-level dynamic segment Next serves from one level down', 'app/x/(..)[y]/page.tsx', 'export default async function P() { return null; }\n', 'can serve curator paths'],
             // Every convention file under a curator path.
             ['a curator not-found page that reads data', 'app/curation/not-found.tsx', "import { readThing } from '@/lib/catalog/thing';\nexport default async function N() { await readThing(); return null; }\n", 'fallback'],
             ['a curator loading state that reads data', 'app/curation/loading.tsx', "import fs from 'node:fs';\nexport default function L() { fs.readFileSync('x'); return null; }\n", 'fallback'],

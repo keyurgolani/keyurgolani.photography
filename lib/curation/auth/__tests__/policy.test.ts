@@ -1,7 +1,9 @@
 // @vitest-environment node
-import { describe, expect, it } from 'vitest';
+import os from 'node:os';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
     bindProblem,
+    externalInterfaceCount,
     curatorHosts,
     curatorStartupProblem,
     evaluateCuratorRequest,
@@ -211,6 +213,35 @@ describe('the socket the server listens on', () => {
         expect(bindProblem(env, SERVER_JS, inside(2))).toContain('more than one network interface');
         expect(bindProblem(env, SERVER_JS, { ...container, interfaces: () => 3 })).toContain('more than one network interface');
         expect(bindProblem(env, SERVER_JS, { ...inside(1), containerized: () => false })).toContain("isn't in a container");
+    });
+});
+
+describe('externalInterfaceCount', () => {
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    const v4 = (address: string, internal = false) => ({ address, netmask: '255.0.0.0', family: 'IPv4' as const, mac: '00:00:00:00:00:00', internal, cidr: null });
+    const v6 = (address: string, internal = false) => ({ address, netmask: 'ffff::', family: 'IPv6' as const, mac: '00:00:00:00:00:00', internal, cidr: null, scopeid: 0 });
+    const LO = { lo: [v4('127.0.0.1', true), v6('::1', true)] };
+
+    it.each([
+        ['loopback alone', LO, 0],
+        ['loopback and one IPv4 interface, as on its own Compose network', { ...LO, eth0: [v4('172.18.0.2')] }, 1],
+        ['loopback and one interface with IPv4, IPv6 and a link-local address', { ...LO, eth0: [v4('172.18.0.2'), v6('fd00::2'), v6('fe80::2')] }, 1],
+        ['two interfaces', { ...LO, eth0: [v4('172.18.0.2')], eth1: [v4('172.19.0.2')] }, 2],
+    ])('counts %s as %i, never counting loopback', (_, interfaces, count) => {
+        vi.spyOn(os, 'networkInterfaces').mockReturnValue(interfaces);
+        expect(externalInterfaceCount()).toBe(count);
+    });
+
+    it('lets the in-container wildcard through with one interface, and not with two, by the real counter', () => {
+        const env = { HOSTNAME: '0.0.0.0', CURATION_BIND_SCOPE: 'container' };
+        const probe: BindProbe = { containerized: () => true, sockets: () => ['0.0.0.0'] };
+        vi.spyOn(os, 'networkInterfaces').mockReturnValue({ ...LO, eth0: [v4('172.18.0.2')] });
+        expect(bindProblem(env, SERVER_JS, probe)).toBeNull();
+        vi.spyOn(os, 'networkInterfaces').mockReturnValue({ ...LO, eth0: [v4('192.168.1.20')], docker0: [v4('172.17.0.1')] });
+        expect(bindProblem(env, SERVER_JS, probe)).toContain('more than one network interface');
     });
 });
 
