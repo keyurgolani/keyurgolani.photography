@@ -93,6 +93,15 @@ describe('sequence show', () => {
         expect(output).toContain(`04  ${P[3]}  no photo record`);
     });
 
+    it('marks a member whose record the reader refuses, such as one with its old <id>.json beside it, as unreadable', async () => {
+        const dir = authoredRecordDir(catalog.root, 'photo', P[2]);
+        fs.copyFileSync(path.join(dir, 'v1.json'), `${dir}.json`);
+        const { exitCode, output } = await run({ command: 'show', seriesId: S1 });
+        expect(exitCode).toBe(0);
+        expect(output).toContain(`03  ${P[2]}  photo record can't be read`);
+        expect(output).toContain(`04  ${P[3]}\n`);
+    });
+
     it('exits 1 for a series that does not exist', async () => {
         expect(await run({ command: 'show', seriesId: 'ser_fixture-09' })).toEqual({ exitCode: 1, output: expect.stringContaining('unknown-series') });
     });
