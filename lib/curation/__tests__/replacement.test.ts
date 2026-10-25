@@ -224,6 +224,28 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         expect((await served(w)).photo).toMatchObject({ assetRevision: w.a, title: P_COPY.title });
     });
 
+    it('after confirm, reopen, and confirm again, still puts back the revision the first confirm replaced', async () => {
+        const w = await world();
+        await w.build(w.job(w.b));
+        const first = await confirm(w, await w.event());
+        expect(first).toMatchObject({ ok: true });
+        const again = await confirm(w, await reopen(w, (first as { event: CurationEvent }).event));
+        expect(again).toMatchObject({ ok: true, event: { status: 'approved' } });
+        // The record pinned B already, so this confirm wrote nothing, and records what the first one replaced.
+        expect(again.ok && again.event.decisions.at(-1)).toMatchObject({ action: 'confirm', fromRevision: w.a, writes: [] });
+        expect(again.ok && again.notes.join(' ')).toContain(`already pins ${w.b}, as the last confirm left it`);
+        expect(again.ok && again.notes.join(' ')).toContain(`in place of ${w.a}`);
+
+        const left = await leave(w, await reopen(w, (again as { event: CurationEvent }).event));
+        expect(left).toMatchObject({ ok: true, event: { status: 'deferred' } });
+        expect(left.ok && left.event.decisions.at(-1)).toMatchObject({ action: 'defer', fromRevision: w.a, writes: [{ record: `photo:${w.p}` }] });
+        expect(left.ok && left.notes.join(' ')).toContain(`back on ${w.a}, in place of ${w.b}`);
+        expect(left.ok && left.notes.join(' ')).not.toContain('so the draft keeps it');
+        expect((await photoRecord(w)).assetRevision).toBe(w.a);
+        expect(['PUBLISHED', 'NO_CHANGES']).toContain((await publish({ dataRoot: w.root, actor: OWNER, logger: { log: () => undefined } })).outcome);
+        expect((await served(w)).photo).toMatchObject({ assetRevision: w.a, title: P_COPY.title });
+    });
+
     it('refuses once the photo record has moved since the confirm, and writes nothing', async () => {
         const w = await world();
         await w.build(w.job(w.b));
