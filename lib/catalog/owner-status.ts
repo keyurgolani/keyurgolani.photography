@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { inboxAlertLines, inboxAlerts, type InboxAlerts } from '../curation/alerts';
 import { currentProfileId } from '../identity/profile';
 import { readRegistry } from '../identity/registry';
 import { identityStatus, type IdentityStatus } from '../identity/status';
@@ -83,6 +84,11 @@ export interface OwnerStatus {
         /** The undescribed photos a published series lists, which block a publish. */
         undescribedPublished: string[];
     } | null;
+    /**
+     * #17's alerting: the curation inbox's open missing sources and failures,
+     * or why the inbox can't be read. Null before the data root is ready.
+     */
+    inbox: InboxAlerts | { error: string } | null;
 }
 
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
@@ -160,7 +166,7 @@ export async function ownerStatus({ dataRoot, clock }: StatusHandle): Promise<Ow
     // status builds no failed-profile text of its own: identityStatus() strips the library and data root paths from
     // each reason (withoutAbsolutePaths(), #53), so status --json carries none.
     const identity = dataRoot === null ? unsetIdentity() : await identityStatus({ root: path.resolve(dataRoot), clock });
-    const status: OwnerStatus = { identity, catalog: { mode: 'legacy', active: null, lastPublish: null }, working: null };
+    const status: OwnerStatus = { identity, catalog: { mode: 'legacy', active: null, lastPublish: null }, working: null, inbox: null };
     if (dataRoot === null || identity.dataRoot.state !== 'ready') return status;
     const root = path.resolve(dataRoot);
     try {
@@ -189,6 +195,11 @@ export async function ownerStatus({ dataRoot, clock }: StatusHandle): Promise<Ow
     }
     if (identity.registryError === undefined && identity.registry !== null) {
         status.working = workingSummary(await readWorkingLayer(root), await readRegistry(root));
+    }
+    try {
+        status.inbox = await inboxAlerts(root);
+    } catch (error) {
+        status.inbox = { error: message(error) };
     }
     return status;
 }
@@ -243,6 +254,7 @@ function formatStatus(status: OwnerStatus): string {
         lines.push(`Undescribed: ${count(working.undescribed.length, 'photo')} without a reviewed description or a decorative flag, ${working.undescribedPublished.length} of them in a published series`);
         if (working.unassigned.length > 0 || working.undescribed.length > 0) lines.push('  photos list shows each photo with its series and description state.');
     }
+    if (status.inbox) lines.push(...('error' in status.inbox ? [`Inbox: can't be read (${status.inbox.error})`] : inboxAlertLines(status.inbox)));
     lines.push(`Holds: ${identity.holds.length}, failed profiles: ${identity.failedProfiles.length}, pending jobs: ${identity.pendingJobs}`);
     lines.push(`Watcher heartbeat: ${identity.watcher ? `${identity.watcher.ageSeconds} s ago (${identity.watcher.heartbeatAt})` : 'none yet'}`);
     return `${lines.join('\n')}\n`;
@@ -252,7 +264,8 @@ function formatStatus(status: OwnerStatus): string {
 export async function runStatusCommand(layer: StatusHandle, { json = false, clock }: { json?: boolean; clock?: () => number } = {}): Promise<CommandResult> {
     try {
         const status = await ownerStatus({ ...layer, clock: clock ?? layer.clock });
-        const ok = status.identity.dataRoot.state === 'ready' && status.working !== null && status.catalog.error === undefined;
+        const ok = status.identity.dataRoot.state === 'ready' && status.working !== null && status.catalog.error === undefined
+            && status.inbox !== null && !('error' in status.inbox);
         return { exitCode: ok ? 0 : 1, output: json ? `${JSON.stringify(status, null, 2)}\n` : formatStatus(status) };
     } catch (error) {
         return { exitCode: 1, output: `Error: ${message(error)}\n` };
