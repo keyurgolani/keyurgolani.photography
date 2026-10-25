@@ -101,6 +101,10 @@ export function isInside(child: string, parent: string): boolean {
 // Where an absolute path can start: not inside a relative path, a URL, or another path
 const PATH_START = String.raw`(?<![\w.~:/-])`;
 
+// Where a root can start. Looser, since a root's text is a path wherever it starts, even after `:` or `-`. A
+// URL's host still keeps `scheme://host/root` whole.
+const ROOT_START = String.raw`(?<![\w.~/])`;
+
 // An absolute path or file URL as Node's errors quote one, which may hold spaces
 const QUOTED_PATH = /'((?:file:\/\/)?\/[^'\n]*)'/g;
 
@@ -122,7 +126,7 @@ export function withoutAbsolutePaths(text: string, roots: readonly (string | nul
         .sort((a, b) => b.length - a.length);
     // A root first, whatever follows it, quoted or not, so a name with a space or a quote in it stays whole.
     let result = text;
-    for (const prefix of prefixes) result = result.replace(new RegExp(`${PATH_START}(?:file://)?${escapeRegExp(prefix)}/`, 'g'), '');
+    for (const prefix of prefixes) result = result.replace(new RegExp(`${ROOT_START}(?:file://)?${escapeRegExp(prefix)}/`, 'g'), '');
     // Every other path, quoted, where it may hold a space, or not
     const baseName = (match: string) => path.posix.basename(match.replace(/^file:\/\//, '')) || match;
     return result

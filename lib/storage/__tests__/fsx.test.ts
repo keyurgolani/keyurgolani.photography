@@ -26,6 +26,10 @@ describe('withoutAbsolutePaths', () => {
         ["copy '/backup/srv/data/x'", "copy 'x'"],
         ['copy /backup/srv/data/x', 'copy x'],
         ['stat /srv/database/x', 'stat x'],
+        ['open x:/srv/data/library/a.jpg', 'open x:a.jpg'],
+        ['file:/srv/data/library/a.jpg', 'file:a.jpg'],
+        ['-/srv/data/library/a.jpg', '-a.jpg'],
+        ['see https://example.com/srv/data/x', 'see https://example.com/srv/data/x'],
     ])('rewrites %s', (text, expected) => {
         expect(withoutAbsolutePaths(text, roots)).toBe(expected);
     });
@@ -47,6 +51,16 @@ describe('withoutAbsolutePaths', () => {
         const spaced = ['/Volumes/My Drive/lib'];
         expect(withoutAbsolutePaths('stat /Volumes/My Drive/lib/a b.jpg failed', spaced)).toBe('stat a b.jpg failed');
         expect(withoutAbsolutePaths("open '/Volumes/My Drive/lib/sub/a b.jpg'", spaced)).toBe("open 'sub/a b.jpg'");
+    });
+
+    it('matches a root holding regular expression characters as its text', () => {
+        const odd = ['/Volumes/Photos (2024) [raw]+'];
+        expect(withoutAbsolutePaths("open '/Volumes/Photos (2024) [raw]+/sub/a.jpg'", odd)).toBe("open 'sub/a.jpg'");
+        expect(withoutAbsolutePaths('stat /Volumes/Photos (2024) [raw]+/a b.jpg failed', odd)).toBe('stat a b.jpg failed');
+    });
+
+    it('keeps a quoted file URL outside the roots whole up to its base name, spaces and all', () => {
+        expect(withoutAbsolutePaths("open 'file:///Volumes/My Drive/other/a b.jpg'", roots)).toBe("open 'a b.jpg'");
     });
 
     it('makes a path under a root relative to it when the error spells the root resolved, through a symlink', () => {
