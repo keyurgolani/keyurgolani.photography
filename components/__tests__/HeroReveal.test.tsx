@@ -3,8 +3,9 @@ import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setPrefersReducedMotion } from '@/test/matchMedia';
 import HeroReveal, { type HeroRevealPhase } from '../HeroReveal';
+import { HOME_LOADING_TIMEOUT_MS } from '../home/homeChromeConfig';
 
-type AnimateOptions = { onComplete?: () => void };
+type AnimateOptions = { duration?: number; onComplete?: () => void };
 
 const framer = vi.hoisted(() => ({
   animate: vi.fn<(value: unknown, to: number, options: AnimateOptions) => { stop: () => void }>(() => ({ stop: vi.fn() })),
@@ -39,6 +40,10 @@ vi.mock('framer-motion', () => ({
 /** The minimum ripple time, then the lead before the mask opens. */
 const RIPPLES_MS = 2400;
 const LEAD_MS = 300;
+/** The mask's duration. */
+const MASK_MS = 1200;
+/** The exit starts by this long after mount, so the intro ends within Home's 6 s loading bound. */
+const EXIT_DEADLINE_MS = HOME_LOADING_TIMEOUT_MS - LEAD_MS - MASK_MS;
 
 function renderReveal(isLoading: boolean) {
   const onSettled = vi.fn();
@@ -112,11 +117,52 @@ describe('HeroReveal', () => {
 
   it('the ripples run their minimum time from mount, so a slow load reveals at once', () => {
     const { phases, setLoading } = renderReveal(true);
-    advance(RIPPLES_MS * 2);
+    advance(EXIT_DEADLINE_MS - 1);
     expect(phases).toEqual(['loading']);
     setLoading(false);
     advance(LEAD_MS);
     expect(phases).toEqual(['loading', 'revealing']);
+  });
+
+  it('a load that outlasts the deadline still starts the exit by 4500 ms, so the mask ends by 6000 ms', () => {
+    const { container, phases, onSettled, setLoading, finishReveal } = renderReveal(true);
+    expect(EXIT_DEADLINE_MS).toBe(4500);
+    advance(EXIT_DEADLINE_MS + LEAD_MS - 1);
+    expect(phases).toEqual(['loading']);
+    advance(1);
+    expect(phases).toEqual(['loading', 'revealing']);
+    expect(framer.animate).toHaveBeenCalledTimes(1);
+    const { duration } = framer.animate.mock.calls[0][2];
+    expect(EXIT_DEADLINE_MS + LEAD_MS + (duration ?? Infinity) * 1000).toBeLessThanOrEqual(HOME_LOADING_TIMEOUT_MS);
+
+    // The intro is gone at 6000 ms on the clock, even with no word from the mask.
+    advance(MASK_MS - 1);
+    expect(phases).toEqual(['loading', 'revealing']);
+    advance(1);
+    expect(phases).toEqual(['loading', 'revealing', 'settled']);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(container).toBeEmptyDOMElement();
+    expect(vi.getTimerCount()).toBe(0);
+
+    // Loading ending later, or the mask's own end, changes nothing.
+    setLoading(false);
+    advance(RIPPLES_MS);
+    finishReveal();
+    expect(framer.animate).toHaveBeenCalledTimes(1);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+  });
+
+  it('loading that ends first still ends the intro early, and clears the deadline', () => {
+    const { phases, setLoading } = renderReveal(true);
+    advance(1000);
+    setLoading(false);
+    advance(RIPPLES_MS - 1000 + LEAD_MS);
+    expect(phases).toEqual(['loading', 'revealing']);
+    // Only the mask's end is left: no deadline starts a second exit.
+    expect(vi.getTimerCount()).toBe(1);
+    advance(EXIT_DEADLINE_MS);
+    expect(framer.animate).toHaveBeenCalledTimes(1);
+    expect(phases).toEqual(['loading', 'revealing', 'settled']);
   });
 
   it('under reduce at mount renders nothing, mounts no overlay, and settles once', () => {

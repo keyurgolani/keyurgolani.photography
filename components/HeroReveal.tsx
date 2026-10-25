@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { motion, useMotionValue, useTransform, animate, type AnimationPlaybackControls } from 'framer-motion';
 import ProfilePicture from './ProfilePicture';
+import { HOME_LOADING_TIMEOUT_MS } from './home/homeChromeConfig';
 import { usePrefersReducedMotion } from './motion/usePrefersReducedMotion';
 import profileBack from '../public/assets/profile/back.png';
 import profileFront from '../public/assets/profile/front.png';
@@ -23,13 +24,18 @@ const MIN_RIPPLE_MS = 2400;
 const RIPPLE_FADE_LEAD_MS = 300;
 /** How long the mask takes to open from the portrait to the whole viewport. */
 const REVEAL_S = 1.2;
+/**
+ * The intro ends within Home's 6 s loading bound, fade included, so its exit
+ * starts by this long after mount whether or not the photograph has arrived.
+ */
+const HERO_EXIT_DEADLINE_MS = HOME_LOADING_TIMEOUT_MS - RIPPLE_FADE_LEAD_MS - REVEAL_S * 1000;
 
 /**
  * Home's loading state on a first visit with motion: a grain overlay with
- * ripples around a centered portrait. Once loading ends, the portrait fades as
- * a hole opens from the center onto the photograph, and when the hole fills
- * the viewport the intro is settled and renders nothing. A return visit and
- * reduced motion start settled.
+ * ripples around a centered portrait. Once loading ends, or at the exit
+ * deadline if it hasn't, the portrait fades as a hole opens from the center
+ * onto the photograph, and when the hole fills the viewport the intro is
+ * settled and renders nothing. A return visit and reduced motion start settled.
  */
 export default function HeroReveal({ isLoading, onSettled, onPhaseChange }: HeroRevealProps) {
   const reducedMotion = usePrefersReducedMotion();
@@ -43,7 +49,9 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange }: Hero
   const rippleIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const rippleIdRef = useRef(0);
   const rippleWaitRef = useRef<NodeJS.Timeout | null>(null);
+  const exitDeadlineRef = useRef<NodeJS.Timeout | null>(null);
   const revealTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const revealEndRef = useRef<NodeJS.Timeout | null>(null);
   const revealAnimationRef = useRef<AnimationPlaybackControls | null>(null);
   const revealInitiatedRef = useRef(!isLoading);
   const mountedRef = useRef(false);
@@ -61,7 +69,7 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange }: Hero
   });
 
   const clearIntroTimers = useCallback(() => {
-    for (const timer of [rippleWaitRef, revealTimeoutRef]) {
+    for (const timer of [rippleWaitRef, exitDeadlineRef, revealTimeoutRef, revealEndRef]) {
       if (timer.current) clearTimeout(timer.current);
       timer.current = null;
     }
@@ -72,8 +80,9 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange }: Hero
   const settle = useCallback(() => {
     if (settledRef.current) return;
     settledRef.current = true;
+    clearIntroTimers();
     setPhase('settled');
-  }, []);
+  }, [clearIntroTimers]);
 
   // No intro timer or animation outlives the component.
   useEffect(() => {
@@ -136,41 +145,48 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange }: Hero
     setRipples(prev => prev.filter(r => r !== id));
   }, []);
 
-  // Trigger reveal when isLoading becomes false
-  // Uses a ref to track initiation so `phase` isn't in the dependency array —
-  // otherwise setPhase('revealing') would trigger cleanup that cancels our timeouts
+  // The exit, once: the ripples stop and fade, then the mask opens as the portrait fades.
+  const beginExit = useCallback(() => {
+    if (revealInitiatedRef.current || settledRef.current) return;
+    revealInitiatedRef.current = true;
+    clearIntroTimers();
+    setRipplesExiting(true);
+    revealTimeoutRef.current = setTimeout(() => {
+      revealTimeoutRef.current = null;
+      setPhase('revealing');
+      revealAnimationRef.current = animate(revealProgress, 1, {
+        duration: REVEAL_S,
+        ease: 'easeInOut',
+        onComplete: () => {
+          // Reduced motion may have settled the intro mid-reveal, or Home may be gone.
+          if (mountedRef.current) settle();
+        },
+      });
+    }, RIPPLE_FADE_LEAD_MS);
+    // The exit's end on the clock, too, in case the mask's last frame comes late or not at all, as in a hidden tab.
+    revealEndRef.current = setTimeout(settle, RIPPLE_FADE_LEAD_MS + REVEAL_S * 1000);
+  }, [clearIntroTimers, revealProgress, settle]);
+
+  // Loading ending starts the exit once at least two ripple cycles have played.
   useEffect(() => {
-    if (!isLoading && !revealInitiatedRef.current && !reducedMotion && !settledRef.current) {
-      revealInitiatedRef.current = true;
-
-      // Ensure at least 2 ripple cycles have played before revealing
-      const waitForRipples = Math.max(0, MIN_RIPPLE_MS - (Date.now() - mountTimeRef.current));
-
-      rippleWaitRef.current = setTimeout(() => {
-        // Stop spawning new ripples and fade existing ones out
-        if (rippleIntervalRef.current) clearInterval(rippleIntervalRef.current);
-        setRipplesExiting(true);
-
-        // The portrait fades as the mask opens, shortly after the ripples start to.
-        revealTimeoutRef.current = setTimeout(() => {
-          setPhase('revealing');
-          revealAnimationRef.current = animate(revealProgress, 1, {
-            duration: REVEAL_S,
-            ease: 'easeInOut',
-            onComplete: () => {
-              // Reduced motion may have settled the intro mid-reveal, or Home may be gone.
-              if (mountedRef.current) settle();
-            },
-          });
-        }, RIPPLE_FADE_LEAD_MS);
-      }, waitForRipples);
-    }
-
+    if (isLoading || reducedMotion || revealInitiatedRef.current || settledRef.current) return;
+    const waitForRipples = Math.max(0, MIN_RIPPLE_MS - (Date.now() - mountTimeRef.current));
+    rippleWaitRef.current = setTimeout(beginExit, waitForRipples);
     return () => {
       if (rippleWaitRef.current) clearTimeout(rippleWaitRef.current);
-      if (revealTimeoutRef.current) clearTimeout(revealTimeoutRef.current);
+      rippleWaitRef.current = null;
     };
-  }, [isLoading, reducedMotion, revealProgress, settle]);
+  }, [isLoading, reducedMotion, beginExit]);
+
+  // Loaded or not, the exit starts by the deadline, so nothing of the intro paints after 6 s.
+  useEffect(() => {
+    if (reducedMotion || revealInitiatedRef.current || settledRef.current) return;
+    exitDeadlineRef.current = setTimeout(beginExit, Math.max(0, mountTimeRef.current + HERO_EXIT_DEADLINE_MS - Date.now()));
+    return () => {
+      if (exitDeadlineRef.current) clearTimeout(exitDeadlineRef.current);
+      exitDeadlineRef.current = null;
+    };
+  }, [reducedMotion, beginExit]);
 
   if (phase === 'settled') return null;
 
