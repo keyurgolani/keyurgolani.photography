@@ -1,5 +1,6 @@
 import type { Locator, Page } from '@playwright/test';
 import { expectNotObscured } from '../support/focus';
+import { expectHomeImmersive } from '../support/home';
 import { waitForHydration } from '../support/hydration';
 import { expectTabOrderMatchesVisualOrder } from '../support/keyboard';
 import { expectReflow } from '../support/reflow';
@@ -8,8 +9,8 @@ import { expect, test } from '../support/test';
 
 // SiteNav on both #1 projects: order, names, and the current page per route,
 // the #1 surface checks, reflow, normal flow outside Home, and no motion
-// under reduce. On Home, its place inside the chrome next to the slideshow
-// controls, over the settled portrait.
+// under reduce. On Home, its place in the chrome's nav region, above the
+// slideshow controls.
 
 const primary = (page: Page) => page.getByRole('navigation', { name: 'Primary' });
 const navControls = (page: Page) => primary(page).locator('a, button');
@@ -117,7 +118,7 @@ for (const width of [320, 1280]) {
         await open(page, '/');
         // Keyboard focus in the chrome shows it and holds it.
         await page.keyboard.press('Tab');
-        await expect.poll(() => primary(page).evaluate((nav) => parseFloat(getComputedStyle(nav.closest('.fixed.inset-0') ?? nav).opacity))).toBe(1);
+        await expect.poll(() => primary(page).evaluate((nav) => parseFloat(getComputedStyle(nav.closest('[data-home-chrome]') ?? nav).opacity))).toBe(1);
         expect(overlap(await boxOf(primary(page)), await boxOf(slideshow(page)))).toBe(false);
         await expect(toggles(page)).toHaveCount(1);
     });
@@ -154,13 +155,11 @@ test.describe("on /about over the page's fixed portrait", () => {
     }
 });
 
-test.describe('on / over the settled portrait', () => {
-    // On these screens the settled portrait reaches up behind SiteNav, and before the chrome sat over it, it took the hit at every link's centre.
+test.describe('on / on a short screen', () => {
+    // The screens where the settled portrait once reached up behind SiteNav and took the hit at every link's centre.
+    // Settled Home has no portrait now, and keyboard focus reveals the chrome and holds it.
     const SHORT_SCREENS = [[640, 400], [667, 375], [568, 320], [740, 360], [736, 414], [768, 400]] as const;
     const portrait = (page: Page) => page.locator('[class*="portrait"]');
-    /** The portrait as painted: its rounded images, which reach past the wrapper's box at the bottom. */
-    const paintedPortrait = (page: Page) => portrait(page).locator('img');
-    const navOpacity = (page: Page) => primary(page).evaluate((nav) => parseFloat(getComputedStyle(nav.parentElement ?? nav).opacity));
 
     /** Whether a click or tap at the centre of `target` lands on it. */
     const takesItsCentre = (target: Locator) =>
@@ -170,36 +169,39 @@ test.describe('on / over the settled portrait', () => {
             return hit !== null && el.contains(hit);
         });
 
-    /** A key press is activity, which shows the chrome and brings the portrait back from its idle hide. Waits until it's fully shown. */
-    async function showPortrait(page: Page) {
-        await page.keyboard.press('Shift');
-        await expect.poll(() => portrait(page).evaluate((el) => parseFloat(getComputedStyle(el).opacity))).toBe(1);
+    /** Presses Tab until `target` has focus, so the focus is keyboard focus. */
+    async function tabTo(page: Page, target: Locator) {
+        for (let press = 0; press < 10; press++) {
+            if (await target.evaluate((el) => el === document.activeElement)) return;
+            await page.keyboard.press('Tab');
+        }
+        await expect(target).toBeFocused();
     }
 
     const checks = () => SHORT_SCREENS.forEach(([width, height]) => {
-        test(`at ${width} by ${height} the links keep their rings clear of the portrait and take a click or tap`, async ({ page }, testInfo) => {
+        test(`at ${width} by ${height} the links keep their rings in view and take a click or tap`, async ({ page }, testInfo) => {
             await page.setViewportSize({ width, height });
             await open(page, '/');
-            await expect(page.locator('[class*="grainOverlay"]')).toHaveCount(0, { timeout: 15_000 });
-            await expect.poll(() => navOpacity(page), { timeout: 10_000 }).toBe(1);
+            await expectHomeImmersive(page);
+            await expect(portrait(page)).toHaveCount(0);
 
             for (const name of ['Home', 'Work', 'About']) {
-                await showPortrait(page);
-                await expectNotObscured(primary(page).getByRole('link', { name, exact: true }), [paintedPortrait(page)]);
+                const link = primary(page).getByRole('link', { name, exact: true });
+                await tabTo(page, link);
+                await expectNotObscured(link, []);
             }
 
             for (const [name, path] of [['Home', '/'], ['Work', '/gallery'], ['About', '/about']] as const) {
-                await showPortrait(page);
                 const link = primary(page).getByRole('link', { name, exact: true });
+                await tabTo(page, link);
                 expect(await takesItsCentre(link), `${name} is the element at its own centre`).toBe(true);
                 if (testInfo.project.name === 'mobile') await link.tap();
                 else await link.click();
                 await expect(page).toHaveURL(path);
                 if (path === '/') continue;
-                // Back on Home the intro is done, so the portrait is settled at once.
                 await page.goBack();
                 await expect(page).toHaveURL('/');
-                await expect.poll(() => navOpacity(page)).toBe(1);
+                await expectHomeImmersive(page);
             }
         });
     });
@@ -207,7 +209,7 @@ test.describe('on / over the settled portrait', () => {
     test.describe('with motion on', checks);
 
     test.describe('under reduced motion', () => {
-        // The portrait settles at once and takes no pointer, which the ring check places beneath the chrome.
+        // No intro and no portrait, and the links keep their rings and their hits the same way.
         test.beforeEach(async ({ page }) => {
             await page.emulateMedia({ reducedMotion: 'reduce' });
         });

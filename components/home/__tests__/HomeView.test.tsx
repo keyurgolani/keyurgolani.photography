@@ -2,34 +2,66 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mediaListenerCounts, setPrefersReducedMotion } from '@/test/matchMedia';
+import { HOME_CHROME_FADE_MS, HOME_CHROME_IDLE_MS, HOME_LOADING_TIMEOUT_MS } from '../homeChromeConfig';
 import type { HomePhoto } from '../homePhoto';
 import { HOME_AUTO_ADVANCE_MS } from '../homePlayback';
+import type { HomePhotosStatus } from '../useLegacyHomePhotos';
 
-const chrome = vi.hoisted(() => ({ show: (() => {}) as (visible: boolean) => void }));
+/** With `manual` set, the intro settles only when a test calls `settle`, after loading ends. */
+const intro = vi.hoisted(() => ({ manual: false, settle: () => {} }));
 
-// Settles once the first photograph is ready, like the real intro without its timers.
+// Like the real intro without its timers: loading while Home loads, revealing after, then settled.
 vi.mock('@/components/HeroReveal', async () => {
-  const { useEffect } = await import('react');
+  const { useEffect, useState } = await import('react');
   return {
-    default: function HeroReveal({ isLoading, onSettled }: { isLoading: boolean; onSettled: () => void }) {
+    default: function HeroReveal({
+      isLoading,
+      onSettled,
+      onPhaseChange,
+    }: {
+      isLoading: boolean;
+      onSettled: () => void;
+      onPhaseChange?: (phase: 'loading' | 'revealing' | 'settled') => void;
+    }) {
+      const [settled, setSettled] = useState(!isLoading);
+      intro.settle = () => setSettled(true);
       useEffect(() => {
-        if (!isLoading) onSettled();
-      }, [isLoading, onSettled]);
-      return <div data-testid="hero-reveal" data-loading={String(isLoading)} />;
+        if (!isLoading && !intro.manual) setSettled(true);
+      }, [isLoading]);
+      const phase = settled ? 'settled' : isLoading ? 'loading' : 'revealing';
+      useEffect(() => {
+        onPhaseChange?.(phase);
+      }, [phase, onPhaseChange]);
+      useEffect(() => {
+        if (settled) onSettled();
+      }, [settled, onSettled]);
+      return settled ? null : <div data-testid="hero-reveal" data-loading={String(isLoading)} />;
     },
   };
 });
 
-// The chrome is hidden until a test shows it.
-vi.mock('@/components/RevealingContents', () => ({
-  default: ({ children, onVisibleChange }: { children: React.ReactNode; onVisibleChange?: (visible: boolean) => void }) => {
-    chrome.show = (visible) => onVisibleChange?.(visible);
-    return <div data-testid="chrome">{children}</div>;
-  },
-}));
+/**
+ * The useHomeChrome of the module graph HomeView was imported from. Each test
+ * resets modules, and a mock factory runs once, so the stand-in SiteNav reads
+ * the hook from here at render time, where it shares HomeView's context.
+ */
+const chromeHook = vi.hoisted(() => ({ use: null as null | (() => { hold: (reason: string) => void; release: (reason: string) => void }) }));
 
+// A stand-in SiteNav with a menu that holds the chrome open, as a consumer of useHomeChrome would.
 vi.mock('@/components/site/SiteNav', () => ({
-  default: () => <nav aria-label="Primary" />,
+  default: function SiteNav() {
+    const { hold, release } = chromeHook.use!();
+    return (
+      <nav aria-label="Primary">
+        <button type="button" onClick={() => hold('dialog')}>
+          Open menu
+        </button>
+        <button type="button" onClick={() => release('dialog')}>
+          Close menu
+        </button>
+      </nav>
+    );
+  },
 }));
 
 const photo = (n: number, total: number): HomePhoto => ({
@@ -42,31 +74,60 @@ const photo = (n: number, total: number): HomePhoto => ({
 
 const three = [photo(1, 3), photo(2, 3), photo(3, 3)];
 
-async function renderHome({ photos = three, outside = false }: { photos?: HomePhoto[]; outside?: boolean } = {}) {
+type RenderOptions = { photos?: HomePhoto[]; photosStatus?: HomePhotosStatus; outside?: boolean };
+
+async function renderHome({ photos = three, photosStatus = 'ready', outside = false }: RenderOptions = {}) {
   const { default: HomeView } = await import('../HomeView');
+  chromeHook.use = (await import('../useHomeChrome')).useHomeChrome;
   const view = render(
     <StrictMode>
       {outside && <button type="button">Outside</button>}
-      <HomeView photos={photos} />
-    </StrictMode>
+      <HomeView photos={photos} photosStatus={photosStatus} />
+    </StrictMode>,
   );
-  const playback = () => view.container.querySelector('main')?.getAttribute('data-playback');
-  const loading = () => screen.getByTestId('hero-reveal').getAttribute('data-loading');
-  // The first photograph's full-quality layer loading ends the intro.
+  const main = () => view.container.querySelector('main')!;
+  const playback = () => view.container.querySelector('[data-playback]')?.getAttribute('data-playback');
+  const loading = () => main().getAttribute('data-home-loading');
+  const slideImage = (slide: number) => view.container.querySelectorAll<HTMLImageElement>('img[data-layer="optimized"]')[slide];
+  // The photograph on screen getting its full-quality layer is what ends loading.
   const becomeReady = () =>
     act(() => {
       fireEvent.load(view.container.querySelector('[aria-hidden="false"] > img[data-layer="optimized"]')!);
     });
-  return { ...view, playback, loading, becomeReady };
+  return { ...view, main, playback, loading, slideImage, becomeReady };
 }
 
 const button = (name: string) => screen.getByRole('button', { name });
 const queryButton = (name: string) => screen.queryByRole('button', { name });
 const position = () => screen.getByRole('group', { name: 'Slideshow' }).querySelector('span')?.textContent;
+const state = () => document.querySelector('main')?.getAttribute('data-interface-state');
+const holds = () => document.querySelector('main')?.getAttribute('data-chrome-holds');
 const advance = (ms: number) =>
   act(() => {
     vi.advanceTimersByTime(ms);
   });
+
+let lastX = 0;
+/** A real mouse move over Home, from its last point to a pixel on, which is what reveals the chrome. */
+function reveal() {
+  const dispatch = (clientX: number) =>
+    document
+      .querySelector('main')!
+      .dispatchEvent(new PointerEvent('pointermove', { pointerType: 'mouse', isPrimary: true, clientX, clientY: 200, movementX: 1, bubbles: true }));
+  act(() => {
+    dispatch(lastX);
+    lastX += 1;
+    dispatch(lastX);
+  });
+  expect(state()).toBe('interactive');
+}
+
+/** The idle and the fade, with a commit between them as in a browser. */
+function recede() {
+  advance(HOME_CHROME_IDLE_MS);
+  advance(HOME_CHROME_FADE_MS);
+  expect(state()).toBe('immersive');
+}
 
 /** Makes `element` match :focus-visible or not, the way a keyboard or a mouse focus would. */
 function focusVisible(element: Element, result: boolean | 'throws') {
@@ -82,6 +143,7 @@ describe('HomeView', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.useFakeTimers();
+    intro.manual = false;
   });
 
   afterEach(() => {
@@ -89,32 +151,171 @@ describe('HomeView', () => {
     vi.restoreAllMocks();
   });
 
-  it('stays in loading mode until the first photograph reports ready, then advances a full interval later', async () => {
-    const { loading, playback, becomeReady } = await renderHome();
-    expect(loading()).toBe('true');
-    expect(playback()).toBe('not-ready');
+  describe('loading', () => {
+    it('stays loading until the first photograph shows, then starts immersive and advances a full interval later', async () => {
+      const { loading, playback, becomeReady, main } = await renderHome();
+      expect(loading()).toBe('true');
+      expect(main()).toHaveAttribute('data-home-intro', 'loading');
+      expect(screen.getByTestId('hero-reveal')).toHaveAttribute('data-loading', 'true');
+      expect(playback()).toBe('not-ready');
 
-    advance(5000);
-    expect(loading()).toBe('true');
-    expect(position()).toBe('01 / 03');
+      advance(5000);
+      expect(loading()).toBe('true');
+      expect(position()).toBe('01 / 03');
 
-    becomeReady();
-    expect(loading()).toBe('false');
-    expect(playback()).toBe('advancing');
-    advance(HOME_AUTO_ADVANCE_MS - 1);
-    expect(position()).toBe('01 / 03');
-    advance(1);
-    expect(position()).toBe('02 / 03');
+      becomeReady();
+      expect(loading()).toBe('false');
+      expect(main()).toHaveAttribute('data-home-intro', 'settled');
+      expect(state()).toBe('immersive');
+      expect(holds()).toBe('');
+      expect(playback()).toBe('advancing');
+      advance(HOME_AUTO_ADVANCE_MS - 1);
+      expect(position()).toBe('01 / 03');
+      advance(1);
+      expect(position()).toBe('02 / 03');
+    });
+
+    it('a return visit skips loading and the intro, and the slideshow waits for the photograph', async () => {
+      const first = await renderHome();
+      first.becomeReady();
+      first.unmount();
+
+      const second = await renderHome();
+      expect(second.loading()).toBe('false');
+      expect(second.main()).toHaveAttribute('data-home-intro', 'settled');
+      expect(screen.queryByTestId('hero-reveal')).toBeNull();
+      expect(second.playback()).toBe('not-ready');
+      second.becomeReady();
+      expect(second.playback()).toBe('advancing');
+    });
+
+    for (const photosStatus of ['empty', 'error'] as const) {
+      it(`an ${photosStatus} photo list ends loading at once and holds the chrome up`, async () => {
+        const { loading, main } = await renderHome({ photos: [], photosStatus });
+        expect(loading()).toBe('false');
+        expect(holds()).toBe('no-photo');
+        expect(state()).toBe('interactive');
+        expect(main()).toHaveAttribute('data-home-intro', 'settled');
+        advance(HOME_CHROME_IDLE_MS * 3);
+        expect(state()).toBe('interactive');
+        expect(screen.getByRole('navigation', { name: 'Primary' })).toBeInTheDocument();
+      });
+    }
+
+    it('a failed first image ends loading at once and holds the chrome up', async () => {
+      const { loading, slideImage } = await renderHome();
+      act(() => {
+        fireEvent.error(slideImage(0));
+      });
+      expect(loading()).toBe('false');
+      expect(holds()).toBe('no-photo');
+      expect(state()).toBe('interactive');
+    });
+
+    it('with the first photograph stalled, one reached with Next releases the no-photo hold for good', async () => {
+      const { loading, playback, slideImage, becomeReady } = await renderHome();
+      advance(HOME_LOADING_TIMEOUT_MS);
+      expect(loading()).toBe('false');
+      expect(holds()).toBe('no-photo');
+      expect(playback()).toBe('not-ready');
+
+      fireEvent.click(button('Next photograph'));
+      expect(position()).toBe('02 / 03');
+      becomeReady();
+      expect(holds()).toBe('');
+      expect(playback()).toBe('advancing');
+
+      // The first slide failing late changes nothing now.
+      act(() => {
+        fireEvent.error(slideImage(0));
+      });
+      expect(holds()).toBe('');
+    });
+
+    it('a photograph loaded off screen counts once Next brings it on', async () => {
+      const { slideImage, playback } = await renderHome();
+      act(() => {
+        fireEvent.load(slideImage(1));
+      });
+      expect(holds()).toBe('');
+      expect(playback()).toBe('not-ready');
+      fireEvent.click(button('Next photograph'));
+      expect(playback()).toBe('advancing');
+    });
+
+    it('the slideshow waits for the intro to settle, and loading ends without it', async () => {
+      intro.manual = true;
+      const { loading, playback, becomeReady, main } = await renderHome();
+      becomeReady();
+      expect(loading()).toBe('false');
+      expect(main()).toHaveAttribute('data-home-intro', 'revealing');
+      expect(playback()).toBe('not-ready');
+
+      act(() => intro.settle());
+      expect(main()).toHaveAttribute('data-home-intro', 'settled');
+      expect(playback()).toBe('advancing');
+    });
+
+    it('under reduced motion shows the shared loading state instead of the intro until the photograph does', async () => {
+      setPrefersReducedMotion(true);
+      const { becomeReady } = await renderHome();
+      expect(screen.getByRole('status')).toHaveTextContent('Loading');
+      becomeReady();
+      expect(screen.queryByRole('status')).toBeNull();
+    });
+
+    it('with motion, the intro is the loading state, so the shared one never renders', async () => {
+      await renderHome();
+      expect(screen.queryByRole('status')).toBeNull();
+    });
   });
 
-  it('skips loading mode when returning home after the first photograph loaded', async () => {
-    const first = await renderHome();
-    first.becomeReady();
-    first.unmount();
+  describe('the chrome', () => {
+    it('puts SiteNav in the nav region and the slideshow controls in the sequence region, in that order', async () => {
+      const { becomeReady, container } = await renderHome();
+      becomeReady();
+      const chrome = container.querySelector('[data-home-chrome]')!;
+      const nav = screen.getByRole('navigation', { name: 'Primary' });
+      const group = screen.getByRole('group', { name: 'Slideshow' });
+      expect(chrome.querySelector('[data-chrome-region="nav"]')).toContainElement(nav);
+      expect(chrome.querySelector('[data-chrome-region="sequence"]')).toContainElement(group);
+      expect(nav.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
 
-    const second = await renderHome();
-    expect(second.loading()).toBe('false');
-    expect(second.playback()).toBe('advancing');
+    it('puts data-playback on a display: contents wrapper inside main, around the photograph and the chrome', async () => {
+      const { main, container } = await renderHome();
+      expect(main()).not.toHaveAttribute('data-playback');
+      const wrapper = container.querySelector('[data-playback]')!;
+      expect(wrapper).toHaveClass('contents');
+      expect(main()).toContainElement(wrapper as HTMLElement);
+      expect(wrapper).toContainElement(container.querySelector('[data-home-chrome]'));
+      expect(wrapper).toContainElement(container.querySelector('[data-home-vignette]'));
+      expect(wrapper).toContainElement(container.querySelector('img[data-layer="optimized"]'));
+    });
+
+    it('wakes nothing on its own: no synthetic event, and the chrome stays receded until intent', async () => {
+      const dispatched = vi.spyOn(window, 'dispatchEvent');
+      const { becomeReady } = await renderHome();
+      becomeReady();
+      advance(HOME_LOADING_TIMEOUT_MS);
+      expect(state()).toBe('immersive');
+      expect(dispatched).not.toHaveBeenCalled();
+    });
+
+    it('a menu holding the chrome open holds the slideshow too, and closing it lets both go', async () => {
+      const { playback, becomeReady } = await renderHome();
+      becomeReady();
+      fireEvent.click(button('Open menu'));
+      expect(holds()).toBe('dialog');
+      expect(playback()).toBe('held');
+      advance(HOME_AUTO_ADVANCE_MS * 2);
+      expect(position()).toBe('01 / 03');
+
+      fireEvent.click(button('Close menu'));
+      expect(holds()).toBe('');
+      expect(playback()).toBe('advancing');
+      recede();
+    });
   });
 
   it('with one photograph renders no controls and starts no timer', async () => {
@@ -150,27 +351,6 @@ describe('HomeView', () => {
     fireEvent.click(play);
     expect(button('Pause slideshow')).toBe(pause);
     expect(playback()).toBe('advancing');
-  });
-
-  it('keeps SiteNav in the DOM, hidden and out of the pointer\'s way, until the intro settles, then hands it the pointer', async () => {
-    const { becomeReady } = await renderHome();
-    const wrapper = () => screen.getByRole('navigation', { name: 'Primary' }).parentElement;
-    expect(wrapper()).toHaveClass('opacity-0', 'pointer-events-none');
-
-    becomeReady();
-    expect(wrapper()).not.toHaveClass('opacity-0');
-    expect(wrapper()).not.toHaveClass('pointer-events-none');
-    // The chrome layer lets the pointer through, so SiteNav takes it back.
-    expect(wrapper()).toHaveClass('pointer-events-auto');
-  });
-
-  it('puts SiteNav ahead of the slideshow controls, inside the focus hold', async () => {
-    const { becomeReady } = await renderHome();
-    becomeReady();
-    const nav = screen.getByRole('navigation', { name: 'Primary' });
-    const group = screen.getByRole('group', { name: 'Slideshow' });
-    expect(nav.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByTestId('chrome')).toContainElement(nav);
   });
 
   it('makes the arrows plain buttons, so they never submit a form around them', async () => {
@@ -250,15 +430,16 @@ describe('HomeView', () => {
     fireEvent.pointerEnter(group, { pointerType: 'mouse' });
     expect(playback()).toBe('advancing');
 
-    act(() => chrome.show(true));
+    reveal();
     expect(playback()).toBe('held');
     expect(button('Pause slideshow')).toBeInTheDocument();
-    advance(HOME_AUTO_ADVANCE_MS * 2);
+    advance(HOME_AUTO_ADVANCE_MS / 4);
     expect(position()).toBe('01 / 03');
 
-    act(() => chrome.show(false));
+    // Resting between the buttons isn't resting on a control, so the chrome recedes and the hold ends with it.
+    recede();
     expect(playback()).toBe('advancing');
-    act(() => chrome.show(true));
+    reveal();
     expect(playback()).toBe('held');
 
     fireEvent.pointerLeave(group, { pointerType: 'mouse' });
@@ -281,6 +462,7 @@ describe('HomeView', () => {
     focusVisible(next, true);
     act(() => next.focus());
     expect(playback()).toBe('held');
+    expect(holds()).toBe('keyboard-focus');
     expect(button('Pause slideshow')).toBe(pause);
     advance(HOME_AUTO_ADVANCE_MS * 2);
     expect(position()).toBe('01 / 03');
@@ -325,24 +507,28 @@ describe('HomeView', () => {
 
   it('in Strict Mode, unmounting leaves no timers and balanced listeners', async () => {
     const counts = { added: 0, removed: 0 };
+    const types = ['visibilitychange', 'pageshow', 'keydown', 'keyup', 'pointerup', 'pointercancel'];
     for (const target of [document, window]) {
       const add = target.addEventListener.bind(target);
       const remove = target.removeEventListener.bind(target);
       vi.spyOn(target, 'addEventListener').mockImplementation((type, listener, options) => {
-        if (type === 'visibilitychange' || type === 'pageshow') counts.added += 1;
+        if (types.includes(type)) counts.added += 1;
         add(type, listener, options);
       });
       vi.spyOn(target, 'removeEventListener').mockImplementation((type, listener, options) => {
-        if (type === 'visibilitychange' || type === 'pageshow') counts.removed += 1;
+        if (types.includes(type)) counts.removed += 1;
         remove(type, listener, options);
       });
     }
     const { becomeReady, unmount } = await renderHome();
     becomeReady();
+    reveal();
     advance(HOME_AUTO_ADVANCE_MS);
     expect(position()).toBe('02 / 03');
     act(() => setPrefersReducedMotion(true));
     act(() => setPrefersReducedMotion(false));
+    reveal();
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
 
     unmount();
     expect(vi.getTimerCount()).toBe(0);
@@ -359,8 +545,9 @@ describe('HomeView', () => {
     first.unmount();
 
     const second = await renderHome();
-    expect(second.playback()).toBe('paused');
     expect(button('Play slideshow')).toBeInTheDocument();
+    second.becomeReady();
+    expect(second.playback()).toBe('paused');
     second.unmount();
 
     // A fresh module graph is what a reload gives.

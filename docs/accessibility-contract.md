@@ -48,7 +48,7 @@ On `/about`, #1 checks the navigation links and theme control in full, Tab reach
 
 The token's outline beats YARL's `outline: none`. The app's own `!important` lightbox rules beat the token's `transition: none`, and some of their `box-shadow` rules tie the token and come later. So the end of `app/globals.css` restates the band and `transition: none` for `.yarl__button` and `.yarl__thumbnails_thumbnail`, and lifts inactive thumbnails from `opacity: 0.5`. YARL also focuses its container to take arrow keys, and the thumbnail track when a focused thumbnail leaves it. Neither is a control, so neither draws the token. In a focused track, the active thumbnail draws it instead.
 
-`html` has `scroll-padding-top: 6rem` and `scroll-padding-bottom: 8rem`, so a focused element that fits between them scrolls into view with room around it. Outside Home, `SiteNav` sits in normal flow, so no chrome covers a focused element. On Home it's part of the chrome, which keyboard focus inside holds open and which sits over the settled portrait.
+`html` has `scroll-padding-top: 6rem` and `scroll-padding-bottom: 8rem`, so a focused element that fits between them scrolls into view with room around it. Outside Home, `SiteNav` sits in normal flow, so no chrome covers a focused element. On Home it's part of the chrome, which keyboard focus reveals at full opacity with no fade and holds open, and settled Home has no portrait under it.
 
 ## Names
 
@@ -66,7 +66,7 @@ The token's outline beats YARL's `outline: none`. The app's own `!important` lig
 ## Running the checks
 
 ```bash
-npx playwright install chromium   # once per machine
+npx playwright install chromium webkit   # once per machine, webkit for mobile-webkit
 npm run test:e2e
 ```
 
