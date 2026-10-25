@@ -18,6 +18,7 @@ const PHOTO_D = 'ph_00000000-0000-4000-8000-00000000000d';
 const ASSET = `sha256-${'a'.repeat(64)}`;
 const ACTIVE = `rev_${'1'.repeat(64)}`;
 const LATER = `rev_${'2'.repeat(64)}`;
+const SYMLINKED = 'symlinked record folders aren\'t supported';
 
 const roots: TempDataRoot[] = [];
 
@@ -370,7 +371,7 @@ describe('writeAuthoredRecord', () => {
         expect(fs.readdirSync(path.join(paths.dir, 'Site'))).toEqual(['v1.json']);
     });
 
-    it('reads and extends a record or site folder that is itself a symlink, as the working layer reads it', async () => {
+    it('refuses a record or site folder that is itself a symlink, in the reader and the writer, and writes nothing through it', async () => {
         const data = dataRoot();
         const paths = authoredPaths(data.root);
         await writeAuthoredRecord(photo(PHOTO_A), { expectedVersion: 0, root: data.root });
@@ -384,15 +385,72 @@ describe('writeAuthoredRecord', () => {
         fs.symlinkSync(path.join(elsewhere, 'site-target'), paths.site, 'dir');
 
         const layer = await readWorkingLayer(data.root);
-        expect(layer).toMatchObject({ site: { version: 1 }, photos: [{ id: PHOTO_A, version: 1 }], problems: [] });
-        expect(await readAuthoredRecord(data.root, 'photo', PHOTO_A)).toMatchObject({ version: 1 });
-        expect(await readAuthoredRecord(data.root, 'site', 'site')).toMatchObject({ version: 1 });
-        await expect(writeAuthoredRecord(photo(PHOTO_A, { title: 'Fixture title' }), { expectedVersion: 1, root: data.root })).resolves.toMatchObject({ version: 2 });
-        await expect(writeAuthoredRecord({ kind: 'site', featuredSeriesIds: [], seriesOrder: [] }, { expectedVersion: 1, root: data.root }))
-            .resolves.toMatchObject({ version: 2 });
-        expect(fs.readdirSync(path.join(elsewhere, 'photo-target')).sort()).toEqual(['v1.json', 'v2.json']);
-        expect(fs.readdirSync(path.join(elsewhere, 'site-target')).sort()).toEqual(['v1.json', 'v2.json']);
-        expect(fs.lstatSync(path.join(paths.photosDir, PHOTO_A)).isSymbolicLink()).toBe(true);
+        expect(layer).toMatchObject({ site: null, photos: [] });
+        expect(layer.problems).toEqual([
+            { kind: 'photo', id: PHOTO_A, reason: 'file-name', issues: [{ path: '', message: expect.stringContaining(SYMLINKED) }] },
+            { kind: 'site', id: 'site', reason: 'file-name', issues: [{ path: '', message: expect.stringContaining(SYMLINKED) }] },
+        ]);
+        await expect(readAuthoredRecord(data.root, 'photo', PHOTO_A)).rejects.toThrow(SYMLINKED);
+        await expect(readAuthoredRecord(data.root, 'site', 'site')).rejects.toThrow(SYMLINKED);
+        const photoError = await rejection(writeAuthoredRecord(photo(PHOTO_A, { title: 'Fixture title' }), { expectedVersion: 1, root: data.root }));
+        expect(photoError).toMatchObject({ code: 'INVALID_RECORD', message: expect.stringContaining(`authored/photos/${PHOTO_A}/ is a symlink`) });
+        const site = await rejection(writeAuthoredRecord({ kind: 'site', featuredSeriesIds: [], seriesOrder: [] }, { expectedVersion: 1, root: data.root }));
+        expect(site).toMatchObject({ code: 'INVALID_RECORD', message: expect.stringContaining('authored/site/ is a symlink') });
+        expect(fs.readdirSync(path.join(elsewhere, 'photo-target'))).toEqual(['v1.json']);
+        expect(fs.readdirSync(path.join(elsewhere, 'site-target'))).toEqual(['v1.json']);
+    });
+
+    it('never writes one record through a symlink into another record\'s folder', async () => {
+        const data = dataRoot();
+        const paths = authoredPaths(data.root);
+        await writeAuthoredRecord(photo(PHOTO_B), { expectedVersion: 0, root: data.root });
+        fs.symlinkSync(path.join(paths.photosDir, PHOTO_B), path.join(paths.photosDir, PHOTO_A), 'dir');
+
+        const layer = await readWorkingLayer(data.root);
+        expect(layer.photos.map(({ id }) => id)).toEqual([PHOTO_B]);
+        expect(layer.problems).toEqual([expect.objectContaining({ kind: 'photo', id: PHOTO_A, reason: 'file-name' })]);
+        for (const expectedVersion of [1, 0]) {
+            const error = await rejection(writeAuthoredRecord(photo(PHOTO_A, { title: 'Fixture title' }), { expectedVersion, root: data.root }));
+            expect(error).toMatchObject({ code: 'INVALID_RECORD', message: expect.stringContaining(SYMLINKED) });
+        }
+        expect(fs.readdirSync(path.join(paths.photosDir, PHOTO_B))).toEqual(['v1.json']);
+        expect(await readAuthoredRecord(data.root, 'photo', PHOTO_B)).toMatchObject({ id: PHOTO_B, version: 1 });
+    });
+
+    it('reports a dangling record or site link as a problem, not as no record, and refuses a first write through it without a path', async () => {
+        const data = dataRoot();
+        const paths = authoredPaths(data.root);
+        fs.mkdirSync(paths.photosDir, { recursive: true });
+        fs.symlinkSync(path.join(data.root, 'gone-photo'), path.join(paths.photosDir, PHOTO_A), 'dir');
+        fs.symlinkSync(path.join(data.root, 'gone-site'), paths.site, 'dir');
+
+        const layer = await readWorkingLayer(data.root);
+        expect(layer).toMatchObject({ site: null, photos: [] });
+        expect(layer.problems.map(({ kind, id, reason }) => ({ kind, id, reason }))).toEqual([
+            { kind: 'photo', id: PHOTO_A, reason: 'file-name' },
+            { kind: 'site', id: 'site', reason: 'file-name' },
+        ]);
+        await expect(readAuthoredRecord(data.root, 'photo', PHOTO_A)).rejects.toThrow(SYMLINKED);
+        await expect(readAuthoredRecord(data.root, 'site', 'site')).rejects.toThrow(SYMLINKED);
+        const photoError = await rejection(writeAuthoredRecord(photo(PHOTO_A), { expectedVersion: 0, root: data.root }));
+        const site = await rejection(writeAuthoredRecord({ kind: 'site', featuredSeriesIds: [], seriesOrder: [] }, { expectedVersion: 0, root: data.root }));
+        for (const error of [photoError, site]) {
+            expect(error).toMatchObject({ code: 'INVALID_RECORD', message: expect.stringContaining(SYMLINKED) });
+            expect(error.message).not.toContain(data.root);
+        }
+        expect(fs.existsSync(path.join(data.root, 'gone-photo'))).toBe(false);
+        expect(fs.existsSync(path.join(data.root, 'gone-site'))).toBe(false);
+    });
+
+    it('still reads and writes through a data root that is itself a symlink', async () => {
+        const data = dataRoot();
+        const linked = path.join(path.dirname(data.root), 'linked-root');
+        fs.symlinkSync(data.root, linked, 'dir');
+        await expect(writeAuthoredRecord(photo(PHOTO_A), { expectedVersion: 0, root: linked })).resolves.toMatchObject({ version: 1 });
+        await expect(writeAuthoredRecord({ kind: 'site', featuredSeriesIds: [], seriesOrder: [] }, { expectedVersion: 0, root: linked })).resolves.toMatchObject({ version: 1 });
+        expect(await readWorkingLayer(linked)).toMatchObject({ site: { version: 1 }, photos: [{ id: PHOTO_A, version: 1 }], problems: [] });
+        expect(await readAuthoredRecord(linked, 'photo', PHOTO_A)).toMatchObject({ version: 1 });
+        expect(fs.readdirSync(path.join(authoredPaths(data.root).photosDir, PHOTO_A))).toEqual(['v1.json']);
     });
 
     it('refuses a symlinked record folder named in another case, naming the link, not its target', async (context) => {

@@ -57,12 +57,19 @@ export function authoredRecordDir(root: string, kind: AuthoredKind, id: string):
  *   finds `PH_…/` under `ph_…`. readWorkingLayer() reports that folder as
  *   misnamed, so reading or extending it here would disagree.
  *
- * A folder that is itself a symlink is checked by its own name in its
- * parent's listing, as readWorkingLayer() finds it, not by its target's name.
- * Anything else is checked with the native realpath, which returns the name
- * the disk holds on APFS and Windows. glibc and musl return the name they're
- * given, so off macOS and Windows the spelling check is best effort.
+ * - the folder is itself a symlink, dangling or not. readWorkingLayer()
+ *   refuses one too: a link can alias another record's folder, so a write for
+ *   one record would land in the other's, and a dangling one would read as no
+ *   record at all. The data root itself may be a symlink.
+ *
+ * A symlink is named by its own name in its parent's listing, as
+ * readWorkingLayer() finds it, not by its target's name. Anything else is
+ * checked with the native realpath, which returns the name the disk holds on
+ * APFS and Windows. glibc and musl return the name they're given, so off
+ * macOS and Windows the spelling check is best effort.
  */
+const SYMLINKED = 'is a symlink, and symlinked record folders aren\'t supported. Put the record\'s folder itself there, not a link to it (the data root itself may be a symlink)';
+
 export async function recordFolderProblem(root: string, kind: AuthoredKind, id: string): Promise<string | null> {
     const dir = authoredRecordDir(root, kind, id);
     const relative = path.relative(root, dir).split(path.sep).join('/');
@@ -76,7 +83,7 @@ export async function recordFolderProblem(root: string, kind: AuthoredKind, id: 
         if ((await fs.promises.lstat(dir)).isSymbolicLink()) {
             // realpath would give the target's name. The working layer goes by the link's own name in the listing.
             const names = await fs.promises.readdir(path.dirname(dir));
-            if (names.includes(name)) return null;
+            if (names.includes(name)) return `${relative}/ ${SYMLINKED}`;
             stored = names.find((entry) => entry.toLowerCase() === name.toLowerCase());
         } else {
             // fs.promises.realpath is the native realpath, as the `--only` lookup in images:cleanup checks it.
@@ -148,18 +155,20 @@ function misnamedRecord(kind: 'series' | 'photo', name: string): string | null {
 }
 
 async function loadFolder<K extends 'series' | 'photo'>(dir: string, kind: K, problems: RecordProblem[]): Promise<RecordOf<K>[]> {
-    let names: string[];
+    let entries: fs.Dirent[];
     try {
-        names = await fs.promises.readdir(dir);
+        entries = await fs.promises.readdir(dir, { withFileTypes: true });
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT')) return [];
         throw error;
     }
     const ids: string[] = [];
     // Dot-files are OS metadata.
-    for (const name of names.filter((entry) => !entry.startsWith('.')).sort(compare)) {
+    for (const entry of entries.filter(({ name }) => !name.startsWith('.')).sort((a, b) => compare(a.name, b.name))) {
+        const { name } = entry;
         if (isRecordId(kind, name)) {
-            ids.push(name);
+            if (entry.isSymbolicLink()) problems.push({ kind, id: name, reason: 'file-name', issues: [{ path: '', message: `the folder ${SYMLINKED}` }] });
+            else ids.push(name);
             continue;
         }
         const misnamed = misnamedRecord(kind, name);
