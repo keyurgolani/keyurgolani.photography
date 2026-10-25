@@ -1,7 +1,7 @@
 import { references, ReferenceScanError, type AssetReference } from '../catalog/references';
 import type { AuthoredSeries } from '../catalog/types';
 import { readAuthoredSeries } from '../catalog/working-layer';
-import { settledByPlacement, settlesByPlacement, type CurationEvent } from './events';
+import { settledByPlacement, settlesByPlacement, unplacedApproval, type CurationEvent } from './events';
 
 /**
  * Where each photograph is placed, for the inbox's judgment count: the
@@ -77,23 +77,31 @@ export async function placementIndex(root: string): Promise<PlacementIndex | { u
 export interface ItemPlacements {
     /** Items settled by placement (settledByPlacement()), each with what holds its photo. */
     placed: Map<string, string>;
-    /** Why nothing could be settled, or null. */
+    /** Approved items whose photo nothing holds now (unplacedApproval()), each with the series their last approval named. */
+    unplaced: Map<string, string>;
+    /** Why neither map could be filled, or null. */
     unknown: ReferenceScanError | null;
 }
 
+const approvedNew = (event: CurationEvent) => event.type === 'new' && event.status === 'approved' && event.photoId !== null;
+
 /**
- * The items among `events` settled by placement, from one placementIndex(),
- * read only when an item could settle. When it can't tell, none settles, so
- * each still counts.
+ * The items among `events` settled by placement, and the approvals whose
+ * photo nothing holds now, from one placementIndex(), read only when an item
+ * could be either. When it can't tell, both maps stay empty, so each item
+ * counts as stored.
  */
 export async function placedItems(root: string, events: readonly CurationEvent[]): Promise<ItemPlacements> {
     const placed = new Map<string, string>();
-    if (!events.some(settlesByPlacement)) return { placed, unknown: null };
+    const unplaced = new Map<string, string>();
+    if (!events.some((event) => settlesByPlacement(event) || approvedNew(event))) return { placed, unplaced, unknown: null };
     const index = await placementIndex(root);
-    if ('unknown' in index) return { placed, unknown: index.unknown };
+    if ('unknown' in index) return { placed, unplaced, unknown: index.unknown };
     for (const event of events) {
         const found = event.photoId === null ? undefined : index.get(event.photoId);
         if (found && settledByPlacement(event, found)) placed.set(event.id, `its photo is in ${found.holders.join(' and ')}`);
+        const series = unplacedApproval(event, found?.holders ?? []);
+        if (series !== null) unplaced.set(event.id, series);
     }
-    return { placed, unknown: null };
+    return { placed, unplaced, unknown: null };
 }
