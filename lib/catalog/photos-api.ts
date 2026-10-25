@@ -7,7 +7,7 @@ import type { TechnicalKey } from '../identity/metadata';
 import type { AssetRevisionRecord, PhotoRecord, Registry } from '../identity/types';
 import { libraryRoot } from '../storage/config';
 import { hasErrorCode } from '../storage/fsx';
-import { baseNameOf, setGroups } from '../../utils/imageOptimizer';
+import { baseNameOf, setGroups } from '../../utils/derivativeSets';
 import { cameraSettingsCaption } from './legacy-photos';
 import type { CatalogReader } from './reader';
 import type { PublicPhotoRecord } from './types';

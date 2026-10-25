@@ -190,6 +190,25 @@ describe('legacy /api/photos', { timeout: 60_000 }, () => {
         expect(bases(await listLegacy())).toContain('added');
     });
 
+    it("doesn't load Sharp or the image pipeline, from the projections or the route", async () => {
+        // A fresh module registry in which loading either throws.
+        vi.resetModules();
+        vi.doMock('sharp', () => {
+            throw new Error('The web side loaded sharp.');
+        });
+        vi.doMock('../../../utils/imageOptimizer', () => {
+            throw new Error('The web side loaded the image pipeline.');
+        });
+        try {
+            await expect(import('../photos-api')).resolves.toHaveProperty('legacyPhotos');
+            await expect(import('../../../app/api/photos/route')).resolves.toHaveProperty('GET');
+        } finally {
+            vi.doUnmock('sharp');
+            vi.doUnmock('../../../utils/imageOptimizer');
+            vi.resetModules();
+        }
+    });
+
     it('never runs Sharp or lists a folder', async () => {
         await pass();
         const decodes = [vi.spyOn(sharp.prototype, 'metadata'), vi.spyOn(sharp.prototype, 'toBuffer')];
