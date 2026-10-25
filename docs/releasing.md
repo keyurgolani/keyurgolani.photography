@@ -180,6 +180,19 @@ Once it logs that it rebuilt the sets of the orientation-tagged photos, clear `.
 
 The first release with slice C of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10) needs the new `docker-compose.prod.yml` on the host, and the data root, `./portfolio-data`, and `./.next-images-cache` created and owned by uid 1001 before the first `up`. The old compose file runs the watcher with tsx, which the image no longer has, and the new one never creates a missing data root or image cache, so the containers don't start without them. A `./.next-images-cache` that Docker created for the old file belongs to root, and the `chown` in the blocks below hands it to uid 1001. The new file also publishes `web` on the host's 127.0.0.1 only, port `PHOTOGRAPHY_PORT` or 3000, so whatever serves the site to the internet has to reach it there, such as a reverse proxy or a tunnel running directly on the host. A proxy or tunnel that runs in a container can't: the host's 127.0.0.1 isn't its 127.0.0.1. Run it as a service in the override below instead, so it joins this project's network, and point it at `http://web:3000`. That service may publish 80 and 443 itself.
 
+On that network, the proxy or tunnel reaches `web` by its service name or by a network alias. If its configured origin names another host, such as the service name an older compose file used, give `web` that name as an alias in the override, rather than changing the proxy's own configuration:
+
+```yaml
+services:
+  web:
+    networks:
+      default:
+        aliases:
+          - <origin name>
+```
+
+`web` stays on the same `default` network, and the alias only adds a name for it there. A proxy that stays in a Compose project of its own has to join this project's `default` network as an external network before either name resolves.
+
 Keep the host's current file, and find what this host changed in it. Compare it with the repository's file for the release the host runs now, `v<current>`, the tag you noted before changing `.env`, not with the new one, which also has the repository's own changes. Then fetch the new file beside it. The `[ -e ... ] ||` keeps the first copy if you run these again:
 
 ```bash
