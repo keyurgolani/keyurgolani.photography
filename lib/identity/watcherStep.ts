@@ -103,6 +103,7 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
     let heartbeatWarned = false;
     let lastPassAt: string | null = null;
     let lastPassResult: PassResult | null = null;
+    let passStartedAt: string | null = null;
     let running: Promise<PassReport> | null = null;
     let waiting: Promise<PassReport> | null = null;
 
@@ -122,7 +123,7 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
     async function writeHeartbeat(status: DataRootStatus): Promise<void> {
         if (status.root === null || (status.state !== 'ready' && status.state !== 'uninitialized')) return;
         try {
-            await writeWatcherHeartbeat(status.root, { pid, hostname, lastPassAt, lastPassResult, heartbeatAt: iso(clock()) });
+            await writeWatcherHeartbeat(status.root, { pid, hostname, lastPassAt, lastPassResult, passStartedAt, heartbeatAt: iso(clock()) });
             heartbeatWarned = false;
         } catch (error) {
             if (!heartbeatWarned) logger.warn(`[identity] Could not write status/watcher.json: ${errorText(error)}`);
@@ -196,16 +197,23 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
     async function runPass(reason: PassReason): Promise<PassReport> {
         await legacyIdle();
         if (stopped) return { status: 'stopped' };
-        const status = dataRootStatus({ versioned: true });
-        noteState(status);
+        // The 30 s check's heartbeats carry this while the pass runs, so the healthcheck sees a pass that never ends.
+        passStartedAt = iso(clock());
+        let status: DataRootStatus;
         let report: PassReport;
-        if (status.state === 'ready' && status.root !== null) {
-            report = await reconcile(reason, status.root);
-        } else {
-            // A ready data root always has a root, so this one isn't ready.
-            const state = status.state as Exclude<DataRootState, 'ready'>;
-            lastPassResult = `data-root-${state}`;
-            report = { status: 'off', state };
+        try {
+            status = dataRootStatus({ versioned: true });
+            noteState(status);
+            if (status.state === 'ready' && status.root !== null) {
+                report = await reconcile(reason, status.root);
+            } else {
+                // A ready data root always has a root, so this one isn't ready.
+                const state = status.state as Exclude<DataRootState, 'ready'>;
+                lastPassResult = `data-root-${state}`;
+                report = { status: 'off', state };
+            }
+        } finally {
+            passStartedAt = null;
         }
         lastPassAt = iso(clock());
         await writeHeartbeat(status);

@@ -87,7 +87,7 @@ The watcher's next pass keeps the ID of every photo that archive knew, follows a
 
 `GET /api/health` answers 200 whenever `web` is up, with the data root's state: `ready`, `uninitialized`, `unavailable`, or `unset`. Both `web` healthchecks call it.
 
-The watcher's healthcheck runs `node dist/scripts/watcherHealth.mjs`, which passes while `status/watcher.json` is at most 120 s old. The watcher rewrites it every 30 s, so a stuck watcher, or a data root uid 1001 can't write, turns it unhealthy. `docker compose -f docker-compose.prod.yml ps` shows the state, and the healthcheck's last lines say why:
+The watcher's healthcheck runs `node dist/scripts/watcherHealth.mjs`, which passes while `status/watcher.json` is at most 120 s old, isn't stamped more than 120 s ahead of the container's clock, and shows no identity pass running longer than 30 minutes. The watcher rewrites it every 30 s, so a watcher whose loop stopped, a data root uid 1001 can't write, or an identity pass that never ends turns it unhealthy. It doesn't catch a legacy derivative job that never finishes: a pass starts only once the legacy step is idle, and the legacy backlog on a first start can rightly take hours, so the healthcheck doesn't time it. If `/media` sets stop appearing while the watcher reads healthy, check its logs for the last photo it processed. `restart: always` doesn't act on unhealthy, so this only changes what `ps` and a dashboard show. `docker compose -f docker-compose.prod.yml ps` shows the state, and the healthcheck's last lines say why:
 
 ```bash
 docker inspect --format '{{json .State.Health}}' "$(docker compose -f docker-compose.prod.yml ps -q image-watcher)"

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runTsx } from '../../../test/helpers/runTsx';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
-import { checkWatcherHealth, watcherStatusFile, writeWatcherHeartbeat, WATCHER_HEALTHY_WITHIN_MS } from '../heartbeat';
+import { checkWatcherHealth, watcherStatusFile, writeWatcherHeartbeat, WATCHER_HEALTHY_WITHIN_MS, WATCHER_PASS_LIMIT_MS } from '../heartbeat';
 import { identityStatus } from '../status';
 
 const AT = Date.parse('2026-05-01T12:00:00.000Z');
@@ -21,8 +21,15 @@ function dataRoot(state: 'ready' | 'uninitialized' = 'ready'): TempDataRoot {
     return data;
 }
 
-function beat(root: string, at = AT): Promise<void> {
-    return writeWatcherHeartbeat(root, { pid: 7, hostname: 'watcher-host', lastPassAt: null, lastPassResult: null, heartbeatAt: new Date(at).toISOString() });
+function beat(root: string, at = AT, passStartedAt: number | null = null): Promise<void> {
+    return writeWatcherHeartbeat(root, {
+        pid: 7,
+        hostname: 'watcher-host',
+        lastPassAt: null,
+        lastPassResult: null,
+        passStartedAt: passStartedAt === null ? null : new Date(passStartedAt).toISOString(),
+        heartbeatAt: new Date(at).toISOString(),
+    });
 }
 
 function writeStatus(root: string, text: string): string {
@@ -53,10 +60,44 @@ describe('checkWatcherHealth', () => {
         expect(await checkWatcherHealth({ clock: () => AT + 600_000, maxAgeMs: 900_000 })).toEqual({ healthy: true, message: 'The last heartbeat was 600 s ago.' });
     });
 
-    it('takes a heartbeat stamped after its own clock as fresh', async () => {
+    it('takes a heartbeat stamped up to 120 s after its own clock as fresh, and one stamped later as unhealthy', async () => {
         const data = dataRoot();
         await beat(data.root, AT + 5_000);
         expect(await checkWatcherHealth({ clock: () => AT })).toEqual({ healthy: true, message: 'The last heartbeat was 0 s ago.' });
+        await beat(data.root, AT + WATCHER_HEALTHY_WITHIN_MS);
+        expect((await checkWatcherHealth({ clock: () => AT })).healthy).toBe(true);
+
+        // After the clock steps back, a watcher that died just before the step would otherwise stay healthy until the clock caught up.
+        await beat(data.root, AT + WATCHER_HEALTHY_WITHIN_MS + 1_000);
+        expect(await checkWatcherHealth({ clock: () => AT })).toEqual({
+            healthy: false,
+            message: 'The last heartbeat is stamped 121 s after this clock, at 2026-05-01T12:02:01.000Z.',
+        });
+    });
+
+    it('is unhealthy once the identity pass under way has run longer than 30 minutes, even with a fresh heartbeat', async () => {
+        const data = dataRoot();
+        expect(WATCHER_PASS_LIMIT_MS).toBe(30 * 60_000);
+        await beat(data.root, AT, AT - WATCHER_PASS_LIMIT_MS);
+        expect(await checkWatcherHealth({ clock: () => AT })).toEqual({ healthy: true, message: 'The last heartbeat was 0 s ago.' });
+
+        await beat(data.root, AT, AT - WATCHER_PASS_LIMIT_MS - 60_000);
+        expect(await checkWatcherHealth({ clock: () => AT })).toEqual({
+            healthy: false,
+            message: 'The identity pass under way has run for 31 min, longer than 30 min.',
+        });
+        expect((await checkWatcherHealth({ clock: () => AT, passLimitMs: 60 * 60_000 })).healthy).toBe(true);
+    });
+
+    it('reads a heartbeat from before passStartedAt existed as no pass running, and refuses a malformed one', async () => {
+        const data = dataRoot();
+        const file = writeStatus(data.root, JSON.stringify({ pid: 7, hostname: 'h', lastPassAt: null, lastPassResult: null, heartbeatAt: new Date(AT).toISOString() }));
+        expect(await checkWatcherHealth({ clock: () => AT })).toEqual({ healthy: true, message: 'The last heartbeat was 0 s ago.' });
+
+        for (const started of ['"soon"', '12']) {
+            writeStatus(data.root, `{"heartbeatAt": "${new Date(AT).toISOString()}", "passStartedAt": ${started}}`);
+            expect(await checkWatcherHealth({ clock: () => AT }), started).toEqual({ healthy: false, message: `No heartbeat: ${file} has an invalid passStartedAt.` });
+        }
     });
 
     it('is unhealthy with no data root, no heartbeat yet, or a heartbeat it cannot use', async () => {
