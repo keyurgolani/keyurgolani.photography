@@ -58,7 +58,7 @@ describe('photos status', () => {
     it('reports the data root, the catalog, the registry, and the working layer, with no absolute path but the root', async () => {
         const catalog = await fixture();
         const clock = () => Date.parse('2026-10-24T12:01:00.000Z');
-        await writeWatcherHeartbeat(catalog.root, { pid: 1, hostname: 'fixture', lastPassAt: null, lastPassResult: null, heartbeatAt: '2026-10-24T12:00:00.000Z' });
+        await writeWatcherHeartbeat(catalog.root, { pid: 1, hostname: 'fixture', lastPassAt: null, lastPassResult: null, passStartedAt: null, heartbeatAt: '2026-10-24T12:00:00.000Z' });
         const result = await runStatusCommand({ dataRoot: catalog.root }, { clock });
         expect(result.exitCode).toBe(0);
         const text = withoutRoot(result.output, catalog.root);
