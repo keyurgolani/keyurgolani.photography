@@ -110,9 +110,10 @@ test('Back after a reload on the Viewer loads the same pages again and fires the
     await expect(page).toHaveURL(new RegExp(`/work/long/photo/${LONG[149]}$`));
     await page.reload();
     await waitForHydration(page);
-    // Listen before the series document loads, so the event can't be missed.
-    await page.addInitScript(() => {
-        document.addEventListener('kg:series-entries-restored', () => {
+    // The reload replaced the document for every entry pushState made, so Back to the series is a
+    // same-document traversal: Next renders the series page into this document. Listen here, before Back.
+    await page.evaluate(() => {
+        window.addEventListener('kg:series-entries-restored', () => {
             (window as unknown as { restored: number }).restored = ((window as unknown as { restored?: number }).restored ?? 0) + 1;
         });
     });
