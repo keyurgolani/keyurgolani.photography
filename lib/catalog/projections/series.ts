@@ -1,8 +1,10 @@
 // A client bundle that reaches this fails the build. Client code takes only types from it (#3, #5).
 import 'server-only';
 import type { VariantFormat, VariantWidth } from '../../identity/variants';
+import { decodeSeriesCursor, encodeSeriesCursor } from '../cursor';
 import type { CatalogContent, CatalogReader, RouteBuilder } from '../reader';
 import { MAX_SLUG_LENGTH, SLUG_RE } from '../schema';
+import { sequenceSections, type SequenceSection } from '../series-sections';
 import type { Crop, FocalPoint, SeriesRecord } from '../types';
 import { ladderOf, type Ladder, type LadderVariant } from './ladder';
 
@@ -17,9 +19,26 @@ import { ladderOf, type Ladder, type LadderVariant } from './ladder';
  * credit, capture date per photo, camera facts, profile, or source path.
  * Every prop the page hands a client component ships to visitors, so this
  * allowlist bounds those props too.
+ *
+ * The sequence comes in pages of SERIES_PAGE_SIZE (#6): the page model
+ * holds the first, and seriesContinuationOf() each one after it, for
+ * `/api/catalog/series/<slug>/pages/<cursor>`. Both build entries the same
+ * way, so a continued entry is the entry the first page would have shown.
  */
 
 type Photo = CatalogContent['photos'][number];
+
+/**
+ * Entries per page, the first server-rendered one and each continuation.
+ * Within #6's approved bound (at most 100 photo records or 100 KiB
+ * compressed); lib/perf's budget tests hold every page to both.
+ */
+export const SERIES_PAGE_SIZE = 100;
+
+/** The continuation endpoint's path for one page. Server-made only: a client follows it and never builds one. */
+export function seriesPagesPath(slug: string, cursor: string): string {
+    return `/api/catalog/series/${encodeURIComponent(slug)}/pages/${cursor}`;
+}
 
 /** One variant file, as `/media` serves it and a `srcset` names it. */
 export type SeriesVariant = LadderVariant;
@@ -66,6 +85,8 @@ export interface SeriesCover {
     focalPoint: FocalPoint;
     /** The photo's authored crop, `cover` by default. */
     crop: Crop;
+    /** The cover's described text, as its entry carries it, so the alt holds when the entry isn't on the first page. */
+    description: string | null;
 }
 
 /** An authored chapter label over the one sequence. It starts at `startPosition` and runs to the next chapter or the end. */
@@ -132,12 +153,35 @@ export interface PublishedSeriesPage {
     facts: SeriesFacts;
     /** Null when the cover can't be shown, so the page opens text-led. */
     cover: SeriesCover | null;
-    /** In the series' `photoIds` order, only members that resolve. Never empty. */
+    /** The first page: up to SERIES_PAGE_SIZE of the members that resolve, in the series' `photoIds` order, from position 1. Never empty. */
     entries: SeriesEntry[];
-    /** Authored chapters over `entries`, in sequence order, each starting after the last. Never a second order. */
+    /** How many members resolve: the whole sequence, the count #7's Viewer gives as "of N". */
+    total: number;
+    /** The next page's continuation path, or null when `entries` is the whole sequence. */
+    nextHref: string | null;
+    /** Authored chapters over the whole sequence, in order, each starting after the last. Never a second order. */
     chapters: SeriesChapter[];
     metadata: SeriesMetadataInputs;
 }
+
+/** One continuation page, as the endpoint answers it. */
+export interface SeriesContinuation {
+    /** The revision the entries came from, the one the cursor named. */
+    revisionId: string;
+    /** Up to SERIES_PAGE_SIZE entries, built as the first page's are, with their absolute positions. */
+    entries: SeriesEntry[];
+    /** The page after this one, or null at the end of the sequence. */
+    nextHref: string | null;
+}
+
+export type SeriesContinuationResult =
+    | { kind: 'ok'; page: SeriesContinuation }
+    /** A malformed cursor, one for another series, or an offset that isn't a page in range. */
+    | { kind: 'bad-request' }
+    /** The cursor names another revision than the one being served. Never served from it, never restarted. */
+    | { kind: 'revision-changed' }
+    /** #5's not-found set, plus a former slug, which an API doesn't redirect. */
+    | { kind: 'not-found' };
 
 export type SeriesPageResult =
     | { kind: 'ok'; page: PublishedSeriesPage }
@@ -154,7 +198,7 @@ export interface SeriesSource {
     photosOf(seriesId: string): readonly Photo[];
 }
 
-const NOT_FOUND: SeriesPageResult = Object.freeze({ kind: 'not-found' });
+const NOT_FOUND = Object.freeze({ kind: 'not-found' as const });
 const CENTER: FocalPoint = Object.freeze({ x: 0.5, y: 0.5 });
 /** The shape the revision schema checks. ResponsivePhoto puts it in a CSS `url()`, so nothing else passes. */
 const LQIP_RE = /^data:image\/webp;base64,[A-Za-z0-9+/]+={0,2}$/;
@@ -254,21 +298,23 @@ function factsOf(series: SeriesRecord, members: readonly Photo[], photoCount: nu
     };
 }
 
+type Routes = Pick<RouteBuilder, 'seriesHref' | 'photoHref' | 'workHref'>;
+
+type Resolved =
+    | { kind: 'ok'; series: SeriesRecord; canonical: boolean; members: readonly Photo[]; photoCount: number }
+    | { kind: 'not-found' };
+
 /**
- * Resolve `/work/<slug>` in one source, in this order: a malformed slug, an
- * unknown one, a series ID that appears more than once, and a series with
- * nothing to open (no positive published count or no member that resolves)
- * are all not-found, and so is a former slug whose canonical slug the route
- * would refuse, the series #3's Work leaves out, so Work never links a
- * missing page and the page never serves a series Work hides; a former slug
- * redirects; anything else is the projection. Compile never writes a
- * repeated ID. Only a hand-written revision can, and the reader indexes
- * members by ID, so it would pair one record's copy with another's photos.
- * Entries are the members that resolve, in `photoIds` order, the list #7's
- * Viewer counts, so positions agree. Hrefs come from `routes`: #13's
- * `publicRoutes` on the site, a preview's own builder in a preview.
+ * The series `slug` names in one source, for the page and its continuation
+ * alike, in this order: a malformed slug, an unknown one, a series ID that
+ * appears more than once, and a series with nothing to open (no positive
+ * published count or no member that resolves) are all not-found. Compile
+ * never writes a repeated ID. Only a hand-written revision can, and the
+ * reader indexes members by ID, so it would pair one record's copy with
+ * another's photos. Members are the ones that resolve, in `photoIds` order,
+ * the list #7's Viewer counts, so positions agree.
  */
-export function seriesPageOf(source: SeriesSource, slug: unknown, routes: Pick<RouteBuilder, 'seriesHref' | 'photoHref' | 'workHref'>): SeriesPageResult {
+function resolveSeries(source: SeriesSource, slug: unknown): Resolved {
     const params = seriesParams(slug);
     if (params === null) return NOT_FOUND;
     const hit = source.seriesBySlug(params.slug);
@@ -281,7 +327,42 @@ export function seriesPageOf(source: SeriesSource, slug: unknown, routes: Pick<R
     // order.duplicate-photo blocks a repeated member at render, so no preview or revision holds one.
     const members = source.photosOf(series.id);
     if (members.length === 0) return NOT_FOUND;
-    if (!hit.canonical) {
+    return { kind: 'ok', series, canonical: hit.canonical, members, photoCount };
+}
+
+/** The entries of one page, from member `offset` on, with their absolute positions. */
+function pageOf(series: SeriesRecord, members: readonly Photo[], offset: number, routes: Routes): SeriesEntry[] {
+    return members.slice(offset, offset + SERIES_PAGE_SIZE).map((photo, index) => ({
+        photoId: photo.id,
+        position: offset + index + 1,
+        title: text(photo.title),
+        description: descriptionOf(photo.alt),
+        href: routes.photoHref(series.slug, photo.id),
+        image: imageOf(photo, false),
+    }));
+}
+
+/** The continuation path of the page starting at member `offset`, or null when nothing is left. */
+function nextHrefOf(revisionId: string, series: SeriesRecord, offset: number, total: number): string | null {
+    if (offset >= total) return null;
+    return seriesPagesPath(series.slug, encodeSeriesCursor({ revisionId, seriesId: series.id, offset }));
+}
+
+/**
+ * Resolve `/work/<slug>` in one source: resolveSeries()'s not-found cases,
+ * then a former slug whose canonical slug the route would refuse, the series
+ * #3's Work leaves out, so Work never links a missing page and the page never
+ * serves a series Work hides; a former slug redirects; anything else is the
+ * projection, with the first page of entries and the path to the next.
+ * Hrefs come from `routes`: #13's `publicRoutes` on the site, a preview's own
+ * builder in a preview. The continuation path always names the public
+ * endpoint, which serves only the active revision.
+ */
+export function seriesPageOf(source: SeriesSource, slug: unknown, routes: Routes): SeriesPageResult {
+    const resolved = resolveSeries(source, slug);
+    if (resolved.kind === 'not-found') return NOT_FOUND;
+    const { series, members, photoCount } = resolved;
+    if (!resolved.canonical) {
         // Only route.slug-format, at render, checks a canonical slug's shape. If the route's own check would refuse it, the
         // 308 would be permanent and point at a page that is always not-found, so a series the route can't serve has no former slugs.
         if (seriesParams(series.slug) === null) return NOT_FOUND;
@@ -289,14 +370,7 @@ export function seriesPageOf(source: SeriesSource, slug: unknown, routes: Pick<R
     }
 
     const coverId = series.cover?.photoId;
-    const entries: SeriesEntry[] = members.map((photo, index) => ({
-        photoId: photo.id,
-        position: index + 1,
-        title: text(photo.title),
-        description: descriptionOf(photo.alt),
-        href: routes.photoHref(series.slug, photo.id),
-        image: imageOf(photo, false),
-    }));
+    const entries = pageOf(series, members, 0, routes);
     // Members are the series' photoIds that resolve, so a cover from anywhere else finds nothing (#3's rule).
     const coverIndex = typeof coverId === 'string' ? members.findIndex((photo) => photo.id === coverId) : -1;
     const coverPhoto = coverIndex === -1 ? null : members[coverIndex];
@@ -305,10 +379,11 @@ export function seriesPageOf(source: SeriesSource, slug: unknown, routes: Pick<R
         ? {
             photoId: coverPhoto.id,
             position: coverIndex + 1,
-            href: entries[coverIndex].href,
+            href: routes.photoHref(series.slug, coverPhoto.id),
             image: coverImage,
             focalPoint: { ...(focal(series.cover.focalPoint) ?? focal(coverPhoto.focalPoint) ?? CENTER) },
             crop: coverPhoto.crop === 'contain' ? 'contain' : 'cover',
+            description: descriptionOf(coverPhoto.alt),
         }
         : null;
     // The shipped ladder drops each file's height, so the share image's comes from the record ladderOf() checked.
@@ -327,49 +402,75 @@ export function seriesPageOf(source: SeriesSource, slug: unknown, routes: Pick<R
             facts: factsOf(series, members, photoCount),
             cover,
             entries,
+            total: members.length,
+            nextHref: nextHrefOf(source.revisionId, series, SERIES_PAGE_SIZE, members.length),
             chapters: chaptersOf(series, members),
             metadata: {
                 canonicalPath: href,
                 title: series.title,
                 description: text(series.shortStatement),
                 shareImage: cover && share && coverPhoto
-                    ? { path: share.url, width: share.width, height: share.height, alt: descriptionOf(coverPhoto.alt) ?? `${series.title}, cover photograph` }
+                    ? { path: share.url, width: share.width, height: share.height, alt: cover.description ?? `${series.title}, cover photograph` }
                     : null,
             },
         },
     };
 }
 
-/** One run of entries under one heading: the photographs before the first chapter (`chapter: null`), then each chapter's. */
-export interface SeriesSection {
-    chapter: SeriesChapter | null;
-    entries: SeriesEntry[];
-}
+const BAD_REQUEST: SeriesContinuationResult = Object.freeze({ kind: 'bad-request' });
+const REVISION_CHANGED: SeriesContinuationResult = Object.freeze({ kind: 'revision-changed' });
 
 /**
- * The page's sections, cut from the one entry list at each chapter's start,
- * so every entry appears once, in order, and numbering runs across chapters.
- * The lead section appears only when the first chapter starts after the
- * first photograph, or there are no chapters.
+ * One continuation page of `/work/<slug>` in one source, checked in this
+ * order: a malformed slug is not-found; a cursor that doesn't decode is a
+ * bad request; a cursor from another revision is revision-changed, whatever
+ * the slug, so a stale cursor says nothing about which series exist; then
+ * resolveSeries()'s not-found cases and a former slug; then a cursor for
+ * another series, or an offset that isn't the start of a page in range, is
+ * a bad request. A cursor never pins its revision: the page always comes
+ * from this source, and only when the source is the revision it named.
+ */
+export function seriesContinuationOf(source: SeriesSource, slug: unknown, cursor: unknown, routes: Routes): SeriesContinuationResult {
+    if (seriesParams(slug) === null) return NOT_FOUND;
+    const position = decodeSeriesCursor(cursor);
+    if (position === null) return BAD_REQUEST;
+    if (position.revisionId !== source.revisionId) return REVISION_CHANGED;
+    const resolved = resolveSeries(source, slug);
+    if (resolved.kind === 'not-found' || !resolved.canonical) return NOT_FOUND;
+    const { series, members } = resolved;
+    if (position.seriesId !== series.id) return BAD_REQUEST;
+    if (position.offset % SERIES_PAGE_SIZE !== 0 || position.offset >= members.length) return BAD_REQUEST;
+    return {
+        kind: 'ok',
+        page: {
+            revisionId: source.revisionId,
+            entries: pageOf(series, members, position.offset, routes),
+            nextHref: nextHrefOf(source.revisionId, series, position.offset + SERIES_PAGE_SIZE, members.length),
+        },
+    };
+}
+
+/** One run of entries under one heading: the photographs before the first chapter (`chapter: null`), then each chapter's. */
+export type SeriesSection = SequenceSection;
+
+/**
+ * The sections of the entries a page holds, cut at each chapter's start, so
+ * every entry appears once, in order, and numbering runs across chapters.
+ * See sequenceSections(), which the client's SeriesSequence runs as pages
+ * append.
  */
 export function seriesSections(page: Pick<PublishedSeriesPage, 'entries' | 'chapters'>): SeriesSection[] {
-    const sections: SeriesSection[] = [];
-    const starts = page.chapters.map((chapter) => chapter.startPosition - 1);
-    const lead = page.entries.slice(0, starts[0] ?? page.entries.length);
-    if (lead.length) sections.push({ chapter: null, entries: lead });
-    page.chapters.forEach((chapter, index) => {
-        sections.push({ chapter, entries: page.entries.slice(starts[index], starts[index + 1]) });
-    });
-    return sections;
+    return sequenceSections(page.entries, page.chapters);
 }
 
 /**
- * The parts of #13's ActiveCatalog that seriesPageFrom() reads, so this
- * module stays clear of the server-only public reader.
+ * The parts of #13's ActiveCatalog that seriesPageFrom() and
+ * seriesContinuationFrom() read, so this module stays clear of the
+ * server-only public reader.
  */
 export type SeriesActiveCatalog<Reason extends string = string> =
     | { mode: 'legacy' }
-    | { mode: 'catalog'; state: 'ok' | 'degraded'; reader: Pick<CatalogReader, 'getSeriesPage'> }
+    | { mode: 'catalog'; state: 'ok' | 'degraded'; reader: Pick<CatalogReader, 'getSeriesPage' | 'getSeriesContinuation'> }
     | { mode: 'catalog'; state: 'unavailable'; reason: Reason };
 
 /**
@@ -391,7 +492,7 @@ export type SeriesActiveCatalog<Reason extends string = string> =
 export async function seriesPageFrom<Reason extends string>(
     load: () => Promise<SeriesActiveCatalog<Reason>>,
     slug: unknown,
-    routes: Pick<RouteBuilder, 'seriesHref' | 'photoHref' | 'workHref'>,
+    routes: Routes,
 ): Promise<SeriesPageResult | { kind: 'unavailable'; reason: Reason }> {
     const params = seriesParams(slug);
     if (params === null) return NOT_FOUND;
@@ -399,4 +500,26 @@ export async function seriesPageFrom<Reason extends string>(
     if (catalog.mode === 'legacy') return NOT_FOUND;
     if (catalog.state === 'unavailable') return { kind: 'unavailable', reason: catalog.reason };
     return catalog.reader.getSeriesPage(params.slug, routes);
+}
+
+/**
+ * The continuation endpoint's answer for the site as it stands. A malformed
+ * slug or cursor is answered before the catalog is read; legacy mode is
+ * not-found, as the page is; an unavailable catalog is unavailable, for a
+ * 503; anything else is seriesContinuationOf() on the served revision (a
+ * degraded catalog's last loaded one).
+ */
+export async function seriesContinuationFrom<Reason extends string>(
+    load: () => Promise<SeriesActiveCatalog<Reason>>,
+    slug: unknown,
+    cursor: unknown,
+    routes: Routes,
+): Promise<SeriesContinuationResult | { kind: 'unavailable'; reason: Reason }> {
+    const params = seriesParams(slug);
+    if (params === null) return NOT_FOUND;
+    if (decodeSeriesCursor(cursor) === null) return BAD_REQUEST;
+    const catalog = await load();
+    if (catalog.mode === 'legacy') return NOT_FOUND;
+    if (catalog.state === 'unavailable') return { kind: 'unavailable', reason: catalog.reason };
+    return catalog.reader.getSeriesContinuation(params.slug, cursor as string, routes);
 }
