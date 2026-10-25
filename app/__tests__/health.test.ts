@@ -58,8 +58,8 @@ describe('GET /api/health', () => {
 
     it('reads data-root.json and nothing else in the data root', async () => {
         const data = dataRoot('ready');
-        fs.mkdirSync(data.file('identity'));
-        fs.writeFileSync(data.file('identity', 'registry.json'), '{ not json');
+        fs.mkdirSync(data.file('identity', 'registry'), { recursive: true });
+        fs.writeFileSync(data.file('identity', 'registry', 'v1.json'), '{ not json');
         fs.mkdirSync(data.file('status'));
         fs.writeFileSync(data.file('status', 'watcher.json'), '{ not json');
         const reads = vi.spyOn(fs, 'readFileSync');
