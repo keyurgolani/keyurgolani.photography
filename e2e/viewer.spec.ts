@@ -329,7 +329,7 @@ test('share metadata names the photo and its series, on SITE_URL, with a /media 
     const meta = (property: string) => page.locator(`meta[property="${property}"]`).getAttribute('content');
     expect(await page.locator('link[rel="canonical"]').getAttribute('href')).toBe(`${SITE_URL}${href(P[0])}`);
     expect(await meta('og:url')).toBe(`${SITE_URL}${href(P[0])}`);
-    expect(await meta('og:title')).toBe('Fixture harbor at dusk, Fixture harbor');
+    expect(await meta('og:title')).toBe('Fixture harbor at dusk, Fixture harbor · Keyur Golani Photography');
     expect(await page.locator('meta[name="description"]').getAttribute('content')).toBe('Fixture authored caption.');
     expect(await meta('og:image')).toMatch(new RegExp(`^${SITE_URL}/media/${P[0]}/sha256-[0-9a-f]{64}/p_[0-9a-f]+/w1200\\.webp$`));
     expect(await meta('og:image:alt')).toBe('Fixture description of the harbor.');

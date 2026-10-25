@@ -1,10 +1,20 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import type { ReactNode } from 'react';
+import { describe, expect, it, vi } from 'vitest';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '@/lib/identity/variants';
 import { mediaUrl } from '@/lib/media/url';
 import type { PublishedViewerPhoto } from '@/lib/catalog/projections/viewer';
 import StoryViewer, { FIT_SIZES, type StoryViewerProps } from '../StoryViewer';
 import { HIDE_TECHNICAL, SHOW_TECHNICAL, TECHNICAL_SOURCE, accentValue, positionLabel, positionText, viewerTitle } from '../viewerLabels';
+
+// The props Link gets, as attributes, so a test can see a move replaces the history entry and nothing prefetches.
+vi.mock('next/link', () => ({
+    default: ({ href, replace, prefetch, children, ...rest }: { href: string; replace?: boolean; prefetch?: boolean | null; children: ReactNode }) => (
+        <a href={href} data-replace={String(Boolean(replace))} data-prefetch={String(prefetch)} {...rest}>
+            {children}
+        </a>
+    ),
+}));
 
 const PHOTO_ID = 'ph_00000000-0000-4000-8000-000000000003';
 const REF = { photoId: PHOTO_ID, assetRevision: `sha256-${'3'.repeat(64)}`, profileId: 'p_0123456789abcdef' };
@@ -91,6 +101,13 @@ describe('StoryViewer', () => {
         const { unmount } = renderViewer();
         expect(screen.getByRole('link', { name: 'Previous photograph' })).toHaveAttribute('href', '/work/fixture/photo/ph_00000000-0000-4000-8000-000000000002');
         expect(screen.getByRole('link', { name: 'Next photograph' })).toHaveAttribute('href', '/work/fixture/photo/ph_00000000-0000-4000-8000-000000000004');
+        // A move replaces the history entry, so one Back leaves the Viewer. Nothing prefetches a revision that may not be active later.
+        for (const name of ['Previous photograph', 'Next photograph']) {
+            expect(screen.getByRole('link', { name })).toHaveAttribute('data-replace', 'true');
+            expect(screen.getByRole('link', { name })).toHaveAttribute('data-prefetch', 'false');
+        }
+        expect(screen.getByRole('link', { name: 'Close' })).toHaveAttribute('data-replace', 'false');
+        expect(screen.getByRole('link', { name: 'Close' })).toHaveAttribute('data-prefetch', 'false');
         unmount();
 
         const first = renderViewer({ previousHref: null });
