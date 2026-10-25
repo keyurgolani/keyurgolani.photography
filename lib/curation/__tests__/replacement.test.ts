@@ -450,6 +450,29 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         expect((await photoRecord(w)).assetRevision).toBe(w.b);
     });
 
+    it('after a later item\'s confirm, reopen and show say leaving the earlier item in draft keeps the later revision, which it does', async () => {
+        const w = await world();
+        const cli = (args: string[]) => runCurationCli(args, { dataRoot: w.root }, { PHOTOS_ACTOR: ACTOR });
+        await w.build(w.job(w.b));
+        expect(await confirm(w, await w.event())).toMatchObject({ ok: true });
+        fs.writeFileSync(w.lib.file(P_PATH), images.third);
+        const c = (await w.pass()).find((fact) => fact.type === 'replaced' && fact.photoId === w.p)?.assetRevision;
+        if (!c) throw new Error('The pass reported no replacement.');
+        expect(await w.build(w.job(c))).toEqual({ status: 'ready', reused: false });
+        expect(await confirm(w, await w.event(replacementEventId(w.p, c)))).toMatchObject({ ok: true });
+        expect((await photoRecord(w)).assetRevision).toBe(c);
+        const authored = treeBytes(path.join(w.root, 'authored'));
+
+        // B's item is reopened. C's confirm is the latest pin, so leaving B's item in draft keeps C: it neither refuses nor puts A back.
+        const reopened = await reopen(w, await w.event());
+        expect((await cli(['show', reopened.id])).output).toContain(`Leaving it in draft (defer) keeps ${c}, the revision ${w.p}'s photo record pins.`);
+        const left = await leave(w, reopened);
+        expect(left).toMatchObject({ ok: true, event: { status: 'deferred' } });
+        expect(left.ok && left.event.decisions.at(-1)).not.toHaveProperty('fromRevision');
+        expect(left.ok && left.notes.join(' ')).toContain(`photo record keeps ${c}.`);
+        expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
+    });
+
     it('leaves an item never confirmed in draft with no write', async () => {
         const w = await world();
         await w.build(w.job(w.b));
