@@ -207,7 +207,15 @@ If the diff shows changes made on this host, don't copy them into the new file:
 - A different host port goes in `.env` as `PHOTOGRAPHY_PORT=<port>`, never in an override.
 - Anything else, such as another service or photos path, goes in an override file that isn't in the repository, added to every command as `-f docker-compose.prod.yml -f <override>`, so the next release's file replaces cleanly. Compose adds an override's `ports:` to the file's instead of replacing them, so a `ports:` entry for `web` there has to start with `127.0.0.1:` and its list has to be tagged `!override` (Compose 2.24.4 or later), and `web` never takes `network_mode: host`. Otherwise `web` is published on every interface again. These rules are for `web` only. A reverse proxy service in the override may publish 80 and 443, or run with `network_mode: host` and point at `http://127.0.0.1:3000`.
 
-A host whose boot service runs a plain `docker compose up`, with no `-f`, loads `docker-compose.yml`, and `docker-compose.override.yml` beside it whenever that exists. Keep that service and every command here on the same project: install the repository's file as `docker-compose.prod.yml`, as above, point `docker-compose.yml` at it with a symlink in the same folder, and name the override `docker-compose.override.yml`, which Compose loads on its own. If the host's file is a real `docker-compose.yml` today, rename it to `docker-compose.prod.yml` before the steps above, so the saved copy and the diff use it. Leave no `compose.yaml` or `compose.yml` in that folder, since Compose prefers them. The `ln` refuses to replace a file that's there:
+A host whose boot service runs a plain `docker compose up`, with no `-f`, loads `docker-compose.yml`, and `docker-compose.override.yml` beside it whenever that exists. Keep that service and every command here on the same project: install the repository's file as `docker-compose.prod.yml`, as above, point `docker-compose.yml` at it with a symlink in the same folder, and name the override `docker-compose.override.yml`, which Compose loads on its own. This layout is for a deploy folder that isn't a git checkout of the repository. In a checkout, `docker-compose.yml` is the repository's dev stack, and a later `git pull`, `checkout`, or `reset` puts it back in place of the symlink, so the next boot starts the dev stack, as root, on the production library and data root.
+
+If the host's file is a real `docker-compose.yml` today, rename it to `docker-compose.prod.yml` before the steps above, so the saved copy and the diff use it. The `-n` leaves a `docker-compose.prod.yml` that's already there alone, and the `ln` below then refuses too, so check which of the two is the host's file before going on:
+
+```bash
+mv -n docker-compose.yml docker-compose.prod.yml
+```
+
+Leave no `compose.yaml` or `compose.yml` in that folder, since Compose prefers them, and no `compose.override.yml` or `compose.override.yaml`, since Compose loads that one instead of `docker-compose.override.yml` when both exist. The `ln` refuses to replace a file that's there:
 
 ```bash
 [ -L docker-compose.yml ] || ln -s docker-compose.prod.yml docker-compose.yml
