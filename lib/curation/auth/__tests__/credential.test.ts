@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { randomBytes } from 'node:crypto';
+import { randomBytes, scryptSync } from 'node:crypto';
 import fs from 'node:fs';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { makeCuratorSecrets, type TestCuratorSecrets } from '../../../../test/helpers/curatorSecrets';
@@ -51,6 +51,30 @@ describe('the passphrase hash', () => {
         const [a, b] = await Promise.all([hashPassphrase('same'), hashPassphrase('same')]);
         expect(a).not.toBe(b);
         expect(parsePassphraseHash(a)!.salt.equals(parsePassphraseHash(b)!.salt)).toBe(false);
+    });
+
+    // A known answer at N=32768, r=8, p=1, checked against Python's hashlib.scrypt
+    // too, so a cheaper derive behind the same prefix can't pass.
+    const KNOWN = {
+        passphrase: 'known answer passphrase',
+        salt: 'AAECAwQFBgcICQoLDA0ODw',
+        key: 'z9TAeN5Uc-zHg2iuZORcVjkrkVRvPo1ofLjoJf-p8_Q',
+    };
+
+    it('verifies a known answer at N=32768, r=8, p=1', async () => {
+        const known = parsePassphraseHash(`scrypt$32768$8$1$${KNOWN.salt}$${KNOWN.key}\n`)!;
+        expect(known.key.toString('hex')).toBe('cfd4c078de5473ecc78368ae64e45c56392b91546f3e8d687cb8e825ffa9f3f4');
+        expect(await verifyPassphrase(KNOWN.passphrase, known)).toBe(true);
+        expect(await verifyPassphrase(`${KNOWN.passphrase}.`, known)).toBe(false);
+    });
+
+    it('hashes at exactly the parameters its prefix names', async () => {
+        const parsed = parsePassphraseHash(await hashPassphrase(KNOWN.passphrase))!;
+        const expected = scryptSync(KNOWN.passphrase, parsed.salt, 32, { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
+        expect(parsed.key.equals(expected)).toBe(true);
+        for (const cheaper of [{ N: 1024, r: 8, p: 1 }, { N: 32768, r: 4, p: 1 }, { N: 16384, r: 8, p: 1 }]) {
+            expect(parsed.key.equals(scryptSync(KNOWN.passphrase, parsed.salt, 32, { ...cheaper, maxmem: 64 * 1024 * 1024 }))).toBe(false);
+        }
     });
 
     it('verifies the passphrase it was made from, and nothing else', async () => {
@@ -208,6 +232,7 @@ describe('sessions', () => {
             ['a tag under another secret', signSessionId(id, randomBytes(32))],
             ['another live session with this tag', `${other}.${tag}`],
             ['a tag padded out', `${idPart}.${tag}=`],
+            ['a tag that decodes to the same bytes but is written otherwise', `${idPart}.${tag.slice(0, -1)}${B64URL[B64URL.indexOf(tag.at(-1)!) ^ 1]}`],
             ['an ID that decodes to the same bytes but is written otherwise', `${idPart.slice(0, -1)}${B64URL[B64URL.indexOf(idPart.at(-1)!) ^ 1]}.${tag}`],
             ['the parts swapped', `${tag}.${idPart}`],
         ];
