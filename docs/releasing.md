@@ -152,18 +152,22 @@ docker compose -f docker-compose.prod.yml up -d
 Then run `images:cleanup` once. Its dry run lists what the old pipeline left behind, including every `cache/dynamic` file from the removed `/api/image` route, and the second command deletes exactly that list:
 
 ```bash
-docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/imageCleanup.mjs
-docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/imageCleanup.mjs --apply --plan <hash>
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts --apply --plan <hash>
 ```
+
+Those commands are for the `v1.1.0` image and the releases before slice C of #10. From the first release with slice C on, the image has no tsx, so run `node dist/scripts/imageCleanup.mjs` with the same flags.
 
 The first release with slice A of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10) needs a step too. The Gallery grid and lightbox now show the derivatives instead of the original files, and derivatives written before it ignored the EXIF orientation, so a photo whose file carries an orientation tag shows turned or mirrored until its derivatives are rebuilt. The watcher rebuilds them by itself. The first time it starts on a library, it rebuilds the set of every photo with an orientation tag, and once each of them is written or has failed it records that in `cache/upright-rebuild.json` in the library, so later starts skip it. A photo that failed is listed there, and each start tries it again until it builds. If the watcher stops first, or a photo changes while it is rebuilt, the next start rebuilds them all again. The watcher has to be able to write `cache/`; it logs at start when it can't. The old derivatives keep serving until each photo's new set is written.
 
 To see which photos it rebuilds, run the dry run after `up -d`. It changes nothing in the library and prints the path of its report:
 
 ```bash
-docker compose -f docker-compose.prod.yml exec image-watcher node dist/scripts/photos.mjs migrate --dry-run --out /tmp/photo-migration
+docker compose -f docker-compose.prod.yml exec image-watcher npm run photos:migrate -- --dry-run --out /tmp/photo-migration
 docker compose -f docker-compose.prod.yml exec image-watcher cat <report path>
 ```
+
+On a release with slice C of #10, the first command is `node dist/scripts/photos.mjs migrate --dry-run --out /tmp/photo-migration` instead.
 
 Its "Orientation-tagged files" section lists them, except any the library reaches through a symlink, since the dry run reads no file through one. If it says "None." and no photo in the library's top folder is a symlink, skip the rest. Otherwise wait for the watcher to log that it rebuilt them:
 
@@ -173,12 +177,23 @@ docker compose -f docker-compose.prod.yml logs image-watcher | grep orientation-
 
 Once it logs that it rebuilt the sets of the orientation-tagged photos, clear `./.next-images-cache` the same way as above, so `/_next/image` drops the copies it made from the old derivatives. If it also names photos that failed to rebuild, fix or remove those files, and clear the cache again once it logs that it rebuilt them. If this is also the first release with Phase 0, this one clear, after the rebuild, covers both.
 
-The first release with slice C of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10) needs the new `docker-compose.prod.yml` on the host, and the data root, `./portfolio-data`, created and owned by uid 1001 before the first `up`. The old compose file runs the watcher with tsx, which the image no longer has, and the new one never creates a missing data root, so neither container starts without it:
+The first release with slice C of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10) needs the new `docker-compose.prod.yml` on the host, and the data root, `./portfolio-data`, created and owned by uid 1001 before the first `up`. The old compose file runs the watcher with tsx, which the image no longer has, and the new one never creates a missing data root, so neither container starts without it. The new file also publishes `web` on the host's 127.0.0.1 only, port `PHOTOGRAPHY_PORT` or 3000, so whatever serves the site to the internet has to reach it there, such as a reverse proxy or a tunnel on the same host.
+
+Keep the host's current file, fetch the new one beside it, and compare them before replacing anything:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/keyurgolani/keyurgolani.photography/vX.Y.Z/docker-compose.prod.yml
+cp -p docker-compose.prod.yml docker-compose.prod.yml.before-vX.Y.Z
+curl -fsSL -o docker-compose.prod.yml.new https://raw.githubusercontent.com/keyurgolani/keyurgolani.photography/vX.Y.Z/docker-compose.prod.yml
+diff -u docker-compose.prod.yml docker-compose.prod.yml.new
+```
+
+If the diff shows changes made on this host, such as another service, port, or photos path, don't copy them into the new file. Put them in an override file that isn't in the repository and add it to every command, as `-f docker-compose.prod.yml -f <override>`, so the next release's file replaces cleanly. Then install the new file and set up the data root:
+
+```bash
+mv docker-compose.prod.yml.new docker-compose.prod.yml
 mkdir -p portfolio-data
 sudo chown -R 1001:1001 portfolio-data
+sudo chmod 700 portfolio-data
 docker compose -f docker-compose.prod.yml pull
 docker compose -f docker-compose.prod.yml up -d
 ```
@@ -189,7 +204,7 @@ docker compose -f docker-compose.prod.yml up -d
 
 Before changing `.env`, note the tag the host runs now. To roll back, set `PHOTOGRAPHY_IMAGE_TAG` back to that tag and run the same two commands. That swaps the code, not the photo library. Rolling back to a release before Phase 0 of #17 brings back the watcher's startup cleanup, which deletes the derivative sets this release keeps for removed photos. That older release also refills `./.next-images-cache` under its year-long headers and writes new `cache/dynamic` files, so roll forward again the way Deploying describes for `v1.1.0`.
 
-Rolling back past the first release with slice C of #10 needs that older release's `docker-compose.prod.yml` too, since its image has no `dist/scripts` for this file's watcher command. Leave `./portfolio-data` where it is. Older releases never read it, and once you roll forward, the watcher's next pass catches up with what changed in the library meanwhile. A release that finds a data root written by a newer one, with a schema it doesn't know, treats it as unavailable and runs only the legacy step.
+Rolling back past the first release with slice C of #10 needs the compose file the host ran before it too, since that older image has no `dist/scripts` for this file's watcher command. Put back the copy that release's deploy step saved, `docker-compose.prod.yml.before-vX.Y.Z`, rather than the repository's older file, so the host's own changes come back with it. Leave `./portfolio-data` where it is. Older releases never read it, and once you roll forward, the watcher's next pass catches up with what changed in the library meanwhile. A release that finds a data root written by a newer one, with a schema it doesn't know, treats it as unavailable and runs only the legacy step.
 
 Never roll back to `v1.0.0`. That image, on GHCR and on Docker Hub, is the initial commit and can't run under this compose file.
 
