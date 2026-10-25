@@ -6,6 +6,7 @@ import { folderBytes } from '../../../test/helpers/folderBytes';
 import { runTsx } from '../../../test/helpers/runTsx';
 import { createTempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { readAuthoredRecord } from '../../catalog/working-layer';
+import { readRegistry, writeRegistry } from '../../identity/registry';
 import { parseCurationArgs, printable, runCurationCli, scrub, type CommandResult } from '../commands';
 import { listEvents } from '../repository';
 import { createCurationSink } from '../sink';
@@ -30,7 +31,7 @@ describe('curation list', () => {
     it('says the inbox is empty when it is', async () => {
         const f = await fixture();
         expect(await cli(f, 'list')).toEqual({ exitCode: 0, output: 'Curation inbox: empty. Nothing requires judgment.\n' });
-        expect(JSON.parse((await cli(f, 'list', '--json')).output)).toEqual({ needsJudgment: 0, total: 0, events: [], problems: [] });
+        expect(JSON.parse((await cli(f, 'list', '--json')).output)).toEqual({ needsJudgment: 0, waiting: 0, total: 0, events: [], problems: [] });
     });
 
     it('counts what needs judgment and lists each item with its version, type, status, and short photo ID', async () => {
@@ -216,5 +217,42 @@ describe('printable, round 2', () => {
         const listed = JSON.parse((await cli(f, 'list', '--json')).output) as { events: { sourcePath: string }[] };
         expect(listed.events[0].sourcePath).toBe(hostile);
         expect((await cli(f, 'list')).output).toContain('trips/back\\\\slash\\u202e\\u2028.jpg');
+    });
+});
+
+describe('round 3: a replacement whose set is still building', () => {
+    it('is listed as waiting with its reason, not as needing judgment, until its set is ready', async () => {
+        const f = await fixture();
+        const photoId = f.catalog.photos[0].id;
+        const registry = await readRegistry(f.root);
+        const photo = registry.photos[photoId];
+        const newer = `sha256-${'8'.repeat(64)}`;
+        photo.revisions[newer] = { ...photo.revisions[photo.source.observedRevision], assetRevision: newer, profiles: { [f.catalog.profileId]: { state: 'pending', attempts: 0 } } };
+        await writeRegistry(f.root, registry, registry.version);
+        await createCurationSink({ root: f.root, logger: quiet })([f.fact('replaced', photoId, { assetRevision: newer }), f.fact('new', f.fresh[0])]);
+        const listed = await cli(f, 'list');
+        expect(listed.output).toMatch(/^Curation inbox: 1 item requires judgment, 1 waiting, 2 in all\./);
+        expect(listed.output).toMatch(/replacement .*waiting: its new derivatives are still building/);
+        expect(JSON.parse((await cli(f, 'list', '--json')).output)).toMatchObject({ needsJudgment: 1, waiting: 1, events: expect.arrayContaining([expect.objectContaining({ type: 'replacement', waiting: 'its new derivatives are still building' })]) });
+        const { events } = await listEvents(f.root);
+        const replacement = events.find((event) => event.type === 'replacement');
+        expect((await cli(f, 'show', replacement?.id as string)).output).toContain('Waiting: its new derivatives are still building');
+
+        const ready = await readRegistry(f.root);
+        ready.photos[photoId].revisions[newer].profiles[f.catalog.profileId] = { state: 'ready', attempts: 1, readyAt: '2026-02-01T00:00:00.000Z' };
+        await writeRegistry(f.root, ready, ready.version);
+        expect((await cli(f, 'list')).output).toMatch(/^Curation inbox: 2 items require judgment, 2 in all\./);
+    });
+
+    it('counts a failed build as needing judgment, since retry is the next step', async () => {
+        const f = await fixture();
+        const photoId = f.catalog.photos[0].id;
+        const registry = await readRegistry(f.root);
+        const photo = registry.photos[photoId];
+        const newer = `sha256-${'9'.repeat(64)}`;
+        photo.revisions[newer] = { ...photo.revisions[photo.source.observedRevision], assetRevision: newer, profiles: { [f.catalog.profileId]: { state: 'failed', attempts: 3 } } };
+        await writeRegistry(f.root, registry, registry.version);
+        await createCurationSink({ root: f.root, logger: quiet })([f.fact('replaced', photoId, { assetRevision: newer })]);
+        expect((await cli(f, 'list')).output).toMatch(/^Curation inbox: 1 item requires judgment, 1 in all\./);
     });
 });

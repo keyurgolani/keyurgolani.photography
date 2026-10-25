@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { ASSET_REVISION_RE, PHOTO_ID_RE } from '../identity/ids';
-import type { IdentityFact, IdentityFactType } from '../identity/types';
+import type { IdentityFact, IdentityFactType, Registry } from '../identity/types';
 import { SERIES_ID_RE } from '../catalog/schema';
 
 /**
@@ -194,9 +194,23 @@ export function eventIdOf(key: string): string {
     return `evt_${createHash('sha256').update(key, 'utf8').digest('hex').slice(0, 24)}`;
 }
 
-/** Whether an event still needs the curator's judgment. */
-export function needsJudgment(event: Pick<CurationEvent, 'status'>): boolean {
-    return event.status === 'open' || event.status === 'failed';
+/**
+ * Why an open item can't be acted on yet, or null when it can: a
+ * replacement whose new bytes have no ready derivative set at `profileId`,
+ * which a confirm refuses until the watcher finishes it. A failed build isn't
+ * waiting, since retry is the next step.
+ */
+export function waitingReason(event: Pick<CurationEvent, 'type' | 'status' | 'photoId' | 'assetRevision'>, registry: Registry | null, profileId: string): string | null {
+    if (event.type !== 'replacement' || event.status !== 'open' || event.photoId === null || event.assetRevision === null) return null;
+    const revision = registry?.photos[event.photoId]?.revisions[event.assetRevision];
+    if (!revision) return null;
+    const state = revision.profiles[profileId]?.state;
+    return state === 'ready' || state === 'failed' ? null : 'its new derivatives are still building';
+}
+
+/** Whether an event still needs the curator's judgment. An item that is waiting (waitingReason()) doesn't, yet. */
+export function needsJudgment(event: Pick<CurationEvent, 'status'>, waiting: string | null = null): boolean {
+    return (event.status === 'open' || event.status === 'failed') && waiting === null;
 }
 
 /** The short photo ID the inbox shows, such as `ph_1a2b3c4d`. */

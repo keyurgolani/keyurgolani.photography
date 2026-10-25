@@ -21,7 +21,8 @@ import {
     type ActionOutcome,
     type Choices,
 } from './actions';
-import { EVENT_ID_RE, EVENT_STATUSES, FAILURE_TEXT, needsJudgment, shortPhotoId, type CurationEvent, type CurationEventStatus, type Placement } from './events';
+import { currentProfileId } from '../identity/profile';
+import { EVENT_ID_RE, EVENT_STATUSES, FAILURE_TEXT, needsJudgment, shortPhotoId, waitingReason, type CurationEvent, type CurationEventStatus, type Placement } from './events';
 import { EventUnusableError, listEvents, readEvent, type EventProblem } from './repository';
 import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from './text';
 
@@ -255,8 +256,9 @@ function printableLines(output: string): string {
 const STATUS_WIDTH = 8;
 const TYPE_WIDTH = 18;
 
-function listLine(event: CurationEvent): string {
-    return `${`${event.id}@${event.version}`.padEnd(32)}  ${event.type.padEnd(TYPE_WIDTH)}  ${event.status.padEnd(STATUS_WIDTH)}  ${shortPhotoId(event.photoId).padEnd(11)}  ${printable(event.derivedFacts.sourcePath)}`;
+function listLine(event: CurationEvent, waiting: string | null = null): string {
+    const line = `${`${event.id}@${event.version}`.padEnd(32)}  ${event.type.padEnd(TYPE_WIDTH)}  ${event.status.padEnd(STATUS_WIDTH)}  ${shortPhotoId(event.photoId).padEnd(11)}  ${printable(event.derivedFacts.sourcePath)}`;
+    return waiting === null ? line : `${line}  waiting: ${waiting}`;
 }
 
 function matches(filter: ListFilter, event: CurationEvent): boolean {
@@ -274,18 +276,22 @@ function problemLine(problem: EventProblem): string {
 async function list(root: string, command: Extract<CurationCommand, { command: 'list' }>): Promise<CommandResult> {
     const { events, problems } = await listEvents(root);
     const shown = events.filter((event) => matches(command.filter, event));
-    const judgment = events.filter(needsJudgment).length;
+    const registry = events.length > 0 ? await readRegistry(root).catch(() => null) : null;
+    const profileId = currentProfileId();
+    const waiting = new Map(events.map((event) => [event.id, waitingReason(event, registry, profileId)]));
+    const judgment = events.filter((event) => needsJudgment(event, waiting.get(event.id) ?? null)).length;
+    const waitingCount = [...waiting.values()].filter((reason) => reason !== null).length;
     if (command.json) {
-        const summary = shown.map((event) => ({ id: event.id, version: event.version, type: event.type, status: event.status, photoId: event.photoId, sourcePath: event.derivedFacts.sourcePath, observedAt: event.observedAt }));
-        return { exitCode: problems.length > 0 ? 4 : 0, output: `${JSON.stringify({ needsJudgment: judgment, total: events.length, events: summary, problems }, null, 2)}\n` };
+        const summary = shown.map((event) => ({ id: event.id, version: event.version, type: event.type, status: event.status, photoId: event.photoId, sourcePath: event.derivedFacts.sourcePath, observedAt: event.observedAt, waiting: waiting.get(event.id) ?? null }));
+        return { exitCode: problems.length > 0 ? 4 : 0, output: `${JSON.stringify({ needsJudgment: judgment, waiting: waitingCount, total: events.length, events: summary, problems }, null, 2)}\n` };
     }
     const lines: string[] = [];
     if (events.length === 0 && problems.length === 0) {
         lines.push('Curation inbox: empty. Nothing requires judgment.');
     } else {
-        lines.push(`Curation inbox: ${items(judgment)} ${judgment === 1 ? 'requires' : 'require'} judgment, ${events.length} in all.`);
+        lines.push(`Curation inbox: ${items(judgment)} ${judgment === 1 ? 'requires' : 'require'} judgment${waitingCount > 0 ? `, ${waitingCount} waiting` : ''}, ${events.length} in all.`);
         if (shown.length === 0) lines.push(`Nothing matches ${command.filter === 'active' ? 'open, failed, or deferred' : command.filter}.`);
-        for (const event of shown) lines.push(listLine(event));
+        for (const event of shown) lines.push(listLine(event, waiting.get(event.id) ?? null));
     }
     for (const problem of problems) lines.push(problemLine(problem));
     return { exitCode: problems.length > 0 ? 4 : 0, output: `${lines.join('\n')}\n` };
@@ -377,6 +383,7 @@ async function show(root: string, command: Extract<CurationCommand, { command: '
     const lines = [
         `${event.id}, version ${event.version}: ${event.type}, ${event.status}`,
         ...identityLines(event, registry),
+        ...((reason) => (reason === null ? [] : [`Waiting: ${reason}. Act on it once the set is ready.`]))(waitingReason(event, registry, currentProfileId())),
         `Asset revision: ${event.assetRevision ?? 'none'}`,
         `Observed: ${event.observedAt}${event.lastObservedAt !== event.observedAt ? `, last ${event.lastObservedAt}` : ''}`,
         ...factLines(event),

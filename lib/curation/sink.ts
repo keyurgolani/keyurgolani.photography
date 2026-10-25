@@ -1,4 +1,4 @@
-import { readActivePointer, readAuthoredSeries } from '../catalog/working-layer';
+import { readActivePointer, readAuthoredRecord, readAuthoredSeries } from '../catalog/working-layer';
 import { ASSET_REVISION_RE, PHOTO_ID_RE } from '../identity/ids';
 import type { FactSink } from '../identity/pass';
 import { readRegistry } from '../identity/registry';
@@ -225,6 +225,35 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                 if (await write(fact, next, existing.version)) {
                     if (next.status !== existing.status) reopened++;
                     else updated++;
+                }
+            }
+
+            // New bytes for a photograph no one has approved yet: its open new item moves to them, and its version
+            // goes up, so an approval reviewed against the older bytes is stale. Once a photo record exists, only a
+            // confirm moves it.
+            const replaced = relevant.filter(({ type, fact }) => type === 'replacement' && fact.photoId !== null).map(({ fact }) => fact);
+            if (replaced.length > 0) {
+                const { events } = await listEvents(root);
+                for (const fact of replaced) {
+                    for (const event of events) {
+                        if (event.type !== 'new' || event.photoId !== fact.photoId || (event.status !== 'open' && event.status !== 'deferred')) continue;
+                        const authored = await readAuthoredRecord(root, 'photo', fact.photoId as string).then((record) => record !== null, () => true);
+                        if (authored) continue;
+                        const current = await readEvent(root, event.id).catch((error: unknown) => {
+                            if (error instanceof EventUnusableError && error.problem.reason !== 'unreadable') return null;
+                            throw error;
+                        });
+                        if (current === null || current.assetRevision === fact.assetRevision || current.factIds.includes(fact.factId)) continue;
+                        const moved: CurationEvent = {
+                            ...current,
+                            assetRevision: fact.assetRevision,
+                            sourceFingerprint: fingerprintOf(fact.assetRevision),
+                            derivedFacts: { ...derivedFactsOf(fact, registry), factType: current.derivedFacts.factType },
+                            lastObservedAt: fact.observedAt > current.lastObservedAt ? fact.observedAt : current.lastObservedAt,
+                            factIds: [...current.factIds, fact.factId].slice(-KEPT_FACT_IDS),
+                        };
+                        if (await write(fact, moved, current.version)) updated++;
+                    }
                 }
             }
 

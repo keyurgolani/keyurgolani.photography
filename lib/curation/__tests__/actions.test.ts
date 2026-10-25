@@ -392,3 +392,51 @@ describe('approve, round 2', () => {
         expect((await readAuthoredRecord(f.root, 'series', DRAFT))?.photoIds).toEqual(reordered);
     });
 });
+
+describe('round 3: a file replaced before its first approval', () => {
+    /** Point the registry's photo at new bytes, as a reconcile pass does for a replacement, and return them. */
+    async function replaceBytes(f: CurationFixture, photoId: string, state: 'pending' | 'ready' = 'pending'): Promise<string> {
+        const registry = await readRegistry(f.root);
+        const photo = registry.photos[photoId];
+        const old = photo.revisions[photo.source.observedRevision];
+        const assetRevision = `sha256-${'7'.repeat(64)}`;
+        photo.revisions[assetRevision] = { ...old, assetRevision, width: 4000, height: 3000, profiles: { [f.catalog.profileId]: state === 'ready' ? { state, attempts: 1, readyAt: '2026-02-01T00:00:00.000Z' } : { state, attempts: 0 } } };
+        photo.source.observedRevision = assetRevision;
+        await writeRegistry(f.root, registry, registry.version);
+        return assetRevision;
+    }
+
+    it('moves the open new item to the newest bytes and bumps its version, so approve takes them and an older version is stale', async () => {
+        const { f, event, input } = await opened((fx) => fx.fact('new', fx.fresh[0]));
+        const photoId = event.photoId as string;
+        const newer = await replaceBytes(f, photoId);
+        await createCurationSink({ root: f.root, logger: quiet })([f.fact('replaced', photoId, { assetRevision: newer })]);
+        const moved = await readEvent(f.root, event.id) as CurationEvent;
+        expect(moved).toMatchObject({ version: 2, type: 'new', status: 'open', assetRevision: newer, derivedFacts: { factType: 'new', width: 4000, height: 3000 } });
+        const before = layers(f.root);
+        // Reviewed against the older bytes: refused, and nothing is written.
+        expect(await approveEvent({ ...input, choices: { seriesId: DRAFT } })).toMatchObject({ ok: false, code: 'stale' });
+        expect(layers(f.root)).toEqual(before);
+        // Shown the newer bytes: approved at them.
+        expect(await approveEvent({ ...input, expectedVersion: 2, choices: { seriesId: DRAFT } })).toMatchObject({ ok: true, event: { status: 'approved', assetRevision: newer } });
+        expect((await readAuthoredRecord(f.root, 'photo', photoId))?.assetRevision).toBe(newer);
+    });
+
+    it('leaves the new item alone once a photo record exists, which only a confirm may move', async () => {
+        const { f, event } = await opened((fx) => fx.fact('new', fx.fresh[0]));
+        const photoId = event.photoId as string;
+        await writeAuthoredRecord({ kind: 'photo', id: photoId, assetRevision: event.assetRevision as string, alt: null }, { expectedVersion: 0, root: f.root });
+        const newer = await replaceBytes(f, photoId);
+        await createCurationSink({ root: f.root, logger: quiet })([f.fact('replaced', photoId, { assetRevision: newer })]);
+        expect(await readEvent(f.root, event.id)).toEqual(event);
+    });
+
+    it('leaves an approved or dismissed new item alone', async () => {
+        const { f, event, input } = await opened((fx) => fx.fact('new', fx.fresh[0]));
+        expect(await dismissEvent({ ...input, reason: 'Not this one.' })).toMatchObject({ ok: true });
+        const dismissed = await readEvent(f.root, event.id);
+        const newer = await replaceBytes(f, event.photoId as string);
+        await createCurationSink({ root: f.root, logger: quiet })([f.fact('replaced', event.photoId as string, { assetRevision: newer })]);
+        expect(await readEvent(f.root, event.id)).toEqual(dismissed);
+    });
+});
