@@ -968,6 +968,34 @@ describe('attachWatcher', { timeout: 60_000 }, () => {
         expect(seen).toEqual([21]);
     });
 
+    it("with awaitStartup, isn't idle before ready queues the startup batch, so nothing waiting on idle() runs alongside it", async () => {
+        const watcher = new EventEmitter<FSWatcherEventMap>();
+        const waiting = createWatcherHandlers({ logger, awaitStartup: true });
+        const outputs = ['landscape', 'portrait', 'square'].flatMap(derivativePaths);
+        const seen: number[] = [];
+        attachWatcher(watcher, waiting, { root: lib.root, logger, onRootRemoved: () => undefined });
+        // Asked before chokidar's initial scan is done, as the identity step's first heartbeat can.
+        void waiting.idle().then(() => { seen.push(Object.keys(lib.hashes(outputs)).length); });
+
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(seen).toEqual([]);
+        watcher.emit('ready');
+
+        await vi.waitFor(() => expect(seen).toHaveLength(1), { timeout: 30_000 });
+        expect(seen).toEqual([21]);
+    });
+
+    it('with awaitStartup, is idle once stopped before ready, so shutdown never waits for a batch that won\'t come', async () => {
+        const waiting = createWatcherHandlers({ logger, awaitStartup: true });
+        let idle = false;
+        void waiting.idle().then(() => { idle = true; });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(idle).toBe(false);
+        waiting.stop();
+        await vi.waitFor(() => expect(idle).toBe(true));
+        expect(await waiting.queueStartupBatch()).toEqual({ processed: [], skipped: [], errors: [] });
+    });
+
     it('on ready, queues the startup batch and then calls onReady', () => {
         const watcher = new EventEmitter<FSWatcherEventMap>();
         const order: string[] = [];

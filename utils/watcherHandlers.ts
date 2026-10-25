@@ -150,7 +150,16 @@ interface Job {
 }
 
 export function createWatcherHandlers(
-    { logger = console, maxConcurrentJobs = 1 }: { logger?: Logger; maxConcurrentJobs?: number } = {},
+    { logger = console, maxConcurrentJobs = 1, awaitStartup = false }: {
+        logger?: Logger;
+        maxConcurrentJobs?: number;
+        /**
+         * Not idle until the first startup batch has queued its jobs, as in watch
+         * mode, where that batch waits for chokidar's `ready`. Without it, a step
+         * waiting on idle() before `ready` would run alongside that batch.
+         */
+        awaitStartup?: boolean;
+    } = {},
 ): WatcherHandlers {
     // One queue, in arrival order. A job starts only when no job for its set,
     // setKeyOf() of its name, is running or queued ahead of it, so the jobs of
@@ -164,8 +173,9 @@ export function createWatcherHandlers(
     let liveQueued = 0;
     let idleWaiters: (() => void)[] = [];
     let stopped = false;
-    // Startup batches still listing the library. Until they queue their jobs, the handlers aren't idle.
-    let planning = 0;
+    // Startup batches still listing the library, or still to come with awaitStartup. Until they queue their jobs, the handlers aren't idle.
+    let planning = awaitStartup ? 1 : 0;
+    let startupAwaited = awaitStartup;
     const isIdle = () => running.size === 0 && queue.length === 0 && planning === 0;
 
     function unqueue(job: Job): void {
@@ -327,7 +337,9 @@ export function createWatcherHandlers(
             const result: StartupBatchResult = { processed: [], skipped: [], errors: [] };
             if (stopped) return result;
             // Busy from here until the jobs are queued, so a step waiting on idle() comes after them, not before.
-            planning++;
+            // The first batch with awaitStartup takes over the count held since creation.
+            if (startupAwaited) startupAwaited = false;
+            else planning++;
             let planned = false;
             const queued = () => {
                 if (planned) return;
@@ -396,6 +408,11 @@ export function createWatcherHandlers(
 
         stop() {
             stopped = true;
+            // No startup batch comes after stop(), so stop waiting for one.
+            if (startupAwaited) {
+                startupAwaited = false;
+                planning--;
+            }
             dropStartupJobs(() => true);
             pump();
         },

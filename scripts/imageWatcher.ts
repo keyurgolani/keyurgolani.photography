@@ -123,7 +123,8 @@ function startWatcher(): void {
 
     console.log(`[ImageWatcher] Starting chokidar watcher for: ${root}${setup.path === root ? '' : ` (${setup.path})`}`);
 
-    const handlers = createWatcherHandlers();
+    // Not idle before chokidar's ready queues the startup batch, so the identity step's first pass can't build alongside it.
+    const handlers = createWatcherHandlers({ awaitStartup: true });
     // A pass reads the library after the legacy step's queued jobs, and asks the watch for any pass it needs next.
     let watch: IdentityWatch | null = null;
     const identity = createIdentityStep({
