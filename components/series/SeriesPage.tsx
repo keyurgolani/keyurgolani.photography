@@ -133,7 +133,7 @@ export default function SeriesPage({ page }: SeriesPageProps) {
                 />
 
                 {/* Outside the sequence section, which SeriesSequence renders. */}
-                <SeriesReturn path={page.href} slug={page.slug} revisionId={page.catalogRevision} />
+                <SeriesReturn path={page.href} slug={page.slug} revisionId={page.catalogRevision} total={total} />
 
                 <p className={styles.end}>
                     <Link href={page.workHref} className={styles.allWork}>

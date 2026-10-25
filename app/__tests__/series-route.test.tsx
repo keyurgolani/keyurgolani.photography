@@ -686,8 +686,8 @@ describe('no discovery through the page', () => {
         for (const sentinel of SENTINELS) expect(text, sentinel).not.toContain(sentinel);
     });
 
-    it('hands the return position only the series path, the canonical slug, and the served revision', async () => {
+    it('hands the return position only the series path, the canonical slug, the served revision, and the total', async () => {
         await html();
-        expect(state.returnProps).toEqual([{ path: '/work/fixture-a', slug: 'fixture-a', revisionId: REVISION }]);
+        expect(state.returnProps).toEqual([{ path: '/work/fixture-a', slug: 'fixture-a', revisionId: REVISION, total: ORDER_A.length }]);
     });
 });

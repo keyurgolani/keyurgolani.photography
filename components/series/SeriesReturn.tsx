@@ -11,6 +11,8 @@ export interface SeriesReturnProps {
     slug: string;
     /** The revision the page came from, so a stored #6 extent from another revision isn't waited for. */
     revisionId: string;
+    /** Every member that resolves, which bounds #6's extent. */
+    total: number;
 }
 
 const subscribeNever = () => () => undefined;
@@ -32,19 +34,20 @@ function navigationType(): string | undefined {
  *   record still names the photograph that opened it.
  * - Back to a series page that mounts again (after a reload on the Viewer,
  *   or any return that renders the page afresh) restores the scroll offset
- *   and focuses the opener, after #6's entries when it's loading a stored
- *   extent. A reload of the series page itself restores nothing.
+ *   and focuses the opener. When the opener is past what's loaded and #6 is
+ *   loading the entry's stored pages again, that waits for #6's event. A
+ *   reload of the series page itself restores nothing.
  * - Closing the intercepted Viewer (#9), by Close, Escape, or Back, leaves
  *   this page mounted. #9's host puts focus back on the opener; this puts the
  *   scroll offset back too, in case the page moved under the modal.
  */
-export default function SeriesReturn({ path, slug, revisionId }: SeriesReturnProps) {
+export default function SeriesReturn({ path, slug, revisionId, total }: SeriesReturnProps) {
     const pathname = usePathname();
     // True only while this render hydrates server HTML, so the mount can tell a document load from a client render.
     const hydrating = useSyncExternalStore(subscribeNever, () => false, () => true);
     const hydrated = useRef(hydrating);
     // The series this mount arrived on. A later refresh in place is no return.
-    const arrivedOn = useRef({ slug, revisionId });
+    const arrivedOn = useRef({ slug, revisionId, total });
     const previousPath = useRef<string | null>(null);
 
     useEffect(() => {

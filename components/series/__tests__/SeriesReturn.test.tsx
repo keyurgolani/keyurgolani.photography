@@ -2,7 +2,8 @@ import { act, fireEvent, render } from '@testing-library/react';
 import { hydrateRoot, type Root } from 'react-dom/client';
 import { renderToString } from 'react-dom/server';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { COVER_ID, ENTRIES_RESTORED_EVENT, EXTENT_KEY, RETURN_KEY } from '../returnPosition';
+import { COVER_ID, RETURN_KEY } from '../returnPosition';
+import { SERIES_PAGES_KEY, SERIES_RESTORED_EVENT } from '../seriesContinuation';
 import SeriesReturn from '../SeriesReturn';
 
 // The series page's return position (#5) as the page mounts it: the record a
@@ -17,7 +18,9 @@ vi.mock('next/navigation', () => ({ usePathname: () => navigation.pathname }));
 const A = 'ph_00000000-0000-4000-8000-000000000001';
 const B = 'ph_00000000-0000-4000-8000-000000000002';
 const NEXT_KEYS = { __NA: true, __PRIVATE_NEXTJS_INTERNALS_TREE: { tree: ['', {}], renderedSearch: '' } };
-const PROPS = { path: '/work/harbor', slug: 'harbor', revisionId: 'rev_a' };
+/** Past the first page, so it isn't on the page until #6 loads it again. */
+const LATE = 'ph_00000000-0000-4000-8000-000000000003';
+const PROPS = { path: '/work/harbor', slug: 'harbor', revisionId: 'rev_a', total: 3 };
 
 const PAGE = `
     <main>
@@ -93,11 +96,11 @@ const byId = (id: string) => document.getElementById(id) as HTMLElement;
 describe('the record', () => {
     it('writes the photograph, the entry, and the scroll offset into the series\' entry on a plain click, keeping every other key', () => {
         const extent = { revisionId: 'rev_a', slug: 'harbor', loaded: 2 };
-        window.history.replaceState({ ...NEXT_KEYS, [EXTENT_KEY]: extent }, '');
+        window.history.replaceState({ ...NEXT_KEYS, [SERIES_PAGES_KEY]: extent }, '');
         mount();
         setScrollY(1234);
         fireEvent.click(byId(`photo-${A}`).querySelector('span') as Element);
-        expect(window.history.state).toEqual({ ...NEXT_KEYS, [EXTENT_KEY]: extent, [RETURN_KEY]: { photoId: A, opener: 'entry', scrollY: 1234 } });
+        expect(window.history.state).toEqual({ ...NEXT_KEYS, [SERIES_PAGES_KEY]: extent, [RETURN_KEY]: { photoId: A, opener: 'entry', scrollY: 1234 } });
     });
 
     it('records the cover as the opener when the cover is activated', () => {
@@ -205,22 +208,40 @@ describe('a series page that mounts again', () => {
         expect(document.activeElement).toBe(byId(`photo-${A}`));
     });
 
-    it('waits for #6\'s restored entries when this series\' extent is stored, then restores', () => {
-        stored({ photoId: B, opener: 'entry', scrollY: 5000 }, { [EXTENT_KEY]: { revisionId: 'rev_a', slug: 'harbor', loaded: 2 } });
+    it('waits for #6\'s restored entries when its photograph is past the first page and this series\' extent is stored, then restores', () => {
+        stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }, { [SERIES_PAGES_KEY]: { revisionId: 'rev_a', slug: 'harbor', loaded: 3 } });
         mount();
         expect(scrollTo).not.toHaveBeenCalled();
+        // #6 loads the page holding it, then fires its event on the section.
+        const late = document.createElement('a');
+        late.id = `photo-${LATE}`;
+        late.href = `/work/harbor/photo/${LATE}`;
+        document.querySelector('ol')?.append(late);
         act(() => {
-            document.querySelector('section')?.dispatchEvent(new Event(ENTRIES_RESTORED_EVENT, { bubbles: true }));
+            document.querySelector('section')?.dispatchEvent(new Event(SERIES_RESTORED_EVENT, { bubbles: true }));
         });
         expect(scrollTo).toHaveBeenCalledWith({ top: 5000, left: 0, behavior: 'instant' });
+        expect(document.activeElement).toBe(late);
+    });
+
+    it('restores at once when its photograph is on the first page, extent or not', () => {
+        stored({ photoId: B, opener: 'entry', scrollY: 900 }, { [SERIES_PAGES_KEY]: { revisionId: 'rev_a', slug: 'harbor', loaded: 3 } });
+        mount();
         expect(document.activeElement).toBe(byId(`photo-${B}`));
     });
 
+    it('takes the extent\'s bound from the total it\'s given', () => {
+        stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }, { [SERIES_PAGES_KEY]: { revisionId: 'rev_a', slug: 'harbor', loaded: 4 } });
+        mount();
+        // 4 is more than the 3 photographs this page has, so #6 won't load it, and nothing waits.
+        expect(scrollTo).toHaveBeenCalledWith({ top: 5000, left: 0, behavior: 'instant' });
+    });
+
     it('stops waiting when it unmounts first', () => {
-        stored({ photoId: B, opener: 'entry', scrollY: 5000 }, { [EXTENT_KEY]: { revisionId: 'rev_a', slug: 'harbor', loaded: 2 } });
+        stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }, { [SERIES_PAGES_KEY]: { revisionId: 'rev_a', slug: 'harbor', loaded: 3 } });
         const view = mount();
         view.unmount();
-        window.dispatchEvent(new Event(ENTRIES_RESTORED_EVENT));
+        window.dispatchEvent(new Event(SERIES_RESTORED_EVENT));
         expect(scrollTo).not.toHaveBeenCalled();
     });
 

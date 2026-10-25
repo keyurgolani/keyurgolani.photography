@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { COVER_ID, ENTRIES_RESTORED_EVENT, EXTENT_KEY, RESTORE_WAIT_MS, RETURN_KEY, hasStoredExtent, openerOf, readReturn, restoreReturn, scheduleRestore, withReturn } from '../returnPosition';
+import { COVER_ID, RESTORE_WAIT_MS, RETURN_KEY, openerOf, readReturn, restoreReturn, scheduleRestore, withReturn } from '../returnPosition';
+import { SERIES_PAGES_KEY, SERIES_RESTORED_EVENT } from '../seriesContinuation';
 
 // The series page's return record (#5): what goes into the series' history
 // entry, what's read back, and how the visitor is put back.
@@ -12,8 +13,8 @@ const NEXT_KEYS = { __NA: true, __PRIVATE_NEXTJS_INTERNALS_TREE: { tree: ['', {}
 describe('withReturn', () => {
     it('adds the record beside every key already there, so Next\'s router keys and #6\'s extent survive', () => {
         const extent = { revisionId: 'rev_a', slug: 'harbor', loaded: 200 };
-        const state = { ...NEXT_KEYS, [EXTENT_KEY]: extent };
-        expect(withReturn(state, { photoId: PHOTO, opener: 'entry', scrollY: 640 })).toEqual({ ...NEXT_KEYS, [EXTENT_KEY]: extent, [RETURN_KEY]: { photoId: PHOTO, opener: 'entry', scrollY: 640 } });
+        const state = { ...NEXT_KEYS, [SERIES_PAGES_KEY]: extent };
+        expect(withReturn(state, { photoId: PHOTO, opener: 'entry', scrollY: 640 })).toEqual({ ...NEXT_KEYS, [SERIES_PAGES_KEY]: extent, [RETURN_KEY]: { photoId: PHOTO, opener: 'entry', scrollY: 640 } });
         // The input is never changed in place.
         expect(state).not.toHaveProperty(RETURN_KEY);
     });
@@ -56,22 +57,6 @@ describe('readReturn', () => {
 
     it('accepts the longest photo ID it allows, and offset zero', () => {
         expect(readReturn({ [RETURN_KEY]: { photoId: 'a'.repeat(128), opener: 'entry', scrollY: 0 } })).toEqual({ photoId: 'a'.repeat(128), opener: 'entry', scrollY: 0 });
-    });
-});
-
-describe('hasStoredExtent', () => {
-    const series = { slug: 'harbor', revisionId: 'rev_a' };
-
-    it('is true only for #6\'s extent on this slug in this revision, with a whole positive count', () => {
-        expect(hasStoredExtent({ [EXTENT_KEY]: { revisionId: 'rev_a', slug: 'harbor', loaded: 200 } }, series)).toBe(true);
-        expect(hasStoredExtent({ [EXTENT_KEY]: { revisionId: 'rev_b', slug: 'harbor', loaded: 200 } }, series)).toBe(false);
-        expect(hasStoredExtent({ [EXTENT_KEY]: { revisionId: 'rev_a', slug: 'ridge', loaded: 200 } }, series)).toBe(false);
-        expect(hasStoredExtent({ [EXTENT_KEY]: { revisionId: 'rev_a', slug: 'harbor', loaded: 0 } }, series)).toBe(false);
-        expect(hasStoredExtent({ [EXTENT_KEY]: { revisionId: 'rev_a', slug: 'harbor', loaded: 1.5 } }, series)).toBe(false);
-        expect(hasStoredExtent({ [EXTENT_KEY]: { revisionId: 'rev_a', slug: 'harbor', loaded: '200' } }, series)).toBe(false);
-        expect(hasStoredExtent({ [EXTENT_KEY]: 'harbor' }, series)).toBe(false);
-        expect(hasStoredExtent(NEXT_KEYS, series)).toBe(false);
-        expect(hasStoredExtent(null, series)).toBe(false);
     });
 });
 
@@ -189,65 +174,96 @@ describe('restoreReturn and scheduleRestore', () => {
         expect(document.activeElement).toBe(before);
     });
 
-    it('restores at once when no extent is stored and the sequence isn\'t busy', () => {
-        inView(document.getElementById(`photo-${PHOTO}`), 100);
-        scheduleRestore({ photoId: PHOTO, opener: 'entry', scrollY: 640 }, { slug: 'harbor', revisionId: 'rev_a' });
-        expect(document.activeElement?.id).toBe(`photo-${PHOTO}`);
-    });
-
-    it('restores at once when the stored extent is another revision\'s, which #6 ignores', () => {
-        window.history.replaceState({ [EXTENT_KEY]: { revisionId: 'rev_old', slug: 'harbor', loaded: 200 } }, '');
-        inView(document.getElementById(`photo-${PHOTO}`), 100);
-        scheduleRestore({ photoId: PHOTO, opener: 'entry', scrollY: 640 }, { slug: 'harbor', revisionId: 'rev_a' });
-        expect(document.activeElement?.id).toBe(`photo-${PHOTO}`);
-    });
-
-    it('waits for #6\'s event when an extent is stored, then restores scroll and focus once', () => {
-        window.history.replaceState({ [EXTENT_KEY]: { revisionId: 'rev_a', slug: 'harbor', loaded: 200 } }, '');
-        scheduleRestore({ photoId: 'ph_late', opener: 'entry', scrollY: 4800 }, { slug: 'harbor', revisionId: 'rev_a' });
-        expect(scrollTo).not.toHaveBeenCalled();
-        expect(document.activeElement).toBe(document.body);
-        // #6 appends the entry it loaded again, then fires the event on the section, which bubbles to window.
+    const SERIES = { slug: 'harbor', revisionId: 'rev_a', total: 300 };
+    const LATE = 'ph_late';
+    const extent = (revisionId = 'rev_a', loaded = 200) => window.history.replaceState({ [SERIES_PAGES_KEY]: { revisionId, slug: 'harbor', loaded } }, '');
+    /** #6 appends the entry it loaded again, then fires its event on the section, which bubbles to window. */
+    const appendLate = () => {
         const late = document.createElement('a');
-        late.id = 'photo-ph_late';
-        late.href = '/work/harbor/photo/ph_late';
+        late.id = `photo-${LATE}`;
+        late.href = `/work/harbor/photo/${LATE}`;
         document.querySelector('ol')?.append(late);
         inView(late, 200);
-        document.querySelector('section')?.dispatchEvent(new Event(ENTRIES_RESTORED_EVENT, { bubbles: true }));
+        return late;
+    };
+    const restored = () => document.querySelector('section')?.dispatchEvent(new Event(SERIES_RESTORED_EVENT, { bubbles: true }));
+
+    it('restores at once when no extent is stored and the sequence isn\'t busy', () => {
+        inView(document.getElementById(`photo-${PHOTO}`), 100);
+        scheduleRestore({ photoId: PHOTO, opener: 'entry', scrollY: 640 }, SERIES);
+        expect(document.activeElement?.id).toBe(`photo-${PHOTO}`);
+    });
+
+    it('restores at once, with an extent stored, when the opener is already on the page', () => {
+        extent();
+        inView(document.getElementById(`photo-${PHOTO}`), 100);
+        scheduleRestore({ photoId: PHOTO, opener: 'entry', scrollY: 640 }, SERIES);
+        expect(document.activeElement?.id).toBe(`photo-${PHOTO}`);
+    });
+
+    it('restores the cover at once, whatever #6 is loading, since the cover is never paged', () => {
+        extent();
+        document.querySelector('section')?.setAttribute('aria-busy', 'true');
+        inView(document.getElementById(COVER_ID), 100);
+        scheduleRestore({ photoId: LATE, opener: 'cover', scrollY: 0 }, SERIES);
+        expect(document.activeElement?.id).toBe(COVER_ID);
+    });
+
+    it.each([
+        ['another revision\'s', () => extent('rev_old')],
+        ['another series\'', () => window.history.replaceState({ [SERIES_PAGES_KEY]: { revisionId: 'rev_a', slug: 'ridge', loaded: 200 } }, '')],
+        ['a larger extent than the series has', () => extent('rev_a', 301)],
+        ['no', () => undefined],
+    ])('only scrolls, at once, when the opener is missing and the entry holds %s extent, which #6 won\'t load', (_label, store) => {
+        store();
+        scheduleRestore({ photoId: LATE, opener: 'entry', scrollY: 4800 }, SERIES);
+        expect(scrollTo).toHaveBeenCalledWith({ top: 4800, left: 0, behavior: 'instant' });
+        expect(document.activeElement).toBe(document.body);
+    });
+
+    it('waits for #6\'s event when the opener is missing and this series\' extent is stored, then restores scroll and focus once', () => {
+        extent();
+        scheduleRestore({ photoId: LATE, opener: 'entry', scrollY: 4800 }, SERIES);
+        expect(scrollTo).not.toHaveBeenCalled();
+        expect(document.activeElement).toBe(document.body);
+        const late = appendLate();
+        restored();
         expect(scrollTo).toHaveBeenCalledWith({ top: 4800, left: 0, behavior: 'instant' });
         expect(document.activeElement).toBe(late);
-        document.querySelector('section')?.dispatchEvent(new Event(ENTRIES_RESTORED_EVENT, { bubbles: true }));
+        restored();
         expect(scrollTo).toHaveBeenCalledTimes(1);
     });
 
     it('waits while the sequence section is aria-busy, even before an extent shows in the state', () => {
         document.querySelector('section')?.setAttribute('aria-busy', 'true');
-        scheduleRestore({ photoId: PHOTO, opener: 'entry', scrollY: 0 }, { slug: 'harbor', revisionId: 'rev_a' });
+        scheduleRestore({ photoId: LATE, opener: 'entry', scrollY: 0 }, SERIES);
         expect(scrollTo).not.toHaveBeenCalled();
-        window.dispatchEvent(new Event(ENTRIES_RESTORED_EVENT));
+        const late = appendLate();
+        window.dispatchEvent(new Event(SERIES_RESTORED_EVENT));
         expect(scrollTo).toHaveBeenCalledTimes(1);
+        expect(document.activeElement).toBe(late);
     });
 
     it('stops waiting after RESTORE_WAIT_MS and restores with what is there', () => {
         vi.useFakeTimers();
-        window.history.replaceState({ [EXTENT_KEY]: { revisionId: 'rev_a', slug: 'harbor', loaded: 200 } }, '');
-        inView(document.getElementById(`photo-${PHOTO}`), 100);
-        scheduleRestore({ photoId: PHOTO, opener: 'entry', scrollY: 640 }, { slug: 'harbor', revisionId: 'rev_a' });
+        extent();
+        scheduleRestore({ photoId: LATE, opener: 'entry', scrollY: 640 }, SERIES);
         vi.advanceTimersByTime(RESTORE_WAIT_MS - 1);
         expect(scrollTo).not.toHaveBeenCalled();
         vi.advanceTimersByTime(1);
-        expect(document.activeElement?.id).toBe(`photo-${PHOTO}`);
+        expect(scrollTo).toHaveBeenCalledWith({ top: 640, left: 0, behavior: 'instant' });
         // The event after the timeout restores nothing more.
-        window.dispatchEvent(new Event(ENTRIES_RESTORED_EVENT));
+        restored();
         expect(scrollTo).toHaveBeenCalledTimes(1);
     });
 
     it('restores nothing once cancelled, by the event or the timeout', () => {
         vi.useFakeTimers();
-        window.history.replaceState({ [EXTENT_KEY]: { revisionId: 'rev_a', slug: 'harbor', loaded: 200 } }, '');
-        const cancel = scheduleRestore({ photoId: PHOTO, opener: 'entry', scrollY: 640 }, { slug: 'harbor', revisionId: 'rev_a' });
+        extent();
+        const cancel = scheduleRestore({ photoId: LATE, opener: 'entry', scrollY: 640 }, SERIES);
         cancel();
-        window.dispatchEvent(new Event(ENTRIES_RESTORED_EVENT));
+        appendLate();
+        restored();
         vi.advanceTimersByTime(RESTORE_WAIT_MS);
         expect(scrollTo).not.toHaveBeenCalled();
         expect(document.activeElement).toBe(document.body);
