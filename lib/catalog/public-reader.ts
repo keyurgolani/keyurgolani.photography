@@ -62,6 +62,8 @@ interface Loaded {
 export const REVISION_CACHE_SIZE = 3;
 
 const revisions = new Map<string, RevisionFile>();
+/** Revision reads under way, so concurrent cold requests read, parse, and hash a revision once. */
+const reading = new Map<string, Promise<RevisionFile>>();
 const activations = new Map<string, Pick<ActiveRevision, 'revisionNumber' | 'activatedAt'>>();
 const lastLoaded = new Map<string, Loaded>();
 const failing = new Map<string, string>();
@@ -81,16 +83,27 @@ async function revisionFor(root: string, revisionId: string): Promise<RevisionFi
         revisions.set(key, cached);
         return cached;
     }
-    let revision: RevisionFile | null;
+    const pending = reading.get(key);
+    if (pending) return pending;
+    const read = (async () => {
+        let revision: RevisionFile | null;
+        try {
+            revision = await readRevisionFile(root, revisionId);
+        } catch (error) {
+            throw new ReadFailure('revision-unreadable', errorName(error));
+        }
+        if (revision === null) throw new ReadFailure('revision-unreadable', 'missing');
+        revisions.set(key, revision);
+        while (revisions.size > REVISION_CACHE_SIZE) revisions.delete(revisions.keys().next().value as string);
+        return revision;
+    })();
+    reading.set(key, read);
     try {
-        revision = await readRevisionFile(root, revisionId);
-    } catch (error) {
-        throw new ReadFailure('revision-unreadable', errorName(error));
+        return await read;
+    } finally {
+        // A failed read isn't kept, so the next request tries again.
+        reading.delete(key);
     }
-    if (revision === null) throw new ReadFailure('revision-unreadable', 'missing');
-    revisions.set(key, revision);
-    while (revisions.size > REVISION_CACHE_SIZE) revisions.delete(revisions.keys().next().value as string);
-    return revision;
 }
 
 /** The number and time of the activation the pointer names. Only metadata, so an unreadable one leaves them null. */
