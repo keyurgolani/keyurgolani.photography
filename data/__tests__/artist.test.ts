@@ -65,9 +65,11 @@ describe('artist.destinations', () => {
 describe('artist.profile', () => {
   const { profile } = artist;
 
-  it('stays provisional until the owner approves the copy', () => {
-    // The owner's copy commit flips this, along with the heading, paragraphs, alias, alt text, and any biography.
-    expect(profile.copyStatus).toBe('provisional');
+  // copyStatus isn't pinned here, so the owner's copy commit touches only
+  // data/artist.ts. app/about/__tests__/copyGate.test.ts checks that a
+  // provisional profile never loads under production.
+  it('has a known copy status', () => {
+    expect(['provisional', 'approved']).toContain(profile.copyStatus);
   });
 
   it('leaves out the claim that the work is edited and sequenced, which is false before the catalog cutover', () => {
