@@ -1,5 +1,3 @@
-import { DERIVATIVE_FOLDERS } from './lib/derivativeFolders.mjs';
-
 // #14's curator paths. proxy.ts 404s them unless CURATION_ENABLED is true.
 const CURATOR_SOURCES = ['/curation/:path*', '/api/curation/:path*'];
 
@@ -41,17 +39,14 @@ const nextConfig = {
     deviceSizes: [400, 800, 1200, 1920],
     imageSizes: [400, 800],
     // A response over this limit hangs /_next/image instead of failing, so it stays
-    // high. localPatterns below keeps originals out of /_next/image entirely.
+    // high. localPatterns below keeps the photo library out of /_next/image entirely.
     maximumResponseBody: 500_000_000,
-    // /_next/image optimizes only the legacy derivatives, so it answers 400
-    // for an original photo and for any other public file. About's portrait,
-    // which Home's intro shows too, comes from the site config folder at
-    // /about/portrait/, never through /_next/image.
+    // /_next/image optimizes no public file, so it answers 400 for anything
+    // under /assets/photos, originals and legacy derivatives alike. Photos
+    // come from /media sets and About's portrait from /about/portrait/, and
+    // neither goes through /_next/image. Next adds /_next/static/media for
+    // statically imported images itself.
     localPatterns: [
-      // Every image derivative folder, by its extension. The LQIP text files aren't images.
-      ...Object.entries(DERIVATIVE_FOLDERS)
-        .filter(([, extension]) => extension !== '.txt')
-        .map(([folder, extension]) => ({ pathname: `/assets/photos/${folder}/*${extension}`, search: '' })),
     ],
   },
 };
