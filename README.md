@@ -99,11 +99,11 @@ Both containers run one pinned release tag. Set it in a `.env` next to `docker-c
 PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z
 ```
 
-Both also mount the private data root, `./portfolio-data`, which has to exist and belong to uid 1001 before the first start, like the photos folder:
+Both also mount the private data root, `./portfolio-data`, and `web` mounts `./.next-images-cache`, its `/_next/image` cache. Both have to exist and belong to uid 1001 before the first start, like the photos folder, since Compose never creates them:
 
 ```bash
-mkdir -p portfolio-data
-sudo chown -R 1001:1001 public/assets/photos portfolio-data
+mkdir -p portfolio-data .next-images-cache
+sudo chown -R 1001:1001 public/assets/photos portfolio-data .next-images-cache
 sudo chmod 700 portfolio-data
 ```
 

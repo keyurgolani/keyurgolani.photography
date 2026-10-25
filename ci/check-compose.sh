@@ -115,11 +115,13 @@ if ! jq -e 'all(.services[]; (.network_mode // "") != "host")' <<<"$resolved" >/
 fi
 echo "Every published port is on 127.0.0.1, and no service shares the host's network."
 
-# 7. web mounts the data root read-only, and no bind of the data root or the
-#    library is ever created when its source is missing. How Compose writes
-#    create_host_path: false in its output differs between versions, so
-#    compare against a probe file holding one long-syntax bind with it and
-#    one short-syntax bind, which Compose creates when missing.
+# 7. web mounts the data root read-only, and no bind of the data root, the
+#    library, or web's image cache is ever created when its source is missing.
+#    Docker would create the image cache owned by root, which uid 1001 can't
+#    write. How Compose writes create_host_path: false in its output differs
+#    between versions, so compare against a probe file holding one
+#    long-syntax bind with it and one short-syntax bind, which Compose creates
+#    when missing.
 PROBE="$PROJECT_DIR/probe.yml"
 cat >"$PROBE" <<'YAML'
 services:
@@ -154,8 +156,8 @@ if ! jq -e '.services.web.environment.PHOTOGRAPHY_DATA_DIR == "/data/portfolio"'
   fail "web must set PHOTOGRAPHY_DATA_DIR=/data/portfolio, the read-only mount."
 fi
 if ! jq -e --argjson never "$never_created" "
-    [.services[] | (.volumes // [])[] | select(($DATA_ROOT_MOUNT) or ((.target // \"\") | rtrimstr(\"/\")) == \"/app/public/assets/photos\")]
+    [.services[] | (.volumes // [])[] | select(($DATA_ROOT_MOUNT) or (((.target // \"\") | rtrimstr(\"/\")) | IN(\"/app/public/assets/photos\", \"/app/.next/cache/images\")))]
     | length > 0 and all(.type == \"bind\" and .bind.create_host_path == \$never)" <<<"$resolved" >/dev/null; then
-  fail "Every mount of the data root or /app/public/assets/photos must be a long-syntax bind with bind.create_host_path: false."
+  fail "Every mount of the data root, /app/public/assets/photos, or /app/.next/cache/images must be a long-syntax bind with bind.create_host_path: false."
 fi
-echo "web mounts the data root read-only, and no data root or library bind is created when missing."
+echo "web mounts the data root read-only, and no data root, library, or image cache bind is created when missing."

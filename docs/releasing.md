@@ -18,7 +18,7 @@ Every pull request runs `.github/workflows/ci.yml`, whether it targets `main` or
 
 `Production audit` can also turn CI red with no code change. That happens when the npm advisory service is unreachable, when a new high or critical advisory lands on a production dependency, or when an allowlist entry expires. Each of these also fails the `ci` job of a `main` publish, so nothing publishes and no release can be cut until it's fixed. [When the audit blocks `main`](#when-the-audit-blocks-main) covers the recovery.
 
-`ci/check-compose.sh` checks that every image line in `docker-compose.prod.yml` is exactly `ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?...}`, that Compose resolves every service to that one tag and refuses the file when the variable is unset, that the file has no `:latest`, that the services Compose starts by default are exactly the ones in `ci/smoke-services`, the list `ci/smoke-image.sh` starts, that every published port is on the host's 127.0.0.1 whatever `PHOTOGRAPHY_PORT` says and no service uses `network_mode: host`, that `web` mounts the data root once, read-only, and points `PHOTOGRAPHY_DATA_DIR` at it, and that every bind of the data root or the library has `create_host_path: false`. A PR that adds a service lists it in `ci/smoke-services` and extends the smoke test to check it.
+`ci/check-compose.sh` checks that every image line in `docker-compose.prod.yml` is exactly `ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?...}`, that Compose resolves every service to that one tag and refuses the file when the variable is unset, that the file has no `:latest`, that the services Compose starts by default are exactly the ones in `ci/smoke-services`, the list `ci/smoke-image.sh` starts, that every published port is on the host's 127.0.0.1 whatever `PHOTOGRAPHY_PORT` says and no service uses `network_mode: host`, that `web` mounts the data root once, read-only, and points `PHOTOGRAPHY_DATA_DIR` at it, and that every bind of the data root, the library, or `web`'s image cache has `create_host_path: false`. A PR that adds a service lists it in `ci/smoke-services` and extends the smoke test to check it.
 
 `ci/smoke-image.sh` starts `web` and `image-watcher` from `docker-compose.prod.yml` on the image under test, with the two photos in `ci/fixtures/library/` as the library and an empty data root. It checks that `/` returns HTML, `/api/photos` returns a JSON array, `/api/health` answers, and the watcher passes its healthcheck, writes all seven derivatives for each photo, picks up a photo added while it runs, and never restarts. Then it runs the migration runbook in [data-root.md](data-root.md) as uid 1001, waits for the watcher to build every `/media` set, checks that `/media` serves them and an original 404s, and that recreating the containers keeps every photo ID and ETag. Last, it runs the watcher with `PHOTOGRAPHY_DATA_DIR` unset and checks that it writes the legacy derivatives and no registry. Its only change to the Compose file is an override that turns on `PHOTOGRAPHY_MEDIA_ACCESS=all` and binds `web` to 127.0.0.1. CI runs it on the image the PR built, and `Publish to GHCR` runs it again on the exact digest it pushed. To run it locally you need Docker with Compose 2.24.4 or later, for the override's `!override` tag, and a free port, 3000 unless you set `SMOKE_IMAGE_PORT`:
 
@@ -177,7 +177,7 @@ docker compose -f docker-compose.prod.yml logs image-watcher | grep orientation-
 
 Once it logs that it rebuilt the sets of the orientation-tagged photos, clear `./.next-images-cache` the same way as above, so `/_next/image` drops the copies it made from the old derivatives. If it also names photos that failed to rebuild, fix or remove those files, and clear the cache again once it logs that it rebuilt them. If this is also the first release with Phase 0, this one clear, after the rebuild, covers both.
 
-The first release with slice C of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10) needs the new `docker-compose.prod.yml` on the host, and the data root, `./portfolio-data`, created and owned by uid 1001 before the first `up`. The old compose file runs the watcher with tsx, which the image no longer has, and the new one never creates a missing data root, so neither container starts without it. The new file also publishes `web` on the host's 127.0.0.1 only, port `PHOTOGRAPHY_PORT` or 3000, so whatever serves the site to the internet has to reach it there, such as a reverse proxy or a tunnel running directly on the host. A proxy or tunnel that runs in a container can't: the host's 127.0.0.1 isn't its 127.0.0.1. Run it as a service in the override below instead, so it joins this project's network, and point it at `http://web:3000`. That service may publish 80 and 443 itself.
+The first release with slice C of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10) needs the new `docker-compose.prod.yml` on the host, and the data root, `./portfolio-data`, and `./.next-images-cache` created and owned by uid 1001 before the first `up`. The old compose file runs the watcher with tsx, which the image no longer has, and the new one never creates a missing data root or image cache, so the containers don't start without them. A `./.next-images-cache` that Docker created for the old file belongs to root, and the `chown` in the blocks below hands it to uid 1001. The new file also publishes `web` on the host's 127.0.0.1 only, port `PHOTOGRAPHY_PORT` or 3000, so whatever serves the site to the internet has to reach it there, such as a reverse proxy or a tunnel running directly on the host. A proxy or tunnel that runs in a container can't: the host's 127.0.0.1 isn't its 127.0.0.1. Run it as a service in the override below instead, so it joins this project's network, and point it at `http://web:3000`. That service may publish 80 and 443 itself.
 
 Keep the host's current file, and find what this host changed in it. Compare it with the repository's file for the release the host runs now, `v<current>`, the tag you noted before changing `.env`, not with the new one, which also has the repository's own changes. Then fetch the new file beside it. The `[ -e ... ] ||` keeps the first copy if you run these again:
 
@@ -199,8 +199,8 @@ Then install the new file, set up the data root, and deploy. Do it this way inst
 (
   grep -qx 'PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z' .env || { echo ".env doesn't set PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z yet. Nothing was changed." >&2; exit 1; }
   mv docker-compose.prod.yml.new docker-compose.prod.yml
-  mkdir -p portfolio-data
-  sudo chown -R 1001:1001 portfolio-data
+  mkdir -p portfolio-data .next-images-cache
+  sudo chown -R 1001:1001 portfolio-data .next-images-cache
   sudo chmod 700 portfolio-data
   docker compose -f docker-compose.prod.yml pull
   docker compose -f docker-compose.prod.yml up -d
@@ -216,8 +216,8 @@ With an override, use this block instead. It also checks the merged file, the ne
     jq -e '.services.web.network_mode == null and ([.services.web.ports[]?.host_ip] | unique) == ["127.0.0.1"]' >/dev/null ||
     { echo "With the override, web isn't published on 127.0.0.1 only. Fix the override. Nothing was changed." >&2; exit 1; }
   mv docker-compose.prod.yml.new docker-compose.prod.yml
-  mkdir -p portfolio-data
-  sudo chown -R 1001:1001 portfolio-data
+  mkdir -p portfolio-data .next-images-cache
+  sudo chown -R 1001:1001 portfolio-data .next-images-cache
   sudo chmod 700 portfolio-data
   docker compose -f docker-compose.prod.yml -f <override> pull
   docker compose -f docker-compose.prod.yml -f <override> up -d
