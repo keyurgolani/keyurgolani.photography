@@ -24,10 +24,18 @@ import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from './text';
 /** Who the web curator acts as. There's no session, so there's no name: the SSH tunnel is the way in (docs/curator.md). */
 export const WEB_ACTOR = 'curator:web';
 
-export class InboxFormError extends Error {}
+export class InboxFormError extends Error {
+    /** The field the refusal is about, so the page shows it beside that field. */
+    readonly field: 'description' | 'reason' | undefined;
 
-const invalid = (message: string): never => {
-    throw new InboxFormError(message);
+    constructor(message: string, field?: 'description' | 'reason') {
+        super(message);
+        this.field = field;
+    }
+}
+
+const invalid = (message: string, field?: 'description' | 'reason'): never => {
+    throw new InboxFormError(message, field);
 };
 
 function field(form: FormData, name: string): string | null {
@@ -37,9 +45,9 @@ function field(form: FormData, name: string): string | null {
     return value;
 }
 
-function text(value: string, label: string, max: number): string {
+function text(value: string, label: string, max: number, field: 'description' | 'reason'): string {
     const checked = ownerText(value, { field: label, max });
-    if (!checked.ok) invalid(checked.problem);
+    if (!checked.ok) invalid(checked.problem, field);
     return (checked as { text: string }).text;
 }
 
@@ -90,7 +98,7 @@ export function choicesFrom(form: FormData, kind: 'approve' | 'edit'): Choices {
             // An unchecked box or an emptied field clears what was saved. An approval then places the photo with no description, and #13's gate holds it back.
             if (saved) choices.description = null;
         } else {
-            const typed: CuratorDescription = { kind: 'described', text: text(description, 'The description', MAX_DESCRIPTION_LENGTH) };
+            const typed: CuratorDescription = { kind: 'described', text: text(description, 'The description', MAX_DESCRIPTION_LENGTH, 'description') };
             choices.description = typed;
         }
     }
@@ -103,10 +111,10 @@ export function choicesFrom(form: FormData, kind: 'approve' | 'edit'): Choices {
 function reasonFrom(form: FormData, required: boolean): string | undefined {
     const reason = field(form, 'reason');
     if (reason === null || reason.trim() === '') {
-        if (required) invalid('Dismissing needs a reason.');
+        if (required) invalid('Dismissing needs a reason.', 'reason');
         return undefined;
     }
-    return text(reason, 'The reason', MAX_REASON_LENGTH);
+    return text(reason, 'The reason', MAX_REASON_LENGTH, 'reason');
 }
 
 const STATUS_FOR: Record<Exclude<ActionOutcome, { ok: true }>['code'], Exclude<InboxActionState, { status: 'idle' }>['status']> = {
@@ -184,8 +192,8 @@ let serial = 0;
 /** Run one inbox action from its form. Never throws for anything the form or the data holds; every answer is a state the page shows, with no host path in it. */
 export async function runInboxAction(kind: InboxActionKind, form: unknown, options: { actor?: string; clock?: () => number; waitMs?: number } = {}): Promise<InboxActionState> {
     serial += 1;
-    const answer = (status: Exclude<InboxActionState, { status: 'idle' }>['status'], eventId: string | null, message: string): InboxActionState => {
-        return { status, action: kind, eventId, message: scrub(message, [dataRootStatus().root, libraryRoot()]), serial };
+    const answer = (status: Exclude<InboxActionState, { status: 'idle' }>['status'], eventId: string | null, message: string, field?: 'description' | 'reason'): InboxActionState => {
+        return { status, action: kind, eventId, message: scrub(message, [dataRootStatus().root, libraryRoot()]), ...(field ? { field } : {}), serial };
     };
     if (!(form instanceof FormData)) return answer('invalid', null, 'The form was empty. Refresh the inbox.');
     let input: ActionInput;
@@ -221,7 +229,7 @@ export async function runInboxAction(kind: InboxActionKind, form: unknown, optio
                 break;
         }
     } catch (error) {
-        if (error instanceof InboxFormError) return answer('invalid', input.eventId, error.message);
+        if (error instanceof InboxFormError) return answer('invalid', input.eventId, error.message, error.field);
         // Storage errors can name a host path, so only the kind of failure shows here. The server log keeps the rest.
         console.error(`[curation] The inbox ${kind} on ${input.eventId} failed:`, error);
         return answer('failed', input.eventId, `The inbox couldn't finish that (${error instanceof Error ? error.name : 'an error'}). Refresh and check the item before trying again.`);

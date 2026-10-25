@@ -18,10 +18,14 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 function ItemLink({ item, selected }: { item: InboxItem; selected: boolean }) {
     return (
         <li>
-            <a className={styles.item} href={`/curation/inbox?item=${item.id}`} aria-current={selected ? 'true' : undefined}>
+            {/* `#item` lands on the item itself, past the list on a phone, and past every row for a keyboard. */}
+            <a className={styles.item} href={`/curation/inbox?item=${item.id}#item`} aria-current={selected ? 'true' : undefined}>
                 <EventBadge type={item.type} />
                 <strong>{item.title}</strong>
-                <small>{item.shortId}</small>
+                <span className={styles.itemMeta}>
+                    <span className={styles.itemFile}>{item.sourcePath}</span>
+                    <small>{item.shortId}</small>
+                </span>
                 {item.waiting ? <span className={styles.waitingNote}>Waiting: {item.waiting}</span> : null}
                 {item.placedBy ? <span className={styles.waitingNote}>Already placed</span> : null}
             </a>
@@ -35,7 +39,7 @@ export default function InboxList({ view }: { view: ReadyView }) {
     const judgment = view.items.filter((item) => item.group === 'judgment');
     const others = (['unplaced', 'waiting', 'deferred', 'placed', 'settled'] as const).map((group) => ({ group, items: view.items.filter((item) => item.group === group) }));
     return (
-        <section className={styles.list} aria-labelledby="inbox-heading">
+        <section className={styles.list} id="inbox-list" aria-labelledby="inbox-heading">
             <header className={styles.listHeader}>
                 <div>
                     <h1 id="inbox-heading">Curation inbox</h1>
@@ -52,7 +56,7 @@ export default function InboxList({ view }: { view: ReadyView }) {
             {view.items.length === 0 && view.problems.length === 0 ? (
                 <div className={styles.empty}>
                     <h2>Nothing requires judgment</h2>
-                    <p>New photographs the watcher finds show up here as draft suggestions. Nothing publishes from the inbox.</p>
+                    <p>Add photographs to the library folder. The watcher picks them up, and each one shows up here as a draft suggestion. Nothing publishes from the inbox.</p>
                 </div>
             ) : null}
             {judgment.length > 0 ? (
