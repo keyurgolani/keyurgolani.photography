@@ -8,7 +8,7 @@ import sharp, { type Sharp } from 'sharp';
 import { scanLibrary } from '../../lib/identity/scan';
 import { dominantChannel, fixtureFiles, withExifOrientation, type Channel } from '../../test/fixtures/makeLibrary';
 import { fakeCaseInsensitiveDisk, fakeCaseSensitiveDisk } from '../../test/helpers/caseDisk';
-import { runTsx } from '../../test/helpers/runTsx';
+import { REPO_ROOT, runTsx } from '../../test/helpers/runTsx';
 import { createTempLibrary, derivativePaths, type TempLibrary } from '../../test/helpers/tempLibrary';
 import { baseNameOf, isOrientationTagged, optimizedSize, ownerOf, planSources, processImage, readSetSource, writeUprightMarker } from '../imageOptimizer';
 import {
