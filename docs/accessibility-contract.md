@@ -34,7 +34,7 @@ Every visitor and curator surface follows these rules. #1 added them with the br
 | The focus token on `SiteNav`, its theme toggle, and in the lightbox | `e2e/focus-ring.spec.ts` from #1 slice 2, moved onto `SiteNav` by #21 | #1, with #21 for `SiteNav` |
 | Work catalog, `/work` | `e2e/work.spec.ts` from #3, on a published fixture catalog its own server serves | #3 |
 | Series pages | Added by #5 | #5 |
-| Viewer | Added by #7 | #7, then #9 |
+| Viewer, `/work/<slug>/photo/<photoId>` | `e2e/viewer.spec.ts` from #7 | #7, then #9 |
 | Site navigation, `SiteNav` | `e2e/shell/nav.spec.ts` from #21, with `server-html`, `theme`, and `confinement` in `e2e/shell/` | #21, then #18 for its reveal on Home |
 | Curation inbox | Added by #14 | #14 |
 | Publish preview | Added by #16 | #16 |
