@@ -1,11 +1,13 @@
 // @vitest-environment node
 import fs from 'node:fs';
+import path from 'node:path';
 import exifReader from 'exif-reader';
 import sharp from 'sharp';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { buildExif, KEPT_VALUES, leakyJpeg, PRIVATE_VALUES } from '../../../test/fixtures/exif';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempLibrary';
+import { pixelDigestOf } from '../ids';
 import { inspectEntry, type ImageInspection } from '../inspect';
 import { exifCaptureTime, extractMetadataTiers, TECHNICAL_KEYS, tiersFromParsedExif, toPublicAsset, VARIANT_FORMATS, VARIANT_WIDTHS } from '../metadata';
 import { runReconcilePass } from '../pass';
@@ -233,6 +235,24 @@ describe('the pixel digest', () => {
         expect(withProfile.pixelDigest).not.toBeNull();
         expect(withProfile.pixelDigest).toBe(withoutProfile.pixelDigest);
     });
+
+    it('hashes a CMYK JPEG as Sharp converts it to sRGB, the one exception to the stored pixels', async () => {
+        const lib = await createTempLibrary();
+        cleanups.push(() => lib.cleanup());
+        const cmyk = await sharp({ create: { width: 16, height: 12, channels: 3, background: { r: 200, g: 40, b: 40 } } })
+            .toColourspace('cmyk')
+            .jpeg()
+            .toBuffer();
+        expect(await sharp(cmyk).metadata()).toMatchObject({ space: 'cmyk', channels: 4 });
+        fs.writeFileSync(lib.file('cmyk.jpg'), cmyk);
+
+        const entry = (await scanLibrary(lib.root)).entries.find((candidate) => candidate.path === 'cmyk.jpg');
+        if (!entry) throw new Error('The scan missed cmyk.jpg');
+        const inspection = await inspectEntry(lib.root, entry) as ImageInspection;
+        const converted = await sharp(cmyk).autoOrient().raw().toBuffer({ resolveWithObject: true });
+        expect(converted.info.channels).toBe(3);
+        expect(inspection.pixelDigest).toBe(pixelDigestOf({ data: converted.data, ...converted.info }));
+    });
 });
 
 describe('stored and public metadata from a real file', () => {
@@ -253,9 +273,13 @@ describe('stored and public metadata from a real file', () => {
 
         const outcome = await runReconcilePass({ clock: () => Date.now() + 60_000, idGen: sequentialIds(), sinks: [] });
         expect(outcome.status).toBe('committed');
-        const registryJson = fs.readFileSync(identityPaths(data.root).registry, 'utf8');
+        // Every version the registry folder holds, not only the newest
+        const registryDir = identityPaths(data.root).registry;
+        const versions = fs.readdirSync(registryDir).sort();
+        expect(versions).toEqual(['v1.json']);
+        const registryJson = fs.readFileSync(path.join(registryDir, 'v1.json'), 'utf8');
         const statCacheJson = fs.readFileSync(identityPaths(data.root).statCache, 'utf8');
-        expectNoPrivateValues(registryJson, 'registry.json');
+        expectNoPrivateValues(registryJson, 'registry/v1.json');
         expectNoPrivateValues(statCacheJson, 'stat-cache.json');
 
         const registry = JSON.parse(registryJson);

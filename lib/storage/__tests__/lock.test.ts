@@ -87,6 +87,25 @@ describe('withLock', () => {
         expect(lockDirEntries()).toEqual([]);
     });
 
+    it('aborts its signal before it releases, so work that keeps the signal past fn sees the lock as gone', async () => {
+        let kept: AbortSignal | undefined;
+        let abortedAtRelease: boolean | undefined;
+        const hooks = { beforeRelease: () => { abortedAtRelease = kept?.aborted; } };
+        await withLock('registry', { root: data.root, hooks }, async ({ signal }) => {
+            kept = signal;
+            expect(signal.aborted).toBe(false);
+        });
+        expect(abortedAtRelease).toBe(true);
+        expect(() => kept?.throwIfAborted()).toThrow('The registry lock was released when its holder finished.');
+
+        abortedAtRelease = undefined;
+        await expect(withLock('registry', { root: data.root, hooks }, async ({ signal }) => {
+            kept = signal;
+            throw new Error('fn failed');
+        })).rejects.toThrow('fn failed');
+        expect(abortedAtRelease).toBe(true);
+    });
+
     it('makes a second holder wait until the first releases', async () => {
         const events: string[] = [];
         const entered = deferred();

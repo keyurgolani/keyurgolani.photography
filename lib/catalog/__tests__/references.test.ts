@@ -1,19 +1,13 @@
 // @vitest-environment node
 import fs from 'node:fs';
 import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { createTempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { references, referencesTo, ReferenceScanError, type AssetReference } from '../references';
 import { revisionIdOf } from '../schema';
 import { createTestCatalog, type TestCatalog } from '../testing';
 import type { CandidateContent } from '../types';
-import { authoredRecordFile, catalogPaths, readWorkingLayer } from '../working-layer';
-
-// The real reader, which a test can wrap to act between the reads references() makes.
-vi.mock('../working-layer', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('../working-layer')>();
-    return { ...actual, readWorkingLayer: vi.fn(actual.readWorkingLayer) };
-});
+import { authoredRecordDir, catalogPaths } from '../working-layer';
 
 const OTHER_ASSET = `sha256-${'b'.repeat(64)}`;
 const OTHER_PROFILE = `p_${'1'.repeat(16)}`;
@@ -129,42 +123,22 @@ describe('references', () => {
         expect(holders).toEqual([ids[0], ids[2]]);
     });
 
-    it('counts a claimed version that a writer installs while it reads', async () => {
+    it("reads each record at its newest version, so an older version's asset pins nothing", async () => {
         const catalog = await fixture();
         const photo = catalog.photos[0];
-        const file = authoredRecordFile(catalog.root, 'photo', photo.id);
-        const stored = JSON.parse(fs.readFileSync(file, 'utf8')) as { version: number; assetRevision: string };
-        const claim = `${file}.claim-${stored.version + 1}`;
-        writeJson(claim, { ...stored, version: stored.version + 1, assetRevision: OTHER_ASSET });
-        const { readWorkingLayer: read } = await vi.importActual<typeof import('../working-layer')>('../working-layer');
-        // The writer installs its claim right after the records are read.
-        vi.mocked(readWorkingLayer).mockImplementationOnce(async (...args) => {
-            const layer = await read(...args);
-            fs.renameSync(claim, file);
-            return layer;
-        });
+        const dir = authoredRecordDir(catalog.root, 'photo', photo.id);
+        // A hand-made version 2 that moves the photo to another asset revision
+        const stored = JSON.parse(fs.readFileSync(path.join(dir, 'v1.json'), 'utf8')) as Record<string, unknown>;
+        writeJson(path.join(dir, 'v2.json'), { ...stored, stamp: undefined, version: 2, assetRevision: OTHER_ASSET });
 
         const found = bySource(await references(catalog.root), 'working-layer-photo').filter((reference) => reference.holder === photo.id);
-        expect(found.map((reference) => reference.assetRevision)).toContain(OTHER_ASSET);
-        expect(fs.existsSync(claim)).toBe(false);
-    });
-
-    it('counts the next version a write that did not finish left claimed, since the next write installs it', async () => {
-        const catalog = await fixture();
-        const photo = catalog.photos[0];
-        const file = authoredRecordFile(catalog.root, 'photo', photo.id);
-        const stored = JSON.parse(fs.readFileSync(file, 'utf8')) as { version: number; assetRevision: string };
-        // What a writer whose process died between its claim and its rename leaves
-        writeJson(`${file}.claim-${stored.version + 1}`, { ...stored, version: stored.version + 1, assetRevision: OTHER_ASSET });
-
-        const found = bySource(await references(catalog.root), 'working-layer-photo').filter((reference) => reference.holder === photo.id);
-        expect(found.map((reference) => reference.assetRevision).sort()).toEqual([stored.assetRevision, OTHER_ASSET].sort());
+        expect(found.map((reference) => reference.assetRevision)).toEqual([OTHER_ASSET]);
     });
 
     it('keeps every asset revision of a series member that has no photo record', async () => {
         const catalog = await fixture();
         const member = catalog.series[0].photoIds[0];
-        fs.rmSync(authoredRecordFile(catalog.root, 'photo', member));
+        fs.rmSync(authoredRecordDir(catalog.root, 'photo', member), { recursive: true });
         const found = await references(catalog.root);
         expect(found).toContainEqual({ source: 'working-layer-series', holder: catalog.series[0].id, photoId: member, assetRevision: null, profileId: null });
         expect(referencesTo(found, { photoId: member, assetRevision: OTHER_ASSET, profileId: OTHER_PROFILE })).toHaveLength(1);
@@ -231,32 +205,40 @@ describe('references fails closed', () => {
             writeJson(catalogPaths(catalog.root).active, { schemaVersion: 1 });
             return 'catalog/active.json';
         }, 'invalid'],
-        ['a photo record that is not JSON', (catalog) => {
+        ['a photo record whose newest version is not JSON', (catalog) => {
             const photo = catalog.photos[2];
-            writeJson(authoredRecordFile(catalog.root, 'photo', photo.id), 'not json');
-            return `authored/photos/${photo.id}.json`;
+            writeJson(path.join(authoredRecordDir(catalog.root, 'photo', photo.id), 'v2.json'), 'not json');
+            return `authored/photos/${photo.id}`;
         }, 'invalid-json'],
         ['a series record that fails the schema', (catalog) => {
             const series = catalog.series[1];
-            writeJson(authoredRecordFile(catalog.root, 'series', series.id), { ...series, visibility: 'public' });
-            return `authored/series/${series.id}.json`;
+            writeJson(path.join(authoredRecordDir(catalog.root, 'series', series.id), 'v2.json'), { ...series, version: 2, visibility: 'public' });
+            return `authored/series/${series.id}`;
         }, 'invalid'],
+        ['a photo record edited in place', (catalog) => {
+            const photo = catalog.photos[2];
+            const file = path.join(authoredRecordDir(catalog.root, 'photo', photo.id), 'v1.json');
+            fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(photo.assetRevision, OTHER_ASSET));
+            return `authored/photos/${photo.id}`;
+        }, 'edited-in-place'],
         ['a revision whose .json is upper case', (catalog) => {
             store(catalog.root, catalog.content, 'revisionsDir', 'REV');
             fs.renameSync(path.join(catalogPaths(catalog.root).revisionsDir, 'REV.json'), path.join(catalogPaths(catalog.root).revisionsDir, `${catalog.revisionId}.JSON`));
             return `catalog/revisions/${catalog.revisionId}.JSON`;
         }, 'file-name'],
-        ['a photo record whose .json is upper case', (catalog) => {
+        ['a photo version whose name is upper case', (catalog) => {
             const photo = catalog.photos[2];
-            const file = authoredRecordFile(catalog.root, 'photo', photo.id);
-            fs.renameSync(file, file.replace(/\.json$/, '.JSON'));
-            return `authored/photos/${photo.id}.JSON`;
+            const dir = authoredRecordDir(catalog.root, 'photo', photo.id);
+            fs.renameSync(path.join(dir, 'v1.json'), path.join(dir, 'V1.JSON'));
+            return `authored/photos/${photo.id}`;
         }, 'file-name'],
-        ['a claim that is not JSON', (catalog) => {
+        ['a photo folder named in another case', (catalog) => {
             const photo = catalog.photos[2];
-            writeJson(`${authoredRecordFile(catalog.root, 'photo', photo.id)}.claim-2`, 'partial');
-            return `authored/photos/${photo.id}.json.claim-2`;
-        }, 'invalid-json'],
+            const dir = authoredRecordDir(catalog.root, 'photo', photo.id);
+            const upper = path.join(path.dirname(dir), photo.id.toUpperCase());
+            fs.renameSync(dir, upper);
+            return `authored/photos/${photo.id.toUpperCase()}`;
+        }, 'file-name'],
     ];
 
     it.each(cases)('on %s', async (_label, breakIt, reason) => {

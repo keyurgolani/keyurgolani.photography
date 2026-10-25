@@ -393,6 +393,7 @@ export async function writeVariants(
             renamed++;
         }
     } catch (error) {
+        builtFrom.delete(builtKey(filename, paths));
         await removeQuietly(order.slice(renamed).map(({ temp }) => temp));
         console.error(
             `[imageOptimizer] Renaming ${filename}'s new outputs failed after replacing ${renamed} of ${order.length}.` +
@@ -401,6 +402,9 @@ export async function writeVariants(
         throw error;
     }
 
+    // A fill of only the missing outputs leaves a set some other source may have built the rest of.
+    if (order.length === VARIANTS.length) builtFrom.set(builtKey(filename, paths), filename);
+    else builtFrom.delete(builtKey(filename, paths));
     if (overwrite) purgeDynamicCache(baseName, paths);
     return order.map(({ target }) => target);
 }
@@ -546,6 +550,26 @@ export function setMembers(filename: string, paths: LibraryPaths = libraryPaths(
 const decoded = new Map<string, { version: string; ok: boolean }>();
 
 /**
+ * The source that last wrote each set whole, by library root and set key.
+ * Kept in memory only, so a set written by another process, or before a
+ * restart, has no known builder.
+ */
+const builtFrom = new Map<string, string>();
+
+const builtKey = (filename: string, paths: LibraryPaths) => `${paths.root}\0${setKeyOf(filename)}`;
+
+/**
+ * The source that last wrote `owner`'s set whole in this process, or null
+ * when that's unknown, as after a partial fill, a rename that failed, or a
+ * restart. A builder that only shares the set's key, as two spellings do on a
+ * case-sensitive disk, doesn't count.
+ */
+export function lastBuiltFrom(owner: string, paths: LibraryPaths = libraryPaths()): string | null {
+    const builder = builtFrom.get(builtKey(owner, paths));
+    return builder !== undefined && sharesSet(builder, owner, paths.root) ? builder : null;
+}
+
+/**
  * Whether a source decodes whole. The header alone isn't enough: a truncated
  * file can keep an intact one, and then every encode fails. Reads the bytes
  * itself, since libvips caches what it loads by file name.
@@ -599,10 +623,13 @@ export async function ownerAfterRemoval(removed: string, paths: LibraryPaths = l
     return removed < owner ? owner : null;
 }
 
-/** The source that owns `filename`'s set among the library's sources now, or `filename` when it is the only one. */
-export async function ownerOf(filename: string, paths: LibraryPaths = libraryPaths()): Promise<string> {
-    const group = setMembers(filename, paths);
-    return group.includes(filename) ? (await pickOwner(group, paths)).owner : filename;
+/**
+ * The source that owns `filename`'s set among the library's sources now, or
+ * `filename` when it is the only one. Pass the setMembers() a caller already
+ * has as `members` to skip listing the library again.
+ */
+export async function ownerOf(filename: string, paths: LibraryPaths = libraryPaths(), members: string[] = setMembers(filename, paths)): Promise<string> {
+    return members.includes(filename) ? (await pickOwner(members, paths)).owner : filename;
 }
 
 /**
@@ -650,13 +677,14 @@ export async function filesToProcess({ force = false }: { force?: boolean } = {}
  * seven outputs when forced or when needsRefresh() says so, and otherwise do
  * nothing. A missing one next to existing ones may come from a different
  * version, so filling in only the gap could leave a mixed set. A source whose
- * set another source owns writes nothing.
+ * set another source owns writes nothing. `owns` skips that check, for a
+ * caller that just made it.
  *
  * Returns the paths it replaced, none when the set was already current.
  */
-export async function refreshImage(filename: string, { force = false }: { force?: boolean } = {}): Promise<string[]> {
+export async function refreshImage(filename: string, { force = false, owns = false }: { force?: boolean; owns?: boolean } = {}): Promise<string[]> {
     const paths = libraryPaths();
-    if (await ownerOf(filename, paths) !== filename) return [];
+    if (!owns && await ownerOf(filename, paths) !== filename) return [];
     if (!force && !needsRefresh(filename, paths)) return [];
     return writeVariants(filename, { overwrite: true, paths });
 }
@@ -700,6 +728,12 @@ export interface OrphanCleanupPlan {
     youngTempFiles: string[];
     /** Folders cleanup didn't enter because they are symlinks, not folders, or can't be listed */
     skippedFolders: string[];
+    /**
+     * With `only`, the skipped folders it couldn't look that photo's files up
+     * in by name, so some may be left there. In a folder it can't list but can
+     * search, its derivatives are looked up by their exact names instead.
+     */
+    uncheckedFolders: string[];
     /** Sources lstat can see but stat can't read. Their sets are kept. */
     unreadableSources: UnreadableSource[];
     /** With `only` and no file under that exact name, the names that differ from it only in case or Unicode form */
@@ -790,12 +824,52 @@ function sourceSet(root: string, sourceFiles: string[]): SourceSet {
     };
 }
 
-/** The folders cleanup reads, each with the folders that must be real directories before it enters. */
-function scannedFolders(paths: LibraryPaths): { dir: string; guards: string[] }[] {
+/**
+ * The folders cleanup reads, each with the folders that must be real
+ * directories before it enters, and the extension of a derivative's exact
+ * name there. The /api/image cache has none, since its names carry a width
+ * and a quality.
+ */
+function scannedFolders(paths: LibraryPaths): { dir: string; guards: string[]; ext: string | null }[] {
     return [
-        ...DERIVATIVE_DIRS.map((key) => ({ dir: paths[key], guards: [paths[key]] })),
-        { dir: paths.dynamicCache, guards: [path.dirname(paths.dynamicCache), paths.dynamicCache] },
+        ...DERIVATIVE_DIRS.map((key) => ({ dir: paths[key], guards: [paths[key]], ext: DERIVATIVE_FOLDERS[FOLDER_OF[key]] as string })),
+        { dir: paths.dynamicCache, guards: [path.dirname(paths.dynamicCache), paths.dynamicCache], ext: null },
     ];
+}
+
+/**
+ * With `only`, look up the photo's derivatives by their exact names in a
+ * folder cleanup can't list, since a takedown mustn't leave one there. Looks
+ * up `requested` as given and without a source extension, the two names
+ * `only` can resolve to. A case-insensitive disk also finds `Square.webp`
+ * under `square.webp`, so a file counts only when the disk spells it the way
+ * it was asked for. Returns the files found, or null when the folder can't be
+ * searched either, or an entry resolves somewhere else, as a symlink does.
+ */
+function lookUpByName(dir: string, ext: string | null, requested: string): string[] | null {
+    if (ext === null) return null;
+    const found: string[] = [];
+    for (const base of new Set([requested, isSourceFile(requested) ? baseNameOf(requested) : requested])) {
+        const file = path.join(dir, `${base}${ext}`);
+        try {
+            fs.lstatSync(file);
+        } catch (error) {
+            if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) continue;
+            return null;
+        }
+        let stored: string;
+        try {
+            stored = fs.realpathSync.native(file);
+            if (path.dirname(stored) !== fs.realpathSync.native(dir)) return null;
+        } catch {
+            // A dangling symlink, or one that leads somewhere unreadable
+            return null;
+        }
+        // Another photo's file, spelled differently
+        if (path.basename(stored) !== path.basename(file)) continue;
+        found.push(file);
+    }
+    return found;
 }
     
 /** lstat, so a symlink never counts as a folder and cleanup never follows one out of the library. */
@@ -938,17 +1012,26 @@ export function planOrphanCleanup(
 
     const sources = sourceSet(paths.root, sourceFiles);
     const skippedFolders: string[] = [];
+    const uncheckedFolders: string[] = [];
     const scanned: string[] = [];
-    for (const { dir, guards } of scannedFolders(paths)) {
+    for (const { dir, guards, ext } of scannedFolders(paths)) {
         const guard = guardState(guards);
-        if (guard.state === 'unsafe') skippedFolders.push(relativeTo(paths.root, guard.at));
+        if (guard.state === 'unsafe') {
+            skippedFolders.push(relativeTo(paths.root, guard.at));
+            // Looking inside would follow it, maybe out of the library
+            if (requested !== null) uncheckedFolders.push(relativeTo(paths.root, guard.at));
+        }
         if (guard.state !== 'ok') continue;
         let names: string[];
         try {
             names = listFiles(dir);
         } catch {
-            // Its files are kept, the same as a folder that is a symlink.
+            // Its files are kept, the same as a folder that is a symlink, except a takedown's, looked up by name.
             skippedFolders.push(relativeTo(paths.root, dir));
+            if (requested === null) continue;
+            const found = lookUpByName(dir, ext, requested);
+            if (found === null) uncheckedFolders.push(relativeTo(paths.root, dir));
+            else scanned.push(...found);
             continue;
         }
         scanned.push(...names.map((name) => path.join(dir, name)));
@@ -975,6 +1058,7 @@ export function planOrphanCleanup(
         entries,
         youngTempFiles,
         skippedFolders,
+        uncheckedFolders,
         unreadableSources: unreadable,
         onlyVariants: only === null ? [] : caseVariants(only, scanned, paths),
         otherOrphans: only === null ? [] : orphanedSets(only, scanned, paths, sources),

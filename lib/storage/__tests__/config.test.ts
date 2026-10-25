@@ -27,6 +27,7 @@ async function tempLibrary(): Promise<TempLibrary> {
 
 afterEach(async () => {
     vi.unstubAllEnvs();
+    vi.restoreAllMocks();
     for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
@@ -129,6 +130,28 @@ describe('dataRootState', () => {
         fs.chmodSync(data.root, 0o555);
         expect(dataRootState({ write: true })).toBe('unwritable');
         expect(dataRootState()).toBe('ready');
+    });
+
+    it("is unwritable when asked for a versioned writer if its filesystem can't hold hard links, and says why", () => {
+        const data = tempDataRoot();
+        // As on exFAT
+        const link = vi.spyOn(fs, 'linkSync').mockImplementation(() => {
+            throw Object.assign(new Error('ENOTSUP: operation not supported, link'), { code: 'ENOTSUP' });
+        });
+        expect(dataRootStatus({ versioned: true })).toMatchObject({ state: 'unwritable', detail: expect.stringContaining("can't hold hard links") });
+        expect(dataRootState()).toBe('ready');
+        expect(data.files()).toEqual([DATA_ROOT_FILE]);
+
+        // A writer of anything else, such as the dry run's report, needs no hard links, so nothing probes for them.
+        link.mockClear();
+        const write = vi.spyOn(fs, 'writeFileSync');
+        expect(dataRootState({ write: true })).toBe('ready');
+        expect(link).not.toHaveBeenCalled();
+        expect(write).not.toHaveBeenCalled();
+
+        vi.restoreAllMocks();
+        expect(dataRootState({ versioned: true })).toBe('ready');
+        expect(data.files()).toEqual([DATA_ROOT_FILE]);
     });
 
     it.skipIf(isRoot)('is unavailable when data-root.json exists but cannot be read', () => {

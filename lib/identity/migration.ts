@@ -215,10 +215,17 @@ export function renderReport(plan: MigrationPlan, observed: ObservedLibrary): st
             ? [`${code(source.path)}: orientation ${inspection.orientation}`]
             : [];
     });
-    section('Orientation-tagged files', oriented.length === 0 ? ['None.'] : [
-        'The rebuild turns these top-level photos upright, and orientations 5 to 8 swap width and height.',
-        '',
-        ...oriented.map((line) => `- ${line}`),
+    // Top-level photos it couldn't read, or that were still changing, so their orientation is unknown
+    const notChecked = observed.scan.entries
+        .filter((entry) => entry.kind === 'source' && !entry.path.includes('/') && observed.inspections.get(entry.path)?.kind !== 'image')
+        .map((entry) => code(entry.path));
+    section('Orientation-tagged files', [
+        ...(oriented.length === 0 ? [notChecked.length === 0 ? 'None.' : 'None among the photos it read.'] : [
+            'The rebuild turns these top-level photos upright, and orientations 5 to 8 swap width and height.',
+            '',
+            ...oriented.map((line) => `- ${line}`),
+        ]),
+        ...(notChecked.length === 0 ? [] : ['', "Not checked, since they couldn't be read or were still changing:", '', ...notChecked.map((item) => `- ${item}`)]),
     ]);
 
     const ambiguous = [

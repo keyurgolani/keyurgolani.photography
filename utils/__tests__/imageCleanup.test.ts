@@ -16,6 +16,8 @@ import {
 } from '../imageOptimizer';
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
+// Root reads and lists any folder, whatever its mode
+const isRoot = process.getuid?.() === 0;
 
 const STALE_TEMP = `thumbnails/${tempFilePrefix('landscape')}4242.0a1b2c3d.tmp`;
 const YOUNG_TEMP = `medium/${tempFilePrefix('portrait')}4242.0a1b2c3e.tmp`;
@@ -261,9 +263,79 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
         expect(plan.entries.map((entry) => entry.relativePath)).not.toContain(DYNAMIC_CACHE);
         expect(plan.entries.map((entry) => entry.relativePath)).toEqual(expect.arrayContaining([STALE_TEMP, ...SQUARE]));
 
-        const { out, output } = capture();
-        expect(runImageCleanup(['--only', 'square'], output)).toBe(0);
-        expect(out).toContain("Skipped cache/dynamic/, which is a symlink, not a folder, or can't be listed, so cleanup deletes nothing in it.");
+        const full = capture();
+        expect(runImageCleanup([], full.output)).toBe(0);
+        expect(full.out).toContain("Skipped cache/dynamic/, which is a symlink, not a folder, or can't be listed, so cleanup deletes nothing in it.");
+
+        // A takedown still plans the rest, but the cache's names carry a width and a quality, so it can't look there by name.
+        const takedown = capture();
+        expect(runImageCleanup(['--only', 'square'], takedown.output)).toBe(1);
+        expect(takedown.out.filter((line) => PER_PATH.test(line)).sort())
+            .toEqual(SQUARE.map((relativePath) => `Would delete ${relativePath} (no source named square.*)`).sort());
+        expect(takedown.err).toEqual([
+            "Skipped cache/dynamic/, which is a symlink, not a folder, or can't be listed, and square's files couldn't be looked up in it by name either, so some may be left there. Check it by hand.",
+        ]);
+    });
+
+    it.skipIf(isRoot)("looks a takedown's files up by name in a folder it can search but not list, and deletes them", async () => {
+        const lib = await libraryWithOrphans();
+        fs.chmodSync(lib.file('optimized'), 0o311);
+        try {
+            const { out, err, output } = capture();
+            expect(runImageCleanup(['--only', 'square'], output)).toBe(0);
+            expect(out).toContain('Would delete optimized/square.webp (no source named square.*)');
+            expect(out).toContain("Skipped optimized/, which is a symlink, not a folder, or can't be listed, so only square's files were looked up in it, by name.");
+            expect(err).toEqual([]);
+
+            const hash = dryRunHash(['--only', 'square']);
+            expect(runImageCleanup(['--only', 'square', '--apply', '--plan', hash], capture().output)).toBe(0);
+            for (const relativePath of SQUARE) expect(fs.existsSync(lib.file(relativePath)), relativePath).toBe(false);
+        } finally {
+            fs.chmodSync(lib.file('optimized'), 0o755);
+        }
+        expect(Object.keys(lib.hashes(derivativePaths('portrait')))).toHaveLength(7);
+    });
+
+    it.skipIf(isRoot)("never takes another photo's file spelled in another case for the takedown's, in a folder it can't list", async (context) => {
+        const lib = await newLibrary({ fixtures: 'basic' });
+        if (!caseInsensitive(lib)) context.skip();
+        fs.renameSync(lib.file('square.webp'), lib.file('Square.webp'));
+        await processImage('Square.webp');
+        expect(fs.readdirSync(lib.file('optimized'))).toContain('Square.webp');
+        fs.chmodSync(lib.file('optimized'), 0o311);
+        try {
+            // This disk finds optimized/Square.webp under square.webp, but it is the live photo Square's.
+            const { out, err, output } = capture();
+            expect(runImageCleanup(['--only', 'square'], output)).toBe(0);
+            expect(out).toContain('Nothing to delete.');
+            expect(err).toEqual([]);
+        } finally {
+            fs.chmodSync(lib.file('optimized'), 0o755);
+        }
+        expect(fs.readdirSync(lib.file('optimized'))).toContain('Square.webp');
+    });
+
+    it.skipIf(isRoot)("fails a takedown, naming the folder, where it can't look the photo's files up by name", async () => {
+        const lib = await libraryWithOrphans();
+        const unchecked = "Skipped optimized/, which is a symlink, not a folder, or can't be listed, and square's files couldn't be looked up in it by name either, so some may be left there. Check it by hand.";
+        fs.chmodSync(lib.file('optimized'), 0o000);
+        try {
+            const dryRun = capture();
+            expect(runImageCleanup(['--only', 'square'], dryRun.output)).toBe(1);
+            expect(dryRun.err).toEqual([unchecked]);
+            const hash = dryRun.out.find((line) => line.startsWith('Plan '))?.match(/^Plan ([0-9a-f]{12})\./)?.[1] ?? '';
+
+            const applied = capture();
+            expect(runImageCleanup(['--only', 'square', '--apply', '--plan', hash], applied.output)).toBe(1);
+            expect(applied.err).toEqual([unchecked]);
+        } finally {
+            fs.chmodSync(lib.file('optimized'), 0o755);
+        }
+        // The rest of the takedown went through.
+        for (const relativePath of SQUARE.filter((entry) => !entry.startsWith('optimized/'))) {
+            expect(fs.existsSync(lib.file(relativePath)), relativePath).toBe(false);
+        }
+        expect(fs.existsSync(lib.file('optimized/square.webp'))).toBe(true);
     });
 
     it('never enters a symlinked folder, so it never deletes outside the library', async () => {
@@ -289,6 +361,13 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
         expect(runImageCleanup(['--apply', '--plan', hash], capture().output)).toBe(0);
         expect(fs.existsSync(path.join(outside, 'square.webp'))).toBe(true);
         expect(fs.existsSync(path.join(outside, 'cache-target', 'square-400-80.webp'))).toBe(true);
+
+        // Nor does a takedown look inside, so it fails and names them.
+        const takedown = capture();
+        expect(runImageCleanup(['--only', 'square'], takedown.output)).toBe(1);
+        expect(takedown.err).toEqual(['optimized', 'cache'].map((folder) =>
+            `Skipped ${folder}/, which is a symlink, not a folder, or can't be listed, and square's files couldn't be looked up in it by name either, so some may be left there. Check it by hand.`));
+        expect(fs.existsSync(path.join(outside, 'square.webp'))).toBe(true);
     });
 
     it('keeps derivatives for a name that differs only in case when this disk resolves both names to one file', async () => {
@@ -522,5 +601,12 @@ describe('images:cleanup', { timeout: 30_000 }, () => {
         expect(run.status, run.stderr).toBe(2);
         expect(run.stderr).toContain('Refusing to clean up: library root not found');
         expect(fs.existsSync(lib.root)).toBe(false);
+    });
+});
+
+describe('the takedown steps', () => {
+    it.each(['README.md', 'public/assets/photos/README.md'])('in %s say what to do when a step exits 1 naming a folder', (guide) => {
+        const text = fs.readFileSync(path.join(REPO_ROOT, guide), 'utf8');
+        expect(text).toContain("If either step exits 1 and names a folder it couldn't look in, remove the photo's files from that folder by hand.");
     });
 });

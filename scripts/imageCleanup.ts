@@ -23,7 +23,9 @@
  *
  * Refuses, with exit code 2, a missing library root, a library with no
  * sources (unless --allow-empty-library is passed), a plan hash that no
- * longer matches the library, and bad options.
+ * longer matches the library, and bad options. Exits 1 when a deletion
+ * fails, and when --only couldn't look for the photo's files in a folder,
+ * which it names.
  */
 
 import fs from 'fs';
@@ -138,7 +140,14 @@ function reportSkips(plan: OrphanCleanupPlan, output: Output): void {
         );
     }
     for (const folder of plan.skippedFolders) {
-        output.log(`Skipped ${folder}/, which is a symlink, not a folder, or can't be listed, so cleanup deletes nothing in it.`);
+        const skipped = `Skipped ${folder}/, which is a symlink, not a folder, or can't be listed`;
+        if (plan.only === null) {
+            output.log(`${skipped}, so cleanup deletes nothing in it.`);
+        } else if (plan.uncheckedFolders.includes(folder)) {
+            output.error(`${skipped}, and ${plan.only}'s files couldn't be looked up in it by name either, so some may be left there. Check it by hand.`);
+        } else {
+            output.log(`${skipped}, so only ${plan.only}'s files were looked up in it, by name.`);
+        }
     }
     const count = plan.youngTempFiles.length;
     if (count > 0) {
@@ -149,7 +158,10 @@ function reportSkips(plan: OrphanCleanupPlan, output: Output): void {
     }
 }
 
-/** Runs the cleanup CLI and returns its exit code: 0 done, 1 a deletion failed, 2 refused. */
+/**
+ * Runs the cleanup CLI and returns its exit code: 0 done, 1 a deletion failed
+ * or --only couldn't look in a folder, 2 refused.
+ */
 export function runImageCleanup(argv: string[], output: Output = console): number {
     const options = readOptions(argv);
     if (typeof options === 'string') {
@@ -195,7 +207,7 @@ export function runImageCleanup(argv: string[], output: Output = console): numbe
             output.log(`  npm run images:cleanup -- ${planFlags(plan)}`);
             output.log(`  npx tsx scripts/imageCleanup.ts ${planFlags(plan)}`);
         }
-        return 0;
+        return plan.uncheckedFolders.length > 0 ? 1 : 0;
     }
 
     if (plan.hash !== options.plan) {
@@ -222,7 +234,7 @@ export function runImageCleanup(argv: string[], output: Output = console): numbe
         `Deleted ${summarize(result.deleted)}.` +
         (result.skipped.length > 0 ? ` Kept ${result.skipped.length} that no longer qualified.` : ''),
     );
-    return result.failed.length > 0 ? 1 : 0;
+    return result.failed.length > 0 || plan.uncheckedFolders.length > 0 ? 1 : 0;
 }
 
 function isMainModule(): boolean {

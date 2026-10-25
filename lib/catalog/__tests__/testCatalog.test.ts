@@ -181,7 +181,7 @@ describe('createTestCatalog', () => {
             const catalog = await createTestCatalog({ root, photos: 1, series: 1 });
             expect(catalog.root).toBe(root);
             await catalog.cleanup();
-            expect(fs.existsSync(path.join(root, 'authored', 'site.json'))).toBe(true);
+            expect(fs.existsSync(path.join(root, 'authored', 'site', 'v1.json'))).toBe(true);
         } finally {
             fs.rmSync(parent, { recursive: true, force: true });
         }

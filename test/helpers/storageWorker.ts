@@ -7,10 +7,13 @@
  *   `exit <id>` to `log` around a `holdMs` hold, and prints its takeover.
  * - `crash-write {file, content}` starts an atomic write and SIGKILLs itself
  *   just before the rename, the way a power cut would.
+ * - `crash-version {dir, value, expected}` starts a versioned write and
+ *   SIGKILLs itself once its temp is staged, before the link.
  */
 
 import fs from 'node:fs';
 import { atomicWriteFile } from '../../lib/storage/atomicWrite';
+import { writeVersionedDocument, type VersionedDocument } from '../../lib/storage/document';
 import { withLock } from '../../lib/storage/lock';
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -47,9 +50,21 @@ async function crashWrite(args: { file: string; content: string }): Promise<void
     });
 }
 
+async function crashVersion(args: { dir: string; value: VersionedDocument; expected: number }): Promise<void> {
+    await writeVersionedDocument(args.dir, args.value, args.expected, {
+        hooks: {
+            afterStage() {
+                process.kill(process.pid, 'SIGKILL');
+            },
+        },
+    });
+}
+
+const commands: Record<string, (args: never) => Promise<void>> = { lock, 'crash-write': crashWrite, 'crash-version': crashVersion };
+
 const [command, json] = process.argv.slice(2);
-const args = JSON.parse(json ?? '{}');
-const run = command === 'lock' ? lock(args as LockArgs) : command === 'crash-write' ? crashWrite(args) : Promise.reject(new Error(`Unknown command ${command}`));
+const args = JSON.parse(json ?? '{}') as never;
+const run = command in commands ? commands[command](args) : Promise.reject(new Error(`Unknown command ${command}`));
 run.catch((error: unknown) => {
     console.error(error);
     process.exitCode = 1;

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { canonicalJson } from '../storage/canonical';
 
 /** `ph_` plus a lowercase UUID v4. Minted once and never derived from path, bytes, time, or position. */
 export const PHOTO_ID_RE = /^ph_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -62,40 +63,7 @@ export function pixelDigestOf({ data, width, height, channels }: RawPixels, hash
     return digest(hasher, [header, data]);
 }
 
-function canonicalize(value: unknown, at: string): unknown {
-    if (typeof value === 'string') return value.normalize('NFC');
-    if (value === null || typeof value === 'boolean') return value;
-    if (typeof value === 'number') {
-        if (!Number.isFinite(value)) throw new TypeError(`canonicalJson: ${at} is ${value}, which JSON can't hold`);
-        return value;
-    }
-    // Array.from visits holes too, as undefined, which JSON would turn into null.
-    if (Array.isArray(value)) return Array.from(value, (inner, index) => canonicalize(inner, `${at}[${index}]`));
-    if (typeof value === 'object') {
-        const prototype = Object.getPrototypeOf(value) as unknown;
-        if (prototype !== Object.prototype && prototype !== null) {
-            throw new TypeError(`canonicalJson: ${at} is a ${(value as { constructor?: { name?: string } }).constructor?.name || 'class instance'}, not plain JSON`);
-        }
-        const entries = Object.entries(value)
-            .filter(([, inner]) => inner !== undefined)
-            .map(([key, inner]): [string, unknown] => [key.normalize('NFC'), canonicalize(inner, `${at}.${key}`)])
-            .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-        return Object.fromEntries(entries);
-    }
-    throw new TypeError(`canonicalJson: ${at} is ${value === undefined ? 'undefined' : `a ${typeof value}`}, not plain JSON`);
-}
-
-/**
- * JSON with object keys sorted at every level, array order kept, absent
- * optionals left out, strings and keys in NFC, and no whitespace, so equal
- * values always serialize the same way. Throws a TypeError for anything that
- * isn't plain JSON, such as a Date, a Map, a class instance, a function, a
- * bigint, a non-finite number, or undefined anywhere but as an object's
- * value, rather than serializing it as something else.
- */
-export function canonicalJson(value: unknown): string {
-    return JSON.stringify(canonicalize(value, 'the value'));
-}
+export { canonicalJson } from '../storage/canonical';
 
 export function profileIdOf(recipe: unknown, versions: { sharp: string; vips: string }): string {
     const hex = createHash('sha256').update(canonicalJson({ recipe, sharp: versions.sharp, vips: versions.vips })).digest('hex');

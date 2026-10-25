@@ -172,6 +172,34 @@ describe('photos:migrate --dry-run', () => {
         expect(section).not.toContain('series/rot6.jpg');
     });
 
+    it.skipIf(isRoot)("lists the top-level photos it couldn't read, or that were still changing, as not checked for orientation", async () => {
+        const lib = await library({
+            'incoming.jpg': fixture('landscape-rot6.jpg'),
+            'unreadable.jpg': fixture('landscape-rot6.jpg'),
+            'series/rot6.jpg': fixture('landscape-rot6.jpg'),
+        });
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', '');
+        vi.stubEnv('NODE_ENV', 'production');
+        // Modified right when the run looks, so it counts as still being written
+        const looked = new Date(Date.now() + 60_000);
+        fs.utimesSync(lib.file('incoming.jpg'), looked, looked);
+        fs.chmodSync(lib.file('unreadable.jpg'), 0o000);
+        try {
+            const { report } = await migrateDryRun(options({ outDir: tempOut(), sleep: async () => undefined }));
+            const section = report.split('## Orientation-tagged files\n')[1].split('\n## ')[0];
+            expect(section.trim().split('\n')).toEqual([
+                'None among the photos it read.',
+                '',
+                "Not checked, since they couldn't be read or were still changing:",
+                '',
+                '- `incoming.jpg`',
+                '- `unreadable.jpg`',
+            ]);
+        } finally {
+            fs.chmodSync(lib.file('unreadable.jpg'), 0o644);
+        }
+    });
+
     it('escapes a pipe in a path, so the Proposed photo IDs table keeps its columns', async () => {
         await library({ 'a|b.jpg': fixture('landscape.jpg') });
         vi.stubEnv('PHOTOGRAPHY_DATA_DIR', '');
@@ -193,6 +221,52 @@ describe('photos:migrate --dry-run', () => {
             `identity/migration/${path.basename(result.reportPath)}`,
         ]);
         expect(result.plan.dataRootState).toBe('uninitialized');
+    });
+
+    it('writes nothing at all in the data root with --out, not even a probe for a moment', async () => {
+        await library({ 'landscape.jpg': fixture('landscape.jpg') });
+        const data = dataRoot();
+        const out = tempOut();
+        const before = tree(data.root);
+        const touched: string[] = [];
+        const record = (target: unknown) => {
+            if (typeof target === 'string' && path.resolve(target).startsWith(data.root)) touched.push(target);
+        };
+        for (const name of ['writeFileSync', 'linkSync', 'mkdirSync', 'openSync'] as const) {
+            const real = fs[name] as (...args: unknown[]) => unknown;
+            vi.spyOn(fs, name).mockImplementation(((...args: unknown[]) => {
+                record(args[0]);
+                if (name === 'linkSync') record(args[1]);
+                return real(...args);
+            }) as never);
+        }
+        for (const name of ['writeFile', 'link', 'mkdir', 'open'] as const) {
+            const real = fs.promises[name] as (...args: unknown[]) => Promise<unknown>;
+            vi.spyOn(fs.promises, name).mockImplementation(((...args: unknown[]) => {
+                // Opening to read is fine; anything that can create or change a file is recorded.
+                if (name !== 'open' || (args[1] !== undefined && args[1] !== 'r')) record(args[0]);
+                if (name === 'link') record(args[1]);
+                return real(...args);
+            }) as never);
+        }
+
+        const result = await migrateDryRun(options({ outDir: out }));
+        vi.restoreAllMocks();
+        expect(path.dirname(result.planPath)).toBe(out);
+        expect(touched).toEqual([]);
+        expect(tree(data.root)).toEqual(before);
+    });
+
+    it('writes its report into a data root whose filesystem holds no hard links, since it writes no versioned document', async () => {
+        await library({ 'landscape.jpg': fixture('landscape.jpg') });
+        const data = dataRoot();
+        // As on exFAT
+        vi.spyOn(fs, 'linkSync').mockImplementation(() => {
+            throw Object.assign(new Error('ENOTSUP: operation not supported, link'), { code: 'ENOTSUP' });
+        });
+        const result = await migrateDryRun(options()).finally(() => vi.restoreAllMocks());
+        expect(path.dirname(result.planPath)).toBe(identityPaths(data.root).migration);
+        expect(result.plan.dataRootState).toBe('ready');
     });
 
     it('requires --out when the data root is missing, and creates nothing', async () => {
@@ -245,8 +319,8 @@ describe('photos:migrate --dry-run', () => {
         await expect(migrateDryRun(options({ outDir: out }))).rejects.toMatchObject({ name: 'DryRunRefusedError', exitCode: 1 });
 
         writeDataRootMarker(data.root);
-        fs.mkdirSync(identityPaths(data.root).dir);
-        fs.writeFileSync(identityPaths(data.root).registry, JSON.stringify({ schemaVersion: 2, version: 3 }));
+        fs.mkdirSync(identityPaths(data.root).registry, { recursive: true });
+        fs.writeFileSync(path.join(identityPaths(data.root).registry, 'v3.json'), JSON.stringify({ schemaVersion: 2, version: 3 }));
         await expect(migrateDryRun(options({ outDir: out }))).rejects.toBeInstanceOf(UnsupportedSchemaError);
         expect(fs.existsSync(out)).toBe(false);
     });
@@ -427,6 +501,14 @@ describe('scripts/photos.ts', { timeout: 120_000 }, () => {
             pendingFacts: 1,
             watcher: null,
         });
+
+        // A registry edited in place is a registry error, with the copy that recovers it.
+        const newest = path.join(identityPaths(data.root).registry, 'v1.json');
+        fs.writeFileSync(newest, fs.readFileSync(newest, 'utf8').replace('"pendingFacts": [', '"pendingFacts": [ ').replace('"updatedAt": "', '"updatedAt": "x'));
+        const edited = await runTsx('scripts/photos.ts', ['identity', 'status'], { env: { PHOTOGRAPHY_LIBRARY_DIR: lib.root, PHOTOGRAPHY_DATA_DIR: data.root } });
+        expect(edited.code).toBe(1);
+        expect(edited.stdout).toContain('Registry: unreadable');
+        expect(edited.stdout).toContain('cp -n v1.json v2.json');
 
         const unset = await runTsx('scripts/photos.ts', ['identity', 'status'], { env: { PHOTOGRAPHY_DATA_DIR: '', NODE_ENV: 'production' } });
         expect(unset.code).toBe(1);

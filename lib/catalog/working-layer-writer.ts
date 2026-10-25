@@ -1,7 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { dataRoot, dataRootStatus } from '../storage/config';
-import { readJsonFile, StaleVersionError, versionOf, writeVersionedDocument, type VersionedWriteOptions } from '../storage/document';
+import {
+    CorruptDocumentError,
+    EditedInPlaceError,
+    readVersionedDocument,
+    StaleVersionError,
+    writeVersionedDocument,
+    type StoredVersion,
+    type VersionedWriteHooks,
+} from '../storage/document';
 import { hasErrorCode, PRIVATE_DIR_MODE, realpathLoose } from '../storage/fsx';
 import { LockTimeoutError, withLock, type LockContext, type LockRecord } from '../storage/lock';
 import { CATALOG_SCHEMA_VERSION, parseAuthoredRecord, type AuthoredKind, type SchemaIssue } from './schema';
@@ -15,7 +23,7 @@ import type {
     AuthoredSite,
     AuthoredSiteInput,
 } from './types';
-import { authoredPaths, authoredRecordFile, isRecordId, readActivePointer } from './working-layer';
+import { authoredPaths, authoredRecordDir, isRecordId, readActivePointer } from './working-layer';
 
 /**
  * The one writer of the authored working layer. The public reader, the
@@ -63,7 +71,7 @@ export interface WriteAuthoredOptions {
     /** How long to wait for the lock when not reusing one. */
     waitMs?: number;
     /** Test hooks, passed to writeVersionedDocument(). */
-    hooks?: VersionedWriteOptions['hooks'];
+    hooks?: VersionedWriteHooks;
 }
 
 const MANAGED = new Set(['schemaVersion', 'version', 'baseRevisionId']);
@@ -80,9 +88,24 @@ async function ensureFolder(dir: string): Promise<void> {
     }
 }
 
-/** The version a record's file holds now, 0 when there is none. */
-async function storedVersion(file: string): Promise<number> {
-    return versionOf(file, await readJsonFile(file));
+/** The newest stored version of a record, or null. A version that can't be used is INVALID_RECORD, with how to fix it. */
+async function readStored(dir: string, ref: { kind: AuthoredKind; id: string }): Promise<StoredVersion | null> {
+    try {
+        return await readVersionedDocument(dir);
+    } catch (error) {
+        if (error instanceof EditedInPlaceError) {
+            const { version } = error;
+            throw new AuthoredWriteError(
+                'INVALID_RECORD',
+                ref,
+                `The stored ${ref.kind} record ${ref.id} was edited in place (v${version}.json). To keep the edit, copy it to the next number while no command runs (cp -n v${version}.json v${version + 1}.json), then write again.`,
+            );
+        }
+        if (error instanceof CorruptDocumentError) {
+            throw new AuthoredWriteError('INVALID_RECORD', ref, `The stored ${ref.kind} record ${ref.id} can't be read: ${error.reason}. Fix it by hand first.`);
+        }
+        throw error;
+    }
 }
 
 async function commit(
@@ -90,24 +113,13 @@ async function commit(
     record: AuthoredRecordInput,
     ref: { kind: AuthoredKind; id: string },
     expectedVersion: number,
-    hooks: WriteAuthoredOptions['hooks'],
+    hooks: VersionedWriteHooks | undefined,
 ): Promise<AuthoredRecord> {
-    const file = authoredRecordFile(root, ref.kind, ref.id);
-    let existingText: string | null = null;
-    try {
-        existingText = await fs.promises.readFile(file, 'utf8');
-    } catch (error) {
-        if (!hasErrorCode(error, 'ENOENT')) throw error;
-    }
+    const dir = authoredRecordDir(root, ref.kind, ref.id);
+    const stored = await readStored(dir, ref);
     let existing: AuthoredRecord | null = null;
-    if (existingText !== null) {
-        let value: unknown;
-        try {
-            value = JSON.parse(existingText);
-        } catch {
-            throw new AuthoredWriteError('INVALID_RECORD', ref, `The stored ${ref.kind} record ${ref.id} is not valid JSON. Fix or remove it by hand first.`);
-        }
-        const parsed = parseAuthoredRecord(ref.kind, value);
+    if (stored !== null) {
+        const parsed = parseAuthoredRecord(ref.kind, stored.value);
         if (!parsed.ok) {
             const message = parsed.error.reason === 'unknown-schema-version'
                 ? `The stored ${ref.kind} record ${ref.id} comes from a newer build, which this one can't read.`
@@ -130,19 +142,14 @@ async function commit(
 
     const paths = authoredPaths(root);
     await ensureFolder(paths.dir);
-    if (ref.kind !== 'site') await ensureFolder(path.dirname(file));
+    if (ref.kind !== 'site') await ensureFolder(path.dirname(dir));
     // The lock keeps writers apart only while it holds. One past its lease may still be between its read and its
-    // rename, so the version it stores is claimed first, and of two writers at one version only one gets through.
+    // commit, so the commit is a compare-and-swap too, and of two writers at one version only one gets through.
     try {
-        return await writeVersionedDocument(file, parsed.value, expectedVersion, { hooks });
+        return await writeVersionedDocument(dir, parsed.value, expectedVersion, { hooks });
     } catch (error) {
         if (!(error instanceof StaleVersionError)) throw error;
-        // A claim that a write which didn't finish holds keeps the next version, while the file still reads this one.
-        const stored = await storedVersion(file).catch(() => error.found);
-        const message = stored === expectedVersion
-            ? `The ${ref.kind} record ${ref.id} is at version ${stored}, but a write that didn't finish holds version ${stored + 1}.`
-            : `The ${ref.kind} record ${ref.id} is at version ${stored}, not ${expectedVersion}.`;
-        throw new AuthoredWriteError('VERSION_CONFLICT', ref, message, { expectedVersion, foundVersion: stored });
+        throw new AuthoredWriteError('VERSION_CONFLICT', ref, `The ${ref.kind} record ${ref.id} is at version ${error.found}, not ${expectedVersion}.`, { expectedVersion, foundVersion: error.found });
     }
 }
 
@@ -150,9 +157,10 @@ async function commit(
  * Write one authored record with compare-and-swap on `version`. Takes
  * `withLock('authored', {leaseMs: 10_000})`, or reuses `lock` when the caller
  * already holds it. Fails with VERSION_CONFLICT unless the stored record is at
- * `expectedVersion` (0 for none), and writes it at the next version, claimed
- * as writeVersionedDocument() claims it, so of two writers that read one
- * version only one stores the next, even when one of them lost the lock. An
+ * `expectedVersion` (0 for none), and commits it as the next version file in
+ * the record's folder, as writeVersionedDocument() commits it, so of two
+ * writers that read one version only one stores the next, even when one of
+ * them lost the lock. A record edited in place is INVALID_RECORD. An
  * existing record keeps its `baseRevisionId`; a new one takes the active
  * revision, or null before the first activation.
  */
@@ -175,7 +183,7 @@ export async function writeAuthoredRecord(record: AuthoredRecordInput, options: 
     const named = options.root ?? dataRoot();
     if (named === null) throw new AuthoredWriteError('DATA_ROOT_NOT_READY', ref, 'PHOTOGRAPHY_DATA_DIR is not set.');
     const root = path.resolve(named);
-    const status = dataRootStatus({ write: true, root });
+    const status = dataRootStatus({ versioned: true, root });
     if (status.state !== 'ready') {
         throw new AuthoredWriteError('DATA_ROOT_NOT_READY', ref, `The data root is ${status.state}${status.detail ? `: ${status.detail}` : ''}.`);
     }

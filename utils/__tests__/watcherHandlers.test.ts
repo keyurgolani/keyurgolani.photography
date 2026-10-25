@@ -7,7 +7,7 @@ import type { FSWatcherEventMap } from 'chokidar';
 import sharp, { type Sharp } from 'sharp';
 import { dominantChannel, fixtureFiles, type Channel } from '../../test/fixtures/makeLibrary';
 import { fakeCaseInsensitiveDisk, fakeCaseSensitiveDisk } from '../../test/helpers/caseDisk';
-import { REPO_ROOT } from '../../test/helpers/runTsx';
+import { REPO_ROOT, runTsx } from '../../test/helpers/runTsx';
 import { createTempLibrary, derivativePaths, type TempLibrary } from '../../test/helpers/tempLibrary';
 import { baseNameOf, ownerOf, processImage } from '../imageOptimizer';
 import {
@@ -152,6 +152,22 @@ function setMtime(relativePath: string, mtimeMs: number): void {
     fs.utimesSync(lib.file(relativePath), time, time);
 }
 
+/** The outputs' inodes, which a rewrite replaces. */
+function inodes(relativePaths: string[]): number[] {
+    return relativePaths.map((relativePath) => fs.statSync(lib.file(relativePath)).ino);
+}
+
+/** Counts the listings of the library root. */
+function countRootListings(): { count: number } {
+    const listings = { count: 0 };
+    const realReaddirSync = fs.readdirSync;
+    vi.spyOn(fs, 'readdirSync').mockImplementation(((target: fs.PathLike, options?: unknown) => {
+        if (path.resolve(String(target)) === path.resolve(lib.root)) listings.count += 1;
+        return (realReaddirSync as (target: fs.PathLike, options?: unknown) => unknown)(target, options);
+    }) as unknown as typeof fs.readdirSync);
+    return listings;
+}
+
 describe('watcher handlers', { timeout: 60_000 }, () => {
     it('onUnlink deletes nothing, leaves the set as it was, and points at images:cleanup', async () => {
         await handlers.onAdd(lib.file('landscape.jpg'));
@@ -227,6 +243,43 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
             expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
         });
 
+        it('keeps --force for the owner when a change to a later source of its set drops its startup job', async () => {
+            const original = fs.readFileSync(lib.file('portrait.png'));
+            // A set built from other pixels, under a source put back older than it, which only --force rebuilds
+            fs.writeFileSync(lib.file('portrait.png'), await sharp({ create: { width: 640, height: 960, channels: 3, background: { r: 200, g: 30, b: 30 } } }).png().toBuffer());
+            await processImage('portrait.png');
+            expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
+            fs.writeFileSync(lib.file('portrait.png'), original);
+            setMtime('portrait.png', Date.parse('2001-01-01T00:00:00Z'));
+            fs.copyFileSync(lib.file('portrait.png'), lib.file('portrait.webp'));
+            const single = newHandlers();
+            // Decode the portrait sources now, so the gate holds landscape.jpg's first encode and not the owner check.
+            expect(await ownerOf('portrait.webp')).toBe('portrait.png');
+            const held = gate.arm();
+            const batch = single.queueStartupBatch({ force: true });
+            await held.reached;
+            const change = single.onChange(lib.file('portrait.webp'));
+            held.release();
+
+            expect(await batch).toEqual({ processed: ['landscape.jpg', 'square.webp'], skipped: ['portrait.png'], errors: [] });
+            await change;
+            expect(await outputChannels('portrait')).toEqual(Array(7).fill('green'));
+        });
+
+        it('leaves the set alone when a source before its owner that never decoded changes', async () => {
+            fs.writeFileSync(lib.file('landscape.jpeg'), corrupt);
+            expect(await processOnce(handlers, { force: true, logger })).toBe(0);
+            const before = inodes(LANDSCAPE);
+            fs.writeFileSync(lib.file('landscape.jpeg'), Buffer.concat([corrupt, Buffer.from([0])]));
+            // Two events for one save, so the second job finds it decoded already at the version it has now
+            await Promise.all([handlers.onChange(lib.file('landscape.jpeg')), handlers.onChange(lib.file('landscape.jpeg'))]);
+
+            expect(inodes(LANDSCAPE)).toEqual(before);
+            expect(await outputChannels('landscape')).toEqual(Array(7).fill('red'));
+            expect(logs).toContain('[ImageWatcher] Skipping landscape.jpeg: it shares its derivatives with landscape.jpg.');
+            expect(logs.filter((line) => line.includes('Rebuilt'))).toEqual([]);
+        });
+
         it('rebuilds the set from a new file that takes it over, whatever its mtime', async () => {
             await handlers.onAdd(lib.file('portrait.png'));
             expect(await outputChannels('portrait')).toEqual(Array(7).fill('green'));
@@ -246,6 +299,49 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
             await handlers.onChange(lib.file('portrait.jpg'));
             expect(await outputChannels('portrait')).toEqual(Array(7).fill('green'));
             expect(logs).toContain('[ImageWatcher] Rebuilt the set portrait.jpg shared from portrait.png, which owns it now.');
+        });
+
+        it('still rebuilds from the next source when something decoded the changed owner again before its change job', async () => {
+            fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+            await handlers.onAdd(lib.file('portrait.jpg'));
+            expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
+            fs.writeFileSync(lib.file('portrait.jpg'), corrupt);
+            // As a job for another source of the set would, ahead of this change's job
+            expect(await ownerOf('portrait.png')).toBe('portrait.png');
+            await handlers.onChange(lib.file('portrait.jpg'));
+            expect(await outputChannels('portrait')).toEqual(Array(7).fill('green'));
+            expect(logs).toContain('[ImageWatcher] Rebuilt the set portrait.jpg shared from portrait.png, which owns it now.');
+        });
+
+        it('rebuilds from the next source when another job decoded the changed owner between two saves of it', async () => {
+            fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+            await handlers.onAdd(lib.file('portrait.jpg'));
+            expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
+            fs.writeFileSync(lib.file('portrait.jpg'), corrupt);
+            // A job for a third source of the set decodes it between the two writes of one save.
+            fs.copyFileSync(lib.file('portrait.png'), lib.file('portrait.webp'));
+            expect(await ownerOf('portrait.webp')).toBe('portrait.png');
+            fs.writeFileSync(lib.file('portrait.jpg'), Buffer.concat([corrupt, Buffer.from([0])]));
+            await handlers.onChange(lib.file('portrait.jpg'));
+            expect(await outputChannels('portrait')).toEqual(Array(7).fill('green'));
+            expect(logs).toContain('[ImageWatcher] Rebuilt the set portrait.jpg shared from portrait.png, which owns it now.');
+        });
+
+        it('rebuilds from the next source when the owner went bad while the watcher was down', async () => {
+            fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+            // Another process built the set, so this one doesn't know what built it.
+            const run = await runTsx('scripts/imageWatcher.ts', ['--once'], {
+                env: { PHOTOGRAPHY_LIBRARY_DIR: lib.root, PHOTOGRAPHY_DATA_DIR: path.join(lib.root, '..', 'no-data-root') },
+            });
+            expect(run.code, run.stderr).toBe(0);
+            expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
+            fs.writeFileSync(lib.file('portrait.jpg'), corrupt);
+            // The restarted watcher decodes it at startup, before the next save of it brings a change event.
+            const restarted = newHandlers();
+            expect(await ownerOf('portrait.png')).toBe('portrait.png');
+            fs.writeFileSync(lib.file('portrait.jpg'), Buffer.concat([corrupt, Buffer.from([0])]));
+            await restarted.onChange(lib.file('portrait.jpg'));
+            expect(await outputChannels('portrait')).toEqual(Array(7).fill('green'));
         });
 
         it('writes nothing for an add or a change of a source whose set another owns', async () => {
@@ -344,6 +440,18 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
         expect(await outputChannels('landscape')).toEqual(Array(7).fill('blue'));
         expect(logs).toContain('[ImageWatcher] Processed: landscape.jpg');
         expect(lib.tempFiles()).toEqual([]);
+    });
+
+    it('onAdd lists the library once, for a set of its own or one it takes over', async () => {
+        const listings = countRootListings();
+        await handlers.onAdd(lib.file('landscape.jpg'));
+        expect(listings.count).toBe(1);
+
+        fs.copyFileSync(lib.file('landscape.jpg'), lib.file('landscape.jpeg'));
+        listings.count = 0;
+        await handlers.onAdd(lib.file('landscape.jpeg'));
+        expect(listings.count).toBe(1);
+        expect(logs).toContain('[ImageWatcher] Rebuilt the set landscape.jpeg now owns from it.');
     });
 
     it('onChange after a save-by-rename regenerates the outputs from the new bytes', async () => {
