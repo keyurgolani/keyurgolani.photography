@@ -109,7 +109,7 @@
   align-items: center;
   gap: 0.5rem;
   padding: 0 0.75rem;
-  /* #1's rule 8: a control's boundary keeps 3:1 on the ground, above the mockup's fainter rule (styles/__tests__/surfaces.test.ts). */
+  /* #1's rule 8: an outlined control's boundary keeps 3:1 on the ground, above the mockup's fainter rule (styles/__tests__/surfaces.test.ts). */
   border: 1px solid var(--cc-rule-strong);
   border-radius: var(--gah-radius);
   background: transparent;
@@ -135,6 +135,12 @@
   color: var(--cc-label);
   opacity: 0.45;
   cursor: default;
+}
+
+/* The header's Close and Zoom are borderless text buttons, as in the approved header. Their icon and label carry rule 8
+   at about 17.9:1 on the bar. Hover still brings in a border, and focus the shared ring. Pressed Zoom fills, below. */
+.header .control {
+  border-color: transparent;
 }
 
 .zoom[aria-pressed='true'] {

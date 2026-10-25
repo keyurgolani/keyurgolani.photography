@@ -371,15 +371,25 @@ test.describe('presentation', () => {
         const controls = [button(page, 'Close'), button(page, 'Zoom'), button(page, 'Previous photograph'), button(page, 'Next photograph'), technical(page)];
         await checkSurface(page, { controls });
         // Rule 8: the boundaries and icons use the tokens styles/__tests__/surfaces.test.ts holds at 3:1 on the ground.
+        // Close and Zoom are the header's borderless text buttons, so their ink label and icon carry it.
         // The pointer rests on the photograph, so no control shows its hover border.
         const rest = await centerOf(stage(page));
         await page.mouse.move(rest.x, rest.y);
-        for (const control of controls) {
-            const paint = await control.evaluate((element) => ({
+        const paintOf = (control: Locator) =>
+            control.evaluate((element) => ({
                 border: getComputedStyle(element).borderTopColor,
                 icon: getComputedStyle(element.querySelector('svg') ?? element).color,
             }));
-            expect(paint, `${control}`).toEqual({ border: 'rgba(255, 255, 255, 0.38)', icon: 'rgb(246, 244, 238)' });
+        for (const [index, control] of controls.entries()) {
+            const border = index < 2 ? 'rgba(0, 0, 0, 0)' : 'rgba(255, 255, 255, 0.38)';
+            expect(await paintOf(control), `${control}`).toEqual({ border, icon: 'rgb(246, 244, 238)' });
+        }
+        // A fine pointer still brings a border in on Close and Zoom.
+        if (!testInfo.project.use.hasTouch) {
+            for (const control of controls.slice(0, 2)) {
+                await control.hover();
+                expect((await paintOf(control)).border, `${control} on hover`).toBe('rgb(246, 244, 238)');
+            }
         }
         for (const name of ['Previous photograph', 'Next photograph']) {
             expect(await button(page, name).evaluate((element) => getComputedStyle(element).backgroundColor)).toBe('rgba(8, 11, 10, 0.9)');

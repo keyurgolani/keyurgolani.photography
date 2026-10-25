@@ -123,8 +123,9 @@ describe('the Chromatic Chapters controls', () => {
   };
   const grounds = ['--cc-ground', '--cc-band-edge', '--cc-band-mid'];
 
-  // #1's rule 8 on the Viewer's ground (#9): control boundaries and icons keep 3:1. Close, Zoom, and the
-  // technical toggle sit on --cc-chrome bars, and Previous and Next are --cc-chrome plates on the bare ground.
+  // #1's rule 8 on the Viewer's ground (#9): control boundaries and icons keep 3:1. The technical toggle sits on a
+  // --cc-chrome bar, and Previous and Next are --cc-chrome plates on the bare ground. Close and Zoom, on the header's
+  // bar, have no boundary at rest, so their label and icon carry it.
   it.each(grounds)('keeps a control boundary at 3:1 against the bar it sits on, over %s', (ground) => {
     const bar = over(rgba('--cc-chrome'), rgba(ground));
     expect(ratio(over(rgba('--cc-rule-strong'), bar), bar)).toBeGreaterThanOrEqual(3);
@@ -139,6 +140,24 @@ describe('the Chromatic Chapters controls', () => {
 
   it.each(grounds)('keeps the icons, in --cc-ink, at 3:1 on a plate over %s', (ground) => {
     expect(ratio(rgba('--cc-ink'), over(rgba('--cc-chrome'), rgba(ground)))).toBeGreaterThanOrEqual(3);
+  });
+
+  it.each(grounds)('keeps the borderless Close and Zoom label and icon, in --cc-ink, at 4.5:1 on the header bar over %s', (ground) => {
+    expect(ratio(rgba('--cc-ink'), over(rgba('--cc-chrome'), rgba(ground)))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('draws the 3:1 boundary on the outlined controls and none on the header\'s Close and Zoom at rest', () => {
+    const viewer = read('../components/viewer/StoryViewer.module.css');
+    const declared = (selector: string, prop: string) => {
+      const found: string[] = [];
+      viewer.walkRules((rule) => {
+        if (rule.selector === selector && rule.parent?.type === 'root') rule.walkDecls(prop, (decl) => void found.push(decl.value));
+      });
+      return found;
+    };
+    expect(declared('.control', 'border')).toEqual(['1px solid var(--cc-rule-strong)']);
+    expect(declared('.step', 'border')).toEqual(['1px solid var(--cc-rule-strong)']);
+    expect(declared('.header .control', 'border-color')).toEqual(['transparent']);
   });
 
   it('fails the fainter --cc-rule as a boundary, which is why the controls use --cc-rule-strong', () => {
