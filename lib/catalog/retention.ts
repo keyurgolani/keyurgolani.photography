@@ -12,7 +12,7 @@ import { CATALOG_LOCK, CatalogIntegrityError, listActivations, readLastPublish }
 import { holderText } from './rollback';
 import { parseCandidateFile, REVISION_ID_RE } from './schema';
 import { AUTHORED_LOCK } from './working-layer-writer';
-import { catalogPaths, readActivePointer } from './working-layer';
+import { catalogPaths } from './working-layer';
 
 /**
  * #15's retention and GC, 15-3: `photos gc` and `photos gc --apply
@@ -27,8 +27,9 @@ import { catalogPaths, readActivePointer } from './working-layer';
  *     live build's folder is skipped.
  *   - `catalog/candidates/<id>.json`, a compile #13's publish wrote that
  *     never became a revision, once it is older than GC_GRACE_MS and no
- *     revision file, activation record, active pointer, or last-publish
- *     summary names its ID.
+ *     revision file, activation record, or last-publish summary names its
+ *     ID. An active pointer naming it with no revision file stops GC
+ *     altogether, since references() refuses that root.
  *
  * It never deletes an asset, a revision, an activation, the pointer, a
  * working-layer record, the registry, `edits/`, or anything it can't
@@ -62,7 +63,6 @@ export type GcKeptReason =
     | 'not-a-regular-file'
     | 'has-revision'
     | 'named-by-activation'
-    | 'named-by-active-pointer'
     | 'named-by-last-publish';
 
 export interface GcEntry {
@@ -136,6 +136,8 @@ export interface GcResult {
 export interface GcHooks {
     /** Runs just before each delete, under every lock. A test changes the data root here. */
     beforeDelete?(entry: GcEntry): void | Promise<void>;
+    /** Runs after an entry's last check and before the delete-time check of its folders. A test changes a folder here. */
+    afterRecheck?(entry: GcEntry): void | Promise<void>;
 }
 
 export interface GcOptions {
@@ -186,12 +188,30 @@ export function planDigest(graceMs: number, entries: readonly GcEntry[]): string
     return `gc_${createHash('sha256').update(canonicalJson(body)).digest('hex')}`;
 }
 
+/** A folder GC checked, with the identity it had when it was checked. */
+interface CheckedFolder {
+    dir: string;
+    dev: number;
+    ino: number;
+}
+
+/** The folder a class lives in, and every folder from the data root down to it, each as it was checked. */
+interface ClassDir {
+    dir: string;
+    chain: CheckedFolder[];
+}
+
 /**
  * The folder a class lives in, checked: a real folder inside the real data
- * root, reached through no symlink. Null when it doesn't exist. Throws
- * UnsafePathError for anything else.
+ * root, reached through no symlink. The chain it returns starts at the data
+ * root itself and holds each folder's identity from the same lstat that
+ * checked it. Null when the folder doesn't exist. Throws UnsafePathError for
+ * anything else.
  */
-async function classDir(realRoot: string, segments: readonly string[]): Promise<string | null> {
+async function classDir(realRoot: string, segments: readonly string[]): Promise<ClassDir | null> {
+    const rootStat = await fs.promises.lstat(realRoot);
+    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) throw new UnsafePathError('The data root', 'is no longer the folder GC started in');
+    const chain: CheckedFolder[] = [{ dir: realRoot, dev: rootStat.dev, ino: rootStat.ino }];
     let current = realRoot;
     for (const segment of segments) {
         current = path.join(current, segment);
@@ -205,10 +225,12 @@ async function classDir(realRoot: string, segments: readonly string[]): Promise<
         const name = posix(path.relative(realRoot, current));
         if (stat.isSymbolicLink()) throw new UnsafePathError(name, 'is a symlink');
         if (!stat.isDirectory()) throw new UnsafePathError(name, 'is not a folder');
+        chain.push({ dir: current, dev: stat.dev, ino: stat.ino });
     }
-    // A case-insensitive disk could answer for another spelling, so the real path must be this one.
+    // The real path must be this one. That refuses a data root, or a folder above it, that no longer resolves to
+    // where GC started, and on a case-insensitive disk a folder that answers for another spelling.
     if ((await fs.promises.realpath(current)) !== current) throw new UnsafePathError(posix(path.relative(realRoot, current)), 'resolves somewhere else');
-    return current;
+    return { dir: current, chain };
 }
 
 /** Every file's size under `dir` and the newest change to it or anything in it, read with lstat, so no symlink is followed. */
@@ -268,14 +290,17 @@ async function existsAtAll(file: string): Promise<boolean> {
     }
 }
 
-/** The revision IDs a candidate must not be deleted under: every activation's, the pointer's, and the last publish's. */
+/**
+ * The revision IDs a candidate must not be deleted under: every activation's
+ * and the last publish's. The active pointer needs no entry here: one that
+ * names a revision with no file makes references() throw, and one whose
+ * revision exists is covered by the has-revision check.
+ */
 async function namedRevisions(root: string): Promise<Map<string, GcKeptReason>> {
     const named = new Map<string, GcKeptReason>();
     const lastPublish = await readLastPublish(root);
     for (const id of [lastPublish?.candidateId, lastPublish?.revisionId]) if (id) named.set(id, 'named-by-last-publish');
     for (const activation of await listActivations(root)) named.set(activation.revisionId, 'named-by-activation');
-    const pointer = await readActivePointer(root);
-    if (pointer) named.set(pointer.revisionId, 'named-by-active-pointer');
     return named;
 }
 
@@ -290,7 +315,7 @@ async function scan(root: string, realRoot: string, now: number, leaseMs: number
     const toDelete: GcEntry[] = [];
     const kept: GcKept[] = [];
 
-    const staging = await classDir(realRoot, [path.basename(stagingRoot(root))]);
+    const staging = (await classDir(realRoot, [path.basename(stagingRoot(root))]))?.dir;
     if (staging) {
         for (const entry of (await fs.promises.readdir(staging, { withFileTypes: true })).sort((a, b) => (a.name < b.name ? -1 : 1))) {
             if (!STAGING_ID.test(entry.name)) continue;
@@ -307,7 +332,7 @@ async function scan(root: string, realRoot: string, now: number, leaseMs: number
         }
     }
 
-    const candidates = await classDir(realRoot, ['catalog', 'candidates']);
+    const candidates = (await classDir(realRoot, ['catalog', 'candidates']))?.dir;
     if (candidates) {
         const named = await namedRevisions(root);
         const { revisionsDir } = catalogPaths(root);
@@ -332,13 +357,23 @@ async function scan(root: string, realRoot: string, now: number, leaseMs: number
     return { graceMs: GC_GRACE_MS, cutoff: iso(cutoffMs), delete: toDelete, kept, references: found.length, digest: planDigest(GC_GRACE_MS, toDelete) };
 }
 
-/** Check one entry again right before its delete, and return its absolute path. Throws if it changed, or for any path GC must not touch. */
-async function recheck(root: string, realRoot: string, entry: GcEntry, now: number): Promise<string> {
+interface Checked {
+    target: string;
+    /** The data root and the folders down to the target's parent, each with the identity classDir() checked. */
+    chain: CheckedFolder[];
+}
+
+/**
+ * Check one entry again right before its delete. Returns its absolute path
+ * and its folders' identities. Throws if it changed, or for any path GC must
+ * not touch.
+ */
+async function recheck(root: string, realRoot: string, entry: GcEntry, now: number): Promise<Checked> {
     if (!DELETABLE.some((shape) => shape.test(entry.path))) throw new UnsafePathError(entry.path, 'is not a path GC deletes');
     const segments = entry.path.split('/');
-    const parent = await classDir(realRoot, segments.slice(0, -1));
-    if (parent === null) throw new EntryChangedError(`${entry.path} is gone.`);
-    const target = path.join(parent, segments[segments.length - 1]);
+    const checkedDir = await classDir(realRoot, segments.slice(0, -1));
+    if (checkedDir === null) throw new EntryChangedError(`${entry.path} is gone.`);
+    const target = path.join(checkedDir.dir, segments[segments.length - 1]);
     let stat: fs.Stats;
     try {
         stat = await fs.promises.lstat(target);
@@ -355,7 +390,58 @@ async function recheck(root: string, realRoot: string, entry: GcEntry, now: numb
         const id = segments[segments.length - 1].replace(/\.json$/, '');
         if (await existsAtAll(path.join(catalogPaths(root).revisionsDir, `${id}.json`))) throw new EntryChangedError(`${entry.path} has a revision now.`);
     }
-    return target;
+    return { target, chain: checkedDir.chain };
+}
+
+/**
+ * Re-verify, synchronously and in the same tick as the delete that follows,
+ * that the data root still resolves to the folder GC started in and that
+ * every folder from it down to the target is the one classDir() checked, by
+ * identity, and no symlink. Node can't delete relative to an open folder, so
+ * this runs as close to the delete as it can.
+ */
+function assertSameFolders(realRoot: string, checked: Checked): void {
+    const changed = (dir: string) => new UnsafePathError(dir === realRoot ? 'The data root' : posix(path.relative(realRoot, dir)), 'changed just before the delete');
+    let resolved: string | null;
+    try {
+        resolved = fs.realpathSync(realRoot);
+    } catch (error) {
+        if (!hasErrorCode(error, 'ENOENT')) throw error;
+        resolved = null;
+    }
+    if (resolved !== realRoot) throw new UnsafePathError('The data root', 'no longer resolves to the folder GC started in');
+    for (const { dir, dev, ino } of checked.chain) {
+        let stat: fs.Stats;
+        try {
+            stat = fs.lstatSync(dir);
+        } catch (error) {
+            if (hasErrorCode(error, 'ENOENT')) throw changed(dir);
+            throw error;
+        }
+        if (stat.isSymbolicLink() || stat.dev !== dev || stat.ino !== ino) throw changed(dir);
+    }
+}
+
+/**
+ * An error for a message, without the absolute path a Node fs error carries:
+ * its code and the path relative to the data root, or "a path outside the
+ * data root", as 15-2's rollback does. Other errors keep their message, which
+ * catalog code writes relative already.
+ */
+export function errorText(error: unknown, roots: readonly string[]): string {
+    const errno = error as NodeJS.ErrnoException;
+    if (error instanceof Error && typeof errno.code === 'string' && typeof errno.path === 'string') {
+        const file = path.resolve(errno.path);
+        for (const root of roots) {
+            const relative = path.relative(root, file);
+            if (relative === '') return `${errno.code} on the data root`;
+            if (!relative.startsWith('..') && !path.isAbsolute(relative)) return `${errno.code} on ${posix(relative)}`;
+        }
+        return `${errno.code} on a path outside the data root`;
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    // Anything else that names the data root says it relative to it too.
+    return roots.reduce((text, root) => text.split(`${root}${path.sep}`).join('').split(root).join('the data root'), message);
 }
 
 /**
@@ -385,11 +471,14 @@ export async function runGc(options: GcOptions): Promise<GcResult> {
     };
 
     const status = dataRootStatus({ write: true, root });
-    if (status.state !== 'ready') return finish('DATA_ROOT_NOT_READY', `The data root is ${status.state}${status.detail ? `: ${status.detail}` : ''}. Nothing was deleted.`);
-    const realRoot = await fs.promises.realpath(root);
+    // The detail can carry a Node message with the root's absolute path, so it is said relative to the root.
+    const detail = status.detail ? `: ${errorText(new Error(status.detail), [root])}` : '';
+    if (status.state !== 'ready') return finish('DATA_ROOT_NOT_READY', `The data root is ${status.state}${detail}. Nothing was deleted.`);
+    let realRoot = root;
     if (applying) logEvent(logger, 'catalog.gc.started', { digest: options.apply });
 
     try {
+        realRoot = await fs.promises.realpath(root);
         return await withLock(CATALOG_LOCK, { root, leaseMs, waitMs }, async (catalogLock) => {
             try {
                 return await withLock(AUTHORED_LOCK, { root, leaseMs, waitMs }, (authoredLock) => held([catalogLock, authoredLock]));
@@ -407,7 +496,7 @@ export async function runGc(options: GcOptions): Promise<GcResult> {
         if (error instanceof UnsafePathError) return finish('UNSAFE_PATH', `${error.message.replace(/ Nothing was deleted\.$/, '')}${deletedSoFar()}`);
         if (error instanceof ReferenceScanError) return finish('INTEGRITY_MISMATCH', `${error.message.replace(/ Nothing was deleted\.$/, '')}${deletedSoFar()}`);
         if (error instanceof CatalogIntegrityError) return finish('INTEGRITY_MISMATCH', `${sentence(error.message)}${deletedSoFar()}`);
-        return finish('STORAGE_ERROR', `${sentence(error instanceof Error ? error.message : String(error))}${deletedSoFar()}`);
+        return finish('STORAGE_ERROR', `${sentence(errorText(error, [realRoot, root]))}${deletedSoFar()}`);
     }
 
     async function stillHeld(locks: readonly LockContext[]): Promise<boolean> {
@@ -433,13 +522,19 @@ export async function runGc(options: GcOptions): Promise<GcResult> {
                 if (entry.class === 'abandoned-staging') {
                     const id = entry.path.slice('staging/'.length);
                     await withLock(stagingLockName(id), { root, waitMs: 0, leaseMs: options.leaseMs }, async () => {
-                        // rm() unlinks a symlink inside the folder rather than following it.
-                        await fs.promises.rm(await recheck(root, realRoot, entry, clock()), { recursive: true, force: true });
+                        const checked = await recheck(root, realRoot, entry, clock());
+                        await hooks.afterRecheck?.(entry);
+                        assertSameFolders(realRoot, checked);
+                        // In the same tick as the check. rm() unlinks a symlink inside the folder rather than following it.
+                        await fs.promises.rm(checked.target, { recursive: true, force: true });
                     }).catch((error: unknown) => {
                         throw error instanceof LockTimeoutError ? new EntryChangedError(`A build holds ${stagingLockName(id)} now.`) : error;
                     });
                 } else {
-                    await fs.promises.unlink(await recheck(root, realRoot, entry, clock()));
+                    const checked = await recheck(root, realRoot, entry, clock());
+                    await hooks.afterRecheck?.(entry);
+                    assertSameFolders(realRoot, checked);
+                    await fs.promises.unlink(checked.target);
                 }
             } catch (error) {
                 if (error instanceof EntryChangedError) {

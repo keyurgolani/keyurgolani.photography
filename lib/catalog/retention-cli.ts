@@ -27,7 +27,6 @@ const KEPT_TEXT: Record<GcKeptReason, string> = {
     'not-a-regular-file': 'not a regular file',
     'has-revision': 'a revision of the same ID exists',
     'named-by-activation': 'an activation names it',
-    'named-by-active-pointer': 'the active pointer names it',
     'named-by-last-publish': 'the last publish names it',
 };
 
@@ -35,7 +34,7 @@ function entryLine(entry: GcEntry): string {
     const at = new Date(entry.newestMs).toISOString();
     const why = entry.class === 'abandoned-staging'
         ? `no build holds its lock, and nothing in it changed since ${at}`
-        : `no revision, activation, active pointer, or last publish names it, and it was last written ${at}`;
+        : `no revision, activation, or last publish names it, and it was last written ${at}`;
     return `Delete ${entry.path}: ${entry.class}, ${count(entry.bytes, 'byte')}. ${entry.rule}: ${why}, more than 7 days ago.`;
 }
 
