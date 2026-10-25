@@ -11,7 +11,6 @@ import { realpathLoose } from '../storage/fsx';
 import {
     ACTION_EXIT_CODES,
     approveEvent,
-    deferEvent,
     dismissEvent,
     editEvent,
     placementText,
@@ -24,7 +23,7 @@ import {
 import { currentProfileId } from '../identity/profile';
 import { EVENT_ID_RE, EVENT_STATUSES, FAILURE_TEXT, needsJudgment, shortPhotoId, waitingReason, type CurationEvent, type CurationEventStatus, type Placement } from './events';
 import { placedItems } from './placement';
-import { confirmReplacement } from './resolutions';
+import { confirmReplacement, leaveInDraft } from './resolutions';
 import { EventUnusableError, listEvents, readEvent, type EventProblem } from './repository';
 import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from './text';
 
@@ -80,7 +79,8 @@ export function curationUsage(program: string = DEFAULT_PROGRAM): string {
   ${program} curation reopen <eventId> --version <n> [--reason <text>]
   ${program} curation confirm <eventId> --version <n>
         Confirm new asset revision: a replacement's photo record takes the new bytes, once all derivatives succeed.
-        To keep the current revision instead, leave it in draft with defer.
+        To keep the revision the draft pins instead, leave it in draft with defer. On a confirmed
+        replacement, reopen and then defer put back the revision the confirm replaced.
     Every item command also takes --base <revisionId|none> (the active revision it was reviewed against) and --actor <name>.
     approve and confirm need --base once a revision is active.`;
 }
@@ -424,7 +424,7 @@ async function replacementLines(root: string, event: CurationEvent): Promise<str
     return [
         `New derivative set: ${set}`,
         `Photo record pins: ${pinned}`,
-        `Confirm new asset revision keeps ${event.photoId}'s series, position, title, description, and story. Leave in draft (defer) keeps the current revision.`,
+        `Confirm new asset revision keeps ${event.photoId}'s series, position, title, description, and story. Leave in draft (defer) keeps the revision the record pinned before this item, and after a confirm puts that one back.`,
     ];
 }
 
@@ -470,7 +470,7 @@ async function show(root: string, command: Extract<CurationCommand, { command: '
                 ...(decision.reason ? [`"${printable(decision.reason)}"`] : []),
                 ...(decision.writes?.length ? [`wrote ${decision.writes.map((entry) => `${entry.record} v${entry.version}`).join(', ')}`] : []),
                 ...(decision.identityDecisionId ? [`identity decision ${decision.identityDecisionId}`] : []),
-                ...(decision.fromRevision ? [`in place of ${decision.fromRevision}`] : []),
+                ...(decision.fromRevision ? [decision.action === 'defer' ? `put back ${decision.fromRevision}` : `in place of ${decision.fromRevision}`] : []),
             ];
             lines.push(`  ${decision.at} ${decision.action} by ${printable(decision.by)}${extra.length ? `: ${extra.join(', ')}` : ''}`);
         }
@@ -508,7 +508,8 @@ async function run(context: CurationContext, command: CurationCommand): Promise<
         case 'approve':
             return report(await approveEvent({ ...input, choices: command.choices }));
         case 'defer':
-            return report(await deferEvent({ ...input, reason: command.reason }));
+            // #17's leave in draft: #14's defer for every type, and for a confirmed replacement, the earlier revision put back.
+            return report(await leaveInDraft({ ...input, reason: command.reason }));
         case 'dismiss':
             return report(await dismissEvent({ ...input, reason: command.reason }));
         case 'retry':

@@ -131,7 +131,7 @@ export const decisionSchema = z.strictObject({
     writes: z.array(writeSchema).optional(),
     /** The #10 identity decision a retry wrote. */
     identityDecisionId: z.string().optional(),
-    /** For a confirm: the asset revision the photo record pinned before it, which the event's replaces. */
+    /** For a confirm: the asset revision the photo record pinned before it, which the event's replaces. For a defer: the one it put back. */
     fromRevision: z.string().regex(ASSET_REVISION_RE).optional(),
 });
 export type CurationDecision = z.infer<typeof decisionSchema>;

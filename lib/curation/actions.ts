@@ -198,7 +198,7 @@ export function editEvent(input: ActionInput & { choices: Choices }): Promise<Ac
     });
 }
 
-/** Leave in draft. */
+/** Leave in draft. The CLI's defer runs #17's leaveInDraft(), which is this for every type but a confirmed replacement. */
 export function deferEvent(input: ActionInput & { reason?: string }): Promise<ActionOutcome> {
     return act(input, async (step) => {
         requireStatus(step.event, ['open', 'failed'], 'deferred');
@@ -235,7 +235,11 @@ export function reopenEvent(input: ActionInput & { reason?: string }): Promise<A
         const { event } = step;
         requireStatus(event, ['deferred', 'dismissed', 'approved'], 'reopened');
         const status: CurationEventStatus = event.type === 'processing-failure' ? 'failed' : 'open';
-        const notes = event.status === 'approved' ? [await reopenedApprovalNote(path.resolve(input.root), event)] : ['Reopened.'];
+        const notes = event.status !== 'approved'
+            ? ['Reopened.']
+            : event.type === 'replacement'
+                ? ['Reopened. The photo record keeps the revision it pins; leave it in draft (defer) to put back the one a confirm replaced, or confirm it again.']
+                : [await reopenedApprovalNote(path.resolve(input.root), event)];
         return { event: decided(step, input, { action: 'reopen', ...(input.reason ? { reason: input.reason } : {}) }, status), notes };
     });
 }
