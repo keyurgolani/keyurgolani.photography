@@ -78,8 +78,14 @@ export interface World {
     revisionId: string;
     /** P's replacement item, as the pass opened it. */
     eventId: string;
-    /** One reconcile pass with #14's sink and the candidate sink, as the watcher runs it. */
+    /**
+     * One reconcile pass with #14's sink and the candidate sink, as the
+     * watcher runs it: the same sinks for every pass of a world, as one
+     * watcher process keeps them, so only its first pass looks at every item.
+     */
     pass(): Promise<IdentityFact[]>;
+    /** Pass with new sinks, as a restarted watcher does. */
+    restartPass(): Promise<IdentityFact[]>;
     /** Build one set as the watcher's worker does: the writer, then the item settled. */
     build(job: DerivativeJob, faults?: WriterFaults, options?: Partial<BuildOptions>): ReturnType<typeof buildDerivativeSet>;
     job(assetRevision: string): DerivativeJob;
@@ -95,8 +101,8 @@ function sinks(): FactSink[] {
     return [createCurationSink({ logger: quiet }), createCandidateSink({ logger: quiet })];
 }
 
-async function passIn(): Promise<IdentityFact[]> {
-    const outcome = await runReconcilePass({ clock, idGen: nextId, logger: quiet, sinks: sinks(), clearDelivered: true });
+async function passIn(delivering: FactSink[] = sinks()): Promise<IdentityFact[]> {
+    const outcome = await runReconcilePass({ clock, idGen: nextId, logger: quiet, sinks: delivering, clearDelivered: true });
     if (outcome.status !== 'committed') throw new Error(`The pass didn't commit: ${JSON.stringify(outcome)}`);
     return outcome.facts;
 }
@@ -109,7 +115,7 @@ interface Template {
     parent: string;
     data: string;
     library: string;
-    facts: Omit<World, 'lib' | 'data' | 'root' | 'pass' | 'build' | 'job' | 'event' | 'cleanup'>;
+    facts: Omit<World, 'lib' | 'data' | 'root' | 'pass' | 'restartPass' | 'build' | 'job' | 'event' | 'cleanup'>;
 }
 
 let template: Template | null = null;
@@ -191,13 +197,15 @@ export async function createWorld(images: Images): Promise<World> {
     fs.cpSync(template.data, data.root, { recursive: true });
     const facts = template.facts;
     const build = settlingAfterBuild(buildDerivativeSet, { logger: quiet });
+    const processSinks = sinks();
     const job = (assetRevision: string): DerivativeJob => ({ photoId: facts.p, assetRevision, profileId: facts.profileId, path: P_PATH });
     return {
         ...facts,
         lib,
         data,
         root: data.root,
-        pass: passIn,
+        pass: () => passIn(processSinks),
+        restartPass: () => passIn(),
         job,
         build: (target, faults = {}, options = {}) => build(target, { logger: quiet, faults, ...options }),
         async event(id = facts.eventId) {
