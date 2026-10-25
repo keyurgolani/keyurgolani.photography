@@ -113,7 +113,22 @@ describe('dataRootState', () => {
         fs.mkdirSync(lib.file('data'));
         writeDataRootMarker(lib.file('data'));
         vi.stubEnv('PHOTOGRAPHY_DATA_DIR', lib.file('data'));
-        expect(dataRootStatus()).toMatchObject({ state: 'unavailable', cause: 'inside-served-folder', detail: expect.stringContaining('inside') });
+        expect(dataRootStatus()).toMatchObject({ state: 'unavailable', cause: 'inside-served-folder', detail: 'it is inside the photo library' });
+    });
+
+    it('names the served folder it is inside without printing that folder\'s path', () => {
+        // public/ under a temp working directory, so the repository's own public/ is never touched.
+        const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'photography-cwd-'));
+        cleanups.push(() => fs.promises.rm(cwd, { recursive: true, force: true }));
+        vi.spyOn(process, 'cwd').mockReturnValue(cwd);
+        vi.stubEnv('PHOTOGRAPHY_LIBRARY_DIR', path.join(cwd, 'library'));
+        const data = path.join(cwd, 'public', 'data');
+        fs.mkdirSync(data, { recursive: true });
+        writeDataRootMarker(data);
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', data);
+        const status = dataRootStatus();
+        expect(status).toMatchObject({ state: 'unavailable', cause: 'inside-served-folder', detail: 'it is inside the app\'s public folder' });
+        expect(status.detail).not.toContain(cwd);
     });
 
     it.runIf(caseInsensitiveTmp)('is unavailable inside the library even when the path is spelled in another case', async () => {
@@ -157,6 +172,19 @@ describe('dataRootState', () => {
     it.skipIf(isRoot)('is unavailable when data-root.json exists but cannot be read', () => {
         const data = tempDataRoot();
         fs.chmodSync(data.file(DATA_ROOT_FILE), 0o000);
-        expect(dataRootStatus()).toMatchObject({ state: 'unavailable', cause: 'marker-unreadable' });
+        const status = dataRootStatus();
+        expect(status).toMatchObject({ state: 'unavailable', cause: 'marker-unreadable', detail: `${DATA_ROOT_FILE} can't be read (EACCES)` });
+        expect(status.detail).not.toContain(data.root);
+    });
+
+    it('names a data root it can\'t stat by the error code, not by a message that carries its path', () => {
+        // A symlink to itself: stat fails with ELOOP, even as root.
+        const data = tempDataRoot();
+        const loop = data.file('loop');
+        fs.symlinkSync(loop, loop);
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', loop);
+        const status = dataRootStatus();
+        expect(status).toMatchObject({ state: 'unavailable', cause: 'not-readable', detail: 'it can\'t be read (ELOOP)' });
+        expect(status.detail).not.toContain(data.root);
     });
 });

@@ -154,7 +154,12 @@ export const activationSchema = z.strictObject({
 /** The active pointer: the newest version in `catalog/active/`, so `version` is that file's number. */
 export const activePointerSchema = z.strictObject({ schemaVersion: z.literal(CATALOG_SCHEMA_VERSION), version: positiveInt, revisionId, activationId });
 
-const conflictSchema = z.strictObject({ field: z.string().min(1), base: z.json(), active: z.json() });
+/**
+ * A field a rebase couldn't merge. `baseUnreadable` is set when the record's
+ * base revision couldn't be read, so `base` is null and the field may be one
+ * only the active revision changed. Without it, both sides changed the field.
+ */
+const conflictSchema = z.strictObject({ field: z.string().min(1), base: z.json(), active: z.json(), baseUnreadable: z.literal(true).optional() });
 const authoredFields = {
     schemaVersion: z.literal(CATALOG_SCHEMA_VERSION),
     /** Bumped on every tool write. The compare-and-swap key. */

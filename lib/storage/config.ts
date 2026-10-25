@@ -72,11 +72,21 @@ export function dataRoot(): string | null {
  * files or where the library scan would walk into them.
  */
 export function servedFolderContaining(target: string): string | null {
+    return servedFolderOf(target)?.folder ?? null;
+}
+
+/**
+ * The served folder `target` resolves inside, with a name for messages. The
+ * name carries no path, since the data-root detail reaches every command's
+ * output and the logs.
+ */
+function servedFolderOf(target: string): { folder: string; name: string } | null {
     const realTarget = realpathLoose(target);
-    for (const served of [libraryRoot(), path.join(process.cwd(), 'public')]) {
-        if (isInside(realTarget, realpathLoose(served))) return served;
-    }
-    return null;
+    const served = [
+        { folder: libraryRoot(), name: 'the photo library' },
+        { folder: path.join(process.cwd(), 'public'), name: 'the app\'s public folder' },
+    ];
+    return served.find(({ folder }) => isInside(realTarget, realpathLoose(folder))) ?? null;
 }
 
 function canAccess(target: string, mode: number): boolean {
@@ -117,6 +127,15 @@ function linkProblem(root: string, stat: fs.Stats): string | null {
     }
 }
 
+/**
+ * Why a read failed, by its error code. A system error's message names the
+ * full path, and these details reach every command's output and the logs.
+ */
+function failure(error: unknown): string {
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    return typeof code === 'string' ? code : 'an unexpected error';
+}
+
 type MarkerCheck = { kind: 'valid' } | { kind: 'absent' | 'invalid'; detail: string } | { kind: 'future' | 'unreadable'; detail: string };
 
 function checkMarker(root: string): MarkerCheck {
@@ -126,7 +145,7 @@ function checkMarker(root: string): MarkerCheck {
         text = fs.readFileSync(file, 'utf8');
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT')) return { kind: 'absent', detail: `${DATA_ROOT_FILE} is missing` };
-        return { kind: 'unreadable', detail: `${DATA_ROOT_FILE} can't be read: ${(error as Error).message}` };
+        return { kind: 'unreadable', detail: `${DATA_ROOT_FILE} can't be read (${failure(error)})` };
     }
     let marker: unknown;
     try {
@@ -173,12 +192,12 @@ export function dataRootStatus(
         stat = fs.statSync(/*turbopackIgnore: true*/ root);
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return { state: 'unavailable', root, cause: 'missing', detail: 'it does not exist' };
-        return { state: 'unavailable', root, cause: 'not-readable', detail: `it can't be read: ${(error as Error).message}` };
+        return { state: 'unavailable', root, cause: 'not-readable', detail: `it can't be read (${failure(error)})` };
     }
     if (!stat.isDirectory()) return { state: 'unavailable', root, cause: 'not-a-directory', detail: 'it is not a directory' };
 
-    const served = servedFolderContaining(root);
-    if (served !== null) return { state: 'unavailable', root, cause: 'inside-served-folder', detail: `it is inside ${served}` };
+    const served = servedFolderOf(root);
+    if (served !== null) return { state: 'unavailable', root, cause: 'inside-served-folder', detail: `it is inside ${served.name}` };
 
     if (!canAccess(root, fs.constants.R_OK | fs.constants.X_OK)) {
         return { state: 'unavailable', root, cause: 'not-readable', detail: 'it is not readable' };
