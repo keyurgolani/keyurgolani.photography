@@ -26,6 +26,7 @@ import { EVENT_ID_RE, EVENT_STATUSES, FAILURE_TEXT, needsJudgment, shortPhotoId,
 import { placedItems } from './placement';
 import { draftPlanText, readDraftPlan, replacedBy } from './pins';
 import { archiveMissing, bindReplacement, confirmReplacement, leaveInDraft, linkedNewItems } from './resolutions';
+import { decisionState, pendingMergeOf, type DecisionState } from './binds';
 import { EventUnusableError, listEvents, readEvent, type EventProblem } from './repository';
 import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from './text';
 
@@ -456,6 +457,31 @@ async function replacementLines(root: string, event: CurationEvent, registry: Re
     ];
 }
 
+/** What became of the item's latest bind: still waiting for the watcher, or refused, with #10's reason. */
+async function bindLines(root: string, event: CurationEvent): Promise<string[]> {
+    const bind = event.decisions.findLast((decision) => decision.action === 'bind' && decision.identityDecisionId !== undefined);
+    if (!bind?.identityDecisionId) return [];
+    const id = bind.identityDecisionId;
+    const where = bind.path ? ` for ${printable(bind.path)}` : '';
+    const found = await decisionState(root, id).catch((): DecisionState => ({ state: 'unknown' }));
+    switch (found.state) {
+        case 'pending':
+            return [`Bind pending: the watcher applies the decision ${id}${where} on its next pass, unless the file is still changing.`];
+        case 'rejected':
+            return [`Bind refused: the watcher rejected the decision ${id}${where}: ${printable(found.reason)}. Nothing changed. Bind another file, or settle it another way.`];
+        default:
+            return [];
+    }
+}
+
+/** For a new item whose photograph a pending bind merges: why approve refuses it. */
+async function pendingMergeLines(root: string, event: CurationEvent): Promise<string[]> {
+    if (event.type !== 'new' || event.photoId === null || (event.status !== 'open' && event.status !== 'deferred')) return [];
+    const merge = await pendingMergeOf(root, event.photoId).catch(() => null);
+    if (merge === null) return [];
+    return [`Bind pending: the decision ${merge.decisionId} merges this photograph into ${merge.into} on the watcher's next pass, so approve refuses it until then.`];
+}
+
 /**
  * #17's lines for a missing source: that the published output is protected,
  * the files linked to it, and the three ways to settle it.
@@ -471,7 +497,8 @@ async function missingLines(root: string, event: CurationEvent, registry: Regist
         lines.push(`Its source is back at ${printable(photo.source.path)}. The watcher closes this item on its next pass.`);
         return lines;
     }
-    const linked = await linkedNewItems(root, event.photoId).catch(() => []);
+    lines.push(...await bindLines(root, event));
+    const linked = registry === null ? [] : await linkedNewItems(root, event.photoId, registry).catch(() => []);
     for (const item of linked) {
         lines.push(`Linked: ${printable(item.derivedFacts.sourcePath)} holds other bytes at its last path, the new photograph ${shortPhotoId(item.photoId)} (${item.id}). curation bind gives them to ${event.photoId}.`);
     }
@@ -518,6 +545,7 @@ async function show(root: string, command: Extract<CurationCommand, { command: '
         `Asset revision: ${event.assetRevision ?? 'none'}`,
         ...(await replacementLines(root, event, registry)),
         ...(await missingLines(root, event, registry)),
+        ...(await pendingMergeLines(root, event)),
         ...failedBuildLines(event),
         `Observed: ${event.observedAt}${event.lastObservedAt !== event.observedAt ? `, last ${event.lastObservedAt}` : ''}`,
         ...factLines(event),
