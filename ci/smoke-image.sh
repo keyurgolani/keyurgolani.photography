@@ -283,10 +283,12 @@ grep -qix 'referrer-policy: no-referrer' <<<"$headers" || fail "curator's /curat
 grep -qix "content-security-policy: frame-ancestors 'none'" <<<"$headers" || fail "curator's /curation did not send frame-ancestors 'none'."
 code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -H 'Host: rebound.example:3001' "$CURATOR_URL/curation") || fail "GET /curation with another Host failed."
 [ "$code" = 421 ] || fail "GET /curation from curator with another Host returned $code, expected 421."
+code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -H 'Host: rebound.example:3001' "$CURATOR_URL/api/health") || fail "GET /api/health with another Host failed."
+[ "$code" = 421 ] || fail "GET /api/health from curator with another Host returned $code, expected 421."
 code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -X POST "$CURATOR_URL/curation") || fail "POST /curation failed."
 [ "$code" = 403 ] || fail "POST /curation from curator without an Origin returned $code, expected 403."
 compose rm --stop --force curator
-echo "web 404s the curator paths, and curator served /curation on 127.0.0.1:3001 with its headers and refused another Host and an Origin-less POST."
+echo "web 404s the curator paths, and curator served /curation on 127.0.0.1:3001 with its headers and refused another Host, on a public path too, and an Origin-less POST."
 
 # 6. The startup scan writes all seven derivatives for every fixture, and the
 #    watcher stays up.
