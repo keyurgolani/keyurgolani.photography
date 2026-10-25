@@ -92,22 +92,24 @@ If `./portfolio-data` is lost or comes up empty on a host whose library had IDs,
 While the stack runs, the watcher is the only process that writes the data root, and it writes the legacy derivatives in the library too. Stop it, archive both folders together, and start it again:
 
 ```bash
+mkdir -m 700 -p ~/photography-backups
 docker compose -f docker-compose.prod.yml stop image-watcher
-sudo sh -c 'umask 077 && tar -czf photography-$(date -u +%Y%m%dT%H%M%SZ).tar.gz public/assets/photos portfolio-data'
+(umask 077 && sudo tar -czf - public/assets/photos portfolio-data >~/photography-backups/photography-$(date -u +%Y%m%dT%H%M%SZ).tar.gz)
 docker compose -f docker-compose.prod.yml start image-watcher
 ```
 
-`sudo` lets `tar` read the uid 1001 files, and `umask 077` makes the archive readable by root only, since it holds the registry and its curator-only details. Keep archives in a folder only you can read, such as one made with `mkdir -m 700`, and copy them off the host the same way. `web` keeps serving meanwhile, since it only reads, but don't run `photos.mjs` commands while `tar` runs. `./.next-images-cache` needs no backup.
+`sudo` lets `tar` read the uid 1001 files. Your own shell writes the archive, so it belongs to you, and `umask 077` and the 0700 folder keep it readable by you only, since it holds the registry and its curator-only details. Copy it off the host the same way, into a folder only you can read. If `tar` reports an error, delete that archive and run the line again, since the redirect leaves a partial file behind. `web` keeps serving meanwhile, since it only reads, but don't run `photos.mjs` commands while `tar` runs. `./.next-images-cache` needs no backup.
 
 ## Restoring
 
-Restore both folders from the same archive, so the registry describes the library beside it. Move the current folders aside instead of deleting them until the restored stack checks out. Extracting as root with `-p` keeps the files' owners and modes:
+Restore both folders from the same archive, so the registry describes the library beside it. Move the current folders aside instead of deleting them until the restored stack checks out. The timestamp keeps a second restore from moving them inside an earlier one's. Extracting as root with `-p` keeps the files' owners and modes:
 
 ```bash
 docker compose -f docker-compose.prod.yml stop
-sudo mv public/assets/photos photos.before-restore
-sudo mv portfolio-data portfolio-data.before-restore
-sudo tar -xzpf photography-<timestamp>.tar.gz
+aside=before-restore-$(date -u +%Y%m%dT%H%M%SZ)
+sudo mv public/assets/photos "photos.$aside"
+sudo mv portfolio-data "portfolio-data.$aside"
+sudo tar -xzpf ~/photography-backups/photography-<timestamp>.tar.gz
 docker compose -f docker-compose.prod.yml up -d
 ```
 
@@ -117,8 +119,8 @@ If only the data root was lost and the library is fine, restore just `portfolio-
 
 ```bash
 docker compose -f docker-compose.prod.yml stop
-sudo mv portfolio-data portfolio-data.before-restore
-sudo tar -xzpf photography-<timestamp>.tar.gz portfolio-data
+sudo mv portfolio-data "portfolio-data.before-restore-$(date -u +%Y%m%dT%H%M%SZ)"
+sudo tar -xzpf ~/photography-backups/photography-<timestamp>.tar.gz portfolio-data
 docker compose -f docker-compose.prod.yml up -d
 ```
 
