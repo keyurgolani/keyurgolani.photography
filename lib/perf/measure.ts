@@ -34,3 +34,18 @@ export function imagesIn(model: unknown): ShippedImage[] {
     walk(model);
     return found;
 }
+
+/** How many arrays `model` holds at any depth, itself included, so a test can tell a sequence from a single record. */
+export function arraysIn(model: unknown): number {
+    let count = 0;
+    const walk = (value: unknown) => {
+        if (Array.isArray(value)) {
+            count += 1;
+            value.forEach(walk);
+        } else if (typeof value === 'object' && value !== null) {
+            Object.values(value).forEach(walk);
+        }
+    };
+    walk(model);
+    return count;
+}
