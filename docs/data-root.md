@@ -98,15 +98,19 @@ An edit that also changes or removes the stamp isn't caught. It reads as a versi
 
 ## Setting it up
 
-Before the first `up -d` with this compose file:
+Before the first `up -d` with this compose file, decide who owns the photos. If another process writes them, such as a file sync tool running as another user, don't `chown` them here. Run the block below as it is and follow [Who owns the photos](#who-owns-the-photos) for the photos folder:
 
 ```bash
 mkdir -p portfolio-data .next-images-cache
-sudo chown -R 1001:1001 public/assets/photos portfolio-data .next-images-cache
+sudo chown -R 1001:1001 portfolio-data .next-images-cache
 sudo chmod 700 portfolio-data
 ```
 
-The `chown -R` of `public/assets/photos` fits a host where nothing else writes the photos. If another process does, such as a file sync tool running as another user, leave it out and follow [Who owns the photos](#who-owns-the-photos) instead.
+On a host where nothing else writes the photos, also hand the whole folder to uid 1001:
+
+```bash
+sudo chown -R 1001:1001 public/assets/photos
+```
 
 `./.next-images-cache` is where `web` keeps the `/_next/image` copies it makes, so it has to belong to uid 1001 too. `docker-compose.prod.yml` never creates it, like the other two folders: a short-syntax bind of a missing folder has the Docker daemon create it, owned by root when the daemon runs as root, and `web` then can't write it. A host that ran the older compose file may already have one that Docker created that way, and the `chown` fixes it.
 
@@ -121,7 +125,7 @@ Both containers run as uid 1001, and each needs only part of the photos folder:
 | `web` | The originals, for their size and EXIF, and the derivatives it serves | Only `./.next-images-cache`, outside the photos folder |
 | `image-watcher` | The originals, in every folder of the library | The derivative folders (`thumbnails`, `medium`, `optimized`, `thumbnails-avif`, `medium-avif`, `optimized-avif`, `lqip`) and `cache/`, all at the top of the photos folder, and the data root |
 
-When nothing else writes the photos, the `chown -R` in [Setting it up](#setting-it-up) is the simple way to give uid 1001 all of that.
+When nothing else writes the photos, the second `chown -R` in [Setting it up](#setting-it-up) is the simple way to give uid 1001 all of that.
 
 When another process writes them, such as a file sync tool running as another user, a `chown -R` takes the originals away from it. The tool may then fail to update them, or hand them back to its own user on its next pass, and every change of owner makes the watcher's next identity pass read every photo again, as [Health](#health) says. Leave the originals with their owner, and hand uid 1001 only the folders the watcher writes, creating any that are missing:
 
