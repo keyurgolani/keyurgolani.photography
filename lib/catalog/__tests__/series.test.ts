@@ -8,7 +8,7 @@ import { createTestCatalog, type TestCatalog } from '../testing';
 import type { CandidateContent, RevisionContent } from '../types';
 import { readWorkingLayer } from '../working-layer';
 import { writeAuthoredRecord } from '../working-layer-writer';
-import { VARIANT_BYTES } from './catalogFixtures';
+import { shippedLadder, VARIANT_BYTES } from './catalogFixtures';
 
 const id = (n: number) => `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const P = Array.from({ length: 12 }, (_, n) => id(n + 1));
@@ -152,7 +152,7 @@ describe('seriesPageOf on a revision', () => {
         const cover = photoOf(content, P[1]);
         const entryImage = (photoId: string) => {
             const photo = photoOf(content, photoId);
-            return { width: photo.width, height: photo.height, variants: photo.variants };
+            return { width: photo.width, height: photo.height, variants: shippedLadder(photo.variants) };
         };
         const described = (photoId: string) => {
             const { alt } = photoOf(content, photoId);
@@ -179,7 +179,7 @@ describe('seriesPageOf on a revision', () => {
                     photoId: P[1],
                     position: 3,
                     href: `/work/fixture-a/photo/${P[1]}`,
-                    image: { width: cover.width, height: cover.height, variants: cover.variants, lqip: cover.lqip },
+                    image: { width: cover.width, height: cover.height, variants: shippedLadder(cover.variants), lqip: cover.lqip },
                     focalPoint: { x: 0.4, y: 0.6 },
                     crop: 'contain',
                 },
@@ -690,7 +690,7 @@ describe('the allowlist', () => {
         Object.assign(tampered.series[0], { visibility: 'published', internalNote: 'Fixture internal note' });
         (tampered.series[0].chapters[0] as Record<string, unknown>).note = 'Fixture chapter note';
         const result = page(readerOf(tampered as RevisionContent).getSeriesPage('fixture-a'));
-        expect(Object.keys(result.cover?.image.variants.w1200.webp ?? {}).sort()).toEqual(['bytes', 'height', 'url', 'width']);
+        expect(Object.keys(result.cover?.image.variants.w1200.webp ?? {}).sort()).toEqual(['url', 'width']);
         const json = JSON.stringify(result);
         for (const leak of ['/library/', '12.345', '/data/assets', 'internalNote', 'visibility', 'Fixture chapter note']) expect(json).not.toContain(leak);
     });

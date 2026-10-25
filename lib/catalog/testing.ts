@@ -130,17 +130,21 @@ export interface TestCatalogOptions {
     profileId?: string;
 }
 
-export interface TestCatalog {
-    root: string;
+/** What buildTestCatalog() returns: the records and content, with nothing on disk. */
+export interface TestCatalogContent {
     seed: number;
     profileId: string;
     site: AuthoredSite;
     series: AuthoredSeries[];
     photos: AuthoredPhoto[];
-    registry: Registry;
     /** What compile would produce: published series in Work order with their photos, sorted by ID. */
     content: CandidateContent;
     revisionId: string;
+}
+
+export interface TestCatalog extends TestCatalogContent {
+    root: string;
+    registry: Registry;
     /**
      * A rule context for a candidate: a copy of `content`, the working layer
      * as read from disk, a copy of the registry, no active revision, and the
@@ -250,32 +254,23 @@ function present(value: string | undefined): string | undefined {
     return value !== undefined && /\S/.test(value) ? value : undefined;
 }
 
-/**
- * Build a test catalog. Writes `data-root.json`, `authored/`, and
- * `identity/registry/`, plus `assets/<photoId>/<assetRevision>/<profileId>/`
- * with `withAssets` or `variantBytes`. Without either, the profile is
- * `pending` and no asset files exist, but `content` still describes the
- * variants as #10 would write them.
- */
-export async function createTestCatalog(options: TestCatalogOptions = {}): Promise<TestCatalog> {
+interface AssetDir {
+    dir: string;
+    manifest: AssetManifest;
+    files: { name: string; data: Buffer | null; bytes: number }[];
+}
+
+/** Everything createTestCatalog() writes, built in memory. Asset dirs are relative to the data root. */
+interface Composed extends TestCatalogContent {
+    registry: Registry;
+    manifests: AssetDir[];
+}
+
+async function compose(options: TestCatalogOptions): Promise<Composed> {
     const seed = options.seed ?? 1;
     const random = prng(seed);
     const profileId = options.profileId ?? currentProfileId();
     const assets: 'files' | 'sparse' | 'none' = options.withAssets ? 'files' : options.variantBytes ? 'sparse' : 'none';
-
-    let created: string | null = null;
-    let root: string;
-    if (options.root) {
-        root = path.resolve(options.root);
-        assertOutsideRepository(root);
-        if (fs.existsSync(root) && fs.readdirSync(root).length > 0) throw new Error(`${root} is not empty.`);
-    } else {
-        created = fs.mkdtempSync(path.join(os.tmpdir(), 'catalog-fixture-'));
-        root = path.join(created, 'data');
-        assertOutsideRepository(root);
-    }
-    await fs.promises.mkdir(root, { recursive: true, mode: PRIVATE_DIR_MODE });
-    await writeFileIn(path.join(root, DATA_ROOT_FILE), `${JSON.stringify({ schemaVersion: DATA_ROOT_SCHEMA_VERSION, initializedAt: FIXTURE_TIME }, null, 2)}\n`);
 
     const photoSpecs: TestPhotoSpec[] = Array.isArray(options.photos) ? options.photos : Array.from({ length: options.photos ?? 6 }, () => ({}));
     const seriesSpecs: TestSeriesSpec[] = Array.isArray(options.series) ? options.series : Array.from({ length: options.series ?? 2 }, () => ({}));
@@ -284,7 +279,7 @@ export async function createTestCatalog(options: TestCatalogOptions = {}): Promi
     const registry = emptyRegistry();
     const photos: AuthoredPhoto[] = [];
     const assetHalves = new Map<string, Omit<CandidatePhotoRecord, 'alt'> & { capturedDate: string | null }>();
-    const manifests: { dir: string; manifest: AssetManifest; files: { name: string; data: Buffer | null; bytes: number }[] }[] = [];
+    const manifests: AssetDir[] = [];
     for (const [index, spec] of photoSpecs.entries()) {
         const id = spec.id ?? `ph_${uuidFrom(random)}`;
         const assetRevision = `sha256-${sha256Hex(`fixture-asset:${seed}:${index}`)}`;
@@ -341,7 +336,7 @@ export async function createTestCatalog(options: TestCatalogOptions = {}): Promi
         });
         if (assets !== 'none') {
             manifests.push({
-                dir: path.join(root, 'assets', id, assetRevision, profileId),
+                dir: path.join('assets', id, assetRevision, profileId),
                 manifest: { schemaVersion: 1, photoId: id, assetRevision, profileId, variants: manifestVariants, lqip, createdAt: FIXTURE_TIME },
                 files,
             });
@@ -487,6 +482,57 @@ export async function createTestCatalog(options: TestCatalogOptions = {}): Promi
     };
     const revisionId = revisionIdOf(content);
 
+    return {
+        seed,
+        profileId,
+        site,
+        series,
+        photos,
+        registry,
+        manifests,
+        content,
+        revisionId,
+    };
+}
+
+/**
+ * The records and content createTestCatalog() would give for the
+ * same options, with nothing written: no data root, registry file, or asset
+ * files. For tests that read only the content, such as #6's payload budgets
+ * over thousands of photos, where writing tens of thousands of files would
+ * take minutes. `variantBytes` and `withAssets` still set every variant's
+ * declared size, and `root` is ignored.
+ */
+export async function buildTestCatalog(options: TestCatalogOptions = {}): Promise<TestCatalogContent> {
+    const { seed, profileId, site, series, photos, content, revisionId } = await compose(options);
+    return { seed, profileId, site, series, photos, content, revisionId };
+}
+
+/**
+ * Build a test catalog. Writes `data-root.json`, `authored/`, and
+ * `identity/registry/`, plus `assets/<photoId>/<assetRevision>/<profileId>/`
+ * with `withAssets` or `variantBytes`. Without either, the profile is
+ * `pending` and no asset files exist, but `content` still describes the
+ * variants as #10 would write them.
+ */
+export async function createTestCatalog(options: TestCatalogOptions = {}): Promise<TestCatalog> {
+    let created: string | null = null;
+    let root: string;
+    if (options.root) {
+        root = path.resolve(options.root);
+        assertOutsideRepository(root);
+        if (fs.existsSync(root) && fs.readdirSync(root).length > 0) throw new Error(`${root} is not empty.`);
+    } else {
+        created = fs.mkdtempSync(path.join(os.tmpdir(), 'catalog-fixture-'));
+        root = path.join(created, 'data');
+        assertOutsideRepository(root);
+    }
+    await fs.promises.mkdir(root, { recursive: true, mode: PRIVATE_DIR_MODE });
+    await writeFileIn(path.join(root, DATA_ROOT_FILE), `${JSON.stringify({ schemaVersion: DATA_ROOT_SCHEMA_VERSION, initializedAt: FIXTURE_TIME }, null, 2)}\n`);
+
+    const { registry, manifests, ...built } = await compose(options);
+    const { site, series, photos } = built;
+
     // Write everything.
     const written = await writeRegistry(root, registry, 0);
     const paths = authoredPaths(root);
@@ -495,7 +541,8 @@ export async function createTestCatalog(options: TestCatalogOptions = {}): Promi
     await writeRecord(paths.site, site);
     await inBatches(series, (entry) => writeRecord(authoredRecordDir(root, 'series', entry.id), entry));
     await inBatches(photos, (photo) => writeRecord(authoredRecordDir(root, 'photo', photo.id), photo));
-    await inBatches(manifests, async ({ dir, manifest, files }) => {
+    await inBatches(manifests, async ({ dir: relative, manifest, files }) => {
+        const dir = path.join(root, relative);
         await fs.promises.mkdir(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
         for (const file of files) {
             const target = path.join(dir, file.name);
@@ -515,17 +562,11 @@ export async function createTestCatalog(options: TestCatalogOptions = {}): Promi
     });
 
     return {
+        ...built,
         root,
-        seed,
-        profileId,
-        site,
-        series,
-        photos,
         registry: written,
-        content,
-        revisionId,
         context: async (overrides = {}) => ({
-            candidate: structuredClone(content),
+            candidate: structuredClone(built.content),
             authored: await readWorkingLayer(root),
             active: null,
             registry: structuredClone(written),

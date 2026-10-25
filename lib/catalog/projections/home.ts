@@ -1,9 +1,8 @@
 import 'server-only';
-import { VARIANT_FORMATS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth } from '../../identity/variants';
-import { mediaUrl } from '../../media/url';
 import type { CatalogContent, CatalogReader, RouteBuilder } from '../reader';
 import { MAX_SLUG_LENGTH, SLUG_RE } from '../schema';
 import type { FocalPoint, SeriesRecord, SiteRecord } from '../types';
+import { ladderOf, type Ladder, type LadderVariant } from './ladder';
 
 /**
  * #4's Home read model: the featured series' authored sequence, from one
@@ -25,20 +24,15 @@ import type { FocalPoint, SeriesRecord, SiteRecord } from '../types';
 
 type Photo = CatalogContent['photos'][number];
 
-/** One variant file, as `/media` serves it. */
-export interface HomeVariant {
-    url: string;
-    width: number;
-    height: number;
-    bytes: number;
-}
+/** One variant file, as `/media` serves it and a `srcset` names it. */
+export type HomeVariant = LadderVariant;
 
 /** One photograph's #10 derivative set, as ResponsivePhoto takes it. */
 export interface HomeImage {
     /** Oriented. */
     width: number;
     height: number;
-    variants: Record<VariantWidth, Record<VariantFormat, HomeVariant>>;
+    variants: Ladder;
     /** Only on the opening photograph, the one a first visit paints first. */
     lqip?: string;
 }
@@ -114,31 +108,11 @@ function altOf(alt: Photo['alt'] | undefined): string {
     return alt?.kind === 'described' ? text(alt.text) ?? '' : '';
 }
 
-/**
- * The photo's derivative set, field by field, when every file is the
- * `/media` URL #10 builds for this photo's set. Anything else (a missing
- * file, an original, a foreign URL) gives null, so Home never points
- * outside the revision's derivatives.
- */
+/** The photo's derivative set when its ladder is usable (see ladderOf()), else null. */
 function imageOf(photo: Photo, withLqip: boolean): HomeImage | null {
     if (!dimension(photo.width) || !dimension(photo.height)) return null;
-    const ladder = photo.variants as Partial<Record<VariantWidth, Partial<Record<VariantFormat, Partial<HomeVariant>>>>> | undefined;
-    const variants = {} as HomeImage['variants'];
-    for (const width of VARIANT_WIDTHS) {
-        variants[width] = {} as Record<VariantFormat, HomeVariant>;
-        for (const format of VARIANT_FORMATS) {
-            const file = ladder?.[width]?.[format];
-            if (!file || !dimension(file.width) || !dimension(file.height) || !dimension(file.bytes)) return null;
-            let expected: string;
-            try {
-                expected = mediaUrl({ photoId: photo.id, assetRevision: photo.assetRevision, profileId: photo.profileId }, width, format);
-            } catch {
-                return null;
-            }
-            if (file.url !== expected) return null;
-            variants[width][format] = { url: file.url, width: file.width, height: file.height, bytes: file.bytes };
-        }
-    }
+    const variants = ladderOf(photo);
+    if (variants === null) return null;
     const image: HomeImage = { width: photo.width, height: photo.height, variants };
     if (withLqip && typeof photo.lqip === 'string' && LQIP_RE.test(photo.lqip)) image.lqip = photo.lqip;
     return image;

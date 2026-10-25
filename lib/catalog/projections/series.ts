@@ -1,10 +1,10 @@
 // A client bundle that reaches this fails the build. Client code takes only types from it (#3, #5).
 import 'server-only';
-import { VARIANT_FORMATS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth } from '../../identity/variants';
-import { mediaUrl } from '../../media/url';
+import type { VariantFormat, VariantWidth } from '../../identity/variants';
 import type { CatalogContent, CatalogReader, RouteBuilder } from '../reader';
 import { MAX_SLUG_LENGTH, SLUG_RE } from '../schema';
 import type { Crop, FocalPoint, SeriesRecord } from '../types';
+import { ladderOf, type Ladder, type LadderVariant } from './ladder';
 
 /**
  * #5's series page read model: one series on `/work/<slug>`, from one
@@ -21,20 +21,15 @@ import type { Crop, FocalPoint, SeriesRecord } from '../types';
 
 type Photo = CatalogContent['photos'][number];
 
-/** One variant file, as `/media` serves it. */
-export interface SeriesVariant {
-    url: string;
-    width: number;
-    height: number;
-    bytes: number;
-}
+/** One variant file, as `/media` serves it and a `srcset` names it. */
+export type SeriesVariant = LadderVariant;
 
 /** One photograph's #10 derivative set, as ResponsivePhoto takes it. */
 export interface SeriesImage {
     /** Oriented. */
     width: number;
     height: number;
-    variants: Record<VariantWidth, Record<VariantFormat, SeriesVariant>>;
+    variants: Ladder;
     /** Only on the cover, the one image the page paints first. */
     lqip?: string;
 }
@@ -199,31 +194,11 @@ function descriptionOf(alt: Photo['alt'] | undefined): string | null {
     return alt?.kind === 'described' ? text(alt.text) : null;
 }
 
-/**
- * The photo's derivative set, field by field, when every file is the
- * `/media` URL #10 builds for this photo's set: #3's cover rule. Anything
- * else (a missing file, an original, a foreign URL) gives null, so the page
- * never points outside the revision's derivatives.
- */
+/** The photo's derivative set when its ladder is usable (see ladderOf(), #3's cover rule), else null. */
 function imageOf(photo: Photo, withLqip: boolean): SeriesImage | null {
     if (!dimension(photo.width) || !dimension(photo.height)) return null;
-    const ladder = photo.variants as Partial<Record<VariantWidth, Partial<Record<VariantFormat, Partial<SeriesVariant>>>>> | undefined;
-    const variants = {} as SeriesImage['variants'];
-    for (const width of VARIANT_WIDTHS) {
-        variants[width] = {} as Record<VariantFormat, SeriesVariant>;
-        for (const format of VARIANT_FORMATS) {
-            const file = ladder?.[width]?.[format];
-            if (!file || !dimension(file.width) || !dimension(file.height) || !dimension(file.bytes)) return null;
-            let expected: string;
-            try {
-                expected = mediaUrl({ photoId: photo.id, assetRevision: photo.assetRevision, profileId: photo.profileId }, width, format);
-            } catch {
-                return null;
-            }
-            if (file.url !== expected) return null;
-            variants[width][format] = { url: file.url, width: file.width, height: file.height, bytes: file.bytes };
-        }
-    }
+    const variants = ladderOf(photo);
+    if (variants === null) return null;
     const image: SeriesImage = { width: photo.width, height: photo.height, variants };
     if (withLqip && typeof photo.lqip === 'string' && LQIP_RE.test(photo.lqip)) image.lqip = photo.lqip;
     return image;
@@ -336,7 +311,8 @@ export function seriesPageOf(source: SeriesSource, slug: unknown, routes: Pick<R
             crop: coverPhoto.crop === 'contain' ? 'contain' : 'cover',
         }
         : null;
-    const share = cover?.image.variants[SHARE_WIDTH][SHARE_FORMAT];
+    // The shipped ladder drops each file's height, so the share image's comes from the record ladderOf() checked.
+    const share = cover && coverPhoto ? coverPhoto.variants[SHARE_WIDTH][SHARE_FORMAT] : undefined;
     const href = routes.seriesHref(series.slug);
 
     return {

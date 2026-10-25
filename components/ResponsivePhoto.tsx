@@ -1,8 +1,16 @@
 import React from 'react';
-import type { PublicAssetProjection } from '@/lib/identity/metadata';
-import { VARIANT_WIDTHS, type VariantFormat } from '@/lib/identity/variants';
+import { VARIANT_WIDTHS, type VariantFormat, type VariantWidth } from '@/lib/identity/variants';
 
-type PhotoAsset = Pick<PublicAssetProjection, 'width' | 'height' | 'variants'> & { lqip?: string };
+/**
+ * What the markup reads: the photo's own size and each file's URL and width.
+ * #10's PublicAssetProjection and the catalog screens' leaner ladders both fit.
+ */
+type PhotoAsset = {
+  width: number;
+  height: number;
+  variants: Record<VariantWidth, Record<VariantFormat, { url: string; width: number }>>;
+  lqip?: string;
+};
 
 export interface ResponsivePhotoProps {
   asset: PhotoAsset;

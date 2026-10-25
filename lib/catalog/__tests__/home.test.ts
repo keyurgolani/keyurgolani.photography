@@ -9,7 +9,7 @@ import { createTestCatalog, type TestCatalog } from '../testing';
 import type { CandidateContent, RevisionContent } from '../types';
 import { readWorkingLayer } from '../working-layer';
 import { writeAuthoredRecord } from '../working-layer-writer';
-import { VARIANT_BYTES } from './catalogFixtures';
+import { shippedLadder, VARIANT_BYTES } from './catalogFixtures';
 
 const id = (n: number) => `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const P = Array.from({ length: 10 }, (_, n) => id(n + 1));
@@ -126,10 +126,11 @@ function featured(home: PublishedHome): HomeSeries {
     return home.featuredSeries;
 }
 
+/** The photo's ladder as Home ships it: each file's `url` and `width` (#6). */
 function ladder(photoId: string) {
     const photo = catalog.content.photos.find((record) => record.id === photoId);
     if (!photo) throw new Error(`No photo ${photoId}`);
-    return photo.variants;
+    return shippedLadder(photo.variants);
 }
 
 describe('order', () => {
