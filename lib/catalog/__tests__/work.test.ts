@@ -205,8 +205,12 @@ describe('the Work summary', () => {
         if (!cover) throw new Error('No cover');
         cover.variants.w400.webp.url = '/elsewhere';
         cover.focalPoint.x = 0;
+        const centered = entry(reader.getWorkSummaries(), 'fixture-c').cover;
+        if (!centered) throw new Error('No cover');
+        centered.focalPoint.x = 0;
         expect(entry(reader.getWorkSummaries(), 'fixture-a').cover?.variants.w400.webp.url).toBe(ladder(P[1]).w400.webp.url);
         expect(source.series[1].cover.focalPoint).toEqual({ x: 0.2, y: 0.3 });
+        expect(entry(reader.getWorkSummaries(), 'fixture-c').cover?.focalPoint).toEqual({ x: 0.5, y: 0.5 });
     });
 });
 
