@@ -207,6 +207,18 @@ If the diff shows changes made on this host, don't copy them into the new file:
 - A different host port goes in `.env` as `PHOTOGRAPHY_PORT=<port>`, never in an override.
 - Anything else, such as another service or photos path, goes in an override file that isn't in the repository, added to every command as `-f docker-compose.prod.yml -f <override>`, so the next release's file replaces cleanly. Compose adds an override's `ports:` to the file's instead of replacing them, so a `ports:` entry for `web` there has to start with `127.0.0.1:` and its list has to be tagged `!override` (Compose 2.24.4 or later), and `web` never takes `network_mode: host`. Otherwise `web` is published on every interface again. These rules are for `web` only. A reverse proxy service in the override may publish 80 and 443, or run with `network_mode: host` and point at `http://127.0.0.1:3000`.
 
+A host whose boot service runs a plain `docker compose up`, with no `-f`, loads `docker-compose.yml`, and `docker-compose.override.yml` beside it whenever that exists. Keep that service and every command here on the same project: install the repository's file as `docker-compose.prod.yml`, as above, point `docker-compose.yml` at it with a symlink in the same folder, and name the override `docker-compose.override.yml`, which Compose loads on its own. If the host's file is a real `docker-compose.yml` today, rename it to `docker-compose.prod.yml` before the steps above, so the saved copy and the diff use it. Leave no `compose.yaml` or `compose.yml` in that folder, since Compose prefers them. The `ln` refuses to replace a file that's there:
+
+```bash
+[ -L docker-compose.yml ] || ln -s docker-compose.prod.yml docker-compose.yml
+```
+
+The block's `mv` replaces the file the link points at, so the link keeps working. With this layout, use the override block below with `docker-compose.override.yml` as `<override>`, and run every other command in this guide either as plain `docker compose` or with both files, `-f docker-compose.prod.yml -f docker-compose.override.yml`. `-f docker-compose.prod.yml` alone leaves the override out, so its services don't start. Once the new file is in place, check that the plain command loads the override. This has to list `web`, `image-watcher`, and every service in the override, and `docker compose config` shows each one's settings:
+
+```bash
+docker compose config --services
+```
+
 Then install the new file, set up the data root and the image cache, stop the old watcher, run the slice A dry run above, and deploy. Do it this way instead of the plain `pull` and `up -d`, and only after the `.env` edit. Each half of the switch needs the other: the plain commands would start the old file on the new image, whose watcher command needs tsx, and this block run on the old tag would start the new file on the old image, which has no `dist/scripts`. Either way the watcher crash-loops. So the block checks `.env` first, and stops before it changes anything when the tag isn't there yet. The check takes the tag alone or pinned to a digest, `vX.Y.Z@sha256:<digest>`, as one line with no quotes or spaces. In the `grep` pattern, put the version's digits in place of `X`, `Y`, and `Z` and keep the `\.` between them. The `exit` leaves only the block's subshell, not your shell:
 
 ```bash
