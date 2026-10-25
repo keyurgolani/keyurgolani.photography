@@ -1,7 +1,7 @@
 import 'server-only';
 import path from 'node:path';
 import { dataRoot } from '../storage/config';
-import { catalogMode } from './mode';
+import { checkCatalogMode } from './mode';
 import { createCatalogReader, createRouteBuilder, type CatalogReader } from './reader';
 import { listActivations, readRevisionFile } from './repository';
 import { forRequest } from './request';
@@ -17,8 +17,12 @@ import { readActivePointer } from './working-layer';
 /** The public routes: `/`, `/work`, `/work/<slug>`, and `/work/<slug>/photo/<photoId>`. */
 export const publicRoutes = createRouteBuilder();
 
-/** Why nothing can be served: the pointer or the revision it names can't be read, and no revision loaded before. */
-export type CatalogUnavailableReason = 'active-unreadable' | 'revision-unreadable';
+/**
+ * Why nothing can be served, with no revision loaded before: `catalog/`
+ * can't be read well enough to tell whether the site cut over, the pointer
+ * can't be read or is gone, or the revision it names can't be read.
+ */
+export type CatalogUnavailableReason = 'catalog-unreadable' | 'active-unreadable' | 'revision-unreadable';
 
 export interface ActiveRevision {
     revisionId: string;
@@ -122,8 +126,11 @@ function logFailure(root: string, failure: ReadFailure): void {
 export async function loadActiveCatalog(root: string | null = dataRoot()): Promise<ActiveCatalog> {
     if (root === null) return { mode: 'legacy' };
     const resolved = path.resolve(/*turbopackIgnore: true*/ root);
-    if (await catalogMode(resolved) === 'legacy') return { mode: 'legacy' };
+    const mode = await checkCatalogMode(resolved);
+    if (mode.mode === 'legacy') return { mode: 'legacy' };
     try {
+        // Not known to have cut over, but it can't be ruled out, so serve nothing new.
+        if (mode.unreadable !== undefined) throw new ReadFailure('catalog-unreadable', mode.unreadable);
         let pointer;
         try {
             pointer = await readActivePointer(resolved);
