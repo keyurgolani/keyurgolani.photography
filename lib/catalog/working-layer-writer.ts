@@ -22,7 +22,7 @@ import type {
     AuthoredSite,
     AuthoredSiteInput,
 } from './types';
-import { authoredPaths, authoredRecordDir, isRecordId, readActivePointer } from './working-layer';
+import { authoredPaths, authoredRecordDir, isRecordId, readActivePointer, recordFolderProblem } from './working-layer';
 
 /**
  * The one writer of the authored working layer. The public reader, the
@@ -109,6 +109,8 @@ async function commit(
     hooks: VersionedWriteHooks | undefined,
 ): Promise<AuthoredRecord> {
     const dir = authoredRecordDir(root, ref.kind, ref.id);
+    const folder = await recordFolderProblem(root, ref.kind, ref.id);
+    if (folder !== null) throw new AuthoredWriteError('INVALID_RECORD', ref, `The ${ref.kind} record ${ref.id} can't be written: ${folder}.`);
     const stored = await readStored(dir, ref);
     let existing: AuthoredRecord | null = null;
     if (stored !== null) {
