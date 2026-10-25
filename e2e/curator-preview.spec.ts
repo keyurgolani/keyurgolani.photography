@@ -16,7 +16,7 @@ import { expect, test } from './support/test';
 // images, the same for a draft that exists and one that doesn't; the
 // draft's own content and none that only the active revision holds; every
 // link and request inside the preview; idle Home photo-only in the frame;
-// images from the preview's media route, `private, no-store`, never
+// images from the preview's media route, never stored and never through
 // `/_next/image`; `frame-ancestors 'self'` on the site subtree only, one CSP
 // each; a malformed draft ID; and logout revoking it all.
 
@@ -288,12 +288,17 @@ test.describe('signed in', () => {
         }
     });
 
-    test("serves the draft's images private and no-store from the preview, and the public /media still refuses a draft-only set", async ({ browser, request }) => {
+    test("serves the draft's images from the preview, never stored, and the public /media still refuses a draft-only set", async ({ browser, request }) => {
         const { context, page } = await signedIn(browser);
         try {
             const image = await page.request.get(`${origin()}${imagePath(draftId, id(4))}`, { maxRedirects: 0 });
             expect(image.status()).toBe(200);
-            expect(headerCopies(image)['cache-control']).toEqual(['private, no-store']);
+            // The handler sends `private, no-store`, but the curator boundary sets `no-store` first, and Next keeps the
+            // first value. Either way it's one header that no cache may store, with nothing that would let one keep it.
+            const cacheControl = headerCopies(image)['cache-control'];
+            expect(cacheControl).toHaveLength(1);
+            expect(cacheControl[0]).toContain('no-store');
+            expect(cacheControl[0]).not.toMatch(/public|max-age|s-maxage|immutable/);
             expect(headerCopies(image)['x-robots-tag']).toEqual(['noindex, nofollow']);
             expect(image.headers()['content-type']).toBe('image/avif');
             const photo = photoOf(id(4));
