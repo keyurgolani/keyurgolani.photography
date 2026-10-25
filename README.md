@@ -122,7 +122,7 @@ docker compose -f docker-compose.prod.yml up -d
 
 The site listens on the host's 127.0.0.1 only, port 3000 unless `PHOTOGRAPHY_PORT` in `.env` says otherwise. A reverse proxy or tunnel on the same host serves it from there. One that runs in a container can't reach the host's 127.0.0.1, so it joins this project's network and uses `http://web:3000`, or a network alias for `web` when its origin names another host, as [docs/releasing.md](docs/releasing.md) describes for the first release with slice C of #10. The same section covers a host whose boot service runs a plain `docker compose up`, which links `docker-compose.yml` to `docker-compose.prod.yml` and names its override `docker-compose.override.yml`, and removing containers left from older service names.
 
-The commands in this README and in [docs/](docs/) name `-f docker-compose.prod.yml` alone, for a host with no override. On a host with one, give every command the same files the host's Compose loads: plain `docker compose` with the layout above, or `-f docker-compose.prod.yml -f <override>`. `-f docker-compose.prod.yml` alone leaves the override out, so a command run that way can mount another photos folder or data root than the site's.
+Most commands in this README and in [docs/](docs/) name `-f docker-compose.prod.yml` alone, for a host with no override. On a host with one, give every command the same files the host's Compose loads: plain `docker compose` with the layout above, or `-f docker-compose.prod.yml -f <override>`. `-f docker-compose.prod.yml` alone leaves the override out, so a command run that way can mount another photos folder or data root than the site's.
 
 [docs/releasing.md](docs/releasing.md) covers cutting a release, deploying, rollback, and telling what's running.
 

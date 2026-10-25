@@ -239,13 +239,13 @@ docker ps -a --filter "label=com.docker.compose.project=$(docker compose -f dock
 docker compose -f docker-compose.prod.yml.new config --services
 ```
 
-A container whose service the second list doesn't name is left from an old service name. Remove each one by its ID before the block, which takes the site down until the block's `up -d`. Removing a container leaves the photos, the data root, and the image cache alone, since they're folders on the host:
+A container whose service the second list doesn't name is left from an old service name. Remove a watcher left from an old service name by its ID before the block. Removing an old `web` takes the site down until step 4's `up -d` below, after the dry run, the backup and the apply, so leave an old `web` running and add `--remove-orphans` to step 4's `up -d` instead. Removing a container leaves the photos, the data root, and the image cache alone, since they're folders on the host:
 
 ```bash
 docker rm -f <ID>
 ```
 
-For an old `web`, you can instead add `--remove-orphans` to the `up -d` after the block, deliberately. It removes every container of this project whose service the files don't name, including one an earlier override started that this override no longer has. That `up -d` runs only after the migration, though, so remove a watcher left from an old service name with `docker rm -f` before the block either way. The block's `stop image-watcher` doesn't reach it, and it would keep writing the library while the dry run reads it.
+`--remove-orphans` on step 4's `up -d` removes every container of this project whose service the files don't name, including one an earlier override started that this override no longer has. That `up -d` runs only after the migration, though, so remove a watcher left from an old service name with `docker rm -f` before the block either way. The block's `stop image-watcher` doesn't reach it, and it would keep writing the library while the dry run reads it.
 
 Then install the new file, set up the data root and the image cache, stop the old watcher, and run the slice A dry run above, which is also the migration's dry run. The block stops there, before `up -d`, and the steps after it apply the migration and then deploy. Do it this way instead of the plain `pull` and `up -d`, and only after the `.env` edit. Each half of the switch needs the other: the plain commands would start the old file on the new image, whose watcher command needs tsx, and this block run on the old tag would start the new file on the old image, which has no `dist/scripts`. Either way the watcher crash-loops. So the block checks `.env` first, and stops before it changes anything when the tag isn't there yet. The check takes the tag alone or pinned to a digest, `vX.Y.Z@sha256:<digest>`, as one line with no quotes or spaces. In the `grep` pattern, put the version's digits in place of `X`, `Y`, and `Z` and keep the `\.` between them. The `exit` leaves only the block's subshell, not your shell. On a large library the dry run reads every photo and can take as long as a full identity pass, while the watcher is stopped and the old `web` keeps serving, so let it finish. If you stop it, run the block again: its `mv` reports that the `.new` file is gone, since the first run moved it in, and the rest runs as before:
 
@@ -283,9 +283,20 @@ With an override, use this block instead. It also checks the merged file, the ne
 
 The block leaves the old `web` serving and the watcher stopped. The first release with slice C of #10 is also the first with slice C of [#13](https://github.com/keyurgolani/keyurgolani.photography/issues/13), whose `web` lists photos only from the registry the migration writes, so apply the migration now, before `up -d`. Started first, the new `web` shows no photos on Home and Gallery until it applies. The old image can't run the migration, since it has no `dist/scripts/photos.mjs`, so these steps run the new image through the new compose file, as the block's dry run did, with the old watcher still stopped. With an override, add `-f <override>` after `-f docker-compose.prod.yml` in each command:
 
-1. Back up both folders, as step 2 of the [migration runbook](data-root.md#migration-runbook) says. The watcher is already stopped, so skip the backup block's `stop` and `start`.
+1. Back up both folders. This is the [Backing up](data-root.md#backing-up) block without its `stop` and `start`, since the watcher is already stopped and its `start` would bring the old watcher back while step 3 applies the plan:
+
+   ```bash
+   (
+     for d in public/assets/photos portfolio-data; do
+       [ -d "$d" ] && [ ! -L "$d" ] || { echo "$d must be a real folder, not a symlink. Nothing was archived." >&2; exit 1; }
+     done
+     mkdir -m 700 -p ~/photography-backups
+     (umask 077 && sudo tar -czf - public/assets/photos portfolio-data >~/photography-backups/photography-$(date -u +%Y%m%dT%H%M%SZ).tar.gz)
+   )
+   ```
+
 2. Read the report the block's dry run printed, and check what step 3 of the runbook lists.
-3. Apply the plan the dry run printed, as step 4 of the runbook does. If it refuses because the library changed since the dry run, run the block's dry run line again and apply that plan:
+3. Apply the plan the dry run printed, as step 4 of the runbook does. If it refuses because the library changed since the dry run, run the block's dry run line again, read its new report as in step 2, and apply that plan:
 
    ```bash
    docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs migrate --apply --plan <plan path>
