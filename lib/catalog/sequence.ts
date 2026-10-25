@@ -67,7 +67,8 @@ export type OrderErrorCode =
     | 'anchor-conflict'
     | 'anchor-order'
     | 'chapter-would-be-empty'
-    | 'position-out-of-range';
+    | 'position-out-of-range'
+    | 'series-unreadable';
 
 export interface OrderError {
     code: OrderErrorCode;
@@ -84,14 +85,23 @@ export interface SequenceContext {
     isKnownPhoto(photoId: string): boolean;
     /** Published series other than `seriesId` that list the photo. */
     publishedSeriesWith(photoId: string, seriesId: string): string[];
+    /** Whether the series exists, readable or not, as refs.series-order counts it. */
     seriesExists(seriesId: string): boolean;
+    /** Series whose record exists but can't be read, so their visibility and members are unknown. */
+    unreadableSeries: readonly string[];
     newChapterId(): string;
 }
 
-/** A context over one registry snapshot and the working layer's series, both read under the caller's hold. */
-export function sequenceContext({ registry, series, newChapterId = () => `ch_${randomUUID()}` }: {
+/**
+ * A context over one registry snapshot and the working layer's series, both
+ * read under the caller's hold. `unreadable` names the series the read listed
+ * as problems: they exist, so the Work order may name them, but no published
+ * series can take a new member while one of them might hold it.
+ */
+export function sequenceContext({ registry, series, unreadable = [], newChapterId = () => `ch_${randomUUID()}` }: {
     registry: Registry;
     series: readonly AuthoredSeries[];
+    unreadable?: readonly string[];
     newChapterId?: () => string;
 }): SequenceContext {
     const published = new Map<string, string[]>();
@@ -99,11 +109,12 @@ export function sequenceContext({ registry, series, newChapterId = () => `ch_${r
         if (entry.visibility !== 'published') continue;
         for (const photoId of new Set(entry.photoIds)) published.set(photoId, [...(published.get(photoId) ?? []), entry.id]);
     }
-    const ids = new Set(series.map((entry) => entry.id));
+    const ids = new Set([...series.map((entry) => entry.id), ...unreadable]);
     return {
         isKnownPhoto: (photoId) => Object.hasOwn(registry.photos, photoId),
         publishedSeriesWith: (photoId, seriesId) => (published.get(photoId) ?? []).filter((id) => id !== seriesId),
         seriesExists: (seriesId) => ids.has(seriesId),
+        unreadableSeries: [...new Set(unreadable)].sort(),
         newChapterId,
     };
 }
@@ -182,6 +193,15 @@ function membershipConflict(series: AuthoredSeries, photoIds: readonly string[],
     if (series.visibility !== 'published') return null;
     for (const [index, photoId] of photoIds.entries()) {
         if (series.photoIds.includes(photoId)) continue;
+        const unreadable = context.unreadableSeries.filter((id) => id !== series.id);
+        if (unreadable.length > 0) {
+            return fail(
+                'series-unreadable',
+                series.id,
+                `The series ${unreadable.join(', ')} can't be read, so nothing shows whether it holds ${photoId}. A photograph belongs to one published series. Fix that record first.`,
+                field(index),
+            );
+        }
         const others = context.publishedSeriesWith(photoId, series.id);
         if (others.length > 0) {
             return fail('membership-conflict', series.id, `${photoId} is already in the published series ${others.join(', ')}. A photograph belongs to one published series.`, field(index));
@@ -357,8 +377,8 @@ async function applyUnderHold(root: string, op: SequenceOp, options: ApplyOption
     const found = current?.version ?? 0;
     if (found !== options.expectedVersion) return versionConflict(found);
 
-    const [registry, { series }] = await Promise.all([readRegistry(root), readAuthoredSeries(root)]);
-    const context = sequenceContext({ registry, series });
+    const [registry, { series, problems }] = await Promise.all([readRegistry(root), readAuthoredSeries(root)]);
+    const context = sequenceContext({ registry, series, unreadable: problems.filter((problem) => problem.kind === 'series').map((problem) => problem.id) });
     const result = isSiteOp(op)
         ? applySiteOp((current as AuthoredSite | null) ?? { schemaVersion: 1, version: 0, baseRevisionId: null, kind: 'site', featuredSeriesIds: [], seriesOrder: [], baseSeriesOrder: null }, op, context)
         : applySeriesOp(current as AuthoredSeries, op, context);

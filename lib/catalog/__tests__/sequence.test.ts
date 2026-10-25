@@ -498,3 +498,32 @@ describe('the operation contract', () => {
         expect(bytes('series', S2)).not.toBeNull();
     });
 });
+
+describe('a series whose record can\'t be read', () => {
+    beforeEach(() => {
+        // S2 is published and holds P5 and P6. Its newest version is no longer JSON.
+        const dir = authoredRecordDir(catalog.root, 'series', S2);
+        const newest = Math.max(...fs.readdirSync(dir).map((name) => Number(/^v(\d+)\.json$/.exec(name)?.[1] ?? 0)));
+        fs.writeFileSync(versionFile(dir, newest + 1), '{ "kind": "series",');
+    });
+
+    it('still exists for the Work order and the featured series, as refs.series-order counts it', async () => {
+        expect((await readAuthoredSeries(catalog.root)).problems).toEqual([expect.objectContaining({ kind: 'series', id: S2 })]);
+        await expectApplied({ kind: 'setSeriesOrder', seriesIds: [S2, S1, S3] });
+        await expectApplied({ kind: 'setFeaturedSeries', seriesIds: [S2] });
+        const issues = runRules(await catalog.context()).filter((issue) => issue.code === 'refs.series-order');
+        expect(issues).toEqual([]);
+    });
+
+    it('blocks a published series from taking a new member, naming the series, since it might hold the photo', async () => {
+        await expectRejected({ kind: 'insert', seriesId: S1, photoId: P[5], at: 'end' }, 'series-unreadable', { field: 'photoId', message: expect.stringContaining(S2) });
+        await expectRejected({ kind: 'insert', seriesId: S1, photoId: P[8], at: 'end' }, 'series-unreadable', { field: 'photoId' });
+        await expectRejected({ kind: 'setSequence', seriesId: S1, photoIds: [...P.slice(0, 5), P[8]] }, 'series-unreadable', { field: 'photoIds[5]' });
+    });
+
+    it('lets everything that adds no member to a published series through', async () => {
+        await expectApplied({ kind: 'insert', seriesId: S3, photoId: P[5], at: 'end' });
+        await expectApplied({ kind: 'move', seriesId: S1, photoId: P[1], at: { after: P[2] } });
+        await expectApplied({ kind: 'setSequence', seriesId: S1, photoIds: P.slice(0, 5) });
+    });
+});
