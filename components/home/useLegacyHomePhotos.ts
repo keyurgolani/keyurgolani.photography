@@ -78,6 +78,8 @@ export function useLegacyHomePhotos(): LegacyHomePhotos {
 
     useEffect(() => {
         let active = true;
+        // Leaving Home stops the request, so a slow list never keeps the connection after the visitor moved on (#6).
+        const controller = new AbortController();
         const links: HTMLLinkElement[] = [];
         const timers: ReturnType<typeof setTimeout>[] = [];
 
@@ -97,7 +99,7 @@ export function useLegacyHomePhotos(): LegacyHomePhotos {
 
         const fetchPhotos = async () => {
             try {
-                const response = await fetch('/api/photos');
+                const response = await fetch('/api/photos', { signal: controller.signal });
                 if (!response.ok) {
                     throw new Error('Failed to fetch images');
                 }
@@ -109,8 +111,9 @@ export function useLegacyHomePhotos(): LegacyHomePhotos {
                 setStatus(merged.length > 0 ? 'ready' : 'empty');
                 if (merged.length > 0) preload(merged.map((photo) => photo.sources.full));
             } catch (error) {
+                if (!active) return;
                 console.error('Error fetching gallery images:', error);
-                if (active && getCachedHomeHeroImages().length === 0) {
+                if (getCachedHomeHeroImages().length === 0) {
                     setPhotos((current) => (current.length === 0 ? current : []));
                     setStatus('error');
                 }
@@ -121,6 +124,7 @@ export function useLegacyHomePhotos(): LegacyHomePhotos {
 
         return () => {
             active = false;
+            controller.abort();
             timers.forEach(clearTimeout);
             links.forEach((link) => link.remove());
         };
