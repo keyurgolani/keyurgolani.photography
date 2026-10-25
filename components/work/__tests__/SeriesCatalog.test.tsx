@@ -135,6 +135,19 @@ describe('SeriesCatalog', () => {
         expect(Object.keys(seen[0].cover as object).sort()).toEqual(['crop', 'focalPoint', 'height', 'photoId', 'variants', 'width']);
         expect(seen[1].cover).toBeNull();
     });
+
+    it('drops a failed cover\'s fallback when a refresh brings the series a new cover, and keeps it for the same one', () => {
+        const { rerender } = render(<SeriesCatalog work={work([series(1)])} />);
+        act(() => {
+            fireEvent.error(document.querySelector('img') as HTMLImageElement);
+        });
+        expect(document.querySelector('[data-cover="unavailable"]')).not.toBeNull();
+        rerender(<SeriesCatalog work={work([series(1)])} />);
+        expect(document.querySelector('img')).toBeNull();
+        rerender(<SeriesCatalog work={work([series(1, { cover: cover(5) })])} />);
+        expect(document.querySelector('[data-cover="unavailable"]')).toBeNull();
+        expect(document.querySelector('img')?.getAttribute('src')).toBe(cover(5).variants.w1200.webp.url);
+    });
 });
 
 describe('WorkCoverImage', () => {

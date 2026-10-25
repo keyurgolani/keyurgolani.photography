@@ -31,8 +31,9 @@ export default function SeriesCatalog({ work }: SeriesCatalogProps) {
                     {work.series.map((series, index) => (
                         <li key={series.id} className={styles.item}>
                             <Link href={series.href} className={styles.entry}>
-                                {/* The first cover loads at once, the rest as they near the viewport. */}
-                                <WorkCoverImage cover={series.cover} eager={index === 0} />
+                                {/* The first cover loads at once, the rest as they near the viewport. Keyed on
+                                    the cover's file, so a refresh that brings a new cover clears a failure. */}
+                                <WorkCoverImage key={series.cover?.variants.w1200.webp.url ?? 'none'} cover={series.cover} eager={index === 0} />
                                 <div className={styles.copy}>
                                     <h2 className={styles.seriesTitle}>{series.title}</h2>
                                     {series.shortStatement !== null && <p className={styles.statement}>{series.shortStatement}</p>}
