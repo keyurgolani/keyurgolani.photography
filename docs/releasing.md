@@ -243,7 +243,7 @@ docker rm -f <ID>
 
 Or add `--remove-orphans` to the block's `up -d`, deliberately. It removes every container of this project whose service the files don't name, including one an earlier override started that this override no longer has.
 
-Then install the new file, set up the data root and the image cache, stop the old watcher, run the slice A dry run above, and deploy. Do it this way instead of the plain `pull` and `up -d`, and only after the `.env` edit. Each half of the switch needs the other: the plain commands would start the old file on the new image, whose watcher command needs tsx, and this block run on the old tag would start the new file on the old image, which has no `dist/scripts`. Either way the watcher crash-loops. So the block checks `.env` first, and stops before it changes anything when the tag isn't there yet. The check takes the tag alone or pinned to a digest, `vX.Y.Z@sha256:<digest>`, as one line with no quotes or spaces. In the `grep` pattern, put the version's digits in place of `X`, `Y`, and `Z` and keep the `\.` between them. The `exit` leaves only the block's subshell, not your shell:
+Then install the new file, set up the data root and the image cache, stop the old watcher, run the slice A dry run above, and deploy. Do it this way instead of the plain `pull` and `up -d`, and only after the `.env` edit. Each half of the switch needs the other: the plain commands would start the old file on the new image, whose watcher command needs tsx, and this block run on the old tag would start the new file on the old image, which has no `dist/scripts`. Either way the watcher crash-loops. So the block checks `.env` first, and stops before it changes anything when the tag isn't there yet. The check takes the tag alone or pinned to a digest, `vX.Y.Z@sha256:<digest>`, as one line with no quotes or spaces. In the `grep` pattern, put the version's digits in place of `X`, `Y`, and `Z` and keep the `\.` between them. The `exit` leaves only the block's subshell, not your shell. On a large library the dry run reads every photo and can take as long as a full identity pass, while the watcher is stopped and the old `web` keeps serving, so let it finish. If you stop it, the block stops before `up -d`. Run the block again: its `mv` reports that the `.new` file is gone, since the first run moved it in, and the rest runs as before:
 
 ```bash
 (
@@ -259,11 +259,12 @@ Then install the new file, set up the data root and the image cache, stop the ol
 )
 ```
 
-With an override, use this block instead. It also checks the merged file, the new one with your override, before anything moves: `web` has to be published on 127.0.0.1 only and stay off the host's network. It needs `jq` on the host, and without it the check fails and stops the block too:
+With an override, use this block instead. It also checks the merged file, the new one with your override, before anything moves: `web` has to be published on 127.0.0.1 only and stay off the host's network. It needs `jq` on the host, and without it the check fails and stops the block too. The check reads the `.new` file, so when an earlier run already moved it in, as one stopped during the dry run did, the block says so and stops. Fetch the new file again with the `curl` line above and run the block again:
 
 ```bash
 (
   grep -Eqx 'PHOTOGRAPHY_IMAGE_TAG=vX\.Y\.Z(@sha256:[0-9a-f]{64})?' .env || { echo ".env doesn't set PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z yet. Nothing was changed." >&2; exit 1; }
+  [ -e docker-compose.prod.yml.new ] || { echo "docker-compose.prod.yml.new is gone, so an earlier run already moved it in. Fetch it again and rerun this block. Nothing was changed." >&2; exit 1; }
   docker compose -f docker-compose.prod.yml.new -f <override> config --format json |
     jq -e '.services.web.network_mode == null and ([.services.web.ports[]?.host_ip] | unique) == ["127.0.0.1"]' >/dev/null ||
     { echo "With the override, web isn't published on 127.0.0.1 only. Fix the override. Nothing was changed." >&2; exit 1; }
