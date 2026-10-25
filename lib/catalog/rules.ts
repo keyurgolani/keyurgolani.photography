@@ -488,7 +488,8 @@ const SLICE_A_RULES: RuleDefinition[] = [
             if (!ctx.authored || ctx.authored.problems.some((problem) => problem.kind === 'site')) return [];
             const known = new Set([
                 ...ctx.authored.series.map((series) => series.id),
-                ...ctx.authored.problems.filter((problem) => problem.kind === 'series').map((problem) => problem.id),
+                // A misnamed folder entry is not a series ID, so it names no series.
+                ...ctx.authored.problems.filter((problem) => problem.kind === 'series' && SERIES_ID_RE.test(problem.id)).map((problem) => problem.id),
             ]);
             const seen = new Set<string>();
             const findings: RuleFinding[] = (ctx.authored.site?.seriesOrder ?? []).flatMap((seriesId, index) => {

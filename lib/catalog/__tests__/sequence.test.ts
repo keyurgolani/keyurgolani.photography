@@ -12,6 +12,7 @@ import { applySeriesOp, applySequenceOp, sequenceContext, type Actor, type Apply
 import { createTestCatalog, type TestCatalog } from '../testing';
 import type { AuthoredSeries } from '../types';
 import { authoredRecordDir, readAuthoredRecord, readAuthoredSeries } from '../working-layer';
+import { writeAuthoredRecord } from '../working-layer-writer';
 
 const P = Array.from({ length: 10 }, (_, index) => `ph_00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`);
 const UNKNOWN = 'ph_00000000-0000-4000-8000-000000000999';
@@ -525,5 +526,35 @@ describe('a series whose record can\'t be read', () => {
         await expectApplied({ kind: 'insert', seriesId: S3, photoId: P[5], at: 'end' });
         await expectApplied({ kind: 'move', seriesId: S1, photoId: P[1], at: { after: P[2] } });
         await expectApplied({ kind: 'setSequence', seriesId: S1, photoIds: P.slice(0, 5) });
+    });
+});
+
+describe('a misnamed entry in the series folder', () => {
+    const MISNAMED = 'ser_old-layout.json';
+
+    beforeEach(() => {
+        // An old-layout record: a .json file where a version folder belongs.
+        const seriesDir = path.dirname(authoredRecordDir(catalog.root, 'series', S1));
+        fs.writeFileSync(path.join(seriesDir, MISNAMED), '{}');
+    });
+
+    it('is not a series the Work order or the featured series can name', async () => {
+        expect((await readAuthoredSeries(catalog.root)).problems).toEqual([expect.objectContaining({ kind: 'series', id: MISNAMED, reason: 'file-name' })]);
+        await expectRejected({ kind: 'setSeriesOrder', seriesIds: [S1, S2, S3, MISNAMED] }, 'unknown-series');
+        await expectRejected({ kind: 'setFeaturedSeries', seriesIds: [MISNAMED] }, 'unknown-series');
+    });
+
+    it('is not a known series to refs.series-order', async () => {
+        const site = await readAuthoredRecord(catalog.root, 'site', 'site');
+        if (!site) throw new Error('No site record');
+        // The schema takes any non-empty string, so a hand edit or an older build could store the name.
+        await withLock('authored', { root: catalog.root, leaseMs: 10_000 }, (lock) =>
+            writeAuthoredRecord({ ...site, seriesOrder: [S1, S2, S3, MISNAMED] }, { expectedVersion: site.version, lock, root: catalog.root }));
+        const issues = runRules(await catalog.context()).filter((issue) => issue.code === 'refs.series-order');
+        expect(issues).toEqual([expect.objectContaining({ field: 'seriesOrder[3]', message: expect.stringContaining(MISNAMED) })]);
+    });
+
+    it('still blocks a published series from taking a new member, since it might be a published series', async () => {
+        await expectRejected({ kind: 'insert', seriesId: S1, photoId: P[8], at: 'end' }, 'series-unreadable', { field: 'photoId', message: expect.stringContaining(MISNAMED) });
     });
 });

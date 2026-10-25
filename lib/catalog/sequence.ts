@@ -6,6 +6,7 @@ import { dataRootStatus } from '../storage/config';
 import type { VersionedWriteHooks } from '../storage/document';
 import { realpathLoose } from '../storage/fsx';
 import { LockTimeoutError, withLock, type LockContext } from '../storage/lock';
+import { SERIES_ID_RE } from './schema';
 import type { AuthoredSeries, AuthoredSite, FocalPoint } from './types';
 import { readAuthoredRecord, readAuthoredSeries } from './working-layer';
 import { AUTHORED_LEASE_MS, AUTHORED_LOCK, AUTHORED_WAIT_MS, AuthoredWriteError, writeAuthoredRecord } from './working-layer-writer';
@@ -95,8 +96,8 @@ export interface SequenceContext {
 /**
  * A context over one registry snapshot and the working layer's series, both
  * read under the caller's hold. `unreadable` names the series the read listed
- * as problems: they exist, so the Work order may name them, but no published
- * series can take a new member while one of them might hold it.
+ * as problems: those with a series ID exist, so the Work order may name them,
+ * and no published series can take a new member while any of them might hold it.
  */
 export function sequenceContext({ registry, series, unreadable = [], newChapterId = () => `ch_${randomUUID()}` }: {
     registry: Registry;
@@ -109,7 +110,9 @@ export function sequenceContext({ registry, series, unreadable = [], newChapterI
         if (entry.visibility !== 'published') continue;
         for (const photoId of new Set(entry.photoIds)) published.set(photoId, [...(published.get(photoId) ?? []), entry.id]);
     }
-    const ids = new Set([...series.map((entry) => entry.id), ...unreadable]);
+    // A misnamed folder entry (an old-layout `ser_x.json` file, an upper-case folder) is a problem
+    // but not a series ID, so it can't be named. It still counts as unreadable below.
+    const ids = new Set([...series.map((entry) => entry.id), ...unreadable.filter((id) => SERIES_ID_RE.test(id))]);
     return {
         isKnownPhoto: (photoId) => Object.hasOwn(registry.photos, photoId),
         publishedSeriesWith: (photoId, seriesId) => (published.get(photoId) ?? []).filter((id) => id !== seriesId),
@@ -378,6 +381,7 @@ async function applyUnderHold(root: string, op: SequenceOp, options: ApplyOption
     if (found !== options.expectedVersion) return versionConflict(found);
 
     const [registry, { series, problems }] = await Promise.all([readRegistry(root), readAuthoredSeries(root)]);
+    // Every series problem, misnamed entries included: sequenceContext decides which ones the Work order may name.
     const context = sequenceContext({ registry, series, unreadable: problems.filter((problem) => problem.kind === 'series').map((problem) => problem.id) });
     const result = isSiteOp(op)
         ? applySiteOp((current as AuthoredSite | null) ?? { schemaVersion: 1, version: 0, baseRevisionId: null, kind: 'site', featuredSeriesIds: [], seriesOrder: [], baseSeriesOrder: null }, op, context)
