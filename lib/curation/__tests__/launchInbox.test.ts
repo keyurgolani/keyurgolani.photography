@@ -14,7 +14,7 @@ import { STABILITY_MS } from '../../identity/reconcile';
  * new items for photos `sequence set` placed need no judgment, and the one
  * photo left out still does. Then the rehearsal's rollback: approve that
  * photo, publish it, roll back, and the approval reads as no longer placed
- * until it is reopened and approved again.
+ * until it is reopened and approved again, and the next publish goes through.
  */
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -137,5 +137,11 @@ describe('the inbox after the launch path', () => {
         expect(await inbox()).toMatchObject({ needsJudgment: 0, placed: 2, unplaced: 0, events: [] });
         expect(JSON.parse(ok(await photos('list', '--unassigned', '--json')))).toEqual([]);
         expect(ok(await photos('curation', 'show', item.id))).not.toContain('No longer placed');
+
+        // And the recovery ends in a publish: the approval reviews the photo record's description and bytes again, against the active revision.
+        const recovered = await photos('publish', '--actor', 'launch-inbox');
+        expect(recovered.code, `${recovered.stdout}\n${recovered.stderr}`).toBe(0);
+        expect(recovered.stdout).toMatch(/PUBLISHED: Published rev_[0-9a-f]{64} as revision \d+\./);
+        expect(JSON.parse(ok(await photos('list', '--unassigned', '--json')))).toEqual([]);
     });
 });
