@@ -33,6 +33,7 @@ import { SINK_WAIT_MS } from './sink';
  *   #14's sink, whose source goes missing again opens again, whether or not
  *   anything shows the photo.
  * - A `new` item closes once a `bind` merged its photo into the missing one.
+ * - A `new` item closes once its photo is archived, approved or not.
  * - A build #10's worker left failed, after its retry at start, gets a
  *   `processing-failure` item, unless a replacement item already carries it.
  *   It closes once the set builds, as after #14's retry, or once the photo
@@ -120,6 +121,21 @@ export function mergedChange(event: CurationEvent, registry: Registry, at: strin
     const into = photoOf(registry, event.photoId)?.mergedInto;
     if (into === undefined) return null;
     return withDecision(event, watcherDecision('close', at, `A bind gave these bytes to ${into}, whose replacement item reviews them.`), { status: 'resolved' });
+}
+
+/**
+ * A `new` item whose photo is archived, resolved, or null. It closes open,
+ * deferred, failed, or approved, since an archived photo has nothing left to
+ * judge or place: without this, the takedown's publish would leave its item
+ * asking for judgment, or flagged as an approval no longer placed with advice
+ * to approve it again, which #10 refuses for an archived photo. Reopening it
+ * works as for any resolved item.
+ */
+export function archivedChange(event: CurationEvent, registry: Registry, at: string): CurationEvent | null {
+    if (event.type !== 'new' || !(STILL_OPEN.has(event.status) || event.status === 'approved')) return null;
+    const photo = photoOf(registry, event.photoId);
+    if (photo?.sourceHealth !== 'archived' || photo.mergedInto !== undefined) return null;
+    return withDecision(event, watcherDecision('close', at, 'The photograph is archived.'), { status: 'resolved' });
 }
 
 const sameFailure = (a: Candidate | undefined, b: Candidate) => a?.state === b.state && a.profileId === b.profileId && a.failure === b.failure;
@@ -220,7 +236,7 @@ function changesFor(events: readonly CurationEvent[], registry: Registry, at: st
     const byId = new Map(events.map((event) => [event.id, event]));
     const changes: CurationEvent[] = [];
     for (const event of events) {
-        const next = missingChange(event, registry, at) ?? mergedChange(event, registry, at) ?? staleFailureChange(event, registry, at);
+        const next = missingChange(event, registry, at) ?? mergedChange(event, registry, at) ?? archivedChange(event, registry, at) ?? staleFailureChange(event, registry, at);
         if (next) changes.push(next);
     }
     const photos = only === undefined ? Object.values(registry.photos) : only.map((photoId) => photoOf(registry, photoId)).filter((photo): photo is PhotoRecord => photo !== undefined);
