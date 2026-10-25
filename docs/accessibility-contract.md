@@ -66,7 +66,7 @@ The token's outline beats YARL's `outline: none`. The app's own `!important` lig
 ## Running the checks
 
 ```bash
-npx playwright install chromium   # once per machine
+npx playwright install chromium webkit   # once per machine, webkit for mobile-webkit
 npm run test:e2e
 ```
 
