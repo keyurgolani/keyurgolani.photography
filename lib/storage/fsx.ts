@@ -38,6 +38,17 @@ export async function fsyncDirectory(dir: string): Promise<void> {
     }
 }
 
+/** Whether anything, a dangling symlink included, is at `target`. Throws for errors other than ENOENT and ENOTDIR. */
+export async function pathExists(target: string): Promise<boolean> {
+    try {
+        await fs.promises.lstat(target);
+        return true;
+    } catch (error) {
+        if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return false;
+        throw error;
+    }
+}
+
 /**
  * Make `dir`, readable by its owner only, unless it exists, and fsync its
  * parent when this call made it. With `syncParent`, fsync the parent even when

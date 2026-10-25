@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { PHOTO_ID_RE } from '../identity/ids';
 import { CorruptDocumentError, EditedInPlaceError, MisnamedVersionError, readVersionedDocument } from '../storage/document';
-import { hasErrorCode } from '../storage/fsx';
+import { hasErrorCode, pathExists } from '../storage/fsx';
 import { parseActivePointer, parseAuthoredRecord, SERIES_ID_RE, type AuthoredKind } from './schema';
 import type { ActivePointer, AuthoredPhoto, AuthoredSeries, AuthoredSite, RecordProblem, RecordProblemReason, WorkingLayer } from './types';
 
@@ -45,6 +45,23 @@ export function authoredRecordDir(root: string, kind: AuthoredKind, id: string):
     const paths = authoredPaths(root);
     if (kind === 'site') return paths.site;
     return path.join(kind === 'series' ? paths.seriesDir : paths.photosDir, id);
+}
+
+/**
+ * Why a record's folder can't be read or written as the record, or null when
+ * it can: its file in the old one-file layout (#28's `authored/site.json`, or
+ * `<id>.json` in its kind's folder) is still there. Reading only the folder
+ * would pass over that file, and a write would add a second copy of the
+ * record beside it.
+ */
+export async function recordFolderProblem(root: string, kind: AuthoredKind, id: string): Promise<string | null> {
+    const dir = authoredRecordDir(root, kind, id);
+    const relative = path.relative(root, dir).split(path.sep).join('/');
+    if (await pathExists(`${dir}.json`)) {
+        return `${relative}.json is in the old layout, which this build no longer reads: the data root's layout changed, and a record is now the folder `
+            + `${relative}/, holding v<N>.json. Move the file there as its next version (v1.json in an empty folder) while no command runs`;
+    }
+    return null;
 }
 
 export type { RecordProblem, RecordProblemReason, WorkingLayer } from './types';
@@ -138,7 +155,10 @@ async function loadFolder<K extends 'series' | 'photo'>(dir: string, kind: K, pr
 export async function readWorkingLayer(root: string): Promise<WorkingLayer> {
     const paths = authoredPaths(root);
     const problems: RecordProblem[] = [];
-    const loadedSite = await load(paths.site, 'site', 'site');
+    const siteFolder = await recordFolderProblem(root, 'site', 'site');
+    const loadedSite = siteFolder === null
+        ? await load(paths.site, 'site', 'site')
+        : { problem: { kind: 'site' as const, id: 'site', reason: 'file-name' as const, issues: [{ path: '', message: siteFolder }] } };
     let site: AuthoredSite | null = null;
     if (loadedSite && 'problem' in loadedSite) problems.push(loadedSite.problem);
     else if (loadedSite) site = loadedSite.record;
@@ -158,6 +178,8 @@ export async function readAuthoredSeries(root: string): Promise<{ series: Author
 /** Read one record, or null when it doesn't exist. Throws when it exists but can't be used. */
 export async function readAuthoredRecord<K extends AuthoredKind>(root: string, kind: K, id: string): Promise<RecordOf<K> | null> {
     if (!isRecordId(kind, id)) return null;
+    const folder = await recordFolderProblem(root, kind, id);
+    if (folder !== null) throw new Error(`The ${kind} record ${id} can't be used: ${folder}`);
     const loaded = await load(authoredRecordDir(root, kind, id), kind, id);
     if (loaded === null) return null;
     if ('problem' in loaded) throw new Error(`The ${kind} record ${id} can't be used: ${loaded.problem.issues.map((issue) => issue.message).join('; ')}`);

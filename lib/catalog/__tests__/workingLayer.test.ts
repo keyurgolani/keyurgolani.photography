@@ -125,6 +125,22 @@ describe('readWorkingLayer', () => {
         expect(JSON.stringify(layer.problems)).not.toContain('IMG_0001');
     });
 
+    it('refuses a site.json in the old layout, naming it, rather than read no site record', async () => {
+        const data = dataRoot();
+        const paths = authoredPaths(data.root);
+        const site = { schemaVersion: 1, version: 1, baseRevisionId: null, kind: 'site', featuredSeriesIds: [], seriesOrder: [] };
+        writeJson(`${paths.site}.json`, site);
+        const refused = { kind: 'site', id: 'site', reason: 'file-name', issues: [{ path: '', message: expect.stringMatching(/^authored\/site\.json .*layout changed/) }] };
+        expect(await readWorkingLayer(data.root)).toEqual({ site: null, series: [], photos: [], problems: [refused] });
+        await expect(readAuthoredRecord(data.root, 'site', 'site')).rejects.toThrow('authored/site.json');
+
+        // Beside the new folder too, since nothing says which one is current.
+        writeVersion(paths.site, 1, site);
+        expect(await readWorkingLayer(data.root)).toMatchObject({ site: null, problems: [refused] });
+        fs.rmSync(`${paths.site}.json`);
+        expect((await readWorkingLayer(data.root)).site).toMatchObject({ version: 1 });
+    });
+
     it('reads one record by kind and ID, or null', async () => {
         const data = dataRoot();
         writeVersion(path.join(authoredPaths(data.root).photosDir, PHOTO_A), 3, { schemaVersion: 1, version: 3, baseRevisionId: null, ...photo(PHOTO_A) });
@@ -284,6 +300,18 @@ describe('writeAuthoredRecord', () => {
         const written = await writeAuthoredRecord({ ...first, alt: { kind: 'decorative' }, title: 'Retry' }, { expectedVersion: 2, root: data.root });
         expect(written).toMatchObject({ version: 3, title: 'Retry' });
         expect(JSON.parse(fs.readFileSync(path.join(dir, 'v3.json'), 'utf8'))).toMatchObject({ stamp: { version: 3 } });
+    });
+
+    it('refuses to write a record whose file in the old layout is still there, and writes nothing', async () => {
+        const data = dataRoot();
+        const paths = authoredPaths(data.root);
+        writeJson(`${paths.site}.json`, { schemaVersion: 1, version: 1, baseRevisionId: null, kind: 'site', featuredSeriesIds: [], seriesOrder: [] });
+        writeJson(path.join(paths.photosDir, `${PHOTO_A}.json`), { schemaVersion: 1, version: 1, baseRevisionId: null, ...photo(PHOTO_A) });
+        const site = await rejection(writeAuthoredRecord({ kind: 'site', featuredSeriesIds: [], seriesOrder: [] }, { expectedVersion: 0, root: data.root }));
+        expect(site).toMatchObject({ code: 'INVALID_RECORD', message: expect.stringContaining('authored/site.json') });
+        const photoError = await rejection(writeAuthoredRecord(photo(PHOTO_A), { expectedVersion: 0, root: data.root }));
+        expect(photoError).toMatchObject({ code: 'INVALID_RECORD', message: expect.stringContaining(`authored/photos/${PHOTO_A}.json`) });
+        expect(data.files().filter((file) => file.startsWith('authored'))).toEqual([`authored/photos/${PHOTO_A}.json`, 'authored/site.json']);
     });
 
     it('tells a stored record from a newer build apart from one to fix by hand', async () => {
