@@ -30,6 +30,36 @@ async function restrictedImports(relativePath: string, source: string): Promise<
 
 const importing = (specifier: string) => `import { probe } from '${specifier}';\nexport const used = probe;\n`;
 
+/** What either rule reports: no-restricted-imports for static imports and exports, no-restricted-syntax for every other load. */
+async function restrictedLoads(relativePath: string, source: string): Promise<string[]> {
+    const [result] = await eslint.lintText(source, { filePath: path.join(REPO_ROOT, relativePath) });
+    return result.messages.filter((message) => message.ruleId === 'no-restricted-imports' || message.ruleId === 'no-restricted-syntax').map((message) => message.message);
+}
+
+/** Every way a file can load `specifier`, beyond the plain static import. */
+const loads = (specifier: string): [string, string][] => [
+    ['export *', `export * from '${specifier}';\n`],
+    ['export from', `export { probe } from '${specifier}';\n`],
+    ['import()', `export const probe = () => import('${specifier}');\n`],
+    ['import() of a template', `export const probe = () => import(\`${specifier}\`);\n`],
+    ['import() of a template ending in the path', `const base = '@/lib';\nexport const probe = () => import(\`\${base}/${specifier.replace(/^.*?(catalog\/)/, '$1')}\`);\n`],
+    ['require()', `export const probe = require('${specifier}');\n`],
+    ['a created require()', `import { createRequire } from 'node:module';\nexport const probe = createRequire(import.meta.url)('${specifier}');\n`],
+    ['vi.mock()', `import { vi } from 'vitest';\nvi.mock('${specifier}');\n`],
+    ['import = require()', `import probe = require('${specifier}');\nexport const used = probe;\n`],
+];
+
+/** Specifiers that resolve to `lib/catalog/<name>.ts` as well as the plain one. */
+const spellings = (prefix: string, name: string) => [
+    `${prefix}/${name}.js`,
+    `${prefix}/${name}.ts`,
+    `${prefix}/${name}.mjs`,
+    `${prefix}/${name}/`,
+    `${prefix}//${name}`,
+    `${prefix}/./${name}`,
+    `${prefix.replace(/catalog$/, 'Catalog')}/${name.toUpperCase()}`,
+];
+
 describe("#16's preview reader import rule", { timeout: 60_000 }, () => {
     it.each([
         ['components/home/Probe.tsx', '@/lib/catalog/preview-reader'],
@@ -70,6 +100,39 @@ describe("#16's preview reader import rule", { timeout: 60_000 }, () => {
         const messages = await restrictedImports(file, importing(specifier));
         expect(messages).toHaveLength(1);
         expect(messages[0]).toContain('never reads the public catalog');
+    });
+
+    it.each(spellings('@/lib/catalog', 'preview-reader'))('rejects %s, which names the preview reader too, outside the allowed folders', async (specifier) => {
+        const messages = await restrictedLoads('components/home/Probe.tsx', importing(specifier));
+        expect(messages).toHaveLength(1);
+        expect(messages[0]).toContain('preview reader');
+    });
+
+    it.each(loads('@/lib/catalog/preview-reader'))('rejects a load by %s outside the allowed folders', async (_, source) => {
+        for (const file of ['components/home/probe.ts', 'app/api/catalog/series/[slug]/pages/[cursor]/route.ts', '__tests__/probe.test.ts']) {
+            const messages = await restrictedLoads(file, source);
+            expect(messages, file).toHaveLength(1);
+            expect(messages[0], file).toContain('preview reader');
+        }
+    });
+
+    it.each(loads('@/lib/catalog/preview-reader'))('lets the allowed folders load it by %s', async (_, source) => {
+        for (const file of ['app/curation/preview/[draftId]/site/page.tsx', 'lib/catalog/__tests__/probe.test.ts']) expect(await restrictedLoads(file, source), file).toEqual([]);
+    });
+
+    it.each(spellings('@/lib/catalog', 'public-reader').map((specifier) => [specifier]).concat(loads('@/lib/catalog/public-reader').map(([, source]) => [source])))('rejects the preview loading the public reader by %s', async (specifierOrSource) => {
+        const source = specifierOrSource.includes('\n') ? specifierOrSource : importing(specifierOrSource);
+        const messages = await restrictedLoads('app/curation/preview/[draftId]/site/page.tsx', source);
+        expect(messages).toHaveLength(1);
+        expect(messages[0]).toContain('never reads the public catalog');
+    });
+
+    it('leaves a module whose name only starts or ends the same way alone', async () => {
+        for (const specifier of ['@/lib/catalog/preview-reader-notes', '@/lib/catalog/my-preview-reader', '@/lib/catalog/reader', '@/lib/catalog/routes', '@/lib/other/preview-readers']) {
+            expect(await restrictedLoads('components/home/probe.ts', importing(specifier)), specifier).toEqual([]);
+            expect(await restrictedLoads('components/home/probe.ts', `export const probe = () => import('${specifier}');\n`), specifier).toEqual([]);
+        }
+        expect(await restrictedLoads('app/curation/preview/[draftId]/site/page.tsx', importing('@/lib/catalog/reader'))).toEqual([]);
     });
 
     it('keeps the rules each folder had: rules.ts stays out of a preview route and of the watcher', async () => {
