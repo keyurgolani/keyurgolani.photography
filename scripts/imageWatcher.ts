@@ -29,8 +29,8 @@
  *   npx tsx scripts/imageWatcher.ts
  *
  *   # Process and exit. Exits 1 if any photo failed or changed while it was
- *   # processed, or if a /media set failed to build for any reason but a
- *   # source that moved on.
+ *   # processed, if a /media set failed to build for any reason but a
+ *   # source that moved on, or if the derivative worker couldn't start.
  *   npx tsx scripts/imageWatcher.ts --once
  *
  *   # Regenerate every legacy derivative, not only missing or outdated ones

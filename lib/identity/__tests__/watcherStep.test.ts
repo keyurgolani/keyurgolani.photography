@@ -319,6 +319,21 @@ describe('an identity pass', { timeout: 60_000 }, () => {
         expect(fs.existsSync(watcherStatusFile(s.data.root))).toBe(false);
     });
 
+    it('drops what the builds did at the next pass, and keeps only the error text until then', async () => {
+        const s = await setup({ options: { worker: { faults: { afterEncode: () => { throw new Error('encoder exploded'); } } } } });
+
+        await s.step.pass('startup');
+        await s.step.idle();
+        expect(s.step.worker?.results.map(({ outcome }) => outcome)).toEqual([
+            { status: 'failed', error: 'encoder exploded' },
+            { status: 'failed', error: 'encoder exploded' },
+        ]);
+
+        await s.step.pass('timer');
+        await s.step.idle();
+        expect(s.step.worker?.results).toEqual([]);
+    });
+
     it('stop() stops the worker too, so it starts no queued build', async () => {
         let workerStops = 0;
         const s = await setup({ options: { createWorker: () => fakeWorker({ stop: () => { workerStops++; } }) } });
@@ -363,6 +378,27 @@ describe('the 30 s check', { timeout: 60_000 }, () => {
         await s.step.check();
 
         expect(s.requests).toEqual([{ reason: 'decisions' }]);
+    });
+
+    it('asks for no pass for a decision the last pass deferred, and for one when another arrives', async () => {
+        let ahead = 3_600_000;
+        const s = await setup({ options: { pass: { clock: () => Date.now() + ahead } } });
+        await s.step.pass('startup');
+        await s.step.idle();
+        const [photoId] = Object.keys((await s.registry()).photos);
+
+        // A decision about a file still being written waits for it to settle, and the pass asks for one then.
+        fs.writeFileSync(s.lib.file('fresh.jpg'), images[2]);
+        ahead = 0;
+        await writeDecision(s.data.root, createDecision({ type: 'new', path: 'fresh.jpg', actor: 'test' }));
+        expect(await s.step.pass('decisions')).toMatchObject({ status: 'committed' });
+        expect(s.requests.map(({ reason }) => reason)).toEqual(['settling']);
+        await s.step.check();
+        expect(s.requests.map(({ reason }) => reason)).toEqual(['settling']);
+
+        await writeDecision(s.data.root, createDecision({ type: 'reprofile', photoId, actor: 'test' }));
+        await s.step.check();
+        expect(s.requests.map(({ reason }) => reason)).toEqual(['settling', 'decisions']);
     });
 
     it('asks for a pass when another process left facts undelivered', async () => {
@@ -608,6 +644,15 @@ describe('runIdentityOnce', { timeout: 60_000 }, () => {
         const o = await once({ worker: { deviceOf: (dir) => (dir.endsWith('staging') ? 2 : 1) } });
         expect(await o.run()).toBe(1);
         expect(o.lines.some((line) => line.includes('EXDEV'))).toBe(true);
+    });
+
+    it("returns 1 when the worker can't start for another reason", async () => {
+        const o = await once();
+        fs.writeFileSync(o.data.file('assets'), 'a file where the asset store goes');
+
+        expect(await o.run()).toBe(1);
+        expect(o.lines.some((line) => line.startsWith('[identity] The worker could not start') && line.includes('EEXIST'))).toBe(true);
+        expect(o.lines).toContain('[identity] The worker never started, so no set was built. Run it again.');
     });
 
     it('passes again at once when a build asks for it, even while a file still settles', async () => {
