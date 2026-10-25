@@ -387,6 +387,19 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
         if (index >= 0) liveHolds.splice(index, 1);
     }
 
+    /**
+     * Take a photo a decision settled out of every hold. A hold left with no
+     * candidate ends, so its path is classified afresh below. A key-collision
+     * hold stays, since it lasts as long as the collision does.
+     */
+    function leaveHolds(photoId: string): void {
+        for (let index = liveHolds.length - 1; index >= 0; index--) {
+            const held = liveHolds[index];
+            held.candidates = held.candidates.filter((candidate) => candidate !== photoId);
+            if (held.candidates.length === 0 && held.keyCollision !== true) liveHolds.splice(index, 1);
+        }
+    }
+
     /** The one readable image at `target` this pass, or why a decision about it can't run now. */
     function imageAt(target: string): ImageSeen | Decided {
         const group = byKey.get(keyOf(target)) ?? [];
@@ -409,7 +422,8 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
      * there, N's revision moves to X, and N is archived with `mergedInto: X`.
      * When the path's hold lists both N and X, as after one photo's file was
      * moved over another's, N loses the path and is classified like any
-     * photo whose path is gone. Every refusal comes before anything changes.
+     * photo whose path is gone. X leaves every hold it was in. Every refusal
+     * comes before anything changes.
      */
     function bind(target: string, photoId: string, merge: string | undefined): Decided {
         const found = imageAt(target);
@@ -481,6 +495,7 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
             fact({ type: 'replaced', photoId, assetRevision: revision, path: at, ...fromPath });
         }
         endHold(at);
+        leaveHolds(photoId);
         if (plan?.kind === 'merge') return decided.applied(`bound ${at} to ${photoId} and merged ${plan.holder.photoId} into it`);
         return decided.applied(plan?.kind === 'unbind' ? `bound ${at} to ${photoId}, which ${plan.holder.photoId} no longer holds` : `bound ${at} to ${photoId}`);
     }
@@ -543,6 +558,21 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
         return decided.applied(`gave ${at} its own photo ${photoId}`);
     }
 
+    /** The first path this pass, by path, that holds one of `x`'s revisions or its pixels and that no hold or other photo has. */
+    function returnedTo(x: PhotoRecord): string | undefined {
+        const own = Object.values(x.revisions).filter((revision) => !revision.reassignedTo);
+        const bytes = new Set(own.map((revision) => revision.assetRevision));
+        const pixels = new Set(own.flatMap((revision) => (revision.pixelDigest === null ? [] : [revision.pixelDigest])));
+        const held = new Set(liveHolds.map((hold) => hold.path));
+        const match = seen.find((item) => {
+            if (!isImage(item) || held.has(item.entry.path)) return false;
+            const holder = boundAt(item.entry.key);
+            if (holder !== undefined && holder !== x) return false;
+            return bytes.has(item.inspection.assetRevision) || (item.inspection.pixelDigest !== null && pixels.has(item.inspection.pixelDigest));
+        });
+        return match?.entry.path;
+    }
+
     /** archive: retire a photo whose file is gone, so it stops being reported missing. Everything is kept. */
     function archive(photoId: string): Decided {
         const x = photos[photoId];
@@ -552,9 +582,13 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
             if (byKey.has(x.source.key)) return decided.rejected(`${photoId} is present at ${x.source.path}, and archive is for a photo whose file is gone`);
             if (underUnreadableDir(x.source.path)) return decided.deferred(`the folder holding ${x.source.path} can't be listed right now`);
         }
+        // Its file back at a path no other photo holds, moved or edited only in its metadata: the rows give the
+        // path back to it this pass, which they can't once it is archived, so it would come back as a duplicate.
+        const back = returnedTo(x);
+        if (back !== undefined) return decided.rejected(`${photoId}'s file is back at ${back}, and archive is for a photo whose file is gone`);
         x.sourceHealth = 'archived';
         x.source.present = false;
-        for (const held of liveHolds) held.candidates = held.candidates.filter((candidate) => candidate !== photoId);
+        leaveHolds(photoId);
         return decided.applied(`archived ${photoId}`);
     }
 

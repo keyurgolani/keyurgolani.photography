@@ -343,6 +343,23 @@ describe('reconcile: bind', () => {
         expect(outcomes(r)).toEqual([{ status, reason }]);
     });
 
+    it('takes the photo out of every hold it was in, so a path held only for it gets its own photo', () => {
+        const r = seeded({ 'a.jpg': 'A' });
+        const x = r.photoAt('a.jpg').photoId;
+        // Renamed, and a new file saved under the old name: both paths are held for x.
+        r.library.move('a.jpg', 'elsewhere.jpg').put('a.jpg', image('B'));
+        r.pass();
+        expect(r.registry.holds.map((held) => [held.path, held.candidates])).toEqual([['a.jpg', [x]], ['elsewhere.jpg', [x]]]);
+
+        r.decide({ type: 'bind', path: 'elsewhere.jpg', photoId: x });
+        r.pass();
+        expect(outcomes(r)).toEqual([{ status: 'applied' }]);
+        expect(r.registry.holds).toEqual([]);
+        expect(r.photo(x)).toMatchObject({ sourceHealth: 'present', source: { path: 'elsewhere.jpg', observedRevision: revisionOf('A') } });
+        const others = Object.values(r.registry.photos).filter((photo) => photo.photoId !== x);
+        expect(others).toMatchObject([{ sourceHealth: 'present', source: { path: 'a.jpg', observedRevision: revisionOf('B') } }]);
+    });
+
     it('refuses an archived photo', () => {
         const r = seeded({ 'a.jpg': 'A' });
         const x = r.photoAt('a.jpg').photoId;
@@ -550,6 +567,38 @@ describe('reconcile: archive', () => {
         expect(r.registry.holds).toMatchObject([{ path: 'c.jpg', candidates: [x1] }]);
         expect(r.photo(x2).sourceHealth).toBe('archived');
         expect(r.photo(x1).sourceHealth).toBe('ambiguous');
+    });
+
+    it.each([
+        ['moved', image('A')],
+        ['moved and edited only in its metadata', image('A2', { pixels: 'A' })],
+    ])('refuses a photo whose file came back %s this pass, which the pass gives back to it', (_how, back) => {
+        const r = seeded({ 'a.jpg': 'A' });
+        const x = r.photoAt('a.jpg').photoId;
+        r.library.remove('a.jpg');
+        r.pass();
+        r.library.put('trips/a.jpg', back);
+        r.decide({ type: 'archive', photoId: x });
+        r.pass();
+        expect(outcomes(r)).toEqual([{ status: 'rejected', reason: `${x}'s file is back at trips/a.jpg, and archive is for a photo whose file is gone` }]);
+        expect(Object.keys(r.registry.photos)).toEqual([x]);
+        expect(r.photo(x)).toMatchObject({ sourceHealth: 'present', source: { path: 'trips/a.jpg', present: true } });
+    });
+
+    it('ends a hold whose only candidate it archives, so the held path gets its own photo', () => {
+        const r = seeded({ 'a.jpg': 'A', 'b.jpg': 'A' });
+        const [x1, x2] = [r.photoAt('a.jpg').photoId, r.photoAt('b.jpg').photoId];
+        r.library.remove('a.jpg', 'b.jpg');
+        r.pass();
+        r.library.put('c.jpg', image('A'));
+        r.pass();
+        r.decide({ type: 'archive', photoId: x1 });
+        r.decide({ type: 'archive', photoId: x2 });
+        r.pass();
+        expect(outcomes(r)).toEqual([{ status: 'applied' }, { status: 'applied' }]);
+        expect(r.registry.holds).toEqual([]);
+        const others = Object.values(r.registry.photos).filter((photo) => photo.photoId !== x1 && photo.photoId !== x2);
+        expect(others).toMatchObject([{ sourceHealth: 'present', duplicateOf: x1, source: { path: 'c.jpg' } }]);
     });
 
     it('applies a second time as a no-op', () => {
