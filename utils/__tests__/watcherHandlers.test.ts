@@ -951,6 +951,23 @@ describe('attachWatcher', { timeout: 60_000 }, () => {
         ]);
     });
 
+    it("isn't idle while the startup batch works out its jobs, so what onReady waits for comes after them", async () => {
+        const watcher = new EventEmitter<FSWatcherEventMap>();
+        const outputs = ['landscape', 'portrait', 'square'].flatMap(derivativePaths);
+        const seen: number[] = [];
+        attachWatcher(watcher, handlers, {
+            root: lib.root,
+            logger,
+            onRootRemoved: () => undefined,
+            onReady: () => { void handlers.idle().then(() => { seen.push(Object.keys(lib.hashes(outputs)).length); }); },
+        });
+
+        watcher.emit('ready');
+
+        await vi.waitFor(() => expect(seen).toHaveLength(1), { timeout: 30_000 });
+        expect(seen).toEqual([21]);
+    });
+
     it('on ready, queues the startup batch and then calls onReady', () => {
         const watcher = new EventEmitter<FSWatcherEventMap>();
         const order: string[] = [];
