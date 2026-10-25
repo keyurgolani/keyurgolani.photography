@@ -158,28 +158,42 @@
   place-items: safe center;
 }
 
+/* The fitted box, from the record's shape (--ratio, set inline) before a byte
+   arrives: the stage's width, at most 80vw on a wide screen (fitSizes() in
+   viewerSizes.ts), and no taller than the first screen leaves. The image fills it, so a slow or
+   failed file never moves Previous, Next, or the reading area (#6). */
+.frame,
+.missing {
+  --fit-vw: 100vw;
+  width: min(100%, var(--fit-vw), calc((100dvh - var(--viewer-header) - var(--viewer-stage-chrome)) * var(--ratio, 3 / 2)));
+  aspect-ratio: var(--ratio, 3 / 2);
+}
+
+@media (min-width: 48rem) {
+  .frame,
+  .missing {
+    --fit-vw: 80vw;
+  }
+}
+
 .frame {
-  max-width: 100%;
   margin: 0;
 }
 
 .image {
   display: block;
-  width: auto;
-  height: auto;
-  max-width: 100%;
-  max-height: calc(100dvh - var(--viewer-header) - var(--viewer-stage-chrome));
+  width: 100%;
+  height: 100%;
   outline: 1px solid var(--cc-rule);
 }
 
-/* No usable set: a reserved box on the dark ground with the series page's
-   missing-image copy and its hairline, so it never reads as a photograph still
-   loading, and Previous, Next, and the reading area stay where they are. */
+/* No usable set, or its file failed: a reserved box on the dark ground with the
+   series page's missing-image copy and its hairline, in the photograph's shape
+   when the record has one, so it never reads as a photograph still loading,
+   and Previous, Next, and the reading area stay where they are. */
 .missing {
   display: flex;
   align-items: flex-end;
-  width: min(100%, calc((100dvh - var(--viewer-header) - var(--viewer-stage-chrome)) * 3 / 2));
-  aspect-ratio: 3 / 2;
   padding: 0.75rem 0.875rem;
   box-shadow: inset 0 0 0 1px var(--cc-rule);
   background: linear-gradient(to top right, transparent calc(50% - 0.5px), var(--cc-rule) calc(50% - 0.5px), var(--cc-rule) calc(50% + 0.5px), transparent calc(50% + 0.5px));
@@ -193,13 +207,7 @@
 }
 
 .viewport[data-zoomed] .frame {
-  max-width: none;
-}
-
-.viewport[data-zoomed] .image {
   width: var(--zoom-width);
-  max-width: none;
-  max-height: none;
 }
 
 .step {
@@ -358,11 +366,9 @@
     justify-self: end;
   }
 
-  .image {
-    max-height: 72dvh;
-  }
-
+  /* The box, not the image, takes the height cap, so it stays reserved from the record's shape (#6). */
+  .frame,
   .missing {
-    width: min(100%, 72dvh * 3 / 2);
+    width: min(100%, 72dvh * var(--ratio, 3 / 2));
   }
 }

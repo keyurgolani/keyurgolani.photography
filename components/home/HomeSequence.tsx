@@ -81,16 +81,17 @@ const HomeSequence: React.FC<HomeSequenceProps> = ({ photos, index, playbackStat
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [photos, index]);
 
-  // Warm up the next three full-quality images and the next two thumbnails.
+  // Warm up the next full-quality image and the next two thumbnails. With the one on screen, that's
+  // at most two full-size files at a time (#6): one more would cost the first view a full image it can't show.
   useEffect(() => {
     if (photos.length === 0) return;
-    const upcoming = [1, 2, 3].map((offset) => photos[(index + offset) % photos.length]);
-    for (const photo of upcoming) {
-      if (preloaded.current.has(photo.id)) continue;
-      preloaded.current.add(photo.id);
-      new Image().src = photo.sources.full;
+    const upcoming = [1, 2].map((offset) => photos[(index + offset) % photos.length]);
+    const next = upcoming[0];
+    if (!preloaded.current.has(next.id)) {
+      preloaded.current.add(next.id);
+      new Image().src = next.sources.full;
     }
-    for (const photo of upcoming.slice(0, 2)) {
+    for (const photo of upcoming) {
       if (!thumbnails.has(photo.id)) new Image().src = photo.sources.thumbnail;
     }
     const current = photos[index];

@@ -4,6 +4,7 @@ import { VARIANT_FORMATS, VARIANT_WIDTHS } from '@/lib/identity/variants';
 import { mediaUrl } from '@/lib/media/url';
 import type { SeriesImage } from '@/lib/catalog/projections/series';
 import SeriesPhoto from '../SeriesPhoto';
+import { preloadsIn, serverHtml } from '@/test/helpers/serverHtml';
 
 const REF = { photoId: 'ph_00000000-0000-4000-8000-000000000001', assetRevision: `sha256-${'c'.repeat(64)}`, profileId: 'p_0123456789abcdef' };
 const LQIP = 'data:image/webp;base64,UklGRhIAAABXRUJQVlA4';
@@ -41,6 +42,10 @@ describe('SeriesPhoto', () => {
         const img = container.querySelector('img') as HTMLImageElement;
         expect(img.getAttribute('loading')).toBe('eager');
         expect(img.getAttribute('fetchpriority')).toBe('high');
+        // The server HTML preloads the cover from the head with its own srcset (#6).
+        const links = preloadsIn(serverHtml(<SeriesPhoto {...base} image={image(1800, 1200, LQIP)} priority intrinsic />));
+        expect(links.map((link) => link.getAttribute('imagesrcset'))).toEqual([container.querySelector('source[type="image/avif"]')?.getAttribute('srcset')]);
+        expect(preloadsIn(serverHtml(<SeriesPhoto {...base} image={image(1800, 1200, LQIP)} />))).toHaveLength(0);
         expect(img.style.backgroundImage).toBe(`url("${LQIP}")`);
         const frame = container.firstElementChild as HTMLElement;
         expect(frame.style.aspectRatio).toBe('1800 / 1200');

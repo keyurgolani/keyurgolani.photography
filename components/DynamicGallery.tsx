@@ -21,13 +21,16 @@ export default function DynamicGallery() {
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
+        // Leaving the gallery stops the request, and nothing from it lands after (#6).
+        const controller = new AbortController();
         const fetchImages = async () => {
             try {
-                const response = await fetch('/api/photos');
+                const response = await fetch('/api/photos', { signal: controller.signal });
                 if (!response.ok) {
                     throw new Error('Failed to fetch images');
                 }
                 const data: ImageItem[] = await response.json();
+                if (controller.signal.aborted) return;
                 setImages(data.map((img, index) => ({
                     id: index,
                     src: img.optimized,  // Use pre-optimized 1920px WebP
@@ -40,14 +43,15 @@ export default function DynamicGallery() {
                     lqip: img.lqip,
                 })));
             } catch (error) {
+                if (controller.signal.aborted) return;
                 console.error('Error fetching gallery images:', error);
                 setImages([]);
-            } finally {
-                setLoading(false);
             }
+            setLoading(false);
         };
 
         fetchImages();
+        return () => controller.abort();
     }, []);
 
     if (loading) {

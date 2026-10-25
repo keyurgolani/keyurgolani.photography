@@ -6,6 +6,9 @@ import type { HomePhoto as CatalogPhoto } from '@/lib/catalog/projections/home';
 import type { PlaybackState } from './homePlayback';
 import styles from './HomeSequence.module.css';
 
+/** Every slide fills the viewport. */
+export const HOME_SIZES = '100vw';
+
 interface CatalogSequenceProps {
   /** The authored order. */
   photoIds: readonly string[];
@@ -17,6 +20,8 @@ interface CatalogSequenceProps {
   photos: ReadonlyMap<string, CatalogPhoto>;
   /** The position useHomePlayback is on. */
   index: number;
+  /** The photograph Home opens on, the one the document head preloads. */
+  openingId?: string;
   /** The slow zoom runs only while this is 'advancing'. */
   playbackState: PlaybackState;
   /** Bumped by Retry: a new number remounts that photo's image, so it fetches again. */
@@ -36,10 +41,13 @@ const addTo = (set: ReadonlySet<string>, id: string) => (set.has(id) ? set : new
  * if it fails, the one before stays, so a failed image never blanks Home.
  * Before anything has loaded, the opening photograph is on screen, over its
  * LQIP. It mounts the photograph at `index`, the next one once something
- * has loaded, the one on screen, and any that loaded before. Like #2's
- * HomeSequence it keeps no timer, renders no control, and never moves focus.
+ * has loaded, the one on screen, and any that loaded before, so the first
+ * view asks for at most two full-size files: the opening photograph, then
+ * the next (#6). A slide that unmounts before it finished stops fetching
+ * (ResponsivePhoto). Like #2's HomeSequence it keeps no timer, renders no
+ * control, and never moves focus.
  */
-export default function CatalogSequence({ photoIds, photos, index, playbackState, attempts, onImageReady, onImageFailed }: CatalogSequenceProps) {
+export default function CatalogSequence({ photoIds, photos, index, openingId, playbackState, attempts, onImageReady, onImageFailed }: CatalogSequenceProps) {
   const [loaded, setLoaded] = useState<ReadonlySet<string>>(new Set());
   const activeId = photoIds[index];
   const nextId = photoIds.length > 1 ? photoIds[(index + 1) % photoIds.length] : undefined;
@@ -95,6 +103,7 @@ export default function CatalogSequence({ photoIds, photos, index, playbackState
                 image={image}
                 alt={photos.get(id)?.alt ?? ''}
                 priority={id === activeId}
+                lead={id === openingId}
                 onLoaded={markLoaded}
                 onFailed={onImageFailed}
               />
@@ -111,12 +120,14 @@ interface SlideImageProps {
   image: NonNullable<CatalogPhoto['image']>;
   alt: string;
   priority: boolean;
+  /** The opening photograph: preloaded from the head, with the srcset and sizes its <picture> has. */
+  lead: boolean;
   onLoaded: (photoId: string) => void;
   onFailed: (photoId: string) => void;
 }
 
 /** One attempt at a photograph's image. Retry remounts it with a new key, since a failed image's decode() doesn't fetch again. */
-function SlideImage({ id, image, alt, priority, onLoaded, onFailed }: SlideImageProps) {
+function SlideImage({ id, image, alt, priority, lead, onLoaded, onFailed }: SlideImageProps) {
   const ref = useRef<HTMLImageElement>(null);
   // A server-rendered image can settle before hydration attaches onLoad and onError, so check it once at mount.
   useEffect(() => {
@@ -132,8 +143,10 @@ function SlideImage({ id, image, alt, priority, onLoaded, onFailed }: SlideImage
       ref={ref}
       asset={image}
       alt={alt}
+      sizes={HOME_SIZES}
       loading="eager"
       fetchPriority={priority ? 'high' : 'auto'}
+      preload={lead}
       onLoad={() => onLoaded(id)}
       onError={() => onFailed(id)}
       className={styles.slideImage}
