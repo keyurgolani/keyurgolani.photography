@@ -194,8 +194,10 @@ describe('proxy.ts and the curator session', () => {
             ['HEAD', '/api/curation/media/ph_x/sha256-x/p_x/w800.webp', {}],
             ['POST', '/api/curation/logout', { origin: CURATOR_ORIGIN }],
             ['POST', '/curation/inbox', { origin: CURATOR_ORIGIN, 'next-action': ACTION_ID }],
-            // An action ID posted to the login page needs a session like any other.
+            // An action ID posted to the login page needs a session like any other, and so does any other write to it.
             ['POST', '/curation/login', { origin: CURATOR_ORIGIN, 'next-action': ACTION_ID }],
+            ['POST', '/curation/login', { origin: CURATOR_ORIGIN }],
+            ['PUT', '/curation/login', { origin: CURATOR_ORIGIN }],
             ['GET', '/curation/login', { 'next-action': ACTION_ID, origin: CURATOR_ORIGIN }],
             ['DELETE', '/api/curation/login', { origin: CURATOR_ORIGIN }],
             ['POST', '/api/curation/login', { origin: CURATOR_ORIGIN, 'next-action': ACTION_ID }],
