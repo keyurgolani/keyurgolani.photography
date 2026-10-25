@@ -19,6 +19,7 @@ const state = vi.hoisted(() => ({
     origin: null as URL | null,
     loads: 0,
     photoProps: [] as unknown[],
+    returnProps: [] as unknown[],
 }));
 
 /** What Next's notFound() throws, reduced to one value, so every not-found case can be compared to the others. */
@@ -75,6 +76,13 @@ vi.mock('@/components/series/SeriesPhoto', async (importOriginal) => {
         },
     };
 });
+
+vi.mock('@/components/series/SeriesReturn', () => ({
+    default: (props: unknown) => {
+        state.returnProps.push(props);
+        return null;
+    },
+}));
 
 const routeModule = await import('../work/[slug]/page');
 const { default: SeriesRoute, generateMetadata, dynamic } = routeModule;
@@ -231,6 +239,7 @@ beforeEach(() => {
     state.origin = null;
     state.loads = 0;
     state.photoProps = [];
+    state.returnProps = [];
 });
 
 describe('/work/[slug] renders per request', () => {
@@ -456,7 +465,9 @@ describe('the page', () => {
         const doc = await documentOf();
         const figure = doc.querySelector('main figure');
         const img = figure?.querySelector('img');
-        expect(img?.getAttribute('alt')).toBe(describedText(P[1]));
+        // The description names the cover's link, so the image inside it has an empty alt (contract rule 1).
+        expect(figure?.querySelector('a')?.getAttribute('aria-label')).toContain(describedText(P[1])?.replace(/[\s.,;:]+$/, ''));
+        expect(img?.getAttribute('alt')).toBe('');
         expect(img?.getAttribute('loading')).toBe('eager');
         expect(img?.getAttribute('fetchpriority')).toBe('high');
         expect(img?.getAttribute('src')).toBe(photoOf(P[1]).variants.w1200.webp.url);
@@ -561,6 +572,36 @@ describe('the page', () => {
         expect(entriesOf(doc).map((link) => link.id)).toEqual(ORDER_A.map((photoId) => `photo-${photoId}`));
     });
 
+    it('makes the cover one link to its photograph\'s canonical Viewer URL, id series-cover, named apart from its entry', async () => {
+        const doc = await documentOf();
+        const links = [...doc.querySelectorAll<HTMLAnchorElement>('main figure a')];
+        expect(links).toHaveLength(1);
+        const [cover] = links;
+        expect(cover.id).toBe('series-cover');
+        expect(cover.getAttribute('href')).toBe(`/work/fixture-a/photo/${P[1]}`);
+        const entryName = photoEntryName({ alt: { kind: 'described', text: describedText(P[1]) ?? '' }, position: 3, total: 6 });
+        expect(cover.getAttribute('aria-label')).toBe(`${entryName}, series cover`);
+        expect(doc.getElementById(`photo-${P[1]}`)?.getAttribute('aria-label')).toBe(entryName);
+        // The image and its box sit inside the link, with no text that would have to be part of its name. The position stays outside.
+        expect(cover.querySelector('[data-photo]')).not.toBeNull();
+        expect(cover.textContent).toBe('');
+        expect(cover.closest('figure')?.querySelector('figcaption')?.closest('a')).toBeNull();
+        // The link takes the photograph's own ratio, so the width cap and the ring fit it.
+        const { width, height } = photoOf(P[1]);
+        expect(cover.getAttribute('style')).toContain(`--ratio:${width} / ${height}`);
+    });
+
+    it('names a decorative cover by its position, still apart from its entry', async () => {
+        const decorative = structuredClone(content);
+        const photo = decorative.photos.find((record) => record.id === P[1]);
+        if (!photo) throw new Error('No P[1]');
+        photo.alt = { kind: 'decorative' };
+        state.catalog = served(decorative);
+        const doc = await documentOf();
+        expect(doc.getElementById('series-cover')?.getAttribute('aria-label')).toBe('Photograph 3 of 6, series cover');
+        expect(doc.getElementById(`photo-${P[1]}`)?.getAttribute('aria-label')).toBe('Photograph 3 of 6');
+    });
+
     it('opens text-led, with no stage, when the cover can\'t be shown, and keeps the cover\'s entry', async () => {
         const broken = structuredClone(content);
         const photo = broken.photos.find((record) => record.id === P[1]);
@@ -569,6 +610,7 @@ describe('the page', () => {
         state.catalog = served(broken);
         const doc = await documentOf();
         expect(doc.querySelector('main figure')).toBeNull();
+        expect(doc.getElementById('series-cover')).toBeNull();
         expect(doc.getElementById(`photo-${P[1]}`)?.querySelector('[data-photo="unavailable"]')).not.toBeNull();
     });
 
@@ -598,10 +640,11 @@ describe('the page', () => {
 });
 
 describe('keyboard and touch order', () => {
-    it('makes the entries and All work the only focusable things in main, as plain links in DOM order with no tabindex', async () => {
+    it('makes the cover, the entries, and All work the only focusable things in main, as plain links in DOM order with no tabindex', async () => {
         const doc = await documentOf();
         const focusable = [...doc.querySelectorAll('main a[href], main button, main input, main select, main textarea, main [tabindex]')];
-        expect(focusable.map((element) => element.getAttribute('href'))).toEqual([...ORDER_A.map((photoId) => `/work/fixture-a/photo/${photoId}`), '/work']);
+        expect(focusable.map((element) => element.getAttribute('href'))).toEqual([`/work/fixture-a/photo/${P[1]}`, ...ORDER_A.map((photoId) => `/work/fixture-a/photo/${photoId}`), '/work']);
+        expect(focusable[0].id).toBe('series-cover');
         for (const element of focusable) {
             expect(element.tagName).toBe('A');
             expect(element.hasAttribute('tabindex')).toBe(false);
@@ -641,5 +684,10 @@ describe('no discovery through the page', () => {
         }
         const text = JSON.stringify(state.photoProps);
         for (const sentinel of SENTINELS) expect(text, sentinel).not.toContain(sentinel);
+    });
+
+    it('hands the return position only the series path, the canonical slug, and the served revision', async () => {
+        await html();
+        expect(state.returnProps).toEqual([{ path: '/work/fixture-a', slug: 'fixture-a', revisionId: REVISION }]);
     });
 });
