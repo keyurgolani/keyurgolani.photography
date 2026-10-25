@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { photoEntryName, photoImageAlt } from '@/lib/a11y/photoName';
 import type { PublishedSeriesPage, SeriesEntry, SeriesFacts, SeriesSection } from '@/lib/catalog/projections/series';
 import SeriesPhoto from './SeriesPhoto';
-import { altOf, capturedSource, positionLabel, yearsLabel } from './seriesLabels';
+import { altOf, capturedSource, yearsLabel } from './seriesLabels';
 import styles from './SeriesPage.module.css';
 
 export interface SeriesPageProps {
@@ -65,7 +65,7 @@ function Facts({ facts, total }: { facts: SeriesFacts; total: number }) {
 /**
  * One run of the sequence as an ordered list that starts at its first
  * position, so numbering runs across chapters. Each entry is one link to its
- * Viewer URL, named by photoEntryName(), with the thumbnail and the visible
+ * Viewer URL, named by photoEntryName(), with the thumbnail and its visible
  * number inside it, and the title and description beside it, visible without
  * hover.
  */
@@ -85,13 +85,12 @@ function EntryList({ entries, total }: { entries: SeriesEntry[]; total: number }
                             image={entry.image}
                             alt=""
                             sizes={ENTRY_SIZES}
-                            fallbackLabel="Image unavailable"
-                            fallbackHidden
                             frameClassName={styles.thumbFrame}
                             crop="contain"
                         />
-                        <span className={styles.position} aria-hidden="true">
-                            {positionLabel(entry.position, total)}
+                        {/* Unpadded, so the visible number is part of the link's name (WCAG 2.5.3). */}
+                        <span className={styles.position} data-position="">
+                            {entry.position}
                         </span>
                     </Link>
                     {(entry.title !== null || entry.description !== null) && (

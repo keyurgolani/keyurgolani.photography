@@ -6,11 +6,6 @@ export function altOf(description: string | null): PhotoAlt {
     return description === null ? { kind: 'decorative' } : { kind: 'described', text: description };
 }
 
-/** The zero-padded sequence number an entry shows, two digits at least, as #7's Viewer counter does. */
-export function positionLabel(position: number, total: number): string {
-    return String(position).padStart(Math.max(2, String(total).length), '0');
-}
-
 /** "2019 to 2023", or one year. */
 export function yearsLabel(captured: NonNullable<SeriesFacts['captured']>): string {
     return captured.fromYear === captured.toYear ? String(captured.fromYear) : `${captured.fromYear} to ${captured.toYear}`;

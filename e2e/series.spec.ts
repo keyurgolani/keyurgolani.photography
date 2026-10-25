@@ -214,7 +214,7 @@ test('the sequence keeps the authored order across its chapter, each entry a lin
         await expect(link).toHaveAttribute('href', viewerPath(photoId));
         await expect(link).toHaveAttribute('id', `photo-${photoId}`);
         await expect(link).toHaveAccessibleName(new RegExp(`photograph ${index + 1} of ${HARBOR.length}$`, 'i'));
-        await expect(link.locator('[aria-hidden="true"]').last()).toHaveText(String(index + 1).padStart(2, '0'));
+        await expect(link.locator('[data-position]')).toHaveText(String(index + 1));
     }
     const chapter = page.getByRole('main').getByRole('region', { name: 'Fixture tide' });
     await expect(chapter.getByRole('heading', { level: 3 })).toHaveText('Fixture tide');

@@ -58,15 +58,16 @@ describe('SeriesPhoto', () => {
         expect(frame?.textContent).toBe('Photograph unavailable');
         // Outside a link, the fallback text is the photograph's only text, so it stays readable.
         expect(frame?.querySelector('[aria-hidden]')).toBeNull();
+        expect(frame?.className).toContain('frame');
     });
 
-    it('swaps in the fallback when the image fails to load, and hides its text inside a named link', () => {
-        const { container } = render(<SeriesPhoto {...base} alt="" image={image()} fallbackLabel="Image unavailable" fallbackHidden />);
+    it('swaps in the fallback when the image fails to load, with no text when it has no label, as inside a named link', () => {
+        const { container } = render(<SeriesPhoto {...base} alt="" image={image()} fallbackLabel={undefined} />);
         fireEvent.error(container.querySelector('img') as HTMLImageElement);
         expect(container.querySelector('img')).toBeNull();
         const frame = container.querySelector('[data-photo="unavailable"]');
         expect(frame?.className).toContain('frame');
-        expect(frame?.querySelector('[aria-hidden="true"]')?.textContent).toBe('Image unavailable');
+        expect(frame?.textContent).toBe('');
     });
 
     it('catches an image that failed before hydration, and leaves one that hasn\'t started alone', () => {

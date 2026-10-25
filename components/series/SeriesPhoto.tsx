@@ -17,10 +17,12 @@ export interface SeriesPhotoProps {
     /** Where the crop centers, 0 to 1 on each axis. */
     focalPoint?: { x: number; y: number };
     crop?: 'cover' | 'contain';
-    /** What the box says when there's no image. */
-    fallbackLabel: string;
-    /** Inside a named link the fallback text is visual only, since the link's name already says which photograph it is. */
-    fallbackHidden?: boolean;
+    /**
+     * What the box says when there's no image. Left out inside a named link,
+     * where any text would have to be part of the link's name (WCAG 2.5.3), so
+     * the box shows the missing-image mark alone.
+     */
+    fallbackLabel?: string;
     /** The box's class, which reserves its shape. */
     frameClassName: string;
     /** Size the box from the photograph's own aspect ratio, as the cover does. Otherwise the class sets it. */
@@ -35,7 +37,7 @@ export interface SeriesPhotoProps {
  * fires onError, so the mount check looks too. An empty currentSrc is a lazy
  * image that hasn't started, which isn't a failure.
  */
-export default function SeriesPhoto({ image, alt, sizes, priority = false, focalPoint, crop = 'cover', fallbackLabel, fallbackHidden = false, frameClassName, intrinsic = false }: SeriesPhotoProps) {
+export default function SeriesPhoto({ image, alt, sizes, priority = false, focalPoint, crop = 'cover', fallbackLabel, frameClassName, intrinsic = false }: SeriesPhotoProps) {
     const element = useRef<HTMLImageElement>(null);
     const [failed, setFailed] = useState(false);
 
@@ -47,9 +49,7 @@ export default function SeriesPhoto({ image, alt, sizes, priority = false, focal
     if (image === null || failed) {
         return (
             <span className={`${frameClassName} ${styles.fallback}`} data-photo="unavailable">
-                <span className={styles.fallbackText} aria-hidden={fallbackHidden ? 'true' : undefined}>
-                    {fallbackLabel}
-                </span>
+                {fallbackLabel !== undefined && <span className={styles.fallbackText}>{fallbackLabel}</span>}
             </span>
         );
     }

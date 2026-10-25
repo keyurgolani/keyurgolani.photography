@@ -480,7 +480,7 @@ describe('the page', () => {
         const entries = entriesOf(doc);
         expect(entries.map((entry) => entry.getAttribute('href'))).toEqual(ORDER_A.map((photoId) => `/work/fixture-a/photo/${photoId}`));
         expect(entries.map((entry) => entry.id)).toEqual(ORDER_A.map((photoId) => `photo-${photoId}`));
-        expect(entries.map((entry) => entry.querySelector('[aria-hidden="true"]')?.textContent)).toEqual(['01', '02', '03', '04', '05', '06']);
+        expect(entries.map((entry) => entry.querySelector('[data-position]')?.textContent)).toEqual(['1', '2', '3', '4', '5', '6']);
     });
 
     it('names each entry with photoEntryName(), unique, and gives its image an empty alt inside the named link', async () => {
@@ -498,11 +498,19 @@ describe('the page', () => {
         for (const entry of entries) for (const img of entry.querySelectorAll('img')) expect(img.getAttribute('alt')).toBe('');
     });
 
+    it('keeps each entry\'s visible text, its number, inside its name (WCAG 2.5.3)', async () => {
+        for (const entry of entriesOf(await documentOf())) {
+            const visible = entry.textContent ?? '';
+            expect(visible).toMatch(/^\d+$/);
+            expect(entry.getAttribute('aria-label')).toMatch(new RegExp(`\\bphotograph ${visible} of \\d+$`, 'i'));
+        }
+    });
+
     it('shows each entry\'s position, title, and description without hover', async () => {
         const doc = await documentOf();
         const items = [...doc.querySelectorAll('main ol > li')];
         const first = items[0];
-        expect(first.querySelector('a [aria-hidden="true"]')?.textContent).toBe('01');
+        expect(first.querySelector('a [data-position]')?.textContent).toBe('1');
         expect(first.querySelector('p')?.textContent).toBe(`Fixture title one${describedText(P[0])}`);
         // The decorative photo has no text to show.
         expect(items[1].querySelector('p')).toBeNull();
@@ -548,9 +556,9 @@ describe('the page', () => {
         expect(entry?.getAttribute('href')).toBe(`/work/fixture-a/photo/${P[2]}`);
         expect(entry?.getAttribute('aria-label')).toBe(photoEntryName({ alt: { kind: 'described', text: describedText(P[2]) ?? '' }, position: 4, total: 6 }));
         expect(entry?.querySelector('img')).toBeNull();
-        const fallback = entry?.querySelector('[data-photo="unavailable"]');
-        expect(fallback?.textContent).toBe('Image unavailable');
-        expect(fallback?.querySelector('[aria-hidden="true"]')).not.toBeNull();
+        // No text in the mark, so the link's visible text stays its number, part of its name.
+        expect(entry?.querySelector('[data-photo="unavailable"]')?.textContent).toBe('');
+        expect(entry?.textContent).toBe('4');
         expect(entry?.closest('li')?.querySelector('p')?.textContent).toBe(describedText(P[2]));
         expect(entriesOf(doc).map((link) => link.id)).toEqual(ORDER_A.map((photoId) => `photo-${photoId}`));
     });
@@ -626,7 +634,7 @@ describe('no discovery through the page', () => {
     it('hands the client component only an image set from /media, an alt, and its display options', async () => {
         await html();
         expect(state.photoProps.length).toBe(ORDER_A.length + 1);
-        const allowed = new Set(['image', 'alt', 'sizes', 'priority', 'focalPoint', 'crop', 'fallbackLabel', 'fallbackHidden', 'frameClassName', 'intrinsic']);
+        const allowed = new Set(['image', 'alt', 'sizes', 'priority', 'focalPoint', 'crop', 'fallbackLabel', 'frameClassName', 'intrinsic']);
         for (const recorded of state.photoProps as SeriesPhotoProps[]) {
             for (const key of Object.keys(recorded)) expect(allowed.has(key), key).toBe(true);
             if (recorded.image === null) continue;

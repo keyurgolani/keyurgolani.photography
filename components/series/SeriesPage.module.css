@@ -212,6 +212,11 @@
   object-fit: contain;
 }
 
+/* The missing-image mark: a hairline across the empty box, so it never reads as a photograph still loading. */
+.thumbFrame.fallback {
+  background: linear-gradient(to top right, transparent calc(50% - 0.5px), var(--gah-rule) calc(50% - 0.5px), var(--gah-rule) calc(50% + 0.5px), transparent calc(50% + 0.5px)), var(--gah-surface);
+}
+
 .position {
   display: block;
   margin-top: 0.5rem;
