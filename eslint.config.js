@@ -12,7 +12,7 @@ const handlers = ['onClick', 'onMouseDown', 'onMouseUp', 'onKeyPress', 'onKeyDow
 const NEXT_MESSAGE = 'This code runs outside Next. Keep Next imports in app/, proxy.ts, or lib/catalog/request.ts.'
 const NEXT_PATHS = [
   { name: 'next', message: NEXT_MESSAGE },
-  { name: 'server-only', message: 'This code runs under plain Node, where server-only throws. Only lib/catalog/public-reader.ts may import it.' },
+  { name: 'server-only', message: 'This code runs under plain Node, where server-only throws. Only lib/catalog/public-reader.ts and lib/catalog/projections/home.ts, which only the web process imports, may import it.' },
 ]
 const NEXT_PATTERNS = [{ group: ['next/*'], message: NEXT_MESSAGE }]
 // Ingestion never authors order (#8). The watcher process may read the
@@ -147,6 +147,15 @@ export default tseslint.config(
     ignores: ['lib/catalog/request.ts', 'lib/catalog/public-reader.ts', ...TESTS_AND_RULESET],
     rules: {
       'no-restricted-imports': ['error', { paths: NEXT_PATHS, patterns: [...NEXT_PATTERNS, ...RULE_RUNNER_PATTERNS] }],
+    },
+  },
+  {
+    // Home's read model runs only in app/page.tsx, so it may mark itself
+    // server-only, and a client component that imports it at runtime fails
+    // the build. Next itself stays out.
+    files: ['lib/catalog/projections/home.ts'],
+    rules: {
+      'no-restricted-imports': ['error', { paths: NEXT_PATHS.filter(({ name }) => name !== 'server-only'), patterns: [...NEXT_PATTERNS, ...RULE_RUNNER_PATTERNS] }],
     },
   },
 )

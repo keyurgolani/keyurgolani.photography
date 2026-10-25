@@ -45,6 +45,12 @@ describe('the lib/catalog import boundary', { timeout: 60_000 }, () => {
         expect(await restrictedImports(file, source)).toEqual([]);
     });
 
+    it("lets lib/catalog/projections/home.ts, which only app/page.tsx imports, mark itself server-only, and keeps Next out of it", async () => {
+        expect(await restrictedImports('lib/catalog/projections/home.ts', SERVER_ONLY)).toEqual([]);
+        expect(await restrictedImports('lib/catalog/projections/home.ts', NEXT_SERVER)).toHaveLength(1);
+        expect(await restrictedImports('lib/catalog/projections/probe.ts', SERVER_ONLY)).toHaveLength(1);
+    });
+
     it.each([
         ['lib/catalog/publish.ts', "import { runRules } from './rules';\nexport const probe = runRules;\n"],
         ['lib/catalog/projections/home.ts', "import { rulesetVersion } from '../rules';\nexport const probe = rulesetVersion;\n"],

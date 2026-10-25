@@ -1,3 +1,4 @@
+import 'server-only';
 import { VARIANT_FORMATS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth } from '../../identity/variants';
 import { mediaUrl } from '../../media/url';
 import type { CatalogContent, CatalogReader, RouteBuilder } from '../reader';
@@ -15,6 +16,8 @@ import type { FocalPoint, SeriesRecord, SiteRecord } from '../types';
  * `chapters`, `accent` (Chromatic Chapters stays in the Viewer), caption,
  * credit, location, camera facts, or source paths. Every prop the page
  * hands a client component ships to visitors, so this allowlist bounds them.
+ * It's server-only: app/page.tsx runs it, and client components import its
+ * types alone, so the build fails if one ever imports it at runtime.
  *
  * #6 later caps this model and narrows it to the ordered IDs plus the
  * current and adjacent records, so it carries nothing it doesn't need.
