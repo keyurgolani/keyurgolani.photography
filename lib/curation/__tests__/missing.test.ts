@@ -913,6 +913,49 @@ describe("archiving a missing photo and its new item", { timeout: 60_000 }, () =
         expect((await w.event(item.id)).status).toBe('open');
         expect(await w.publish({ dryRun: true })).toMatchObject({ outcome: 'NO_CHANGES' });
     });
+
+    it("keeps #16's review stamps on an archived photo, and its takedown publishes when the closed new item is reopened first", async () => {
+        const w = await world();
+        // R, new: approve its item with a description, so the photo record's stamps name that item, and publish it.
+        const R_PATH = 'harbor/third.jpg';
+        fs.writeFileSync(w.lib.file(R_PATH), images.third);
+        const r = (await w.pass()).find((fact) => fact.type === 'new')?.photoId as string;
+        const rRevision = (await w.registry()).photos[r].source.observedRevision;
+        expect((await w.build({ photoId: r, assetRevision: rRevision, profileId: w.profileId, path: R_PATH })).status).toBe('ready');
+        await w.pass();
+        let item = (await listEvents(w.root)).events.find((event) => event.type === 'new' && event.photoId === r) as CurationEvent;
+        expect(await approveEvent({ root: w.root, eventId: item.id, expectedVersion: item.version, expectedBase: w.revisionId, actor: ACTOR, choices: { seriesId: SERIES, placement: 'end', description: { kind: 'described', text: 'Fixture description of R.' } } })).toMatchObject({ ok: true });
+        const shown = await w.publish();
+        expect(shown).toMatchObject({ outcome: 'PUBLISHED' });
+        const stamped = (await readAuthoredRecord(w.root, 'photo', r)) as AuthoredPhoto;
+        expect(stamped.review?.fields.alt).toMatchObject({ origin: 'curator', event: { id: item.id } });
+
+        // Gone and archived: the pass that applies the archive closes the new item and leaves the record's stamps as they were.
+        fs.rmSync(w.lib.file(R_PATH));
+        await w.pass();
+        const missing = await w.event(missingEventId(r, rRevision));
+        const base = shown.revisionId as string;
+        expect(await archiveMissing({ root: w.root, eventId: missing.id, expectedVersion: missing.version, expectedBase: base, actor: ACTOR })).toMatchObject({ ok: true });
+        await w.pass();
+        item = await w.event(item.id);
+        expect(item.status).toBe('resolved');
+        expect(((await readAuthoredRecord(w.root, 'photo', r)) as AuthoredPhoto).review).toEqual(stamped.review);
+
+        // Reopened before the takedown publish, the item those stamps name is open again, so they read as stale. The
+        // takedown's removed row reviews only the series' photoIds, which archive stamped against the missing item, so
+        // review.authored-change doesn't hold it, and the takedown still publishes.
+        const reopened = await cli(w, 'reopen', item.id, '--version', String(item.version), '--base', base);
+        expect(reopened.exitCode).toBe(0);
+        expect((await w.event(item.id)).status).toBe('open');
+        const dry = await w.publish({ dryRun: true });
+        expect(dry).toMatchObject({ outcome: 'DRY_RUN_OK' });
+        expect(dry.issues.filter((issue) => issue.code.startsWith('review.'))).toEqual([]);
+        expect(await w.publish()).toMatchObject({ outcome: 'PUBLISHED', removed: [{ photoId: r, series: [SERIES] }] });
+
+        // After it, the draft is the active revision's content: NO_CHANGES, and review.empty-diff stays silent.
+        await w.pass();
+        expect(await w.publish({ dryRun: true })).toMatchObject({ outcome: 'NO_CHANGES' });
+    });
 });
 
 describe('a build that stays failed', { timeout: 60_000 }, () => {
