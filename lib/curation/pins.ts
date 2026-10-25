@@ -1,3 +1,5 @@
+import { hashValue } from '../catalog/review';
+import type { AuthoredPhoto } from '../catalog/types';
 import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
 import { readUsableEvent, replacementEventIds } from './candidates';
@@ -73,14 +75,35 @@ export type DraftPlan =
     | { kind: 'back-already'; photoId: string; putBack: string }
     /** The record pins another revision, which defer keeps. */
     | { kind: 'keeps-other'; photoId: string; pinned: string }
-    /** The record pins the item's bytes, and no pin of the inbox's says so: a hand edit, a #15 rollback, or a confirm whose event a crash lost. */
-    | { kind: 'unexplained'; photoId: string; revision: string; pin: Pin | null }
+    /**
+     * The record pins the item's bytes, and no pin of the inbox's says so: a hand edit, a #15 rollback, or a confirm
+     * whose event a crash lost. `stampedFrom` is what that lost confirm replaced, when #16's stamp shows it.
+     */
+    | { kind: 'unexplained'; photoId: string; revision: string; pin: Pin | null; stampedFrom?: string }
     /** The record pins the item's bytes as the latest pin set them, and that pin records nothing to put back. `own` when it is this item's confirm. */
     | { kind: 'keeps'; photoId: string; revision: string; pin: Pin; own: boolean }
     | { kind: 'put-back'; photoId: string; revision: string; putBack: string };
 
-/** The plan for `event`, given the revision its photo record pins (null for no record) and the inbox's latest pin of the photo. */
-export function draftPlan(event: CurationEvent, pinned: string | null, pin: Pin | null): DraftPlan {
+/**
+ * The revision a confirm of `eventId` replaced, when the record's #16 stamp
+ * on `assetRevision` shows that confirm wrote the bytes it pins, or null.
+ * Leave in draft's put back writes a stamp naming the item too, but with the
+ * revision it put back as `to`, so it never reads as the confirm.
+ */
+export function confirmStampOf(record: AuthoredPhoto, eventId: string, assetRevision: string): string | null {
+    const stamp = record.review?.fields.assetRevision;
+    if (!stamp || stamp.event?.id !== eventId || !stamp.asset || stamp.asset.to !== assetRevision || stamp.asset.from === assetRevision) return null;
+    return record.assetRevision === assetRevision && stamp.valueHash === hashValue(assetRevision) ? stamp.asset.from : null;
+}
+
+/**
+ * The plan for `event`, given the revision its photo record pins (null for no
+ * record) and the inbox's latest pin of the photo. `stampedFrom` is what a
+ * confirm of this item replaced, by the record's stamp (confirmStampOf()),
+ * which only an `unexplained` plan carries, so its note can say so. Leave in
+ * draft still puts nothing back there: confirm again records it first.
+ */
+export function draftPlan(event: CurationEvent, pinned: string | null, pin: Pin | null, stampedFrom?: string | null): DraftPlan {
     if (event.type !== 'replacement' || event.photoId === null || event.assetRevision === null) return { kind: 'plain' };
     const photoId = event.photoId;
     const revision = event.assetRevision;
@@ -91,17 +114,17 @@ export function draftPlan(event: CurationEvent, pinned: string | null, pin: Pin 
         if (own?.fromRevision) return { kind: 'back-already', photoId, putBack: own.fromRevision };
         return { kind: 'keeps-other', photoId, pinned };
     }
-    if (!own && pin?.revision !== revision) return { kind: 'unexplained', photoId, revision, pin };
+    if (!own && pin?.revision !== revision) return { kind: 'unexplained', photoId, revision, pin, ...(stampedFrom ? { stampedFrom } : {}) };
     if (!own?.fromRevision) return { kind: 'keeps', photoId, revision, pin: pin as Pin, own: own !== null };
     return { kind: 'put-back', photoId, revision, putBack: own.fromRevision };
 }
 
-/** draftPlan() read from the data root: the photo record through `readPinned`, the latest pin through the registry. */
-export async function readDraftPlan(root: string, event: CurationEvent, readPinned: (photoId: string) => Promise<string | null>, registry?: Registry): Promise<DraftPlan> {
+/** draftPlan() read from the data root: the photo record through `readRecord`, the latest pin through the registry. */
+export async function readDraftPlan(root: string, event: CurationEvent, readRecord: (photoId: string) => Promise<AuthoredPhoto | null>, registry?: Registry): Promise<DraftPlan> {
     if (event.type !== 'replacement' || event.photoId === null || event.assetRevision === null) return { kind: 'plain' };
-    const pinned = await readPinned(event.photoId);
-    if (pinned === null) return draftPlan(event, null, null);
-    return draftPlan(event, pinned, await latestPin(root, registry ?? (await readRegistry(root)), event.photoId));
+    const record = await readRecord(event.photoId);
+    if (record === null) return draftPlan(event, null, null);
+    return draftPlan(event, record.assetRevision, await latestPin(root, registry ?? (await readRegistry(root)), event.photoId), confirmStampOf(record, event.id, event.assetRevision));
 }
 
 /**
@@ -122,7 +145,9 @@ export function draftPlanText(plan: DraftPlan, replaced?: string): string | null
         case 'keeps-other':
             return `Leaving it in draft (defer) keeps ${plan.pinned}, the revision ${plan.photoId}'s photo record pins.`;
         case 'unexplained':
-            return `Leaving it in draft (defer) keeps ${plan.revision}: nothing on record shows a confirm of this item put ${plan.photoId}'s photo record there, so it puts nothing back.`;
+            return plan.stampedFrom
+                ? `Leaving it in draft (defer) keeps ${plan.revision}: the inbox records no confirm of this item, though its review stamp shows one put ${plan.photoId}'s photo record there in place of ${plan.stampedFrom}. Run curation confirm again to record what it replaced, and then defer puts that back.`
+                : `Leaving it in draft (defer) keeps ${plan.revision}: neither the inbox nor its review stamp shows a confirm of this item put ${plan.photoId}'s photo record there, so it puts nothing back.`;
         case 'keeps': {
             if (plan.own) return 'Its last confirm found the record on these bytes already and recorded nothing to put back, so leaving it in draft (defer) keeps them too.';
             const back = replaced && replaced !== plan.revision ? ` To use ${replaced} again, which this item's confirm replaced, set assetRevision with photos edit ${plan.photoId}.` : '';
