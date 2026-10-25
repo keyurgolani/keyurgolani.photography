@@ -1,5 +1,3 @@
-import { DERIVATIVE_FOLDERS } from './lib/derivativeFolders.mjs';
-
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
@@ -16,17 +14,15 @@ const nextConfig = {
     deviceSizes: [400, 800, 1200, 1920],
     imageSizes: [400, 800],
     // A response over this limit hangs /_next/image instead of failing, so it stays
-    // high. localPatterns below keeps originals out of /_next/image entirely.
+    // high. localPatterns below keeps the photo library out of /_next/image entirely.
     maximumResponseBody: 500_000_000,
-    // /_next/image optimizes only the legacy derivatives and the two profile
-    // portraits, so it answers 400 for an original photo. The portraits are
-    // listed by exact path, which no encoded `..` can climb out of. The pages
-    // import them statically, and Next adds /_next/static/media for those itself.
+    // /_next/image optimizes only the two profile portraits, so it answers 400
+    // for anything under /assets/photos, originals and legacy derivatives alike.
+    // Photos come from /media sets, which never go through /_next/image. The
+    // portraits are listed by exact path, which no encoded `..` can climb out
+    // of. The pages import them statically, and Next adds /_next/static/media
+    // for those itself.
     localPatterns: [
-      // Every image derivative folder, by its extension. The LQIP text files aren't images.
-      ...Object.entries(DERIVATIVE_FOLDERS)
-        .filter(([, extension]) => extension !== '.txt')
-        .map(([folder, extension]) => ({ pathname: `/assets/photos/${folder}/*${extension}`, search: '' })),
       { pathname: '/assets/profile/front.png', search: '' },
       { pathname: '/assets/profile/back.png', search: '' },
     ],

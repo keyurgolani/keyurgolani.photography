@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { hasEncodedSeparator, isPublicDerivativePath, isUnderPhotos } from './utils/publicDerivatives';
+import { hasEncodedSeparator, isUnderPhotos } from './utils/privatePaths';
 
 function notFound(): NextResponse {
     return new NextResponse('Not Found', {
@@ -9,18 +9,17 @@ function notFound(): NextResponse {
 }
 
 /**
- * Keeps original photos private. Under /assets/photos only the legacy
- * derivatives pass: top-level files in thumbnails, medium, and optimized
- * (.webp), their -avif twins (.avif), and lqip (.txt). Everything else,
- * including source files at any depth, gets a 404, and so does any path
- * that encodes a slash or a backslash. Other paths pass through.
+ * Keeps the photo library private. Everything under /assets/photos gets a
+ * 404: original sources at any depth, and the legacy basename derivatives
+ * too, since the site serves photos only from the /media sets the active
+ * catalog revision holds. So does any path that encodes a slash or a
+ * backslash. Other paths pass through.
  */
 export function proxy(request: NextRequest): NextResponse {
     const { pathname } = request.nextUrl;
     // next dev decodes these into separators and resolves `..` before it looks for a file.
-    if (hasEncodedSeparator(pathname)) return notFound();
-    if (!isUnderPhotos(pathname) || isPublicDerivativePath(pathname)) return NextResponse.next();
-    return notFound();
+    if (hasEncodedSeparator(pathname) || isUnderPhotos(pathname)) return notFound();
+    return NextResponse.next();
 }
 
 export const config = {
