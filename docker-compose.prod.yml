@@ -4,7 +4,9 @@ services:
   web:
     image: ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?Set PHOTOGRAPHY_IMAGE_TAG to a release tag, for example v1.1.0}
     ports:
-      - "3000:3000"
+      # Loopback only. A reverse proxy or tunnel on the host serves it to the
+      # internet. PHOTOGRAPHY_PORT changes the host port.
+      - "127.0.0.1:${PHOTOGRAPHY_PORT:-3000}:3000"
     volumes:
       # Never created when missing, so a lost photos folder keeps the container
       # from starting instead of serving an empty library
@@ -41,6 +43,7 @@ services:
   # 1001 (nextjs user). Run on host:
   #   mkdir -p ./portfolio-data
   #   chown -R 1001:1001 ./public/assets/photos ./portfolio-data
+  #   chmod 700 ./portfolio-data
   image-watcher:
     image: ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?Set PHOTOGRAPHY_IMAGE_TAG to a release tag, for example v1.1.0}
     user: "1001:1001"

@@ -89,7 +89,7 @@ It listens on `127.0.0.1:3000` only. Open [http://localhost:3000](http://localho
 ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:3000:127.0.0.1:3000 <host>
 ```
 
-After a dependency change, rebuild with `docker compose up --build -V`. Without `-V`, the anonymous `node_modules` volume keeps the old install. Both containers use `./portfolio-data` in your checkout as the data root, the same folder the npm scripts use by default.
+After a dependency change, rebuild with `docker compose up --build -V`. Without `-V`, the anonymous `node_modules` volume keeps the old install. Both containers use `./portfolio-data` in your checkout as the data root, the same folder the npm scripts use by default. On Linux, both containers run as root, so if Compose creates `./portfolio-data` or the watcher writes it, those files belong to root with mode 0600 and the npm scripts on the host can't read them. Create the folder yourself before the first `docker compose up`, and use either the containers or the npm scripts for one data root, or `sudo chown -R "$(id -u):$(id -g)" portfolio-data` when switching to the npm scripts. Docker Desktop on macOS maps the files to your user, so this doesn't come up there.
 
 ### Production with Docker
 
@@ -104,6 +104,7 @@ Both also mount the private data root, `./portfolio-data`, which has to exist an
 ```bash
 mkdir -p portfolio-data
 sudo chown -R 1001:1001 public/assets/photos portfolio-data
+sudo chmod 700 portfolio-data
 ```
 
 [docs/data-root.md](docs/data-root.md) covers what it holds, backing it up with the library, restoring it, and the one-time migration that gives every photo its ID.
@@ -114,6 +115,8 @@ Then pull and start:
 docker compose -f docker-compose.prod.yml pull
 docker compose -f docker-compose.prod.yml up -d
 ```
+
+The site listens on the host's 127.0.0.1 only, port 3000 unless `PHOTOGRAPHY_PORT` in `.env` says otherwise. A reverse proxy or tunnel on the same host serves it from there.
 
 [docs/releasing.md](docs/releasing.md) covers cutting a release, deploying, rollback, and telling what's running.
 

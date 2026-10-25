@@ -16,7 +16,9 @@ services:
       - .:/app
       - /app/node_modules
       - ./public/assets/photos:/app/public/assets/photos # Bind mount for photos
-      - ./portfolio-data:/data/portfolio:ro # The private data root, which only the watcher writes
+      # The private data root, which only the watcher writes. Read-only here by
+      # convention only: .:/app shows the same folder read-write at /app/portfolio-data.
+      - ./portfolio-data:/data/portfolio:ro
     environment:
       - NODE_ENV=development
       - PHOTOGRAPHY_DATA_DIR=/data/portfolio
