@@ -4,6 +4,7 @@ import 'server-only';
 import type { PublicAssetProjection } from '../identity/metadata';
 import { workCatalogOf, type WorkCatalog } from './projections/work';
 import { viewerPhotoOf, type ViewerPhotoResult } from './projections/viewer';
+import { seriesPageOf, type SeriesPageResult } from './projections/series';
 import type { CandidateContent, RevisionContent, SeriesRecord, SiteRecord } from './types';
 
 /**
@@ -36,6 +37,8 @@ export interface CatalogReader<Photo = CatalogContent['photos'][number]> {
     getWorkSummaries(routes?: Pick<RouteBuilder, 'seriesHref'>): WorkCatalog;
     /** #7's Viewer read model for `/work/<slug>/photo/<photoId>`, from this reader's content alone. */
     getViewerPhoto(slug: string, photoId: string): ViewerPhotoResult;
+    /** #5's series page read model for `/work/<slug>`, from this reader's content alone. Hrefs from `routes`, the public ones by default. */
+    getSeriesPage(slug: string, routes?: Pick<RouteBuilder, 'seriesHref' | 'photoHref' | 'workHref'>): SeriesPageResult;
 }
 
 interface Index {
@@ -92,6 +95,7 @@ export function createCatalogReader<C extends CatalogContent>(content: C, meta: 
         },
         getWorkSummaries: (routes = publicRouteBuilder) => workCatalogOf({ revisionId: revision.revisionId, listSeries: reader.listSeries, photosOf: reader.photosOf }, routes),
         getViewerPhoto: (slug, photoId) => viewerPhotoOf({ revisionId: revision.revisionId, listSeries: reader.listSeries, seriesBySlug: reader.seriesBySlug, photo: reader.photo, photosOf: reader.photosOf }, slug, photoId),
+        getSeriesPage: (slug, routes = publicRouteBuilder) => seriesPageOf({ revisionId: revision.revisionId, seriesBySlug: reader.seriesBySlug, photosOf: reader.photosOf }, slug, routes),
     };
     return reader;
 }
@@ -138,5 +142,5 @@ export function createRouteBuilder({ basePath = '' }: { basePath?: string } = {}
     };
 }
 
-/** The public builder getWorkSummaries() defaults to. #13's `publicRoutes` is the same. */
+/** The public builder getWorkSummaries() and getSeriesPage() default to. #13's `publicRoutes` is the same. */
 const publicRouteBuilder = createRouteBuilder();
