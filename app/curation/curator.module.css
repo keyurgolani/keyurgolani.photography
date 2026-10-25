@@ -260,8 +260,9 @@
   position: relative;
   display: grid;
   min-height: 22rem;
-  padding: 6%;
-  place-items: center;
+  padding: 4rem 6% 6%;
+  align-content: start;
+  justify-items: center;
   background: var(--gah-ground);
 }
 
@@ -669,7 +670,7 @@ textarea.control {
 
   .photo {
     min-height: 12rem;
-    padding: 0.75rem 1.125rem;
+    padding: 3.25rem 1.125rem 0.75rem;
   }
 
   .fields {
