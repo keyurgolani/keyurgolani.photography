@@ -47,11 +47,16 @@ services:
       start_period: 10s
 
   # Image optimization watcher - processes new photos automatically
-  # Note: Ensure the photos directory and the data root are writable by uid
-  # 1001 (nextjs user), and the image cache too. Run on host:
+  # Both containers run as uid 1001 (nextjs user). web reads the photos and
+  # their derivatives and writes only ./.next-images-cache. The watcher reads
+  # the photos, writes the derivative folders and cache/ in the photos folder,
+  # and writes the data root. When nothing else writes the photos, run on host:
   #   mkdir -p ./portfolio-data ./.next-images-cache
   #   chown -R 1001:1001 ./public/assets/photos ./portfolio-data ./.next-images-cache
   #   chmod 700 ./portfolio-data
+  # When another process, such as a file sync tool, writes the photos, hand
+  # uid 1001 only the derivative folders and cache/ instead, and keep the
+  # photos readable to it (docs/data-root.md, Who owns the photos).
   image-watcher:
     image: ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?Set PHOTOGRAPHY_IMAGE_TAG to a release tag, for example v1.1.0}
     user: "1001:1001"

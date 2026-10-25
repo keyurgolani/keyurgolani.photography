@@ -99,7 +99,7 @@ Both containers run one pinned release tag. Set it in a `.env` next to `docker-c
 PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z
 ```
 
-Both also mount the private data root, `./portfolio-data`, and `web` mounts `./.next-images-cache`, its `/_next/image` cache. Both have to exist and belong to uid 1001 before the first start, like the photos folder, since Compose never creates them:
+Both also mount the private data root, `./portfolio-data`, and `web` mounts `./.next-images-cache`, its `/_next/image` cache. Both have to exist and belong to uid 1001 before the first start, since Compose never creates them. On a host where nothing else writes the photos, hand the photos folder to uid 1001 too:
 
 ```bash
 mkdir -p portfolio-data .next-images-cache
@@ -107,7 +107,7 @@ sudo chown -R 1001:1001 public/assets/photos portfolio-data .next-images-cache
 sudo chmod 700 portfolio-data
 ```
 
-[docs/data-root.md](docs/data-root.md) covers what it holds, backing it up with the library, restoring it, and the one-time migration that gives every photo its ID.
+If another process writes the photos, such as a file sync tool running as another user, leave `public/assets/photos` out of that `chown` and give uid 1001 only the folders the watcher writes, as [Who owns the photos](docs/data-root.md#who-owns-the-photos) describes. [docs/data-root.md](docs/data-root.md) also covers what the data root holds, backing it up with the library, restoring it, and the one-time migration that gives every photo its ID.
 
 Then pull and start:
 

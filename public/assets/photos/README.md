@@ -62,7 +62,7 @@ volumes:
 
 This allows photos to be added/updated without rebuilding the container.
 
-Both containers also mount `./portfolio-data`, the private data root, which holds each photo's stable ID and its `/media` sets. Its registry names every photo by its path in this folder, so back the two up together and restore them together. [docs/data-root.md](../../../docs/data-root.md) covers setting it up, the `chown` both folders need, backups, restores, and the one-time migration.
+Both containers also mount `./portfolio-data`, the private data root, which holds each photo's stable ID and its `/media` sets. Its registry names every photo by its path in this folder, so back the two up together and restore them together. [docs/data-root.md](../../../docs/data-root.md) covers setting it up, the ownership both folders need (including a library that another process, such as a file sync tool, writes), backups, restores, and the one-time migration.
 
 The build leaves this folder's photos out of the image. Only this README and `.gitkeep` go in.
 
