@@ -248,11 +248,6 @@ describe('/work/[slug] renders per request', () => {
         const source = fs.readFileSync(path.join(REPO_ROOT, 'app/work/[slug]/page.tsx'), 'utf8');
         expect(source).not.toContain('<Suspense');
     });
-
-    it('is listed in check:prerender', async () => {
-        const { DYNAMIC_PATHS } = await import('../../ci/check-prerender.mjs');
-        expect(DYNAMIC_PATHS).toContain('/work/[slug]');
-    });
 });
 
 describe('route generation and visibility', () => {

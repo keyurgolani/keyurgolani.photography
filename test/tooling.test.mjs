@@ -75,3 +75,48 @@ describe('local servers', () => {
     expect(smoke).toContain('-f "$OVERRIDE"');
   });
 });
+
+describe('the image build', () => {
+  // `next build` type-checks every file tsconfig.json includes, test files too,
+  // and `.dockerignore` drops ci/ and e2e/ from the image context. So a module
+  // under app/, components/ or lib/ that imports from either breaks the image
+  // build with TS2307 while every local check stays green.
+  const SCANNED = ['app', 'components', 'lib'];
+  const DROPPED = ['ci', 'e2e'];
+  const SPECIFIER = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)(['"])([^'"\n]+)\1/g;
+
+  /** The specifiers in `source` that resolve into a directory the image context drops. */
+  function droppedImports(file, source) {
+    return [...source.matchAll(SPECIFIER)]
+      .map(([, , specifier]) => specifier)
+      .filter((specifier) => {
+        let target;
+        if (specifier.startsWith('.')) target = path.resolve(path.dirname(file), specifier);
+        else if (specifier.startsWith('@/')) target = path.join(REPO_ROOT, specifier.slice(2));
+        else return false;
+        return DROPPED.includes(path.relative(REPO_ROOT, target).split(path.sep)[0]);
+      });
+  }
+
+  it('flags an import from ci/ or e2e/, relative or through @/', () => {
+    const file = path.join(REPO_ROOT, 'app', '__tests__', 'probe.test.tsx');
+    expect(droppedImports(file, "const { DYNAMIC_PATHS } = await import('../../ci/check-prerender.mjs');")).toEqual(['../../ci/check-prerender.mjs']);
+    expect(droppedImports(file, "import { x } from '@/e2e/support/x';\nexport * from \"../../ci/y\";")).toEqual(['@/e2e/support/x', '../../ci/y']);
+    expect(droppedImports(file, "import { x } from '@/lib/ci/x';\nimport '../ci/z';\nimport y from 'ci';")).toEqual([]);
+  });
+
+  it('has no module under app/, components/ or lib/ importing from ci/ or e2e/', async () => {
+    const offenders = [];
+    let scanned = 0;
+    for (const dir of SCANNED) {
+      for (const entry of await fs.readdir(path.join(REPO_ROOT, dir), { recursive: true, withFileTypes: true })) {
+        if (!entry.isFile() || !/\.[cm]?[jt]sx?$/.test(entry.name)) continue;
+        const file = path.join(entry.parentPath, entry.name);
+        scanned += 1;
+        for (const specifier of droppedImports(file, await fs.readFile(file, 'utf8'))) offenders.push(`${path.relative(REPO_ROOT, file)}: ${specifier}`);
+      }
+    }
+    expect(scanned).toBeGreaterThan(0);
+    expect(offenders).toEqual([]);
+  });
+});
