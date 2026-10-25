@@ -70,7 +70,7 @@ async function startServer(siteUrl: string | undefined): Promise<Server> {
         await expect
             .poll(async () => {
                 try {
-                    return (await fetch(`${origin}/api/photos`)).status;
+                    return (await fetch(`${origin}/api/health`)).status;
                 } catch {
                     return 0;
                 }
@@ -152,7 +152,7 @@ test.describe('with SITE_URL unset', () => {
     const warnings = () => server.output().match(/SITE_URL/g)?.length ?? 0;
 
     test('the server logs one warning at startup, still one after page requests, and share URLs fall back to localhost', async ({ request }) => {
-        // Readiness only asked /api/photos, so a warning now came from startup, not from rendering a page.
+        // Readiness only asked /api/health, which renders no page and answers 200 with no data root, so a warning now came from startup.
         await expect.poll(warnings, { timeout: 5_000 }).toBe(1);
         expect(server.output()).toContain("SITE_URL isn't set, so share links point at http://localhost:3000.");
         const html = await (await request.get(`${server.origin}/about`)).text();
