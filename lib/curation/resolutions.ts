@@ -31,8 +31,9 @@ import { eventIdOf, eventKey, type CandidateFailure, type CurationEvent } from '
  * photo record pinned before the item. On an item whose confirm landed,
  * reopened since, it writes the record back to the revision that confirm
  * replaced, the same way confirm writes it, so the next publish ships that
- * one. A confirm whose record write landed before a crash lost its event is
- * put back the same way, from what the inbox last pinned.
+ * one. A record on the item's bytes with no confirm of the item to say so
+ * (a hand edit, a #15 rollback, or a confirm whose event a crash lost) is
+ * left where it is: pins alone can't tell those apart, so nothing is guessed.
  */
 
 const FAILURE_TEXT: Record<CandidateFailure, string> = {
@@ -216,11 +217,11 @@ export function confirmReplacement(input: ActionInput & { faults?: ConfirmFaults
  * Leave in draft. Any event but a replacement is #14's defer. A replacement
  * keeps the revision the photo record pinned before it: when this item's
  * confirm is the inbox's latest pin and the record still pins the item's
- * bytes, or the record pins them with no confirm recorded, as a crash
- * between confirm's two writes leaves it, the record goes back to the
- * revision the confirm replaced. That write goes through writeAuthoredRecord()
- * under the authored lock, with compare-and-swap, once that revision's set
- * checks out. A record that has moved since the confirm is refused.
+ * bytes, the record goes back to the revision the confirm replaced. That
+ * write goes through writeAuthoredRecord() under the authored lock, with
+ * compare-and-swap, once that revision's set checks out. A record that has
+ * moved since the confirm is refused. A record on the item's bytes that no
+ * confirm of the item explains is deferred with no write, and says so.
  */
 export function leaveInDraft(input: ActionInput & { reason?: string; faults?: ConfirmFaults }): Promise<ActionOutcome> {
     return act(input, async (step) => {
@@ -248,13 +249,16 @@ export function leaveInDraft(input: ActionInput & { reason?: string; faults?: Co
             return defer([`Left in draft. ${photoId}'s photo record keeps ${record.assetRevision}.`]);
         }
 
-        const putBack = own ? own.fromRevision ?? null : pin && pin.revision !== revision ? pin.revision : null;
+        if (!own && pin?.revision !== revision) {
+            // The record pins these bytes with no pin of the inbox's to say so: a hand edit, a #15 rollback, or a confirm whose event a crash lost.
+            // Pins alone can't tell those apart, so nothing is guessed and nothing is written.
+            return defer([
+                `Left in draft. ${photoId}'s photo record already pins ${revision}, by an edit or rollback this item didn't make, or a confirm of it that was never recorded, so nothing was put back.${pin ? ` The inbox last pinned ${pin.revision}.` : ''} The draft keeps ${revision}, and the next photos publish ships it.`,
+            ]);
+        }
+        const putBack = own?.fromRevision ?? null;
         if (putBack === null) {
-            const why = own
-                ? 'as it did before this item was confirmed'
-                : pin
-                    ? `as ${pin.eventId}'s ${pin.action} set it`
-                    : 'and the inbox holds no earlier revision of it to put back';
+            const why = own ? 'as it did before this item was confirmed' : `as ${pin?.eventId}'s ${pin?.action} set it`;
             return defer([`Left in draft. ${photoId}'s photo record pins ${revision}, ${why}, so the draft keeps it.`]);
         }
         const candidate = candidateOf(registry, photoId, putBack);
@@ -276,7 +280,7 @@ export function leaveInDraft(input: ActionInput & { reason?: string; faults?: Co
             await input.faults?.afterWrite?.();
         });
         return defer([
-            `Left in draft: ${photoId}'s photo record is back on ${putBack}, in place of ${revision}${own ? '' : ', which a confirm wrote without recording it'}. Its series, position, title, description, and story stay as they were. The next photos publish ships ${putBack}, not ${revision}.`,
+            `Left in draft: ${photoId}'s photo record is back on ${putBack}, in place of ${revision}. Its series, position, title, description, and story stay as they were. The next photos publish ships ${putBack}, not ${revision}.`,
         ], { writes, fromRevision: putBack });
     });
 }

@@ -274,7 +274,7 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
     });
 
-    it('after a crash between confirm\'s two writes, puts back the revision the inbox last pinned', async () => {
+    it('after a crash between confirm\'s two writes, leaves the record on the new bytes with no write, and says nothing was put back', async () => {
         const w = await world();
         await approveP(w);
         await w.build(w.job(w.b));
@@ -284,13 +284,33 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         expect((await photoRecord(w)).assetRevision).toBe(w.b);
         expect(await w.event()).toEqual(open);
 
+        // Pins alone can't tell this from a hand edit or a rollback, so leave in draft guesses nothing.
+        const authored = treeBytes(path.join(w.root, 'authored'));
         const left = await leave(w, open);
         expect(left).toMatchObject({ ok: true, event: { status: 'deferred' } });
-        expect(left.ok && left.event.decisions.at(-1)).toMatchObject({ action: 'defer', fromRevision: w.a, writes: [{ record: `photo:${w.p}` }] });
-        expect(left.ok && left.notes.join(' ')).toContain('which a confirm wrote without recording it');
-        expect((await photoRecord(w)).assetRevision).toBe(w.a);
-        expect(['PUBLISHED', 'NO_CHANGES']).toContain((await publish({ dataRoot: w.root, actor: OWNER, logger: { log: () => undefined } })).outcome);
-        expect((await served(w)).photo.assetRevision).toBe(w.a);
+        expect(left.ok && left.event.decisions.at(-1)).toMatchObject({ action: 'defer' });
+        expect(left.ok && left.event.decisions.at(-1)).not.toHaveProperty('fromRevision');
+        expect(left.ok && left.event.decisions.at(-1)).not.toHaveProperty('writes');
+        expect(left.ok && left.notes.join(' ')).toContain(`already pins ${w.b}, by an edit or rollback this item didn't make, or a confirm of it that was never recorded, so nothing was put back. The inbox last pinned ${w.a}.`);
+        expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
+    });
+
+    it('leaves a record moved onto the item\'s bytes by hand where it is, with no write', async () => {
+        const w = await world();
+        await approveP(w);
+        await w.build(w.job(w.b));
+        // An edit outside the inbox, as a hand edit of authored/ or #15's rollback moves it.
+        const record = await photoRecord(w);
+        await writeAuthoredRecord({ ...record, assetRevision: w.b }, { expectedVersion: record.version, root: w.root });
+        const authored = treeBytes(path.join(w.root, 'authored'));
+        const left = await leave(w, await w.event());
+        expect(left).toMatchObject({ ok: true, event: { status: 'deferred' } });
+        expect(left.ok && left.event.decisions.at(-1)).not.toHaveProperty('fromRevision');
+        expect(left.ok && left.notes.join(' ')).toContain(`already pins ${w.b}, by an edit or rollback this item didn't make`);
+        expect(left.ok && left.notes.join(' ')).toContain('so nothing was put back');
+        expect(left.ok && left.notes.join(' ')).toContain(`The draft keeps ${w.b}, and the next photos publish ships it.`);
+        expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
+        expect((await photoRecord(w)).assetRevision).toBe(w.b);
     });
 
     it('after a crash between confirm\'s two writes, a confirm again records what it replaced, and leave in draft puts that back', async () => {
@@ -314,7 +334,7 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         const authored = treeBytes(path.join(w.root, 'authored'));
         const left = await leave(w, await w.event());
         expect(left).toMatchObject({ ok: true, event: { status: 'deferred' } });
-        expect(left.ok && left.notes.join(' ')).toContain(`pins ${w.b}, and the inbox holds no earlier revision of it to put back, so the draft keeps it`);
+        expect(left.ok && left.notes.join(' ')).toContain(`already pins ${w.b}, by an edit or rollback this item didn't make, or a confirm of it that was never recorded, so nothing was put back. The draft keeps ${w.b}`);
         expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
     });
 
