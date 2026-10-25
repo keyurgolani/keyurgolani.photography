@@ -15,7 +15,7 @@ import { eventIdOf, eventKey, type CurationEvent, type CurationEventType } from 
 import { runCurationCli } from '../commands';
 import { loadInbox } from '../inbox';
 import { runInboxAction, WEB_ACTOR } from '../inbox-form';
-import { defaultDescription, defaultPlacement, defaultSeries, parsePlacementValue, placementValue, summaryText, type InboxActionState, type InboxView } from '../inbox-view';
+import { defaultDescription, defaultPlacement, defaultSeries, formSeries, parsePlacementValue, placementValue, summaryText, type InboxActionState, type InboxView } from '../inbox-view';
 import { eventDir, readEvent, withCurationLock } from '../repository';
 import { createCurationSink } from '../sink';
 import { createCurationFixture, DRAFT, GPS, PUBLISHED, SERIAL, writeRules, type CurationFixture } from './curationFixtures';
@@ -338,6 +338,7 @@ describe('runInboxAction', () => {
         done(await runInboxAction('reopen', itemForm(event, null)));
         event = (await readEvent(f.root, ids[0]))!;
         expect(defaultSeries(ready(await loadInbox(ids[0])).selected!)).toBeNull();
+        expect(formSeries(ready(await loadInbox(ids[0])).selected!, [DRAFT, PUBLISHED])).toBeNull();
         const again = await approveEvent({ root: f.root, eventId: event.id, expectedVersion: event.version, actor: 'curator:cli', choices: {} });
         expect(again.ok && again.event.decisions.at(-1)?.seriesId).toBeNull();
         expect((await readAuthoredRecord(f.root, 'series', DRAFT))?.photoIds).not.toContain(event.photoId);
@@ -400,6 +401,31 @@ describe('runInboxAction', () => {
         const detail = ready(await loadInbox(ids[0])).selected!;
         expect(detail.placed?.seriesIds).toEqual([PUBLISHED]);
         expect(defaultSeries(detail)).toBe(DRAFT);
+    });
+
+    it('starts the reopened form of an approval no longer placed on the series it was approved into, while a bare CLI approve stays unassigned', async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])]);
+        let event = (await readEvent(f.root, ids[0]))!;
+        done(await runInboxAction('approve', itemForm(event, null, { series: DRAFT, decorative: 'off' })));
+        // A sequence remove takes it out of the series, so nothing holds the photo now.
+        const draft = (await readAuthoredRecord(f.root, 'series', DRAFT))!;
+        await writeAuthoredRecord({ ...draft, photoIds: draft.photoIds.filter((id) => id !== event.photoId) }, { expectedVersion: draft.version, root: f.root });
+        let detail = ready(await loadInbox(ids[0])).selected!;
+        expect(detail).toMatchObject({ group: 'unplaced', unplacedSeries: DRAFT, lastApprovedSeries: DRAFT });
+        event = (await readEvent(f.root, ids[0]))!;
+        done(await runInboxAction('reopen', itemForm(event, null)));
+        const view = ready(await loadInbox(ids[0]));
+        detail = view.selected!;
+        expect(detail.unplacedSeries).toBeNull();
+        expect(defaultSeries(detail)).toBeNull();
+        expect(formSeries(detail, view.series.map((option) => option.id))).toBe(DRAFT);
+        // Not once the series is gone from the options, and not over a saved "Leave unassigned".
+        expect(formSeries(detail, [])).toBeNull();
+        expect(formSeries({ ...detail, edits: { seriesId: null, editedAt: detail.observedAt, editedBy: WEB_ACTOR } }, [DRAFT])).toBeNull();
+        // The form sends what it shows, so the page approves into the series; the CLI's bare approve keeps to the working layer.
+        event = (await readEvent(f.root, ids[0]))!;
+        const cli = await approveEvent({ root: f.root, eventId: event.id, expectedVersion: event.version, actor: 'curator:cli', choices: {} });
+        expect(cli.ok && cli.event.decisions.at(-1)?.seriesId).toBeNull();
     });
 
     it('logs a failed action without the data root path', async () => {
