@@ -98,19 +98,34 @@ export function isInside(child: string, parent: string): boolean {
     return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
-// An absolute path, as Node's errors quote one, that isn't part of a relative path or a URL
-const ABSOLUTE_PATH = /(?<![\w.~:/-])\/[^\s'"`,;()]+/g;
+// Where an absolute path can start: not inside a relative path, a URL, or another path
+const PATH_START = String.raw`(?<![\w.~:/-])`;
+
+// An absolute path or file URL as Node's errors quote one, which may hold spaces
+const QUOTED_PATH = /'((?:file:\/\/)?\/[^'\n]*)'/g;
+
+// An absolute path or file URL outside quotes, which ends at a space
+const ABSOLUTE_PATH = new RegExp(String.raw`${PATH_START}(?:file://)?/[^\s'"\`,;()]+`, 'g');
+
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
  * Error text with no absolute path left in it, for a reason a document stores
  * or a status command prints, so neither shows where the library or the data
- * root lives on the host. A path inside one of `roots` becomes relative to
- * it, and any other absolute path becomes its base name.
+ * root lives on the host. A path or `file://` URL inside one of `roots`, as
+ * given or resolved, becomes relative to it, and any other becomes its base
+ * name. A root counts only as a path's whole leading segments, so
+ * `/backup/srv/data/x` isn't inside `/srv/data`.
  */
 export function withoutAbsolutePaths(text: string, roots: readonly (string | null)[]): string {
     const prefixes = [...new Set(roots.flatMap((root) => (root === null ? [] : [path.resolve(root), realpathLoose(root)])))]
         .sort((a, b) => b.length - a.length);
+    // A root first, whatever follows it, quoted or not, so a name with a space or a quote in it stays whole.
     let result = text;
-    for (const prefix of prefixes) result = result.split(`${prefix}${path.sep}`).join('');
-    return result.replace(ABSOLUTE_PATH, (match) => path.posix.basename(match) || match);
+    for (const prefix of prefixes) result = result.replace(new RegExp(`${PATH_START}(?:file://)?${escapeRegExp(prefix)}/`, 'g'), '');
+    // Every other path, quoted, where it may hold a space, or not
+    const baseName = (match: string) => path.posix.basename(match.replace(/^file:\/\//, '')) || match;
+    return result
+        .replace(QUOTED_PATH, (_, quoted: string) => `'${baseName(quoted)}'`)
+        .replace(ABSOLUTE_PATH, baseName);
 }
