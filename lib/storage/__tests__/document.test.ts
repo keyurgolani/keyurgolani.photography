@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { recordDirectorySyncs } from '../../../test/helpers/directorySyncs';
 import { runTsx } from '../../../test/helpers/runTsx';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import {
@@ -9,6 +10,7 @@ import {
     CorruptDocumentError,
     EditedInPlaceError,
     KEEP_VERSIONS,
+    MAX_VERSION_DIGITS,
     MisnamedVersionError,
     pruneVersions,
     READ_ATTEMPTS,
@@ -16,7 +18,9 @@ import {
     readVersionedDocument,
     StaleVersionError,
     UnsupportedSchemaError,
+    VersionLimitError,
     versionFile,
+    versionText,
     writeVersionedDocument,
 } from '../document';
 
@@ -108,6 +112,28 @@ describe('readVersionedDocument', () => {
         fs.rmSync(path.join(dir, 'V2.JSON'));
         fs.writeFileSync(path.join(dir, 'v02.json'), '{}');
         await expect(readVersionedDocument(dir)).rejects.toThrow('looks like a version');
+    });
+
+    it('refuses a name that folds to a version only under Unicode case folding, as APFS folds v2.jſon to v2.json', async () => {
+        await commitNext(1);
+        fs.writeFileSync(path.join(dir, 'v2.jſon'), '{}');
+        await expect(readVersionedDocument(dir)).rejects.toBeInstanceOf(MisnamedVersionError);
+    });
+
+    it('refuses a version number too long to read exactly as misnamed, not as a folder that kept changing', async () => {
+        await commitNext(1);
+        const huge = 'v99999999999999999999.json';
+        fs.writeFileSync(path.join(dir, huge), '{}');
+        const error = await readVersionedDocument(dir).catch((caught: unknown) => caught);
+        expect(error).toBeInstanceOf(MisnamedVersionError);
+        expect(error).toMatchObject({ file: path.join(dir, huge), message: expect.stringContaining(`at most ${MAX_VERSION_DIGITS} digits`) });
+        // The longest number it reads is still a version.
+        fs.rmSync(path.join(dir, huge));
+        const longest = Number('9'.repeat(MAX_VERSION_DIGITS));
+        expect(Number.isSafeInteger(longest)).toBe(true);
+        fs.writeFileSync(versionFile(dir, longest), JSON.stringify(counter(5)));
+        expect(await readVersionedDocument(dir)).toMatchObject({ version: longest, value: { count: 5 } });
+        await expect(writeVersionedDocument(dir, counter(6), longest)).rejects.toThrow(VersionLimitError);
     });
 
     it('throws CorruptDocumentError for a newest version that is not a JSON object', async () => {
@@ -232,6 +258,17 @@ describe('writeVersionedDocument', () => {
         expect(names()).toEqual(['v1.json', 'v2.json']);
     });
 
+    it('fsyncs the folder and its parent on a first write, though another writer made the folder, and only the folder after', async () => {
+        // Another writer's mkdir, which it never synced the parent for: it lost, or crashed.
+        fs.mkdirSync(dir, { mode: 0o700 });
+        const synced = recordDirectorySyncs();
+        await writeVersionedDocument(dir, counter(1), 0);
+        expect(synced).toEqual([dir, data.root]);
+        synced.length = 0;
+        await writeVersionedDocument(dir, counter(2), 1);
+        expect(synced).toEqual([dir]);
+    });
+
     it('creates only the document folder, never a missing parent', async () => {
         await expect(writeVersionedDocument(data.file('missing', 'doc'), counter(1), 0)).rejects.toMatchObject({ code: 'ENOENT' });
         expect(fs.existsSync(data.file('missing'))).toBe(false);
@@ -250,6 +287,46 @@ describe('pruneVersions', () => {
         expect(names()).toEqual(['.v5.77.bbbb.tmp', 'notes.txt', 'v3.json', 'v4.json']);
         expect(await pruneVersions(dir, { keep: 1 })).toEqual(['v3.json']);
         await expect(pruneVersions(dir, { keep: 0 })).rejects.toThrow(RangeError);
+    });
+
+    it('fails a writer whose temp it swept, and lets a new writer and a reader work, while paused before deleting versions', async () => {
+        const hold = { keep: 10 };
+        await writeVersionedDocument(dir, counter(1), 0, hold);
+        // A writer passed its listing at version 1 and waits to link v2.json.
+        let paused!: () => void;
+        let resume!: () => void;
+        const stalled = new Promise<void>((resolve) => { paused = resolve; });
+        const old = writeVersionedDocument(dir, counter(99), 1, {
+            ...hold,
+            hooks: { beforeLink: () => new Promise<void>((resolve) => { resume = resolve; paused(); }) },
+        });
+        await stalled;
+        // Others commit 2 and 3 without a prune of their own, so the old writer's temp is still there for this one.
+        for (const version of [2, 3]) fs.writeFileSync(versionFile(dir, version), versionText(counter(version), version));
+        expect(temps()).toHaveLength(1);
+
+        let gap = false;
+        const removed = await pruneVersions(dir, {
+            keep: 1,
+            hooks: {
+                async afterSweep() {
+                    gap = true;
+                    expect(await readVersionedDocument(dir)).toMatchObject({ version: 3, value: { count: 3 } });
+                    // Its temp is swept, so it can't link v2.json, whether or not that version is deleted yet.
+                    resume();
+                    await expect(old).rejects.toMatchObject({ name: 'StaleVersionError', expected: 1 });
+                    expect(names()).toEqual(['v1.json', 'v2.json', 'v3.json']);
+                    // A writer that read version 3 commits 4, which is above the newest this prune listed.
+                    await expect(writeVersionedDocument(dir, counter(4), 3, hold)).resolves.toMatchObject({ version: 4 });
+                    expect(await readVersionedDocument(dir)).toMatchObject({ version: 4, value: { count: 4 } });
+                },
+            },
+        });
+        expect(gap).toBe(true);
+        // It deletes only below the newest it listed, so version 3 stays, and the old writer's v2.json is never linked again.
+        expect(removed).toEqual([expect.stringMatching(/^\.v2\./), 'v2.json', 'v1.json']);
+        expect(names()).toEqual(['v3.json', 'v4.json']);
+        expect(await readVersionedDocument(dir)).toMatchObject({ version: 4, value: { count: 4 } });
     });
 });
 

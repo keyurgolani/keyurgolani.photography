@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteJson } from '../storage/atomicWrite';
 import {
@@ -10,7 +9,7 @@ import {
     writeVersionedDocument,
     type VersionedWriteHooks,
 } from '../storage/document';
-import { hasErrorCode, PRIVATE_DIR_MODE } from '../storage/fsx';
+import { ensureDirectory, pathExists } from '../storage/fsx';
 import { ASSET_REVISION_RE, DECISION_ID_RE, PHOTO_ID_RE } from './ids';
 import type { ImageInspection, UnsupportedInspection } from './inspect';
 import { EXTRACTOR_VERSION } from './metadata';
@@ -87,27 +86,32 @@ function assertRegistry(file: string, value: Record<string, unknown>): asserts v
  * Read the newest version in `identity/registry/`, or an empty registry when
  * there is none. Throws UnsupportedSchemaError for one from a newer build,
  * which makes the data root unavailable, CorruptDocumentError for a malformed
- * one, and EditedInPlaceError, a CorruptDocumentError, for one edited in place.
+ * one or for `identity/registry.json` in the old layout, and
+ * EditedInPlaceError, a CorruptDocumentError, for one edited in place.
  */
 export async function readRegistry(root: string): Promise<Registry> {
-    const stored = await readVersionedDocument(identityPaths(root).registry);
+    const paths = identityPaths(root);
+    // #28 stored the registry as one file. Passing over it would read an empty registry, and the next pass would
+    // mint new IDs for every photo.
+    const old = `${paths.registry}.json`;
+    if (await pathExists(old)) {
+        throw new CorruptDocumentError(
+            old,
+            'the data root\'s layout changed, and this build no longer reads identity/registry.json. The registry is now the folder identity/registry/, '
+                + 'with one v<N>.json per version. Move the file there as its next version (v1.json in an empty folder) while no command runs',
+        );
+    }
+    const stored = await readVersionedDocument(paths.registry);
     if (stored === null) return emptyRegistry();
     checkSchemaVersion(stored.file, stored.value, REGISTRY_SCHEMA_VERSION);
     assertRegistry(stored.file, stored.value);
     return stored.value as unknown as Registry;
 }
 
-async function ensureIdentityDir(root: string): Promise<void> {
-    try {
-        await fs.promises.mkdir(identityPaths(root).dir, { mode: PRIVATE_DIR_MODE });
-    } catch (error) {
-        if (!hasErrorCode(error, 'EEXIST')) throw error;
-    }
-}
-
 /** Compare-and-swap write of the registry's next version. The caller holds the registry lock. */
 export async function writeRegistry(root: string, registry: Registry, expectedVersion: number, hooks?: VersionedWriteHooks): Promise<Registry> {
-    await ensureIdentityDir(root);
+    // The first version survives a crash only with `identity/` in the root, which the stat cache may have made unsynced.
+    await ensureDirectory(identityPaths(root).dir, { syncParent: expectedVersion === 0 });
     return writeVersionedDocument(identityPaths(root).registry, registry, expectedVersion, { hooks });
 }
 
@@ -153,6 +157,6 @@ export async function readStatCache(root: string): Promise<StatCache> {
 }
 
 export async function writeStatCache(root: string, cache: StatCache): Promise<void> {
-    await ensureIdentityDir(root);
+    await ensureDirectory(identityPaths(root).dir);
     await atomicWriteJson(identityPaths(root).statCache, cache);
 }

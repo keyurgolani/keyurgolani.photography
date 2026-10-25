@@ -477,6 +477,17 @@ describe('the operation contract', () => {
         expect(fs.existsSync(path.join(catalog.root, 'locks'))).toBe(false);
     });
 
+    it('throws for a series or site record the reader refuses, such as one with its old file beside it, and writes nothing', async () => {
+        const seriesDir = authoredRecordDir(catalog.root, 'series', S1);
+        const siteDir = authoredRecordDir(catalog.root, 'site', 'site');
+        fs.copyFileSync(versionFile(seriesDir, 1), `${seriesDir}.json`);
+        fs.copyFileSync(versionFile(siteDir, 1), `${siteDir}.json`);
+        const before = authoredBytes();
+        await expect(apply({ kind: 'move', seriesId: S1, photoId: P[1], at: 'end' }, { expectedVersion: 1 })).rejects.toThrow(`authored/series/${S1}.json is in the old layout`);
+        await expect(apply({ kind: 'setSeriesOrder', seriesIds: [S1, S2, S3] }, { expectedVersion: 1 })).rejects.toThrow('authored/site.json is in the old layout');
+        expect(authoredBytes()).toEqual(before);
+    });
+
     it('never changes the record a pure operation is given', async () => {
         const record = await series();
         const copy = structuredClone(record);

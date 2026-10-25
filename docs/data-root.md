@@ -17,23 +17,40 @@ Inside each folder the versions are `v1.json`, `v2.json`, and so on. The highest
 
 Each write keeps the two newest versions and removes older ones. Files that start with `.v` and end in `.tmp` are writes in progress, or left by a write that crashed. The next write in that folder removes them. Leave them alone.
 
+A record's folder is a real folder, never a symlink: the catalog refuses a linked one, dangling or not, and says so. The data root itself may be a symlink.
+
 Every version carries a `stamp` with its own number and a hash of its content. That's how a command notices a file that was edited in place.
+
+An older build stored each of these as one file: `identity/registry.json`, `authored/site.json`, `authored/series/<seriesId>.json`, `authored/photos/<photoId>.json`. This build refuses to read or write a document while its old file is there, and the message names the file. While no command runs (see below), move it into a new folder as `v1.json`. The folder takes the file's owner and group, read from the file itself, so the app can write the next version there:
+
+```bash
+file="$PHOTOGRAPHY_DATA_DIR/authored/photos/<photoId>.json"   # or any old file above
+folder="${file%.json}"
+uid="$(sudo stat -c %u "$file")" && gid="$(sudo stat -c %g "$file")" &&
+  sudo test ! -e "$folder" &&
+  sudo install -d -o "$uid" -g "$gid" -m 700 "$folder" &&
+  sudo mv -n "$file" "$folder/v1.json"
+```
+
+On macOS, use `stat -f %u` and `stat -f %g` in place of `stat -c %u` and `stat -c %g`. Each step runs only if the one before it worked, so nothing runs for a missing file. The `test` stops it when the folder already exists, since `install -d` would change an existing folder's owner. In that case the old file sits beside versions of its own, and nothing says which copy is current: decide that first, by hand.
 
 ## Editing a document by hand
 
 Only while no command runs: stop the `image-watcher` container, and don't run `photos:*` commands until you're done.
 
-1. Copy the newest version to the next number. `cp -n` refuses to overwrite, so a typo can't replace a version:
+1. Copy the newest version to the next number, and edit the copy. Do both as root, keeping the owner: the folders are 0700 and the files 0600, owned by the user the app runs as (uid 1001 in the container setup), so a copy root owns can't be read by the app. The registry then reads as unreadable, and a record as `unreadable`. `cp -p` keeps the owner and mode of the file it copies, and `sudoedit` writes back into the same file, so the copy keeps both:
 
    ```bash
-   cd "$PHOTOGRAPHY_DATA_DIR/authored/photos/<photoId>"
-   ls                          # say v3.json and v4.json
-   cp -n v4.json v5.json
+   dir="$PHOTOGRAPHY_DATA_DIR/authored/photos/<photoId>"
+   sudo ls "$dir"                                    # say v3.json and v4.json
+   sudo test ! -e "$dir/v5.json" && sudo cp -n -p "$dir/v4.json" "$dir/v5.json" && sudoedit "$dir/v5.json"
    ```
 
-2. Edit `v5.json`. Leave its `stamp` as it is. A stamp that names another number marks the file as made by hand, and the next write stamps the version after it again. Leave `baseRevisionId` alone too, and in the site record `baseSeriesOrder`: publishing manages them, and they're how it tells your edits from the published ones.
+   The `test` and `cp -n` refuse to touch a `v5.json` that already exists, so a typo can't replace a version, and `sudoedit` runs only on a copy just made. `sudoedit` refuses a file in a folder you can write yourself, as when the app runs as your own user, and a path through a symlink in a folder you can write, as when `PHOTOGRAPHY_DATA_DIR` is a link in your home folder. The copy is then still an exact copy of `v4.json`, so nothing is lost: edit `v5.json` as the user who owns it (with your own editor when that's you), or for a link, run `sudoedit` on the resolved path, `sudoedit "$(sudo realpath "$dir/v5.json")"`. If you already copied it with a plain `sudo cp`, give the copy the owner of the version it came from: `owner="$(sudo stat -c %u:%g "$dir/v4.json")" && sudo chown "$owner" "$dir/v5.json"` (`stat -f %u:%g` on macOS).
+
+2. While you edit, leave the `stamp` as it is. A stamp that names another number marks the file as made by hand, and the next write stamps the version after it again. Leave `baseRevisionId` alone too, and in the site record `baseSeriesOrder`: publishing manages them, and they're how it tells your edits from the published ones.
 3. Start the watcher again.
 
-Never edit a version in place. A command that reads an edited newest version refuses it: `photos:identity status` reports the registry as unreadable and exits 1, the catalog lists the record as edited in place, and nothing writes on top of it. The message names the copy that recovers it (`cp -n v4.json v5.json`). Run that to keep the edit as a new version, or restore the file from a backup.
+Never edit a version in place. A command that reads an edited newest version refuses it: `photos:identity status` reports the registry as unreadable and exits 1, the catalog lists the record as edited in place, and nothing writes on top of it. The message names the copy that recovers it (`cp -n v4.json v5.json`). Make that copy as in step 1, with `sudo cp -n -p`, to keep the edit as a new version, or restore the file from a backup.
 
-An edit that also changes or removes the stamp isn't caught. It reads as a version made by hand.
+An edit that also changes or removes the stamp isn't caught. It reads as a version made by hand. An in-place edit of a hand-made copy isn't caught either, since its stamp already names another number. So finish the edit before the watcher starts again. Once the next write stamps a new version, that one is checked again.

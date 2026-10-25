@@ -140,8 +140,22 @@ export class EditedInPlaceError extends CorruptDocumentError {
 /** A name in a version folder that looks like a version but isn't spelled as one, such as `V3.JSON` or `v03.json`. */
 export class MisnamedVersionError extends CorruptDocumentError {
     constructor(file: string) {
-        super(file, `${path.basename(file)} looks like a version, but versions are named v<N>.json in lower case, with no leading zeros. Rename it`);
+        super(
+            file,
+            `${path.basename(file)} looks like a version, but versions are named v<N>.json in lower case, with no leading zeros and at most ${MAX_VERSION_DIGITS} digits. Rename it`,
+        );
         this.name = 'MisnamedVersionError';
+    }
+}
+
+/** A document at the highest version a name can hold, which can't take another. */
+export class VersionLimitError extends CorruptDocumentError {
+    readonly version: number;
+
+    constructor(dir: string, version: number) {
+        super(dir, `it is at version ${version}, the highest a version can be, so it can't take another`);
+        this.name = 'VersionLimitError';
+        this.version = version;
     }
 }
 
@@ -204,9 +218,16 @@ export const KEEP_VERSIONS = 2;
 /** How many times a reader lists a folder when the version it picked is pruned before it opens it. */
 export const READ_ATTEMPTS = 5;
 
-const VERSION_NAME = /^v([1-9]\d*)\.json$/;
-/** Anything a person could mean as a version, in another case or with leading zeros. */
-const VERSION_LIKE = /^v\d+\.json$/i;
+/** The most digits a version number has, so every one reads exactly (Number.MAX_SAFE_INTEGER has 16). */
+export const MAX_VERSION_DIGITS = 15;
+const MAX_VERSION = Number('9'.repeat(MAX_VERSION_DIGITS));
+const VERSION_NAME = new RegExp(`^v([1-9]\\d{0,${MAX_VERSION_DIGITS - 1}})\\.json$`);
+/**
+ * Anything a person, or a disk that folds names, could mean as a version: in
+ * another case, with leading zeros, or too long to read. `u` folds the way APFS
+ * does, so `v2.jſon` (U+017F) counts too.
+ */
+const VERSION_LIKE = /^v\d+\.json$/iu;
 const TEMP_NAME = /^\.v([1-9]\d*)\.\d+\.[0-9a-f-]+\.tmp$/;
 
 /** `<dir>/v<version>.json`. */
@@ -350,7 +371,9 @@ export interface VersionedWriteOptions {
  * StaleVersionError otherwise and commits nothing. Callers hold the
  * document's lock, which only serializes their work: this is what stops a
  * writer that lost its lock, or never took it, from losing an update. `dir`
- * is created, readable by its owner only, and its parent must exist. Returns
+ * is created, readable by its owner only, and its parent must exist. A first
+ * write (expectedVersion 0) fsyncs that parent too; callers that make the
+ * levels above use ensureDirectory() with syncParent the same way. Returns
  * `next` at its new version.
  */
 export async function writeVersionedDocument<T extends VersionedDocument>(
@@ -360,6 +383,7 @@ export async function writeVersionedDocument<T extends VersionedDocument>(
     { hooks, keep = KEEP_VERSIONS }: VersionedWriteOptions = {},
 ): Promise<T> {
     if (!Number.isInteger(expectedVersion) || expectedVersion < 0) throw new RangeError(`expectedVersion must be a non-negative integer, got ${expectedVersion}`);
+    if (expectedVersion >= MAX_VERSION) throw new VersionLimitError(dir, expectedVersion);
     let created = false;
     try {
         await fs.promises.mkdir(dir, { mode: PRIVATE_DIR_MODE });
@@ -394,8 +418,9 @@ export async function writeVersionedDocument<T extends VersionedDocument>(
         }
         await hooks?.afterLink?.(file);
         await fsyncDirectory(dir);
-        // A folder this write created holds its first version only once the folder itself survives a crash.
-        if (created) await fsyncDirectory(path.dirname(dir));
+        // A first version survives a crash only with its folder's entry in the parent. Another writer may have made
+        // the folder and then lost or crashed before it synced the parent, so a first write syncs it either way.
+        if (created || expectedVersion === 0) await fsyncDirectory(path.dirname(dir));
     } finally {
         await fs.promises.rm(temp, { force: true }).catch(() => undefined);
     }
@@ -404,12 +429,21 @@ export async function writeVersionedDocument<T extends VersionedDocument>(
     return { ...next, version };
 }
 
+export interface PruneOptions {
+    /** How many versions to keep, the newest by number. */
+    keep?: number;
+    hooks?: {
+        /** After the temps are swept, before any version is deleted. */
+        afterSweep?(): void | Promise<void>;
+    };
+}
+
 /**
  * Apply the prune rule to `dir`: with H its newest version, remove the temps
  * named for H or below, then the versions numbered H - keep or below. Returns
  * the names it removed, temps first.
  */
-export async function pruneVersions(dir: string, { keep = KEEP_VERSIONS }: { keep?: number } = {}): Promise<string[]> {
+export async function pruneVersions(dir: string, { keep = KEEP_VERSIONS, hooks }: PruneOptions = {}): Promise<string[]> {
     if (!Number.isInteger(keep) || keep < 1) throw new RangeError(`keep must be a positive integer, got ${keep}`);
     const listing = await list(dir);
     const newest = newestOf(listing);
@@ -426,6 +460,7 @@ export async function pruneVersions(dir: string, { keep = KEEP_VERSIONS }: { kee
     // Temps first. A writer still holding one for a version at or below the newest can't commit it: its link finds
     // that version (EEXIST) or, once swept, no temp (ENOENT). Only then may a version number go free.
     for (const temp of listing.temps) if (temp.version <= newest) await remove(temp.name);
+    await hooks?.afterSweep?.();
     for (const version of listing.versions) if (version <= newest - keep) await remove(`v${version}.json`);
     return removed;
 }

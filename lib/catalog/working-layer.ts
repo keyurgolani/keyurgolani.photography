@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { PHOTO_ID_RE } from '../identity/ids';
 import { CorruptDocumentError, EditedInPlaceError, MisnamedVersionError, readVersionedDocument } from '../storage/document';
-import { hasErrorCode } from '../storage/fsx';
+import { hasErrorCode, pathExists } from '../storage/fsx';
 import { parseActivePointer, parseAuthoredRecord, SERIES_ID_RE, type AuthoredKind } from './schema';
 import type { ActivePointer, AuthoredPhoto, AuthoredSeries, AuthoredSite, RecordProblem, RecordProblemReason, WorkingLayer } from './types';
 
@@ -45,6 +45,59 @@ export function authoredRecordDir(root: string, kind: AuthoredKind, id: string):
     const paths = authoredPaths(root);
     if (kind === 'site') return paths.site;
     return path.join(kind === 'series' ? paths.seriesDir : paths.photosDir, id);
+}
+
+/**
+ * Why a record's folder can't be read or written as the record, or null when
+ * it can:
+ * - its file in the old one-file layout (#28's `authored/site.json`, or
+ *   `<id>.json` in its kind's folder) is still there. Reading only the folder
+ *   would pass over that file, and a write would add a second copy beside it;
+ * - the disk holds the folder under another name, as a case-insensitive disk
+ *   finds `PH_…/` under `ph_…`. readWorkingLayer() reports that folder as
+ *   misnamed, so reading or extending it here would disagree.
+ *
+ * - the folder is itself a symlink, dangling or not. readWorkingLayer()
+ *   refuses one too: a link can alias another record's folder, so a write for
+ *   one record would land in the other's, and a dangling one would read as no
+ *   record at all. The data root itself may be a symlink.
+ *
+ * A symlink is named by its own name in its parent's listing, as
+ * readWorkingLayer() finds it, not by its target's name. Anything else is
+ * checked with the native realpath, which returns the name the disk holds on
+ * APFS and Windows. glibc and musl return the name they're given, so off
+ * macOS and Windows the spelling check is best effort.
+ */
+const SYMLINKED = 'is a symlink, and symlinked record folders aren\'t supported. Put the record\'s folder itself there, not a link to it (the data root itself may be a symlink)';
+
+export async function recordFolderProblem(root: string, kind: AuthoredKind, id: string): Promise<string | null> {
+    const dir = authoredRecordDir(root, kind, id);
+    const relative = path.relative(root, dir).split(path.sep).join('/');
+    if (await pathExists(`${dir}.json`)) {
+        return `${relative}.json is in the old layout, which this build no longer reads: the data root's layout changed, and a record is now the folder `
+            + `${relative}/, holding v<N>.json. Move the file there as its next version (v1.json in an empty folder) while no command runs`;
+    }
+    const name = path.basename(dir);
+    let stored: string | undefined;
+    try {
+        if ((await fs.promises.lstat(dir)).isSymbolicLink()) {
+            // realpath would give the target's name. The working layer goes by the link's own name in the listing.
+            const names = await fs.promises.readdir(path.dirname(dir));
+            if (names.includes(name)) return `${relative}/ ${SYMLINKED}`;
+            stored = names.find((entry) => entry.toLowerCase() === name.toLowerCase());
+        } else {
+            // fs.promises.realpath is the native realpath, as the `--only` lookup in images:cleanup checks it.
+            stored = path.basename(await fs.promises.realpath(dir));
+        }
+    } catch {
+        // Missing, or unreadable, which the read itself reports.
+        return null;
+    }
+    if (stored === undefined) return `${relative}/ isn't listed under that name in its folder, so the working layer doesn't read it. Name it ${JSON.stringify(name)}`;
+    if (stored !== name) {
+        return `${relative}/ is ${JSON.stringify(stored)} on disk, which the working layer reads as misnamed. Name it ${JSON.stringify(name)}`;
+    }
+    return null;
 }
 
 export type { RecordProblem, RecordProblemReason, WorkingLayer } from './types';
@@ -102,18 +155,20 @@ function misnamedRecord(kind: 'series' | 'photo', name: string): string | null {
 }
 
 async function loadFolder<K extends 'series' | 'photo'>(dir: string, kind: K, problems: RecordProblem[]): Promise<RecordOf<K>[]> {
-    let names: string[];
+    let entries: fs.Dirent[];
     try {
-        names = await fs.promises.readdir(dir);
+        entries = await fs.promises.readdir(dir, { withFileTypes: true });
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT')) return [];
         throw error;
     }
     const ids: string[] = [];
     // Dot-files are OS metadata.
-    for (const name of names.filter((entry) => !entry.startsWith('.')).sort(compare)) {
+    for (const entry of entries.filter(({ name }) => !name.startsWith('.')).sort((a, b) => compare(a.name, b.name))) {
+        const { name } = entry;
         if (isRecordId(kind, name)) {
-            ids.push(name);
+            if (entry.isSymbolicLink()) problems.push({ kind, id: name, reason: 'file-name', issues: [{ path: '', message: `the folder ${SYMLINKED}` }] });
+            else ids.push(name);
             continue;
         }
         const misnamed = misnamedRecord(kind, name);
@@ -138,7 +193,10 @@ async function loadFolder<K extends 'series' | 'photo'>(dir: string, kind: K, pr
 export async function readWorkingLayer(root: string): Promise<WorkingLayer> {
     const paths = authoredPaths(root);
     const problems: RecordProblem[] = [];
-    const loadedSite = await load(paths.site, 'site', 'site');
+    const siteFolder = await recordFolderProblem(root, 'site', 'site');
+    const loadedSite = siteFolder === null
+        ? await load(paths.site, 'site', 'site')
+        : { problem: { kind: 'site' as const, id: 'site', reason: 'file-name' as const, issues: [{ path: '', message: siteFolder }] } };
     let site: AuthoredSite | null = null;
     if (loadedSite && 'problem' in loadedSite) problems.push(loadedSite.problem);
     else if (loadedSite) site = loadedSite.record;
@@ -158,6 +216,8 @@ export async function readAuthoredSeries(root: string): Promise<{ series: Author
 /** Read one record, or null when it doesn't exist. Throws when it exists but can't be used. */
 export async function readAuthoredRecord<K extends AuthoredKind>(root: string, kind: K, id: string): Promise<RecordOf<K> | null> {
     if (!isRecordId(kind, id)) return null;
+    const folder = await recordFolderProblem(root, kind, id);
+    if (folder !== null) throw new Error(`The ${kind} record ${id} can't be used: ${folder}`);
     const loaded = await load(authoredRecordDir(root, kind, id), kind, id);
     if (loaded === null) return null;
     if ('problem' in loaded) throw new Error(`The ${kind} record ${id} can't be used: ${loaded.problem.issues.map((issue) => issue.message).join('; ')}`);
