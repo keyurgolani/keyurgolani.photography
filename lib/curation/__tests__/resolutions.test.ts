@@ -10,7 +10,7 @@ import { reopenEvent } from '../actions';
 import { eventIdOf, eventKey, type CurationEvent } from '../events';
 import { readEvent } from '../repository';
 import { confirmReplacement, leaveInDraft } from '../resolutions';
-import { createWorld, makeImages, P_PATH, photoRecord, removeTemplate, setDir, treeBytes, type Images, type World } from './replacementWorld';
+import { createWorld, makeImages, P_PATH, photoRecord, removeTemplate, replacementEventId, setDir, treeBytes, type Images, type World } from './replacementWorld';
 
 // The real writer, watched, so a test can read what each resolution handed it.
 vi.mock('../../catalog/working-layer-writer', async (importOriginal) => {
@@ -23,7 +23,9 @@ vi.mock('../../catalog/working-layer-writer', async (importOriginal) => {
  * removing any of them fails here: the active revision checked again under
  * the authored lock, a merged or missing source, the strict manifest read,
  * no photo record, an event that isn't a replacement, and the review inputs
- * handed to #13's writer for #16.
+ * handed to #13's writer for #16. Then one for each of leave in draft's own:
+ * the set it puts back ready and checking out, the photo record checked
+ * again under the authored lock, and a put back counted as the inbox's pin.
  */
 
 let images: Images;
@@ -175,5 +177,107 @@ describe('the review inputs handed to #13\'s writer', { timeout: 60_000 }, () =>
         writer.mockClear();
         expect(await confirm(w, await w.event())).toMatchObject({ ok: true, event: { decisions: [{ action: 'confirm', writes: [] }] } });
         expect(writer).not.toHaveBeenCalled();
+    });
+});
+
+describe('leave in draft\'s guards', { timeout: 60_000 }, () => {
+    const leave = (w: World, event: CurationEvent, extra: Partial<Parameters<typeof leaveInDraft>[0]> = {}) =>
+        leaveInDraft({ root: w.root, eventId: event.id, expectedVersion: event.version, expectedBase: w.revisionId, actor: ACTOR, ...extra });
+
+    const reopen = async (w: World, event: CurationEvent): Promise<CurationEvent> => {
+        const reopened = await reopenEvent({ root: w.root, eventId: event.id, expectedVersion: event.version, expectedBase: w.revisionId, actor: ACTOR });
+        if (!reopened.ok) throw new Error(reopened.message);
+        return reopened.event;
+    };
+
+    /** B confirmed in place of A, then reopened, so leave in draft has A to put back. */
+    async function confirmedAndReopened(w: World): Promise<CurationEvent> {
+        const confirmed = await confirm(w, await w.event());
+        if (!confirmed.ok) throw new Error(confirmed.message);
+        const reopened = await reopen(w, confirmed.event);
+        expect((await photoRecord(w)).assetRevision).toBe(w.b);
+        writer.mockClear();
+        return reopened;
+    }
+
+    /** Leave in draft, expecting `expected`, and that neither the photo record nor the event changed. */
+    async function refusedLeave(w: World, event: CurationEvent, expected: { code: string; message: string | RegExp }) {
+        const before = authored(w);
+        const result = await leave(w, event);
+        expect(result).toMatchObject({ ok: false, code: expected.code });
+        expect(!result.ok && result.message).toMatch(expected.message);
+        expect(authored(w)).toEqual(before);
+        expect(await readEvent(w.root, event.id)).toEqual(event);
+        expect(writer).not.toHaveBeenCalled();
+    }
+
+    it('refuses to put back a revision whose set the registry calls failed', async () => {
+        const w = await readyWorld();
+        const reopened = await confirmedAndReopened(w);
+        const registry = await readRegistry(w.root);
+        const profiles = registry.photos[w.p].revisions[w.a].profiles;
+        profiles[w.profileId] = { ...profiles[w.profileId], state: 'failed', error: 'build' };
+        await writeRegistry(w.root, registry, registry.version);
+        await refusedLeave(w, reopened, { code: 'refused', message: `${w.a}, the revision to put back, has no ready derivative set` });
+        expect((await photoRecord(w)).assetRevision).toBe(w.b);
+    });
+
+    it('refuses to put back a revision whose set has one byte changed', async () => {
+        const w = await readyWorld();
+        const reopened = await confirmedAndReopened(w);
+        const file = path.join(setDir(w, w.a), 'w400.webp');
+        const bytes = fs.readFileSync(file);
+        bytes[bytes.length >> 1] ^= 0xff;
+        fs.chmodSync(file, 0o600);
+        fs.writeFileSync(file, bytes);
+        await refusedLeave(w, reopened, { code: 'damaged', message: `${w.a}'s derivative set for ${w.profileId} doesn't check out` });
+        expect((await photoRecord(w)).assetRevision).toBe(w.b);
+    });
+
+    it('checks the photo record again under the authored lock, so one moved while it waited is stale', async () => {
+        const w = await readyWorld();
+        const reopened = await confirmedAndReopened(w);
+        const elsewhere = `sha256-${'c'.repeat(64)}`;
+        let moved: ReturnType<typeof authored> = null;
+        const result = await leave(w, reopened, {
+            faults: {
+                // An edit lands after the record was read, before the authored lock is held.
+                async beforeAuthoredLock() {
+                    const record = await photoRecord(w);
+                    await writeAuthoredRecord({ ...record, assetRevision: elsewhere }, { expectedVersion: record.version, root: w.root });
+                    moved = authored(w);
+                    writer.mockClear();
+                },
+            },
+        });
+        expect(result).toMatchObject({ ok: false, code: 'stale', message: expect.stringContaining('moved while leaving it in draft waited for the authored lock') });
+        expect(moved).not.toBeNull();
+        expect(authored(w)).toEqual(moved);
+        expect((await photoRecord(w)).assetRevision).toBe(elsewhere);
+        expect(await readEvent(w.root, reopened.id)).toEqual(reopened);
+        expect(writer).not.toHaveBeenCalled();
+    });
+
+    it('counts a put back as the inbox\'s pin, so a later confirm whose event a crash lost records that it replaced A', async () => {
+        const w = await readyWorld();
+        // B confirmed in place of A, then put back to A.
+        const left = await leave(w, await confirmedAndReopened(w));
+        expect(left.ok && left.event.decisions.at(-1)).toMatchObject({ action: 'defer', fromRevision: w.a });
+        expect((await photoRecord(w)).assetRevision).toBe(w.a);
+
+        // C replaces B's file and builds, and its confirm crashes between its two writes.
+        fs.writeFileSync(w.lib.file(P_PATH), images.third);
+        const c = (await w.pass()).find((fact) => fact.type === 'replaced' && fact.photoId === w.p)?.assetRevision;
+        if (!c) throw new Error('The pass reported no replacement.');
+        expect(await w.build(w.job(c))).toEqual({ status: 'ready', reused: false });
+        const item = await w.event(replacementEventId(w.p, c));
+        await expect(confirm(w, item, { faults: { afterWrite: () => { throw new Error('killed'); } } })).rejects.toThrow('killed');
+        expect((await photoRecord(w)).assetRevision).toBe(c);
+
+        // The inbox last pinned A, by the put back, not B, by the confirm it undid.
+        const again = await confirm(w, await w.event(item.id));
+        expect(again.ok && again.event.decisions.at(-1)).toMatchObject({ action: 'confirm', fromRevision: w.a, writes: [] });
+        expect(await leave(w, await reopen(w, (again as { event: CurationEvent }).event))).toMatchObject({ ok: true, event: { status: 'deferred' } });
+        expect((await photoRecord(w)).assetRevision).toBe(w.a);
     });
 });
