@@ -786,7 +786,7 @@ export async function publish(options: PublishOptions): Promise<PublishResult> {
         await step(7);
 
         // 8. A dry run stops here.
-        if (dryRun) throw new Stop('DRY_RUN_OK', `${compiled.candidateId} passes validation. Nothing was written but the candidate and its diagnostics.`);
+        if (dryRun) throw new Stop('DRY_RUN_OK', `${compiled.candidateId} passes validation. Nothing was written but the candidate and its diagnostics, and, on the first command after the upgrade, the one-time review backfill.`);
         await step(8);
 
         // 9. The revision file, written once.

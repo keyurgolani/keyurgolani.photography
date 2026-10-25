@@ -146,7 +146,7 @@ export function draftPlanText(plan: DraftPlan, replaced?: string): string | null
             return `Leaving it in draft (defer) keeps ${plan.pinned}, the revision ${plan.photoId}'s photo record pins.`;
         case 'unexplained':
             return plan.stampedFrom
-                ? `Leaving it in draft (defer) keeps ${plan.revision}: the inbox records no confirm of this item, though its review stamp shows one put ${plan.photoId}'s photo record there in place of ${plan.stampedFrom}. Run curation confirm again to record what it replaced, and then defer puts that back.`
+                ? `Leaving it in draft (defer) keeps ${plan.revision}: the inbox records no confirm of this item, though its review stamp shows one put ${plan.photoId}'s photo record there in place of ${plan.stampedFrom}. Run curation confirm again to record what it replaced, and then reopen and defer put that back.`
                 : `Leaving it in draft (defer) keeps ${plan.revision}: neither the inbox nor its review stamp shows a confirm of this item put ${plan.photoId}'s photo record there, so it puts nothing back.`;
         case 'keeps': {
             if (plan.own) return 'Its last confirm found the record on these bytes already and recorded nothing to put back, so leaving it in draft (defer) keeps them too.';

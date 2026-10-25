@@ -373,6 +373,24 @@ describe('an authored capture date', () => {
     });
 });
 
+describe('a capture date #10 read', () => {
+    it('stays derived when new bytes bring another date, though the backfill stamped the absent override, and needs no review after a rollback away and back', () => {
+        const w = world();
+        const id = series(w, 0).photoIds[0];
+        const record = authoredPhoto(w, id);
+        // As after the backfill and a tool write: the absent capturedAt stamped as a hash of null, reviewed against a revision a rollback left behind.
+        const base = structuredClone(active.content);
+        (base.photos.find((entry) => entry.id === id) as RevisionFile['content']['photos'][number]).capturedAt = '2019-01-01';
+        const baseId = revisionIdOf(base);
+        record.review = { fields: { capturedAt: { valueHash: hashValue(null), origin: 'migration', baseRevisionId: baseId, actor: 'migration', reviewedAt: '2026-03-01T00:00:00.000Z' } } };
+        record.assetRevision = A;
+        Object.assign(photo(w, id), { assetRevision: A, capturedAt: '2025-06-06' });
+        const result = diff(w, { review: { bases: new Map([[baseId, base]]), inbox: new Map(), unreadable: new Set() } });
+        expect(rows(result.changes)).toEqual([['photo', id, 'assetRevision', 'asset'], ['photo', id, 'derived', 'derived']]);
+        expect(result.changes[1]).toMatchObject({ fields: ['capturedAt'], provenance: 'derived', review: { state: 'not-required' } });
+    });
+});
+
 describe('movedIds()', () => {
     it.each([
         { name: 'no change', before: ['a', 'b', 'c'], after: ['a', 'b', 'c'], moved: [] },
