@@ -109,7 +109,8 @@ describe('approve', () => {
         expect(layers(f.root)).toEqual(before);
         expect(await approveEvent({ ...input, choices: { seriesId: null } })).toMatchObject({ ok: true, event: { status: 'approved' } });
         const after = layers(f.root);
-        expect(Object.keys(after.authored ?? {}).filter((name) => !(name in (before.authored ?? {})))).toEqual([`photos/${event.photoId}/v1.json`]);
+        // Besides #16's one-time review backfill marker, which the first tool write after the upgrade adds.
+        expect(Object.keys(after.authored ?? {}).filter((name) => !(name in (before.authored ?? {})) && name !== 'review-backfill.json')).toEqual([`photos/${event.photoId}/v1.json`]);
     });
 
     it('refuses a placement #8 refuses and writes nothing', async () => {

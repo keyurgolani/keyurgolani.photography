@@ -614,6 +614,8 @@ async function orderSnapshot(dataRoot: string): Promise<Map<string, SnapshotEntr
         const stat = fs.statSync(file);
         if (stat.isDirectory()) await visit(file);
         else if (stat.isFile()) {
+            // #16's one-time review backfill marker is review state, not order: the first tool write after the upgrade adds it.
+            if (relative(file) === 'authored/review-backfill.json') return;
             const sha = sha256(file);
             entries.set(relative(file), { label, digest: sha, sha });
         }

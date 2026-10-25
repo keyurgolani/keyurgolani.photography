@@ -196,6 +196,72 @@ describe('writeAuthoredRecord() stamps', { timeout: 60_000 }, () => {
     });
 });
 
+describe('the one-time review backfill', { timeout: 60_000 }, () => {
+    const marker = (root: string) => JSON.parse(fs.readFileSync(`${root}/authored/review-backfill.json`, 'utf8')) as { records: Record<string, number> };
+
+    it('counts a record the owner made by hand before the upgrade as reviewed, so the first publish goes through', async () => {
+        const f = await fixture();
+        const id = f.catalog.photos[0].id;
+        // Before any 16-1 command: a copy at the next version, edited, with no review stamps.
+        await f.handEdit<AuthoredPhoto>('photo', id, (photo) => {
+            photo.caption = 'Fixture caption, by hand before the upgrade.';
+        });
+        expect(fs.existsSync(`${f.root}/authored/review-backfill.json`)).toBe(false);
+        expect(reviewIssues(await validateWorkingLayer({ dataRoot: f.root }))).toEqual([]);
+        published(await f.publish());
+        // The first command that took the authored lock recorded it at the version it had then.
+        expect(marker(f.root).records[`photo:${id}`]).toBe(2);
+    });
+
+    it('refuses a version made by hand after the backfill that drops review, and a record folder made by hand', async () => {
+        const f = await fixture();
+        published(await f.publish());
+        const id = f.catalog.photos[0].id;
+        await f.handEdit<AuthoredPhoto>('photo', id, (photo) => {
+            delete photo.review;
+            photo.title = 'Fixture title, by hand, stamps dropped.';
+        });
+        const series = f.catalog.series[0];
+        const made = 'ser_by-hand';
+        fs.mkdirSync(authoredRecordDir(f.root, 'series', made), { recursive: true, mode: 0o700 });
+        fs.writeFileSync(versionFile(authoredRecordDir(f.root, 'series', made), 1), `${JSON.stringify({
+            schemaVersion: 1, version: 1, baseRevisionId: null, kind: 'series', id: made, slug: 'by-hand', title: 'Fixture by hand', statement: 'Fixture statement.',
+            shortStatement: 'Fixture short.', photoIds: [], chapters: [], cover: null, visibility: 'hidden',
+        }, null, 2)}\n`, { mode: 0o600 });
+        const refused = await f.publish();
+        expect(refused.outcome).toBe('VALIDATION_FAILED');
+        expect(reviewIssues(refused)).toEqual([expect.objectContaining({ record: { kind: 'photo', id }, field: 'title', message: expect.stringContaining('written outside the tools') })]);
+        // A hidden series shows nothing, so it needs no review, but published by hand it does.
+        await f.handEdit<AuthoredSeries>('series', made, (record) => {
+            record.visibility = 'published';
+            record.photoIds = [series.photoIds[0]];
+            record.cover = { photoId: series.photoIds[0] };
+        });
+        await f.edit<AuthoredSeries>('series', series.id, (record) => {
+            record.photoIds = record.photoIds.slice(1);
+            record.cover = { photoId: record.photoIds[0] };
+        });
+        await f.edit<AuthoredSite>('site', 'site', (site) => {
+            site.seriesOrder = [...site.seriesOrder, made];
+        });
+        const fields = reviewIssues(await validateWorkingLayer({ dataRoot: f.root })).map((issue) => `${issue.record.kind}:${issue.record.id}:${issue.field}`);
+        expect(fields).toEqual(expect.arrayContaining([`photo:${id}:title`, `series:${made}:visibility`, `series:${made}:title`, `series:${made}:photoIds`]));
+    });
+
+    it('is written once, by the first command that takes the authored lock, and never again', async () => {
+        const f = await fixture();
+        published(await f.publish());
+        const text = fs.readFileSync(`${f.root}/authored/review-backfill.json`, 'utf8');
+        expect(Object.keys(marker(f.root).records).length).toBe(f.catalog.photos.length + f.catalog.series.length + 1);
+        await f.edit<AuthoredPhoto>('photo', f.catalog.photos[0].id, (photo) => {
+            photo.caption = 'Fixture caption.';
+        });
+        published(await f.publish());
+        expect((await f.publish()).outcome).toBe('NO_CHANGES');
+        expect(fs.readFileSync(`${f.root}/authored/review-backfill.json`, 'utf8')).toBe(text);
+    });
+});
+
 describe('rebase and review stamps', { timeout: 60_000 }, () => {
     it('keeps a publish\'s stamps and moves their base to the revision it published', async () => {
         const f = await fixture();
