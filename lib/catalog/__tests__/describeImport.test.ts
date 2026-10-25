@@ -8,7 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LockLostError, withLock } from '../../storage/lock';
 import { FIELD_LIMITS, IMPORT_FILE_MAX_BYTES, importDescriptions, parseCsvRecords, parseDescriptions, quoteCell, runDescribeImport } from '../describe-import';
 import { createTestCatalog, type TestCatalog } from '../testing';
-import { authoredPaths, authoredRecordFile, readAuthoredRecord } from '../working-layer';
+import { authoredPaths, readAuthoredRecord } from '../working-layer';
+import { newestRecordFile } from './catalogFixtures';
 import { AUTHORED_LOCK, AuthoredWriteError, writeAuthoredRecord } from '../working-layer-writer';
 
 let catalog: TestCatalog;
@@ -33,9 +34,9 @@ function file(name: string, content: string | Buffer): string {
     return target;
 }
 
-/** Every authored photo record's bytes, by ID. */
+/** Every authored photo record's newest version, as bytes, by ID. */
 function recordBytes(): Record<string, string> {
-    return Object.fromEntries(ids.map((id) => [id, fs.readFileSync(authoredRecordFile(catalog.root, 'photo', id), 'utf8')]));
+    return Object.fromEntries(ids.map((id) => [id, fs.readFileSync(newestRecordFile(catalog.root, 'photo', id), 'utf8')]));
 }
 
 const csvRows = (header: string, rows: string[]) => [header, ...rows].join('\n');
@@ -300,7 +301,7 @@ describe('runDescribeImport', () => {
         const rows = csvRows('photoId,caption', ids.map((id, index) => `${id},Fixture caption ${index}`));
         const target = file('d.csv', rows);
         let writes = 0;
-        const hooks = { beforeClaim() { if (++writes === 2) throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' }); } };
+        const hooks = { afterStage() { if (++writes === 2) throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' }); } };
         const result = await runDescribeImport(layer(), { file: target, hooks });
         expect(result.exitCode).toBe(4);
         expect(result.output).toContain('ENOSPC');
@@ -368,14 +369,14 @@ describe('runDescribeImport', () => {
     });
 
     it('exits 3 on a version conflict part way', async () => {
-        const hooks = { beforeClaim() { throw new AuthoredWriteError('VERSION_CONFLICT', { kind: 'photo', id: ids[0] }, `The photo record ${ids[0]} is at version 3, not 2.`); } };
+        const hooks = { afterStage() { throw new AuthoredWriteError('VERSION_CONFLICT', { kind: 'photo', id: ids[0] }, `The photo record ${ids[0]} is at version 3, not 2.`); } };
         const result = await runDescribeImport(layer(), { file: file('d.csv', csvRows('photoId,caption', [`${ids[0]},Fixture caption`])), hooks });
         expect(result.exitCode).toBe(3);
         expect(result.output).toContain('Error (VERSION_CONFLICT)');
     });
 
     it('exits 3 when it loses the authored lock part way', async () => {
-        const hooks = { beforeClaim() { throw new LockLostError(AUTHORED_LOCK, null); } };
+        const hooks = { afterStage() { throw new LockLostError(AUTHORED_LOCK, null); } };
         const result = await runDescribeImport(layer(), { file: file('d.csv', csvRows('photoId,caption', [`${ids[0]},Fixture caption`])), hooks });
         expect(result.exitCode).toBe(3);
         expect(result.output).toContain('Nothing was written.');

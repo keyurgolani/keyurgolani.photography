@@ -56,8 +56,8 @@ describe('the owner walkthrough', () => {
         const [landscape, portrait, square] = listed.map((row) => row.photoId);
 
         // 3. The series record, by hand, then its sequence, cover, a chapter, and the site's order through the commands.
-        fs.mkdirSync(data.file('authored', 'series'), { recursive: true, mode: 0o700 });
-        fs.writeFileSync(data.file('authored', 'series', `${SERIES}.json`), `${JSON.stringify({
+        fs.mkdirSync(data.file('authored', 'series', SERIES), { recursive: true, mode: 0o700 });
+        fs.writeFileSync(data.file('authored', 'series', SERIES, 'v1.json'), `${JSON.stringify({
             schemaVersion: 1,
             version: 1,
             baseRevisionId: null,
