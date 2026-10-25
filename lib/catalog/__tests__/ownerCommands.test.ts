@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { writeWatcherHeartbeat } from '../../identity/heartbeat';
 import { readRegistry, writeRegistry } from '../../identity/registry';
+import { libraryRoot } from '../../storage/config';
 import { versionFile } from '../../storage/document';
 import { LockLostError, withLock } from '../../storage/lock';
 import { initDrafts, runDraftInit } from '../draft-init';
@@ -79,6 +80,24 @@ describe('photos status', () => {
         expect(Object.keys(status)).toEqual(['identity', 'catalog', 'working']);
         expect(status.catalog).toMatchObject({ mode: 'catalog', active: { revisionNumber: 1, status: 'committed', kind: 'publish', actor: 'test' }, lastPublish: { outcome: 'PUBLISHED' } });
         expect(status.working).toMatchObject({ site: true, photoRecords: 4, unassigned: [catalog.photos[3].id] });
+    });
+
+    it('prints a failed profile\'s reason in JSON without the library or data root path', async () => {
+        const catalog = await fixture();
+        const registry = await readRegistry(catalog.root);
+        const photo = registry.photos[catalog.photos[0].id];
+        const revision = photo.revisions[photo.source.observedRevision];
+        const [profileId] = Object.keys(revision.profiles);
+        const source = path.join(libraryRoot(), 'nested', 'fixture source.jpg');
+        revision.profiles[profileId] = { state: 'failed', attempts: 3, error: `source unreadable: EACCES: permission denied, open '${source}' (staging ${path.join(catalog.root, 'staging', 'x')})` };
+        await writeRegistry(catalog.root, registry, registry.version);
+        const result = await runStatusCommand({ dataRoot: catalog.root }, { json: true });
+        const status = JSON.parse(result.output) as Awaited<ReturnType<typeof ownerStatus>>;
+        expect(status.identity.failedProfiles).toEqual([expect.objectContaining({ photoId: photo.photoId, profileId })]);
+        const reason = status.identity.failedProfiles[0].error ?? '';
+        expect(reason).toContain('fixture source.jpg');
+        expect(result.output).not.toContain(libraryRoot());
+        expect(result.output).not.toContain(path.join(catalog.root, 'staging'));
     });
 
     it('prints its report and exits 1 when the data root is missing or unset', async () => {

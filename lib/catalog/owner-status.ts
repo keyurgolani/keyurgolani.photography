@@ -157,9 +157,8 @@ export interface StatusHandle {
 }
 
 export async function ownerStatus({ dataRoot, clock }: StatusHandle): Promise<OwnerStatus> {
-    // TODO(restack): status --json carries identityStatus()'s failedProfiles[].error verbatim, which can name an
-    // absolute library path (13D pre-review finding 11). status builds none of that text itself, so the fix is in
-    // identityStatus(): take the lead's withoutAbsolutePaths() when fix/identity-set-sources-followups lands.
+    // status builds no failed-profile text of its own: identityStatus() strips the library and data root paths from
+    // each reason (withoutAbsolutePaths(), #53), so status --json carries none.
     const identity = dataRoot === null ? unsetIdentity() : await identityStatus({ root: path.resolve(dataRoot), clock });
     const status: OwnerStatus = { identity, catalog: { mode: 'legacy', active: null, lastPublish: null }, working: null };
     if (dataRoot === null || identity.dataRoot.state !== 'ready') return status;
