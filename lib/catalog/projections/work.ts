@@ -1,9 +1,8 @@
 // A client bundle that reaches this fails the build. Client code takes only types from it (#3).
 import 'server-only';
-import { VARIANT_FORMATS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth } from '../../identity/variants';
-import { mediaUrl } from '../../media/url';
 import type { CatalogContent, CatalogReader, RouteBuilder } from '../reader';
 import type { Crop, FocalPoint, SeriesRecord } from '../types';
+import { ladderOf, type Ladder, type LadderVariant } from './ladder';
 
 /**
  * #3's Work read model: the series catalog on `/work`, from one compiled
@@ -19,13 +18,8 @@ import type { Crop, FocalPoint, SeriesRecord } from '../types';
 
 type Photo = CatalogContent['photos'][number];
 
-/** One cover variant file, as `/media` serves it. */
-export interface WorkCoverVariant {
-    url: string;
-    width: number;
-    height: number;
-    bytes: number;
-}
+/** One cover variant file, as `/media` serves it and a `srcset` names it. */
+export type WorkCoverVariant = LadderVariant;
 
 /** A series' authored cover, as ResponsivePhoto takes it. Decorative on Work: the entry's title names the link. */
 export interface WorkCover {
@@ -33,7 +27,7 @@ export interface WorkCover {
     /** Oriented, for the image's intrinsic size only. The entry's slot sets its box. */
     width: number;
     height: number;
-    variants: Record<VariantWidth, Record<VariantFormat, WorkCoverVariant>>;
+    variants: Ladder;
     /** The series cover's focal point, else the photo's, else the center. 0 to 1. */
     focalPoint: FocalPoint;
     /** The photo's authored crop, `cover` by default. */
@@ -93,33 +87,6 @@ function focal(value: unknown): FocalPoint | null {
 const dimension = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n > 0;
 
 /**
- * The cover's variant ladder, field by field, when every file is the
- * `/media` URL #10 builds for this photo's set. A missing or foreign file
- * (a hand-written revision, a partial derivative set) gives null, so the
- * entry falls back instead of pointing anywhere else.
- */
-function coverVariants(photo: Photo): WorkCover['variants'] | null {
-    const ladder = photo.variants as Partial<Record<VariantWidth, Partial<Record<VariantFormat, Partial<WorkCoverVariant>>>>> | undefined;
-    const projected = {} as WorkCover['variants'];
-    for (const width of VARIANT_WIDTHS) {
-        projected[width] = {} as Record<VariantFormat, WorkCoverVariant>;
-        for (const format of VARIANT_FORMATS) {
-            const file = ladder?.[width]?.[format];
-            if (!file || !dimension(file.width) || !dimension(file.height) || !dimension(file.bytes)) return null;
-            let expected: string;
-            try {
-                expected = mediaUrl({ photoId: photo.id, assetRevision: photo.assetRevision, profileId: photo.profileId }, width, format);
-            } catch {
-                return null;
-            }
-            if (file.url !== expected) return null;
-            projected[width][format] = { url: file.url, width: file.width, height: file.height, bytes: file.bytes };
-        }
-    }
-    return projected;
-}
-
-/**
  * The series' authored cover, or null when it can't be shown: no cover, a
  * cover outside the series' resolved members (#8's `order.cover` keeps it
  * inside at publish; a draft may have left it out), or an unusable set.
@@ -129,7 +96,7 @@ function coverOf(series: SeriesRecord, members: readonly Photo[]): WorkCover | n
     // Members are the series' photoIds that resolve, so a cover from anywhere else finds nothing.
     const photo = typeof photoId === 'string' ? members.find((member) => member.id === photoId) : undefined;
     if (!photo || !dimension(photo.width) || !dimension(photo.height)) return null;
-    const variants = coverVariants(photo);
+    const variants = ladderOf(photo);
     if (variants === null) return null;
     return {
         photoId: photo.id,

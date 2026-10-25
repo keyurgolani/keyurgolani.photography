@@ -13,7 +13,7 @@ function image(width = 1800, height = 1200, lqip?: string): SeriesImage {
     for (const variant of VARIANT_WIDTHS) {
         const target = Math.min(Number(variant.slice(1)), width);
         variants[variant] = {} as SeriesImage['variants'][typeof variant];
-        for (const format of VARIANT_FORMATS) variants[variant][format] = { url: mediaUrl(REF, variant, format), width: target, height: Math.round((target * height) / width), bytes: 1_000 };
+        for (const format of VARIANT_FORMATS) variants[variant][format] = { url: mediaUrl(REF, variant, format), width: target };
     }
     return { width, height, variants, ...(lqip ? { lqip } : {}) };
 }

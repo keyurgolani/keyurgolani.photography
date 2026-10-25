@@ -15,7 +15,7 @@ function cover(n: number, overrides: Partial<WorkCover> = {}): WorkCover {
         variants[width] = {} as WorkCover['variants'][typeof width];
         for (const format of VARIANT_FORMATS) {
             const pixels = Number(width.slice(1));
-            variants[width][format] = { url: mediaUrl(ref, width, format), width: pixels, height: Math.round((pixels * 2) / 3), bytes: 1_000 };
+            variants[width][format] = { url: mediaUrl(ref, width, format), width: pixels };
         }
     }
     return { photoId: ref.photoId, width: 2400, height: 1600, variants, focalPoint: { x: 0.25, y: 0.75 }, crop: 'cover', ...overrides };

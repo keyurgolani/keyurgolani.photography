@@ -3,12 +3,12 @@
 import 'server-only';
 import { PHOTO_ID_RE } from '../../identity/ids';
 import { TECHNICAL_KEYS, type TechnicalKey } from '../../identity/metadata';
-import { VARIANT_FORMATS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth } from '../../identity/variants';
-import { mediaUrl } from '../../media/url';
+import type { VariantFormat, VariantWidth } from '../../identity/variants';
 import { sequencePosition } from '../order';
 import type { CatalogContent, CatalogReader } from '../reader';
 import { MAX_SLUG_LENGTH, SLUG_RE } from '../schema';
 import type { SeriesRecord } from '../types';
+import { ladderOf, type Ladder, type LadderVariant } from './ladder';
 
 /**
  * #7's Viewer read model: one photograph in one series, from one compiled
@@ -24,13 +24,8 @@ type Photo = CatalogContent['photos'][number];
 /** The neutral copy a draft preview shows while a photo's description is pending. A published revision never needs it. */
 export const DESCRIPTION_PENDING_COPY = 'Description pending editorial review';
 
-/** One variant file, as `/media` serves it. */
-export interface ViewerVariant {
-    url: string;
-    width: number;
-    height: number;
-    bytes: number;
-}
+/** One variant file, as `/media` serves it and a `srcset` names it. */
+export type ViewerVariant = LadderVariant;
 
 /** One photograph's #10 derivative set, as ResponsivePhoto takes it. #5's `SeriesImage`, with the asset revision. */
 export interface ViewerImage {
@@ -40,7 +35,8 @@ export interface ViewerImage {
     assetRevision: string;
     /** The stored WebP data URI. Absent when it isn't one, so nothing else reaches the CSS `url()` that ResponsivePhoto writes it into. */
     lqip?: string;
-    variants: Record<VariantWidth, Record<VariantFormat, ViewerVariant>>;
+    /** Each file's `url` and `width`, the parts a `srcset` reads (see ladder.ts). */
+    variants: Ladder;
 }
 
 /** The approved sketch's `PublishedViewerPhoto`, with the approved detail's title, and the variant ladder in place of one URL. */
@@ -83,6 +79,12 @@ export interface PublishedViewerPhoto {
          * a broken set's fields ships, so nothing from it reaches the client.
          */
         image: ViewerImage | null;
+        /**
+         * The share image, the 1200 px WebP, with the file's own height from the
+         * record, since the shipped ladder carries only `url` and `width`. Null
+         * exactly when `image` is.
+         */
+        shareImage: { url: string; width: number; height: number } | null;
         /** The photo's stored `#rrggbb` accent, or null. */
         accent: string | null;
         /** Derived camera facts: only #10's allowlisted keys, in allowlist order. */
@@ -175,35 +177,28 @@ function technical(facts: Photo['technical']): Partial<Record<TechnicalKey, stri
 }
 
 /**
- * The photo's set, field by field, when the photo has positive integer
- * dimensions and every file is the `/media` URL #10 builds for this photo's
- * set and declares a positive size, else null. The same checks as #5's
- * imageOf() and #6's ladderOf() on the other screens, copied until those
- * land; one shared helper later. Field by field, so the Viewer gets only
+ * The photo's set when the photo has positive integer dimensions and its
+ * ladder is usable (see ladderOf(), the same check Home, Work, and Series
+ * use), else null. ladderOf() copies field by field, so the Viewer gets only
  * what the set names and a caller can't edit the cached revision through it.
  */
 function imageOf(photo: Photo): ViewerImage | null {
     if (!dimension(photo.width) || !dimension(photo.height)) return null;
-    const stored = photo.variants as Partial<Record<VariantWidth, Partial<Record<VariantFormat, Partial<ViewerVariant>>>>> | undefined;
-    const projected = {} as ViewerImage['variants'];
-    for (const width of VARIANT_WIDTHS) {
-        projected[width] = {} as Record<VariantFormat, ViewerVariant>;
-        for (const format of VARIANT_FORMATS) {
-            const file = stored?.[width]?.[format];
-            if (!file || !dimension(file.width) || !dimension(file.height) || !dimension(file.bytes)) return null;
-            let expected: string;
-            try {
-                expected = mediaUrl({ photoId: photo.id, assetRevision: photo.assetRevision, profileId: photo.profileId }, width, format);
-            } catch {
-                return null;
-            }
-            if (file.url !== expected) return null;
-            projected[width][format] = { url: file.url, width: file.width, height: file.height, bytes: file.bytes };
-        }
-    }
-    const image: ViewerImage = { width: photo.width, height: photo.height, assetRevision: photo.assetRevision, variants: projected };
+    const variants = ladderOf(photo);
+    if (variants === null) return null;
+    const image: ViewerImage = { width: photo.width, height: photo.height, assetRevision: photo.assetRevision, variants };
     if (typeof photo.lqip === 'string' && LQIP_RE.test(photo.lqip)) image.lqip = photo.lqip;
     return image;
+}
+
+/** The share image: the 1200 px WebP, a published `/media` variant whose path carries the asset revision. */
+const SHARE_WIDTH: VariantWidth = 'w1200';
+const SHARE_FORMAT: VariantFormat = 'webp';
+
+/** The share file, field by field, for a photo whose set imageOf() accepted, so every field is already checked. */
+function shareOf(photo: Photo): NonNullable<PublishedViewerPhoto['photo']['shareImage']> {
+    const file = photo.variants[SHARE_WIDTH][SHARE_FORMAT];
+    return { url: file.url, width: file.width, height: file.height };
 }
 
 /**
@@ -241,6 +236,7 @@ export function viewerPhotoOf(source: ViewerSource, slug: unknown, photoId: unkn
         if (viewerParams(series.slug, record.id) === null) return NOT_FOUND;
         return { kind: 'redirect', slug: series.slug, photoId: record.id };
     }
+    const image = imageOf(record);
     return {
         kind: 'ok',
         viewer: {
@@ -252,7 +248,8 @@ export function viewerPhotoOf(source: ViewerSource, slug: unknown, photoId: unkn
                 ...described(record.alt),
                 caption: text(record.caption),
                 // Compile never writes a bad set; a hand-written revision can. The Viewer never points outside the revision's derivatives.
-                image: imageOf(record),
+                image,
+                shareImage: image === null ? null : shareOf(record),
                 accent: accent(record.accent),
                 technical: technical(record.technical),
             },

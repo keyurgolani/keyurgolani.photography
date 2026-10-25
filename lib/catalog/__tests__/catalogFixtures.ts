@@ -45,3 +45,10 @@ export function newestRecordFile(root: string, kind: AuthoredKind, id: string): 
     const versions = fs.existsSync(dir) ? fs.readdirSync(dir).flatMap((name) => /^v([1-9]\d*)\.json$/.exec(name)?.[1] ?? []).map(Number) : [];
     return versionFile(dir, Math.max(0, ...versions));
 }
+
+type StoredLadder = Record<(typeof VARIANT_WIDTHS)[number], Record<(typeof VARIANT_FORMATS)[number], { url: string; width: number }>>;
+
+/** A stored ladder as the screens ship it (#6): each file's `url` and `width`, nothing else. */
+export function shippedLadder(variants: StoredLadder): StoredLadder {
+    return Object.fromEntries(VARIANT_WIDTHS.map((width) => [width, Object.fromEntries(VARIANT_FORMATS.map((format) => [format, { url: variants[width][format].url, width: variants[width][format].width }]))])) as StoredLadder;
+}
