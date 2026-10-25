@@ -120,7 +120,7 @@ describe('the inbox after the launch path', () => {
         expect(summary).toMatch(/^Curation inbox: 0 items require judgment, 2 already placed, 1 approved but no longer placed, 3 in all\.\n/);
         expect(summary).toContain(`  approved  ${square.slice(0, 11)}  square.webp  unplaced: approved into ${SERIES}, but no series or the live revision holds its photo now`);
         const shown = ok(await photos('curation', 'show', item.id));
-        expect(shown).toContain(`No longer placed: it was approved into ${SERIES}, but no series or the live revision holds its photo now. The photo record stays in the draft, unassigned. To put it back in ${SERIES}, run:\n`);
+        expect(shown).toContain(`No longer placed: it was approved into ${SERIES}, but no series or the live revision holds its photo now. The photo record stays in the draft, unassigned. To put it back at the end of ${SERIES}, run:\n`);
 
         // The two commands show printed, run as printed: reopened, it needs judgment again; approved again, it is back in the series.
         const advice = shown.split('\n').filter((line) => line.startsWith('  curation '));
@@ -129,7 +129,7 @@ describe('the inbox after the launch path', () => {
             expect.stringMatching(new RegExp(`^ {2}curation approve ${item.id} --version \\d+ --series ${SERIES} --base ${candidate}$`)),
         ]);
         const run = (line: string) => photos(...line.trim().split(' '));
-        expect(ok(await run(advice[0]))).toContain(`Reopened. Nothing holds its photo now, so there is no draft placement to keep. Approve it with --series ${SERIES} to place it again.`);
+        expect(ok(await run(advice[0]))).toContain(`Reopened. No series in the draft holds its photo, so there is no draft placement to keep. Approve it with --series ${SERIES} to place it again, at the end.`);
         expect(await inbox()).toMatchObject({ needsJudgment: 1, placed: 2, unplaced: 0 });
         expect(ok(await run(advice[1]))).toContain(`Approved into ${SERIES} at the end, in the draft.`);
         expect(await inbox()).toMatchObject({ needsJudgment: 0, placed: 2, unplaced: 0, events: [] });
