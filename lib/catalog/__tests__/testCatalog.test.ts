@@ -11,7 +11,7 @@ import type { AssetManifest } from '../../identity/types';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../../identity/variants';
 import { dataRootStatus } from '../../storage/config';
 import { verifyDirectory } from '../../storage/publish';
-import { toAssetProjection } from '../reader';
+import { createCatalogReader, toAssetProjection } from '../reader';
 import { parseCandidateFile, parseRevisionFile, revisionIdOf } from '../schema';
 import { createTestCatalog, type TestCatalog, type TestCatalogOptions } from '../testing';
 import { readWorkingLayer } from '../working-layer';
@@ -76,8 +76,9 @@ describe('createTestCatalog', () => {
         expect(catalog.revisionId).toBe(revisionIdOf(catalog.content));
         const file = { revisionId: catalog.revisionId, schemaVersion: 1, baseRevisionId: null, compiledAt: '2026-01-01T00:00:00.000Z', content: catalog.content };
         expect(parseRevisionFile(file).ok).toBe(true);
-        expect(catalog.reader().photosOf('ser_fixture-02').map((photo) => photo.id)).toEqual(catalog.series[1].photoIds);
-        expect(catalog.reader().revision()).toEqual({ revisionId: catalog.revisionId, revisionNumber: null });
+        const reader = createCatalogReader(catalog.content, { revisionId: catalog.revisionId, revisionNumber: null });
+        expect(reader.photosOf('ser_fixture-02').map((photo) => photo.id)).toEqual(catalog.series[1].photoIds);
+        expect(reader.revision()).toEqual({ revisionId: catalog.revisionId, revisionNumber: null });
     });
 
     it('reads as an obvious fixture, with no copy that could pass for the owner\'s', async () => {
@@ -108,7 +109,8 @@ describe('createTestCatalog', () => {
         });
         expect(catalog.content.series.map((series) => series.slug)).toEqual(['fixture-first']);
         expect(catalog.content.photos.map((photo) => photo.id)).toEqual(catalog.series[0].photoIds.slice().sort());
-        const [first, second] = catalog.series[0].photoIds.map((id) => catalog.reader().photo(id));
+        const reader = createCatalogReader(catalog.content, { revisionId: catalog.revisionId, revisionNumber: null });
+        const [first, second] = catalog.series[0].photoIds.map((id) => reader.photo(id));
         expect(first?.alt).toEqual({ kind: 'pending' });
         expect(second).toMatchObject({ width: 1200, height: 1800, aspectRatio: 0.6667, title: 'Fixture title' });
         expect(second?.variants.w400.webp).toMatchObject({ width: 400, height: 600 });

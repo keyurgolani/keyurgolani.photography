@@ -2,7 +2,8 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../../identity/variants';
 import { mediaUrl } from '../../media/url';
-import { LEGACY_GALLERY_PATH, photoCountLabel, workCatalogOf, workRouteOf, type WorkActiveCatalog, type WorkCatalog, type WorkSeriesSummary } from '../projections/work';
+import { photoCountLabel } from '../labels';
+import { LEGACY_GALLERY_PATH, workCatalogOf, workRouteOf, type WorkActiveCatalog, type WorkCatalog, type WorkSeriesSummary } from '../projections/work';
 import { publish } from '../publish';
 import { createCatalogReader, createRouteBuilder } from '../reader';
 import { createTestCatalog, type TestCatalog } from '../testing';

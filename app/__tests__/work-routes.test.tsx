@@ -2,6 +2,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ActiveCatalog } from '@/lib/catalog/public-reader';
+import { createCatalogReader } from '@/lib/catalog/reader';
 import { createTestCatalog, type TestCatalog } from '@/lib/catalog/testing';
 
 // The two pages' request-time gate: workRouteOf() with getActiveCatalog() and
@@ -98,7 +99,7 @@ const served = (servedState: 'ok' | 'degraded'): ActiveCatalog =>
     ({
         mode: 'catalog',
         state: servedState,
-        reader: catalog.reader({ revisionId: catalog.revisionId, revisionNumber: 1 }),
+        reader: createCatalogReader(catalog.content, { revisionId: catalog.revisionId, revisionNumber: 1 }),
         active: { revisionId: catalog.revisionId, revisionNumber: 1, activationId: 'act_fixture', activatedAt: null },
     }) as unknown as ActiveCatalog;
 

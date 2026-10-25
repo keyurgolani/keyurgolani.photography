@@ -1,5 +1,6 @@
 import Link from 'next/link';
-import { photoCountLabel, type WorkCatalog } from '@/lib/catalog/projections/work';
+import { photoCountLabel } from '@/lib/catalog/labels';
+import type { WorkCatalog } from '@/lib/catalog/projections/work';
 import WorkCoverImage from './WorkCoverImage';
 import styles from './SeriesCatalog.module.css';
 

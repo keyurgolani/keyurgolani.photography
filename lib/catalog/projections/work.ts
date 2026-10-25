@@ -1,3 +1,5 @@
+// A client bundle that reaches this fails the build. Client code takes only types from it (#3).
+import 'server-only';
 import { VARIANT_FORMATS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth } from '../../identity/variants';
 import { mediaUrl } from '../../media/url';
 import type { CatalogContent, CatalogReader, RouteBuilder } from '../reader';
@@ -172,11 +174,6 @@ export function workCatalogOf(source: WorkSource, routes: Pick<RouteBuilder, 'se
         });
     }
     return { catalogRevision: source.revisionId, series };
-}
-
-/** The count line under an entry's statement: interface copy, not authored. */
-export function photoCountLabel(count: number): string {
-    return count === 1 ? '1 photograph' : `${count} photographs`;
 }
 
 /** The legacy archive route, until #13 slice E removes it. */
