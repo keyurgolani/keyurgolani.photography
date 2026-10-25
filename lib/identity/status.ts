@@ -28,8 +28,9 @@ export interface IdentityStatus {
     watcher: { heartbeatAt: string; ageSeconds: number } | null;
 }
 
-export async function identityStatus({ clock = Date.now }: { clock?: () => number } = {}): Promise<IdentityStatus> {
-    const dataRoot = dataRootStatus();
+/** `root` names the data root, PHOTOGRAPHY_DATA_DIR's by default. */
+export async function identityStatus({ clock = Date.now, root }: { clock?: () => number; root?: string } = {}): Promise<IdentityStatus> {
+    const dataRoot = dataRootStatus(root === undefined ? {} : { root });
     const status: IdentityStatus = {
         dataRoot,
         registry: null,

@@ -35,6 +35,52 @@
  *     bind to a path another photo holds merges that photo into <photoId>
  *     only when --merge names it, and only if it was minted at that path.
  *
+ *   npx tsx scripts/photos.ts status [--json]
+ *     The data root, the catalog mode and active revision, the last publish,
+ *     registry counts, the working layer's records, how many photos no series
+ *     lists and how many have no reviewed description, and the watcher's
+ *     heartbeat. Exits 1 unless the data root is ready and everything reads.
+ *
+ *   npx tsx scripts/photos.ts list [--unassigned] [--json]
+ *     Every photo the registry holds, but not archived ones, with its library
+ *     path, capture date, series, description state, and the data-root path
+ *     of the 400 px WebP it would publish on. --unassigned keeps the photos in
+ *     the library that no series lists.
+ *
+ *   npx tsx scripts/photos.ts draft:init
+ *     Create site.json and a photo record for every photo without one, with
+ *     no description and the asset revision its source is bound to. Never
+ *     overwrites a record.
+ *
+ *   npx tsx scripts/photos.ts describe --import <file> [--dry-run]
+ *     Set descriptions, decorative flags, titles, and captions from a CSV or
+ *     JSON file with the columns photoId, alt, decorative, title, and caption.
+ *     An empty cell changes nothing, imported descriptions count as reviewed,
+ *     and any row it can't apply, such as an unknown photo ID, stops the whole
+ *     import before it writes anything. The file is a regular file of at most
+ *     5 MiB in UTF-8, and describe-import.ts lists the characters and field
+ *     lengths it refuses. --dry-run takes no lock and writes nothing.
+ *
+ *   npx tsx scripts/photos.ts edit (<photoId> | <seriesId> | site) [--file <path>] [--expect-version <N>]
+ *     Open a record's newest version in $VISUAL or $EDITOR, check it, and
+ *     commit it as the next version. A series without a record opens as a
+ *     draft to fill in. --file commits a file instead of opening an editor,
+ *     and needs --expect-version, the version the edit started from, when
+ *     the record exists. An edit it can't commit stays in edits/ in the data
+ *     root, with the command that commits it. Exits 0 when saved or
+ *     unchanged, 1 when the edit or the record can't be used, 2 on a usage
+ *     error, 3 when the record isn't at the version the edit started from or
+ *     the authored lock stays busy, and 4 for I/O.
+ *
+ *   npx tsx scripts/photos.ts sequence <command> <seriesId> ...
+ *   npx tsx scripts/photos.ts series order <seriesId>...
+ *   npx tsx scripts/photos.ts series featured (<seriesId>... | --clear)
+ *     Change a series' photos, cover, opening photo, and chapters, or the
+ *     Work order and featured series, through #8's operations. The usage
+ *     below lists each form. sequence set and series order need at least one
+ *     ID. Exits 0 on success, 1 when the operation is refused, 2 on a usage
+ *     error, 3 on a version conflict or a busy authored lock, and 4 for I/O.
+ *
  *   npx tsx scripts/photos.ts validate [--reprofile]
  *     Compile the working layer and run every rule, taking no lock and
  *     writing nothing, so it runs on a read-only data root too. Prints the
@@ -61,19 +107,30 @@
  * under the working directory outside production.
  *
  * The image has no tsx, so it runs the bundle `npm run build:scripts` writes,
- * with the same arguments: node dist/scripts/photos.mjs <command>.
+ * with the same arguments: node dist/scripts/photos.mjs <command>. In
+ * production, run it in the watcher's container, which mounts the data root
+ * read-write:
+ * docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs <command>.
+ * The README's "Curating the catalog" section walks through the commands.
+ *
+ * Every command refuses a flag given twice. The owner commands, status to
+ * series, exit 1 when PHOTOGRAPHY_DATA_DIR is unset, and status still prints
+ * its report then.
  */
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseArgs } from 'node:util';
-import { publish, PUBLISH_EXIT_CODES, validateWorkingLayer, VALIDATE_EXIT_CODES, type PublishResult } from '../lib/catalog/publish';
+import { runDescribeImport } from '../lib/catalog/describe-import';
+import { runDraftInit } from '../lib/catalog/draft-init';
+import { recordRef, runEditRecord } from '../lib/catalog/edit-record';
+import { runListCommand, runStatusCommand } from '../lib/catalog/owner-status';
+import { issueLines, photoIdArg, publishReport, sequenceArgs, seriesArgs, parseFlags, UsageError } from '../lib/catalog/owner-cli';
+import { publish, PUBLISH_EXIT_CODES, validateWorkingLayer, VALIDATE_EXIT_CODES } from '../lib/catalog/publish';
 import { REVISION_ID_RE } from '../lib/catalog/schema';
-import type { Issue } from '../lib/catalog/types';
-import { catalogPaths } from '../lib/catalog/working-layer';
+import { runSequenceCommand, type CommandResult, type SequenceCommand } from '../lib/catalog/sequence-commands';
 import { ApplyRefusedError, migrateApply } from '../lib/identity/apply';
 import { createDecision, decisionFileName, isLibraryPath, writeDecision, type DecisionInput } from '../lib/identity/decisions';
-import { ASSET_REVISION_RE, PHOTO_ID_RE } from '../lib/identity/ids';
+import { ASSET_REVISION_RE } from '../lib/identity/ids';
 import { DryRunRefusedError, migrateDryRun } from '../lib/identity/migration';
 import { jsonLogSink, runReconcilePass } from '../lib/identity/pass';
 import { identityPaths } from '../lib/identity/registry';
@@ -94,19 +151,27 @@ const USAGE = `Usage:
   ${PROGRAM} identity archive <photoId> [--reason <text>]
   ${PROGRAM} identity retry <photoId> [<assetRevision>] [--reason <text>]
   ${PROGRAM} identity reprofile (<photoId> | --all) [--reason <text>]
+  ${PROGRAM} status [--json]
+  ${PROGRAM} list [--unassigned] [--json]
+  ${PROGRAM} draft:init
+  ${PROGRAM} describe --import <file> [--dry-run]
+  ${PROGRAM} edit (<photoId> | <seriesId> | site) [--file <path>] [--expect-version <N>]
+  ${PROGRAM} sequence show <seriesId>
+  ${PROGRAM} sequence set <seriesId> <photoId>... [--expect-version <N>]
+  ${PROGRAM} sequence (insert | move) <seriesId> <photoId> (--start | --end | --after <photoId> | --to <N>) [--expect-version <N>]
+  ${PROGRAM} sequence remove <seriesId> <photoId> [--expect-version <N>]
+  ${PROGRAM} sequence cover <seriesId> <photoId> [--focal <x>,<y> | --clear-focal] [--expect-version <N>]
+  ${PROGRAM} sequence opening <seriesId> (<photoId> | --clear) [--expect-version <N>]
+  ${PROGRAM} sequence chapter add <seriesId> <title> --start <photoId> [--expect-version <N>]
+  ${PROGRAM} sequence chapter move <seriesId> <chapterId> --start <photoId> [--expect-version <N>]
+  ${PROGRAM} sequence chapter remove <seriesId> <chapterId> [--expect-version <N>]
+  ${PROGRAM} series order <seriesId>... [--expect-version <N>]
+  ${PROGRAM} series featured (<seriesId>... | --clear) [--expect-version <N>]
   ${PROGRAM} validate [--reprofile]
-  ${PROGRAM} publish [--actor <name>] [--reason <text>] [--expect <candidateId>] [--dry-run] [--confirm-launch] [--reprofile]`;
-
-class UsageError extends Error {}
-
-/** Parse flags strictly: an unknown flag, a stray argument, or a missing value is a usage error. */
-function strictly<T>(parse: () => T): T {
-    try {
-        return parse();
-    } catch (error) {
-        throw new UsageError(error instanceof Error ? error.message : String(error));
-    }
-}
+  ${PROGRAM} publish [--actor <name>] [--reason <text>] [--expect <candidateId>] [--dry-run] [--confirm-launch] [--reprofile]
+A flag given twice is refused. An argument that starts with - goes after --.
+In production: docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs <command>
+The README's "Curating the catalog" section has the commands, the hand-edit rules, and the launch checklist.`;
 
 /** A path argument as a library-relative POSIX path. */
 function libraryPath(arg: string): string {
@@ -117,17 +182,11 @@ function libraryPath(arg: string): string {
     return posix;
 }
 
-function photoIdArg(arg: string): string {
-    if (!PHOTO_ID_RE.test(arg)) throw new UsageError(`${arg} is not a photo ID.`);
-    return arg;
-}
-
 async function migrate(args: string[]): Promise<number> {
-    const { values } = strictly(() => parseArgs({
+    const { values } = parseFlags({
         args,
         options: { 'dry-run': { type: 'boolean' }, apply: { type: 'boolean' }, out: { type: 'string' }, plan: { type: 'string' } },
-        strict: true,
-    }));
+    });
     if (values['dry-run'] && values.apply) throw new UsageError("--dry-run and --apply don't go together.");
     if (values.apply) {
         if (!values.plan) throw new UsageError('--apply needs --plan <file>.');
@@ -193,12 +252,11 @@ function decisionInput(type: DecisionInput['type'], positionals: string[], value
 
 /** Write a decision and run a pass that applies it, or leave it for the watcher when the registry is busy. */
 async function decide(type: DecisionInput['type'], args: string[]): Promise<number> {
-    const { values, positionals } = strictly(() => parseArgs({
+    const { values, positionals } = parseFlags({
         args,
         options: { reason: { type: 'string' }, all: { type: 'boolean' }, merge: { type: 'string' } },
         allowPositionals: true,
-        strict: true,
-    }));
+    });
     if (values.all !== undefined && type !== 'reprofile') throw new UsageError('--all goes with identity reprofile.');
     if (values.merge !== undefined && type !== 'bind') throw new UsageError('--merge goes with identity bind.');
     const input = decisionInput(type, positionals, values);
@@ -250,28 +308,15 @@ async function identity(args: string[]): Promise<number> {
     const decisionType = DECISION_COMMANDS.find((type) => type === subcommand);
     if (decisionType !== undefined) return decide(decisionType, rest);
     if (subcommand !== 'status') throw new UsageError(subcommand ? `Unknown identity command: ${subcommand}` : 'photos identity needs a command.');
-    const { values } = strictly(() => parseArgs({ args: rest, options: { json: { type: 'boolean' } }, strict: true }));
+    const { values } = parseFlags({ args: rest, options: { json: { type: 'boolean' } } });
     const status = await identityStatus();
     process.stdout.write(values.json ? `${JSON.stringify(status, null, 2)}\n` : formatStatus(status));
     return status.dataRoot.state === 'ready' && !status.registryError ? 0 : 1;
 }
 
-/** How many issues the CLI prints. The diagnostics file holds every one. */
-const PRINTED_ISSUES = 200;
-
-const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
-
 /** Lines for a command's report: stdout when it succeeded, stderr when it didn't, as the identity commands do. */
 function reporter(exitCode: number): (line: string) => void {
     return exitCode === 0 ? (line) => console.log(line) : (line) => console.error(line);
-}
-
-function printIssues(print: (line: string) => void, issues: readonly Issue[], rest: string): void {
-    for (const issue of issues.slice(0, PRINTED_ISSUES)) {
-        print(`${issue.severity} ${issue.record.kind} ${issue.record.id} ${issue.field}: ${issue.message} (${issue.code})`);
-        if (issue.hint) print(`    ${issue.hint}`);
-    }
-    if (issues.length > PRINTED_ISSUES) print(`${count(issues.length - PRINTED_ISSUES, 'more issue')} not shown. ${rest}`);
 }
 
 /** The data root to compile from, or an exit code after saying why there is none. */
@@ -284,7 +329,7 @@ function catalogRoot(): string | number {
 }
 
 async function validate(args: string[]): Promise<number> {
-    const { values } = strictly(() => parseArgs({ args, options: { reprofile: { type: 'boolean' } }, strict: true }));
+    const { values } = parseFlags({ args, options: { reprofile: { type: 'boolean' } } });
     const root = catalogRoot();
     if (typeof root === 'number') return root;
     const result = await validateWorkingLayer({ dataRoot: root, reprofile: values.reprofile });
@@ -292,32 +337,12 @@ async function validate(args: string[]): Promise<number> {
     const print = reporter(exitCode);
     print(`[photos] ${result.outcome}: ${result.message}`);
     if (result.candidateId) print(`Candidate: ${result.candidateId}`);
-    printIssues(print, result.issues, 'publish --dry-run writes them all to the diagnostics file.');
+    for (const line of issueLines(result.issues, 'publish --dry-run writes them all to the diagnostics file.')) print(line);
     return exitCode;
 }
 
-function printPublish(print: (line: string) => void, result: PublishResult, root: string): void {
-    print(`[photos] ${result.outcome}: ${result.message}`);
-    if (result.candidateId) print(`Candidate: ${result.candidateId}`);
-    if (result.revisionId) print(`Active: ${result.revisionId}${result.revisionNumber === null ? '' : `, revision ${result.revisionNumber}`}`);
-    if (result.missingRules?.length) print(`Missing rules: ${result.missingRules.join(', ')}`);
-    if (result.launch) {
-        const { published, gone } = result.launch;
-        const leaving = gone === 0 ? 'Every photograph in the library is in it.' : `${count(gone, 'photograph')} in the library ${gone === 1 ? "isn't" : "aren't"} in it, so ${gone === 1 ? 'it leaves' : 'they leave'} the site.`;
-        print(`Launch: this revision replaces the legacy Home and Gallery with ${count(published, 'photograph')}. ${leaving}`);
-        if (result.outcome === 'LAUNCH_CONFIRMATION_REQUIRED') print('Run it again with --confirm-launch to publish it.');
-    }
-    if (result.reprofiled) {
-        const { moved, kept } = result.reprofiled;
-        if (moved.length) print(`Moved to the current profile: ${moved.slice(0, PRINTED_ISSUES).join(', ')}${moved.length > PRINTED_ISSUES ? `, and ${moved.length - PRINTED_ISSUES} more` : ''}`);
-        if (kept.length) print(`Kept their profile, since the watcher can't rebuild them: ${kept.slice(0, PRINTED_ISSUES).join(', ')}${kept.length > PRINTED_ISSUES ? `, and ${kept.length - PRINTED_ISSUES} more` : ''}`);
-    }
-    const diagnostics = result.candidateId ? path.relative(root, path.join(catalogPaths(root).diagnosticsDir, `${result.candidateId}.json`)) : null;
-    printIssues(print, result.issues, diagnostics ? `All of them are in ${diagnostics}.` : '');
-}
-
 async function publishCommand(args: string[]): Promise<number> {
-    const { values } = strictly(() => parseArgs({
+    const { values } = parseFlags({
         args,
         options: {
             actor: { type: 'string' },
@@ -327,8 +352,7 @@ async function publishCommand(args: string[]): Promise<number> {
             'confirm-launch': { type: 'boolean' },
             reprofile: { type: 'boolean' },
         },
-        strict: true,
-    }));
+    });
     const actor = values.actor ?? process.env.PHOTOS_ACTOR ?? '';
     if (!/\S/.test(actor)) throw new UsageError('photos publish needs --actor <name> or PHOTOS_ACTOR.');
     if (values.reason !== undefined && !/\S/.test(values.reason)) throw new UsageError('--reason needs some text.');
@@ -345,8 +369,75 @@ async function publishCommand(args: string[]): Promise<number> {
         reprofile: values.reprofile,
     });
     const exitCode = PUBLISH_EXIT_CODES[result.outcome];
-    printPublish(reporter(exitCode), result, root);
+    for (const line of publishReport(result, root)) reporter(exitCode)(line);
     return exitCode;
+}
+
+/** Print a handler's text, on stdout when it succeeded and stderr when it didn't, and return its exit code. */
+function printed(result: CommandResult): number {
+    (result.exitCode === 0 ? process.stdout : process.stderr).write(result.output);
+    return result.exitCode;
+}
+
+/**
+ * The data root for the owner commands, or 1 after saying it is unset. These
+ * commands use 1 for a data root that isn't ready and 3 only for a busy or
+ * lost authored lock and a version conflict, so a wrapper that retries on 3
+ * never loops on a missing PHOTOGRAPHY_DATA_DIR.
+ */
+function ownerRoot(): string | number {
+    const root = dataRoot();
+    if (root !== null) return root;
+    console.error('[photos] The data root is unset: PHOTOGRAPHY_DATA_DIR is not set. Nothing was written.');
+    return 1;
+}
+
+async function statusCommand(args: string[]): Promise<number> {
+    const { values } = parseFlags({ args, options: { json: { type: 'boolean' } } });
+    // status is the diagnostic command, so it reports even with no data root.
+    return printed(await runStatusCommand({ dataRoot: dataRoot() }, { json: values.json }));
+}
+
+async function listCommand(args: string[]): Promise<number> {
+    const { values } = parseFlags({ args, options: { unassigned: { type: 'boolean' }, json: { type: 'boolean' } } });
+    const root = ownerRoot();
+    if (typeof root === 'number') return root;
+    return printed(await runListCommand({ dataRoot: root }, { unassigned: values.unassigned, json: values.json }));
+}
+
+async function draftInitCommand(args: string[]): Promise<number> {
+    parseFlags({ args, options: {} });
+    const root = ownerRoot();
+    if (typeof root === 'number') return root;
+    return printed(await runDraftInit({ dataRoot: root }));
+}
+
+async function describeCommand(args: string[]): Promise<number> {
+    const { values } = parseFlags({ args, options: { import: { type: 'string' }, 'dry-run': { type: 'boolean' } } });
+    if (!values.import) throw new UsageError('photos describe needs --import <file>.');
+    const root = ownerRoot();
+    if (typeof root === 'number') return root;
+    return printed(await runDescribeImport({ dataRoot: root }, { file: values.import, dryRun: values['dry-run'] }));
+}
+
+async function editCommand(args: string[]): Promise<number> {
+    const { values, positionals } = parseFlags({ args, options: { file: { type: 'string' }, 'expect-version': { type: 'string' } }, allowPositionals: true });
+    if (positionals.length !== 1) throw new UsageError('photos edit needs one record: a photo ID, a series ID, or site.');
+    const ref = recordRef(positionals[0]);
+    if (ref === null) throw new UsageError(`${positionals[0]} is not a photo ID, a series ID, or site.`);
+    if (values.file === '') throw new UsageError('--file needs a path.');
+    const expect = values['expect-version'];
+    if (expect !== undefined && !/^\d+$/.test(expect)) throw new UsageError('--expect-version takes a version from 0.');
+    const root = ownerRoot();
+    if (typeof root === 'number') return root;
+    return printed(await runEditRecord({ dataRoot: root }, ref, { file: values.file, expectVersion: expect === undefined ? undefined : Number(expect) }));
+}
+
+async function orderCommand(parse: () => SequenceCommand): Promise<number> {
+    const command = parse();
+    const root = ownerRoot();
+    if (typeof root === 'number') return root;
+    return printed(await runSequenceCommand({ dataRoot: root }, command));
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -354,6 +445,13 @@ async function main(argv: string[]): Promise<number> {
     try {
         if (command === 'migrate') return await migrate(args);
         if (command === 'identity') return await identity(args);
+        if (command === 'status') return await statusCommand(args);
+        if (command === 'list') return await listCommand(args);
+        if (command === 'draft:init') return await draftInitCommand(args);
+        if (command === 'describe') return await describeCommand(args);
+        if (command === 'edit') return await editCommand(args);
+        if (command === 'sequence') return await orderCommand(() => sequenceArgs(args));
+        if (command === 'series') return await orderCommand(() => seriesArgs(args));
         if (command === 'validate') return await validate(args);
         if (command === 'publish') return await publishCommand(args);
         throw new UsageError(command ? `Unknown command: ${command}` : 'No command given.');

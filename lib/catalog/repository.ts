@@ -259,3 +259,20 @@ export async function writeLastPublish(root: string, summary: LastPublishFile): 
     await ensureDir(dir);
     await atomicWriteJson(path.join(/*turbopackIgnore: true*/ dir, 'last-publish.json'), summary);
 }
+
+const isLastPublish = (value: unknown): value is LastPublishFile => {
+    if (typeof value !== 'object' || value === null) return false;
+    const file = value as Record<string, unknown>;
+    return file.schemaVersion === CATALOG_SCHEMA_VERSION && typeof file.outcome === 'string' && typeof file.at === 'string' && typeof file.actor === 'string'
+        && Number.isInteger(file.errors) && Number.isInteger(file.warnings);
+};
+
+/** How the last publish attempt ended, or null when nothing has tried. Throws CatalogIntegrityError when the file can't be used. */
+export async function readLastPublish(root: string): Promise<LastPublishFile | null> {
+    const file = path.join(/*turbopackIgnore: true*/ catalogPaths(root).diagnosticsDir, 'last-publish.json');
+    const read = await readJson(file);
+    if (read === null) return null;
+    const name = relative(root, file);
+    if (!read.json || !isLastPublish(read.value)) throw new CatalogIntegrityError(name, `${name} is not a publish summary this build reads.`);
+    return read.value;
+}

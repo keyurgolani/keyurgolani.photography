@@ -142,7 +142,7 @@ The site listens on the host's 127.0.0.1 only, port 3000 unless `PHOTOGRAPHY_POR
 │   └── watcherHandlers.ts # Watcher event handlers and job queue
 ├── scripts/               # Background scripts, bundled into dist/scripts for the image
 │   ├── imageWatcher.ts    # File watcher for new photos
-│   ├── photos.ts          # Photo ID migration and identity commands
+│   ├── photos.ts          # Photo ID, identity, and catalog commands
 │   └── watcherHealth.ts   # The watcher container's healthcheck
 ├── public/                # Static assets
 │   └── assets/photos/     # Photo storage directory
@@ -179,15 +179,22 @@ The site listens on the host's 127.0.0.1 only, port 3000 unless `PHOTOGRAPHY_POR
   docker compose -f docker-compose.prod.yml start web image-watcher
   ```
 - **Take a photo down after the launch**, once a catalog revision is active. Do the steps above too, since its legacy derivatives stay reachable at their URLs until the legacy URLs close.
-  1. Remove the photo from every series that lists it: its `photoIds` entry, and the series' cover or a chapter start if it is one. Or hide the series. Then publish, with the same `run --rm --no-deps image-watcher` form as the commands above: `node dist/scripts/photos.mjs publish --actor <name>`.
+  1. Take the photo out of every series that lists it, then publish. Run each command with the same `run --rm --no-deps image-watcher` form as the commands above, as `node dist/scripts/photos.mjs <command>`. `list` shows the series that list the photo. In each one, `sequence remove <seriesId> <photoId>` takes it out, and a publish then needs these too:
+     - A published series needs a cover. If the photo was the cover, the remove clears it, so pick another with `sequence cover <seriesId> <otherPhotoId>`.
+     - If it was the opening photograph, the remove clears that too, and the series then has no opening photograph. Pick another with `sequence opening <seriesId> <otherPhotoId>` if you want one. A hand edit has to change or drop `openingPhotoId` itself.
+     - A chapter that starts on it moves to the next photograph. If it's the chapter's only one, the remove refuses, so remove the chapter first with `sequence chapter remove <seriesId> <chapterId>`.
+     - A published series needs a photograph. If it's the series' only one, hide the series instead: set its `visibility` to `"hidden"` with `edit <seriesId> --file <path> --expect-version <N>`, on a host copy as "Curating the catalog" below shows.
+     - A hidden series can't stay featured, and at least one featured series has to stay published. If you hid a featured series, list the ones left with `series featured <seriesId>...`.
+
+     Then run `validate`, which names each record and field a publish would stop on, and publish with `publish --actor <name>`.
   2. Check that `GET /api/ready` answers `"state":"ok"` with the `revisionId` that publish printed. `degraded` means `web` couldn't read the new revision and still serves the one before, the photo included.
   3. Purge the photo's `/media` URLs from any CDN in front of the site. `/media` sends `max-age=31536000, immutable`, so a browser that loaded the photo can keep showing it for up to a year.
 
-  If the publish stops on errors in other records, the photo stays public until they're fixed. As a last resort, delete its sets, `assets/<photoId>/` in the data root, inside `image-watcher`. `/media` then answers 404 for them, and its page shows a broken image until a publish leaves the photo out.
-- **List legacy derivatives whose photo is gone**, such as a deleted photo's or a renamed photo's earlier names. It prints each base name in `optimized/` that no file in the library's top folder has:
+  If the publish stops on errors in other records, the photo stays public until they're fixed. `validate` lists them. As a last resort, delete its sets, `assets/<photoId>/` in the data root, inside `image-watcher`. `/media` then answers 404 for them, and its page shows a broken image until a publish leaves the photo out.
+- **List legacy derivatives whose photo is gone**, such as a deleted photo's or a renamed photo's earlier names. It prints each base name in `optimized/` that no photo in the library's top folder has. Only the extensions the watcher builds from count, in any case (`.jpg`, `.jpeg`, `.png`, `.webp`), so a sidecar such as `IMG_1.xmp` left behind doesn't hide a deleted photo's old images:
 
   ```bash
-  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher sh -c 'cd /app/public/assets/photos && for f in optimized/*.webp; do n=${f#optimized/}; n=${n%.webp}; set -- "$n".*; [ -e "$1" ] || echo "$n"; done'
+  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher sh -c 'cd /app/public/assets/photos && for f in optimized/*.webp; do n=${f#optimized/}; n=${n%.webp}; found=; for s in "$n".*; do case "$s" in *.[jJ][pP][gG]|*.[jJ][pP][eE][gG]|*.[pP][nN][gG]|*.[wW][eE][bB][pP]) found=1;; esac; done; [ -n "$found" ] || echo "$n"; done'
   ```
 - **Regenerate everything** locally with `npm run images:process -- --force`. The production image has no tsx or npm scripts, so there, run the bundled watcher with `--force`, and stop `image-watcher` first so the two never write at once. Photos with an EXIF orientation tag need none of this after an upgrade: the watcher rebuilds them by itself at its first start, as [docs/releasing.md](docs/releasing.md) describes for slice A of #10.
 
@@ -198,7 +205,71 @@ The site listens on the host's 127.0.0.1 only, port 3000 unless `PHOTOGRAPHY_POR
   ```
 - **Restore the library folder** if it was deleted. The watcher exits 1 when its folder disappears, and since Compose no longer creates a missing photos folder, neither container can start until it's back. Stop the stack, copy the folder back into place rather than moving it with `mv`, then start the stack.
 - **Preview stable photo IDs** with `npm run photos:migrate -- --dry-run`. It proposes an ID for every photo and writes only a plan and a report, to `identity/migration/` in the data root or to `--out <dir>`. Applying the plan with `-- --apply --plan <file>` initializes the data root, and from then on the watcher keeps the IDs current, nested folders included, and builds each photo's `/media` set. Home and the Gallery list photos from the registry it writes, so they stay empty until the plan is applied. In production, follow the runbook in [docs/data-root.md](docs/data-root.md), which backs up the library and the data root first and runs the same steps in the watcher container.
-- **Check and publish the catalog** with `npm run photos -- validate`, which compiles the authored records in the data root and prints every problem without taking a lock or writing anything, so it also runs on a read-only data root, and `npm run photos -- publish --actor <name>`, which validates them again under a lock and makes the result the active revision. Add `--dry-run` to stop after validation. The first publish also needs `--confirm-launch`. From then on, `/api/photos` lists the active revision's photos at their `/media` URLs instead of the registry's, and `/media` serves only the sets the active revision holds, so don't publish in production before the launch.
+- **Check and publish the catalog** with `npm run photos -- validate`, which compiles the authored records in the data root and prints every problem without taking a lock or writing anything, so it also runs on a read-only data root, and `npm run photos -- publish --actor <name>`, which validates them again under a lock and makes the result the active revision. Add `--dry-run` to stop after validation. The first publish also needs `--confirm-launch`. From then on, `/api/photos` lists the active revision's photos at their `/media` URLs instead of the registry's, and `/media` serves only the sets the active revision holds, so don't publish in production before the launch. "Curating the catalog" below has the rest of the commands.
+
+### Curating the catalog
+
+The series, their order, and each photograph's description, title, and caption live in authored records under `authored/` in the data root. The `photos` commands below edit them, `validate` checks them, and `publish` makes them public as one catalog revision. Visitors see nothing until a publish. Locally, run a command as `npm run photos -- <command>`. In production, until the image has a service of its own for these commands, run them in `image-watcher`'s container, which mounts the data root read-write, as the data-root runbook does:
+
+```bash
+photos() { docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs "$@"; }
+photos status
+```
+
+The commands:
+
+- `status [--json]`: the data root, the revision the site serves and whether its publish finished, the last publish, the registry's counts, the records, how many photos no series lists or have no reviewed description, and the watcher's heartbeat.
+- `list [--unassigned] [--json]`: each photo with its library path, capture date, series, description state, and the 400 px set it would publish on. `--unassigned` keeps the photos no series lists.
+- `draft:init`: a record for every photo that has none, with no description and the asset revision its file is bound to, and `site.json` if it's missing. It never overwrites a record, so run it again after adding photos.
+- `describe --import <file> [--dry-run]`: descriptions, decorative flags, titles, and captions for many photos from one file, below. `--dry-run` says what would change, takes no lock, and writes nothing.
+- `sequence show | set | insert | move | remove | cover | opening | chapter add | chapter move | chapter remove`: a series' photographs, cover and its focal point, opening photograph, and chapters. `photos` with no command prints each form.
+- `series order <seriesId>...` sets the Work order, and `series featured <seriesId>...` the featured series, which Home opens on once it reads the catalog (#4). `series featured --clear` features none, and a publish then stops on `refs.non-empty` until a published series is featured again.
+- `edit <record>`: any other change to a record, below.
+- `validate`, then `publish --actor <name>`, as above.
+
+`status` to `series`, and `edit` below, exit 0 when they worked, 1 when they refused or the data root isn't ready or isn't set, 2 on a usage error, 3 while another command holds the authored records or when a record changed underneath it, and 4 on an I/O error. `validate` and `publish` keep slice B's codes: 0 when valid or published, 1 on validation errors, 2 on a usage error, 4 when a catalog file is damaged or an I/O error stops them, and 3 on any other stop, such as a data root that isn't ready or isn't set, a busy lock, or the first publish's launch stop. A flag given twice is refused, and an argument that starts with `-`, such as a chapter title, goes after `--`: `photos sequence chapter add <seriesId> --start <photoId> -- "-30 at dawn"`. Every `sequence` and `series` change takes `--expect-version <N>`, the version `sequence show` or the last change printed, so it stops if someone else changed the record in between.
+
+The import file is CSV with a header row, or a JSON array of objects, with the columns `photoId` (required), `alt`, `decorative` (`true` or `false`), `title`, and `caption`. An empty cell leaves its field as it is, and an imported description counts as reviewed, so check it first. `decorative` `true` marks a photo decorative, and `false` with an empty `alt` takes the flag off, so the photo has no description and blocks a publish until it gets one. Any row the import can't apply, such as an unknown photo ID, stops the whole import before it writes anything, and a run that fails part way says how many records it wrote: running the same file again finishes it. The file has to be:
+
+- UTF-8. In Excel, save as "CSV UTF-8": plain "CSV" and "CSV (Macintosh)" write another encoding, and the import names the first line it can't read.
+- A regular file of at most 5 MiB.
+- Plain text: no control characters, no invisible format characters (bidi controls, zero-width spaces, soft hyphens, tag characters, and the rest of Unicode's Cf), no private-use or unassigned code points, and no replacement characters. The import names the code point and the character's position. ZWJ and ZWNJ, the left-to-right and right-to-left marks, and emoji flags written with tags, such as England's, are fine. Chapter titles from `sequence chapter add` follow the same rules, with `title`'s 200-character limit.
+- At most 1,000 characters of `alt`, 200 of `title`, and 2,000 of `caption`. Only `caption` takes a line break. The description rules still warn about alt text past 250 characters.
+
+In JSON, a key given twice in one object keeps its last value. In production the command reads a path inside the container, so mount the file there, readable by the containers' user, for example:
+
+```bash
+docker compose -f docker-compose.prod.yml run --rm --no-deps -v "$PWD/descriptions.csv:/tmp/descriptions.csv:ro" image-watcher node dist/scripts/photos.mjs describe --import /tmp/descriptions.csv --dry-run
+```
+
+`edit (<photoId> | <seriesId> | site) [--file <path> --expect-version <N>]` covers what the commands above don't: creating a series, its slug, title, statements, and visibility, and a photo's focal point, crop, credit, and location. It opens the record's newest version in `$VISUAL` or `$EDITOR`, without the fields the commands manage (`schemaVersion`, `version`, `baseRevisionId`, and the site's `baseSeriesOrder`), checks your edit against the record's schema and its text against the import's rules and limits (statements take up to 2,000 characters and a short statement 500), and saves it as the next version. A series with no record opens as a draft, so `photos edit ser_<name>` is how a new series starts. Its ID is `ser_` and then a lowercase letter or digit and 1 to 62 more lowercase letters, digits, `-`, or `_`. A published series also needs a title, a statement, a short statement, a photograph, and a cover before a publish takes it. If the record changed while the editor was open, or the edit can't be saved, the command keeps your edit in `edits/` in the data root and prints the command that saves it once fixed, `edit <id> --file <path> --expect-version <N>`, where N is the version the edit started from. If the record has moved past N, that command exits 3 and names the newer version: merge your edit into it and run it again with that number. Run `photos validate` afterwards.
+
+Opening an editor is for local use. In production, edit a host copy and save it with `--file`:
+
+```bash
+# As root, keeping the data root's owner, as docs/data-root.md's hand edits do. Say the newest version is v4.json.
+root=portfolio-data
+owner="$(sudo stat -c %u:%g "$root")"   # stat -f %u:%g on macOS
+sudo test -e "$root/edits" || sudo install -d -o "${owner%:*}" -g "${owner#*:}" -m 700 "$root/edits"
+sudo cp -n -p "$root/authored/series/<seriesId>/v4.json" "$root/edits/<seriesId>.json"
+sudoedit "$root/edits/<seriesId>.json"
+photos edit <seriesId> --file /data/portfolio/edits/<seriesId>.json --expect-version 4
+```
+
+The copy can keep its `stamp` and managed fields: `edit` ignores them. `--file` needs `--expect-version` whenever the record exists, so a copy can't replace a version written after it was made.
+
+Each record is a folder of versions under `authored/`: `site/`, `series/<seriesId>/`, and `photos/<photoId>/`, each holding `v1.json`, `v2.json`, and so on, where the highest number is the record. Edit a record only through `photos edit`, or by copying its newest version to the next number and editing the copy, as [docs/data-root.md](docs/data-root.md) describes:
+
+- Only while no `photos` command runs. The commands hold a lock while they write, and an editor doesn't take it.
+- Never edit a version in place. A command that reads an edited newest version refuses it and names the copy that keeps the edit.
+- Never copy or edit the active pointer, `catalog/active/`. Only `photos publish` moves it.
+- Copy and edit as root, keeping the owner: `sudo cp -n -p` keeps the owner and mode of the version it copies, and `sudoedit` writes back into the same file. A copy root owns can't be read by the app. If one already is, give it the owner of the version it came from with `chown --reference`, or `chown -R 1001:1001 ./portfolio-data/authored`, the uid `docker-compose.prod.yml` runs the app as.
+
+The first publish replaces the legacy Home and Gallery, so it stops and prints what it would change, with a checklist, until it's run with `--confirm-launch`. Run it again with the `--confirm-launch --expect <candidateId>` it prints, so it publishes exactly the candidate you checked. Before that:
+
+- The cutover milestone has shipped: Home, Work, the series pages, and the Viewer read the catalog (#4, #3, #5, #7), and #15's 15-1 and 15-2 are in, so a rollback works.
+- Viewer hardening (#9) is recommended first.
+- A preview looks right. Copy the data root, publish the copy with `PHOTOGRAPHY_DATA_DIR` pointing at it, and serve a build on another port against it, bound to `127.0.0.1`, such as `PHOTOGRAPHY_DATA_DIR=<copy> npx next start --hostname 127.0.0.1 -p 3001`.
 
 ### Supported Formats
 - JPEG (.jpg, .jpeg)
