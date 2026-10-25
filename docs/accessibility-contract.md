@@ -37,7 +37,7 @@ Every visitor and curator surface follows these rules. #1 added them with the br
 | Viewer, `/work/<slug>/photo/<photoId>` | `e2e/viewer.spec.ts` from #7, `e2e/viewer-modal.spec.ts` and `e2e/viewer-touch.spec.ts` from #9 | #7, then #9 |
 | Site navigation, `SiteNav` | `e2e/shell/nav.spec.ts` from #21, with `server-html`, `theme`, and `confinement` in `e2e/shell/` | #21, then #18 for its reveal on Home |
 | Curator login, `/curation/login` | `e2e/curator-login.spec.ts` from #14's 14-2, at rest, with a refusal, and during the lock | #14 |
-| Curation inbox | Added by #14 | #14 |
+| Curation inbox, `/curation/inbox` | `e2e/curation-inbox.spec.ts` from #14, on a fixture its own curator server serves. The #1 surface checks there are on #14's backlog | #14 |
 | Publish preview | Added by #16 | #16 |
 | Revision history | Added by #15 | #15 |
 
