@@ -12,10 +12,9 @@ import { emptyRegistry, type AssetManifest, type PhotoRecord, type Registry, typ
 import { VARIANT_FORMATS, VARIANT_PIXELS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth } from '../identity/variants';
 import { mediaUrl } from '../media/url';
 import { DATA_ROOT_FILE, DATA_ROOT_SCHEMA_VERSION } from '../storage/config';
-import { versionFile, versionText } from '../storage/document';
+import { readVersionedDocument, versionFile, versionText } from '../storage/document';
 import { isInside, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, realpathLoose } from '../storage/fsx';
 import { createCatalogReader, type CatalogReader, type ReaderMeta } from './reader';
-import { registerRule } from './rules';
 import { parseAuthoredRecord, revisionIdOf, type AuthoredKind } from './schema';
 import type {
     AuthoredAlt,
@@ -32,7 +31,7 @@ import type {
     SeriesRecord,
     Visibility,
 } from './types';
-import { authoredPaths, authoredRecordDir, readWorkingLayer } from './working-layer';
+import { authoredPaths, authoredRecordDir, catalogPaths, readWorkingLayer } from './working-layer';
 
 /**
  * Test catalogs: a data root with a working layer, #10's registry, and
@@ -150,29 +149,6 @@ export interface TestCatalog {
     context(overrides?: Partial<RuleContext>): Promise<RuleContext>;
     /** Removes the root, unless the caller named it. */
     cleanup(): Promise<void>;
-}
-
-/** #8's order rules, which #13's first activation needs registered. */
-export const ORDER_RULE_IDS = [
-    'order.duplicate-photo',
-    'order.unknown-photo',
-    'order.unpublishable-member',
-    'order.cover',
-    'order.opening',
-    'order.chapter-anchor',
-    'order.empty-series',
-] as const;
-
-/**
- * Register stand-ins for #8's order rules, each reporting nothing, with the
- * gate and severity #8 gives the real one. Call it once per test file. A
- * second call throws on the duplicate ID, and so will #8's real rules, so the
- * stand-ins have to go when #8 lands.
- */
-export function registerOrderRuleStandIns(): void {
-    for (const id of ORDER_RULE_IDS) {
-        registerRule({ id, version: 1, severity: 'error', rollbackClass: 'integrity', gate: id === 'order.empty-series' ? 'publish' : 'render', check: () => [] });
-    }
 }
 
 /** mulberry32: a small seeded PRNG, so IDs repeat for a seed. */
@@ -561,4 +537,109 @@ export async function createTestCatalog(options: TestCatalogOptions = {}): Promi
             if (created) await fs.promises.rm(created, { recursive: true, force: true });
         },
     };
+}
+
+/** One thing an ingestion path does, for assertOrderUntouched(). */
+export interface OrderStep {
+    name: string;
+    run(): unknown;
+}
+
+const VERSION_NAME_RE = /^v[1-9]\d*\.json$/;
+const TEMP_NAME_RE = /^\.v\d+\..+\.tmp$/;
+const sha256 = (file: string) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+
+/** A snapshot entry. `label` is `file`, `temp`, `older version`, or a version folder's state (`v<N>`, `no version`, `unreadable: ...`). */
+interface SnapshotEntry {
+    label: string;
+    digest: string;
+    /** The SHA-256 of the file, or of a version folder's newest version. */
+    sha: string;
+}
+
+const isFolderEntry = (entry: SnapshotEntry) => !['file', 'temp', 'older version'].includes(entry.label);
+
+/**
+ * What `catalog/` and `authored/` hold, by data-root-relative path. A version
+ * folder (lib/storage/document.ts) counts as one entry, the version a reader
+ * gets from it and that file's SHA-256, so a commit shows as that document
+ * moving from one version to the next. Each older version, each staged temp,
+ * and any other file in the folder counts as a file of its own. Every other
+ * file counts by its SHA-256.
+ */
+async function orderSnapshot(dataRoot: string): Promise<Map<string, SnapshotEntry>> {
+    const entries = new Map<string, SnapshotEntry>();
+    const relative = (file: string) => path.relative(dataRoot, file).split(path.sep).join('/');
+    const visitEntry = async (file: string, label = 'file'): Promise<void> => {
+        const stat = fs.statSync(file);
+        if (stat.isDirectory()) await visit(file);
+        else if (stat.isFile()) {
+            const sha = sha256(file);
+            entries.set(relative(file), { label, digest: sha, sha });
+        }
+    };
+    const visit = async (dir: string): Promise<void> => {
+        const names = fs.readdirSync(dir).sort();
+        const versions = names.filter((name) => VERSION_NAME_RE.test(name)).map((name) => Number(name.slice(1, -'.json'.length)));
+        if (versions.length === 0 && !names.some((name) => TEMP_NAME_RE.test(name))) {
+            for (const name of names) await visitEntry(path.join(dir, name));
+            return;
+        }
+        let label: string;
+        let sha: string;
+        try {
+            const newest = await readVersionedDocument(dir);
+            label = newest ? `v${newest.version}` : 'no version';
+            sha = newest ? sha256(newest.file) : '';
+        } catch (error) {
+            label = `unreadable: ${(error as Error).name}`;
+            sha = label;
+        }
+        entries.set(relative(dir), { label, digest: `${label} ${sha}`, sha });
+        // A reader takes the highest number, which the folder's entry covers.
+        const newestName = versions.length > 0 ? path.basename(versionFile(dir, Math.max(...versions))) : null;
+        for (const name of names) {
+            if (name === newestName) continue;
+            const label = VERSION_NAME_RE.test(name) ? 'older version' : TEMP_NAME_RE.test(name) ? 'temp' : 'file';
+            await visitEntry(path.join(dir, name), label);
+        }
+    };
+    for (const dir of [catalogPaths(dataRoot).dir, authoredPaths(dataRoot).dir]) {
+        if (fs.existsSync(dir)) await visit(dir);
+    }
+    return entries;
+}
+
+/**
+ * Run `steps` in order and throw if any of them commits a version of a
+ * document under `catalog/` or `authored/`, stages one, or changes, adds, or
+ * removes a file or a document there, naming the step and what it touched. An
+ * older version may only disappear, as a prune removes it. This is how the tests show that no ingestion path authors order: the reconcile
+ * fact types, the sinks, and the watcher all go through it, and #14 and #17
+ * add rows for their sinks.
+ */
+export async function assertOrderUntouched(dataRoot: string, steps: readonly OrderStep[]): Promise<void> {
+    const before = await orderSnapshot(dataRoot);
+    if (before.size === 0) throw new Error('catalog/ and authored/ hold no files, so there is nothing to compare.');
+    const labelOf = (entry: SnapshotEntry) => (entry.label === 'file' || entry.label === 'temp' ? '' : ` (${entry.label})`);
+    for (const step of steps) {
+        await step.run();
+        const after = await orderSnapshot(dataRoot);
+        const changes = [
+            ...[...before].flatMap(([name, was]) => {
+                const now = after.get(name);
+                if (!now || now.digest === was.digest) return [];
+                return [isFolderEntry(was) || isFolderEntry(now) ? `changed ${name} (${was.label} to ${now.label})` : `changed ${name}${labelOf(was)}`];
+            }),
+            ...[...after].filter(([name]) => !before.has(name)).flatMap(([name, now]) => {
+                // The version that was newest before a commit becomes an older one. The folder's entry already shows the commit.
+                const folder = before.get(name.slice(0, name.lastIndexOf('/')));
+                if (now.label === 'older version' && folder && `${folder.label}.json` === path.posix.basename(name) && folder.sha === now.sha) return [];
+                return [`added ${name}${labelOf(now)}`];
+            }),
+            // A prune removes older versions, so only they may disappear.
+            ...[...before].filter(([name, was]) => !after.has(name) && was.label !== 'older version').map(([name]) => `removed ${name}`),
+        ];
+        if (changes.length > 0) throw new Error(`The step "${step.name}" touched authored order: ${changes.join(', ')}.`);
+    }
 }

@@ -169,6 +169,13 @@ export const authoredSiteSchema = z.strictObject({
     featuredSeriesIds: z.array(seriesRef),
     /** Work order. Draft and hidden series may hold slots. */
     seriesOrder: z.array(seriesRef),
+    /**
+     * Managed, like `baseRevisionId`: the Work order as the last rebase left
+     * it, without any change the owner made since, so a rebase can tell an
+     * owner's move from the target's. Null when that isn't known: a record no
+     * rebase has written, or one written before this field.
+     */
+    baseSeriesOrder: z.array(seriesRef).nullable().default(null),
 });
 
 /** A SeriesRecord minus `derived`. Draft and hidden series may lack copy, photos, and a cover. */

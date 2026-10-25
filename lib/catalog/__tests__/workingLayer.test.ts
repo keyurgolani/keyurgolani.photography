@@ -2,12 +2,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { importGraph } from '../../../test/helpers/importGraph';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
-import { REPO_ROOT } from '../../../test/helpers/runTsx';
 import { withLock } from '../../storage/lock';
-import type { AuthoredPhoto, AuthoredSeries } from '../types';
+import type { AuthoredPhoto, AuthoredSeries, ManagedField } from '../types';
 import { authoredPaths, catalogPaths, readActivePointer, readAuthoredRecord, readWorkingLayer } from '../working-layer';
-import { AuthoredWriteError, writeAuthoredRecord } from '../working-layer-writer';
+import { AuthoredWriteError, MANAGED_FIELDS, writeAuthoredRecord } from '../working-layer-writer';
 
 const PHOTO_A = 'ph_00000000-0000-4000-8000-00000000000a';
 const PHOTO_B = 'ph_00000000-0000-4000-8000-00000000000b';
@@ -157,6 +157,32 @@ describe('writeAuthoredRecord', () => {
         const updated = await writeAuthoredRecord({ ...created, title: 'Fixture title', baseRevisionId: LATER }, { expectedVersion: 1, root: data.root });
         expect(updated).toMatchObject({ version: 2, baseRevisionId: ACTIVE, title: 'Fixture title' });
         expect(await readAuthoredRecord(data.root, 'series', 'ser_fixture')).toEqual(updated);
+    });
+
+    it('keeps the site record\'s baseSeriesOrder, which only a rebase sets, and starts a new one at null', async () => {
+        const data = dataRoot();
+        const site = { kind: 'site' as const, featuredSeriesIds: [], seriesOrder: ['ser_fixture-a', 'ser_fixture-b'] };
+        const created = await writeAuthoredRecord({ ...site, baseSeriesOrder: ['ser_fixture-b'] }, { expectedVersion: 0, root: data.root });
+        expect(created).toMatchObject({ version: 1, baseSeriesOrder: null });
+
+        // A record written before the field reads as unknown.
+        const dir = authoredPaths(data.root).site;
+        writeVersion(dir, 2, { schemaVersion: 1, version: 2, baseRevisionId: null, ...site });
+        expect(await readAuthoredRecord(data.root, 'site', 'site')).toMatchObject({ version: 2, baseSeriesOrder: null });
+
+        // One a rebase wrote keeps it through an owner's write that names another.
+        writeVersion(dir, 3, { schemaVersion: 1, version: 3, baseRevisionId: ACTIVE, ...site, baseSeriesOrder: ['ser_fixture-a', 'ser_fixture-b'] });
+        const updated = await writeAuthoredRecord({ ...site, seriesOrder: ['ser_fixture-b', 'ser_fixture-a'], baseSeriesOrder: ['ser_fixture-b', 'ser_fixture-a'] }, { expectedVersion: 3, root: data.root });
+        expect(updated).toMatchObject({ version: 4, baseRevisionId: ACTIVE, seriesOrder: ['ser_fixture-b', 'ser_fixture-a'], baseSeriesOrder: ['ser_fixture-a', 'ser_fixture-b'] });
+        expect(await readAuthoredRecord(data.root, 'site', 'site')).toEqual(updated);
+    });
+
+    it('types as managed exactly the fields the writer manages', () => {
+        // Checked by tsc: the assignment fails to compile when ManagedField and MANAGED_FIELDS differ either way.
+        type Managed = (typeof MANAGED_FIELDS)[number];
+        const same: [ManagedField] extends [Managed] ? ([Managed] extends [ManagedField] ? true : false) : false = true;
+        expect(same).toBe(true);
+        expect([...MANAGED_FIELDS].sort()).toEqual(['baseRevisionId', 'baseSeriesOrder', 'schemaVersion', 'version']);
     });
 
     it.each([
@@ -318,23 +344,6 @@ describe('writeAuthoredRecord', () => {
     });
 });
 
-/** Every module `entry` reaches through relative imports. */
-function importGraph(entry: string): Set<string> {
-    const seen = new Set<string>();
-    const visit = (file: string) => {
-        if (seen.has(file)) return;
-        seen.add(file);
-        const source = fs.readFileSync(file, 'utf8');
-        for (const match of source.matchAll(/(?:from|import)\s*['"](\.{1,2}\/[^'"]+)['"]/g)) {
-            const base = path.resolve(path.dirname(file), match[1]);
-            const resolved = [`${base}.ts`, `${base}.tsx`, path.join(base, 'index.ts')].find((candidate) => fs.existsSync(candidate));
-            if (resolved) visit(resolved);
-        }
-    };
-    visit(entry);
-    return seen;
-}
-
 describe('the read path', () => {
     it.each([
         'lib/catalog/working-layer.ts',
@@ -342,9 +351,10 @@ describe('the read path', () => {
         'lib/catalog/request.ts',
         'lib/catalog/rules.ts',
         'lib/catalog/references.ts',
+        'lib/catalog/order.ts',
     ])('never reaches the writer from %s', (entry) => {
-        const graph = [...importGraph(path.join(REPO_ROOT, entry))].map((file) => path.relative(REPO_ROOT, file));
-        expect(graph).toContain(entry);
-        expect(graph.filter((file) => file.includes('working-layer-writer'))).toEqual([]);
+        const { files } = importGraph(entry);
+        expect(files).toContain(entry);
+        expect(files.filter((file) => file.includes('working-layer-writer'))).toEqual([]);
     });
 });
