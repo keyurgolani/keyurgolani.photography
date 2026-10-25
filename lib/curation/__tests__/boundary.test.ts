@@ -11,7 +11,7 @@ import { REPO_ROOT } from '../../../test/helpers/runTsx';
  * other than 14-2's `lib/curation/auth/`, the boundary itself, or any of the
  * curator's own files, so no public route or API can reveal an inbox item or
  * offer a curator control. The curator's files, under `/curation` and
- * `/api/curation` by URL, are 14-3's inbox, and the route-inventory test
+ * `/api/curation` by URL, are 14-3's inbox and #16's preview, and the route-inventory test
  * (__tests__/routeInventory.test.ts) checks every one of them is guarded.
  */
 
@@ -46,8 +46,11 @@ describe('the public routes', () => {
     });
 
     // By URL, as the route inventory decides it, so a route group or a parallel slot counts too.
-    it("leave the curator only its own files, 14-2b's login and 14-3's inbox", () => {
-        expect(appFiles().filter(isCuratorFile).sort()).toEqual([
+    it("leave the curator only its own files, 14-2b's login, 14-3's inbox and #16's preview", () => {
+        const curator = appFiles().filter(isCuratorFile).sort();
+        const preview = curator.filter((file) => file.startsWith('app/curation/preview/'));
+        expect(preview).toEqual(expect.arrayContaining(['app/curation/preview/[draftId]/page.tsx', 'app/curation/preview/[draftId]/site/page.tsx']));
+        expect(curator.filter((file) => !preview.includes(file))).toEqual([
             'app/api/curation/login/route.ts',
             'app/api/curation/logout/route.ts',
             'app/api/curation/media/[photoId]/[assetRevision]/[profileId]/[variant]/route.ts',
