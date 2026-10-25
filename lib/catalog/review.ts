@@ -205,8 +205,31 @@ export interface StampInputs {
     origin?: 'curator' | 'generated';
     event?: { id: string; version: number };
     asset?: { from: string; to: string; profileId: string };
+    /** Fields the write leaves as they are but reviews again, as restampable() picks them. */
+    restamp?: readonly string[];
     actor: string;
     reviewedAt: string;
+}
+
+/** Whether a review may stamp `value` again: its stamp reviewed that value, isn't a suggestion's, and records no confirm's `asset`. */
+function refreshable(stamp: FieldReview | undefined, value: unknown): boolean {
+    return stamp !== undefined && stamp.origin !== 'generated' && stamp.asset === undefined && stamp.valueHash === hashValue(value);
+}
+
+/**
+ * The fields among `fields` a review against `baseRevisionId` should stamp
+ * again though it leaves their values alone: each one's stamp reviewed the
+ * value it holds, against another base, and is neither a suggestion's nor a
+ * confirm's. An approval vouches again for the description and bytes it
+ * showed (lib/curation/actions.ts's approveEvent()), so a rollback since the
+ * last review doesn't leave them stale. A field edited by hand, a generated
+ * description, and a version made by hand without stamps get nothing, so a
+ * stamp is only ever refreshed for a value someone reviewed.
+ */
+export function restampable(record: AuthoredRecord, fields: readonly string[], baseRevisionId: string | null): string[] {
+    if (record.review === undefined && isHandMade(record)) return [];
+    const stamps = stampsOf(record);
+    return fields.filter((field) => refreshable(stamps[field], valueOf(record, field)) && stamps[field].baseRevisionId !== baseRevisionId);
 }
 
 /**
@@ -215,8 +238,9 @@ export interface StampInputs {
  * is one whose #13 `conflicts` entry the write removed, since settling a
  * conflict is a review of the field. A field it left alone keeps the stamp
  * it had, or the backfill's for a record written before stamps, so a write
- * never reviews what it didn't touch. `covers` holds the pinned revisions of
- * the cover photos `next` and `existing` name.
+ * never reviews what it didn't touch, except a field `inputs.restamp` names
+ * whose stamp reviewed the value it still holds (restampable()). `covers`
+ * holds the pinned revisions of the cover photos `next` and `existing` name.
  */
 export function stampWrite(
     existing: AuthoredRecord | null,
@@ -232,7 +256,7 @@ export function stampWrite(
         const value = valueOf(next, field);
         const hash = hashValue(value);
         const before = existing ? valueOf(existing, field) : undefined;
-        if (hashValue(before) === hash && !settled.has(field)) {
+        if (hashValue(before) === hash && !settled.has(field) && !(inputs.restamp?.includes(field) && refreshable(prior[field], value))) {
             if (prior[field]) fields[field] = prior[field];
             continue;
         }

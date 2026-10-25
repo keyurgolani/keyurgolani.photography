@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { restampable } from '../catalog/review';
 import { applySequenceOp, applySeriesOp, sequenceContext, type SeriesOp } from '../catalog/sequence';
 import type { AuthoredAlt, AuthoredPhoto, AuthoredSeries } from '../catalog/types';
 import { readActivePointer, readAuthoredRecord, readAuthoredSeries } from '../catalog/working-layer';
@@ -467,9 +468,12 @@ export function approveEvent(
                 // A clear wins over what the photo record holds, so a reopened item can withdraw a description or the decorative flag.
                 const alt: AuthoredAlt = description === null ? null : description ? altOf(description) : existing?.alt ?? null;
                 const unchanged = existing !== null && JSON.stringify(existing.alt) === JSON.stringify(alt);
-                // #16: what the curator reviewed, stamped on every field these writes change.
-                const review = { baseRevisionId: step.active, event: { id: event.id, version: event.version }, actor: input.actor, reviewedAt: step.at };
-                if (!unchanged) {
+                // #16: what the curator reviewed, stamped on every field these writes change. The approval also vouches
+                // again for the description and bytes it showed, so a record they kept since a review against another
+                // base, as after a rollback, is stamped against this one. A hand edit or a suggestion stays unreviewed.
+                const restamp = existing ? restampable(existing, ['alt', 'assetRevision'], step.active) : [];
+                const review = { baseRevisionId: step.active, event: { id: event.id, version: event.version }, actor: input.actor, reviewedAt: step.at, ...(restamp.length > 0 ? { restamp } : {}) };
+                if (!unchanged || restamp.length > 0) {
                     const record = existing ? { ...existing, alt } : { kind: 'photo' as const, id: photoId, assetRevision, alt };
                     const written = await writeAuthoredRecord(record, { expectedVersion: existing?.version ?? 0, lock: authored, root, review });
                     writes.push({ record: `photo:${photoId}`, version: written.version });

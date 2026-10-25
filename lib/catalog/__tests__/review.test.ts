@@ -6,7 +6,7 @@ import { withLock } from '../../storage/lock';
 import { revisionIdOf } from '../schema';
 import { blockingIssues, publish, validateStored, validateWorkingLayer, type PublishResult } from '../publish';
 import { readRevisionFile } from '../repository';
-import { hashValue } from '../review';
+import { hashValue, restampable } from '../review';
 import { rollback } from '../rollback';
 import { registeredRules, runRules } from '../ruleset';
 import { applySequenceOp } from '../sequence';
@@ -183,6 +183,31 @@ describe('writeAuthoredRecord() stamps', { timeout: 60_000 }, () => {
         expect((await f.read<AuthoredSeries>('series', a.id)).review?.fields.photoIds).toMatchObject({ origin: 'generated', actor: 'policy:fixture' });
         expect(await move(a.id, a.photoIds[1], 'editor', (await f.read<AuthoredSeries>('series', a.id)).version)).toMatchObject({ ok: true, changed: true });
         expect((await f.read<AuthoredSeries>('series', a.id)).review?.fields.photoIds).toMatchObject({ origin: 'curator', actor: 'cli' });
+    });
+
+    it('stamps again a field restamp names only while its stamp reviewed the value it holds, and never a suggestion or a hand edit', async () => {
+        const f = await fixture();
+        const first = published(await f.publish());
+        const id = f.catalog.photos[0].id;
+        await f.edit<AuthoredPhoto>('photo', id, (photo) => {
+            photo.alt = { kind: 'described', text: 'Fixture suggested.', reviewed: false };
+            photo.title = 'Fixture title.';
+        });
+        await f.handEdit<AuthoredPhoto>('photo', id, (photo) => {
+            photo.caption = 'Fixture caption, by hand.';
+        });
+        const before = await f.read<AuthoredPhoto>('photo', id);
+        const fields = ['alt', 'title', 'caption', 'assetRevision'];
+        expect(restampable(before, fields, first)).toEqual([]);
+        expect(restampable(before, fields, null)).toEqual(['title', 'assetRevision']);
+
+        const written = await f.edit<AuthoredPhoto>('photo', id, () => undefined, { review: { baseRevisionId: null, restamp: fields, actor: ACTOR, reviewedAt: AT } });
+        expect(written.review?.fields.title).toMatchObject({ valueHash: hashValue('Fixture title.'), origin: 'curator', baseRevisionId: null, actor: ACTOR, reviewedAt: AT });
+        expect(written.review?.fields.assetRevision).toMatchObject({ baseRevisionId: null, actor: ACTOR });
+        expect(written.review?.fields.alt).toEqual(before.review?.fields.alt);
+        expect(written.review?.fields.alt).toMatchObject({ origin: 'generated' });
+        expect(written.review?.fields.caption).toEqual(before.review?.fields.caption);
+        expect(written.review?.fields.caption?.valueHash).not.toBe(hashValue('Fixture caption, by hand.'));
     });
 
     it('records the cover photo\'s pinned revision on a series cover', async () => {
