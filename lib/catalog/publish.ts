@@ -80,7 +80,7 @@ export type PublishOutcome =
     | 'INTEGRITY_MISMATCH'
     | 'STORAGE_ERROR';
 
-export type ActivateOutcome = 'ACTIVATED' | 'NOTHING_ACTIVE' | 'ACTIVE_CHANGED' | 'LOCK_LOST' | 'INTEGRITY_MISMATCH';
+export type ActivateOutcome = 'ACTIVATED' | 'NOTHING_ACTIVE' | 'ACTIVE_CHANGED' | 'VALIDATION_FAILED' | 'LOCK_LOST' | 'INTEGRITY_MISMATCH';
 
 /** The CLI's exit code for each outcome. Usage errors, 2, are the CLI's own. */
 export const PUBLISH_EXIT_CODES: Record<PublishOutcome, 0 | 1 | 3 | 4> = {
@@ -259,9 +259,20 @@ async function commitActivation(input: CommitInput): Promise<CommitResult> {
 }
 
 /** Run every rule over a stored revision, as a rollback or a repair records it. */
-function validateStored(root: string, revision: RevisionFile, registry: Registry | null): Activation['validation'] {
+function validateStored(root: string, revision: RevisionFile, registry: Registry | null): { validation: Activation['validation']; issues: Issue[] } {
     const issues = runRules({ candidate: revision.content, authored: null, active: revision, registry, roots: { dataRoot: root, libraryRoot: libraryRoot() } });
-    return { rulesetVersion: rulesetVersion(), errors: countOf(issues, 'error'), warnings: countOf(issues, 'warning'), diagnosticsDigest: digestOf(issues) };
+    return { issues, validation: { rulesetVersion: rulesetVersion(), errors: countOf(issues, 'error'), warnings: countOf(issues, 'warning'), diagnosticsDigest: digestOf(issues) } };
+}
+
+/**
+ * The errors that keep a stored revision from going live: every `integrity`
+ * error, and every `editorial` error whose rule isn't in `acceptedRules`. An
+ * error from a rule this process doesn't know counts as integrity.
+ */
+export function blockingIssues(issues: readonly Issue[], acceptedRules: readonly string[] = []): Issue[] {
+    const classOf = new Map(registeredRules().map((rule) => [rule.id, rule.rollbackClass]));
+    const accepted = new Set(acceptedRules);
+    return issues.filter((issue) => issue.severity === 'error' && !(classOf.get(issue.code) === 'editorial' && accepted.has(issue.code)));
 }
 
 export interface RecoverOptions {
@@ -318,7 +329,7 @@ export async function recover(options: RecoverOptions): Promise<RecoveryReport> 
                 kind: 'publish',
                 actor: 'recover',
                 reason: named ? `repair: active.json named the ${named.status} activation ${named.activationId}` : `repair: active.json named the missing activation ${pointer.activationId}`,
-                validation: validateStored(root, revision, registry),
+                validation: validateStored(root, revision, registry).validation,
                 acceptedRules: [],
                 lockTakeover: lock.takeover,
                 clock,
@@ -459,6 +470,8 @@ export interface ActivateResult {
     activation: Activation | null;
     /** What settling an interrupted activation did first, when it got that far. */
     recovery?: RecoveryReport;
+    /** The stored revision's issues, once it was read. For VALIDATION_FAILED, the ones that block it come first. */
+    issues?: Issue[];
 }
 
 /**
@@ -468,8 +481,11 @@ export interface ActivateResult {
  * rebase, so the activation that is live is committed before this one
  * records it as the previous one. Then it refuses with NOTHING_ACTIVE before
  * the first activation, and returns ACTIVE_CHANGED, writing nothing more, if
- * `expectedActiveRevisionId` isn't the active revision. The caller rebases
- * the working layer afterwards.
+ * `expectedActiveRevisionId` isn't the active revision. It runs every rule
+ * on the stored revision and refuses with VALIDATION_FAILED, writing nothing
+ * more, on any `integrity` error or any `editorial` error whose rule isn't in
+ * `acceptedRules`, so a revision whose sets broke since it was published
+ * never goes live again. The caller rebases the working layer afterwards.
  */
 export async function activateRevision(options: ActivateOptions): Promise<ActivateResult> {
     const root = path.resolve(options.dataRoot ?? options.lock.root);
@@ -502,6 +518,19 @@ export async function activateRevision(options: ActivateOptions): Promise<Activa
     }
     if (revision === null) return { outcome: 'INTEGRITY_MISMATCH', message: `${options.revisionId} has no revision file.`, activation: null, recovery };
     const registry = await readRegistry(root).catch(() => null);
+    const acceptedRules = options.acceptedRules ?? [];
+    const { validation, issues } = validateStored(root, revision, registry);
+    const blocking = blockingIssues(issues, acceptedRules);
+    if (blocking.length > 0) {
+        const codes = [...new Set(blocking.map((issue) => issue.code))].sort().join(', ');
+        return {
+            outcome: 'VALIDATION_FAILED',
+            message: `${blocking.length} ${blocking.length === 1 ? 'error keeps' : 'errors keep'} ${revision.revisionId} from going live (${codes}). Nothing was activated.`,
+            activation: null,
+            recovery,
+            issues: [...blocking, ...issues.filter((issue) => !blocking.includes(issue))],
+        };
+    }
     const result = await commitActivation({
         root,
         lock,
@@ -509,14 +538,14 @@ export async function activateRevision(options: ActivateOptions): Promise<Activa
         kind: options.kind,
         actor: options.actor,
         reason: options.reason,
-        validation: validateStored(root, revision, registry),
-        acceptedRules: options.acceptedRules ?? [],
+        validation,
+        acceptedRules,
         lockTakeover: options.lockTakeover ?? lock.takeover,
         clock,
         afterStep: options.hooks?.afterStep,
     });
-    if (!result.ok) return { outcome: result.outcome, message: result.message, activation: null, recovery };
-    return { outcome: 'ACTIVATED', message: `Activated ${revision.revisionId} as revision ${result.activation.revisionNumber}.`, activation: result.activation, recovery };
+    if (!result.ok) return { outcome: result.outcome, message: result.message, activation: null, recovery, issues };
+    return { outcome: 'ACTIVATED', message: `Activated ${revision.revisionId} as revision ${result.activation.revisionNumber}.`, activation: result.activation, recovery, issues };
 }
 
 /** What a first activation takes away: present photographs #10 knows that the candidate doesn't publish. */

@@ -4,18 +4,34 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { withLock, type LockContext, type LockRecord } from '../../storage/lock';
-import { activateRevision, publish, PUBLISH_EXIT_CODES, rebaseWorkingLayer, recover, type ActivateOptions, type PublishOptions, type PublishResult } from '../publish';
+import { activateRevision, blockingIssues, publish, PUBLISH_EXIT_CODES, rebaseWorkingLayer, recover, type ActivateOptions, type PublishOptions, type PublishResult } from '../publish';
 import { references } from '../references';
+import { mediaFilePath } from '../../media/path';
 import { CATALOG_LOCK, listActivations, readRevisionFile, revisionFilePath } from '../repository';
+import { registerRule } from '../rules';
 import { createTestCatalog, type TestCatalog, type TestCatalogOptions } from '../testing';
-import type { AuthoredPhoto } from '../types';
+import type { AuthoredPhoto, Issue } from '../types';
 import { AUTHORED_LOCK, writeAuthoredRecord } from '../working-layer-writer';
 import { catalogPaths, readActivePointer, readWorkingLayer } from '../working-layer';
 import { VARIANT_BYTES } from './catalogFixtures';
 
 const cleanups: (() => Promise<void>)[] = [];
 
+/** The revision ID test.editorial reports an editorial error on while it's set, so a stored revision can carry one. */
+let editorialErrorOn: string | null = null;
+registerRule({
+    id: 'test.editorial',
+    version: 1,
+    severity: 'error',
+    gate: 'publish',
+    rollbackClass: 'editorial',
+    check: (ctx) => (editorialErrorOn !== null && ctx.active?.revisionId === editorialErrorOn && ctx.authored === null
+        ? [{ record: { kind: 'site', id: 'site' }, field: 'featuredSeriesIds', message: 'A test editorial error.' }]
+        : []),
+});
+
 afterEach(async () => {
+    editorialErrorOn = null;
     for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
@@ -565,6 +581,57 @@ describe('activateRevision', { timeout: 30_000 }, () => {
         expect(next.recovery).toMatchObject({ committed: null, abandoned: [], repaired: null });
         const statuses = (await listActivations(root)).map((activation) => `${activation.sequence}:${activation.kind}:${activation.status}`);
         expect(statuses.slice(0, 3)).toEqual(['1:publish:committed', `2:publish:${crashAfter === 11 ? 'committed' : 'abandoned'}`, '3:rollback:committed']);
+    });
+
+    it('refuses a stored revision with an integrity error, even one the caller lists as accepted, writing nothing', async () => {
+        const { catalog, root, run, editPhoto, first, catalogFiles } = await launched({ seed: 88 });
+        await editPhoto(catalog.photos[0].id, (photo) => {
+            photo.caption = 'A caption revision 2 publishes.';
+        });
+        const second = await run();
+        expect(second.revisionNumber).toBe(2);
+        // A derivative of revision 1's photo goes missing after it was published.
+        const firstRevision = await readRevisionFile(root, first.revisionId ?? '');
+        const photo = firstRevision?.content.photos[0];
+        if (!photo) throw new Error('Revision 1 has no photo.');
+        fs.rmSync(mediaFilePath({ photoId: photo.id, assetRevision: photo.assetRevision, profileId: photo.profileId }, 'w400', 'webp', root));
+        const pointer = fs.readFileSync(catalogPaths(root).active);
+        const files = catalogFiles();
+
+        for (const acceptedRules of [[], ['assets.variant']]) {
+            const result = await activate(root, { revisionId: first.revisionId ?? '', expectedActiveRevisionId: second.revisionId ?? '', acceptedRules });
+            expect(result).toMatchObject({ outcome: 'VALIDATION_FAILED', activation: null });
+            expect(result.message).toMatch(/1 error keeps rev_[0-9a-f]{64} from going live \(assets\.variant\)\. Nothing was activated\./);
+            expect(result.issues?.[0]).toMatchObject({ code: 'assets.variant', severity: 'error', field: 'variants.w400.webp' });
+        }
+        expect(fs.readFileSync(catalogPaths(root).active)).toEqual(pointer);
+        expect(catalogFiles()).toEqual(files);
+    });
+
+    it('refuses a stored revision with an editorial error unless the caller accepts that rule, and records what it accepted', async () => {
+        const { catalog, root, run, editPhoto, first } = await launched({ seed: 89 });
+        await editPhoto(catalog.photos[0].id, (photo) => {
+            photo.caption = 'A caption revision 2 publishes.';
+        });
+        const second = await run();
+        editorialErrorOn = first.revisionId;
+
+        const refused = await activate(root, { revisionId: first.revisionId ?? '', expectedActiveRevisionId: second.revisionId ?? '' });
+        expect(refused).toMatchObject({ outcome: 'VALIDATION_FAILED', activation: null });
+        expect(refused.message).toContain('(test.editorial)');
+        expect(await readActivePointer(root)).toMatchObject({ revisionId: second.revisionId });
+
+        const accepted = await activate(root, { revisionId: first.revisionId ?? '', expectedActiveRevisionId: second.revisionId ?? '', acceptedRules: ['test.editorial'] });
+        expect(accepted.outcome).toBe('ACTIVATED');
+        expect(accepted.activation).toMatchObject({ acceptedRules: ['test.editorial'], validation: { errors: 1 } });
+        expect(await readActivePointer(root)).toMatchObject({ revisionId: first.revisionId });
+    });
+
+    it('blocks on every error but an accepted editorial one, and on an error from a rule it does not know', () => {
+        const issue = (code: string, severity: Issue['severity'] = 'error'): Issue => ({ code, severity, record: { kind: 'site', id: 'site' }, field: 'f', message: 'm' });
+        const issues = [issue('test.editorial'), issue('assets.variant'), issue('nobody.knows'), issue('order.source-missing', 'warning')];
+        expect(blockingIssues(issues).map((entry) => entry.code)).toEqual(['test.editorial', 'assets.variant', 'nobody.knows']);
+        expect(blockingIssues(issues, ['test.editorial', 'assets.variant', 'nobody.knows']).map((entry) => entry.code)).toEqual(['assets.variant', 'nobody.knows']);
     });
 
     it("takes its data root from the lock when it isn't given", async () => {
