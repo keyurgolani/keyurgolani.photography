@@ -2,7 +2,8 @@ import path from 'node:path';
 import { readRegistry } from '../identity/registry';
 import type { PhotoRecord } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
-import { LockTimeoutError, withLock } from '../storage/lock';
+import type { VersionedWriteOptions } from '../storage/document';
+import { LockLostError, LockTimeoutError, withLock } from '../storage/lock';
 import type { CommandResult, LayerHandle } from './sequence-commands';
 import { AUTHORED_LEASE_MS, AUTHORED_LOCK, AUTHORED_WAIT_MS, AuthoredWriteError, writeAuthoredRecord } from './working-layer-writer';
 import { readWorkingLayer } from './working-layer';
@@ -16,7 +17,9 @@ import { readWorkingLayer } from './working-layer';
  * series lists it until the owner adds it.
  *
  * Exit codes follow sequence-commands.ts: 0 on success, 1 when the data root
- * isn't ready, 3 when the authored lock stays busy, and 4 for I/O.
+ * isn't ready, 3 when the authored lock stays busy or is lost part way, and
+ * 4 for I/O. A run that stops part way leaves the records it wrote, and
+ * running it again finishes the rest.
  */
 
 export interface DraftInitResult {
@@ -48,7 +51,12 @@ function skipReason(photo: PhotoRecord): string | null {
     return null;
 }
 
-export async function initDrafts({ dataRoot, waitMs = AUTHORED_WAIT_MS }: LayerHandle): Promise<DraftInitResult> {
+export interface DraftInitOptions {
+    /** Test hooks, passed to every writeAuthoredRecord() call. */
+    hooks?: VersionedWriteOptions['hooks'];
+}
+
+export async function initDrafts({ dataRoot, waitMs = AUTHORED_WAIT_MS }: LayerHandle, { hooks }: DraftInitOptions = {}): Promise<DraftInitResult> {
     const root = path.resolve(dataRoot);
     return withLock(AUTHORED_LOCK, { root, leaseMs: AUTHORED_LEASE_MS, waitMs }, async (lock) => {
         const layer = await readWorkingLayer(root);
@@ -57,7 +65,7 @@ export async function initDrafts({ dataRoot, waitMs = AUTHORED_WAIT_MS }: LayerH
         const unusable = new Set(layer.problems.map((problem) => `${problem.kind}:${problem.id}`));
         const result: DraftInitResult = { siteCreated: false, created: [], existing: 0, skipped: [] };
         if (layer.site === null && !unusable.has('site:site')) {
-            await writeAuthoredRecord({ kind: 'site', featuredSeriesIds: [], seriesOrder: [] }, { expectedVersion: 0, lock, root });
+            await writeAuthoredRecord({ kind: 'site', featuredSeriesIds: [], seriesOrder: [] }, { expectedVersion: 0, lock, root, hooks });
             result.siteCreated = true;
         }
         const known = new Set(layer.photos.map((photo) => photo.id));
@@ -76,7 +84,7 @@ export async function initDrafts({ dataRoot, waitMs = AUTHORED_WAIT_MS }: LayerH
                 continue;
             }
             lock.signal.throwIfAborted();
-            await writeAuthoredRecord({ kind: 'photo', id: photo.photoId, assetRevision: photo.source.observedRevision, alt: null }, { expectedVersion: 0, lock, root });
+            await writeAuthoredRecord({ kind: 'photo', id: photo.photoId, assetRevision: photo.source.observedRevision, alt: null }, { expectedVersion: 0, lock, root, hooks });
             result.created.push(photo.photoId);
         }
         return result;
@@ -96,17 +104,20 @@ function format(result: DraftInitResult): string {
 }
 
 /** `photos draft:init`. Never throws: every outcome is an exit code and the text to print. */
-export async function runDraftInit(layer: LayerHandle): Promise<CommandResult> {
+export async function runDraftInit(layer: LayerHandle, options: DraftInitOptions = {}): Promise<CommandResult> {
     const status = dataRootStatus({ write: true, root: path.resolve(layer.dataRoot) });
     if (status.state !== 'ready') return { exitCode: 1, output: `Error: The data root is ${status.state}${status.detail ? `: ${status.detail}` : ''}. Nothing was written.\n` };
     try {
-        return { exitCode: 0, output: format(await initDrafts(layer)) };
+        return { exitCode: 0, output: format(await initDrafts(layer, options)) };
     } catch (error) {
-        if (error instanceof LockTimeoutError) return { exitCode: 3, output: `Error (authored-locked): ${error.message}\n` };
+        if (error instanceof LockTimeoutError) return { exitCode: 3, output: `Error (authored-locked): ${error.message} Nothing was written.\n` };
+        // Each record is written on its own, so whatever stops the run leaves the ones before it.
+        const rest = 'Records written before it stay, and running draft:init again finishes the rest.';
+        if (error instanceof LockLostError) return { exitCode: 3, output: `Error (LOCK_LOST): ${error.message} ${rest}\n` };
         if (error instanceof AuthoredWriteError) {
-            const exitCode = error.code === 'VERSION_CONFLICT' || error.code === 'AUTHORED_LOCKED' ? 3 : 1;
-            return { exitCode, output: `Error (${error.code}): ${error.message} Records written before it stay, and running draft:init again finishes the rest.\n` };
+            const exitCode = ['VERSION_CONFLICT', 'AUTHORED_LOCKED', 'LOCK_NOT_HELD'].includes(error.code) ? 3 : 1;
+            return { exitCode, output: `Error (${error.code}): ${error.message} ${rest}\n` };
         }
-        return { exitCode: 4, output: `Error: ${(error as Error).message}\n` };
+        return { exitCode: 4, output: `Error: ${(error as Error).message} ${rest}\n` };
     }
 }
