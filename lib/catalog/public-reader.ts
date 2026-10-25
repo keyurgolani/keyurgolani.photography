@@ -61,10 +61,14 @@ interface Loaded {
 /** How many parsed revisions a process keeps, by data root and revision ID. */
 export const REVISION_CACHE_SIZE = 3;
 
+/** How long a pending or unlisted activation's answer is kept, so requests in a burst share one read of the activations. */
+export const UNSETTLED_ACTIVATION_TTL_MS = 1_000;
+
 const revisions = new Map<string, RevisionFile>();
 /** Revision reads under way, so concurrent cold requests read, parse, and hash a revision once. */
 const reading = new Map<string, Promise<RevisionFile>>();
 const activations = new Map<string, Pick<ActiveRevision, 'revisionNumber' | 'activatedAt'>>();
+const unsettled = new Map<string, { value: Pick<ActiveRevision, 'revisionNumber' | 'activatedAt'>; until: number }>();
 const lastLoaded = new Map<string, Loaded>();
 const failing = new Map<string, string>();
 
@@ -111,16 +115,24 @@ async function activationFor(root: string, activationId: string): Promise<Pick<A
     const key = `${root}\0${activationId}`;
     const cached = activations.get(key);
     if (cached) return cached;
+    const brief = unsettled.get(key);
+    if (brief && Date.now() < brief.until) return brief.value;
+    unsettled.delete(key);
+    // A pending one gets its committedAt when recovery commits it, and a missing one may show up, so either is kept only briefly.
+    const keepBriefly = (value: Pick<ActiveRevision, 'revisionNumber' | 'activatedAt'>) => {
+        unsettled.set(key, { value, until: Date.now() + UNSETTLED_ACTIVATION_TTL_MS });
+        return value;
+    };
     try {
         const activation = (await listActivations(root)).find((candidate) => candidate.activationId === activationId);
-        if (!activation) return { revisionNumber: null, activatedAt: null };
+        if (!activation) return keepBriefly({ revisionNumber: null, activatedAt: null });
         const found = { revisionNumber: activation.revisionNumber, activatedAt: activation.committedAt ?? activation.startedAt };
-        // A pending one gets its committedAt when recovery commits it, so only a committed one is kept.
-        if (activation.status === 'committed') activations.set(key, found);
+        if (activation.status !== 'committed') return keepBriefly(found);
+        activations.set(key, found);
         return found;
     } catch {
         // The revision itself read fine, so serve it without the number.
-        return { revisionNumber: null, activatedAt: null };
+        return keepBriefly({ revisionNumber: null, activatedAt: null });
     }
 }
 
