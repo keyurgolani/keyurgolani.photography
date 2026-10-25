@@ -107,11 +107,12 @@ export interface StampInputs {
 
 /**
  * The stamps a written record carries. A field the write changed is stamped
- * with `inputs`, a described alt with `reviewed: false` as generated. A field
- * it left alone keeps the stamp it had, or the backfill's for a record
- * written before stamps, so a write never reviews what it didn't touch.
- * `coverAsset` is the pinned revision of the cover photo `next` names, and
- * `existingCoverAsset` that of the one `existing` names.
+ * with `inputs`, a described alt with `reviewed: false` as generated, and so
+ * is one whose #13 `conflicts` entry the write removed, since settling a
+ * conflict is a review of the field. A field it left alone keeps the stamp
+ * it had, or the backfill's for a record written before stamps, so a write
+ * never reviews what it didn't touch. `covers` holds the pinned revisions of
+ * the cover photos `next` and `existing` name.
  */
 export function stampWrite(
     existing: AuthoredRecord | null,
@@ -120,12 +121,14 @@ export function stampWrite(
     covers: { next?: string | null; existing?: string | null } = {},
 ): ReviewStamp {
     const prior = existing ? stampsOf(existing, covers.existing, inputs.reviewedAt) : {};
+    const remaining = new Set((next.conflicts ?? []).map((conflict) => conflict.field));
+    const settled = new Set((existing?.conflicts ?? []).map((conflict) => conflict.field).filter((field) => !remaining.has(field)));
     const fields: Record<string, FieldReview> = {};
     for (const field of STAMPED_FIELDS[next.kind]) {
         const value = valueOf(next, field);
         const hash = hashValue(value);
         const before = existing ? valueOf(existing, field) : undefined;
-        if (hashValue(before) === hash) {
+        if (hashValue(before) === hash && !settled.has(field)) {
             if (prior[field]) fields[field] = prior[field];
             continue;
         }
