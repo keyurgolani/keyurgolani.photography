@@ -4,7 +4,7 @@ import { dataRootStatus } from '../storage/config';
 import { hasErrorCode } from '../storage/fsx';
 import { parseCandidateFile, parseRevisionFile, type ParseResult, type SchemaIssue } from './schema';
 import type { CandidateContent } from './types';
-import { authoredPaths, catalogPaths, readActivePointer, readWorkingLayer, type RecordProblem } from './working-layer';
+import { ACTIVE_POINTER_NAME, authoredPaths, catalogPaths, readActivePointer, readWorkingLayer, type RecordProblem } from './working-layer';
 
 /**
  * What destructive cleanup has to keep: every asset a revision, a candidate,
@@ -129,13 +129,13 @@ export async function references(dataRoot: string): Promise<AssetReference[]> {
     } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
         throw code
-            ? new ReferenceScanError('catalog/active.json', 'unreadable', `the file can't be read (${code})`)
-            : new ReferenceScanError('catalog/active.json', 'invalid', (error as Error).message);
+            ? new ReferenceScanError(ACTIVE_POINTER_NAME, 'unreadable', `the pointer can't be read (${code})`)
+            : new ReferenceScanError(ACTIVE_POINTER_NAME, 'invalid', (error as Error).message);
     }
 
     const revisions = await readStored(dataRoot, paths.revisionsDir, parseRevisionFile);
     if (activeRevisionId !== null && !revisions.some((revision) => revision.revisionId === activeRevisionId)) {
-        throw new ReferenceScanError(`catalog/revisions/${activeRevisionId}.json`, 'missing', 'catalog/active.json names it, but it does not exist');
+        throw new ReferenceScanError(`catalog/revisions/${activeRevisionId}.json`, 'missing', `${ACTIVE_POINTER_NAME} names it, but it does not exist`);
     }
     for (const revision of revisions) {
         const source = revision.revisionId === activeRevisionId ? 'active-revision' : 'revision';

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { atomicCreateJson, atomicWriteJson, type AtomicWriteFaults } from '../storage/atomicWrite';
+import { StaleVersionError, writeVersionedDocument, type VersionedWriteHooks } from '../storage/document';
 import { hasErrorCode, PRIVATE_DIR_MODE } from '../storage/fsx';
 import { CATALOG_SCHEMA_VERSION, parseActivation, parseRevisionFile, revisionIdOf, ACTIVATION_ID_RE, REVISION_ID_RE } from './schema';
 import type { Activation, ActivePointer, CandidateFile, Issue, RevisionFile } from './types';
@@ -8,8 +9,8 @@ import { catalogPaths } from './working-layer';
 
 /**
  * Catalog storage under `catalog/`: revision files, which are never
- * rewritten, activation records, the active pointer, candidates, and
- * diagnostics. Only the CLI writes here, holding the catalog lock, and only
+ * rewritten, activation records, the active pointer's version folder,
+ * candidates, and diagnostics. Only the CLI writes here, holding the catalog lock, and only
  * publish.ts's commitActivation() writes the pointer. Readers on the web side
  * go through slice C's public reader instead.
  */
@@ -174,10 +175,41 @@ export function revisionNumberFor(activations: readonly Activation[], revisionId
     return committed.reduce((highest, activation) => Math.max(highest, activation.revisionNumber), 0) + 1;
 }
 
-/** Replace `catalog/active.json`. publish.ts's commitActivation() is its only production caller. */
-export async function writeActivePointer(root: string, pointer: ActivePointer, faults?: AtomicWriteFaults): Promise<void> {
+/** A pointer write found another version in `catalog/active/` than the one its caller read. */
+export class ActivePointerMovedError extends Error {
+    readonly expected: number;
+    readonly found: number;
+
+    constructor(expected: number, found: number) {
+        super(`The active pointer is at version ${found}, not ${expected}: another process moved it.`);
+        this.name = 'ActivePointerMovedError';
+        this.expected = expected;
+        this.found = found;
+    }
+}
+
+/**
+ * Commit the active pointer as the next version in `catalog/active/`, only if
+ * its newest version is still `expectedVersion` (0 before the first). The
+ * link() that commits it never replaces a version, so of two processes that
+ * read one version only one moves the pointer, and the other gets
+ * ActivePointerMovedError, writing nothing. publish.ts's commitActivation()
+ * is its only production caller.
+ */
+export async function writeActivePointer(
+    root: string,
+    pointer: Pick<ActivePointer, 'revisionId' | 'activationId'>,
+    expectedVersion: number,
+    hooks?: VersionedWriteHooks,
+): Promise<ActivePointer> {
     await ensureDir(catalogPaths(root).dir);
-    await atomicWriteJson(catalogPaths(root).active, { ...pointer, schemaVersion: CATALOG_SCHEMA_VERSION }, { faults });
+    const next: ActivePointer = { schemaVersion: CATALOG_SCHEMA_VERSION, version: expectedVersion, revisionId: pointer.revisionId, activationId: pointer.activationId };
+    try {
+        return await writeVersionedDocument(catalogPaths(root).active, next, expectedVersion, { hooks });
+    } catch (error) {
+        if (error instanceof StaleVersionError) throw new ActivePointerMovedError(error.expected, error.found);
+        throw error;
+    }
 }
 
 /** `catalog/candidates/<candidateId>.json`, which #16's preview reads. Same content, same name, so a rewrite changes only compiledAt. */

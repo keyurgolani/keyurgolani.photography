@@ -151,7 +151,8 @@ export const activationSchema = z.strictObject({
     acceptedRules: z.array(z.string().min(1)),
     lockTakeover: z.strictObject({ previousOwner: z.string(), previousAcquiredAt: z.string() }).nullable(),
 });
-export const activePointerSchema = z.strictObject({ schemaVersion: z.literal(CATALOG_SCHEMA_VERSION), revisionId, activationId });
+/** The active pointer: the newest version in `catalog/active/`, so `version` is that file's number. */
+export const activePointerSchema = z.strictObject({ schemaVersion: z.literal(CATALOG_SCHEMA_VERSION), version: positiveInt, revisionId, activationId });
 
 const conflictSchema = z.strictObject({ field: z.string().min(1), base: z.json(), active: z.json() });
 const authoredFields = {

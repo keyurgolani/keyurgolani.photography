@@ -8,11 +8,12 @@ import type { ActivePointer, AuthoredPhoto, AuthoredSeries, AuthoredSite, Record
 
 /**
  * Read-only access to the authored working layer and the active pointer. Each
- * record is a version folder (lib/storage/document.ts): `authored/site/`,
- * `authored/series/<seriesId>/`, and `authored/photos/<photoId>/`, each read
- * from its newest `v<N>.json`. Any process may import this, the watcher
- * included. Writes go through working-layer-writer.ts, which nothing on the
- * read path imports.
+ * is a version folder (lib/storage/document.ts): `authored/site/`,
+ * `authored/series/<seriesId>/`, `authored/photos/<photoId>/`, and
+ * `catalog/active/`, each read from its newest `v<N>.json`. Any process may
+ * import this, the watcher included. Authored writes go through
+ * working-layer-writer.ts, and the pointer's through repository.ts, which
+ * nothing on the read path imports.
  */
 
 export function authoredPaths(root: string) {
@@ -25,7 +26,8 @@ export function catalogPaths(root: string) {
     const dir = path.join(root, 'catalog');
     return {
         dir,
-        active: path.join(dir, 'active.json'),
+        /** The active pointer's version folder: `catalog/active/v<N>.json`. */
+        active: path.join(dir, 'active'),
         revisionsDir: path.join(dir, 'revisions'),
         activationsDir: path.join(dir, 'activations'),
         candidatesDir: path.join(dir, 'candidates'),
@@ -224,22 +226,25 @@ export async function readAuthoredRecord<K extends AuthoredKind>(root: string, k
     return loaded.record;
 }
 
-/** `catalog/active.json`, or null before the first activation. Throws when it exists but isn't valid. */
+/** Where the active pointer lives, relative to the data root, for messages. */
+export const ACTIVE_POINTER_NAME = 'catalog/active';
+
+/**
+ * The active pointer: the newest version in `catalog/active/`, or null before
+ * the first activation. Throws when it exists but isn't valid, including a
+ * version edited in place.
+ */
 export async function readActivePointer(root: string): Promise<ActivePointer | null> {
-    let text: string;
+    let stored: Awaited<ReturnType<typeof readVersionedDocument>>;
     try {
-        text = await fs.promises.readFile(catalogPaths(root).active, 'utf8');
+        stored = await readVersionedDocument(catalogPaths(root).active);
     } catch (error) {
-        if (hasErrorCode(error, 'ENOENT')) return null;
+        if (error instanceof EditedInPlaceError) throw new Error(`${ACTIVE_POINTER_NAME}/v${error.version}.json was edited in place, so it is not a valid active pointer`);
+        if (error instanceof CorruptDocumentError) throw new Error(`${ACTIVE_POINTER_NAME}: ${error.reason}`);
         throw error;
     }
-    let value: unknown;
-    try {
-        value = JSON.parse(text);
-    } catch {
-        throw new Error('catalog/active.json is not valid JSON');
-    }
-    const parsed = parseActivePointer(value);
-    if (!parsed.ok) throw new Error(`catalog/active.json is not a valid active pointer: ${parsed.error.issues.map((issue) => issue.message).join('; ')}`);
+    if (stored === null) return null;
+    const parsed = parseActivePointer(stored.value);
+    if (!parsed.ok) throw new Error(`${ACTIVE_POINTER_NAME}/v${stored.version}.json is not a valid active pointer: ${parsed.error.issues.map((issue) => issue.message).join('; ')}`);
     return parsed.value;
 }

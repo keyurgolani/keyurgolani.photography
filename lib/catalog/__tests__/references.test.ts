@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createTempDataRoot } from '../../../test/helpers/tempDataRoot';
+import { versionFile, versionText } from '../../storage/document';
 import { references, referencesTo, ReferenceScanError, type AssetReference } from '../references';
 import { revisionIdOf } from '../schema';
 import { createTestCatalog, type TestCatalog } from '../testing';
@@ -38,8 +39,9 @@ function store(root: string, content: CandidateContent, folder: 'revisionsDir' |
     return revisionId;
 }
 
+/** Point `catalog/active/` at `revisionId`, as its first version. */
 function activate(root: string, revisionId: string): void {
-    writeJson(catalogPaths(root).active, { schemaVersion: 1, revisionId, activationId: 'act_00000000-0000-4000-8000-000000000001' });
+    writeJson(versionFile(catalogPaths(root).active, 1), versionText({ schemaVersion: 1, revisionId, activationId: 'act_00000000-0000-4000-8000-000000000001' }, 1));
 }
 
 /** `content` with one photo moved to another asset revision or profile. */
@@ -202,8 +204,8 @@ describe('references fails closed', () => {
             return `catalog/revisions/${catalog.revisionId}.json`;
         }, 'missing'],
         ['an active pointer that is not valid', (catalog) => {
-            writeJson(catalogPaths(catalog.root).active, { schemaVersion: 1 });
-            return 'catalog/active.json';
+            writeJson(versionFile(catalogPaths(catalog.root).active, 1), { schemaVersion: 1, version: 1 });
+            return 'catalog/active';
         }, 'invalid'],
         ['a photo record whose newest version is not JSON', (catalog) => {
             const photo = catalog.photos[2];

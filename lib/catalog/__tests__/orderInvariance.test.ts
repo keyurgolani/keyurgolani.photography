@@ -16,7 +16,7 @@ import { readRegistry, writeRegistry } from '../../identity/registry';
 import type { IdentityFactType, Registry } from '../../identity/types';
 import { VARIANT_FORMATS, VARIANT_PIXELS, VARIANT_WIDTHS } from '../../identity/variants';
 import { mediaUrl } from '../../media/url';
-import { pruneVersions, versionFile } from '../../storage/document';
+import { pruneVersions, versionFile, versionText } from '../../storage/document';
 import { runRules } from '../rules';
 import { parseRevisionFile, revisionIdOf } from '../schema';
 import { applySequenceOp } from '../sequence';
@@ -162,7 +162,8 @@ async function prepare(): Promise<Fixture> {
     fs.mkdirSync(paths.candidatesDir, { recursive: true });
     fs.writeFileSync(path.join(paths.revisionsDir, `${revisionId}.json`), `${JSON.stringify(parsed.value, null, 2)}\n`);
     fs.writeFileSync(path.join(paths.candidatesDir, `${revisionId}.json`), `${JSON.stringify(parsed.value, null, 2)}\n`);
-    fs.writeFileSync(paths.active, `${JSON.stringify({ schemaVersion: 1, revisionId, activationId: 'act_00000000-0000-4000-8000-000000000001' }, null, 2)}\n`);
+    fs.mkdirSync(paths.active);
+    fs.writeFileSync(versionFile(paths.active, 1), versionText({ schemaVersion: 1, revisionId, activationId: 'act_00000000-0000-4000-8000-000000000001' }, 1));
 
     for (const [index, photoId] of members.entries()) {
         await writeAuthoredRecord({ kind: 'photo', id: photoId, assetRevision: registry.photos[photoId].source.observedRevision, alt: { kind: 'described', text: `Fixture description of photograph ${index + 1}.`, reviewed: true } }, { expectedVersion: 0, root });

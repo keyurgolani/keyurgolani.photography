@@ -3,11 +3,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { folderBytes } from '../../../test/helpers/folderBytes';
 import { withLock, type LockContext, type LockRecord } from '../../storage/lock';
 import { activateRevision, blockingIssues, publish, PUBLISH_EXIT_CODES, rebaseWorkingLayer, recover, type ActivateOptions, type PublishOptions, type PublishResult } from '../publish';
 import { references } from '../references';
 import { mediaFilePath } from '../../media/path';
-import { CATALOG_LOCK, listActivations, readRevisionFile, revisionFilePath } from '../repository';
+import { CATALOG_LOCK, listActivations, readRevisionFile, revisionFilePath, writeActivePointer } from '../repository';
 import { registerRule } from '../rules';
 import { createTestCatalog, type TestCatalog, type TestCatalogOptions } from '../testing';
 import type { AuthoredPhoto, Issue } from '../types';
@@ -102,7 +103,7 @@ async function bases(root: string): Promise<(string | null | undefined)[]> {
     return [...new Set([layer.site, ...layer.series, ...layer.photos].map((record) => record?.baseRevisionId))];
 }
 
-/** Read active.json and the revision it names, as a web request would, until stopped. */
+/** Read the active pointer and the revision it names, as a web request would, until stopped. */
 function readLoop(root: string) {
     let running = true;
     const seen = new Set<string | null>();
@@ -115,7 +116,7 @@ function readLoop(root: string) {
                     seen.add(null);
                 } else {
                     const revision = await readRevisionFile(root, pointer.revisionId);
-                    if (revision === null) errors.push(`active.json names ${pointer.revisionId}, which has no revision file`);
+                    if (revision === null) errors.push(`the active pointer names ${pointer.revisionId}, which has no revision file`);
                     else seen.add(revision.revisionId);
                 }
             } catch (error) {
@@ -156,7 +157,7 @@ describe('the first publish', { timeout: 30_000 }, () => {
         const { catalog, root, run, events } = await setup({ seed: 63 });
         const result = await run({ reason: 'launch' });
         expect(result).toMatchObject({ outcome: 'PUBLISHED', candidateId: catalog.revisionId, revisionId: catalog.revisionId, revisionNumber: 1, rebased: true, issues: [], errors: 0 });
-        expect(await readActivePointer(root)).toEqual({ schemaVersion: 1, revisionId: catalog.revisionId, activationId: result.activationId });
+        expect(await readActivePointer(root)).toEqual({ schemaVersion: 1, version: 1, revisionId: catalog.revisionId, activationId: result.activationId });
         expect((await readRevisionFile(root, catalog.revisionId))?.content).toEqual(catalog.content);
         const [activation] = await listActivations(root);
         expect(activation).toMatchObject({
@@ -228,7 +229,7 @@ describe('later publishes', { timeout: 30_000 }, () => {
 
     it('stop on a validation error, keeping every issue in the diagnostics and the active revision as it was', async () => {
         const { catalog, root, run, editPhoto, events } = await launched({ seed: 67 });
-        const pointer = fs.readFileSync(catalogPaths(root).active);
+        const pointer = folderBytes(catalogPaths(root).active);
         const photoId = catalog.photos[1].id;
         await editPhoto(photoId, (photo) => {
             photo.alt = null;
@@ -239,7 +240,7 @@ describe('later publishes', { timeout: 30_000 }, () => {
         expect(result.issues).toContainEqual(expect.objectContaining({ severity: 'error', record: { kind: 'photo', id: photoId }, code: expect.stringMatching(/^description\./) }));
         const diagnostics = JSON.parse(fs.readFileSync(path.join(catalogPaths(root).diagnosticsDir, `${result.candidateId}.json`), 'utf8')) as { issues: unknown[]; errors: number };
         expect(diagnostics).toMatchObject({ issues: result.issues, errors: result.errors });
-        expect(fs.readFileSync(catalogPaths(root).active)).toEqual(pointer);
+        expect(folderBytes(catalogPaths(root).active)).toEqual(pointer);
         expect(await listActivations(root)).toHaveLength(1);
         expect(fs.existsSync(revisionFilePath(root, result.candidateId ?? ''))).toBe(false);
         expect(events.map((entry) => entry.event)).toEqual(['catalog.publish.started', 'catalog.publish.validated', 'catalog.publish.failed']);
@@ -452,12 +453,40 @@ describe('the catalog lock', { timeout: 30_000 }, () => {
         expect(events).toContainEqual({ event: 'catalog.lock.takeover', lock: CATALOG_LOCK, ...takeover });
     });
 
-    it('gives a holder paused past its lease LOCK_LOST at step 11, and leaves active.json alone', async () => {
+    it('stops with LOCK_LOST when the active pointer moved after step 10 read it, even while the lock re-read passes', async () => {
+        const { catalog, root, run, editPhoto, first } = await launched({ seed: 73 });
+        await editPhoto(catalog.photos[0].id, (photo) => {
+            photo.caption = 'A fixture caption.';
+        });
+        let moved: Record<string, string> | null = null;
+        const result = await run({
+            hooks: {
+                async afterStep(step) {
+                    if (step !== 10) return;
+                    // Another process moves the pointer between this holder's read and its commit, as one that took
+                    // the lock over and then lost it again would. The lock file itself still names this holder.
+                    const current = await readActivePointer(root);
+                    if (!current || !first.activationId) throw new Error('Nothing is active.');
+                    await writeActivePointer(root, { revisionId: current.revisionId, activationId: first.activationId }, current.version);
+                    moved = folderBytes(catalogPaths(root).active);
+                },
+            },
+        });
+
+        expect(result.outcome).toBe('LOCK_LOST');
+        expect(moved).not.toBeNull();
+        // The other process's version stays newest: this holder linked nothing.
+        expect(folderBytes(catalogPaths(root).active)).toEqual(moved);
+        expect(await readActivePointer(root)).toMatchObject({ version: 2, revisionId: first.revisionId });
+        expect((await listActivations(root)).filter((activation) => activation.status === 'pending')).toHaveLength(1);
+    });
+
+    it('gives a holder paused past its lease LOCK_LOST at step 11, and leaves the active pointer alone', async () => {
         const { catalog, root, run, editPhoto } = await launched({ seed: 74 });
         await editPhoto(catalog.photos[0].id, (photo) => {
             photo.caption = 'A fixture caption.';
         });
-        const pointer = fs.readFileSync(catalogPaths(root).active);
+        const pointer = folderBytes(catalogPaths(root).active);
         const summary = fs.readFileSync(lastPublishFile(root));
         let pause = false;
         const paused = deferred();
@@ -495,7 +524,7 @@ describe('the catalog lock', { timeout: 30_000 }, () => {
 
         expect(result.outcome).toBe('LOCK_LOST');
         expect(PUBLISH_EXIT_CODES[result.outcome]).toBe(3);
-        expect(fs.readFileSync(catalogPaths(root).active)).toEqual(pointer);
+        expect(folderBytes(catalogPaths(root).active)).toEqual(pointer);
         expect(fs.readFileSync(lastPublishFile(root))).toEqual(summary);
         const pending = (await listActivations(root)).filter((activation) => activation.status === 'pending');
         expect(pending).toHaveLength(1);
@@ -510,7 +539,7 @@ describe('recovery', { timeout: 30_000 }, () => {
     it.each([
         ['an abandoned activation', (file: string) => fs.writeFileSync(file, JSON.stringify({ ...(JSON.parse(fs.readFileSync(file, 'utf8')) as object), status: 'abandoned' }))],
         ['a missing activation', (file: string) => fs.rmSync(file)],
-    ])('repairs an active.json that names %s with a repair activation for its revision', async (_label, damage) => {
+    ])('repairs an active pointer that names %s with a repair activation for its revision', async (_label, damage) => {
         const { catalog, root, run, editPhoto, events } = await launched({ seed: 75 });
         await editPhoto(catalog.photos[0].id, (photo) => {
             photo.caption = 'A fixture caption.';
@@ -525,23 +554,23 @@ describe('recovery', { timeout: 30_000 }, () => {
         expect(result).toMatchObject({ outcome: 'NO_CHANGES', revisionId: second.revisionId, revisionNumber: 2 });
         const repaired = result.recovery?.repaired;
         const repair = (await listActivations(root)).find((activation) => activation.activationId === repaired);
-        expect(repair).toMatchObject({ kind: 'publish', status: 'committed', actor: 'recover', revisionId: second.revisionId, revisionNumber: 2, reason: expect.stringMatching(/^repair: active\.json named the/) });
+        expect(repair).toMatchObject({ kind: 'publish', status: 'committed', actor: 'recover', revisionId: second.revisionId, revisionNumber: 2, reason: expect.stringMatching(/^repair: the active pointer named the/) });
         expect(await readActivePointer(root)).toMatchObject({ revisionId: second.revisionId, activationId: repaired });
         expect(events).toContainEqual(expect.objectContaining({ event: 'catalog.recover.repaired', activationId: repaired, revisionId: second.revisionId, replaced: named.activationId }));
     });
 
-    it('leaves active.json alone when the catalog lock is lost before a repair moves it, and repairs on the next publish', async () => {
+    it('leaves the active pointer alone when the catalog lock is lost before a repair moves it, and repairs on the next publish', async () => {
         const { catalog, root, run, editPhoto } = await launched({ seed: 82 });
         await editPhoto(catalog.photos[0].id, (photo) => {
             photo.caption = 'A fixture caption.';
         });
         const second = await run();
         fs.rmSync(path.join(catalogPaths(root).activationsDir, `000002-${second.activationId}.json`));
-        const pointer = fs.readFileSync(catalogPaths(root).active);
+        const pointer = folderBytes(catalogPaths(root).active);
 
         const lost: LockContext = { name: CATALOG_LOCK, root, signal: new AbortController().signal, takeover: null, isHeld: async () => false };
         await expect(recover({ dataRoot: root, lock: lost, logger: { log: () => undefined } })).rejects.toThrow(/took over the catalog lock, so nothing was activated/);
-        expect(fs.readFileSync(catalogPaths(root).active)).toEqual(pointer);
+        expect(folderBytes(catalogPaths(root).active)).toEqual(pointer);
         const stale = (await listActivations(root)).filter((activation) => activation.status === 'pending');
         expect(stale).toHaveLength(1);
 
@@ -681,7 +710,7 @@ describe('activateRevision', { timeout: 30_000 }, () => {
         const photo = firstRevision?.content.photos[0];
         if (!photo) throw new Error('Revision 1 has no photo.');
         fs.rmSync(mediaFilePath({ photoId: photo.id, assetRevision: photo.assetRevision, profileId: photo.profileId }, 'w400', 'webp', root));
-        const pointer = fs.readFileSync(catalogPaths(root).active);
+        const pointer = folderBytes(catalogPaths(root).active);
         const files = catalogFiles();
 
         for (const acceptedRules of [[], ['assets.variant']]) {
@@ -690,7 +719,7 @@ describe('activateRevision', { timeout: 30_000 }, () => {
             expect(result.message).toMatch(/1 error keeps rev_[0-9a-f]{64} from going live \(assets\.variant\)\. Nothing was activated\./);
             expect(result.issues?.[0]).toMatchObject({ code: 'assets.variant', severity: 'error', field: 'variants.w400.webp' });
         }
-        expect(fs.readFileSync(catalogPaths(root).active)).toEqual(pointer);
+        expect(folderBytes(catalogPaths(root).active)).toEqual(pointer);
         expect(catalogFiles()).toEqual(files);
     });
 

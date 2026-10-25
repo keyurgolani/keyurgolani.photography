@@ -18,7 +18,8 @@ The registry in it names every photo by its path in the library and by the SHA-2
 | `staging/` | Sets still being built | The watcher |
 | `status/watcher.json` | The watcher's heartbeat, which its healthcheck reads | The watcher, every 30 s |
 | `catalog/revisions/` | Every published revision, which never changes once it's written | `photos.mjs publish` |
-| `catalog/activations/`, `catalog/active.json` | Each activation, and the pointer to the active revision | `photos.mjs publish` |
+| `catalog/activations/` | Each activation | `photos.mjs publish` |
+| `catalog/active/v<N>.json` | The pointer to the active revision. A [version folder](#version-folders), so a publish moves it by adding the next version. | `photos.mjs publish` |
 | `catalog/candidates/`, `catalog/diagnostics/` | The last compile of each candidate, its issues, and how the last publish ended | `photos.mjs publish` |
 | `locks/` | The locks writers take on the registry, the authored records, and the catalog | The watcher and `photos.mjs` |
 
@@ -30,7 +31,7 @@ docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher cat /
 
 ## Version folders
 
-Every document that two writers could change at once is a folder with one file per version: `identity/registry/`, `authored/site/`, `authored/series/<seriesId>/`, and `authored/photos/<photoId>/`. Inside each folder the versions are `v1.json`, `v2.json`, and so on. The highest number is the document. A write never changes an existing file. It adds the next number with `link()`, which fails if that number already exists, so two writers can't both store the same version. That's why the data root needs a filesystem with hard links.
+Every document that two writers could change at once is a folder with one file per version: `identity/registry/`, `authored/site/`, `authored/series/<seriesId>/`, `authored/photos/<photoId>/`, and the active catalog pointer, `catalog/active/`. Inside each folder the versions are `v1.json`, `v2.json`, and so on. The highest number is the document. A write never changes an existing file. It adds the next number with `link()`, which fails if that number already exists, so two writers can't both store the same version. That's why the data root needs a filesystem with hard links.
 
 Each write keeps the two newest versions and removes older ones. Files that start with `.v` and end in `.tmp` are writes in progress, or left by a write that crashed. The next write in that folder removes them. Leave them alone.
 

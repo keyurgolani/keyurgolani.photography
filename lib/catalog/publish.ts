@@ -9,6 +9,7 @@ import { candidateFile, compileCandidate, type CompileResult } from './compile';
 import { LAUNCH_ORDER_RULE_IDS } from './order-rules';
 import { rebaseWorkingLayer, type RebaseReport } from './rebase';
 import {
+    ActivePointerMovedError,
     assertRevisionId,
     CATALOG_LOCK,
     CatalogIntegrityError,
@@ -28,7 +29,7 @@ import { registeredRules, rulesetVersion, runRules } from './ruleset';
 import { CATALOG_SCHEMA_VERSION, parseRevisionFile } from './schema';
 import type { Activation, ActivePointer, Issue, RevisionFile, WorkingLayer } from './types';
 import { AUTHORED_LEASE_MS, AUTHORED_LOCK, AUTHORED_WAIT_MS } from './working-layer-writer';
-import { readActivePointer, readWorkingLayer } from './working-layer';
+import { ACTIVE_POINTER_NAME, readActivePointer, readWorkingLayer } from './working-layer';
 
 export { rebaseWorkingLayer, type RebaseOptions, type RebaseReport } from './rebase';
 
@@ -53,13 +54,15 @@ export { rebaseWorkingLayer, type RebaseOptions, type RebaseReport } from './reb
  *   9. Write `revisions/<id>.json`, or re-hash the one already there.
  *  10. Write the pending activation.
  *  11. Re-read the lock, stop with LOCK_LOST unless it is still ours, and
- *      point `active.json` at the revision.
+ *      commit the next version of the active pointer, `catalog/active/`,
+ *      naming the revision. It stops with LOCK_LOST too if the pointer moved
+ *      since step 10 read it.
  *  12. Mark the activation committed.
  *  13. Rebase the working layer onto the new revision.
  *
- * Steps 10 to 12 are commitActivation(), the only writer of `active.json`.
+ * Steps 10 to 12 are commitActivation(), the only writer of the pointer.
  * Through step 9 a stop writes at most the candidate, its diagnostics, and
- * `last-publish.json`, so `active.json` changes only when a publish lands,
+ * `last-publish.json`, so the pointer changes only when a publish lands,
  * or when step 1 settles an interrupted one. A retry after a crash at any
  * step gets the same revision ID and at most one committed activation.
  */
@@ -167,7 +170,7 @@ export interface PublishResult {
 }
 
 export interface RecoveryReport {
-    /** The pending activation active.json names, now committed. */
+    /** The pending activation the active pointer names, now committed. */
     committed: string | null;
     abandoned: string[];
     /** A repair activation for a pointer that named an abandoned or missing one. */
@@ -215,10 +218,11 @@ interface CommitInput {
 type CommitResult = { ok: true; activation: Activation } | { ok: false; outcome: 'LOCK_LOST'; message: string };
 
 /**
- * Steps 10 to 12: write the pending activation, point `active.json` at its
- * revision if this process still holds the catalog lock, and mark it
- * committed. The only production writer of `active.json`. A crash between
- * them leaves a pending activation that recover() commits or abandons.
+ * Steps 10 to 12: write the pending activation, point the active pointer at
+ * its revision if this process still holds the catalog lock and the pointer
+ * is still at the version it read, and mark it committed. The only production
+ * writer of `catalog/active/`. A crash between them leaves a pending
+ * activation that recover() commits or abandons.
  */
 async function commitActivation(input: CommitInput): Promise<CommitResult> {
     const { root, lock, clock, afterStep } = input;
@@ -245,10 +249,16 @@ async function commitActivation(input: CommitInput): Promise<CommitResult> {
     await writeActivation(root, pending);
     await afterStep?.(10);
 
-    if (lock.signal.aborted || !(await lock.isHeld())) {
-        return { ok: false, outcome: 'LOCK_LOST', message: 'Another process took over the catalog lock, so nothing was activated. The next publish abandons the pending activation.' };
+    const lost: CommitResult = { ok: false, outcome: 'LOCK_LOST', message: 'Another process took over the catalog lock, so nothing was activated. The next publish abandons the pending activation.' };
+    if (lock.signal.aborted || !(await lock.isHeld())) return lost;
+    // A compare-and-swap on the version read above: a holder that lost the lock after that re-read, and finds the
+    // pointer moved by the process that has it now, stops here instead of putting its revision back.
+    try {
+        await writeActivePointer(root, { revisionId: pending.revisionId, activationId: pending.activationId }, pointer?.version ?? 0);
+    } catch (error) {
+        if (error instanceof ActivePointerMovedError) return lost;
+        throw error;
     }
-    await writeActivePointer(root, { schemaVersion: CATALOG_SCHEMA_VERSION, revisionId: pending.revisionId, activationId: pending.activationId });
     await afterStep?.(11);
 
     const committed: Activation = { ...pending, status: 'committed', committedAt: iso(clock()) };
@@ -288,8 +298,8 @@ export interface RecoverOptions {
 
 /**
  * Settle an interrupted activation, under the caller's catalog hold: commit
- * the pending activation `active.json` names and abandon every other pending
- * one. If `active.json` names an abandoned or missing activation, record a
+ * the pending activation the active pointer names and abandon every other
+ * pending one. If the pointer names an abandoned or missing activation, record a
  * repair activation for its revision through commitActivation(). Then rebase
  * the working layer onto the active revision if any record is on another
  * base. Throws LockTimeoutError when that rebase can't get the authored lock,
@@ -319,7 +329,7 @@ export async function recover(options: RecoverOptions): Promise<RecoveryReport> 
         const named = activations.find((activation) => activation.activationId === pointer.activationId);
         if (!named || named.status !== 'committed' || named.revisionId !== pointer.revisionId) {
             const revision = await readRevisionFile(root, pointer.revisionId);
-            if (revision === null) throw new CatalogIntegrityError('catalog/active.json', `catalog/active.json names ${pointer.revisionId}, which has no revision file.`);
+            if (revision === null) throw new CatalogIntegrityError(ACTIVE_POINTER_NAME, `${ACTIVE_POINTER_NAME} names ${pointer.revisionId}, which has no revision file.`);
             const registry = await readRegistry(root).catch(() => null);
             const result = await commitActivation({
                 root,
@@ -327,7 +337,7 @@ export async function recover(options: RecoverOptions): Promise<RecoveryReport> 
                 revisionId: pointer.revisionId,
                 kind: 'publish',
                 actor: 'recover',
-                reason: named ? `repair: active.json named the ${named.status} activation ${named.activationId}` : `repair: active.json named the missing activation ${pointer.activationId}`,
+                reason: named ? `repair: the active pointer named the ${named.status} activation ${named.activationId}` : `repair: the active pointer named the missing activation ${pointer.activationId}`,
                 validation: validateStored(root, revision, registry).validation,
                 acceptedRules: [],
                 lockTakeover: lock.takeover,
@@ -377,7 +387,7 @@ async function snapshotAndCompile(root: string, options: { lock: boolean; author
     const registry = await readRegistry(root);
     const pointer = await readActivePointer(root);
     const active = pointer ? await readRevisionFile(root, pointer.revisionId) : null;
-    if (pointer && active === null) throw new CatalogIntegrityError('catalog/active.json', `catalog/active.json names ${pointer.revisionId}, which has no revision file.`);
+    if (pointer && active === null) throw new CatalogIntegrityError(ACTIVE_POINTER_NAME, `${ACTIVE_POINTER_NAME} names ${pointer.revisionId}, which has no revision file.`);
     const compiled = await compileCandidate({ layer, registry, root, active, reprofile: options.reprofile, profileId: options.profileId });
     return { layer, registry, pointer, active, compiled };
 }
@@ -474,7 +484,7 @@ export interface ActivateResult {
 }
 
 /**
- * Point `active.json` at a stored revision through commitActivation(), under
+ * Point the active pointer at a stored revision through commitActivation(), under
  * the caller's catalog hold: #15's rollback, and later reactivations. First
  * it settles an interrupted activation as recover() does, without the
  * rebase, so the activation that is live is committed before this one

@@ -2,7 +2,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { folderBytes } from '../../../test/helpers/folderBytes';
 import {
+    ActivePointerMovedError,
     activationFileName,
     assertRevisionId,
     CatalogIntegrityError,
@@ -13,12 +15,13 @@ import {
     revisionFilePath,
     revisionNumberFor,
     writeActivation,
+    writeActivePointer,
     writeRevisionIfAbsent,
 } from '../repository';
 import { CATALOG_SCHEMA_VERSION, revisionIdOf } from '../schema';
 import { createTestCatalog, type TestCatalog } from '../testing';
 import type { Activation, RevisionContent, RevisionFile } from '../types';
-import { catalogPaths } from '../working-layer';
+import { catalogPaths, readActivePointer } from '../working-layer';
 
 let catalog: TestCatalog;
 
@@ -169,5 +172,41 @@ describe('activation records', () => {
         // A rollback to an older revision keeps that revision's number.
         expect(revisionNumberFor(history, REV_A)).toBe(1);
         expect(revisionNumberFor([], REV_A)).toBe(1);
+    });
+});
+
+describe('the active pointer', () => {
+    const ACT_1 = 'act_00000000-0000-4000-8000-000000000001';
+    const ACT_2 = 'act_00000000-0000-4000-8000-000000000002';
+
+    it('commits each move as the next version in catalog/active/, keeping the two newest', async () => {
+        const dir = catalogPaths(catalog.root).active;
+        expect(await readActivePointer(catalog.root)).toBeNull();
+        expect(await writeActivePointer(catalog.root, { revisionId: REV_A, activationId: ACT_1 }, 0)).toEqual({ schemaVersion: 1, version: 1, revisionId: REV_A, activationId: ACT_1 });
+        await writeActivePointer(catalog.root, { revisionId: REV_B, activationId: ACT_2 }, 1);
+        await writeActivePointer(catalog.root, { revisionId: REV_A, activationId: ACT_1 }, 2);
+        expect(fs.readdirSync(dir).sort()).toEqual(['v2.json', 'v3.json']);
+        expect(await readActivePointer(catalog.root)).toEqual({ schemaVersion: 1, version: 3, revisionId: REV_A, activationId: ACT_1 });
+    });
+
+    it('refuses a move from a version that is no longer the newest, and writes nothing', async () => {
+        const dir = catalogPaths(catalog.root).active;
+        await writeActivePointer(catalog.root, { revisionId: REV_A, activationId: ACT_1 }, 0);
+        await writeActivePointer(catalog.root, { revisionId: REV_B, activationId: ACT_2 }, 1);
+        const before = folderBytes(dir);
+        // A holder that read version 1 before another process moved the pointer to version 2.
+        const error = await writeActivePointer(catalog.root, { revisionId: REV_C, activationId: ACT_1 }, 1).then(() => null, (thrown: unknown) => thrown);
+        expect(error).toBeInstanceOf(ActivePointerMovedError);
+        expect(error).toMatchObject({ expected: 1, found: 2 });
+        expect(folderBytes(dir)).toEqual(before);
+        expect(await readActivePointer(catalog.root)).toMatchObject({ version: 2, revisionId: REV_B });
+    });
+
+    it('refuses to read a pointer version edited in place, naming the file from the data root', async () => {
+        await writeActivePointer(catalog.root, { revisionId: REV_A, activationId: ACT_1 }, 0);
+        const file = path.join(catalogPaths(catalog.root).active, 'v1.json');
+        fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(REV_A, REV_B));
+        const error = await readActivePointer(catalog.root).then(() => null, (thrown: unknown) => thrown as Error);
+        expect(error?.message).toBe('catalog/active/v1.json was edited in place, so it is not a valid active pointer');
     });
 });
