@@ -208,9 +208,33 @@ export function waitingReason(event: Pick<CurationEvent, 'type' | 'status' | 'ph
     return state === 'ready' || state === 'failed' ? null : 'its new derivatives are still building';
 }
 
-/** Whether an event still needs the curator's judgment. An item that is waiting (waitingReason()) doesn't, yet. */
-export function needsJudgment(event: Pick<CurationEvent, 'status'>, waiting: string | null = null): boolean {
-    return (event.status === 'open' || event.status === 'failed') && waiting === null;
+/** Whether placement can settle this item: a new photograph's item, open or deferred, with a photo ID. */
+export function settlesByPlacement(event: Pick<CurationEvent, 'type' | 'status' | 'photoId'>): boolean {
+    return event.type === 'new' && event.photoId !== null && (event.status === 'open' || event.status === 'deferred');
+}
+
+/**
+ * Whether a new photograph's item is settled because its photo is already
+ * placed: `holders` is photoHolders()' list, a working-layer series or the
+ * active revision. `sequence set` and `insert` place photos without the
+ * inbox, and a published photo needs no judgment. The item counts as settled
+ * only while something holds the photo, and nothing writes that to it, so
+ * removing the photo from its series, or a rollback that takes it out, puts
+ * the item back as it was, and the sink's and approve's rules see the item
+ * they always did. A missing, replacement, or other item stays open whatever
+ * holds the photo.
+ */
+export function settledByPlacement(event: Pick<CurationEvent, 'type' | 'status' | 'photoId'>, holders: readonly string[]): boolean {
+    return settlesByPlacement(event) && holders.length > 0;
+}
+
+/**
+ * Whether an event still needs the curator's judgment. An item that is
+ * waiting (waitingReason()) doesn't, yet, and neither does one settled by
+ * placement (settledByPlacement()).
+ */
+export function needsJudgment(event: Pick<CurationEvent, 'status'>, waiting: string | null = null, settled = false): boolean {
+    return (event.status === 'open' || event.status === 'failed') && waiting === null && !settled;
 }
 
 /** The short photo ID the inbox shows, such as `ph_1a2b3c4d`. */
