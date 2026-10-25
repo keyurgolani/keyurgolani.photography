@@ -1,0 +1,52 @@
+/* Room for chrome that's still position: fixed. Since #21, SiteNav and the
+   theme toggle sit in normal flow above main, so neither needs any. #12 moves
+   these to about.css. The global scroll padding stays, so a link Tab scrolls
+   into view keeps its whole ring on screen. */
+:global(html):has(.root) {
+  --about-chrome-top: 0px;
+  --about-chrome-bottom: 0px;
+}
+
+/* About's ground until #12: black with light ink in both themes, since the
+   page ignores the theme. #12 moves the tokens to [data-surface='about'] with
+   the Light Takes Shape values. Content flows portrait, name, then links, and
+   a short page fills the viewport below SiteNav without scrolling. The 2rem
+   above and below keeps the portrait off SiteNav and the last link's ring on
+   screen at scroll end. The inline padding keeps the ring and ParallaxCard's
+   10 px overhang inside 320 px. */
+.root {
+  --about-ground: #000;
+  --about-ink: #f0f0f0;
+  --about-rule: #808080;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2rem;
+  min-height: calc(100svh - var(--site-nav-height, 0px));
+  padding: calc(var(--about-chrome-top, 0px) + 2rem) 1rem calc(var(--about-chrome-bottom, 0px) + 2rem);
+  background: var(--about-ground);
+  color: var(--about-ink);
+}
+
+/* The portrait sizes from here rather than from ProfilePicture's own w-64 box,
+   which 200% text grows past 320 px. Its photo runs about 1.5rem past the
+   bottom of the box, so the margin keeps the name clear of it. */
+.portrait {
+  width: min(16rem, 100%);
+  aspect-ratio: 1 / 1;
+  margin-block-end: 1rem;
+}
+
+@media (min-width: 768px) {
+  .portrait {
+    width: min(20rem, 100%);
+  }
+}
+
+/* With no pointer events, ParallaxCard's tilt can't start. */
+@media (prefers-reduced-motion: reduce) {
+  .portrait {
+    pointer-events: none;
+  }
+}

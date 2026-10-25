@@ -4,7 +4,7 @@ import { waitForHydration } from './hydration';
 
 const MARK = 'data-e2e-contrast';
 
-type Rgb = readonly [number, number, number];
+export type Rgb = readonly [number, number, number];
 
 function luminance([r, g, b]: Rgb): number {
     const linear = (channel: number) => {
@@ -14,7 +14,8 @@ function luminance([r, g, b]: Rgb): number {
     return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
 }
 
-function contrast(a: Rgb, b: Rgb): number {
+/** The WCAG contrast ratio between two opaque colors. */
+export function contrast(a: Rgb, b: Rgb): number {
     const [lighter, darker] = [luminance(a), luminance(b)].sort((x, y) => y - x);
     return (lighter + 0.05) / (darker + 0.05);
 }
