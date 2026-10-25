@@ -10,7 +10,7 @@ import { IntegrityError, MANIFEST_FILE, manifestFiles, publishDirectory, readDir
 import { assetRevisionOf, sha256, type Hasher } from './ids';
 import { PROFILE_1 } from './profile';
 import { readRegistry, writeRegistry } from './registry';
-import type { AssetManifest, DerivativeJob, ProfileEntry, VariantFile } from './types';
+import type { AssetManifest, DerivativeJob, ProfileEntry, Registry, VariantFile } from './types';
 import { VARIANT_FORMATS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth } from './variants';
 
 /**
@@ -163,16 +163,28 @@ async function validated(name: string, data: Buffer, format: VariantFormat, expe
     return { width: metadata.width, height: metadata.height };
 }
 
-/** Record the build's result under the registry lock, if the entry is still the pending one this build was for. */
-async function record(root: string, job: DerivativeJob, entry: (current: ProfileEntry) => ProfileEntry, options: BuildOptions): Promise<void> {
-    await withLock('registry', { root, waitMs: options.lock?.waitMs, leaseMs: options.lock?.leaseMs }, async ({ signal }) => {
+/**
+ * Record the build's result under the registry lock, if the entry is still
+ * the pending one this build was for and `still`, given the registry as it
+ * is now, holds. Returns false when `still` doesn't, recording nothing.
+ */
+async function record(
+    root: string,
+    job: DerivativeJob,
+    entry: (current: ProfileEntry) => ProfileEntry,
+    options: BuildOptions,
+    still: (registry: Registry) => boolean = () => true,
+): Promise<boolean> {
+    return withLock('registry', { root, waitMs: options.lock?.waitMs, leaseMs: options.lock?.leaseMs }, async ({ signal }) => {
         const registry = await readRegistry(root);
         const revision = registry.photos[job.photoId]?.revisions[job.assetRevision];
         const current = revision?.profiles[job.profileId];
-        if (!revision || revision.reassignedTo || !current || current.state !== 'pending') return;
+        if (!revision || revision.reassignedTo || !current || current.state !== 'pending') return true;
+        if (!still(registry)) return false;
         revision.profiles[job.profileId] = entry(current);
         signal.throwIfAborted();
         await writeRegistry(root, { ...registry, updatedAt: iso((options.clock ?? Date.now)()) }, registry.version);
+        return true;
     });
 }
 
@@ -181,8 +193,8 @@ async function record(root: string, job: DerivativeJob, entry: (current: Profile
  * Skips encoding when a valid set is already in place, which also makes a
  * restart after a crash between publishing and recording mark it ready.
  * Fails with `source-superseded` when the bound path holds another revision
- * now, and leaves the entry pending when the source no longer hashes to the
- * job's revision. Any failure before publishing removes the staging
+ * now, as the registry says under its lock, and leaves the entry pending when
+ * the source no longer hashes to the job's revision. Any failure before publishing removes the staging
  * directory and records `failed`, changing nothing else.
  */
 export async function buildDerivativeSet(job: DerivativeJob, options: BuildOptions = {}): Promise<BuildOutcome> {
@@ -209,14 +221,16 @@ export async function buildDerivativeSet(job: DerivativeJob, options: BuildOptio
         }
         return { status: 'ready', reused };
     };
-    const recordFailed = async (error: string, cause?: unknown): Promise<BuildOutcome> => {
-        logger.warn(`[derivatives] ${job.photoId} ${job.assetRevision} ${job.profileId} failed: ${error}`);
+    const recordFailed = async (error: string, cause?: unknown, still?: (current: Registry) => boolean): Promise<BuildOutcome> => {
         try {
-            await record(root, job, (current) => ({ state: 'failed', attempts: current.attempts + 1, error }), options);
+            if (!await record(root, job, (current) => ({ state: 'failed', attempts: current.attempts + 1, error }), options, still)) {
+                return { status: 'pending', reason: 'source-changing' };
+            }
         } catch (lockError) {
             if (lockError instanceof LockTimeoutError) return { status: 'pending', reason: 'locked' };
             throw lockError;
         }
+        logger.warn(`[derivatives] ${job.photoId} ${job.assetRevision} ${job.profileId} failed: ${error}`);
         return { status: 'failed', error, ...(cause === undefined ? {} : { cause }) };
     };
 
@@ -233,7 +247,10 @@ export async function buildDerivativeSet(job: DerivativeJob, options: BuildOptio
 
     // Build only from the bytes the job names, read once and checked by digest, never by timestamps.
     if (!photo.source.present) return { status: 'skipped', reason: 'source-missing' };
-    if (photo.source.observedRevision !== job.assetRevision) return recordFailed('source-superseded');
+    if (photo.source.observedRevision !== job.assetRevision) {
+        // Read without the lock, so a pass may have brought the revision back since, as a revert does. Checked again under it.
+        return recordFailed('source-superseded', undefined, (current) => current.photos[job.photoId]?.source.observedRevision !== job.assetRevision);
+    }
     let source: Buffer;
     try {
         source = await fs.promises.readFile(path.join(options.library ?? libraryRoot(), photo.source.path));
