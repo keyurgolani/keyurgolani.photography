@@ -219,6 +219,22 @@ The block's `mv` replaces the file the link points at, so the link keeps working
 docker compose config --services
 ```
 
+If the host's file named a service differently from the repository's, for example, a name from a hand-written compose file, such as `<old-service>` where the repository's file has `web`, that service's container outlives the switch. Compose manages only the services its files name, so `up -d` leaves the old container running, still holding the port it published, and a new `web` on the same port fails to start. Before the block below, list this project's containers with their service names, and the services the new files name. Add `-f <override>` to the second command when you use one:
+
+```bash
+docker ps -a --filter "label=com.docker.compose.project=$(docker compose -f docker-compose.prod.yml.new config --format json | jq -r .name)" \
+  --format '{{.ID}}\t{{.Label "com.docker.compose.service"}}\t{{.Names}}\t{{.Status}}'
+docker compose -f docker-compose.prod.yml.new config --services
+```
+
+A container whose service the second list doesn't name is left from an old service name. Remove each one by its ID before the block, which takes the site down until the block's `up -d`. Removing a container leaves the photos, the data root, and the image cache alone, since they're folders on the host:
+
+```bash
+docker rm -f <ID>
+```
+
+Or add `--remove-orphans` to the block's `up -d`, deliberately. It removes every container of this project whose service the files don't name, including one an earlier override started that this override no longer has.
+
 Then install the new file, set up the data root and the image cache, stop the old watcher, run the slice A dry run above, and deploy. Do it this way instead of the plain `pull` and `up -d`, and only after the `.env` edit. Each half of the switch needs the other: the plain commands would start the old file on the new image, whose watcher command needs tsx, and this block run on the old tag would start the new file on the old image, which has no `dist/scripts`. Either way the watcher crash-loops. So the block checks `.env` first, and stops before it changes anything when the tag isn't there yet. The check takes the tag alone or pinned to a digest, `vX.Y.Z@sha256:<digest>`, as one line with no quotes or spaces. In the `grep` pattern, put the version's digits in place of `X`, `Y`, and `Z` and keep the `\.` between them. The `exit` leaves only the block's subshell, not your shell:
 
 ```bash
