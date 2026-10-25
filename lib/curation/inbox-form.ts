@@ -124,7 +124,7 @@ const DONE: Record<InboxActionKind, string> = {
 let serial = 0;
 
 /** Run one inbox action from its form. Never throws for anything the form or the data holds; every answer is a state the page shows, with no host path in it. */
-export async function runInboxAction(kind: InboxActionKind, form: unknown, options: { actor?: string; clock?: () => number } = {}): Promise<InboxActionState> {
+export async function runInboxAction(kind: InboxActionKind, form: unknown, options: { actor?: string; clock?: () => number; waitMs?: number } = {}): Promise<InboxActionState> {
     serial += 1;
     const answer = (status: Exclude<InboxActionState, { status: 'idle' }>['status'], eventId: string | null, message: string): InboxActionState => {
         return { status, action: kind, eventId, message: scrub(message, [dataRootStatus().root, libraryRoot()]), serial };
@@ -135,7 +135,7 @@ export async function runInboxAction(kind: InboxActionKind, form: unknown, optio
         const item = itemFields(form);
         const status = dataRootStatus({ versioned: true });
         if (status.state !== 'ready' || status.root === null) return answer('failed', item.eventId, `The data root is ${status.state}. Nothing was written.`);
-        input = { root: status.root, ...item, actor: options.actor ?? WEB_ACTOR, ...(options.clock ? { clock: options.clock } : {}) };
+        input = { root: status.root, ...item, actor: options.actor ?? WEB_ACTOR, ...(options.clock ? { clock: options.clock } : {}), ...(options.waitMs === undefined ? {} : { waitMs: options.waitMs }) };
     } catch (error) {
         if (error instanceof InboxFormError) return answer('invalid', null, error.message);
         throw error;

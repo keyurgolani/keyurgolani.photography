@@ -101,15 +101,18 @@ function decisionDetail(decision: CurationEvent['decisions'][number]): string {
 }
 
 /** Which of 14-1's actions would get past their state and type checks. The action checks again, under the lock. */
-function abilities(event: CurationEvent): InboxDetail['can'] {
+function abilities(event: CurationEvent, registry: Registry | null): InboxDetail['can'] {
     const open = event.status === 'open' || event.status === 'deferred' || event.status === 'failed';
     const failure = event.derivedFacts.failure;
+    const revision = event.photoId !== null && event.assetRevision !== null ? registry?.photos[event.photoId]?.revisions[event.assetRevision] : undefined;
+    const failedBuild = revision !== undefined && Object.values(revision.profiles).some((profile) => profile.state === 'failed');
     return {
         approve: event.type === 'new' && (event.status === 'open' || event.status === 'deferred'),
         edit: open,
         defer: event.status === 'open' || event.status === 'failed',
         dismiss: open,
-        retry: open && event.photoId !== null && event.assetRevision !== null && failure !== 'unsupported-format' && failure !== 'digest-collision' && (event.type === 'processing-failure' || failure !== undefined),
+        // As retryEvent() decides: an identified photograph whose file couldn't be decoded, or whose build failed.
+        retry: open && event.photoId !== null && event.assetRevision !== null && failure !== 'unsupported-format' && failure !== 'digest-collision' && (failure === 'undecodable' || failedBuild),
         reopen: event.status === 'deferred' || event.status === 'dismissed' || event.status === 'approved',
     };
 }
@@ -162,7 +165,7 @@ async function detailOf(root: string, event: CurationEvent, item: InboxItem, reg
         decisions: event.decisions.map((decision) => ({ action: decision.action, at: decision.at, by: printable(decision.by), detail: decisionDetail(decision) })),
         reviewedAt: event.reviewedAt,
         reviewedBy: event.reviewedBy === null ? null : printable(event.reviewedBy),
-        can: abilities(event),
+        can: abilities(event, registry),
         primaryUnavailable: primaryUnavailable(event),
     };
 }
@@ -202,7 +205,7 @@ export async function loadInbox(selectedId: string | null): Promise<InboxView> {
 
     const wanted = selectedId !== null && EVENT_ID_RE.test(selectedId) ? selectedId : null;
     const fallback = items.find((item) => item.group === 'judgment') ?? items.find((item) => item.group !== 'settled') ?? null;
-    const chosen = wanted === null ? fallback : (items.find((item) => item.id === wanted) ?? null);
+    const chosen = selectedId === null ? fallback : wanted === null ? null : (items.find((item) => item.id === wanted) ?? null);
     const event = chosen ? events.find((entry) => entry.id === chosen.id) ?? null : null;
 
     return {
