@@ -306,7 +306,7 @@ Every write through the tools stamps what it changed in the authored record's `r
 
 `photos.mjs validate` and `publish` compare the draft with the active revision and refuse a change visitors would see whose review is missing or stale (`review.authored-change`), naming the record, the field, and what to do. A review goes stale when:
 
-- a rollback publishes the field differently from the revision it was reviewed against. A publish never does: what it publishes came from your own draft. Approving an inbox item again, as `curation show` advises after a rollback, reviews its photograph's description and bytes against the active revision, unless the description is a suggestion or was changed by hand;
+- a rollback publishes the field differently from the revision it was reviewed against. A publish never does: what it publishes came from your own draft. Approving a new photograph's inbox item again, as `curation show` advises after a rollback, reviews its photo record's fields against the active revision: each one that still holds the value last reviewed, other than a suggested description or bytes a confirm chose;
 - a photograph's description, title, caption, focal point, crop, or accent was reviewed for other bytes than the ones its record pins now, or a series cover for other bytes than its photograph's;
 - the inbox item it settled is open again, or a newer replacement of the same photograph waits in the inbox. Confirm it, or leave it in draft, and the publish goes through. A reopened new photograph that a series still holds counts as already placed in `curation list`, so the refusal names its `curation show`: approve it again or leave it in draft.
 

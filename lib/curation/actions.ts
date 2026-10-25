@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { restampable } from '../catalog/review';
+import { restampable, STAMPED_FIELDS } from '../catalog/review';
 import { applySequenceOp, applySeriesOp, sequenceContext, type SeriesOp } from '../catalog/sequence';
 import type { AuthoredAlt, AuthoredPhoto, AuthoredSeries } from '../catalog/types';
 import { readActivePointer, readAuthoredRecord, readAuthoredSeries } from '../catalog/working-layer';
@@ -412,9 +412,9 @@ export function approveEvent(input: ActionInput & { choices: Choices; faults?: A
                 const alt: AuthoredAlt = description ? altOf(description) : existing?.alt ?? null;
                 const unchanged = existing !== null && JSON.stringify(existing.alt) === JSON.stringify(alt);
                 // #16: what the curator reviewed, stamped on every field these writes change. The approval also vouches
-                // again for the description and bytes it showed, so a record they kept since a review against another
-                // base, as after a rollback, is stamped against this one. A hand edit or a suggestion stays unreviewed.
-                const restamp = existing ? restampable(existing, ['alt', 'assetRevision'], step.active) : [];
+                // again for the photo record it places, so each field reviewed against another base, as after a
+                // rollback, is stamped against this one. A hand edit, a suggestion, or a confirm's bytes stay as they were.
+                const restamp = existing ? restampable(existing, STAMPED_FIELDS.photo, step.active) : [];
                 const review = { baseRevisionId: step.active, event: { id: event.id, version: event.version }, actor: input.actor, reviewedAt: step.at, ...(restamp.length > 0 ? { restamp } : {}) };
                 if (!unchanged || restamp.length > 0) {
                     const record = existing ? { ...existing, alt } : { kind: 'photo' as const, id: photoId, assetRevision, alt };

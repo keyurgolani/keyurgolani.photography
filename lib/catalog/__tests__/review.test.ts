@@ -104,6 +104,8 @@ describe('writeAuthoredRecord() stamps', { timeout: 60_000 }, () => {
         expect(written.review?.fields.assetRevision).toMatchObject({ asset: { from: photo.assetRevision, to: other, profileId: f.catalog.profileId }, assetRevision: other });
         expect(written.review?.fields.title).not.toHaveProperty('asset');
         expect(written.review?.fields.title).toMatchObject({ assetRevision: other });
+        // A confirm's stamp is never stamped again by another review, while the title it wrote beside it is.
+        expect(restampable(written, ['assetRevision', 'title'], `rev_${'a'.repeat(64)}`)).toEqual(['title']);
     });
 
     it('writes an existing record when the active pointer can\'t be read, stamping it against the record\'s base', async () => {

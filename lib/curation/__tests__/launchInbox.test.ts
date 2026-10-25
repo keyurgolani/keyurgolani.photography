@@ -106,6 +106,10 @@ describe('the inbox after the launch path', () => {
         // The rehearsal's rollback: approve the third photo into the series, publish it as revision 2, and roll back to 1.
         const item = byPhoto.get(square) as Listed['events'][number];
         ok(await photos('curation', 'approve', item.id, '--version', String(item.version), '--series', SERIES, '--description', 'A purple fixture checkerboard.', '--base', candidate ?? ''));
+        // A title and a caption too, so the recovery's publish covers every field the photo record holds, not only its description and bytes.
+        const titles = path.join(path.dirname(data.root), 'titles.csv');
+        fs.writeFileSync(titles, ['photoId,title,caption', `${square},A fixture title.,A fixture caption.`, ''].join('\n'));
+        ok(await photos('describe', '--import', titles));
         const second = /PUBLISHED: Published (rev_[0-9a-f]{64}) as revision 2\./.exec(ok(await photos('publish', '--actor', 'launch-inbox')))?.[1];
         expect(second).toBeDefined();
         expect(await inbox()).toMatchObject({ needsJudgment: 0, placed: 2, unplaced: 0, events: [] });
@@ -138,7 +142,7 @@ describe('the inbox after the launch path', () => {
         expect(JSON.parse(ok(await photos('list', '--unassigned', '--json')))).toEqual([]);
         expect(ok(await photos('curation', 'show', item.id))).not.toContain('No longer placed');
 
-        // And the recovery ends in a publish: the approval reviews the photo record's description and bytes again, against the active revision.
+        // And the recovery ends in a publish: the approval reviews the photo record's fields again, against the active revision.
         const recovered = await photos('publish', '--actor', 'launch-inbox');
         expect(recovered.code, `${recovered.stdout}\n${recovered.stderr}`).toBe(0);
         expect(recovered.stdout).toMatch(/PUBLISHED: Published rev_[0-9a-f]{64} as revision \d+\./);
