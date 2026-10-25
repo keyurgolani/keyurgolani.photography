@@ -11,14 +11,14 @@ import { writeAuthoredRecord } from '../../catalog/working-layer-writer';
 import { runReconcilePass } from '../../identity/pass';
 import { identityPaths } from '../../identity/registry';
 import type { DerivativeJob, IdentityFact } from '../../identity/types';
-import { retryEvent } from '../actions';
+import { approveEvent, retryEvent } from '../actions';
 import { inboxAlertLines, inboxAlerts } from '../alerts';
 import { parseCurationArgs, runCurationCli } from '../commands';
 import type { CurationEvent } from '../events';
 import { listEvents, withCurationLock } from '../repository';
 import { archiveMissing, bindReplacement } from '../resolutions';
 import { createSourcesSink, failureEventId, settleSources } from '../sources';
-import { clock, createMissingWorld, removeMissingTemplate, type MissingWorld } from './missingWorld';
+import { clock, createMissingWorld, missingEventId, removeMissingTemplate, type MissingWorld } from './missingWorld';
 import { makeImages, P_PATH, Q_PATH, quiet, replacementEventId, SERIES, served, treeBytes, type Images } from './replacementWorld';
 
 /**
@@ -247,6 +247,111 @@ describe('other bytes back', { timeout: 60_000 }, () => {
         const bound = await bindReplacement({ root: w.root, eventId: again.id, expectedVersion: again.version, actor: ACTOR, path: 'harbor/elsewhere.jpg' });
         expect(bound).toMatchObject({ ok: true });
         expect(pendingDecisions(w)).toEqual([expect.objectContaining({ type: 'bind', path: 'harbor/elsewhere.jpg', photoId: w.p })]);
+    });
+
+    it('refuse a bind #10 would reject, for a photo with more than the one revision first seen at the path, writing nothing', async () => {
+        const w = await world();
+        const { n } = await otherBytes(w);
+        fs.writeFileSync(w.lib.file(P_PATH), images.replacement);
+        await w.pass();
+        expect(Object.keys((await w.registry()).photos[n].revisions)).toHaveLength(2);
+        const item = await w.event(w.missingId);
+        const bound = await bindReplacement({ root: w.root, eventId: item.id, expectedVersion: item.version, actor: ACTOR, path: P_PATH });
+        expect(bound).toMatchObject({ ok: false, code: 'refused', message: expect.stringContaining(`${n}, which has more than the one revision first seen there`) });
+        expect(pendingDecisions(w)).toEqual([]);
+        expect((await w.event(w.missingId)).version).toBe(item.version);
+    });
+
+    it("refuse approving the photo a pending bind merges, so the merge can't strand it in a series", async () => {
+        const w = await world();
+        const { n, newItem } = await otherBytes(w);
+        const item = await w.event(w.missingId);
+        expect(await bindReplacement({ root: w.root, eventId: item.id, expectedVersion: item.version, actor: ACTOR })).toMatchObject({ ok: true });
+        expect(await show(w, newItem.id)).toContain(`merges this photograph into ${w.p} on the watcher's next pass, so approve refuses it`);
+
+        const authored = treeBytes(path.join(w.root, 'authored'));
+        const approve = () => approveEvent({ root: w.root, eventId: newItem.id, expectedVersion: newItem.version, expectedBase: w.revisionId, actor: ACTOR, choices: { seriesId: SERIES, placement: 'end' } });
+        expect(await approve()).toMatchObject({ ok: false, code: 'refused', message: expect.stringContaining(`${n} is merged into ${w.p} by the bind decision`) });
+        const run = await runCurationCli(['approve', newItem.id, '--version', String(newItem.version), '--base', w.revisionId, '--series', SERIES, '--end'], { dataRoot: w.root, libraryRoot: w.lib.root }, {});
+        expect(run.exitCode).toBe(1);
+        expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
+        expect((await w.event(newItem.id)).version).toBe(newItem.version);
+
+        // The pass merges N, and nothing in the draft names it.
+        await w.pass();
+        expect((await w.registry()).photos[n].mergedInto).toBe(w.p);
+        expect((await series(w)).photoIds).not.toContain(n);
+        expect(await readAuthoredRecord(w.root, 'photo', n)).toBeNull();
+        expect(await w.event(newItem.id)).toMatchObject({ status: 'resolved' });
+    });
+
+    it('say when #10 refuses the bind, and offer it again', async () => {
+        const w = await world();
+        await otherBytes(w);
+        const item = await w.event(w.missingId);
+        const run = await runCurationCli(['bind', item.id, '--version', String(item.version)], { dataRoot: w.root, libraryRoot: w.lib.root }, {});
+        expect(run.exitCode).toBe(0);
+        expect(run.output).toContain('If the watcher accepts it');
+        expect(run.output).not.toContain('closes then');
+        const [decision] = pendingDecisions(w) as { decisionId: string }[];
+        expect(await show(w, w.missingId)).toContain(`Bind pending: the watcher applies the decision ${decision.decisionId} for ${P_PATH}`);
+
+        // The file goes before the watcher's next pass, so #10 rejects the decision.
+        removeP(w);
+        await w.pass();
+        expect(fs.readdirSync(path.join(identityPaths(w.root).decisions, 'rejected')).some((name) => name.includes(decision.decisionId))).toBe(true);
+        expect((await w.registry()).photos[w.p].sourceHealth).toBe('missing');
+        expect((await w.event(w.missingId)).status).toBe('open');
+        const text = await show(w, w.missingId);
+        expect(text).toContain(`Bind refused: the watcher rejected the decision ${decision.decisionId} for ${P_PATH}: there is no image at ${P_PATH}.`);
+        expect(text).toContain(`curation bind ${w.missingId} --path <library path>`);
+        expect(text).not.toContain('Bind pending');
+        expect(text).not.toContain(w.root);
+        expect(text).not.toContain(w.lib.root);
+    });
+});
+
+describe('a file copied over another photo', { timeout: 60_000 }, () => {
+    const R_PATH = 'harbor/third.jpg';
+
+    it("binds through #10's hold, so the photo at the path gives it up and keeps its identity instead of being merged", async () => {
+        const w = await world();
+        fs.writeFileSync(w.lib.file(R_PATH), images.third);
+        const r = (await w.pass()).find((fact) => fact.type === 'new')?.photoId as string;
+        const rRevision = (await w.registry()).photos[r].source.observedRevision;
+        const rItem = (await listEvents(w.root)).events.find((event) => event.type === 'new' && event.photoId === r) as CurationEvent;
+        removeP(w);
+        await w.pass();
+        // The owner restores P by copying its file over R's.
+        fs.writeFileSync(w.lib.file(R_PATH), images.original);
+        await w.pass();
+        expect((await w.registry()).holds).toEqual([expect.objectContaining({ path: R_PATH, candidates: expect.arrayContaining([w.p, r]) })]);
+
+        const item = await w.event(w.missingId);
+        const run = await runCurationCli(['bind', item.id, '--version', String(item.version), '--path', R_PATH], { dataRoot: w.root, libraryRoot: w.lib.root }, {});
+        expect(run.exitCode).toBe(0);
+        expect(run.output).toContain(`${r}, which #10 holds that path in doubt for, gives it up and keeps its own identity`);
+        expect(run.output).toContain('own bytes');
+        const decisions = pendingDecisions(w);
+        expect(decisions).toEqual([expect.objectContaining({ type: 'bind', path: R_PATH, photoId: w.p })]);
+        expect(decisions[0]).not.toHaveProperty('merge');
+
+        const facts = await w.pass();
+        expect(facts).toEqual(expect.arrayContaining([
+            expect.objectContaining({ type: 'renamed', photoId: w.p, path: R_PATH }),
+            expect.objectContaining({ type: 'missing', photoId: r }),
+        ]));
+        const registry = await w.registry();
+        expect(registry.photos[w.p]).toMatchObject({ sourceHealth: 'present', source: { path: R_PATH, observedRevision: w.a } });
+        expect(Object.keys(registry.photos[w.p].revisions)).toEqual([w.a]);
+        expect(registry.photos[r]).toMatchObject({ sourceHealth: 'missing' });
+        expect(registry.photos[r].mergedInto).toBeUndefined();
+        expect((await w.event(w.missingId)).status).toBe('resolved');
+        // R keeps its own items: none closes saying a bind gave its bytes away, and its disappearance gets one.
+        const rNew = await w.event(rItem.id);
+        expect(rNew.status).not.toBe('resolved');
+        expect(JSON.stringify(rNew.decisions)).not.toContain('A bind gave these bytes');
+        expect(await w.event(missingEventId(r, rRevision))).toMatchObject({ status: 'open', photoId: r });
     });
 });
 
