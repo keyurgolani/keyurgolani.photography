@@ -791,6 +791,8 @@ export interface SourcePlan {
      * ones it lists to retry, and null when it lists none.
      */
     upright: string[] | null;
+    /** The ones in `upright` whose file can't be read to tell, so the watcher names them as unreadable, not as tagged. */
+    unreadable: string[];
     /** The sources left out because another one owns their set, and whether each was passed over for not decoding. */
     shared: { file: string; owner: string; undecodable: boolean }[];
 }
@@ -803,13 +805,18 @@ export async function planSources({ force = false }: { force?: boolean } = {}): 
     const retry = readUprightRetry(paths);
     const upright: string[] | null = retry === null || retry.length > 0 ? [] : null;
     const candidate = (owner: string) => retry === null || retry.includes(owner);
-    const plan: SourcePlan = { files: [], reowned: [], upright, shared: [] };
+    const plan: SourcePlan = { files: [], reowned: [], upright, unreadable: [], shared: [] };
     const index = force ? null : readDerivativeIndex(paths);
     for (const group of setGroups(getPhotoFiles(paths.root), paths.root)) {
         const { owner, undecodable } = await pickOwner(group, paths);
         for (const file of group) if (file !== owner) plan.shared.push({ file, owner, undecodable: undecodable.includes(file) });
-        const tagged = upright !== null && candidate(owner) && (await isOrientationTagged(owner, paths)) !== false;
-        if (tagged) upright.push(owner);
+        let tagged = false;
+        if (upright !== null && candidate(owner)) {
+            const orientation = await isOrientationTagged(owner, paths);
+            tagged = orientation !== false;
+            if (tagged) upright.push(owner);
+            if (orientation === null) plan.unreadable.push(owner);
+        }
         // A removal or an addition while the watcher was down can change a set's owner without touching its files.
         // So can a build that didn't finish, even of a set that has one source now.
         const recorded = readSetSource(owner, paths);
