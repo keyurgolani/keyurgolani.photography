@@ -5,15 +5,16 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { writeWatcherHeartbeat } from '../../identity/heartbeat';
 import { readRegistry, writeRegistry } from '../../identity/registry';
+import { versionFile } from '../../storage/document';
 import { LockLostError, withLock } from '../../storage/lock';
 import { initDrafts, runDraftInit } from '../draft-init';
 import { listPhotos, ownerStatus, runListCommand, runStatusCommand } from '../owner-status';
 import { publish, type PublishOptions } from '../publish';
 import { listActivations } from '../repository';
 import { createTestCatalog, type TestCatalog, type TestCatalogOptions } from '../testing';
-import { authoredPaths, authoredRecordFile, readActivePointer, readAuthoredRecord, readWorkingLayer } from '../working-layer';
+import { authoredPaths, authoredRecordDir, catalogPaths, readActivePointer, readAuthoredRecord, readWorkingLayer } from '../working-layer';
 import { AUTHORED_LOCK, writeAuthoredRecord } from '../working-layer-writer';
-import { VARIANT_BYTES } from './catalogFixtures';
+import { newestRecordFile, VARIANT_BYTES } from './catalogFixtures';
 
 const cleanups: (() => Promise<void>)[] = [];
 
@@ -128,7 +129,9 @@ describe('photos status with a pointer its activation disagrees with', () => {
         expect(second.outcome).toBe('PUBLISHED');
         // A torn restore: the pointer names revision 1 but still names activation 2.
         const pointer = await readActivePointer(catalog.root);
-        fs.writeFileSync(path.join(catalog.root, 'catalog', 'active.json'), `${JSON.stringify({ ...pointer, revisionId: catalog.revisionId }, null, 2)}\n`);
+        // A hand-made pointer version, as a torn restore or a copy by hand leaves it: no stamp, so it reads as made by hand.
+        const newest = Math.max(...fs.readdirSync(catalogPaths(catalog.root).active).flatMap((name) => /^v(\d+)\.json$/.exec(name)?.[1] ?? []).map(Number));
+        fs.writeFileSync(versionFile(catalogPaths(catalog.root).active, newest + 1), `${JSON.stringify({ ...pointer, version: newest + 1, revisionId: catalog.revisionId }, null, 2)}\n`);
         const status = await ownerStatus({ dataRoot: catalog.root });
         expect(status.catalog.active).toMatchObject({ revisionId: catalog.revisionId, activationId: pointer?.activationId, status: 'mismatch' });
         const { output } = await runStatusCommand({ dataRoot: catalog.root });
@@ -162,7 +165,7 @@ describe('photos list', () => {
 
     it('marks a photo with no ready set and one with no record', async () => {
         const catalog = await fixture({ variantBytes: undefined });
-        fs.rmSync(authoredRecordFile(catalog.root, 'photo', catalog.photos[3].id));
+        fs.rmSync(authoredRecordDir(catalog.root, 'photo', catalog.photos[3].id), { recursive: true });
         const rows = await listPhotos({ dataRoot: catalog.root });
         expect(rows.every((row) => row.w400 === null)).toBe(true);
         expect(rows.find((row) => row.photoId === catalog.photos[3].id)?.alt).toBe('no record');
@@ -183,7 +186,7 @@ describe('photos draft:init', () => {
         const paths = authoredPaths(catalog.root);
         fs.rmSync(paths.photosDir, { recursive: true });
         fs.mkdirSync(paths.photosDir);
-        fs.rmSync(authoredRecordFile(catalog.root, 'site', 'site'));
+        fs.rmSync(authoredRecordDir(catalog.root, 'site', 'site'), { recursive: true });
         const ids = catalog.photos.map((photo) => photo.id).sort();
         return { catalog, ids };
     }
@@ -205,8 +208,9 @@ describe('photos draft:init', () => {
         const registry = await readRegistry(catalog.root);
         const [kept, broken, merged, archived, ambiguous, given] = ids;
         await writeAuthoredRecord({ kind: 'photo', id: kept, assetRevision: registry.photos[kept].source.observedRevision, alt: { kind: 'decorative' } }, { expectedVersion: 0, root: catalog.root });
-        const keptBytes = fs.readFileSync(authoredRecordFile(catalog.root, 'photo', kept));
-        fs.writeFileSync(authoredRecordFile(catalog.root, 'photo', broken), '{ not json');
+        const keptBytes = fs.readFileSync(newestRecordFile(catalog.root, 'photo', kept));
+        fs.mkdirSync(authoredRecordDir(catalog.root, 'photo', broken));
+        fs.writeFileSync(versionFile(authoredRecordDir(catalog.root, 'photo', broken), 1), '{ not json');
         registry.photos[merged].mergedInto = kept;
         registry.photos[archived].sourceHealth = 'archived';
         registry.photos[ambiguous].sourceHealth = 'ambiguous';
@@ -221,8 +225,8 @@ describe('photos draft:init', () => {
             { photoId: ambiguous, reason: 'its source is ambiguous until an identity decision settles it' },
             { photoId: given, reason: 'its bound asset revision belongs to another photo' },
         ]);
-        expect(fs.readFileSync(authoredRecordFile(catalog.root, 'photo', kept))).toEqual(keptBytes);
-        expect(fs.readFileSync(authoredRecordFile(catalog.root, 'photo', broken), 'utf8')).toBe('{ not json');
+        expect(fs.readFileSync(newestRecordFile(catalog.root, 'photo', kept))).toEqual(keptBytes);
+        expect(fs.readFileSync(versionFile(authoredRecordDir(catalog.root, 'photo', broken), 1), 'utf8')).toBe('{ not json');
         const again = await initDrafts({ dataRoot: catalog.root });
         expect(again).toMatchObject({ siteCreated: false, created: [], existing: 3 });
     });
@@ -233,13 +237,13 @@ describe('photos draft:init', () => {
         expect((await runDraftInit({ dataRoot: missing })).exitCode).toBe(1);
         const locked = await withLock(AUTHORED_LOCK, { root: catalog.root }, () => runDraftInit({ dataRoot: catalog.root, waitMs: 100 }));
         expect(locked.exitCode).toBe(3);
-        expect(fs.existsSync(authoredRecordFile(catalog.root, 'site', 'site'))).toBe(false);
+        expect(fs.existsSync(authoredRecordDir(catalog.root, 'site', 'site'))).toBe(false);
     });
 
     it('says a failed write left the records before it, and a rerun finishes', async () => {
         const { catalog, ids } = await bare();
         let writes = 0;
-        const hooks = { beforeClaim() { if (++writes === 3) throw Object.assign(new Error('EIO: i/o error, write'), { code: 'EIO' }); } };
+        const hooks = { afterStage() { if (++writes === 3) throw Object.assign(new Error('EIO: i/o error, write'), { code: 'EIO' }); } };
         const result = await runDraftInit({ dataRoot: catalog.root }, { hooks });
         expect(result.exitCode).toBe(4);
         expect(result.output).toBe('Error: EIO: i/o error, write Records written before it stay, and running draft:init again finishes the rest.\n');
@@ -251,7 +255,7 @@ describe('photos draft:init', () => {
 
     it('exits 3 when it loses the authored lock part way', async () => {
         const { catalog } = await bare();
-        const hooks = { beforeClaim() { throw new LockLostError(AUTHORED_LOCK, null); } };
+        const hooks = { afterStage() { throw new LockLostError(AUTHORED_LOCK, null); } };
         const result = await runDraftInit({ dataRoot: catalog.root }, { hooks });
         expect(result.exitCode).toBe(3);
         expect(result.output).toContain('LOCK_LOST');

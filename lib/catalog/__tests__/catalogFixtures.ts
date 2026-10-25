@@ -5,6 +5,9 @@ import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../../identity/variants';
 import { MANIFEST_FILE } from '../../storage/publish';
 import { assetDir } from '../../media/path';
 import type { VariantByteTable } from '../testing';
+import type { AuthoredKind } from '../schema';
+import { authoredRecordDir } from '../working-layer';
+import { versionFile } from '../../storage/document';
 
 /** Sparse variant sizes for createTestCatalog(): small, a different size per file, and quick to write. */
 export const VARIANT_BYTES = Object.fromEntries(
@@ -34,4 +37,11 @@ export function addReadyProfile(root: string, registry: Registry, photoId: strin
     const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8')) as AssetManifest;
     fs.writeFileSync(manifestFile, `${JSON.stringify({ ...manifest, profileId }, null, 2)}\n`);
     registry.photos[photoId].revisions[assetRevision].profiles[profileId] = { state: 'ready', attempts: 1, readyAt };
+}
+
+/** The newest version file of an authored record, `v0.json` (absent) when it has none, for tests that compare its bytes. */
+export function newestRecordFile(root: string, kind: AuthoredKind, id: string): string {
+    const dir = authoredRecordDir(root, kind, id);
+    const versions = fs.existsSync(dir) ? fs.readdirSync(dir).flatMap((name) => /^v([1-9]\d*)\.json$/.exec(name)?.[1] ?? []).map(Number) : [];
+    return versionFile(dir, Math.max(0, ...versions));
 }
