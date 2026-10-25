@@ -152,6 +152,22 @@ describe('readWorkingLayer', () => {
         expect((await readWorkingLayer(data.root)).site).toMatchObject({ version: 1 });
     });
 
+    it('refuses to read a photo or series record whose file in the old layout is still there, naming the file', async () => {
+        const data = dataRoot();
+        const { seriesDir, photosDir } = authoredPaths(data.root);
+        await writeAuthoredRecord(photo(PHOTO_A), { expectedVersion: 0, root: data.root });
+        await writeAuthoredRecord(series('ser_fixture'), { expectedVersion: 0, root: data.root });
+        writeJson(path.join(photosDir, `${PHOTO_A}.json`), { schemaVersion: 1, version: 1, baseRevisionId: null, ...photo(PHOTO_A) });
+        writeJson(path.join(seriesDir, 'ser_fixture.json'), { schemaVersion: 1, version: 1, baseRevisionId: null, ...series('ser_fixture') });
+        await expect(readAuthoredRecord(data.root, 'photo', PHOTO_A)).rejects.toThrow(`authored/photos/${PHOTO_A}.json is in the old layout`);
+        await expect(readAuthoredRecord(data.root, 'series', 'ser_fixture')).rejects.toThrow('authored/series/ser_fixture.json is in the old layout');
+
+        fs.rmSync(path.join(photosDir, `${PHOTO_A}.json`));
+        fs.rmSync(path.join(seriesDir, 'ser_fixture.json'));
+        expect(await readAuthoredRecord(data.root, 'photo', PHOTO_A)).toMatchObject({ version: 1 });
+        expect(await readAuthoredRecord(data.root, 'series', 'ser_fixture')).toMatchObject({ version: 1 });
+    });
+
     it('reads one record by kind and ID, or null', async () => {
         const data = dataRoot();
         writeVersion(path.join(authoredPaths(data.root).photosDir, PHOTO_A), 3, { schemaVersion: 1, version: 3, baseRevisionId: null, ...photo(PHOTO_A) });
