@@ -1,9 +1,12 @@
 import Link from 'next/link';
-import { photoImageAlt } from '@/lib/a11y/photoName';
+import type { CSSProperties } from 'react';
 import type { PublishedSeriesPage, SeriesFacts } from '@/lib/catalog/projections/series';
 import SeriesPhoto from './SeriesPhoto';
+import SeriesReturn from './SeriesReturn';
 import SeriesSequence from './SeriesSequence';
-import { altOf, capturedSource, yearsLabel } from './seriesLabels';
+import { coverSizes } from './seriesCopy';
+import { altOf, capturedSource, coverEntryName, yearsLabel } from './seriesLabels';
+import { COVER_ID } from './returnPosition';
 import styles from './SeriesPage.module.css';
 
 export { ENTRY_SIZES, SEQUENCE_HEADING } from './seriesCopy';
@@ -11,9 +14,6 @@ export { ENTRY_SIZES, SEQUENCE_HEADING } from './seriesCopy';
 export interface SeriesPageProps {
     page: PublishedSeriesPage;
 }
-
-/** The cover fills the content column, the viewport less its gutters. */
-export const COVER_SIZES = '100vw';
 
 /** Interface copy for the derived facts, apart from the authored text. */
 export const FACTS_HEADING = 'From the published photographs';
@@ -67,8 +67,10 @@ function Facts({ facts, total }: { facts: SeriesFacts; total: number }) {
  * reordering, and an All work link at its end. The sequence is
  * SeriesSequence, which shows the first page and appends the rest on Show
  * more (#6); every prop it takes comes from the projection's allowlist.
- * Each entry links to its canonical Viewer URL and carries
- * `id="photo-<photoId>"`, so #5 PR 2 and #9 can return focus to it.
+ * The cover and each entry link to their canonical Viewer URL. Entries carry
+ * `id="photo-<photoId>"` and the cover `id="series-cover"`, so SeriesReturn
+ * (whose props are the series path, slug, revision, and total) and #9 can
+ * put focus back on the one that opened the Viewer.
  */
 export default function SeriesPage({ page }: SeriesPageProps) {
     const { total, cover } = page;
@@ -91,17 +93,27 @@ export default function SeriesPage({ page }: SeriesPageProps) {
 
                 {cover && (
                     <figure className={styles.stage}>
-                        <SeriesPhoto
-                            image={cover.image}
-                            alt={photoImageAlt({ alt: altOf(cover.description), position: cover.position, total })}
-                            sizes={COVER_SIZES}
-                            priority
-                            focalPoint={cover.focalPoint}
-                            crop={cover.crop}
-                            intrinsic
-                            fallbackLabel="Photograph unavailable"
-                            frameClassName={styles.coverFrame}
-                        />
+                        {/* The cover opens its photograph's Viewer too. The ratio sizes the link to the photograph, so its ring fits it. */}
+                        <Link
+                            id={COVER_ID}
+                            href={cover.href}
+                            prefetch={false}
+                            aria-label={coverEntryName({ alt: altOf(cover.description), position: cover.position, total })}
+                            className={styles.coverLink}
+                            style={{ '--ratio': `${cover.image.width} / ${cover.image.height}` } as CSSProperties}
+                        >
+                            {/* alt="" inside the named link, and no fallback text, which would have to be part of the name (WCAG 2.5.3). */}
+                            <SeriesPhoto
+                                image={cover.image}
+                                alt=""
+                                sizes={coverSizes(cover.image)}
+                                priority
+                                focalPoint={cover.focalPoint}
+                                crop={cover.crop}
+                                intrinsic
+                                frameClassName={styles.coverFrame}
+                            />
+                        </Link>
                         <figcaption className={styles.stageNote}>
                             Photograph {cover.position} of {total}
                         </figcaption>
@@ -119,6 +131,9 @@ export default function SeriesPage({ page }: SeriesPageProps) {
                     nextHref={page.nextHref}
                     chapters={page.chapters}
                 />
+
+                {/* Outside the sequence section, which SeriesSequence renders. */}
+                <SeriesReturn path={page.href} slug={page.slug} revisionId={page.catalogRevision} total={total} />
 
                 <p className={styles.end}>
                     <Link href={page.workHref} className={styles.allWork}>

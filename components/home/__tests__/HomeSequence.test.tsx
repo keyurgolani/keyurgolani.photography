@@ -159,6 +159,21 @@ describe('HomeSequence', () => {
     expect(isOutgoing(second)).toBe(true);
   });
 
+  it('asks for at most two full-size images at first, rendered and warmed up together, then one more per move (#6)', () => {
+    const assigned: string[] = [];
+    const setter = vi.spyOn(HTMLImageElement.prototype, 'src', 'set').mockImplementation((value: string) => void assigned.push(value));
+    try {
+      const five = [1, 2, 3, 4, 5].map((n) => photo(n, 5));
+      const { layers, rerender } = renderSequence({ list: five });
+      const full = () => new Set([...layers('optimized').map((img) => img.getAttribute('src')), ...assigned.filter((url) => url.startsWith('/optimized-'))]);
+      expect([...full()].sort()).toEqual(['/optimized-1.webp', '/optimized-2.webp']);
+      rerender(<HomeSequence photos={five} index={1} playbackState="advancing" />);
+      expect([...full()].sort()).toEqual(['/optimized-1.webp', '/optimized-2.webp', '/optimized-3.webp']);
+    } finally {
+      setter.mockRestore();
+    }
+  });
+
   it('renders nothing without photos', () => {
     const { container } = renderSequence({ list: [] });
 
