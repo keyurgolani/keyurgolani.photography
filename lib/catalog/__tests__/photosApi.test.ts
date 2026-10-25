@@ -467,7 +467,7 @@ describe('catalog /api/photos validators', { timeout: 60_000 }, () => {
 
     it('answers 503 with no-store and no ETag when the catalog is unavailable, whatever If-None-Match says', async () => {
         const { catalog } = await published(22);
-        fs.writeFileSync(`${catalog.root}/catalog/active.json`, 'not json');
+        await damagePointer(catalog.root);
         const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
         for (const header of [undefined, '*', 'W/"anything"']) {
             const response = await GET(header);
