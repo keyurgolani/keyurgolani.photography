@@ -32,7 +32,8 @@ const READ_METHODS = new Set(['GET', 'HEAD']);
  *   a mutation), and each page, handler and action runs requireCurator()
  *   again.
  * - With `CURATION_ENABLED=true`, every other path needs the curator's
- *   `Host` too (421 otherwise), so the curator process answers no other name.
+ *   `Host` too (421 otherwise). Only `/_next/static` and `/_next/image`,
+ *   outside the matcher, answer any `Host`, with the same bytes as on web.
  * - Every other path takes only GET, HEAD and OPTIONS. Nothing outside the
  *   curator prefixes mutates (the route-inventory test), so a POST there,
  *   such as a server action ID posted to `/`, gets a 404 before Next looks

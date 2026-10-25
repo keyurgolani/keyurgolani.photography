@@ -80,36 +80,51 @@ function sourceFiles(root: string, entry: string): string[] {
 }
 
 /**
- * The URL segments an `app/` file's folder serves: route groups and
- * parallel slots dropped, intercepting markers such as `(..)` stripped.
- * Null for a file outside app/.
+ * The URL segments an `app/` file's folder serves, with route groups and
+ * parallel slots dropped. With `resolve`, an intercepting folder is placed
+ * where Next serves it: `(.)name` at its own level, each `(..)` one level up,
+ * `(...)name` at the root, counted in URL segments as Next counts them.
+ * Without it, the folder stays as written, which is the literal URL Next
+ * also answers. Null for a file outside app/.
  */
-export function urlSegments(file: string): string[] | null {
+export function urlSegments(file: string, resolve = true): string[] | null {
     if (!file.startsWith('app/')) return null;
     const folders = path.posix.dirname(file).split('/').slice(1);
     const segments: string[] = [];
     for (const folder of folders) {
         if (folder.startsWith('@')) continue;
         if (/^\([^.)][^)]*\)$/.test(folder)) continue;
-        const name = folder.replace(/^(?:\(\.{1,3}\))+/, '');
-        if (name) segments.push(name);
+        const intercept = /^((?:\(\.{1,3}\))+)(.*)$/.exec(folder);
+        if (intercept && resolve) {
+            for (const marker of intercept[1].match(/\(\.{1,3}\)/g) ?? []) {
+                if (marker === '(..)') segments.pop();
+                else if (marker === '(...)') segments.length = 0;
+            }
+            if (intercept[2]) segments.push(intercept[2]);
+        } else {
+            segments.push(folder);
+        }
     }
     return segments;
 }
 
-/** Whether an `app/` file serves, or lives under, a curator URL. */
+/** Both URLs an `app/` file's folder answers: where Next serves it, and the folder as written. */
+function urlsOf(file: string): string[][] {
+    const resolved = urlSegments(file, true);
+    const literal = urlSegments(file, false);
+    return resolved && literal ? [resolved, literal] : [];
+}
+
+/** Whether an `app/` file serves, or lives under, a curator URL, by either URL it answers. */
 export function isCuratorFile(file: string): boolean {
-    const segments = urlSegments(file);
-    return segments !== null && isCuratorPath(`/${segments.join('/')}`);
+    return urlsOf(file).some((segments) => isCuratorPath(`/${segments.join('/')}`));
 }
 
 const isDynamic = (segment: string | undefined) => segment !== undefined && segment.startsWith('[');
 
 /** Whether a route file's URL starts with a dynamic segment where a curator path could match it: `/[x]` or `/api/[x]`. */
 function canServeCuratorPaths(file: string): boolean {
-    const segments = urlSegments(file);
-    if (!segments) return false;
-    return isDynamic(segments[0]) || (segments[0] === 'api' && isDynamic(segments[1]));
+    return urlsOf(file).some((segments) => isDynamic(segments[0]) || (segments[0] === 'api' && isDynamic(segments[1])));
 }
 
 function hasDirective(statements: ts.NodeArray<ts.Statement>, directive: string): boolean {
