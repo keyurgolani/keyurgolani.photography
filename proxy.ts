@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { CURATOR_FRAME_POLICY, CURATOR_RESPONSE_HEADERS, evaluateCuratorRequest, isCuratorPath } from './lib/curation/auth/policy';
+import { CURATOR_FRAME_POLICY, CURATOR_RESPONSE_HEADERS, evaluateCuratorRequest, isCurationEnabled, isCuratorPath } from './lib/curation/auth/policy';
 import { hasEncodedSeparator, isPublicDerivativePath, isUnderPhotos } from './utils/publicDerivatives';
 
 const PLAIN_TEXT = { 'Content-Type': 'text/plain; charset=utf-8', 'X-Content-Type-Options': 'nosniff' };
@@ -31,6 +31,8 @@ const READ_METHODS = new Set(['GET', 'HEAD']);
  *   the checks in lib/curation/auth/policy.ts (bind, `Host`, and `Origin` on
  *   a mutation), and each page, handler and action runs requireCurator()
  *   again.
+ * - With `CURATION_ENABLED=true`, every other path needs the curator's
+ *   `Host` too (421 otherwise), so the curator process answers no other name.
  * - Every other path takes only GET, HEAD and OPTIONS. Nothing outside the
  *   curator prefixes mutates (the route-inventory test), so a POST there,
  *   such as a server action ID posted to `/`, gets a 404 before Next looks
@@ -60,6 +62,16 @@ export function proxy(request: NextRequest): NextResponse {
         const response = NextResponse.next();
         for (const [name, value] of Object.entries(CURATOR_RESPONSE_HEADERS)) response.headers.set(name, value);
         return response;
+    }
+    // On the curator process, the public paths answer only the curator's
+    // Host too, so nothing it serves differs by Host from what the tunnel sees.
+    if (isCurationEnabled(process.env)) {
+        const denial = evaluateCuratorRequest(
+            { host: request.headers.get('host'), origin: null, forwardedHost: request.headers.get('x-forwarded-host'), mutation: false },
+            process.env,
+            process.argv,
+        );
+        if (denial !== null) return curatorDenial(denial.status);
     }
     if (!READ_METHODS.has(method) && method !== 'OPTIONS') return notFound();
     if (!isUnderPhotos(pathname) || isPublicDerivativePath(pathname)) return NextResponse.next();

@@ -221,6 +221,9 @@ if ! jq -e '(.services.curator.network_mode // "") == "" and (.services.curator.
     and ([.services | to_entries[] | select(.key != "curator") | (.value.networks // {"default": null}) | keys[]] | index("curator") == null)' <<<"$resolved" >/dev/null; then
   fail "curator must be on the curator network alone, and no other service may join it."
 fi
+if ! jq -e '.services.curator.healthcheck.test | index("Host: localhost:3001") != null' <<<"$resolved" >/dev/null; then
+  fail "curator's healthcheck must send Host: localhost:3001, since the curator answers no other Host."
+fi
 if ! jq -e '.services.curator.user == "1001:1001"' <<<"$resolved" >/dev/null; then
   fail "curator must run as user 1001:1001, the watcher's uid."
 fi
