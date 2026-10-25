@@ -229,7 +229,9 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         expect(await ready(started.base), started.output()).toMatchObject(degraded);
         await expectServed(url, started.base);
 
-        // With the pointer folder gone, the process still remembers the cutover and the revision.
+        // With the pointer folder gone, it keeps serving the revision it loaded. The committed activation is still
+        // there, so this shows the last loaded revision is kept, not that the cutover is remembered without it.
+        // The unit tests cover that ("remembers a cutover it saw").
         fs.rmSync(catalogPaths(damaged.root).active, { recursive: true });
         expect(await ready(started.base), started.output()).toMatchObject(degraded);
         await expectServed(url, started.base);
