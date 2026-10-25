@@ -280,14 +280,16 @@ export function createWatcherHandlers(
         try {
             writeUprightMarker(rebuilt.length, undefined, undefined, retry);
         } catch (error) {
-            logger.error(`[ImageWatcher] Could not write ${uprightMarkerPath()}: ${error instanceof Error ? error.message : String(error)}. The next start rebuilds the orientation-tagged photos again.`);
+            logger.error(`[ImageWatcher] Could not write ${uprightMarkerPath()}: ${error instanceof Error ? error.message : String(error)}. The next start rebuilds the orientation-tagged and unreadable photos again.`);
             return;
         }
         if (rebuilt.length > 0) {
             logger.log(`[ImageWatcher] Rebuilt the sets of ${uprightPhotos(rebuilt, unreadable)}. Clear the /_next/image cache, so it drops what it made from the old sets.`);
         }
         for (const [kind, list] of byKind(retry, unreadable)) {
-            logger.log(`[ImageWatcher] These ${kind} photos failed to rebuild, so each start tries them again until they build: ${list.join(', ')}.`);
+            logger.log(list.length === 1
+                ? `[ImageWatcher] This ${kind} photo failed to rebuild, so each start tries it again until it builds: ${list[0]}.`
+                : `[ImageWatcher] These ${kind} photos failed to rebuild, so each start tries them again until they build: ${list.join(', ')}.`);
         }
     }
 
@@ -375,7 +377,7 @@ export function createWatcherHandlers(
                 const { files, reowned, upright, unreadable: unread, shared } = await planSources({ force });
                 const unreadable = new Set(unread);
                 if (!cacheFolderWritable()) {
-                    logger.error(`[ImageWatcher] ${path.dirname(uprightMarkerPath())} can't be written, so the watcher can't record which sets it rebuilt. Until it can, every start rebuilds the orientation-tagged photos again. A set whose rebuild was refused, since another source still in the library last built it, keeps that source's outputs even after that source is edited, until cache/set-sources can be written again.`);
+                    logger.error(`[ImageWatcher] ${path.dirname(uprightMarkerPath())} can't be written, so the watcher can't record which sets it rebuilt. Until it can, every start rebuilds the orientation-tagged and unreadable photos again. A set whose rebuild was refused, since another source still in the library last built it, keeps that source's outputs even after that source is edited, until cache/set-sources can be written again.`);
                 }
                 for (const { file, owner, undecodable } of shared) {
                     logger.log(`[ImageWatcher] Skipping ${file}: ${undecodable ? `it can't be decoded, so ${owner} has the derivatives they share` : `it shares its derivatives with ${owner}`}.`);
@@ -421,7 +423,11 @@ export function createWatcherHandlers(
                     const left = upright.filter((file) => outcome(file) === 'skipped');
                     const failed = upright.filter((file) => outcome(file) === 'failed');
                     if (left.length === 0) recordUpright(upright.filter((file) => outcome(file) === 'done'), failed, unreadable);
-                    else for (const [kind, list] of byKind(left, unreadable)) logger.log(`[ImageWatcher] These ${kind} photos weren't rebuilt, so the next start tries again: ${list.join(', ')}.`);
+                    else for (const [kind, list] of byKind(left, unreadable)) {
+                        logger.log(list.length === 1
+                            ? `[ImageWatcher] This ${kind} photo wasn't rebuilt, so the next start tries again: ${list[0]}.`
+                            : `[ImageWatcher] These ${kind} photos weren't rebuilt, so the next start tries again: ${list.join(', ')}.`);
+                    }
                 }
                 // Last, once the batch has written everything, marker included.
                 logger.log(

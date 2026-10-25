@@ -1019,7 +1019,7 @@ describe('the one-time rebuild of orientation-tagged photos', { timeout: 60_000 
 
         expect(await batch).toEqual({ processed: [], skipped: ['turned.jpg'], errors: [] });
         expect(fs.existsSync(marker())).toBe(false);
-        expect(logs).toContain("[ImageWatcher] These orientation-tagged photos weren't rebuilt, so the next start tries again: turned.jpg.");
+        expect(logs).toContain("[ImageWatcher] This orientation-tagged photo wasn't rebuilt, so the next start tries again: turned.jpg.");
 
         expect(await newHandlers().queueStartupBatch()).toEqual({ processed: ['turned.jpg'], skipped: [], errors: [] });
         expect(await outputChannels('turned')).toEqual(Array(7).fill('blue'));
@@ -1037,7 +1037,7 @@ describe('the one-time rebuild of orientation-tagged photos', { timeout: 60_000 
         expect(await optimizedSize('turned.jpg')).toEqual(UPRIGHT);
         expect(JSON.parse(fs.readFileSync(marker(), 'utf8'))).toEqual({ rebuiltAt: expect.any(String), photos: 1, retry: ['broken.jpg'] });
         expect(logs).toContain('[ImageWatcher] Rebuilt the sets of 1 orientation-tagged photo. Clear the /_next/image cache, so it drops what it made from the old sets.');
-        expect(logs).toContain('[ImageWatcher] These orientation-tagged photos failed to rebuild, so each start tries them again until they build: broken.jpg.');
+        expect(logs).toContain('[ImageWatcher] This orientation-tagged photo failed to rebuild, so each start tries it again until it builds: broken.jpg.');
 
         // The next start leaves turned.jpg's set alone, sideways or not, and tries broken.jpg again
         fs.writeFileSync(lib.file('optimized/turned.webp'), await sideways());
@@ -1072,15 +1072,46 @@ describe('the one-time rebuild of orientation-tagged photos', { timeout: 60_000 
         expect(JSON.parse(fs.readFileSync(marker(), 'utf8'))).toEqual({ rebuiltAt: expect.any(String), photos: 1, retry: ['corrupt.jpg'] });
         expect(logs).toContain('[ImageWatcher] Rebuilding the sets of 1 orientation-tagged photo and 1 unreadable photo once, since a set written before derivatives were turned upright shows its photo turned or mirrored, and an unreadable photo may carry an orientation tag.');
         expect(logs).toContain('[ImageWatcher] Rebuilt the sets of 1 orientation-tagged photo. Clear the /_next/image cache, so it drops what it made from the old sets.');
-        expect(logs).toContain('[ImageWatcher] These unreadable photos failed to rebuild, so each start tries them again until they build: corrupt.jpg.');
-        expect(logs.some((line) => line.startsWith('[ImageWatcher] These orientation-tagged photos'))).toBe(false);
+        expect(logs).toContain('[ImageWatcher] This unreadable photo failed to rebuild, so each start tries it again until it builds: corrupt.jpg.');
+        expect(logs.some((line) => line.startsWith('[ImageWatcher] This orientation-tagged photo'))).toBe(false);
 
         // The next start retries only corrupt.jpg, and still calls it unreadable
         logs.length = 0;
         expect(await newHandlers().queueStartupBatch()).toEqual({ processed: [], skipped: [], errors: ['corrupt.jpg'] });
         expect(logs).toContain('[ImageWatcher] Rebuilding the sets of 1 unreadable photo once, since a set written before derivatives were turned upright shows its photo turned or mirrored, and an unreadable photo may carry an orientation tag.');
-        expect(logs).toContain('[ImageWatcher] These unreadable photos failed to rebuild, so each start tries them again until they build: corrupt.jpg.');
+        expect(logs).toContain('[ImageWatcher] This unreadable photo failed to rebuild, so each start tries it again until it builds: corrupt.jpg.');
         expect(logs.some((line) => line.includes('orientation-tagged photo'))).toBe(false);
+    });
+
+    it("names an unreadable photo left unbuilt as unreadable, and lists several as these", async () => {
+        await oldLibrary();
+        // Both sort after turned.jpg, so they wait in the queue while it is mid-encode
+        fs.writeFileSync(lib.file('unread-a.jpg'), corrupt);
+        fs.writeFileSync(lib.file('unread-b.jpg'), corrupt);
+        const single = newHandlers();
+        const held = gate.arm();
+        const batch = single.queueStartupBatch();
+        await held.reached;
+        single.stop();
+        held.release();
+
+        expect(await batch).toEqual({ processed: ['turned.jpg'], skipped: ['unread-a.jpg', 'unread-b.jpg'], errors: [] });
+        expect(fs.existsSync(marker())).toBe(false);
+        expect(logs).toContain("[ImageWatcher] These unreadable photos weren't rebuilt, so the next start tries again: unread-a.jpg, unread-b.jpg.");
+        expect(logs.some((line) => line.includes('orientation-tagged photo') && line.includes("rebuilt, so the next start"))).toBe(false);
+
+        // Once one of them is gone, the other is named alone
+        fs.rmSync(lib.file('unread-b.jpg'));
+        logs.length = 0;
+        const again = newHandlers();
+        const heldAgain = gate.arm();
+        const retry = again.queueStartupBatch();
+        await heldAgain.reached;
+        again.stop();
+        heldAgain.release();
+
+        expect(await retry).toEqual({ processed: ['turned.jpg'], skipped: ['unread-a.jpg'], errors: [] });
+        expect(logs).toContain("[ImageWatcher] This unreadable photo wasn't rebuilt, so the next start tries again: unread-a.jpg.");
     });
 
     it('records it at once when no photo is tagged, and after a forced run too', async () => {
@@ -1116,10 +1147,10 @@ describe('the one-time rebuild of orientation-tagged photos', { timeout: 60_000 
         expect(await handlers.queueStartupBatch()).toEqual({ processed: ['turned.jpg'], skipped: [], errors: [] });
         expect(await optimizedSize('turned.jpg')).toEqual(UPRIGHT);
         // Said up front, before any build
-        const warning = `[ImageWatcher] ${path.dirname(marker())} can't be written, so the watcher can't record which sets it rebuilt. Until it can, every start rebuilds the orientation-tagged photos again. A set whose rebuild was refused, since another source still in the library last built it, keeps that source's outputs even after that source is edited, until cache/set-sources can be written again.`;
+        const warning = `[ImageWatcher] ${path.dirname(marker())} can't be written, so the watcher can't record which sets it rebuilt. Until it can, every start rebuilds the orientation-tagged and unreadable photos again. A set whose rebuild was refused, since another source still in the library last built it, keeps that source's outputs even after that source is edited, until cache/set-sources can be written again.`;
         expect(logs.indexOf(warning)).toBeGreaterThanOrEqual(0);
         expect(logs.indexOf(warning)).toBeLessThan(logs.findIndex((line) => line.startsWith('[ImageWatcher] Processing ')));
-        expect(logs.some((line) => line.startsWith(`[ImageWatcher] Could not write ${marker()}: `) && line.endsWith('The next start rebuilds the orientation-tagged photos again.'))).toBe(true);
+        expect(logs.some((line) => line.startsWith(`[ImageWatcher] Could not write ${marker()}: `) && line.endsWith('The next start rebuilds the orientation-tagged and unreadable photos again.'))).toBe(true);
         expect(logs.some((line) => line.startsWith('[ImageWatcher] Rebuilt the sets'))).toBe(false);
         expect(errors).toHaveBeenCalledWith(expect.stringMatching(/^\[imageOptimizer\] Couldn't record that turned\.jpg's set was built from it: /));
     });
