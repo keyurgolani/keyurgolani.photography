@@ -4,7 +4,7 @@ import path from 'node:path';
 import { atomicWriteJson } from '../storage/atomicWrite';
 import { isRecord } from '../storage/document';
 import { hasErrorCode, PRIVATE_DIR_MODE, timestampOf } from '../storage/fsx';
-import { ASSET_REVISION_RE, DECISION_ID_RE, mintPhotoId, PHOTO_ID_RE } from './ids';
+import { ASSET_REVISION_RE, DECISION_ID_RE, isLibraryPath, mintPhotoId, PHOTO_ID_RE } from './ids';
 import { identityPaths } from './registry';
 
 /**
@@ -73,11 +73,7 @@ const SHAPES: Record<DecisionType, { path: 'required' | 'none'; photoId: 'requir
     reprofile: { path: 'none', photoId: 'optional', merge: 'none', assetRevision: 'none' },
 };
 
-/** A library-relative POSIX path with no empty, `.`, or `..` segment. */
-export function isLibraryPath(value: string): boolean {
-    // An empty path, an absolute one, and a doubled slash all split into an empty segment.
-    return !value.includes('\0') && value.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
-}
+export { isLibraryPath };
 
 /** Check a parsed decision file. Returns the decision, or why it isn't one. */
 export function parseDecision(value: unknown): { decision: IdentityDecision } | { invalid: string } {
