@@ -16,12 +16,14 @@ const nextConfig = {
     // A response over this limit hangs /_next/image instead of failing, so it stays
     // high. localPatterns below keeps the photo library out of /_next/image entirely.
     maximumResponseBody: 500_000_000,
-    // /_next/image optimizes only the two profile portraits, so it answers 400
-    // for anything under /assets/photos, originals and legacy derivatives alike.
-    // Photos come from /media sets, which never go through /_next/image. The
-    // portraits are listed by exact path, which no encoded `..` can climb out
-    // of. The pages import them statically, and Next adds /_next/static/media
-    // for those itself.
+    // Of the public files, /_next/image optimizes only the two profile
+    // portraits, so it answers 400 for every url under /assets/photos,
+    // originals and legacy derivatives alike. Photos come from /media sets,
+    // which never go through /_next/image. The portraits are listed by exact
+    // path, which no encoded `..` can climb out of. The pages import them
+    // statically, and at load Next adds its own /_next/static/media patterns to
+    // this list for those. proxy.ts is what keeps a url under those from
+    // reaching /assets/photos.
     localPatterns: [
       { pathname: '/assets/profile/front.png', search: '' },
       { pathname: '/assets/profile/back.png', search: '' },

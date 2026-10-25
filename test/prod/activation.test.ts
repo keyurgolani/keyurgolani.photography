@@ -328,7 +328,8 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         await legacy.arrayBuffer();
         const optimized = await fetch(`${base}/_next/image?url=${encodeURIComponent(legacyUrl)}&w=400&q=75`);
         expect(optimized.status).toBe(400);
-        await optimized.arrayBuffer();
+        // Refused by images.localPatterns, before Next reads the file.
+        expect(await optimized.text()).toBe('"url" parameter is not allowed');
 
         // /api/image is gone.
         const image = await fetch(`${base}/api/image?src=${encodeURIComponent(`${legacyBase}.jpg`)}&w=800`);
