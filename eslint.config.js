@@ -52,18 +52,34 @@ const TESTS_AND_RULESET = ['**/__tests__/**', 'lib/catalog/ruleset.ts']
 // preview's routes never import the public reader, so draft and public data
 // never mix in one response. Like the patterns above, every entry that sets
 // no-restricted-imports outside those two folders repeats PREVIEW_READER_PATTERNS.
-const PREVIEW_READER_PATTERNS = [
-  {
-    regex: '(^|/)catalog/preview-reader(\\.ts)?$',
-    message: 'Only app/curation/** and lib/catalog/** may import the preview reader, which reads drafts.',
-  },
-]
-const PUBLIC_READER_PATTERNS = [
-  {
-    regex: '(^|/)catalog/public-reader(\\.ts)?$',
-    message: 'The preview renders the draft through lib/catalog/preview-reader.ts and never reads the public catalog.',
-  },
-]
+// Each specifier that resolves to the module, by alias or relative path:
+// any extension TypeScript maps to it (`.js` under bundler resolution), a
+// doubled or `./` separator, and a trailing slash. Case-insensitive, as
+// no-restricted-imports matches by default and macOS resolves.
+const catalogModule = (name) => `(^|/)catalog(/+\\.)*/+${name}(\\.[cm]?[jt]sx?)?/?$`
+const PREVIEW_READER_SPECIFIER = catalogModule('preview-reader')
+const PUBLIC_READER_SPECIFIER = catalogModule('public-reader')
+const PREVIEW_READER_MESSAGE = 'Only app/curation/** and lib/catalog/** may import the preview reader, which reads drafts.'
+const PUBLIC_READER_MESSAGE = 'The preview renders the draft through lib/catalog/preview-reader.ts and never reads the public catalog.'
+const PREVIEW_READER_PATTERNS = [{ regex: PREVIEW_READER_SPECIFIER, message: PREVIEW_READER_MESSAGE }]
+const PUBLIC_READER_PATTERNS = [{ regex: PUBLIC_READER_SPECIFIER, message: PUBLIC_READER_MESSAGE }]
+// no-restricted-imports sees only static imports and exports, so these catch
+// the module loaded any other way: `import()` with a string or a template
+// (static, or ending in the module's path), `require()` or any other call
+// given its path, and TypeScript's `import x = require()`. esquery's regex
+// can't hold a `/`, so each one is written as \u002F, which RegExp reads as `/`.
+const loadedBy = (specifier, message) => {
+  const re = `/${specifier.replaceAll('/', '\\u002F')}/i`
+  return [
+    { selector: `ImportExpression[source.value=${re}]`, message },
+    { selector: `ImportExpression > TemplateLiteral.source > TemplateElement[value.cooked=${re}]`, message },
+    { selector: `CallExpression > Literal.arguments[value=${re}]`, message },
+    { selector: `CallExpression > TemplateLiteral.arguments > TemplateElement[value.cooked=${re}]`, message },
+    { selector: `TSExternalModuleReference > Literal[value=${re}]`, message },
+  ]
+}
+const PREVIEW_READER_LOADS = loadedBy(PREVIEW_READER_SPECIFIER, PREVIEW_READER_MESSAGE)
+const PUBLIC_READER_LOADS = loadedBy(PUBLIC_READER_SPECIFIER, PUBLIC_READER_MESSAGE)
 const PREVIEW_READERS = ['app/curation/**', 'lib/catalog/**']
 
 export default tseslint.config(
@@ -128,6 +144,8 @@ export default tseslint.config(
     ignores: PREVIEW_READERS,
     rules: {
       'no-restricted-imports': ['error', { patterns: PREVIEW_READER_PATTERNS }],
+      // The only no-restricted-syntax entries, so nothing below replaces them.
+      'no-restricted-syntax': ['error', ...PREVIEW_READER_LOADS],
     },
   },
   {
@@ -150,6 +168,7 @@ export default tseslint.config(
     files: ['app/curation/**/preview/**'],
     rules: {
       'no-restricted-imports': ['error', { patterns: [...RULE_RUNNER_PATTERNS, ...PUBLIC_READER_PATTERNS] }],
+      'no-restricted-syntax': ['error', ...PUBLIC_READER_LOADS],
     },
   },
   {
