@@ -237,8 +237,10 @@ describe('other bytes back', { timeout: 60_000 }, () => {
         await w.pass();
         const item = await w.event(w.missingId);
         expect(await bindReplacement({ root: w.root, eventId: item.id, expectedVersion: item.version, actor: ACTOR })).toMatchObject({ ok: false, code: 'needs-choice' });
-        expect(pendingDecisions(w)).toEqual([]);
+        // A file the watcher hasn't seen yet would only be rejected out of sight on its next pass.
         fs.writeFileSync(w.lib.file('harbor/elsewhere.jpg'), images.third);
+        expect(await bindReplacement({ root: w.root, eventId: item.id, expectedVersion: item.version, actor: ACTOR, path: 'harbor/elsewhere.jpg' })).toMatchObject({ ok: false, code: 'refused', message: expect.stringContaining("hasn't seen") });
+        expect(pendingDecisions(w)).toEqual([]);
         await w.pass();
         const again = await w.event(w.missingId);
         const bound = await bindReplacement({ root: w.root, eventId: again.id, expectedVersion: again.version, actor: ACTOR, path: 'harbor/elsewhere.jpg' });
