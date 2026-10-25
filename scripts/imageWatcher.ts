@@ -109,6 +109,9 @@ function requireLibraryRoot(): string {
 /** The replacement items a build couldn't settle yet, which the candidate sink settles on its next delivery. One per process. */
 const owed = owedSettles();
 
+/** The failed-build items a build couldn't settle yet, which the sources sink settles on its next delivery. One per process. */
+const owedSources = owedSettles();
+
 /**
  * Where the identity step's facts go: the log, the curation inbox, which
  * opens a draft item for each, then #17's candidate sink, which records on
@@ -117,12 +120,12 @@ const owed = owedSettles();
  * opens an item for each build that stays failed.
  */
 function factSinks() {
-    return [jsonLogSink(), createCurationSink(), createCandidateSink({ owed }), createSourcesSink()];
+    return [jsonLogSink(), createCurationSink(), createCandidateSink({ owed }), createSourcesSink({ owed: owedSources })];
 }
 
-/** The derivative worker's builds, each followed by recording its set on the revision's replacement item, or owing that to the candidate sink, and settling a failed build's item. */
+/** The derivative worker's builds, each followed by recording its set on the revision's replacement item and settling a failed build's item, or owing those to their sinks. */
 function workerBuilds() {
-    return { build: recordingFailuresAfterBuild(settlingAfterBuild(buildDerivativeSet, { owed })) };
+    return { build: recordingFailuresAfterBuild(settlingAfterBuild(buildDerivativeSet, { owed }), { owed: owedSources }) };
 }
 
 /** A file the identity scan reads, or any folder, since a moved folder moves the photos in it. */

@@ -6,7 +6,7 @@ import { folderOf } from '../identity/scan';
 import { PHOTO_ID_RE } from '../identity/ids';
 import type { DerivativeJob, IdentityFact, PhotoRecord, Registry } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
-import { candidateOf, readUsableEvent, replacementEventIds, type BuildFunction } from './candidates';
+import { candidateOf, readUsableEvent, replacementEventIds, type BuildFunction, type OwedSettles } from './candidates';
 import {
     CURATION_SCHEMA_VERSION,
     eventIdOf,
@@ -40,9 +40,10 @@ import { SINK_WAIT_MS } from './sink';
  *
  * The sink's first delivery, at the watcher's start, looks at every item
  * once, which recovers what a crash left unsettled. Each later one reads
- * the registry once and settles only the photos the pass's facts name and
- * the photos retired since the last delivery, since an archive or a merge
- * #10 applies names no fact of its own.
+ * the registry once and settles only the photos the pass's facts name, the
+ * photos whose settle after a build failed, and the photos retired since
+ * the last delivery, since an archive or a merge #10 applies names no fact
+ * of its own.
  *
  * Nothing here deletes, archives, unpublishes, or writes anything outside
  * `curation/`. It reads the registry without its lock and takes only the
@@ -314,6 +315,12 @@ export async function settleSources(root: string, options: SourcesOptions = {}):
 export interface SourcesSinkOptions extends Omit<SourcesOptions, 'only' | 'registry'> {
     /** Defaults to the data root at each delivery. */
     root?: string;
+    /**
+     * The photos whose settle after a build failed, shared between the sink
+     * and recordingFailuresAfterBuild(), as 17-1's candidate sink shares its
+     * own. The sink settles them on its next delivery.
+     */
+    owed?: OwedSettles;
 }
 
 function readyRoot(root: string | undefined): string {
@@ -333,22 +340,29 @@ const retiredIn = (registry: Registry) => new Set(Object.values(registry.photos)
  * A fact sink that runs after #14's sink has opened the pass's items. Its
  * first delivery settles every item, which recovers what a crash left
  * unsettled. Each later one reads the registry once and settles only the
- * photos the facts name and those retired since the last delivery that
- * succeeded, since #10 applies an archive, or retires a merged photo,
- * without a fact for it. The pass delivers its pending facts until every
- * sink has them, so a delivery that failed names them again. Like #14's
- * sink, an I/O or lock error fails the delivery.
+ * photos the facts name, those `owed` holds, whose settle after a build
+ * failed, and those retired since the last delivery that succeeded, since
+ * #10 applies an archive, or retires a merged photo, without a fact for it.
+ * The pass delivers its pending facts until every sink has them, so a
+ * delivery that failed names them again, and an owed photo stays owed until
+ * a delivery settles it. Like #14's sink, an I/O or lock error fails the
+ * delivery.
  */
 export function createSourcesSink(options: SourcesSinkOptions = {}): FactSink {
-    const { root, ...rest } = options;
+    const { root, owed, ...rest } = options;
     let retired: Set<string> | null = null;
     return async (facts) => {
         const at = readyRoot(root);
         const registry = await readRegistry(at);
         const now = retiredIn(registry);
         const known = retired;
+        const taken = owed?.take();
         if (known === null) await settleSources(at, { ...rest, registry });
-        else await settleSources(at, { ...rest, registry, only: [...namedPhotos(facts), ...[...now].filter((photoId) => !known.has(photoId))] });
+        else {
+            const owedPhotos = (taken?.refs ?? []).map((ref) => ref.photoId);
+            await settleSources(at, { ...rest, registry, only: [...namedPhotos(facts), ...owedPhotos, ...[...now].filter((photoId) => !known.has(photoId))] });
+        }
+        taken?.settled();
         retired = now;
     };
 }
@@ -357,17 +371,21 @@ export function createSourcesSink(options: SourcesSinkOptions = {}): FactSink {
  * `build`, then settle the built photo's failed-build item, for #10's
  * worker, so a failure that stays shows without waiting for the next pass.
  * A build that throws settles nothing, and a settle that fails is logged and
- * left to the next pass, never changing the build's outcome.
+ * added to `owed`, so the sources sink settles it on its next delivery, the
+ * next pass's; with no `owed`, the watcher's next start does. Neither ever
+ * changes the build's outcome.
  */
 export function recordingFailuresAfterBuild(build: BuildFunction, options: Omit<SourcesSinkOptions, 'root'> = {}): BuildFunction {
-    const { logger = console } = options;
+    const { logger = console, owed, ...settleOptions } = options;
     return async (job: DerivativeJob, buildOptions: BuildOptions) => {
         const outcome = await build(job, buildOptions);
         if (outcome.status !== 'ready' && outcome.status !== 'failed') return outcome;
         try {
-            await settleSources(readyRoot(buildOptions.root), { ...options, only: job });
+            await settleSources(readyRoot(buildOptions.root), { ...settleOptions, logger, only: job });
         } catch (error) {
-            logger.warn(`[curation] Could not record the build of ${job.photoId} ${job.assetRevision} in the inbox yet; the next pass does: ${error instanceof Error ? error.message : String(error)}`);
+            owed?.add(job);
+            const when = owed ? 'the next pass settles it' : "the watcher's next start settles it";
+            logger.warn(`[curation] Could not record the build of ${job.photoId} ${job.assetRevision} in the inbox yet; ${when}: ${error instanceof Error ? error.message : String(error)}`);
         }
         return outcome;
     };
