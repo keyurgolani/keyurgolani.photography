@@ -39,10 +39,17 @@ async function openPage(page: Page, photoId: string): Promise<void> {
     await expect(header(page).getByRole('heading', { level: 1 })).toHaveText('Fixture harbor');
 }
 
-async function openFromSeries(page: Page, photoId: string, testInfo: TestInfo): Promise<void> {
+/**
+ * Opens the modal from the series entry: a tap on the touch projects or a click, or Enter on the entry. Chromium shows
+ * the ring on the Close that showModal() focuses only when a key opened the dialog, so the keyboard checks open it so.
+ */
+async function openFromSeries(page: Page, photoId: string, testInfo: TestInfo, via: 'pointer' | 'keyboard' = 'pointer'): Promise<void> {
     await page.goto(`${origin()}/work/harbor`);
     await waitForHydration(page);
-    if (testInfo.project.use.hasTouch) await entry(page, photoId).tap();
+    if (via === 'keyboard') {
+        await entry(page, photoId).focus();
+        await page.keyboard.press('Enter');
+    } else if (testInfo.project.use.hasTouch) await entry(page, photoId).tap();
     else await entry(page, photoId).click();
     await expect(page).toHaveURL(`${origin()}${href(photoId)}`);
     await expect(dialog(page)).toBeVisible();
@@ -201,13 +208,25 @@ test.describe('presentation', () => {
         await page.emulateMedia({ reducedMotion: 'reduce' });
         await openPage(page, P[0]);
         const before = await stage(page).boundingBox();
-        // Every frame from before the move until the new photograph shows: anything animating, and any transform on the stage.
+        // Every frame from before the move until the new photograph shows: anything that animates for longer than the
+        // reduced-motion baseline's 0.01 ms, anything that animates position or transform at all, and any transform on the stage.
         await page.evaluate(() => {
-            const record = { animations: 0, transforms: [] as string[], running: true };
+            const record = { animations: [] as string[], transforms: [] as string[], running: true };
             (window as unknown as { kgMotion: typeof record }).kgMotion = record;
+            const MOVES = /^(transform|translate|scale|rotate|left|right|top|bottom|inset|margin|offset)/i;
             const sample = () => {
                 if (!record.running) return;
-                record.animations = Math.max(record.animations, document.getAnimations().length);
+                for (const animation of document.getAnimations()) {
+                    const effect = animation.effect as KeyframeEffect | null;
+                    const duration = Number(effect?.getTiming().duration ?? 0);
+                    const properties =
+                        animation instanceof CSSTransition ? [animation.transitionProperty] : (effect?.getKeyframes() ?? []).flatMap((frame) => Object.keys(frame));
+                    const moves = properties.some((property) => MOVES.test(property));
+                    if (duration > 1 || moves) {
+                        const target = effect?.target instanceof Element ? `${effect.target.tagName}.${effect.target.className}` : 'none';
+                        record.animations.push(`${properties.join(',')} ${duration}ms on ${target}`);
+                    }
+                }
                 const stageElement = document.querySelector('[data-viewer-stage]');
                 for (const element of stageElement ? [stageElement, ...stageElement.querySelectorAll('*')] : []) {
                     const transform = getComputedStyle(element).transform;
@@ -222,17 +241,17 @@ test.describe('presentation', () => {
         await expectStill(page, P[1], 2);
         await expect(announcer(page)).toHaveText('Photograph 2 of 3');
         const motion = await page.evaluate(() => {
-            const record = (window as unknown as { kgMotion: { animations: number; transforms: string[]; running: boolean } }).kgMotion;
+            const record = (window as unknown as { kgMotion: { animations: string[]; transforms: string[]; running: boolean } }).kgMotion;
             record.running = false;
-            return { animations: record.animations, transforms: record.transforms };
+            return { animations: [...new Set(record.animations)], transforms: [...new Set(record.transforms)] };
         });
-        expect(motion).toEqual({ animations: 0, transforms: [] });
+        expect(motion).toEqual({ animations: [], transforms: [] });
         const after = await stage(page).boundingBox();
         expect(after?.x).toBeCloseTo(before?.x ?? NaN, 0);
     });
 
     test('the modal passes the #1 checks, with 44 px targets, 3:1 boundaries on the ground, and controls that reflow at 200% text', async ({ page }, testInfo) => {
-        await openFromSeries(page, P[1], testInfo);
+        await openFromSeries(page, P[1], testInfo, 'keyboard');
         const controls = [button(page, 'Close'), button(page, 'Zoom'), button(page, 'Previous photograph'), button(page, 'Next photograph'), technical(page)];
         await checkSurface(page, { controls });
         // Rule 8: the boundaries and icons use the tokens styles/__tests__/surfaces.test.ts holds at 3:1 on the ground.
@@ -257,7 +276,7 @@ test.describe('presentation', () => {
         await page.setViewportSize({ width: 640, height: 400 });
         for (const mode of ['page', 'modal'] as const) {
             if (mode === 'page') await openPage(page, P[1]);
-            else await openFromSeries(page, P[1], testInfo);
+            else await openFromSeries(page, P[1], testInfo, 'keyboard');
             await expect(viewer(page)).toHaveAttribute('data-viewer-mode', mode);
             const controls = viewer(page).locator('a, button');
             await expectMinTargetSize(controls, 44);
@@ -271,7 +290,7 @@ test.describe('presentation', () => {
     });
 
     test('in the modal, Enter and Space work on every button, and focus stays on the one pressed', async ({ page }, testInfo) => {
-        await openFromSeries(page, P[1], testInfo);
+        await openFromSeries(page, P[1], testInfo, 'keyboard');
         const zoom = button(page, 'Zoom');
         await zoom.focus();
         await page.keyboard.press('Enter');
@@ -309,7 +328,7 @@ test.describe('presentation', () => {
         await expect(page).toHaveURL(`${origin()}/work/harbor`);
         await expect(entry(page, P[1])).toBeFocused();
         // Space closes it too, once.
-        await openFromSeries(page, P[1], testInfo);
+        await openFromSeries(page, P[1], testInfo, 'keyboard');
         await button(page, 'Close').focus();
         await page.keyboard.press('Space');
         await expect(page).toHaveURL(`${origin()}/work/harbor`);
