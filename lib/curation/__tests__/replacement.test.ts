@@ -14,7 +14,7 @@ import { deferEvent, retryEvent } from '../actions';
 import { createCandidateSink, settleCandidates, settlingAfterBuild } from '../candidates';
 import { runCurationCli } from '../commands';
 import type { CurationEvent } from '../events';
-import { listEvents, readEvent } from '../repository';
+import { listEvents, readEvent, withCurationLock } from '../repository';
 import { confirmReplacement } from '../resolutions';
 import { createCurationSink } from '../sink';
 import {
@@ -311,12 +311,40 @@ describe('a crash', { timeout: 60_000 }, () => {
         expect(await confirm(w, await w.event())).toMatchObject({ ok: true });
     });
 
-    it('between the registry\'s ready and the item\'s write is settled by the next pass', async () => {
+    it('between the registry\'s ready and the item\'s write is settled when the watcher starts again', async () => {
         const w = await world();
+        await w.pass();
         // The writer alone, as if the watcher died before the item was written.
         expect(await buildDerivativeSet(w.job(w.b), { logger: quiet })).toEqual({ status: 'ready', reused: false });
         expect((await w.event()).candidate).toBeUndefined();
+        // A later pass of the same process names no fact for it, so it reads no item.
         await w.pass();
+        expect((await w.event()).candidate).toBeUndefined();
+        // The restarted watcher's first pass looks at every item once.
+        await w.restartPass();
+        expect(await w.event()).toMatchObject({ status: 'open', candidate: { state: 'ready', profileId: w.profileId } });
+    });
+
+    it('in a delivery is settled when the pass delivers the fact again, and a pass settles only the revisions its facts name', async () => {
+        const w = await world();
+        const sink = createCandidateSink({ root: w.root, logger: quiet, waitMs: 100 });
+        // The watcher's start: every item is looked at, and B's is still building.
+        await sink([]);
+        expect((await w.event()).candidate).toBeUndefined();
+        expect(await buildDerivativeSet(w.job(w.b), { logger: quiet })).toEqual({ status: 'ready', reused: false });
+        const before = layers(w);
+        const fact = (photoId: string, assetRevision: string, factId: string) => ({ type: 'replaced' as const, factId, key: `replaced:${photoId}:${assetRevision}`, photoId, assetRevision, path: P_PATH, folder: 'harbor', observedAt: new Date().toISOString() });
+        // A pass with no facts, or with facts for other revisions, leaves B's item alone.
+        await sink([]);
+        await sink([fact(w.q, `sha256-${'e'.repeat(64)}`, 'other'), { ...fact(w.p, w.b, 'new-one'), type: 'new' as const }]);
+        expect(layers(w)).toEqual(before);
+        // A delivery that fails writes nothing, and the pass keeps the fact pending.
+        await withCurationLock(w.root, {}, async () => {
+            await expect(sink([fact(w.p, w.b, 'named')])).rejects.toThrow();
+        });
+        expect(layers(w)).toEqual(before);
+        // Delivered again, it settles.
+        await sink([fact(w.p, w.b, 'named')]);
         expect(await w.event()).toMatchObject({ status: 'open', candidate: { state: 'ready', profileId: w.profileId } });
     });
 });
