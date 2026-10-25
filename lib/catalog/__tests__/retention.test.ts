@@ -12,6 +12,7 @@ import { references } from '../references';
 import { activationFileName, CATALOG_LOCK, writeActivation } from '../repository';
 import { errorText, GC_EXIT_CODES, GC_GRACE_MS, runGc, type GcOptions, type GcResult } from '../retention';
 import { gcArgs, runGcCommand } from '../retention-cli';
+import { editsDir } from '../edit-record';
 import { UsageError } from '../owner-cli';
 import { revisionIdOf } from '../schema';
 import { createTestCatalog, type TestCatalog } from '../testing';
@@ -456,7 +457,8 @@ describe('what photos gc never deletes', () => {
 
     it('leaves edits/ alone, whatever it holds', async () => {
         const { root, catalog } = await mixedRoot();
-        const edits = path.join(root, 'edits');
+        const edits = editsDir(root);
+        expect(path.relative(root, edits)).toBe('edits');
         fs.mkdirSync(edits, { mode: 0o700 });
         fs.writeFileSync(path.join(edits, `${revisionIdOf(variant(catalog.content, 8))}.json`), '{}', { mode: 0o600 });
         fs.writeFileSync(path.join(edits, 'ph_kept-edit.json'), '{"alt":"kept"}', { mode: 0o600 });
