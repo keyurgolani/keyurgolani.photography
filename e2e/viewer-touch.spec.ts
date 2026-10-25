@@ -4,8 +4,9 @@ import { expectReflow } from './support/reflow';
 import { checkSurface } from './support/surface';
 import { expectMinTargetSize } from './support/targets';
 import { expect, test } from './support/test';
-import { centerOf, realTouches, touchDrag, twoFingerSpread } from './support/touch';
+import { centerOf, doubleTap, realTouches, touchDrag, twoFingerSpread } from './support/touch';
 import { P, href, useViewerCatalog } from './support/viewerCatalog';
+import { SETTLE } from '../components/viewer/doubleTap';
 
 // #9 PR 2: touch and presentation, on #7's published fixture. Swipes run on
 // the touch projects: real touches through CDP on `mobile`, and synthetic
@@ -287,6 +288,75 @@ test.describe('swipe', () => {
         await expect(zoom).toHaveAttribute('aria-pressed', 'false');
         await swipe(page, -150);
         await expectStill(page, P[2], 3);
+    });
+});
+
+test.describe('double-tap', () => {
+    // #9c: the stage's touch-action turns the browser's double-tap zoom off, so the Viewer reads two taps on the
+    // photograph as its own Zoom (components/viewer/doubleTap.ts has the thresholds, both sides of each).
+    test.beforeEach(() => runsOn(test.info(), 'mobile', 'mobile-webkit'));
+
+    /** A scroll quiets taps for the settle (a tap that stops a fling isn't one), so each case waits out any scroll its setup made. */
+    const settled = (page: Page) => page.waitForTimeout(SETTLE + 50);
+
+    test('on a page, a double-tap on the photograph toggles Zoom, never moves, and a swipe right after still moves', async ({ page }) => {
+        await openPage(page, P[1]);
+        await settled(page);
+        const zoom = button(page, 'Zoom');
+        await doubleTap(page, await centerOf(stage(page)));
+        await expect(zoom).toHaveAttribute('aria-pressed', 'true');
+        const region = viewer(page).getByRole('region', { name: 'Zoomed photograph' });
+        await expect(region).toBeVisible();
+        await expectStill(page, P[1], 2);
+        // Zoomed, the photograph keeps pinch and pan both ways, and no browser double-tap zoom, so the Viewer's runs again.
+        await expect(region).toHaveCSS('touch-action', 'manipulation');
+        await doubleTap(page, await centerOf(region));
+        await expect(zoom).toHaveAttribute('aria-pressed', 'false');
+        await expectStill(page, P[1], 2);
+        await expect(announcer(page)).toHaveText('');
+        await swipe(page, -150);
+        await expectStill(page, P[2], 3);
+    });
+
+    test('two taps too far apart in time are two taps, and nothing zooms', async ({ page }) => {
+        await openPage(page, P[1]);
+        await settled(page);
+        await doubleTap(page, await centerOf(stage(page)), { gap: 600 });
+        await page.waitForTimeout(300);
+        await expect(button(page, 'Zoom')).toHaveAttribute('aria-pressed', 'false');
+        await expectStill(page, P[1], 2);
+    });
+
+    test('in the modal, a double-tap toggles Zoom, keeps the dialog open, and Close still lands on the opener', async ({ page }, testInfo) => {
+        await openFromSeries(page, P[0], testInfo);
+        await settled(page);
+        await doubleTap(page, await centerOf(stage(page)));
+        await expect(button(page, 'Zoom')).toHaveAttribute('aria-pressed', 'true');
+        await expectStill(page, P[0], 1);
+        await expect(dialog(page)).toBeVisible();
+        // A tap on the photograph takes focus as any tap on content does: off Close, onto the zoomed region or the body. It never leaves the dialog.
+        expect(['viewer', 'body']).toContain(await focusPlace(page));
+        await button(page, 'Close').tap();
+        await expect(page).toHaveURL(`${origin()}/work/harbor`);
+        await expect(entry(page, P[0])).toBeFocused();
+    });
+
+    test('a double-tap leaves vertical scroll alone: a mostly vertical drag still scrolls the page and never zooms or moves', async ({ page }) => {
+        const size = page.viewportSize();
+        if (size) await page.setViewportSize({ width: size.width, height: 400 });
+        await openPage(page, P[0]);
+        await settled(page);
+        const zoom = button(page, 'Zoom');
+        await doubleTap(page, await centerOf(stage(page)));
+        await expect(zoom).toHaveAttribute('aria-pressed', 'true');
+        await doubleTap(page, await centerOf(stage(page)));
+        await expect(zoom).toHaveAttribute('aria-pressed', 'false');
+        await swipe(page, -20, { dy: -120 });
+        await expectStill(page, P[0], 1);
+        await expect(zoom).toHaveAttribute('aria-pressed', 'false');
+        if (realTouches(page)) {
+            await expect.poll(() => page.evaluate(() => window.scrollY), 'the drag scrolled the page').toBeGreaterThan(0);
+        }
     });
 });
 

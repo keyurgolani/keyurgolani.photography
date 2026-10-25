@@ -174,6 +174,76 @@ test('moves replace the history entry, so one Back leaves the Viewer for the pag
     await expect(header(page)).toContainText('02 / 03');
 });
 
+/** Where the reading area's title line sits on screen: the title (when shown), and the first line of the caption or the description. */
+async function titleLine(page: Page) {
+    return page.locator('[data-surface="viewer"]').evaluate((root) => {
+        const box = (element: Element | null) => {
+            if (element === null) return null;
+            const { top, bottom } = element.getBoundingClientRect();
+            return { top, bottom };
+        };
+        const reading = root.querySelector('section[aria-labelledby]');
+        const title = reading?.querySelector('h2:not(.sr-only)') ?? null;
+        const lead = reading?.querySelector('h2 ~ p, h2 ~ div p:not(:first-child)') ?? null;
+        const leadTop = lead?.getBoundingClientRect().top ?? NaN;
+        const lineHeight = lead ? parseFloat(getComputedStyle(lead).lineHeight) : NaN;
+        return {
+            innerHeight,
+            frame: box(root.querySelector('[data-viewer-stage] figure')),
+            reading: box(reading ?? null),
+            title: box(title),
+            leadText: lead?.textContent ?? null,
+            leadLineBottom: leadTop + lineHeight,
+        };
+    });
+}
+
+test('at 1440 by 900, the title line shows under the photograph in the first screen, as the approved design keeps it', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'desktop', 'The wide layout.');
+    await page.setViewportSize({ width: 1440, height: 900 });
+    // The first photograph has a title and a caption; the second has neither, so its description leads.
+    for (const [photoId, lead] of [
+        [P[0], 'Fixture authored caption.'],
+        [P[1], 'Fixture description of photograph 0002.'],
+    ] as const) {
+        await openViewer(page, photoId);
+        const line = await titleLine(page);
+        expect(line.leadText).toBe(lead);
+        expect(line.frame && line.reading && line.frame.bottom <= line.reading.top, 'the photograph sits above the reading area').toBe(true);
+        if (photoId === P[0]) expect(line.title && line.title.top >= 0 && line.title.bottom <= line.innerHeight, 'the title shows').toBe(true);
+        expect(line.leadLineBottom, `the first line of ${lead} shows`).toBeLessThanOrEqual(line.innerHeight);
+        // The photograph still holds the screen.
+        expect(line.frame && line.frame.bottom - line.frame.top).toBeGreaterThan(line.innerHeight * 0.6);
+    }
+});
+
+test('on a phone, the reading area sits at the foot of the first screen, with the photograph centered above it and no empty ground under it', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'mobile', 'The narrow layout.');
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openViewer(page, P[1]);
+    const layout = await page.locator('[data-surface="viewer"]').evaluate((root) => {
+        const rect = (selector: string) => root.querySelector(selector)?.getBoundingClientRect() ?? null;
+        return {
+            innerHeight,
+            scrollHeight: document.documentElement.scrollHeight,
+            stage: rect('[data-viewer-stage]'),
+            frame: rect('[data-viewer-stage] figure'),
+            reading: rect('section[aria-labelledby]'),
+        };
+    });
+    expect(layout.scrollHeight, 'the Viewer is one screen').toBeLessThanOrEqual(layout.innerHeight);
+    expect(layout.reading && layout.reading.bottom, 'the reading area reaches the foot of the screen').toBeCloseTo(layout.innerHeight, 0);
+    const { stage, frame } = layout;
+    expect(stage && frame, 'the stage and the photograph').toBeTruthy();
+    if (stage && frame) {
+        const above = frame.top - stage.top;
+        const below = stage.bottom - frame.bottom;
+        // The stage keeps its top padding and none at the bottom, where the arrows' row sits.
+        expect(Math.abs(above - below)).toBeLessThan(40);
+        expect(below, 'the stage took the spare height').toBeGreaterThan(40);
+    }
+});
+
 test('the Viewer passes the #1 checks, and its controls reflow', async ({ page }) => {
     await openViewer(page, P[1]);
     const controls = [close(page), zoom(page), previous(page), next(page), technical(page)];

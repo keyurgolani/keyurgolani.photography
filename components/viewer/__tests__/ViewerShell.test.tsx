@@ -654,3 +654,192 @@ describe('ViewerShell, swipes', () => {
         expect(router.replace).not.toHaveBeenCalled();
     });
 });
+
+describe('ViewerShell, double-tap', () => {
+    const setPointerCapture = vi.fn();
+    beforeAll(() => {
+        Object.assign(HTMLElement.prototype, { setPointerCapture });
+    });
+    afterAll(() => {
+        delete (HTMLElement.prototype as Partial<HTMLElement>).setPointerCapture;
+    });
+
+    /** A pointer event at `t` ms, as the browser stamps it, from a touch unless `pointerType` says otherwise. */
+    function pointer(target: EventTarget, type: string, { pointerId = 1, x = 200, y = 300, t = 0, pointerType = 'touch', isPrimary = true } = {}) {
+        const event = new PointerEvent(type, { pointerId, clientX: x, clientY: y, pointerType, isPrimary, bubbles: true, cancelable: true });
+        Object.defineProperty(event, 'timeStamp', { value: t });
+        act(() => {
+            target.dispatchEvent(event);
+        });
+    }
+    /** One tap at `t`, lifted 50 ms later. */
+    function tap(target: EventTarget, t: number, options: { pointerId?: number; x?: number; y?: number; pointerType?: string } = {}) {
+        pointer(target, 'pointerdown', { ...options, t });
+        pointer(target, 'pointerup', { ...options, t: t + 50 });
+    }
+    function scrolled(target: EventTarget, t: number) {
+        const event = new Event('scroll');
+        Object.defineProperty(event, 'timeStamp', { value: t });
+        act(() => {
+            target.dispatchEvent(event);
+        });
+    }
+    const zoom = () => screen.getByRole('button', { name: 'Zoom' });
+    const renderZoomable = (mode: ViewerMode = 'page', n = 2) => {
+        const view = render(<ViewerShell mode={mode}>{photo(n, true)}</ViewerShell>);
+        return { ...view, move: (to: number) => view.rerender(<ViewerShell mode={mode}>{photo(to, true)}</ViewerShell>) };
+    };
+
+    it('toggles Zoom, as the button does, in both modes, and leaves focus where it was', () => {
+        for (const mode of ['page', 'modal'] as const) {
+            const { unmount } = renderZoomable(mode);
+            const focused = document.activeElement;
+            expect(zoom()).toHaveAttribute('aria-pressed', 'false');
+            tap(stage(), 1000);
+            expect(zoom()).toHaveAttribute('aria-pressed', 'false');
+            tap(stage(), 1150);
+            expect(zoom()).toHaveAttribute('aria-pressed', 'true');
+            expect(stage()).toHaveAttribute('data-zoomed', 'true');
+            expect(document.activeElement).toBe(focused);
+            // Zoomed, the stage is the scroll region, and a double-tap on it zooms back out.
+            tap(stage(), 2000);
+            tap(stage(), 2150);
+            expect(zoom()).toHaveAttribute('aria-pressed', 'false');
+            expect(router.replace).not.toHaveBeenCalled();
+            unmount();
+        }
+    });
+
+    it('takes touch only: a mouse or a pen double-click on the photograph does nothing', () => {
+        renderZoomable();
+        for (const [index, pointerType] of ['mouse', 'pen'].entries()) {
+            tap(stage(), 1000 * (index + 1), { pointerType });
+            tap(stage(), 1000 * (index + 1) + 150, { pointerType });
+            expect(zoom(), pointerType).toHaveAttribute('aria-pressed', 'false');
+        }
+    });
+
+    it('does nothing for two taps too far apart in time or place, or off the photograph', () => {
+        renderZoomable();
+        tap(stage(), 1000);
+        tap(stage(), 1351);
+        tap(stage(), 3000, { x: 200 });
+        tap(stage(), 3150, { x: 225 });
+        tap(step('Next photograph'), 5000);
+        tap(step('Next photograph'), 5150);
+        tap(screen.getByRole('button', { name: 'Show technical details' }), 7000);
+        tap(screen.getByRole('button', { name: 'Show technical details' }), 7150);
+        expect(zoom()).toHaveAttribute('aria-pressed', 'false');
+    });
+
+    it('counts a touch\'s travel on the way, so a touch that goes out and comes back is no tap', () => {
+        renderZoomable();
+        tap(stage(), 1000);
+        pointer(stage(), 'pointerdown', { t: 1150 });
+        pointer(stage(), 'pointermove', { x: 230, t: 1170 });
+        pointer(stage(), 'pointerup', { x: 201, t: 1200 });
+        expect(zoom()).toHaveAttribute('aria-pressed', 'false');
+    });
+
+    it('never fires on a swipe, and a double-tap never moves: a swipe right after it still moves', () => {
+        renderZoomable();
+        // A swipe, then a tap within the settle: no Zoom, and the swipe moved.
+        pointer(stage(), 'pointerdown', { t: 1000 });
+        pointer(stage(), 'pointerup', { x: 100, t: 1080 });
+        expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
+        tap(stage(), 1200);
+        tap(stage(), 1300);
+        expect(zoom()).toHaveAttribute('aria-pressed', 'false');
+        // Twice to zoom in and out, which never moves, and the next swipe does.
+        router.replace.mockClear();
+        tap(stage(), 3000);
+        tap(stage(), 3150);
+        expect(zoom()).toHaveAttribute('aria-pressed', 'true');
+        tap(stage(), 4000);
+        tap(stage(), 4150);
+        expect(zoom()).toHaveAttribute('aria-pressed', 'false');
+        expect(router.replace).not.toHaveBeenCalled();
+        pointer(stage(), 'pointerdown', { t: 4300 });
+        pointer(stage(), 'pointerup', { x: 100, t: 4380 });
+        expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
+    });
+
+    it('quiets taps during and right after any scroll, so a tap that stops a fling never zooms', () => {
+        renderZoomable();
+        // The zoomed photograph's pan flings on after the lift; the page's scroll does too.
+        for (const target of [stage(), document]) {
+            scrolled(target, 1000);
+            scrolled(target, 1016);
+            tap(stage(), 1100);
+            tap(stage(), 1250);
+            expect(zoom()).toHaveAttribute('aria-pressed', 'false');
+        }
+        // A pair that starts once the scroll has been still for the settle zooms.
+        tap(stage(), 1316);
+        tap(stage(), 1450);
+        expect(zoom()).toHaveAttribute('aria-pressed', 'true');
+    });
+
+    it('never fires on a cancel or on two fingers', () => {
+        renderZoomable();
+        tap(stage(), 1000);
+        pointer(stage(), 'pointerdown', { t: 1100 });
+        pointer(stage(), 'pointercancel', { t: 1120 });
+        // Within the settle after the cancel, even a clean pair does nothing.
+        tap(stage(), 1200);
+        tap(stage(), 1300);
+        pointer(stage(), 'pointerdown', { pointerId: 2, t: 1600 });
+        pointer(stage(), 'pointerdown', { pointerId: 3, t: 1610, isPrimary: false });
+        pointer(stage(), 'pointerup', { pointerId: 3, t: 1640 });
+        pointer(stage(), 'pointerup', { pointerId: 2, t: 1650 });
+        expect(zoom()).toHaveAttribute('aria-pressed', 'false');
+    });
+
+    it('does nothing where Zoom does nothing, on a photo with no usable set, so a swipe still moves after it', () => {
+        renderShell('page', 2);
+        tap(stage(), 1000);
+        tap(stage(), 1150);
+        expect(zoom()).toHaveAttribute('aria-pressed', 'false');
+        expect(stage()).not.toHaveAttribute('data-zoomed');
+        pointer(stage(), 'pointerdown', { t: 2000 });
+        pointer(stage(), 'pointerup', { x: 100, t: 2080 });
+        expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
+    });
+
+    it('never pairs a tap on one photograph with a tap on the next', () => {
+        const { move } = renderZoomable('page', 1);
+        tap(stage(), 1000);
+        move(2);
+        tap(stage(), 1150);
+        expect(zoom()).toHaveAttribute('aria-pressed', 'false');
+    });
+
+    describe('on a pinch-zoomed page', () => {
+        const viewport = Object.assign(new EventTarget(), { scale: 2 });
+        beforeEach(() => {
+            Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport });
+        });
+        afterEach(() => {
+            Reflect.deleteProperty(window, 'visualViewport');
+        });
+
+        it('leaves a double-tap to the browser', () => {
+            renderZoomable();
+            tap(stage(), 1000);
+            tap(stage(), 1150);
+            expect(zoom()).toHaveAttribute('aria-pressed', 'false');
+        });
+    });
+
+    it('stops listening when it unmounts, the document\'s scroll listener included', () => {
+        const removeFromDocument = vi.spyOn(document, 'removeEventListener');
+        const { unmount } = renderZoomable();
+        const removeFromRoot = vi.spyOn(root() as HTMLElement, 'removeEventListener');
+        unmount();
+        expect(removeFromDocument).toHaveBeenCalledWith('scroll', expect.any(Function), { capture: true });
+        for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) {
+            expect(removeFromRoot).toHaveBeenCalledWith(type, expect.any(Function));
+        }
+        removeFromDocument.mockRestore();
+    });
+});

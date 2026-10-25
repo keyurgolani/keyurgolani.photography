@@ -21,6 +21,13 @@
   /* Room the fitted photograph leaves for the stage's padding, so it fits the first screen with the header. */
   --viewer-stage-chrome: 4rem;
   --viewer-stage-pad: clamp(0.75rem, 2vw, 1.5rem);
+  /* The reading area's own sizes, shared with the lead it keeps in the first screen below. */
+  --viewer-reading-pad: clamp(1rem, 2.5vw, 1.75rem);
+  --viewer-title-size: clamp(1.25rem, 1.05rem + 0.8vw, 1.75rem);
+  /* Room the first screen keeps under the photograph on a wide screen (#9b): the reading area's accent rule and top padding,
+     the title's line, the gap, and the first line of the caption, so the title line shows without a scroll, as the approved
+     design keeps it in view. Zero on a narrow screen, where the photograph is capped by the width instead. */
+  --viewer-reading-lead: 0px;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   grid-template-rows: auto minmax(auto, 1fr) auto;
@@ -53,6 +60,8 @@
   border: 0;
   overflow: auto;
   overscroll-behavior: contain;
+  /* A control focused at an edge scrolls in with room for its ring, as the page's html scroll-padding gives it there. */
+  scroll-padding-block: 1rem;
 }
 
 .viewer::backdrop {
@@ -167,10 +176,11 @@
 
 /* Zoomed, the photograph keeps the largest variant's width and the box scrolls, so a drag pans it both ways and never moves the Viewer. Pinch zoom is never turned off. */
 .viewport[data-zoomed] {
-  max-height: calc(100dvh - var(--viewer-header) - var(--viewer-stage-chrome));
+  max-height: calc(100dvh - var(--viewer-header) - var(--viewer-stage-chrome) - var(--viewer-reading-lead));
   overflow: auto;
   place-items: safe center;
-  touch-action: auto;
+  /* Pans both ways and pinches, as auto does, but no browser double-tap zoom: a double-tap here is the Viewer's Zoom (useDoubleTap). */
+  touch-action: manipulation;
 }
 
 /* The fitted box, from the record's shape (--ratio, set inline) before a byte
@@ -180,11 +190,15 @@
 .frame,
 .missing {
   --fit-vw: 100vw;
-  width: min(100%, var(--fit-vw), calc((100dvh - var(--viewer-header) - var(--viewer-stage-chrome)) * var(--ratio, 3 / 2)));
+  width: min(100%, var(--fit-vw), calc((100dvh - var(--viewer-header) - var(--viewer-stage-chrome) - var(--viewer-reading-lead)) * var(--ratio, 3 / 2)));
   aspect-ratio: var(--ratio, 3 / 2);
 }
 
 @media (min-width: 48rem) {
+  .viewer {
+    --viewer-reading-lead: calc(4px + var(--viewer-reading-pad) + 1.2 * var(--viewer-title-size) + 0.75rem + 1.5 * var(--gah-type-statement) + 0.5rem);
+  }
+
   .frame,
   .missing {
     --fit-vw: 80vw;
@@ -269,7 +283,7 @@
   align-self: stretch;
   display: grid;
   gap: 0.75rem;
-  padding: clamp(1rem, 2.5vw, 1.75rem) var(--site-gutter) clamp(1.25rem, 3vw, 2.25rem);
+  padding: var(--viewer-reading-pad) var(--site-gutter) clamp(1.25rem, 3vw, 2.25rem);
   border-top: 4px solid var(--cc-accent, var(--cc-rule));
   background: var(--cc-chrome);
 }
@@ -280,7 +294,7 @@
 
 .title {
   margin: 0;
-  font-size: clamp(1.25rem, 1.05rem + 0.8vw, 1.75rem);
+  font-size: var(--viewer-title-size);
   line-height: 1.2;
   overflow-wrap: anywhere;
 }
@@ -350,17 +364,18 @@
 }
 
 /* Narrow screens: the photograph takes the width, and Previous and Next sit in a row under it, at the edges.
-   The rows take their own height, so the controls and the reading area follow the photograph without a gap. */
+   As in the approved mockup, the stage takes the height the screen has left and centers the photograph in it, so the
+   arrows and the reading area sit at the foot of the screen, under the thumb, with no empty ground below them (#9b).
+   When the reading area is long, the stage takes only its own height and the page scrolls. */
 @media (max-width: 47.99rem) {
   .viewer {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    grid-template-rows: auto auto auto auto;
+    grid-template-rows: auto minmax(auto, 1fr) auto auto;
     grid-template-areas:
       'header header'
       'viewport viewport'
       'previous next'
       'reading reading';
-    align-content: start;
     column-gap: 0;
   }
 
