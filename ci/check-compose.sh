@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Checks that docker-compose.prod.yml runs every service on the one release
-# tag in PHOTOGRAPHY_IMAGE_TAG, and that ci/smoke-image.sh starts every
-# service Compose starts by default. Compose runs from an empty project
-# directory so a local .env can't leak in.
+# tag in PHOTOGRAPHY_IMAGE_TAG, that ci/smoke-image.sh starts every service
+# Compose starts by default, that every published port is on the host's
+# loopback, and that the data root and the library mounts keep their
+# guarantees. Compose runs from an empty project directory so a local .env
+# can't leak in.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -87,3 +89,60 @@ if [ "$services" != "$smoke" ]; then
   fail "$FILE starts '$services' by default, but $SERVICES_FILE lists '$smoke'. A PR that adds a service lists it in $SERVICES_FILE and extends ci/smoke-image.sh to check it."
 fi
 echo "ci/smoke-image.sh starts every default service: $services."
+
+# The resolved file the last checks read, with every profile.
+if ! resolved=$(PHOTOGRAPHY_IMAGE_TAG=v9.9.9 compose config --format json); then
+  fail "docker compose config failed."
+fi
+
+# 6. Every published port is on the host's 127.0.0.1, whatever
+#    PHOTOGRAPHY_PORT says. A reverse proxy or tunnel on the host serves it.
+for port in '' 3456; do
+  if ! ports=$(PHOTOGRAPHY_IMAGE_TAG=v9.9.9 PHOTOGRAPHY_PORT=$port compose config --format json); then
+    fail "docker compose config failed with PHOTOGRAPHY_PORT='$port'."
+  fi
+  if ! jq -e '[.services[] | (.ports // [])[]] | all(type == "object" and .host_ip == "127.0.0.1")' <<<"$ports" >/dev/null; then
+    fail "Every ports: entry must publish on 127.0.0.1, as \"127.0.0.1:\${PHOTOGRAPHY_PORT:-3000}:3000\"."
+  fi
+done
+if ! jq -e '.services.web.ports | length > 0' <<<"$resolved" >/dev/null; then
+  fail "web must publish its port on 127.0.0.1."
+fi
+echo "Every published port is on 127.0.0.1."
+
+# 7. web mounts the data root read-only, and no bind of the data root or the
+#    library is ever created when its source is missing. How Compose writes
+#    create_host_path: false in its output differs between versions, so
+#    compare against a probe file holding one long-syntax bind with it and
+#    one short-syntax bind, which Compose creates when missing.
+PROBE="$PROJECT_DIR/probe.yml"
+cat >"$PROBE" <<'YAML'
+services:
+  probe:
+    image: probe
+    volumes:
+      - type: bind
+        source: ./kept
+        target: /kept
+        bind:
+          create_host_path: false
+      - ./created:/created
+YAML
+if ! probe=$(docker compose -f "$PROBE" --project-directory "$PROJECT_DIR" config --format json); then
+  fail "docker compose config failed on the create_host_path probe."
+fi
+never_created=$(jq -c '.services.probe.volumes[] | select(.target == "/kept") | .bind.create_host_path' <<<"$probe")
+short_syntax=$(jq -c '.services.probe.volumes[] | select(.target == "/created") | .bind.create_host_path' <<<"$probe")
+if [ "$never_created" = "$short_syntax" ]; then
+  fail "This Compose writes create_host_path the same way for a long-syntax bind with false and a short-syntax bind ($never_created), so the check can't tell them apart."
+fi
+if ! jq -e '[.services.web.volumes[]? | select(.target == "/data/portfolio")]
+    | length == 1 and all(.type == "bind" and .read_only == true)' <<<"$resolved" >/dev/null; then
+  fail "web must mount the data root at /data/portfolio once, as a bind with read_only: true."
+fi
+if ! jq -e --argjson never "$never_created" '
+    [.services[] | (.volumes // [])[] | select(.target == "/data/portfolio" or .target == "/app/public/assets/photos")]
+    | length > 0 and all(.type == "bind" and .bind.create_host_path == $never)' <<<"$resolved" >/dev/null; then
+  fail "Every mount of /data/portfolio or /app/public/assets/photos must be a long-syntax bind with bind.create_host_path: false."
+fi
+echo "web mounts the data root read-only, and no data root or library bind is created when missing."
