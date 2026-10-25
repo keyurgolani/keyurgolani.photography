@@ -135,10 +135,29 @@ identity_status() {
   in_watcher node dist/scripts/photos.mjs identity status --json || true
 }
 
+# Prints the registry's newest version file, identity/registry/v<N>.json. The
+# running watcher can add a version and prune an old one meanwhile, so a
+# version that's gone by the time it's read means reading the list again.
+read_registry() {
+  in_watcher node -e '
+    const fs = require("fs");
+    const dir = "/data/portfolio/identity/registry";
+    for (let attempt = 1; ; attempt++) {
+      const versions = fs.readdirSync(dir).map((name) => /^v([1-9][0-9]*)\.json$/.exec(name)).filter(Boolean).map((match) => Number(match[1]));
+      if (versions.length === 0) throw new Error(`${dir} has no version file`);
+      try {
+        process.stdout.write(fs.readFileSync(`${dir}/v${Math.max(...versions)}.json`, "utf8"));
+        break;
+      } catch (error) {
+        if (error.code !== "ENOENT" || attempt === 5) throw error;
+      }
+    }'
+}
+
 # Writes one line per photo to <file>, sorted: its library path, photo ID, and
 # the /media URL of the w800 WebP in its ready set, from the registry.
 media_sets() {
-  in_watcher cat /data/portfolio/identity/registry.json >"$TMP/registry.json" || fail "Could not read the registry."
+  read_registry >"$TMP/registry.json" || fail "Could not read the registry."
   jq -r '
     .photos[]
     | .revisions[.source.observedRevision] as $revision
@@ -248,7 +267,8 @@ dry_run=$(in_watcher node dist/scripts/photos.mjs migrate --dry-run) || fail "Th
 plan=$(sed -n 's/^Plan: //p' <<<"$dry_run")
 [ -n "$plan" ] || fail "The dry run printed no plan: $dry_run"
 in_watcher node dist/scripts/photos.mjs migrate --apply --plan "$plan" || fail "Applying $plan failed."
-owner=$(in_watcher stat -c %u /data/portfolio/identity/registry.json) || fail "Could not stat the registry."
+owner=$(in_watcher sh -c 'stat -c %u /data/portfolio/identity/registry /data/portfolio/identity/registry/v*.json | sort -u') ||
+  fail "Could not stat the registry."
 [ "$owner" = 1001 ] || fail "The migration wrote the registry as uid $owner, expected 1001."
 check_health
 [ "$HEALTH" = ready ] || fail "GET /api/health reported dataRoot '$HEALTH' after the migration, expected ready."
@@ -308,6 +328,6 @@ grep -q 'Identity step off: the data root is unset' "$TMP/unset.log" || {
 }
 missing=$(missing_outputs "$UNSET" "${fixtures[@]}")
 [ -z "$missing" ] || fail "With PHOTOGRAPHY_DATA_DIR unset, the watcher did not write: $missing"
-registries=$(find "$UNSET" -name registry.json)
+registries=$(find "$UNSET" \( -name registry.json -o -path '*/identity/registry' \))
 [ -z "$registries" ] || fail "With PHOTOGRAPHY_DATA_DIR unset, the watcher wrote $registries."
 echo "With PHOTOGRAPHY_DATA_DIR unset, the watcher logged that the identity step is off, wrote the legacy derivatives, and no registry."
