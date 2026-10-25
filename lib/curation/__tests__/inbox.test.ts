@@ -2,17 +2,17 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { folderBytes } from '../../../test/helpers/folderBytes';
 import { setDataDir, writeDataRootMarker } from '../../../test/helpers/tempDataRoot';
-import { readAuthoredRecord } from '../../catalog/working-layer';
+import { authoredRecordDir, readAuthoredRecord } from '../../catalog/working-layer';
 import { readRegistry, writeRegistry } from '../../identity/registry';
 import type { IdentityFact } from '../../identity/types';
 import { deferEvent } from '../actions';
 import { eventIdOf, eventKey, type CurationEvent, type CurationEventType } from '../events';
 import { loadInbox } from '../inbox';
 import { runInboxAction, WEB_ACTOR } from '../inbox-form';
-import { defaultPlacement, defaultSeries, parsePlacementValue, placementValue, summaryText, type InboxActionState, type InboxView } from '../inbox-view';
+import { defaultDescription, defaultPlacement, defaultSeries, parsePlacementValue, placementValue, summaryText, type InboxActionState, type InboxView } from '../inbox-view';
 import { eventDir, readEvent, withCurationLock } from '../repository';
 import { createCurationSink } from '../sink';
 import { createCurationFixture, DRAFT, GPS, PUBLISHED, SERIAL, writeRules, type CurationFixture } from './curationFixtures';
@@ -263,6 +263,55 @@ describe('runInboxAction', () => {
         expect(ready(await loadInbox(ids[0])).selected?.placed?.seriesIds).toEqual([DRAFT]);
         const state = await runInboxAction('approve', itemForm(event, null, { series: 'unassigned', decorative: 'off' }));
         expect(state).toMatchObject({ status: 'refused', message: expect.stringMatching(/already in a series/) });
+        expect(state.status !== 'idle' && state.message).not.toMatch(/evt_|ph_|rev_|ser_|sha256-/);
+        expect((await readEvent(f.root, ids[0]))?.version).toBe(event.version);
+    });
+
+    it('starts a reopened form from the working layer, not from a saved edit the approval overrode', async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])]);
+        let event = (await readEvent(f.root, ids[0]))!;
+        done(await runInboxAction('edit', itemForm(event, null, { series: DRAFT, seriesTouched: '1', decorative: 'off', description: 'Saved A' })));
+        event = (await readEvent(f.root, ids[0]))!;
+        done(await runInboxAction('approve', itemForm(event, null, { series: PUBLISHED, decorative: 'off', description: 'Typed B', descriptionWas: 'described' })));
+        event = (await readEvent(f.root, ids[0]))!;
+        expect(event.edits?.seriesId).toBeUndefined();
+        expect(event.edits?.description).toBeUndefined();
+        done(await runInboxAction('reopen', itemForm(event, null)));
+        const detail = ready(await loadInbox(ids[0])).selected!;
+        expect(defaultSeries(detail)).toBe(PUBLISHED);
+        expect(defaultDescription(detail)).toEqual({ kind: 'described', text: 'Typed B' });
+    });
+
+    it('logs a failed action without the data root path', async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])]);
+        const event = (await readEvent(f.root, ids[0]))!;
+        const registry = path.join(f.root, 'identity', 'registry');
+        const newest = Math.max(...fs.readdirSync(registry).filter((name) => /^v\d+\.json$/.test(name)).map((name) => Number(name.slice(1, -5))));
+        fs.writeFileSync(path.join(registry, `v${newest + 1}.json`), '{ not json');
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        try {
+            const state = await runInboxAction('approve', itemForm(event, null, { series: DRAFT, decorative: 'off' }));
+            expect(state).toMatchObject({ status: 'failed' });
+            const logged = warn.mock.calls.map((call) => call.join(' ')).join('\n');
+            expect(logged).toContain('[curation]');
+            expect(logged).not.toContain(f.root);
+        } finally {
+            warn.mockRestore();
+        }
+    });
+
+    it("refuses an unassigned approval when a series that might hold the photo can't be read", async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])]);
+        let event = (await readEvent(f.root, ids[0]))!;
+        done(await runInboxAction('approve', itemForm(event, null, { series: DRAFT, decorative: 'off' })));
+        event = (await readEvent(f.root, ids[0]))!;
+        done(await runInboxAction('reopen', itemForm(event, null)));
+        event = (await readEvent(f.root, ids[0]))!;
+        const dir = authoredRecordDir(f.root, 'series', DRAFT);
+        const newest = Math.max(...fs.readdirSync(dir).filter((name) => /^v\d+\.json$/.test(name)).map((name) => Number(name.slice(1, -5))));
+        fs.writeFileSync(path.join(dir, `v${newest + 1}.json`), '{ not json');
+        const state = await runInboxAction('approve', itemForm(event, null, { series: 'unassigned', decorative: 'off' }));
+        expect(state).toMatchObject({ status: 'refused', message: expect.stringMatching(/can't be read/) });
         expect(state.status !== 'idle' && state.message).not.toMatch(/evt_|ph_|rev_|ser_|sha256-/);
         expect((await readEvent(f.root, ids[0]))?.version).toBe(event.version);
     });

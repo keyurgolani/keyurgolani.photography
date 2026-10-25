@@ -142,6 +142,7 @@ const PAGE_WORDING: [RegExp, string][] = [
 /** Refusals 14-1 words with IDs, in the page's words. The page already says which item. */
 const REFUSAL_WORDING: [RegExp, (match: RegExpMatchArray) => string][] = [
     [/is already in .*an approval doesn't take a photograph out of a series/, () => "This photograph is already in a series, and approving doesn't take it out of one. Keep its series to approve it. Nothing was written."],
+    [/can't be read, so nothing shows whether one holds/, () => "A series can't be read, so nothing shows whether one still holds this photograph. Nothing was written."],
     [/^There is no series /, () => "That series isn't in the working layer any more. Refresh the inbox. Nothing was written."],
     [/ is (open|deferred|dismissed|approved|failed), so it can't be ([a-z]+)\./, (match) => `This item is ${match[1]}, so it can't be ${match[2]}. Refresh the inbox.`],
     [/^Nothing failed for /, () => "Nothing failed for this photograph, so there's nothing to retry."],
@@ -234,6 +235,6 @@ export async function runInboxAction(kind: InboxActionKind, form: unknown, optio
     if (outcome.code === 'locked') return answer('busy', input.eventId, 'Another change is being written right now, so nothing was written. Try again in a moment.');
     const status = STATUS_FOR[outcome.code] as 'refused' | 'invalid' | 'failed';
     // 14-1's own words, IDs and all, stay in the server log.
-    if (status === 'failed') console.warn(`[curation] The inbox ${kind} on ${input.eventId} failed: ${outcome.message}`);
+    if (status === 'failed') console.warn(`[curation] The inbox ${kind} on ${input.eventId} failed: ${scrub(outcome.message, [dataRootStatus().root, libraryRoot()])}`);
     return answer(status, input.eventId, pageWording(outcome.message, status));
 }
