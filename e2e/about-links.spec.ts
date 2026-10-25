@@ -153,6 +153,21 @@ async function expectFocusedLinkClear(page: Page, index: number) {
 /** Waits for the first light and any lit transition to finish. */
 const settled = (page: Page) => page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== 'running'));
 
+/**
+ * Focuses the link from the keyboard, as a visitor does, and checks it matches
+ * :focus-visible. A script's focus() isn't enough once a mouse press has
+ * focused something: Chromium carries the press's pointer modality over to
+ * the next script focus, so the link takes focus without matching
+ * :focus-visible and never lights.
+ */
+async function focusFromKeyboard(page: Page, link: Locator, name: string) {
+    await link.focus();
+    await page.keyboard.press('Shift+Tab');
+    await page.keyboard.press('Tab');
+    await expect(link, `${name} takes focus from the keyboard`).toBeFocused();
+    expect(await link.evaluate((el) => el.matches(':focus-visible')), `${name} matches :focus-visible`).toBe(true);
+}
+
 /** What a link shows: its frame, its mark, the brand's light behind the mark, its underline, and its arrow. */
 const litState = (link: Locator) =>
     link.evaluate((el) => {
@@ -392,7 +407,7 @@ test.describe('on the desktop project', () => {
                         await expectLabelContrast(link);
                         await page.mouse.move(0, 0);
 
-                        await link.focus();
+                        await focusFromKeyboard(page, link, name);
                         await settled(page);
                         expect((await litState(link)).light, `${name} is lit on focus`).toBeGreaterThan(0.5);
                         await expectLabelContrast(link);
@@ -497,6 +512,63 @@ test.describe('on the desktop project', () => {
             await link.focus();
             await settled(page);
             expect(await moves(link), `${name} on focus`).toEqual({ link: [], fades: [], arrow: '2px -2px' });
+            await link.blur();
+        }
+    });
+
+    test('a link focused while the first light passes shows its full lit light, from the delay to the end of the pass', async ({ page }) => {
+        await page.emulateMedia({ reducedMotion: 'no-preference' });
+        await openAbout(page);
+        await settled(page);
+        for (const [index, link] of (await links(page).all()).entries()) {
+            const name = ENABLED[index].label;
+            await focusFromKeyboard(page, link, name);
+            await settled(page);
+            const lit = (await litState(link)).light;
+            expect(lit, `${name} is lit on focus`).toBeGreaterThan(0.5);
+            await link.blur();
+            await settled(page);
+
+            // Replays the link's first light from the start, as on load, and holds it in its delay.
+            const pass = await link.evaluateHandle((el) => {
+                const mark = el.querySelector('svg[data-icon]')?.parentElement;
+                if (!mark) return null;
+                const off = document.createElement('style');
+                off.textContent = 'nav[aria-label^="External profiles"] span::before { animation-name: none !important; }';
+                // Each read of the name applies the change, so the pass ends and starts over.
+                document.head.append(off);
+                const stopped = getComputedStyle(mark, '::before').animationName;
+                off.remove();
+                if (stopped !== 'none' || getComputedStyle(mark, '::before').animationName === 'none') return null;
+                const found = document
+                    .getAnimations()
+                    .find((animation) => animation instanceof CSSAnimation && /first-light/.test(animation.animationName) && animation.effect instanceof KeyframeEffect && animation.effect.target === mark);
+                if (!found) return null;
+                found.pause();
+                found.currentTime = 0;
+                return found;
+            });
+            expect(await pass.evaluate((found) => found !== null), `${name}'s first light replays`).toBe(true);
+
+            // Focus arrives mid-pass, and the light is read in the delay, at the pass's start, its peak, and near its end.
+            await focusFromKeyboard(page, link, name);
+            const during = await pass.evaluate((found) => {
+                const effect = found?.effect;
+                if (!found || !(effect instanceof KeyframeEffect) || !effect.target) return [];
+                const timing = effect.getComputedTiming();
+                const delay = Number(timing.delay ?? 0);
+                const duration = Number(timing.duration ?? 0);
+                const target = effect.target;
+                const opacities = [delay / 2, delay, delay + 0.4 * duration, delay + 0.9 * duration].map((time) => {
+                    found.currentTime = time;
+                    return Number(getComputedStyle(target, '::before').opacity);
+                });
+                found.cancel();
+                return opacities;
+            });
+            expect(during, `${name}'s light is read four times during the pass`).toHaveLength(4);
+            for (const opacity of during) expect(opacity, `${name} keeps its lit light through the first light`).toBeCloseTo(lit, 2);
+            await pass.dispose();
             await link.blur();
         }
     });

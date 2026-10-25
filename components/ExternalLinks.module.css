@@ -109,6 +109,8 @@
 }
 
 .mark::before {
+  /* The light's opacity now: the rest glow, or 0.8 when lit. */
+  --glow: calc(var(--glow-rest) + var(--lit) * (0.8 - var(--glow-rest)));
   content: '';
   position: absolute;
   inset: var(--glow-inset);
@@ -116,21 +118,24 @@
   border-radius: 50%;
   background: var(--brand-glow, none);
   filter: blur(var(--glow-blur));
-  opacity: calc(var(--glow-rest) + var(--lit) * (0.8 - var(--glow-rest)));
+  opacity: var(--glow);
   pointer-events: none;
   transition: opacity var(--motion-base, 220ms) var(--ease-standard, ease-out);
   animation: first-light 800ms var(--ease-standard, ease-out) backwards;
   animation-delay: calc(200ms + var(--order, 0) * 110ms);
 }
 
+/* The first light rises from the glow and settles back. Its keyframes read
+   --glow too, so a link lit during the pass, or during its delay, shows its
+   full lit light, which is already brighter than the pass's peak. */
 @keyframes first-light {
   0%,
   100% {
-    opacity: var(--glow-rest);
+    opacity: var(--glow);
   }
 
   40% {
-    opacity: 0.62;
+    opacity: max(var(--glow), 0.62);
   }
 }
 
