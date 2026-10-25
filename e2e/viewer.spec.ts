@@ -211,9 +211,22 @@ test('Tab runs Close, Zoom, Previous, Next, and the technical toggle, and Enter 
     await expect(zoom(page)).toHaveAttribute('aria-pressed', 'false');
     await expect(zoom(page)).toBeFocused();
 
+    // Previous and Next are buttons (#9), so each moves with Enter and with Space, and keeps focus.
     await next(page).focus();
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(`${origin()}${href(P[2])}`);
+    await expect(next(page)).toBeFocused();
+    await previous(page).focus();
+    await page.keyboard.press('Enter');
+    await expect(page).toHaveURL(`${origin()}${href(P[1])}`);
+    await expect(previous(page)).toBeFocused();
+    await page.keyboard.press('Space');
+    await expect(page).toHaveURL(`${origin()}${href(P[0])}`);
+    await expect(previous(page)).toBeFocused();
+    await next(page).focus();
+    await page.keyboard.press('Space');
+    await expect(page).toHaveURL(`${origin()}${href(P[1])}`);
+    await expect(next(page)).toBeFocused();
     await close(page).focus();
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(`${origin()}/work/harbor`);

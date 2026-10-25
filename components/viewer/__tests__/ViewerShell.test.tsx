@@ -164,11 +164,12 @@ describe('ViewerShell, on a page', () => {
 
     it('takes Left and Right from the document, but not with a modifier, and Escape does nothing on a page', () => {
         renderShell('page', 2);
-        fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+        // A move takes the key, so it doesn't also scroll the page sideways (fireEvent returns false once the default is prevented).
+        expect(fireEvent.keyDown(document.body, { key: 'ArrowRight' })).toBe(false);
         expect(router.replace).toHaveBeenLastCalledWith(photoHref(3), { scroll: false });
         router.replace.mockClear();
         for (const modifier of ['altKey', 'ctrlKey', 'metaKey', 'shiftKey']) {
-            fireEvent.keyDown(document.body, { key: 'ArrowLeft', [modifier]: true });
+            expect(fireEvent.keyDown(document.body, { key: 'ArrowLeft', [modifier]: true })).toBe(true);
         }
         fireEvent.keyDown(document.body, { key: 'Escape' });
         expect(router.replace).not.toHaveBeenCalled();
@@ -184,6 +185,17 @@ describe('ViewerShell, on a page', () => {
         move(2);
         expect(toggle.isConnected).toBe(false);
         expect(document.activeElement).toBe(step('Next photograph'));
+    });
+
+    it('puts focus on Previous when the move that lost it went back', () => {
+        const { move } = renderShell('page', 2);
+        const toggle = screen.getByRole('button', { name: 'Show technical details' });
+        toggle.focus();
+        fireEvent.keyDown(toggle, { key: 'ArrowLeft' });
+        expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(1), { scroll: false });
+        move(1);
+        expect(toggle.isConnected).toBe(false);
+        expect(document.activeElement).toBe(step('Previous photograph'));
     });
 
     it('resets Zoom on a move, and Zoom on a photo with nothing to enlarge stays focusable and does nothing', () => {
@@ -275,7 +287,7 @@ describe('ViewerShell, as the modal', () => {
         expect(router.replace).not.toHaveBeenCalled();
         const next = step('Next photograph');
         next.focus();
-        fireEvent.keyDown(next, { key: 'ArrowRight' });
+        expect(fireEvent.keyDown(next, { key: 'ArrowRight' })).toBe(false);
         expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(2), { scroll: false });
         move(2);
         expect(document.activeElement).toBe(next);

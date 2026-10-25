@@ -152,6 +152,37 @@ describe('ViewerHost', () => {
         expect(document.activeElement).toBe(entry);
     });
 
+    it.each(['altKey', 'ctrlKey', 'metaKey', 'shiftKey'])('doesn\'t take a click with %s as the opener', (modifier) => {
+        const view = render(host());
+        const entry = screen.getByText('Entry a');
+        fireEvent.click(entry);
+        // The modified click opens a tab or a window, so the plain click before it stays the opener.
+        fireEvent.click(screen.getByText('Entry b'), { [modifier]: true });
+        openModal('a');
+        view.rerender(host());
+        closeModal();
+        view.rerender(host());
+        expect(document.activeElement).toBe(entry);
+    });
+
+    it('forgets the opener once focus is back on it, so a later modal nothing opened moves no focus', () => {
+        const view = render(host());
+        const entry = screen.getByText('Entry a');
+        fireEvent.click(entry);
+        openModal('a');
+        view.rerender(host());
+        closeModal();
+        view.rerender(host());
+        expect(document.activeElement).toBe(entry);
+        entry.blur();
+        // A second open with no click on the series, for example Forward back into the Viewer.
+        openModal('b');
+        view.rerender(host());
+        closeModal();
+        view.rerender(host());
+        expect(document.activeElement).toBe(document.body);
+    });
+
     it('moves no focus when nothing opened the modal from the series', () => {
         const view = render(host());
         openModal('a');
