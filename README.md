@@ -226,6 +226,7 @@ The commands:
 - `series order <seriesId>...` sets the Work order, and `series featured <seriesId>...` the featured series, which Home opens on once it reads the catalog (#4). `series featured --clear` features none, and a publish then stops on `refs.non-empty` until a published series is featured again.
 - `edit <record>`: any other change to a record, below.
 - `validate`, then `publish --actor <name>`, as above.
+- `history` and `rollback`, below.
 
 `status` to `series`, and `edit` below, exit 0 when they worked, 1 when they refused or the data root isn't ready or isn't set, 2 on a usage error, 3 while another command holds the authored records or when a record changed underneath it, and 4 on an I/O error. `validate` and `publish` keep slice B's codes: 0 when valid or published, 1 on validation errors, 2 on a usage error, 4 when a catalog file is damaged or an I/O error stops them, and 3 on any other stop, such as a data root that isn't ready or isn't set, a busy lock, or the first publish's launch stop. A flag given twice is refused, and an argument that starts with `-`, such as a chapter title, goes after `--`: `photos sequence chapter add <seriesId> --start <photoId> -- "-30 at dawn"`. Every `sequence` and `series` change takes `--expect-version <N>`, the version `sequence show` or the last change printed, so it stops if someone else changed the record in between.
 
@@ -262,7 +263,7 @@ Each record is a folder of versions under `authored/`: `site/`, `series/<seriesI
 
 - Only while no `photos` command runs. The commands hold a lock while they write, and an editor doesn't take it.
 - Never edit a version in place. A command that reads an edited newest version refuses it and names the copy that keeps the edit.
-- Never copy or edit the active pointer, `catalog/active/`. Only `photos publish` moves it.
+- Never copy or edit the active pointer, `catalog/active/`. Only `photos publish` and `photos rollback` move it.
 - Copy and edit as root, keeping the owner: `sudo cp -n -p` keeps the owner and mode of the version it copies, and `sudoedit` writes back into the same file. A copy root owns can't be read by the app. If one already is, give it the owner of the version it came from with `chown --reference`, or `chown -R 1001:1001 ./portfolio-data/authored`, the uid `docker-compose.prod.yml` runs the app as.
 
 The first publish replaces the legacy Home and Gallery, so it stops and prints what it would change, with a checklist, until it's run with `--confirm-launch`. Run it again with the `--confirm-launch --expect <candidateId>` it prints, so it publishes exactly the candidate you checked. Before that:
@@ -270,6 +271,33 @@ The first publish replaces the legacy Home and Gallery, so it stops and prints w
 - The cutover milestone has shipped: Home, Work, the series pages, and the Viewer read the catalog (#4, #3, #5, #7), and #15's 15-1 and 15-2 are in, so a rollback works.
 - Viewer hardening (#9) is recommended first.
 - A preview looks right. Copy the data root, publish the copy with `PHOTOGRAPHY_DATA_DIR` pointing at it, and serve a build on another port against it, bound to `127.0.0.1`, such as `PHOTOGRAPHY_DATA_DIR=<copy> npx next start --hostname 127.0.0.1 -p 3001`.
+
+#### History and rollback
+
+Every publish and rollback adds an activation record under `catalog/activations/`. Nothing rewrites a revision file, and a record changes only once, from pending to committed or set aside. `photos history` lists them, oldest first, by their sequence number rather than their time, since the containers' clocks can disagree. Each row has the revision number and ID, publish or rollback, who ran it and why, when, the validation result, and what that revision changed against the one it was compiled on. The live one says `LIVE`. One that never moved the active pointer, because a command crashed or lost its lock, says interrupted, and the next publish or rollback sets it aside. It takes no lock and writes nothing.
+
+`photos rollback --to <number | revisionId> --reason <text>` makes a revision that was live before live again, without rebuilding any image:
+
+```bash
+photos history
+photos rollback --to 3 --reason "revert the caption change" --actor <name>
+```
+
+- The target is a revision number or ID from `history`, and only one that was live before. The rollback is a new activation that keeps the target's number, so `history` shows revision 3 live again from a later row.
+- It runs every rule on the stored revision first. An integrity error stops it, such as a derivative that is missing or has the wrong size, or a privacy rule: a rollback never brings back a path, a source file's name, or GPS, serial, or owner fields. Editorial errors, today the accent color's format and contrast, print with the plan and don't stop it, and the activation records them.
+- It prints what the target brings back, removes, and changes against the live revision, by series and photo. A rollback can bring back a photo a later publish took out on purpose, so read the list. If the live revision's file is damaged or missing, it says so and lists everything the target publishes instead, since moving off a broken revision is what a rollback is for. The working layer can't be compared with a revision that can't be read, so after such a rollback every field that differs from the target becomes a conflict to settle before the next publish, even one you never touched. The rollback says how many it raised and lists them. Then it asks you to type `yes`. Where there is no terminal to ask in, run it again with `--yes --expect-active <revisionId>`, the live revision the list was made against, as it prints. `--yes` works only with `--expect-active`, and either way the rollback stops, changing nothing, if another revision went live in between.
+- The actor is `--actor` or `PHOTOS_ACTOR`, and one is required: the container's user is always `nextjs`.
+- It waits up to 30 seconds for a publish or another rollback that holds the catalog lock, then names the holder and when its lease runs out. It takes over a lease only once that lease has expired, and records the takeover on the activation. No flag breaks a live lock.
+- Afterwards it moves the working layer onto the target, as a publish does, so edits made since stay and a field changed on both sides becomes a conflict to settle before the next publish. If the working layer is busy, or the command stops after the pointer moved, running the same rollback again finishes the job, and so does the next publish. A rollback to the revision that is already live changes nothing visitors see, so it asks nothing, and only records an interrupted activation and rebases the working layer if a crash left either undone.
+
+`history` exits 0, 3 when the data root isn't ready or isn't set, and 4 when a catalog file is damaged or can't be read. `rollback` exits 0 when rolled back or when the target is already live, 1 when the target was never live or a rule stops it, 2 on a usage error, 4 when a catalog file is damaged or an I/O error stops it, and 3 on any other stop: no confirmation, another revision live first, a busy lock, or a data root that isn't ready.
+
+In production both run in `image-watcher`'s container like the other commands. `docker compose run` gives the command a terminal, so the `photos` function above can answer the confirmation. In a script, add `-T` and confirm with `--yes --expect-active`:
+
+```bash
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs history
+docker compose -f docker-compose.prod.yml run --rm --no-deps -T -e PHOTOS_ACTOR=<name> image-watcher node dist/scripts/photos.mjs rollback --to 3 --reason "revert the caption change" --yes --expect-active <revisionId>
+```
 
 ### Supported Formats
 - JPEG (.jpg, .jpeg)

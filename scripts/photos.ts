@@ -102,6 +102,35 @@
  *     on a usage error, 4 when a catalog file is damaged or an I/O error
  *     stops it, and 3 on any other stop. Logs one JSON line per event.
  *
+ *   npx tsx scripts/photos.ts history
+ *     Every activation, oldest first by sequence, with its revision number
+ *     and ID, actor, reason, time, validation result, and what its revision
+ *     changed against its parent. The live one says LIVE, and one that never
+ *     moved the active pointer says interrupted. Takes no lock and writes
+ *     nothing. Exits 0, 3 when the data root isn't ready, and 4 when a
+ *     catalog file is damaged.
+ *
+ *   npx tsx scripts/photos.ts rollback --to <number | revisionId> --reason <text> [--actor <name>]
+ *                                      [--expect-active <revisionId>] [--yes]
+ *     Make a revision that was active before live again, as a new rollback
+ *     activation that keeps its number. Prints what it brings back, removes,
+ *     and changes against the active revision, and the target's issues: an
+ *     integrity error, such as a missing derivative or a privacy rule's,
+ *     stops it, and editorial errors print and don't. Then it asks to
+ *     confirm in a terminal; elsewhere --yes confirms, and only with
+ *     --expect-active naming the active revision the list was made
+ *     against. The actor is --actor or PHOTOS_ACTOR, and one is required.
+ *     It waits up to 30 s for another command's catalog lock and names the
+ *     holder if it can't get it. A target that is already active needs no
+ *     confirmation: it finishes what a crashed activation left undone. A
+ *     live revision that can't be read is no reason to refuse: the list is
+ *     then everything the target publishes. Exits 0 when rolled back or already
+ *     active, 1 when the target was never active or its rules stop it, 2 on
+ *     a usage error, 4 when a catalog file is damaged or an I/O error stops
+ *     it, and 3 on any other stop, such as no confirmation, another
+ *     revision going live first, or a busy lock. Logs one JSON line per
+ *     event.
+ *
  * The library is PHOTOGRAPHY_LIBRARY_DIR, or public/assets/photos under the
  * working directory. The data root is PHOTOGRAPHY_DATA_DIR, or portfolio-data
  * under the working directory outside production.
@@ -119,10 +148,12 @@
  */
 
 import path from 'node:path';
+import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { runDescribeImport } from '../lib/catalog/describe-import';
 import { runDraftInit } from '../lib/catalog/draft-init';
 import { recordRef, runEditRecord } from '../lib/catalog/edit-record';
+import { rollbackArgs, runHistoryCommand, runRollbackCommand } from '../lib/catalog/history-cli';
 import { runListCommand, runStatusCommand } from '../lib/catalog/owner-status';
 import { issueLines, photoIdArg, publishReport, sequenceArgs, seriesArgs, parseFlags, UsageError } from '../lib/catalog/owner-cli';
 import { publish, PUBLISH_EXIT_CODES, validateWorkingLayer, VALIDATE_EXIT_CODES } from '../lib/catalog/publish';
@@ -169,6 +200,8 @@ const USAGE = `Usage:
   ${PROGRAM} series featured (<seriesId>... | --clear) [--expect-version <N>]
   ${PROGRAM} validate [--reprofile]
   ${PROGRAM} publish [--actor <name>] [--reason <text>] [--expect <candidateId>] [--dry-run] [--confirm-launch] [--reprofile]
+  ${PROGRAM} history
+  ${PROGRAM} rollback --to <number | revisionId> --reason <text> [--actor <name>] [--expect-active <revisionId>] [--yes]
 A flag given twice is refused. An argument that starts with - goes after --.
 In production: docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs <command>
 The README's "Curating the catalog" section has the commands, the hand-edit rules, and the launch checklist.`;
@@ -373,6 +406,34 @@ async function publishCommand(args: string[]): Promise<number> {
     return exitCode;
 }
 
+async function historyCommand(args: string[]): Promise<number> {
+    parseFlags({ args, options: {} });
+    const root = catalogRoot();
+    if (typeof root === 'number') return root;
+    return printed(await runHistoryCommand(root));
+}
+
+/** Ask a yes-or-no question on the terminal. Only "yes" confirms. */
+async function askInTerminal(question: string): Promise<boolean> {
+    const terminal = createInterface({ input: process.stdin, output: process.stdout });
+    try {
+        return (await terminal.question(question)).trim().toLowerCase() === 'yes';
+    } finally {
+        terminal.close();
+    }
+}
+
+async function rollbackCommand(args: string[]): Promise<number> {
+    const parsed = rollbackArgs(args);
+    const root = catalogRoot();
+    if (typeof root === 'number') return root;
+    return runRollbackCommand(root, parsed, {
+        out: (line) => console.log(line),
+        err: (line) => console.error(line),
+        confirm: process.stdin.isTTY ? askInTerminal : null,
+    });
+}
+
 /** Print a handler's text, on stdout when it succeeded and stderr when it didn't, and return its exit code. */
 function printed(result: CommandResult): number {
     (result.exitCode === 0 ? process.stdout : process.stderr).write(result.output);
@@ -454,6 +515,8 @@ async function main(argv: string[]): Promise<number> {
         if (command === 'series') return await orderCommand(() => seriesArgs(args));
         if (command === 'validate') return await validate(args);
         if (command === 'publish') return await publishCommand(args);
+        if (command === 'history') return await historyCommand(args);
+        if (command === 'rollback') return await rollbackCommand(args);
         throw new UsageError(command ? `Unknown command: ${command}` : 'No command given.');
     } catch (error) {
         if (error instanceof UsageError) {

@@ -10,7 +10,7 @@ The registry in it names every photo by its path in the library and by the SHA-2
 |---|---|---|
 | `data-root.json` | The marker that says the folder is an initialized data root | `migrate --apply`, once |
 | `identity/registry/v<N>.json` | Every photo ID, the photo's path, and its revisions, with the state of each revision's `/media` set. A [version folder](#version-folders): the highest `v<N>.json` is the registry. | The watcher, `migrate --apply`, and `identity` decisions |
-| `authored/site/v<N>.json`, `authored/<kind>/<id>/v<N>.json` | The authored catalog records: the site record, and one version folder per series (`authored/series/<seriesId>/`) and per photo (`authored/photos/<photoId>/`) | `photos.mjs` `draft:init`, `describe`, `sequence`, `series`, and `edit`, a hand-made copy at the next version as [Editing a document by hand](#editing-a-document-by-hand) describes, and `photos.mjs publish` when it rebases them |
+| `authored/site/v<N>.json`, `authored/<kind>/<id>/v<N>.json` | The authored catalog records: the site record, and one version folder per series (`authored/series/<seriesId>/`) and per photo (`authored/photos/<photoId>/`) | `photos.mjs` `draft:init`, `describe`, `sequence`, `series`, and `edit`, a hand-made copy at the next version as [Editing a document by hand](#editing-a-document-by-hand) describes, and `photos.mjs publish` and `rollback` when they rebase them |
 | `identity/stat-cache.json` | File sizes and times, so a pass doesn't hash files that haven't changed. Safe to delete, though the next pass then reads every photo again, as [Health](#health) says. | The watcher |
 | `identity/decisions/` | `identity` decisions waiting for a pass, then filed under `applied/` or `rejected/` | `photos.mjs identity` |
 | `identity/migration/` | Dry-run plans and reports, and the mapping each apply wrote from paths and legacy URLs to photo IDs | `photos.mjs migrate` |
@@ -18,8 +18,8 @@ The registry in it names every photo by its path in the library and by the SHA-2
 | `staging/` | Sets still being built | The watcher |
 | `status/watcher.json` | The watcher's heartbeat, which its healthcheck reads | The watcher, every 30 s |
 | `catalog/revisions/` | Every published revision, which never changes once it's written | `photos.mjs publish` |
-| `catalog/activations/` | Each activation | `photos.mjs publish` |
-| `catalog/active/v<N>.json` | The pointer to the active revision. A [version folder](#version-folders), so a publish moves it by adding the next version. | `photos.mjs publish` |
+| `catalog/activations/` | Each activation: every publish and rollback adds one | `photos.mjs publish` and `rollback` |
+| `catalog/active/v<N>.json` | The pointer to the active revision. A [version folder](#version-folders), so a publish or a rollback moves it by adding the next version. | `photos.mjs publish` and `rollback` |
 | `catalog/candidates/`, `catalog/diagnostics/` | The last compile of each candidate, its issues, and how the last publish ended | `photos.mjs publish` |
 | `locks/` | The locks writers take on the registry, the authored records, and the catalog | The watcher and `photos.mjs` |
 | `edits/` | `photos.mjs edit`'s working copies, and edits it kept because they couldn't be saved, which `edit <id> --file <path> --expect-version <N>` saves once fixed. Private, like the rest (0700, files 0600). Nothing reads them as records, and `references()` doesn't list them, so the cleanup #15 adds has to leave the folder alone. Delete a kept edit once it's saved or no longer wanted. | `photos.mjs edit` |
@@ -34,7 +34,7 @@ docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher cat /
 
 Every document that two writers could change at once is a folder with one file per version: `identity/registry/`, `authored/site/`, `authored/series/<seriesId>/`, `authored/photos/<photoId>/`, and the active catalog pointer, `catalog/active/`. Inside each folder the versions are `v1.json`, `v2.json`, and so on. The highest number is the document. A write never changes an existing file. It adds the next number with `link()`, which fails if that number already exists, so two writers can't both store the same version. That's why the data root needs a filesystem with hard links.
 
-Never edit the active pointer by hand: only `photos.mjs publish`, and later `photos.mjs rollback`, move it. A version copied there by hand makes a revision live without the checks a publish runs, so the next command refuses to record it if the rules block that revision.
+Never edit the active pointer by hand: only `photos.mjs publish` and `photos.mjs rollback` move it. A version copied there by hand makes a revision live without the checks a publish runs, so the next command refuses to record it if the rules block that revision.
 
 Each write keeps the two newest versions and removes older ones. Files that start with `.v` and end in `.tmp` are writes in progress, or left by a write that crashed. The next write in that folder removes them. Leave them alone.
 
