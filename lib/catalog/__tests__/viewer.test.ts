@@ -377,6 +377,45 @@ describe('the Viewer projection', () => {
         expect(content.photos.find((photo) => photo.id === P[0])?.variants.w1200.webp.url).toMatch(/^\/media\//);
         expect(viewer(reader.getViewerPhoto('fixture-a', P[0])).photo.variants.w1200.webp.url).toMatch(/^\/media\//);
     });
+
+    it('answers not-found, by slug or prior slug, for a photo whose set isn\'t its own /media ladder with positive sizes', () => {
+        type Odd = RevisionContent['photos'][number] & Record<string, unknown>;
+        const stored = content.photos.find((entry) => entry.id === P[1]);
+        if (!stored) throw new Error('Missing fixture photo');
+        const other = content.photos.find((entry) => entry.id === P[0]);
+        const breaks: [string, (photo: Odd) => void][] = [
+            ['an original file', (photo) => { photo.variants.w800.avif.url = '/library/private/fixture-source.jpg'; }],
+            ['a foreign host', (photo) => { photo.variants.w400.webp.url = `https://example.test${stored.variants.w400.webp.url}`; }],
+            ['another photo\'s file', (photo) => { photo.variants.w1920.webp.url = other?.variants.w1920.webp.url ?? ''; }],
+            ['another width\'s file', (photo) => { photo.variants.w1200.webp.url = stored.variants.w800.webp.url; }],
+            ['another format\'s file', (photo) => { photo.variants.w1200.avif.url = stored.variants.w1200.webp.url; }],
+            ['an image optimizer URL', (photo) => { photo.variants.w400.avif.url = `/_next/image?url=${encodeURIComponent(stored.variants.w400.avif.url)}&w=400&q=75`; }],
+            ['a missing file', (photo) => { delete (photo.variants.w1920 as Partial<typeof photo.variants.w1920>).avif; }],
+            ['a missing width', (photo) => { delete (photo.variants as Partial<typeof photo.variants>).w400; }],
+            ['no ladder', (photo) => { delete (photo as Partial<Odd>).variants; }],
+            ['a zero file width', (photo) => { photo.variants.w400.webp.width = 0; }],
+            ['a fractional file height', (photo) => { photo.variants.w800.webp.height = 533.5; }],
+            ['a negative byte count', (photo) => { photo.variants.w1200.avif.bytes = -1; }],
+            ['a byte count that isn\'t a number', (photo) => { (photo.variants.w1200.webp as Record<string, unknown>).bytes = '1000'; }],
+            ['a bad asset revision', (photo) => { photo.assetRevision = '../private'; }],
+            ['a bad profile', (photo) => { photo.profileId = 'p_../x'; }],
+            ['a zero photo width', (photo) => { photo.width = 0; }],
+            ['a photo height that isn\'t finite', (photo) => { photo.height = Number.POSITIVE_INFINITY; }],
+        ];
+        for (const [name, breakIt] of breaks) {
+            const odd = structuredClone(content);
+            const photo = odd.photos.find((entry) => entry.id === P[1]) as Odd | undefined;
+            if (!photo) throw new Error('Missing fixture photo');
+            breakIt(photo);
+            const reader = createCatalogReader(odd, { revisionId: REVISION_A, revisionNumber: 3 });
+            expect(reader.getViewerPhoto('fixture-a', P[1]), name).toEqual({ kind: 'not-found' });
+            expect(reader.getViewerPhoto('old-fixture-a', P[1]), name).toEqual({ kind: 'not-found' });
+            // Only that photo: its neighbors still resolve, and still count it, as the series page lists it.
+            expect(viewer(reader.getViewerPhoto('fixture-a', P[0])).nextPhotoId, name).toBe(P[1]);
+        }
+        const intact = viewer(createCatalogReader(content, { revisionId: REVISION_A, revisionNumber: 3 }).getViewerPhoto('fixture-a', P[1])).photo;
+        expect(intact.variants).toEqual(stored.variants);
+    });
 });
 
 describe('the pending fallback in a draft preview', () => {
