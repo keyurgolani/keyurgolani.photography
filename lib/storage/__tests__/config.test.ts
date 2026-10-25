@@ -113,7 +113,22 @@ describe('dataRootState', () => {
         fs.mkdirSync(lib.file('data'));
         writeDataRootMarker(lib.file('data'));
         vi.stubEnv('PHOTOGRAPHY_DATA_DIR', lib.file('data'));
-        expect(dataRootStatus()).toMatchObject({ state: 'unavailable', cause: 'inside-served-folder', detail: expect.stringContaining('inside') });
+        expect(dataRootStatus()).toMatchObject({ state: 'unavailable', cause: 'inside-served-folder', detail: 'it is inside the photo library' });
+    });
+
+    it('names the served folder it is inside without printing that folder\'s path', () => {
+        // public/ under a temp working directory, so the repository's own public/ is never touched.
+        const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'photography-cwd-'));
+        cleanups.push(() => fs.promises.rm(cwd, { recursive: true, force: true }));
+        vi.spyOn(process, 'cwd').mockReturnValue(cwd);
+        vi.stubEnv('PHOTOGRAPHY_LIBRARY_DIR', path.join(cwd, 'library'));
+        const data = path.join(cwd, 'public', 'data');
+        fs.mkdirSync(data, { recursive: true });
+        writeDataRootMarker(data);
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', data);
+        const status = dataRootStatus();
+        expect(status).toMatchObject({ state: 'unavailable', cause: 'inside-served-folder', detail: 'it is inside the app\'s public folder' });
+        expect(status.detail).not.toContain(cwd);
     });
 
     it.runIf(caseInsensitiveTmp)('is unavailable inside the library even when the path is spelled in another case', async () => {

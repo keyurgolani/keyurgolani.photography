@@ -72,11 +72,21 @@ export function dataRoot(): string | null {
  * files or where the library scan would walk into them.
  */
 export function servedFolderContaining(target: string): string | null {
+    return servedFolderOf(target)?.folder ?? null;
+}
+
+/**
+ * The served folder `target` resolves inside, with a name for messages. The
+ * name carries no path, since the data-root detail reaches every command's
+ * output and the logs.
+ */
+function servedFolderOf(target: string): { folder: string; name: string } | null {
     const realTarget = realpathLoose(target);
-    for (const served of [libraryRoot(), path.join(process.cwd(), 'public')]) {
-        if (isInside(realTarget, realpathLoose(served))) return served;
-    }
-    return null;
+    const served = [
+        { folder: libraryRoot(), name: 'the photo library' },
+        { folder: path.join(process.cwd(), 'public'), name: 'the app\'s public folder' },
+    ];
+    return served.find(({ folder }) => isInside(realTarget, realpathLoose(folder))) ?? null;
 }
 
 function canAccess(target: string, mode: number): boolean {
@@ -177,8 +187,8 @@ export function dataRootStatus(
     }
     if (!stat.isDirectory()) return { state: 'unavailable', root, cause: 'not-a-directory', detail: 'it is not a directory' };
 
-    const served = servedFolderContaining(root);
-    if (served !== null) return { state: 'unavailable', root, cause: 'inside-served-folder', detail: `it is inside ${served}` };
+    const served = servedFolderOf(root);
+    if (served !== null) return { state: 'unavailable', root, cause: 'inside-served-folder', detail: `it is inside ${served.name}` };
 
     if (!canAccess(root, fs.constants.R_OK | fs.constants.X_OK)) {
         return { state: 'unavailable', root, cause: 'not-readable', detail: 'it is not readable' };
