@@ -154,7 +154,9 @@ function expectCuratorHeaders(response: APIResponse, frameAncestors: "'none'" | 
     expect(headers['content-security-policy'], response.url()).toEqual([`frame-ancestors ${frameAncestors}`]);
 }
 
-const PUBLIC_REQUEST = /^\/(?:$|work(?:\/|$)|about(?:\/|$)|gallery(?:\/|$)|api\/|media\/|_next\/image|assets\/photos\/)/;
+const PUBLIC_REQUEST = /^\/(?:$|work(?:\/|$)|about(?:\/|$)|gallery(?:\/|$)|api\/|media\/|assets\/photos\/)/;
+/** What /_next/image may optimize for a preview page: the site's own static portraits (#12's Home intro and About), never a photograph. */
+const STATIC_IMAGE = /^\/(?:_next\/static\/media|assets\/profile)\//;
 
 /** Record every request the page and its frames make, to check none leaves the preview. */
 function requestLog(page: Page): string[] {
@@ -169,7 +171,8 @@ function expectInsidePreview(log: readonly string[], draft = draftId) {
         const parsed = new URL(url);
         expect(parsed.origin, url).toBe(origin());
         expect(parsed.pathname, url).not.toMatch(PUBLIC_REQUEST);
-        if (parsed.pathname.includes('/media/') && !parsed.pathname.startsWith('/_next/static/')) expect(parsed.pathname.startsWith(`${base(draft)}/media/`), url).toBe(true);
+        if (parsed.pathname.startsWith('/_next/image')) expect(parsed.searchParams.get('url') ?? '', url).toMatch(STATIC_IMAGE);
+        if (parsed.pathname.includes('/media/') && !parsed.pathname.startsWith('/_next/')) expect(parsed.pathname.startsWith(`${base(draft)}/media/`), url).toBe(true);
     }
 }
 
@@ -393,6 +396,7 @@ test.describe('load-more', () => {
                 const parsed = new URL(url);
                 expect(parsed.origin, url).toBe(at);
                 expect(parsed.pathname, url).not.toMatch(PUBLIC_REQUEST);
+                if (parsed.pathname.startsWith('/_next/image')) expect(parsed.searchParams.get('url') ?? '', url).toMatch(STATIC_IMAGE);
             }
         } finally {
             await context.close();
