@@ -107,6 +107,23 @@ describe('useLegacyHomePhotos', () => {
     expect(preloadLinks()).toHaveLength(0);
   });
 
+  it('aborts the list request when Home unmounts, and logs nothing for it (#6)', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let signal: AbortSignal | undefined;
+    fetchMock.mockImplementationOnce((_url: string, init?: RequestInit) => {
+      signal = init?.signal ?? undefined;
+      return new Promise((_, reject) => signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError'))));
+    });
+    const useLegacyHomePhotos = await loadHook();
+    const { result, unmount } = renderHook(() => useLegacyHomePhotos());
+    expect(signal?.aborted).toBe(false);
+    unmount();
+    expect(signal?.aborted).toBe(true);
+    await act(() => Promise.resolve());
+    expect(result.current.status).toBe('loading');
+    expect(error).not.toHaveBeenCalled();
+  });
+
   it('drops the preload links on their own after 15 s', async () => {
     vi.useFakeTimers();
     fetchMock.mockResolvedValueOnce(answer(records));
