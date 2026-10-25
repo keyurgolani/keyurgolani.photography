@@ -9,11 +9,12 @@ import { EditedInPlaceError, StaleVersionError } from '../../storage/document';
 import { withLock } from '../../storage/lock';
 import { PHOTO_ID_RE, sha256, type Hasher } from '../ids';
 import { inspectEntry } from '../inspect';
-import { jsonLogSink, runReconcilePass, type PassOptions, type PassOutcome } from '../pass';
+import type { DecisionFile, IdentityDecision } from '../decisions';
+import { jsonLogSink, replayDecisions, runReconcilePass, type PassOptions, type PassOutcome } from '../pass';
 import { identityPaths, readRegistry, writeRegistry } from '../registry';
 import { scanLibrary } from '../scan';
 import { identityStatus } from '../status';
-import type { IdentityFact, Registry } from '../types';
+import type { IdentityFact, RecordedDecision, Registry } from '../types';
 import { sequentialIds } from './reconcileFixtures';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -440,5 +441,22 @@ describe('inspectEntry', () => {
         expect([after.size, after.ino, after.mtimeMs]).toEqual([entry.size, entry.ino, entry.mtimeMs]);
 
         expect(await inspectEntry(lib.root, entry, { hasher: sha256 })).toEqual({ kind: 'changed' });
+    });
+});
+
+describe('replayDecisions', () => {
+    const decisionId = '00000000-0000-4000-8000-0000000000d1';
+    const other = '00000000-0000-4000-8000-0000000000d2';
+    const decision = { schemaVersion: 1, decisionId, type: 'archive', photoId: 'ph_00000000-0000-4000-8000-0000000000e1', actor: 'cli', reason: '', createdAt: '2026-06-01T12:00:00.000Z' } as IdentityDecision;
+    const file: DecisionFile = { name: `20260601T120000000Z-${decisionId}.json`, decision, raw: JSON.stringify(decision) };
+
+    it("files a recorded decision under its listed name and the entry's own fields, whatever else the entry holds", () => {
+        const tampered = { status: 'rejected', reason: 'no', name: '../../victim.txt', decisionId: other, detail: 'x' } as unknown as RecordedDecision;
+        const replay = replayDecisions([file], { [decisionId]: tampered });
+        expect(replay.fresh).toEqual([]);
+        expect(replay.settle([])).toEqual({
+            outcomes: [{ name: file.name, decisionId, status: 'rejected', reason: 'no' }],
+            decided: { [decisionId]: { status: 'rejected', reason: 'no' } },
+        });
     });
 });

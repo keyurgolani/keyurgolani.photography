@@ -191,14 +191,20 @@ export type PassOutcome =
     | { status: 'skipped'; reason: 'data-root'; state: DataRootState; detail?: string }
     | { status: 'skipped'; reason: 'locked'; holder: LockRecord | null };
 
+/** Only the fields a recorded decision has. */
+function recordOf(outcome: RecordedDecision | Exclude<DecisionOutcome, { status: 'deferred' }>): RecordedDecision {
+    return outcome.status === 'applied' ? { status: 'applied', detail: outcome.detail } : { status: 'rejected', reason: outcome.reason };
+}
+
 /**
  * Split the waiting decision files into those to apply now and those an
  * earlier registry write already applied or rejected, which a crash kept
  * from being filed. Returns the outcomes in file order, given what the new
  * ones came to, and the record the next registry write carries: every
  * waiting decision that is applied or rejected now, until its file moves.
+ * Exported for tests.
  */
-function replayDecisions(files: readonly DecisionFile[], recorded: Readonly<Record<string, RecordedDecision>>) {
+export function replayDecisions(files: readonly DecisionFile[], recorded: Readonly<Record<string, RecordedDecision>>) {
     const isRecorded = (file: DecisionFile) => file.decision !== null && Object.hasOwn(recorded, file.decision.decisionId);
     const fresh = files.filter((file) => !isRecorded(file));
     const settle = (outcomesOfFresh: readonly DecisionOutcome[]) => {
@@ -207,13 +213,14 @@ function replayDecisions(files: readonly DecisionFile[], recorded: Readonly<Reco
         const decided: Record<string, RecordedDecision> = {};
         for (const file of files) {
             const decisionId = file.decision?.decisionId ?? null;
+            // Built from the listed file and the entry's checked fields, never by copying the stored entry.
             const outcome: DecisionOutcome | undefined = decisionId !== null && isRecorded(file)
-                ? { name: file.name, decisionId, ...recorded[decisionId] }
+                ? { name: file.name, decisionId, ...recordOf(recorded[decisionId]) }
                 : byName.get(file.name);
             if (!outcome) continue;
             outcomes.push(outcome);
             if (decisionId === null || outcome.status === 'deferred') continue;
-            decided[decisionId] = outcome.status === 'applied' ? { status: 'applied', detail: outcome.detail } : { status: 'rejected', reason: outcome.reason };
+            decided[decisionId] = recordOf(outcome);
         }
         return { outcomes, decided };
     };

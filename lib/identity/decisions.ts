@@ -4,7 +4,7 @@ import path from 'node:path';
 import { atomicWriteJson } from '../storage/atomicWrite';
 import { isRecord } from '../storage/document';
 import { hasErrorCode, PRIVATE_DIR_MODE, timestampOf } from '../storage/fsx';
-import { ASSET_REVISION_RE, mintPhotoId, PHOTO_ID_RE } from './ids';
+import { ASSET_REVISION_RE, DECISION_ID_RE, mintPhotoId, PHOTO_ID_RE } from './ids';
 import { identityPaths } from './registry';
 
 /**
@@ -63,7 +63,6 @@ export type DecisionOutcome =
     /** Left in place for a later pass, such as when the file at its path is still being written. */
     | { name: string; decisionId: string | null; status: 'deferred'; reason: string };
 
-const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const FIELDS = new Set(['schemaVersion', 'decisionId', 'type', 'path', 'photoId', 'merge', 'assetRevision', 'actor', 'reason', 'createdAt']);
 /** Which of the optional fields each type takes, and which it requires. */
 const SHAPES: Record<DecisionType, { path: 'required' | 'none'; photoId: 'required' | 'optional'; merge: 'optional' | 'none'; assetRevision: 'optional' | 'none' }> = {
@@ -89,7 +88,7 @@ export function parseDecision(value: unknown): { decision: IdentityDecision } | 
         return { invalid: newer ? `schemaVersion ${value.schemaVersion} comes from a newer build` : 'schemaVersion must be 1' };
     }
     const { decisionId, type, path: target, photoId, merge, assetRevision, actor, reason, createdAt } = value;
-    if (typeof decisionId !== 'string' || !UUID_V4_RE.test(decisionId)) return { invalid: 'decisionId must be a lowercase UUID v4' };
+    if (typeof decisionId !== 'string' || !DECISION_ID_RE.test(decisionId)) return { invalid: 'decisionId must be a lowercase UUID v4' };
     if (typeof type !== 'string' || !(DECISION_TYPES as readonly string[]).includes(type)) return { invalid: `type must be one of ${DECISION_TYPES.join(', ')}` };
     if (typeof actor !== 'string' || actor.length === 0) return { invalid: 'actor must be a non-empty string' };
     if (typeof reason !== 'string') return { invalid: 'reason must be a string' };
@@ -202,7 +201,9 @@ export async function settleDecisions(root: string, files: readonly DecisionFile
     const dir = identityPaths(root).decisions;
     const byName = new Map(files.map((file) => [file.name, file]));
     for (const outcome of outcomes) {
-        if (outcome.status === 'deferred') continue;
+        // Only a file this pass listed is moved or replaced, whatever name an outcome carries.
+        const file = byName.get(outcome.name);
+        if (outcome.status === 'deferred' || file === undefined) continue;
         const source = path.join(dir, outcome.name);
         const targetDir = path.join(dir, outcome.status);
         await fs.promises.mkdir(targetDir, { recursive: true, mode: PRIVATE_DIR_MODE });
@@ -212,11 +213,10 @@ export async function settleDecisions(root: string, files: readonly DecisionFile
             });
             continue;
         }
-        const file = byName.get(outcome.name);
         await atomicWriteJson(path.join(targetDir, outcome.name), {
             rejectedAt: at,
             reason: outcome.reason,
-            ...(file?.decision ? { decision: file.decision } : { raw: file?.raw ?? null }),
+            ...(file.decision ? { decision: file.decision } : { raw: file.raw }),
         });
         await fs.promises.rm(source, { force: true });
     }
