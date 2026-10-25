@@ -141,10 +141,11 @@ short_syntax=$(jq -c '.services.probe.volumes[] | select(.target == "/created") 
 if [ "$never_created" = "$short_syntax" ]; then
   fail "This Compose writes create_host_path the same way for a long-syntax bind with false and a short-syntax bind ($never_created), so the check can't tell them apart."
 fi
+echo "create_host_path probe: long syntax with false=$never_created, short syntax=$short_syntax"
 # A data root mount is one at /data/portfolio, however its target is spelled,
-# or one of ./portfolio-data wherever it lands, so a second read-write bind of
-# the same folder can't slip past.
-DATA_ROOT_MOUNT='((.target // "") | rtrimstr("/")) == "/data/portfolio" or ((.source // "") | rtrimstr("/") | endswith("/portfolio-data"))'
+# or one of ./portfolio-data or a folder inside it wherever it lands, so a
+# second read-write bind of the same folder can't slip past.
+DATA_ROOT_MOUNT='((.target // "") | rtrimstr("/")) == "/data/portfolio" or ((.source // "") | test("/portfolio-data(/|$)"))'
 if ! jq -e "[.services.web.volumes[]? | select($DATA_ROOT_MOUNT)]
     | length == 1 and all(.type == \"bind\" and .target == \"/data/portfolio\" and .read_only == true)" <<<"$resolved" >/dev/null; then
   fail "web must mount the data root once, at /data/portfolio, as a bind with read_only: true."
