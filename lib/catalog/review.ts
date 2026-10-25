@@ -38,12 +38,20 @@ import type { AuthoredPhoto, AuthoredRecord, AuthoredSeries, AuthoredSite, Field
 
 export type ReviewOrigin = FieldReview['origin'];
 
+/** One record as the backfill found it: its version, and the hash of each stamped field's value then. */
+export interface BackfilledRecord {
+    version: number;
+    fields: Record<string, string>;
+}
+
 /** The one-time backfill marker (review-backfill.ts writes it). */
 export interface ReviewBackfill {
     schemaVersion: 1;
     backfilledAt: string;
-    /** Each record without `review` at the backfill, by `site`, `series:<id>`, or `photo:<id>`, at its version then. */
-    records: Record<string, number>;
+    /** Each record without `review` at the backfill, by `site`, `series:<id>`, or `photo:<id>`. */
+    records: Record<string, BackfilledRecord>;
+    /** True when the file can't be read or isn't a marker. It then lists nothing, so it never lets a hand edit through. */
+    damaged?: boolean;
 }
 
 export const backfillKey = (record: Pick<AuthoredRecord, 'kind'> & { id?: string }): string => (record.kind === 'site' ? 'site' : `${record.kind}:${record.id}`);
@@ -98,14 +106,21 @@ function generatedAlt(field: string, value: unknown): boolean {
     return field === 'alt' && alt != null && alt.kind === 'described' && !alt.reviewed;
 }
 
-/** The stamps a record without `review` reads as. `coverAsset` is the cover photo's pinned revision, for a series. */
-export function backfillFields(record: AuthoredRecord, coverAsset?: string | null, at: string = BACKFILL_AT): Record<string, FieldReview> {
+/**
+ * The stamps a record without `review` reads as. `coverAsset` is the cover
+ * photo's pinned revision, for a series. `hashes` are the values the
+ * backfill marker recorded for the record, so a field changed since reads as
+ * edited; without them, the record's own values are taken as reviewed.
+ */
+export function backfillFields(record: AuthoredRecord, coverAsset?: string | null, at: string = BACKFILL_AT, hashes?: Record<string, string>): Record<string, FieldReview> {
     const fields: Record<string, FieldReview> = {};
     // Absent fields too, so dropping one reads as reviewed where a tool dropped it before the backfill.
     for (const field of STAMPED_FIELDS[record.kind]) {
         const value = valueOf(record, field);
+        const valueHash = hashes ? hashes[field] : hashValue(value);
+        if (valueHash === undefined) continue;
         fields[field] = {
-            valueHash: hashValue(value),
+            valueHash,
             origin: generatedAlt(field, value) ? 'generated' : 'migration',
             baseRevisionId: record.baseRevisionId,
             ...assetFor(record, field, coverAsset),
@@ -126,11 +141,18 @@ function assetFor(record: AuthoredRecord, field: string, coverAsset: string | nu
  * Whether a record without stamps reads as backfilled: its newest version
  * was written by a tool, or `backfill`, the one-time marker
  * (review-backfill.ts), doesn't exist yet (null or absent) or lists the
- * record at this version. Otherwise it is a version made by hand after the
- * backfill.
+ * record. A listed record reads against the values the marker recorded, so
+ * whatever changed since, by hand, reads as edited. Otherwise it is a record
+ * made by hand after the backfill.
  */
 export function backfilled(record: AuthoredRecord, backfill: ReviewBackfill | null | undefined): boolean {
-    return !isHandMade(record) || !backfill || backfill.records[backfillKey(record)] === record.version;
+    return !isHandMade(record) || !backfill || Object.hasOwn(backfill.records, backfillKey(record));
+}
+
+/** The values the marker recorded for `record`, when it lists it. */
+function markedHashes(record: AuthoredRecord, backfill: ReviewBackfill | null | undefined): Record<string, string> | undefined {
+    const key = backfillKey(record);
+    return backfill && Object.hasOwn(backfill.records, key) ? backfill.records[key].fields : undefined;
 }
 
 /**
@@ -142,16 +164,17 @@ export function backfilled(record: AuthoredRecord, backfill: ReviewBackfill | nu
 export function stampsOf(record: AuthoredRecord, coverAsset?: string | null, at?: string, backfill?: ReviewBackfill | null): Record<string, FieldReview> {
     if (record.review) return record.review.fields;
     if (!backfilled(record, backfill)) return {};
-    if (at !== undefined) return backfillFields(record, coverAsset, at);
-    // Read in memory, once per record and cover.
+    const hashes = markedHashes(record, backfill);
+    if (at !== undefined) return backfillFields(record, coverAsset, at, hashes);
+    // Read in memory, once per record, cover, and marker.
     const key = coverAsset ?? '';
     const cached = memo.get(record);
-    if (cached?.key === key) return cached.fields;
-    const fields = backfillFields(record, coverAsset);
-    memo.set(record, { key, fields });
+    if (cached?.key === key && cached.hashes === hashes) return cached.fields;
+    const fields = backfillFields(record, coverAsset, BACKFILL_AT, hashes);
+    memo.set(record, { key, hashes, fields });
     return fields;
 }
-const memo = new WeakMap<AuthoredRecord, { key: string; fields: Record<string, FieldReview> }>();
+const memo = new WeakMap<AuthoredRecord, { key: string; hashes: Record<string, string> | undefined; fields: Record<string, FieldReview> }>();
 
 /** What a write was reviewed with. The writer fills in what a caller leaves out. */
 export interface StampInputs {
@@ -254,6 +277,7 @@ export interface ReviewContext {
 export type FieldReviewReason =
     | 'no-record'
     | 'no-stamp'
+    | 'backfill-unreadable'
     | 'edited'
     | 'generated'
     | 'active-moved'
@@ -353,6 +377,9 @@ export function fieldReview(ref: FieldRef, env: ReviewEnv): FieldReviewState {
     }
     const value = valueOf(record, ref.field);
     const stamp = stampsOf(record, coverAssetOf(env.layer, record), undefined, env.review?.backfill)[ref.field];
+    if (!stamp && record.review === undefined && isHandMade(record) && env.review?.backfill?.damaged) {
+        return { ...ref, state: 'unreviewed', reason: 'backfill-unreadable', detail: `authored/review-backfill.json can't be read, so nothing shows whether ${ref.field} was there before the upgrade or was changed by hand since.` };
+    }
     if (!stamp) return { ...ref, state: 'unreviewed', reason: 'no-stamp', detail: `${ref.field} was written outside the tools, so nothing on record reviewed it.` };
     const seen = { origin: stamp.origin, by: stamp.actor, at: stamp.reviewedAt };
     if (stamp.valueHash !== hashValue(value)) {

@@ -198,7 +198,7 @@ describe('writeAuthoredRecord() stamps', { timeout: 60_000 }, () => {
 });
 
 describe('the one-time review backfill', { timeout: 60_000 }, () => {
-    const marker = (root: string) => JSON.parse(fs.readFileSync(`${root}/authored/review-backfill.json`, 'utf8')) as { records: Record<string, number> };
+    const marker = (root: string) => JSON.parse(fs.readFileSync(`${root}/authored/review-backfill.json`, 'utf8')) as { records: Record<string, { version: number; fields: Record<string, string> }> };
 
     it('counts a record the owner made by hand before the upgrade as reviewed, so the first publish goes through', async () => {
         const f = await fixture();
@@ -211,7 +211,55 @@ describe('the one-time review backfill', { timeout: 60_000 }, () => {
         expect(reviewIssues(await validateWorkingLayer({ dataRoot: f.root }))).toEqual([]);
         published(await f.publish());
         // The first command that took the authored lock recorded it at the version it had then.
-        expect(marker(f.root).records[`photo:${id}`]).toBe(2);
+        expect(marker(f.root).records[`photo:${id}`]).toMatchObject({ version: 2, fields: { caption: hashValue('Fixture caption, by hand before the upgrade.') } });
+    });
+
+    it('is fixed by a dry run first, and reads a later hand edit against it field by field, so earlier hand edits stay reviewed', async () => {
+        const f = await fixture();
+        const id = f.catalog.photos[0].id;
+        await f.handEdit<AuthoredPhoto>('photo', id, (photo) => {
+            photo.title = 'Fixture title, by hand before the upgrade.';
+        });
+        // The first 16-1 command is a dry run: its snapshot writes the marker.
+        expect((await f.publish({ dryRun: true })).outcome).toBe('DRY_RUN_OK');
+        expect(marker(f.root).records[`photo:${id}`]).toMatchObject({ version: 2 });
+        // A hand edit of the same record after it: only the field it changed reads as not reviewed.
+        await f.handEdit<AuthoredPhoto>('photo', id, (photo) => {
+            photo.caption = 'Fixture caption, by hand after the upgrade.';
+        });
+        const refused = await f.publish();
+        expect(refused.outcome).toBe('VALIDATION_FAILED');
+        expect(reviewIssues(refused)).toEqual([expect.objectContaining({ record: { kind: 'photo', id }, field: 'caption', message: expect.stringContaining('changed outside the tools') })]);
+    });
+
+    it('catches an in-place edit of a listed version that strips its stamp', async () => {
+        const f = await fixture();
+        expect((await f.publish({ dryRun: true })).outcome).toBe('DRY_RUN_OK');
+        const id = f.catalog.photos[0].id;
+        const file = versionFile(authoredRecordDir(f.root, 'photo', id), 1);
+        const body = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+        delete body.stamp;
+        fs.writeFileSync(file, `${JSON.stringify({ ...body, title: 'Fixture title, in place.' }, null, 2)}
+`);
+        const refused = await f.publish();
+        expect(refused.outcome).toBe('VALIDATION_FAILED');
+        expect(reviewIssues(refused)).toEqual([expect.objectContaining({ record: { kind: 'photo', id }, field: 'title', message: expect.stringContaining('changed outside the tools') })]);
+    });
+
+    it('refuses the hand-made records when the marker can\'t be read, and says the marker is why', async () => {
+        const f = await fixture();
+        const id = f.catalog.photos[0].id;
+        await f.handEdit<AuthoredPhoto>('photo', id, (photo) => {
+            photo.caption = 'Fixture caption, by hand before the upgrade.';
+        });
+        fs.writeFileSync(`${f.root}/authored/review-backfill.json`, '{ not json\n');
+        const refused = await f.publish();
+        expect(refused.outcome).toBe('VALIDATION_FAILED');
+        const issue = reviewIssues(refused).find((entry) => entry.record.id === id && entry.field === 'caption');
+        expect(issue).toMatchObject({ message: expect.stringContaining("authored/review-backfill.json can't be read") });
+        expect(issue?.hint).toContain('Restore authored/review-backfill.json from the data-root backup');
+        // Never rewritten, even damaged.
+        expect(fs.readFileSync(`${f.root}/authored/review-backfill.json`, 'utf8')).toBe('{ not json\n');
     });
 
     it('refuses a version made by hand after the backfill that drops review, and a record folder made by hand', async () => {
@@ -231,7 +279,7 @@ describe('the one-time review backfill', { timeout: 60_000 }, () => {
         }, null, 2)}\n`, { mode: 0o600 });
         const refused = await f.publish();
         expect(refused.outcome).toBe('VALIDATION_FAILED');
-        expect(reviewIssues(refused)).toEqual([expect.objectContaining({ record: { kind: 'photo', id }, field: 'title', message: expect.stringContaining('written outside the tools') })]);
+        expect(reviewIssues(refused)).toEqual([expect.objectContaining({ record: { kind: 'photo', id }, field: 'title', message: expect.stringContaining('changed outside the tools since it was last reviewed') })]);
         // A hidden series shows nothing, so it needs no review, but published by hand it does.
         await f.handEdit<AuthoredSeries>('series', made, (record) => {
             record.visibility = 'published';

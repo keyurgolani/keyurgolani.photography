@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Registry } from '../identity/types';
 import { canonicalJson } from '../storage/canonical';
-import { fieldReview, type FieldRef, type FieldReviewState, type ReviewContext } from './review';
+import { fieldReview, hashValue, type FieldRef, type FieldReviewState, type ReviewContext } from './review';
 import type { AuthoredPhoto, AuthoredSeries, CandidateContent, CandidatePhotoRecord, IssueRecord, PublicPhotoRecord, RevisionFile, SeriesRecord, WorkingLayer } from './types';
 
 /**
@@ -346,7 +346,9 @@ export function diffCatalog(input: DiffInput): CatalogDiff {
         // stamp for it, or the active revision published a date #10 didn't read.
         const registryDate = registry?.photos[id]?.revisions[was.assetRevision]?.derived.capturedDate?.value;
         const overridden = was.capturedAt !== undefined && registryDate !== undefined && was.capturedAt !== registryDate;
-        const capturedAuthored = working?.capturedAt !== undefined || working?.review?.fields.capturedAt !== undefined || overridden;
+        // A stamp counts only when it holds a value: the backfill stamps an absent date too, as a hash of null.
+        const stamped = working?.review?.fields.capturedAt;
+        const capturedAuthored = working?.capturedAt !== undefined || (stamped !== undefined && stamped.valueHash !== hashValue(null)) || overridden;
         const authoredFields: string[] = [...AUTHORED_PHOTO_FIELDS, ...(capturedAuthored ? ['capturedAt'] : [])];
         for (const field of authoredFields) {
             const a = (was as Record<string, unknown>)[field];

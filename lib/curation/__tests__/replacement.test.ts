@@ -330,7 +330,7 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         // Pins alone can't tell this from a hand edit or a rollback, so leave in draft writes nothing. #16's stamp shows
         // the lost confirm, so curation show and the defer say to confirm again.
         const shown = (await runCurationCli(['show', open.id], { dataRoot: w.root }, { PHOTOS_ACTOR: ACTOR })).output;
-        expect(shown).toContain(`the inbox records no confirm of this item, though its review stamp shows one put ${w.p}'s photo record there in place of ${w.a}. Run curation confirm again to record what it replaced, and then defer puts that back.`);
+        expect(shown).toContain(`the inbox records no confirm of this item, though its review stamp shows one put ${w.p}'s photo record there in place of ${w.a}. Run curation confirm again to record what it replaced, and then reopen and defer put that back.`);
         const authored = treeBytes(path.join(w.root, 'authored'));
         const left = await leave(w, open);
         expect(left).toMatchObject({ ok: true, event: { status: 'deferred' } });
