@@ -123,15 +123,20 @@ for (const width of [320, 1280]) {
     });
 }
 
-test.describe("on /about over the page's fixed portrait", () => {
-    // On short screens About's fixed bottom portrait reaches up behind SiteNav, and it used to paint over the links.
-    const portraitImages = (page: Page) => page.locator('main .fixed img');
+test.describe('on /about at short screens, over the in-flow portrait', () => {
+    // The legacy About's fixed bottom portrait reached up behind SiteNav on short screens and painted over the links.
+    // Since #11 the portrait sits in flow below SiteNav, and nothing in main is fixed or sticky.
+    const portraitImages = (page: Page) => page.getByTestId('about-portrait').locator('img');
 
     for (const [width, height] of [[844, 390], [568, 320]] as const) {
         test(`at ${width} by ${height} each control keeps its ring clear of the portrait, and each link takes a click or tap at its centre`, async ({ page }, testInfo) => {
             await page.setViewportSize({ width, height });
             await open(page, '/about');
             await expect(portraitImages(page)).not.toHaveCount(0);
+            const pinned = await page.locator('main').evaluate((main) =>
+                [main, ...Array.from(main.querySelectorAll('*'))].filter((el) => /^(fixed|sticky)$/.test(getComputedStyle(el).position)).map((el) => el.tagName),
+            );
+            expect(pinned, 'nothing in main is fixed or sticky').toEqual([]);
 
             for (const control of await navControls(page).all()) await expectNotObscured(control, [portraitImages(page)]);
 
