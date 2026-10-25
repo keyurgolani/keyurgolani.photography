@@ -13,7 +13,7 @@ import { MANIFEST_FILE } from '../../storage/publish';
 import { writeVersionedDocument } from '../../storage/document';
 import { approveEvent, deferEvent, reopenEvent, retryEvent } from '../actions';
 import { createCandidateSink, replacementEventIds, settleCandidates, settlingAfterBuild } from '../candidates';
-import { runCurationCli } from '../commands';
+import { curationUsage, runCurationCli } from '../commands';
 import { eventIdOf, eventKey, type CurationEvent } from '../events';
 import { listEvents, readEvent, withCurationLock, writeEvent } from '../repository';
 import { confirmReplacement, leaveInDraft } from '../resolutions';
@@ -764,6 +764,24 @@ describe('confirm', { timeout: 60_000 }, () => {
         expect(done).toMatchObject({ exitCode: 0, output: expect.stringContaining(`Confirmed ${w.b} for ${w.p}`) });
         expect((await cli(['show', ready.id])).output).toContain(`confirm by ${ACTOR}: wrote photo:${w.p}`);
         expect((await readAuthoredRecord(w.root, 'photo', w.p))?.assetRevision).toBe(w.b);
+    });
+
+    it('is undone from the CLI by reopen and defer, which put the earlier revision back', async () => {
+        const w = await world();
+        await w.build(w.job(w.b));
+        const cli = (args: string[]) => runCurationCli(args, { dataRoot: w.root }, { PHOTOS_ACTOR: ACTOR });
+        const at = async () => String((await w.event()).version);
+        expect(await cli(['confirm', w.eventId, '--version', await at(), '--base', w.revisionId])).toMatchObject({ exitCode: 0 });
+        const reopened = await cli(['reopen', w.eventId, '--version', await at(), '--base', w.revisionId]);
+        expect(reopened).toMatchObject({ exitCode: 0, output: expect.stringContaining('leave it in draft (defer) to put back the one a confirm replaced') });
+        const deferred = await cli(['defer', w.eventId, '--version', await at(), '--base', w.revisionId]);
+        expect(deferred).toMatchObject({ exitCode: 0, output: expect.stringContaining(`back on ${w.a}, in place of ${w.b}`) });
+        expect((await photoRecord(w)).assetRevision).toBe(w.a);
+        const shown = (await cli(['show', w.eventId])).output;
+        expect(shown).toMatch(new RegExp(`defer by ${ACTOR}: wrote photo:${w.p} v\\d+, put back ${w.a}`));
+        expect(shown).toContain('after a confirm puts that one back');
+        expect(curationUsage()).toContain('reopen and then defer put back the revision the confirm replaced');
+        expect(curationUsage()).not.toContain('To keep the current revision instead');
     });
 });
 
