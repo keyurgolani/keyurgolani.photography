@@ -6,9 +6,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { folderBytes } from '../../../test/helpers/folderBytes';
 import { setDataDir, writeDataRootMarker } from '../../../test/helpers/tempDataRoot';
 import { authoredRecordDir, readAuthoredRecord } from '../../catalog/working-layer';
+import { writeAuthoredRecord } from '../../catalog/working-layer-writer';
 import { readRegistry, writeRegistry } from '../../identity/registry';
 import type { IdentityFact } from '../../identity/types';
-import { deferEvent } from '../actions';
+import { approveEvent, deferEvent, reopenEvent } from '../actions';
 import { eventIdOf, eventKey, type CurationEvent, type CurationEventType } from '../events';
 import { loadInbox } from '../inbox';
 import { runInboxAction, WEB_ACTOR } from '../inbox-form';
@@ -280,6 +281,37 @@ describe('runInboxAction', () => {
         const detail = ready(await loadInbox(ids[0])).selected!;
         expect(defaultSeries(detail)).toBe(PUBLISHED);
         expect(defaultDescription(detail)).toEqual({ kind: 'described', text: 'Typed B' });
+    });
+
+    it('takes the suggestion on a first approval, from the CLI and the page alike, even when a series already holds the photo', async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])], { rules: { schemaVersion: 1, series: [{ seriesId: DRAFT, folders: ['trips'] }] } });
+        const event = (await readEvent(f.root, ids[0]))!;
+        // The owner put it in the published series by hand before anyone approved it.
+        const published = (await readAuthoredRecord(f.root, 'series', PUBLISHED))!;
+        await writeAuthoredRecord({ ...published, photoIds: [...published.photoIds, event.photoId!] }, { expectedVersion: published.version, root: f.root });
+        expect(defaultSeries(ready(await loadInbox(ids[0])).selected!)).toBe(DRAFT);
+        const result = await approveEvent({ root: f.root, eventId: event.id, expectedVersion: event.version, actor: 'curator:cli', choices: {} });
+        expect(result).toMatchObject({ ok: true });
+        expect(result.ok && result.event.decisions.at(-1)?.seriesId).toBe(DRAFT);
+    });
+
+    it('keeps a reopened item that was approved unassigned unassigned, unless a series now holds it', async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])], { rules: { schemaVersion: 1, series: [{ seriesId: DRAFT, folders: ['trips'] }] } });
+        let event = (await readEvent(f.root, ids[0]))!;
+        done(await runInboxAction('approve', itemForm(event, null, { series: 'unassigned', decorative: 'off' })));
+        event = (await readEvent(f.root, ids[0]))!;
+        done(await runInboxAction('reopen', itemForm(event, null)));
+        event = (await readEvent(f.root, ids[0]))!;
+        expect(defaultSeries(ready(await loadInbox(ids[0])).selected!)).toBeNull();
+        const again = await approveEvent({ root: f.root, eventId: event.id, expectedVersion: event.version, actor: 'curator:cli', choices: {} });
+        expect(again.ok && again.event.decisions.at(-1)?.seriesId).toBeNull();
+        expect((await readAuthoredRecord(f.root, 'series', DRAFT))?.photoIds).not.toContain(event.photoId);
+        // Once a series holds it, a reopen starts from that series.
+        const reopened = (await reopenEvent({ root: f.root, eventId: event.id, expectedVersion: event.version + 1, actor: 'curator:cli' }));
+        expect(reopened).toMatchObject({ ok: true });
+        const draft = (await readAuthoredRecord(f.root, 'series', DRAFT))!;
+        await writeAuthoredRecord({ ...draft, photoIds: [...draft.photoIds, event.photoId!] }, { expectedVersion: draft.version, root: f.root });
+        expect(defaultSeries(ready(await loadInbox(ids[0])).selected!)).toBe(DRAFT);
     });
 
     it('logs a failed action without the data root path', async () => {
