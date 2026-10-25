@@ -123,6 +123,11 @@ async function commit(
             throw new AuthoredWriteError('INVALID_RECORD', ref, message, { issues: parsed.error.issues });
         }
         existing = parsed.value;
+        // As the reader does: a folder holding another record's versions is never extended as this one.
+        if (ref.kind !== 'site' && (existing as AuthoredSeries | AuthoredPhoto).id !== ref.id) {
+            const message = `its folder holds the record ${JSON.stringify((existing as AuthoredSeries | AuthoredPhoto).id)}`;
+            throw new AuthoredWriteError('INVALID_RECORD', ref, `The ${ref.kind} record ${ref.id} can't be written: ${message}. Fix it by hand first.`, { issues: [{ path: 'id', message }] });
+        }
     }
 
     const foundVersion = existing?.version ?? 0;
