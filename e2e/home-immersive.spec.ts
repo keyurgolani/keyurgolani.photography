@@ -1,5 +1,5 @@
 import type { CDPSession, Locator, Page, Route, TestInfo } from '@playwright/test';
-import type { ImageItem } from '../utils/getImageData';
+import type { ImageItem } from '../lib/catalog/photos-api';
 import { expectNoA11yViolations } from './support/a11y';
 import { expectContrastOverImage } from './support/contrast';
 import { expectFocusRingVisible } from './support/focus';
