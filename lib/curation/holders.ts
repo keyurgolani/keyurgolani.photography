@@ -63,3 +63,36 @@ function holderEntries(list: readonly AssetReference[], photoId: string): Holder
 function holderName(entry: HolderEntry): string {
     return entry.kind === 'revision' ? `the active revision ${entry.id}` : `the series ${entry.id}`;
 }
+
+/** What keeps a photo from being merged into another, which retires it. */
+export interface MergeBlockers {
+    /** The active revision and the working-layer series that show it, as photoHolders() names them. */
+    shown: string[];
+    /** The retained catalog revisions, besides the active one, that list it. A rollback to one needs its sets. */
+    retained: string[];
+    /** Whether the working layer holds a photo record for it, whose copy a merge would drop. */
+    record: boolean;
+}
+
+/**
+ * Everything that refers to `photoId` and that a merge would break, for
+ * #17's bind, or `unknown` when references() can't tell. Unlike
+ * photoHolders(), it counts retained revisions and photo records too.
+ * Candidates are left out: the next publish compiles a new one. Any other
+ * error is thrown.
+ */
+export async function mergeBlockers(root: string, photoId: string): Promise<MergeBlockers | { unknown: ReferenceScanError }> {
+    let list: AssetReference[];
+    try {
+        list = await references(root);
+    } catch (error) {
+        if (!(error instanceof ReferenceScanError)) throw error;
+        return { unknown: error };
+    }
+    const mine = list.filter((entry) => entry.photoId === photoId);
+    const shown = mine
+        .filter((entry) => entry.source === 'active-revision' || entry.source === 'working-layer-series')
+        .map((entry) => (entry.source === 'active-revision' ? `the active revision ${entry.holder}` : `the series ${entry.holder}`));
+    const retained = mine.filter((entry) => entry.source === 'revision').map((entry) => entry.holder);
+    return { shown: [...new Set(shown)], retained: [...new Set(retained)].sort(), record: mine.some((entry) => entry.source === 'working-layer-photo') };
+}
