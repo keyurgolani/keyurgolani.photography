@@ -625,6 +625,14 @@ export async function publish(options: PublishOptions): Promise<PublishResult> {
         return result;
     };
 
+    /**
+     * Whether this process still holds the catalog lock, by its file and not
+     * just its signal: the signal aborts only when a renewal sees another
+     * owner, and a holder whose renewals stalled past its lease may not have
+     * run one since a takeover.
+     */
+    const stillHolds = async (lock: LockContext): Promise<boolean> => !lock.signal.aborted && (await lock.isHeld().catch(() => false));
+
     /** What an error that ended the publish means, as an outcome. */
     const stopFor = async (error: unknown): Promise<{ outcome: PublishOutcome; message: string; details: Partial<PublishResult> }> => {
         if (error instanceof Stop) return { outcome: error.outcome, message: error.message, details: error.details };
@@ -649,7 +657,7 @@ export async function publish(options: PublishOptions): Promise<PublishResult> {
             } catch (error) {
                 const stop = await stopFor(error);
                 // A holder that lost the lock leaves the summary to the process that has it now.
-                return finish(stop.outcome, stop.message, stop.details, stop.outcome !== 'LOCK_LOST' && !lock.signal.aborted);
+                return finish(stop.outcome, stop.message, stop.details, stop.outcome !== 'LOCK_LOST' && (await stillHolds(lock)));
             }
         });
     } catch (error) {
@@ -762,7 +770,7 @@ export async function publish(options: PublishOptions): Promise<PublishResult> {
         }
         await step(13);
         const rebaseNote = result.rebased ? '' : ' The working layer was busy, so the next publish rebases it.';
-        return finish('PUBLISHED', `Published ${compiled.candidateId} as revision ${committed.activation.revisionNumber}.${rebaseNote}`, {}, !lock.signal.aborted);
+        return finish('PUBLISHED', `Published ${compiled.candidateId} as revision ${committed.activation.revisionNumber}.${rebaseNote}`, {}, await stillHolds(lock));
     }
 }
 

@@ -481,6 +481,49 @@ describe('the catalog lock', { timeout: 30_000 }, () => {
         expect((await listActivations(root)).filter((activation) => activation.status === 'pending')).toHaveLength(1);
     });
 
+    it('leaves last-publish.json to the new holder when a holder whose renewals stalled past its lease stops after a takeover', async () => {
+        const { root, run } = await launched({ seed: 72 });
+        const summary = fs.readFileSync(lastPublishFile(root));
+        let pause = false;
+        const paused = deferred();
+        const resume = deferred();
+        const letGo = deferred();
+        const stolen: Promise<void>[] = [];
+
+        // Nothing changed, so this publish stops with NO_CHANGES at step 5, after the takeover.
+        const result = await run({
+            leaseMs: 200,
+            hooks: {
+                lock: {
+                    async beforeRenew() {
+                        if (!pause) return;
+                        paused.resolve();
+                        await resume.promise;
+                    },
+                },
+                async afterStep(step) {
+                    if (step !== 4) return;
+                    pause = true;
+                    await paused.promise;
+                    const tookOver = deferred();
+                    stolen.push(withLock(CATALOG_LOCK, { root, waitMs: 5_000, pollMs: 20 }, async () => {
+                        tookOver.resolve();
+                        await letGo.promise;
+                    }));
+                    await tookOver.promise;
+                    // The lock's release waits for the paused renewal, so let it go on once the stop has been summarized.
+                    setTimeout(() => resume.resolve(), 100);
+                },
+            },
+        });
+        letGo.resolve();
+        await Promise.all(stolen);
+
+        expect(result.outcome).toBe('NO_CHANGES');
+        // Its signal never aborted, since no renewal ran after the takeover, but the lock file names another owner.
+        expect(fs.readFileSync(lastPublishFile(root))).toEqual(summary);
+    });
+
     it('gives a holder paused past its lease LOCK_LOST at step 11, and leaves the active pointer alone', async () => {
         const { catalog, root, run, editPhoto } = await launched({ seed: 74 });
         await editPhoto(catalog.photos[0].id, (photo) => {
