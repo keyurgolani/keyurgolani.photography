@@ -466,7 +466,7 @@ async function missingLines(root: string, event: CurationEvent, registry: Regist
     const lines = [
         'Published output protected: the active revision keeps serving this photograph from its derivative set, which the source file is no longer needed for. Deleting, moving, or renaming a file never takes a photograph down.',
     ];
-    if (event.status === 'resolved') return lines;
+    if (event.status !== 'open' && event.status !== 'deferred' && event.status !== 'failed') return lines;
     if (photo?.sourceHealth === 'present' && photo.source.present) {
         lines.push(`Its source is back at ${printable(photo.source.path)}. The watcher closes this item on its next pass.`);
         return lines;
