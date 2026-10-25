@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { request as httpRequest, type APIRequestContext, type Page } from '@playwright/test';
 import { folderBytes } from '../test/helpers/folderBytes';
+import { validateWorkingLayer } from '../lib/catalog/publish';
 import { readAuthoredRecord } from '../lib/catalog/working-layer';
 import { deferEvent } from '../lib/curation/actions';
 import { eventIdOf, eventKey } from '../lib/curation/events';
@@ -61,7 +62,7 @@ const webOrigin = () => {
 const eventOf = (photoId: string) => eventIdOf(eventKey('new', { photoId, assetRevision: data().revisionOf(photoId), key: `new:${photoId}:${data().revisionOf(photoId)}` }));
 const layers = () => ({ catalog: folderBytes(path.join(data().root, 'catalog')) });
 /** The answer the last action gave, in the page's polite status region. */
-const answer = (page: Page, state: 'done' | 'stale') => page.getByRole('status').locator(`[data-state="${state}"]`);
+const answer = (page: Page, state: 'done' | 'stale' | 'invalid') => page.getByRole('status').locator(`[data-state="${state}"]`);
 const summary = (page: Page) => page.getByRole('region', { name: 'Curation inbox' }).locator('header p');
 
 async function openInbox(page: Page, item?: string) {
@@ -85,9 +86,9 @@ test('the curator header leads, and an empty inbox says nothing requires judgmen
 test('lists what the watcher opened, and shows the selected photograph from the curator-only route', async ({ page }) => {
     await openInboxItems(data());
     await openInbox(page);
-    await expect(summary(page)).toHaveText('4 items require judgment');
+    await expect(summary(page)).toHaveText('7 items require judgment');
     const list = page.getByRole('list', { name: 'Requires judgment' });
-    await expect(list.getByRole('link')).toHaveCount(4);
+    await expect(list.getByRole('link')).toHaveCount(7);
     await list.getByRole('link', { name: /Uncurated photograph/ }).first().click();
     await waitForHydration(page);
     await expect(page.getByRole('heading', { level: 2, name: FRESH.approve })).toBeVisible();
@@ -131,6 +132,50 @@ test('turns away an action on an item that changed since the page loaded, and wr
     await page.getByRole('link', { name: 'Refresh and review again' }).click();
     await waitForHydration(page);
     await expect(page.locator('header').getByText('Left in draft', { exact: true })).toBeVisible();
+});
+
+test('clears a saved Decorative flag the curator unchecks, so the description gate holds the photo back', async ({ page }) => {
+    await openInbox(page, eventOf(FRESH.decorative));
+    await page.getByRole('checkbox', { name: /Decorative/ }).check();
+    await page.getByRole('button', { name: 'Save edits' }).click();
+    await expect(answer(page, 'done')).toHaveText(/^Saved your edits/);
+    await openInbox(page, eventOf(FRESH.decorative));
+    const box = page.getByRole('checkbox', { name: /Decorative/ });
+    await expect(box).toBeChecked();
+    await box.uncheck();
+    await page.getByRole('button', { name: 'Save edits' }).click();
+    await expect(answer(page, 'done')).toHaveText(/^Saved your edits/);
+    expect((await readEvent(data().root, eventOf(FRESH.decorative)))?.edits?.description).toBeNull();
+    await page.getByRole('combobox', { name: 'Suggested series' }).selectOption(INBOX_SERIES.published.id);
+    await page.getByRole('button', { name: 'Review series suggestion' }).click();
+    await expect(answer(page, 'done')).toContainText('no description yet');
+    expect((await readAuthoredRecord(data().root, 'photo', FRESH.decorative))?.alt).toBeNull();
+    // #13's description gate, as publish runs it, holds the photograph back.
+    const validation = await validateWorkingLayer({ dataRoot: data().root });
+    expect(validation.issues.filter((issue) => issue.code === 'description.required' && issue.record.id === FRESH.decorative)).toHaveLength(1);
+});
+
+test('stores the series it shows after a refused answer', async ({ page }) => {
+    await openInbox(page, eventOf(FRESH.refused));
+    const series = page.getByRole('combobox', { name: 'Suggested series' });
+    await series.selectOption(INBOX_SERIES.draft.id);
+    await page.getByRole('textbox', { name: 'Draft description' }).fill('<b>Harbor</b>');
+    await page.getByRole('button', { name: 'Review series suggestion' }).click();
+    await expect(answer(page, 'invalid')).toContainText('markup');
+    await expect(series).toHaveValue(INBOX_SERIES.draft.id);
+    await page.getByRole('textbox', { name: 'Draft description' }).fill('Harbor wall, fixed after the refusal.');
+    await page.getByRole('button', { name: 'Review series suggestion' }).click();
+    await expect(answer(page, 'done')).toBeVisible();
+    const shown = await series.inputValue();
+    expect((await readAuthoredRecord(data().root, 'series', shown))?.photoIds).toContain(FRESH.refused);
+});
+
+test('approves "Leave unassigned" when no rules file suggests a series', async ({ page }) => {
+    await openInbox(page, eventOf(FRESH.unassigned));
+    await expect(page.getByRole('combobox', { name: 'Suggested series' })).toHaveValue('unassigned');
+    await page.getByRole('button', { name: 'Review series suggestion' }).click();
+    await expect(answer(page, 'done')).toBeVisible();
+    expect((await readEvent(data().root, eventOf(FRESH.unassigned)))?.decisions.at(-1)).toMatchObject({ action: 'approve', seriesId: null });
 });
 
 test('dismisses an unreadable file with a reason, then reopens it', async ({ page }) => {

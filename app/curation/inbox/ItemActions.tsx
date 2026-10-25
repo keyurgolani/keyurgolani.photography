@@ -1,6 +1,6 @@
 'use client';
 
-import { useActionState, useState, type ReactNode } from 'react';
+import { startTransition, useActionState, useState, type FormEvent, type ReactNode } from 'react';
 import { Save } from 'lucide-react';
 import styles from '../curator.module.css';
 import { approveItem, deferItem, dismissItem, editItem, reopenItem, retryItem } from './actions';
@@ -90,7 +90,6 @@ function SuggestionFields({ detail, series, seriesProblem }: Pick<ItemActionsPro
     const placementShown = placement ?? initialPlacement;
     const saved = detail.edits?.description;
     const [description, setDescription] = useState(saved?.kind === 'described' ? saved.text : '');
-    const [descriptionTouched, setDescriptionTouched] = useState(false);
     const [decorative, setDecorative] = useState(saved?.kind === 'decorative');
 
     const suggested = detail.suggestions.series;
@@ -111,8 +110,10 @@ function SuggestionFields({ detail, series, seriesProblem }: Pick<ItemActionsPro
             <h3 className={styles.boxTitle} id="suggestion-heading">
                 Reviewable suggestion
             </h3>
-            {/* Only what the curator changes is sent, so an untouched suggestion stays a suggestion. */}
-            {seriesTouched ? <input type="hidden" name="series" value={seriesValue} /> : null}
+            {/* The shown series is always sent, so what the page shows is what an approval stores; Save edits counts it only once it's changed. */}
+            {seriesValue !== '' ? <input type="hidden" name="series" value={seriesValue} /> : null}
+            {seriesTouched ? <input type="hidden" name="seriesTouched" value="1" /> : null}
+            {/* A position is sent only once the curator picks one, so a suggested position stays a suggestion and never reads as an authored move. */}
             {placement !== null && chosen ? <input type="hidden" name="placement" value={placement} /> : null}
 
             <label className={styles.label}>
@@ -148,27 +149,29 @@ function SuggestionFields({ detail, series, seriesProblem }: Pick<ItemActionsPro
 
             <label className={styles.label}>
                 Draft description
-                <textarea
+                {/* One line, as the server stores it: a description can't hold a line break. */}
+                <input
+                    type="text"
                     className={styles.control}
-                    name={descriptionTouched || saved?.kind === 'described' ? 'description' : undefined}
+                    name="description"
                     value={description}
-                    rows={2}
                     disabled={decorative}
-                    onChange={(event) => {
-                        setDescription(event.target.value);
-                        setDescriptionTouched(true);
-                    }}
+                    autoComplete="off"
+                    onChange={(event) => setDescription(event.target.value)}
                     aria-describedby="description-hint"
                 />
             </label>
-            {saved ? <input type="hidden" name="descriptionWas" value="1" /> : null}
+            {/* What was saved, so an emptied field or an unchecked box clears it. */}
+            {saved ? <input type="hidden" name="descriptionWas" value={saved.kind} /> : null}
             <p className={styles.hint} id="description-hint">
                 Nothing is suggested. What you type here is stored as reviewed, and publishing waits until the photograph has a description or is marked decorative.
             </p>
             <label className={styles.check}>
-                <input type="checkbox" name="decorative" checked={decorative} onChange={(event) => setDecorative(event.target.checked)} />
+                <input type="checkbox" checked={decorative} onChange={(event) => setDecorative(event.target.checked)} />
                 Decorative: it needs no description
             </label>
+            {/* The box's state, sent every time, so unchecked means not decorative. */}
+            <input type="hidden" name="decorative" value={decorative ? 'on' : 'off'} />
 
             <label className={styles.label}>
                 Proposed sequence position
@@ -234,12 +237,21 @@ function SuggestionFields({ detail, series, seriesProblem }: Pick<ItemActionsPro
 /** 14-1's actions on the selected item, each a form the page's server actions take. */
 export default function ItemActions({ detail, activeRevisionId, series, seriesProblem, note }: ItemActionsProps) {
     const [state, dispatch, pending] = useActionState(dispatchByIntent, IDLE);
+    // Submitting by hand, not through <form action>, so React never resets the form after an answer: a reset would put
+    // each select back to its page-load option while the curator's choice is still what the form sends.
+    const submit = (event: FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+        const submitter = (event.nativeEvent as SubmitEvent).submitter;
+        const form = new FormData(event.currentTarget);
+        if (submitter instanceof HTMLButtonElement && submitter.name) form.set(submitter.name, submitter.value);
+        startTransition(() => dispatch(form));
+    };
     const primary = PRIMARY_ACTION[detail.type];
     const { can } = detail;
     const anyItemAction = can.edit || can.defer || can.approve;
     return (
         <>
-            <form action={dispatch} aria-label="Review">
+            <form onSubmit={submit} aria-label="Review">
                 <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
                 {/* The form version the page showed, so a form left open across a refresh never reads as another item's. */}
                 {detail.type === 'new' && can.edit ? <SuggestionFields key={detail.version} detail={detail} series={series} seriesProblem={seriesProblem} /> : null}
@@ -277,7 +289,7 @@ export default function ItemActions({ detail, activeRevisionId, series, seriesPr
             </form>
 
             {can.retry ? (
-                <form action={dispatch} className={styles.actions}>
+                <form onSubmit={submit} className={styles.actions}>
                     <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
                     <button type="submit" name="intent" value="retry" className={styles.button} disabled={pending}>
                         Retry processing
@@ -286,7 +298,7 @@ export default function ItemActions({ detail, activeRevisionId, series, seriesPr
             ) : null}
 
             {can.reopen ? (
-                <form action={dispatch} className={styles.actions}>
+                <form onSubmit={submit} className={styles.actions}>
                     <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
                     <button type="submit" name="intent" value="reopen" className={styles.button} disabled={pending}>
                         Reopen
@@ -297,7 +309,7 @@ export default function ItemActions({ detail, activeRevisionId, series, seriesPr
             {can.dismiss ? (
                 <details className={styles.more}>
                     <summary>Dismiss with a reason</summary>
-                    <form action={dispatch}>
+                    <form onSubmit={submit}>
                         <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
                         <label className={styles.label}>
                             Reason

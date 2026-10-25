@@ -218,6 +218,49 @@ describe('runInboxAction', () => {
         expect((await readAuthoredRecord(f.root, 'photo', event.photoId!))?.alt).toEqual({ kind: 'decorative' });
     });
 
+    it('clears a saved decorative flag the curator unchecks, so the description gate holds the photo back', async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])], { published: true });
+        let event = (await readEvent(f.root, ids[0]))!;
+        done(await runInboxAction('edit', itemForm(event, f.catalog.revisionId, { decorative: 'on', description: '' })));
+        event = (await readEvent(f.root, ids[0]))!;
+        expect(event.edits?.description).toEqual({ kind: 'decorative' });
+        // Unchecked: the page sends the box's state and that a description was saved.
+        const unchecked = { decorative: 'off', description: '', descriptionWas: 'decorative' };
+        done(await runInboxAction('edit', itemForm(event, f.catalog.revisionId, unchecked)));
+        event = (await readEvent(f.root, ids[0]))!;
+        expect(event.edits?.description).toBeNull();
+        const approved = await runInboxAction('approve', itemForm(event, f.catalog.revisionId, { series: PUBLISHED, ...unchecked }));
+        done(approved);
+        // 14-1's note for #13's description gate. The e2e runs the gate itself on a catalog with ready assets.
+        expect(approved).toMatchObject({ message: expect.stringMatching(/no description yet, so publishing it waits/) });
+        expect((await readAuthoredRecord(f.root, 'photo', event.photoId!))?.alt).toBeNull();
+    });
+
+    it('approves "Leave unassigned" when no rules file suggests a series and the page shows it as the choice', async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])]);
+        const event = (await readEvent(f.root, ids[0]))!;
+        expect(event.suggestions.series?.value).toBeNull();
+        done(await runInboxAction('approve', itemForm(event, null, { series: 'unassigned', decorative: 'off' })));
+        expect(await readEvent(f.root, ids[0])).toMatchObject({ status: 'approved', decisions: [expect.objectContaining({ action: 'approve', seriesId: null })] });
+    });
+
+    it('answers a missing choice in page wording, never with CLI flags', async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])]);
+        const event = (await readEvent(f.root, ids[0]))!;
+        const state = await runInboxAction('approve', itemForm(event, null));
+        expect(state).toMatchObject({ status: 'invalid' });
+        expect(state.status !== 'idle' && state.message).not.toMatch(/--[a-z]/);
+        expect(state.status !== 'idle' && state.message).toMatch(/Choose a series/);
+    });
+
+    it('counts a series on Save edits only when the curator changed it', async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])]);
+        const event = (await readEvent(f.root, ids[0]))!;
+        expect(await runInboxAction('edit', itemForm(event, null, { series: 'unassigned', decorative: 'off' }))).toMatchObject({ status: 'invalid', message: /Nothing changed/ });
+        done(await runInboxAction('edit', itemForm(event, null, { series: DRAFT, seriesTouched: '1', decorative: 'off' })));
+        expect((await readEvent(f.root, ids[0]))?.edits?.seriesId).toBe(DRAFT);
+    });
+
     it('takes the suggestion as it stands when the curator changes nothing', async () => {
         const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])], { rules: { schemaVersion: 1, series: [{ seriesId: DRAFT, folders: ['trips'] }] } });
         const event = (await readEvent(f.root, ids[0]))!;
@@ -272,7 +315,7 @@ describe('runInboxAction', () => {
         const event = (await readEvent(f.root, ids[0]))!;
         const before = layers(f.root);
         expect(await runInboxAction('edit', itemForm(event, null))).toMatchObject({ status: 'invalid', message: /Nothing changed/ });
-        done(await runInboxAction('edit', itemForm(event, null, { series: DRAFT, placement: 'end', description: 'Saved for later.' })));
+        done(await runInboxAction('edit', itemForm(event, null, { series: DRAFT, seriesTouched: '1', placement: 'end', description: 'Saved for later.' })));
         expect(layers(f.root)).toEqual(before);
         expect((await readEvent(f.root, ids[0]))?.edits).toMatchObject({ seriesId: DRAFT, placement: 'end', description: { kind: 'described', text: 'Saved for later.' }, editedBy: WEB_ACTOR });
     });
