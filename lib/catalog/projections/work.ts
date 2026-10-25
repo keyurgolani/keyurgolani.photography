@@ -2,7 +2,8 @@
 import 'server-only';
 import type { CatalogContent, CatalogReader, RouteBuilder } from '../reader';
 import type { Crop, FocalPoint, SeriesRecord } from '../types';
-import { ladderOf, type Ladder, type LadderVariant } from './ladder';
+import { imageOf, type Ladder } from './ladder';
+import { CENTER, focal, openableSeries, text, type ScreenCatalog } from './shared';
 
 /**
  * #3's Work read model: the series catalog on `/work`, from one compiled
@@ -17,9 +18,6 @@ import { ladderOf, type Ladder, type LadderVariant } from './ladder';
  */
 
 type Photo = CatalogContent['photos'][number];
-
-/** One cover variant file, as `/media` serves it and a `srcset` names it. */
-export type WorkCoverVariant = LadderVariant;
 
 /** A series' authored cover, as ResponsivePhoto takes it. Decorative on Work: the entry's title names the link. */
 export interface WorkCover {
@@ -70,22 +68,6 @@ export interface WorkSource {
     photosOf(seriesId: string): readonly Photo[];
 }
 
-const CENTER: FocalPoint = Object.freeze({ x: 0.5, y: 0.5 });
-
-/** Authored text only when it holds something. */
-function text(value: unknown): string | null {
-    return typeof value === 'string' && /\S/.test(value) ? value : null;
-}
-
-function focal(value: unknown): FocalPoint | null {
-    if (typeof value !== 'object' || value === null) return null;
-    const { x, y } = value as Record<string, unknown>;
-    const unit = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 1;
-    return unit(x) && unit(y) ? { x, y } : null;
-}
-
-const dimension = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n > 0;
-
 /**
  * The series' authored cover, or null when it can't be shown: no cover, a
  * cover outside the series' resolved members (#8's `order.cover` keeps it
@@ -95,14 +77,11 @@ function coverOf(series: SeriesRecord, members: readonly Photo[]): WorkCover | n
     const photoId = series.cover?.photoId;
     // Members are the series' photoIds that resolve, so a cover from anywhere else finds nothing.
     const photo = typeof photoId === 'string' ? members.find((member) => member.id === photoId) : undefined;
-    if (!photo || !dimension(photo.width) || !dimension(photo.height)) return null;
-    const variants = ladderOf(photo);
-    if (variants === null) return null;
+    const image = photo ? imageOf(photo, false) : null;
+    if (!photo || image === null) return null;
     return {
         photoId: photo.id,
-        width: photo.width,
-        height: photo.height,
-        variants,
+        ...image,
         focalPoint: { ...(focal(series.cover.focalPoint) ?? focal(photo.focalPoint) ?? CENTER) },
         crop: photo.crop === 'contain' ? 'contain' : 'cover',
     };
@@ -110,33 +89,25 @@ function coverOf(series: SeriesRecord, members: readonly Photo[]): WorkCover | n
 
 /**
  * The Work catalog of one source, in its series order. A series appears
- * only with something to open: a positive published count and at least one
- * member that resolves. An empty series is left out, as compile leaves it
- * out, so no entry links to an empty page. A series ID that appears more
- * than once is left out entirely: compile never writes one, and the reader
- * indexes members by ID, so a hand-written revision with two records under
- * one ID would pair one record's copy with the other's photos. Hrefs come
- * from `routes`: #13's `publicRoutes` on the site, a preview's own builder
- * in a preview.
+ * only when openableSeries() says #5's page opens it: its ID once, a
+ * positive published count, and at least one member that resolves. An
+ * empty series is left out, as compile leaves it out, so no entry links to
+ * an empty page, and a repeated ID is left out entirely. Hrefs come from
+ * `routes`: #13's `publicRoutes` on the site, a preview's own builder in a
+ * preview.
  */
 export function workCatalogOf(source: WorkSource, routes: Pick<RouteBuilder, 'seriesHref'>): WorkCatalog {
-    const records = source.listSeries();
-    const uses = new Map<string, number>();
-    for (const record of records) uses.set(record.id, (uses.get(record.id) ?? 0) + 1);
     const series: WorkSeriesSummary[] = [];
-    for (const record of records) {
-        if (uses.get(record.id) !== 1) continue;
-        const photoCount = record.derived?.photoCount;
-        if (!dimension(photoCount)) continue;
+    for (const record of source.listSeries()) {
+        if (!openableSeries(source, record)) continue;
         const members = source.photosOf(record.id);
-        if (members.length === 0) continue;
         series.push({
             id: record.id,
             slug: record.slug,
             href: routes.seriesHref(record.slug),
             title: record.title,
             shortStatement: text(record.shortStatement),
-            derived: { photoCount },
+            derived: { photoCount: record.derived.photoCount },
             cover: coverOf(record, members),
         });
     }
@@ -146,14 +117,8 @@ export function workCatalogOf(source: WorkSource, routes: Pick<RouteBuilder, 'se
 /** The legacy archive route, until #13 slice E removes it. */
 export const LEGACY_GALLERY_PATH = '/gallery';
 
-/**
- * The parts of #13's ActiveCatalog that workRouteOf() reads, so this module
- * stays clear of the server-only public reader.
- */
-export type WorkActiveCatalog<Reason extends string = string> =
-    | { mode: 'legacy' }
-    | { mode: 'catalog'; state: 'ok' | 'degraded'; reader: Pick<CatalogReader, 'getWorkSummaries'> }
-    | { mode: 'catalog'; state: 'unavailable'; reason: Reason };
+/** The parts of #13's ActiveCatalog that workRouteOf() reads. */
+export type WorkActiveCatalog<Reason extends string = string> = ScreenCatalog<Pick<CatalogReader, 'getWorkSummaries'>, Reason>;
 
 export type WorkRouteResult<Reason extends string = string> =
     /** `/work` in catalog mode: render this. */

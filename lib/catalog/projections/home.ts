@@ -1,9 +1,10 @@
 import 'server-only';
 import { PHOTO_ID_RE } from '../../identity/ids';
 import type { CatalogContent, CatalogReader, RouteBuilder } from '../reader';
-import { MAX_SLUG_LENGTH, REVISION_ID_RE, SLUG_RE } from '../schema';
+import { REVISION_ID_RE } from '../schema';
 import type { FocalPoint, SeriesRecord, SiteRecord } from '../types';
-import { ladderOf, type Ladder, type LadderVariant } from './ladder';
+import { imageOf, type Ladder } from './ladder';
+import { CENTER, focal, openableSeries, seriesParams, text, type ScreenCatalog } from './shared';
 
 /**
  * #4's Home read model: the featured series' authored sequence, from one
@@ -26,9 +27,6 @@ import { ladderOf, type Ladder, type LadderVariant } from './ladder';
  */
 
 type Photo = CatalogContent['photos'][number];
-
-/** One variant file, as `/media` serves it and a `srcset` names it. */
-export type HomeVariant = LadderVariant;
 
 /** One photograph's #10 derivative set, as ResponsivePhoto takes it. */
 export interface HomeImage {
@@ -110,51 +108,9 @@ export interface HomeSource {
     photosOf(seriesId: string): readonly Photo[];
 }
 
-const CENTER: FocalPoint = Object.freeze({ x: 0.5, y: 0.5 });
-/** The shape the revision schema checks. ResponsivePhoto puts it in a CSS `url()`, so nothing else passes. */
-const LQIP_RE = /^data:image\/webp;base64,[A-Za-z0-9+/]+={0,2}$/;
-
-/** Authored text only when it holds something. */
-function text(value: unknown): string | null {
-    return typeof value === 'string' && /\S/.test(value) ? value : null;
-}
-
-function focal(value: unknown): FocalPoint | null {
-    if (typeof value !== 'object' || value === null) return null;
-    const { x, y } = value as Record<string, unknown>;
-    const unit = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 1;
-    return unit(x) && unit(y) ? { x, y } : null;
-}
-
-const dimension = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n > 0;
-
 /** The alt, from the alt union alone. A draft's `pending` or blank text gives empty, never a made-up name. */
 function altOf(alt: Photo['alt'] | undefined): string {
     return alt?.kind === 'described' ? text(alt.text) ?? '' : '';
-}
-
-/** The photo's derivative set when its ladder is usable (see ladderOf()), else null. */
-function imageOf(photo: Photo, withLqip: boolean): HomeImage | null {
-    if (!dimension(photo.width) || !dimension(photo.height)) return null;
-    const variants = ladderOf(photo);
-    if (variants === null) return null;
-    const image: HomeImage = { width: photo.width, height: photo.height, variants };
-    if (withLqip && typeof photo.lqip === 'string' && LQIP_RE.test(photo.lqip)) image.lqip = photo.lqip;
-    return image;
-}
-
-/**
- * Whether #5's series page would open this series, by the same checks #5
- * and #7 make: its ID appears once, its published count is positive, and
- * its canonical slug is one the route accepts. Compile never writes
- * anything else, so only a hand-written revision fails, and Home then shows
- * its empty state instead of linking a series page that answers not-found.
- * The members that resolve are checked by the caller.
- */
-function openable(series: SeriesRecord, listed: readonly SeriesRecord[]): boolean {
-    if (listed.filter((record) => record.id === series.id).length !== 1) return false;
-    if (!dimension(series.derived?.photoCount)) return false;
-    return typeof series.slug === 'string' && series.slug.length <= MAX_SLUG_LENGTH && SLUG_RE.test(series.slug);
 }
 
 /**
@@ -197,10 +153,9 @@ export function publishedHomeOf(source: HomeSource, routes: Pick<RouteBuilder, '
 function featuredOf(source: HomeSource): { series: SeriesRecord; members: readonly Photo[] } | null {
     const listed = source.listSeries();
     const series = source.site().featuredSeriesIds.map((seriesId) => listed.find((entry) => entry.id === seriesId)).find((entry) => entry !== undefined);
-    if (!series || !openable(series, listed)) return null;
-    // order.duplicate-photo blocks a repeated member at render, so no preview or revision holds one.
-    const members = source.photosOf(series.id);
-    return members.length === 0 ? null : { series, members };
+    // The series page's own checks: openableSeries(), then the route's slug check on the canonical slug Home links.
+    if (!series || !openableSeries(source, series) || seriesParams(series.slug) === null) return null;
+    return { series, members: source.photosOf(series.id) };
 }
 
 /** The member at `index` and its neighbor on each side, wrapping, as #2's Home wraps from the last to the first. Each once. */
@@ -234,14 +189,8 @@ export function homePhotosOf(source: HomeSource, photoId: unknown): HomePhotosRe
     return { kind: 'ok', window: { revisionId: source.revisionId, photos: windowOf(featured.members, index).map((photo) => recordOf(photo, false)) } };
 }
 
-/**
- * The parts of #13's ActiveCatalog that homeRouteOf() reads, so this
- * module stays clear of the server-only public reader.
- */
-export type HomeActiveCatalog<Reason extends string = string> =
-    | { mode: 'legacy' }
-    | { mode: 'catalog'; state: 'ok' | 'degraded'; reader: Pick<CatalogReader, 'revision' | 'site' | 'listSeries' | 'photosOf'> }
-    | { mode: 'catalog'; state: 'unavailable'; reason: Reason };
+/** The parts of #13's ActiveCatalog that homeRouteOf() and homePhotosFrom() read. */
+export type HomeActiveCatalog<Reason extends string = string> = ScreenCatalog<Pick<CatalogReader, 'revision' | 'site' | 'listSeries' | 'photosOf'>, Reason>;
 
 export type HomeRouteResult<Reason extends string = string> =
     /** Before the cutover: today's Home, unchanged. */
