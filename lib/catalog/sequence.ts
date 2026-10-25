@@ -3,6 +3,7 @@ import path from 'node:path';
 import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
+import type { VersionedWriteHooks } from '../storage/document';
 import { realpathLoose } from '../storage/fsx';
 import { LockTimeoutError, withLock, type LockContext } from '../storage/lock';
 import type { AuthoredSeries, AuthoredSite, FocalPoint } from './types';
@@ -330,6 +331,8 @@ export interface ApplyOptions {
     lock?: LockContext;
     /** How long to wait for the lock when not given one. Defaults to 10 s. */
     waitMs?: number;
+    /** Test hooks, passed to the writer's writeVersionedDocument(). */
+    hooks?: VersionedWriteHooks;
 }
 
 export type ApplyResult =
@@ -363,12 +366,12 @@ async function applyUnderHold(root: string, op: SequenceOp, options: ApplyOption
     if (!result.changed) return { ok: true, changed: false, version: found, actor: options.actor, consequences: [] };
 
     const record: AuthoredSite | AuthoredSeries = result.record;
-    const writeOptions = { expectedVersion: found, lock: hold, root };
+    const writeOptions = { expectedVersion: found, lock: hold, root, hooks: options.hooks };
     try {
         const written = record.kind === 'site' ? await writeAuthoredRecord(record, writeOptions) : await writeAuthoredRecord(record, writeOptions);
         return { ok: true, changed: true, version: written.version, actor: options.actor, consequences: result.consequences };
     } catch (error) {
-        // Under the hold only a hand edit can get in between, and it wins.
+        // Under the hold only a hand edit, or a writer past its lease, can get in between, and it wins.
         if (error instanceof AuthoredWriteError && error.code === 'VERSION_CONFLICT') return versionConflict(error.foundVersion ?? found);
         throw error;
     }
