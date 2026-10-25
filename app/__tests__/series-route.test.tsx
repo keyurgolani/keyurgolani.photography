@@ -132,7 +132,7 @@ beforeAll(async () => {
                 title: 'Fixture title one',
                 caption: 'SENTINEL caption',
                 credit: 'SENTINEL credit',
-                technical: { make: 'SENTINEL make' },
+                technical: { Make: 'SENTINEL make' },
                 location: 'Fixture location one',
                 capturedAt: '2019-05-06',
                 accent: '#a1b2c3',
