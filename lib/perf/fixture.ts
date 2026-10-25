@@ -3,10 +3,16 @@ import { buildTestCatalog, type TestCatalogContent, type TestCatalogOptions, typ
 /**
  * #6's large fixture library: 5,000 photographs across 100 series, built by
  * #13's test catalog with declared variant sizes, so no image data exists or
- * goes into Git. Test-only; nothing in the app imports it. Series split the
- * photos evenly (50 each) and the first one is featured, the helper's
- * defaults, with its obvious fixture copy.
+ * goes into Git. Test-only; nothing in the app imports it. The first series
+ * holds 250 photographs and is featured (the helper's default), so the
+ * Series page bound and Home's narrowing have something to bind (#6 PR 2):
+ * three pages of 100, 100, and 50, and a featured sequence far longer than
+ * Home's three records. The other 99 split the remaining 4,750 (47 or 48
+ * each), with the helper's obvious fixture copy.
  */
+
+/** The featured series' size: more than two pages, so there's a page between the first and the last. */
+export const LONG_SERIES_PHOTOS = 250;
 
 const KIB = 1024;
 
@@ -20,7 +26,7 @@ export const BUDGET_VARIANT_BYTES: VariantByteTable = {
 
 export const BUDGET_FIXTURE = {
     photos: 5_000,
-    series: 100,
+    series: [{ photos: LONG_SERIES_PHOTOS }, ...Array.from({ length: 99 }, () => ({}))],
     seed: 6,
     variantBytes: BUDGET_VARIANT_BYTES,
 } as const satisfies TestCatalogOptions;

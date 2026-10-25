@@ -9,7 +9,11 @@ import styles from './HomeSequence.module.css';
 interface CatalogSequenceProps {
   /** The authored order. */
   photoIds: readonly string[];
-  /** The records it can show, by ID. A photo without one renders as a missing image. */
+  /**
+   * The records it holds, by ID. A record whose image is null renders as a
+   * missing image; a photo with no record yet renders nothing and reports
+   * nothing, so the photograph before it stays on screen while it loads.
+   */
   photos: ReadonlyMap<string, CatalogPhoto>;
   /** The position useHomePlayback is on. */
   index: number;
@@ -55,9 +59,9 @@ export default function CatalogSequence({ photoIds, photos, index, playbackState
     if (activeId !== undefined && loaded.has(activeId)) onImageReady(activeId);
   }, [activeId, loaded, onImageReady]);
 
-  // A photo with no showable set fails as soon as it would mount.
+  // A photo whose record has no showable set fails as soon as it would mount. One with no record yet is still loading (#6).
   useEffect(() => {
-    for (const id of [activeId, nextId]) if (id !== undefined && !photos.get(id)?.image) onImageFailed(id);
+    for (const id of [activeId, nextId]) if (id !== undefined && photos.get(id)?.image === null) onImageFailed(id);
   }, [activeId, nextId, photos, onImageFailed]);
 
   if (photoIds.length === 0) return null;

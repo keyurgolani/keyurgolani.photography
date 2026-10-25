@@ -182,7 +182,11 @@ describe('seriesPageOf on a revision', () => {
                     image: { width: cover.width, height: cover.height, variants: shippedLadder(cover.variants), lqip: cover.lqip },
                     focalPoint: { x: 0.4, y: 0.6 },
                     crop: 'contain',
+                    description: described(P[1]),
                 },
+                total: 6,
+                // One page holds the whole sequence, so there's nothing to continue.
+                nextHref: null,
                 entries: ORDER_A.map((photoId, index) => ({
                     photoId,
                     position: index + 1,
@@ -672,9 +676,9 @@ describe('the authored copy and metadata inputs', () => {
 describe('the allowlist', () => {
     it('returns only the approved fields: no accent, aliases, caption, credit, per-photo date, camera facts, profile, or source', () => {
         const result = page(readerOf(revisionContent()).getSeriesPage('fixture-a'));
-        expect(Object.keys(result).sort()).toEqual(['authored', 'catalogRevision', 'chapters', 'cover', 'entries', 'facts', 'href', 'id', 'metadata', 'slug', 'workHref']);
+        expect(Object.keys(result).sort()).toEqual(['authored', 'catalogRevision', 'chapters', 'cover', 'entries', 'facts', 'href', 'id', 'metadata', 'nextHref', 'slug', 'total', 'workHref']);
         expect(Object.keys(result.entries[0]).sort()).toEqual(['description', 'href', 'image', 'photoId', 'position', 'title']);
-        expect(Object.keys(result.cover ?? {}).sort()).toEqual(['crop', 'focalPoint', 'href', 'image', 'photoId', 'position']);
+        expect(Object.keys(result.cover ?? {}).sort()).toEqual(['crop', 'description', 'focalPoint', 'href', 'image', 'photoId', 'position']);
         expect(Object.keys(result.metadata).sort()).toEqual(['canonicalPath', 'description', 'shareImage', 'title']);
         const json = JSON.stringify(result);
         for (const leak of ['#a0b0c0', '#c08040', 'accent', 'old-fixture-a', 'slugAliases', 'Fixture caption', 'Fixture credit', 'Fixture Make', 'Fixture Model', 'technical', 'profileId', 'assetRevision', 'fixture-source-one', 'openingPhotoId', 'ser_fixture-b', 'fixture-draft', 'fixture-hidden', P[7], P[8], P[9]]) {

@@ -4,7 +4,7 @@ import 'server-only';
 import type { PublicAssetProjection } from '../identity/metadata';
 import { workCatalogOf, type WorkCatalog } from './projections/work';
 import { viewerPhotoOf, type ViewerPhotoResult } from './projections/viewer';
-import { seriesPageOf, type SeriesPageResult } from './projections/series';
+import { seriesContinuationOf, seriesPageOf, type SeriesContinuationResult, type SeriesPageResult } from './projections/series';
 import type { CandidateContent, RevisionContent, SeriesRecord, SiteRecord } from './types';
 
 /**
@@ -39,6 +39,8 @@ export interface CatalogReader<Photo = CatalogContent['photos'][number]> {
     getViewerPhoto(slug: string, photoId: string): ViewerPhotoResult;
     /** #5's series page read model for `/work/<slug>`, from this reader's content alone. Hrefs from `routes`, the public ones by default. */
     getSeriesPage(slug: string, routes?: Pick<RouteBuilder, 'seriesHref' | 'photoHref' | 'workHref'>): SeriesPageResult;
+    /** #6's continuation page of `/work/<slug>` after its first, from this reader's content alone, when `cursor` names this revision. */
+    getSeriesContinuation(slug: string, cursor: string, routes?: Pick<RouteBuilder, 'seriesHref' | 'photoHref' | 'workHref'>): SeriesContinuationResult;
 }
 
 interface Index {
@@ -96,6 +98,7 @@ export function createCatalogReader<C extends CatalogContent>(content: C, meta: 
         getWorkSummaries: (routes = publicRouteBuilder) => workCatalogOf({ revisionId: revision.revisionId, listSeries: reader.listSeries, photosOf: reader.photosOf }, routes),
         getViewerPhoto: (slug, photoId) => viewerPhotoOf({ revisionId: revision.revisionId, listSeries: reader.listSeries, seriesBySlug: reader.seriesBySlug, photo: reader.photo, photosOf: reader.photosOf }, slug, photoId),
         getSeriesPage: (slug, routes = publicRouteBuilder) => seriesPageOf({ revisionId: revision.revisionId, listSeries: reader.listSeries, seriesBySlug: reader.seriesBySlug, photosOf: reader.photosOf }, slug, routes),
+        getSeriesContinuation: (slug, cursor, routes = publicRouteBuilder) => seriesContinuationOf({ revisionId: revision.revisionId, listSeries: reader.listSeries, seriesBySlug: reader.seriesBySlug, photosOf: reader.photosOf }, slug, cursor, routes),
     };
     return reader;
 }

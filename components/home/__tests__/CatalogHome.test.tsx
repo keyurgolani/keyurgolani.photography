@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { StrictMode } from 'react';
 import { renderToString } from 'react-dom/server';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import type { HomeImage, HomePhoto, PublishedHome } from '@/lib/catalog/projections/home';
 import { HOME_CHROME_IDLE_MS, HOME_LOADING_TIMEOUT_MS } from '../homeChromeConfig';
 import { HOME_AUTO_ADVANCE_MS } from '../homePlayback';
@@ -39,6 +39,9 @@ vi.mock('@/components/site/SiteNav', () => ({
   default: () => <nav aria-label="Primary" />,
 }));
 
+const router = vi.hoisted(() => ({ refresh: vi.fn() }));
+vi.mock('next/navigation', () => ({ useRouter: () => router }));
+
 const id = (n: number) => `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 
 function image(n: number): HomeImage {
@@ -58,6 +61,11 @@ const photo = (n: number, overrides: Partial<HomePhoto> = {}): HomePhoto => ({
 /** Authored order 4, 1, 3, 0, opening on 3, which neither ID order nor anything else gives. */
 const ORDER = [4, 1, 3, 0];
 
+/**
+ * A Home with `records` for the given photographs: every one by default, so
+ * these tests need no records endpoint. The narrowed tests below pass the
+ * server's three.
+ */
 function published({ order = ORDER, opening = 3, revision = 'a', photos }: { order?: number[]; opening?: number; revision?: string; photos?: HomePhoto[] } = {}): PublishedHome {
   return {
     catalogRevision: `rev_${revision.repeat(64)}`,
@@ -67,7 +75,8 @@ function published({ order = ORDER, opening = 3, revision = 'a', photos }: { ord
       href: '/work/fixture-a',
       title: 'Fixture series A',
       shortStatement: 'Fixture short statement A.',
-      photos: photos ?? order.map((n) => photo(n)),
+      photoIds: order.map(id),
+      records: photos ?? order.map((n) => photo(n)),
       openingPhotoId: id(opening),
     },
   };
@@ -189,7 +198,7 @@ describe('CatalogHome', () => {
     it('puts the opening photograph in the server HTML, current and named, over its LQIP', async () => {
       const { default: CatalogHome } = await import('../CatalogHome');
       const home = published();
-      home.featuredSeries!.photos[2].image!.lqip = 'data:image/webp;base64,AAAA';
+      home.featuredSeries!.records[2].image!.lqip = 'data:image/webp;base64,AAAA';
       const host = document.createElement('div');
       host.innerHTML = renderToString(<CatalogHome home={home} />);
       const slides = [...host.querySelectorAll('[data-photo-id]')];
@@ -531,6 +540,124 @@ describe('CatalogHome', () => {
       advance(HOME_CHROME_IDLE_MS * 3);
       expect(main()).toHaveAttribute('data-interface-state', 'interactive');
       expect(queryButton('Next photograph')).toBeNull();
+    });
+  });
+
+  describe('the narrowed Home (#6): three records from the server, the rest as Home moves', () => {
+    /** Six photographs in ID order, opening on 2, with the server's window: 1, 2, and 3. */
+    const SIX = [0, 1, 2, 3, 4, 5];
+    const narrowed = (revision = 'a') => published({ order: SIX, opening: 2, revision, photos: [photo(1), photo(2), photo(3)] });
+    const REVISION = `rev_${'a'.repeat(64)}`;
+    const href = (n: number) => `/api/catalog/home/photos/${id(n)}?revision=${REVISION}`;
+    type Init = { signal: AbortSignal };
+    const ok = (ns: number[], revisionId = REVISION) => ({ ok: true, status: 200, json: async () => ({ revisionId, photos: ns.map((n) => photo(n)) }) }) as unknown as Response;
+    const status = (code: number) => ({ ok: false, status: code, json: async () => ({}) }) as unknown as Response;
+    /** Calls a live component made: React's development remount aborts the first one. */
+    const live = (fetch: MockInstance<typeof globalThis.fetch>) => fetch.mock.calls.filter(([, init]) => !(init as Init).signal.aborted).map(([url]) => url);
+    const flush = () =>
+      act(async () => {
+        for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+      });
+
+    beforeEach(() => {
+      router.refresh.mockClear();
+    });
+
+    it('asks for the next window one step ahead, bound to the rendered revision, and never twice', async () => {
+      const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => (String(url) === href(3) ? ok([2, 3, 4]) : ok([3, 4, 5])));
+      await renderHome(narrowed());
+      await flush();
+      // The window around 3 brings 4, the photograph after next.
+      expect(live(fetch)).toEqual([href(3)]);
+      load(2);
+      click('Next photograph');
+      await flush();
+      expect(live(fetch)).toEqual([href(3), href(4)]);
+      load(3);
+      click('Next photograph');
+      await flush();
+      expect(new Set(live(fetch)).size).toBe(live(fetch).length);
+      expect(document.querySelector(`[data-photo-id="${id(4)}"] img`)).not.toBeNull();
+    });
+
+    it('keeps the photograph on screen, with no failure, while the next record is on its way', async () => {
+      vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise<Response>(() => undefined));
+      await renderHome(narrowed());
+      load(2);
+      click('Next photograph');
+      load(3);
+      click('Next photograph');
+      await flush();
+      expect(position()).toBe('05 / 06');
+      expect(shownSlide()).toHaveAttribute('data-photo-id', id(3));
+      expect(failure()).toBe('');
+      expect(queryButton('Retry')).toBeNull();
+    });
+
+    it('shows a record that couldn\'t be fetched as failed, with Retry asking again', async () => {
+      const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => status(503));
+      await renderHome(narrowed());
+      await flush();
+      load(2);
+      click('Next photograph');
+      load(3);
+      click('Next photograph');
+      await flush();
+      expect(failure()).toBe('Photograph 05 of 06 couldn’t load.');
+      expect(shownSlide()).toHaveAttribute('data-photo-id', id(3));
+      fetch.mockImplementation(async () => ok([3, 4, 5]));
+      const before = live(fetch).length;
+      click('Retry');
+      await flush();
+      expect(live(fetch).slice(before)).toEqual([href(4)]);
+      expect(failure()).toBe('');
+      expect(document.querySelector(`[data-photo-id="${id(4)}"] img`)).not.toBeNull();
+    });
+
+    it('ignores records from another revision, so two revisions never mix', async () => {
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async () => ok([2, 3, 4], `rev_${'b'.repeat(64)}`));
+      await renderHome(narrowed());
+      await flush();
+      load(2);
+      click('Next photograph');
+      load(3);
+      click('Next photograph');
+      await flush();
+      expect(document.querySelector(`[data-photo-id="${id(4)}"] img`)).toBeNull();
+      expect(failure()).toBe('Photograph 05 of 06 couldn’t load.');
+    });
+
+    it('re-renders from the new revision once on a 409, however many requests get one', async () => {
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async () => status(409));
+      await renderHome(narrowed());
+      await flush();
+      load(2);
+      click('Next photograph');
+      await flush();
+      click('Next photograph');
+      await flush();
+      expect(router.refresh).toHaveBeenCalledTimes(1);
+      expect(failure()).toBe('');
+    });
+
+    it('starts over on the new revision\'s records when the refresh brings one, with nothing from the old', async () => {
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async () => ok([2, 3, 4]));
+      const view = await renderHome(narrowed());
+      await flush();
+      view.rerender(narrowed('b'));
+      expect(position()).toBe('03 / 06');
+      // The new Home holds only its own server window until it asks the new revision.
+      expect(document.querySelector(`[data-photo-id="${id(4)}"] img`)).toBeNull();
+    });
+
+    it('aborts what it asked for when Home unmounts', async () => {
+      const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise<Response>(() => undefined));
+      const view = await renderHome(narrowed());
+      await flush();
+      const signals = fetch.mock.calls.map(([, init]) => (init as Init).signal);
+      expect(signals.some((signal) => !signal.aborted)).toBe(true);
+      view.unmount();
+      expect(signals.every((signal) => signal.aborted)).toBe(true);
     });
   });
 });
