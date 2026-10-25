@@ -167,10 +167,10 @@ async function press(button: HTMLElement) {
 }
 
 describe('the forms', () => {
-    it('send the item, its version, and the active revision, and leave an untouched suggestion out', async () => {
+    it('send the item, its version, the active revision, and the shown series, and leave an untouched position out', async () => {
         renderInbox();
         await press(screen.getByRole('button', { name: 'Review series suggestion' }));
-        expect(sent.forms).toEqual([{ action: 'approve', fields: { eventId: EVT(1), version: '3', base: ACTIVE, intent: 'approve' } }]);
+        expect(sent.forms).toEqual([{ action: 'approve', fields: { eventId: EVT(1), version: '3', base: ACTIVE, series: 'ser_harbor', description: '', decorative: 'off', intent: 'approve' } }]);
         expect(await screen.findByText('Done.')).toBeInTheDocument();
     });
 
@@ -179,7 +179,7 @@ describe('the forms', () => {
         fireEvent.change(screen.getByRole('combobox', { name: 'Suggested series' }), { target: { value: 'ser_draft' } });
         fireEvent.change(screen.getByRole('textbox', { name: 'Draft description' }), { target: { value: 'Typed by me.' } });
         await press(screen.getByRole('button', { name: 'Save edits' }));
-        expect(sent.forms[0]).toEqual({ action: 'edit', fields: { eventId: EVT(1), version: '3', base: ACTIVE, series: 'ser_draft', description: 'Typed by me.', intent: 'edit' } });
+        expect(sent.forms[0]).toEqual({ action: 'edit', fields: { eventId: EVT(1), version: '3', base: ACTIVE, series: 'ser_draft', seriesTouched: '1', description: 'Typed by me.', decorative: 'off', intent: 'edit' } });
     });
 
     it('send a position picked in the sequence editor', async () => {
@@ -188,8 +188,8 @@ describe('the forms', () => {
         const editor = screen.getByRole('group', { name: 'Place it in Harbor' });
         fireEvent.click(within(editor).getByRole('radio', { name: 'At the start' }));
         await press(screen.getByRole('button', { name: 'Review series suggestion' }));
-        expect(sent.forms[0].fields).toMatchObject({ placement: 'start', intent: 'approve' });
-        expect(sent.forms[0].fields.series).toBeUndefined();
+        expect(sent.forms[0].fields).toMatchObject({ placement: 'start', series: 'ser_harbor', intent: 'approve' });
+        expect(sent.forms[0].fields.seriesTouched).toBeUndefined();
     });
 
     it('send the decorative flag instead of text', async () => {
@@ -197,7 +197,45 @@ describe('the forms', () => {
         fireEvent.click(screen.getByRole('checkbox', { name: /Decorative/ }));
         await press(screen.getByRole('button', { name: 'Review series suggestion' }));
         expect(sent.forms[0].fields).toMatchObject({ decorative: 'on' });
+        // The disabled field isn't sent; the flag stands for the description.
         expect(sent.forms[0].fields.description).toBeUndefined();
+    });
+
+    it('send an unchecked Decorative box as off, with the saved flag, so a saved flag can be cleared', async () => {
+        renderInbox(view({ selected: detail({ edits: { description: { kind: 'decorative' }, editedAt: '2026-02-01T00:00:00.000Z', editedBy: 'curator:web' } }) }));
+        const box = screen.getByRole('checkbox', { name: /Decorative/ });
+        expect(box).toBeChecked();
+        fireEvent.click(box);
+        await press(screen.getByRole('button', { name: 'Save edits' }));
+        expect(sent.forms[0].fields).toMatchObject({ decorative: 'off', descriptionWas: 'decorative', description: '' });
+    });
+
+    it('keep the shown series and the sent series the same after a refused answer', async () => {
+        sent.answer = { status: 'invalid', action: 'approve', eventId: EVT(1), message: 'The description is plain text, so it can’t hold markup.', serial: 1 };
+        renderInbox();
+        const series = () => screen.getByRole('combobox', { name: 'Suggested series' }) as HTMLSelectElement;
+        fireEvent.change(series(), { target: { value: 'ser_draft' } });
+        fireEvent.change(screen.getByRole('textbox', { name: 'Draft description' }), { target: { value: '<b>x</b>' } });
+        await press(screen.getByRole('button', { name: 'Review series suggestion' }));
+        expect(await screen.findByText(/can’t hold markup/)).toBeInTheDocument();
+        expect(series().value).toBe('ser_draft');
+        sent.answer = null;
+        fireEvent.change(screen.getByRole('textbox', { name: 'Draft description' }), { target: { value: 'Fixed.' } });
+        await press(screen.getByRole('button', { name: 'Review series suggestion' }));
+        expect(sent.forms[1].fields.series).toBe(series().value);
+    });
+
+    it('send "Leave unassigned" when it is the shown default, as it is with no rules file', async () => {
+        renderInbox(view({ selected: detail({ suggestions: { series: { value: null, confidence: 'low', producedBy: 'rules@none', producedAt: '2026-02-01T00:00:00.000Z', evidence: [] }, placement: null } }) }));
+        expect(screen.getByRole('combobox', { name: 'Suggested series' })).toHaveValue('unassigned');
+        await press(screen.getByRole('button', { name: 'Review series suggestion' }));
+        expect(sent.forms[0].fields).toMatchObject({ series: 'unassigned', intent: 'approve' });
+        expect(sent.forms[0].fields.seriesTouched).toBeUndefined();
+    });
+
+    it('take the description on one line, as the server stores it', () => {
+        renderInbox();
+        expect(screen.getByRole('textbox', { name: 'Draft description' }).tagName).toBe('INPUT');
     });
 
     it('show a stale answer with a way to refresh, and keep what the curator typed', async () => {

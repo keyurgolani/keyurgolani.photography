@@ -99,7 +99,7 @@ type Change = { event: CurationEvent; notes?: string[] };
 
 /** The checks every action shares, then `change`, then the event write, all under the curation lock. */
 async function act(input: ActionInput, change: (step: Step) => Promise<Change>): Promise<ActionOutcome> {
-    const root = path.resolve(input.root);
+    const root = path.resolve(/*turbopackIgnore: true*/ input.root);
     const status = dataRootStatus({ versioned: true, root });
     if (status.state !== 'ready') return { ok: false, code: 'not-ready', message: `The data root is ${status.state}. Nothing was written.` };
     if (!Number.isInteger(input.expectedVersion) || input.expectedVersion < 1) return { ok: false, code: 'needs-choice', message: '--version takes the event version list or show printed.' };
@@ -219,7 +219,7 @@ export function dismissEvent(input: ActionInput & { reason: string }): Promise<A
         requireStatus(event, OPEN_STATES, 'dismissed');
         if (!input.reason) fail('needs-choice', 'dismiss needs a reason.');
         if (event.type === 'missing' && event.photoId !== null) {
-            const holders = await publishedReferences(path.resolve(input.root), event.photoId);
+            const holders = await publishedReferences(path.resolve(/*turbopackIgnore: true*/ input.root), event.photoId);
             if (holders.length > 0) {
                 fail('refused', `${event.photoId}'s source is missing, and ${holders.join(' and ')} still ${holders.length === 1 ? 'references' : 'reference'} it, so it can't be dismissed. Restore the source, or remove it from the series and publish first. Nothing was written.`);
             }
@@ -266,7 +266,7 @@ export function retryEvent(input: ActionInput & { reason?: string }): Promise<Ac
     return act(input, async (step) => {
         const { event } = step;
         requireStatus(event, OPEN_STATES, 'retried');
-        const root = path.resolve(input.root);
+        const root = path.resolve(/*turbopackIgnore: true*/ input.root);
         if (event.photoId === null || event.assetRevision === null) fail('refused', `The event ${event.id} has no photo ID, so there is nothing to retry. Retry needs a photograph #10 has identified.`);
         const failure = event.derivedFacts.failure;
         if (failure === 'unsupported-format' || failure === 'digest-collision') {
@@ -340,7 +340,7 @@ export function approveEvent(input: ActionInput & { choices: Choices; faults?: A
         }
         const photoId = event.photoId as string;
         const assetRevision = event.assetRevision as string;
-        const root = path.resolve(input.root);
+        const root = path.resolve(/*turbopackIgnore: true*/ input.root);
         const { seriesId, placement, picked, description } = resolveChoices(event, input.choices);
         let kept = false;
 

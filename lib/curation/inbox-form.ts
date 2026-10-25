@@ -55,14 +55,21 @@ function itemFields(form: FormData): Pick<ActionInput, 'eventId' | 'expectedVers
 }
 
 /**
- * The curator's choices: only the fields the form sends. The page leaves a
- * series or position field out until the curator changes it, so an untouched
- * suggestion stays a suggestion, as 14-1 resolves it.
+ * The curator's choices, from the fields the form sends:
+ * - `series`, the series the page shows, every time one is shown, so an
+ *   approval stores what the curator saw. `seriesTouched` says they changed
+ *   it, which is what Save edits counts.
+ * - `placement` only once the curator picks a position, so a suggested
+ *   position stays a suggestion as 14-1 resolves it.
+ * - `decorative`, `on` or `off` every time, and `descriptionWas`, the kind
+ *   of description already saved, so an unchecked box or an emptied field
+ *   clears it.
  */
 export function choicesFrom(form: FormData, kind: 'approve' | 'edit'): Choices {
     const choices: Choices = {};
     const series = field(form, 'series');
-    if (series !== null && series !== '') {
+    const countsSeries = kind === 'approve' || field(form, 'seriesTouched') !== null;
+    if (series !== null && series !== '' && countsSeries) {
         if (series === 'unassigned') choices.seriesId = null;
         else if (SERIES_ID_RE.test(series)) choices.seriesId = series;
         else invalid('That series is not one the working layer holds. Refresh the inbox.');
@@ -74,14 +81,14 @@ export function choicesFrom(form: FormData, kind: 'approve' | 'edit'): Choices {
         choices.placement = parsed as NonNullable<Choices['placement']>;
     }
     if (choices.seriesId === null && choices.placement !== undefined) delete choices.placement;
-    // The description field is sent only when the curator changed it or it holds their saved text.
     const decorative = field(form, 'decorative') === 'on';
-    const description = field(form, 'description');
+    const description = field(form, 'description') ?? '';
+    const saved = field(form, 'descriptionWas') !== null;
     if (decorative) choices.description = { kind: 'decorative' };
-    else if (description !== null) {
+    else {
         if (description.trim() === '') {
-            // An emptied field clears the curator's own text. An approval then places the photo with no description.
-            if (field(form, 'descriptionWas') !== null) choices.description = null;
+            // An unchecked box or an emptied field clears what was saved. An approval then places the photo with no description, and #13's gate holds it back.
+            if (saved) choices.description = null;
         } else {
             const typed: CuratorDescription = { kind: 'described', text: text(description, 'The description', MAX_DESCRIPTION_LENGTH) };
             choices.description = typed;
@@ -120,6 +127,24 @@ const DONE: Record<InboxActionKind, string> = {
     retry: 'Asked the watcher to process it again on its next pass.',
     reopen: 'Reopened.',
 };
+
+/** 14-1's answers that speak to the CLI, in the page's words. */
+const PAGE_WORDING: [RegExp, string][] = [
+    [/^Nothing chooses a series/, 'Choose a series, or Leave unassigned, before approving. Nothing was written.'],
+    [/^A position needs a series/, 'Choose a series before a position. Nothing was written.'],
+    [/^A photograph left unassigned has no position/, 'A photograph left unassigned has no position. Nothing was written.'],
+    [/^approve needs --base/, "The page didn't carry the active revision. Refresh the inbox and review it again. Nothing was written."],
+    [/^--version takes/, 'The form carries no item version. Refresh the inbox.'],
+    [/^edit needs a series/, 'Nothing changed, so there is nothing to save.'],
+    [/^dismiss needs a reason/, 'Dismissing needs a reason.'],
+];
+
+/** A refusal in the curator's words: never a CLI flag or command, which the page has no use for. */
+export function pageWording(message: string): string {
+    for (const [pattern, wording] of PAGE_WORDING) if (pattern.test(message)) return wording;
+    if (/(^|\s)--[a-z]|\bphotos (identity|publish|curation)\b/.test(message)) return "That can't be done from the inbox as it stands. Refresh and review it again. Nothing was written.";
+    return message;
+}
 
 let serial = 0;
 
@@ -177,5 +202,5 @@ export async function runInboxAction(kind: InboxActionKind, form: unknown, optio
         return answer('stale', input.eventId, `This item changed since the page loaded, so nothing was written. Refresh and review it again. (${outcome.message})`);
     }
     if (outcome.code === 'locked') return answer('busy', input.eventId, 'Another change is being written right now, so nothing was written. Try again in a moment.');
-    return answer(STATUS_FOR[outcome.code], input.eventId, outcome.message);
+    return answer(STATUS_FOR[outcome.code], input.eventId, pageWording(outcome.message));
 }

@@ -29,14 +29,14 @@ export const CURATION_LEASE_MS = 30_000;
 export const CURATION_WAIT_MS = 10_000;
 
 export function curationPaths(root: string) {
-    const dir = path.join(root, 'curation');
-    return { dir, events: path.join(dir, 'events'), rules: path.join(dir, 'rules.json') };
+    const dir = path.join(/*turbopackIgnore: true*/ root, 'curation');
+    return { dir, events: path.join(/*turbopackIgnore: true*/ dir, 'events'), rules: path.join(/*turbopackIgnore: true*/ dir, 'rules.json') };
 }
 
 /** The version folder of one event. Throws for an ID that can't name one, so no other name ever becomes a path. */
 export function eventDir(root: string, eventId: string): string {
     if (!EVENT_ID_RE.test(eventId)) throw new TypeError(`${JSON.stringify(eventId)} is not an event ID.`);
-    return path.join(curationPaths(root).events, eventId);
+    return path.join(/*turbopackIgnore: true*/ curationPaths(root).events, eventId);
 }
 
 /** An event that exists but can't be used. It names the event, never a path. */
