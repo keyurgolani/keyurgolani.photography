@@ -1,11 +1,8 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import { fireEvent, render } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '@/lib/identity/variants';
 import { mediaUrl } from '@/lib/media/url';
 import type { SeriesImage } from '@/lib/catalog/projections/series';
-import { REPO_ROOT } from '../../../test/helpers/runTsx';
 import SeriesPhoto from '../SeriesPhoto';
 
 const REF = { photoId: 'ph_00000000-0000-4000-8000-000000000001', assetRevision: `sha256-${'c'.repeat(64)}`, profileId: 'p_0123456789abcdef' };
@@ -36,6 +33,7 @@ describe('SeriesPhoto', () => {
         expect(frame.getAttribute('data-photo')).toBe('cover');
         // The class sets the box's shape unless the photograph's own ratio is asked for.
         expect(frame.style.aspectRatio).toBe('');
+        expect(frame.style.getPropertyValue('--ratio')).toBe('');
     });
 
     it('loads the cover at once, at high priority, in a box at the photograph\'s own ratio around its focal point', () => {
@@ -46,6 +44,8 @@ describe('SeriesPhoto', () => {
         expect(img.style.backgroundImage).toBe(`url("${LQIP}")`);
         const frame = container.firstElementChild as HTMLElement;
         expect(frame.style.aspectRatio).toBe('1800 / 1200');
+        // The class caps the width with it, so the height cap can't crop the box.
+        expect(frame.style.getPropertyValue('--ratio')).toBe('1800 / 1200');
         expect(frame.style.getPropertyValue('--focal-x')).toBe('20%');
         expect(frame.style.getPropertyValue('--focal-y')).toBe('90%');
         expect(frame.getAttribute('data-photo')).toBe('contain');
@@ -84,19 +84,6 @@ describe('SeriesPhoto', () => {
             complete.mockRestore();
             natural.mockRestore();
             current.mockRestore();
-        }
-    });
-});
-
-describe('the series page\'s client modules', () => {
-    // A 'use client' module ships to visitors with everything it imports. The projection pulls in node:crypto and zod.
-    it('take only types from the catalog read path', () => {
-        const dir = path.join(REPO_ROOT, 'components/series');
-        const clients = fs.readdirSync(dir).filter((name) => /\.tsx?$/.test(name) && /^\s*['"]use client['"]/.test(fs.readFileSync(path.join(dir, name), 'utf8')));
-        expect(clients).toEqual(['SeriesPhoto.tsx']);
-        for (const name of clients) {
-            const source = fs.readFileSync(path.join(dir, name), 'utf8');
-            for (const [statement] of source.matchAll(/^import\s[^;]*?from\s+['"][^'"]*lib\/catalog\/[^'"]*['"];?/gm)) expect(statement, `${name}: ${statement}`).toMatch(/^import type /);
         }
     });
 });

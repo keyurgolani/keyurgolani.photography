@@ -88,17 +88,21 @@
   font-size: var(--gah-type-label);
 }
 
-/* The cover at its own aspect ratio, capped so a tall photograph still leaves the sequence in reach. */
+/* The cover at its own aspect ratio, no taller than 82svh, so a tall photograph
+   still leaves the sequence in reach. The cap is on the width (82svh times the
+   photograph's ratio, from SeriesPhoto's --ratio), not a max-height, which
+   would shorten the box without narrowing it and crop the photograph. The
+   fallback box keeps 3:2. */
 .stage {
   margin: 0;
 }
 
 .coverFrame {
+  --ratio: 3 / 2;
   position: relative;
   display: block;
   overflow: hidden;
-  width: 100%;
-  max-height: 82svh;
+  width: min(100%, calc(82svh * var(--ratio)));
   border-radius: var(--gah-radius);
   background: var(--gah-surface);
 }

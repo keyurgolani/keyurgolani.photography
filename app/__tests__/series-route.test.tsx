@@ -470,6 +470,9 @@ describe('the page', () => {
         expect(frame?.getAttribute('data-photo')).toBe('contain');
         expect(frame?.getAttribute('style')).toContain('--focal-x:25%');
         expect(frame?.getAttribute('style')).toContain('--focal-y:75%');
+        const { width, height } = photoOf(P[1]);
+        expect(frame?.getAttribute('style')).toContain(`aspect-ratio:${width} / ${height}`);
+        expect(frame?.getAttribute('style')).toContain(`--ratio:${width} / ${height}`);
         // The only image with a placeholder, and the only one loaded at once.
         expect(doc.querySelectorAll('img[loading="eager"]')).toHaveLength(1);
         expect([...doc.querySelectorAll('img')].filter((image) => image.getAttribute('style')?.includes('background-image'))).toHaveLength(1);

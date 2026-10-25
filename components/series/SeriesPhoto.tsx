@@ -25,7 +25,7 @@ export interface SeriesPhotoProps {
     fallbackLabel?: string;
     /** The box's class, which reserves its shape. */
     frameClassName: string;
-    /** Size the box from the photograph's own aspect ratio, as the cover does. Otherwise the class sets it. */
+    /** Size the box from the photograph's own aspect ratio, as the cover does, and hand the class that ratio as --ratio. Otherwise the class sets it. */
     intrinsic?: boolean;
 }
 
@@ -55,7 +55,8 @@ export default function SeriesPhoto({ image, alt, sizes, priority = false, focal
     }
 
     const style = {
-        ...(intrinsic ? { aspectRatio: `${image.width} / ${image.height}` } : {}),
+        // --ratio lets the class cap the width too, so a height cap never crops the box away from the photograph's shape.
+        ...(intrinsic ? { aspectRatio: `${image.width} / ${image.height}`, '--ratio': `${image.width} / ${image.height}` } : {}),
         ...(focalPoint ? { '--focal-x': `${focalPoint.x * 100}%`, '--focal-y': `${focalPoint.y * 100}%` } : {}),
     } as CSSProperties;
     return (
