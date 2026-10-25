@@ -4,11 +4,14 @@ import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
 import { dataRootStatus, libraryRoot } from '../storage/config';
 import { printable, scrub } from './commands';
-import { EVENT_ID_RE, FAILURE_TEXT, needsJudgment, shortPhotoId, waitingReason, type CurationEvent } from './events';
-import { photoHolders } from './holders';
+import { EVENT_ID_RE, FAILURE_TEXT, needsJudgment, waitingReason, type CurationEvent } from './events';
+import { photoHolderEntries } from './holders';
 import {
     itemTitle,
     PRIMARY_ACTION,
+    seriesName,
+    shortIdOf,
+    type HolderRef,
     type InboxDetail,
     type InboxItem,
     type InboxView,
@@ -52,7 +55,8 @@ function itemOf(event: CurationEvent, waiting: string | null, placed: string | n
         group: groupOf(event, waiting, placed !== null, unplaced !== null),
         title: unplaced !== null ? 'Approved, no longer placed' : itemTitle(event.type, waiting !== null),
         photoId: event.photoId,
-        shortId: shortPhotoId(event.photoId),
+        shortId: shortIdOf(event.photoId),
+        sourcePath: printable(event.derivedFacts.sourcePath),
         waiting,
         placedBy: placed,
         unplacedSeries: unplaced,
@@ -96,9 +100,14 @@ function factsOf(event: CurationEvent): { label: string; value: string }[] {
     return rows;
 }
 
-function decisionDetail(decision: CurationEvent['decisions'][number]): string {
+/** A decision in History, with its series by title and the ID kept beside it. */
+function decisionDetail(decision: CurationEvent['decisions'][number], series: readonly SeriesOption[]): string {
     const parts: string[] = [];
-    if (decision.seriesId !== undefined) parts.push(decision.seriesId ?? 'left unassigned');
+    if (decision.seriesId === null) parts.push('left unassigned');
+    else if (decision.seriesId !== undefined) {
+        const name = seriesName(series, decision.seriesId);
+        parts.push(name === decision.seriesId ? name : `${name} (${decision.seriesId})`);
+    }
     if (decision.placement) parts.push(typeof decision.placement === 'string' ? `at the ${decision.placement}` : `after ${decision.placement.after}`);
     if (decision.reason) parts.push(`"${printable(decision.reason)}"`);
     if (decision.writes?.length) parts.push(`wrote ${decision.writes.map((entry) => `${entry.record} v${entry.version}`).join(', ')}`);
@@ -151,10 +160,10 @@ async function placedOf(root: string, event: CurationEvent, series: readonly Ser
 
 async function detailOf(root: string, event: CurationEvent, item: InboxItem, registry: Registry | null, scrubbed: (text: string) => string, series: readonly SeriesOption[]): Promise<InboxDetail> {
     const derivatives = derivativeText(event, registry);
-    let references: string[] | null = null;
+    let references: HolderRef[] | null = null;
     if (event.photoId !== null) {
-        const found = await photoHolders(root, event.photoId);
-        references = 'unknown' in found ? null : found.holders;
+        const found = await photoHolderEntries(root, event.photoId);
+        references = 'unknown' in found ? null : found.entries;
     } else {
         references = [];
     }
@@ -165,7 +174,7 @@ async function detailOf(root: string, event: CurationEvent, item: InboxItem, reg
         assetRevision: event.assetRevision,
         observedAt: event.observedAt,
         lastObservedAt: event.lastObservedAt,
-        sourcePath: printable(event.derivedFacts.sourcePath),
+        capturedDate: event.derivedFacts.capturedDate ?? null,
         fromPath: event.derivedFacts.fromPath ? printable(event.derivedFacts.fromPath) : null,
         identity: identityText(event, registry),
         derivatives: derivatives.text,
@@ -189,7 +198,7 @@ async function detailOf(root: string, event: CurationEvent, item: InboxItem, reg
             : null,
         placed: await placedOf(root, event, series),
         lastApprovedSeries: event.decisions.filter((decision) => decision.action === 'approve').at(-1)?.seriesId ?? null,
-        decisions: event.decisions.map((decision) => ({ action: decision.action, at: decision.at, by: printable(decision.by), detail: decisionDetail(decision) })),
+        decisions: event.decisions.map((decision) => ({ action: decision.action, at: decision.at, by: printable(decision.by), detail: decisionDetail(decision, series) })),
         reviewedAt: event.reviewedAt,
         reviewedBy: event.reviewedBy === null ? null : printable(event.reviewedBy),
         can: { ...abilities(event, registry), ...(event.type === 'missing' && references?.length !== 0 ? { dismiss: false } : {}) },
@@ -203,7 +212,7 @@ async function seriesOptions(root: string): Promise<{ series: SeriesOption[]; pr
         id: entry.id,
         label: entry.title.trim() || entry.id,
         visibility: entry.visibility,
-        members: entry.photoIds.map((photoId) => ({ photoId, shortId: shortPhotoId(photoId) })),
+        members: entry.photoIds.map((photoId) => ({ photoId, shortId: shortIdOf(photoId) })),
     }));
     const unreadable = problems.filter((problem) => problem.kind === 'series').map((problem) => problem.id);
     return { series: options, problem: unreadable.length > 0 ? `Some series can't be read (${unreadable.join(', ')}), so they aren't offered.` : null };

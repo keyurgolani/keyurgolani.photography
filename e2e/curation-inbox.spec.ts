@@ -66,6 +66,8 @@ const layers = () => ({ catalog: folderBytes(path.join(data().root, 'catalog')) 
 /** The answer the last action gave, in the page's polite status region. */
 const answer = (page: Page, state: 'done' | 'stale' | 'invalid') => page.getByRole('status').locator(`[data-state="${state}"]`);
 const summary = (page: Page) => page.getByRole('region', { name: 'Curation inbox' }).locator('header p');
+/** The item's heading: its source file's name, which is what tells the curator which photograph it is. */
+const itemHeading = (page: Page, photoId: string) => page.getByRole('heading', { level: 2, name: path.posix.basename(FRESH_SOURCES[photoId]) });
 
 async function openInbox(page: Page, item?: string) {
     await page.goto(`${curatorOrigin()}/curation/inbox${item ? `?item=${item}` : ''}`);
@@ -98,9 +100,13 @@ test('lists what the watcher opened, and shows the selected photograph from the 
     await expect(summary(page)).toHaveText('8 items require judgment');
     const list = page.getByRole('list', { name: 'Requires judgment' });
     await expect(list.getByRole('link')).toHaveCount(8);
+    // Each row names its source file, so rows of new photographs tell apart.
+    await expect(list.getByRole('link', { name: new RegExp(FRESH_SOURCES[FRESH.approve]) })).toHaveCount(1);
     await list.getByRole('link', { name: /Uncurated photograph/ }).first().click();
     await waitForHydration(page);
-    await expect(page.getByRole('heading', { level: 2, name: FRESH.approve })).toBeVisible();
+    // The row's link lands on the item itself, so on a phone it isn't under the list.
+    await expect(page).toHaveURL(/#item$/);
+    await expect(itemHeading(page, FRESH.approve)).toBeInViewport();
     const preview = page.getByRole('img', { name: /^Candidate photograph / });
     await expect.poll(() => preview.evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
     const response = await page.request.get(`${curatorOrigin()}${await preview.getAttribute('src')}`);
@@ -127,7 +133,7 @@ test('approves a new photograph into the draft with the typed description, and p
 test('turns away an action on an item that changed since the page loaded, and writes nothing', async ({ page }) => {
     const eventId = eventOf(FRESH.stale);
     await openInbox(page, eventId);
-    await expect(page.getByRole('heading', { level: 2, name: FRESH.stale })).toBeVisible();
+    await expect(itemHeading(page, FRESH.stale)).toBeVisible();
     // The CLI, or another tab, acts on it first.
     const shown = (await readEvent(data().root, eventId))!;
     expect(await deferEvent({ root: data().root, eventId, expectedVersion: shown.version, actor: 'curator:cli' })).toMatchObject({ ok: true });
@@ -168,9 +174,13 @@ test('stores the series it shows after a refused answer', async ({ page }) => {
     await openInbox(page, eventOf(FRESH.refused));
     const series = page.getByRole('combobox', { name: 'Suggested series' });
     await series.selectOption(INBOX_SERIES.draft.id);
-    await page.getByRole('textbox', { name: 'Draft description' }).fill('<b>Harbor</b>');
+    const description = page.getByRole('textbox', { name: 'Draft description' });
+    await description.fill('<b>Harbor</b>');
     await page.getByRole('button', { name: 'Review series suggestion' }).click();
-    await expect(answer(page, 'invalid')).toContainText('markup');
+    // The refusal shows by the description field, which is marked and takes focus.
+    await expect(description).toHaveAccessibleDescription(/markup/);
+    await expect(description).toHaveAttribute('aria-invalid', 'true');
+    await expect(description).toBeFocused();
     await expect(series).toHaveValue(INBOX_SERIES.draft.id);
     await page.getByRole('textbox', { name: 'Draft description' }).fill('Harbor wall, fixed after the refusal.');
     // Read before approving: an approved item no longer offers the suggestion.

@@ -206,6 +206,27 @@
   background: var(--curator-active);
 }
 
+/* The list column ends at the row's edges, so the focus token sits inside the row instead of outside it. */
+.items .item:focus-visible {
+  outline-offset: calc(-1 * var(--focus-ring-width));
+  box-shadow: inset 0 0 0 calc(var(--focus-ring-width) + var(--focus-ring-offset)) var(--focus-ring-dark) !important;
+}
+
+.itemMeta {
+  display: flex;
+  max-width: 100%;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.125rem 0.625rem;
+}
+
+.itemFile {
+  min-width: 0;
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
+  overflow-wrap: anywhere;
+}
+
 .item strong {
   font-weight: 500;
 }
@@ -275,25 +296,46 @@
 }
 
 .photo {
-  position: relative;
-  display: grid;
   min-height: 22rem;
-  padding: 4rem 6% 6%;
-  align-content: start;
-  justify-items: center;
   background: var(--gah-ground);
 }
 
-.photo img {
+/* The column runs the detail's full height; the frame inside it stays at the
+   top of the screen, so the photograph is in view while the curator works
+   the form beside it. Only on the wide layout, where it has its own column
+   and covers nothing. */
+.photoFrame {
+  position: sticky;
+  top: 0;
+  display: grid;
+  padding: 4rem 6% 6%;
+  align-content: start;
+  justify-items: center;
+}
+
+.photoFrame img {
   max-width: 100%;
-  max-height: 70svh;
+  max-height: calc(100svh - 7rem);
   object-fit: contain;
 }
 
-.photo > .badge {
+.photoFrame > .badge {
   position: absolute;
   top: 1rem;
   left: 1rem;
+}
+
+.backToList {
+  display: none;
+}
+
+/* The item takes focus when a row's link lands on it, so the next Tab starts
+   in its form. It isn't a control and isn't in the tab order, so it shows no ring;
+   every control inside it keeps the focus token. */
+.body .detail:focus,
+.body .detail:focus-visible {
+  outline: none;
+  box-shadow: none !important;
 }
 
 .noPreview {
@@ -314,18 +356,20 @@
   gap: 0.75rem;
 }
 
-.fieldsHeader > div > span {
-  color: var(--gah-ink-muted);
-  font-size: var(--gah-type-label);
+.fieldsHeader h2 {
+  margin: 0;
+  font-family: var(--gah-font-sans);
+  font-size: 1.125rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 
-.fieldsHeader h2 {
-  margin: 0.3rem 0 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.9375rem;
-  font-weight: 400;
-  letter-spacing: 0;
-  overflow-wrap: anywhere;
+.identityLine {
+  margin: 0.25rem 0 0;
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
 }
 
 .status {
@@ -337,10 +381,16 @@
   font-size: var(--gah-type-label);
 }
 
-.status[data-approved='true'] {
+.status[data-tone='approved'] {
   border-color: var(--curator-approved-rule);
   color: var(--curator-approved-ink);
   background: var(--curator-approved-bg);
+}
+
+.status[data-tone='change'] {
+  border-color: var(--curator-tone-change-ink);
+  color: var(--curator-tone-change-ink);
+  background: var(--curator-tone-change-bg);
 }
 
 .facts {
@@ -440,6 +490,22 @@ textarea.control {
   margin: 0.3rem 0 0;
   color: var(--gah-ink-muted);
   font-size: var(--gah-type-label);
+}
+
+/* A refusal about one field, under that field. Marked by its border and the field's aria-invalid, not by color alone. */
+.fieldError {
+  /* Clear of the focused field's ring, which the field holds while this shows. */
+  margin: 0.625rem 0 0;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--curator-tone-alert-ink);
+  border-radius: var(--gah-radius);
+  color: var(--gah-ink);
+  background: var(--curator-tone-alert-bg);
+  font-size: var(--gah-type-label);
+}
+
+.control[aria-invalid='true'] {
+  border-color: var(--curator-tone-alert-ink);
 }
 
 .evidence {
@@ -550,6 +616,13 @@ textarea.control {
   background: transparent;
 }
 
+/* An action the inbox can't take yet: there, with its reason, but quieter than the live one. */
+.unavailable {
+  border-style: dashed;
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}
+
 .more {
   margin-top: 1rem;
   border-top: 1px solid var(--curator-rule);
@@ -657,19 +730,28 @@ textarea.control {
 
 /* The mockup's mobile frame: the header stacks, the list sits above the detail. */
 @media (max-width: 767px) {
+  /* Sign out shares the wordmark's row, so the header takes two rows, not three. */
   .header {
-    grid-template-columns: 1fr;
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      'mark end'
+      'screens screens';
+  }
+
+  .wordmark {
+    grid-area: mark;
+  }
+
+  .headerEnd {
+    grid-area: end;
   }
 
   .volume {
     display: none;
   }
 
-  .headerEnd {
-    justify-content: flex-start;
-  }
-
   .screens {
+    grid-area: screens;
     justify-content: stretch;
   }
 
@@ -689,11 +771,34 @@ textarea.control {
 
   .detail {
     display: block;
+    /* A row's #item link lands here. The page keeps 6rem of scroll padding for focus; the item starts at the top instead. */
+    scroll-margin-top: -5.5rem;
+  }
+
+  .backToList {
+    display: flex;
+    min-height: 44px;
+    align-items: center;
+    padding: 0 1.125rem;
+    border-bottom: 1px solid var(--curator-rule);
+    color: var(--gah-ink-soft);
+    font-size: var(--gah-type-label);
+    text-decoration: underline;
+    text-underline-offset: 0.2em;
   }
 
   .photo {
     min-height: 12rem;
+  }
+
+  .photoFrame {
+    position: relative;
     padding: 3.25rem 1.125rem 0.75rem;
+  }
+
+  /* Short enough that the file name shows under it on a phone and at 200% zoom. */
+  .photoFrame img {
+    max-height: 55svh;
   }
 
   .fields {

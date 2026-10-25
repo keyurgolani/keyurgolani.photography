@@ -30,13 +30,14 @@ const EVT = (n: number) => `evt_${String(n).padStart(24, '0')}`;
 const REV = `sha256-${'a'.repeat(64)}`;
 const ACTIVE = `rev_${'b'.repeat(64)}`;
 
+const SHORT = (n: number) => `ph_0000…${String(n).padStart(4, '0')}`;
 const SERIES: SeriesOption[] = [
-    { id: 'ser_harbor', label: 'Harbor', visibility: 'published', members: [{ photoId: P(1), shortId: P(1).slice(0, 11) }, { photoId: P(2), shortId: P(2).slice(0, 11) }] },
+    { id: 'ser_harbor', label: 'Harbor', visibility: 'published', members: [{ photoId: P(1), shortId: SHORT(1) }, { photoId: P(2), shortId: SHORT(2) }] },
     { id: 'ser_draft', label: 'Draft series', visibility: 'draft', members: [] },
 ];
 
 function item(overrides: Partial<InboxItem> = {}): InboxItem {
-    return { id: EVT(1), version: 3, type: 'new', status: 'open', group: 'judgment', title: 'Uncurated photograph', photoId: P(9), shortId: P(9).slice(0, 11), waiting: null, placedBy: null, unplacedSeries: null, ...overrides };
+    return { id: EVT(1), version: 3, type: 'new', status: 'open', group: 'judgment', title: 'Uncurated photograph', photoId: P(9), shortId: SHORT(9), sourcePath: 'trips/harbor-1.jpg', waiting: null, placedBy: null, unplacedSeries: null, ...overrides };
 }
 
 function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
@@ -45,7 +46,7 @@ function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
         assetRevision: REV,
         observedAt: '2026-02-01T00:00:00.000Z',
         lastObservedAt: '2026-02-01T00:00:00.000Z',
-        sourcePath: 'trips/harbor-1.jpg',
+        capturedDate: '2024-06-01',
         fromPath: null,
         identity: `${P(9)}, source present`,
         derivatives: 'p_1 ready',
@@ -88,7 +89,9 @@ describe('the list', () => {
         expect(screen.getByRole('heading', { level: 1, name: 'Curation inbox' })).toBeInTheDocument();
         expect(screen.getByText('1 item requires judgment, 1 waiting')).toBeInTheDocument();
         const links = screen.getAllByRole('link', { name: /photograph|Replacement/ });
-        expect(links.map((link) => link.getAttribute('href'))).toEqual([`/curation/inbox?item=${EVT(1)}`, `/curation/inbox?item=${EVT(2)}`]);
+        // Each lands on the item itself, past the list, on a phone and for a keyboard alike.
+        expect(links.map((link) => link.getAttribute('href'))).toEqual([`/curation/inbox?item=${EVT(1)}#item`, `/curation/inbox?item=${EVT(2)}#item`]);
+        expect(document.getElementById('item')).toHaveAttribute('aria-labelledby', 'item-heading');
         expect(links[0]).toHaveAttribute('aria-current', 'true');
         expect(links[1]).not.toHaveAttribute('aria-current');
         expect(screen.getByRole('heading', { name: 'Waiting' })).toBeInTheDocument();
@@ -96,10 +99,52 @@ describe('the list', () => {
         expect(screen.getByRole('button', { name: 'Refresh inbox' }).closest('form')).toHaveAttribute('method', 'get');
     });
 
-    it('shows the empty state when nothing is in the inbox', () => {
+    it('brings the item into view and focus when the URL asks for it, as a row link does', () => {
+        const scrolled = vi.fn();
+        const original = Element.prototype.scrollIntoView;
+        Element.prototype.scrollIntoView = scrolled;
+        window.location.hash = '#item';
+        try {
+            renderInbox();
+            const target = document.getElementById('item')!;
+            expect(scrolled).toHaveBeenCalledTimes(1);
+            expect(scrolled.mock.contexts[0]).toBe(target);
+            expect(target).toHaveFocus();
+            expect(target).toHaveAttribute('tabindex', '-1');
+        } finally {
+            window.location.hash = '';
+            Element.prototype.scrollIntoView = original;
+        }
+    });
+
+    it('leaves the scroll and focus alone without #item', () => {
+        const scrolled = vi.fn();
+        const original = Element.prototype.scrollIntoView;
+        Element.prototype.scrollIntoView = scrolled;
+        try {
+            renderInbox();
+            expect(scrolled).not.toHaveBeenCalled();
+            expect(document.getElementById('item')).not.toHaveFocus();
+        } finally {
+            Element.prototype.scrollIntoView = original;
+        }
+    });
+
+    it('tells rows apart by source file and the ID head and tail', () => {
+        renderInbox(view({ items: [item(), item({ id: EVT(2), photoId: P(10), shortId: SHORT(10), sourcePath: 'trips/harbor-2.jpg' })] }));
+        const links = screen.getAllByRole('link', { name: /Uncurated photograph/ });
+        expect(within(links[0]).getByText('trips/harbor-1.jpg')).toBeInTheDocument();
+        expect(within(links[0]).getByText('ph_0000…0009')).toBeInTheDocument();
+        expect(within(links[1]).getByText('trips/harbor-2.jpg')).toBeInTheDocument();
+        expect(within(links[1]).getByText('ph_0000…0010')).toBeInTheDocument();
+    });
+
+    it('shows the empty state once, with where photographs go in', () => {
         renderInbox(view({ items: [], needsJudgment: 0, selected: null }));
         expect(screen.getByRole('heading', { name: 'Nothing requires judgment' })).toBeInTheDocument();
         expect(screen.getByText('0 items require judgment')).toBeInTheDocument();
+        expect(screen.getAllByText(/library folder/)).toHaveLength(1);
+        expect(screen.queryByText(/its suggestion shows here/)).toBeNull();
         expect(screen.queryByRole('form')).toBeNull();
     });
 
@@ -111,19 +156,50 @@ describe('the list', () => {
 });
 
 describe('the detail', () => {
-    it('shows the photograph, its identity, the system response, and the locked statement', () => {
+    it('leads with the file name, its folder and capture date, and the photograph; the full IDs sit in Source facts', () => {
         renderInbox();
-        expect(screen.getByRole('img', { name: `Candidate photograph ${P(9).slice(0, 11)}` })).toHaveAttribute('src', expect.stringMatching(/^\/api\/curation\/media\//));
-        expect(screen.getByRole('heading', { level: 2, name: P(9) })).toBeInTheDocument();
-        expect(screen.getByText('Stable photo identity')).toBeInTheDocument();
-        expect(screen.getByText('Asset revision')).toBeInTheDocument();
-        expect(screen.getByText('System response')).toBeInTheDocument();
+        expect(screen.getByRole('img', { name: 'Candidate photograph harbor-1.jpg' })).toHaveAttribute('src', expect.stringMatching(/^\/api\/curation\/media\//));
+        expect(screen.getByRole('heading', { level: 2, name: 'harbor-1.jpg' })).toBeInTheDocument();
+        expect(screen.getByText('In trips, captured 1 June 2024')).toBeInTheDocument();
+        const top = screen.getByRole('heading', { level: 2, name: 'harbor-1.jpg' }).closest('header')!.nextElementSibling as HTMLElement;
+        expect(within(top).getByText('Stable photo identity').nextElementSibling).toHaveTextContent('ph_0000…0009');
+        expect(within(top).getByText('Asset revision').nextElementSibling).toHaveTextContent('sha256-aaaa…aaaa');
+        expect(within(top).getByText('System response')).toBeInTheDocument();
         expect(screen.getByText('Draft only')).toBeInTheDocument();
         expect(screen.getByText('Published statement remains unchanged.')).toBeInTheDocument();
-        // Source facts sit apart from the suggestion the curator edits.
-        expect(screen.getByRole('heading', { name: 'Source facts' })).toBeInTheDocument();
+        // Source facts sit apart from the suggestion the curator edits, and keep the full values.
+        const facts = screen.getByRole('region', { name: 'Source facts' });
+        expect(within(facts).getByText(REV)).toBeInTheDocument();
+        expect(within(facts).getByText(`${P(9)}, source present`)).toBeInTheDocument();
+        expect(within(facts).getByText('Referenced by').nextElementSibling).toHaveTextContent('Nothing');
         expect(screen.getByRole('heading', { name: 'Reviewable suggestion' })).toBeInTheDocument();
         expect(screen.getByText(/high confidence, by rules@abc/)).toBeInTheDocument();
+        // On a phone, a way back to every item from the top of the detail.
+        expect(screen.getByRole('link', { name: 'All items (1)' })).toHaveAttribute('href', '#inbox-list');
+        expect(document.getElementById('inbox-list')).toBeInTheDocument();
+    });
+
+    it('names series by title and keeps the live revision apart, for a replacement and in Source facts', () => {
+        renderInbox(view({ selected: detail({ type: 'replacement', photoId: P(2), shortId: SHORT(2), references: [{ kind: 'revision', id: ACTIVE }, { kind: 'series', id: 'ser_harbor' }, { kind: 'series', id: 'ser_draft' }], can: { approve: false, edit: true, defer: true, dismiss: false, retry: false, reopen: false }, primaryUnavailable: 'Not yet.' }) }));
+        expect(screen.getByText('Series membership').nextElementSibling).toHaveTextContent('Harbor, position 02; Draft series');
+        expect(screen.getByText('Title, description, and story stay attached to ph_0000…0002')).toBeInTheDocument();
+        expect(screen.getByText('Referenced by').nextElementSibling).toHaveTextContent('The live revision (rev_bbbb…bbbb); series Harbor and Draft series (draft)');
+        expect(screen.queryByText(/ser_harbor/)).toBeNull();
+    });
+
+    it('never calls an approval no longer placed approved', () => {
+        renderInbox(view({ selected: detail({ status: 'approved', group: 'unplaced', unplacedSeries: 'ser_draft', lastApprovedSeries: 'ser_draft', placed: { alt: null, seriesIds: [] }, can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true } }) }));
+        expect(screen.queryByText('Suggestion approved')).toBeNull();
+        expect(screen.getByText('Approved, no longer placed')).toBeInTheDocument();
+        expect(screen.getByText('System response').nextElementSibling).toHaveTextContent(/approved into Draft series, but nothing holds its photo now/);
+        expect(screen.queryByText(/waits here as a draft suggestion/)).toBeNull();
+    });
+
+    it('says once that an approval is in the draft, and where', () => {
+        renderInbox(view({ selected: detail({ status: 'approved', group: 'settled', placed: { alt: null, seriesIds: ['ser_draft'] }, lastApprovedSeries: 'ser_draft', can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true } }) }));
+        expect(screen.getByText('Suggestion approved')).toBeInTheDocument();
+        expect(screen.getByText('System response').nextElementSibling).toHaveTextContent('In the draft, in Draft series. Nothing publishes until you publish.');
+        expect(screen.queryAllByText(/Approved into the draft/)).toHaveLength(0);
     });
 
     it('offers the suggested series, Leave unassigned, and the positions in that series', () => {
@@ -136,8 +212,8 @@ describe('the detail', () => {
         expect(within(position).getAllByRole('option').map((option) => option.textContent)).toEqual([
             'At the start',
             'At the end',
-            `After photograph 01 (${P(1).slice(0, 11)})`,
-            `After photograph 02 (${P(2).slice(0, 11)})`,
+            `After photograph 01 (${SHORT(1)})`,
+            `After photograph 02 (${SHORT(2)})`,
             'Choose in sequence editor',
         ]);
     });
@@ -147,6 +223,9 @@ describe('the detail', () => {
         expect(screen.getByRole('heading', { name: 'Identity-preserving replacement' })).toBeInTheDocument();
         expect(screen.getByText('Use the new bytes only after all derivatives succeed')).toBeInTheDocument();
         expect(screen.getByRole('button', { name: 'Confirm new asset revision' })).toBeDisabled();
+        // The live action takes the primary place; the unavailable one sits before it, quieter.
+        const row = screen.getByRole('button', { name: 'Leave in draft' }).parentElement!;
+        expect(within(row).getAllByRole('button').map((button) => button.textContent)).toEqual(['Confirm new asset revision', 'Leave in draft']);
         expect(screen.queryByRole('combobox', { name: 'Suggested series' })).toBeNull();
         unmount();
         renderInbox(view({ selected: detail({ type: 'missing', can: { approve: false, edit: true, defer: true, dismiss: true, retry: false, reopen: false }, primaryUnavailable: "Locating isn't in the inbox yet." }) }));
@@ -250,11 +329,58 @@ describe('the forms', () => {
     it('start a reopened item that is no longer placed on the series it was approved into, and send it', async () => {
         const noRules = { series: { value: null, confidence: 'low' as const, producedBy: 'rules@none', producedAt: '2026-02-01T00:00:00.000Z', evidence: [] }, placement: null };
         const approved = [{ action: 'approve', at: '2026-02-01T00:00:00.000Z', by: 'curator:web', detail: '' }, { action: 'reopen', at: '2026-02-01T00:01:00.000Z', by: 'curator:web', detail: '' }];
-        renderInbox(view({ selected: detail({ suggestions: noRules, decisions: approved, placed: { alt: null, seriesIds: [] }, lastApprovedSeries: 'ser_harbor' }) }));
+        renderInbox(view({ selected: detail({ suggestions: noRules, decisions: approved, placed: { alt: { kind: 'described', text: 'Harbor wall at dusk.' }, seriesIds: [] }, lastApprovedSeries: 'ser_harbor' }) }));
         expect(screen.getByRole('combobox', { name: 'Suggested series' })).toHaveValue('ser_harbor');
+        // The captions say what the form starts from, not the suggestion it no longer shows.
+        expect(screen.getByText('Starts on Harbor, where it was approved. No series rule is set up (curation/rules.json), so nothing is suggested.')).toBeInTheDocument();
+        expect(screen.queryByText(/Suggested leaving it unassigned/)).toBeNull();
+        expect(screen.getByRole('textbox', { name: 'Draft description' })).toHaveAccessibleDescription('The description it was approved with, stored as reviewed. Clear it to withdraw it.');
+        expect(screen.queryByText(/^Nothing is suggested/)).toBeNull();
         await press(screen.getByRole('button', { name: 'Review series suggestion' }));
         expect(sent.forms[0].fields).toMatchObject({ series: 'ser_harbor', intent: 'approve' });
         expect(sent.forms[0].fields.seriesTouched).toBeUndefined();
+    });
+
+    it('say once that no series rule is set up, without the internal producer name', () => {
+        renderInbox(view({ selected: detail({ suggestions: { series: { value: null, confidence: 'low', producedBy: 'rules@none', producedAt: '2026-02-01T00:00:00.000Z', evidence: ['There is no curation/rules.json, so no series is suggested.'] }, placement: null } }) }));
+        expect(screen.getByText('No series rule is set up (curation/rules.json), so nothing is suggested.')).toBeInTheDocument();
+        expect(screen.queryByText(/rules@none/)).toBeNull();
+        expect(screen.queryByText(/There is no curation\/rules.json/)).toBeNull();
+    });
+
+    it('show a refused description by the description field, mark the field, and move focus to it', async () => {
+        sent.answer = { status: 'invalid', action: 'approve', eventId: EVT(1), message: 'The description is plain text, so it can’t hold markup.', field: 'description', serial: 1 };
+        renderInbox();
+        const field = screen.getByRole('textbox', { name: 'Draft description' });
+        fireEvent.change(field, { target: { value: '<b>x</b>' } });
+        await press(screen.getByRole('button', { name: 'Review series suggestion' }));
+        expect(field).toHaveAttribute('aria-invalid', 'true');
+        expect(field).toHaveAccessibleDescription(/can’t hold markup/);
+        expect(field).toHaveFocus();
+        // Shown once, by the field, and not again under the buttons.
+        expect(screen.getAllByText(/can’t hold markup/)).toHaveLength(1);
+        const error = screen.getByText(/can’t hold markup/);
+        expect(error.compareDocumentPosition(field) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+        expect(error.compareDocumentPosition(screen.getByRole('checkbox', { name: /Decorative/ })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('put an answer right under the buttons that produced it, above Dismiss', async () => {
+        sent.answer = { status: 'stale', action: 'approve', eventId: EVT(1), message: 'This item changed since the page loaded, so nothing was written.', serial: 1 };
+        renderInbox();
+        await press(screen.getByRole('button', { name: 'Review series suggestion' }));
+        const notice = await screen.findByText(/changed since the page loaded/);
+        const dismiss = screen.getByText('Dismiss with a reason');
+        expect(notice.compareDocumentPosition(screen.getByRole('button', { name: 'Review series suggestion' })) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+        expect(notice.compareDocumentPosition(dismiss) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('put a refused dismissal inside Dismiss, by its button', async () => {
+        sent.answer = { status: 'refused', action: 'dismiss', eventId: EVT(1), message: 'Something still shows this photograph, so it can’t be dismissed.', serial: 1 };
+        renderInbox();
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reason' }), { target: { value: 'A duplicate.' } });
+        await press(screen.getByRole('button', { name: 'Dismiss' }));
+        const notice = await screen.findByText(/can’t be dismissed/);
+        expect(notice.closest('details')).not.toBeNull();
     });
 
     it('fill a reopened item with its reviewed description', () => {
@@ -281,7 +407,7 @@ describe('the forms', () => {
         fireEvent.change(screen.getByRole('textbox', { name: 'Draft description' }), { target: { value: 'Still here.' } });
         await press(screen.getByRole('button', { name: 'Review series suggestion' }));
         expect(await screen.findByText(/changed since the page loaded/)).toBeInTheDocument();
-        expect(screen.getByRole('link', { name: 'Refresh and review again' })).toHaveAttribute('href', `/curation/inbox?item=${EVT(1)}`);
+        expect(screen.getByRole('link', { name: 'Refresh and review again' })).toHaveAttribute('href', `/curation/inbox?item=${EVT(1)}#item`);
         expect(screen.getByRole('textbox', { name: 'Draft description' })).toHaveValue('Still here.');
     });
 

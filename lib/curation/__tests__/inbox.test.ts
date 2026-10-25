@@ -493,6 +493,17 @@ describe('runInboxAction', () => {
         expect(state.status !== 'idle' && state.message).toMatch(/Choose a series/);
     });
 
+    it('names the description field when it refuses the description, and the reason field for a reason', async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])]);
+        const event = (await readEvent(f.root, ids[0]))!;
+        const refused = await runInboxAction('approve', itemForm(event, null, { series: DRAFT, decorative: 'off', description: '<b>Harbor</b>' }));
+        expect(refused).toMatchObject({ status: 'invalid', field: 'description', message: expect.stringMatching(/markup/) });
+        expect(await runInboxAction('dismiss', itemForm(event, null, { reason: '<i>dup</i>' }))).toMatchObject({ status: 'invalid', field: 'reason' });
+        // A refusal that isn't about one field names none.
+        expect(await runInboxAction('approve', itemForm(event, null))).not.toHaveProperty('field');
+        expect(await readEvent(f.root, ids[0])).toEqual(event);
+    });
+
     it('counts a series on Save edits only when the curator changed it', async () => {
         const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])]);
         const event = (await readEvent(f.root, ids[0]))!;
