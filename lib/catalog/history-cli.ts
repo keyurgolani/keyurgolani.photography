@@ -183,6 +183,9 @@ function resultLines(result: RollbackResult): string[] {
     const lines = [`[photos] ${result.outcome}: ${result.message}`];
     if (result.activation) lines.push(`Active: ${result.activation.revisionId}, revision ${result.activation.revisionNumber}`, `Activation: #${result.activation.sequence} ${result.activation.activationId}`);
     if (result.outcome === 'VALIDATION_FAILED') lines.push(...issueLines(result.issues, ''));
+    const conflicts = result.conflicts ?? [];
+    for (const conflict of conflicts.slice(0, PRINTED_ISSUES)) lines.push(`Conflict: ${conflict.kind} ${conflict.id} ${conflict.field}`);
+    if (conflicts.length > PRINTED_ISSUES) lines.push(`${count(conflicts.length - PRINTED_ISSUES, 'more conflict')} not shown. photos validate lists them all.`);
     return lines;
 }
 

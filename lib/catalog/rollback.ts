@@ -4,7 +4,7 @@ import type { Registry } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
 import { LockTimeoutError, MAX_LEASE_MS, withLock, type LockContext, type LockHooks, type LockRecord } from '../storage/lock';
 import { changesBetween, historyState, knownGood, type RevisionChanges } from './history';
-import { activateRevision, blockingIssues, CATALOG_LEASE_MS, rebaseWorkingLayer, recover, validateStored, type CatalogLogger, type RecoveryReport } from './publish';
+import { activateRevision, blockingIssues, CATALOG_LEASE_MS, rebaseWorkingLayer, recover, validateStored, type CatalogLogger, type RebaseReport, type RecoveryReport } from './publish';
 import { assertRevisionId, CATALOG_LOCK, CatalogIntegrityError, listActivations, readRevisionFile } from './repository';
 import { registeredRules } from './ruleset';
 import type { Activation, Issue, RevisionContent, RevisionFile } from './types';
@@ -134,6 +134,8 @@ export interface RollbackResult {
     activation: Activation | null;
     /** False when the rebase couldn't get the authored lock. The next publish rebases. */
     rebased?: boolean;
+    /** The working-layer conflicts the rebase raised, which stop the next publish until they're settled. */
+    conflicts?: RebaseReport['conflicts'];
     holder?: LockRecord | null;
     recovery?: RecoveryReport;
     issues: Issue[];
@@ -167,6 +169,13 @@ function relativeName(root: string, file: string): string {
     if (relative === '') return 'the data root';
     if (relative.startsWith('..') || path.isAbsolute(relative)) return 'a path outside the data root';
     return relative.split(path.sep).join('/');
+}
+
+/** What a rebase's conflicts mean for the owner, or nothing when it raised none. */
+function conflictNote(conflicts: RebaseReport['conflicts'] | undefined): string {
+    const n = conflicts?.length ?? 0;
+    if (n === 0) return '';
+    return ` The rebase raised ${n} working-layer ${n === 1 ? 'conflict' : 'conflicts'}, so the next publish stops until ${n === 1 ? "it's" : "they're"} settled.`;
 }
 
 const named = (ref: RevisionRef) => (ref.revisionNumber === null ? ref.revisionId : `revision ${ref.revisionNumber} (${ref.revisionId})`);
@@ -371,7 +380,8 @@ export async function rollback(options: RollbackOptions): Promise<RollbackResult
             recovery.rebased ? 'rebased the working layer onto it' : '',
         ].filter(Boolean);
         const note = done.length ? ` ${done.join(', ').replace(/^./, (first) => first.toUpperCase()).replace(/, ([^,]+)$/, ', and $1')}.` : '';
-        return finish('NO_CHANGES', `${message}${note}`, { recovery, ...(recovery.rebased ? { rebased: true } : {}) });
+        const conflicts = recovery.rebased?.conflicts ?? [];
+        return finish('NO_CHANGES', `${message}${note}${conflictNote(conflicts)}`, { recovery, conflicts, ...(recovery.rebased ? { rebased: true } : {}) });
     }
 
     async function rollbackHeld(lock: LockContext): Promise<RollbackResult> {
@@ -412,8 +422,9 @@ export async function rollback(options: RollbackOptions): Promise<RollbackResult
         result.activation = activated.activation;
 
         let rebased: boolean;
+        let conflicts: RebaseReport['conflicts'] = [];
         try {
-            await rebaseWorkingLayer({ root, targetRevisionId: options.revisionId, waitMs: options.authoredWaitMs });
+            conflicts = (await rebaseWorkingLayer({ root, targetRevisionId: options.revisionId, waitMs: options.authoredWaitMs })).conflicts;
             rebased = true;
         } catch (error) {
             if (!(error instanceof LockTimeoutError)) throw error;
@@ -423,6 +434,6 @@ export async function rollback(options: RollbackOptions): Promise<RollbackResult
         const target: RevisionRef = { revisionId: options.revisionId, revisionNumber: activated.activation.revisionNumber };
         const from = planned.active ? ` from ${named(planned.active)}` : '';
         const note = rebased ? '' : ' The working layer was busy, so the next publish rebases it.';
-        return finish('ROLLED_BACK', `Rolled back to ${named(target)}${from}.${note}`, { rebased });
+        return finish('ROLLED_BACK', `Rolled back to ${named(target)}${from}.${note}${conflictNote(conflicts)}`, { rebased, conflicts });
     }
 }

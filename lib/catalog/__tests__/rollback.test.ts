@@ -514,7 +514,7 @@ describe('fix round 1', { timeout: 60_000 }, () => {
     const args = (overrides: Partial<RollbackArgs> = {}): RollbackArgs => ({ to: { revisionNumber: 1 }, reason: 'roll back', actor: 'curator', yes: false, ...overrides });
 
     it('rolls back off a live revision whose file is damaged, listing everything the target publishes', async () => {
-        const { root, one, two } = await twoRevisions({ seed: 251 });
+        const { catalog, root, one, two } = await twoRevisions({ seed: 251 });
         fs.writeFileSync(revisionFilePath(root, two), '{ not json');
         const planned = await planRollback({ dataRoot: root, to: { revisionNumber: 1 } });
         expect(planned).toMatchObject({ outcome: 'READY', target: { revisionId: one }, active: { revisionId: two }, activeProblem: `catalog/revisions/${two}.json is not valid JSON` });
@@ -525,9 +525,10 @@ describe('fix round 1', { timeout: 60_000 }, () => {
             `The live revision can't be read (catalog/revisions/${two}.json is not valid JSON), so this lists everything the target publishes.`,
             `Publishes 1 series: ${target?.content.series.map((series) => `${series.id} "${series.title}"`).join(', ')}`,
             `Publishes 4 photos: ${target?.content.photos.map((photo) => photo.id).sort().join(', ')}`,
-            `[photos] ROLLED_BACK: Rolled back to revision 1 (${one}) from revision 2 (${two}).`,
+            `[photos] ROLLED_BACK: Rolled back to revision 1 (${one}) from revision 2 (${two}). The rebase raised 1 working-layer conflict, so the next publish stops until it's settled.`,
         ]));
         expect(terminal.asked).toHaveLength(1);
+        expect(terminal.lines).toContain(`Conflict: photo ${catalog.photos[0].id} caption`);
         expect(await readActivePointer(root)).toMatchObject({ revisionId: one });
     });
 
@@ -717,6 +718,13 @@ describe('after a rollback off a damaged live revision', { timeout: 60_000 }, ()
         // The working record can't be compared with the damaged base, so its caption stays only as a conflict to settle.
         const record = (await readWorkingLayer(root)).photos.find((photo) => photo.id === captioned);
         expect(record?.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ field: 'caption' })]));
+
+        // The result says so, rather than reading as a clean rollback.
+        const layer = await readWorkingLayer(root);
+        const conflicts = [layer.site, ...layer.series, ...layer.photos].reduce((total, entry) => total + (entry?.conflicts?.length ?? 0), 0);
+        expect(conflicts).toBeGreaterThan(0);
+        expect(rolled.conflicts).toHaveLength(conflicts);
+        expect(rolled.message).toBe(`Rolled back to revision 1 (${one}) from revision 2 (${two}). The rebase raised ${conflicts} working-layer ${conflicts === 1 ? 'conflict' : 'conflicts'}, so the next publish stops until ${conflicts === 1 ? "it's" : "they're"} settled.`);
 
         // An unrelated edit, then a publish.
         await editPhoto(catalog.photos[1].id, (photo) => {
