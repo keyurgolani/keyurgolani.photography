@@ -64,25 +64,25 @@ export type Artist = {
 };
 
 export const artist: Artist = {
-  // A placeholder from the approved mockup, which labels its own text
-  // provisional. None of it is the owner's yet: he writes the heading, the
-  // paragraphs, and any biography, confirms the alias and the alt text, and
-  // then sets copyStatus to 'approved'. The mockup's paragraph about edited and
-  // sequenced bodies of work is left out, since Home shuffles and Gallery is
-  // one newest-first feed until the catalog cutover.
+  // Approved on 2026-10-24 under the owner's delegation. Each claim traces to
+  // his own words: his Instagram bio, keyurgolani.name, his 2026-10-15
+  // message, and the alias he added in 39a562a. No biography, genres, or photo
+  // credit. Nothing here says the work is edited or sequenced, since Home
+  // shuffles and Gallery is one newest-first feed until the catalog cutover.
   profile: {
-    copyStatus: 'provisional',
+    copyStatus: 'approved',
     name: 'Keyur Golani',
     alias: 'ISerialClicker',
     portrait: {
       width: 3394,
       height: 3620,
-      alt: 'Keyur Golani, seated, in aviator sunglasses and a dark cable-knit turtleneck',
+      alt: 'Keyur Golani in aviator sunglasses and a dark knit turtleneck, smiling toward the camera',
       focalPoint: { x: 52, y: 26 },
     },
-    statementHeading: 'I photograph the distance between a place and the way it is remembered.',
+    statementHeading: 'A curious soul',
     statementParagraphs: [
-      'The work returns to landscape, weather, travel, and brief encounters. I am drawn to the moment a descriptive frame also becomes an arrangement of color, scale, and rhythm.',
+      "I'm a software engineer doing photography. I photograph where I live, in the Pacific Northwest, and when I travel.",
+      'This site is an artistic body of work, and it changes as I add photographs, replace some, and take some down. I built the site and host it myself.',
     ],
   },
   destinations: [
