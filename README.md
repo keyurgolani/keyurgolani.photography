@@ -185,7 +185,7 @@ The site listens on the host's 127.0.0.1 only, port 3000 unless `PHOTOGRAPHY_POR
   docker compose -f docker-compose.prod.yml run --rm --no-deps web sh -c 'rm -rf /app/.next/cache/images/*'
   docker compose -f docker-compose.prod.yml start web image-watcher
   ```
-- **Regenerate everything** with `npm run images:process -- --force`. In production, stop `image-watcher` first so the two never write at once:
+- **Regenerate everything** locally with `npm run images:process -- --force`. The production image has no tsx or npm scripts, so there, run the bundled watcher with `--force`, and stop `image-watcher` first so the two never write at once. Photos with an EXIF orientation tag need none of this after an upgrade: the watcher rebuilds them by itself at its first start, as [docs/releasing.md](docs/releasing.md) describes for slice A of #10.
 
   ```bash
   docker compose -f docker-compose.prod.yml stop image-watcher
