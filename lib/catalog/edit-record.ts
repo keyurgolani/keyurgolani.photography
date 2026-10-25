@@ -185,6 +185,11 @@ export async function runEditRecord(layer: LayerHandle, ref: RecordRef, options:
             await fs.promises.mkdir(dir, { mode: PRIVATE_DIR_MODE });
         } catch (error) {
             if (!hasErrorCode(error, 'EEXIST')) throw error;
+            // A link could send the working copy, and the record's text, outside the data root, as #49 refuses for record folders.
+            const stat = await fs.promises.lstat(dir);
+            if (stat.isSymbolicLink() || !stat.isDirectory()) {
+                return { exitCode: 1, output: 'Error: edits/ in the data root is a symlink or not a folder, so photos edit won\'t keep a working copy there. Make it a folder of its own (0700). Nothing was written.\n' };
+            }
         }
         await fs.promises.chmod(dir, PRIVATE_DIR_MODE);
         // The name carries the version the edit opened, so a kept one says what it was made against.
