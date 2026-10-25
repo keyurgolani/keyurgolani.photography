@@ -1,6 +1,7 @@
 import { VARIANT_FORMATS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth } from '../../identity/variants';
 import { mediaUrl } from '../../media/url';
 import type { CatalogContent, CatalogReader, RouteBuilder } from '../reader';
+import { MAX_SLUG_LENGTH, SLUG_RE } from '../schema';
 import type { FocalPoint, SeriesRecord, SiteRecord } from '../types';
 
 /**
@@ -141,9 +142,25 @@ function imageOf(photo: Photo, withLqip: boolean): HomeImage | null {
 }
 
 /**
+ * Whether #5's series page would open this series, by the same checks #5
+ * and #7 make: its ID appears once, its published count is positive, and
+ * its canonical slug is one the route accepts. Compile never writes
+ * anything else, so only a hand-written revision fails, and Home then shows
+ * its empty state instead of linking a series page that answers not-found.
+ * The members that resolve are checked by the caller.
+ */
+function openable(series: SeriesRecord, listed: readonly SeriesRecord[]): boolean {
+    if (listed.filter((record) => record.id === series.id).length !== 1) return false;
+    if (!dimension(series.derived?.photoCount)) return false;
+    return typeof series.slug === 'string' && series.slug.length <= MAX_SLUG_LENGTH && SLUG_RE.test(series.slug);
+}
+
+/**
  * The Home of one source. The featured series is the first
  * `featuredSeriesIds` entry the source holds, as #8's featuredSeries()
- * reads it, and never rotates. Its photographs are the members that
+ * reads it, and never rotates. One #5's page wouldn't open (a repeated
+ * ID, no positive published count, or a slug the route refuses) gives the
+ * empty state, never the next entry. Its photographs are the members that
  * resolve, in `photoIds` order, the list #5 and #7 count, so the position
  * Home shows matches the series page. The href comes from `routes`: #13's
  * `publicRoutes` on the site, a preview's own builder in a preview.
@@ -153,6 +170,7 @@ export function publishedHomeOf(source: HomeSource, routes: Pick<RouteBuilder, '
     const listed = source.listSeries();
     const series = source.site().featuredSeriesIds.map((seriesId) => listed.find((entry) => entry.id === seriesId)).find((entry) => entry !== undefined);
     if (!series) return empty;
+    if (!openable(series, listed)) return empty;
     // order.duplicate-photo blocks a repeated member at render, so no preview or revision holds one.
     const members = source.photosOf(series.id);
     if (members.length === 0) return empty;
