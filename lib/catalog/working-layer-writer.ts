@@ -72,6 +72,24 @@ export interface WriteAuthoredOptions {
     waitMs?: number;
     /** Test hooks, passed to writeVersionedDocument(). */
     hooks?: VersionedWriteHooks;
+    /**
+     * What the curator reviewed before this write, for #16's staleness
+     * model. 16-1 stamps it under the same hold; until then the writer
+     * stores nothing from it, and callers that review keep it themselves too.
+     */
+    review?: ReviewInputs;
+}
+
+/** The inputs a reviewed write passes for #16: what was reviewed, against which active revision, and by whom. */
+export interface ReviewInputs {
+    /** The active revision the curator reviewed against, null before the first activation. */
+    baseRevisionId: string | null;
+    /** The inbox event and the version of it the curator reviewed, when the write settles one. */
+    event?: { id: string; version: number };
+    /** For a confirmed replacement: the asset revision the record pinned, the one it pins now, and the set's profile. */
+    asset?: { from: string; to: string; profileId: string };
+    actor: string;
+    reviewedAt: string;
 }
 
 /** The fields the writer owns, as ManagedField names them. */
