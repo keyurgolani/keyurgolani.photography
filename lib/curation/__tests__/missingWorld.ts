@@ -40,8 +40,14 @@ export interface MissingWorld {
     revisionId: string;
     /** P's missing item, once a pass reports P missing. */
     missingId: string;
-    /** One reconcile pass with the watcher's sinks. */
+    /**
+     * One reconcile pass with the watcher's sinks: the same sinks for every
+     * pass of a world, as one watcher process keeps them, so only its first
+     * pass looks at every item.
+     */
     pass(): Promise<IdentityFact[]>;
+    /** Pass with new sinks, as a restarted watcher's first pass. */
+    restartPass(): Promise<IdentityFact[]>;
     /** The watcher started again with `--once`: the derivative worker's start, then passes and builds. */
     restart(): Promise<0 | 1>;
     /** One build as the watcher's worker runs it, settling the inbox after. */
@@ -63,8 +69,8 @@ export function watcherSinks(): FactSink[] {
 
 const watcherBuild = () => recordingFailuresAfterBuild(settlingAfterBuild(buildDerivativeSet, { logger: quiet, clock }), { logger: quiet, clock });
 
-async function passIn(): Promise<IdentityFact[]> {
-    const outcome = await runReconcilePass({ clock, idGen: nextId, logger: quiet, sinks: watcherSinks(), clearDelivered: true });
+async function passIn(sinks: FactSink[] = watcherSinks()): Promise<IdentityFact[]> {
+    const outcome = await runReconcilePass({ clock, idGen: nextId, logger: quiet, sinks, clearDelivered: true });
     if (outcome.status !== 'committed') throw new Error(`The pass didn't commit: ${JSON.stringify(outcome)}`);
     return outcome.facts;
 }
@@ -153,12 +159,14 @@ export async function createMissingWorld(images: Images): Promise<MissingWorld> 
     fs.cpSync(template.library, lib.root, { recursive: true });
     fs.cpSync(template.data, data.root, { recursive: true });
     const build = watcherBuild();
+    const processSinks = watcherSinks();
     return {
         ...template.facts,
         lib,
         data,
         root: data.root,
-        pass: passIn,
+        pass: () => passIn(processSinks),
+        restartPass: () => passIn(),
         restart: () => runIdentityOnce({
             sinks: watcherSinks(),
             worker: { build: watcherBuild() },
