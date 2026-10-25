@@ -303,12 +303,36 @@ describe('other bytes back', { timeout: 60_000 }, () => {
     it('refuse a bind that would merge a photograph with a photo record in the draft, so its copy isn\'t dropped', async () => {
         const w = await world();
         const { n } = await otherBytes(w);
-        await writeAuthoredRecord({ kind: 'photo', id: n, assetRevision: (await w.registry()).photos[n].source.observedRevision, title: 'Fixture title for N', alt: { kind: 'decorative' } }, { expectedVersion: 0, root: w.root });
+        await writeAuthoredRecord({ kind: 'photo', id: n, assetRevision: (await w.registry()).photos[n].source.observedRevision, title: 'Fixture title for N', alt: null }, { expectedVersion: 0, root: w.root });
         const item = await w.event(w.missingId);
         const bound = await bindReplacement({ root: w.root, eventId: item.id, expectedVersion: item.version, actor: ACTOR });
-        expect(bound).toMatchObject({ ok: false, code: 'refused', message: expect.stringContaining(`${n}, which has a photo record in the draft`) });
+        expect(bound).toMatchObject({ ok: false, code: 'refused', message: expect.stringContaining(`${n}, which has a photo record in the draft with the owner's title`) });
         expect(pendingDecisions(w)).toEqual([]);
         expect((await w.event(w.missingId)).version).toBe(item.version);
+    });
+
+    it('let a bind merge a photograph whose record draft:init wrote bare, saying the merge leaves it unused', async () => {
+        const w = await world();
+        const { n } = await otherBytes(w);
+        // draft:init's record: the bound revision and nothing the owner set.
+        await writeAuthoredRecord({ kind: 'photo', id: n, assetRevision: (await w.registry()).photos[n].source.observedRevision, alt: null }, { expectedVersion: 0, root: w.root });
+        const recordDir = authoredRecordDir(w.root, 'photo', n);
+        const record = treeBytes(recordDir);
+        const item = await w.event(w.missingId);
+        const bound = await bindReplacement({ root: w.root, eventId: item.id, expectedVersion: item.version, actor: ACTOR });
+        expect(bound).toMatchObject({ ok: true });
+        if (!bound.ok) return;
+        expect(bound.notes.join('\n')).toContain(`${n}'s photo record holds nothing the owner set, as draft:init writes it, so the merge leaves it unused`);
+        expect(pendingDecisions(w)).toEqual([expect.objectContaining({ type: 'bind', photoId: w.p, merge: n })]);
+
+        await w.pass();
+        expect((await w.registry()).photos[n].mergedInto).toBe(w.p);
+        // Dropped from the catalog, never deleted: the record stays as it was, and a publish leaves it out.
+        expect(treeBytes(recordDir)).toEqual(record);
+        await editQ(w);
+        const dry = await w.publish({ dryRun: true });
+        expect(dry.outcome).toBe('DRY_RUN_OK');
+        expect(dry.issues.filter((issue) => issue.severity === 'error')).toEqual([]);
     });
 
     it('need a path when nothing is linked, and take one anywhere in the library', async () => {
