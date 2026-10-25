@@ -37,6 +37,7 @@ Before the first `up -d` with this compose file:
 ```bash
 mkdir -p portfolio-data
 sudo chown -R 1001:1001 public/assets/photos portfolio-data
+sudo chmod 700 portfolio-data
 ```
 
 Until the migration below initializes it, the watcher writes only its heartbeat there, logs once that the identity step is off, and keeps writing the legacy derivatives the site serves today. `GET /api/health` reports `uninitialized`.
@@ -53,11 +54,11 @@ While the stack runs, the watcher is the only process that writes the data root,
 
 ```bash
 docker compose -f docker-compose.prod.yml stop image-watcher
-sudo tar -czf photography-$(date -u +%Y%m%dT%H%M%SZ).tar.gz public/assets/photos portfolio-data
+sudo sh -c 'umask 077 && tar -czf photography-$(date -u +%Y%m%dT%H%M%SZ).tar.gz public/assets/photos portfolio-data'
 docker compose -f docker-compose.prod.yml start image-watcher
 ```
 
-`sudo` lets `tar` read the uid 1001 files. `web` keeps serving meanwhile, since it only reads, but don't run `photos.mjs` commands while `tar` runs. `./.next-images-cache` needs no backup.
+`sudo` lets `tar` read the uid 1001 files, and `umask 077` makes the archive readable by root only, since it holds the registry and its curator-only details. Keep archives in a folder only you can read, such as one made with `mkdir -m 700`, and copy them off the host the same way. `web` keeps serving meanwhile, since it only reads, but don't run `photos.mjs` commands while `tar` runs. `./.next-images-cache` needs no backup.
 
 ## Restoring
 
@@ -73,10 +74,11 @@ docker compose -f docker-compose.prod.yml up -d
 
 Then check that `photos.mjs identity status` counts the photos you expect, as in step 6 of the runbook, and that `GET /api/health` reports `ready`.
 
-If only the data root was lost and the library is fine, restore just `portfolio-data` from the newest archive and keep the current library. Move whatever is left of `./portfolio-data` aside first, as above:
+If only the data root was lost and the library is fine, restore just `portfolio-data` from the newest archive and keep the current library. Move whatever is left of `./portfolio-data` aside first, as above. `tar` overwrites only the files the archive has and keeps the rest, so files written after the archive, such as newer decisions, would otherwise stay beside the restored ones and apply to the older state:
 
 ```bash
 docker compose -f docker-compose.prod.yml stop
+sudo mv portfolio-data portfolio-data.before-restore
 sudo tar -xzpf photography-<timestamp>.tar.gz portfolio-data
 docker compose -f docker-compose.prod.yml up -d
 ```
