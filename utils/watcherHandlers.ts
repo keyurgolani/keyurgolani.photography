@@ -30,6 +30,20 @@ function photos(count: number, noun: string): string {
     return `${count} ${noun}${count === 1 ? '' : 's'}`;
 }
 
+/** The upright rebuild's photos split into the orientation-tagged ones and the `unreadable` ones, which may be tagged. Empty kinds left out. */
+function byKind(files: readonly string[], unreadable: ReadonlySet<string>): [kind: string, files: string[]][] {
+    const kinds: [string, string[]][] = [
+        ['orientation-tagged', files.filter((file) => !unreadable.has(file))],
+        ['unreadable', files.filter((file) => unreadable.has(file))],
+    ];
+    return kinds.filter(([, list]) => list.length > 0);
+}
+
+/** `2 orientation-tagged photos`, `1 orientation-tagged photo and 1 unreadable photo`. */
+function uprightPhotos(files: readonly string[], unreadable: ReadonlySet<string>): string {
+    return byKind(files, unreadable).map(([kind, list]) => photos(list.length, `${kind} photo`)).join(' and ');
+}
+
 export interface StartupBatchResult {
     processed: string[];
     /** Changed or removed while processed, superseded by a live change, or dropped by stop() */
@@ -262,18 +276,18 @@ export function createWatcherHandlers(
     }
 
     /** Record the one-time upright rebuild done, so later starts skip it, apart from `retry`, which failed. */
-    function recordUpright(rebuilt: number, retry: readonly string[] = []): void {
+    function recordUpright(rebuilt: readonly string[], retry: readonly string[] = [], unreadable: ReadonlySet<string> = new Set()): void {
         try {
-            writeUprightMarker(rebuilt, undefined, undefined, retry);
+            writeUprightMarker(rebuilt.length, undefined, undefined, retry);
         } catch (error) {
             logger.error(`[ImageWatcher] Could not write ${uprightMarkerPath()}: ${error instanceof Error ? error.message : String(error)}. The next start rebuilds the orientation-tagged photos again.`);
             return;
         }
-        if (rebuilt > 0) {
-            logger.log(`[ImageWatcher] Rebuilt the sets of ${photos(rebuilt, 'orientation-tagged photo')}. Clear the /_next/image cache, so it drops what it made from the old sets.`);
+        if (rebuilt.length > 0) {
+            logger.log(`[ImageWatcher] Rebuilt the sets of ${uprightPhotos(rebuilt, unreadable)}. Clear the /_next/image cache, so it drops what it made from the old sets.`);
         }
-        if (retry.length > 0) {
-            logger.log(`[ImageWatcher] These orientation-tagged photos failed to rebuild, so each start tries them again until they build: ${retry.join(', ')}.`);
+        for (const [kind, list] of byKind(retry, unreadable)) {
+            logger.log(`[ImageWatcher] These ${kind} photos failed to rebuild, so each start tries them again until they build: ${list.join(', ')}.`);
         }
     }
 
@@ -358,7 +372,8 @@ export function createWatcherHandlers(
             };
             try {
                 logger.log('[ImageWatcher] Checking for unprocessed images...');
-                const { files, reowned, upright, shared } = await planSources({ force });
+                const { files, reowned, upright, unreadable: unread, shared } = await planSources({ force });
+                const unreadable = new Set(unread);
                 if (!cacheFolderWritable()) {
                     logger.error(`[ImageWatcher] ${path.dirname(uprightMarkerPath())} can't be written, so the watcher can't record which sets it rebuilt. Until it can, every start rebuilds the orientation-tagged photos again. A set whose rebuild was refused, since another source still in the library last built it, keeps that source's outputs even after that source is edited, until cache/set-sources can be written again.`);
                 }
@@ -374,12 +389,13 @@ export function createWatcherHandlers(
                 }
                 const turned = new Set(upright ?? []);
                 if (turned.size > 0) {
-                    logger.log(`[ImageWatcher] Rebuilding the sets of ${photos(turned.size, 'orientation-tagged photo')} once, since a set written before derivatives were turned upright shows its photo turned or mirrored.`);
+                    const mayBeTagged = unreadable.size > 0 ? ', and an unreadable photo may carry an orientation tag' : '';
+                    logger.log(`[ImageWatcher] Rebuilding the sets of ${uprightPhotos([...turned], unreadable)} once, since a set written before derivatives were turned upright shows its photo turned or mirrored${mayBeTagged}.`);
                 }
                 // Rebuilt whatever their state, since their sets can look current
                 const forced = new Set([...turned, ...reowned.map(({ file }) => file)]);
                 if (files.length === 0) {
-                    if (upright !== null) recordUpright(0);
+                    if (upright !== null) recordUpright([]);
                     logger.log('[ImageWatcher] All images are processed.');
                     return result;
                 }
@@ -404,8 +420,8 @@ export function createWatcherHandlers(
                     const outcome = (file: string) => outcomes[files.indexOf(file)];
                     const left = upright.filter((file) => outcome(file) === 'skipped');
                     const failed = upright.filter((file) => outcome(file) === 'failed');
-                    if (left.length === 0) recordUpright(upright.length - failed.length, failed);
-                    else logger.log(`[ImageWatcher] These orientation-tagged photos weren't rebuilt, so the next start tries again: ${left.join(', ')}.`);
+                    if (left.length === 0) recordUpright(upright.filter((file) => outcome(file) === 'done'), failed, unreadable);
+                    else for (const [kind, list] of byKind(left, unreadable)) logger.log(`[ImageWatcher] These ${kind} photos weren't rebuilt, so the next start tries again: ${list.join(', ')}.`);
                 }
                 // Last, once the batch has written everything, marker included.
                 logger.log(

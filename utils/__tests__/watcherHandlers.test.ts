@@ -1059,7 +1059,28 @@ describe('the one-time rebuild of orientation-tagged photos', { timeout: 60_000 
 
         expect(await isOrientationTagged('unknown.jpg')).toBeNull();
         expect(await isOrientationTagged('landscape.jpg')).toBe(false);
-        expect((await planSources()).upright).toEqual(['unknown.jpg']);
+        expect(await planSources()).toMatchObject({ upright: ['unknown.jpg'], unreadable: ['unknown.jpg'] });
+    });
+
+    it("names a photo whose orientation can't be read as unreadable, not as tagged, while it retries it", async () => {
+        await oldLibrary();
+        // The rehearsal's undecodable photo: no EXIF, and its orientation can't be read
+        fs.writeFileSync(lib.file('corrupt.jpg'), corrupt);
+        expect(await isOrientationTagged('corrupt.jpg')).toBeNull();
+
+        expect(await handlers.queueStartupBatch()).toEqual({ processed: ['turned.jpg'], skipped: [], errors: ['corrupt.jpg'] });
+        expect(JSON.parse(fs.readFileSync(marker(), 'utf8'))).toEqual({ rebuiltAt: expect.any(String), photos: 1, retry: ['corrupt.jpg'] });
+        expect(logs).toContain('[ImageWatcher] Rebuilding the sets of 1 orientation-tagged photo and 1 unreadable photo once, since a set written before derivatives were turned upright shows its photo turned or mirrored, and an unreadable photo may carry an orientation tag.');
+        expect(logs).toContain('[ImageWatcher] Rebuilt the sets of 1 orientation-tagged photo. Clear the /_next/image cache, so it drops what it made from the old sets.');
+        expect(logs).toContain('[ImageWatcher] These unreadable photos failed to rebuild, so each start tries them again until they build: corrupt.jpg.');
+        expect(logs.some((line) => line.startsWith('[ImageWatcher] These orientation-tagged photos'))).toBe(false);
+
+        // The next start retries only corrupt.jpg, and still calls it unreadable
+        logs.length = 0;
+        expect(await newHandlers().queueStartupBatch()).toEqual({ processed: [], skipped: [], errors: ['corrupt.jpg'] });
+        expect(logs).toContain('[ImageWatcher] Rebuilding the sets of 1 unreadable photo once, since a set written before derivatives were turned upright shows its photo turned or mirrored, and an unreadable photo may carry an orientation tag.');
+        expect(logs).toContain('[ImageWatcher] These unreadable photos failed to rebuild, so each start tries them again until they build: corrupt.jpg.');
+        expect(logs.some((line) => line.includes('orientation-tagged photo'))).toBe(false);
     });
 
     it('records it at once when no photo is tagged, and after a forced run too', async () => {
