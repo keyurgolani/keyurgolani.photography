@@ -5,6 +5,14 @@
    so the Viewer is dark under both site themes. The accent, when the revision
    stores one, arrives as --cc-accent on the root and paints the two rules the
    mockup paints. Nothing sits on the photograph, so no text needs a scrim. */
+/* The body under the Viewer is its ground too, so a touch overscroll or the
+   strip past the root never shows the light site theme, and it doesn't fade in
+   from it. The body sits outside the surface, so this is --cc-ground's value. */
+:global(body):has(.viewer) {
+  background-color: #111513;
+  transition: none;
+}
+
 .viewer {
   --viewer-header: 3.5rem;
   /* Room the fitted photograph leaves for the stage's padding, so it fits the first screen with the header. */
