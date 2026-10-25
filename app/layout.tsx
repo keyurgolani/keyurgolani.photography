@@ -1,4 +1,5 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
+import { connection } from 'next/server';
 import '../styles/tokens.css';
 import '../styles/surfaces/light-takes-shape.css';
 import '../styles/surfaces/chromatic-chapters.css';
@@ -6,11 +7,22 @@ import './globals.css';
 import { sans, serif } from './fonts';
 import { ThemeProvider } from '../components/ThemeContext';
 import { THEME_INIT_SCRIPT } from '../components/site/themeScript';
+import { getMetadataBase } from '../lib/site/config';
+import { SITE_NAME, siteOpenGraph } from '../lib/site/metadata';
 
-export const metadata: Metadata = {
-  title: 'Keyur Golani - Photography',
-  description: 'Photography portfolio of Keyur Golani',
-};
+// Every page renders per request, so the share URLs follow the SITE_URL each server starts with.
+export async function generateMetadata(): Promise<Metadata> {
+  await connection();
+  return {
+    metadataBase: getMetadataBase(),
+    title: { default: SITE_NAME, template: `%s · ${SITE_NAME}` },
+    description: 'Photography portfolio of Keyur Golani',
+    openGraph: siteOpenGraph,
+    twitter: { card: 'summary_large_image' },
+  };
+}
+
+export const viewport: Viewport = { themeColor: '#080a09' };
 
 export default function RootLayout({
   children,

@@ -17,6 +17,7 @@ services:
     restart: always
     environment:
       - NODE_ENV=production
+      - SITE_URL=https://keyurgolani.photography  # Public origin for share links, read at runtime
       - NEXT_PUBLIC_UI_AUTO_HIDE_TIMEOUT=3000  # UI elements auto-hide timeout in ms (default: 3000)
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/photos"]
