@@ -145,20 +145,65 @@ describe('the public reader', { timeout: 60_000 }, () => {
         expect(await revisionReads()).toBe(1);
     });
 
-    it('treats a pending activation alone as not cut over, and one it cannot read as cut over', async () => {
+    it('treats a pending activation alone as not cut over, and one it cannot read as cut over for that read only', async () => {
         const { root, published } = await fixture(6);
-        const { catalogMode } = await freshProcess();
+        const { catalogMode, checkCatalogMode, loadActiveCatalog } = await freshProcess();
         // A crash after step 10 leaves a pending activation and no pointer.
         await published({ hooks: { afterStep: (step) => { if (step === 10) throw new Error('crash after step 10'); } } }).catch(() => undefined);
         expect(fs.readdirSync(catalogPaths(root).activationsDir)).toHaveLength(1);
         expect(fs.existsSync(catalogPaths(root).active)).toBe(false);
         expect(await catalogMode(root)).toBe('legacy');
 
+        vi.spyOn(console, 'error').mockImplementation(() => undefined);
         fs.writeFileSync(path.join(catalogPaths(root).activationsDir, 'not-an-activation.json'), '{}\n');
-        expect(await catalogMode(root)).toBe('catalog');
+        expect(await checkCatalogMode(root)).toEqual({ mode: 'catalog', unreadable: expect.any(String) });
+        expect(await loadActiveCatalog(root)).toEqual({ mode: 'catalog', state: 'unavailable', reason: 'catalog-unreadable' });
         fs.rmSync(path.join(catalogPaths(root).activationsDir, 'not-an-activation.json'));
-        // And it stays there in this process.
-        expect(await catalogMode(root)).toBe('catalog');
+        // Nothing showed the site cut over, so it goes back to legacy once the file reads.
+        expect(await catalogMode(root)).toBe('legacy');
+        expect(await loadActiveCatalog(root)).toEqual({ mode: 'legacy' });
+    });
+
+    it('serves nothing while an lstat of the pointer fails, and goes back to legacy once it succeeds', async () => {
+        const { root } = await fixture(7);
+        const { checkCatalogMode, loadActiveCatalog } = await freshProcess();
+        const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        const active = catalogPaths(root).active;
+        const lstat = fs.promises.lstat.bind(fs.promises);
+        const failing = vi.spyOn(fs.promises, 'lstat').mockImplementation((async (file: fs.PathLike, options?: fs.StatOptions) => {
+            if (String(file) === active) throw Object.assign(new Error('too many open files'), { code: 'EMFILE' });
+            return lstat(file, options);
+        }) as typeof fs.promises.lstat);
+        expect(await checkCatalogMode(root)).toEqual({ mode: 'catalog', unreadable: 'EMFILE' });
+        expect(await loadActiveCatalog(root)).toEqual({ mode: 'catalog', state: 'unavailable', reason: 'catalog-unreadable' });
+        expect(errors.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([{ event: 'catalog.read.failed', reason: 'catalog-unreadable', error: 'EMFILE' }]);
+
+        failing.mockRestore();
+        expect(await checkCatalogMode(root)).toEqual({ mode: 'legacy' });
+        expect(await loadActiveCatalog(root)).toEqual({ mode: 'legacy' });
+    });
+
+    it.skipIf(process.getuid?.() === 0)('serves nothing while catalog/ can\'t be read, as a dry run by another user leaves it, and goes back to legacy once it can', async () => {
+        const { root, published } = await fixture(8);
+        const { loadActiveCatalog } = await freshProcess();
+        expect((await published({ dryRun: true, hooks: {} })).outcome).toBe('DRY_RUN_OK');
+        vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        const dir = catalogPaths(root).dir;
+        fs.chmodSync(dir, 0o000);
+        cleanups.push(async () => fs.chmodSync(dir, 0o700));
+
+        expect(await loadActiveCatalog(root)).toEqual({ mode: 'catalog', state: 'unavailable', reason: 'catalog-unreadable' });
+        fs.chmodSync(dir, 0o700);
+        expect(await loadActiveCatalog(root)).toEqual({ mode: 'legacy' });
+    });
+
+    it('remembers a cutover it saw, so a pointer that goes unreadable later still serves catalog mode', async () => {
+        const { root, published } = await fixture(9);
+        const { checkCatalogMode } = await freshProcess();
+        await published();
+        expect(await checkCatalogMode(root)).toEqual({ mode: 'catalog' });
+        fs.rmSync(catalogPaths(root).dir, { recursive: true, force: true });
+        expect(await checkCatalogMode(root)).toEqual({ mode: 'catalog' });
     });
 
     it('is legacy without a data root', async () => {
