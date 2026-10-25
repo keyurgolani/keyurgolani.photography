@@ -483,6 +483,63 @@ describe('ViewerShell, swipes', () => {
         expect(router.replace).not.toHaveBeenCalled();
     });
 
+    describe('on a pinch-zoomed page', () => {
+        // jsdom has no visualViewport, so a stand-in carries the scale and fires resize as the browser does.
+        const viewport = Object.assign(new EventTarget(), { scale: 1 });
+        const pinch = (scale: number) =>
+            act(() => {
+                viewport.scale = scale;
+                viewport.dispatchEvent(new Event('resize'));
+            });
+        beforeEach(() => {
+            viewport.scale = 1;
+            Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport });
+        });
+        afterEach(() => {
+            Reflect.deleteProperty(window, 'visualViewport');
+        });
+
+        it('leaves a sideways drag to the browser to pan the page, and swipes again once it\'s back to scale 1', () => {
+            renderShell('page', 2);
+            expect(root()).not.toHaveAttribute('data-pinched');
+            pinch(2);
+            expect(root()).toHaveAttribute('data-pinched', '');
+            swipe(stage(), -120);
+            expect(router.replace).not.toHaveBeenCalled();
+            // A hair over 1 still counts as pinched; back at 1, the stage swipes again.
+            pinch(1.02);
+            swipe(stage(), -120);
+            expect(router.replace).not.toHaveBeenCalled();
+            pinch(1);
+            expect(root()).not.toHaveAttribute('data-pinched');
+            swipe(stage(), -120);
+            expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
+        });
+
+        it('reads the scale at the start, even before a resize reports it', () => {
+            renderShell('page', 2);
+            viewport.scale = 3;
+            swipe(stage(), -120);
+            expect(router.replace).not.toHaveBeenCalled();
+        });
+
+        it('drops a gesture in flight when the page is pinched mid-way', () => {
+            renderShell('page', 2);
+            fireEvent.pointerDown(stage(), { pointerId: 1, isPrimary: true, clientX: 200, clientY: 300 });
+            pinch(1.5);
+            fireEvent.pointerUp(root() as HTMLElement, { pointerId: 1, clientX: 20, clientY: 300 });
+            expect(router.replace).not.toHaveBeenCalled();
+        });
+
+        it('stops listening to the viewport when it unmounts', () => {
+            const remove = vi.spyOn(viewport, 'removeEventListener');
+            const { unmount } = renderShell('page', 2);
+            unmount();
+            expect(remove).toHaveBeenCalledWith('resize', expect.any(Function));
+            remove.mockRestore();
+        });
+    });
+
     it('drops a gesture in flight when the photograph changes by another route', () => {
         // From the first photograph to the second, which still has a Next, so a gesture that survived would move.
         const { move } = renderShell('page', 1);

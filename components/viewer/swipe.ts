@@ -5,6 +5,13 @@ import type { ViewerStep } from './viewerKeys';
 export const SWIPE_DISTANCE = 48;
 /** And only when the horizontal travel is at least this many times the vertical. */
 export const SWIPE_RATIO = 1.25;
+/** Above this page scale the visitor has pinched in, and a sideways drag pans the page instead of moving. */
+export const PINCH_SCALE = 1.01;
+
+/** Whether the page is pinch-zoomed, from `visualViewport.scale`, which is undefined where the browser has none. */
+export function isPinched(scale: number | undefined): boolean {
+    return (scale ?? 1) > PINCH_SCALE;
+}
 
 /**
  * The move a finished gesture asks for, from its net travel: at least

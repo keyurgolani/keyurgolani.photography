@@ -154,6 +154,11 @@
   touch-action: pan-y pinch-zoom;
 }
 
+/* While the page is pinch-zoomed (useSwipe sets data-pinched on the root), a sideways drag pans the page, and swipe is off. */
+.viewer[data-pinched] .viewport {
+  touch-action: auto;
+}
+
 /* Zoomed, the photograph keeps the largest variant's width and the box scrolls, so a drag pans it both ways and never moves the Viewer. Pinch zoom is never turned off. */
 .viewport[data-zoomed] {
   max-height: calc(100dvh - var(--viewer-header) - var(--viewer-stage-chrome));

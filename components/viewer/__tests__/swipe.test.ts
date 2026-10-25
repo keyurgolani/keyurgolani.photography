@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { SWIPE_DISTANCE, SWIPE_IDLE, SWIPE_RATIO, reduceSwipe, swipeStep, type SwipeInput, type SwipeState } from '../swipe';
+import { PINCH_SCALE, SWIPE_DISTANCE, SWIPE_IDLE, SWIPE_RATIO, isPinched, reduceSwipe, swipeStep, type SwipeInput, type SwipeState } from '../swipe';
 
 /** Runs inputs from idle and returns the moves they asked for, and the state they left. */
 function run(inputs: SwipeInput[], from: SwipeState = SWIPE_IDLE) {
@@ -48,6 +48,19 @@ describe('swipeStep', () => {
         [-30, -500, null],
     ])('dx %d, dy %d asks for %s', (dx, dy, expected) => {
         expect(swipeStep(dx, dy)).toBe(expected);
+    });
+});
+
+describe('isPinched', () => {
+    it.each([
+        [undefined, false],
+        [1, false],
+        [1.01, false],
+        [1.011, true],
+        [2, true],
+    ])('scale %s is pinched: %s', (scale, expected) => {
+        expect(PINCH_SCALE).toBe(1.01);
+        expect(isPinched(scale)).toBe(expected);
     });
 });
 

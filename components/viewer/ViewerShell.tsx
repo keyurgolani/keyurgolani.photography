@@ -91,8 +91,8 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         const moved = movedWith.current;
         movedWith.current = null;
         const active = document.activeElement;
-        const lost = moved !== null && moved.held !== null && moved.held !== document.body && !moved.held.isConnected;
-        if (root && moved && lost && (active === null || active === document.body)) {
+        const lost = moved?.held != null && !moved.held.isConnected;
+        if (root && lost && (active === null || active === document.body)) {
             root.querySelector<HTMLElement>(`[data-viewer-step="${moved.direction}"]`)?.focus();
         }
     }, [chrome]);
@@ -143,7 +143,7 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         return () => document.removeEventListener('keydown', onKey);
     }, [mode]);
 
-    useSwipe(rootRef, { zoomed, photoId: chrome?.photoId ?? null, onStep: step });
+    const pinched = useSwipe(rootRef, { zoomed, zoomedRef, stepRef, photoId: chrome?.photoId ?? null });
 
     const actions = useMemo<ViewerChromeActions>(() => ({ step, close }), [step, close]);
     const context = useMemo<ViewerShellContext>(() => ({ mode, claimed: chrome !== null, zoomed, headingId, report }), [mode, chrome, zoomed, headingId, report]);
@@ -169,6 +169,7 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
                 }}
                 data-surface="viewer"
                 data-viewer-mode="modal"
+                data-pinched={pinched ? '' : undefined}
                 aria-labelledby={headingId}
                 className={styles.viewer}
                 style={surface}
@@ -184,6 +185,7 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
             }}
             data-surface="viewer"
             data-viewer-mode="page"
+            data-pinched={pinched ? '' : undefined}
             className={styles.viewer}
             style={surface}
         >
