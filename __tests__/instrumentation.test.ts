@@ -1,4 +1,6 @@
 // @vitest-environment node
+import { once } from 'node:events';
+import http from 'node:http';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { register } from '../instrumentation';
 
@@ -54,6 +56,35 @@ describe('register() with the curator on', () => {
         vi.stubEnv('HOSTNAME', hostname);
         await register();
         expect(exit).not.toHaveBeenCalled();
+    });
+});
+
+describe('register() under next dev', () => {
+    beforeEach(() => {
+        vi.stubEnv('CURATION_ENABLED', 'true');
+        vi.stubEnv('__NEXT_DEV_SERVER', '1');
+        vi.stubEnv('NEXT_PRIVATE_WORKER', '1');
+    });
+
+    it('starts when the server it finds listens on loopback, whatever HOSTNAME says', async () => {
+        vi.stubEnv('HOSTNAME', '');
+        const server = http.createServer();
+        server.listen(0, '127.0.0.1');
+        await once(server, 'listening');
+        try {
+            await register();
+            expect(exit).not.toHaveBeenCalled();
+        } finally {
+            server.close();
+            await once(server, 'close');
+        }
+    });
+
+    it('stops when it finds no listening socket to check', async () => {
+        vi.stubEnv('HOSTNAME', '127.0.0.1');
+        await register();
+        expect(exit).toHaveBeenCalledWith(1);
+        expect(error.mock.calls[0][0]).toContain("the dev server's listening address can't be read");
     });
 });
 
