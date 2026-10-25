@@ -360,6 +360,15 @@ const PATH_LIKE_RE = /\/(?:users|home|data|volumes|mnt)\/|(?<![\p{L}\p{N}])~\/|(
 /** A path folded as a case-insensitive disk compares it, with each run of slashes or backslashes as one `/`. */
 const foldedPath = (text: string) => lowered(text).replace(/[\\/]+/g, '/');
 
+/** Characters a reader doesn't see: format characters and the default-ignorable ones, such as a soft hyphen, ZWJ, or a tag. */
+const INVISIBLE_RE = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
+
+/** `text`, and `text` without its invisible characters when it has any, so one can't split a path or a name past a check. */
+function readings(text: string): string[] {
+    const visible = text.replace(INVISIBLE_RE, '');
+    return visible === text ? [text] : [text, visible];
+}
+
 /** Whether `text` holds `root` as a whole path: not followed by more of a name, so `/data` doesn't match `/database`. Both come folded. */
 function holdsRoot(text: string, root: string): boolean {
     for (let at = text.indexOf(root); at !== -1; at = text.indexOf(root, at + 1)) {
@@ -688,7 +697,7 @@ const SLICE_A_RULES: RuleDefinition[] = [
                 .map((root) => (root ? foldedPath(root).replace(/\/$/, '') : ''))
                 .filter(Boolean);
             return publishedValues(ctx).strings
-                .filter(({ value }) => (MAYBE_PATH_RE.test(value) && PATH_LIKE_RE.test(value)) || roots.some((root) => holdsRoot(foldedPath(value), root)))
+                .filter(({ value }) => readings(value).some((text) => (MAYBE_PATH_RE.test(text) && PATH_LIKE_RE.test(text)) || roots.some((root) => holdsRoot(foldedPath(text), root))))
                 .map(({ record, field }) => ({ record, field, message: 'The field holds what looks like a file path.', hint: 'Published text never names a path.' }));
         },
     },
@@ -699,7 +708,7 @@ const SLICE_A_RULES: RuleDefinition[] = [
         check: (ctx) => {
             const holdsName = nameMatcher([...sourceNames(ctx).values()].flatMap((entry) => entry.names));
             return publishedValues(ctx).strings
-                .filter(({ value }) => holdsName(lowered(value)))
+                .filter(({ value }) => readings(value).some((text) => holdsName(lowered(text))))
                 .map(({ record, field }) => ({ record, field, message: 'The field holds a source file\'s name.', hint: 'Published text never names a source file.' }));
         },
     },
