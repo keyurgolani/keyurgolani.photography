@@ -3,9 +3,9 @@ import type { ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '@/lib/identity/variants';
 import { mediaUrl } from '@/lib/media/url';
-import type { PublishedViewerPhoto } from '@/lib/catalog/projections/viewer';
+import type { PublishedViewerPhoto, ViewerImage } from '@/lib/catalog/projections/viewer';
 import StoryViewer, { FIT_SIZES, type StoryViewerProps } from '../StoryViewer';
-import { HIDE_TECHNICAL, SHOW_TECHNICAL, TECHNICAL_SOURCE, accentValue, positionLabel, positionText, viewerTitle } from '../viewerLabels';
+import { HIDE_TECHNICAL, SHOW_TECHNICAL, TECHNICAL_SOURCE, UNAVAILABLE_LABEL, accentValue, positionLabel, positionText, viewerTitle } from '../viewerLabels';
 
 // The props Link gets, as attributes, so a test can see a move replaces the history entry and nothing prefetches.
 vi.mock('next/link', () => ({
@@ -19,8 +19,8 @@ vi.mock('next/link', () => ({
 const PHOTO_ID = 'ph_00000000-0000-4000-8000-000000000003';
 const REF = { photoId: PHOTO_ID, assetRevision: `sha256-${'3'.repeat(64)}`, profileId: 'p_0123456789abcdef' };
 
-function variants(): PublishedViewerPhoto['photo']['variants'] {
-    const ladder = {} as PublishedViewerPhoto['photo']['variants'];
+function variants(): ViewerImage['variants'] {
+    const ladder = {} as ViewerImage['variants'];
     for (const width of VARIANT_WIDTHS) {
         ladder[width] = {} as (typeof ladder)[typeof width];
         for (const format of VARIANT_FORMATS) {
@@ -42,10 +42,7 @@ function model(photo: Partial<PublishedViewerPhoto['photo']> = {}, rest: Partial
             caption: 'An authored fixture caption.',
             alt: 'A fixture description of the visible scene.',
             descriptionPending: false,
-            width: 2400,
-            height: 1600,
-            assetRevision: REF.assetRevision,
-            variants: variants(),
+            image: { width: 2400, height: 1600, assetRevision: REF.assetRevision, variants: variants() },
             accent: '#c08040',
             technical: { Make: 'Fixture Make', Model: 'Fixture Model', FNumber: '2.8', ISO: '200' },
             ...photo,
@@ -78,6 +75,8 @@ describe('StoryViewer', () => {
         if (!header) throw new Error('No header');
         expect(within(header).getByRole('heading', { level: 1 })).toHaveTextContent('Fixture series');
         expect(header).toHaveTextContent('03 / 12');
+        // The padded form is for the eye; a screen reader reads the spelled-out position instead.
+        expect(within(header).getByText('03 / 12')).toHaveAttribute('aria-hidden', 'true');
         expect(within(header).getByText('Photograph 3 of 12')).toHaveClass('sr-only');
         expect(within(header).getByRole('link', { name: 'Close' })).toHaveAttribute('href', '/work/fixture');
         expect(within(header).getByRole('button', { name: 'Zoom' })).toHaveAttribute('aria-pressed', 'false');
@@ -91,6 +90,8 @@ describe('StoryViewer', () => {
         const image = screen.getByRole('img', { name: 'A fixture description of the visible scene.' });
         expect(image).toHaveAttribute('src', mediaUrl(REF, 'w1200', 'webp'));
         expect([image.getAttribute('width'), image.getAttribute('height')]).toEqual(['2400', '1600']);
+        // The photograph is the page's largest paint, so it loads at once and first.
+        expect([image.getAttribute('loading'), image.getAttribute('fetchpriority')]).toEqual(['eager', 'high']);
         expect(container.querySelector('source[type="image/avif"]')).toHaveAttribute('sizes', FIT_SIZES);
         const urls = [...container.querySelectorAll('img, source')].flatMap((element) => [element.getAttribute('src'), element.getAttribute('srcset')]).filter(Boolean).join(' ');
         expect(urls).not.toMatch(/_next\/image|api\/image/);
@@ -186,6 +187,31 @@ describe('StoryViewer', () => {
         expect(screen.getByText('Description pending editorial review')).toHaveAttribute('data-description', 'pending');
     });
 
+    it('keeps the stage, its moves, and the reading area when the photo has no usable set, with Zoom disabled', () => {
+        const { container } = renderViewer({ viewer: model({ image: null }) });
+        expect(container.querySelector('img, picture, source')).toBeNull();
+        const missing = container.querySelector('[data-photo="unavailable"]');
+        expect(missing).toHaveTextContent(UNAVAILABLE_LABEL);
+        expect(UNAVAILABLE_LABEL).toBe('Photograph unavailable');
+        const zoom = screen.getByRole('button', { name: 'Zoom' });
+        expect(zoom).toBeDisabled();
+        expect(zoom).toHaveAttribute('aria-pressed', 'false');
+        fireEvent.click(zoom);
+        expect(screen.queryByRole('region', { name: 'Zoomed photograph' })).toBeNull();
+        // Previous and Next stay links in the stage, either side of the box.
+        const stage = missing?.parentElement?.parentElement;
+        for (const name of ['Previous photograph', 'Next photograph']) {
+            const link = screen.getByRole('link', { name });
+            expect(link).toHaveAttribute('data-replace', 'true');
+            expect(link.parentElement).toBe(stage);
+        }
+        const reading = screen.getByRole('region', { name: 'Fixture title' });
+        expect(within(reading).getByText('An authored fixture caption.')).toBeInTheDocument();
+        expect(within(reading).getByText('A fixture description of the visible scene.')).toBeInTheDocument();
+        expect(within(reading).getByRole('button', { name: SHOW_TECHNICAL })).toBeEnabled();
+        expect(container.innerHTML).not.toContain('/media/');
+    });
+
     it('renders authored text as text, never as markup', () => {
         const { container } = renderViewer({ viewer: model({ caption: '<img src=x onerror=alert(1)>', title: '<b>Bold</b>' }, { series: { id: 'ser_fixture', slug: 'fixture', title: '<i>Series</i>', accent: null } }) });
         expect(container.querySelectorAll('img')).toHaveLength(1);
@@ -203,7 +229,8 @@ describe('StoryViewer', () => {
         expect(root({})).toBe('#c08040');
         expect(root({ viewer: model({ accent: null }) })).toBe('#a0b0c0');
         expect(root({ viewer: model({ accent: 'red; background: url(x)' }, { series: { id: 'ser_fixture', slug: 'fixture', title: 'Fixture series', accent: null } }) })).toBe('');
-        expect(accentValue('#c08040; color: red', 'x#a0b0c0', '#A0B0C0')).toBe('#A0B0C0');
+        expect(accentValue('#c08040; color: red', 'x#a0b0c0', '#abc', '#c08040ff', '#A0B0C0')).toBe('#A0B0C0');
+        expect(accentValue('#abc')).toBeNull();
     });
 });
 

@@ -34,7 +34,8 @@ const SHARE_FORMAT = 'webp';
  * body match whichever case it was, with Next's noindex on the not-found
  * page. URLs are paths Next resolves against the root layout's
  * getMetadataBase(). Without a valid SITE_URL that base is localhost, so the
- * canonical link, og:url, and the share image are left out instead.
+ * canonical link, og:url, and the share image are left out instead. A photo
+ * with no usable set has no share image either, as on #5's series page.
  */
 export async function generateMetadata({ params }: ViewerRouteProps): Promise<Metadata> {
     const { slug, photoId } = await params;
@@ -43,7 +44,7 @@ export async function generateMetadata({ params }: ViewerRouteProps): Promise<Me
     const { series, photo, position, total } = result.viewer;
     const hasOrigin = getSiteOrigin() !== null;
     const canonical = publicRoutes.photoHref(series.slug, photo.id);
-    const share = photo.variants[SHARE_WIDTH][SHARE_FORMAT];
+    const share = photo.image?.variants[SHARE_WIDTH][SHARE_FORMAT] ?? null;
     const description = photo.caption ?? photo.description;
     return {
         title: viewerTitle(photo.title, series.title, position, total),
@@ -52,10 +53,8 @@ export async function generateMetadata({ params }: ViewerRouteProps): Promise<Me
         // Next replaces openGraph whole, so the site's fields go first.
         openGraph: {
             ...siteOpenGraph,
-            ...(hasOrigin && {
-                url: canonical,
-                images: [{ url: share.url, width: share.width, height: share.height, ...(photo.alt !== '' && { alt: photo.alt }) }],
-            }),
+            ...(hasOrigin && { url: canonical }),
+            ...(hasOrigin && share && { images: [{ url: share.url, width: share.width, height: share.height, ...(photo.alt !== '' && { alt: photo.alt }) }] }),
         },
     };
 }

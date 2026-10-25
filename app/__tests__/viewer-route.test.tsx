@@ -2,7 +2,9 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ActiveCatalog } from '@/lib/catalog/public-reader';
+import { createCatalogReader } from '@/lib/catalog/reader';
 import { createTestCatalog, type TestCatalog } from '@/lib/catalog/testing';
+import type { CandidateContent } from '@/lib/catalog/types';
 
 // The Viewer route (#7): viewerPhotoFrom() with getActiveCatalog() and
 // publicRoutes, answered as a render, a 308, the public not-found, or a throw
@@ -101,11 +103,11 @@ afterAll(async () => {
     await catalog?.cleanup();
 });
 
-const served = (servedState: 'ok' | 'degraded'): ActiveCatalog =>
+const served = (servedState: 'ok' | 'degraded', content: CandidateContent = catalog.content): ActiveCatalog =>
     ({
         mode: 'catalog',
         state: servedState,
-        reader: catalog.reader({ revisionId: catalog.revisionId, revisionNumber: 1 }),
+        reader: createCatalogReader(content, { revisionId: catalog.revisionId, revisionNumber: 1 }),
         active: { revisionId: catalog.revisionId, revisionNumber: 1, activationId: 'act_fixture', activatedAt: null },
     }) as unknown as ActiveCatalog;
 
@@ -194,6 +196,32 @@ describe('the Viewer route', () => {
             for (const sentinel of SENTINELS) expect(page, sentinel).not.toContain(sentinel);
             expect(page).not.toMatch(/_next\/image|api\/image/);
         }
+    });
+
+    it('renders a photo whose set fails the /media check without its image, never not-found', async () => {
+        const broken = structuredClone(catalog.content);
+        const photo = broken.photos.find((entry) => entry.id === P[1]);
+        if (!photo) throw new Error('Missing fixture photo');
+        photo.variants.w800.avif.url = '/library/private/SENTINEL-broken.jpg';
+        photo.caption = 'Route caption two.';
+        state.catalog = served('ok', broken);
+        const page = html(await answer('route-a', P[1]));
+        expect(page).toContain('02 / 03');
+        expect(page).toContain('Route caption two.');
+        expect(page).toContain(`aria-label="Previous photograph" href="/work/route-a/photo/${P[0]}"`);
+        expect(page).toContain(`aria-label="Next photograph" href="/work/route-a/photo/${P[2]}"`);
+        expect(page).toMatch(/data-photo="unavailable"[^>]*>.*Photograph unavailable/);
+        expect(page).toMatch(/<button[^>]*disabled=""[^>]*>.*Zoom/);
+        expect(page).not.toMatch(/<img|<picture|\/media\/|SENTINEL-broken/);
+        // A prior slug still 308s to it, and its share metadata has no image.
+        expect(await answer('sentinel-old-slug', P[1])).toEqual({ redirect: `/work/route-a/photo/${P[1]}` });
+        process.env.SITE_URL = 'https://photos.example.test';
+        expect(await generateMetadata(props('route-a', P[1]))).toEqual({
+            title: 'Route A, photograph 2 of 3',
+            description: 'Route caption two.',
+            alternates: { canonical: `/work/route-a/photo/${P[1]}` },
+            openGraph: { siteName: 'Keyur Golani Photography', type: 'website', url: `/work/route-a/photo/${P[1]}` },
+        });
     });
 
     it('answers a former series slug 308 to the canonical URL', async () => {

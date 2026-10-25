@@ -3,6 +3,8 @@
 
 export const CLOSE_LABEL = 'Close';
 export const ZOOM_LABEL = 'Zoom';
+/** The series page's missing-image copy (#5), for a photo whose revision holds no usable set. */
+export const UNAVAILABLE_LABEL = 'Photograph unavailable';
 export const PREVIOUS_LABEL = 'Previous photograph';
 export const NEXT_LABEL = 'Next photograph';
 export const DESCRIPTION_LABEL = 'Description';
