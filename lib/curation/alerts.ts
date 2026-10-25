@@ -5,11 +5,12 @@ import { listEvents } from './repository';
 
 /**
  * #17's alerting: the open missing sources and failures in the curation
- * inbox, for `photos status`. #13 slice D's `photos status`
- * (lib/catalog/owner-status.ts on `feat/13d-owner-authoring`) isn't on this
- * branch's base, so this is the one function its status calls: inboxAlerts()
- * for `--json`, inboxAlertLines() for the text. It reads only, takes no
- * lock, and prints no absolute path.
+ * inbox, for #13 slice D's `photos status` (lib/catalog/owner-status.ts):
+ * inboxAlerts() for `--json` and inboxAlertLines() for the text. It reads
+ * only, takes no lock, and prints no absolute path. An item stays listed
+ * until the watcher or the curator settles it, so status shows it on every
+ * run; the watcher retries failed builds at its start, and `curation retry`
+ * builds one again.
  */
 
 const STILL_OPEN = new Set(['open', 'deferred', 'failed']);
@@ -81,6 +82,6 @@ export function inboxAlertLines(alerts: InboxAlerts): string[] {
     for (const item of failed) {
         lines.push(`  failed   ${shortPhotoId(item.photoId)}  ${printable(item.sourcePath)}  since ${item.since}, ${item.type}: ${item.failure}  (${item.eventId}@${item.version})`);
     }
-    if (missing.length > 0 || failed.length > 0) lines.push('  curation show <eventId> says what each one needs.');
+    if (missing.length > 0 || failed.length > 0) lines.push('  photos curation show <eventId> says what each one needs.');
     return lines;
 }
