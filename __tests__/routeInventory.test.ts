@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { folderBytes } from '../test/helpers/folderBytes';
 import { REPO_ROOT } from '../test/helpers/runTsx';
-import { routeInventory } from '../test/helpers/routeInventory';
+import { isCuratorFile, routeInventory } from '../test/helpers/routeInventory';
 import { setDataDir } from '../test/helpers/tempDataRoot';
 
 // #14's 14-2 route inventory. No app/ handler but GET or HEAD, and no
@@ -105,6 +105,11 @@ describe('the route inventory', () => {
             fs.writeFileSync(path.join(tree, file), text);
         };
 
+        /** The import every guarded curator file carries. */
+        const G = "import { requireCurator } from '@/lib/curation/auth';\n";
+        const DYN = "export const dynamic = 'force-dynamic';\n";
+        const GUARDED_PAGE = `${G}${DYN}export default async function P() { await requireCurator({ read: true }); return null; }\n`;
+
         it.each([
             ['a POST handler outside the prefixes', 'app/api/photos/route.ts', 'export async function POST() { return new Response(); }\n', 'mutating handler'],
             ['a re-exported DELETE handler', 'app/api/x/route.ts', 'async function d() { return new Response(); }\nexport { d as DELETE };\n', 'mutating handler'],
@@ -112,28 +117,41 @@ describe('the route inventory', () => {
             ["a 'use server' file outside the prefixes", 'lib/actions.ts', "'use server';\nexport async function go() {}\n", "'use server'"],
             ["a 'use server' file in components", 'components/form.tsx', "'use server';\nexport async function go() {}\n", "'use server'"],
             ['an inline action in a public page', 'app/page.tsx', "export default function Page() { async function go() { 'use server'; } return null; }\n", "'use server'"],
-            [
-                'a curator action that writes before the guard',
-                'app/curation/actions.ts',
-                "'use server';\nimport { requireCurator } from '@/lib/curation/auth';\nexport async function go() { write(); await requireCurator(); }\n",
-                'server action',
-            ],
-            [
-                'a curator action with a read guard',
-                'app/curation/actions.ts',
-                "'use server';\nexport async function go() { await requireCurator({ read: true }); }\n",
-                'server action',
-            ],
-            ['a curator action that never awaits the guard', 'app/curation/actions.ts', "'use server';\nexport async function go() { requireCurator(); }\n", 'server action'],
+            ['a curator action that writes before the guard', 'app/curation/actions.ts', `'use server';\n${G}export async function go() { write(); await requireCurator(); }\n`, 'server action'],
+            ['a curator action with a read guard', 'app/curation/actions.ts', `'use server';\n${G}export async function go() { await requireCurator({ read: true }); }\n`, 'server action'],
+            ['a curator action that never awaits the guard', 'app/curation/actions.ts', `'use server';\n${G}export async function go() { requireCurator(); }\n`, 'server action'],
             ['a curator action re-exported from elsewhere', 'app/curation/actions.ts', "'use server';\nexport { go } from '@/lib/elsewhere';\n", "can't be checked"],
-            ['an unguarded inline curator action', 'app/curation/inbox/page.tsx', "export const dynamic = 'force-dynamic';\nexport default async function P() { await requireCurator({ read: true }); async function go() { 'use server'; save(); } return null; }\n", 'server action'],
-            ['an unguarded curator page', 'app/curation/inbox/page.tsx', "export const dynamic = 'force-dynamic';\nexport default async function P() { return null; }\n", 'renders curator content'],
+            ['an unguarded inline curator action', 'app/curation/inbox/page.tsx', `${G}${DYN}export default async function P() { await requireCurator({ read: true }); async function go() { 'use server'; save(); } return null; }\n`, 'server action'],
+            ['an unguarded curator page', 'app/curation/inbox/page.tsx', `${DYN}export default async function P() { return null; }\n`, 'renders curator content'],
             ['an unguarded curator layout', 'app/curation/layout.tsx', 'export default function L({ children }) { return children; }\n', 'renders curator content'],
-            ['unguarded curator metadata', 'app/curation/inbox/page.tsx', "export const dynamic = 'force-dynamic';\nexport async function generateMetadata() { return {}; }\nexport default async function P() { await requireCurator({ read: true }); return null; }\n", 'generateMetadata'],
-            ['a curator page that may be prerendered', 'app/curation/inbox/page.tsx', 'export default async function P() { await requireCurator({ read: true }); return null; }\n', 'force-dynamic'],
-            ['a curator POST handler with a read guard', 'app/api/curation/x/route.ts', "export const dynamic = 'force-dynamic';\nexport async function POST() { await requireCurator({ read: true }); }\n", 'curator handler'],
-            ['an unguarded curator GET handler', 'app/api/curation/x/route.ts', "export const dynamic = 'force-dynamic';\nexport async function GET() { return new Response(); }\n", 'curator handler'],
-            ['a curator handler built by a factory', 'app/api/curation/x/route.ts', "export const dynamic = 'force-dynamic';\nexport const POST = make();\n", 'curator handler'],
+            ['an unguarded curator template', 'app/curation/template.tsx', 'export default function T({ children }) { return children; }\n', 'renders curator content'],
+            ['unguarded curator metadata', 'app/curation/inbox/page.tsx', `${G}${DYN}export async function generateMetadata() { return {}; }\nexport default async function P() { await requireCurator({ read: true }); return null; }\n`, 'generateMetadata'],
+            ['a curator page that may be prerendered', 'app/curation/inbox/page.tsx', `${G}export default async function P() { await requireCurator({ read: true }); return null; }\n`, 'force-dynamic'],
+            ['a curator POST handler with a read guard', 'app/api/curation/x/route.ts', `${G}${DYN}export async function POST() { await requireCurator({ read: true }); }\n`, 'curator handler'],
+            ['an unguarded curator GET handler', 'app/api/curation/x/route.ts', `${DYN}export async function GET() { return new Response(); }\n`, 'curator handler'],
+            ['a curator handler built by a factory', 'app/api/curation/x/route.ts', `${DYN}export const POST = make();\n`, 'curator handler'],
+            // The URL decides, not the folder: route groups and parallel slots serve the same paths.
+            ['an unguarded curator page in a route group', 'app/(curator)/curation/page.tsx', `${DYN}export default async function P() { return null; }\n`, 'renders curator content'],
+            ['an unguarded curator page in nested route groups', 'app/(a)/(b)/curation/inbox/page.tsx', `${DYN}export default async function P() { return null; }\n`, 'renders curator content'],
+            ['an unguarded curator page in a parallel slot', 'app/@panel/curation/page.tsx', `${DYN}export default async function P() { return null; }\n`, 'renders curator content'],
+            ['an unguarded curator handler in a route group', 'app/(curator)/api/curation/x/route.ts', `${DYN}export async function GET() { return new Response(); }\n`, 'curator handler'],
+            ['a top-level dynamic segment, which can serve curator paths', 'app/[section]/page.tsx', 'export default async function P() { return null; }\n', 'can serve curator paths'],
+            ['a dynamic segment under /api, which can serve curator paths', 'app/api/[name]/route.ts', 'export async function GET() { return new Response(); }\n', 'can serve curator paths'],
+            // Every convention file under a curator path.
+            ['a curator not-found page that reads data', 'app/curation/not-found.tsx', "import { readThing } from '@/lib/catalog/thing';\nexport default async function N() { await readThing(); return null; }\n", 'fallback'],
+            ['a curator loading state that reads data', 'app/curation/loading.tsx', "import fs from 'node:fs';\nexport default function L() { fs.readFileSync('x'); return null; }\n", 'fallback'],
+            ['a curator error boundary that is not a client component', 'app/curation/error.tsx', 'export default function E() { return null; }\n', "'use client'"],
+            ['a curator error boundary that reads data', 'app/curation/error.tsx', "'use client';\nimport { thing } from '../../lib/thing';\nexport default function E() { return thing; }\n", 'fallback'],
+            ['an unguarded curator share image', 'app/curation/opengraph-image.tsx', `${DYN}export default async function Image() { return new Response(); }\n`, 'renders curator content'],
+            ['an unguarded curator icon', 'app/curation/icon.tsx', `${DYN}export default function Icon() { return new Response(); }\n`, 'renders curator content'],
+            ['an unguarded curator sitemap', 'app/curation/sitemap.ts', `${DYN}export default function sitemap() { return []; }\n`, 'renders curator content'],
+            ['a curator share image that may be prerendered', 'app/curation/twitter-image.tsx', `${G}export default async function Image() { await requireCurator({ read: true }); return new Response(); }\n`, 'force-dynamic'],
+            ['a curator page with static params', 'app/curation/[id]/page.tsx', `${GUARDED_PAGE}export function generateStaticParams() { return []; }\n`, 'generateStaticParams'],
+            // The guard has to be the real one.
+            ['a guard imported from elsewhere', 'app/curation/page.tsx', `import { requireCurator } from './guard';\n${DYN}export default async function P() { await requireCurator({ read: true }); return null; }\n`, '@/lib/curation/auth'],
+            ['a guard that is another function renamed', 'app/curation/page.tsx', `import { other as requireCurator } from '@/lib/curation/auth';\n${DYN}export default async function P() { await requireCurator({ read: true }); return null; }\n`, '@/lib/curation/auth'],
+            ['a guard that is never imported', 'app/curation/page.tsx', `${DYN}export default async function P() { await requireCurator({ read: true }); return null; }\n`, '@/lib/curation/auth'],
+            ['a guard declared in the file', 'app/curation/page.tsx', `${DYN}async function requireCurator(o) {}\nexport default async function P() { await requireCurator({ read: true }); return null; }\n`, '@/lib/curation/auth'],
         ])('fails on %s', (_, file, text, message) => {
             write(file, text);
             const { violations } = routeInventory(tree);
@@ -141,11 +159,32 @@ describe('the route inventory', () => {
             expect(violations[0]).toContain(message);
         });
 
-        it('passes guarded curator pages, handlers and actions', () => {
-            write('app/curation/inbox/page.tsx', "export const dynamic = 'force-dynamic';\nexport default async function P() { await requireCurator({ read: true }); async function go() { 'use server'; await requireCurator(); } return null; }\n");
-            write('app/curation/actions.ts', "'use server';\nexport async function go() { await requireCurator(); }\nexport const stop = async () => { const access = await requireCurator(); };\n");
-            write('app/api/curation/x/route.ts', "export const dynamic = 'force-dynamic';\nexport async function GET() { await requireCurator({ read: true }); }\nexport async function POST() { await requireCurator(); }\n");
+        it.each([
+            ['a public page', 'app/page.tsx', "import { go } from './curation/actions';\nexport default function P() { return null; }\n"],
+            ['a public page through the alias', 'app/work/page.tsx', "import { go } from '@/app/curation/actions';\nexport default function P() { return null; }\n"],
+            ['a component', 'components/Form.tsx', "import { go } from '../app/curation/actions';\nexport const Form = () => null;\n"],
+            ['a dynamic import in a library', 'lib/thing.ts', "export const load = () => import('@/app/curation/actions');\n"],
+        ])('fails when %s imports a curator action', (_, file, text) => {
+            write('app/curation/actions.ts', `'use server';\n${G}export async function go() { await requireCurator(); }\n`);
+            write(file, text);
+            const { violations } = routeInventory(tree);
+            expect(violations).toHaveLength(1);
+            expect(violations[0]).toContain('imports a curator action');
+        });
+
+        it('passes guarded curator pages, handlers, actions and convention files, in groups and slots too', () => {
+            write('app/curation/inbox/page.tsx', `${G}${DYN}export default async function P() { await requireCurator({ read: true }); async function go() { 'use server'; await requireCurator(); } return null; }\n`);
+            write('app/curation/actions.ts', `'use server';\n${G}export async function go() { await requireCurator(); }\nexport const stop = async () => { const access = await requireCurator(); };\n`);
+            write('app/curation/inbox/client.tsx', "'use client';\nimport { go } from '../actions';\nexport const Button = () => null;\n");
+            write('app/api/curation/x/route.ts', `${G}${DYN}export async function GET() { await requireCurator({ read: true }); }\nexport async function POST() { await requireCurator(); }\n`);
+            write('app/(curator)/curation/review/page.tsx', GUARDED_PAGE);
+            write('app/(curator)/curation/layout.tsx', `${G}export default async function L({ children }) { await requireCurator({ read: true }); return children; }\n`);
+            write('app/curation/not-found.tsx', "import Link from 'next/link';\nimport StatusPage from '@/components/site/StatusPage';\nexport default function N() { return null; }\n");
+            write('app/curation/loading.tsx', "import styles from './loading.module.css';\nexport default function L() { return null; }\n");
+            write('app/curation/error.tsx', "'use client';\nimport { useEffect } from 'react';\nexport default function E() { return null; }\n");
+            write('app/curation/opengraph-image.tsx', `${G}${DYN}export default async function Image() { await requireCurator({ read: true }); return new Response(); }\n`);
             write('app/api/photos/route.ts', 'export async function GET() { return new Response(); }\n');
+            write('app/work/[slug]/page.tsx', 'export default async function P() { return null; }\n');
             const inventory = routeInventory(tree);
             expect(inventory.violations).toEqual([]);
             expect(inventory.actions).toEqual(['app/curation/actions.ts', 'app/curation/inbox/page.tsx#go']);
@@ -159,7 +198,7 @@ describe('every curator action, called with the boundary failing', () => {
     const actionFiles = [...new Set(inventory.actions.map((action) => action.split('#')[0]))].filter((file) => !/\/page\.[jt]sx?$/.test(file));
 
     it('lists only files under the curator prefixes', () => {
-        for (const file of actionFiles) expect(file.startsWith('app/curation/') || file.startsWith('app/api/curation/')).toBe(true);
+        for (const file of actionFiles) expect(isCuratorFile(file)).toBe(true);
     });
 
     const targets = [
