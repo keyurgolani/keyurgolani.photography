@@ -258,7 +258,7 @@ describe('leave in draft\'s guards', { timeout: 60_000 }, () => {
         expect(writer).not.toHaveBeenCalled();
     });
 
-    it('counts a put back as the inbox\'s pin, so a later confirm whose event a crash lost records that it replaced A', async () => {
+    it('counts a put back as the inbox\'s pin, so a later confirm whose event a crash lost names A as the last pin, and puts nothing back', async () => {
         const w = await readyWorld();
         // B confirmed in place of A, then put back to A.
         const left = await leave(w, await confirmedAndReopened(w));
@@ -274,10 +274,15 @@ describe('leave in draft\'s guards', { timeout: 60_000 }, () => {
         await expect(confirm(w, item, { faults: { afterWrite: () => { throw new Error('killed'); } } })).rejects.toThrow('killed');
         expect((await photoRecord(w)).assetRevision).toBe(c);
 
-        // The inbox last pinned A, by the put back, not B, by the confirm it undid.
+        // The inbox last pinned A, by the put back, not B, by the confirm it undid. Nothing shows C's confirm put the record
+        // on C, so confirm again records nothing to put back, and leave in draft keeps C.
         const again = await confirm(w, await w.event(item.id));
-        expect(again.ok && again.event.decisions.at(-1)).toMatchObject({ action: 'confirm', fromRevision: w.a, writes: [] });
+        expect(again.ok && again.event.decisions.at(-1)).toMatchObject({ action: 'confirm', writes: [] });
+        expect(again.ok && again.event.decisions.at(-1)).not.toHaveProperty('fromRevision');
+        expect(again.ok && again.notes.join(' ')).toContain(`already pins ${c}, though the inbox last pinned ${w.a}, so nothing in the working layer changed.`);
+        const before = authored(w);
         expect(await leave(w, await reopen(w, (again as { event: CurationEvent }).event))).toMatchObject({ ok: true, event: { status: 'deferred' } });
-        expect((await photoRecord(w)).assetRevision).toBe(w.a);
+        expect((await photoRecord(w)).assetRevision).toBe(c);
+        expect(authored(w)).toEqual(before);
     });
 });

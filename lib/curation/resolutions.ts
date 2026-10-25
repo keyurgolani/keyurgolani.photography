@@ -32,8 +32,10 @@ import { eventIdOf, eventKey, type CandidateFailure, type CurationEvent } from '
  * reopened since, it writes the record back to the revision that confirm
  * replaced, the same way confirm writes it, so the next publish ships that
  * one. A record on the item's bytes with no confirm of the item to say so
- * (a hand edit, a #15 rollback, or a confirm whose event a crash lost) is
- * left where it is: pins alone can't tell those apart, so nothing is guessed.
+ * (a hand edit or `photos edit`, a #15 rollback, or a confirm whose event a
+ * crash lost) is left where it is: nothing on record tells those apart, so
+ * nothing is guessed. Confirm guesses nothing there either: it records no
+ * `fromRevision`, so a later Leave in draft keeps the record where it is.
  */
 
 const FAILURE_TEXT: Record<CandidateFailure, string> = {
@@ -173,7 +175,8 @@ export function confirmReplacement(input: ActionInput & { faults?: ConfirmFaults
 
         const writes: WrittenRecord[] = [];
         let fromRevision = assetRevision;
-        let recovered = false;
+        // When the record already pins these bytes though the inbox last pinned another revision, that one.
+        let unexplained: string | null = null;
         let again = false;
         await input.faults?.beforeAuthoredLock?.();
         await underAuthoredLock(root, step, input, 'confirm', async (authored) => {
@@ -190,9 +193,12 @@ export function confirmReplacement(input: ActionInput & { faults?: ConfirmFaults
                     fromRevision = pin.fromRevision;
                     again = true;
                 } else if (pin && pin.revision !== assetRevision) {
-                    // Pinned already, though the inbox last pinned another: a confirm whose event a crash lost. Keep what it replaced.
-                    fromRevision = pin.revision;
-                    recovered = true;
+                    // Pinned already, though the inbox last pinned another. A confirm whose event a crash lost leaves this, and so
+                    // do a #15 rollback's rebase and a photos edit. Until 16-1 stamps the reviewed event on the record, nothing on
+                    // record tells them apart: the writer stores no review inputs, and the record keeps only its two newest
+                    // versions, in which a photos edit of assetRevision alone reads the same as confirm's write. So record no
+                    // fromRevision, and leaving it in draft later puts nothing back.
+                    unexplained = pin.revision;
                 }
                 return;
             }
@@ -203,11 +209,14 @@ export function confirmReplacement(input: ActionInput & { faults?: ConfirmFaults
 
         const notes = writes.length > 0
             ? [`Confirmed ${assetRevision} for ${photoId} in the draft, in place of ${fromRevision}. Its series, position, title, description, and story stay as they were. Visitors keep the current image until photos publish runs.`]
-            : recovered
-                ? [`${photoId}'s photo record already pins ${assetRevision}, though the inbox last pinned ${fromRevision}, so nothing in the working layer changed. It is recorded as confirmed in place of ${fromRevision}, which leaving it in draft puts back.`]
+            : unexplained !== null
+                ? [
+                    `${photoId}'s photo record already pins ${assetRevision}, though the inbox last pinned ${unexplained}, so nothing in the working layer changed. Nothing on record shows a confirm of this item put it there: a rollback, a photos edit, and a confirm whose event a crash lost all leave it this way.`,
+                    `So it is recorded as confirmed with nothing to put back, and leaving it in draft later keeps ${assetRevision}. To use ${unexplained} again, set assetRevision back with photos edit ${photoId}.`,
+                ]
                 : again
                     ? [`${photoId}'s photo record already pins ${assetRevision}, as the last confirm left it, so nothing in the working layer changed. It is recorded as confirmed in place of ${fromRevision}, which that confirm replaced and leaving it in draft puts back.`]
-                    : [`${photoId}'s photo record already pins ${assetRevision}, so nothing in the working layer changed.`];
+                    : [`${photoId}'s photo record already pins ${assetRevision}, so nothing in the working layer changed, and leaving it in draft later puts nothing back.`];
         const next = decided(step, input, { action: 'confirm', writes, ...(fromRevision !== assetRevision ? { fromRevision } : {}) }, 'approved');
         return { event: next, notes };
     });
@@ -251,14 +260,15 @@ export function leaveInDraft(input: ActionInput & { reason?: string; faults?: Co
 
         if (!own && pin?.revision !== revision) {
             // The record pins these bytes with no pin of the inbox's to say so: a hand edit, a #15 rollback, or a confirm whose event a crash lost.
-            // Pins alone can't tell those apart, so nothing is guessed and nothing is written.
+            // Nothing on record tells those apart, so nothing is guessed and nothing is written.
             return defer([
                 `Left in draft. ${photoId}'s photo record already pins ${revision}, by an edit or rollback this item didn't make, or a confirm of it that was never recorded, so nothing was put back.${pin ? ` The inbox last pinned ${pin.revision}.` : ''} The draft keeps ${revision}, and the next photos publish ships it.`,
             ]);
         }
         const putBack = own?.fromRevision ?? null;
         if (putBack === null) {
-            const why = own ? 'as it did before this item was confirmed' : `as ${pin?.eventId}'s ${pin?.action} set it`;
+            // This item's last confirm found the record on these bytes already and recorded nothing to put back.
+            const why = own ? 'as it did before this item\'s last confirm, which recorded nothing to put back' : `as ${pin?.eventId}'s ${pin?.action} set it`;
             return defer([`Left in draft. ${photoId}'s photo record pins ${revision}, ${why}, so the draft keeps it.`]);
         }
         const candidate = candidateOf(registry, photoId, putBack);
