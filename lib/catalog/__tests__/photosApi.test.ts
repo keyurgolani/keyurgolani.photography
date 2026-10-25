@@ -290,8 +290,11 @@ describe('legacy /api/photos', { timeout: 60_000 }, () => {
         fs.writeFileSync(`${paths.registry}.json`, '{}\n');
         const check = async () => {
             expect(await legacyPhotos(data.root, lib.root)).toEqual({ ok: false, reason: 'registry-old-layout' });
-            const photos = await GET();
+            // An If-None-Match is never weighed against an error.
+            const photos = await GET('*');
             expect(photos.status).toBe(503);
+            expect(photos.headers.get('cache-control')).toBe('no-store');
+            expect(photos.headers.has('etag')).toBe(false);
             expect(await photos.json()).toEqual({ reason: 'registry-old-layout' });
             const readiness = await ready();
             expect(readiness.status).toBe(503);
