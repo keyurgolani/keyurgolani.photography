@@ -230,6 +230,30 @@ describe('the public reader', { timeout: 60_000 }, () => {
         expect(await restarted.loadActiveCatalog(root)).toMatchObject({ state: 'ok', active: { revisionId: first.revisionId } });
     });
 
+    it('keeps a pending activation briefly, so a burst of requests reads the activations once, and reads them again after', async () => {
+        const { root, published, edit } = await fixture(11);
+        await published();
+        await edit();
+        // A crash after step 11 leaves active.json naming a pending activation until the next CLI run's recovery.
+        await published({ hooks: { afterStep: (step) => { if (step === 11) throw new Error('crash after step 11'); } } });
+        const { loadActiveCatalog, UNSETTLED_ACTIVATION_TTL_MS } = await freshProcess();
+        let now = Date.parse('2026-06-01T00:00:00.000Z');
+        vi.spyOn(Date, 'now').mockImplementation(() => now);
+        const activationReads = async (loads: number) => {
+            const reads = vi.spyOn(fs.promises, 'readFile');
+            for (let index = 0; index < loads; index += 1) expect(await loadActiveCatalog(root)).toMatchObject({ state: 'ok', active: { revisionNumber: 2 } });
+            const count = reads.mock.calls.filter(([file]) => String(file).includes(`${path.sep}activations${path.sep}`)).length;
+            reads.mockRestore();
+            return count;
+        };
+
+        const burst = await activationReads(5);
+        expect(burst).toBeGreaterThan(0);
+        expect(await activationReads(5)).toBe(0);
+        now += UNSETTLED_ACTIVATION_TTL_MS;
+        expect(await activationReads(1)).toBe(burst);
+    });
+
     it('is legacy without a data root', async () => {
         const { loadActiveCatalog, catalogMode } = await freshProcess();
         expect(await catalogMode(null)).toBe('legacy');
