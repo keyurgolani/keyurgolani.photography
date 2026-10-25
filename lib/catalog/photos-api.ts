@@ -163,12 +163,14 @@ export async function legacyList(registry: Registry, library: string): Promise<I
         .map(({ item }, id) => ({ id, ...item }));
 }
 
-/** The last list built per data root, kept while the registry file is the same file. */
+/** The last list built per data root, kept while the registry's version folder is unchanged. */
 const built = new Map<string, { stamp: string; items: ImageItem[] }>();
 
 /**
- * Legacy mode's `/api/photos` list. One stat of the registry per call: the
- * list is built again only when the registry was written since.
+ * Legacy mode's `/api/photos` list. One stat of the registry's version
+ * folder, `identity/registry/`, per call: each write links a new version
+ * into it and prunes old ones, which changes the folder's times, so the list
+ * is built again only when the registry was written since.
  */
 export async function legacyPhotos(root: string, library: string = libraryRoot()): Promise<LegacyPhotos> {
     const file = identityPaths(root).registry;

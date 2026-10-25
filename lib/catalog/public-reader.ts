@@ -1,17 +1,17 @@
 import 'server-only';
 import path from 'node:path';
 import { dataRoot } from '../storage/config';
-import { checkCatalogMode } from './mode';
+import { checkCatalogMode, readPointer } from './mode';
 import { createCatalogReader, createRouteBuilder, type CatalogReader } from './reader';
 import { listActivations, readRevisionFile } from './repository';
 import { forRequest } from './request';
 import type { PublicPhotoRecord, RevisionFile } from './types';
-import { readActivePointer } from './working-layer';
 
 /**
- * The one read path for public routes and APIs. It reads `catalog/active.json`
- * once per request and only the revision it names, so no response mixes two
- * revisions. The web process imports it; the CLI never does.
+ * The one read path for public routes and APIs. It reads the active pointer,
+ * the newest version in `catalog/active/`, once per request, through
+ * readActivePointer(), and only the revision it names, so no response mixes
+ * two revisions. The web process imports it; the CLI never does.
  */
 
 /** The public routes: `/`, `/work`, `/work/<slug>`, and `/work/<slug>/photo/<photoId>`. */
@@ -151,17 +151,15 @@ function logFailure(root: string, failure: ReadFailure): void {
 export async function loadActiveCatalog(root: string | null = dataRoot()): Promise<ActiveCatalog> {
     if (root === null) return { mode: 'legacy' };
     const resolved = path.resolve(/*turbopackIgnore: true*/ root);
-    const mode = await checkCatalogMode(resolved);
+    // The request's one read of the pointer, which the mode check reuses.
+    const read = await readPointer(resolved);
+    const mode = await checkCatalogMode(resolved, read);
     if (mode.mode === 'legacy') return { mode: 'legacy' };
     try {
         // Not known to have cut over, but it can't be ruled out, so serve nothing new.
         if (mode.unreadable !== undefined) throw new ReadFailure('catalog-unreadable', mode.unreadable);
-        let pointer;
-        try {
-            pointer = await readActivePointer(resolved);
-        } catch (error) {
-            throw new ReadFailure('active-unreadable', errorName(error));
-        }
+        if ('error' in read) throw new ReadFailure('active-unreadable', errorName(read.error));
+        const { pointer } = read;
         if (pointer === null) throw new ReadFailure('active-unreadable', 'missing');
         const revision = await revisionFor(resolved, pointer.revisionId);
         const { revisionNumber, activatedAt } = await activationFor(resolved, pointer.activationId);

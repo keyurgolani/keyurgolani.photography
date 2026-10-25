@@ -1,5 +1,6 @@
 // @vitest-environment node
 import fs from 'node:fs';
+import path from 'node:path';
 import sharp from 'sharp';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { leakyJpeg } from '../../../test/fixtures/exif';
@@ -10,11 +11,13 @@ import { optimizedSize, processImage } from '../../../utils/imageOptimizer';
 import { sequentialIds } from '../../identity/__tests__/reconcileFixtures';
 import { runReconcilePass } from '../../identity/pass';
 import { identityPaths, readRegistry } from '../../identity/registry';
+import { versionFile } from '../../storage/document';
 import { catalogPhotos, legacyPhotos, type ImageItem } from '../photos-api';
 import { createCatalogReader } from '../reader';
 import { publish } from '../publish';
 import { createTestCatalog } from '../testing';
 import type { PublicPhotoRecord, RevisionContent } from '../types';
+import { catalogPaths, readActivePointer } from '../working-layer';
 import { VARIANT_BYTES } from './catalogFixtures';
 
 vi.mock('next/server', async (importOriginal) => ({
@@ -75,6 +78,13 @@ afterEach(async () => {
     await data.cleanup();
     await lib.cleanup();
 });
+
+/** Overwrite the newest version in the pointer's folder, the one readActivePointer() reads, with something that isn't JSON. */
+async function damagePointer(root: string): Promise<void> {
+    const pointer = await readActivePointer(root);
+    if (!pointer) throw new Error('There is no active pointer to damage');
+    fs.writeFileSync(versionFile(catalogPaths(root).active, pointer.version), 'not json');
+}
 
 /** One reconcile pass over the library, which writes the registry legacy mode reads. */
 async function pass(): Promise<void> {
@@ -178,10 +188,13 @@ describe('legacy /api/photos', { timeout: 60_000 }, () => {
     it('builds the list again only when the registry is written', async () => {
         await pass();
         const first = await listLegacy();
-        const reads = vi.spyOn(fs.promises, 'readFile');
+        // The registry is a version folder, and an unchanged folder is neither listed nor read.
+        const registry = identityPaths(data.root).registry;
+        const inRegistry = (file: unknown) => String(file) === registry || String(file).startsWith(`${registry}${path.sep}`);
+        const reads = [vi.spyOn(fs.promises, 'readFile'), vi.spyOn(fs.promises, 'readdir'), vi.spyOn(fs.promises, 'open')];
         expect(await listLegacy()).toBe(first);
-        expect(reads.mock.calls.some(([file]) => String(file) === identityPaths(data.root).registry)).toBe(false);
-        reads.mockRestore();
+        for (const spy of reads) expect(spy.mock.calls.some(([file]) => inRegistry(file))).toBe(false);
+        for (const spy of reads) spy.mockRestore();
 
         fs.copyFileSync(lib.file('landscape.jpg'), lib.file('added.jpg'));
         await processImage('added.jpg');
@@ -209,18 +222,20 @@ describe('legacy /api/photos', { timeout: 60_000 }, () => {
         }
     });
 
-    it('never runs Sharp or lists a folder', async () => {
+    it('never runs Sharp or lists a folder but the registry\'s own', async () => {
         await pass();
         const decodes = [vi.spyOn(sharp.prototype, 'metadata'), vi.spyOn(sharp.prototype, 'toBuffer')];
         const listings = [vi.spyOn(fs.promises, 'readdir'), vi.spyOn(fs, 'readdirSync'), vi.spyOn(fs.promises, 'opendir')];
         expect((await listLegacy()).length).toBeGreaterThan(0);
-        for (const spy of [...decodes, ...listings]) expect(spy).not.toHaveBeenCalled();
+        for (const spy of decodes) expect(spy).not.toHaveBeenCalled();
+        // Reading the registry lists its version folder, to find the newest version. Nothing lists the library.
+        for (const spy of listings) expect(spy.mock.calls.map(([dir]) => String(dir))).toEqual(spy === listings[0] ? [identityPaths(data.root).registry] : []);
     });
 
     it('is unavailable as registry-missing before the migration', async () => {
         expect(await legacyPhotos(data.root, lib.root)).toEqual({ ok: false, reason: 'registry-missing' });
-        fs.mkdirSync(identityPaths(data.root).dir, { recursive: true });
-        fs.writeFileSync(identityPaths(data.root).registry, 'not json');
+        fs.mkdirSync(identityPaths(data.root).registry, { recursive: true });
+        fs.writeFileSync(versionFile(identityPaths(data.root).registry, 1), 'not json');
         expect(await legacyPhotos(data.root, lib.root)).toEqual({ ok: false, reason: 'registry-unreadable' });
     });
 });
@@ -303,7 +318,7 @@ describe('GET /api/ready', { timeout: 60_000 }, () => {
         const body = await ok.json();
         expect(body).toEqual({ mode: 'catalog', state: 'ok', revisionId, revisionNumber: 1, activatedAt: expect.any(String) });
 
-        fs.writeFileSync(`${root}/catalog/active.json`, 'not json');
+        await damagePointer(root);
         const degraded = await ready();
         expect(degraded.status).toBe(200);
         const text = await degraded.text();
@@ -313,7 +328,7 @@ describe('GET /api/ready', { timeout: 60_000 }, () => {
 
     it('answers 503 when its pointer is unreadable and no revision loaded before', async () => {
         const { root } = await published(13);
-        fs.writeFileSync(`${root}/catalog/active.json`, 'not json');
+        await damagePointer(root);
         const response = await ready();
         expect(response.status).toBe(503);
         expect(await response.json()).toEqual({ mode: 'catalog', state: 'unavailable', ...NO_REVISION, reason: 'active-unreadable' });

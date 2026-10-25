@@ -3,12 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { importGraph } from '../../../test/helpers/importGraph';
+import { REPO_ROOT } from '../../../test/helpers/runTsx';
+import { versionFile } from '../../storage/document';
 import { withLock } from '../../storage/lock';
 import { activateRevision, publish, type PublishOptions, type PublishResult } from '../publish';
 import { CATALOG_LOCK, revisionFilePath } from '../repository';
 import { createTestCatalog } from '../testing';
 import { writeAuthoredRecord } from '../working-layer-writer';
-import { catalogPaths, readWorkingLayer } from '../working-layer';
+import { catalogPaths, readActivePointer, readWorkingLayer } from '../working-layer';
 import { VARIANT_BYTES } from './catalogFixtures';
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -87,7 +89,7 @@ describe('the public reader', { timeout: 60_000 }, () => {
         await loadActiveCatalog(root);
         const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
-        fs.rmSync(catalogPaths(root).active);
+        fs.rmSync(catalogPaths(root).active, { recursive: true });
         expect(await loadActiveCatalog(root)).toMatchObject({ mode: 'catalog', state: 'degraded', active: { revisionId: first.revisionId } });
         expect(await loadActiveCatalog(root)).toMatchObject({ state: 'degraded' });
         // One line when reads start failing, not one per read
@@ -97,6 +99,47 @@ describe('the public reader', { timeout: 60_000 }, () => {
         const restarted = await freshProcess();
         expect(await restarted.catalogMode(root)).toBe('catalog');
         expect(await restarted.loadActiveCatalog(root)).toEqual({ mode: 'catalog', state: 'unavailable', reason: 'active-unreadable' });
+    });
+
+    it('serves the last revision it loaded while the newest pointer version is damaged, and a new process sees the cutover in it', async () => {
+        const { root, published } = await fixture(12);
+        const { loadActiveCatalog } = await freshProcess();
+        const first = await published();
+        expect(await loadActiveCatalog(root)).toMatchObject({ state: 'ok', active: { revisionId: first.revisionId } });
+        const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+        // Damage the version the pointer's folder reads, found through the pointer itself.
+        const pointer = await readActivePointer(root);
+        if (!pointer) throw new Error('The publish left no pointer');
+        const file = versionFile(catalogPaths(root).active, pointer.version);
+        fs.chmodSync(file, 0o600);
+        fs.writeFileSync(file, 'not json');
+        expect(await loadActiveCatalog(root)).toMatchObject({ mode: 'catalog', state: 'degraded', active: { revisionId: first.revisionId } });
+        expect(errors.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([{ event: 'catalog.read.failed', reason: 'active-unreadable', error: 'Error' }]);
+        expect(errors.mock.calls.join('\n')).not.toContain(root);
+
+        // With the activations gone too, the damaged version alone shows a new process the site cut over.
+        fs.rmSync(catalogPaths(root).activationsDir, { recursive: true });
+        const restarted = await freshProcess();
+        expect(await restarted.checkCatalogMode(root)).toEqual({ mode: 'catalog' });
+        expect(await restarted.loadActiveCatalog(root)).toEqual({ mode: 'catalog', state: 'unavailable', reason: 'active-unreadable' });
+    });
+
+    it('reads the pointer once per request, before and after the cutover', async () => {
+        const { root, published } = await fixture(13);
+        const { loadActiveCatalog } = await freshProcess();
+        const pointerListings = async () => {
+            const listings = vi.spyOn(fs.promises, 'readdir');
+            await loadActiveCatalog(root);
+            const count = listings.mock.calls.filter(([dir]) => String(dir) === catalogPaths(root).active).length;
+            listings.mockRestore();
+            return count;
+        };
+        expect(await pointerListings()).toBe(1);
+        await published();
+        // The first read in catalog mode, which the mode check reuses, then one that it remembers.
+        expect(await pointerListings()).toBe(1);
+        expect(await pointerListings()).toBe(1);
     });
 
     it('serves nothing from a revision file that fails its check, in a process that never loaded it', async () => {
@@ -153,6 +196,9 @@ describe('the public reader', { timeout: 60_000 }, () => {
         expect(fs.readdirSync(catalogPaths(root).activationsDir)).toHaveLength(1);
         expect(fs.existsSync(catalogPaths(root).active)).toBe(false);
         expect(await catalogMode(root)).toBe('legacy');
+        // A pointer folder with no version yet, as a writer that stopped before its link leaves it, isn't a cutover either.
+        fs.mkdirSync(catalogPaths(root).active, { mode: 0o700 });
+        expect(await catalogMode(root)).toBe('legacy');
 
         vi.spyOn(console, 'error').mockImplementation(() => undefined);
         fs.writeFileSync(path.join(catalogPaths(root).activationsDir, 'not-an-activation.json'), '{}\n');
@@ -164,16 +210,16 @@ describe('the public reader', { timeout: 60_000 }, () => {
         expect(await loadActiveCatalog(root)).toEqual({ mode: 'legacy' });
     });
 
-    it('serves nothing while an lstat of the pointer fails, and goes back to legacy once it succeeds', async () => {
+    it('serves nothing while a listing of the pointer folder fails, and goes back to legacy once it succeeds', async () => {
         const { root } = await fixture(7);
         const { checkCatalogMode, loadActiveCatalog } = await freshProcess();
         const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
         const active = catalogPaths(root).active;
-        const lstat = fs.promises.lstat.bind(fs.promises);
-        const failing = vi.spyOn(fs.promises, 'lstat').mockImplementation((async (file: fs.PathLike, options?: fs.StatOptions) => {
-            if (String(file) === active) throw Object.assign(new Error('too many open files'), { code: 'EMFILE' });
-            return lstat(file, options);
-        }) as typeof fs.promises.lstat);
+        const readdir = fs.promises.readdir.bind(fs.promises);
+        const failing = vi.spyOn(fs.promises, 'readdir').mockImplementation((async (dir: fs.PathLike, options?: unknown) => {
+            if (String(dir) === active) throw Object.assign(new Error('too many open files'), { code: 'EMFILE' });
+            return readdir(dir, options as never);
+        }) as typeof fs.promises.readdir);
         expect(await checkCatalogMode(root)).toEqual({ mode: 'catalog', unreadable: 'EMFILE' });
         expect(await loadActiveCatalog(root)).toEqual({ mode: 'catalog', state: 'unavailable', reason: 'catalog-unreadable' });
         expect(errors.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([{ event: 'catalog.read.failed', reason: 'catalog-unreadable', error: 'EMFILE' }]);
@@ -234,7 +280,7 @@ describe('the public reader', { timeout: 60_000 }, () => {
         const { root, published, edit } = await fixture(11);
         await published();
         await edit();
-        // A crash after step 11 leaves active.json naming a pending activation until the next CLI run's recovery.
+        // A crash after step 11 leaves the pointer naming a pending activation until the next CLI run's recovery.
         await published({ hooks: { afterStep: (step) => { if (step === 11) throw new Error('crash after step 11'); } } });
         const { loadActiveCatalog, UNSETTLED_ACTIVATION_TTL_MS } = await freshProcess();
         let now = Date.parse('2026-06-01T00:00:00.000Z');
@@ -283,7 +329,14 @@ describe('isAssetPublic', { timeout: 60_000 }, () => {
 });
 
 describe('the CLI and watcher entrypoints', () => {
-    it.each(['scripts/photos.ts', 'scripts/imageWatcher.ts', 'scripts/watcherHealth.ts'])('%s never reaches the public reader or request.ts', (entry) => {
+    // Every script, so one added later is covered too.
+    const entries = fs.readdirSync(path.join(REPO_ROOT, 'scripts')).filter((name) => name.endsWith('.ts')).sort().map((name) => `scripts/${name}`);
+
+    it('include the photos CLI and the watcher', () => {
+        expect(entries).toEqual(expect.arrayContaining(['scripts/photos.ts', 'scripts/imageWatcher.ts']));
+    });
+
+    it.each(entries)('%s never reaches the public reader or request.ts', (entry) => {
         const { files } = importGraph(entry);
         expect(files).not.toContain('lib/catalog/public-reader.ts');
         expect(files).not.toContain('lib/catalog/request.ts');
