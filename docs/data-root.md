@@ -1,6 +1,6 @@
 # The data root
 
-The data root is `./portfolio-data` next to `docker-compose.prod.yml` on the host. It holds what the site knows about each photo beyond the file itself: a stable photo ID, every revision of the file's bytes, and the `/media` sets built from each revision. Both containers mount it at `/data/portfolio`, which `PHOTOGRAPHY_DATA_DIR` names. Only the watcher and `photos.mjs` write it, and `web` mounts it read-only.
+The data root is `./portfolio-data` next to `docker-compose.prod.yml` on the host. It holds what the site knows about each photo beyond the file itself: a stable photo ID, every revision of the file's bytes, and the `/media` sets built from each revision. Every container mounts it at `/data/portfolio`, which `PHOTOGRAPHY_DATA_DIR` names. Only the watcher, `photos.mjs`, and the curator ([curator.md](curator.md)) write it, and `web` mounts it, and the library, read-only.
 
 The registry in it names every photo by its path in the library and by the SHA-256 of its bytes, so the library and the data root only make sense together. Back them up together and restore them together.
 
