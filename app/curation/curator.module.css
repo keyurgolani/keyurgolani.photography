@@ -100,10 +100,28 @@
   cursor: default;
 }
 
+.headerEnd {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+}
+
 .volume {
-  justify-self: end;
   color: var(--gah-ink-muted);
   font-size: var(--gah-type-label);
+}
+
+.signOut {
+  min-height: 44px;
+  padding: 0 0.75rem;
+  border: 1px solid var(--gah-rule-strong);
+  border-radius: var(--gah-radius);
+  color: var(--gah-ink-soft);
+  background: transparent;
+  font: inherit;
+  font-size: var(--gah-type-label);
+  cursor: pointer;
 }
 
 /* Body: the list, then the detail */
@@ -624,6 +642,7 @@ textarea.control {
 
 @media (hover: hover) and (pointer: fine) {
   .screen:hover,
+  .signOut:hover,
   .item:hover,
   .refresh:hover,
   .button:hover:not(:disabled),
@@ -644,6 +663,10 @@ textarea.control {
 
   .volume {
     display: none;
+  }
+
+  .headerEnd {
+    justify-content: flex-start;
   }
 
   .screens {

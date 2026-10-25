@@ -7,6 +7,7 @@ import { deferEvent } from '../lib/curation/actions';
 import { eventIdOf, eventKey } from '../lib/curation/events';
 import { listEvents, readEvent } from '../lib/curation/repository';
 import { startCatalogServer, READY_TIMEOUT, type CatalogServer } from './support/catalogServer';
+import { signIn, startCuratorServer, type CuratorServer } from './support/curatorServer';
 import { createInboxFixture, FAILED_SOURCE, FRESH, FRESH_SOURCES, INBOX_SERIES, PUBLISHED_IDS, openInboxItems, undisclosed, type InboxFixture } from './support/curation-inbox';
 import { waitForHydration } from './support/hydration';
 import { expect, test } from './support/test';
@@ -26,7 +27,7 @@ test.describe.configure({ mode: 'serial' });
 const HOOK_TIMEOUT = 2 * READY_TIMEOUT + 60_000;
 
 let fixture: InboxFixture | undefined;
-let curator: CatalogServer | undefined;
+let curator: CuratorServer | undefined;
 let web: CatalogServer | undefined;
 
 test.beforeAll(async () => {
@@ -35,7 +36,8 @@ test.beforeAll(async () => {
     // E2E_CURATION_PORT pins two ports per worker, for a machine that hands out ranges.
     const base = Number(process.env.E2E_CURATION_PORT);
     const pinned = Number.isInteger(base) && base > 0 ? base + 2 * test.info().parallelIndex : undefined;
-    curator = await startCatalogServer(fixture.root, pinned, { library: fixture.library, curator: true });
+    // The curator with 14-2b's login: test secret files made for this run, a test passphrase never printed.
+    curator = await startCuratorServer(fixture.root, pinned, { library: fixture.library });
     web = await startCatalogServer(fixture.root, pinned === undefined ? undefined : pinned + 1, { library: fixture.library });
 });
 
@@ -70,10 +72,17 @@ async function openInbox(page: Page, item?: string) {
     await waitForHydration(page);
 }
 
+// Every curator page needs a session, so each test signs in through the login form first.
+test.beforeEach(async ({ page }) => {
+    if (!curator) throw new Error('The curator server did not start');
+    await signIn(page, curator.origin, curator.passphrase);
+});
+
 test('the curator header leads, and an empty inbox says nothing requires judgment', async ({ page }) => {
-    await page.goto(`${curatorOrigin()}/curation`);
+    // The login lands on /curation, which leads on to the inbox.
+    await page.getByRole('link', { name: 'Open the inbox' }).click();
     await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox`);
-    await waitForHydration(page);
+    await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Portfolio curation' })).toBeVisible();
     const screens = page.getByRole('navigation', { name: 'Curation' });
     await expect(screens.getByRole('link', { name: 'Inbox' })).toHaveAttribute('aria-current', 'page');
