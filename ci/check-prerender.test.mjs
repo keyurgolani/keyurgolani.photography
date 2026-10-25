@@ -28,6 +28,18 @@ describe('prerenderedPaths', () => {
     expect(DYNAMIC_PATHS).toEqual(expect.arrayContaining(['/api/photos', '/api/ready']));
   });
 
+  it('lists Work and the legacy Gallery, whose cutover gate reads the catalog per request', () => {
+    expect(DYNAMIC_PATHS).toEqual(expect.arrayContaining(['/work', '/gallery']));
+  });
+
+  it('finds Work and the Gallery when the build prerendered them as static pages', () => {
+    const routes = {
+      '/work': { initialRevalidateSeconds: false, srcRoute: '/work', dataRoute: '/work.rsc' },
+      '/gallery': { initialRevalidateSeconds: false, srcRoute: '/gallery', dataRoute: '/gallery.rsc' },
+    };
+    expect(prerenderedPaths(manifest({ routes }))).toEqual(['/gallery', '/work']);
+  });
+
   it('finds nothing when the build prerendered only other paths', () => {
     expect(prerenderedPaths(manifest())).toEqual([]);
   });
@@ -81,7 +93,7 @@ describe('check-prerender.mjs run directly', () => {
   it('exits 0 and names the paths it checked when the build prerendered none of them', () => {
     const result = run(file(manifest()));
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('The build prerendered none of: /api/photos, /api/ready.');
+    expect(result.stdout).toContain('The build prerendered none of: /api/photos, /api/ready, /work, /gallery.');
   });
 
   it('exits 1 with the fix when the build prerendered /api/photos', () => {
