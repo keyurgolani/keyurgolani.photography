@@ -5,7 +5,7 @@ import { isValidElement, type ReactElement } from 'react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { VARIANT_BYTES } from '@/lib/catalog/__tests__/catalogFixtures';
 import { encodeSeriesCursor } from '@/lib/catalog/cursor';
-import { currentDraftId, PREVIEW_READER_STATE_KEY, previewBasePath, resetPreviewReaderForTests } from '@/lib/catalog/preview-reader';
+import { currentDraftId, previewBasePath, previewReaderStateForTests, resetPreviewReaderForTests } from '@/lib/catalog/preview-reader';
 import { publish } from '@/lib/catalog/publish';
 import { createTestCatalog, type TestCatalog } from '@/lib/catalog/testing';
 import { readWorkingLayer } from '@/lib/catalog/working-layer';
@@ -196,7 +196,7 @@ describe('without a session', () => {
         as(cookie);
         // Warm the cache through the subresources themselves.
         for (const name of ['load-more', 'home records', 'image']) expect(await outcome(surfaces(draftId)[name]), name).toMatchObject({ kind: 'response', status: 200 });
-        const state = (globalThis as Record<symbol, { kept: Map<string, unknown>; compiling: Map<string, unknown> }>)[PREVIEW_READER_STATE_KEY];
+        const state = previewReaderStateForTests();
         expect(state.kept.size).toBeGreaterThan(0);
         deleteSession(sessionFromCookies(cookie, secrets.sessionKey)!);
         const reads = [vi.spyOn(state.kept, 'get'), vi.spyOn(state.kept, 'has'), vi.spyOn(state.compiling, 'get')];

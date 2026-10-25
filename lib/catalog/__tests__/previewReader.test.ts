@@ -11,6 +11,7 @@ import {
     previewFrameHref,
     previewMediaAccess,
     previewMediaUrls,
+    previewReaderStateForTests,
     previewRoutes,
     resetPreviewReaderForTests,
     SUBRESOURCE_MAX_AGE_MS,
@@ -220,6 +221,23 @@ describe('loadPreviewCatalog', { timeout: 60_000 }, () => {
         await retitleFirstSeries('A retitled fixture series');
         expect(await other.loadPreviewCatalog(before)).toEqual({ mode: 'catalog', state: 'not-current' });
         expect(await loadPreviewCatalog(before, { maxAgeMs: SUBRESOURCE_MAX_AGE_MS })).toEqual({ mode: 'catalog', state: 'not-current' });
+    });
+
+    it('keeps at most two compiled drafts for the process, the newest, however many edits it compiles', async () => {
+        const { kept } = previewReaderStateForTests();
+        const drafts: string[] = [];
+        for (const [index, title] of ['First', 'Second', 'Third', 'Fourth'].entries()) {
+            if (index > 0) await retitleFirstSeries(`${title} retitled fixture series`);
+            const draftId = await candidateId();
+            expect(drafts).not.toContain(draftId);
+            drafts.push(draftId);
+            expect((await loadPreviewCatalog(draftId)).state).toBe('ok');
+            expect(kept.size).toBe(Math.min(drafts.length, 2));
+        }
+        // By currentDraftId() too, which keeps what it compiles.
+        await retitleFirstSeries('Fifth retitled fixture series');
+        drafts.push((await currentDraftId()) as string);
+        expect([...kept.keys()]).toEqual(drafts.slice(-2).map((draftId) => `${catalog.root}\0${draftId}`));
     });
 
     it('names the current draft for /curation/preview', async () => {
