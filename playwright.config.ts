@@ -67,10 +67,11 @@ export default defineConfig({
       testIgnore: '**/support/**',
     },
     {
-      // WebKit targets the click after a tap differently from Chromium, so Home's first-tap rule runs on both.
+      // WebKit targets the click after a tap differently from Chromium, so Home's first-tap rule runs on both,
+      // and it can leave focus on the body after a tap, so the Viewer's swipes and keys under its modal (#9) do too.
       name: 'mobile-webkit',
       use: { ...devices['iPhone 13'] },
-      testMatch: /home-immersive\.spec\.ts/,
+      testMatch: /(home-immersive|viewer-touch)\.spec\.ts/,
     },
   ],
   webServer: [
