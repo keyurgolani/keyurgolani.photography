@@ -9,6 +9,7 @@ import type { AuthoredPhoto, AuthoredSeries } from '../../catalog/types';
 import { authoredRecordDir, readActivePointer, readAuthoredRecord } from '../../catalog/working-layer';
 import { writeAuthoredRecord } from '../../catalog/working-layer-writer';
 import { runReconcilePass } from '../../identity/pass';
+import { runStatusCommand } from '../../catalog/owner-status';
 import { identityPaths } from '../../identity/registry';
 import type { DerivativeJob, IdentityFact } from '../../identity/types';
 import { approveEvent, retryEvent } from '../actions';
@@ -683,6 +684,15 @@ describe('photos status lines', { timeout: 60_000 }, () => {
         expect(lines[2]).toContain('failed   ');
         expect(lines.join('\n')).not.toContain(w.root);
         expect(lines.join('\n')).not.toContain(w.lib.root);
+
+        // photos status prints the same lines, and --json carries the same alerts. Open items don't fail it.
+        const status = await runStatusCommand({ dataRoot: w.root });
+        expect(status.exitCode).toBe(0);
+        expect(status.output).toContain(`\n${lines.join('\n')}\n`);
+        expect(status.output.split(w.root).join('<root>')).not.toContain(w.lib.root);
+        const json = await runStatusCommand({ dataRoot: w.root }, { json: true });
+        expect(json.exitCode).toBe(0);
+        expect((JSON.parse(json.output) as { inbox: unknown }).inbox).toEqual(JSON.parse(JSON.stringify(alerts)));
 
         // Once the source is back, the missing line goes.
         fs.writeFileSync(w.lib.file(P_PATH), images.original);

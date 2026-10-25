@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { curationPaths } from '../../curation/repository';
 import { writeWatcherHeartbeat } from '../../identity/heartbeat';
 import { readRegistry, writeRegistry } from '../../identity/registry';
 import { libraryRoot } from '../../storage/config';
@@ -70,6 +71,8 @@ describe('photos status', () => {
         expect(text).toContain('Working layer: site.json, 1 series record (published 1, draft 0, hidden 0), 4 photo records');
         expect(text).toContain('Unassigned: 1 photo in the library that no series lists');
         expect(text).toContain('Watcher heartbeat: 60 s ago (2026-10-24T12:00:00.000Z)');
+        // #17: the inbox's open missing sources and failures, none here.
+        expect(text).toContain('Inbox: 0 missing sources, 0 failures open');
     });
 
     it('prints JSON with the same facts', async () => {
@@ -77,7 +80,8 @@ describe('photos status', () => {
         await run(catalog);
         const result = await runStatusCommand({ dataRoot: catalog.root }, { json: true });
         const status = JSON.parse(result.output) as Awaited<ReturnType<typeof ownerStatus>>;
-        expect(Object.keys(status)).toEqual(['identity', 'catalog', 'working']);
+        expect(Object.keys(status)).toEqual(['identity', 'catalog', 'working', 'inbox']);
+        expect(status.inbox).toEqual({ missing: [], failed: [], unreadable: 0 });
         expect(status.catalog).toMatchObject({ mode: 'catalog', active: { revisionNumber: 1, status: 'committed', kind: 'publish', actor: 'test' }, lastPublish: { outcome: 'PUBLISHED' } });
         expect(status.working).toMatchObject({ site: true, photoRecords: 4, unassigned: [catalog.photos[3].id] });
     });
@@ -98,6 +102,19 @@ describe('photos status', () => {
         expect(reason).toContain('fixture source.jpg');
         expect(result.output).not.toContain(libraryRoot());
         expect(result.output).not.toContain(path.join(catalog.root, 'staging'));
+    });
+
+    it('says when the curation inbox can\'t be read, and exits 1', async () => {
+        const catalog = await fixture();
+        fs.mkdirSync(curationPaths(catalog.root).dir, { recursive: true });
+        fs.writeFileSync(curationPaths(catalog.root).events, 'not a folder');
+        const result = await runStatusCommand({ dataRoot: catalog.root });
+        expect(result.exitCode).toBe(1);
+        expect(result.output).toMatch(/^Inbox: can't be read \(.+\)$/m);
+        expect(result.output).toContain('Holds: ');
+        const json = await runStatusCommand({ dataRoot: catalog.root }, { json: true });
+        expect(json.exitCode).toBe(1);
+        expect((JSON.parse(json.output) as Awaited<ReturnType<typeof ownerStatus>>).inbox).toEqual({ error: expect.any(String) });
     });
 
     it('prints its report and exits 1 when the data root is missing or unset', async () => {
