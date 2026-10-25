@@ -21,7 +21,9 @@ import { inboxAlertLines, inboxAlerts } from '../alerts';
 import { parseCurationArgs, runCurationCli } from '../commands';
 import type { CurationEvent } from '../events';
 import { listEvents } from '../repository';
-import { archiveMissing, bindReplacement, holdRefusal } from '../resolutions';
+import { archiveMissing, bindReplacement, holdRefusal, MANAGED_PHOTO_FIELDS, OWNER_FIELDS } from '../resolutions';
+import { authoredPhotoSchema } from '../../catalog/schema';
+import { publish } from '../../catalog/publish';
 import { createSourcesSink, failureEventId, recordingFailuresAfterBuild, settleSources } from '../sources';
 import { clock, createMissingWorld, missingEventId, removeMissingTemplate, type MissingWorld } from './missingWorld';
 import { makeImages, P_PATH, Q_PATH, quiet, replacementEventId, SERIES, served, treeBytes, type Images } from './replacementWorld';
@@ -271,6 +273,10 @@ describe('other bytes back', { timeout: 60_000 }, () => {
         const item = await w.event(w.missingId);
         const bound = await bindReplacement({ root: w.root, eventId: item.id, expectedVersion: item.version, actor: ACTOR });
         expect(bound).toMatchObject({ ok: false, code: 'refused', message: expect.stringContaining(`the series ${SERIES}`) });
+        if (bound.ok) return;
+        // Only in the draft, so taking it out of the series is a way forward, unless a revision rollback can reach lists it.
+        expect(bound.message).toContain(`Take it out of ${SERIES} first, or keep it as its own photograph`);
+        expect(bound.message).toContain('a revision photos rollback can go back to');
         expect(pendingDecisions(w)).toEqual([]);
         expect((await w.event(w.missingId)).version).toBe(item.version);
     });
@@ -285,6 +291,13 @@ describe('other bytes back', { timeout: 60_000 }, () => {
         expect(inserted).toMatchObject({ ok: true });
         const showing = await w.publish();
         expect(showing).toMatchObject({ outcome: 'PUBLISHED' });
+        // While the live site shows it, taking it out wouldn't help: the revision that showed it stays one rollback can reach.
+        const live = await w.event(w.missingId);
+        const onSite = await bindReplacement({ root: w.root, eventId: live.id, expectedVersion: live.version, actor: ACTOR, path: P_PATH });
+        expect(onSite).toMatchObject({ ok: false, code: 'refused', message: expect.stringContaining(`the active revision ${showing.revisionId}`) });
+        if (onSite.ok) return;
+        expect(onSite.message).toContain("A photograph visitors see can't be merged, even once it's taken out");
+        expect(onSite.message).not.toContain('Take it out');
         const removed = await applySequenceOp({ dataRoot: w.root }, { kind: 'remove', seriesId: SERIES, photoId: n }, { expectedVersion: (await series(w)).version, actor: { kind: 'editor' } });
         expect(removed).toMatchObject({ ok: true });
         expect(await w.publish()).toMatchObject({ outcome: 'PUBLISHED', removed: [{ photoId: n }] });
@@ -298,6 +311,55 @@ describe('other bytes back', { timeout: 60_000 }, () => {
         expect((await w.event(w.missingId)).version).toBe(item.version);
         await w.pass();
         expect((await w.registry()).photos[n].mergedInto).toBeUndefined();
+    });
+
+    it("let a bind merge a photograph only a revision that never went live lists, as a crashed publish leaves one", async () => {
+        const w = await world();
+        const { n } = await otherBytes(w);
+        const nRevision = (await w.registry()).photos[n].source.observedRevision;
+        expect((await w.build({ photoId: n, assetRevision: nRevision, profileId: w.profileId, path: P_PATH })).status).toBe('ready');
+        await writeAuthoredRecord({ kind: 'photo', id: n, assetRevision: nRevision, alt: { kind: 'decorative' } }, { expectedVersion: 0, root: w.root });
+        expect(await applySequenceOp({ dataRoot: w.root }, { kind: 'insert', seriesId: SERIES, photoId: n, at: 'end' }, { expectedVersion: (await series(w)).version, actor: { kind: 'editor' } })).toMatchObject({ ok: true });
+        // The publish writes its revision file, then stops before anything goes live.
+        const crashed = await publish({ dataRoot: w.root, actor: ACTOR, logger: { log: () => undefined }, hooks: { afterStep(step) { if (step === 9) throw new Error('Fixture crash after the revision file'); } } });
+        expect(crashed.outcome).not.toBe('PUBLISHED');
+        expect((await readActivePointer(w.root))?.revisionId).toBe(w.revisionId);
+        const never = fs.readdirSync(path.join(w.root, 'catalog', 'revisions')).filter((name) => !name.startsWith(w.revisionId));
+        expect(never).toHaveLength(1);
+        // Out of the series, and the record back to bare, so only that revision file names it.
+        expect(await applySequenceOp({ dataRoot: w.root }, { kind: 'remove', seriesId: SERIES, photoId: n }, { expectedVersion: (await series(w)).version, actor: { kind: 'editor' } })).toMatchObject({ ok: true });
+        const record = (await readAuthoredRecord(w.root, 'photo', n)) as AuthoredPhoto;
+        await writeAuthoredRecord({ kind: 'photo', id: n, assetRevision: nRevision, alt: null }, { expectedVersion: record.version, root: w.root });
+
+        const item = await w.event(w.missingId);
+        const bound = await bindReplacement({ root: w.root, eventId: item.id, expectedVersion: item.version, actor: ACTOR, path: P_PATH });
+        expect(bound).toMatchObject({ ok: true });
+        expect(pendingDecisions(w)).toEqual([expect.objectContaining({ type: 'bind', photoId: w.p, merge: n })]);
+    });
+
+    it.each([
+        ['alt', { kind: 'described', text: 'Fixture description of N.', reviewed: true }, 'description'],
+        ['alt', { kind: 'decorative' }, 'decorative flag'],
+        ['title', 'Fixture title for N', 'title'],
+        ['caption', 'Fixture caption for N.', 'caption'],
+        ['focalPoint', { x: 0.25, y: 0.75 }, 'focal point'],
+        ['crop', 'contain', 'crop'],
+        ['accent', '#336699', 'accent'],
+        ['credit', 'Fixture credit', 'credit'],
+        ['location', 'Fixture harbor', 'location'],
+        ['capturedAt', '2020-02-02', 'capture date'],
+    ] as const)('refuse a bind that would merge a photograph whose record holds the owner\'s %s (%s)', async (field, value, name) => {
+        const w = await world();
+        const { n } = await otherBytes(w);
+        await writeAuthoredRecord({ kind: 'photo', id: n, assetRevision: (await w.registry()).photos[n].source.observedRevision, alt: null, [field]: value } as Parameters<typeof writeAuthoredRecord>[0], { expectedVersion: 0, root: w.root });
+        const item = await w.event(w.missingId);
+        const bound = await bindReplacement({ root: w.root, eventId: item.id, expectedVersion: item.version, actor: ACTOR });
+        expect(bound).toMatchObject({ ok: false, code: 'refused', message: expect.stringContaining(`with the owner's ${name}.`) });
+        expect(pendingDecisions(w)).toEqual([]);
+    });
+
+    it('count every photo record field as the owner\'s copy, or as one the tools manage', () => {
+        expect([...Object.keys(OWNER_FIELDS), ...MANAGED_PHOTO_FIELDS].sort()).toEqual(Object.keys(authoredPhotoSchema.shape).sort());
     });
 
     it('refuse a bind that would merge a photograph with a photo record in the draft, so its copy isn\'t dropped', async () => {
