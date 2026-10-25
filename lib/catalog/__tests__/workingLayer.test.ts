@@ -432,6 +432,18 @@ describe('writeAuthoredRecord', () => {
         expect(broken).toMatchObject({ code: 'INVALID_RECORD', message: `The stored photo record ${PHOTO_A} can't be read. Fix it by hand first.` });
     });
 
+    it('refuses to extend a folder holding another record\'s versions, as the reader refuses to read it', async () => {
+        const data = dataRoot();
+        const dir = path.join(authoredPaths(data.root).photosDir, PHOTO_A);
+        writeVersion(dir, 1, { schemaVersion: 1, version: 1, baseRevisionId: null, ...photo(PHOTO_B) });
+        await expect(readAuthoredRecord(data.root, 'photo', PHOTO_A)).rejects.toThrow(PHOTO_B);
+        for (const expectedVersion of [1, 0]) {
+            const error = await rejection(writeAuthoredRecord(photo(PHOTO_A, { title: 'Fixture title' }), { expectedVersion, root: data.root }));
+            expect(error).toMatchObject({ code: 'INVALID_RECORD', message: expect.stringContaining(`its folder holds the record "${PHOTO_B}"`), issues: [{ path: 'id' }] });
+        }
+        expect(fs.readdirSync(dir)).toEqual(['v1.json']);
+    });
+
     it('sorts records by ID, not by file name', async () => {
         const data = dataRoot();
         for (const id of ['ser_ab-c', 'ser_ab']) await writeAuthoredRecord(series(id), { expectedVersion: 0, root: data.root });
