@@ -387,10 +387,6 @@ export function createWatcherHandlers(
 
                 const lists: Record<Outcome, string[]> = { done: result.processed, skipped: result.skipped, failed: result.errors };
                 files.forEach((file, index) => lists[outcomes[index]].push(file));
-                logger.log(
-                    `[ImageWatcher] Completed: ${result.processed.length} processed, ` +
-                    `${result.skipped.length} skipped, ${result.errors.length} errors`,
-                );
                 if (upright !== null) {
                     // A photo that changed meanwhile, or a stop, leaves the whole rebuild to the next start. One that
                     // failed doesn't hold it back: it is recorded to retry, so the others aren't rebuilt at every start.
@@ -400,6 +396,11 @@ export function createWatcherHandlers(
                     if (left.length === 0) recordUpright(upright.length - failed.length, failed);
                     else logger.log(`[ImageWatcher] These orientation-tagged photos weren't rebuilt, so the next start tries again: ${left.join(', ')}.`);
                 }
+                // Last, once the batch has written everything, marker included.
+                logger.log(
+                    `[ImageWatcher] Completed: ${result.processed.length} processed, ` +
+                    `${result.skipped.length} skipped, ${result.errors.length} errors`,
+                );
                 return result;
             } finally {
                 queued();
