@@ -52,9 +52,11 @@ const SENTINELS = [
     'private/SENTINEL-source.jpg',
     'SENTINEL chapter',
     '2019-07-08',
-    // The draft and hidden series' photos.
+    // The draft and hidden series' photos, and their IDs.
     P[4],
     P[5],
+    'ser_route-draft',
+    'ser_route-hidden',
 ];
 
 let catalog: TestCatalog;

@@ -40,9 +40,11 @@ const SENTINELS = [
     'private/SENTINEL-source.jpg',
     'SENTINEL chapter',
     '2019-07-08',
-    // The draft and hidden series' photos.
+    // The draft and hidden series' photos, and their IDs, which would reach the RSC payload as React keys.
     P[4],
     P[5],
+    'ser_e2e-draft',
+    'ser_e2e-hidden',
 ];
 
 const HARBOR = [P[0], P[1], P[2]];
@@ -345,6 +347,8 @@ for (const theme of ['dark', 'light'] as const) {
             return { ground: style.backgroundColor, ink: style.color, accent: style.getPropertyValue('--cc-accent').trim() };
         });
         expect(colors).toEqual({ ground: 'rgb(17, 21, 19)', ink: 'rgb(246, 244, 238)', accent: '#c08040' });
+        // The body behind the root is the same ground, so an overscroll never shows the site theme.
+        expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgb(17, 21, 19)');
         // No theme toggle: the Viewer renders no SiteNav.
         await expect(page.getByRole('button', { name: /^Switch to (dark|light) mode$/ })).toHaveCount(0);
     });
