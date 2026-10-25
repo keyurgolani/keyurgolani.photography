@@ -180,8 +180,13 @@ async function commit(
     }
 
     // An existing record keeps its base until a rebase moves it. A new one starts on the active revision.
-    const active = rebaseTo === undefined ? (await readActivePointer(root))?.revisionId ?? null : null;
+    const active = rebaseTo === undefined && existing === null ? (await readActivePointer(root))?.revisionId ?? null : null;
     const baseRevisionId = rebaseTo ?? (existing ? existing.baseRevisionId : active);
+    // What #16's stamps were reviewed against without review inputs: the active revision, read as a new record's base
+    // is. An existing record's write never failed on the pointer before stamps, so one that can't be read gives its base.
+    const reviewedAgainst = rebaseTo !== undefined || review
+        ? review?.baseRevisionId ?? null
+        : existing === null ? active : await readActivePointer(root).then((pointer) => pointer?.revisionId ?? null, () => existing.baseRevisionId);
     // The site record's base Work order moves with its base, so only a rebase sets it, from the record it merged.
     // Any other write keeps the stored value, and a new record's is unknown.
     const site = ref.kind === 'site'
@@ -195,7 +200,7 @@ async function commit(
     const stamps = rebaseTo !== undefined
         ? rebaseStamps(existing, unstamped.value, await coverAsset(root, existing), new Date().toISOString(), published ? rebaseTo : undefined)
         : stampWrite(existing, unstamped.value, {
-            baseRevisionId: review ? review.baseRevisionId : active,
+            baseRevisionId: reviewedAgainst,
             ...(review?.origin ? { origin: review.origin } : {}),
             ...(review?.event ? { event: review.event } : {}),
             ...(review?.asset ? { asset: review.asset } : {}),
