@@ -287,3 +287,35 @@ docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node 
 ```
 
 A suggestion is only a draft. Approving the item is what places the photograph, and it takes the series you pass, the one you saved with `curation edit`, or the suggestion, in that order.
+
+## Retention and cleanup
+
+Cleanup never deletes anything a visitor could be served or a rollback could need:
+
+- Every revision in `catalog/revisions/`, every activation in `catalog/activations/`, and the active pointer.
+- Every asset in `assets/`. Cleanup deletes no asset at all, so every set a revision, a candidate, or a working-layer record names stays. Deleting historical assets will need a later, explicit opt-in retention policy, and a source file being gone from the library is never a reason to delete one.
+- The working layer in `authored/`, the registry in `identity/`, the curation inbox in `curation/`, `catalog/diagnostics/`, and `edits/`. Cleanup never reads or changes anything in `edits/`.
+
+`photos.mjs gc` deletes two kinds of leftover, and only once each has gone unchanged for more than 7 days:
+
+| Class | What it is | When it may go |
+|---|---|---|
+| `abandoned-staging` | `staging/<id>/`, a folder a derivative build left when it was killed before publishing its set | Nothing in it changed for more than 7 days, and no build holds its `build-<id>` lock. The delete takes that lock with no wait, so a live build's folder is skipped. |
+| `orphan-candidate` | `catalog/candidates/<id>.json`, a compile that never became a revision | Its file and its `compiledAt` are both more than 7 days old, its ID has no revision, and no activation or the last publish summary names it. An active pointer that names a revision with no file stops GC altogether. |
+
+Anything else in `staging/` or `catalog/candidates/` stays, such as a file, a symlink, or a name a build doesn't make. The watcher still clears a killed build's folder at start whatever its age, as it always has.
+
+How a run goes:
+
+1. `photos.mjs gc` is a dry run. It lists every path it would delete with its class, the rule that allows it, and its size, lists what of those two classes it keeps and why, and prints a plan digest. It deletes nothing.
+2. `photos.mjs gc --apply <planDigest>` plans again and deletes only if the plan has the same digest, so a path added to the plan, gone from it, changed, or newly protected since the dry run stops it before it deletes anything. It prints the new plan then: check it, and apply its digest if it is still what you want. Each path is checked again just before its delete, and a change there stops the run. `--apply` logs one JSON line per path it deletes.
+3. Both hold the catalog and authored locks from the scan through the last delete, waiting up to 30 seconds for each and naming the holder if they can't get it, so no publish, rollback, or record write lands in between.
+4. Both stop, deleting nothing, if any revision, candidate, record, or the pointer can't be read, or if `staging/`, `catalog/`, or `catalog/candidates/` is a symlink, since then nobody can tell what a delete would reach. A symlink inside a staging folder is deleted as a link, never followed.
+5. GC can't delete relative to an open folder, so just before each delete it re-verifies that the data root and every folder it deletes in are the ones it checked, and stops if any isn't. Keep the data root writable only by uid 1001, the user the containers run as.
+
+`gc` exits 0 when it planned or applied, 1 when a folder it deletes in is a symlink, isn't a folder, resolves somewhere else, or changes just before a delete, 2 on a usage error, 4 when a catalog file is damaged or an I/O error stops it, and 3 on any other stop, such as a changed plan, a busy lock, or a data root that isn't ready. It runs in `image-watcher`'s container like the other commands:
+
+```bash
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs gc
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs gc --apply <planDigest>
+```
