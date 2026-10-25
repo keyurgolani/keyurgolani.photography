@@ -5,7 +5,6 @@ import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
 import { dataRootStatus, libraryRoot } from '../storage/config';
 import { LockTimeoutError, withLock, type LockContext, type LockHooks, type LockRecord } from '../storage/lock';
-import './asset-rules';
 import { candidateFile, compileCandidate, type CompileResult } from './compile';
 import { LAUNCH_ORDER_RULE_IDS } from './order-rules';
 import { rebaseWorkingLayer, type RebaseReport } from './rebase';
@@ -25,7 +24,7 @@ import {
     writeLastPublish,
     writeRevisionIfAbsent,
 } from './repository';
-import { registeredRules, rulesetVersion, runRules } from './rules';
+import { registeredRules, rulesetVersion, runRules } from './ruleset';
 import { CATALOG_SCHEMA_VERSION, parseRevisionFile } from './schema';
 import type { Activation, ActivePointer, Issue, RevisionFile, WorkingLayer } from './types';
 import { AUTHORED_LEASE_MS, AUTHORED_LOCK, AUTHORED_WAIT_MS } from './working-layer-writer';

@@ -27,6 +27,21 @@ const ORDER_WRITER_PATTERNS = [
   },
 ]
 
+// Rules run through lib/catalog/ruleset.ts, which registers every rule
+// module. rules.ts alone lacks the asset rules, so a process that ran rules
+// from it would skip them and record another rulesetVersion. Only rules.ts's
+// own tests run rules from it. Like the pattern above, every entry that sets
+// no-restricted-imports for production code repeats this one.
+const RULE_RUNNER_PATTERNS = [
+  {
+    regex: '(^|/)rules$',
+    importNames: ['runRules', 'rulesetVersion', 'registeredRules'],
+    message: 'Run rules through lib/catalog/ruleset.ts, which registers every rule module.',
+  },
+]
+const PRODUCTION_CODE = ['lib/**', 'app/**', 'scripts/**', 'components/**', 'utils/**', 'proxy.ts']
+const TESTS_AND_RULESET = ['**/__tests__/**', 'lib/catalog/ruleset.ts']
+
 export default tseslint.config(
   {
     ignores: [
@@ -84,12 +99,20 @@ export default tseslint.config(
     },
   },
   {
+    // Every process runs the whole ruleset.
+    files: PRODUCTION_CODE,
+    ignores: TESTS_AND_RULESET,
+    rules: {
+      'no-restricted-imports': ['error', { patterns: RULE_RUNNER_PATTERNS }],
+    },
+  },
+  {
     // Storage, identity, and media code runs in the watcher and CLI, so it
     // must not depend on Next or on server-only's bundler check, and the
     // watcher process must not reach the order writers.
     files: ['lib/storage/**', 'lib/identity/**', 'lib/media/**'],
     rules: {
-      'no-restricted-imports': ['error', { paths: NEXT_PATHS, patterns: [...NEXT_PATTERNS, ...ORDER_WRITER_PATTERNS] }],
+      'no-restricted-imports': ['error', { paths: NEXT_PATHS, patterns: [...NEXT_PATTERNS, ...ORDER_WRITER_PATTERNS, ...RULE_RUNNER_PATTERNS] }],
     },
   },
   {
@@ -105,7 +128,7 @@ export default tseslint.config(
       'lib/curation/auth/**',
     ],
     rules: {
-      'no-restricted-imports': ['error', { patterns: ORDER_WRITER_PATTERNS }],
+      'no-restricted-imports': ['error', { patterns: [...ORDER_WRITER_PATTERNS, ...RULE_RUNNER_PATTERNS] }],
     },
   },
   {
@@ -116,6 +139,14 @@ export default tseslint.config(
     ignores: ['lib/catalog/request.ts', 'lib/catalog/public-reader.ts'],
     rules: {
       'no-restricted-imports': ['error', { paths: NEXT_PATHS, patterns: NEXT_PATTERNS }],
+    },
+  },
+  {
+    // The same, outside the tests and ruleset.ts, which also run the whole ruleset.
+    files: ['lib/catalog/**'],
+    ignores: ['lib/catalog/request.ts', 'lib/catalog/public-reader.ts', ...TESTS_AND_RULESET],
+    rules: {
+      'no-restricted-imports': ['error', { paths: NEXT_PATHS, patterns: [...NEXT_PATTERNS, ...RULE_RUNNER_PATTERNS] }],
     },
   },
 )

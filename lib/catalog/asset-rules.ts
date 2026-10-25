@@ -10,9 +10,10 @@ import type { CandidatePhotoRecord, ExcludedMember, ExclusionReason, Rule, RuleC
  * The asset rules, slice B's: each published photo's derivative set is the
  * one #10's registry calls ready, each variant file is there at its
  * manifest's size, and each URL is the media route's. They stat files and
- * read nothing. Importing this module registers them, as rules.ts does its
- * own, so compile and publish see every rule and the slice A and #8 rule
- * tests stay free of asset fixtures.
+ * read nothing. Importing this module registers them. ruleset.ts imports
+ * it, so every process that runs rules through ruleset.ts runs these too,
+ * and the slice A and #8 rule tests, which import rules.ts, stay free of
+ * asset fixtures.
  *
  * They check the candidate's photos, and the members compile left out
  * (`ctx.excluded`). On a stored revision they check its photos.
