@@ -202,7 +202,7 @@ export async function runInboxAction(kind: InboxActionKind, form: unknown, optio
     try {
         switch (kind) {
             case 'approve':
-                outcome = await approveEvent({ ...input, choices: choicesFrom(form, 'approve') });
+                outcome = await approveEvent({ ...input, choices: choicesFrom(form, 'approve'), keepPlaced: true });
                 break;
             case 'edit':
                 outcome = await editEvent({ ...input, choices: choicesFrom(form, 'edit') });

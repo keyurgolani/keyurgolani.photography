@@ -61,7 +61,13 @@ export const STATUS_LABELS: Record<CurationEventStatus, string> = {
 };
 
 /** Where an item sits in the list. */
-export type ItemGroup = 'judgment' | 'waiting' | 'deferred' | 'settled';
+/**
+ * Where an item sits in the list, the way `curation list` counts it:
+ * `placed` is a new photograph's open or deferred item whose photo a series
+ * or the live revision already holds, and `unplaced` an approval whose photo
+ * nothing holds now (lib/curation/placement.ts).
+ */
+export type ItemGroup = 'judgment' | 'unplaced' | 'waiting' | 'deferred' | 'placed' | 'settled';
 
 export interface InboxSuggestion {
     /** Null is "Leave unassigned". */
@@ -86,6 +92,10 @@ export interface InboxItem {
     photoId: string | null;
     shortId: string;
     waiting: string | null;
+    /** What holds its photo, for an item settled by placement, or null. */
+    placedBy: string | null;
+    /** The series its last approval named, for an approval whose photo nothing holds now, or null. */
+    unplacedSeries: string | null;
 }
 
 export interface SeriesOption {
@@ -145,6 +155,11 @@ export type InboxView =
           activeRevisionId: string | null;
           needsJudgment: number;
           waiting: number;
+          /** Items settled by placement, and approvals no longer placed, as `curation list` counts them. */
+          placed: number;
+          unplaced: number;
+          /** The placement lookup couldn't tell, so every item counts by its stored status. */
+          placementUnknown: boolean;
           items: InboxItem[];
           /** Event folders that couldn't be read, by ID and reason. Never a path. */
           problems: { id: string; message: string }[];
@@ -156,10 +171,15 @@ export type InboxView =
           missingSelection: string | null;
       };
 
-/** "N items require judgment", and how many wait on the watcher. */
-export function summaryText(view: { needsJudgment: number; waiting: number }): string {
+/** "N items require judgment", then what waits, what's already placed, and what's no longer placed, as `curation list` says it. */
+export function summaryText(view: { needsJudgment: number; waiting: number; placed?: number; unplaced?: number }): string {
     const judgment = `${view.needsJudgment} ${view.needsJudgment === 1 ? 'item requires' : 'items require'} judgment`;
-    return view.waiting > 0 ? `${judgment}, ${view.waiting} waiting` : judgment;
+    const rest = [
+        ...(view.waiting > 0 ? [`${view.waiting} waiting`] : []),
+        ...((view.placed ?? 0) > 0 ? [`${view.placed} already placed`] : []),
+        ...((view.unplaced ?? 0) > 0 ? [`${view.unplaced} approved but no longer placed`] : []),
+    ];
+    return [judgment, ...rest].join(', ');
 }
 
 const PLACEMENT_RE = /^(start|end|after:ph_[0-9a-f-]{36})$/;

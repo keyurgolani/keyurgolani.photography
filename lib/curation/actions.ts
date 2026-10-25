@@ -327,7 +327,20 @@ export interface ApproveFaults {
     beforePlacement?(): void | Promise<void>;
 }
 
-export function approveEvent(input: ActionInput & { choices: Choices; faults?: ApproveFaults }): Promise<ActionOutcome> {
+export function approveEvent(
+    input: ActionInput & {
+        choices: Choices;
+        faults?: ApproveFaults;
+        /**
+         * Refuse "unassigned" for a photograph a series holds, or while a series
+         * can't be read. The inbox page sets it, since "Leave unassigned" there
+         * reads as taking the photo out. The CLI leaves it off: `--unassigned`
+         * records that the last approval chose no series, which D6's placement
+         * lookup reads once the series drops the photo.
+         */
+        keepPlaced?: boolean;
+    },
+): Promise<ActionOutcome> {
     return act(input, async (step) => {
         const { event } = step;
         if (event.type !== 'new') {
@@ -375,8 +388,8 @@ export function approveEvent(input: ActionInput & { choices: Choices; faults?: A
                 // Check the placement before writing anything, so a refused one leaves the working layer as it was.
                 let op: SeriesOp | null = null;
                 let series: AuthoredSeries | null = null;
-                if (seriesId === null) {
-                    // Approving never takes a photograph out of a series, so "unassigned" can't be recorded for one a series holds.
+                if (seriesId === null && input.keepPlaced) {
+                    // Approving never takes a photograph out of a series, so the page can't record "unassigned" for one a series holds.
                     const all = await readAuthoredSeries(root);
                     const unreadable = all.problems.filter((problem) => problem.kind === 'series').map((problem) => problem.id);
                     // As #8's membership check does: a series that can't be read might hold it, so nothing shows it's free.

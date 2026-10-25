@@ -11,6 +11,7 @@ import { readRegistry, writeRegistry } from '../../identity/registry';
 import type { IdentityFact } from '../../identity/types';
 import { approveEvent, deferEvent, reopenEvent } from '../actions';
 import { eventIdOf, eventKey, type CurationEvent, type CurationEventType } from '../events';
+import { runCurationCli } from '../commands';
 import { loadInbox } from '../inbox';
 import { runInboxAction, WEB_ACTOR } from '../inbox-form';
 import { defaultDescription, defaultPlacement, defaultSeries, parsePlacementValue, placementValue, summaryText, type InboxActionState, type InboxView } from '../inbox-view';
@@ -116,6 +117,39 @@ describe('loadInbox', () => {
         expect(view.selected?.id).toBe(view.items[0].id);
         expect(ids).toContain(view.selected?.id);
         expect(view.activeRevisionId).toBe(f.catalog.revisionId);
+    });
+
+    it('keeps a placed new photograph out of "requires judgment", counting as `curation list` does', async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0]), fx.fact('new', fx.fresh[1])]);
+        // The owner put the first photo in a series by hand, so its item is settled by placement.
+        const draft = (await readAuthoredRecord(f.root, 'series', DRAFT))!;
+        await writeAuthoredRecord({ ...draft, photoIds: [...draft.photoIds, f.fresh[0]] }, { expectedVersion: draft.version, root: f.root });
+        const view = ready(await loadInbox(null));
+        const placed = view.items.find((item) => item.photoId === f.fresh[0])!;
+        expect(placed).toMatchObject({ group: 'placed', placedBy: `its photo is in the series ${DRAFT}` });
+        expect(view.items.find((item) => item.photoId === f.fresh[1])?.group).toBe('judgment');
+        expect(view).toMatchObject({ needsJudgment: 1, placed: 1, unplaced: 0 });
+        expect(summaryText(view)).toBe('1 item requires judgment, 1 already placed');
+        const listed = JSON.parse((await runCurationCli(['list', '--json'], { dataRoot: f.root })).output);
+        expect({ needsJudgment: listed.needsJudgment, placed: listed.placed, unplaced: listed.unplaced }).toEqual({ needsJudgment: view.needsJudgment, placed: view.placed, unplaced: view.unplaced });
+        expect(view.selected?.id).toBe(ids[1]);
+    });
+
+    it('shows an approval no longer placed the way `curation show` describes it', async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])]);
+        const event = (await readEvent(f.root, ids[0]))!;
+        done(await runInboxAction('approve', itemForm(event, null, { series: DRAFT, decorative: 'off' })));
+        // A rollback or a `sequence remove` takes it out of the series; the item still reads approved.
+        const draft = (await readAuthoredRecord(f.root, 'series', DRAFT))!;
+        await writeAuthoredRecord({ ...draft, photoIds: draft.photoIds.filter((id) => id !== f.fresh[0]) }, { expectedVersion: draft.version, root: f.root });
+        const view = ready(await loadInbox(ids[0]));
+        expect(view.selected).toMatchObject({ group: 'unplaced', unplacedSeries: DRAFT, title: 'Approved, no longer placed', can: { reopen: true } });
+        expect(view).toMatchObject({ unplaced: 1, needsJudgment: 0 });
+        expect(summaryText(view)).toBe('0 items require judgment, 1 approved but no longer placed');
+        const shown = (await runCurationCli(['show', ids[0]], { dataRoot: f.root })).output;
+        expect(shown).toContain(`No longer placed: it was approved into ${DRAFT}`);
+        const listed = JSON.parse((await runCurationCli(['list', '--json'], { dataRoot: f.root })).output);
+        expect(listed.unplaced).toBe(view.unplaced);
     });
 
     it('shows source facts and suggestions apart, with no GPS, serial, curator-only EXIF, or host path', async () => {
