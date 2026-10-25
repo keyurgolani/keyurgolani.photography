@@ -141,7 +141,9 @@
  *     #17's Confirm new asset revision, for a replacement whose new set is
  *     ready (lib/curation/resolutions.ts). Needs --base once a revision is active.
  *     defer leaves a replacement in draft, and on a reopened confirmed one
- *     puts back the revision the confirm replaced.
+ *     puts back the revision the confirm replaced, while that confirm is
+ *     still the inbox's latest change to the photo's revision. reopen and
+ *     show say what defer will do.
  *     The curation inbox (lib/curation/commands.ts). New photographs wait
  *     here until approved into the draft; nothing here publishes. Item
  *     commands take the --version that list or show printed, and --base
