@@ -28,6 +28,12 @@ describe('SiteNav', () => {
     expect(within(primary()).getByRole('link', { name: 'KG, Keyur Golani' })).toHaveTextContent(/^KG/);
   });
 
+  it('keeps the wordmark text as separate words, so its visible label sits inside its name', () => {
+    render(<SiteNav />);
+    // Without the space the text reads "KGKeyur Golani", which axe's label-content-name-mismatch fails.
+    expect(within(primary()).getByRole('link', { name: 'KG, Keyur Golani' }).textContent).toBe('KG Keyur Golani');
+  });
+
   it.each([
     ['/', 'Home'],
     ['/gallery', 'Work'],

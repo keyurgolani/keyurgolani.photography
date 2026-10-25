@@ -21,9 +21,12 @@ export default function SiteNav({ surface = 'gallery' }: SiteNavProps) {
   return (
     <nav aria-label="Primary" className={styles.nav} data-surface={surface === 'about' ? 'about' : undefined}>
       <div className={styles.start}>
-        {/* The name starts with the visible "KG" (WCAG 2.5.3). */}
+        {/*
+          The name holds the visible "KG Keyur Golani" in order (WCAG 2.5.3). The space
+          keeps the two spans separate words in the text; the flex row doesn't render it.
+        */}
         <Link href="/" className={styles.wordmark} aria-label="KG, Keyur Golani">
-          <span className={styles.monogram}>KG</span>
+          <span className={styles.monogram}>KG</span>{' '}
           <span className={styles.name}>Keyur Golani</span>
         </Link>
       </div>
