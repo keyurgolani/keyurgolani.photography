@@ -154,11 +154,6 @@ test.describe('opened from the series page, the Viewer is a modal dialog', () =>
     const entry = (page: Page, photoId: string) => page.locator(`[id="photo-${photoId}"]`);
     const dialog = (page: Page) => page.getByRole('dialog', { name: /^Fixture harbor/ });
 
-    test.beforeEach(async ({ request }) => {
-        // SKIP-UNTIL-5: #5's series page is the modal's only entry. Remove this line when #9 PR 1 rebases onto a next that has it.
-        test.skip((await request.get(`${origin()}/work/harbor`, { maxRedirects: 0 })).status() === 404, 'Needs #5\'s series page at /work/<slug>.');
-    });
-
     async function openFromSeries(page: Page, photoId: string): Promise<void> {
         await page.goto(seriesUrl());
         await waitForHydration(page);
