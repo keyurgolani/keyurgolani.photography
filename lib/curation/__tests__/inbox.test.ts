@@ -289,6 +289,7 @@ describe('runInboxAction', () => {
     it('refuses to dismiss a missing photograph a series still shows, and says why', async () => {
         const { f, ids } = await inbox((fx) => [fx.fact('missing', fx.catalog.photos[0].id)], { published: true });
         const event = (await readEvent(f.root, ids[0]))!;
+        expect(ready(await loadInbox(ids[0])).selected?.can).toMatchObject({ dismiss: false, defer: true });
         const state = await runInboxAction('dismiss', itemForm(event, f.catalog.revisionId, { reason: 'Gone.' }));
         expect(state).toMatchObject({ status: 'refused', message: expect.stringMatching(/can't be dismissed/) });
         expect((await readEvent(f.root, ids[0]))?.version).toBe(1);

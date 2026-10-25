@@ -100,7 +100,12 @@ function decisionDetail(decision: CurationEvent['decisions'][number]): string {
     return parts.join(', ');
 }
 
-/** Which of 14-1's actions would get past their state and type checks. The action checks again, under the lock. */
+/**
+ * Which of 14-1's actions would get past their state and type checks. The
+ * action checks again, under the lock. A missing photograph that something
+ * still shows can't be dismissed either (detailOf() decides that once it
+ * knows the references).
+ */
 function abilities(event: CurationEvent, registry: Registry | null): InboxDetail['can'] {
     const open = event.status === 'open' || event.status === 'deferred' || event.status === 'failed';
     const failure = event.derivedFacts.failure;
@@ -165,7 +170,7 @@ async function detailOf(root: string, event: CurationEvent, item: InboxItem, reg
         decisions: event.decisions.map((decision) => ({ action: decision.action, at: decision.at, by: printable(decision.by), detail: decisionDetail(decision) })),
         reviewedAt: event.reviewedAt,
         reviewedBy: event.reviewedBy === null ? null : printable(event.reviewedBy),
-        can: abilities(event, registry),
+        can: { ...abilities(event, registry), ...(event.type === 'missing' && references?.length !== 0 ? { dismiss: false } : {}) },
         primaryUnavailable: primaryUnavailable(event),
     };
 }
