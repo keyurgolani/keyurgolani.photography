@@ -1,7 +1,7 @@
 'use client';
 
 import { SlidersHorizontal } from 'lucide-react';
-import { useContext, useId, useLayoutEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import ResponsivePhoto from '@/components/ResponsivePhoto';
 // Types only: the projection pulls the catalog schema and node:crypto in, which must stay out of the client bundle.
 import type { PublishedViewerPhoto } from '@/lib/catalog/projections/viewer';
@@ -17,6 +17,7 @@ import {
     accentValue,
     positionText,
 } from './viewerLabels';
+import { fitSizes } from './viewerSizes';
 import styles from './StoryViewer.module.css';
 
 export interface StoryViewerProps {
@@ -31,8 +32,46 @@ export interface StoryViewerProps {
     pendingCopy: string | null;
 }
 
-/** The fitted photograph is at most about four fifths of a wide viewport, and the full width of a narrow one. */
-export const FIT_SIZES = '(min-width: 48rem) 80vw, 100vw';
+type ViewerImage = NonNullable<PublishedViewerPhoto['photo']['image']>;
+
+/**
+ * The photograph in its fitted box, reserved from the record's shape before
+ * the file arrives. If the file fails, the box keeps its place and shape with
+ * the missing-image copy, so Previous, Next, Close, and the reading area stay
+ * where they were. A file that fails before hydration fires no event, so the
+ * mount check looks too.
+ */
+function Photograph({ image, alt, zoomedWidth }: { image: ViewerImage; alt: string; zoomedWidth: number | null }) {
+    const element = useRef<HTMLImageElement>(null);
+    const [failed, setFailed] = useState(false);
+    useEffect(() => {
+        const img = element.current;
+        if (img && img.complete && img.naturalWidth === 0 && img.currentSrc !== '') setFailed(true);
+    }, []);
+    const shape = { '--ratio': `${image.width} / ${image.height}` } as CSSProperties;
+    if (failed) {
+        return (
+            <div className={styles.missing} style={shape} data-photo="unavailable">
+                <span className={styles.missingLabel}>{UNAVAILABLE_LABEL}</span>
+            </div>
+        );
+    }
+    return (
+        <figure className={styles.frame} style={zoomedWidth === null ? shape : ({ ...shape, '--zoom-width': `${zoomedWidth}px` } as CSSProperties)}>
+            <ResponsivePhoto
+                ref={element}
+                asset={image}
+                alt={alt}
+                sizes={zoomedWidth === null ? fitSizes(image.width, image.height) : `${zoomedWidth}px`}
+                loading="eager"
+                fetchPriority="high"
+                preload={zoomedWidth === null}
+                onError={() => setFailed(true)}
+                className={styles.image}
+            />
+        </figure>
+    );
+}
 
 /**
  * One photograph in the Viewer (#7) in Chromatic Chapters: the photograph at
@@ -105,16 +144,8 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
                         <span className={styles.missingLabel}>{UNAVAILABLE_LABEL}</span>
                     </div>
                 ) : (
-                    <figure className={styles.frame} style={zoomedIn ? ({ '--zoom-width': `${largest}px` } as CSSProperties) : undefined}>
-                        <ResponsivePhoto
-                            asset={image}
-                            alt={photo.alt}
-                            sizes={zoomedIn ? `${largest}px` : FIT_SIZES}
-                            loading="eager"
-                            fetchPriority="high"
-                            className={styles.image}
-                        />
-                    </figure>
+                    // Keyed on the file, so the next photograph starts without the last one's failure.
+                    <Photograph key={image.variants.w1200.webp.url} image={image} alt={photo.alt} zoomedWidth={zoomedIn ? largest : null} />
                 )}
             </div>
 

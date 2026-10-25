@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '@/lib/identity/variants';
 import { mediaUrl } from '@/lib/media/url';
 import type { PublishedViewerPhoto, ViewerImage } from '@/lib/catalog/projections/viewer';
-import StoryViewer, { FIT_SIZES, type StoryViewerProps } from '../StoryViewer';
+import StoryViewer, { type StoryViewerProps } from '../StoryViewer';
+import { fitSizes } from '../viewerSizes';
 import { HIDE_TECHNICAL, SHOW_TECHNICAL, TECHNICAL_SOURCE, UNAVAILABLE_LABEL, accentValue, positionLabel, positionText, viewerTitle } from '../viewerLabels';
 
 // The props Link gets, as attributes, so a test can see a move replaces the history entry and nothing prefetches.
@@ -93,7 +94,7 @@ describe('StoryViewer', () => {
         expect([image.getAttribute('width'), image.getAttribute('height')]).toEqual(['2400', '1600']);
         // The photograph is the page's largest paint, so it loads at once and first.
         expect([image.getAttribute('loading'), image.getAttribute('fetchpriority')]).toEqual(['eager', 'high']);
-        expect(container.querySelector('source[type="image/avif"]')).toHaveAttribute('sizes', FIT_SIZES);
+        expect(container.querySelector('source[type="image/avif"]')).toHaveAttribute('sizes', fitSizes(2400, 1600));
         const urls = [...container.querySelectorAll('img, source')].flatMap((element) => [element.getAttribute('src'), element.getAttribute('srcset')]).filter(Boolean).join(' ');
         expect(urls).not.toMatch(/_next\/image|api\/image/);
         for (const url of urls.split(/[\s,]+/).filter((part) => part.startsWith('/'))) expect(url).toMatch(/^\/media\//);
@@ -189,6 +190,32 @@ describe('StoryViewer', () => {
     it('shows the pending copy only when the page passes it, in place of the description', () => {
         renderViewer({ viewer: model({ description: null, alt: '', descriptionPending: true }), pendingCopy: 'Description pending editorial review' });
         expect(screen.getByText('Description pending editorial review')).toHaveAttribute('data-description', 'pending');
+    });
+
+    it('reserves the box from the record\'s shape before the file arrives, and preloads the fitted rung (#6)', () => {
+        const { container } = renderViewer();
+        expect(container.querySelector('figure')?.getAttribute('style')).toContain('--ratio: 2400 / 1600');
+        const link = document.head.querySelector('link[rel="preload"][as="image"]');
+        expect(link?.getAttribute('imagesizes')).toBe(fitSizes(2400, 1600));
+        expect(link?.getAttribute('imagesrcset')).toBe(container.querySelector('source[type="image/avif"]')?.getAttribute('srcset'));
+    });
+
+    it('keeps the box, in the photograph\'s shape, with the moves and the reading area, when its file fails (#6)', () => {
+        const { container, rerender } = renderViewer();
+        fireEvent.error(screen.getByRole('img', { name: 'A fixture description of the visible scene.' }));
+        const missing = container.querySelector('[data-photo="unavailable"]');
+        expect(missing).toHaveTextContent(UNAVAILABLE_LABEL);
+        expect(missing?.getAttribute('style')).toContain('--ratio: 2400 / 1600');
+        expect(container.querySelector('img, picture')).toBeNull();
+        const stage = missing?.parentElement?.parentElement;
+        for (const name of ['Previous photograph', 'Next photograph']) expect(screen.getByRole('link', { name }).parentElement).toBe(stage);
+        expect(screen.getByRole('link', { name: 'Close' })).toHaveAttribute('href', '/work/fixture');
+        // The next photograph starts without the failure.
+        const OTHER = { ...REF, photoId: 'ph_00000000-0000-4000-8000-000000000004' };
+        const next = model({ id: OTHER.photoId, image: { width: 1600, height: 2400, assetRevision: REF.assetRevision, variants: { ...variants(), w1200: { avif: { url: mediaUrl(OTHER, 'w1200', 'avif'), width: 1200 }, webp: { url: mediaUrl(OTHER, 'w1200', 'webp'), width: 1200 } } } } });
+        rerender(<StoryViewer viewer={next} closeHref="/work/fixture" previousHref={null} nextHref={null} pendingCopy={null} />);
+        expect(container.querySelector('[data-photo="unavailable"]')).toBeNull();
+        expect(container.querySelector('img')).toHaveAttribute('src', mediaUrl(OTHER, 'w1200', 'webp'));
     });
 
     it('keeps the stage, its moves, and the reading area when the photo has no usable set, with Zoom disabled', () => {

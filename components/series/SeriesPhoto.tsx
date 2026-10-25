@@ -12,7 +12,7 @@ export interface SeriesPhotoProps {
     /** The image's own alt. Empty inside a named link. */
     alt: string;
     sizes: string;
-    /** The cover loads at once at high priority. Sequence thumbnails load as they near the viewport. */
+    /** The cover loads at once at high priority, preloaded from the head. Sequence thumbnails load as they near the viewport. */
     priority?: boolean;
     /** Where the crop centers, 0 to 1 on each axis. */
     focalPoint?: { x: number; y: number };
@@ -68,6 +68,7 @@ export default function SeriesPhoto({ image, alt, sizes, priority = false, focal
                 sizes={sizes}
                 loading={priority ? 'eager' : 'lazy'}
                 fetchPriority={priority ? 'high' : undefined}
+                preload={priority}
                 onError={() => setFailed(true)}
                 className={styles.image}
             />

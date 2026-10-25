@@ -5,6 +5,16 @@
  * the value).
  */
 
+import { heightCappedSizes } from '@/components/photoSizes';
+
+/**
+ * The cover's sizes: the column (100vw less gutters), until the stylesheet's
+ * 82svh height cap makes the box narrower than that, as it does for most
+ * photographs on a wide screen (#6). Without its dimensions, the column.
+ */
+export const coverSizes = (image: { width: number; height: number } | null) =>
+    image === null ? '100vw' : heightCappedSizes(image.width, image.height, 82, [{ vw: 100 }]);
+
 /** Sequence thumbnails, about a fifth of the row on wide screens, a third on tablets, and half on phones. */
 export const ENTRY_SIZES = '(min-width: 64rem) 20vw, (min-width: 40rem) 33vw, 50vw';
 export const SEQUENCE_HEADING = 'Sequence';
