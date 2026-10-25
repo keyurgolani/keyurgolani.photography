@@ -176,10 +176,16 @@ export function parsePlacementValue(value: string): Placement | null {
     return { after: value.slice('after:'.length) };
 }
 
-/** The series the form starts on: the saved edit, then the series that already holds the photo, then the suggestion. Undefined when none names one. */
-export function defaultSeries(detail: Pick<InboxDetail, 'edits' | 'suggestions'> & { placed?: InboxDetail['placed'] }): string | null | undefined {
+/**
+ * The series the form starts on, the way lib/curation/actions.ts resolves an
+ * approval with nothing chosen: the saved edit; then, once an earlier
+ * approval placed the photo, where it is now (the series that holds it, or
+ * unassigned when none does); then the suggestion. Undefined when none names one.
+ */
+export function defaultSeries(detail: Pick<InboxDetail, 'edits' | 'suggestions'> & { placed?: InboxDetail['placed']; decisions?: InboxDetail['decisions'] }): string | null | undefined {
     if (detail.edits?.seriesId !== undefined) return detail.edits.seriesId;
-    if (detail.placed && detail.placed.seriesIds.length > 0) return detail.placed.seriesIds[0];
+    const approvedBefore = detail.decisions?.some((decision) => decision.action === 'approve') ?? false;
+    if (approvedBefore && detail.placed) return detail.placed.seriesIds[0] ?? null;
     if (detail.suggestions.series) return detail.suggestions.series.value;
     return undefined;
 }
