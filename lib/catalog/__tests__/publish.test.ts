@@ -453,6 +453,53 @@ describe('the catalog lock', { timeout: 30_000 }, () => {
         expect(events).toContainEqual({ event: 'catalog.lock.takeover', lock: CATALOG_LOCK, ...takeover });
     });
 
+    it('leaves last-publish.json to the new holder when a stalled holder is taken over after step 12, and still reports PUBLISHED', async () => {
+        const { catalog, root, run, editPhoto } = await launched({ seed: 71 });
+        await editPhoto(catalog.photos[0].id, (photo) => {
+            photo.caption = 'A fixture caption.';
+        });
+        const summary = fs.readFileSync(lastPublishFile(root));
+        let pause = false;
+        const paused = deferred();
+        const resume = deferred();
+        const letGo = deferred();
+        const stolen: Promise<void>[] = [];
+
+        const result = await run({
+            leaseMs: 200,
+            hooks: {
+                lock: {
+                    async beforeRenew() {
+                        if (!pause) return;
+                        paused.resolve();
+                        await resume.promise;
+                    },
+                },
+                async afterStep(step) {
+                    if (step === 13) {
+                        // The lock's release waits for the paused renewal, so let it go on once the publish has been summarized.
+                        setTimeout(() => resume.resolve(), 100);
+                        return;
+                    }
+                    if (step !== 12) return;
+                    pause = true;
+                    await paused.promise;
+                    const tookOver = deferred();
+                    stolen.push(withLock(CATALOG_LOCK, { root, waitMs: 5_000, pollMs: 20 }, async () => {
+                        tookOver.resolve();
+                        await letGo.promise;
+                    }));
+                    await tookOver.promise;
+                },
+            },
+        });
+        letGo.resolve();
+        await Promise.all(stolen);
+
+        expect(result.outcome).toBe('PUBLISHED');
+        expect(fs.readFileSync(lastPublishFile(root))).toEqual(summary);
+    });
+
     it('stops with LOCK_LOST when the active pointer moved after step 10 read it, even while the lock re-read passes', async () => {
         const { catalog, root, run, editPhoto, first } = await launched({ seed: 73 });
         await editPhoto(catalog.photos[0].id, (photo) => {
@@ -774,6 +821,12 @@ describe('activateRevision', { timeout: 30_000 }, () => {
             manifest.variants.w400.webp.bytes += 1;
             fs.writeFileSync(file, JSON.stringify(manifest));
         }, 'variants.w400.webp.bytes'],
+        ['is reached through a symlink', (file: string) => {
+            // Every file is still there through the link, so only the manifest check sees it, as /media does.
+            const dir = path.dirname(file);
+            fs.renameSync(dir, `${dir}-moved`);
+            fs.symlinkSync(`${dir}-moved`, dir);
+        }, 'profileId'],
     ])('refuses a stored revision whose photo\'s set %s, which /media would serve none of', async (_label, damage, field) => {
         const { catalog, root, run, editPhoto, first, catalogFiles } = await launched({ seed: 90 });
         await editPhoto(catalog.photos[0].id, (photo) => {
