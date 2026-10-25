@@ -331,6 +331,33 @@ describe('the edges of the checks', () => {
         ]);
     });
 
+    it('conflicts: say both sides changed a field only when they did, not when the base revision couldn\'t be read', () => {
+        const ctx = context();
+        const photo = authoredPhoto(ctx, photoAt(ctx, 0).id);
+        photo.conflicts = [
+            { field: 'caption', base: null, active: null, baseUnreadable: true },
+            { field: 'title', base: 'Fixture title A', active: 'Fixture title B' },
+        ];
+        const record = { kind: 'photo', id: photo.id };
+        const hint = 'Settle the field, then delete its conflicts entry.';
+        expect(runRules(ctx)).toEqual([
+            expect.objectContaining({
+                code: 'working.conflicts',
+                record,
+                field: 'caption',
+                message: 'This field differs from the active revision, and the revision this record was based on can\'t be read, so nothing shows which side changed it.',
+                hint,
+            }),
+            expect.objectContaining({
+                code: 'working.conflicts',
+                record,
+                field: 'title',
+                message: 'This field changed both here and in the active revision, in different ways.',
+                hint,
+            }),
+        ]);
+    });
+
     it('work things out again on each run, so a changed context gets fresh results', () => {
         const ctx = context();
         expect(runRules(ctx)).toEqual([]);

@@ -728,7 +728,7 @@ const SLICE_A_RULES: RuleDefinition[] = [
         gate: 'publish',
         check: (ctx) => {
             if (!ctx.authored) return [];
-            const records: { record: IssueRecord; conflicts?: { field: string }[] }[] = [
+            const records: { record: IssueRecord; conflicts?: { field: string; baseUnreadable?: true }[] }[] = [
                 ...(ctx.authored.site ? [{ record: SITE, conflicts: ctx.authored.site.conflicts }] : []),
                 ...ctx.authored.series.map((series) => ({ record: seriesRecord(series.id), conflicts: series.conflicts })),
                 ...ctx.authored.photos.map((photo) => ({ record: photoRecord(photo.id), conflicts: photo.conflicts })),
@@ -736,7 +736,9 @@ const SLICE_A_RULES: RuleDefinition[] = [
             return records.flatMap(({ record, conflicts }) => (conflicts ?? []).map((conflict) => ({
                 record,
                 field: conflict.field,
-                message: 'This field changed both here and in the active revision, in different ways.',
+                message: conflict.baseUnreadable
+                    ? 'This field differs from the active revision, and the revision this record was based on can\'t be read, so nothing shows which side changed it.'
+                    : 'This field changed both here and in the active revision, in different ways.',
                 hint: 'Settle the field, then delete its conflicts entry.',
             })));
         },

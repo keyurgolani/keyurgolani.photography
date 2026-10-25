@@ -239,8 +239,10 @@ describe('authored records', () => {
         for (const alt of [null, { kind: 'described', text: 'Fixture description', reviewed: true }, { kind: 'described', text: 'Suggested', reviewed: false }, { kind: 'decorative' }]) {
             expect(parseAuthoredRecord('photo', { ...record, alt }).ok).toBe(true);
         }
-        const conflicted = { ...record, alt: null, conflicts: [{ field: 'title', base: 'Fixture A', active: 'Fixture B' }] };
+        const conflicted = { ...record, alt: null, conflicts: [{ field: 'title', base: 'Fixture A', active: 'Fixture B' }, { field: 'caption', base: null, active: null, baseUnreadable: true }] };
         expect(parseAuthoredRecord('photo', conflicted)).toEqual({ ok: true, value: conflicted });
+        // The flag is only ever set, never false, so an entry reads one way.
+        expect(parseAuthoredRecord('photo', { ...conflicted, conflicts: [{ field: 'caption', base: null, active: null, baseUnreadable: false }] }).ok).toBe(false);
     });
 
     it.each([

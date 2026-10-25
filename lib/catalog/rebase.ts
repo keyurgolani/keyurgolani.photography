@@ -58,7 +58,8 @@ type Merge<T> = { value: T; conflict: Conflict | null; changed: boolean };
 /**
  * A base revision that should exist but is missing or damaged. Nothing tells
  * an owner's edit from what the target changed, so every field whose working
- * value differs from the target's keeps the working value and conflicts.
+ * value differs from the target's keeps the working value and conflicts, with
+ * `baseUnreadable` set so the publish issue doesn't claim both sides changed it.
  */
 const UNREADABLE = Symbol('unreadable base');
 type Base<T> = T | typeof UNREADABLE;
@@ -66,7 +67,7 @@ type Base<T> = T | typeof UNREADABLE;
 /** Three-way merge of one field: the curator's value `mine`, the base's, and the target's. */
 function threeWay<T>(field: string, mine: T, base: Base<T>, target: T): Merge<T> {
     if (same(mine, target)) return { value: mine, conflict: null, changed: false };
-    if (base === UNREADABLE) return { value: mine, conflict: { field, base: null, active: (target ?? null) as Conflict['active'] }, changed: false };
+    if (base === UNREADABLE) return { value: mine, conflict: { field, base: null, active: (target ?? null) as Conflict['active'], baseUnreadable: true }, changed: false };
     if (same(mine, base)) return { value: target, conflict: null, changed: true };
     if (same(target, base)) return { value: mine, conflict: null, changed: false };
     return { value: mine, conflict: { field, base: (base ?? null) as Conflict['base'], active: (target ?? null) as Conflict['active'] }, changed: false };
@@ -194,7 +195,7 @@ function mergeSeries(series: AuthoredSeries, base: SeriesView | typeof UNREADABL
     const conflicts: Conflict[] = [];
     const compared: string[] = ['visibility'];
     const published = threeWay('visibility', mine.published, base === UNREADABLE ? UNREADABLE : base.published, target.published);
-    if (published.conflict) conflicts.push({ field: 'visibility', base: base !== UNREADABLE && base.published ? 'published' : null, active: target.published ? 'published' : null });
+    if (published.conflict) conflicts.push({ ...published.conflict, base: base !== UNREADABLE && base.published ? 'published' : null, active: target.published ? 'published' : null });
     // Unpublished by the target, a once-public series is hidden; one the curator kept as a draft stays a draft.
     if (published.changed) next.visibility = published.value ? 'published' : series.visibility === 'published' ? 'hidden' : series.visibility;
     const baseValues = base === UNREADABLE ? UNREADABLE : base.values;
@@ -263,7 +264,7 @@ function mergeSite(site: AuthoredSite, base: SiteBase, target: RevisionFile, sna
     next.seriesOrder = order.seriesOrder;
     // writeRebasedRecord() stores it, the one write that does.
     next.baseSeriesOrder = order.baseSeriesOrder;
-    if (order.conflict) conflicts.push(order.conflict);
+    if (order.conflict) conflicts.push(base.kind === 'unreadable' ? { ...order.conflict, baseUnreadable: true } : order.conflict);
     return { record: next, conflicts, compared };
 }
 
