@@ -15,6 +15,7 @@ import {
     type ItemGroup,
     type SeriesOption,
 } from './inbox-view';
+import { placedItems } from './placement';
 import { listEvents } from './repository';
 
 /**
@@ -31,25 +32,30 @@ export function curatorPreviewUrl(photoId: string, assetRevision: string, profil
     return `/api/curation/media/${photoId}/${assetRevision}/${profileId}/w800.webp`;
 }
 
-function groupOf(event: CurationEvent, waiting: string | null): ItemGroup {
+/** Where an item sits, the way `curation list` counts it, from D6's shared placement lookup (lib/curation/placement.ts). */
+function groupOf(event: CurationEvent, waiting: string | null, placed: boolean, unplaced: boolean): ItemGroup {
+    if (unplaced) return 'unplaced';
     if (event.status === 'approved' || event.status === 'dismissed') return 'settled';
+    if (placed) return 'placed';
     if (event.status === 'deferred') return 'deferred';
-    return needsJudgment(event, waiting) ? 'judgment' : 'waiting';
+    return needsJudgment(event, waiting, placed) ? 'judgment' : 'waiting';
 }
 
-const GROUP_ORDER: Record<ItemGroup, number> = { judgment: 0, waiting: 1, deferred: 2, settled: 3 };
+const GROUP_ORDER: Record<ItemGroup, number> = { judgment: 0, unplaced: 1, waiting: 2, deferred: 3, placed: 4, settled: 5 };
 
-function itemOf(event: CurationEvent, waiting: string | null): InboxItem {
+function itemOf(event: CurationEvent, waiting: string | null, placed: string | null, unplaced: string | null): InboxItem {
     return {
         id: event.id,
         version: event.version,
         type: event.type,
         status: event.status,
-        group: groupOf(event, waiting),
-        title: itemTitle(event.type, waiting !== null),
+        group: groupOf(event, waiting, placed !== null, unplaced !== null),
+        title: unplaced !== null ? 'Approved, no longer placed' : itemTitle(event.type, waiting !== null),
         photoId: event.photoId,
         shortId: shortPhotoId(event.photoId),
         waiting,
+        placedBy: placed,
+        unplacedSeries: unplaced,
     };
 }
 
@@ -217,8 +223,10 @@ export async function loadInbox(selectedId: string | null): Promise<InboxView> {
     const { events, problems } = await listEvents(root);
     const registry = events.length > 0 ? await readRegistry(root).catch(() => null) : null;
     const profileId = currentProfileId();
+    // The same lookup `curation list` and `show` use, so the page and the CLI count alike.
+    const placements = await placedItems(root, events);
     const items = events
-        .map((event) => itemOf(event, waitingReason(event, registry, profileId)))
+        .map((event) => itemOf(event, waitingReason(event, registry, profileId), placements.placed.get(event.id) ?? null, placements.unplaced.get(event.id) ?? null))
         .sort((a, b) => GROUP_ORDER[a.group] - GROUP_ORDER[b.group]);
     const active = (await readActivePointer(root))?.revisionId ?? null;
     const { series, problem } = await seriesOptions(root);
@@ -233,6 +241,9 @@ export async function loadInbox(selectedId: string | null): Promise<InboxView> {
         activeRevisionId: active,
         needsJudgment: items.filter((item) => item.group === 'judgment').length,
         waiting: items.filter((item) => item.group === 'waiting').length,
+        placed: placements.placed.size,
+        unplaced: placements.unplaced.size,
+        placementUnknown: placements.unknown !== null,
         items,
         problems: problems.map((entry) => ({ id: entry.id, message: scrubbed(printable(`${entry.reason}: ${entry.message}`)) })),
         series,

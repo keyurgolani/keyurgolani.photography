@@ -97,6 +97,11 @@ function TypeBox({ detail }: { detail: InboxDetail }) {
     return null;
 }
 
+/** A series by its authored title, or its ID when the working layer doesn't hold it now. */
+function seriesLabel(view: ReadyView, seriesId: string): string {
+    return view.series.find((option) => option.id === seriesId)?.label ?? seriesId;
+}
+
 /** The detail side of the Inbox: the photograph, its identity, what the system did, the suggestion, and the actions. */
 export default function InboxDetailView({ view }: { view: ReadyView }) {
     const detail = view.selected;
@@ -137,6 +142,11 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
                         { label: 'Asset revision', value: detail.assetRevision ?? 'None' },
                         { label: 'System response', value: SYSTEM_RESPONSE[detail.type] },
                         ...(detail.waiting ? [{ label: 'Waiting', value: `${detail.waiting[0].toUpperCase()}${detail.waiting.slice(1)}. Act on it once the set is ready.` }] : []),
+                        // As `curation show` says it, from the same placement lookup.
+                        ...(detail.placedBy ? [{ label: 'Already placed', value: `${detail.placedBy[0].toUpperCase()}${detail.placedBy.slice(1)}, so it needs no judgment while it stays there.` }] : []),
+                        ...(detail.unplacedSeries
+                            ? [{ label: 'No longer placed', value: `It was approved into ${seriesLabel(view, detail.unplacedSeries)}, but no series or the live revision holds its photo now. The photo record stays in the draft, unassigned. To put it back, reopen it and approve it into ${seriesLabel(view, detail.unplacedSeries)}.` }]
+                            : []),
                     ]}
                 />
                 <TypeBox detail={detail} />

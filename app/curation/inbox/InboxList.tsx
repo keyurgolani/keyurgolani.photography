@@ -6,8 +6,10 @@ import { summaryText, type InboxItem, type InboxView, type ItemGroup } from '@/l
 type ReadyView = Extract<InboxView, { state: 'ready' }>;
 
 const GROUP_HEADINGS: Record<Exclude<ItemGroup, 'judgment'>, string> = {
+    unplaced: 'No longer placed',
     waiting: 'Waiting',
     deferred: 'Left in draft',
+    placed: 'Already placed',
     settled: 'Settled',
 };
 
@@ -21,6 +23,7 @@ function ItemLink({ item, selected }: { item: InboxItem; selected: boolean }) {
                 <strong>{item.title}</strong>
                 <small>{item.shortId}</small>
                 {item.waiting ? <span className={styles.waitingNote}>Waiting: {item.waiting}</span> : null}
+                {item.placedBy ? <span className={styles.waitingNote}>Already placed</span> : null}
             </a>
         </li>
     );
@@ -30,7 +33,7 @@ function ItemLink({ item, selected }: { item: InboxItem; selected: boolean }) {
 export default function InboxList({ view }: { view: ReadyView }) {
     const selectedId = view.selected?.id ?? null;
     const judgment = view.items.filter((item) => item.group === 'judgment');
-    const others = (['waiting', 'deferred', 'settled'] as const).map((group) => ({ group, items: view.items.filter((item) => item.group === group) }));
+    const others = (['unplaced', 'waiting', 'deferred', 'placed', 'settled'] as const).map((group) => ({ group, items: view.items.filter((item) => item.group === group) }));
     return (
         <section className={styles.list} aria-labelledby="inbox-heading">
             <header className={styles.listHeader}>
@@ -75,6 +78,11 @@ export default function InboxList({ view }: { view: ReadyView }) {
                         </ul>
                     </div>
                 ))}
+            {view.placementUnknown ? (
+                <p className={styles.empty} role="status">
+                    The inbox can&apos;t tell which new photographs are placed, since a revision or series can&apos;t be read, so every item counts by its stored status.
+                </p>
+            ) : null}
             {view.problems.length > 0 ? (
                 <div className={styles.empty} role="status">
                     <h2>{plural(view.problems.length, "item can't", "items can't")} be read</h2>
