@@ -6,9 +6,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { folderBytes } from '../../../test/helpers/folderBytes';
 import { setDataDir, writeDataRootMarker } from '../../../test/helpers/tempDataRoot';
 import { authoredRecordDir, readAuthoredRecord } from '../../catalog/working-layer';
-import { writeAuthoredRecord } from '../../catalog/working-layer-writer';
+import { AUTHORED_LOCK, writeAuthoredRecord } from '../../catalog/working-layer-writer';
 import { readRegistry, writeRegistry } from '../../identity/registry';
 import type { IdentityFact } from '../../identity/types';
+import { withLock } from '../../storage/lock';
 import { approveEvent, deferEvent, reopenEvent } from '../actions';
 import { eventIdOf, eventKey, type CurationEvent, type CurationEventType } from '../events';
 import { runCurationCli } from '../commands';
@@ -346,6 +347,59 @@ describe('runInboxAction', () => {
         const draft = (await readAuthoredRecord(f.root, 'series', DRAFT))!;
         await writeAuthoredRecord({ ...draft, photoIds: [...draft.photoIds, event.photoId!] }, { expectedVersion: draft.version, root: f.root });
         expect(defaultSeries(ready(await loadInbox(ids[0])).selected!)).toBe(DRAFT);
+    });
+
+    it("refuses a bare re-approve from the CLI when the series that might hold the photo can't be read, rather than recording it unassigned", async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])]);
+        let event = (await readEvent(f.root, ids[0]))!;
+        expect((await approveEvent({ root: f.root, eventId: event.id, expectedVersion: event.version, actor: 'curator:cli', choices: { seriesId: DRAFT } })).ok).toBe(true);
+        event = (await readEvent(f.root, ids[0]))!;
+        expect((await reopenEvent({ root: f.root, eventId: event.id, expectedVersion: event.version, actor: 'curator:cli' })).ok).toBe(true);
+        event = (await readEvent(f.root, ids[0]))!;
+        // The newest version of the series that holds it can't be read, so nothing shows the photo is free.
+        const dir = authoredRecordDir(f.root, 'series', DRAFT);
+        const newest = Math.max(...fs.readdirSync(dir).filter((name) => /^v\d+\.json$/.test(name)).map((name) => Number(name.slice(1, -5))));
+        fs.writeFileSync(path.join(dir, `v${newest + 1}.json`), '{ not json');
+        const before = layers(f.root);
+        const again = await approveEvent({ root: f.root, eventId: event.id, expectedVersion: event.version, actor: 'curator:cli', choices: {} });
+        expect(again).toMatchObject({ ok: false, code: 'refused', message: expect.stringMatching(new RegExp(`${DRAFT} can't be read`)) });
+        expect(layers(f.root)).toEqual(before);
+        expect(await readEvent(f.root, ids[0])).toMatchObject({ status: 'open', version: event.version });
+    });
+
+    it('reads the series that hold the photo under the authored lock, so a bare re-approve sees a removal made while it waited', async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])], { rules: { schemaVersion: 1, series: [{ seriesId: DRAFT, folders: ['trips'] }] } });
+        let event = (await readEvent(f.root, ids[0]))!;
+        expect((await approveEvent({ root: f.root, eventId: event.id, expectedVersion: event.version, actor: 'curator:cli', choices: {} })).ok).toBe(true);
+        event = (await readEvent(f.root, ids[0]))!;
+        expect((await reopenEvent({ root: f.root, eventId: event.id, expectedVersion: event.version, actor: 'curator:cli' })).ok).toBe(true);
+        event = (await readEvent(f.root, ids[0]))!;
+        const photoId = event.photoId!;
+        let pending: ReturnType<typeof approveEvent> | undefined;
+        await withLock(AUTHORED_LOCK, { root: f.root }, async (lock) => {
+            pending = approveEvent({ root: f.root, eventId: event.id, expectedVersion: event.version, actor: 'curator:cli', choices: {}, waitMs: 10_000 });
+            // Long enough for an approval that read the series before taking the lock to have read them.
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            const draft = (await readAuthoredRecord(f.root, 'series', DRAFT))!;
+            expect(draft.photoIds).toContain(photoId);
+            await writeAuthoredRecord({ ...draft, photoIds: draft.photoIds.filter((id) => id !== photoId) }, { expectedVersion: draft.version, lock, root: f.root });
+        });
+        const again = await pending!;
+        expect(again).toMatchObject({ ok: true });
+        expect(again.ok && again.event.decisions.at(-1)?.seriesId).toBeNull();
+        expect((await readAuthoredRecord(f.root, 'series', DRAFT))?.photoIds).not.toContain(photoId);
+    });
+
+    it('starts a first approval on the suggestion even when a photo record and a series already hold the photo', async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])], { rules: { schemaVersion: 1, series: [{ seriesId: DRAFT, folders: ['trips'] }] } });
+        const event = (await readEvent(f.root, ids[0]))!;
+        // Written outside the inbox, with no approval on this item: the page sees a photo record and the series holding it.
+        await writeAuthoredRecord({ kind: 'photo', id: event.photoId!, assetRevision: event.assetRevision!, alt: null }, { expectedVersion: 0, root: f.root });
+        const published = (await readAuthoredRecord(f.root, 'series', PUBLISHED))!;
+        await writeAuthoredRecord({ ...published, photoIds: [...published.photoIds, event.photoId!] }, { expectedVersion: published.version, root: f.root });
+        const detail = ready(await loadInbox(ids[0])).selected!;
+        expect(detail.placed?.seriesIds).toEqual([PUBLISHED]);
+        expect(defaultSeries(detail)).toBe(DRAFT);
     });
 
     it('logs a failed action without the data root path', async () => {
