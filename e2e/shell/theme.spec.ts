@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test';
+import { artist } from '../../data/artist';
 import { waitForHydration } from '../support/hydration';
 import { expect, test } from '../support/test';
 
@@ -9,6 +10,8 @@ const toggle = (page: Page) => page.getByRole('button', { name: /^Switch to (dar
 const bodyBackground = (page: Page) => page.evaluate(() => (document.body ? getComputedStyle(document.body).backgroundColor : ''));
 const LIGHT_GROUND = 'rgb(250, 250, 250)';
 const DARK_GROUND = 'rgb(5, 5, 5)';
+/** About's Light Takes Shape paper, the same in both themes. */
+const PAPER = 'rgb(244, 236, 215)';
 
 /** Page errors, and console errors about hydration or React's 418, 423, and 425. */
 function watchErrors(page: Page) {
@@ -106,13 +109,16 @@ test('one toggle flips the theme and stores it, a reload keeps it, and the icon 
 test.describe('with JavaScript disabled', () => {
     test.use({ javaScriptEnabled: false });
 
-    for (const [path, heading] of [['/gallery', 'Gallery'], ['/about', 'Keyur Golani']] as const) {
-        test(`${path} shows its heading and SiteNav on the dark ground`, async ({ page }) => {
+    for (const [path, heading, ground, groundName] of [
+        ['/gallery', 'Gallery', DARK_GROUND, 'the dark ground'],
+        ['/about', artist.profile.statementHeading, PAPER, "About's paper"],
+    ] as const) {
+        test(`${path} shows its heading and SiteNav on ${groundName}`, async ({ page }) => {
             await page.goto(path);
             await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
             await expect(page.getByRole('heading', { level: 1, name: heading })).toBeVisible();
             await expect(page.getByRole('navigation', { name: 'Primary' })).toBeVisible();
-            expect(await bodyBackground(page)).toBe(DARK_GROUND);
+            expect(await bodyBackground(page)).toBe(ground);
         });
     }
 });

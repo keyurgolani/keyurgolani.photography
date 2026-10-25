@@ -1,3 +1,4 @@
+import { artist } from '../../data/artist';
 import { waitForHydration } from '../support/hydration';
 import { expect, test } from '../support/test';
 
@@ -8,11 +9,33 @@ test.skip(({ isMobile }) => isMobile, 'The desktop project covers it. SiteNav ru
 
 const NAV = /<nav[^>]*aria-label="Primary"/;
 
+/** The text as React writes it into HTML, escaped for a RegExp. */
+const escape = (text: string) =>
+    text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#x27;')
+        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const { profile } = artist;
+/** About's portrait with its alt, the caption's name and alias, then the statement h1. React may split adjacent text with comments. */
+const ABOUT = new RegExp(
+    [
+        `<figure[^>]*data-testid="about-portrait"`,
+        `<img[^>]*alt="${escape(profile.portrait?.alt ?? '')}"`,
+        `<figcaption[^>]*>${escape(profile.name)}`,
+        escape(profile.alias ?? ''),
+        `</figcaption>`,
+        `<h1[^>]*>${escape(profile.statementHeading)}</h1>`,
+    ].join('[\\s\\S]*'),
+);
+
 for (const [path, content] of [
     // Home's main carries the chrome's state, immersive from the first byte, and a wrapper inside it the playback's.
     ['/', /<main[^>]*data-interface-state="immersive"[^>]*>[\s\S]*?<div[^>]*data-playback=/],
     ['/gallery', /<h1[^>]*>Gallery<\/h1>/],
-    ['/about', /<h1[^>]*>Keyur Golani<\/h1>[\s\S]*aka ISerialClicker/],
+    ['/about', ABOUT],
 ] as const) {
     test(`the server HTML for ${path} holds SiteNav and the page content`, async ({ request }) => {
         const response = await request.get(path);
