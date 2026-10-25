@@ -162,14 +162,13 @@ Those commands are for the `v1.1.0` image and the releases before slice C of #10
 
 The first release with slice A of [stable photo identity (#10)](https://github.com/keyurgolani/keyurgolani.photography/issues/10) needs a step too. The Gallery grid and lightbox now show the derivatives instead of the original files, and derivatives written before it ignored the EXIF orientation, so a photo whose file carries an orientation tag shows turned or mirrored until its derivatives are rebuilt. The watcher rebuilds them by itself. The first time it starts on a library, it rebuilds the set of every photo with an orientation tag, and once each of them is written or has failed it records that in `cache/upright-rebuild.json` in the library, so later starts skip it. A photo that failed is listed there, and each start tries it again until it builds. If the watcher stops first, or a photo changes while it is rebuilt, the next start rebuilds them all again. The watcher has to be able to write `cache/`; it logs at start when it can't. The old derivatives keep serving until each photo's new set is written.
 
-To see which photos it rebuilds, run the dry run after `up -d`. It changes nothing in the library and prints the path of its report:
+To see which photos it rebuilds, run the migration dry run the way the [migration runbook](data-root.md#migration-runbook) does, with `run --rm --no-deps` while the watcher is stopped, before the new watcher first starts. The deploy blocks for the first release with slice C, below, do that between their `pull` and their `up -d`, with `node dist/scripts/photos.mjs migrate --dry-run`, since that image has no tsx. It changes nothing in the library, adds only a plan and a report under `identity/migration/` in the data root, and prints the report's path. Read the report once the block is done:
 
 ```bash
-docker compose -f docker-compose.prod.yml exec image-watcher npm run photos:migrate -- --dry-run --out /tmp/photo-migration
-docker compose -f docker-compose.prod.yml exec image-watcher cat <report path>
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher cat <report path>
 ```
 
-On a release with slice C of #10, the first command is `node dist/scripts/photos.mjs migrate --dry-run --out /tmp/photo-migration` instead.
+On a host that already ran a release with slice A, the watcher has already rebuilt them, so skip the rest of this step.
 
 Its "Orientation-tagged files" section lists them, except any the library reaches through a symlink, since the dry run reads no file through one. If it says "None." and no photo in the library's top folder is a symlink, skip the rest. Otherwise wait for the watcher to log that it rebuilt them:
 
@@ -195,7 +194,7 @@ If the diff shows changes made on this host, don't copy them into the new file:
 - A different host port goes in `.env` as `PHOTOGRAPHY_PORT=<port>`, never in an override.
 - Anything else, such as another service or photos path, goes in an override file that isn't in the repository, added to every command as `-f docker-compose.prod.yml -f <override>`, so the next release's file replaces cleanly. Compose adds an override's `ports:` to the file's instead of replacing them, so a `ports:` entry for `web` there has to start with `127.0.0.1:` and its list has to be tagged `!override` (Compose 2.24.4 or later), and `web` never takes `network_mode: host`. Otherwise `web` is published on every interface again. These rules are for `web` only. A reverse proxy service in the override may publish 80 and 443, or run with `network_mode: host` and point at `http://127.0.0.1:3000`.
 
-Then install the new file, set up the data root, and deploy. Do it this way instead of the plain `pull` and `up -d`, and only after the `.env` edit. Each half of the switch needs the other: the plain commands would start the old file on the new image, whose watcher command needs tsx, and this block run on the old tag would start the new file on the old image, which has no `dist/scripts`. Either way the watcher crash-loops. So the block checks `.env` first, and stops before it changes anything when the tag isn't there yet. The check takes the tag alone or pinned to a digest, `vX.Y.Z@sha256:<digest>`, as one line with no quotes or spaces. In the `grep` pattern, put the version's digits in place of `X`, `Y`, and `Z` and keep the `\.` between them. The `exit` leaves only the block's subshell, not your shell:
+Then install the new file, set up the data root and the image cache, stop the old watcher, run the slice A dry run above, and deploy. Do it this way instead of the plain `pull` and `up -d`, and only after the `.env` edit. Each half of the switch needs the other: the plain commands would start the old file on the new image, whose watcher command needs tsx, and this block run on the old tag would start the new file on the old image, which has no `dist/scripts`. Either way the watcher crash-loops. So the block checks `.env` first, and stops before it changes anything when the tag isn't there yet. The check takes the tag alone or pinned to a digest, `vX.Y.Z@sha256:<digest>`, as one line with no quotes or spaces. In the `grep` pattern, put the version's digits in place of `X`, `Y`, and `Z` and keep the `\.` between them. The `exit` leaves only the block's subshell, not your shell:
 
 ```bash
 (
@@ -205,6 +204,8 @@ Then install the new file, set up the data root, and deploy. Do it this way inst
   sudo chown -R 1001:1001 portfolio-data .next-images-cache
   sudo chmod 700 portfolio-data
   docker compose -f docker-compose.prod.yml pull
+  docker compose -f docker-compose.prod.yml stop image-watcher
+  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs migrate --dry-run
   docker compose -f docker-compose.prod.yml up -d
 )
 ```
@@ -222,6 +223,8 @@ With an override, use this block instead. It also checks the merged file, the ne
   sudo chown -R 1001:1001 portfolio-data .next-images-cache
   sudo chmod 700 portfolio-data
   docker compose -f docker-compose.prod.yml -f <override> pull
+  docker compose -f docker-compose.prod.yml -f <override> stop image-watcher
+  docker compose -f docker-compose.prod.yml -f <override> run --rm --no-deps image-watcher node dist/scripts/photos.mjs migrate --dry-run
   docker compose -f docker-compose.prod.yml -f <override> up -d
 )
 ```
