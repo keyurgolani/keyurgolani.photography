@@ -15,6 +15,7 @@ import {
     attachWatcher,
     createIgnoreFilter,
     createWatcherHandlers,
+    createWatchModeHandlers,
     drainOrReport,
     processOnce,
     type WatcherHandlers,
@@ -1164,6 +1165,22 @@ describe('attachWatcher', { timeout: 60_000 }, () => {
 
         await vi.waitFor(() => expect(seen).toHaveLength(1), { timeout: 30_000 });
         expect(seen).toEqual([21]);
+    });
+
+    it("gives watch mode handlers that aren't idle before ready, and the watcher script's watch mode uses them", async () => {
+        const waiting = createWatchModeHandlers({ logger });
+        let idle = false;
+        void waiting.idle().then(() => { idle = true; });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(idle).toBe(false);
+        waiting.stop();
+        await vi.waitFor(() => expect(idle).toBe(true));
+
+        // The script runs when it's imported, so this reads it instead.
+        const script = fs.readFileSync(path.join(REPO_ROOT, 'scripts/imageWatcher.ts'), 'utf8');
+        const watchMode = script.slice(script.indexOf('function startWatcher('), script.indexOf('async function runOnce('));
+        expect(watchMode).toContain('const handlers = createWatchModeHandlers();');
+        expect(watchMode).not.toContain('createWatcherHandlers(');
     });
 
     it('with awaitStartup, is idle once stopped before ready, so shutdown never waits for a batch that won\'t come', async () => {

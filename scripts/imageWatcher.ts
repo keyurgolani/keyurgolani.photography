@@ -43,7 +43,7 @@ import { scanKind } from '../lib/identity/scan';
 import { createIdentityStep, runIdentityOnce, watchIdentity, type IdentityWatch } from '../lib/identity/watcherStep';
 import { dataRoot } from '../lib/storage/config';
 import { ensureDirectories, libraryPaths, libraryRootExists } from '../utils/imageOptimizer';
-import { attachWatcher, createWatcherHandlers, drainOrReport, processOnce, watchSetup, type LibraryChange } from '../utils/watcherHandlers';
+import { attachWatcher, createWatcherHandlers, createWatchModeHandlers, drainOrReport, processOnce, watchSetup, type LibraryChange } from '../utils/watcherHandlers';
 
 const USAGE = 'Usage: npx tsx scripts/imageWatcher.ts [--watch | --once] [--force]';
 
@@ -125,7 +125,7 @@ function startWatcher(): void {
     console.log(`[ImageWatcher] Starting chokidar watcher for: ${root}${setup.path === root ? '' : ` (${setup.path})`}`);
 
     // Not idle before chokidar's ready queues the startup batch, so the identity step's first pass can't build alongside it.
-    const handlers = createWatcherHandlers({ awaitStartup: true });
+    const handlers = createWatchModeHandlers();
     // A pass reads the library after the legacy step's queued jobs, and asks the watch for any pass it needs next.
     let watch: IdentityWatch | null = null;
     const identity = createIdentityStep({
