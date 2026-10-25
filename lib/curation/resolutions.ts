@@ -41,11 +41,20 @@ import { listEvents } from './repository';
  * replaced, the same way confirm writes it, so the next publish ships that
  * one, while that confirm is still the inbox's latest pin of the photo. Once
  * a later pin moved the record, even back onto the item's bytes, it puts
- * nothing back, and reopen and `curation show` say so. A record on the item's bytes with no confirm of the item to say so
- * (a hand edit or `photos edit`, a #15 rollback, or a confirm whose event a
- * crash lost) is left where it is: nothing on record tells those apart, so
- * nothing is guessed. Confirm guesses nothing there either: it records no
- * `fromRevision`, so a later Leave in draft keeps the record where it is.
+ * nothing back, and reopen and `curation show` say so. A record on the
+ * item's bytes with no confirm of the item to say so (a hand edit or `photos
+ * edit`, a #15 rollback, or a confirm whose event a crash lost) is left where
+ * it is: the inbox's pins don't tell those apart, so nothing is guessed.
+ *
+ * Confirm reads #16's review stamp there. The writer stamps `assetRevision`
+ * with the item and the revision it replaced, and a rebase that moves the
+ * field, or an edit, replaces or breaks the stamp. So a stamp naming this
+ * item's confirm proves it wrote the record: confirm then records what that
+ * confirm replaced, as after a crash between its two writes, or a repeat
+ * confirm after a reopen, and a later Leave in draft puts it back. Anything
+ * else records no `fromRevision`, so a later Leave in draft keeps the record
+ * where it is, and a rollback away and back again never brings an old
+ * `fromRevision` with it.
  *
  * And #17's resolutions of a missing item, besides putting the file back,
  * for which the watcher closes the item (lib/curation/sources.ts):
@@ -220,7 +229,7 @@ export function confirmReplacement(input: ActionInput & { faults?: ConfirmFaults
             ? [`Confirmed ${assetRevision} for ${photoId} in the draft, in place of ${fromRevision}. Its series, position, title, description, and story stay as they were. Visitors keep the current image until photos publish runs.`]
             : unexplained !== null
                 ? [
-                    `${photoId}'s photo record already pins ${assetRevision}, though the inbox last pinned ${unexplained}, so nothing in the working layer changed. Nothing on record shows a confirm of this item put it there: a rollback, a photos edit, and a confirm whose event a crash lost all leave it this way.`,
+                    `${photoId}'s photo record already pins ${assetRevision}, though the inbox last pinned ${unexplained}, so nothing in the working layer changed. Its review stamp doesn't show a confirm of this item put it there: a rollback, a photos edit, and a hand edit all leave it this way.`,
                     `So it is recorded as confirmed with nothing to put back, and leaving it in draft later keeps ${assetRevision}. To use ${unexplained} again, set assetRevision back with photos edit ${photoId}.`,
                 ]
                 : again

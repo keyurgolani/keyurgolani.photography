@@ -234,6 +234,9 @@ async function commit(
  * existing record keeps its `baseRevisionId`; a new one takes the active
  * revision, or null before the first activation. The site record keeps its
  * `baseSeriesOrder` the same way, and a new one starts at null (unknown).
+ * Under the same hold it stamps #16's `review` on every field the write
+ * changes, with `options.review` or the CLI's defaults, and keeps every
+ * other field's stamp (lib/catalog/review.ts's stampWrite()).
  */
 export function writeAuthoredRecord(record: AuthoredSiteInput, options: WriteAuthoredOptions): Promise<AuthoredSite>;
 export function writeAuthoredRecord(record: AuthoredSeriesInput, options: WriteAuthoredOptions): Promise<AuthoredSeries>;
@@ -293,7 +296,9 @@ export interface WriteRebasedOptions {
  * only write that moves an existing record's base. It checks `version` the
  * way writeAuthoredRecord() does, under the caller's authored hold. For the
  * site record it also stores the `baseSeriesOrder` the rebase merged against,
- * the one write that sets that field.
+ * the one write that sets that field. It reviews nothing: it keeps #16's
+ * stamps of the fields it left alone and drops those of the fields it moved
+ * (rebaseStamps()).
  */
 export function writeRebasedRecord(record: AuthoredSiteInput, options: WriteRebasedOptions): Promise<AuthoredSite>;
 export function writeRebasedRecord(record: AuthoredSeriesInput, options: WriteRebasedOptions): Promise<AuthoredSeries>;
