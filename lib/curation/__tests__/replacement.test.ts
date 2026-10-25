@@ -548,6 +548,31 @@ describe('a crash', { timeout: 60_000 }, () => {
     });
 });
 
+describe('a busy curation lock', { timeout: 60_000 }, () => {
+    it('at the settle after a build is settled by the next pass, with no restart', async () => {
+        const w = await world();
+        // The watcher's start: B's fact was delivered already, and its item is building.
+        await w.pass();
+        expect((await w.event()).candidate).toBeUndefined();
+        const warn = vi.fn();
+        const build = settlingAfterBuild(buildDerivativeSet, { logger: { ...quiet, warn }, waitMs: 100, owed: w.owed });
+        // A curator action holds the curation lock through the build's settle.
+        await withCurationLock(w.root, {}, async () => {
+            expect(await build(w.job(w.b), { logger: quiet })).toEqual({ status: 'ready', reused: false });
+        });
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining(`Could not record the set for ${w.p} ${w.b} on its replacement item yet; the next pass settles it`));
+        expect((await w.event()).candidate).toBeUndefined();
+
+        // The next pass names no fact for B, and settles it all the same.
+        expect((await w.pass()).filter((fact) => fact.photoId === w.p)).toEqual([]);
+        expect(await w.event()).toMatchObject({ status: 'open', candidate: { state: 'ready', profileId: w.profileId } });
+        // Owed no longer, so a pass after that writes nothing.
+        const before = layers(w);
+        await w.pass();
+        expect(layers(w)).toEqual(before);
+    });
+});
+
 describe('an older revision\'s bytes', { timeout: 60_000 }, () => {
     it('come back ready on the set already committed for them, with no build', async () => {
         const w = await world();
