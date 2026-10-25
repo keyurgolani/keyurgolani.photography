@@ -374,7 +374,7 @@ in_secrets session-secret --out /secrets/curator-session.key </dev/null >/dev/nu
 compose up -d --pull never --wait --wait-timeout 180 curator
 code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$CURATOR_URL/curation") || fail "GET /curation from curator failed."
 [ "$code" = 307 ] || fail "GET /curation from curator without a session returned $code, expected 307 to the login page."
-grep -qix 'location: /curation/login' <<<"$(tr -d '\r' <"$TMP/headers.txt")" || fail "GET /curation without a session did not lead to /curation/login."
+grep -qiE '^location: (http://127\.0\.0\.1:3001)?/curation/login$' <<<"$(tr -d '\r' <"$TMP/headers.txt")" || fail "GET /curation without a session did not lead to /curation/login."
 code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$CURATOR_URL/curation/login") || fail "GET /curation/login from curator failed."
 [ "$code" = 200 ] || fail "GET /curation/login from curator returned $code, expected 200."
 headers=$(tr -d '\r' <"$TMP/headers.txt")
