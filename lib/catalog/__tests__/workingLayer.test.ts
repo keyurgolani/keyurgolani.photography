@@ -5,9 +5,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { importGraph } from '../../../test/helpers/importGraph';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { withLock } from '../../storage/lock';
-import type { AuthoredPhoto, AuthoredSeries } from '../types';
+import type { AuthoredPhoto, AuthoredSeries, ManagedField } from '../types';
 import { authoredPaths, catalogPaths, readActivePointer, readAuthoredRecord, readWorkingLayer } from '../working-layer';
-import { AuthoredWriteError, writeAuthoredRecord } from '../working-layer-writer';
+import { AuthoredWriteError, MANAGED_FIELDS, writeAuthoredRecord } from '../working-layer-writer';
 
 const PHOTO_A = 'ph_00000000-0000-4000-8000-00000000000a';
 const PHOTO_B = 'ph_00000000-0000-4000-8000-00000000000b';
@@ -175,6 +175,14 @@ describe('writeAuthoredRecord', () => {
         const updated = await writeAuthoredRecord({ ...site, seriesOrder: ['ser_fixture-b', 'ser_fixture-a'], baseSeriesOrder: ['ser_fixture-b', 'ser_fixture-a'] }, { expectedVersion: 3, root: data.root });
         expect(updated).toMatchObject({ version: 4, baseRevisionId: ACTIVE, seriesOrder: ['ser_fixture-b', 'ser_fixture-a'], baseSeriesOrder: ['ser_fixture-a', 'ser_fixture-b'] });
         expect(await readAuthoredRecord(data.root, 'site', 'site')).toEqual(updated);
+    });
+
+    it('types as managed exactly the fields the writer manages', () => {
+        // Checked by tsc: the assignment fails to compile when ManagedField and MANAGED_FIELDS differ either way.
+        type Managed = (typeof MANAGED_FIELDS)[number];
+        const same: [ManagedField] extends [Managed] ? ([Managed] extends [ManagedField] ? true : false) : false = true;
+        expect(same).toBe(true);
+        expect([...MANAGED_FIELDS].sort()).toEqual(['baseRevisionId', 'baseSeriesOrder', 'schemaVersion', 'version']);
     });
 
     it.each([

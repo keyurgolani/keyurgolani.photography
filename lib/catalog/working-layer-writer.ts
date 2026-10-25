@@ -74,7 +74,9 @@ export interface WriteAuthoredOptions {
     hooks?: VersionedWriteHooks;
 }
 
-const MANAGED = new Set(['schemaVersion', 'version', 'baseRevisionId', 'baseSeriesOrder']);
+/** The fields the writer owns, as ManagedField names them. */
+export const MANAGED_FIELDS = ['schemaVersion', 'version', 'baseRevisionId', 'baseSeriesOrder'] as const;
+const MANAGED = new Set<string>(MANAGED_FIELDS);
 
 function withoutManaged(record: AuthoredRecordInput): Record<string, unknown> {
     return Object.fromEntries(Object.entries(record).filter(([key]) => !MANAGED.has(key)));
