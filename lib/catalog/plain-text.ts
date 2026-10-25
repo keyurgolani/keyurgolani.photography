@@ -8,10 +8,10 @@
 
 /**
  * The most characters (code points, after NFC) each text field takes. A
- * chapter title takes `title`'s. The description rules still warn about alt
- * text past 250.
+ * chapter title, a credit, and a location take `title`'s. The description
+ * rules still warn about alt text past 250.
  */
-export const FIELD_LIMITS = { alt: 1000, title: 200, caption: 2000 } as const;
+export const FIELD_LIMITS = { alt: 1000, title: 200, caption: 2000, statement: 2000, shortStatement: 500 } as const;
 
 export const codePointName = (codePoint: number) => `U+${codePoint.toString(16).toUpperCase().padStart(4, '0')}`;
 
