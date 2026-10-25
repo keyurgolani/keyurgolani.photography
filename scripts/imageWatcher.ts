@@ -119,6 +119,7 @@ function startWatcher(): void {
     const root = requireLibraryRoot();
     ensureDirectories();
     // With no data root the identity step never runs, so the watch stays exactly as it was before it.
+    // Outside production dataRoot() falls back to ./portfolio-data, so dev and `npm run images:watch` count as on.
     const setup = watchSetup(root, { identity: dataRoot() !== null });
 
     console.log(`[ImageWatcher] Starting chokidar watcher for: ${root}${setup.path === root ? '' : ` (${setup.path})`}`);
