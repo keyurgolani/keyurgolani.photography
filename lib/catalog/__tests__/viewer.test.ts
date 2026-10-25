@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { TECHNICAL_KEYS } from '../../identity/metadata';
-import { DESCRIPTION_PENDING_COPY, viewerParams, viewerPhotoFrom, viewerPhotoOf, type PublishedViewerPhoto, type ViewerCatalog, type ViewerSource } from '../projections/viewer';
+import { DESCRIPTION_PENDING_COPY, viewerParams, viewerPhotoFrom, viewerPhotoOf, type PublishedViewerPhoto, type ViewerCatalog, type ViewerImage, type ViewerSource } from '../projections/viewer';
 import { publish } from '../publish';
 import { createCatalogReader } from '../reader';
 import { createTestCatalog, type TestCatalog } from '../testing';
@@ -86,6 +86,16 @@ function viewer(result: ReturnType<typeof viewerPhotoOf>): PublishedViewerPhoto 
     return result.viewer;
 }
 
+function image(photo: PublishedViewerPhoto['photo']): ViewerImage {
+    if (photo.image === null) throw new Error(`Expected an image for ${photo.id}`);
+    return photo.image;
+}
+
+/** A reader over the fixture's candidate, as a draft preview reads it. */
+function draftReader() {
+    return createCatalogReader(catalog.content, { revisionId: REVISION_B, revisionNumber: null });
+}
+
 /** A source that fails the test if anything reads it. */
 function trap(): ViewerSource {
     const fail = () => {
@@ -147,11 +157,13 @@ describe('viewerPhotoOf on a revision', () => {
                     caption: null,
                     alt: 'Fixture description of photograph 0002.',
                     descriptionPending: false,
-                    width: 1600,
-                    height: 2400,
-                    assetRevision: content.photos.find((photo) => photo.id === P[1])?.assetRevision,
-                    lqip: content.photos.find((photo) => photo.id === P[1])?.lqip,
-                    variants: content.photos.find((photo) => photo.id === P[1])?.variants,
+                    image: {
+                        width: 1600,
+                        height: 2400,
+                        assetRevision: content.photos.find((photo) => photo.id === P[1])?.assetRevision,
+                        lqip: content.photos.find((photo) => photo.id === P[1])?.lqip,
+                        variants: content.photos.find((photo) => photo.id === P[1])?.variants,
+                    },
                     accent: null,
                     technical: { Make: 'Fixture Make', Model: 'Fixture Model', FocalLength: '35', FNumber: '2.8', ExposureTime: '1/250', ISO: '200' },
                 },
@@ -311,8 +323,9 @@ describe('the Viewer projection', () => {
         expect(Object.keys(result).sort()).toEqual(['catalogRevision', 'nextPhotoId', 'photo', 'position', 'previousPhotoId', 'series', 'total']);
         expect(Object.keys(result.series).sort()).toEqual(['accent', 'id', 'slug', 'title']);
         expect(Object.keys(result.photo).sort()).toEqual([
-            'accent', 'alt', 'assetRevision', 'caption', 'description', 'descriptionPending', 'height', 'id', 'lqip', 'technical', 'title', 'variants', 'width',
+            'accent', 'alt', 'caption', 'description', 'descriptionPending', 'id', 'image', 'technical', 'title',
         ]);
+        expect(Object.keys(image(result.photo)).sort()).toEqual(['assetRevision', 'height', 'lqip', 'variants', 'width']);
         const json = JSON.stringify(result);
         for (const leak of ['Fixture credit', 'Fixture location', '2023-03-04', 'focalPoint', 'crop', 'profileId', 'fixture-source-one', 'statement', 'slugAliases', 'old-fixture-a']) {
             expect(json).not.toContain(leak);
@@ -329,7 +342,7 @@ describe('the Viewer projection', () => {
         const reader = createCatalogReader(tampered as RevisionContent, { revisionId: REVISION_A, revisionNumber: 3 });
         const result = viewer(reader.getViewerPhoto('fixture-a', P[0]));
         expect(Object.keys(result.photo.technical)).toEqual([...TECHNICAL_KEYS]);
-        expect(Object.keys(result.photo.variants.w1200.webp).sort()).toEqual(['bytes', 'height', 'url', 'width']);
+        expect(Object.keys(image(result.photo).variants.w1200.webp).sort()).toEqual(['bytes', 'height', 'url', 'width']);
         const json = JSON.stringify(result);
         for (const leak of ['FIXTURE-SERIAL', '12.345', 'Fixture artist', 'Fixture software', 'Fixture maker note', '/library/', '/data/assets', 'internalNote', 'visibility']) {
             expect(json).not.toContain(leak);
@@ -363,7 +376,7 @@ describe('the Viewer projection', () => {
             const photo = odd.photos.find((entry) => entry.id === P[0]);
             if (!photo) throw new Error('Missing fixture photo');
             photo.lqip = bad;
-            const result = viewer(createCatalogReader(odd, { revisionId: REVISION_A, revisionNumber: 3 }).getViewerPhoto('fixture-a', P[0])).photo;
+            const result = image(viewer(createCatalogReader(odd, { revisionId: REVISION_A, revisionNumber: 3 }).getViewerPhoto('fixture-a', P[0])).photo);
             expect(result, name).not.toHaveProperty('lqip');
             expect(result.variants, name).toEqual(stored?.variants);
             expect([result.width, result.height, result.assetRevision], name).toEqual([stored?.width, stored?.height, stored?.assetRevision]);
@@ -373,16 +386,17 @@ describe('the Viewer projection', () => {
     it('copies the variant ladder, so a caller can\'t edit the revision through it', () => {
         const reader = createCatalogReader(content, { revisionId: REVISION_A, revisionNumber: 3 });
         const result = viewer(reader.getViewerPhoto('fixture-a', P[0]));
-        result.photo.variants.w1200.webp.url = '/elsewhere';
+        image(result.photo).variants.w1200.webp.url = '/elsewhere';
         expect(content.photos.find((photo) => photo.id === P[0])?.variants.w1200.webp.url).toMatch(/^\/media\//);
-        expect(viewer(reader.getViewerPhoto('fixture-a', P[0])).photo.variants.w1200.webp.url).toMatch(/^\/media\//);
+        expect(image(viewer(reader.getViewerPhoto('fixture-a', P[0])).photo).variants.w1200.webp.url).toMatch(/^\/media\//);
     });
 
-    it('answers not-found, by slug or prior slug, for a photo whose set isn\'t its own /media ladder with positive sizes', () => {
+    it('renders without its image, by slug or prior slug, a photo whose set isn\'t its own /media ladder with positive sizes', () => {
         type Odd = RevisionContent['photos'][number] & Record<string, unknown>;
         const stored = content.photos.find((entry) => entry.id === P[1]);
         if (!stored) throw new Error('Missing fixture photo');
         const other = content.photos.find((entry) => entry.id === P[0]);
+        const intact = viewer(createCatalogReader(content, { revisionId: REVISION_A, revisionNumber: 3 }).getViewerPhoto('fixture-a', P[1]));
         const breaks: [string, (photo: Odd) => void][] = [
             ['an original file', (photo) => { photo.variants.w800.avif.url = '/library/private/fixture-source.jpg'; }],
             ['a foreign host', (photo) => { photo.variants.w400.webp.url = `https://example.test${stored.variants.w400.webp.url}`; }],
@@ -408,19 +422,28 @@ describe('the Viewer projection', () => {
             if (!photo) throw new Error('Missing fixture photo');
             breakIt(photo);
             const reader = createCatalogReader(odd, { revisionId: REVISION_A, revisionNumber: 3 });
-            expect(reader.getViewerPhoto('fixture-a', P[1]), name).toEqual({ kind: 'not-found' });
-            expect(reader.getViewerPhoto('old-fixture-a', P[1]), name).toEqual({ kind: 'not-found' });
-            // Only that photo: its neighbors still resolve, and still count it, as the series page lists it.
-            expect(viewer(reader.getViewerPhoto('fixture-a', P[0])).nextPhotoId, name).toBe(P[1]);
+            const result = reader.getViewerPhoto('fixture-a', P[1]);
+            const broken = viewer(result);
+            // The photo renders without its image: the same text, place, and neighbors as an intact one.
+            expect(broken.photo.image, name).toBeNull();
+            expect({ ...broken, photo: { ...broken.photo, image: intact.photo.image } }, name).toEqual(intact);
+            // Nothing from the broken set ships.
+            const json = JSON.stringify(result);
+            for (const leak of ['/library/private', 'example.test', '_next/image', '../private', 'p_../x', '/media/', 'data:image']) expect(json, name).not.toContain(leak);
+            // A prior slug still 308s, to a page that renders.
+            expect(reader.getViewerPhoto('old-fixture-a', P[1]), name).toEqual({ kind: 'redirect', slug: 'fixture-a', photoId: P[1] });
+            // Only that photo: its neighbors keep their sets and still count it, as the series page lists it.
+            const before = viewer(reader.getViewerPhoto('fixture-a', P[0]));
+            expect([before.nextPhotoId, before.photo.image?.variants], name).toEqual([P[1], other?.variants]);
+            expect(viewer(reader.getViewerPhoto('fixture-a', P[2])).previousPhotoId, name).toBe(P[1]);
         }
-        const intact = viewer(createCatalogReader(content, { revisionId: REVISION_A, revisionNumber: 3 }).getViewerPhoto('fixture-a', P[1])).photo;
-        expect(intact.variants).toEqual(stored.variants);
+        expect(image(intact.photo).variants).toEqual(stored.variants);
     });
 });
 
 describe('the pending fallback in a draft preview', () => {
     it('marks a candidate photo whose description is pending, with an empty alt and no description', () => {
-        const draft = catalog.reader({ revisionId: REVISION_B });
+        const draft = draftReader();
         const pending = viewer(draft.getViewerPhoto('fixture-a', P[3])).photo;
         expect([pending.description, pending.alt, pending.descriptionPending]).toEqual([null, '', true]);
         expect(DESCRIPTION_PENDING_COPY).toBe('Description pending editorial review');
@@ -436,7 +459,7 @@ describe('the pending fallback in a draft preview', () => {
     });
 
     it('never marks a reviewed or decorative photo pending', () => {
-        const draft = catalog.reader({ revisionId: REVISION_B });
+        const draft = draftReader();
         for (const photoId of [P[0], P[1], P[2], P[4]]) expect(viewer(draft.getViewerPhoto('fixture-a', photoId)).photo.descriptionPending).toBe(false);
     });
 });
