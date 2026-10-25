@@ -251,9 +251,11 @@ describe('rebaseWorkingLayer', { timeout: 30_000 }, () => {
         // A base that should exist and can't be read, on a record that never learned its base order.
         const lost = `rev_${'9'.repeat(64)}`;
         damage(revisionFilePath(root, lost));
-        // With no base to compare against, the rebase can't settle a featured conflict, so it stays.
-        const featured = { field: 'featuredSeriesIds', base: [b], active: [a] };
-        await withLock(AUTHORED_LOCK, { root }, (lock) => writeRebasedRecord({ ...site, seriesOrder: [c, a, b], baseSeriesOrder: null, conflicts: [featured] }, { expectedVersion: site.version, lock, baseRevisionId: lost }));
+        // An older featured conflict goes: with no base to compare, a featured list that differs from the target conflicts afresh.
+        await withLock(AUTHORED_LOCK, { root }, (lock) => writeRebasedRecord(
+            { ...site, seriesOrder: [c, a, b], featuredSeriesIds: [b], baseSeriesOrder: null, conflicts: [{ field: 'featuredSeriesIds', base: [c], active: [a] }] },
+            { expectedVersion: site.version, lock, baseRevisionId: lost },
+        ));
 
         const result = await publish({ dataRoot: root, actor: 'test', logger: quiet });
         expect(result.outcome).toBe('VALIDATION_FAILED');
@@ -261,10 +263,124 @@ describe('rebaseWorkingLayer', { timeout: 30_000 }, () => {
         expect((await readActivePointer(root))?.revisionId).toBe(first.revisionId);
         expect(await record<AuthoredSite>('site', 'site')).toMatchObject({
             seriesOrder: [c, a, b],
-            featuredSeriesIds: site.featuredSeriesIds,
+            featuredSeriesIds: [b],
             baseRevisionId: first.revisionId,
-            conflicts: [featured, { field: 'seriesOrder', base: [], active: [a, b, c] }],
+            conflicts: [{ field: 'featuredSeriesIds', base: null, active: site.featuredSeriesIds }, { field: 'seriesOrder', base: [], active: [a, b, c] }],
         });
+    });
+
+    it('raises a conflict on every field that differs from the target when a rollback leaves a damaged base, so the next publish can\'t bring it back', async () => {
+        // #15's 15-2 delta check, D3b: roll back off a damaged live revision, make an unrelated edit, publish.
+        const { catalog, root, run, edit, record, rollBack } = await setup({ seed: 109, photos: 3, series: 1 });
+        const [rolled, other] = catalog.photos.map((photo) => photo.id);
+        const first = await run();
+        await edit<AuthoredPhoto>('photo', rolled, (photo) => {
+            photo.caption = 'The caption revision 2 publishes.';
+        });
+        const second = await run();
+        fs.writeFileSync(revisionFilePath(root, ids(second)), '{ not json');
+
+        const report = await rollBack(ids(first), ids(second));
+        expect(report.conflicts).toEqual([{ kind: 'photo', id: rolled, field: 'caption' }]);
+        expect(await record<AuthoredPhoto>('photo', rolled)).toMatchObject({
+            caption: 'The caption revision 2 publishes.',
+            baseRevisionId: first.revisionId,
+            conflicts: [{ field: 'caption', base: null, active: null }],
+        });
+
+        await edit<AuthoredPhoto>('photo', other, (photo) => {
+            photo.caption = 'An unrelated caption.';
+        });
+        const next = await publish({ dataRoot: root, actor: 'test', logger: quiet });
+        expect(next.outcome).toBe('VALIDATION_FAILED');
+        expect(next.issues).toContainEqual(expect.objectContaining({ code: 'working.conflicts', record: { kind: 'photo', id: rolled } }));
+        expect((await readActivePointer(root))?.revisionId).toBe(first.revisionId);
+    });
+
+    it('keeps a series the owner hid after a first publish that couldn\'t rebase, rather than publishing it again', async () => {
+        // The quick delta's P7: with a null base, visibility has nothing to compare with.
+        const { catalog, root, run, edit, record } = await setup({ seed: 111, photos: 4, series: 2 });
+        const [kept, hidden] = catalog.series.map((series) => series.id);
+        let release = () => undefined as void;
+        const held = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let holding: Promise<void> | null = null;
+        const first = await run({
+            authoredWaitMs: 100,
+            hooks: {
+                async afterStep(step) {
+                    if (step !== 12) return;
+                    let taken = () => undefined as void;
+                    const holds = new Promise<void>((resolve) => {
+                        taken = resolve;
+                    });
+                    holding = withLock(AUTHORED_LOCK, { root }, async () => {
+                        taken();
+                        await held;
+                    });
+                    await holds;
+                },
+            },
+        });
+        release();
+        await holding;
+        expect(first.rebased).toBe(false);
+        await edit<AuthoredSeries>('series', hidden, (series) => {
+            series.visibility = 'hidden';
+        });
+        await edit<AuthoredSite>('site', 'site', (site) => {
+            site.featuredSeriesIds = site.featuredSeriesIds.filter((id) => id !== hidden);
+        });
+
+        const second = await run();
+        expect(second.recovery?.rebased?.conflicts).toEqual([]);
+        expect(await record<AuthoredSeries>('series', hidden)).toMatchObject({ visibility: 'hidden' });
+        expect((await readRevisionFile(root, ids(second)))?.content.series.map((series) => series.id)).toEqual([kept]);
+    });
+
+    it('keeps every working record as it is, stored conflicts included, when the base is null', async () => {
+        const { catalog, root, run, edit, record } = await setup({ seed: 110, photos: 3, series: 1 });
+        const photoId = catalog.photos[0].id;
+        let release = () => undefined as void;
+        const held = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let holding: Promise<void> | null = null;
+        const first = await run({
+            authoredWaitMs: 100,
+            hooks: {
+                async afterStep(step) {
+                    if (step !== 12) return;
+                    let taken = () => undefined as void;
+                    const holds = new Promise<void>((resolve) => {
+                        taken = resolve;
+                    });
+                    holding = withLock(AUTHORED_LOCK, { root }, async () => {
+                        taken();
+                        await held;
+                    });
+                    await holds;
+                },
+            },
+        });
+        release();
+        await holding;
+        expect(first.rebased).toBe(false);
+        const stored = { field: 'featuredSeriesIds', base: ['ser_fixture-99'], active: [] };
+        await edit<AuthoredPhoto>('photo', photoId, (photo) => {
+            photo.caption = 'A caption written after the first publish.';
+        });
+        await edit<AuthoredSite>('site', 'site', (site) => {
+            site.conflicts = [stored];
+        });
+
+        const report = await rebaseWorkingLayer({ root, targetRevisionId: ids(first) });
+        expect(report.conflicts).toEqual([]);
+        const photo = await record<AuthoredPhoto>('photo', photoId);
+        expect(photo).toMatchObject({ caption: 'A caption written after the first publish.', baseRevisionId: first.revisionId });
+        expect(photo).not.toHaveProperty('conflicts');
+        expect(await record<AuthoredSite>('site', 'site')).toMatchObject({ baseRevisionId: first.revisionId, conflicts: [stored] });
     });
 
     it('keeps a stored Work order conflict when a repeated entry leaves the order undecided', async () => {
@@ -330,7 +446,7 @@ describe('rebaseWorkingLayer', { timeout: 30_000 }, () => {
         expect((await record<AuthoredSeries>('series', draft)).conflicts).toEqual([titleConflict]);
     });
 
-    it('skips records already on the target, and only moves a record whose base revision is gone', async () => {
+    it('skips records already on the target, and conflicts on a field that differs from the target when a record\'s base revision is gone', async () => {
         const { catalog, root, run, record } = await setup({ seed: 97, photos: 2, series: 1 });
         const first = await run();
         await expect(rebaseWorkingLayer({ root, targetRevisionId: ids(first) })).resolves.toEqual({ rebased: 0, conflicts: [] });
@@ -339,8 +455,13 @@ describe('rebaseWorkingLayer', { timeout: 30_000 }, () => {
         const before = await record<AuthoredPhoto>('photo', photoId);
         const gone = `rev_${'9'.repeat(64)}`;
         await withLock(AUTHORED_LOCK, { root }, (lock) => writeRebasedRecord({ ...before, caption: 'A caption no revision has.' }, { expectedVersion: before.version, lock, baseRevisionId: gone }));
-        await expect(rebaseWorkingLayer({ root, targetRevisionId: ids(first) })).resolves.toEqual({ rebased: 1, conflicts: [] });
-        expect(await record<AuthoredPhoto>('photo', photoId)).toMatchObject({ caption: 'A caption no revision has.', baseRevisionId: first.revisionId, version: before.version + 2 });
+        await expect(rebaseWorkingLayer({ root, targetRevisionId: ids(first) })).resolves.toEqual({ rebased: 1, conflicts: [{ kind: 'photo', id: photoId, field: 'caption' }] });
+        expect(await record<AuthoredPhoto>('photo', photoId)).toMatchObject({
+            caption: 'A caption no revision has.',
+            baseRevisionId: first.revisionId,
+            version: before.version + 2,
+            conflicts: [{ field: 'caption', base: null, active: null }],
+        });
     });
 
     it('needs a target with a revision file, and a live authored hold when it is handed one', async () => {

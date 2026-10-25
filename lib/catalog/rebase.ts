@@ -55,9 +55,18 @@ const same = (a: unknown, b: unknown) => canonicalJson(a ?? null) === canonicalJ
 
 type Merge<T> = { value: T; conflict: Conflict | null; changed: boolean };
 
+/**
+ * A base revision that should exist but is missing or damaged. Nothing tells
+ * an owner's edit from what the target changed, so every field whose working
+ * value differs from the target's keeps the working value and conflicts.
+ */
+const UNREADABLE = Symbol('unreadable base');
+type Base<T> = T | typeof UNREADABLE;
+
 /** Three-way merge of one field: the curator's value `mine`, the base's, and the target's. */
-function threeWay<T>(field: string, mine: T, base: T, target: T): Merge<T> {
+function threeWay<T>(field: string, mine: T, base: Base<T>, target: T): Merge<T> {
     if (same(mine, target)) return { value: mine, conflict: null, changed: false };
+    if (base === UNREADABLE) return { value: mine, conflict: { field, base: null, active: (target ?? null) as Conflict['active'] }, changed: false };
     if (same(mine, base)) return { value: target, conflict: null, changed: true };
     if (same(target, base)) return { value: mine, conflict: null, changed: false };
     return { value: mine, conflict: { field, base: (base ?? null) as Conflict['base'], active: (target ?? null) as Conflict['active'] }, changed: false };
@@ -123,7 +132,11 @@ function publishedPhotoView(photo: PublicPhotoRecord): PhotoView {
     return view;
 }
 
-function mergePhoto(photo: AuthoredPhoto, base: PhotoView | null, target: PhotoView | null, registry: Registry | null): Merged<AuthoredPhoto> {
+/**
+ * A photo record's merge. `base` is null when the base doesn't publish the
+ * photo, and UNREADABLE when the base revision can't be read.
+ */
+function mergePhoto(photo: AuthoredPhoto, base: PhotoView | null | typeof UNREADABLE, target: PhotoView | null, registry: Registry | null): Merged<AuthoredPhoto> {
     if (base === null || target === null) return { record: photo, conflicts: [], compared: [] };
     const mine = authoredPhotoView(photo, registry);
     const next: AuthoredPhoto = { ...photo };
@@ -131,7 +144,7 @@ function mergePhoto(photo: AuthoredPhoto, base: PhotoView | null, target: PhotoV
     const compared: string[] = [];
     const take = <K extends keyof PhotoView>(field: K, apply: (value: PhotoView[K]) => void) => {
         compared.push(field);
-        const merged = threeWay(field, mine[field], base[field], target[field]);
+        const merged = threeWay(field, mine[field], base === UNREADABLE ? UNREADABLE : base[field], target[field]);
         if (merged.conflict) conflicts.push(merged.conflict);
         if (merged.changed) apply(merged.value);
     };
@@ -174,19 +187,21 @@ function publishedSeriesView(series: SeriesRecord | undefined): SeriesView {
     return series ? { published: true, values: Object.fromEntries(SERIES_FIELDS.map((field) => [field, series[field]])) } : { published: false, values: null };
 }
 
-function mergeSeries(series: AuthoredSeries, base: SeriesView, target: SeriesView): Merged<AuthoredSeries> {
+/** A series record's merge. `base` is UNREADABLE when the base revision can't be read. */
+function mergeSeries(series: AuthoredSeries, base: SeriesView | typeof UNREADABLE, target: SeriesView): Merged<AuthoredSeries> {
     const mine = authoredSeriesView(series);
     const next: AuthoredSeries = { ...series };
     const conflicts: Conflict[] = [];
     const compared: string[] = ['visibility'];
-    const published = threeWay('visibility', mine.published, base.published, target.published);
-    if (published.conflict) conflicts.push({ field: 'visibility', base: base.published ? 'published' : null, active: target.published ? 'published' : null });
+    const published = threeWay('visibility', mine.published, base === UNREADABLE ? UNREADABLE : base.published, target.published);
+    if (published.conflict) conflicts.push({ field: 'visibility', base: base !== UNREADABLE && base.published ? 'published' : null, active: target.published ? 'published' : null });
     // Unpublished by the target, a once-public series is hidden; one the curator kept as a draft stays a draft.
     if (published.changed) next.visibility = published.value ? 'published' : series.visibility === 'published' ? 'hidden' : series.visibility;
-    if (base.values !== null && target.values !== null && mine.values !== null) {
+    const baseValues = base === UNREADABLE ? UNREADABLE : base.values;
+    if (baseValues !== null && target.values !== null && mine.values !== null) {
         for (const field of SERIES_FIELDS) {
             compared.push(field);
-            const merged = threeWay(field, mine.values[field], base.values[field], target.values[field]);
+            const merged = threeWay(field, mine.values[field], baseValues === UNREADABLE ? UNREADABLE : baseValues[field], target.values[field]);
             if (merged.conflict) conflicts.push(merged.conflict);
             if (!merged.changed) continue;
             if (merged.value === undefined) delete (next as Record<string, unknown>)[field];
@@ -214,22 +229,23 @@ type SiteBase =
  * The site record's merge. `snapshot` is the snapshot's site record, whose
  * `seriesOrder` the target was compiled from.
  *
- * With no known base, the featured list stays as authored, as a series' or a
- * photo's fields do. The Work order goes through #8's rebaseSeriesOrder()
- * either way. On a null base it compares against the target itself, so the
- * owner's order stays with no conflict. On an unreadable one it compares
- * against an empty base, so an order that differs from the target's keeps
- * the owner's and raises a conflict: the conflict only fires when a base
- * should exist and can't be read.
+ * On a null base the featured list stays as authored, as a series' or a
+ * photo's fields do, and on an unreadable one it conflicts when it differs
+ * from the target's, as theirs do. The Work order goes through #8's
+ * rebaseSeriesOrder() either way. On a null base it compares against the
+ * target itself, so the owner's order stays with no conflict. On an
+ * unreadable one it compares against an empty base, so an order that differs
+ * from the target's keeps the owner's and raises a conflict. Conflicts only
+ * fire when a base should exist and can't be read.
  */
 function mergeSite(site: AuthoredSite, base: SiteBase, target: RevisionFile, snapshot: AuthoredSite | null): Merged<AuthoredSite> {
     const next: AuthoredSite = { ...site };
     const conflicts: Conflict[] = [];
     const compared: string[] = [];
     const targetIds = target.content.series.map((series) => series.id);
-    if (base.kind === 'known') {
+    if (base.kind !== 'none') {
         compared.push('featuredSeriesIds');
-        const featured = threeWay('featuredSeriesIds', site.featuredSeriesIds, base.featuredSeriesIds, target.content.site.featuredSeriesIds);
+        const featured = threeWay('featuredSeriesIds', site.featuredSeriesIds, base.kind === 'known' ? base.featuredSeriesIds : UNREADABLE, target.content.site.featuredSeriesIds);
         if (featured.conflict) conflicts.push(featured.conflict);
         if (featured.changed) next.featuredSeriesIds = [...featured.value];
     }
@@ -257,9 +273,10 @@ const EMPTY_BASE: Pick<RevisionFile, 'content'> = { content: { site: { featuredS
  * Rebase the working layer onto `targetRevisionId`, under the authored lock.
  * Throws LockTimeoutError when it can't get the lock, and
  * CatalogIntegrityError when the target revision is missing or damaged. A
- * base revision that is gone counts as empty, so its records keep their
- * fields and only move their base, except that the site's Work order then
- * conflicts with a target order that differs (see mergeSite()).
+ * record whose base is null keeps its fields and only moves its base. One
+ * whose base revision should exist but is missing or damaged keeps its
+ * fields too, and every field that differs from the target gets a conflict,
+ * so the next publish can't quietly bring back what that revision published.
  */
 export async function rebaseWorkingLayer(options: RebaseOptions): Promise<RebaseReport> {
     const root = path.resolve(options.root);
@@ -269,12 +286,13 @@ export async function rebaseWorkingLayer(options: RebaseOptions): Promise<Rebase
         if (target === null) throw new Error(`The revision ${options.targetRevisionId} has no revision file, so nothing can rebase onto it.`);
         const registry = options.registry !== undefined ? options.registry : await readRegistry(root).catch(() => null);
         const layer = await readWorkingLayer(root);
-        const bases = new Map<string, Pick<RevisionFile, 'content'>>();
-        const baseOf = async (revisionId: string | null): Promise<Pick<RevisionFile, 'content'>> => {
+        const bases = new Map<string, Pick<RevisionFile, 'content'> | typeof UNREADABLE>();
+        /** A record's base revision: empty for a null base, UNREADABLE for one that is missing or damaged. */
+        const baseOf = async (revisionId: string | null): Promise<Pick<RevisionFile, 'content'> | typeof UNREADABLE> => {
             if (revisionId === null) return EMPTY_BASE;
             let base = bases.get(revisionId);
             if (!base) {
-                base = (await readRevisionFile(root, revisionId).catch(() => null)) ?? EMPTY_BASE;
+                base = (await readRevisionFile(root, revisionId).catch(() => null)) ?? UNREADABLE;
                 bases.set(revisionId, base);
             }
             return base;
@@ -311,19 +329,28 @@ export async function rebaseWorkingLayer(options: RebaseOptions): Promise<Rebase
         for (const series of layer.series) {
             if (series.baseRevisionId === target.revisionId) continue;
             const fromSnapshot = snapshotSeries.get(series.id);
-            const base = fromSnapshot
-                ? authoredSeriesView(fromSnapshot)
-                : publishedSeriesView((await baseOf(series.baseRevisionId)).content.series.find((entry) => entry.id === series.id));
+            // A null base published nothing to compare with, so the record stays as it is, a hidden series included.
+            if (!fromSnapshot && series.baseRevisionId === null) {
+                await write(series, { record: series, conflicts: [], compared: [] });
+                continue;
+            }
+            let base: SeriesView | typeof UNREADABLE;
+            if (fromSnapshot) base = authoredSeriesView(fromSnapshot);
+            else {
+                const revision = await baseOf(series.baseRevisionId);
+                base = revision === UNREADABLE ? UNREADABLE : publishedSeriesView(revision.content.series.find((entry) => entry.id === series.id));
+            }
             await write(series, mergeSeries(series, base, publishedSeriesView(targetSeries.get(series.id))));
         }
         for (const photo of layer.photos) {
             if (photo.baseRevisionId === target.revisionId) continue;
             const fromSnapshot = snapshotPhotos.get(photo.id);
-            let base: PhotoView | null;
+            let base: PhotoView | null | typeof UNREADABLE;
             if (fromSnapshot) base = authoredPhotoView(fromSnapshot, registry);
             else {
-                const published = (await baseOf(photo.baseRevisionId)).content.photos.find((entry) => entry.id === photo.id);
-                base = published ? publishedPhotoView(published) : null;
+                const revision = await baseOf(photo.baseRevisionId);
+                const published = revision === UNREADABLE ? undefined : revision.content.photos.find((entry) => entry.id === photo.id);
+                base = revision === UNREADABLE ? UNREADABLE : published ? publishedPhotoView(published) : null;
             }
             const published = targetPhotos.get(photo.id);
             await write(photo, mergePhoto(photo, base, published ? publishedPhotoView(published) : null, registry));
