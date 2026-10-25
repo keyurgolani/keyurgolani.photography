@@ -123,8 +123,14 @@ const sentence = (text: string) => `${text[0].toUpperCase()}${text.slice(1)}`;
 export default function InboxDetailView({ view }: { view: ReadyView }) {
     const detail = view.selected;
     if (detail === null) {
-        // An empty inbox says so once, in the list.
-        if (view.items.length === 0 && !view.missingSelection) return null;
+        // An empty inbox says so once, in the list. On a wide screen the detail side keeps one quiet line, so it isn't blank; a phone stacks the two, so it shows nothing there.
+        if (view.items.length === 0 && !view.missingSelection) {
+            return (
+                <section className={`${styles.state} ${styles.emptyPane}`} aria-label="Item">
+                    <p>Nothing to review. A new photograph opens here once the watcher picks it up.</p>
+                </section>
+            );
+        }
         return (
             <section className={styles.state} aria-label="Item">
                 {view.missingSelection ? <p role="status">That item isn&apos;t in the inbox any more. Pick another from the list.</p> : <p>Pick an item from the list to review it.</p>}

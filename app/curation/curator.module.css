@@ -492,10 +492,11 @@ textarea.control {
   font-size: var(--gah-type-label);
 }
 
-/* A refusal about one field, under that field. Marked by its border and the field's aria-invalid, not by color alone. */
-.fieldError {
-  /* Clear of the focused field's ring, which the field holds while this shows. */
-  margin: 0.625rem 0 0;
+/* A refusal about one field, under that field. Marked by its border and the field's aria-invalid, not by color alone.
+   `p.` so it outranks `.box p`, which would take its margin and color. */
+p.fieldError {
+  /* Clear of the focused field's ring (offset plus width, 6px), which the field holds while this shows. */
+  margin: calc(var(--focus-ring-offset) + var(--focus-ring-width) + 0.375rem) 0 0.625rem;
   padding: 0.5rem 0.625rem;
   border: 1px solid var(--curator-tone-alert-ink);
   border-radius: var(--gah-radius);
@@ -693,6 +694,13 @@ textarea.control {
   color: var(--gah-ink-soft);
 }
 
+/* The detail side of an empty inbox: one muted line, wide screens only, since the list already says the inbox is empty. */
+.emptyPane p {
+  margin: 0;
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}
+
 .linkButton {
   display: inline-flex;
   min-height: 44px;
@@ -767,6 +775,10 @@ textarea.control {
   .list {
     border-right: 0;
     border-bottom: 1px solid var(--curator-rule);
+  }
+
+  .emptyPane {
+    display: none;
   }
 
   .detail {

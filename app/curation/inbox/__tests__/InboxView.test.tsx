@@ -1,6 +1,11 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createCurationFixture } from '@/lib/curation/__tests__/curationFixtures';
+import { eventIdOf, eventKey } from '@/lib/curation/events';
+import { loadInbox } from '@/lib/curation/inbox';
 import type { InboxActionState, InboxDetail, InboxItem, InboxView, SeriesOption } from '@/lib/curation/inbox-view';
+import { createCurationSink } from '@/lib/curation/sink';
+import { setDataDir } from '@/test/helpers/tempDataRoot';
 
 // The Inbox's pieces as the curator sees them: the list and its states, the
 // detail by type, and the forms, with the server actions stood in for, so
@@ -87,7 +92,9 @@ describe('the list', () => {
     it('says how many items need judgment, links each, and marks the open one', () => {
         renderInbox(view({ items: [item(), item({ id: EVT(2), type: 'replacement', group: 'waiting', title: 'Replacement building', waiting: 'its new derivatives are still building' })], waiting: 1 }));
         expect(screen.getByRole('heading', { level: 1, name: 'Curation inbox' })).toBeInTheDocument();
-        expect(screen.getByText('1 item requires judgment, 1 waiting')).toBeInTheDocument();
+        expect(screen.getByText('1 of 2 items requires judgment, 1 waiting')).toBeInTheDocument();
+        // The back link counts the same items the summary does.
+        expect(screen.getByRole('link', { name: 'All items (2)' })).toHaveAttribute('href', '#inbox-list');
         const links = screen.getAllByRole('link', { name: /photograph|Replacement/ });
         // Each lands on the item itself, past the list, on a phone and for a keyboard alike.
         expect(links.map((link) => link.getAttribute('href'))).toEqual([`/curation/inbox?item=${EVT(1)}#item`, `/curation/inbox?item=${EVT(2)}#item`]);
@@ -146,6 +153,43 @@ describe('the list', () => {
         expect(screen.getAllByText(/library folder/)).toHaveLength(1);
         expect(screen.queryByText(/its suggestion shows here/)).toBeNull();
         expect(screen.queryByRole('form')).toBeNull();
+        // The detail side keeps one quiet line, so a wide screen isn't blank, and doesn't repeat the list.
+        const pane = screen.getByRole('region', { name: 'Item' });
+        expect(pane).toHaveTextContent('Nothing to review. A new photograph opens here once the watcher picks it up.');
+        expect(within(pane).queryByRole('heading')).toBeNull();
+        expect(screen.getAllByText(/Nothing requires judgment/)).toHaveLength(1);
+    });
+
+    it('names the total beside the count needing judgment once settled items are listed too, matching "All items (N)"', () => {
+        renderInbox(view({ items: [item(), item({ id: EVT(2), status: 'approved', group: 'settled' }), item({ id: EVT(3), status: 'dismissed', group: 'settled' })] }));
+        expect(screen.getByText('1 of 3 items requires judgment')).toBeInTheDocument();
+        expect(screen.getByRole('link', { name: 'All items (3)' })).toBeInTheDocument();
+    });
+
+    it('shows a source name with control, bidi, and zero-width characters escaped, in its row and its heading', async () => {
+        const f = await createCurationFixture();
+        const restore = setDataDir(f.root);
+        try {
+            // A synced library file can carry any name; #10 doesn't filter them.
+            const name = 'evil\u202egpj.exe\u0007\u200b\u2066.jpg';
+            const fact = f.fact('new', f.fresh[0], { path: `trips/${name}`, folder: 'trips' });
+            await createCurationSink({ root: f.root, logger: { log: () => undefined, warn: () => undefined, error: () => undefined } })([fact]);
+            const loaded = await loadInbox(eventIdOf(eventKey('new', fact)));
+            if (loaded.state !== 'ready') throw new Error(`The inbox is ${loaded.state}`);
+            renderInbox(loaded);
+            const escaped = 'evil\\u202egpj.exe\\u0007\\u200b\\u2066.jpg';
+            const row = screen.getByRole('link', { name: /Uncurated photograph/ });
+            const heading = screen.getByRole('heading', { level: 2, name: escaped });
+            for (const shown of [row, heading]) {
+                expect(shown.textContent).toContain(escaped);
+                // eslint-disable-next-line no-control-regex
+                expect(shown.textContent).not.toMatch(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/u);
+            }
+            expect(within(row).getByText(`trips/${escaped}`)).toBeInTheDocument();
+        } finally {
+            restore();
+            await f.cleanup();
+        }
     });
 
     it('lists an unreadable item by ID', () => {

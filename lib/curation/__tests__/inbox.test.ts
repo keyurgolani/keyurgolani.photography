@@ -112,7 +112,7 @@ describe('loadInbox', () => {
         expect(view.items.map((item) => item.group)).toEqual(['judgment', 'judgment', 'judgment', 'judgment', 'judgment', 'waiting']);
         expect(view.items.slice(0, 5).map((item) => item.type).sort()).toEqual(['ambiguous', 'missing', 'new', 'processing-failure', 'reappeared']);
         expect(view.items[5].type).toBe('replacement');
-        expect(summaryText(view)).toBe('5 items require judgment, 1 waiting');
+        expect(summaryText(view)).toBe('5 of 6 items require judgment, 1 waiting');
         expect(view.items[5]).toMatchObject({ title: 'Replacement building', waiting: 'its new derivatives are still building' });
         // With no selection, the first item that needs judgment shows.
         expect(view.selected?.id).toBe(view.items[0].id);
@@ -130,7 +130,7 @@ describe('loadInbox', () => {
         expect(placed).toMatchObject({ group: 'placed', placedBy: `its photo is in the series ${DRAFT}` });
         expect(view.items.find((item) => item.photoId === f.fresh[1])?.group).toBe('judgment');
         expect(view).toMatchObject({ needsJudgment: 1, placed: 1, unplaced: 0 });
-        expect(summaryText(view)).toBe('1 item requires judgment, 1 already placed');
+        expect(summaryText(view)).toBe('1 of 2 items requires judgment, 1 already placed');
         const listed = JSON.parse((await runCurationCli(['list', '--json'], { dataRoot: f.root })).output);
         expect({ needsJudgment: listed.needsJudgment, placed: listed.placed, unplaced: listed.unplaced }).toEqual({ needsJudgment: view.needsJudgment, placed: view.placed, unplaced: view.unplaced });
         expect(view.selected?.id).toBe(ids[1]);
@@ -146,7 +146,7 @@ describe('loadInbox', () => {
         const view = ready(await loadInbox(ids[0]));
         expect(view.selected).toMatchObject({ group: 'unplaced', unplacedSeries: DRAFT, title: 'Approved, no longer placed', can: { reopen: true } });
         expect(view).toMatchObject({ unplaced: 1, needsJudgment: 0 });
-        expect(summaryText(view)).toBe('0 items require judgment, 1 approved but no longer placed');
+        expect(summaryText(view)).toBe('0 of 1 item requires judgment, 1 approved but no longer placed');
         const shown = (await runCurationCli(['show', ids[0]], { dataRoot: f.root })).output;
         expect(shown).toContain(`No longer placed: it was approved into ${DRAFT}`);
         const listed = JSON.parse((await runCurationCli(['list', '--json'], { dataRoot: f.root })).output);

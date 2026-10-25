@@ -69,8 +69,9 @@ const summary = (page: Page) => page.getByRole('region', { name: 'Curation inbox
 /** The item's heading: its source file's name, which is what tells the curator which photograph it is. */
 const itemHeading = (page: Page, photoId: string) => page.getByRole('heading', { level: 2, name: path.posix.basename(FRESH_SOURCES[photoId]) });
 
-async function openInbox(page: Page, item?: string) {
-    await page.goto(`${curatorOrigin()}/curation/inbox${item ? `?item=${item}` : ''}`);
+/** `landed` opens the item on `#item`, as its row link does, so a link back to the same URL only scrolls unless the page reloads it. */
+async function openInbox(page: Page, item?: string, { landed = false }: { landed?: boolean } = {}) {
+    await page.goto(`${curatorOrigin()}/curation/inbox${item ? `?item=${item}` : ''}${landed ? '#item' : ''}`);
     await waitForHydration(page);
 }
 
@@ -132,7 +133,9 @@ test('approves a new photograph into the draft with the typed description, and p
 
 test('turns away an action on an item that changed since the page loaded, and writes nothing', async ({ page }) => {
     const eventId = eventOf(FRESH.stale);
-    await openInbox(page, eventId);
+    // Opened the way a curator reaches it, through its row link, so "Refresh and review again" names the URL the page is already on.
+    await openInbox(page, eventId, { landed: true });
+    await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox?item=${eventId}#item`);
     await expect(itemHeading(page, FRESH.stale)).toBeVisible();
     // The CLI, or another tab, acts on it first.
     const shown = (await readEvent(data().root, eventId))!;
@@ -144,7 +147,9 @@ test('turns away an action on an item that changed since the page loaded, and wr
     await expect(page.getByRole('textbox', { name: 'Draft description' })).toHaveValue('Typed before the refresh.');
     expect(await readEvent(data().root, eventId)).toEqual(moved);
     expect(await readAuthoredRecord(data().root, 'photo', FRESH.stale)).toBeNull();
-    await page.getByRole('link', { name: 'Refresh and review again' }).click();
+    const refresh = page.getByRole('link', { name: 'Refresh and review again' });
+    await expect(refresh).toHaveAttribute('href', `/curation/inbox?item=${eventId}#item`);
+    await refresh.click();
     await waitForHydration(page);
     await expect(page.locator('header').getByText('Left in draft', { exact: true })).toBeVisible();
 });
