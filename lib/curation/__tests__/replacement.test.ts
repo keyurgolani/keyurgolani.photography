@@ -4,18 +4,19 @@ import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { publish } from '../../catalog/publish';
 import { authoredRecordDir, readAuthoredRecord } from '../../catalog/working-layer';
+import { writeAuthoredRecord } from '../../catalog/working-layer-writer';
 import { buildDerivativeSet, stagingRoot, type WriterFaults } from '../../identity/derivatives';
 import { readRegistry } from '../../identity/registry';
 import { runIdentityOnce } from '../../identity/watcherStep';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../../identity/variants';
 import { MANIFEST_FILE } from '../../storage/publish';
 import { writeVersionedDocument } from '../../storage/document';
-import { approveEvent, deferEvent, retryEvent } from '../actions';
+import { approveEvent, deferEvent, reopenEvent, retryEvent } from '../actions';
 import { createCandidateSink, replacementEventIds, settleCandidates, settlingAfterBuild } from '../candidates';
 import { runCurationCli } from '../commands';
 import { eventIdOf, eventKey, type CurationEvent } from '../events';
-import { listEvents, readEvent, withCurationLock } from '../repository';
-import { confirmReplacement } from '../resolutions';
+import { listEvents, readEvent, withCurationLock, writeEvent } from '../repository';
+import { confirmReplacement, leaveInDraft } from '../resolutions';
 import { createCurationSink } from '../sink';
 import {
     createWorld,
@@ -149,6 +150,160 @@ describe('a replacement that builds', { timeout: 60_000 }, () => {
         expect((await served(w)).photo.assetRevision).toBe(w.a);
         expect(await confirm(w, (deferred as { event: CurationEvent }).event)).toMatchObject({ ok: true });
         expect((await photoRecord(w)).assetRevision).toBe(w.b);
+    });
+});
+
+describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
+    const leave = (w: World, event: CurationEvent, extra: Partial<Parameters<typeof leaveInDraft>[0]> = {}) =>
+        leaveInDraft({ root: w.root, eventId: event.id, expectedVersion: event.version, expectedBase: w.revisionId, actor: ACTOR, ...extra });
+    const reopen = async (w: World, event: CurationEvent, base = w.revisionId) => {
+        const reopened = await reopenEvent({ root: w.root, eventId: event.id, expectedVersion: event.version, expectedBase: base, actor: ACTOR });
+        if (!reopened.ok) throw new Error(reopened.message);
+        return reopened.event;
+    };
+    /**
+     * Record P's new item as approved, as the curator would have before the
+     * first publish, so the inbox records that it pinned A. The world wrote
+     * P's record directly, and its source holds B now, so approve itself
+     * would be stale.
+     */
+    const approveP = async (w: World) => {
+        const id = eventIdOf(eventKey('new', { photoId: w.p, assetRevision: w.a, key: `new:${w.p}:${w.a}` }));
+        const item = await w.event(id);
+        const at = new Date(Date.now() - 3_600_000).toISOString();
+        await withCurationLock(w.root, {}, (hold) => writeEvent(w.root, {
+            ...item,
+            status: 'approved',
+            decisions: [...item.decisions, { action: 'approve', at, by: ACTOR, baseRevisionId: null, seriesId: SERIES, writes: [] }],
+            reviewedAt: at,
+            reviewedBy: ACTOR,
+        }, item.version, hold));
+    };
+    const kept = (record: Awaited<ReturnType<typeof photoRecord>>) => {
+        const { version: _version, assetRevision: _revision, ...rest } = record;
+        void _version;
+        void _revision;
+        return rest;
+    };
+
+    it('puts the photo record back on the revision the confirm replaced, so the next publish ships it', async () => {
+        const w = await world();
+        await w.build(w.job(w.b));
+        const before = await photoRecord(w);
+        const confirmed = await confirm(w, await w.event());
+        expect(confirmed).toMatchObject({ ok: true });
+        const reopened = await reopen(w, (confirmed as { event: CurationEvent }).event);
+        expect((await photoRecord(w)).assetRevision).toBe(w.b);
+
+        const left = await leave(w, reopened);
+        expect(left).toMatchObject({ ok: true, event: { status: 'deferred' } });
+        expect(left.ok && left.event.decisions.at(-1)).toMatchObject({ action: 'defer', fromRevision: w.a, writes: [{ record: `photo:${w.p}`, version: before.version + 2 }] });
+        expect(left.ok && left.notes.join(' ')).toContain(`back on ${w.a}, in place of ${w.b}`);
+        const after = await photoRecord(w);
+        expect(after.assetRevision).toBe(w.a);
+        expect(kept(after)).toEqual(kept(before));
+
+        const published = await publish({ dataRoot: w.root, actor: OWNER, logger: { log: () => undefined } });
+        expect(['PUBLISHED', 'NO_CHANGES']).toContain(published.outcome);
+        expect((await served(w)).photo).toMatchObject({ id: w.p, assetRevision: w.a, title: P_COPY.title });
+        // Confirm from there pins B again.
+        expect(await confirm(w, (left as { event: CurationEvent }).event)).toMatchObject({ ok: true, event: { decisions: expect.arrayContaining([expect.objectContaining({ action: 'confirm', fromRevision: w.a })]) } });
+        expect((await photoRecord(w)).assetRevision).toBe(w.b);
+    });
+
+    it('puts A back after B went live, and the next publish ships A', async () => {
+        const w = await world();
+        await w.build(w.job(w.b));
+        const confirmed = await confirm(w, await w.event());
+        const live = await publish({ dataRoot: w.root, actor: OWNER, logger: { log: () => undefined } });
+        expect(live.outcome).toBe('PUBLISHED');
+        expect((await served(w)).photo.assetRevision).toBe(w.b);
+        const reopened = await reopen(w, (confirmed as { event: CurationEvent }).event, live.revisionId as string);
+        expect(await leave(w, reopened, { expectedBase: live.revisionId })).toMatchObject({ ok: true, event: { status: 'deferred' } });
+        expect((await publish({ dataRoot: w.root, actor: OWNER, logger: { log: () => undefined } })).outcome).toBe('PUBLISHED');
+        expect((await served(w)).photo).toMatchObject({ assetRevision: w.a, title: P_COPY.title });
+    });
+
+    it('refuses once the photo record has moved since the confirm, and writes nothing', async () => {
+        const w = await world();
+        await w.build(w.job(w.b));
+        const confirmed = await confirm(w, await w.event());
+        const reopened = await reopen(w, (confirmed as { event: CurationEvent }).event);
+        const record = await photoRecord(w);
+        const elsewhere = `sha256-${'c'.repeat(64)}`;
+        await writeAuthoredRecord({ ...record, assetRevision: elsewhere }, { expectedVersion: record.version, root: w.root });
+        const before = layers(w);
+        expect(await leave(w, reopened)).toMatchObject({ ok: false, code: 'stale', message: expect.stringContaining(`pins ${elsewhere} now, not ${w.b}`) });
+        expect(layers(w)).toEqual(before);
+    });
+
+    it('keeps the record where it is when it already went back, as a crash between the put back and the event leaves it', async () => {
+        const w = await world();
+        await w.build(w.job(w.b));
+        const confirmed = await confirm(w, await w.event());
+        const reopened = await reopen(w, (confirmed as { event: CurationEvent }).event);
+        await expect(leave(w, reopened, { faults: { afterWrite: () => { throw new Error('killed'); } } })).rejects.toThrow('killed');
+        expect((await photoRecord(w)).assetRevision).toBe(w.a);
+        expect(await w.event()).toEqual(reopened);
+        const authored = treeBytes(path.join(w.root, 'authored'));
+        const left = await leave(w, reopened);
+        expect(left).toMatchObject({ ok: true, event: { status: 'deferred' } });
+        expect(left.ok && left.event.decisions.at(-1)).toMatchObject({ action: 'defer', fromRevision: w.a });
+        expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
+    });
+
+    it('after a crash between confirm\'s two writes, puts back the revision the inbox last pinned', async () => {
+        const w = await world();
+        await approveP(w);
+        await w.build(w.job(w.b));
+        const open = await w.event();
+        await expect(confirm(w, open, { faults: { afterWrite: () => { throw new Error('killed'); } } })).rejects.toThrow('killed');
+        // The record took B, but the event never recorded the confirm.
+        expect((await photoRecord(w)).assetRevision).toBe(w.b);
+        expect(await w.event()).toEqual(open);
+
+        const left = await leave(w, open);
+        expect(left).toMatchObject({ ok: true, event: { status: 'deferred' } });
+        expect(left.ok && left.event.decisions.at(-1)).toMatchObject({ action: 'defer', fromRevision: w.a, writes: [{ record: `photo:${w.p}` }] });
+        expect(left.ok && left.notes.join(' ')).toContain('which a confirm wrote without recording it');
+        expect((await photoRecord(w)).assetRevision).toBe(w.a);
+        expect(['PUBLISHED', 'NO_CHANGES']).toContain((await publish({ dataRoot: w.root, actor: OWNER, logger: { log: () => undefined } })).outcome);
+        expect((await served(w)).photo.assetRevision).toBe(w.a);
+    });
+
+    it('after a crash between confirm\'s two writes, a confirm again records what it replaced, and leave in draft puts that back', async () => {
+        const w = await world();
+        await approveP(w);
+        await w.build(w.job(w.b));
+        await expect(confirm(w, await w.event(), { faults: { afterWrite: () => { throw new Error('killed'); } } })).rejects.toThrow('killed');
+        const again = await confirm(w, await w.event());
+        expect(again).toMatchObject({ ok: true, event: { status: 'approved' } });
+        expect(again.ok && again.event.decisions.at(-1)).toMatchObject({ action: 'confirm', fromRevision: w.a, writes: [] });
+        expect(again.ok && again.notes.join(' ')).toContain(`though the inbox last pinned ${w.a}`);
+        const reopened = await reopen(w, (again as { event: CurationEvent }).event);
+        expect(await leave(w, reopened)).toMatchObject({ ok: true, event: { status: 'deferred' } });
+        expect((await photoRecord(w)).assetRevision).toBe(w.a);
+    });
+
+    it('after a crash between confirm\'s two writes with no earlier pin in the inbox, says the draft keeps the new bytes', async () => {
+        const w = await world();
+        await w.build(w.job(w.b));
+        await expect(confirm(w, await w.event(), { faults: { afterWrite: () => { throw new Error('killed'); } } })).rejects.toThrow('killed');
+        const authored = treeBytes(path.join(w.root, 'authored'));
+        const left = await leave(w, await w.event());
+        expect(left).toMatchObject({ ok: true, event: { status: 'deferred' } });
+        expect(left.ok && left.notes.join(' ')).toContain(`pins ${w.b}, and the inbox holds no earlier revision of it to put back, so the draft keeps it`);
+        expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
+    });
+
+    it('leaves an item never confirmed in draft with no write', async () => {
+        const w = await world();
+        await w.build(w.job(w.b));
+        const before = treeBytes(path.join(w.root, 'authored'));
+        const left = await leave(w, await w.event());
+        expect(left).toMatchObject({ ok: true, event: { status: 'deferred' } });
+        expect(left.ok && left.notes.join(' ')).toContain(`keeps ${w.a}`);
+        expect(treeBytes(path.join(w.root, 'authored'))).toEqual(before);
     });
 });
 
