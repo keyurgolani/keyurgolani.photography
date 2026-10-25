@@ -183,6 +183,64 @@ describe('the media route handler', () => {
         expect((await get(handler, { variant: 'w400.webp' })).status).toBe(404);
     });
 
+    it("answers a conditional request with 404, not 304, once the file is gone, though it kept the set's manifest", async () => {
+        const data = dataRoot();
+        const files = writeSet(data.root);
+        const handler = handlerWith({ access: allowAll });
+        expect((await get(handler)).status).toBe(200);
+        fs.rmSync(mediaFilePath(REF, 'w800', 'webp', data.root));
+
+        const response = await get(handler, {}, { 'If-None-Match': `"${sha(files['w800.webp'])}"` });
+        expect(response.status).toBe(404);
+        expect(response.headers.get('cache-control')).toBe('no-store');
+    });
+
+    it('404s a variant file that is a symlink, even to a copy of the listed bytes', async () => {
+        // Made first, since the last temp data root made is the configured one
+        const elsewhere = dataRoot();
+        const data = dataRoot();
+        const files = writeSet(data.root);
+        const copy = elsewhere.file('w800.webp');
+        fs.writeFileSync(copy, files['w800.webp']);
+        const file = mediaFilePath(REF, 'w800', 'webp', data.root);
+        fs.rmSync(file);
+        fs.symlinkSync(copy, file);
+
+        const response = await get(handlerWith({ access: allowAll }));
+        expect(response.status).toBe(404);
+        expect(response.headers.get('cache-control')).toBe('no-store');
+        // The other files of the set are still served.
+        expect((await get(handlerWith({ access: allowAll }), { variant: 'w400.webp' })).status).toBe(200);
+    });
+
+    it.each([
+        ['set folder', (ref: AssetRef, root: string) => assetDir(ref, root)],
+        ['photo folder', (ref: AssetRef, root: string) => path.join(root, 'assets', ref.photoId)],
+    ])('404s a set reached through a symlinked %s, even to a complete set', async (_name, linked) => {
+        const elsewhere = dataRoot();
+        const data = dataRoot();
+        writeSet(elsewhere.root);
+        fs.mkdirSync(path.dirname(linked(REF, data.root)), { recursive: true });
+        fs.symlinkSync(linked(REF, elsewhere.root), linked(REF, data.root));
+
+        const response = await get(handlerWith({ access: allowAll }));
+        expect(response.status).toBe(404);
+        expect(response.headers.get('cache-control')).toBe('no-store');
+    });
+
+    it('still serves a set when the data root itself is reached through a symlink', async () => {
+        const data = dataRoot();
+        const files = writeSet(data.root);
+        const link = `${data.root}-link`;
+        fs.symlinkSync(data.root, link);
+        cleanups.push(async () => fs.rmSync(link, { force: true }));
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', link);
+
+        const response = await get(handlerWith({ access: allowAll }));
+        expect(response.status).toBe(200);
+        expect(Buffer.from(await response.arrayBuffer()).equals(files['w800.webp'])).toBe(true);
+    });
+
     it("404s a file whose size doesn't match its manifest", async () => {
         const data = dataRoot();
         writeSet(data.root);

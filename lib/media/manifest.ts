@@ -5,14 +5,17 @@ import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../identity/variants';
 import { dataRootStatus } from '../storage/config';
 import { hasErrorCode } from '../storage/fsx';
 import { MANIFEST_FILE } from '../storage/publish';
-import { assetDir, isValidRef, mediaFilePath } from './path';
+import { assetDir, assetsRoot, isValidRef } from './path';
 import type { AssetRef } from './url';
 
 /**
  * Reading derivative sets. A set is ready when its `manifest.json` names
  * exactly the ref it sits under and every file it lists exists at its size.
  * The writer writes the manifest last, so a set without one was never
- * finished. Nothing here reads the registry or the library.
+ * finished. Nothing here reads the registry or the library, and nothing
+ * follows a symlink below the asset store: a set whose folder is reached
+ * through one, or a file that is one, reads as missing. Nothing the writer
+ * makes is a symlink, so one is something else put there.
  */
 
 const MANIFEST_KEYS = new Set(['schemaVersion', 'photoId', 'assetRevision', 'profileId', 'variants', 'lqip', 'createdAt']);
@@ -46,15 +49,59 @@ export function parseAssetManifest(value: unknown, ref: AssetRef): AssetManifest
     return value as unknown as AssetManifest;
 }
 
-type ManifestRead = { manifest: AssetManifest } | { reason: 'missing' | 'invalid-manifest' };
+/** Errors that mean a file isn't there to serve: gone, under a non-folder, or a symlink O_NOFOLLOW refused. */
+export const NOT_SERVABLE = ['ENOENT', 'ENOTDIR', 'ELOOP'] as const;
+
+/**
+ * The folder of `ref`'s set, as its real path, when it exists and every
+ * segment from the asset store down is a real folder, not a symlink. Null
+ * otherwise. The data root and the store may be reached through symlinks.
+ */
+export async function containedAssetDir(ref: AssetRef, root: string): Promise<string | null> {
+    let real: string;
+    let store: string;
+    try {
+        [real, store] = await Promise.all([fs.promises.realpath(assetDir(ref, root)), fs.promises.realpath(assetsRoot(root))]);
+    } catch (error) {
+        if (hasErrorCode(error, ...NOT_SERVABLE)) return null;
+        throw error;
+    }
+    return real === path.join(store, ref.photoId, ref.assetRevision, ref.profileId) ? real : null;
+}
+
+/** Open a regular file for reading without following a symlink at its name. Null when it isn't there to serve. */
+export async function openRegularFile(file: string): Promise<{ handle: fs.promises.FileHandle; size: number } | null> {
+    let handle: fs.promises.FileHandle;
+    try {
+        handle = await fs.promises.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    } catch (error) {
+        if (hasErrorCode(error, ...NOT_SERVABLE)) return null;
+        throw error;
+    }
+    try {
+        const stats = await handle.stat();
+        if (stats.isFile()) return { handle, size: stats.size };
+    } catch (error) {
+        await handle.close();
+        throw error;
+    }
+    await handle.close();
+    return null;
+}
+
+/** The manifest, and the set's folder by its real path, or why there is none. */
+type ManifestRead = { manifest: AssetManifest; dir: string } | { reason: 'missing' | 'invalid-manifest' };
 
 async function readManifestFile(ref: AssetRef, root: string): Promise<ManifestRead> {
+    const dir = await containedAssetDir(ref, root);
+    if (dir === null) return { reason: 'missing' };
+    const opened = await openRegularFile(path.join(dir, MANIFEST_FILE));
+    if (opened === null) return { reason: 'missing' };
     let text: string;
     try {
-        text = await fs.promises.readFile(path.join(assetDir(ref, root), MANIFEST_FILE), 'utf8');
-    } catch (error) {
-        if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return { reason: 'missing' };
-        throw error;
+        text = await opened.handle.readFile('utf8');
+    } finally {
+        await opened.handle.close();
     }
     let value: unknown;
     try {
@@ -63,7 +110,7 @@ async function readManifestFile(ref: AssetRef, root: string): Promise<ManifestRe
         return { reason: 'invalid-manifest' };
     }
     const manifest = parseAssetManifest(value, ref);
-    return manifest ? { manifest } : { reason: 'invalid-manifest' };
+    return manifest ? { manifest, dir } : { reason: 'invalid-manifest' };
 }
 
 /** The validated manifest of `ref`'s set, or null when it has none or it isn't valid. Doesn't check the files. */
@@ -92,14 +139,15 @@ export async function resolveAsset(ref: AssetRef, { root }: { root?: string } = 
     if (!('manifest' in read)) return { state: 'unavailable', reason: read.reason };
     for (const width of VARIANT_WIDTHS) {
         for (const format of VARIANT_FORMATS) {
-            let size: number;
+            let stats: fs.Stats;
             try {
-                size = (await fs.promises.stat(mediaFilePath(ref, width, format, status.root))).size;
+                // lstat, so a symlinked file counts as missing, as /media treats it
+                stats = await fs.promises.lstat(path.join(read.dir, `${width}.${format}`));
             } catch (error) {
                 if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return { state: 'unavailable', reason: 'missing-file' };
                 throw error;
             }
-            if (size !== read.manifest.variants[width][format].bytes) return { state: 'unavailable', reason: 'missing-file' };
+            if (!stats.isFile() || stats.size !== read.manifest.variants[width][format].bytes) return { state: 'unavailable', reason: 'missing-file' };
         }
     }
     return { state: 'ready', manifest: read.manifest };
