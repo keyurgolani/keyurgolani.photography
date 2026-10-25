@@ -181,17 +181,14 @@ describe('proxy.ts and the curator session', () => {
             for (const method of ['GET', 'HEAD']) {
                 const response = await send(pathname, { method, headers });
                 expect(response.status, `${method} ${pathname}`).toBe(307);
-                expect(response.headers.get('location')).toBe('/curation/login');
+                expect(response.headers.get('location')).toBe(`http://${CURATOR_HOST}/curation/login`);
                 expectCuratorHeaders(response);
             }
         }
     });
 
-    it.each(anonymous)('401s an RSC request, a route handler, /api/curation/media and a server action with %s', async (_, headers) => {
+    it.each(anonymous)('401s a route handler, /api/curation/media and a server action with %s', async (_, headers) => {
         const cases: [string, string, Record<string, string>][] = [
-            ['GET', '/curation', { rsc: '1' }],
-            ['GET', '/curation/inbox', { 'next-router-prefetch': '1', rsc: '1' }],
-            ['GET', '/curation/inbox', { 'next-router-state-tree': '%5B%5D' }],
             ['GET', '/api/curation/events', {}],
             ['GET', '/api/curation/media/ph_x/sha256-x/p_x/w800.webp', {}],
             ['HEAD', '/api/curation/media/ph_x/sha256-x/p_x/w800.webp', {}],
@@ -210,10 +207,13 @@ describe('proxy.ts and the curator session', () => {
         }
     });
 
+    it('builds the login redirect on the allowed Host it came in on', async () => {
+        expect((await send('/curation', { headers: { host: 'LOCALHOST:3001' } })).headers.get('location')).toBe('http://localhost:3001/curation/login');
+    });
+
     it('lets the login page and its form through without a session, and nothing else', async () => {
         expect(passes(await send('/curation/login'))).toBe(true);
         expect(passes(await send('/curation/login', { method: 'HEAD' }))).toBe(true);
-        expect(passes(await send('/curation/login', { headers: { rsc: '1' } }))).toBe(true);
         expect(passes(await send('/api/curation/login', { method: 'POST', headers: { origin: CURATOR_ORIGIN } }))).toBe(true);
         // The form still needs its Origin, and the page its Host.
         expect((await send('/api/curation/login', { method: 'POST' })).status).toBe(403);
@@ -224,7 +224,6 @@ describe('proxy.ts and the curator session', () => {
 
     it('passes a page, a handler and an action with a live session', async () => {
         expect(passes(await send('/curation', { headers: { cookie: signedIn } }))).toBe(true);
-        expect(passes(await send('/curation', { headers: { cookie: signedIn, rsc: '1' } }))).toBe(true);
         expect(passes(await send('/api/curation/media/ph_x/sha256-x/p_x/w800.webp', { headers: { cookie: signedIn } }))).toBe(true);
         expect(passes(await send('/api/curation/logout', { method: 'POST', headers: { cookie: signedIn, origin: CURATOR_ORIGIN } }))).toBe(true);
     });

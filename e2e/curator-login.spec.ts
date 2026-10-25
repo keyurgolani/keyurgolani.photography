@@ -2,6 +2,7 @@ import { publish } from '../lib/catalog/publish';
 import { createTestCatalog, type TestCatalog } from '../lib/catalog/testing';
 import { READY_TIMEOUT } from './support/catalogServer';
 import { signIn, startCuratorServer, type CuratorServer } from './support/curatorServer';
+import { waitForHydration } from './support/hydration';
 import { expect, test } from './support/test';
 
 // #14's 14-2: the curator's `Secure` session cookie over plain http on
@@ -58,6 +59,7 @@ for (const name of ['localhost', '127.0.0.1']) {
             await expect(page.getByRole('heading', { name: 'Curator login' })).toBeVisible();
 
             // A wrong passphrase sets nothing.
+            await waitForHydration(page);
             await page.getByLabel('Passphrase').fill('not the passphrase');
             await page.getByRole('button', { name: 'Sign in' }).click();
             await expect(page.getByRole('alert')).toContainText("That didn't sign you in.");
@@ -89,6 +91,7 @@ for (const name of ['localhost', '127.0.0.1']) {
             await expect(page.getByText("you're signed in")).toBeVisible();
 
             // Logout ends the session and clears the cookie.
+            await waitForHydration(page);
             await page.getByRole('button', { name: 'Sign out' }).click();
             await expect(page).toHaveURL(`${origin}/curation/login`);
             expect((await context.cookies(origin)).filter((entry) => entry.name === 'curator_session')).toEqual([]);

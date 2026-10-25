@@ -77,19 +77,22 @@ function curatorDenial(status: number): NextResponse {
     });
 }
 
-/** A curator page asked for without a session: on to the login page, same origin, with every curator header. */
-function toLogin(): NextResponse {
+/**
+ * A curator page asked for without a session: on to the login page, with
+ * every curator header. Next takes only an absolute Location from a proxy,
+ * so it's built on `host`, which has passed the allowlist by now, and never
+ * on anything else the request sent. Next sends it on as a relative one when
+ * it's the request's own origin.
+ */
+function toLogin(host: string): NextResponse {
     return new NextResponse(null, {
         status: 307,
-        headers: { Location: LOGIN_PAGE, ...CURATOR_RESPONSE_HEADERS, ...CURATOR_FRAME_POLICY },
+        headers: { Location: new URL(LOGIN_PAGE, `http://${host}`).toString(), ...CURATOR_RESPONSE_HEADERS, ...CURATOR_FRAME_POLICY },
     });
 }
 
 /** Methods that only read. Anything else can reach a server action or a mutating handler. */
 const READ_METHODS = new Set(['GET', 'HEAD']);
-
-/** Headers the App Router's client sends when it fetches a page's RSC payload instead of its HTML. */
-const RSC_HEADERS = ['rsc', 'next-router-prefetch', 'next-router-state-tree'];
 
 /**
  * Keeps original photos private, the curator behind its boundary, and every
@@ -101,8 +104,8 @@ const RSC_HEADERS = ['rsc', 'next-router-prefetch', 'next-router-state-tree'];
  *   the checks in lib/curation/auth/policy.ts (the bind and the secret
  *   files, `Host`, `Origin` on a mutation, and a live session), and each
  *   page, handler and action runs requireCurator() again. Without a session,
- *   a page is sent to `/curation/login`, and a route handler, a server
- *   action or an RSC request gets 401. Only a read of `/curation/login` and
+ *   a page, or its RSC payload, is sent to `/curation/login`, and a route
+ *   handler or a server action gets 401. Only a read of `/curation/login` and
  *   a POST to `/api/curation/login` skip the session.
  * - `/_next/image` is checked only for its `url`: unless the legacy
  *   derivatives serve, it refuses one that reaches /assets/photos with a 400
@@ -145,8 +148,10 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
             process.argv,
         );
         if (denial !== null) {
-            const page = !resolvedPathname(pathname).toLowerCase().startsWith('/api') && !RSC_HEADERS.some((name) => request.headers.has(name));
-            if (denial.reason === 'session' && !mutation && page) return toLogin();
+            // Next hides the RSC headers from the proxy, so a page's RSC fetch is sent to the login like the page itself.
+            const page = !resolvedPathname(pathname).toLowerCase().startsWith('/api');
+            const host = request.headers.get('host');
+            if (denial.reason === 'session' && !mutation && page && host) return toLogin(host.toLowerCase());
             return curatorDenial(denial.status);
         }
         const response = NextResponse.next();

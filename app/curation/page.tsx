@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import SameOriginPostForm from '@/components/site/SameOriginPostForm';
 import StatusPage from '@/components/site/StatusPage';
 import { requireCurator } from '@/lib/curation/auth';
 
@@ -16,11 +17,7 @@ export default async function CurationPage() {
   return (
     <StatusPage
       heading="Curation"
-      actions={
-        <form method="post" action="/api/curation/logout">
-          <button type="submit">Sign out</button>
-        </form>
-      }
+      actions={<SameOriginPostForm action="/api/curation/logout" submitLabel="Sign out" />}
     >
       The curator is on, and you&apos;re signed in. The inbox isn&apos;t built yet.
     </StatusPage>
