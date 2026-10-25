@@ -61,13 +61,16 @@
  *     5 MiB in UTF-8, and describe-import.ts lists the characters and field
  *     lengths it refuses. --dry-run takes no lock and writes nothing.
  *
- *   npx tsx scripts/photos.ts edit (<photoId> | <seriesId> | site) [--file <path>]
+ *   npx tsx scripts/photos.ts edit (<photoId> | <seriesId> | site) [--file <path>] [--expect-version <N>]
  *     Open a record's newest version in $VISUAL or $EDITOR, check it, and
  *     commit it as the next version. A series without a record opens as a
- *     draft to fill in. --file commits a file instead of opening an editor.
- *     Exits 0 when saved or unchanged, 1 when the edit or the record can't be
- *     used, 2 on a usage error, 3 when the record changed meanwhile or the
- *     authored lock stays busy, and 4 for I/O.
+ *     draft to fill in. --file commits a file instead of opening an editor,
+ *     and needs --expect-version, the version the edit started from, when
+ *     the record exists. An edit it can't commit stays in edits/ in the data
+ *     root, with the command that commits it. Exits 0 when saved or
+ *     unchanged, 1 when the edit or the record can't be used, 2 on a usage
+ *     error, 3 when the record isn't at the version the edit started from or
+ *     the authored lock stays busy, and 4 for I/O.
  *
  *   npx tsx scripts/photos.ts sequence <command> <seriesId> ...
  *   npx tsx scripts/photos.ts series order <seriesId>...
@@ -152,7 +155,7 @@ const USAGE = `Usage:
   ${PROGRAM} list [--unassigned] [--json]
   ${PROGRAM} draft:init
   ${PROGRAM} describe --import <file> [--dry-run]
-  ${PROGRAM} edit (<photoId> | <seriesId> | site) [--file <path>]
+  ${PROGRAM} edit (<photoId> | <seriesId> | site) [--file <path>] [--expect-version <N>]
   ${PROGRAM} sequence show <seriesId>
   ${PROGRAM} sequence set <seriesId> <photoId>... [--expect-version <N>]
   ${PROGRAM} sequence (insert | move) <seriesId> <photoId> (--start | --end | --after <photoId> | --to <N>) [--expect-version <N>]
@@ -418,14 +421,16 @@ async function describeCommand(args: string[]): Promise<number> {
 }
 
 async function editCommand(args: string[]): Promise<number> {
-    const { values, positionals } = parseFlags({ args, options: { file: { type: 'string' } }, allowPositionals: true });
+    const { values, positionals } = parseFlags({ args, options: { file: { type: 'string' }, 'expect-version': { type: 'string' } }, allowPositionals: true });
     if (positionals.length !== 1) throw new UsageError('photos edit needs one record: a photo ID, a series ID, or site.');
     const ref = recordRef(positionals[0]);
     if (ref === null) throw new UsageError(`${positionals[0]} is not a photo ID, a series ID, or site.`);
     if (values.file === '') throw new UsageError('--file needs a path.');
+    const expect = values['expect-version'];
+    if (expect !== undefined && !/^\d+$/.test(expect)) throw new UsageError('--expect-version takes a version from 0.');
     const root = ownerRoot();
     if (typeof root === 'number') return root;
-    return printed(await runEditRecord({ dataRoot: root }, ref, { file: values.file }));
+    return printed(await runEditRecord({ dataRoot: root }, ref, { file: values.file, expectVersion: expect === undefined ? undefined : Number(expect) }));
 }
 
 async function orderCommand(parse: () => SequenceCommand): Promise<number> {

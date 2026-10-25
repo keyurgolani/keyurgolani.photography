@@ -43,7 +43,7 @@ export const IMPORT_FILE_MAX_BYTES = 5 * 1024 * 1024;
 
 export { FIELD_LIMITS };
 
-type TextColumn = keyof typeof FIELD_LIMITS;
+type TextColumn = 'alt' | 'title' | 'caption';
 
 export interface DescriptionRow {
     /** Where the row is, for messages: `line 4` in CSV, `item 3` in JSON. */
