@@ -108,10 +108,11 @@ const server = () => {
 };
 const origin = () => server().origin;
 const base = (draft = draftId) => `/curation/preview/${draft}/site`;
+/** A photo's derivative set, from its authored record, since draft-only photos aren't in the published content. */
 const photoOf = (photoId: string) => {
-    const photo = catalog?.content.photos.find((entry) => entry.id === photoId);
-    if (!photo) throw new Error(`No photo ${photoId}`);
-    return photo;
+    const photo = catalog?.photos.find((entry) => entry.id === photoId);
+    if (!photo || !catalog) throw new Error(`No photo ${photoId}`);
+    return { id: photo.id, assetRevision: photo.assetRevision, profileId: catalog.profileId };
 };
 const imagePath = (draft: string, photoId: string) => {
     const photo = photoOf(photoId);
@@ -168,7 +169,7 @@ function expectInsidePreview(log: readonly string[], draft = draftId) {
         const parsed = new URL(url);
         expect(parsed.origin, url).toBe(origin());
         expect(parsed.pathname, url).not.toMatch(PUBLIC_REQUEST);
-        if (parsed.pathname.includes('/media/')) expect(parsed.pathname.startsWith(`${base(draft)}/media/`), url).toBe(true);
+        if (parsed.pathname.includes('/media/') && !parsed.pathname.startsWith('/_next/static/')) expect(parsed.pathname.startsWith(`${base(draft)}/media/`), url).toBe(true);
     }
 }
 
@@ -237,8 +238,8 @@ test.describe('signed in', () => {
             await page.goto(`${origin()}${base()}/work`);
             await waitForHydration(page);
             const main = page.getByRole('main');
-            await expect(main.getByText(KEPT.draftTitle)).toBeVisible();
-            await expect(main.getByText(NEW.title)).toBeVisible();
+            await expect(main.getByText(KEPT.draftTitle).first()).toBeVisible();
+            await expect(main.getByText(NEW.title).first()).toBeVisible();
             await expect(main.getByText(GONE.title)).toHaveCount(0);
             await expect(main.getByText(KEPT.title, { exact: true })).toHaveCount(0);
             for (const path of await linkPaths(page)) expect(path.startsWith(base()), path).toBe(true);
@@ -261,12 +262,15 @@ test.describe('signed in', () => {
             await page.locator(`#photo-${id(4)}`).click();
             await expect(page).toHaveURL(`${origin()}${base()}/work/${NEW.slug}/photo/${id(4)}`);
             await expect(page.locator('[data-surface="viewer"]')).toBeVisible();
-            const next = page.locator('[data-viewer-step="next"]');
-            await expect(next).toHaveAttribute('href', `${base()}/work/${NEW.slug}/photo/${id(5)}`);
-            await next.click();
+            // The shell's Previous and Next move inside the preview.
+            await page.getByRole('button', { name: 'Next photograph' }).click();
             await expect(page).toHaveURL(`${origin()}${base()}/work/${NEW.slug}/photo/${id(5)}`);
-            await expect(page.locator('[data-viewer-step="previous"]')).toHaveAttribute('href', `${base()}/work/${NEW.slug}/photo/${id(4)}`);
+            await page.getByRole('button', { name: 'Previous photograph' }).click();
+            await expect(page).toHaveURL(`${origin()}${base()}/work/${NEW.slug}/photo/${id(4)}`);
+            await page.getByRole('button', { name: 'Next photograph' }).click();
+            await expect(page).toHaveURL(`${origin()}${base()}/work/${NEW.slug}/photo/${id(5)}`);
             await expect(page.getByRole('link', { name: 'Close' })).toHaveAttribute('href', `${base()}/work/${NEW.slug}`);
+            for (const path of await linkPaths(page)) expect(path.startsWith(base()), path).toBe(true);
             // The photograph comes from the preview's media route, never /_next/image.
             const source = await page.locator('[data-surface="viewer"] img').first().evaluate((image) => (image as HTMLImageElement).currentSrc);
             expect(new URL(source).pathname.startsWith(`${base()}/media/${id(5)}/`)).toBe(true);
