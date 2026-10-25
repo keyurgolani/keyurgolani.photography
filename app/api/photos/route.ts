@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { catalogPhotos, legacyPhotos, type ImageItem } from '@/lib/catalog/photos-api';
 import { getActiveCatalog } from '@/lib/catalog/public-reader';
-import { catalogError, catalogJson } from '@/lib/catalog/validators';
+import { catalogError, catalogJson, errorName } from '@/lib/catalog/validators';
 import { dataRoot } from '@/lib/storage/config';
 
 /**
@@ -24,13 +24,21 @@ function unavailable(mode: 'legacy' | 'catalog', reason: string): Response {
     return catalogError(503, { reason }, { 'X-Catalog-Mode': mode });
 }
 
+/** Anything the route doesn't handle, in either mode, gets a 500 with `no-store` and no ETag, not Next's bare 500. */
 export async function GET(request: Request): Promise<Response> {
-    const catalog = await getActiveCatalog();
-    if (catalog.mode === 'legacy') {
-        const root = dataRoot();
-        const photos = root === null ? { ok: false as const, reason: 'registry-missing' } : await legacyPhotos(root);
-        return photos.ok ? legacyListed(photos.items) : unavailable('legacy', photos.reason);
+    let mode: 'legacy' | 'catalog' | undefined;
+    try {
+        const catalog = await getActiveCatalog();
+        mode = catalog.mode;
+        if (catalog.mode === 'legacy') {
+            const root = dataRoot();
+            const photos = root === null ? { ok: false as const, reason: 'registry-missing' } : await legacyPhotos(root);
+            return photos.ok ? legacyListed(photos.items) : unavailable('legacy', photos.reason);
+        }
+        if (catalog.state === 'unavailable') return unavailable('catalog', catalog.reason);
+        return await catalogJson(request, catalog.active.revisionId, () => catalogPhotos(catalog.reader), { headers: { 'X-Catalog-Mode': 'catalog' } });
+    } catch (error) {
+        console.error(JSON.stringify({ event: 'catalog.response.failed', route: '/api/photos', error: errorName(error) }));
+        return catalogError(500, { reason: 'internal' }, mode === undefined ? {} : { 'X-Catalog-Mode': mode });
     }
-    if (catalog.state === 'unavailable') return unavailable('catalog', catalog.reason);
-    return catalogJson(request, catalog.active.revisionId, () => catalogPhotos(catalog.reader), { headers: { 'X-Catalog-Mode': 'catalog' } });
 }

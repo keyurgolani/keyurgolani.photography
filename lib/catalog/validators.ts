@@ -67,7 +67,7 @@ export interface CatalogJsonOptions {
 }
 
 /** A short, path-free name for an error, for the log line. */
-function errorName(error: unknown): string {
+export function errorName(error: unknown): string {
     if (typeof error === 'object' && error !== null && typeof (error as NodeJS.ErrnoException).code === 'string') return (error as NodeJS.ErrnoException).code as string;
     return error instanceof Error ? error.name : 'Error';
 }
@@ -80,8 +80,8 @@ export function catalogError(status: number, body: unknown, headers: Record<stri
 /**
  * The 200 for `revisionId`, or a 304 when `If-None-Match` names its tag or
  * is `*`. The 304 carries the same `ETag`, `Cache-Control`, and
- * `X-Catalog-Revision` and doesn't build the body. A body that throws gives
- * a 500 through catalogError().
+ * `X-Catalog-Revision` and doesn't build the body. A body that throws, or
+ * that JSON can't encode, gives a 500 through catalogError().
  */
 export async function catalogJson(request: Request, revisionId: string, body: () => unknown, options: CatalogJsonOptions = {}): Promise<Response> {
     const { pathname } = new URL(request.url);
@@ -90,12 +90,11 @@ export async function catalogJson(request: Request, revisionId: string, body: ()
     if (ifNoneMatchHits(request.headers.get('if-none-match'), etag)) {
         return new Response(null, { status: 304, headers });
     }
-    let value: unknown;
     try {
-        value = await body();
+        // Encoding is inside the try too, so a body JSON can't encode fails the same way.
+        return Response.json(await body(), { headers });
     } catch (error) {
         console.error(JSON.stringify({ event: 'catalog.response.failed', route: pathname, error: errorName(error) }));
         return catalogError(500, { reason: 'internal' }, options.headers);
     }
-    return Response.json(value, { headers });
 }
