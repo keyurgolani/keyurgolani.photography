@@ -7,6 +7,9 @@
   --cc-band-mid: #151918;
   --cc-bands: linear-gradient(90deg, var(--cc-band-edge) 0 17%, var(--cc-band-mid) 17% 82%, var(--cc-band-edge) 82%);
   --cc-ink: #f6f4ee;
+  --cc-ink-soft: #d3d6d1;
+  --cc-label: #a9b3ae;
   --cc-chrome: rgba(8, 11, 10, 0.9);
   --cc-rule: rgba(255, 255, 255, 0.17);
+  --cc-rule-strong: rgba(255, 255, 255, 0.38);
 }

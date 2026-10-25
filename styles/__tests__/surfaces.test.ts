@@ -14,7 +14,7 @@ const SURFACES = [
 ] as const;
 
 /** The surface-only colors, which the all-routes tokens may not carry. The shared rgba(255, 255, 255, 0.17) neutral is fine. */
-const SURFACE_HEXES = ['#f4ecd7', '#292a28', '#5b564c', '#111513', '#101413', '#151918', '#f6f4ee'];
+const SURFACE_HEXES = ['#f4ecd7', '#292a28', '#5b564c', '#111513', '#101413', '#151918', '#f6f4ee', '#d3d6d1', '#a9b3ae'];
 
 /** Every rule in `root`, with whether it sits inside an at-rule other than @media. */
 function rules(root: Container) {
@@ -84,4 +84,19 @@ describe('the Light Takes Shape paper', () => {
   it.each(['--lts-ink', '--lts-ink-soft'])('keeps %s at 4.5:1 on --lts-paper', (ink) => {
     expect(contrast(values.get(ink)!, values.get('--lts-paper')!)).toBeGreaterThanOrEqual(4.5);
   });
+});
+
+describe('the Chromatic Chapters text', () => {
+  const values = new Map<string, string>();
+  read('surfaces/chromatic-chapters.css').walkDecls((decl) => {
+    if (!values.has(decl.prop)) values.set(decl.prop, decl.value);
+  });
+
+  // The Viewer sets text on the ground and both bands, and on --cc-chrome over them, which is darker still.
+  it.each(['--cc-ink', '--cc-ink-soft', '--cc-label'].flatMap((ink) => ['--cc-ground', '--cc-band-edge', '--cc-band-mid'].map((ground) => [ink, ground])))(
+    'keeps %s at 4.5:1 on %s',
+    (ink, ground) => {
+      expect(contrast(values.get(ink)!, values.get(ground)!)).toBeGreaterThanOrEqual(4.5);
+    },
+  );
 });
