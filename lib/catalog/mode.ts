@@ -1,8 +1,8 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import { hasErrorCode } from '../storage/fsx';
 import { listActivations } from './repository';
-import { catalogPaths } from './working-layer';
+import type { ActivePointer } from './types';
+import { readActivePointer } from './working-layer';
 
 export type CatalogMode = 'legacy' | 'catalog';
 
@@ -24,14 +24,35 @@ function errorName(error: unknown): string {
     return error instanceof Error ? error.name : 'Error';
 }
 
-async function exists(file: string): Promise<Evidence> {
+/**
+ * One read of the active pointer through readActivePointer(): the newest
+ * version in `catalog/active/`, null when the folder holds none, or what the
+ * read threw.
+ */
+export type PointerRead = { pointer: ActivePointer | null } | { error: unknown };
+
+/** Read the active pointer once. The public reader hands the result to checkCatalogMode(), so a request reads it once. */
+export async function readPointer(root: string): Promise<PointerRead> {
     try {
-        await fs.promises.lstat(/*turbopackIgnore: true*/ file);
-        return { found: true };
+        return { pointer: await readActivePointer(root) };
     } catch (error) {
-        if (hasErrorCode(error, 'ENOENT')) return { found: false };
-        return { unreadable: errorName(error) };
+        return { error };
     }
+}
+
+/**
+ * Whether a pointer read shows a cutover. A file system error carries an
+ * errno code and says nothing either way. readActivePointer() throws any
+ * other error only when the folder holds a version that isn't a valid
+ * pointer, such as a damaged one or one edited in place, and that is a
+ * cutover too.
+ */
+function pointerEvidence(read: PointerRead): Evidence {
+    if (!('error' in read)) return { found: read.pointer !== null };
+    const { error } = read;
+    if (typeof error !== 'object' || error === null || typeof (error as NodeJS.ErrnoException).code !== 'string') return { found: true };
+    if (hasErrorCode(error, 'ENOENT')) return { found: false };
+    return { unreadable: errorName(error) };
 }
 
 async function hasCommittedActivation(root: string): Promise<Evidence> {
@@ -45,22 +66,26 @@ async function hasCommittedActivation(root: string): Promise<Evidence> {
 
 /**
  * Where public reads come from, and why. `legacy` until the first
- * activation, and `catalog` once `catalog/active.json` or a committed
- * activation exists. It then stays `catalog` for as long as the process
- * runs, even if both go away, so a public read never falls back to the
- * legacy library after the cutover.
+ * activation, and `catalog` once `catalog/active/` holds a version, valid or
+ * not, or a committed activation exists. It then stays `catalog` for as long
+ * as the process runs, even if both go away, so a public read never falls
+ * back to the legacy library after the cutover.
  *
  * When either can't be read, nobody can tell it isn't there, so this call
  * answers `catalog` too, with `unreadable` saying what failed. That answer
  * isn't remembered, so a transient error or a permission fixed later
  * doesn't keep a site that never published on catalog mode. The CLI may
  * call this; it reads only.
+ *
+ * `read` is the pointer read the caller made for this request, so the
+ * pointer is read once. Without it, this call reads the pointer itself,
+ * unless the process already remembers the cutover.
  */
-export async function checkCatalogMode(root: string | null): Promise<ModeCheck> {
+export async function checkCatalogMode(root: string | null, read?: PointerRead): Promise<ModeCheck> {
     if (root === null) return { mode: 'legacy' };
     const resolved = path.resolve(/*turbopackIgnore: true*/ root);
     if (cutOver.has(resolved)) return { mode: 'catalog' };
-    const pointer = await exists(catalogPaths(resolved).active);
+    const pointer = pointerEvidence(read ?? await readPointer(resolved));
     const committed = 'found' in pointer && pointer.found ? pointer : await hasCommittedActivation(resolved);
     if (('found' in pointer && pointer.found) || ('found' in committed && committed.found)) {
         cutOver.add(resolved);
