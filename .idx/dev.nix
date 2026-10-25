@@ -28,7 +28,8 @@
       enable = true;
       previews = {
         web = {
-          command = ["npm" "run" "dev" "--" "--port" "$PORT" "--hostname" "0.0.0.0"];
+          # Loopback only. The preview proxy runs in the same workspace.
+          command = ["npm" "run" "dev" "--" "--port" "$PORT" "--hostname" "127.0.0.1"];
           manager = "web";
         };
       };

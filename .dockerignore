@@ -9,7 +9,10 @@ README.md
 # Next loads .env, .env.production, and .env.local at build time, inlines
 # NEXT_PUBLIC_ values, and copies the files it loaded into the standalone output
 .env*
+**/*.env
 !.env.example
+# Secret files for docker-compose.prod.yml, never copied into an image
+**/secrets
 dist
 .github
 ci
