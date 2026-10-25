@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { renderToString } from 'react-dom/server';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PublishedViewerPhoto, ViewerImage } from '@/lib/catalog/projections/viewer';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '@/lib/identity/variants';
 import { mediaUrl } from '@/lib/media/url';
@@ -108,6 +108,25 @@ function renderShell(mode: ViewerMode, n: number) {
 const root = () => document.querySelector<HTMLElement>('[data-surface="viewer"]');
 const announcer = () => document.querySelector('[data-viewer-announcer]');
 const step = (name: 'Previous photograph' | 'Next photograph') => screen.getByRole('button', { name });
+const stage = () => document.querySelector<HTMLElement>('[data-viewer-stage]') as HTMLElement;
+
+/**
+ * A touchmove at `dx` across and `dy` down from the swipe's 200, 300 start, with `fingers` touches down, and whether the
+ * page cancelled it. jsdom's TouchEvent wants real Touch objects, so this is a plain cancelable event with `touches` set.
+ */
+function touchMove(target: HTMLElement, dx: number, dy = 0, { fingers = 1, cancelable = true } = {}): boolean {
+    const event = new Event('touchmove', { bubbles: true, cancelable });
+    const touch = { clientX: 200 + dx, clientY: 300 + dy };
+    Object.defineProperty(event, 'touches', { value: Array.from({ length: fingers }, () => touch) });
+    target.dispatchEvent(event);
+    return event.defaultPrevented;
+}
+
+/** One finger down on `target` and up `dx` across and `dy` down, as the root sees it once it holds the capture. */
+function swipe(target: HTMLElement, dx: number, dy = 0) {
+    fireEvent.pointerDown(target, { pointerId: 1, isPrimary: true, clientX: 200, clientY: 300 });
+    fireEvent.pointerUp(target, { pointerId: 1, clientX: 200 + dx, clientY: 300 + dy });
+}
 
 describe('ViewerShell, on a page', () => {
     it('is a main with the controls rendered once, as buttons, with no dialog and an empty polite region', () => {
@@ -285,6 +304,7 @@ describe('ViewerShell, as the modal', () => {
         const outside = document.createElement('button');
         document.body.append(outside);
         fireEvent.keyDown(outside, { key: 'ArrowRight' });
+        expect(fireEvent.keyDown(document.documentElement, { key: 'ArrowRight' })).toBe(true);
         expect(router.replace).not.toHaveBeenCalled();
         const next = step('Next photograph');
         next.focus();
@@ -323,6 +343,32 @@ describe('ViewerShell, as the modal', () => {
         expect(router.back).toHaveBeenCalledOnce();
     });
 
+    it('takes arrows from the body while it\'s open, where focus lands after Tab past the end or a tap in WebKit', () => {
+        const { move } = renderShell('modal', 1);
+        (document.activeElement as HTMLElement).blur();
+        expect(document.activeElement).toBe(document.body);
+        expect(fireEvent.keyDown(document.body, { key: 'ArrowRight' })).toBe(false);
+        expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(2), { scroll: false });
+        move(2);
+        // The move leaves focus where it was.
+        expect(document.activeElement).toBe(document.body);
+        // The dialog itself, which a click on the photograph focuses in Chromium, counts as inside.
+        fireEvent.keyDown(dialog() as HTMLElement, { key: 'ArrowLeft' });
+        expect(router.replace).toHaveBeenLastCalledWith(photoHref(1), { scroll: false });
+        // A modifier still means the key is someone else's.
+        router.replace.mockClear();
+        expect(fireEvent.keyDown(document.body, { key: 'ArrowRight', altKey: true })).toBe(true);
+        expect(router.replace).not.toHaveBeenCalled();
+    });
+
+    it('moves on a swipe in the modal too', () => {
+        renderShell('modal', 2);
+        swipe(stage(), -80);
+        expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
+        swipe(stage(), 80);
+        expect(router.replace).toHaveBeenLastCalledWith(photoHref(1), { scroll: false });
+    });
+
     it('closes the dialog when it unmounts without asking for a Back, and leaves no listener', () => {
         const { unmount } = renderShell('modal', 2);
         const element = dialog() as HTMLDialogElement;
@@ -335,7 +381,276 @@ describe('ViewerShell, as the modal', () => {
             element.dispatchEvent(new Event('close'));
         });
         fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+        swipe(element.querySelector<HTMLElement>('[data-viewer-stage]') ?? element, -80);
         expect(router.back).not.toHaveBeenCalled();
+        expect(router.replace).not.toHaveBeenCalled();
+    });
+});
+
+describe('ViewerShell, swipes', () => {
+    const setPointerCapture = vi.fn();
+    beforeAll(() => {
+        // jsdom has pointer events but no pointer capture.
+        Object.assign(HTMLElement.prototype, { setPointerCapture });
+    });
+    afterAll(() => {
+        delete (HTMLElement.prototype as Partial<HTMLElement>).setPointerCapture;
+    });
+
+    it('moves on a horizontal swipe on the photograph: toward the left is Next, toward the right Previous', () => {
+        const { move } = renderShell('page', 2);
+        swipe(stage(), -48);
+        expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
+        move(3);
+        expect(announcer()).toHaveTextContent('Photograph 3 of 3');
+        router.replace.mockClear();
+        swipe(stage(), 120, 20);
+        expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(2), { scroll: false });
+    });
+
+    it('takes the pointer\'s capture on the root, which outlives the photograph, for a gesture it follows', () => {
+        renderShell('page', 2);
+        fireEvent.pointerDown(stage(), { pointerId: 4, isPrimary: true, clientX: 200, clientY: 300 });
+        expect(setPointerCapture).toHaveBeenCalledExactlyOnceWith(4);
+        expect(setPointerCapture.mock.contexts[0]).toBe(root());
+        fireEvent.pointerUp(root() as HTMLElement, { pointerId: 4, clientX: 100, clientY: 300 });
+        expect(router.replace).toHaveBeenCalledOnce();
+        // A start off the photograph takes no capture.
+        setPointerCapture.mockClear();
+        fireEvent.pointerDown(step('Next photograph'), { pointerId: 5, isPrimary: true, clientX: 200, clientY: 300 });
+        expect(setPointerCapture).not.toHaveBeenCalled();
+    });
+
+    it('still moves when the browser refuses the capture', () => {
+        setPointerCapture.mockImplementationOnce(() => {
+            throw new DOMException('No active pointer', 'NotFoundError');
+        });
+        renderShell('page', 2);
+        swipe(stage(), -80);
+        expect(router.replace).toHaveBeenCalledOnce();
+    });
+
+    it('leaves focus where it was: a swipe never moves keyboard focus', () => {
+        const { move } = renderShell('page', 2);
+        expect(document.activeElement).toBe(document.body);
+        swipe(stage(), -80);
+        move(3);
+        expect(document.activeElement).toBe(document.body);
+        // Nor does an arrow with nothing focused.
+        fireEvent.keyDown(document.body, { key: 'ArrowLeft' });
+        move(2);
+        expect(document.activeElement).toBe(document.body);
+    });
+
+    it('never moves on a short swipe, a mostly vertical one, a cancel, or a lost capture', () => {
+        renderShell('page', 2);
+        swipe(stage(), -47);
+        swipe(stage(), 47);
+        swipe(stage(), -60, 49);
+        swipe(stage(), 5, 200);
+        fireEvent.pointerDown(stage(), { pointerId: 1, isPrimary: true, clientX: 200, clientY: 300 });
+        fireEvent.pointerCancel(stage(), { pointerId: 1 });
+        fireEvent.pointerUp(stage(), { pointerId: 1, clientX: 50, clientY: 300 });
+        fireEvent.pointerDown(stage(), { pointerId: 2, isPrimary: true, clientX: 200, clientY: 300 });
+        (root() as HTMLElement).dispatchEvent(new PointerEvent('lostpointercapture', { pointerId: 2, bubbles: true }));
+        fireEvent.pointerUp(stage(), { pointerId: 2, clientX: 50, clientY: 300 });
+        expect(router.replace).not.toHaveBeenCalled();
+        // And the next clean swipe still works.
+        swipe(stage(), -80);
+        expect(router.replace).toHaveBeenCalledOnce();
+    });
+
+    it('never moves on two fingers, a pinch, or a second finger on a control', () => {
+        renderShell('page', 2);
+        fireEvent.pointerDown(stage(), { pointerId: 1, isPrimary: true, clientX: 200, clientY: 300 });
+        fireEvent.pointerDown(stage(), { pointerId: 2, isPrimary: false, clientX: 220, clientY: 300 });
+        fireEvent.pointerUp(stage(), { pointerId: 2, clientX: 400, clientY: 300 });
+        fireEvent.pointerUp(stage(), { pointerId: 1, clientX: 20, clientY: 300 });
+        fireEvent.pointerDown(stage(), { pointerId: 3, isPrimary: true, clientX: 200, clientY: 300 });
+        fireEvent.pointerDown(step('Previous photograph'), { pointerId: 4, isPrimary: false, clientX: 10, clientY: 10 });
+        fireEvent.pointerUp(stage(), { pointerId: 3, clientX: 20, clientY: 300 });
+        expect(router.replace).not.toHaveBeenCalled();
+    });
+
+    it('never moves on a swipe that starts off the photograph', () => {
+        renderShell('page', 2);
+        swipe(step('Next photograph'), -80);
+        swipe(document.querySelector('header') as HTMLElement, -80);
+        swipe(screen.getByRole('button', { name: 'Show technical details' }), -80);
+        expect(router.replace).not.toHaveBeenCalled();
+    });
+
+    describe('claims a sideways touch from the browser, so it leaves no fling to swallow the next tap', () => {
+        const down = (target: HTMLElement, pointerId = 1, isPrimary = true) =>
+            fireEvent.pointerDown(target, { pointerId, isPrimary, clientX: 200, clientY: 300 });
+
+        it('cancels every move of a touch that settles sideways, from the slop on, and still moves at the lift', () => {
+            renderShell('page', 2);
+            down(stage());
+            expect(touchMove(stage(), -4, 1), 'under the slop').toBe(false);
+            expect(touchMove(stage(), -12, 3)).toBe(true);
+            // Settled: a later move that turns down is still the Viewer's, and so is one aimed outside the photograph.
+            expect(touchMove(stage(), -20, 40)).toBe(true);
+            expect(touchMove(root() as HTMLElement, -150, 0)).toBe(true);
+            // A move the browser already made uncancelable is left alone.
+            expect(touchMove(stage(), -150, 0, { cancelable: false })).toBe(false);
+            fireEvent.pointerUp(root() as HTMLElement, { pointerId: 1, clientX: 50, clientY: 300 });
+            expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
+        });
+
+        it('leaves a touch that settles downward to the browser to scroll, however it turns later', () => {
+            renderShell('page', 2);
+            down(stage());
+            expect(touchMove(stage(), 3, -12)).toBe(false);
+            expect(touchMove(stage(), -150, -14)).toBe(false);
+        });
+
+        it('settles each touch afresh', () => {
+            renderShell('page', 2);
+            down(stage());
+            expect(touchMove(stage(), -30)).toBe(true);
+            fireEvent.pointerUp(root() as HTMLElement, { pointerId: 1, clientX: 170, clientY: 300 });
+            down(stage(), 2);
+            expect(touchMove(stage(), 0, 30)).toBe(false);
+            fireEvent.pointerUp(root() as HTMLElement, { pointerId: 2, clientX: 200, clientY: 330 });
+            down(stage(), 3);
+            expect(touchMove(stage(), 30)).toBe(true);
+        });
+
+        it('claims nothing it doesn\'t follow: a touch off the photograph, on the zoomed photograph, a second finger, after a lift or cancel', () => {
+            render(<ViewerShell mode="page">{photo(2, true)}</ViewerShell>);
+            down(step('Next photograph'));
+            expect(touchMove(step('Next photograph'), -30)).toBe(false);
+            fireEvent.pointerUp(step('Next photograph'), { pointerId: 1, clientX: 170, clientY: 300 });
+            down(stage());
+            expect(touchMove(stage(), -30, 0, { fingers: 2 })).toBe(false);
+            down(stage(), 2, false);
+            expect(touchMove(stage(), -40)).toBe(false);
+            fireEvent.pointerUp(stage(), { pointerId: 2, clientX: 160, clientY: 300 });
+            fireEvent.pointerUp(stage(), { pointerId: 1, clientX: 160, clientY: 300 });
+            down(stage(), 3);
+            fireEvent.pointerUp(root() as HTMLElement, { pointerId: 3, clientX: 200, clientY: 300 });
+            expect(touchMove(stage(), -30)).toBe(false);
+            down(stage(), 4);
+            fireEvent.pointerCancel(stage(), { pointerId: 4 });
+            expect(touchMove(stage(), -30)).toBe(false);
+            const zoom = screen.getByRole('button', { name: 'Zoom' });
+            fireEvent.click(zoom);
+            down(stage(), 5);
+            expect(touchMove(stage(), -30)).toBe(false);
+            expect(router.replace).not.toHaveBeenCalled();
+        });
+
+        it('listens actively, since a passive listener can\'t cancel, on the root, and stops when it unmounts', () => {
+            const add = vi.spyOn(HTMLElement.prototype, 'addEventListener');
+            const remove = vi.spyOn(HTMLElement.prototype, 'removeEventListener');
+            try {
+                const { unmount } = renderShell('page', 2);
+                // React adds its own passive touchmove listeners on the container, so only the root's count.
+                const added = add.mock.calls.filter(([type], index) => type === 'touchmove' && add.mock.contexts[index] === root());
+                expect(added).toHaveLength(1);
+                expect(added[0][2]).toEqual({ passive: false });
+                unmount();
+                expect(remove.mock.calls.filter(([type, listener]) => type === 'touchmove' && listener === added[0][1])).toHaveLength(1);
+            } finally {
+                add.mockRestore();
+                remove.mockRestore();
+            }
+        });
+    });
+
+    it('leaves a drag on the zoomed photograph to its scroll region, and drops a gesture when Zoom changes mid-way', () => {
+        render(<ViewerShell mode="page">{photo(2, true)}</ViewerShell>);
+        const zoom = screen.getByRole('button', { name: 'Zoom' });
+        fireEvent.click(zoom);
+        expect(zoom).toHaveAttribute('aria-pressed', 'true');
+        swipe(stage(), -120);
+        expect(router.replace).not.toHaveBeenCalled();
+        // Started unzoomed, then zoomed before the lift.
+        fireEvent.click(zoom);
+        fireEvent.pointerDown(stage(), { pointerId: 1, isPrimary: true, clientX: 200, clientY: 300 });
+        fireEvent.click(zoom);
+        fireEvent.pointerUp(stage(), { pointerId: 1, clientX: 20, clientY: 300 });
+        expect(router.replace).not.toHaveBeenCalled();
+    });
+
+    describe('on a pinch-zoomed page', () => {
+        // jsdom has no visualViewport, so a stand-in carries the scale and fires resize as the browser does.
+        const viewport = Object.assign(new EventTarget(), { scale: 1 });
+        const pinch = (scale: number) =>
+            act(() => {
+                viewport.scale = scale;
+                viewport.dispatchEvent(new Event('resize'));
+            });
+        beforeEach(() => {
+            viewport.scale = 1;
+            Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport });
+        });
+        afterEach(() => {
+            Reflect.deleteProperty(window, 'visualViewport');
+        });
+
+        it('leaves a sideways drag to the browser to pan the page, and swipes again once it\'s back to scale 1', () => {
+            renderShell('page', 2);
+            expect(root()).not.toHaveAttribute('data-pinched');
+            pinch(2);
+            expect(root()).toHaveAttribute('data-pinched', '');
+            swipe(stage(), -120);
+            expect(router.replace).not.toHaveBeenCalled();
+            // A hair over 1 still counts as pinched; back at 1, the stage swipes again.
+            pinch(1.02);
+            swipe(stage(), -120);
+            expect(router.replace).not.toHaveBeenCalled();
+            pinch(1);
+            expect(root()).not.toHaveAttribute('data-pinched');
+            swipe(stage(), -120);
+            expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
+        });
+
+        it('reads the scale at the start, even before a resize reports it', () => {
+            renderShell('page', 2);
+            viewport.scale = 3;
+            swipe(stage(), -120);
+            expect(router.replace).not.toHaveBeenCalled();
+        });
+
+        it('drops a gesture in flight when the page is pinched mid-way', () => {
+            renderShell('page', 2);
+            fireEvent.pointerDown(stage(), { pointerId: 1, isPrimary: true, clientX: 200, clientY: 300 });
+            pinch(1.5);
+            fireEvent.pointerUp(root() as HTMLElement, { pointerId: 1, clientX: 20, clientY: 300 });
+            expect(router.replace).not.toHaveBeenCalled();
+        });
+
+        it('stops listening to the viewport when it unmounts', () => {
+            const remove = vi.spyOn(viewport, 'removeEventListener');
+            const { unmount } = renderShell('page', 2);
+            unmount();
+            expect(remove).toHaveBeenCalledWith('resize', expect.any(Function));
+            remove.mockRestore();
+        });
+    });
+
+    it('drops a gesture in flight when the photograph changes by another route', () => {
+        // From the first photograph to the second, which still has a Next, so a gesture that survived would move.
+        const { move } = renderShell('page', 1);
+        fireEvent.pointerDown(stage(), { pointerId: 1, isPrimary: true, clientX: 200, clientY: 300 });
+        move(2);
+        fireEvent.pointerUp(root() as HTMLElement, { pointerId: 1, clientX: 20, clientY: 300 });
+        expect(router.replace).not.toHaveBeenCalled();
+        expect(announcer()).toHaveTextContent('Photograph 2 of 3');
+    });
+
+    it('stops listening when it unmounts', () => {
+        const { unmount } = renderShell('page', 2);
+        const element = root() as HTMLElement;
+        const stageElement = stage();
+        fireEvent.pointerDown(stageElement, { pointerId: 1, isPrimary: true, clientX: 200, clientY: 300 });
+        unmount();
+        element.append(stageElement);
+        document.body.append(element);
+        fireEvent.pointerUp(stageElement, { pointerId: 1, clientX: 20, clientY: 300 });
+        swipe(stageElement, -80);
         expect(router.replace).not.toHaveBeenCalled();
     });
 });
