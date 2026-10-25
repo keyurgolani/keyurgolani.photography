@@ -130,10 +130,10 @@ function variantDifferences(manifest: DirectoryManifest | null): string[] {
     ];
 }
 
-/** Encode one variant the way profile 1 says: upright, inside the width, never enlarged, no metadata. */
+/** Encode one variant the way profile 1 says: upright, inside the width and the height cap, never enlarged, no metadata. */
 async function encode(source: Buffer, width: VariantWidth, format: VariantFormat): Promise<Buffer> {
     const recipe = PROFILE_1.variants[width];
-    const resized = sharp(source).autoOrient().resize(recipe.width, undefined, PROFILE_1.resize);
+    const resized = sharp(source).autoOrient().resize(recipe.width, PROFILE_1.maxHeight, PROFILE_1.resize);
     return (format === 'avif' ? resized.avif(recipe.avif) : resized.webp(recipe.webp)).toBuffer();
 }
 
@@ -141,6 +141,11 @@ async function lqipOf(source: Buffer): Promise<string> {
     const { size, fit, webp } = PROFILE_1.lqip;
     const data = await sharp(source).autoOrient().resize(size, size, { fit }).webp(webp).toBuffer();
     return `data:image/webp;base64,${data.toString('base64')}`;
+}
+
+/** The width a variant comes out at from an upright `width` x `height` source: inside its target width and the height cap, never enlarged. */
+export function variantWidthFor(width: number, height: number, target: number): number {
+    return Math.max(1, Math.round(width * Math.min(target / width, PROFILE_1.maxHeight / height, 1)));
 }
 
 /** Decode an encoded file and check it is what the profile promised. Returns its dimensions. */
@@ -237,8 +242,8 @@ export async function buildDerivativeSet(job: DerivativeJob, options: BuildOptio
         return recordFailed(`source unreadable: ${errorText(error)}`, error);
     }
     if (assetRevisionOf(source, hasher) !== job.assetRevision) return { status: 'pending', reason: 'digest-mismatch' };
-    if (revision.width === null) return recordFailed('undecodable');
-    const orientedWidth = revision.width;
+    if (revision.width === null || revision.height === null) return recordFailed('undecodable');
+    const { width: orientedWidth, height: orientedHeight } = revision;
 
     const id = idGen();
     const staging = path.join(stagingRoot(root), id);
@@ -255,7 +260,7 @@ export async function buildDerivativeSet(job: DerivativeJob, options: BuildOptio
                         const name = `${width}.${format}`;
                         const encoded = await encode(source, width, format);
                         const data = (await faults.afterEncode?.(name, encoded)) ?? encoded;
-                        const size = await validated(name, data, format, Math.min(PROFILE_1.variants[width].width, orientedWidth));
+                        const size = await validated(name, data, format, variantWidthFor(orientedWidth, orientedHeight, PROFILE_1.variants[width].width));
                         await writeFile(path.join(staging, name), data);
                         variants[width][format] = { ...size, bytes: data.length, sha256: createHash('sha256').update(data).digest('hex') };
                         await faults.afterVariant?.(name);
