@@ -174,7 +174,7 @@ describe('npm run photos -- curation', () => {
 });
 
 describe('curation output, round 1', () => {
-    it('scrubs the data root from a storage error on the command path', async () => {
+    it.skipIf(process.getuid?.() === 0)('scrubs the data root from a storage error on the command path', async () => {
         const f = await fixture();
         await createCurationSink({ root: f.root, logger: quiet })([f.fact('new', f.fresh[0])]);
         const events = path.join(f.root, 'curation', 'events');

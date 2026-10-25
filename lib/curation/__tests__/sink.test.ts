@@ -327,7 +327,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 }
 
 describe('round 2', () => {
-    it('fails the delivery on an I/O error reading an event, so the fact retries and the item reopens once it can be read', async () => {
+    it.skipIf(process.getuid?.() === 0)('fails the delivery on an I/O error reading an event, so the fact retries and the item reopens once it can be read', async () => {
         const f = await fixture({ published: true });
         const published = f.catalog.series[0].photoIds[0];
         const first = f.fact('missing', published);

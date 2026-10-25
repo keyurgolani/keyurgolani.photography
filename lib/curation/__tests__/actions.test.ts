@@ -12,7 +12,7 @@ import { readVersionedDocument, versionFile, versionText, writeVersionedDocument
 import { withLock } from '../../storage/lock';
 import { approveEvent, deferEvent, dismissEvent, editEvent, reopenEvent, retryEvent, type ActionInput } from '../actions';
 import { eventIdOf, eventKey, type CurationEvent, type CurationEventType } from '../events';
-import { listEvents, readEvent } from '../repository';
+import { eventDir, listEvents, readEvent } from '../repository';
 import { createCurationSink } from '../sink';
 import { createCurationFixture, DRAFT, GPS, holdingCuration, PUBLISHED, SERIAL, writeRules, type CurationFixture } from './curationFixtures';
 
@@ -462,7 +462,7 @@ describe('round 4: folding a replacement into the new item', () => {
         expect(events.map((entry) => [entry.id, entry.type, entry.assetRevision])).toEqual([[event.id, 'new', newer]]);
     });
 
-    it('fails the delivery when the photo record can\'t be read, so the fact comes again and the item moves once it can', async () => {
+    it.skipIf(process.getuid?.() === 0)('fails the delivery when the photo record can\'t be read, so the fact comes again and the item moves once it can', async () => {
         const { f, event } = await opened((fx) => fx.fact('new', fx.fresh[0]));
         const photoId = event.photoId as string;
         const newer = await replaceBytes(f, photoId, '5');
@@ -499,5 +499,73 @@ describe('round 4: folding a replacement into the new item', () => {
         const moved = await readEvent(f.root, event.id) as CurationEvent;
         expect(moved.suggestions.series).toMatchObject({ value: PUBLISHED, producedAt: '2026-05-01T00:00:00.000Z' });
         expect(moved.suggestions.placement).toMatchObject({ value: 'end', producedAt: '2026-05-01T00:00:00.000Z' });
+    });
+});
+
+describe('round 5', () => {
+    const asRoot = process.getuid?.() === 0;
+
+    async function replaceBytes(f: CurationFixture, photoId: string, n: string): Promise<string> {
+        const registry = await readRegistry(f.root);
+        const photo = registry.photos[photoId];
+        const old = photo.revisions[photo.source.observedRevision];
+        const assetRevision = `sha256-${n.repeat(64)}`;
+        photo.revisions[assetRevision] = { ...old, assetRevision, profiles: { [f.catalog.profileId]: { state: 'pending', attempts: 0 } } };
+        photo.source.observedRevision = assetRevision;
+        await writeRegistry(f.root, registry, registry.version);
+        return assetRevision;
+    }
+
+    it.skipIf(asRoot)('fails the delivery when the new item can\'t be listed, then folds once it reads again', async () => {
+        const { f, event } = await opened((fx) => fx.fact('new', fx.fresh[0]));
+        const photoId = event.photoId as string;
+        const newer = await replaceBytes(f, photoId, '2');
+        const dir = eventDir(f.root, event.id);
+        fs.chmodSync(dir, 0o000);
+        cleanups.push(async () => fs.chmodSync(dir, 0o700));
+        const fact = f.fact('replaced', photoId, { assetRevision: newer });
+        await expect(createCurationSink({ root: f.root, logger: quiet })([fact])).rejects.toThrow();
+        fs.chmodSync(dir, 0o700);
+        expect((await listEvents(f.root)).events).toHaveLength(1);
+        await createCurationSink({ root: f.root, logger: quiet })([fact]);
+        const { events } = await listEvents(f.root);
+        expect(events.map((entry) => [entry.id, entry.version, entry.assetRevision])).toEqual([[event.id, 2, newer]]);
+    });
+
+    it.skipIf(asRoot)('reads the photo record only when an open or deferred new item could fold, so an unreadable approved record fails nothing', async () => {
+        const { f, event, input } = await opened((fx) => fx.fact('new', fx.fresh[0]));
+        const photoId = event.photoId as string;
+        expect(await approveEvent({ ...input, choices: { seriesId: null } })).toMatchObject({ ok: true });
+        const newer = await replaceBytes(f, photoId, '1');
+        const photos = path.join(f.root, 'authored', 'photos');
+        fs.chmodSync(photos, 0o000);
+        cleanups.push(async () => fs.chmodSync(photos, 0o700));
+        await createCurationSink({ root: f.root, logger: quiet })([f.fact('replaced', photoId, { assetRevision: newer })]);
+        fs.chmodSync(photos, 0o700);
+        expect((await listEvents(f.root)).events.map((entry) => entry.type).sort()).toEqual(['new', 'replacement']);
+    });
+
+    it('closes an open missing item when the same bytes come back, says why, and opens no reappeared item', async () => {
+        const { f, event } = await opened((fx) => fx.fact('missing', fx.fresh[0]));
+        const back = f.fact('reappeared', event.photoId as string);
+        await createCurationSink({ root: f.root, logger: quiet })([back]);
+        const { events } = await listEvents(f.root);
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({ id: event.id, version: 2, status: 'dismissed', factIds: [event.factIds[0], back.factId] });
+        expect(events[0].decisions.at(-1)).toMatchObject({ action: 'dismiss', by: 'watcher', reason: expect.stringMatching(/same bytes came back at trips\/harbor-1\.jpg/) });
+        // Delivered again, it changes nothing and still opens nothing.
+        await createCurationSink({ root: f.root, logger: quiet })([back]);
+        expect((await listEvents(f.root)).events).toEqual(events);
+    });
+
+    it('closes a deferred missing item too, and leaves other bytes and closed items as they were', async () => {
+        const { f, event, input } = await opened((fx) => fx.fact('missing', fx.fresh[0]));
+        expect(await deferEvent(input)).toMatchObject({ ok: true });
+        await createCurationSink({ root: f.root, logger: quiet })([f.fact('reappeared', event.photoId as string)]);
+        expect(await readEvent(f.root, event.id)).toMatchObject({ status: 'dismissed' });
+        // Other bytes at the path: it opens what it opens today, and the missing item stays.
+        const other = await opened((fx) => fx.fact('missing', fx.fresh[1]));
+        await createCurationSink({ root: other.f.root, logger: quiet })([other.f.fact('reappeared', other.event.photoId as string, { assetRevision: `sha256-${'0'.repeat(64)}` })]);
+        expect((await listEvents(other.f.root)).events.map((entry) => [entry.type, entry.status]).sort()).toEqual([['missing', 'open'], ['reappeared', 'open']]);
     });
 });

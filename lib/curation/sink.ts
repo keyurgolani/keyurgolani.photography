@@ -191,34 +191,56 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                 if (error instanceof EventUnusableError && error.problem.reason !== 'unreadable') return null;
                 throw error;
             });
-            /** The new items by photo, listed once a replacement needs them, and kept current as this delivery opens more. */
-            let newByPhoto: Map<string, string[]> | null = null;
-            const newItemsOf = async (photoId: string): Promise<string[]> => {
-                if (newByPhoto === null) {
-                    newByPhoto = new Map();
-                    for (const event of (await listEvents(root)).events) {
-                        if (event.type === 'new' && event.photoId !== null) newByPhoto.set(event.photoId, [...(newByPhoto.get(event.photoId) ?? []), event.id]);
+            /**
+             * The items of one type for one photo, from one listing taken when a fold first needs it and kept current
+             * as this delivery opens more. An item the listing couldn't read for an errno fails the delivery, since
+             * it may be the one a fact belongs to; a damaged one is passed over.
+             */
+            let byPhoto: Map<string, string[]> | null = null;
+            const itemsOf = async (type: CurationEventType, photoId: string): Promise<string[]> => {
+                if (byPhoto === null) {
+                    const { events, problems } = await listEvents(root);
+                    const unreadable = problems.find((problem) => problem.reason === 'unreadable');
+                    if (unreadable) throw new Error(`The inbox item ${unreadable.id} can't be read (${unreadable.message}), so this delivery waits for the next pass.`);
+                    byPhoto = new Map();
+                    for (const event of events) {
+                        if (event.photoId !== null) byPhoto.set(`${event.type}|${event.photoId}`, [...(byPhoto.get(`${event.type}|${event.photoId}`) ?? []), event.id]);
                     }
                 }
-                return newByPhoto.get(photoId) ?? [];
+                return byPhoto.get(`${type}|${photoId}`) ?? [];
             };
+            const noteOpened = (event: CurationEvent) => {
+                if (byPhoto !== null && event.photoId !== null) {
+                    const known: Map<string, string[]> = byPhoto;
+                    known.set(`${event.type}|${event.photoId}`, [...(known.get(`${event.type}|${event.photoId}`) ?? []), event.id]);
+                }
+            };
+            /** The readable items of `type` for the photo, newest state, and whether one already holds `factId`. */
+            const loadItems = async (type: CurationEventType, photoId: string, factId: string) => {
+                const items: CurationEvent[] = [];
+                for (const eventId of await itemsOf(type, photoId)) {
+                    const current = await readOrSkip(eventId);
+                    if (current !== null && current.type === type) items.push(current);
+                }
+                return { items, seen: items.some((item) => item.factIds.includes(factId)) };
+            };
+            const pending = (event: CurationEvent) => event.status === 'open' || event.status === 'deferred';
 
             /**
              * New bytes for a photograph no one has approved yet fold into its open or deferred new item: the item
              * moves to them, with suggestions for them, and its version goes up, so an approval reviewed against the
              * older bytes is stale. No replacement item opens beside it. Once a photo record exists, only a confirm
-             * moves the photo, so the fact opens a replacement item as usual. Returns whether it folded.
+             * moves the photo, so the fact opens a replacement item as usual. The record is read only when there is
+             * an item to fold into. Returns whether the fact is handled.
              */
             const foldIntoNew = async (fact: IdentityFact): Promise<boolean> => {
                 const photoId = fact.photoId as string;
-                const ids = await newItemsOf(photoId);
-                if (ids.length === 0 || await hasPhotoRecord(photoId)) return false;
-                let folded = false;
-                for (const eventId of ids) {
-                    const current = await readOrSkip(eventId);
-                    if (current === null || current.type !== 'new' || (current.status !== 'open' && current.status !== 'deferred')) continue;
-                    folded = true;
-                    if (current.factIds.includes(fact.factId) || current.assetRevision === fact.assetRevision) continue;
+                const { items, seen } = await loadItems('new', photoId, fact.factId);
+                if (seen) return true;
+                const open = items.filter(pending);
+                if (open.length === 0 || await hasPhotoRecord(photoId)) return false;
+                for (const current of open) {
+                    if (current.assetRevision === fact.assetRevision) continue;
                     const derivedFacts = { ...derivedFactsOf(fact, registry), factType: current.derivedFacts.factType };
                     const moved: CurationEvent = {
                         ...current,
@@ -231,11 +253,38 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                     };
                     if (await write(fact, moved, current.version)) updated++;
                 }
-                return folded;
+                return true;
+            };
+
+            /**
+             * The same bytes back for a photograph whose missing item is open or deferred close that item, saying
+             * so, and open no reappeared item: there is nothing left to judge. Other bytes open what they always
+             * did. Returns whether the fact is handled.
+             */
+            const closeMissing = async (fact: IdentityFact): Promise<boolean> => {
+                const { items, seen } = await loadItems('missing', fact.photoId as string, fact.factId);
+                if (seen) return true;
+                const open = items.filter((item) => pending(item) && item.assetRevision === fact.assetRevision);
+                if (open.length === 0) return false;
+                const active = await readActivePointer(root).then((pointer) => pointer?.revisionId ?? null, () => null);
+                for (const current of open) {
+                    const closed: CurationEvent = {
+                        ...current,
+                        status: 'dismissed',
+                        lastObservedAt: fact.observedAt > current.lastObservedAt ? fact.observedAt : current.lastObservedAt,
+                        factIds: [...current.factIds, fact.factId].slice(-KEPT_FACT_IDS),
+                        decisions: [...current.decisions, { action: 'dismiss', at: producedAt, by: 'watcher', baseRevisionId: active, reason: `The same bytes came back at ${fact.path}, so nothing is missing.` }],
+                        reviewedAt: producedAt,
+                        reviewedBy: 'watcher',
+                    };
+                    if (await write(fact, closed, current.version)) updated++;
+                }
+                return true;
             };
 
             for (const { fact, type } of relevant) {
                 if (type === 'replacement' && fact.photoId !== null && await foldIntoNew(fact)) continue;
+                if (type === 'reappeared' && fact.photoId !== null && await closeMissing(fact)) continue;
                 let id: string;
                 let fresh: CurationEvent;
                 try {
@@ -260,10 +309,7 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                 if (existing === null) {
                     if (await write(fact, fresh, 0)) {
                         opened++;
-                        if (type === 'new' && fact.photoId !== null && newByPhoto !== null) {
-                            const known: Map<string, string[]> = newByPhoto;
-                            known.set(fact.photoId, [...(known.get(fact.photoId) ?? []), fresh.id]);
-                        }
+                        noteOpened(fresh);
                     }
                     continue;
                 }

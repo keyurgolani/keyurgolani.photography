@@ -345,10 +345,12 @@ describe('reconcile never authors order', () => {
         ]);
 
         expect([...seen].sort()).toEqual([...ALL_FACT_TYPES].sort());
-        // The curation sink saw every one of them and opened an inbox item for each type but a rename, writing only under curation/.
+        // The curation sink saw every one of them, writing only under curation/. It opened an item for each type but
+        // a rename and the reappearance: the same bytes came back for an open missing item, which it closed instead.
         const { events, problems } = await listEvents(fixture.data.root);
         expect(problems).toEqual([]);
-        expect([...new Set(events.map((event) => event.type))].sort()).toEqual(['ambiguous', 'missing', 'new', 'processing-failure', 'reappeared', 'replacement']);
+        expect([...new Set(events.map((event) => event.type))].sort()).toEqual(['ambiguous', 'missing', 'new', 'processing-failure', 'replacement']);
+        expect(events.filter((event) => event.type === 'missing' && event.status === 'dismissed').map((event) => event.decisions.at(-1)?.by)).toContain('watcher');
         // Identity moved underneath, but the published members keep their IDs and positions.
         expect((await readAuthoredRecord(fixture.data.root, 'series', SERIES))?.photoIds).toEqual([landscape, portrait, square]);
     }, 120_000);
