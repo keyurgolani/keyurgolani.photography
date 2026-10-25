@@ -2,7 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Registry } from '../../identity/types';
 import { changeId, diffCatalog, movedIds, type CatalogChange, type ChangeCategory, type DiffInput } from '../diff';
-import { hashValue } from '../review';
+import { hashValue, noteHandMade, rebaseStamps, STAMPED_FIELDS } from '../review';
 import { revisionIdOf } from '../schema';
 import { createTestCatalog, type TestCatalog } from '../testing';
 import type { AuthoredPhoto, AuthoredSeries, CandidateContent, FieldReview, RevisionFile, WorkingLayer } from '../types';
@@ -388,6 +388,35 @@ describe('a capture date #10 read', () => {
         const result = diff(w, { review: { bases: new Map([[baseId, base]]), inbox: new Map(), unreadable: new Set() } });
         expect(rows(result.changes)).toEqual([['photo', id, 'assetRevision', 'asset'], ['photo', id, 'derived', 'derived']]);
         expect(result.changes[1]).toMatchObject({ fields: ['capturedAt'], provenance: 'derived', review: { state: 'not-required' } });
+    });
+});
+
+describe('a hand-made record the backfill marker lists', () => {
+    it('reads a field that describes the image against the asset revision the marker recorded, so replaced bytes make it stale', () => {
+        const w = world();
+        const id = series(w, 0).photoIds[0];
+        const record = authoredPhoto(w, id);
+        const alt = { kind: 'described' as const, text: 'Fixture description, from before the upgrade.', reviewed: true };
+        record.alt = alt;
+        photo(w, id).alt = { kind: 'described', text: alt.text };
+        delete record.review;
+        noteHandMade(record, true);
+        const fields = Object.fromEntries(STAMPED_FIELDS.photo.map((field) => [field, hashValue((record as unknown as Record<string, unknown>)[field])]));
+        const backfill = { schemaVersion: 1 as const, backfilledAt: '2026-03-01T00:00:00.000Z', records: { [`photo:${id}`]: { version: record.version, fields, baseRevisionId: active.revisionId, assetRevision: A } } };
+        const review = (extra: object = {}) => (diff(w, { review: { bases: new Map(), inbox: new Map(), unreadable: new Set(), backfill: { ...backfill, ...extra } } }).changes.find((change) => change.field === 'alt') as CatalogChange).review;
+        // The marker says the description was reviewed with bytes A, and the record pins others now.
+        expect(review()).toMatchObject({ state: 'stale', fields: [{ reason: 'asset-replaced' }] });
+        // Recorded with the bytes it pins, it's reviewed.
+        expect(review({ records: { [`photo:${id}`]: { ...backfill.records[`photo:${id}`], assetRevision: record.assetRevision } } }).state).toBe('reviewed');
+    });
+
+    it('stays unstamped through a rebase while the marker can\'t be read', () => {
+        const w = world();
+        const record = authoredPhoto(w, series(w, 0).photoIds[0]);
+        delete record.review;
+        noteHandMade(record, true);
+        expect(rebaseStamps(record, { ...record }, null, '2026-03-01T00:00:00.000Z', active.revisionId, { schemaVersion: 1, backfilledAt: '', records: {}, damaged: true })).toBeUndefined();
+        expect(rebaseStamps(record, { ...record }, null, '2026-03-01T00:00:00.000Z', active.revisionId, null)).toBeDefined();
     });
 });
 

@@ -38,10 +38,17 @@ import type { AuthoredPhoto, AuthoredRecord, AuthoredSeries, AuthoredSite, Field
 
 export type ReviewOrigin = FieldReview['origin'];
 
-/** One record as the backfill found it: its version, and the hash of each stamped field's value then. */
+/**
+ * One record as the backfill found it: its version, the hash of each stamped
+ * field's value then, and what those values were reviewed against then: the
+ * record's base, a photo's pinned asset revision, a series cover's photo's.
+ */
 export interface BackfilledRecord {
     version: number;
     fields: Record<string, string>;
+    baseRevisionId: string | null;
+    assetRevision?: string;
+    coverAsset?: string;
 }
 
 /** The one-time backfill marker (review-backfill.ts writes it). */
@@ -108,22 +115,28 @@ function generatedAlt(field: string, value: unknown): boolean {
 
 /**
  * The stamps a record without `review` reads as. `coverAsset` is the cover
- * photo's pinned revision, for a series. `hashes` are the values the
- * backfill marker recorded for the record, so a field changed since reads as
- * edited; without them, the record's own values are taken as reviewed.
+ * photo's pinned revision, for a series. `entry` is what the backfill marker
+ * recorded for the record: its values, so a field changed since reads as
+ * edited, and the base and asset revisions they were reviewed against then,
+ * so a publish, rollback, or replacement since makes them stale as it would
+ * any stamp. Without it, the record's own values, base, and asset revisions
+ * are taken as reviewed.
  */
-export function backfillFields(record: AuthoredRecord, coverAsset?: string | null, at: string = BACKFILL_AT, hashes?: Record<string, string>): Record<string, FieldReview> {
+export function backfillFields(record: AuthoredRecord, coverAsset?: string | null, at: string = BACKFILL_AT, entry?: BackfilledRecord): Record<string, FieldReview> {
     const fields: Record<string, FieldReview> = {};
     // Absent fields too, so dropping one reads as reviewed where a tool dropped it before the backfill.
     for (const field of STAMPED_FIELDS[record.kind]) {
         const value = valueOf(record, field);
-        const valueHash = hashes ? hashes[field] : hashValue(value);
+        const valueHash = entry ? entry.fields[field] : hashValue(value);
         if (valueHash === undefined) continue;
+        const asset = entry
+            ? record.kind === 'photo' ? (entry.assetRevision ? { assetRevision: entry.assetRevision } : {}) : record.kind === 'series' && field === 'cover' && entry.coverAsset ? { assetRevision: entry.coverAsset } : {}
+            : assetFor(record, field, coverAsset);
         fields[field] = {
             valueHash,
             origin: generatedAlt(field, value) ? 'generated' : 'migration',
-            baseRevisionId: record.baseRevisionId,
-            ...assetFor(record, field, coverAsset),
+            baseRevisionId: entry ? entry.baseRevisionId : record.baseRevisionId,
+            ...asset,
             actor: 'migration',
             reviewedAt: at,
         };
@@ -149,10 +162,19 @@ export function backfilled(record: AuthoredRecord, backfill: ReviewBackfill | nu
     return !isHandMade(record) || !backfill || Object.hasOwn(backfill.records, backfillKey(record));
 }
 
-/** The values the marker recorded for `record`, when it lists it. */
-function markedHashes(record: AuthoredRecord, backfill: ReviewBackfill | null | undefined): Record<string, string> | undefined {
+/** What the marker recorded for `record`, when it lists it. */
+function markedEntry(record: AuthoredRecord, backfill: ReviewBackfill | null | undefined): BackfilledRecord | undefined {
     const key = backfillKey(record);
-    return backfill && Object.hasOwn(backfill.records, key) ? backfill.records[key].fields : undefined;
+    return backfill && Object.hasOwn(backfill.records, key) ? backfill.records[key] : undefined;
+}
+
+/**
+ * Whether a write of `record` would lose its backfill: it has no stamps, was
+ * made by hand, and the marker that would say what it held at the upgrade
+ * can't be read. The writer refuses then, until the marker is restored.
+ */
+export function backfillUnknown(record: AuthoredRecord, backfill: ReviewBackfill | null | undefined): boolean {
+    return record.review === undefined && isHandMade(record) && backfill?.damaged === true;
 }
 
 /**
@@ -164,7 +186,7 @@ function markedHashes(record: AuthoredRecord, backfill: ReviewBackfill | null | 
 export function stampsOf(record: AuthoredRecord, coverAsset?: string | null, at?: string, backfill?: ReviewBackfill | null): Record<string, FieldReview> {
     if (record.review) return record.review.fields;
     if (!backfilled(record, backfill)) return {};
-    const hashes = markedHashes(record, backfill);
+    const hashes = markedEntry(record, backfill);
     if (at !== undefined) return backfillFields(record, coverAsset, at, hashes);
     // Read in memory, once per record, cover, and marker.
     const key = coverAsset ?? '';
@@ -174,7 +196,7 @@ export function stampsOf(record: AuthoredRecord, coverAsset?: string | null, at?
     memo.set(record, { key, hashes, fields });
     return fields;
 }
-const memo = new WeakMap<AuthoredRecord, { key: string; hashes: Record<string, string> | undefined; fields: Record<string, FieldReview> }>();
+const memo = new WeakMap<AuthoredRecord, { key: string; hashes: BackfilledRecord | undefined; fields: Record<string, FieldReview> }>();
 
 /** What a write was reviewed with. The writer fills in what a caller leaves out. */
 export interface StampInputs {
@@ -242,7 +264,8 @@ export function stampWrite(
  * publishes differently from that base reads as stale.
  */
 export function rebaseStamps(existing: AuthoredRecord | null, next: AuthoredRecord, existingCover: string | null, at: string, publishedFrom?: string, backfill?: ReviewBackfill | null): ReviewStamp | undefined {
-    if (!existing) return undefined;
+    // A hand-made record with no stamps while the marker can't be read: stay unstamped, so the restored marker still reads it.
+    if (!existing || backfillUnknown(existing, backfill)) return undefined;
     const fields: Record<string, FieldReview> = {};
     for (const [field, stamp] of Object.entries(stampsOf(existing, existingCover, at, backfill))) {
         if (hashValue(valueOf(existing, field)) !== hashValue(valueOf(next, field))) continue;

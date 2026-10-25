@@ -246,6 +246,49 @@ describe('the one-time review backfill', { timeout: 60_000 }, () => {
         expect(reviewIssues(refused)).toEqual([expect.objectContaining({ record: { kind: 'photo', id }, field: 'title', message: expect.stringContaining('changed outside the tools') })]);
     });
 
+    it('reads a hand version that drops review against what the marker recorded the values were reviewed against', async () => {
+        const f = await fixture();
+        published(await f.publish());
+        const id = f.catalog.photos[0].id;
+        // A title through the tools, published, then a hand version that drops review and takes the title back out.
+        await f.edit<AuthoredPhoto>('photo', id, (photo) => {
+            photo.title = 'Fixture title, through the tools.';
+        });
+        published(await f.publish());
+        await f.handEdit<AuthoredPhoto>('photo', id, (photo) => {
+            delete photo.review;
+            delete photo.title;
+        });
+        // The value matches what the marker recorded, but that was reviewed before the active revision published the title.
+        const refused = await f.publish();
+        expect(refused.outcome).toBe('VALIDATION_FAILED');
+        expect(reviewIssues(refused)).toEqual([expect.objectContaining({ record: { kind: 'photo', id }, field: 'title', message: expect.stringContaining('Stale review') })]);
+    });
+
+    it('refuses a tool write of a hand-made record while the marker can\'t be read, and the restored marker clears it', async () => {
+        const f = await fixture();
+        const id = f.catalog.photos[0].id;
+        await f.handEdit<AuthoredPhoto>('photo', id, (photo) => {
+            photo.title = 'Fixture title, by hand before the upgrade.';
+        });
+        expect((await f.publish({ dryRun: true })).outcome).toBe('DRY_RUN_OK');
+        const file = `${f.root}/authored/review-backfill.json`;
+        const backup = fs.readFileSync(file);
+        fs.writeFileSync(file, '{ not json\n');
+        await expect(f.edit<AuthoredPhoto>('photo', id, (photo) => {
+            photo.caption = 'Fixture caption.';
+        })).rejects.toThrow(/review-backfill\.json can't be read.*Restore authored\/review-backfill\.json from the data-root backup/);
+        expect((await f.read<AuthoredPhoto>('photo', id)).review).toBeUndefined();
+        // Restored from the backup, the pre-upgrade title is reviewed again, and the write goes through.
+        fs.writeFileSync(file, backup);
+        expect(reviewIssues(await validateWorkingLayer({ dataRoot: f.root }))).toEqual([]);
+        const written = await f.edit<AuthoredPhoto>('photo', id, (photo) => {
+            photo.caption = 'Fixture caption.';
+        });
+        expect(written.review?.fields.title).toMatchObject({ origin: 'migration' });
+        published(await f.publish());
+    });
+
     it('refuses the hand-made records when the marker can\'t be read, and says the marker is why', async () => {
         const f = await fixture();
         const id = f.catalog.photos[0].id;

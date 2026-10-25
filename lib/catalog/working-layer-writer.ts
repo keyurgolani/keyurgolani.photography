@@ -23,7 +23,7 @@ import type {
     AuthoredSite,
     AuthoredSiteInput,
 } from './types';
-import { noteHandMade, rebaseStamps, stampWrite } from './review';
+import { backfillUnknown, noteHandMade, rebaseStamps, stampWrite } from './review';
 import { ensureReviewBackfill } from './review-backfill';
 import { authoredPaths, authoredRecordDir, isRecordId, readActivePointer, readAuthoredRecord, recordFolderProblem } from './working-layer';
 
@@ -202,6 +202,12 @@ async function commit(
     // what it changed with what the curator reviewed, keeping the rest as they were. The first write after the upgrade
     // records the one-time backfill first, while this hold keeps every other tool write out.
     const backfill = await ensureReviewBackfill(root);
+    // A record made by hand with no stamps reads against the marker. While the marker can't be read, a write would
+    // store none for the fields it leaves alone, so the record would lose its backfill for good. A rebase keeps the
+    // record unstamped instead (rebaseStamps()), and any other write refuses until the marker is restored.
+    if (existing && rebaseTo === undefined && backfillUnknown(existing, backfill)) {
+        throw new AuthoredWriteError('INVALID_RECORD', ref, `authored/review-backfill.json can't be read, so nothing shows what the ${ref.kind} record ${ref.id}, made by hand, held at the upgrade, and writing it would take that for unreviewed. Restore authored/review-backfill.json from the data-root backup, then write again. Nothing was written.`);
+    }
     const stamps = rebaseTo !== undefined
         ? rebaseStamps(existing, unstamped.value, await coverAsset(root, existing), new Date().toISOString(), published ? rebaseTo : undefined, backfill)
         : stampWrite(existing, unstamped.value, {
