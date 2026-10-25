@@ -41,6 +41,19 @@ const HINTS: Record<string, string> = {
     'inbox-unread': 'Publish reads the inbox. Run it again.',
 };
 
+/**
+ * The fix for a reason. A reopened item names its `curation show`, since
+ * `curation list` counts a reopened new photograph as already placed while a
+ * series holds it (settledByPlacement()), so the list alone wouldn't point
+ * the curator at it.
+ */
+function hintFor(reason: string | undefined, eventId: string | undefined): string {
+    if (reason === 'item-reopened' && eventId !== undefined) {
+        return `Run curation show ${eventId}, then approve it again or leave it in draft. curation list counts a reopened photograph a series still holds as already placed, but this review waits for that decision.`;
+    }
+    return HINTS[reason ?? ''] ?? 'Review the change, then publish again.';
+}
+
 const REVIEW_RULES: Rule[] = [
     {
         id: 'review.authored-change',
@@ -65,7 +78,7 @@ const REVIEW_RULES: Rule[] = [
                         record: entry.record,
                         field: entry.field,
                         message: `${entry.state === 'stale' ? 'Stale review' : 'Not reviewed'}: ${entry.detail}`,
-                        hint: HINTS[entry.reason ?? ''] ?? 'Review the change, then publish again.',
+                        hint: hintFor(entry.reason, entry.eventId),
                     });
                 }
             }

@@ -5,8 +5,9 @@ import { publish, validateWorkingLayer } from '../../catalog/publish';
 import type { AuthoredPhoto, Issue } from '../../catalog/types';
 import { readAuthoredRecord } from '../../catalog/working-layer';
 import { writeAuthoredRecord } from '../../catalog/working-layer-writer';
-import { approveEvent } from '../actions';
+import { approveEvent, reopenEvent } from '../actions';
 import { eventIdOf, eventKey, type CurationEvent } from '../events';
+import { placedItems } from '../placement';
 import { confirmReplacement, leaveInDraft } from '../resolutions';
 import { createWorld, makeImages, OWNER, photoRecord, removeTemplate, replacementEventId, SERIES, served, type Images, type World } from './replacementWorld';
 
@@ -120,5 +121,40 @@ describe('a stale approval after a #17 replacement', { timeout: 120_000 }, () =>
         expect(shipped.outcome, shipped.message).toBe('PUBLISHED');
         expect(((await readAuthoredRecord(w.root, 'photo', photoId)) as AuthoredPhoto).assetRevision).toBe(replaced);
         expect((await photoRecord(w)).assetRevision).toBe(w.a);
+    });
+
+    it('names the reopened item\'s curation show when the inbox counts it as already placed', async () => {
+        const w = await world();
+        const fresh = 'harbor/fresh.jpg';
+        fs.writeFileSync(w.lib.file(fresh), images.fresh);
+        const [added] = await w.pass();
+        const photoId = added.photoId as string;
+        expect(await w.build({ photoId, assetRevision: added.assetRevision, profileId: w.profileId, path: fresh })).toMatchObject({ status: 'ready' });
+        const newId = eventIdOf(eventKey('new', added));
+        const item = await w.event(newId);
+        const approved = await approveEvent({
+            root: w.root, eventId: newId, expectedVersion: item.version, expectedBase: w.revisionId, actor: ACTOR,
+            choices: { seriesId: SERIES, placement: 'end', description: { kind: 'described', text: 'Fixture description typed for the fresh bytes.' } },
+        });
+        expect(approved).toMatchObject({ ok: true });
+        const reopened = await reopenEvent({ root: w.root, eventId: newId, expectedVersion: (await w.event(newId)).version, expectedBase: w.revisionId, actor: ACTOR });
+        expect(reopened).toMatchObject({ ok: true, event: { status: 'open' } });
+
+        // The series still holds the photo, so the inbox counts the item as already placed, and the gate points at it.
+        expect((await placedItems(w.root, [await w.event(newId)])).placed.has(newId)).toBe(true);
+        const blocked = await publish({ dataRoot: w.root, actor: OWNER, logger: log });
+        expect(blocked.outcome).toBe('VALIDATION_FAILED');
+        const issues = review(blocked.issues);
+        expect(issues.map((issue) => `${issue.record.kind}:${issue.field}`)).toEqual(expect.arrayContaining([`photo:alt`, `series:photoIds`]));
+        for (const issue of issues) {
+            expect(issue.message).toContain(`It settled the inbox item ${newId}, which is open again.`);
+            expect(issue.hint).toBe(`Run curation show ${newId}, then approve it again or leave it in draft. curation list counts a reopened photograph a series still holds as already placed, but this review waits for that decision.`);
+        }
+
+        // Approved again, where it is, the publish goes through.
+        const again = await approveEvent({ root: w.root, eventId: newId, expectedVersion: (await w.event(newId)).version, expectedBase: w.revisionId, actor: ACTOR, choices: { seriesId: SERIES } });
+        expect(again).toMatchObject({ ok: true, event: { status: 'approved' } });
+        const shipped = await publish({ dataRoot: w.root, actor: OWNER, logger: log });
+        expect(shipped.outcome, shipped.message).toBe('PUBLISHED');
     });
 });
