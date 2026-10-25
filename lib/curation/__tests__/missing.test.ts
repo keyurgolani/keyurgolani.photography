@@ -8,16 +8,17 @@ import { applySequenceOp } from '../../catalog/sequence';
 import type { AuthoredPhoto, AuthoredSeries } from '../../catalog/types';
 import { readActivePointer, readAuthoredRecord } from '../../catalog/working-layer';
 import { writeAuthoredRecord } from '../../catalog/working-layer-writer';
+import { runReconcilePass } from '../../identity/pass';
 import { identityPaths } from '../../identity/registry';
-import type { DerivativeJob } from '../../identity/types';
+import type { DerivativeJob, IdentityFact } from '../../identity/types';
 import { retryEvent } from '../actions';
 import { inboxAlertLines, inboxAlerts } from '../alerts';
 import { parseCurationArgs, runCurationCli } from '../commands';
 import type { CurationEvent } from '../events';
-import { listEvents } from '../repository';
+import { listEvents, withCurationLock } from '../repository';
 import { archiveMissing, bindReplacement } from '../resolutions';
-import { failureEventId, settleSources } from '../sources';
-import { createMissingWorld, removeMissingTemplate, type MissingWorld } from './missingWorld';
+import { createSourcesSink, failureEventId, settleSources } from '../sources';
+import { clock, createMissingWorld, removeMissingTemplate, type MissingWorld } from './missingWorld';
 import { makeImages, P_PATH, Q_PATH, quiet, replacementEventId, SERIES, served, treeBytes, type Images } from './replacementWorld';
 
 /**
@@ -548,6 +549,40 @@ describe('nothing deleted anywhere', { timeout: 120_000 }, () => {
         expect(Object.keys(rest)).toContain(Q_PATH);
         const registry = await w.registry();
         expect(registry.photos[w.p].revisions[w.a].profiles[w.profileId].state).toBe('ready');
+    });
+});
+
+describe('the sources sink', { timeout: 60_000 }, () => {
+    it("looks at every item on its first delivery, then only at the photos a pass's facts name", async () => {
+        const w = await world();
+        removeP(w);
+        await w.pass();
+        const sink = createSourcesSink({ root: w.root, logger: quiet, clock, waitMs: 100 });
+        // The watcher's start: every item is looked at, and P is still missing.
+        await sink([]);
+        expect((await w.event(w.missingId)).status).toBe('open');
+
+        // P's file back under another name, in a pass whose facts no sources sink saw.
+        fs.writeFileSync(w.lib.file('harbor/moved.jpg'), images.original);
+        expect(await runReconcilePass({ clock, logger: quiet, sinks: [], clearDelivered: true })).toMatchObject({ status: 'committed' });
+        expect((await w.registry()).photos[w.p].sourceHealth).toBe('present');
+        const before = layers(w);
+        const renamed = (photoId: string, assetRevision: string, factId: string): IdentityFact => ({
+            type: 'renamed', factId, key: `renamed:${photoId}:${assetRevision}`, photoId, assetRevision, path: 'harbor/moved.jpg', folder: 'harbor', observedAt: new Date().toISOString(), fromPath: P_PATH,
+        });
+        // A pass with no facts, or with facts for other photos, leaves P's item alone.
+        await sink([]);
+        await sink([renamed(w.q, w.qa, '00000000-0000-4000-8000-00000000aaa1')]);
+        expect(layers(w)).toEqual(before);
+        expect((await w.event(w.missingId)).status).toBe('open');
+        // A delivery that fails writes nothing, and the pass keeps the fact pending.
+        await withCurationLock(w.root, {}, async () => {
+            await expect(sink([renamed(w.p, w.a, '00000000-0000-4000-8000-00000000aaa2')])).rejects.toThrow();
+        });
+        expect((await w.event(w.missingId)).status).toBe('open');
+        // Delivered again, it settles.
+        await sink([renamed(w.p, w.a, '00000000-0000-4000-8000-00000000aaa2')]);
+        expect(await w.event(w.missingId)).toMatchObject({ status: 'resolved', decisions: expect.arrayContaining([expect.objectContaining({ action: 'close', by: 'watcher' })]) });
     });
 });
 

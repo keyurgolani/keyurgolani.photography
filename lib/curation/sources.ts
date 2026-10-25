@@ -3,9 +3,10 @@ import type { FactSink } from '../identity/pass';
 import { currentProfileId } from '../identity/profile';
 import { readRegistry } from '../identity/registry';
 import { folderOf } from '../identity/scan';
-import type { DerivativeJob, PhotoRecord, Registry } from '../identity/types';
+import { PHOTO_ID_RE } from '../identity/ids';
+import type { DerivativeJob, IdentityFact, PhotoRecord, Registry } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
-import { candidateOf, replacementEventIds, type BuildFunction } from './candidates';
+import { candidateOf, readUsableEvent, replacementEventIds, type BuildFunction } from './candidates';
 import {
     CURATION_SCHEMA_VERSION,
     eventIdOf,
@@ -15,7 +16,7 @@ import {
     type CurationDecision,
     type CurationEvent,
 } from './events';
-import { EventMovedError, EventUnusableError, InvalidEventError, listEvents, readEvent, withCurationLock, writeEvent } from './repository';
+import { EventMovedError, EventUnusableError, InvalidEventError, listEvents, withCurationLock, writeEvent } from './repository';
 import { SINK_WAIT_MS } from './sink';
 
 /**
@@ -33,7 +34,14 @@ import { SINK_WAIT_MS } from './sink';
  * - A `new` item closes once a `bind` merged its photo into the missing one.
  * - A build #10's worker left failed, after its retry at start, gets a
  *   `processing-failure` item, unless a replacement item already carries it.
- *   It closes once the set builds, as after #14's retry.
+ *   It closes once the set builds, as after #14's retry, or once the photo
+ *   moves on to other bytes or is retired.
+ *
+ * The sink's first delivery, at the watcher's start, looks at every item
+ * once, which recovers what a crash left unsettled. Each later one reads
+ * the registry once and settles only the photos the pass's facts name and
+ * the photos retired since the last delivery, since an archive or a merge
+ * #10 applies names no fact of its own.
  *
  * Nothing here deletes, archives, unpublishes, or writes anything outside
  * `curation/`. It reads the registry without its lock and takes only the
@@ -179,14 +187,16 @@ export function staleFailureChange(event: CurationEvent, registry: Registry, at:
 }
 
 export interface SourcesOptions {
-    /** Settle only this photo's failed-build item, as after its build. Otherwise everything. */
-    only?: Pick<DerivativeJob, 'photoId'>;
+    /** Settle only these photos' items, as after a build or for a pass's facts. Otherwise every item. */
+    only?: Pick<DerivativeJob, 'photoId'> | readonly string[];
     clock?: () => number;
     logger?: Logger;
     /** How long to wait for the curation lock. A busy lock throws LockTimeoutError, and nothing is written. */
     waitMs?: number;
     /** #10's current profile. Defaults to currentProfileId(). */
     profileId?: string;
+    /** The registry as the caller just read it, for the first look. Under the lock it is read again. */
+    registry?: Registry;
 }
 
 export interface SourcesResult {
@@ -200,17 +210,15 @@ export interface SourcesResult {
     updated: string[];
 }
 
-/** Every change the registry calls for, against one listing. Pure. */
-function changesFor(events: readonly CurationEvent[], registry: Registry, at: string, profileId: string, only?: string): CurationEvent[] {
+/** Every change the registry calls for, against one listing, which holds only `only`'s items when it is set. Pure. */
+function changesFor(events: readonly CurationEvent[], registry: Registry, at: string, profileId: string, only?: readonly string[]): CurationEvent[] {
     const byId = new Map(events.map((event) => [event.id, event]));
     const changes: CurationEvent[] = [];
-    if (only === undefined) {
-        for (const event of events) {
-            const next = missingChange(event, registry, at) ?? mergedChange(event, registry, at) ?? staleFailureChange(event, registry, at);
-            if (next) changes.push(next);
-        }
+    for (const event of events) {
+        const next = missingChange(event, registry, at) ?? mergedChange(event, registry, at) ?? staleFailureChange(event, registry, at);
+        if (next) changes.push(next);
     }
-    const photos = only === undefined ? Object.values(registry.photos) : [photoOf(registry, only)].filter((photo): photo is PhotoRecord => photo !== undefined);
+    const photos = only === undefined ? Object.values(registry.photos) : only.map((photoId) => photoOf(registry, photoId)).filter((photo): photo is PhotoRecord => photo !== undefined);
     for (const photo of photos) {
         if (isRetired(photo)) continue;
         const revision = photo.source.observedRevision;
@@ -221,17 +229,27 @@ function changesFor(events: readonly CurationEvent[], registry: Registry, at: st
     return changes;
 }
 
-/** The items `only`'s photo could need, read one by one, or every item. Damaged ones are left out, as #14's sink leaves them. */
-async function eventsFor(root: string, registry: Registry, only: string | undefined): Promise<CurationEvent[]> {
+/** The items this module settles for one photo: per revision, its missing, new, and failed-build items, and the observed revision's replacement items. */
+function itemIdsOf(photo: PhotoRecord): string[] {
+    const { photoId } = photo;
+    const perRevision = Object.keys(photo.revisions).flatMap((assetRevision) => [
+        eventIdOf(eventKey('missing', { photoId, assetRevision, key: `missing:${photoId}:${assetRevision}` })),
+        eventIdOf(eventKey('new', { photoId, assetRevision, key: `new:${photoId}:${assetRevision}` })),
+        failureEventId(photoId, assetRevision),
+    ]);
+    return [...perRevision, failureEventId(photoId, photo.source.observedRevision), ...replacementEventIds(photoId, photo.source.observedRevision)];
+}
+
+/** The items `only`'s photos could need, read one by one, or every item. Damaged ones are left out, as #14's sink leaves them. */
+async function eventsFor(root: string, registry: Registry, only: readonly string[] | undefined): Promise<CurationEvent[]> {
     if (only === undefined) return (await listEvents(root)).events;
-    const photo = photoOf(registry, only);
-    if (!photo) return [];
+    const ids = new Set(only.flatMap((photoId) => {
+        const photo = photoOf(registry, photoId);
+        return photo ? itemIdsOf(photo) : [];
+    }));
     const found: CurationEvent[] = [];
-    for (const id of [failureEventId(only, photo.source.observedRevision), ...replacementEventIds(only, photo.source.observedRevision)]) {
-        const event = await readEvent(root, id).catch((error: unknown) => {
-            if (error instanceof EventUnusableError && error.problem.reason !== 'unreadable') return null;
-            throw error;
-        });
+    for (const id of ids) {
+        const event = await readUsableEvent(root, id);
         if (event) found.push(event);
     }
     return found;
@@ -247,11 +265,12 @@ async function eventsFor(root: string, registry: Registry, only: string | undefi
 export async function settleSources(root: string, options: SourcesOptions = {}): Promise<SourcesResult> {
     const { clock = Date.now, logger = console, waitMs = SINK_WAIT_MS } = options;
     const profileId = options.profileId ?? currentProfileId();
-    const only = options.only?.photoId;
+    const only = options.only === undefined ? undefined : 'photoId' in options.only ? [options.only.photoId] : [...new Set(options.only as readonly string[])];
     const result: SourcesResult = { resolved: [], reopened: [], failed: [], updated: [] };
+    if (only !== undefined && only.length === 0) return result;
     const at = () => new Date(clock()).toISOString();
 
-    const looked = await readRegistry(root);
+    const looked = options.registry ?? await readRegistry(root);
     const due = changesFor(await eventsFor(root, looked, only), looked, at(), profileId, only);
     if (due.length === 0) return result;
 
@@ -288,7 +307,7 @@ export async function settleSources(root: string, options: SourcesOptions = {}):
     return result;
 }
 
-export interface SourcesSinkOptions extends Omit<SourcesOptions, 'only'> {
+export interface SourcesSinkOptions extends Omit<SourcesOptions, 'only' | 'registry'> {
     /** Defaults to the data root at each delivery. */
     root?: string;
 }
@@ -299,15 +318,34 @@ function readyRoot(root: string | undefined): string {
     return status.root;
 }
 
+/** The photos a pass's facts name, each once. A fact without a well-formed photo ID is left out. */
+export function namedPhotos(facts: readonly IdentityFact[]): string[] {
+    return [...new Set(facts.flatMap((fact) => (typeof fact.photoId === 'string' && PHOTO_ID_RE.test(fact.photoId) ? [fact.photoId] : [])))];
+}
+
+const retiredIn = (registry: Registry) => new Set(Object.values(registry.photos).filter(isRetired).map((photo) => photo.photoId));
+
 /**
- * A fact sink that settles missing and failed-build items on every pass,
- * facts or none, after #14's sink has opened the pass's items. Like that
- * sink, an I/O or lock error fails the delivery, so the pass delivers again.
+ * A fact sink that runs after #14's sink has opened the pass's items. Its
+ * first delivery settles every item, which recovers what a crash left
+ * unsettled. Each later one reads the registry once and settles only the
+ * photos the facts name and those retired since the last delivery that
+ * succeeded, since #10 applies an archive, or retires a merged photo,
+ * without a fact for it. The pass delivers its pending facts until every
+ * sink has them, so a delivery that failed names them again. Like #14's
+ * sink, an I/O or lock error fails the delivery.
  */
 export function createSourcesSink(options: SourcesSinkOptions = {}): FactSink {
     const { root, ...rest } = options;
-    return async () => {
-        await settleSources(readyRoot(root), rest);
+    let retired: Set<string> | null = null;
+    return async (facts) => {
+        const at = readyRoot(root);
+        const registry = await readRegistry(at);
+        const now = retiredIn(registry);
+        const known = retired;
+        if (known === null) await settleSources(at, { ...rest, registry });
+        else await settleSources(at, { ...rest, registry, only: [...namedPhotos(facts), ...[...now].filter((photoId) => !known.has(photoId))] });
+        retired = now;
     };
 }
 
