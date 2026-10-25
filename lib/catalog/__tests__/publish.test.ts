@@ -347,6 +347,56 @@ describe('an interrupted publish', { timeout: 30_000 }, () => {
     });
 });
 
+describe('a publish that dies holding the lock', { timeout: 30_000 }, () => {
+    it.each([9, 10, 11, 12])('after step %i leaves its lease behind: a retry fails fast while it is live, then takes it over and converges', async (crashAfter) => {
+        const { catalog, root, run, editPhoto, first, events } = await launched({ seed: 91 });
+        await editPhoto(catalog.photos[0].id, (photo) => {
+            photo.caption = 'A caption written before the crash.';
+        });
+        const { candidateId } = await run({ dryRun: true });
+        const lockFile = path.join(root, 'locks', `${CATALOG_LOCK}.lock`);
+        const saved: { lease?: Buffer } = {};
+
+        // A throw releases the lock, so put back the lease the process held at the crash, as a killed process leaves it.
+        const crashed = await run({
+            leaseMs: 1_500,
+            hooks: {
+                afterStep(step) {
+                    if (step !== crashAfter) return;
+                    saved.lease = fs.readFileSync(lockFile);
+                    throw new Error(`crash after step ${crashAfter}`);
+                },
+            },
+        });
+        expect(crashed.outcome).toBe('STORAGE_ERROR');
+        if (!saved.lease) throw new Error('The crash hook never ran.');
+        // Its last heartbeat, as of now, so the lease is still live for the first retry.
+        const dead = { ...(JSON.parse(saved.lease.toString('utf8')) as LockRecord), heartbeatAt: new Date().toISOString() };
+        fs.writeFileSync(lockFile, `${JSON.stringify(dead)}
+`);
+
+        const tooSoon = await run();
+        expect(tooSoon).toMatchObject({ outcome: 'CATALOG_LOCKED', holder: { owner: dead.owner } });
+
+        await new Promise((resolve) => setTimeout(resolve, 1_600));
+        events.length = 0;
+        const retry = await run();
+        expect(retry).toMatchObject({ outcome: crashAfter >= 11 ? 'NO_CHANGES' : 'PUBLISHED', revisionId: candidateId, revisionNumber: 2 });
+        const takeover = { previousOwner: dead.owner, previousAcquiredAt: dead.acquiredAt };
+        expect(events).toContainEqual({ event: 'catalog.lock.takeover', lock: CATALOG_LOCK, ...takeover });
+
+        const activations = await listActivations(root);
+        expect(activations.filter((activation) => activation.status === 'committed').map((activation) => activation.revisionId)).toEqual([first.revisionId, candidateId]);
+        expect(activations.filter((activation) => activation.status === 'pending')).toEqual([]);
+        expect(activations.filter((activation) => activation.status === 'abandoned')).toHaveLength(crashAfter === 10 ? 1 : 0);
+        // A retry that activates records the takeover it made.
+        if (crashAfter < 11) expect(activations.at(-1)).toMatchObject({ status: 'committed', revisionId: candidateId, lockTakeover: takeover });
+        expect((await readActivePointer(root))?.revisionId).toBe(candidateId);
+        expect(await bases(root)).toEqual([candidateId]);
+        expect(fs.existsSync(lockFile)).toBe(false);
+    });
+});
+
 describe('the catalog lock', { timeout: 30_000 }, () => {
     it.each([
         ['PUBLISHED', true],
