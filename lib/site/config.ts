@@ -5,23 +5,35 @@
 const LOCAL_ORIGIN = 'http://localhost:3000';
 
 /**
+ * Reads `SITE_URL` and returns its origin, or why it has none. The reason
+ * never quotes the value, which may hold credentials.
+ */
+function readSiteUrl(): { origin: URL } | { problem: string } {
+  const value = process.env.SITE_URL?.trim();
+  if (!value) return { problem: "SITE_URL isn't set" };
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return { problem: "SITE_URL isn't an absolute URL" };
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return { problem: "SITE_URL's scheme isn't http or https" };
+  if (url.username || url.password) return { problem: 'SITE_URL has credentials' };
+  if (url.pathname !== '/') return { problem: 'SITE_URL has a path' };
+  if (url.search) return { problem: 'SITE_URL has a query' };
+  if (url.hash) return { problem: 'SITE_URL has a hash' };
+  return { origin: new URL(url.origin) };
+}
+
+/**
  * The origin in `SITE_URL`: an absolute http or https URL with no path beyond
  * `/`, and no query, hash, or credentials. A trailing slash is dropped.
  * Returns `null` for anything else, and callers then omit canonical and share
  * URLs.
  */
 export function getSiteOrigin(): URL | null {
-  const value = process.env.SITE_URL?.trim();
-  if (!value) return null;
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    return null;
-  }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
-  if (url.pathname !== '/' || url.search || url.hash || url.username || url.password) return null;
-  return new URL(url.origin);
+  const read = readSiteUrl();
+  return 'origin' in read ? read.origin : null;
 }
 
 /** The base for metadata URLs, `SITE_URL`'s origin or the local fallback. */
@@ -31,10 +43,11 @@ export function getMetadataBase(): URL {
 
 let warned = false;
 
-/** Warns once when a production server starts without a valid `SITE_URL`. */
+/** Warns once, with the reason and never the value, when a production server starts without a valid `SITE_URL`. */
 export function checkSiteUrl(): void {
-  if (warned || process.env.NODE_ENV !== 'production' || getSiteOrigin()) return;
+  if (warned || process.env.NODE_ENV !== 'production') return;
+  const read = readSiteUrl();
+  if ('origin' in read) return;
   warned = true;
-  const problem = process.env.SITE_URL?.trim() ? `SITE_URL (${process.env.SITE_URL}) isn't an http or https origin` : "SITE_URL isn't set";
-  console.warn(`${problem}, so share links point at ${LOCAL_ORIGIN}. Set it to the site's public origin, like https://keyurgolani.photography.`);
+  console.warn(`${read.problem}, so share links point at ${LOCAL_ORIGIN}. Set it to the site's public origin, like https://keyurgolani.photography.`);
 }
