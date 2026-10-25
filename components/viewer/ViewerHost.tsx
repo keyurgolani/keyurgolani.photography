@@ -10,7 +10,13 @@ const MODAL_SEGMENT = '(.)photo';
 
 interface Opener {
     element: HTMLElement;
-    id: string;
+    /** The photograph the link opened, so its series entry, `id="photo-<photoId>"`, can stand in for a re-rendered link. */
+    photoId: string;
+}
+
+/** The last segment of a Viewer path, its photo ID. */
+function photoIdOf(pathname: string): string {
+    return pathname.replace(/\/$/, '').split('/').pop() ?? '';
 }
 
 /**
@@ -29,7 +35,9 @@ interface Opener {
  *
  * It records the link that opened the modal when it's activated, since
  * Safari doesn't focus a link on click, and puts focus back on it when the
- * modal closes, however many moves came between.
+ * modal closes, however many moves came between. If that link is no longer
+ * in the document, focus goes to the series entry of the photograph that
+ * opened the modal, `photo-<photoId>`.
  */
 export default function ViewerHost({ children, modal }: { children: ReactNode; modal: ReactNode }) {
     const pathname = usePathname();
@@ -47,7 +55,7 @@ export default function ViewerHost({ children, modal }: { children: ReactNode; m
             if (link === null || link.closest('[data-surface="viewer"]') !== null) return;
             const url = new URL(link.href, window.location.href);
             if (url.origin !== window.location.origin || !isViewerPath(url.pathname)) return;
-            opener.current = { element: link, id: link.id };
+            opener.current = { element: link, photoId: photoIdOf(url.pathname) };
         };
         // Capture, so it's recorded before the link's own handler starts the navigation.
         document.addEventListener('click', onClick, true);
@@ -58,8 +66,9 @@ export default function ViewerHost({ children, modal }: { children: ReactNode; m
         if (wasOpen.current && !modalOpen) {
             const recorded = opener.current;
             opener.current = null;
-            // The series page stays mounted under the modal, so the opener is normally the same node. If it was re-rendered, find it by id.
-            const target = recorded?.element.isConnected ? recorded.element : recorded?.id ? document.getElementById(recorded.id) : null;
+            // The series page stays mounted under the modal, so the opener is normally the same node. If the series re-rendered its
+            // entries (Show more, #6), the old node is gone: focus the entry for the photograph that opened the modal, not the one shown last.
+            const target = recorded?.element.isConnected ? recorded.element : recorded?.photoId ? document.getElementById(`photo-${recorded.photoId}`) : null;
             target?.focus();
         }
         wasOpen.current = modalOpen;

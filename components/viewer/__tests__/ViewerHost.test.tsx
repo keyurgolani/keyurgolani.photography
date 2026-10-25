@@ -136,6 +136,57 @@ describe('ViewerHost', () => {
         expect(document.activeElement).toBe(screen.getByText('Entry b again'));
     });
 
+    // A link to a photograph that isn't its series entry, like the cover, beside the entries that carry `photo-<photoId>`.
+    const WITH_COVER = (
+        <main>
+            <a href="/work/fixture/photo/a">Cover a</a>
+            <a id="photo-a" href="/work/fixture/photo/a">
+                Entry a
+            </a>
+            <a id="photo-b" href="/work/fixture/photo/b">
+                Entry b
+            </a>
+        </main>
+    );
+
+    it('keeps focus on the link that opened the modal while it\'s still in the document, even when it isn\'t the entry', () => {
+        const view = render(host(WITH_COVER));
+        const cover = screen.getByText('Cover a');
+        fireEvent.click(cover);
+        openModal('a');
+        view.rerender(host(WITH_COVER));
+        closeModal();
+        view.rerender(host(WITH_COVER));
+        expect(document.activeElement).toBe(cover);
+    });
+
+    it('focuses the entry of the photograph that opened the modal, not the one shown last, once the opener left the document', () => {
+        const view = render(host(WITH_COVER));
+        const cover = screen.getByText('Cover a');
+        fireEvent.click(cover);
+        openModal('a');
+        view.rerender(host(WITH_COVER));
+        openModal('b');
+        view.rerender(host(WITH_COVER));
+        // The series re-rendered its entries under the modal (Show more, #6), so the link that was clicked is gone.
+        // A new root element, so React mounts new nodes rather than reusing the old ones in place.
+        const fresh = (
+            <section>
+                <a id="photo-a" href="/work/fixture/photo/a">
+                    Entry a again
+                </a>
+                <a id="photo-b" href="/work/fixture/photo/b">
+                    Entry b again
+                </a>
+            </section>
+        );
+        view.rerender(host(fresh));
+        expect(cover.isConnected).toBe(false);
+        closeModal();
+        view.rerender(host(fresh));
+        expect(document.activeElement).toBe(screen.getByText('Entry a again'));
+    });
+
     it('records only a plain click on a Viewer link outside the Viewer', () => {
         const view = render(host());
         const entry = screen.getByText('Entry a');
