@@ -13,6 +13,10 @@ export interface AtomicWriteFaults {
 
 export interface AtomicWriteOptions {
     faults?: AtomicWriteFaults;
+    /** The new file's mode, before the umask. Defaults to PRIVATE_FILE_MODE. */
+    mode?: number;
+    /** Where to stage the write, beside `file`. Defaults to tempPathFor(file). */
+    tempPath?: string;
 }
 
 /** The `.<name>.<pid>.<uuid>.tmp` name a write stages beside its target. */
@@ -25,13 +29,13 @@ export function tempPathFor(file: string): string {
  * write a temp file in the same directory, fsync it, rename it over the
  * target, then fsync the directory. The directory must exist. On failure the
  * temp file is removed and the target keeps its old contents. The new file
- * is readable by its owner only.
+ * is readable by its owner only, unless `mode` says otherwise.
  */
-export async function atomicWriteFile(file: string, data: string | Uint8Array, { faults }: AtomicWriteOptions = {}): Promise<void> {
-    const temp = tempPathFor(file);
+export async function atomicWriteFile(file: string, data: string | Uint8Array, { faults, mode = PRIVATE_FILE_MODE, tempPath }: AtomicWriteOptions = {}): Promise<void> {
+    const temp = tempPath ?? tempPathFor(file);
     let renamed = false;
     try {
-        const handle = await fs.promises.open(temp, 'wx', PRIVATE_FILE_MODE);
+        const handle = await fs.promises.open(temp, 'wx', mode);
         try {
             await handle.writeFile(data);
             await handle.sync();

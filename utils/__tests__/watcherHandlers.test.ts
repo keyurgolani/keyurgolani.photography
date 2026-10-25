@@ -80,6 +80,28 @@ vi.mock('sharp', async (importOriginal) => {
     return { ...actual, default: Object.assign(wrapped, actual.default) };
 });
 
+// The writes of cache/set-sources, in the order they finish, and which ones fail, as a full disk would.
+const recordWrites = vi.hoisted(() => ({
+    fail: null as ((data: string) => boolean) | null,
+    events: null as string[] | null,
+}));
+
+vi.mock('../../lib/storage/atomicWrite', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../../lib/storage/atomicWrite')>();
+    const isRecord = (file: string) => file.includes(`${path.sep}set-sources${path.sep}`);
+    return {
+        ...actual,
+        async atomicWriteFile(...args: Parameters<typeof actual.atomicWriteFile>) {
+            const [file, data] = args;
+            if (isRecord(file) && recordWrites.fail?.(String(data))) {
+                throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
+            }
+            await actual.atomicWriteFile(...args);
+            if (isRecord(file)) recordWrites.events?.push(`record ${String(data).trim()}`);
+        },
+    };
+});
+
 const LANDSCAPE = derivativePaths('landscape');
 const BASIC = ['landscape.jpg', 'portrait.png', 'square.webp'];
 
@@ -126,6 +148,8 @@ beforeEach(async () => {
 
 afterEach(async () => {
     gate.reset();
+    recordWrites.fail = null;
+    recordWrites.events = null;
     vi.restoreAllMocks();
     await Promise.all(handlerSets.splice(0).map((set) => set.idle()));
     await lib.cleanup();
@@ -147,7 +171,8 @@ function recordSourceReads(): string[] {
     const reads: string[] = [];
     const realOpen = fs.promises.open.bind(fs.promises);
     vi.spyOn(fs.promises, 'open').mockImplementation(((...args: Parameters<typeof fs.promises.open>) => {
-        if (args[1] === 'r') reads.push(path.basename(String(args[0])));
+        // A record's write opens its folder to fsync it, which reads no source.
+        if (args[1] === 'r' && /\.(jpe?g|png|webp)$/i.test(String(args[0]))) reads.push(path.basename(String(args[0])));
         return realOpen(...args);
     }) as typeof fs.promises.open);
     return reads;
@@ -467,15 +492,9 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
                 killed.stop();
             }
 
-            /** Fails each write to cache/set-sources that `matches` picks, as a full disk would. */
+            /** Fails each write to cache/set-sources that `matches` picks, as a full disk would, until the test ends. */
             function failRecordWrites(matches: (data: string) => boolean): void {
-                const realWrite = fs.writeFileSync;
-                vi.spyOn(fs, 'writeFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, data: string | NodeJS.ArrayBufferView, options?: fs.WriteFileOptions) => {
-                    if (String(file).includes(`${path.sep}set-sources${path.sep}`) && matches(String(data))) {
-                        throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
-                    }
-                    return realWrite(file, data, options);
-                }) as typeof fs.writeFileSync);
+                recordWrites.fail = matches;
             }
             const unfinished = (data: string) => data.includes('"complete":false');
 
@@ -516,12 +535,33 @@ describe('watcher handlers', { timeout: 60_000 }, () => {
                 await handlers.onAdd(lib.file('portrait.jpg'));
                 expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
                 expect(errors).toHaveBeenCalledWith(expect.stringMatching(/^\[imageOptimizer\] Couldn't record that portrait\.jpg's set was built from it: /));
-                vi.mocked(fs.writeFileSync).mockRestore();
+                recordWrites.fail = null;
                 handlers.stop();
 
                 fs.unlinkSync(lib.file('portrait.jpg'));
                 expect(await newHandlers().queueStartupBatch()).toEqual({ processed: ['portrait.png'], skipped: [], errors: [] });
                 expect(await outputChannels('portrait')).toEqual(Array(7).fill('green'));
+            });
+
+            it('has the record that a build starts on disk, through atomicWriteFile, before its first rename', async () => {
+                await builtLibrary();
+                recordWrites.events = [];
+                const realRename = fs.promises.rename.bind(fs.promises);
+                vi.spyOn(fs.promises, 'rename').mockImplementation(async (...args: Parameters<typeof fs.promises.rename>) => {
+                    const target = String(args[1]);
+                    if (!target.includes(`${path.sep}set-sources${path.sep}`)) recordWrites.events?.push(`rename ${path.relative(lib.root, target)}`);
+                    return realRename(...args);
+                });
+                fs.copyFileSync(lib.file('landscape.jpg'), lib.file('portrait.jpg'));
+                await handlers.onAdd(lib.file('portrait.jpg'));
+
+                // atomicWriteFile() resolves only after the record and its folder are fsynced.
+                const events = recordWrites.events;
+                expect(events[0]).toBe('record {"source":"portrait.jpg","complete":false}');
+                expect(events.slice(1, -1)).toHaveLength(7);
+                expect(events.slice(1, -1).every((event) => event.startsWith('rename '))).toBe(true);
+                expect(events.at(-1)).toBe('record {"source":"portrait.jpg"}');
+                expect(await outputChannels('portrait')).toEqual(Array(7).fill('red'));
             });
 
             it("renames nothing in a set another source shares when it can't record that the build starts", async () => {
