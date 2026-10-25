@@ -300,7 +300,9 @@ export interface RecoverOptions {
  * Settle an interrupted activation, under the caller's catalog hold: commit
  * the pending activation the active pointer names and abandon every other
  * pending one. If the pointer names an abandoned or missing activation, record a
- * repair activation for its revision through commitActivation(). Then rebase
+ * repair activation for its revision through commitActivation(), unless the
+ * revision has an error blockingIssues() counts: then it throws
+ * CatalogIntegrityError and records nothing. Then rebase
  * the working layer onto the active revision if any record is on another
  * base. Throws LockTimeoutError when that rebase can't get the authored lock,
  * and an error saying so when the catalog lock is lost before the repair
@@ -331,6 +333,19 @@ export async function recover(options: RecoverOptions): Promise<RecoveryReport> 
             const revision = await readRevisionFile(root, pointer.revisionId);
             if (revision === null) throw new CatalogIntegrityError(ACTIVE_POINTER_NAME, `${ACTIVE_POINTER_NAME} names ${pointer.revisionId}, which has no revision file.`);
             const registry = await readRegistry(root).catch(() => null);
+            const stored = validateStored(root, revision, registry);
+            // A pointer no committed activation records was moved outside a publish, by hand or by damage. Recording a
+            // revision the rules block would make it look published, so the repair refuses and leaves the records as
+            // they are.
+            const blocking = blockingIssues(stored.issues);
+            if (blocking.length > 0) {
+                const codes = [...new Set(blocking.map((issue) => issue.code))].sort().join(', ');
+                logEvent(logger, 'catalog.recover.refused', { revisionId: pointer.revisionId, activationId: pointer.activationId, errors: blocking.length, codes });
+                throw new CatalogIntegrityError(
+                    ACTIVE_POINTER_NAME,
+                    `${ACTIVE_POINTER_NAME} names ${pointer.revisionId}, which no committed activation records, and ${blocking.length} ${blocking.length === 1 ? 'error keeps' : 'errors keep'} it from going live (${codes}). Nothing was repaired. Fix what blocks it, or restore ${ACTIVE_POINTER_NAME}/ from a backup, then publish again.`,
+                );
+            }
             const result = await commitActivation({
                 root,
                 lock,
@@ -338,7 +353,7 @@ export async function recover(options: RecoverOptions): Promise<RecoveryReport> 
                 kind: 'publish',
                 actor: 'recover',
                 reason: named ? `repair: the active pointer named the ${named.status} activation ${named.activationId}` : `repair: the active pointer named the missing activation ${pointer.activationId}`,
-                validation: validateStored(root, revision, registry).validation,
+                validation: stored.validation,
                 acceptedRules: [],
                 lockTakeover: lock.takeover,
                 clock,

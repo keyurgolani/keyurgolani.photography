@@ -649,6 +649,32 @@ describe('recovery', { timeout: 30_000 }, () => {
         expect(events).toContainEqual(expect.objectContaining({ event: 'catalog.recover.repaired', activationId: repaired, revisionId: second.revisionId, replaced: named.activationId }));
     });
 
+    it('refuses to record a repair for a pointer moved by hand to a revision the rules block, and records nothing', async () => {
+        const { catalog, root, run, editPhoto, first, events } = await launched({ seed: 76 });
+        await editPhoto(catalog.photos[0].id, (photo) => {
+            photo.caption = 'A caption revision 2 publishes.';
+        });
+        const second = await run();
+        // Revision 1's set loses its manifest, so a rollback to it is refused.
+        const photo = (await readRevisionFile(root, first.revisionId ?? ''))?.content.photos[0];
+        if (!photo) throw new Error('Revision 1 has no photo.');
+        fs.rmSync(path.join(assetDir({ photoId: photo.id, assetRevision: photo.assetRevision, profileId: photo.profileId }, root), 'manifest.json'));
+        // Then someone copies the pointer to the next number by hand and points it at revision 1.
+        const dir = catalogPaths(root).active;
+        const newest = (await readActivePointer(root))?.version ?? 0;
+        const text = fs.readFileSync(path.join(dir, `v${newest}.json`), 'utf8');
+        fs.writeFileSync(path.join(dir, `v${newest + 1}.json`), text.replace(second.revisionId ?? '', first.revisionId ?? ''));
+        expect(await readActivePointer(root)).toMatchObject({ revisionId: first.revisionId });
+        const history = await listActivations(root);
+        events.length = 0;
+
+        const result = await run();
+        expect(result.outcome).toBe('INTEGRITY_MISMATCH');
+        expect(result.message).toMatch(/^catalog\/active names rev_[0-9a-f]{64}, which no committed activation records, and 1 error keeps it from going live \(assets\.manifest\)\. Nothing was repaired\./);
+        expect(await listActivations(root)).toEqual(history);
+        expect(events).toContainEqual(expect.objectContaining({ event: 'catalog.recover.refused', revisionId: first.revisionId, codes: 'assets.manifest' }));
+    });
+
     it('leaves the active pointer alone when the catalog lock is lost before a repair moves it, and repairs on the next publish', async () => {
         const { catalog, root, run, editPhoto } = await launched({ seed: 82 });
         await editPhoto(catalog.photos[0].id, (photo) => {

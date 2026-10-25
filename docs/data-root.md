@@ -33,6 +33,8 @@ docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher cat /
 
 Every document that two writers could change at once is a folder with one file per version: `identity/registry/`, `authored/site/`, `authored/series/<seriesId>/`, `authored/photos/<photoId>/`, and the active catalog pointer, `catalog/active/`. Inside each folder the versions are `v1.json`, `v2.json`, and so on. The highest number is the document. A write never changes an existing file. It adds the next number with `link()`, which fails if that number already exists, so two writers can't both store the same version. That's why the data root needs a filesystem with hard links.
 
+Never edit the active pointer by hand: only `photos.mjs publish`, and later `photos.mjs rollback`, move it. A version copied there by hand makes a revision live without the checks a publish runs, so the next command refuses to record it if the rules block that revision.
+
 Each write keeps the two newest versions and removes older ones. Files that start with `.v` and end in `.tmp` are writes in progress, or left by a write that crashed. The next write in that folder removes them. Leave them alone.
 
 A record's folder is a real folder, never a symlink: the catalog refuses a linked one, dangling or not, and says so. The data root itself may be a symlink for the app, but [Backing up](#backing-up) and [Restoring](#restoring) need it to be a real folder.
@@ -55,6 +57,8 @@ uid="$(sudo stat -c %u "$file")" && gid="$(sudo stat -c %g "$file")" &&
 On macOS, use `stat -f %u` and `stat -f %g` in place of `stat -c %u` and `stat -c %g`. Each step runs only if the one before it worked, so nothing runs for a missing file. The `test` stops it when the folder already exists, since `install -d` would change an existing folder's owner. In that case the old file sits beside versions of its own, and nothing says which copy is current: decide that first, by hand.
 
 ## Editing a document by hand
+
+This is for the registry and the authored records, never the active pointer.
 
 Only while no command runs: stop the watcher, and don't run `photos.mjs` commands until you're done. The folders are 0700 and the files 0600, owned by the user the app runs as (uid 1001 in the containers), so the new version has to keep that owner and mode. A copy root owns can't be read by the app: the registry then reads as unreadable, and a record as `unreadable`. With the containers, edit as uid 1001 from a shell in the watcher's image:
 
