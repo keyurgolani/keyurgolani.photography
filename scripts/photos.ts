@@ -38,8 +38,9 @@
  *   npx tsx scripts/photos.ts status [--json]
  *     The data root, the catalog mode and active revision, the last publish,
  *     registry counts, the working layer's records, how many photos no series
- *     lists and how many have no reviewed description, and the watcher's
- *     heartbeat. Exits 1 unless the data root is ready and everything reads.
+ *     lists and how many have no reviewed description, the curation inbox's
+ *     open missing sources and failures (#17), and the watcher's heartbeat.
+ *     Exits 1 unless the data root is ready and everything reads.
  *
  *   npx tsx scripts/photos.ts list [--unassigned] [--json]
  *     Every photo the registry holds, but not archived ones, with its library
