@@ -304,6 +304,10 @@ docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node 
 docker compose -f docker-compose.prod.yml run --rm --no-deps -T -e PHOTOS_ACTOR=<name> image-watcher node dist/scripts/photos.mjs rollback --to 3 --reason "revert the caption change" --yes --expect-active <revisionId>
 ```
 
+#### Cleanup
+
+`photos gc` plans the cleanup the data root's [retention rules](docs/data-root.md#retention-and-cleanup) allow: staging folders a killed derivative build left, and candidates that never became a revision, once each has gone unchanged for more than 7 days. It lists each path with its class, the rule that allows it, and its size, prints a plan digest, and deletes nothing. `photos gc --apply <planDigest>` deletes exactly that plan, and stops without deleting anything if the plan changed since. It never deletes an asset, a revision, an activation, a record, or anything in `edits/`.
+
 ### Supported Formats
 - JPEG (.jpg, .jpeg)
 - PNG (.png)

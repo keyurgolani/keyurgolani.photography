@@ -80,8 +80,8 @@ export function stagingLockName(id: string): string {
     return `build-${id}`;
 }
 
-/** A name a build's staging folder can have: one that makes a valid lock name. */
-const STAGING_ID = /^[a-z0-9-]+$/;
+/** A name a build's staging folder can have: one that makes a valid lock name. #15's GC considers only these too. */
+export const STAGING_ID = /^[a-z0-9-]+$/;
 
 const iso = (ms: number) => new Date(ms).toISOString();
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));

@@ -148,6 +148,23 @@
  *     refused, 2 on a usage error, 3 when stale, locked, or the data root
  *     isn't ready, and 4 when a file can't be read. Prints no absolute path.
  *
+ *   npx tsx scripts/photos.ts gc [--apply <planDigest>]
+ *     Plan the cleanup docs/data-root.md's retention rules allow: staging
+ *     folders a killed derivative build left and candidates that never
+ *     became a revision, once each is more than 7 days old. It lists every
+ *     path with its class, the rule that allows it, and its size, and
+ *     prints the plan's digest. It deletes nothing without --apply, which
+ *     takes that digest, plans again, and deletes only if the plan is
+ *     still the same. Both hold the catalog and authored locks for the
+ *     whole run, waiting up to 30 s for each. It never deletes an asset,
+ *     a revision, an activation, a record, or anything in edits/. Exits 0
+ *     when planned or applied, 1 when a folder it would delete in is a
+ *     symlink, isn't a folder, resolves somewhere else, or changes just
+ *     before a delete, 2 on a usage error, 4 when a catalog file is
+ *     damaged or an I/O error stops it, and 3 on any other stop, such as a
+ *     changed plan or a busy lock. --apply logs one JSON line per path it
+ *     deletes.
+ *
  * The library is PHOTOGRAPHY_LIBRARY_DIR, or public/assets/photos under the
  * working directory. The data root is PHOTOGRAPHY_DATA_DIR, or portfolio-data
  * under the working directory outside production.
@@ -171,6 +188,7 @@ import { runDescribeImport } from '../lib/catalog/describe-import';
 import { runDraftInit } from '../lib/catalog/draft-init';
 import { recordRef, runEditRecord } from '../lib/catalog/edit-record';
 import { rollbackArgs, runHistoryCommand, runRollbackCommand } from '../lib/catalog/history-cli';
+import { gcArgs, runGcCommand } from '../lib/catalog/retention-cli';
 import { runListCommand, runStatusCommand } from '../lib/catalog/owner-status';
 import { issueLines, photoIdArg, publishReport, sequenceArgs, seriesArgs, parseFlags, UsageError } from '../lib/catalog/owner-cli';
 import { publish, PUBLISH_EXIT_CODES, validateWorkingLayer, VALIDATE_EXIT_CODES } from '../lib/catalog/publish';
@@ -221,6 +239,7 @@ const USAGE = `Usage:
   ${PROGRAM} history
   ${PROGRAM} rollback --to <number | revisionId> --reason <text> [--actor <name>] [--expect-active <revisionId>] [--yes]
 ${curationUsage(PROGRAM)}
+  ${PROGRAM} gc [--apply <planDigest>]
 A flag given twice is refused. An argument that starts with - goes after --.
 In production: docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs <command>
 The README's "Curating the catalog" section has the commands, the hand-edit rules, and the launch checklist.`;
@@ -453,6 +472,13 @@ async function rollbackCommand(args: string[]): Promise<number> {
     });
 }
 
+async function gcCommand(args: string[]): Promise<number> {
+    const parsed = gcArgs(args);
+    const root = catalogRoot();
+    if (typeof root === 'number') return root;
+    return runGcCommand(root, parsed, { out: (line) => console.log(line), err: (line) => console.error(line) });
+}
+
 /** Print a handler's text, on stdout when it succeeded and stderr when it didn't, and return its exit code. */
 function printed(result: CommandResult): number {
     (result.exitCode === 0 ? process.stdout : process.stderr).write(result.output);
@@ -541,6 +567,7 @@ async function main(argv: string[]): Promise<number> {
             (result.exitCode === 0 ? process.stdout : process.stderr).write(result.output);
             return result.exitCode;
         }
+        if (command === 'gc') return await gcCommand(args);
         throw new UsageError(command ? `Unknown command: ${command}` : 'No command given.');
     } catch (error) {
         if (error instanceof UsageError) {
