@@ -317,6 +317,11 @@ function resolveChoices(event: CurationEvent, choices: Choices): { seriesId: str
     return { seriesId, placement: placement ?? 'end', picked, description: choices.description !== undefined ? choices.description : edits?.description };
 }
 
+/** The refusal for "unassigned" while a series that might hold the photo can't be read. The page words it through lib/curation/inbox-form.ts. */
+function unreadableSeriesMessage(unreadable: readonly string[], photoId: string): string {
+    return `The series ${unreadable.join(' and ')} can't be read, so nothing shows whether one holds ${photoId}. Fix the series first. Nothing was written.`;
+}
+
 /**
  * Approve a new photograph into the draft: its photo record at the event's
  * asset revision, and, unless it's left unassigned, its place in the chosen
@@ -378,9 +383,15 @@ export function approveEvent(
                 let choices = input.choices;
                 const approvedBefore = event.decisions.some((decision) => decision.action === 'approve');
                 if (approvedBefore && choices.seriesId === undefined && event.edits?.seriesId === undefined) {
-                    const holding = (await readAuthoredSeries(root)).series.filter((entry) => entry.photoIds.includes(photoId));
+                    const all = await readAuthoredSeries(root);
+                    const holding = all.series.filter((entry) => entry.photoIds.includes(photoId));
                     if (holding.length === 1) choices = { ...choices, seriesId: holding[0].id };
-                    else if (holding.length === 0) choices = { ...choices, seriesId: null };
+                    else if (holding.length === 0) {
+                        // A series that can't be read might hold it, so "unassigned" would be a guess. Refused as keepPlaced refuses it below.
+                        const unreadable = all.problems.filter((problem) => problem.kind === 'series').map((problem) => problem.id);
+                        if (unreadable.length > 0) fail('refused', unreadableSeriesMessage(unreadable, photoId));
+                        choices = { ...choices, seriesId: null };
+                    }
                 }
                 resolved = resolveChoices(event, choices);
                 const { seriesId, placement, picked, description } = resolved;
@@ -393,7 +404,7 @@ export function approveEvent(
                     const all = await readAuthoredSeries(root);
                     const unreadable = all.problems.filter((problem) => problem.kind === 'series').map((problem) => problem.id);
                     // As #8's membership check does: a series that can't be read might hold it, so nothing shows it's free.
-                    if (unreadable.length > 0) fail('refused', `The series ${unreadable.join(' and ')} can't be read, so nothing shows whether one holds ${photoId}. Fix the series first. Nothing was written.`);
+                    if (unreadable.length > 0) fail('refused', unreadableSeriesMessage(unreadable, photoId));
                     const holding = all.series.filter((entry) => entry.photoIds.includes(photoId)).map((entry) => entry.id);
                     if (holding.length > 0) fail('refused', `${photoId} is already in ${holding.join(' and ')}, and an approval doesn't take a photograph out of a series. Nothing was written.`);
                 }
