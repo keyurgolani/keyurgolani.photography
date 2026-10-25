@@ -7,7 +7,7 @@ import { expectHomeImmersive, photoPoint } from './support/home';
 import { waitForHydration } from './support/hydration';
 import { expectReflow } from './support/reflow';
 import { checkSurface } from './support/surface';
-import { parkPointer, recordDispatchedEvents } from './support/synthetic';
+import { parkPointer, queuedEvents, recordDispatchedEvents } from './support/synthetic';
 import { expect, setPhotoFixtures, test } from './support/test';
 
 // #18: Home rests on the photograph alone, and intent brings the chrome back.
@@ -292,14 +292,21 @@ test.describe('at rest', () => {
         await expect.poll(() => page.evaluate(() => Object.keys(document).some((key) => key.startsWith('_reactListening'))), {
             message: 'React listens on the document before the held chunk arrives',
         }).toBe(true);
-        await page.mouse.move(300, 300);
-        await page.mouse.move(800, 400, { steps: 2 });
+        // mouse.move returns once the browser takes the move, and the page only sees it at a later frame, which on CI
+        // came after Home had hydrated, so React queued nothing. So the hover moves until React has queued it: both
+        // native hovers held and stopped before window. Both points rest on Home's photo layer.
+        await expect(async () => {
+            await page.mouse.move(300, 300);
+            await page.mouse.move(800, 400, { steps: 2 });
+            expect(await queuedEvents(page)).toEqual(['mouseover', 'pointerover']);
+        }, 'React queues the native hover').toPass({ intervals: [100, 250, 500] });
         expect(await page.evaluate(() => document.documentElement.hasAttribute('data-hydrated')), 'React has not hydrated yet').toBe(false);
 
         releaseChunk();
         await waitForHydration(page);
         // React replays its queue in this order. The recorder before this one counted both as synthetic.
         await expect.poll(async () => (await dispatched()).replayed).toEqual(['mouseover', 'pointerover']);
+        expect(await queuedEvents(page)).toEqual([]);
         expect((await dispatched()).synthetic).toEqual([]);
         await expectHomeImmersive(page);
 
