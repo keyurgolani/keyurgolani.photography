@@ -10,13 +10,15 @@ import { createCatalogReader, createRouteBuilder, type CatalogReader } from '../
 import { buildTestCatalog, createTestCatalog, type TestCatalogContent } from '../../catalog/testing';
 import { KIB, SCREEN_BUDGETS, type Screen } from '../budgets';
 import { BUDGET_FIXTURE, BUDGET_VARIANT_BYTES, buildBudgetFixture } from '../fixture';
-import { imagesIn, payloadSize, type PayloadSize } from '../measure';
+import { arraysIn, imagesIn, payloadSize, type PayloadSize } from '../measure';
 
 /**
  * #6's payload budgets: each screen's read model on the 5,000-photo fixture,
  * serialized and gzipped, against lib/perf/budgets.ts. To print the numbers:
  *
- *     BUDGETS_REPORT=1 npx vitest run lib/perf/__tests__/budgets.test.ts
+ *     BUDGETS_REPORT=1 npx vitest run lib/perf/__tests__/budgets.test.ts --reporter=default
+ *
+ * (Vitest may pick a reporter that hides a passing test's console output; `--reporter=default` shows it.)
  */
 
 const routes = createRouteBuilder();
@@ -151,7 +153,8 @@ describe('payloads on the 5,000-photo fixture', () => {
         const covers = new Set(model.series.flatMap((summary) => (summary.cover ? [summary.cover.photoId] : [])));
         expect(photoIdsIn(model)).toEqual(covers);
         expect(imagesIn(model)).toHaveLength(covers.size);
-        expect(model.series.filter((summary) => Object.values(summary).some(Array.isArray))).toHaveLength(SCREEN_BUDGETS.work.photoSequences);
+        // At any depth: a summary and its cover hold no arrays, so a sequence without IDs (alt or sizes alone) fails too.
+        expect(model.series.filter((summary) => arraysIn(summary) > 0)).toHaveLength(SCREEN_BUDGETS.work.photoSequences);
         expectGeometry(model);
     });
 
@@ -176,8 +179,8 @@ describe('payloads on the 5,000-photo fixture', () => {
                 const neighbors = [model.previousPhotoId, model.nextPhotoId].filter((id): id is string => id !== null);
                 expect(photoIdsIn(model), photoId).toEqual(new Set([photoId, ...neighbors]));
                 expect(size.gzipBytes, photoId).toBeLessThanOrEqual(SCREEN_BUDGETS.viewer.gzipBytes);
+                expectGeometry(model);
             }
         }
-        expectGeometry(viewer(fixture.content.series[0].slug, fixture.content.series[0].photoIds[0]));
     });
 });
