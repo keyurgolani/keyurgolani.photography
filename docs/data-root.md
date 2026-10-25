@@ -106,9 +106,41 @@ sudo chown -R 1001:1001 public/assets/photos portfolio-data .next-images-cache
 sudo chmod 700 portfolio-data
 ```
 
+The `chown -R` of `public/assets/photos` fits a host where nothing else writes the photos. If another process does, such as a file sync tool running as another user, leave it out and follow [Who owns the photos](#who-owns-the-photos) instead.
+
 `./.next-images-cache` is where `web` keeps the `/_next/image` copies it makes, so it has to belong to uid 1001 too. `docker-compose.prod.yml` never creates it, like the other two folders: a short-syntax bind of a missing folder has the Docker daemon create it, owned by root when the daemon runs as root, and `web` then can't write it. A host that ran the older compose file may already have one that Docker created that way, and the `chown` fixes it.
 
-Until the migration below initializes it, the watcher writes only its heartbeat there, logs once that the identity step is off, and keeps writing the legacy derivatives the site serves today. `GET /api/health` reports `uninitialized`.
+Until the migration below initializes the data root, the watcher writes only its heartbeat there, logs once that the identity step is off, and keeps writing the legacy derivatives the site serves today. `GET /api/health` reports `uninitialized`.
+
+### Who owns the photos
+
+Both containers run as uid 1001, and each needs only part of the photos folder:
+
+| Container | Reads | Writes |
+|---|---|---|
+| `web` | The originals, for their size and EXIF, and the derivatives it serves | Only `./.next-images-cache`, outside the photos folder |
+| `image-watcher` | The originals, in every folder of the library | The derivative folders (`thumbnails`, `medium`, `optimized`, `thumbnails-avif`, `medium-avif`, `optimized-avif`, `lqip`) and `cache/`, all at the top of the photos folder, and the data root |
+
+When nothing else writes the photos, the `chown -R` in [Setting it up](#setting-it-up) is the simple way to give uid 1001 all of that.
+
+When another process writes them, such as a file sync tool running as another user, a `chown -R` takes the originals away from it. The tool may then fail to update them, or hand them back to its own user on its next pass, and every change of owner makes the watcher's next identity pass read every photo again, as [Health](#health) says. Leave the originals with their owner, and hand uid 1001 only the folders the watcher writes, creating any that are missing:
+
+```bash
+(
+  cd public/assets/photos || exit 1
+  sudo mkdir -p thumbnails medium optimized thumbnails-avif medium-avif optimized-avif lqip cache
+  sudo chown -R 1001:1001 thumbnails medium optimized thumbnails-avif medium-avif optimized-avif lqip cache
+)
+```
+
+That works only if uid 1001 can still read the originals: every folder in the library readable and searchable, and every photo readable. The containers share no group with the tool unless you set one up, so in practice that means the world bits, folders at least `0755` and photos at least `0644`, and a tool set to create new files that way. A photo that arrives as `0600` stays out of the Gallery, since neither container can read it. This prints every file or folder in the library that uid 1001 can't read, so no output means it can read them all:
+
+```bash
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher \
+  find /app/public/assets/photos \( ! -exec test -r {} \; -o -type d ! -exec test -x {} \; \) -print
+```
+
+If the tool can leave folders out, leave out the derivative folders and `cache/` too. The watcher builds them from the originals, and a copy the tool writes as its own user is one the watcher can't replace.
 
 ## Never migrate into an empty data root beside a library that had IDs
 
