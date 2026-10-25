@@ -390,6 +390,43 @@ describe('the empty state', () => {
         expect(homeOf(held)).toEqual({ catalogRevision: REVISION_A, featuredSeries: null });
     });
 
+    it('is a null featured series when the featured ID appears more than once, without falling through to the next', () => {
+        const held = content();
+        // A hand-written revision: a second record under A's ID, with its own slug and B's photographs. #5 answers both not-found.
+        held.series.push({ ...structuredClone(held.series[0]), id: 'ser_fixture-a', slug: 'fixture-a-again', slugAliases: [] });
+        expect(homeOf(held)).toEqual({ catalogRevision: REVISION_A, featuredSeries: null });
+        // A repeat of an unfeatured series leaves Home alone.
+        const other = content();
+        other.series.push({ ...structuredClone(other.series[0]), slug: 'fixture-b-again', slugAliases: [] });
+        expect(featured(homeOf(other)).id).toBe('ser_fixture-a');
+    });
+
+    it('is a null featured series when its published count isn\'t a positive whole number', () => {
+        for (const photoCount of [0, -5, 2.5, Number.NaN, '5', null, undefined]) {
+            const held = content();
+            (held.series[1].derived as { photoCount: unknown }).photoCount = photoCount;
+            expect(homeOf(held), String(photoCount)).toEqual({ catalogRevision: REVISION_A, featuredSeries: null });
+        }
+        const missing = content();
+        delete (missing.series[1] as { derived?: unknown }).derived;
+        expect(homeOf(missing)).toEqual({ catalogRevision: REVISION_A, featuredSeries: null });
+        // One photograph is enough, and the count needn't match the members that resolve.
+        const one = content();
+        one.series[1].derived.photoCount = 1;
+        expect(featured(homeOf(one)).photos.map((photo) => photo.id)).toEqual(ORDER_A);
+    });
+
+    it('is a null featured series when its slug is one the series route refuses', () => {
+        for (const slug of ['Fixture-A', 'fixture_a', '-fixture-a', 'fixture--a', '', 'a'.repeat(65), 42]) {
+            const held = content();
+            (held.series[1] as { slug: unknown }).slug = slug;
+            expect(homeOf(held), String(slug)).toEqual({ catalogRevision: REVISION_A, featuredSeries: null });
+        }
+        const longest = content();
+        longest.series[1].slug = 'a'.repeat(64);
+        expect(featured(homeOf(longest)).href).toBe(`/work/${'a'.repeat(64)}`);
+    });
+
     it('is a null featured series for a revision with no series', () => {
         const held = content();
         held.series = [];
