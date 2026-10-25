@@ -11,6 +11,7 @@ import { LockTimeoutError, withLock, type LockContext } from '../storage/lock';
 import { unplacedApproval, type CurationDecision, type CurationEvent, type CurationEventStatus, type CuratorDescription, type CuratorEdits, type Placement } from './events';
 import { photoHolders } from './holders';
 import { placementIndex } from './placement';
+import { draftPlanText, readDraftPlan, replacedBy } from './pins';
 import { EventMovedError, EventUnusableError, readEvent, withCurationLock, writeEvent } from './repository';
 
 /**
@@ -235,14 +236,10 @@ export function reopenEvent(input: ActionInput & { reason?: string }): Promise<A
         const { event } = step;
         requireStatus(event, ['deferred', 'dismissed', 'approved'], 'reopened');
         const status: CurationEventStatus = event.type === 'processing-failure' ? 'failed' : 'open';
-        // #17: a confirm that found the record on its bytes already, with nothing showing it put them there, records nothing to put back.
-        const replaced = event.decisions.findLast((decision) => decision.action === 'confirm')?.fromRevision;
         const notes = event.status !== 'approved'
             ? ['Reopened.']
             : event.type === 'replacement'
-                ? replaced
-                    ? ['Reopened. The photo record keeps the revision it pins; leave it in draft (defer) to put back the one a confirm replaced, or confirm it again.']
-                    : ['Reopened. The photo record keeps the revision it pins. Its last confirm found the record on these bytes already and recorded nothing to put back, so leaving it in draft (defer) keeps them too.']
+                ? [`Reopened. The photo record keeps the revision it pins. ${await draftNote(path.resolve(input.root), event)}`]
                 : [await reopenedApprovalNote(path.resolve(input.root), event)];
         return { event: decided(step, input, { action: 'reopen', ...(input.reason ? { reason: input.reason } : {}) }, status), notes };
     });
@@ -262,6 +259,16 @@ async function reopenedApprovalNote(root: string, event: CurationEvent): Promise
     if ((index.get(event.photoId)?.seriesIds.length ?? 0) > 0) return 'Reopened. The draft placement stays in the working layer; approve with a position flag to move it.';
     const series = unplacedApproval({ ...event, status: 'approved' }, []);
     return `Reopened. No series in the draft holds its photo, so there is no draft placement to keep.${series === null ? '' : ` Approve it with --series ${series} to place it again, at the end.`}`;
+}
+
+/** #17: what leaving a replacement in draft would do now, from the plan leaveInDraft() acts on, so the two can't disagree. */
+async function draftNote(root: string, event: CurationEvent): Promise<string> {
+    try {
+        const plan = await readDraftPlan(root, event, async (photoId) => (await readAuthoredRecord(root, 'photo', photoId))?.assetRevision ?? null);
+        return draftPlanText(plan, replacedBy(event)) ?? '';
+    } catch (error) {
+        return `What leaving it in draft (defer) would do can't be told now: ${(error as Error).message.replace(/\.$/, '')}.`;
+    }
 }
 
 /** Whether the registry shows a failed derivative build for this revision. */

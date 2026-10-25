@@ -409,6 +409,47 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
     });
 
+    it('after a later item\'s confirm is left in draft, reopen and show say leaving the earlier item in draft keeps its bytes, which it does', async () => {
+        const w = await world();
+        const cli = (args: string[]) => runCurationCli(args, { dataRoot: w.root }, { PHOTOS_ACTOR: ACTOR });
+        await w.build(w.job(w.b));
+        // X: B confirmed in place of A.
+        const x = await confirm(w, await w.event());
+        expect(x.ok && x.event.decisions.at(-1)).toMatchObject({ action: 'confirm', fromRevision: w.a });
+        // Y: C replaces B's file and is confirmed in place of B.
+        fs.writeFileSync(w.lib.file(P_PATH), images.third);
+        const c = (await w.pass()).find((fact) => fact.type === 'replaced' && fact.photoId === w.p)?.assetRevision;
+        if (!c) throw new Error('The pass reported no replacement.');
+        expect(await w.build(w.job(c))).toEqual({ status: 'ready', reused: false });
+        const yId = replacementEventId(w.p, c);
+        const y = await confirm(w, await w.event(yId));
+        expect(y.ok && y.event.decisions.at(-1)).toMatchObject({ action: 'confirm', fromRevision: w.b });
+        // Y is reopened and left in draft, which puts B back.
+        const yLeft = await leave(w, await reopen(w, await w.event(yId)));
+        expect(yLeft.ok && yLeft.notes.join(' ')).toContain(`back on ${w.b}, in place of ${c}`);
+        expect((await photoRecord(w)).assetRevision).toBe(w.b);
+        const authored = treeBytes(path.join(w.root, 'authored'));
+
+        // X is reopened. Y's Leave in draft set the record last, so leaving X in draft keeps B, and reopen and show say so.
+        const xItem = await w.event();
+        const reopened = await reopenEvent({ root: w.root, eventId: xItem.id, expectedVersion: xItem.version, expectedBase: w.revisionId, actor: ACTOR });
+        const note = reopened.ok ? reopened.notes.join(' ') : '';
+        expect(note).toContain(`Leaving it in draft (defer) keeps ${w.b}: ${yId}'s defer set ${w.p}'s photo record on it last, not a confirm of this item, so it puts nothing back.`);
+        expect(note).toContain(`To use ${w.a} again, which this item's confirm replaced, set assetRevision with photos edit ${w.p}.`);
+        expect(note).not.toContain('to put back');
+        const shown = (await cli(['show', xItem.id])).output;
+        expect(shown).toContain(`Leaving it in draft (defer) keeps ${w.b}: ${yId}'s defer set`);
+        expect(shown).not.toContain('puts back');
+
+        const left = await leave(w, (reopened as { event: CurationEvent }).event);
+        expect(left).toMatchObject({ ok: true, event: { status: 'deferred' } });
+        expect(left.ok && left.event.decisions.at(-1)).not.toHaveProperty('fromRevision');
+        expect(left.ok && left.event.decisions.at(-1)).not.toHaveProperty('writes');
+        expect(left.ok && left.notes.join(' ')).toContain(`pins ${w.b}, as ${yId}'s defer set it, so the draft keeps it.`);
+        expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
+        expect((await photoRecord(w)).assetRevision).toBe(w.b);
+    });
+
     it('leaves an item never confirmed in draft with no write', async () => {
         const w = await world();
         await w.build(w.job(w.b));
@@ -911,13 +952,15 @@ describe('confirm', { timeout: 60_000 }, () => {
         const at = async () => String((await w.event()).version);
         expect(await cli(['confirm', w.eventId, '--version', await at(), '--base', w.revisionId])).toMatchObject({ exitCode: 0 });
         const reopened = await cli(['reopen', w.eventId, '--version', await at(), '--base', w.revisionId]);
-        expect(reopened).toMatchObject({ exitCode: 0, output: expect.stringContaining('leave it in draft (defer) to put back the one a confirm replaced') });
+        expect(reopened).toMatchObject({ exitCode: 0, output: expect.stringContaining(`Leaving it in draft (defer) puts back ${w.a}, the revision this item's confirm replaced.`) });
+        expect((await cli(['show', w.eventId])).output).toContain(`Leaving it in draft (defer) puts back ${w.a}, the revision this item's confirm replaced.`);
         const deferred = await cli(['defer', w.eventId, '--version', await at(), '--base', w.revisionId]);
         expect(deferred).toMatchObject({ exitCode: 0, output: expect.stringContaining(`back on ${w.a}, in place of ${w.b}`) });
         expect((await photoRecord(w)).assetRevision).toBe(w.a);
         const shown = (await cli(['show', w.eventId])).output;
         expect(shown).toMatch(new RegExp(`defer by ${ACTOR}: wrote photo:${w.p} v\\d+, put back ${w.a}`));
-        expect(shown).toContain('after a confirm puts that one back');
+        expect(shown).toContain(`Leaving it in draft (defer) keeps ${w.a}, the revision ${w.p}'s photo record pins.`);
+        expect(shown).not.toContain('puts back');
         expect(curationUsage()).toContain('reopen and then defer put back the revision the confirm replaced');
         expect(curationUsage()).not.toContain('To keep the current revision instead');
     });

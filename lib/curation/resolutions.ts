@@ -3,15 +3,15 @@ import type { AuthoredPhoto } from '../catalog/types';
 import { readActivePointer } from '../catalog/working-layer';
 import { AUTHORED_LEASE_MS, AUTHORED_LOCK, AUTHORED_WAIT_MS, AuthoredWriteError, writeAuthoredRecord, type WriteAuthoredOptions } from '../catalog/working-layer-writer';
 import { readRegistry } from '../identity/registry';
-import type { Registry } from '../identity/types';
 import { readAssetManifest } from '../media/manifest';
 import { assetDir } from '../media/path';
 import type { AssetRef } from '../media/url';
 import { LockTimeoutError, withLock, type LockContext } from '../storage/lock';
 import { verifyDirectory } from '../storage/publish';
 import { act, decided, fail, readAuthored, requireStatus, type ActionInput, type ActionOutcome, type Change, type Step, type WrittenRecord } from './actions';
-import { candidateOf, readUsableEvent, replacementEventIds } from './candidates';
-import { eventIdOf, eventKey, type CandidateFailure, type CurationEvent } from './events';
+import { candidateOf } from './candidates';
+import type { CandidateFailure } from './events';
+import { draftPlan, latestPin } from './pins';
 
 /**
  * #17's resolutions of a replacement item. Only the CLI and the curator
@@ -31,7 +31,9 @@ import { eventIdOf, eventKey, type CandidateFailure, type CurationEvent } from '
  * photo record pinned before the item. On an item whose confirm landed,
  * reopened since, it writes the record back to the revision that confirm
  * replaced, the same way confirm writes it, so the next publish ships that
- * one. A record on the item's bytes with no confirm of the item to say so
+ * one, while that confirm is still the inbox's latest pin of the photo. Once
+ * a later pin moved the record, even back onto the item's bytes, it puts
+ * nothing back, and reopen and `curation show` say so. A record on the item's bytes with no confirm of the item to say so
  * (a hand edit or `photos edit`, a #15 rollback, or a confirm whose event a
  * crash lost) is left where it is: nothing on record tells those apart, so
  * nothing is guessed. Confirm guesses nothing there either: it records no
@@ -52,51 +54,6 @@ export interface ConfirmFaults {
     beforeWrite?(): void | Promise<void>;
     /** After the photo record is written, before the event is. A test can crash here. */
     afterWrite?(): void | Promise<void>;
-}
-
-/**
- * A revision the inbox set on a photo record: an approval of its new item,
- * a confirm of a replacement, or a Leave in draft that put a confirm's
- * revision back.
- */
-export interface Pin {
-    revision: string;
-    at: string;
-    eventId: string;
-    action: 'approve' | 'confirm' | 'defer';
-    /** For a confirm: the revision the record pinned before it. */
-    fromRevision?: string;
-}
-
-/** Every pin `events` record for `photoId`, oldest first. */
-export function pinsOf(events: readonly CurationEvent[], photoId: string): Pin[] {
-    const pins: Pin[] = [];
-    for (const event of events) {
-        if (event.photoId !== photoId || event.assetRevision === null) continue;
-        for (const decision of event.decisions) {
-            const base = { at: decision.at, eventId: event.id };
-            if (event.type === 'new' && decision.action === 'approve') pins.push({ ...base, action: 'approve', revision: event.assetRevision });
-            else if (event.type === 'replacement' && decision.action === 'confirm') {
-                pins.push({ ...base, action: 'confirm', revision: event.assetRevision, ...(decision.fromRevision ? { fromRevision: decision.fromRevision } : {}) });
-            } else if (event.type === 'replacement' && decision.action === 'defer' && decision.fromRevision) {
-                pins.push({ ...base, action: 'defer', revision: decision.fromRevision });
-            }
-        }
-    }
-    return pins.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
-}
-
-/** The newest pin the inbox records for `photoId`, or null for none. It reads only the items that can pin it: each revision's new and replacement items. */
-async function latestPin(root: string, registry: Registry, photoId: string): Promise<Pin | null> {
-    const photo = Object.hasOwn(registry.photos, photoId) ? registry.photos[photoId] : undefined;
-    const events: CurationEvent[] = [];
-    for (const assetRevision of Object.keys(photo?.revisions ?? {})) {
-        for (const id of [eventIdOf(eventKey('new', { photoId, assetRevision, key: `new:${photoId}:${assetRevision}` })), ...replacementEventIds(photoId, assetRevision)]) {
-            const event = await readUsableEvent(root, id);
-            if (event) events.push(event);
-        }
-    }
-    return pinsOf(events, photoId).at(-1) ?? null;
 }
 
 /** #13 accepts only a set #10's writer committed with its manifest, every file checking out, so neither does a resolution. */
@@ -230,7 +187,10 @@ export function confirmReplacement(input: ActionInput & { faults?: ConfirmFaults
  * write goes through writeAuthoredRecord() under the authored lock, with
  * compare-and-swap, once that revision's set checks out. A record that has
  * moved since the confirm is refused. A record on the item's bytes that no
- * confirm of the item explains is deferred with no write, and says so.
+ * confirm of the item explains is deferred with no write, and says so, and
+ * so is one a later pin set there, such as another item's Leave in draft
+ * putting back these bytes. draftPlan() in pins.ts decides, and reopen and
+ * `curation show` describe the same plan.
  */
 export function leaveInDraft(input: ActionInput & { reason?: string; faults?: ConfirmFaults }): Promise<ActionOutcome> {
     return act(input, async (step) => {
@@ -246,31 +206,34 @@ export function leaveInDraft(input: ActionInput & { reason?: string; faults?: Co
         const root = path.resolve(input.root);
         const registry = await readRegistryOrFail(root);
         const record = await readAuthored<AuthoredPhoto>(root, 'photo', photoId);
-        if (record === null) return defer([`Left in draft. ${photoId} has no photo record yet, so no revision of it is pinned.`]);
-        const pin = await latestPin(root, registry, photoId);
-        const own = pin && pin.eventId === event.id && pin.action === 'confirm' ? pin : null;
-
-        if (record.assetRevision !== revision) {
-            if (own?.fromRevision && record.assetRevision !== own.fromRevision) {
-                fail('stale', `${photoId}'s photo record pins ${record.assetRevision} now, not ${revision} as this item's confirm left it, so leaving it in draft can't tell what to put back. Show it again and review it. Nothing was written.`);
+        // Reopen's note and curation show describe this same plan (pins.ts), so they promise what this does.
+        const plan = draftPlan(event, record?.assetRevision ?? null, record === null ? null : await latestPin(root, registry, photoId));
+        switch (plan.kind) {
+            case 'plain':
+                return defer(['Left in draft.']);
+            case 'no-record':
+                return defer([`Left in draft. ${photoId} has no photo record yet, so no revision of it is pinned.`]);
+            case 'moved':
+                return fail('stale', `${photoId}'s photo record pins ${plan.pinned} now, not ${revision} as this item's confirm left it, so leaving it in draft can't tell what to put back. Show it again and review it. Nothing was written.`);
+            case 'back-already':
+                return defer([`Left in draft. ${photoId}'s photo record is back on ${plan.putBack} already.`], { fromRevision: plan.putBack });
+            case 'keeps-other':
+                return defer([`Left in draft. ${photoId}'s photo record keeps ${plan.pinned}.`]);
+            case 'unexplained':
+                // The record pins these bytes with no pin of the inbox's to say so: a hand edit, a #15 rollback, or a confirm whose event a crash lost.
+                // Nothing on record tells those apart, so nothing is guessed and nothing is written.
+                return defer([
+                    `Left in draft. ${photoId}'s photo record already pins ${revision}, by an edit or rollback this item didn't make, or a confirm of it that was never recorded, so nothing was put back.${plan.pin ? ` The inbox last pinned ${plan.pin.revision}.` : ''} The draft keeps ${revision}, and the next photos publish ships it.`,
+                ]);
+            case 'keeps': {
+                // This item's last confirm recorded nothing to put back, or a later pin, such as another item's Leave in draft, set the record on these bytes.
+                const why = plan.own ? 'as it did before this item\'s last confirm, which recorded nothing to put back' : `as ${plan.pin.eventId}'s ${plan.pin.action} set it`;
+                return defer([`Left in draft. ${photoId}'s photo record pins ${revision}, ${why}, so the draft keeps it.`]);
             }
-            if (own?.fromRevision) return defer([`Left in draft. ${photoId}'s photo record is back on ${own.fromRevision} already.`], { fromRevision: own.fromRevision });
-            return defer([`Left in draft. ${photoId}'s photo record keeps ${record.assetRevision}.`]);
+            case 'put-back':
+                break;
         }
-
-        if (!own && pin?.revision !== revision) {
-            // The record pins these bytes with no pin of the inbox's to say so: a hand edit, a #15 rollback, or a confirm whose event a crash lost.
-            // Nothing on record tells those apart, so nothing is guessed and nothing is written.
-            return defer([
-                `Left in draft. ${photoId}'s photo record already pins ${revision}, by an edit or rollback this item didn't make, or a confirm of it that was never recorded, so nothing was put back.${pin ? ` The inbox last pinned ${pin.revision}.` : ''} The draft keeps ${revision}, and the next photos publish ships it.`,
-            ]);
-        }
-        const putBack = own?.fromRevision ?? null;
-        if (putBack === null) {
-            // This item's last confirm found the record on these bytes already and recorded nothing to put back.
-            const why = own ? 'as it did before this item\'s last confirm, which recorded nothing to put back' : `as ${pin?.eventId}'s ${pin?.action} set it`;
-            return defer([`Left in draft. ${photoId}'s photo record pins ${revision}, ${why}, so the draft keeps it.`]);
-        }
+        const putBack = plan.putBack;
         const candidate = candidateOf(registry, photoId, putBack);
         if (candidate.state !== 'ready') {
             fail('refused', `${putBack}, the revision to put back, has no ready derivative set, so leaving it in draft can't pin it again. The photo record keeps ${revision}. Nothing was written.`);
