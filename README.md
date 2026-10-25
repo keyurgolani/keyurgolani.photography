@@ -183,7 +183,7 @@ The site listens on the host's 127.0.0.1 only, port 3000 unless `PHOTOGRAPHY_POR
      - A published series needs a cover. If the photo was the cover, the remove clears it, so pick another with `sequence cover <seriesId> <otherPhotoId>`.
      - If it was the opening photograph, the remove clears that too, and the series then has no opening photograph. Pick another with `sequence opening <seriesId> <otherPhotoId>` if you want one. A hand edit has to change or drop `openingPhotoId` itself.
      - A chapter that starts on it moves to the next photograph. If it's the chapter's only one, the remove refuses, so remove the chapter first with `sequence chapter remove <seriesId> <chapterId>`.
-     - A published series needs a photograph. If it's the series' only one, hide the series instead: `edit <seriesId>` and set its `visibility` to `"hidden"`.
+     - A published series needs a photograph. If it's the series' only one, hide the series instead: set its `visibility` to `"hidden"` with `edit <seriesId> --file <path> --expect-version <N>`, on a host copy as "Curating the catalog" below shows.
      - A hidden series can't stay featured, and at least one featured series has to stay published. If you hid a featured series, list the ones left with `series featured <seriesId>...`.
 
      Then run `validate`, which names each record and field a publish would stop on, and publish with `publish --actor <name>`.
@@ -242,7 +242,19 @@ In JSON, a key given twice in one object keeps its last value. In production the
 docker compose -f docker-compose.prod.yml run --rm --no-deps -v "$PWD/descriptions.csv:/tmp/descriptions.csv:ro" image-watcher node dist/scripts/photos.mjs describe --import /tmp/descriptions.csv --dry-run
 ```
 
-`edit (<photoId> | <seriesId> | site) [--file <path>]` covers what the commands above don't: creating a series, its slug, title, statements, and visibility, and a photo's focal point, crop, credit, and location. It opens the record's newest version in `$VISUAL` or `$EDITOR`, without the fields the commands manage (`schemaVersion`, `version`, `baseRevisionId`, and the site's `baseSeriesOrder`), checks your edit against the record's schema, and saves it as the next version. A series with no record opens as a draft, so `photos edit ser_<name>` is how a new series starts. Its ID is `ser_` and then a lowercase letter or digit and 1 to 62 more lowercase letters, digits, `-`, or `_`. A published series also needs a title, a statement, a short statement, a photograph, and a cover before a publish takes it. If the record changed while the editor was open, or the edit can't be saved, the command keeps your edit and prints the `--file` command that saves it once fixed. Run `photos validate` afterwards. In production the container has no editor of yours, so edit a copy on the host and save it with `--file`, mounted as the import file above is.
+`edit (<photoId> | <seriesId> | site) [--file <path> --expect-version <N>]` covers what the commands above don't: creating a series, its slug, title, statements, and visibility, and a photo's focal point, crop, credit, and location. It opens the record's newest version in `$VISUAL` or `$EDITOR`, without the fields the commands manage (`schemaVersion`, `version`, `baseRevisionId`, and the site's `baseSeriesOrder`), checks your edit against the record's schema and its text against the import's rules and limits (statements take up to 2,000 characters and a short statement 500), and saves it as the next version. A series with no record opens as a draft, so `photos edit ser_<name>` is how a new series starts. Its ID is `ser_` and then a lowercase letter or digit and 1 to 62 more lowercase letters, digits, `-`, or `_`. A published series also needs a title, a statement, a short statement, a photograph, and a cover before a publish takes it. If the record changed while the editor was open, or the edit can't be saved, the command keeps your edit in `edits/` in the data root and prints the command that saves it once fixed, `edit <id> --file <path> --expect-version <N>`, where N is the version the edit started from. If the record has moved past N, that command exits 3 and names the newer version: merge your edit into it and run it again with that number. Run `photos validate` afterwards.
+
+Opening an editor is for local use. In production, edit a host copy and save it with `--file`:
+
+```bash
+# The newest version of the record, say v4.json, copied into the data root's edits/ folder as its owner, uid 1001:
+sudo -u '#1001' mkdir -p -m 700 portfolio-data/edits
+sudo -u '#1001' cp -n portfolio-data/authored/series/<seriesId>/v4.json portfolio-data/edits/<seriesId>.json
+sudoedit portfolio-data/edits/<seriesId>.json
+photos edit <seriesId> --file /data/portfolio/edits/<seriesId>.json --expect-version 4
+```
+
+The copy can keep its `stamp` and managed fields: `edit` ignores them. `--file` needs `--expect-version` whenever the record exists, so a copy can't replace a version written after it was made.
 
 Each record is a folder of versions under `authored/`: `site/`, `series/<seriesId>/`, and `photos/<photoId>/`, each holding `v1.json`, `v2.json`, and so on, where the highest number is the record. Edit a record only through `photos edit`, or by copying its newest version to the next number and editing the copy, as [docs/data-root.md](docs/data-root.md) describes:
 
