@@ -31,23 +31,45 @@ export interface CatalogServer {
     stop: () => Promise<void>;
 }
 
+export interface CatalogServerOptions {
+    /** A fixture library outside the repository, instead of #1's empty one. */
+    library?: string;
+    /**
+     * Serve as the curator (#14): `CURATION_ENABLED=true`, with the port it
+     * listens on as `CURATOR_TUNNEL_PORT`, so the Host allowlist takes
+     * `127.0.0.1:<port>` and `localhost:<port>`. Still `next start
+     * --hostname 127.0.0.1`, so the bind checks pass the way they do for the
+     * owner's tunnel. Its secret files come from `env`
+     * (e2e/support/curatorServer.ts makes test ones).
+     */
+    curator?: boolean;
+    /** More settings for the server, such as the curator's secret file paths. */
+    env?: Record<string, string>;
+    /** SITE_URL for this server only. Unset otherwise, whatever this shell has. */
+    siteUrl?: string;
+}
+
+/** The settings that turn a server into the curator. A plain catalog server never inherits them from this shell. */
+const CURATOR_SETTINGS = ['CURATION_ENABLED', 'CURATOR_TUNNEL_PORT', 'CURATION_BIND_SCOPE', 'CURATOR_PASSPHRASE_HASH_FILE', 'CURATOR_SESSION_SECRET_FILE'];
+
 /**
  * Serve the build with `dataRoot` as its data root, and wait until it
  * answers. `port` pins the port, for a machine that hands out ranges; it
  * defaults to a free one. `siteUrl` sets SITE_URL for this server only; it
  * is unset otherwise, whatever this shell has.
  */
-export async function startCatalogServer(dataRoot: string, port?: number, { siteUrl }: { siteUrl?: string } = {}): Promise<CatalogServer> {
-    const library = process.env.E2E_EMPTY_LIBRARY;
+export async function startCatalogServer(dataRoot: string, port?: number, options: CatalogServerOptions = {}): Promise<CatalogServer> {
+    const library = options.library ?? process.env.E2E_EMPTY_LIBRARY;
     if (!library) throw new Error('playwright.config.ts sets E2E_EMPTY_LIBRARY, so the server never reads a real photo library');
     const siteConfig = process.env.E2E_SITE_CONFIG_DIR;
     if (!siteConfig) throw new Error("playwright.config.ts sets E2E_SITE_CONFIG_DIR, so the server reads the stand-in portrait, never the checkout's site config folder");
     const listen = port ?? (await freePort());
-    // Only these roots, whatever this shell points PHOTOGRAPHY_* at.
-    const kept = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('PHOTOGRAPHY_')));
-    const env: NodeJS.ProcessEnv = { ...kept, NODE_ENV: 'production', PHOTOGRAPHY_DATA_DIR: dataRoot, PHOTOGRAPHY_LIBRARY_DIR: library, PHOTOGRAPHY_SITE_CONFIG_DIR: siteConfig };
+    // Only these roots, whatever this shell points PHOTOGRAPHY_* at, and the curator only when asked.
+    const kept = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('PHOTOGRAPHY_') && !CURATOR_SETTINGS.includes(name)));
+    const curator: Record<string, string> = options.curator ? { CURATION_ENABLED: 'true', CURATOR_TUNNEL_PORT: String(listen) } : {};
+    const env: NodeJS.ProcessEnv = { ...kept, ...curator, ...options.env, NODE_ENV: 'production', PHOTOGRAPHY_DATA_DIR: dataRoot, PHOTOGRAPHY_LIBRARY_DIR: library, PHOTOGRAPHY_SITE_CONFIG_DIR: siteConfig };
     delete env.SITE_URL;
-    if (siteUrl) env.SITE_URL = siteUrl;
+    if (options.siteUrl) env.SITE_URL = options.siteUrl;
     const next = path.join(process.cwd(), 'node_modules', 'next', 'dist', 'bin', 'next');
     // Its own process group, so stopping it also stops any process it starts.
     const child = spawn(process.execPath, [next, 'start', '--port', String(listen), '--hostname', '127.0.0.1'], { cwd: process.cwd(), env, detached: true });
