@@ -39,6 +39,11 @@ export function viewerTitle(photoTitle: string | null, seriesTitle: string, posi
     return photoTitle === null ? `${seriesTitle}, photograph ${position} of ${total}` : `${photoTitle}, ${seriesTitle}`;
 }
 
+/** What the live region says when a move is asked for past an end. The Viewer doesn't wrap. */
+export function boundaryText(step: 'previous' | 'next', seriesTitle: string): string {
+    return step === 'previous' ? `First photograph in ${seriesTitle}.` : `Last photograph in ${seriesTitle}.`;
+}
+
 /** Only the form 13A's `accent.format` accepts, so nothing else reaches the inline custom property. */
 export function accentValue(...candidates: (string | null)[]): string | null {
     return candidates.find((value): value is string => typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)) ?? null;

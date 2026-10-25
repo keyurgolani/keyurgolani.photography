@@ -241,7 +241,8 @@ describe('plain Node and server-only', () => {
         expect(entries).toEqual(expect.arrayContaining(['scripts/photos.ts', 'e2e/work.spec.ts', 'e2e/support/catalogServer.ts']));
     });
 
-    it('never reaches a module that imports it', () => {
+    // Walks the whole import graph from every script and spec, which grows with each route.
+    it('never reaches a module that imports it', { timeout: 30_000 }, () => {
         expect(reaching(entries, disk, importsServerOnly)).toEqual([]);
     });
 

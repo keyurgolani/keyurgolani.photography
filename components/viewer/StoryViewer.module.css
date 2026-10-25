@@ -13,13 +13,23 @@
   transition: none;
 }
 
+/* One grid for the whole Viewer (#9). The shell's controls and the
+   photograph's pieces are all its items, whichever of the two renders the
+   controls, so the layout doesn't change when the shell takes them over. */
 .viewer {
   --viewer-header: 3.5rem;
   /* Room the fitted photograph leaves for the stage's padding, so it fits the first screen with the header. */
   --viewer-stage-chrome: 4rem;
+  --viewer-stage-pad: clamp(0.75rem, 2vw, 1.5rem);
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(auto, 1fr) auto;
+  grid-template-areas:
+    'header header header'
+    'previous viewport next'
+    'reading reading reading';
+  align-items: center;
+  column-gap: clamp(0.5rem, 2vw, 1.5rem);
   min-height: 100dvh;
   background: var(--cc-bands), var(--cc-ground);
   color: var(--cc-ink);
@@ -27,7 +37,31 @@
   font-family: var(--gah-font-sans);
 }
 
+/* The photograph's own pieces join the Viewer's grid. The accent still inherits through it. */
+.content {
+  display: contents;
+}
+
+/* The modal fills the viewport and scrolls itself, with nothing of the series showing through. */
+.viewer:modal {
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.viewer::backdrop {
+  background: #111513;
+}
+
 .header {
+  grid-area: header;
+  align-self: stretch;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -94,8 +128,8 @@
   margin-left: auto;
 }
 
-/* With no usable set there's nothing to enlarge, so Zoom stays in place, disabled, like Previous and Next at the ends. */
-.control:disabled {
+/* With no usable set there's nothing to enlarge, so Zoom stays in place, unavailable but focusable, like Previous and Next at the ends. */
+.control[aria-disabled='true'] {
   border-color: var(--cc-rule);
   color: var(--cc-label);
   opacity: 0.45;
@@ -108,28 +142,13 @@
   color: var(--cc-ground);
 }
 
-.main {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr) auto;
-  min-width: 0;
-}
-
-.stage {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  grid-template-areas: 'previous viewport next';
-  align-items: center;
-  gap: clamp(0.5rem, 2vw, 1.5rem);
-  min-height: 0;
-  padding: clamp(0.75rem, 2vw, 1.5rem) var(--site-gutter);
-}
-
 .viewport {
   grid-area: viewport;
+  align-self: stretch;
   display: grid;
   place-items: center;
   min-width: 0;
+  padding-block: var(--viewer-stage-pad);
 }
 
 /* Zoomed, the photograph keeps the largest variant's width and the box scrolls. Pinch zoom is never turned off. */
@@ -196,8 +215,8 @@
   cursor: pointer;
 }
 
-/* The ends: the Viewer stops, and the control stays in place so nothing shifts. */
-.step:disabled {
+/* The ends: the Viewer stops, and the control stays in place and focusable, so nothing shifts and focus stays on it. */
+.step[aria-disabled='true'] {
   border-color: var(--cc-rule);
   color: var(--cc-label);
   opacity: 0.45;
@@ -206,21 +225,25 @@
 
 .previous {
   grid-area: previous;
+  margin-left: var(--site-gutter);
 }
 
 .next {
   grid-area: next;
+  margin-right: var(--site-gutter);
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .control:not(:disabled):hover,
-  a.step:hover {
+  .control:not([aria-disabled='true']):hover,
+  .step:not([aria-disabled='true']):hover {
     border-color: var(--cc-ink);
   }
 }
 
 /* The reading area: authored copy first, in the serif, then the derived facts behind their toggle. It never covers the photograph. */
 .reading {
+  grid-area: reading;
+  align-self: stretch;
   display: grid;
   gap: 0.75rem;
   padding: clamp(1rem, 2.5vw, 1.75rem) var(--site-gutter) clamp(1.25rem, 3vw, 2.25rem);
@@ -303,30 +326,36 @@
   overflow-wrap: anywhere;
 }
 
-/* Narrow screens: the photograph takes the width, and Previous and Next sit in a row under it, at the edges. */
+/* Narrow screens: the photograph takes the width, and Previous and Next sit in a row under it, at the edges.
+   The rows take their own height, so the controls and the reading area follow the photograph without a gap. */
 @media (max-width: 47.99rem) {
-  /* The stage takes its own height, so the controls and the reading area follow the photograph without a gap. */
-  .main {
-    grid-template-rows: auto auto;
+  .viewer {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: auto auto auto auto;
+    grid-template-areas:
+      'header header'
+      'viewport viewport'
+      'previous next'
+      'reading reading';
     align-content: start;
+    column-gap: 0;
   }
 
-  .stage {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    grid-template-areas:
-      'viewport viewport'
-      'previous next';
-    padding-inline: 0;
+  .viewport {
+    padding-block: var(--viewer-stage-pad) 0;
+  }
+
+  .previous,
+  .next {
+    margin-block: clamp(0.5rem, 2vw, 1.5rem) var(--viewer-stage-pad);
   }
 
   .previous {
     justify-self: start;
-    margin-left: var(--site-gutter);
   }
 
   .next {
     justify-self: end;
-    margin-right: var(--site-gutter);
   }
 
   .image {
