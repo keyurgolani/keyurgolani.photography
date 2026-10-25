@@ -147,8 +147,10 @@ function FeaturedHome({ series }: { series: HomeSeries }) {
         nav={<SiteNav />}
         story={
           <div className={styles.story}>
-            <h1 className={styles.title}>{series.title}</h1>
-            {series.shortStatement !== null && <p className={styles.statement}>{series.shortStatement}</p>}
+            <div className={styles.copy}>
+              <h1 className={styles.title}>{series.title}</h1>
+              {series.shortStatement !== null && <p className={styles.statement}>{series.shortStatement}</p>}
+            </div>
             <Link href={series.href} className={styles.enter}>
               Enter the series
             </Link>

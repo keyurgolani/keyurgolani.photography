@@ -13,6 +13,31 @@
   color: var(--gah-ink);
 }
 
+/* The title and statement, as wide as their longest line. */
+.copy {
+  position: relative;
+  isolation: isolate;
+  align-self: flex-start;
+  max-width: 100%;
+}
+
+/* On a wide screen #18's vignette weighs left and fades to 0.46 at 38% of the
+   width, too little behind this text over a white photograph (rule 8). This
+   scrim sits behind the title and statement alone and fades out past their
+   edges, so the vignette stays as tuned. It's in the chrome, so it shows and
+   hides with it. A narrow screen's vignette is bottom-weighted and enough. */
+@media (min-width: 40rem) {
+  .copy::before {
+    content: '';
+    position: absolute;
+    z-index: -1;
+    inset: -3rem -6rem -1.5rem calc(-1 * var(--site-gutter));
+    background: linear-gradient(90deg, rgb(8 10 9 / 0.6) calc(100% - 6rem), rgb(8 10 9 / 0) 100%);
+    mask-image: linear-gradient(0deg, transparent 0, #000 1.5rem, #000 calc(100% - 3rem), transparent 100%);
+    pointer-events: none;
+  }
+}
+
 .title {
   max-width: 12ch;
   margin: 0;
