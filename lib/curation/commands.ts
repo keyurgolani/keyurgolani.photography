@@ -438,7 +438,7 @@ async function replacementLines(root: string, event: CurationEvent, registry: Re
     return [
         `New derivative set: ${set}`,
         `Photo record pins: ${pinned}`,
-        `Confirm new asset revision keeps ${event.photoId}'s series, position, title, description, and story. ${draft}`,
+        `Confirm new asset revision keeps ${event.photoId}'s series, position, title, description, and story.${draft ? ` ${draft}` : ''}`,
     ];
 }
 
