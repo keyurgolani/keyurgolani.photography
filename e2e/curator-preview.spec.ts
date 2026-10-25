@@ -129,7 +129,14 @@ const previewPaths = (draft: string) => [
     `${base(draft)}/api/catalog/series/${KEPT.slug}/pages/x`,
     `${base(draft)}/api/catalog/home/photos/${id(1)}?revision=${draft}`,
     imagePath(draft, id(4)),
+    // Paths no route matches, which the preview's catch-all pages answer.
+    `/curation/preview/${draft}/anything`,
+    `${base(draft)}/gallery`,
+    `${base(draft)}/work/${KEPT.slug}/photo/${id(1)}/more`,
 ];
+
+/** Malformed draft IDs a client sends as they are. */
+const MALFORMED = ['rev_x', `rev_${'A'.repeat(64)}`, `rev_${'a'.repeat(65)}`, 'index.json'];
 
 /** Each header a response sent, every copy, by lower-case name. */
 function headerCopies(response: APIResponse): Record<string, string[]> {
@@ -199,18 +206,19 @@ async function signedIn(browser: Browser, at = origin(), passphrase = server().p
 }
 
 test.describe('anonymous', () => {
-    test('gets the login redirect with the curator headers on every preview request, the same for an existing and an unknown draft', async ({ request }) => {
+    test('gets the login redirect with the curator headers on every preview request, the same for an existing, an unknown and a malformed draft', async ({ request }) => {
         const anonymous: APIRequestContext = request;
         for (const headers of [{}, { RSC: '1' }] as Record<string, string>[]) {
             const existing = previewPaths(draftId);
-            const unknown = previewPaths(UNKNOWN);
-            for (let at = 0; at < existing.length; at += 1) {
-                const a = await anonymous.get(`${origin()}${existing[at]}`, { maxRedirects: 0, headers });
-                const b = await anonymous.get(`${origin()}${unknown[at]}`, { maxRedirects: 0, headers });
-                expect(a.status(), existing[at]).toBe(307);
-                expect(new URL(a.headers().location, origin()).pathname, existing[at]).toBe('/curation/login');
-                expectCuratorHeaders(a, "'none'");
-                expect(await seen(a), existing[at]).toEqual(await seen(b));
+            for (const other of [UNKNOWN, ...MALFORMED].map(previewPaths)) {
+                for (let at = 0; at < existing.length; at += 1) {
+                    const a = await anonymous.get(`${origin()}${existing[at]}`, { maxRedirects: 0, headers });
+                    const b = await anonymous.get(`${origin()}${other[at]}`, { maxRedirects: 0, headers });
+                    expect(a.status(), existing[at]).toBe(307);
+                    expect(new URL(a.headers().location, origin()).pathname, existing[at]).toBe('/curation/login');
+                    expectCuratorHeaders(a, "'none'");
+                    expect(await seen(a), other[at]).toEqual(await seen(b));
+                }
             }
         }
     });
@@ -343,12 +351,41 @@ test.describe('signed in', () => {
     test('answers a malformed draft ID with the preview not-found page', async ({ browser }) => {
         const { context, page } = await signedIn(browser);
         try {
-            for (const malformed of ['rev_x', `rev_${'A'.repeat(64)}`, `rev_${'a'.repeat(65)}`]) {
+            for (const malformed of MALFORMED) {
                 for (const path of [`/curation/preview/${malformed}`, `/curation/preview/${malformed}/site`, `/curation/preview/${malformed}/site/work`]) {
                     const response = await page.goto(`${origin()}${path}`);
                     expect(response?.status(), path).toBe(404);
                     await expect(page.getByRole('heading', { name: 'Preview not found' }), path).toBeVisible();
                     expect(await linkPaths(page)).toEqual(['/curation/preview']);
+                }
+            }
+        } finally {
+            await context.close();
+        }
+    });
+
+    test("answers a path no route matches with the preview's not-found page, its links and metadata inside the preview", async ({ browser }) => {
+        const { context, page } = await signedIn(browser);
+        try {
+            for (const draft of [draftId, UNKNOWN]) {
+                for (const [path, heading, frameAncestors] of [
+                    [`${base(draft)}/gallery`, 'Page not found', "'self'"],
+                    [`${base(draft)}/work/${KEPT.slug}/photo/${id(1)}/more`, 'Page not found', "'self'"],
+                    [`/curation/preview/${draft}/anything`, 'Preview not found', "'none'"],
+                ] as const) {
+                    const response = await page.request.get(`${origin()}${path}`);
+                    expect(response.status(), path).toBe(404);
+                    expectCuratorHeaders(response, frameAncestors);
+                    const html = await response.text();
+                    expect(html, path).toMatch(/<meta name="robots" content="noindex, nofollow"\/>/);
+                    expect(html, path).not.toMatch(/<meta (?:property|name)="(?:og|twitter):/);
+                    expect(html, path).not.toMatch(/<link rel="canonical"/);
+                    expect(html, path).toMatch(/<title>Preview(?: · [^<]*)?<\/title>/);
+                    await page.goto(`${origin()}${path}`);
+                    await expect(page.getByRole('heading', { name: heading }), path).toBeVisible();
+                    const links = await linkPaths(page);
+                    expect(links.length, path).toBeGreaterThan(0);
+                    for (const link of links) expect(link.startsWith(heading === 'Page not found' ? base(draft) : '/curation/preview'), `${path} links to ${link}`).toBe(true);
                 }
             }
         } finally {

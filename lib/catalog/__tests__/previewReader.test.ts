@@ -191,6 +191,37 @@ describe('loadPreviewCatalog', { timeout: 60_000 }, () => {
         expect(String(error.mock.calls[0][0])).not.toContain(catalog.root);
     });
 
+    it('keeps a stale draft for a subresource no longer than SUBRESOURCE_MAX_AGE_MS after its compile', async () => {
+        let now = 1_000;
+        const before = await candidateId();
+        expect((await loadPreviewCatalog(before, { now: () => now })).state).toBe('ok');
+        await retitleFirstSeries('A retitled fixture series');
+        now += SUBRESOURCE_MAX_AGE_MS;
+        expect((await loadPreviewCatalog(before, { now: () => now, maxAgeMs: SUBRESOURCE_MAX_AGE_MS })).state).toBe('ok');
+        now += 1;
+        expect(await loadPreviewCatalog(before, { now: () => now, maxAgeMs: SUBRESOURCE_MAX_AGE_MS })).toEqual({ mode: 'catalog', state: 'not-current' });
+    });
+
+    it('keeps one cache for the process, so every route bundle shares its compiles and a page drops a stale draft for all of them', async () => {
+        // Next bundles each route on its own, so each loads its own copy of this module.
+        const before = await candidateId();
+        expect((await loadPreviewCatalog(before)).state).toBe('ok');
+        vi.resetModules();
+        const other = await import('../preview-reader');
+        expect(other.loadPreviewCatalog).not.toBe(loadPreviewCatalog);
+        vi.mocked(compileCandidate).mockClear();
+        // The other copy reuses this one's compile...
+        expect((await other.loadPreviewCatalog(before, { maxAgeMs: SUBRESOURCE_MAX_AGE_MS })).state).toBe('ok');
+        expect(compileCandidate).not.toHaveBeenCalled();
+        // ...shares a compile under way...
+        await Promise.all([loadPreviewCatalog(before), other.loadPreviewCatalog(before)]);
+        expect(compileCandidate).toHaveBeenCalledTimes(1);
+        // ...and once a page in one bundle finds the draft stale, a subresource in another can't serve it.
+        await retitleFirstSeries('A retitled fixture series');
+        expect(await other.loadPreviewCatalog(before)).toEqual({ mode: 'catalog', state: 'not-current' });
+        expect(await loadPreviewCatalog(before, { maxAgeMs: SUBRESOURCE_MAX_AGE_MS })).toEqual({ mode: 'catalog', state: 'not-current' });
+    });
+
     it('names the current draft for /curation/preview', async () => {
         expect(await currentDraftId()).toBe(await candidateId());
         vi.stubEnv('PHOTOGRAPHY_DATA_DIR', `${catalog.root}-missing`);

@@ -82,9 +82,30 @@ interface Kept {
     at: number;
 }
 
-const kept = new Map<string, Kept>();
-/** Compiles under way, by data root: a compile doesn't depend on the ID asked for, so concurrent requests share one. */
-const compiling = new Map<string, Promise<CompileResult>>();
+interface PreviewReaderState {
+    /** Compiled drafts, by data root and draft ID, oldest first. */
+    kept: Map<string, Kept>;
+    /** Compiles under way, by data root: a compile doesn't depend on the ID asked for, so concurrent requests share one. */
+    compiling: Map<string, Promise<CompileResult>>;
+}
+
+/**
+ * Where the process keeps its compiles. Next bundles each route on its own,
+ * so a module-level map would be one per route: a page that finds a draft
+ * no longer current couldn't drop it from the media or records handlers'
+ * maps, and concurrent compiles would be shared per route only. So the maps
+ * live on `globalThis`, one for the process, whichever bundle loaded this
+ * module.
+ */
+export const PREVIEW_READER_STATE_KEY = Symbol.for('kg.catalog.previewReader');
+
+function sharedState(): PreviewReaderState {
+    const global = globalThis as typeof globalThis & { [PREVIEW_READER_STATE_KEY]?: PreviewReaderState };
+    global[PREVIEW_READER_STATE_KEY] ??= { kept: new Map(), compiling: new Map() };
+    return global[PREVIEW_READER_STATE_KEY];
+}
+
+const { kept, compiling } = sharedState();
 
 /** A short, path-free name for what went wrong, for the log line. */
 function errorName(error: unknown): string {
