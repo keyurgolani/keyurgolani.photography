@@ -89,11 +89,12 @@ describe('the watcher process import graph', () => {
 
     it('hands the curation and candidate sinks, and the settling build, to the identity step in both watch and --once', () => {
         const source = fs.readFileSync(path.join(REPO_ROOT, 'scripts/imageWatcher.ts'), 'utf8');
-        expect(source).toMatch(/function factSinks\(\) \{\n\s+return \[jsonLogSink\(\), createCurationSink\(\), createCandidateSink\(\)\];/);
+        expect(source).toMatch(/function factSinks\(\) \{\n\s+return \[jsonLogSink\(\), createCurationSink\(\), createCandidateSink\(\{ owed \}\)\];/);
         expect(source).toMatch(/createIdentityStep\(\{\n\s+sinks: factSinks\(\),\n\s+worker: workerBuilds\(\),/);
         expect(source).toMatch(/runIdentityOnce\(\{ sinks: factSinks\(\), worker: workerBuilds\(\),/);
-        // #17: every build records its set on the revision's replacement item.
-        expect(source).toMatch(/function workerBuilds\(\) \{\n\s+return \{ build: settlingAfterBuild\(buildDerivativeSet\) \};/);
+        // #17: every build records its set on the revision's replacement item, or owes it to the candidate sink, which shares `owed`.
+        expect(source).toMatch(/function workerBuilds\(\) \{\n\s+return \{ build: settlingAfterBuild\(buildDerivativeSet, \{ owed \}\) \};/);
+        expect(source).toMatch(/^const owed = owedSettles\(\);$/m);
     });
 
     it('lets a watcher module read the working layer and the catalog reader', () => {
