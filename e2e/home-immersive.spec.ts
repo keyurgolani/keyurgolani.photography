@@ -7,6 +7,7 @@ import { expectHomeImmersive, photoPoint } from './support/home';
 import { waitForHydration } from './support/hydration';
 import { expectReflow } from './support/reflow';
 import { checkSurface } from './support/surface';
+import { parkPointer, recordDispatchedEvents } from './support/synthetic';
 import { expect, setPhotoFixtures, test } from './support/test';
 
 // #18: Home rests on the photograph alone, and intent brings the chrome back.
@@ -91,20 +92,6 @@ async function recordVisibility(page: Page) {
         }).observe(document, { subtree: true, attributes: true, attributeFilter: ['data-interface-state'], childList: true });
     });
     return () => page.evaluate(() => (window as unknown as { __chromeStates: string[] }).__chromeStates);
-}
-
-/** UI events page scripts dispatch, which a synthetic wake would show up in. */
-async function recordSyntheticEvents(page: Page) {
-    await page.addInitScript(() => {
-        const dispatched: string[] = [];
-        (window as unknown as { __synthetic: string[] }).__synthetic = dispatched;
-        const dispatch = EventTarget.prototype.dispatchEvent;
-        EventTarget.prototype.dispatchEvent = function (event: Event) {
-            if (event instanceof UIEvent || event.type === 'click') dispatched.push(event.type);
-            return dispatch.call(this, event);
-        };
-    });
-    return () => page.evaluate(() => (window as unknown as { __synthetic: string[] }).__synthetic);
 }
 
 /**
@@ -277,14 +264,47 @@ async function roundTripToAbout(page: Page, isMobile: boolean) {
 test.describe('at rest', () => {
     test('Home settles to the photograph alone, filling the viewport, with nothing waking it, and again after a trip to About', async ({ page, isMobile }, testInfo) => {
         runsOn(testInfo, 'desktop', 'mobile');
-        const synthetic = await recordSyntheticEvents(page);
+        const dispatched = await recordDispatchedEvents(page);
+        await parkPointer(page);
         await openHome(page);
         expect(await photoCoversViewport(page)).toBe(true);
-        expect(await synthetic()).toEqual([]);
+        expect((await dispatched()).synthetic).toEqual([]);
 
         await roundTripToAbout(page, isMobile);
         await expectHomeImmersive(page);
         await expect.poll(() => photoCoversViewport(page)).toBe(true);
+    });
+
+    test("React's replay of a hover that reached Home before it hydrated wakes nothing and isn't counted as synthetic, and an app dispatch is", async ({ page }, testInfo) => {
+        runsOn(testInfo, 'desktop');
+        const dispatched = await recordDispatchedEvents(page);
+        setPhotoFixtures(page, ['white', 'gray', 'black']);
+        // Holds the chunk with Home's chrome, so React listens on the document but can't hydrate it, and queues the hover.
+        let releaseChunk = () => {};
+        const chunkHeld = new Promise<void>((resolve) => (releaseChunk = resolve));
+        await page.route('**/_next/static/**/*.js', async (route) => {
+            const response = await route.fetch();
+            const body = await response.text();
+            if (body.includes('data-interface-state')) await chunkHeld;
+            await route.fulfill({ response, body });
+        });
+        await page.goto('/', { waitUntil: 'commit' });
+        await expect.poll(() => page.evaluate(() => Object.keys(document).some((key) => key.startsWith('_reactListening'))), {
+            message: 'React listens on the document before the held chunk arrives',
+        }).toBe(true);
+        await page.mouse.move(300, 300);
+        await page.mouse.move(800, 400, { steps: 2 });
+        expect(await page.evaluate(() => document.documentElement.hasAttribute('data-hydrated')), 'React has not hydrated yet').toBe(false);
+
+        releaseChunk();
+        await waitForHydration(page);
+        // React replays its queue in this order. The recorder before this one counted both as synthetic.
+        await expect.poll(async () => (await dispatched()).replayed).toEqual(['mouseover', 'pointerover']);
+        expect((await dispatched()).synthetic).toEqual([]);
+        await expectHomeImmersive(page);
+
+        await page.evaluate(() => document.querySelector('main')?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })));
+        expect((await dispatched()).synthetic).toEqual(['mouseover']);
     });
 
     test('under reduced motion, no intro layer or portrait shows at any frame, and Home settles the same way, there and back', async ({ page, isMobile }, testInfo) => {

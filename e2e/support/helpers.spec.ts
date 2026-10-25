@@ -6,6 +6,7 @@ import { expectHoverRulesGated } from './hover';
 import { expectReachableWithin, expectTabOrderMatchesVisualOrder } from './keyboard';
 import { expectReflow } from './reflow';
 import { checkSurface, expectUniqueNames } from './surface';
+import { parkPointer, recordDispatchedEvents } from './synthetic';
 import { expectMinTargetSize } from './targets';
 import { expectSingleTapActivates } from './touch';
 
@@ -513,4 +514,101 @@ test.describe('checkSurface', () => {
             await expect(checkSurface(page, await loadSurface(page, { names, style }))).rejects.toThrow(error);
         });
     }
+});
+
+test.describe('recordDispatchedEvents', () => {
+    // A stand-in for React DOM's queue. It keeps the latest native hover of each type and replays it as
+    // attemptReplayContinuousQueuedEvent does: `new event.constructor(type, event)` on the event's own target.
+    const PAGE = `<!doctype html>
+<html lang="en" data-hydrated="true">
+<head><meta charset="utf-8"><title>Helper self-test</title></head>
+<body style="margin: 0">
+<div id="a" style="position: fixed; left: 0; top: 0; width: 200px; height: 200px"></div>
+<div id="b" style="position: fixed; left: 300px; top: 0; width: 200px; height: 200px"></div>
+<script>
+    window.held = {};
+    for (const type of ['mouseover', 'pointerover']) document.addEventListener(type, (e) => { if (e.isTrusted) held[type] = e; }, true);
+    window.replay = (event, target = event.target) => target.dispatchEvent(new event.constructor(event.type, event));
+</script>
+</body>
+</html>`;
+
+    type StandIn = { held: Record<string, MouseEvent>; replay: (event: Event, target?: EventTarget) => boolean; first: Event };
+
+    /** Opens the stand-in with a native hover on #a held. The route answers in the browser, so no server sees it. */
+    async function open(page: Page) {
+        const dispatched = await recordDispatchedEvents(page);
+        await page.route('**/dispatch-self-test', (route) => route.fulfill({ contentType: 'text/html', body: PAGE }));
+        await page.goto('/dispatch-self-test');
+        await page.mouse.move(100, 100);
+        await expect.poll(() => page.evaluate(() => Object.keys((window as unknown as StandIn).held).sort())).toEqual(['mouseover', 'pointerover']);
+        return dispatched;
+    }
+
+    test("leaves out React's copy of a native hover on its own target, once", async ({ page }) => {
+        const dispatched = await open(page);
+        await page.evaluate(() => {
+            const { held, replay } = window as unknown as StandIn;
+            replay(held.mouseover);
+            replay(held.pointerover);
+        });
+        expect(await dispatched()).toEqual({ synthetic: [], replayed: ['mouseover', 'pointerover'] });
+
+        await page.evaluate(() => {
+            const { held, replay } = window as unknown as StandIn;
+            replay(held.mouseover);
+        });
+        expect(await dispatched()).toEqual({ synthetic: ['mouseover'], replayed: ['mouseover', 'pointerover'] });
+    });
+
+    test('counts a fresh hover, a copy on another target or at another point, a click, and a copy after the pointer left', async ({ page }) => {
+        const dispatched = await open(page);
+        await page.evaluate(() => {
+            const { held, replay } = window as unknown as StandIn;
+            const a = document.getElementById('a')!;
+            a.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+            replay(held.mouseover, document.getElementById('b')!);
+            a.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: held.mouseover.clientX + 5, clientY: held.mouseover.clientY }));
+            a.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+            (window as unknown as StandIn).first = held.pointerover;
+        });
+        expect(await dispatched()).toEqual({ synthetic: ['mouseover', 'mouseover', 'mouseover', 'click'], replayed: [] });
+
+        // Moving onto #b gives #a a native pointerout, which drops #a's pointerover from React's queue.
+        await page.mouse.move(400, 100);
+        await page.evaluate(() => {
+            const { first, replay } = window as unknown as StandIn;
+            replay(first);
+        });
+        expect(await dispatched()).toEqual({ synthetic: ['mouseover', 'mouseover', 'mouseover', 'click', 'pointerover'], replayed: [] });
+    });
+});
+
+test.describe('parkPointer', () => {
+    test('leaves no element under the pointer, so content changing where it rests sends no native hover', async ({ page }) => {
+        await load(page, `<div id="frame" style="position: fixed; inset: 0"><div id="a" style="height: 100%"></div></div>
+<script>
+    window.overs = [];
+    window.addEventListener('pointerover', (e) => { if (e.isTrusted) overs.push(e.target.id); }, true);
+    window.swap = (id) => { document.getElementById('frame').innerHTML = '<div id="' + id + '" style="height: 100%"></div>'; };
+</script>`);
+        type Probe = { overs: string[]; swap: (id: string) => void };
+        const hovered = () => page.evaluate(() => Array.from(document.querySelectorAll(':hover'), (el) => el.id || el.localName));
+        const overs = () => page.evaluate(() => (window as unknown as Probe).overs.splice(0));
+        const swap = (id: string) => page.evaluate((next) => (window as unknown as Probe).swap(next), id);
+
+        // Resting on the page, the pointer gets a native hover when new content arrives under it.
+        await page.mouse.move(500, 300);
+        expect(await overs()).toEqual(['a']);
+        await swap('b');
+        await expect.poll(overs).toEqual(['b']);
+
+        await parkPointer(page);
+        expect(await hovered()).toEqual([]);
+        await swap('c');
+        // Two frames and then some, for the hover update Chromium runs after layout.
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 300)))));
+        expect(await overs()).toEqual([]);
+        expect(await hovered()).toEqual([]);
+    });
 });
