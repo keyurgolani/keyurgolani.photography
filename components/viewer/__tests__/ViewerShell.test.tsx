@@ -146,7 +146,7 @@ describe('ViewerShell, on a page', () => {
         expect(announcer()).toHaveTextContent('First photograph in Fixture series.');
     });
 
-    it('takes Left and Right from the document, but not with a modifier, while zoomed, or as Escape', () => {
+    it('takes Left and Right from the document, but not with a modifier, and Escape does nothing on a page', () => {
         renderShell('page', 2);
         fireEvent.keyDown(document.body, { key: 'ArrowRight' });
         expect(router.replace).toHaveBeenLastCalledWith(photoHref(3), { scroll: false });
