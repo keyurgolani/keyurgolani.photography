@@ -13,9 +13,10 @@ import { expectSingleTapActivates } from './support/touch';
 // A series page (#5) on a published catalog, on both #1 projects: the 200,
 // the 308 from a former slug, one not-found for every case (catalog and
 // legacy mode alike), canonical and share metadata on SITE_URL, the title,
-// statement, facts, cover, chapters, and authored sequence, nothing
-// unpublished in the HTML or the RSC payload, the #1 surface checks, Enter
-// and a single tap on an entry, and an entry whose image /media can't serve.
+// statement, facts, cover, chapters, and authored sequence, the cover's box,
+// focal point, and crop at desktop and mobile sizes, nothing unpublished in
+// the HTML or the RSC payload, the #1 surface checks, Enter and a single tap
+// on an entry, and an entry whose image /media can't serve.
 // Each project's worker publishes its own fixture and serves it from a
 // second `next start`, so the harness server stays in legacy mode.
 
@@ -27,12 +28,26 @@ const SITE_URL = 'https://photos.example.test';
 const SITE_NAME = 'Keyur Golani Photography';
 
 const id = (n: number) => `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
-const P = Array.from({ length: 8 }, (_, n) => id(n + 1));
+const P = Array.from({ length: 9 }, (_, n) => id(n + 1));
 
 /** Harbor's authored order, which neither spec order nor ID order gives. Its cover is P[1], third. A chapter starts there. */
 const HARBOR = [P[2], P[0], P[1], P[3], P[4]];
 /** Its files are removed after the publish, so /media can't serve this entry's image. */
 const BROKEN = P[3];
+/** Harbor's cover focal point, off center so the CSS has to carry it. */
+const HARBOR_FOCAL = { x: 0.2, y: 0.8 };
+/** A capture day on a harbor photograph. The page shows years only. */
+const CAPTURE_DAY = '2019-05-06';
+/** The two covers' shapes: harbor's 3:2 cover crops at its focal point, the tall series' portrait cover is authored `contain`. */
+const COVERS = [
+    { slug: 'harbor', width: 900, height: 600, fit: 'cover', position: `${HARBOR_FOCAL.x * 100}% ${HARBOR_FOCAL.y * 100}%` },
+    { slug: 'tall', width: 600, height: 900, fit: 'contain', position: '50% 50%' },
+] as const;
+/** Desktop sizes where the cover's 82svh cap applies. The first is the desktop project's own. */
+const DESKTOP_SIZES = [
+    { width: 1280, height: 800 },
+    { width: 1440, height: 900 },
+];
 
 /** Strings only unpublished series and fields outside the page's allowlist carry. */
 const SENTINELS = [
@@ -47,9 +62,12 @@ const SENTINELS = [
     'SENTINEL credit',
     'private/SENTINEL-source.jpg',
     '#5e7173',
-    // The draft and hidden series' photos.
+    // The draft and hidden series' photos, and their IDs, which would reach the RSC payload as React keys.
     P[6],
     P[7],
+    'ser_e2e-draft',
+    'ser_e2e-hidden',
+    CAPTURE_DAY,
 ];
 
 /** Every path that must answer exactly like an unknown slug on the catalog server. */
@@ -66,7 +84,7 @@ test.beforeAll(async () => {
         seed: 51,
         withAssets: true,
         photos: [
-            { ...photo(0), title: 'Fixture harbor title', location: 'Fixture quay', caption: 'SENTINEL caption', credit: 'SENTINEL credit', sourcePath: 'private/SENTINEL-source.jpg' },
+            { ...photo(0), title: 'Fixture harbor title', location: 'Fixture quay', caption: 'SENTINEL caption', credit: 'SENTINEL credit', sourcePath: 'private/SENTINEL-source.jpg', capturedAt: CAPTURE_DAY },
             photo(1),
             { ...photo(2), alt: { kind: 'decorative' } },
             photo(3),
@@ -74,6 +92,7 @@ test.beforeAll(async () => {
             photo(5),
             photo(6),
             photo(7),
+            { id: P[8], width: 600, height: 900, crop: 'contain' },
         ],
         series: [
             {
@@ -85,10 +104,11 @@ test.beforeAll(async () => {
                 statement: 'The first paragraph of the harbor.\n\nA second <b>paragraph</b>.',
                 accent: '#5e7173',
                 photoIds: HARBOR,
-                cover: { photoId: P[1] },
+                cover: { photoId: P[1], focalPoint: HARBOR_FOCAL },
                 chapters: [{ id: 'ch-tide', title: 'Fixture tide', startPhotoId: P[1] }],
             },
             { id: 'ser_e2e-single', slug: 'single', title: 'Fixture single', photoIds: [P[5]] },
+            { id: 'ser_e2e-tall', slug: 'tall', title: 'Fixture tall', photoIds: [P[8]] },
             { id: 'ser_e2e-draft', slug: 'sentinel-draft', slugAliases: ['sentinel-old-draft'], title: 'SENTINEL draft title', photoIds: [P[6]], visibility: 'draft' },
             { id: 'ser_e2e-hidden', slug: 'sentinel-hidden', slugAliases: ['sentinel-old-hidden'], title: 'SENTINEL hidden title', photoIds: [P[7]], visibility: 'hidden' },
         ],
@@ -147,7 +167,7 @@ test('the canonical slug answers 200 and a former slug 308 to it, neither cachea
 });
 
 test('every not-found case answers the same status, title, and page, in catalog and legacy mode', async ({ page, request, baseURL }) => {
-    const answers: { url: string; status: number; title: string | undefined; robots: string | undefined; body: string }[] = [];
+    const answers: { url: string; status: number; headers: Record<string, string | undefined>; title: string | undefined; robots: string | undefined; body: string }[] = [];
     // The harness server is in legacy mode, where no series exists yet.
     const urls = [...NOT_FOUND_PATHS.map((path) => `${origin()}${path}`), `${baseURL}/work/harbor`];
     for (const url of urls) {
@@ -158,6 +178,7 @@ test('every not-found case answers the same status, title, and page, in catalog 
         answers.push({
             url,
             status: response.status(),
+            headers: Object.fromEntries(['cache-control', 'content-type', 'vary'].map((name) => [name, response.headers()[name]])),
             title: /<title>([^<]*)<\/title>/.exec(html)?.[1],
             robots: meta(html, 'robots'),
             body: await page.locator('body').innerText(),
@@ -165,6 +186,7 @@ test('every not-found case answers the same status, title, and page, in catalog 
     }
     const first = answers[0];
     expect(first.status).toBe(404);
+    expect(first.headers['cache-control']).toContain('no-store');
     expect(first.title).toBe(`Page not found · ${SITE_NAME}`);
     expect(first.robots).toContain('noindex');
     expect(first.body).toContain('Page not found');
@@ -207,6 +229,50 @@ test('the page opens with the title, the statement as text, the derived facts ap
     await expect(main.locator('figure figcaption')).toHaveText('Photograph 3 of 5');
 });
 
+/** The cover's frame box, and its image's computed fit and position. */
+async function coverOf(page: Page) {
+    const frame = page.getByRole('main').locator('figure [data-photo]');
+    const box = await frame.boundingBox();
+    const image = await frame.locator('img').evaluate((element) => ({ fit: getComputedStyle(element).objectFit, position: getComputedStyle(element).objectPosition }));
+    return { box, ...image };
+}
+
+test('each cover keeps its own aspect ratio under the height cap, around its focal point or whole when authored contain', async ({ page }, testInfo) => {
+    // The desktop project checks both desktop sizes (its own is the first), and a mobile project its own viewport.
+    const sizes = testInfo.project.use.isMobile ? [page.viewportSize()] : DESKTOP_SIZES;
+    for (const size of sizes) {
+        if (!size) throw new Error('The project has no viewport');
+        await page.setViewportSize(size);
+        for (const cover of COVERS) {
+            const label = `${cover.slug} at ${size.width}x${size.height}`;
+            await page.goto(`${origin()}/work/${cover.slug}`);
+            await waitForHydration(page);
+            const { box, fit, position } = await coverOf(page);
+            expect(box, label).not.toBeNull();
+            const height = box?.height ?? 0;
+            expect(height, `${label} has a height`).toBeGreaterThan(0);
+            // Within 1% of the photograph's ratio, so the box crops nothing away from its shape.
+            const ratio = (box?.width ?? 0) / height;
+            expect(Math.abs(ratio / (cover.width / cover.height) - 1), `${label} ratio ${ratio}`).toBeLessThan(0.01);
+            expect(height, `${label} stays under 82svh`).toBeLessThanOrEqual(size.height * 0.82 + 1);
+            expect({ fit, position }, label).toEqual({ fit: cover.fit, position: cover.position });
+        }
+    }
+});
+
+test('each sequence thumbnail keeps its 4:3 box and shows the whole photograph', async ({ page }) => {
+    await openHarbor(page);
+    for (const photoId of HARBOR) {
+        const link = entry(page, photoId);
+        await link.scrollIntoViewIfNeeded();
+        const box = await link.locator('[data-photo]').boundingBox();
+        expect(box?.height ?? 0, `${photoId} has a height`).toBeGreaterThan(0);
+        expect((box?.width ?? 0) / (box?.height ?? 1), `${photoId} keeps 4:3`).toBeCloseTo(4 / 3, 1);
+        if (photoId === BROKEN) continue;
+        expect(await link.locator('img').evaluate((image) => getComputedStyle(image).objectFit), photoId).toBe('contain');
+    }
+});
+
 test('the sequence keeps the authored order across its chapter, each entry a link to its canonical Viewer URL', async ({ page }) => {
     await openHarbor(page);
     for (const [index, photoId] of HARBOR.entries()) {
@@ -241,6 +307,8 @@ test('an entry whose image /media can\'t serve keeps its place, text, and link, 
 });
 
 test('nothing unpublished reaches the served HTML or the RSC payload', async ({ request }) => {
+    // The capture day is a real published fact the page shows only as its year.
+    expect(catalog?.content.photos.map((photo) => photo.capturedAt)).toContain(CAPTURE_DAY);
     const html = await (await request.get(`${origin()}/work/harbor`)).text();
     expect(html, 'the check reads a rendered series page').toContain('Fixture harbor');
     for (const sentinel of SENTINELS) expect(html, sentinel).not.toContain(sentinel);
