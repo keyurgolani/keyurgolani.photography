@@ -15,8 +15,12 @@ import type { Registry } from '../../identity/types';
 import { readVersionedDocument, versionFile } from '../../storage/document';
 import { catalogPhotos, legacyPhotos, type ImageItem } from '../photos-api';
 import { createCatalogReader } from '../reader';
-import { publish } from '../publish';
+import { withLock } from '../../storage/lock';
+import { activateRevision, publish } from '../publish';
+import { CATALOG_LOCK } from '../repository';
 import { createTestCatalog } from '../testing';
+import { readWorkingLayer } from '../working-layer';
+import { writeAuthoredRecord } from '../working-layer-writer';
 import type { PublicPhotoRecord, RevisionContent } from '../types';
 import { catalogPaths, readActivePointer } from '../working-layer';
 import { VARIANT_BYTES } from './catalogFixtures';
@@ -27,7 +31,9 @@ vi.mock('next/server', async (importOriginal) => ({
     connection: vi.fn(async () => undefined),
 }));
 
-const { GET } = await import('../../../app/api/photos/route');
+const { GET: photosRoute } = await import('../../../app/api/photos/route');
+/** GET /api/photos, with an If-None-Match header when given one. */
+const GET = (ifNoneMatch?: string) => photosRoute(new Request('http://127.0.0.1/api/photos', ifNoneMatch === undefined ? {} : { headers: { 'If-None-Match': ifNoneMatch } }));
 const { GET: ready } = await import('../../../app/api/ready/route');
 
 const URL_FIELDS = ['src', 'thumbnail', 'medium', 'optimized', 'thumbnailAvif', 'mediumAvif', 'optimizedAvif'] as const;
@@ -284,8 +290,11 @@ describe('legacy /api/photos', { timeout: 60_000 }, () => {
         fs.writeFileSync(`${paths.registry}.json`, '{}\n');
         const check = async () => {
             expect(await legacyPhotos(data.root, lib.root)).toEqual({ ok: false, reason: 'registry-old-layout' });
-            const photos = await GET();
+            // An If-None-Match is never weighed against an error.
+            const photos = await GET('*');
             expect(photos.status).toBe(503);
+            expect(photos.headers.get('cache-control')).toBe('no-store');
+            expect(photos.headers.has('etag')).toBe(false);
             expect(await photos.json()).toEqual({ reason: 'registry-old-layout' });
             const readiness = await ready();
             expect(readiness.status).toBe(503);
@@ -376,6 +385,102 @@ describe('GET /api/photos', { timeout: 60_000 }, () => {
         const items = await response.json() as ImageItem[];
         expect(items.length).toBeGreaterThan(0);
         expect(items.every((item) => item.src.startsWith('/media/'))).toBe(true);
+    });
+
+    it('sends no ETag in legacy mode, and answers If-None-Match with the full list', async () => {
+        await pass();
+        for (const header of [undefined, '*']) {
+            const response = await GET(header);
+            expect(response.status).toBe(200);
+            expect(response.headers.has('etag')).toBe(false);
+            expect(response.headers.get('cache-control')).toBe('no-cache');
+            expect((await response.json() as ImageItem[]).length).toBeGreaterThan(0);
+        }
+    });
+});
+
+describe('catalog /api/photos validators', { timeout: 60_000 }, () => {
+    /** A test catalog as PHOTOGRAPHY_DATA_DIR, with its first revision published. */
+    async function published(seed: number) {
+        const catalog = await createTestCatalog({ variantBytes: VARIANT_BYTES, seed, photos: 3, series: [{ photos: 2 }, { photos: 1, visibility: 'draft' }] });
+        cleanups.push(() => catalog.cleanup());
+        const restore = process.env.PHOTOGRAPHY_DATA_DIR;
+        process.env.PHOTOGRAPHY_DATA_DIR = catalog.root;
+        cleanups.push(async () => {
+            process.env.PHOTOGRAPHY_DATA_DIR = restore;
+        });
+        const first = await publish({ dataRoot: catalog.root, actor: 'test', confirmLaunch: true, logger: { log: () => undefined } });
+        if (first.outcome !== 'PUBLISHED') throw new Error(first.message);
+        return { catalog, revisionId: first.revisionId as string };
+    }
+
+    async function publishDraft(root: string, seriesId: string): Promise<string> {
+        const layer = await readWorkingLayer(root);
+        const record = layer.series.find((entry) => entry.id === seriesId)!;
+        await writeAuthoredRecord({ ...structuredClone(record), visibility: 'published' }, { expectedVersion: record.version, root });
+        const next = await publish({ dataRoot: root, actor: 'test', confirmLaunch: true, logger: { log: () => undefined } });
+        if (next.outcome !== 'PUBLISHED') throw new Error(next.message);
+        return next.revisionId as string;
+    }
+
+    const headersOf = (response: Response) => ({
+        etag: response.headers.get('etag'),
+        cacheControl: response.headers.get('cache-control'),
+        revision: response.headers.get('x-catalog-revision'),
+        mode: response.headers.get('x-catalog-mode'),
+    });
+
+    it('answers 304 for the current tag with the same headers, and 200 with a new tag after a publish and a rollback', async () => {
+        const { catalog, revisionId: first } = await published(21);
+        const a = await GET();
+        expect(a.status).toBe(200);
+        const tagA = a.headers.get('etag') as string;
+        expect(tagA).toMatch(/^W\/"[A-Za-z0-9_-]{22}"$/);
+        expect(headersOf(a)).toEqual({ etag: tagA, cacheControl: 'no-cache', revision: first, mode: 'catalog' });
+        expect(a.headers.has('last-modified')).toBe(false);
+        const listA = await a.json() as ImageItem[];
+
+        for (const header of [tagA, tagA.slice(2), `W/"stale", ${tagA}`, '*']) {
+            const again = await GET(header);
+            expect(again.status, header).toBe(304);
+            expect(headersOf(again), header).toEqual(headersOf(a));
+            expect(await again.text()).toBe('');
+        }
+
+        const second = await publishDraft(catalog.root, catalog.series[1].id);
+        const b = await GET(tagA);
+        expect(b.status).toBe(200);
+        const tagB = b.headers.get('etag') as string;
+        expect(tagB).not.toBe(tagA);
+        expect(headersOf(b)).toEqual({ etag: tagB, cacheControl: 'no-cache', revision: second, mode: 'catalog' });
+        expect((await b.json() as ImageItem[]).length).toBe(listA.length + 1);
+        expect((await GET(tagB)).status).toBe(304);
+
+        const rollback = await withLock(CATALOG_LOCK, { root: catalog.root }, (lock) => activateRevision({
+            lock, revisionId: first, expectedActiveRevisionId: second, kind: 'rollback', actor: 'test', reason: 'rollback',
+        }));
+        expect(rollback.outcome, rollback.message).toBe('ACTIVATED');
+        const back = await GET(tagB);
+        expect(back.status).toBe(200);
+        // The same revision and build as before give the same tag and body.
+        expect(headersOf(back)).toEqual(headersOf(a));
+        expect(await back.json()).toEqual(listA);
+        expect((await GET(tagA)).status).toBe(304);
+    });
+
+    it('answers 503 with no-store and no ETag when the catalog is unavailable, whatever If-None-Match says', async () => {
+        const { catalog } = await published(22);
+        await damagePointer(catalog.root);
+        const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        for (const header of [undefined, '*', 'W/"anything"']) {
+            const response = await GET(header);
+            expect(response.status).toBe(503);
+            expect(response.headers.get('cache-control')).toBe('no-store');
+            expect(response.headers.has('etag')).toBe(false);
+            expect(response.headers.get('x-catalog-mode')).toBe('catalog');
+            expect(await response.json()).toEqual({ reason: 'active-unreadable' });
+        }
+        expect(logged).toHaveBeenCalled();
     });
 });
 
