@@ -59,19 +59,21 @@ describe('the inbox after the launch path', () => {
         const id = (source: string) => listed.find((row) => row.source === source)?.photoId as string;
         const [landscape, portrait, square] = [id('landscape.jpg'), id('portrait.png'), id('square.webp')];
 
-        fs.mkdirSync(data.file('authored', 'series', SERIES), { recursive: true, mode: 0o700 });
-        fs.writeFileSync(data.file('authored', 'series', SERIES, 'v1.json'), `${JSON.stringify({
-            schemaVersion: 1,
-            version: 1,
-            baseRevisionId: null,
+        // The series record through photos edit, which reviews what it writes (#16): a record made by hand after the upgrade would read as not reviewed.
+        const seriesFile = path.join(path.dirname(data.root), 'series.json');
+        fs.writeFileSync(seriesFile, `${JSON.stringify({
             kind: 'series',
             id: SERIES,
             slug: 'launch-inbox',
             title: 'Launch inbox fixture series',
             statement: 'A fixture statement for the launch inbox test. Not real copy.',
             shortStatement: 'A fixture short statement.',
+            photoIds: [],
+            chapters: [],
+            cover: null,
             visibility: 'published',
         }, null, 2)}\n`);
+        expect(ok(await photos('edit', SERIES, '--file', seriesFile))).toContain(`Saved series ${SERIES} as version 1.`);
         ok(await photos('sequence', 'set', SERIES, landscape, portrait));
 
         // Placed in the draft: settled before any publish.
