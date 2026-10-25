@@ -415,12 +415,21 @@ export async function writeVersionedDocument<T extends VersionedDocument>(
     return { ...next, version };
 }
 
+export interface PruneOptions {
+    /** How many versions to keep, the newest by number. */
+    keep?: number;
+    hooks?: {
+        /** After the temps are swept, before any version is deleted. */
+        afterSweep?(): void | Promise<void>;
+    };
+}
+
 /**
  * Apply the prune rule to `dir`: with H its newest version, remove the temps
  * named for H or below, then the versions numbered H - keep or below. Returns
  * the names it removed, temps first.
  */
-export async function pruneVersions(dir: string, { keep = KEEP_VERSIONS }: { keep?: number } = {}): Promise<string[]> {
+export async function pruneVersions(dir: string, { keep = KEEP_VERSIONS, hooks }: PruneOptions = {}): Promise<string[]> {
     if (!Number.isInteger(keep) || keep < 1) throw new RangeError(`keep must be a positive integer, got ${keep}`);
     const listing = await list(dir);
     const newest = newestOf(listing);
@@ -437,6 +446,7 @@ export async function pruneVersions(dir: string, { keep = KEEP_VERSIONS }: { kee
     // Temps first. A writer still holding one for a version at or below the newest can't commit it: its link finds
     // that version (EEXIST) or, once swept, no temp (ENOENT). Only then may a version number go free.
     for (const temp of listing.temps) if (temp.version <= newest) await remove(temp.name);
+    await hooks?.afterSweep?.();
     for (const version of listing.versions) if (version <= newest - keep) await remove(`v${version}.json`);
     return removed;
 }
