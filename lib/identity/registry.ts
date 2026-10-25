@@ -10,7 +10,7 @@ import {
     type VersionedWriteHooks,
 } from '../storage/document';
 import { ensureDirectory, pathExists } from '../storage/fsx';
-import { ASSET_REVISION_RE, DECISION_ID_RE, PHOTO_ID_RE } from './ids';
+import { ASSET_REVISION_RE, DECISION_ID_RE, isLibraryPath, PHOTO_ID_RE } from './ids';
 import type { ImageInspection, UnsupportedInspection } from './inspect';
 import { EXTRACTOR_VERSION } from './metadata';
 import { emptyRegistry, REGISTRY_SCHEMA_VERSION, type Registry } from './types';
@@ -52,6 +52,8 @@ function assertRegistry(file: string, value: Record<string, unknown>): asserts v
             typeof source.present !== 'boolean' || typeof source.observedRevision !== 'string') {
             fail(`photo ${photoId} has a malformed source`);
         }
+        // The worker reads the library at this path, so it must stay inside it.
+        if (!isLibraryPath((source as Record<string, unknown>).path as string)) fail(`photo ${photoId} has a source path outside the library`);
         if (!HEALTH.has(record.sourceHealth as string)) fail(`photo ${photoId} has an unknown sourceHealth`);
         if (!isRecord(record.revisions)) fail(`photo ${photoId} has malformed revisions`);
         for (const [assetRevision, revision] of Object.entries(record.revisions as Record<string, unknown>)) {
@@ -65,6 +67,7 @@ function assertRegistry(file: string, value: Record<string, unknown>): asserts v
         if (!isRecord(held) || typeof held.path !== 'string' || typeof held.assetRevision !== 'string' || !Array.isArray(held.candidates)) {
             fail('holds holds a malformed entry');
         }
+        if (!isLibraryPath((held as Record<string, unknown>).path as string)) fail('holds holds a path outside the library');
     }
     for (const pending of value.pendingFacts as unknown[]) {
         if (!isRecord(pending) || typeof pending.factId !== 'string' || typeof pending.type !== 'string') fail('pendingFacts holds a malformed fact');

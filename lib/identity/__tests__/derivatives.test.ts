@@ -4,6 +4,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { withExifOrientation } from '../../../test/fixtures/makeLibrary';
+import { handEditRegistry } from '../../../test/helpers/registryFiles';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempLibrary';
 import { resolveAsset } from '../../media/manifest';
@@ -102,6 +103,33 @@ function snapshot(dir: string): Record<string, { bytes: string; mtimeMs: number 
 }
 
 describe('buildDerivativeSet', () => {
+    it.each([
+        ['a source path', (value: Record<string, unknown>, photoId: string, escape: string) => {
+            ((value.photos as Record<string, { source: { path: string } }>)[photoId]).source.path = escape;
+        }, /has a source path outside the library/],
+        ['a held path', (value: Record<string, unknown>, _photoId: string, escape: string) => {
+            (value.holds as unknown[]).push({ path: escape, assetRevision: `sha256-${'0'.repeat(64)}`, candidates: [] });
+        }, /holds holds a path outside the library/],
+    ])('refuses a hand-edited registry with %s outside the library, and reads nothing there', async (_, edit, refusal) => {
+        const s = await setup();
+        const job = await s.job('landscape.jpg');
+        // The same bytes beside the library, so the digest check alone wouldn't stop the read
+        const outside = path.join(path.dirname(s.lib.root), 'outside.jpg');
+        fs.writeFileSync(outside, landscape);
+        handEditRegistry(s.data.root, (value) => edit(value, job.photoId, '../outside.jpg'));
+        const reads: string[] = [];
+        const realReadFile = fs.promises.readFile.bind(fs.promises);
+        const spy = vi.spyOn(fs.promises, 'readFile').mockImplementation(((...args: Parameters<typeof fs.promises.readFile>) => {
+            reads.push(String(args[0]));
+            return realReadFile(...args);
+        }) as typeof fs.promises.readFile);
+        cleanups.push(async () => spy.mockRestore());
+
+        await expect(s.build(job)).rejects.toThrow(refusal);
+        expect(reads.filter((file) => path.resolve(file) === outside)).toEqual([]);
+        expect(fs.existsSync(assetDir(job, s.data.root))).toBe(false);
+    });
+
     it('builds a panorama taller than WebP can encode, narrower so no variant is over 16383 px tall', async () => {
         const tall = await sharp({ create: { width: 100, height: 17_000, channels: 3, background: { r: 90, g: 140, b: 200 } } }).jpeg().toBuffer();
         const s = await setup({ 'tall.jpg': tall });
