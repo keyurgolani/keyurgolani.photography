@@ -24,7 +24,8 @@ export class MediaPathError extends Error {
 /** `<dataRoot>/assets`. Throws when no data root is configured. */
 export function assetsRoot(root: string | null = dataRoot()): string {
     if (root === null) throw new MediaPathError('No data root is configured: PHOTOGRAPHY_DATA_DIR is not set.');
-    return path.join(path.resolve(root), 'assets');
+    // Found at run time: the ignore comments keep the build from tracing public/assets/ in its place.
+    return path.join(/*turbopackIgnore: true*/ path.resolve(/*turbopackIgnore: true*/ root), 'assets');
 }
 
 export function isValidRef(ref: AssetRef): boolean {
@@ -37,7 +38,7 @@ export function assetDir(ref: AssetRef, root: string | null = dataRoot()): strin
     if (!ASSET_REVISION_RE.test(ref.assetRevision)) throw new MediaPathError(`Invalid assetRevision: ${JSON.stringify(ref.assetRevision)}`);
     if (!PROFILE_ID_RE.test(ref.profileId)) throw new MediaPathError(`Invalid profileId: ${JSON.stringify(ref.profileId)}`);
     const store = assetsRoot(root);
-    const dir = path.join(store, ref.photoId, ref.assetRevision, ref.profileId);
+    const dir = path.join(/*turbopackIgnore: true*/ store, ref.photoId, ref.assetRevision, ref.profileId);
     if (!isInside(dir, store)) throw new MediaPathError(`${dir} is outside ${store}`);
     return dir;
 }
@@ -46,7 +47,7 @@ export function assetDir(ref: AssetRef, root: string | null = dataRoot()): strin
 export function mediaFilePath(ref: AssetRef, variant: VariantWidth, format: VariantFormat, root: string | null = dataRoot()): string {
     if (!(VARIANT_WIDTHS as readonly string[]).includes(variant)) throw new MediaPathError(`Invalid variant: ${JSON.stringify(variant)}`);
     if (!(VARIANT_FORMATS as readonly string[]).includes(format)) throw new MediaPathError(`Invalid format: ${JSON.stringify(format)}`);
-    return path.join(assetDir(ref, root), `${variant}.${format}`);
+    return path.join(/*turbopackIgnore: true*/ assetDir(ref, root), `${variant}.${format}`);
 }
 
 /** The variant and format a media URL's last segment names, or null. */

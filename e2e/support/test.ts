@@ -46,7 +46,7 @@ export const test = base.extend<{ photoRoutes: void }>({
         async ({ page }, use) => {
             await page.route('**/api/photos', (route) => route.fulfill({ json: photoRecords(photoLists.get(page) ?? DEFAULT_PHOTO_NAMES) }));
             await page.route('**/assets/photos/**', (route) => servePhoto(route, new URL(route.request().url()).pathname));
-            // Photo URLs through the image optimizer get the fixture too. Anything else, like the About portrait, passes through.
+            // Photo URLs through the image optimizer get the fixture too. Anything else passes through.
             await page.route('**/_next/image**', (route) => {
                 const request = new URL(route.request().url());
                 const source = new URL(request.searchParams.get('url') ?? '', request);

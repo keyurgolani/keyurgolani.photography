@@ -17,6 +17,9 @@
 #    stay the same once the containers are recreated.
 # 4. With PHOTOGRAPHY_DATA_DIR unset, the watcher says the identity step is
 #    off, writes the legacy derivatives, and writes no registry.
+# 5. About shows the portrait in ./site-config, read-only, at a content-hashed
+#    URL that changes when the file is swapped, with no restart, and its name
+#    panel once the file is gone. The image itself holds no site config.
 #
 #   ci/smoke-image.sh <tag>
 #
@@ -50,6 +53,7 @@ TMP=$(mktemp -d)
 PHOTOS=$TMP/public/assets/photos
 DATA=$TMP/portfolio-data
 UNSET=$TMP/unset-library
+SITE_CONFIG=$TMP/site-config
 OVERRIDE=$TMP/smoke.override.yml
 
 compose() {
@@ -204,10 +208,41 @@ expect_json() {
 
 # 1. A throwaway library and an empty data root. Both containers run as uid
 #    1001, and the override is the smoke test's only change to the Compose file.
-mkdir -p "$PHOTOS" "$TMP/.next-images-cache" "$DATA" "$UNSET"
+mkdir -p "$PHOTOS" "$TMP/.next-images-cache" "$DATA" "$UNSET" "$SITE_CONFIG/about"
 cp ci/fixtures/library/*.jpg "$PHOTOS/"
 cp ci/fixtures/library/*.jpg "$UNSET/"
 chmod -R a+rwX "$PHOTOS" "$TMP/.next-images-cache" "$DATA" "$UNSET"
+# About's portrait: a generated stand-in carrying EXIF with GPS and a camera
+# serial, and XMP, made with the image's own Sharp, so step 3b's check that
+# none of it is served can fail. The folder is writable by anyone on the host,
+# so only the read-only mount can stop web writing it in step 3b.
+PORTRAIT_MARKERS=(SMOKE-SERIAL-7Q4 SMOKE-COPYRIGHT-7Q4 SMOKE-XMP-7Q4)
+mkdir -p "$TMP/portraits"
+docker run --rm --pull never --user "$(id -u):$(id -g)" -v "$TMP/portraits:/out" -w /app --entrypoint node "$IMAGE" -e '
+const sharp = require("sharp");
+sharp({ create: { width: 1600, height: 2000, channels: 3, background: { r: 150, g: 110, b: 80 } } })
+  .withExif({
+    IFD0: { Make: "Smoke", Copyright: "SMOKE-COPYRIGHT-7Q4" },
+    IFD2: { BodySerialNumber: "SMOKE-SERIAL-7Q4" },
+    IFD3: { GPSLatitudeRef: "N", GPSLatitude: "47/1 36/1 0/1", GPSLongitudeRef: "W", GPSLongitude: "122/1 19/1 0/1" },
+  })
+  .withXmp("<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><dc:creator>SMOKE-XMP-7Q4</dc:creator></rdf:Description></rdf:RDF></x:xmpmeta>")
+  .jpeg()
+  .toFile("/out/portrait.jpg")
+  .then(() => sharp("/out/portrait.jpg").metadata())
+  .then(({ exif, xmp }) => {
+    // 0x8825 is the tag that points at the GPS block, in either byte order.
+    const gps = exif && (exif.includes(Buffer.from([0x88, 0x25])) || exif.includes(Buffer.from([0x25, 0x88])));
+    if (!gps || !xmp) throw new Error("the stand-in portrait has no GPS EXIF or no XMP");
+  })
+  .catch((error) => { console.error(error.message); process.exit(1); });
+' || fail "Could not make the stand-in portrait with the image's Sharp."
+PORTRAIT=$TMP/portraits/portrait.jpg
+for marker in Exif "${PORTRAIT_MARKERS[@]}"; do
+  grep -qa "$marker" "$PORTRAIT" || fail "The stand-in portrait does not carry $marker, so step 3b could not catch it."
+done
+cp "$PORTRAIT" "$SITE_CONFIG/about/portrait.jpg"
+chmod -R a+rwX "$SITE_CONFIG"
 fixtures=()
 for fixture in ci/fixtures/library/*.jpg; do
   fixtures+=("$(basename "$fixture" .jpg)")
@@ -246,6 +281,50 @@ case $content_type in
 esac
 grep -q '<title>' "$TMP/home.html" || fail "GET / has no <title>."
 echo "GET / returned HTML with a <title>."
+
+# 3b. About's portrait comes from ./site-config, which web mounts read-only,
+#     at a content-hashed /about/portrait URL sent as immutable. Swapping the
+#     file changes the URL with no restart, and removing it leaves About's
+#     name panel, never a 500.
+about_portrait_url() {
+  local code
+  code=$(curl -sS --max-time 30 -o "$TMP/about.html" -w '%{http_code}' "$BASE_URL/about") || fail "GET /about failed."
+  [ "$code" = 200 ] || fail "GET /about returned $code, expected 200."
+  grep -o '/about/portrait/[0-9a-f]\{32\}/w1200\.webp' "$TMP/about.html" | head -n 1 || true
+}
+first=$(about_portrait_url)
+[ -n "$first" ] || fail "GET /about names no /about/portrait/<token>/w1200.webp for ./site-config/about/portrait.jpg."
+code=$(curl -sS --max-time 60 -D "$TMP/headers.txt" -o "$TMP/portrait.webp" -w '%{http_code} %{content_type}' "$BASE_URL$first") || fail "GET $first failed."
+[ "$code" = "200 image/webp" ] || fail "GET $first returned '$code', expected '200 image/webp'."
+tr -d '\r' <"$TMP/headers.txt" | grep -qix 'cache-control: public, max-age=31536000, immutable' || fail "GET $first did not send Cache-Control: public, max-age=31536000, immutable."
+curl -sS --max-time 60 -o "$TMP/portrait.avif" "$BASE_URL${first%.webp}.avif" || fail "GET ${first%.webp}.avif failed."
+for variant in "$TMP/portrait.webp" "$TMP/portrait.avif"; do
+  if grep -qaE 'EXIF|Exif|XMP |xmpmeta' "$variant"; then fail "The portrait's $(basename "$variant") carries EXIF or XMP."; fi
+  for marker in "${PORTRAIT_MARKERS[@]}"; do
+    if grep -qa "$marker" "$variant"; then fail "The portrait's $(basename "$variant") carries the stand-in's $marker."; fi
+  done
+done
+if compose exec -T web sh -c 'touch /config/site/about/written' 2>/dev/null; then
+  fail "web could write its site config folder, which it must mount read-only."
+fi
+cp ci/fixtures/library/ci-landscape.jpg "$SITE_CONFIG/about/portrait.jpg"
+second=$(about_portrait_url)
+[ -n "$second" ] && [ "$second" != "$first" ] || fail "After the swap, GET /about named '$second', expected a new /about/portrait URL, with no restart."
+code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$BASE_URL$first") || fail "GET $first failed."
+[ "$code" = 404 ] || fail "After the swap, the old $first returned $code, expected 404."
+tr -d '\r' <"$TMP/headers.txt" | grep -qix 'cache-control: no-store' || fail "After the swap, the old $first did not send Cache-Control: no-store."
+rm "$SITE_CONFIG/about/portrait.jpg"
+gone=$(about_portrait_url)
+[ -z "$gone" ] || fail "With no portrait, GET /about still named $gone."
+grep -q 'data-testid="about-portrait"' "$TMP/about.html" || fail "With no portrait, GET /about has no name panel."
+compose logs --no-color web | grep -q '\[about\] No portrait: there is no about/portrait.jpg' || fail "web logged no warning once the portrait was gone."
+if compose logs --no-color web | grep '\[about\]' | grep -q '/config/site'; then fail "web logged the site config folder's path."; fi
+cp "$PORTRAIT" "$SITE_CONFIG/about/portrait.jpg"
+chmod a+r "$SITE_CONFIG/about/portrait.jpg"
+[ "$(about_portrait_url)" = "$first" ] || fail "With the first portrait back, GET /about did not name its URL again."
+docker run --rm --pull never --entrypoint sh "$IMAGE" -c '[ ! -e /app/site-config ] && [ ! -e /config ]' ||
+  fail "The image holds a site config folder, which belongs on the host."
+echo "About served ./site-config's portrait read-only at an immutable hashed URL with none of its EXIF, GPS, or XMP, followed a swap and a removal with no restart, 404ed the swapped-out URL, and the image holds no site config."
 
 # 4. Until the migration writes the registry, there is nothing to list, so
 #    /api/photos and /api/ready answer 503 with registry-missing.

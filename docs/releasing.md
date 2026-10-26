@@ -329,9 +329,64 @@ curl -s http://127.0.0.1:3000/api/ready
 
 It should report `"mode":"legacy"` and `"state":"ok"`. Until a catalog revision is published, `/media` serves no set and the site keeps serving the legacy derivatives.
 
+## About's portrait
+
+About reads its portrait from the host. It's one file in `./site-config`, next to `docker-compose.prod.yml`, which `web` mounts read-only at `/config/site` (`PHOTOGRAPHY_SITE_CONFIG_DIR`):
+
+```
+site-config/
+  about/
+    portrait.jpg     # or portrait.jpeg, portrait.png, portrait.webp: exactly one
+    portrait.json    # optional
+```
+
+`portrait.json` takes two fields, both optional:
+
+```json
+{
+  "alt": "Keyur Golani in aviator sunglasses and a dark knit turtleneck, smiling toward the camera",
+  "focalPoint": { "x": 52, "y": 26 }
+}
+```
+
+- `alt` is the photo's alt text, at most 1,000 characters. Without it, the alt is "Portrait of" and the artist's name.
+- `focalPoint` is the point the crop keeps in view, in percent from the top left, each 0 to 100. Without it, the crop is centered.
+
+The server reads the file itself and nothing a visitor sends names a path. It refuses a symlink at `about/` or at either file, bytes that aren't the JPEG, PNG, or WebP the name says, a file over 40 MB, a side over 12,000 px, or more than 50 megapixels. It builds AVIF and WebP copies at 400, 800, 1200, and 1920 px wide in memory with the same settings as the watcher's photos: turned upright from the EXIF orientation, with every bit of EXIF, GPS, XMP, IPTC, and the color profile dropped. The file itself is never served. The copies are served at `/about/portrait/<hash>/<size>`, where the hash is of the file's bytes, so a new photo always gets new URLs and browsers can keep each one for a year. Only the current file's URLs answer: once it's swapped, removed, or refused, the old URLs are a 404 on the next request. A browser or a CDN that already fetched a copy can keep it until it expires, so to take a photo down everywhere, also purge `/about/portrait/` in the CDN.
+
+To swap the photo, replace the file. Copy the new one in under another name and rename it over the old one, so `web` never reads a half-written file:
+
+```bash
+cp ~/new-portrait.jpg site-config/about/.portrait.jpg.new
+mv site-config/about/.portrait.jpg.new site-config/about/portrait.jpg
+```
+
+In the same step, update `portrait.json`'s `alt` and `focalPoint` for the new photo, or remove it to get "Portrait of" and the artist's name and a centered crop. They describe one picture, so the old ones are wrong for the next. When `portrait.json` is older than the photo, `web` logs `[about] about/portrait.json is older than about/portrait.jpg, so its alt text and crop may describe the previous photo.`
+
+About shows the new photo on the next page load, with no restart. A page loaded before the swap shows the name until it's reloaded. A restart works too. If you change the file's type, say from `.png` to `.jpg`, remove the old one: with two portraits About shows neither. `web` runs as uid 1001, so the folder and the files have to be readable by it, which `chmod -R a+rX site-config` makes sure of. Nothing in the stack writes the folder.
+
+Without a usable file, About shows the artist's name and alias in the portrait's place, in the same frame, and `web` logs one line saying why, naming only the relative path:
+
+```bash
+docker compose -f docker-compose.prod.yml logs web | grep '\[about\]'
+```
+
+`[about] About shows about/portrait.jpg, 3394 x 3620 px, sha256 <first 12 hex>.` means it's in use, and a swap logs the new file's line. A problem with `portrait.json` keeps the photo and logs why the alt text and crop fell back to their defaults.
+
+The first release with this, `v1.2.0`, stops reading About's portrait from the image, so set the folder up before its `up -d`, or About shows the name until you do. Create `site-config/about/` and run `chmod -R a+rX site-config` before the first `up -d`, as below. When `./site-config` is missing, Compose creates it so `web` still starts, but under a rootful Docker daemon that folder is owned by root, and `mkdir -p site-config/about` then needs `sudo`. If that happened, give it back to the deploy user before you put the photo in: `sudo chown -R "$(id -u):$(id -g)" site-config`. To keep the photo `v1.1.0` shows, copy it out of the repository at that tag along with its alt text and focal point, which are the example above:
+
+```bash
+mkdir -p site-config/about
+curl -fsSL -o site-config/about/portrait.png https://raw.githubusercontent.com/keyurgolani/keyurgolani.photography/v1.1.0/public/assets/profile/front.png
+printf '%s\n' '{ "alt": "Keyur Golani in aviator sunglasses and a dark knit turtleneck, smiling toward the camera", "focalPoint": { "x": 52, "y": 26 } }' >site-config/about/portrait.json
+chmod -R a+rX site-config
+```
+
+Back up `./site-config` with the rest of the host's folders. It isn't in the repository, so the backup is the only other copy.
+
 ## Rollback
 
-Before changing `.env`, note the tag the host runs now. To roll back, set `PHOTOGRAPHY_IMAGE_TAG` back to that tag and run the same two commands. That swaps the code, not the photo library. Rolling back to a release before Phase 0 of #17 brings back the watcher's startup cleanup, which deletes the derivative sets this release keeps for removed photos. That older release also refills `./.next-images-cache` under its year-long headers and writes new `cache/dynamic` files, so roll forward again the way Deploying describes for `v1.1.0`.
+Before changing `.env`, note the tag the host runs now. To roll back, set `PHOTOGRAPHY_IMAGE_TAG` back to that tag and run the same two commands. That swaps the code, not the photo library. A release before `v1.2.0` ignores `./site-config` and shows the portrait built into its image. Rolling back to a release before Phase 0 of #17 brings back the watcher's startup cleanup, which deletes the derivative sets this release keeps for removed photos. That older release also refills `./.next-images-cache` under its year-long headers and writes new `cache/dynamic` files, so roll forward again the way Deploying describes for `v1.1.0`.
 
 Rolling back past the first release with slice C of #10 needs the compose file the host ran before it too, since that older image has no `dist/scripts` for this file's watcher command. Put back the copy that release's deploy step saved, `docker-compose.prod.yml.before-vX.Y.Z`, rather than the repository's older file, so the host's own changes come back with it. Leave out of the override whatever only moved there from that copy, since the copy already has it. Restore the file first, then set the older tag in `.env`, then run the two commands.
 

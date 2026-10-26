@@ -80,26 +80,16 @@ describe('artist.profile', () => {
   it('has a heading, at least one paragraph, and no markup in any copy', () => {
     expect(profile.statementHeading.trim()).not.toBe('');
     expect(profile.statementParagraphs.length).toBeGreaterThan(0);
-    for (const text of [profile.name, profile.alias ?? '', profile.statementHeading, ...profile.statementParagraphs, profile.shortBiography ?? '', profile.portrait?.alt ?? '']) {
+    for (const text of [profile.name, profile.alias ?? '', profile.statementHeading, ...profile.statementParagraphs, profile.shortBiography ?? '']) {
       expect(text.trim(), 'empty copy').toBe(text);
       expect(text).not.toMatch(/[<>]/);
     }
   });
 
-  it("gives the portrait the size of the PNG data/artistPortraitImage.ts imports, an alt, and a focal point inside the frame", () => {
-    const { portrait } = profile;
-    expect(portrait).toBeDefined();
-    if (!portrait) return;
-    const module = fs.readFileSync(path.join(import.meta.dirname, '../artistPortraitImage.ts'), 'utf8');
-    const imported = /from '([^']+\.png)'/.exec(module)?.[1];
-    expect(imported, 'data/artistPortraitImage.ts imports a .png').toBeDefined();
-    // The PNG header: width and height are the big-endian words at bytes 16 and 20.
-    const header = fs.readFileSync(path.join(import.meta.dirname, '..', imported ?? '')).subarray(0, 24);
-    expect({ width: portrait.width, height: portrait.height }).toEqual({ width: header.readUInt32BE(16), height: header.readUInt32BE(20) });
-    expect(portrait.alt.trim()).not.toBe('');
-    for (const value of [portrait.focalPoint?.x ?? 50, portrait.focalPoint?.y ?? 50]) {
-      expect(value).toBeGreaterThanOrEqual(0);
-      expect(value).toBeLessThanOrEqual(100);
-    }
+  it('carries no portrait: the photo, its alt, and its focal point are files on the host (lib/siteConfig/aboutPortrait.ts)', () => {
+    expect(profile).not.toHaveProperty('portrait');
+    const source = fs.readFileSync(path.join(import.meta.dirname, '../artist.ts'), 'utf8');
+    expect(source).not.toMatch(/\.(png|jpe?g|webp)'/);
+    expect(fs.existsSync(path.join(import.meta.dirname, '../artistPortraitImage.ts'))).toBe(false);
   });
 });

@@ -50,7 +50,7 @@ export interface DataRootStatus {
  * the whole project into .next/standalone.
  */
 export function libraryRoot(): string {
-    return path.resolve(/*turbopackIgnore: true*/ process.env.PHOTOGRAPHY_LIBRARY_DIR || path.join(process.cwd(), 'public/assets/photos'));
+    return path.resolve(/*turbopackIgnore: true*/ process.env.PHOTOGRAPHY_LIBRARY_DIR || path.join(/*turbopackIgnore: true*/ process.cwd(), 'public/assets/photos'));
 }
 
 /**
@@ -62,7 +62,7 @@ export function dataRoot(): string | null {
     const configured = process.env.PHOTOGRAPHY_DATA_DIR;
     if (configured) return path.resolve(configured);
     if (process.env.NODE_ENV === 'production') return null;
-    return path.join(process.cwd(), 'portfolio-data');
+    return path.join(/*turbopackIgnore: true*/ process.cwd(), 'portfolio-data');
 }
 
 /**
@@ -84,7 +84,7 @@ function servedFolderOf(target: string): { folder: string; name: string } | null
     const realTarget = realpathLoose(target);
     const served = [
         { folder: libraryRoot(), name: 'the photo library' },
-        { folder: path.join(process.cwd(), 'public'), name: 'the app\'s public folder' },
+        { folder: path.join(/*turbopackIgnore: true*/ process.cwd(), 'public'), name: 'the app\'s public folder' },
     ];
     return served.find(({ folder }) => isInside(realTarget, realpathLoose(folder))) ?? null;
 }

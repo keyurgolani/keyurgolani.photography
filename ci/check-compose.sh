@@ -2,8 +2,8 @@
 # Checks that docker-compose.prod.yml runs every service on the one release
 # tag in PHOTOGRAPHY_IMAGE_TAG, that ci/smoke-image.sh starts every service
 # Compose starts by default, that every published port is on the host's
-# loopback, and that the data root, the library, and web's image cache
-# mounts keep their guarantees. Compose runs from an empty project
+# loopback, and that the data root, the library, web's image cache, and the
+# site config folder mounts keep their guarantees. Compose runs from an empty project
 # directory so a local .env can't leak in.
 set -euo pipefail
 
@@ -161,3 +161,24 @@ if ! jq -e --argjson never "$never_created" "
   fail "Every mount of the data root, /app/public/assets/photos, or /app/.next/cache/images must be a long-syntax bind with bind.create_host_path: false."
 fi
 echo "web mounts the data root read-only, and no data root, library, or image cache bind is created when missing."
+
+# 8. web mounts the site config folder, which holds About's portrait, once,
+#    read-only, at /config/site, and points PHOTOGRAPHY_SITE_CONFIG_DIR at it.
+#    No other service mounts it, so nothing in the stack can write the
+#    portrait, and nothing mounts it under /app/public, where Next would
+#    serve the original file, metadata and all.
+SITE_CONFIG_MOUNT='((.target // "") | rtrimstr("/")) == "/config/site" or ((.source // "") | test("/site-config(/|$)"))'
+if ! jq -e "[.services.web.volumes[]? | select($SITE_CONFIG_MOUNT)]
+    | length == 1 and all(.type == \"bind\" and .target == \"/config/site\" and .read_only == true)" <<<"$resolved" >/dev/null; then
+  fail "web must mount ./site-config once, at /config/site, as a bind with read_only: true."
+fi
+if ! jq -e '.services.web.environment.PHOTOGRAPHY_SITE_CONFIG_DIR == "/config/site"' <<<"$resolved" >/dev/null; then
+  fail "web must set PHOTOGRAPHY_SITE_CONFIG_DIR=/config/site, the read-only mount."
+fi
+if ! jq -e "[.services | to_entries[] | select(.key != \"web\") | .value.volumes[]? | select($SITE_CONFIG_MOUNT)] | length == 0" <<<"$resolved" >/dev/null; then
+  fail "Only web may mount the site config folder."
+fi
+if ! jq -e '[.services[] | (.volumes // [])[] | select(((.target // "") | startswith("/app/public")) and (((.source // "") | test("/site-config(/|$)"))))] | length == 0' <<<"$resolved" >/dev/null; then
+  fail "The site config folder must never be mounted under /app/public."
+fi
+echo "web mounts the site config folder once, read-only, at /config/site, and no other service mounts it."

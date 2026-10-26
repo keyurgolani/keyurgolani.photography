@@ -55,13 +55,19 @@
 
 /* The portrait sits on the mockup's near-black ground inside a 9 px paper
    frame. Its caption is a band below the photo, in flow, so enlarged text
-   grows the frame instead of covering the face. */
+   grows the frame instead of covering the face. The frame, the ground under
+   it, and the band's height are shared with the name panel below, so both
+   states are the same box in the same tone. */
 .portrait {
+  --about-frame: 9px;
+  --about-frame-ground: #101311;
+  /* One line of caption: its padding plus its line box. */
+  --about-caption-band: calc(1rem + 0.875rem * 1.4);
   display: flex;
   flex-direction: column;
   margin: 0;
-  border: 9px solid var(--lts-frame);
-  background: #101311;
+  border: var(--about-frame) solid var(--lts-frame);
+  background: var(--about-frame-ground);
   box-shadow: var(--lts-shadow);
 }
 
@@ -78,13 +84,16 @@
   }
 }
 
-/* The focal point from data/artist.ts is the object-position, set inline. */
+/* The focal point from the host's portrait.json is the object-position,
+   set inline on .photo as --portrait-focus. The <picture> ResponsivePhoto
+   renders is inline, so the image is placed against .photo directly. */
 .image {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
+  object-position: var(--portrait-focus, 50% 50%);
 }
 
 .caption {
@@ -97,29 +106,57 @@
   overflow-wrap: anywhere;
 }
 
-/* A failed portrait: the same frame and height, with the name and alias as
-   text on paper instead of a broken image. */
+/* No portrait, or one that failed to load: the same frame, tone, and outer
+   box as the photo with its caption band, lit from inside like a paper
+   shade, so nothing on the page moves either way. A soft pool of light sits
+   high in the panel over the shade's horizontal ribs, and the name is set in
+   the statement's serif at the foot, where the photo's caption band would
+   be. It reads as a deliberate name plate, never as a missing image. The
+   paper stops at the frame, which lies over the photo's dark ground, so the
+   frame reads as the same taupe mat. */
 .fallback {
-  justify-content: center;
-  min-height: clamp(250px, 42svh, 380px);
-  padding: 1.5rem;
-  background: var(--lts-paper);
+  justify-content: flex-end;
+  min-height: calc(clamp(250px, 42svh, 380px) + var(--about-caption-band) + 2 * var(--about-frame));
+  padding: clamp(1.25rem, 1rem + 1.5vw, 2.25rem);
+  background:
+    radial-gradient(ellipse 78% 58% at 50% 36%, rgba(255, 252, 240, 0.96) 0%, rgba(253, 246, 226, 0.7) 42%, rgba(244, 236, 215, 0) 78%) padding-box,
+    repeating-linear-gradient(180deg, rgba(93, 73, 42, 0.07) 0 1px, transparent 1px 2.125rem) padding-box,
+    linear-gradient(#ecdfbf, #ecdfbf) padding-box,
+    var(--about-frame-ground) border-box;
 }
 
 @media (min-width: 64rem) {
   .fallback {
-    min-height: 420px;
+    min-height: calc(420px + var(--about-caption-band) + 2 * var(--about-frame));
   }
 }
 
-.fallbackName,
-.name {
+/* A long name or alias breaks between words. Only a word wider than the
+   panel breaks inside itself. */
+.fallbackName {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
   margin: 0;
   color: var(--lts-ink);
+  overflow-wrap: break-word;
+}
+
+.fallbackFullName {
+  max-width: 100%;
+  font-family: var(--font-serif), serif;
+  font-size: var(--lts-type-plate);
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+}
+
+.fallbackAlias {
+  color: var(--lts-ink-soft);
   font-family: var(--font-sans), sans-serif;
-  font-size: 1rem;
+  font-size: 0.9375rem;
   line-height: 1.4;
-  overflow-wrap: anywhere;
 }
 
 .article {
@@ -139,7 +176,7 @@
   max-width: 16ch;
   margin: 0 0 1.125rem;
   font-family: var(--font-serif), serif;
-  font-size: clamp(2rem, 1.25rem + 2.4vw, 3.375rem);
+  font-size: var(--lts-type-heading);
   font-weight: 400;
   line-height: 1.02;
   letter-spacing: -0.04em;

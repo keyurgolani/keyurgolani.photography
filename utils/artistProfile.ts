@@ -1,7 +1,7 @@
 import type { ArtistProfile } from '../data/artist';
 
 export const PROVISIONAL_COPY_MESSAGE =
-  'data/artist.ts: About copy is provisional. Replace the statement, alias, alt text, and biography ' +
+  'data/artist.ts: About copy is provisional. Replace the statement, alias, and biography ' +
   "with owner-approved copy and set copyStatus to 'approved'.";
 
 /**

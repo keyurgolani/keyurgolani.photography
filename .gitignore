@@ -68,3 +68,7 @@ progress.md
 
 # Private identity state, the default data root outside production
 /portfolio-data/
+
+# The site config folder: About's portrait and its portrait.json live on the
+# host, beside docker-compose.prod.yml, never in the repository
+/site-config/

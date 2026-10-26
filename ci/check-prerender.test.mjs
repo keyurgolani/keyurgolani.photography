@@ -7,11 +7,11 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { DYNAMIC_PATHS, prerenderedPaths } from './check-prerender.mjs';
 
-// A manifest in the shape `next build` writes, prerendering /about.
+// A manifest in the shape `next build` writes, prerendering /_not-found.
 function manifest({ routes = {}, dynamicRoutes = {} } = {}) {
   return {
     version: 4,
-    routes: { '/about': { initialRevalidateSeconds: false, srcRoute: '/about', dataRoute: '/about.rsc' }, ...routes },
+    routes: { '/_not-found': { initialRevalidateSeconds: false, srcRoute: '/_not-found', dataRoute: '/_not-found.rsc' }, ...routes },
     dynamicRoutes,
     notFoundRoutes: [],
     preview: {},
@@ -65,6 +65,11 @@ describe('prerenderedPaths', () => {
 
   it('lists the #6 continuation endpoints by their patterns, since each answers from the active revision per request', () => {
     expect(DYNAMIC_PATHS).toEqual(expect.arrayContaining(['/api/catalog/series/[slug]/pages/[cursor]', '/api/catalog/home/photos/[photoId]']));
+  });
+
+  it('lists About and its portrait route, which read the host portrait per request, so a build never freezes the one it saw', () => {
+    expect(DYNAMIC_PATHS).toEqual(expect.arrayContaining(['/about', '/about/portrait/[token]/[variant]']));
+    expect(prerenderedPaths(manifest({ routes: { '/about': { initialRevalidateSeconds: false, srcRoute: '/about', dataRoute: '/about.rsc' } } }))).toEqual(['/about']);
   });
 
   it('finds a continuation endpoint when the build kept its pattern', () => {
@@ -131,7 +136,7 @@ describe('check-prerender.mjs run directly', () => {
   it('exits 0 and names the paths it checked when the build prerendered none of them', () => {
     const result = run(file(manifest()));
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('The build prerendered none of: /, /api/photos, /api/ready, /work, /gallery, /work/[slug], /work/[slug]/photo/[photoId], /api/catalog/series/[slug]/pages/[cursor], /api/catalog/home/photos/[photoId].');
+    expect(result.stdout).toContain('The build prerendered none of: /, /api/photos, /api/ready, /work, /gallery, /work/[slug], /work/[slug]/photo/[photoId], /api/catalog/series/[slug]/pages/[cursor], /api/catalog/home/photos/[photoId], /about, /about/portrait/[token]/[variant].');
   });
 
   it('exits 1 with the fix when the build prerendered /api/photos', () => {

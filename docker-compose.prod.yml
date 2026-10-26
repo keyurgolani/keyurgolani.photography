@@ -34,10 +34,23 @@ services:
         target: /app/.next/cache/images
         bind:
           create_host_path: false
+      # The site config folder: About's portrait, about/portrait.jpg (or .jpeg,
+      # .png, .webp), and its optional about/portrait.json. Read-only, and
+      # read per request, so swapping the file there changes About with no
+      # rebuild or restart. Created empty when missing, so a host without one
+      # still starts and About shows the name instead (docs/releasing.md,
+      # About's portrait).
+      - type: bind
+        source: ./site-config
+        target: /config/site
+        read_only: true
+        bind:
+          create_host_path: true
     restart: always
     environment:
       - NODE_ENV=production
       - PHOTOGRAPHY_DATA_DIR=/data/portfolio
+      - PHOTOGRAPHY_SITE_CONFIG_DIR=/config/site
       - SITE_URL=https://keyurgolani.photography  # Public origin for share links, read at runtime
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]

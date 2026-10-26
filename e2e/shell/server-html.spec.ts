@@ -1,4 +1,5 @@
 import { artist } from '../../data/artist';
+import { STAND_IN_PORTRAIT } from '../support/aboutPortrait';
 import { waitForHydration } from '../support/hydration';
 import { expect, test } from '../support/test';
 
@@ -19,11 +20,11 @@ const escape = (text: string) =>
         .replace(/'/g, '&#x27;')
         .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const { profile } = artist;
-/** About's portrait with its alt, the caption's name and alias, then the statement h1. React may split adjacent text with comments. */
+/** About's portrait, the stand-in the server reads from its site config folder, with its alt, the caption's name and alias, then the statement h1. React may split adjacent text with comments. */
 const ABOUT = new RegExp(
     [
         `<figure[^>]*data-testid="about-portrait"`,
-        `<img[^>]*alt="${escape(profile.portrait?.alt ?? '')}"`,
+        `<img[^>]*alt="${escape(STAND_IN_PORTRAIT.alt)}"`,
         `<figcaption[^>]*>${escape(profile.name)}`,
         escape(profile.alias ?? ''),
         `</figcaption>`,

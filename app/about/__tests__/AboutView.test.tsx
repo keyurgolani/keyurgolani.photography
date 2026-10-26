@@ -1,10 +1,27 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { artist, type ArtistProfile, type ExternalDestination } from '@/data/artist';
+import { VARIANT_WIDTHS } from '@/lib/identity/variants';
+import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
 import AboutView from '../AboutView';
 import { PORTRAIT_SIZES } from '../ArtistPortrait';
 
-const SRC = '/assets/profile/front.png';
+const TOKEN = 'a'.repeat(32);
+const url = (variant: string) => `/about/portrait/${TOKEN}/${variant}`;
+
+/** A portrait as the page builds it from the host's file and portrait.json. */
+const portraitView = (overrides: Partial<AboutPortraitView> = {}): AboutPortraitView => ({
+  asset: {
+    width: 800,
+    height: 1000,
+    variants: Object.fromEntries(
+      VARIANT_WIDTHS.map((width) => [width, { avif: { url: url(`${width}.avif`), width: Math.min(800, Number(width.slice(1))) }, webp: { url: url(`${width}.webp`), width: Math.min(800, Number(width.slice(1))) } }]),
+    ) as AboutPortraitView['asset']['variants'],
+  },
+  alt: 'Portrait of Test Artist',
+  focalPoint: { x: 40, y: 20 },
+  ...overrides,
+});
 
 const destinations: ExternalDestination[] = [
   { id: 'one', kind: 'profile', label: 'One', href: 'https://example.com/one', icon: 'instagram', enabled: true },
@@ -15,13 +32,13 @@ const profile = (overrides: Partial<ArtistProfile> = {}): ArtistProfile => ({
   copyStatus: 'provisional',
   name: 'Test Artist',
   alias: 'TestAlias',
-  portrait: { width: 800, height: 1000, alt: 'Portrait of Test Artist', focalPoint: { x: 40, y: 20 } },
   statementHeading: 'A statement heading.',
   statementParagraphs: ['First paragraph.', 'Second paragraph.'],
   ...overrides,
 });
 
-const renderAbout = (overrides: Partial<ArtistProfile> = {}, links = destinations) => render(<AboutView profile={profile(overrides)} portraitSrc={SRC} destinations={links} />);
+const renderAbout = (overrides: Partial<ArtistProfile> = {}, links = destinations, portrait: AboutPortraitView | null = portraitView()) =>
+  render(<AboutView profile={profile(overrides)} portrait={portrait} destinations={links} />);
 
 /** Every element in main that the reading order runs through, in DOM order. */
 const readingOrder = () =>
@@ -46,25 +63,41 @@ describe('AboutView', () => {
     const image = within(figure).getByRole('img', { name: 'Portrait of Test Artist' });
     expect(image).toHaveAttribute('width', '800');
     expect(image).toHaveAttribute('height', '1000');
-    expect(image).toHaveAttribute('sizes', PORTRAIT_SIZES);
-    expect(image.style.objectPosition).toBe('40% 20%');
+    expect(image.closest('[style]')?.getAttribute('style')).toContain('--portrait-focus: 40% 20%');
     expect(within(figure).getByText('Test Artist', { exact: false }).closest('figcaption')).not.toBeNull();
     expect(figure.querySelector('figcaption')).toHaveTextContent('Test Artist · TestAlias');
   });
 
-  it('centers the crop when the portrait has no focal point', () => {
-    renderAbout({ portrait: { width: 800, height: 1000, alt: 'Portrait of Test Artist' } });
-    expect(screen.getByRole('img').style.objectPosition).toBe('50% 50%');
+  it('loads the portrait from its content-hashed /about/portrait URLs, AVIF then WebP, at the column width', () => {
+    renderAbout();
+    const figure = screen.getByTestId('about-portrait');
+    const sources = Array.from(figure.querySelectorAll('source'));
+    expect(sources.map((source) => source.getAttribute('type'))).toEqual(['image/avif', 'image/webp']);
+    for (const source of sources) expect(source).toHaveAttribute('sizes', PORTRAIT_SIZES);
+    expect(sources[0].getAttribute('srcset')).toBe(`${url('w400.avif')} 400w, ${url('w800.avif')} 800w`);
+    expect(within(figure).getByRole('img')).toHaveAttribute('src', url('w1200.webp'));
+    expect(within(figure).getByRole('img')).toHaveAttribute('loading', 'eager');
+    expect(figure.innerHTML).not.toMatch(/_next\/image|_next\/static|assets\/profile/);
   });
 
-  it('shows the name and alias as text before the heading when there is no portrait', () => {
-    renderAbout({ portrait: undefined });
+  it('centers the crop on the focal point it is given', () => {
+    renderAbout({}, destinations, portraitView({ focalPoint: { x: 50, y: 50 } }));
+    expect(screen.getByRole('img').closest('[style]')?.getAttribute('style')).toContain('--portrait-focus: 50% 50%');
+  });
+
+  it('with no portrait, shows the name panel in the portrait column, before the heading, with no image', () => {
+    renderAbout({}, destinations, null);
     expect(screen.queryByRole('figure')).toBeNull();
     expect(screen.queryByRole('img')).toBeNull();
-    expect(readingOrder().slice(0, 2)).toEqual(['p Test Artist · TestAlias', 'h1']);
+    expect(document.querySelector('figcaption')).toBeNull();
+    const panel = screen.getByTestId('about-portrait');
+    expect(panel).toHaveTextContent('Test Artist · TestAlias');
+    expect(readingOrder().slice(0, 2)).toEqual(['portrait', 'h1']);
+    // The name shows once.
+    expect(screen.getAllByText('Test Artist', { exact: false })).toHaveLength(1);
   });
 
-  it('swaps a failed portrait for the name and alias, with no image or caption left', () => {
+  it('swaps a failed portrait for the same name panel, with no image or caption left', () => {
     renderAbout();
     fireEvent.error(screen.getByRole('img'));
     const fallback = screen.getByTestId('about-portrait');
@@ -75,6 +108,45 @@ describe('AboutView', () => {
     // The name shows once, and the statement still reads.
     expect(screen.getAllByText('Test Artist', { exact: false })).toHaveLength(1);
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('A statement heading.');
+  });
+
+  it('shows the name panel for a portrait that failed before hydration, when no error event reaches React', () => {
+    const complete = vi.spyOn(HTMLImageElement.prototype, 'complete', 'get').mockReturnValue(true);
+    const natural = vi.spyOn(HTMLImageElement.prototype, 'naturalWidth', 'get').mockReturnValue(0);
+    try {
+      renderAbout();
+      expect(screen.queryByRole('img')).toBeNull();
+      expect(screen.getByTestId('about-portrait')).toHaveTextContent('Test Artist · TestAlias');
+    } finally {
+      complete.mockRestore();
+      natural.mockRestore();
+    }
+  });
+
+  it('keeps a portrait that already loaded before hydration', () => {
+    const complete = vi.spyOn(HTMLImageElement.prototype, 'complete', 'get').mockReturnValue(true);
+    const natural = vi.spyOn(HTMLImageElement.prototype, 'naturalWidth', 'get').mockReturnValue(800);
+    try {
+      renderAbout();
+      expect(screen.getByRole('img', { name: 'Portrait of Test Artist' })).toBeInTheDocument();
+    } finally {
+      complete.mockRestore();
+      natural.mockRestore();
+    }
+  });
+
+  it('renders the same panel for no portrait and a failed one', () => {
+    const { container: none, unmount } = renderAbout({}, destinations, null);
+    const empty = none.querySelector('[data-testid="about-portrait"]')?.outerHTML;
+    unmount();
+    renderAbout();
+    fireEvent.error(screen.getByRole('img'));
+    expect(screen.getByTestId('about-portrait').outerHTML).toBe(empty);
+  });
+
+  it('leaves the alias out of the name panel when there is none', () => {
+    renderAbout({ alias: undefined }, destinations, null);
+    expect(screen.getByTestId('about-portrait').textContent).toBe('Test Artist');
   });
 
   it('leaves the alias out when there is none', () => {
