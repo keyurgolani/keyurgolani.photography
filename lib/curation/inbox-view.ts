@@ -521,6 +521,8 @@ type StateFacts = Pick<InboxDetail, 'type' | 'status' | 'group' | 'unplacedSerie
 /** The status beside the item's identity, from its status and where it sits now, so an approval nothing holds never reads approved. */
 export function statusLabel(item: Pick<InboxItem, 'status' | 'group'> & Partial<Pick<InboxItem, 'type'>>): { text: string; tone: 'approved' | 'change' | null } {
     if (item.group === 'unplaced') return { text: 'Approved, no longer placed', tone: 'change' };
+    // Only #17's archive approves a missing item.
+    if (item.type === 'missing' && item.status === 'approved') return { text: 'Archived', tone: null };
     if (item.status === 'approved') return { text: item.type === 'replacement' ? CONFIRMED_LABEL : STATUS_LABELS.approved, tone: 'approved' };
     return { text: STATUS_LABELS[item.status], tone: null };
 }
@@ -541,6 +543,12 @@ export function systemResponse(item: StateFacts, labelOf: (seriesId: string) => 
         if (replacement?.draft === 'new') return replacement.live ? 'The draft uses the new version, and so does the live revision.' : 'The draft uses the new version. Visitors keep the current one until you publish.';
         if (replacement) return 'Confirmed earlier, but the draft uses another version of this photograph now. Nothing publishes until you publish.';
         return 'The new version was confirmed into the draft. Nothing publishes until you publish.';
+    }
+    if (item.type === 'missing' && item.status === 'approved') {
+        // #17's archive: out of every series in the draft, and off the site once a publish leaves it out.
+        const live = item.references?.some((ref) => ref.kind === 'revision') ?? false;
+        if (live) return 'Archived and out of every series in the draft. The live site shows it until you publish.';
+        return item.references === null ? 'Archived and out of every series in the draft.' : 'Archived, and nothing shows it any more.';
     }
     if (item.status === 'approved') {
         // Live only when the active revision is known to hold it; when the holders can't be read, it claims nothing about live.

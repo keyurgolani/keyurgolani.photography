@@ -431,7 +431,7 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
                         {detail.primaryUnavailable}
                     </p>
                 ) : null}
-                {detail.status === 'approved' ? <p className={styles.hint}>{reopenHint(detail)}</p> : null}
+                {detail.status === 'approved' && detail.type !== 'missing' ? <p className={styles.hint}>{reopenHint(detail)}</p> : null}
             </form>
 
             {can.retry ? (
