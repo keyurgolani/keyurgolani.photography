@@ -60,7 +60,9 @@ jobs:
   e2e:
     name: Browser tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The suite alone takes about 19 minutes on next, and the Playwright install
+    # has taken up to 9 more on a slow apt mirror.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
