@@ -821,8 +821,8 @@ p.fieldError {
 
   .detail {
     display: block;
-    /* A row's #item link lands here. The page keeps 6rem of scroll padding for focus; the item starts at the top instead. */
-    scroll-margin-top: -5.5rem;
+    /* A row's #item link lands here. The page keeps 6rem of scroll padding for focus; the item, alone on the page, starts at the top instead. */
+    scroll-margin-top: -6rem;
   }
 
   .backToList {
