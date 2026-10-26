@@ -5,8 +5,8 @@ import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
 import tseslint from 'typescript-eslint'
 
-// The handlers a non-interactive element may not carry. Leaving out the mouse
-// move and enter events keeps ParallaxCard's hover-only tilt legal.
+// The handlers a non-interactive element may not carry. Hover-only handlers,
+// such as a pointer move, aren't among them.
 const handlers = ['onClick', 'onMouseDown', 'onMouseUp', 'onKeyPress', 'onKeyDown', 'onKeyUp']
 
 const NEXT_MESSAGE = 'This code runs outside Next. Keep Next imports in app/, proxy.ts, or lib/catalog/request.ts.'

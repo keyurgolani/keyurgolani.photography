@@ -43,8 +43,8 @@ type HomeChromeControllerProps = {
 /**
  * The one owner of Home chrome visibility. Home starts immersive, with the
  * chrome invisible and untargetable but still in the document, and any intent
- * shows it: a mouse or pen that moves, focus, a key, a wheel or scroll, or a
- * first tap, which only reveals. It recedes `idleMs` after the last activity
+ * shows it: a mouse or pen that moves once the intro has settled, focus, a
+ * key, a wheel or scroll, or a first tap, which only reveals. It recedes `idleMs` after the last activity
  * unless a hold stands. It renders Home's `<main>` with the state as data
  * attributes, and one setTimeout arms the idle, so mouse movement doesn't
  * re-render Home.
@@ -216,7 +216,12 @@ export default function HomeChromeController({
       if (!holdsPointer(event)) return;
       const moved = lastPoint !== null && (lastPoint.x !== event.clientX || lastPoint.y !== event.clientY);
       lastPoint = { x: event.clientX, y: event.clientY };
-      if (moved) activity();
+      if (!moved) return;
+      // While the intro plays, a mouse only tilts the portrait, as on v1.1.0: it doesn't wake the chrome, so the
+      // scrim never dims the portrait under it. Focus, a key, a press, or a wheel still does, and a chrome already
+      // up stays up for the mouse as usual.
+      if (stateRef.current.intro !== 'settled' && stateRef.current.visibility !== 'interactive') return;
+      activity();
     };
 
     const onPointerDown = (event: PointerEvent) => {

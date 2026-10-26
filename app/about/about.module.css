@@ -56,13 +56,11 @@
 /* The portrait sits on the mockup's near-black ground inside a 9 px paper
    frame. Its caption is a band below the photo, in flow, so enlarged text
    grows the frame instead of covering the face. The frame, the ground under
-   it, and the band's height are shared with the name panel below, so both
-   states are the same box in the same tone. */
+   it, and the photo and caption boxes are shared with the name panel below,
+   so both states are the same box in the same tone. */
 .portrait {
   --about-frame: 9px;
   --about-frame-ground: #101311;
-  /* One line of caption: its padding plus its line box. */
-  --about-caption-band: calc(1rem + 0.875rem * 1.4);
   display: flex;
   flex-direction: column;
   margin: 0;
@@ -113,11 +111,11 @@
    the statement's serif at the foot, where the photo's caption band would
    be. It reads as a deliberate name plate, never as a missing image. The
    paper stops at the frame, which lies over the photo's dark ground, so the
-   frame reads as the same taupe mat. */
+   frame reads as the same taupe mat. Its height comes from an unseen copy
+   of the photo's box and caption band in the same grid cell, so a caption
+   that wraps, with enlarged text on a phone, grows both states alike. */
 .fallback {
-  justify-content: flex-end;
-  min-height: calc(clamp(250px, 42svh, 380px) + var(--about-caption-band) + 2 * var(--about-frame));
-  padding: clamp(1.25rem, 1rem + 1.5vw, 2.25rem);
+  display: grid;
   background:
     radial-gradient(ellipse 78% 58% at 50% 36%, rgba(255, 252, 240, 0.96) 0%, rgba(253, 246, 226, 0.7) 42%, rgba(244, 236, 215, 0) 78%) padding-box,
     repeating-linear-gradient(180deg, rgba(93, 73, 42, 0.07) 0 1px, transparent 1px 2.125rem) padding-box,
@@ -125,19 +123,27 @@
     var(--about-frame-ground) border-box;
 }
 
-@media (min-width: 64rem) {
-  .fallback {
-    min-height: calc(420px + var(--about-caption-band) + 2 * var(--about-frame));
-  }
+.fallbackSizer {
+  display: flex;
+  grid-area: 1 / 1;
+  flex-direction: column;
+  visibility: hidden;
+}
+
+.fallbackSizer > [data-caption]::after {
+  content: attr(data-caption);
 }
 
 /* A long name or alias breaks between words. Only a word wider than the
    panel breaks inside itself. */
 .fallbackName {
   display: flex;
+  grid-area: 1 / 1;
+  align-self: end;
   flex-direction: column;
   gap: 0.5rem;
   margin: 0;
+  padding: clamp(1.25rem, 1rem + 1.5vw, 2.25rem);
   color: var(--lts-ink);
   overflow-wrap: break-word;
 }

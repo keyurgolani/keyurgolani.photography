@@ -77,7 +77,12 @@ export type AboutPortraitState =
           alt: string | null;
           focalPoint: FocalPoint | null;
       }
-    | { state: 'none'; reason: string };
+    | {
+          state: 'none';
+          reason: string;
+          /** The folder or the file couldn't be read this time, as with too many open files, so a later read may find it unchanged. */
+          transient?: true;
+      };
 
 /** The URL token: 32 lowercase hex. */
 export const PORTRAIT_TOKEN_RE = /^[0-9a-f]{32}$/;
@@ -127,9 +132,18 @@ export function resetAboutPortraitReader(): void {
     state.logged = { portrait: null, json: null, staleJson: null };
 }
 
+/** Read errors that say nothing about the file, only about this moment: too many open files, a busy or interrupted call. */
+const TRANSIENT_CODES = new Set(['EMFILE', 'ENFILE', 'EAGAIN', 'EBUSY', 'EINTR', 'ENOMEM', 'ETIMEDOUT']);
+
+const isTransient = (error: unknown) => TRANSIENT_CODES.has(String((error as NodeJS.ErrnoException | null)?.code));
+
+/** `{ transient: true }` for a transient read error, to spread into a `none`, or nothing. */
+const transientOf = (error: unknown): { transient?: true } => (isTransient(error) ? { transient: true } : {});
+
 const signature = (stats: fs.Stats | null) => (stats === null ? '-' : `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}`);
 
-const megabytes = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+/** A limit as the owner reads it: 40.0 MB for the portrait, 16 KB for portrait.json. */
+const sizeLabel = (bytes: number) => (bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`);
 
 async function lstatOrNull(target: string): Promise<fs.Stats | null> {
     try {
@@ -150,30 +164,47 @@ export function sniffFormat(bytes: Uint8Array): PortraitFormat | null {
     return null;
 }
 
-const PNG_IEND = Buffer.from([0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]);
+/**
+ * Whether a PNG's chunks, walked from the signature (length, type, data,
+ * CRC), reach an IEND chunk that starts on a chunk boundary and ends inside
+ * the bytes. IEND's bytes inside an earlier chunk, such as an embedded
+ * thumbnail, don't count, and anything after the real IEND is ignored.
+ */
+function pngReachesIend(bytes: Buffer): boolean {
+    let offset = 8;
+    while (offset + 12 <= bytes.length) {
+        const end = offset + 12 + bytes.readUInt32BE(offset);
+        if (end > bytes.length) return false;
+        if (bytes.toString('latin1', offset + 4, offset + 8) === 'IEND') return true;
+        offset = end;
+    }
+    return false;
+}
 
 /**
  * Why the bytes stop short of the end their format writes, or null. A file
  * still being copied in place can decode before its last bytes land, so it
  * waits for a later request, which sees the new size and reads it again.
- * A JPEG's end isn't checked: a phone's motion photo and some cameras write
- * data after the end marker, and a JPEG cut short already fails the decode.
+ * Only a file that ends early is refused. Bytes after a PNG's IEND chunk or
+ * past a WebP's RIFF size decode fine, and some tools write them, so they
+ * pass. A JPEG's end isn't checked: a phone's motion photo and some cameras
+ * write data after the end marker, and a JPEG cut short already fails the decode.
  */
 export function incompleteReason(format: PortraitFormat, bytes: Uint8Array): string | null {
     if (format === 'png') {
-        const tail = bytes.subarray(Math.max(0, bytes.length - PNG_IEND.length));
-        return Buffer.from(tail).equals(PNG_IEND) ? null : "doesn't end with a PNG's IEND chunk, so it may still be copying";
+        return pngReachesIend(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)) ? null : "has no PNG IEND chunk yet, so it may still be copying";
     }
     if (format === 'webp') {
-        const declared = bytes.length >= 8 ? Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).readUInt32LE(4) + 8 : -1;
-        return declared === bytes.length ? null : `is ${bytes.length} bytes, but its RIFF header says ${declared}, so it may still be copying`;
+        const declared = bytes.length >= 8 ? Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).readUInt32LE(4) + 8 : Infinity;
+        // No byte counts in the reason: a file still growing would log a new line on every request.
+        return declared <= bytes.length ? null : 'is shorter than its RIFF header says, so it may still be copying';
     }
     return null;
 }
 
 /** What the folder holds now, without reading any file. */
 type Listing =
-    | { kind: 'problem'; reason: string }
+    | { kind: 'problem'; reason: string; transient?: true }
     | { kind: 'files'; dir: string; name: (typeof PORTRAIT_NAMES)[number]; file: fs.Stats; json: fs.Stats | null };
 
 async function list(): Promise<Listing> {
@@ -183,7 +214,7 @@ async function list(): Promise<Listing> {
         rootStats = await fs.promises.stat(/*turbopackIgnore: true*/ root);
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return { kind: 'problem', reason: 'the site config folder does not exist' };
-        return { kind: 'problem', reason: `the site config folder can't be read (${(error as NodeJS.ErrnoException).code ?? 'error'})` };
+        return { kind: 'problem', reason: `the site config folder can't be read (${(error as NodeJS.ErrnoException).code ?? 'error'})`, ...transientOf(error) };
     }
     if (!rootStats.isDirectory()) return { kind: 'problem', reason: 'the site config folder is not a folder' };
     // Next serves public/ as is, metadata and all, and the library scan would put a portrait there on Home.
@@ -215,17 +246,17 @@ async function list(): Promise<Listing> {
 }
 
 /** Read a fixed file without following a symlink, refusing one over `maxBytes`. */
-async function readCapped(file: string, maxBytes: number): Promise<{ bytes: Buffer; stats: fs.Stats } | { problem: string }> {
+async function readCapped(file: string, maxBytes: number): Promise<{ bytes: Buffer; stats: fs.Stats } | { problem: string; transient?: true }> {
     let opened: Awaited<ReturnType<typeof openRegularFile>>;
     try {
         opened = await openRegularFile(file);
     } catch (error) {
-        return { problem: `can't be read (${(error as NodeJS.ErrnoException).code ?? 'error'})` };
+        return { problem: `can't be read (${(error as NodeJS.ErrnoException).code ?? 'error'})`, ...transientOf(error) };
     }
     if (opened === null) return { problem: "isn't a regular file" };
     try {
         const stats = await opened.handle.stat();
-        if (stats.size > maxBytes) return { problem: `is ${megabytes(stats.size)}, over the ${megabytes(maxBytes)} limit` };
+        if (stats.size > maxBytes) return { problem: `is over the ${sizeLabel(maxBytes)} limit` };
         const bytes = await opened.handle.readFile();
         if (bytes.length !== stats.size) return { problem: 'changed while it was read' };
         return { bytes, stats };
@@ -292,10 +323,11 @@ async function readState(listing: Extract<Listing, { kind: 'files' }>, logger: L
     if (listing.file.isSymbolicLink()) return { result: { state: 'none', reason: `${relative} is a symlink, which isn't followed` }, key: null };
     if (!listing.file.isFile()) return { result: { state: 'none', reason: `${relative} isn't a regular file` }, key: null };
     if (listing.file.size > PORTRAIT_LIMITS.maxBytes) {
-        return { result: { state: 'none', reason: `${relative} is ${megabytes(listing.file.size)}, over the ${megabytes(PORTRAIT_LIMITS.maxBytes)} limit` }, key: keyOf(listing) };
+        // Not the file's own size, which changes while it's copied, so one file over the limit logs once.
+        return { result: { state: 'none', reason: `${relative} is over the ${sizeLabel(PORTRAIT_LIMITS.maxBytes)} limit` }, key: keyOf(listing) };
     }
     const read = await readCapped(path.join(/*turbopackIgnore: true*/ listing.dir, listing.name), PORTRAIT_LIMITS.maxBytes);
-    if ('problem' in read) return { result: { state: 'none', reason: `${relative} ${read.problem}` }, key: null };
+    if ('problem' in read) return { result: { state: 'none', reason: `${relative} ${read.problem}`, ...(read.transient ? { transient: true as const } : {}) }, key: null };
     // Keyed on what was opened, so a file swapped between the listing and the open is read again next time.
     const key = keyOf({ ...listing, file: read.stats });
     const size = await inspect(listing.name, read.bytes);
@@ -336,7 +368,7 @@ export async function readAboutPortrait({ logger = console }: { logger?: Logger 
         const listing = await list();
         if (listing.kind === 'problem') {
             state.key = null;
-            result = { state: 'none', reason: listing.reason };
+            result = { state: 'none', reason: listing.reason, ...(listing.transient ? { transient: true as const } : {}) };
         } else {
             const key = keyOf(listing);
             if (state.key === key && state.result !== null) return state.result;
@@ -355,7 +387,7 @@ export async function readAboutPortrait({ logger = console }: { logger?: Logger 
         }
     } catch (error) {
         state.key = null;
-        result = { state: 'none', reason: `the portrait can't be read (${(error as NodeJS.ErrnoException).code ?? 'an unexpected error'})` };
+        result = { state: 'none', reason: `the portrait can't be read (${(error as NodeJS.ErrnoException).code ?? 'an unexpected error'})`, ...transientOf(error) };
     }
     state.result = result;
     if (result.state === 'ready') {
@@ -366,7 +398,7 @@ export async function readAboutPortrait({ logger = console }: { logger?: Logger 
         }
     } else {
         logOnce('json', null, logger);
-        logOnce('portrait', `[about] No portrait: ${result.reason}, so About shows the name instead.`, logger);
+        logOnce('portrait', `[about] No portrait: ${result.reason}, so About shows the name, and Home's intro plays without a portrait.`, logger);
     }
     return result;
 }
@@ -376,11 +408,20 @@ export async function checkAboutPortrait(options: { logger?: Logger } = {}): Pro
     await readAboutPortrait(options);
 }
 
-/** The source bytes for `token`, read again and checked against it, or null once the file holds something else. */
-export async function readPortraitSource(token: string): Promise<Buffer | null> {
+/**
+ * The source bytes for `token`, read again and checked against it; null once
+ * the file holds something else, or is gone or refused; or `'unsure'` when a
+ * read failed only for the moment, as with too many open files, which says
+ * nothing about the file.
+ */
+export async function readPortraitSource(token: string): Promise<Buffer | 'unsure' | null> {
     const current = await readAboutPortrait();
+    if (current.state === 'none' && current.transient === true) return 'unsure';
     if (current.state !== 'ready' || current.token !== token) return null;
-    const read = await readCapped(path.join(/*turbopackIgnore: true*/ siteConfigDir(), current.file), PORTRAIT_LIMITS.maxBytes).catch(() => null);
-    if (read === null || 'problem' in read) return null;
+    const read = await readCapped(path.join(/*turbopackIgnore: true*/ siteConfigDir(), current.file), PORTRAIT_LIMITS.maxBytes).catch((error: unknown) =>
+        isTransient(error) ? ('unsure' as const) : null,
+    );
+    if (read === 'unsure' || read === null) return read;
+    if ('problem' in read) return read.transient ? 'unsure' : null;
     return createHash('sha256').update(read.bytes).digest('hex') === current.sha256 ? read.bytes : null;
 }

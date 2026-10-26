@@ -340,6 +340,8 @@ site-config/
     portrait.json    # optional
 ```
 
+Home shows the same file. On a first visit it's the portrait at the center of Home's loading screen, which glides into its place as the page opens, above the bottom of the screen, or higher where that would sit behind the series title or the navigation, and stays there as a small badge that shows with Home's navigation. Home asks for a small copy from the same `/about/portrait/` set, so it never reads the file a second time. Use an opaque photo: where a PNG is transparent, Home and About show a plain background behind it.
+
 `portrait.json` takes two fields, both optional:
 
 ```json
@@ -365,7 +367,7 @@ In the same step, update `portrait.json`'s `alt` and `focalPoint` for the new ph
 
 About shows the new photo on the next page load, with no restart. A page loaded before the swap shows the name until it's reloaded. A restart works too. If you change the file's type, say from `.png` to `.jpg`, remove the old one: with two portraits About shows neither. `web` runs as uid 1001, so the folder and the files have to be readable by it, which `chmod -R a+rX site-config` makes sure of. Nothing in the stack writes the folder.
 
-Without a usable file, About shows the artist's name and alias in the portrait's place, in the same frame, and `web` logs one line saying why, naming only the relative path:
+Without a usable file, About shows the artist's name and alias in the portrait's place, in the same frame, Home's loading screen plays without a portrait and shows no badge, and `web` logs one line saying why, naming only the relative path:
 
 ```bash
 docker compose -f docker-compose.prod.yml logs web | grep '\[about\]'
@@ -373,7 +375,7 @@ docker compose -f docker-compose.prod.yml logs web | grep '\[about\]'
 
 `[about] About shows about/portrait.jpg, 3394 x 3620 px, sha256 <first 12 hex>.` means it's in use, and a swap logs the new file's line. A problem with `portrait.json` keeps the photo and logs why the alt text and crop fell back to their defaults.
 
-The first release with this, `v1.2.0`, stops reading About's portrait from the image, so set the folder up before its `up -d`, or About shows the name until you do. Create `site-config/about/` and run `chmod -R a+rX site-config` before the first `up -d`, as below. When `./site-config` is missing, Compose creates it so `web` still starts, but under a rootful Docker daemon that folder is owned by root, and `mkdir -p site-config/about` then needs `sudo`. If that happened, give it back to the deploy user before you put the photo in: `sudo chown -R "$(id -u):$(id -g)" site-config`. To keep the photo `v1.1.0` shows, copy it out of the repository at that tag along with its alt text and focal point, which are the example above:
+The first release with this, `v1.2.0`, stops reading About's portrait from the image, so set the folder up before its `up -d`, or About shows the name until you do. Create `site-config/about/` and run `chmod -R a+rX site-config` before the first `up -d`, as below. When `./site-config` is missing, Compose creates it so `web` still starts, but under a rootful Docker daemon that folder is owned by root, and `mkdir -p site-config/about` then needs `sudo`. If that happened, give it back to the deploy user before you put the photo in: `sudo chown -R "$(id -u):$(id -g)" site-config`. To keep the photo `v1.1.0` shows, copy it out of the repository at that tag along with its alt text and focal point, which are the example above. It's the cut-out from `v1.1.0`'s two-layer portrait, so it shows on a plain background, without the blurred mountain `v1.1.0` put behind it:
 
 ```bash
 mkdir -p site-config/about

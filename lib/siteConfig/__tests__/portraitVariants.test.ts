@@ -166,7 +166,7 @@ describe('the portrait derivatives', () => {
         put('portrait.jpg', await jpeg());
         const token = await currentToken();
         const open = fs.promises.open.bind(fs.promises);
-        const spy = vi.spyOn(fs.promises, 'open').mockImplementationOnce(() => Promise.reject(Object.assign(new Error('EMFILE'), { code: 'EMFILE' })));
+        const spy = vi.spyOn(fs.promises, 'open').mockImplementationOnce(() => Promise.reject(Object.assign(new Error('EACCES'), { code: 'EACCES' })));
         expect(await portraitVariant(token, 'w800', 'webp', { logger: quiet })).toBeNull();
         spy.mockImplementation(open);
         expect(await portraitVariant(token, 'w800', 'webp', { logger: quiet })).not.toBeNull();
@@ -369,7 +369,8 @@ describe('a variant that fails to encode', () => {
         expect(waits).toEqual([10_000, 20_000, 40_000, 80_000, 160_000, 320_000, 600_000, 600_000, 600_000]);
         expect(logger.warn).toHaveBeenCalledTimes(1);
         expect(logger.warn.mock.calls[0][0]).toMatch(/^\[about\] The portrait's w1200\.avif couldn't be encoded \(corrupt\), so it isn't served\. A later request tries it again\.$/);
-    });
+       // About 50 requests and 9 encodes: well over the default 5 s on a loaded machine.
+    }, 30_000);
 
     it('is refused, not served, when the encoder hands back EXIF', async () => {
         put('portrait.jpg', await jpeg());
@@ -389,6 +390,112 @@ describe('a variant that fails to encode', () => {
         encode.mockResolvedValueOnce(withProfile);
         expect(await variant(token)).toBeNull();
         expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/kept metadata/));
+    });
+});
+
+describe('the encode queue', () => {
+    /** Holds the first encode open until `release`, counting how many run at once. */
+    function holdFirstEncode() {
+        const actual = vi.importActual<typeof import('../../identity/profile')>('../../identity/profile');
+        let release: () => void = () => {};
+        const gate = new Promise<void>((resolve) => (release = resolve));
+        const counts = { active: 0, peak: 0 };
+        let first = true;
+        encode.mockImplementation(async (...args) => {
+            counts.active += 1;
+            counts.peak = Math.max(counts.peak, counts.active);
+            try {
+                if (first) {
+                    first = false;
+                    await gate;
+                }
+                return await (await actual).encodeVariant(...args);
+            } finally {
+                counts.active -= 1;
+            }
+        });
+        return { release, counts };
+    }
+
+    it("runs one encode at a time across sets: a swap's new set waits for the encode already running", async () => {
+        put('portrait.jpg', await jpeg());
+        const tokenA = await currentToken();
+        const { release, counts } = holdFirstEncode();
+        const a = portraitVariant(tokenA, 'w1200', 'avif', { logger: quiet });
+        await vi.waitFor(() => expect(encode).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+        const tokenB = await swapTo({ r: 30, g: 90, b: 150 }, 10);
+        const b = portraitVariant(tokenB, 'w1200', 'avif', { logger: quiet });
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(encode, "the new set's first encode waits in the queue").toHaveBeenCalledTimes(1);
+        release();
+        expect(await a).toBeNull();
+        expect(await b).not.toBeNull();
+        expect(counts.peak).toBe(1);
+    });
+
+    it("skips a dropped set's remaining encodes", async () => {
+        const sourceA = await jpeg();
+        put('portrait.jpg', sourceA);
+        const tokenA = await currentToken();
+        const { release } = holdFirstEncode();
+        const a = portraitVariant(tokenA, 'w1200', 'avif', { logger: quiet });
+        await vi.waitFor(() => expect(encode).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+        const tokenB = await swapTo({ r: 30, g: 90, b: 150 }, 10);
+        // Drops A's set: the file is B now.
+        expect(await aboutPortraitView('Pat Artist', { logger: quiet })).not.toBeNull();
+        release();
+        await a;
+        expect(await portraitVariant(tokenB, 'w400', 'webp', { logger: quiet })).not.toBeNull();
+        await resetPortraitVariants();
+        const ofA = encode.mock.calls.filter(([bytes]) => Buffer.from(bytes as Buffer).equals(sourceA));
+        expect(ofA, "only the encode that was already running when A's set was dropped").toHaveLength(1);
+    });
+});
+
+describe('a read that fails for the moment', () => {
+    it('keeps the set, so the next request serves it without encoding it again, while a removal still drops it', async () => {
+        put('portrait.jpg', await jpeg());
+        const token = await currentToken();
+        expect(await portraitVariant(token, 'w800', 'webp', { logger: quiet })).not.toBeNull();
+        const stat = fs.promises.stat.bind(fs.promises);
+        const spy = vi.spyOn(fs.promises, 'stat').mockImplementationOnce(() => Promise.reject(Object.assign(new Error('EMFILE'), { code: 'EMFILE' })));
+        expect(await readAboutPortrait({ logger: quiet })).toMatchObject({ state: 'none', transient: true });
+        spy.mockImplementationOnce(() => Promise.reject(Object.assign(new Error('EMFILE'), { code: 'EMFILE' })));
+        expect(await portraitVariant(token, 'w800', 'webp', { logger: quiet }), 'nothing is served while the folder reads as none').toBeNull();
+        spy.mockImplementation(stat);
+        expect(await portraitVariant(token, 'w800', 'webp', { logger: quiet })).not.toBeNull();
+        expect(await portraitVariant(token, 'w400', 'avif', { logger: quiet })).not.toBeNull();
+        await resetPortraitVariants();
+        // The one set, each variant once: nothing was encoded again after the failed reads.
+        expect(encode.mock.calls.length).toBe(VARIANT_WIDTHS.length * VARIANT_FORMATS.length);
+
+        // A real removal still drops it.
+        fs.rmSync(about('portrait.jpg'));
+        expect(await readAboutPortrait({ logger: quiet })).toEqual({ state: 'none', reason: expect.any(String) });
+    });
+    it('keeps the set when the source read for an encode fails for the moment, so what it already encoded stays and the next request tries again', async () => {
+        put('portrait.jpg', await jpeg());
+        const token = await currentToken();
+        const now = Date.now();
+        vi.spyOn(Date, 'now').mockReturnValue(now);
+        const encodesOf = (name: string) => encode.mock.calls.filter(([, width, format]) => `${width}.${format}` === name).length;
+        // w1200.avif encodes first, and fails once; the rest of the set encodes.
+        encode.mockRejectedValueOnce(new Error('out of memory'));
+        expect(await portraitVariant(token, 'w1200', 'avif', { logger: quiet })).toBeNull();
+        expect(await portraitVariant(token, 'w400', 'webp', { logger: quiet })).not.toBeNull();
+        vi.mocked(Date.now).mockReturnValue(now + ENCODE_RETRY.firstMs);
+        // Its retry finds too many files open when it reads the source again.
+        const open = fs.promises.open.bind(fs.promises);
+        const spy = vi.spyOn(fs.promises, 'open').mockImplementationOnce(() => Promise.reject(Object.assign(new Error('EMFILE'), { code: 'EMFILE' })));
+        expect(await portraitVariant(token, 'w1200', 'avif', { logger: quiet })).toBeNull();
+        spy.mockImplementation(open);
+        expect(encodesOf('w1200.avif')).toBe(1);
+        // The set is kept: a variant it already holds is served without encoding it again.
+        expect(await portraitVariant(token, 'w800', 'webp', { logger: quiet })).not.toBeNull();
+        expect(encodesOf('w800.webp')).toBe(1);
+        // And the missed one encodes on the next request, with no wait.
+        expect(await portraitVariant(token, 'w1200', 'avif', { logger: quiet })).not.toBeNull();
+        expect(encodesOf('w1200.avif')).toBe(2);
     });
 });
 

@@ -34,6 +34,11 @@ export default function ArtistPortrait({ portrait, name, alias }: ArtistPortrait
   if (portrait === null || failed) {
     return (
       <div data-testid="about-portrait" className={`${styles.portrait} ${styles.fallback}`}>
+        {/* The photo's box and its caption band, unseen, so the panel is the frame's size at any text size: the band wraps as the caption would. */}
+        <div className={styles.fallbackSizer} aria-hidden="true">
+          <div className={styles.photo} />
+          <div className={styles.caption} data-caption={alias ? `${name} · ${alias}` : name} />
+        </div>
         <p className={styles.fallbackName}>
           <span className={styles.fallbackFullName}>{name}</span>
           {/* The dot is for the text and screen readers: the alias shows on its own line. */}

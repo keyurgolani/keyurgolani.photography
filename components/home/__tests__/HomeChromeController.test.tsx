@@ -733,6 +733,39 @@ describe('HomeChromeController', () => {
       expect(state()).toBe('immersive');
     });
 
+    it("a mouse that moves while the intro plays leaves the chrome asleep, as v1.1.0's did, and focus or a key still wakes it", () => {
+      const { link } = renderHome({ loading: true });
+      // The photograph is up, and the intro is still on its way out.
+      act(() => api.reportPhoto('shown'));
+      for (const phase of ['loading', 'revealing'] as const) {
+        act(() => api.reportIntro(phase));
+        move();
+        move();
+        expect(state(), phase).toBe('immersive');
+      }
+      // A key wakes it at once, and the mouse then keeps it up as usual.
+      key('keydown', 'Tab', link);
+      expect(state()).toBe('interactive');
+      advance(IDLE - 1);
+      move();
+      advance(1);
+      expect(state()).toBe('interactive');
+      recede();
+      expect(state()).toBe('immersive');
+      // Once the intro settles, a move wakes it.
+      act(() => api.reportIntro('settled'));
+      move();
+      expect(state()).toBe('interactive');
+    });
+
+    it('keyboard focus on a nav control wakes the chrome during the intro', () => {
+      const { link } = renderHome({ loading: true });
+      move();
+      expect(state()).toBe('immersive');
+      act(() => link.focus());
+      expect(state()).toBe('interactive');
+    });
+
     it('no photograph ends loading at once and holds the chrome up', () => {
       renderHome({ loading: true });
       act(() => api.reportPhoto('none'));

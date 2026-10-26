@@ -50,8 +50,10 @@ export async function photoPoint(target: HomeTarget): Promise<{ x: number; y: nu
 /**
  * Settled Home with a photograph, showing nothing but the photograph: the
  * intro settled, loading over, no no-photo hold, `immersive`, the chrome and
- * vignette at opacity 0, no portrait, and every control's centre hitting
- * something outside the chrome. Waits for each, since the fade is real time.
+ * vignette at opacity 0, no loading portrait, the badge, if there is one,
+ * gone with the chrome once its 3 s are up and taking no pointer, and every
+ * control's centre hitting something outside the chrome. Waits for each,
+ * since the fades are real time.
  */
 export async function expectHomeImmersive(target: HomeTarget): Promise<void> {
     const main = target.locator('main[data-interface-state]');
@@ -64,6 +66,10 @@ export async function expectHomeImmersive(target: HomeTarget): Promise<void> {
         await expect(target.locator(layer)).toHaveCSS('opacity', '0');
     }
     await expect(target.locator('[class*="portrait"]')).toHaveCount(0);
+    for (const badge of await target.locator('[data-home-badge]').all()) {
+        await expect(badge).toHaveCSS('opacity', '0', { timeout: 10_000 });
+        await expect(badge).toHaveCSS('pointer-events', 'none');
+    }
     const caught = await target.evaluate((selector) => {
         const chrome = document.querySelector('[data-home-chrome]');
         if (!chrome) return ['no chrome layer'];

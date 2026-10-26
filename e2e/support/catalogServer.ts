@@ -40,10 +40,12 @@ export interface CatalogServer {
 export async function startCatalogServer(dataRoot: string, port?: number, { siteUrl }: { siteUrl?: string } = {}): Promise<CatalogServer> {
     const library = process.env.E2E_EMPTY_LIBRARY;
     if (!library) throw new Error('playwright.config.ts sets E2E_EMPTY_LIBRARY, so the server never reads a real photo library');
+    const siteConfig = process.env.E2E_SITE_CONFIG_DIR;
+    if (!siteConfig) throw new Error("playwright.config.ts sets E2E_SITE_CONFIG_DIR, so the server reads the stand-in portrait, never the checkout's site config folder");
     const listen = port ?? (await freePort());
     // Only these roots, whatever this shell points PHOTOGRAPHY_* at.
     const kept = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('PHOTOGRAPHY_')));
-    const env: NodeJS.ProcessEnv = { ...kept, NODE_ENV: 'production', PHOTOGRAPHY_DATA_DIR: dataRoot, PHOTOGRAPHY_LIBRARY_DIR: library };
+    const env: NodeJS.ProcessEnv = { ...kept, NODE_ENV: 'production', PHOTOGRAPHY_DATA_DIR: dataRoot, PHOTOGRAPHY_LIBRARY_DIR: library, PHOTOGRAPHY_SITE_CONFIG_DIR: siteConfig };
     delete env.SITE_URL;
     if (siteUrl) env.SITE_URL = siteUrl;
     const next = path.join(process.cwd(), 'node_modules', 'next', 'dist', 'bin', 'next');

@@ -99,7 +99,7 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')("About's portrait from the h
         // No portrait from the build either: no static media copy and no optimizer URL.
         expect(html).not.toMatch(/_next\/static\/media\/[^"]+\.(png|jpe?g|webp)|_next\/image/);
         const lines = output.split('\n').filter((line) => line.includes('[about]'));
-        expect(lines).toEqual(['[about] No portrait: about/ does not exist, so About shows the name instead.']);
+        expect(lines).toEqual(["[about] No portrait: about/ does not exist, so About shows the name, and Home's intro plays without a portrait."]);
         expect(output).not.toContain(siteConfig);
     });
 
@@ -147,7 +147,7 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')("About's portrait from the h
             expect(response.status, token).toBe(404);
             expect(response.headers.get('cache-control')).toBe('no-store');
         }
-        expect(output).toContain('[about] No portrait: there is no about/portrait.jpg, .jpeg, .png, or .webp, so About shows the name instead.');
+        expect(output).toContain("[about] No portrait: there is no about/portrait.jpg, .jpeg, .png, or .webp, so About shows the name, and Home's intro plays without a portrait.");
         expect(output).not.toContain(siteConfig);
     });
 });

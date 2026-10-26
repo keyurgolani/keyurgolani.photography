@@ -91,6 +91,7 @@ function encodeInto(set: PortraitSet, names: string[], logger: Logger): void {
     const source = readPortraitSource(set.token);
     void source.then((bytes) => {
         // The source changed before it was read: nothing is worth keeping, so a later request reads it again.
+        // A read that failed only for the moment keeps the set and what it already encoded, as setFor does.
         if (bytes === null && kept().set === set) kept().set = null;
     });
     let previous: Promise<unknown> = kept().queue.then(() => source);
@@ -100,6 +101,11 @@ function encodeInto(set: PortraitSet, names: string[], logger: Logger): void {
             const bytes = await source;
             // A set dropped since, by a swap or a removal, encodes nothing more.
             if (bytes === null || kept().set !== set) return null;
+            // Not read this time: the next request for it tries again, with no wait and nothing logged.
+            if (bytes === 'unsure') {
+                set.failed.add(name);
+                return null;
+            }
             try {
                 const data = await encodeVariant(bytes, width, format, { limitInputPixels: PORTRAIT_LIMITS.maxPixels });
                 if (await carriesMetadata(data)) return failed(set, name, 'kept metadata', logger);
@@ -128,12 +134,15 @@ function startSet(token: string, logger: Logger): PortraitSet {
 /**
  * The set for `token` while it's the current portrait's, started if it isn't
  * yet. Null for any other token. A kept set that's no longer current, since
- * the file was removed, refused, or swapped, is dropped here.
+ * the file was removed, refused, or swapped, is dropped here. A read that
+ * failed only for the moment, as with too many open files, says nothing about
+ * the file, so it keeps the set, though it serves nothing from it this time.
  */
 function setFor(token: string | null, current: AboutPortraitState, logger: Logger): PortraitSet | null {
     const state = kept();
     const currentToken = current.state === 'ready' ? current.token : null;
-    if (state.set !== null && state.set.token !== currentToken) state.set = null;
+    const unsure = current.state === 'none' && current.transient === true;
+    if (state.set !== null && state.set.token !== currentToken && !unsure) state.set = null;
     if (currentToken === null || currentToken !== token) return null;
     state.set ??= startSet(currentToken, logger);
     return state.set;

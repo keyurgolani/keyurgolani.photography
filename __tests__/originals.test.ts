@@ -78,14 +78,14 @@ describe('proxy.ts on /assets/photos', () => {
         ['a prefix with a character that is neither a letter nor a digit', '/assets/pho%E2%80%8Ctos/landscape.jpg'],
         ['a prefix with punctuation in it', '/as.sets/photos/landscape.jpg'],
         ['a derivative under a capitalized prefix', '/Assets/photos/optimized/landscape.webp'],
-        ['an encoded traversal from a sibling folder', '/assets/profile/..%2Fphotos%2Flandscape.jpg'],
-        ['a lowercase encoded traversal from a sibling folder', '/assets/profile/..%2fphotos%2flandscape.jpg'],
-        ['an encoded backslash traversal from a sibling folder', '/assets/profile/..%5Cphotos%5Clandscape.jpg'],
+        ['an encoded traversal from a sibling folder', '/assets/sibling/..%2Fphotos%2Flandscape.jpg'],
+        ['a lowercase encoded traversal from a sibling folder', '/assets/sibling/..%2fphotos%2flandscape.jpg'],
+        ['an encoded backslash traversal from a sibling folder', '/assets/sibling/..%5Cphotos%5Clandscape.jpg'],
         ['an encoded traversal from another top-level folder', '/foo/..%2Fassets%2Fphotos%2Flandscape.jpg'],
         ["an encoded traversal from Next's static folder", '/_next/static/..%2F..%2Fassets/photos/landscape.jpg'],
-        ['a dot-dot traversal from a sibling folder', '/assets/profile/../photos/landscape.jpg'],
-        ['an encoded dot-dot segment in a sibling folder', '/assets/profile/%2e%2e/photos/landscape.jpg'],
-        ['a nested original reached through a sibling folder', '/assets/profile/%2E%2E/photos/series/x.jpg'],
+        ['a dot-dot traversal from a sibling folder', '/assets/sibling/../photos/landscape.jpg'],
+        ['an encoded dot-dot segment in a sibling folder', '/assets/sibling/%2e%2e/photos/landscape.jpg'],
+        ['a nested original reached through a sibling folder', '/assets/sibling/%2E%2E/photos/series/x.jpg'],
         ['an encoded slash outside /assets/photos', '/gallery%2Fx'],
     ])('404s %s', (_label, pathname) => {
         const response = respond(pathname);
@@ -95,8 +95,8 @@ describe('proxy.ts on /assets/photos', () => {
     });
 
     it.each([
-        '/', '/gallery', '/about', '/api/photos', '/assets/profile/front.png', '/favicon.ico', '/assets/photosets/x.jpg',
-        '/assets/photos/../profile/front.png', '/_next/static/chunks/%5Broot-of-the-server%5D__0a1b2c._.js',
+        '/', '/gallery', '/about', '/api/photos', '/assets/sibling/x.png', '/favicon.ico', '/assets/photosets/x.jpg',
+        '/assets/photos/../sibling/x.png', '/_next/static/chunks/%5Broot-of-the-server%5D__0a1b2c._.js',
     ])('passes %s, outside /assets/photos', (pathname) => {
         expect(passes(pathname)).toBe(true);
     });
@@ -104,14 +104,14 @@ describe('proxy.ts on /assets/photos', () => {
     it('resolves a pathname the way next dev does before it looks for a file', () => {
         expect(resolvedPathname('/assets//photos/./optimized/../x.jpg')).toBe('/assets/photos/x.jpg');
         expect(resolvedPathname('/../../assets/photos')).toBe('/assets/photos');
-        expect(resolvedPathname('/assets/profile/..%5Cphotos%5Cx.jpg')).toBe('/assets/photos/x.jpg');
+        expect(resolvedPathname('/assets/sibling/..%5Cphotos%5Cx.jpg')).toBe('/assets/photos/x.jpg');
         expect(resolvedPathname('/assets/photos/50%off.jpg')).toBe('/assets/photos/50%off.jpg');
     });
 
     it("runs on every request but Next's own assets, and on those too once they carry a percent sign", () => {
         const matches = (url: string) => unstable_doesMiddlewareMatch({ config, url });
         for (const url of [
-            '/', '/gallery', '/api/photos', '/assets/photos', '/assets/photos/series/x.jpg', '/Assets/Photos/x.jpg', '/assets/profile/front.png',
+            '/', '/gallery', '/api/photos', '/assets/photos', '/assets/photos/series/x.jpg', '/Assets/Photos/x.jpg', '/assets/sibling/x.png',
             '/_next/static/..%2F..%2Fassets/photos/x.jpg', '/_next/static/chunks/%5Broot%5D.js', '/_next/image%2F..%2F..%2Fassets/photos/x.jpg',
         ]) {
             expect(matches(url), url).toBe(true);
@@ -183,25 +183,20 @@ describe('images.localPatterns', () => {
             '/assets/photos/lqip/landscape.txt',
             '/assets/photos/optimized/landscape.webp?v=2',
             '/public/assets/photos/landscape.jpg',
-            '/assets/profile/..%2Fphotos%2Flandscape.jpg',
+            '/assets/sibling/..%2Fphotos%2Flandscape.jpg',
+            '/vite.svg',
             '/favicon.ico',
         ]) {
             expect(allows(url), url).toBe(false);
         }
     });
 
-    it('lets /_next/image optimize the two profile portraits by their exact paths only', () => {
-        expect(allows('/assets/profile/front.png')).toBe(true);
-        expect(allows('/assets/profile/back.png')).toBe(true);
-        for (const url of [
-            '/assets/profile/front.png?v=2',
-            '/assets/profile/Front.png',
-            '/assets/profile/side.png',
-            '/assets/profile/front.png%2F..%2F..%2Fphotos%2Flandscape.jpg',
-            '/assets/profile/front.png/../../photos/landscape.jpg',
-            '/assets/profile/%2E%2E/photos/landscape.jpg',
-        ]) {
-            expect(allows(url), url).toBe(false);
+    it('names nothing outside the derivative folders, so no other public file reaches /_next/image', () => {
+        const patterns = (nextConfig.images?.localPatterns ?? []) as { pathname?: string; search?: string }[];
+        expect(patterns.length).toBeGreaterThan(0);
+        for (const pattern of patterns) {
+            expect(pattern.pathname, JSON.stringify(pattern)).toMatch(/^\/assets\/photos\/[a-z-]+\/\*\.(webp|avif)$/);
+            expect(pattern.search).toBe('');
         }
     });
 });

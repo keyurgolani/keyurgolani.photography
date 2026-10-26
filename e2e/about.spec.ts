@@ -384,6 +384,29 @@ test.describe('the statement and portrait at set sizes', () => {
         });
     }
 
+    // With 200% text on a phone the caption band wraps to two lines, and the panel grows with it.
+    for (const [width, height] of [[390, 844], [1440, 900]] as const) {
+        test(`keep the photo frame's box and the statement's place with 200% text when the photo fails, at ${width} by ${height}`, async ({ page }) => {
+            await page.setViewportSize({ width, height });
+            const enlarge = () => page.evaluate(() => document.documentElement.style.setProperty('font-size', '200%'));
+            await openAbout(page);
+            const image = portrait(page).locator('img');
+            await expect.poll(() => image.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth > 0)).toBe(true);
+            await enlarge();
+            const photo = { frame: await boxOf(portrait(page)), heading: await boxOf(heading(page)) };
+
+            await page.route('**/about/portrait/**', (route) => route.fulfill({ status: 500, body: '' }));
+            await openAbout(page);
+            await expect(portrait(page).locator('img')).toHaveCount(0);
+            await enlarge();
+            const panel = { frame: await boxOf(portrait(page)), heading: await boxOf(heading(page)) };
+            for (const edge of ['left', 'top', 'right', 'bottom'] as const) {
+                expect(Math.abs(panel.frame[edge] - photo.frame[edge]), `the panel's ${edge} against the photo's`).toBeLessThanOrEqual(1);
+            }
+            expect(Math.abs(panel.heading.top - photo.heading.top), "the statement's top").toBeLessThanOrEqual(1);
+        });
+    }
+
     for (const [width, height] of [[390, 844], [1280, 800]] as const) {
         test(`stay readable with 200% text at ${width} by ${height}`, async ({ page }) => {
             await page.setViewportSize({ width, height });
