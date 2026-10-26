@@ -55,13 +55,19 @@
 
 /* The portrait sits on the mockup's near-black ground inside a 9 px paper
    frame. Its caption is a band below the photo, in flow, so enlarged text
-   grows the frame instead of covering the face. */
+   grows the frame instead of covering the face. The frame, the ground under
+   it, and the band's height are shared with the name panel below, so both
+   states are the same box in the same tone. */
 .portrait {
+  --about-frame: 9px;
+  --about-frame-ground: #101311;
+  /* One line of caption: its padding plus its line box. */
+  --about-caption-band: calc(1rem + 0.875rem * 1.4);
   display: flex;
   flex-direction: column;
   margin: 0;
-  border: 9px solid var(--lts-frame);
-  background: #101311;
+  border: var(--about-frame) solid var(--lts-frame);
+  background: var(--about-frame-ground);
   box-shadow: var(--lts-shadow);
 }
 
@@ -100,40 +106,46 @@
   overflow-wrap: anywhere;
 }
 
-/* No portrait, or one that failed to load: the same frame and height, lit
-   from inside like a paper shade. A soft pool of light sits high in the
-   panel over the shade's horizontal ribs, and the name is set in the
-   statement's serif at the foot, where the photo's caption band would be.
-   It reads as a deliberate name plate, never as a missing image. */
+/* No portrait, or one that failed to load: the same frame, tone, and outer
+   box as the photo with its caption band, lit from inside like a paper
+   shade, so nothing on the page moves either way. A soft pool of light sits
+   high in the panel over the shade's horizontal ribs, and the name is set in
+   the statement's serif at the foot, where the photo's caption band would
+   be. It reads as a deliberate name plate, never as a missing image. The
+   paper stops at the frame, which lies over the photo's dark ground, so the
+   frame reads as the same taupe mat. */
 .fallback {
   justify-content: flex-end;
-  min-height: clamp(250px, 42svh, 380px);
+  min-height: calc(clamp(250px, 42svh, 380px) + var(--about-caption-band) + 2 * var(--about-frame));
   padding: clamp(1.25rem, 1rem + 1.5vw, 2.25rem);
   background:
-    radial-gradient(ellipse 78% 58% at 50% 36%, rgba(255, 252, 240, 0.96) 0%, rgba(253, 246, 226, 0.7) 42%, rgba(244, 236, 215, 0) 78%),
-    repeating-linear-gradient(180deg, rgba(93, 73, 42, 0.07) 0 1px, transparent 1px 2.125rem),
-    #ecdfbf;
+    radial-gradient(ellipse 78% 58% at 50% 36%, rgba(255, 252, 240, 0.96) 0%, rgba(253, 246, 226, 0.7) 42%, rgba(244, 236, 215, 0) 78%) padding-box,
+    repeating-linear-gradient(180deg, rgba(93, 73, 42, 0.07) 0 1px, transparent 1px 2.125rem) padding-box,
+    linear-gradient(#ecdfbf, #ecdfbf) padding-box,
+    var(--about-frame-ground) border-box;
 }
 
 @media (min-width: 64rem) {
   .fallback {
-    min-height: 420px;
+    min-height: calc(420px + var(--about-caption-band) + 2 * var(--about-frame));
   }
 }
 
+/* A long name or alias breaks between words. Only a word wider than the
+   panel breaks inside itself. */
 .fallbackName {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
   margin: 0;
   color: var(--lts-ink);
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .fallbackFullName {
-  max-width: 12ch;
+  max-width: 100%;
   font-family: var(--font-serif), serif;
-  font-size: clamp(2.25rem, 1.6rem + 2.2vw, 3.5rem);
+  font-size: var(--lts-type-plate);
   font-weight: 400;
   line-height: 1;
   letter-spacing: -0.03em;
@@ -164,7 +176,7 @@
   max-width: 16ch;
   margin: 0 0 1.125rem;
   font-family: var(--font-serif), serif;
-  font-size: clamp(2rem, 1.25rem + 2.4vw, 3.375rem);
+  font-size: var(--lts-type-heading);
   font-weight: 400;
   line-height: 1.02;
   letter-spacing: -0.04em;
