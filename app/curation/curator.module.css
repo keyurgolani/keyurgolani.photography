@@ -191,15 +191,40 @@
 }
 
 .item {
-  display: flex;
+  display: grid;
   min-height: 72px;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.3rem;
+  grid-template-columns: 56px minmax(0, 1fr);
+  align-items: start;
+  column-gap: 0.75rem;
   padding: 0.8rem 1rem;
   border-bottom: 1px solid var(--curator-rule);
   color: var(--gah-ink);
   text-decoration: none;
+}
+
+/* A fixed square, so a row never shifts as its thumbnail loads, and is the same with none. */
+.thumb {
+  display: block;
+  width: 56px;
+  height: 56px;
+  border-radius: var(--gah-radius);
+  background: var(--gah-ground);
+  object-fit: cover;
+}
+
+.thumb[data-thumb='none'] {
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--curator-rule);
+  color: var(--gah-ink-muted);
+}
+
+.itemText {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.3rem;
 }
 
 .item[aria-current='true'] {

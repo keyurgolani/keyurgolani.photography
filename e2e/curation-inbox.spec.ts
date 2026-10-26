@@ -102,7 +102,25 @@ test('lists what the watcher opened, and shows the selected photograph from the 
     const list = page.getByRole('list', { name: 'Requires judgment' });
     await expect(list.getByRole('link')).toHaveCount(8);
     // Each row names its source file, so rows of new photographs tell apart.
-    await expect(list.getByRole('link', { name: new RegExp(FRESH_SOURCES[FRESH.approve]) })).toHaveCount(1);
+    const approveRow = list.getByRole('link', { name: new RegExp(FRESH_SOURCES[FRESH.approve]) });
+    await expect(approveRow).toHaveCount(1);
+    // And shows a thumbnail: the set's smallest WebP from the curator-only route, at a fixed size, loaded lazily, with an empty alt.
+    const thumb = approveRow.locator('img');
+    await expect(thumb).toHaveAttribute('alt', '');
+    await expect(thumb).toHaveAttribute('loading', 'lazy');
+    const thumbSrc = (await thumb.getAttribute('src')) ?? '';
+    expect(thumbSrc).toMatch(new RegExp(`^/api/curation/media/${FRESH.approve}/sha256-[0-9a-f]{64}/p_[0-9a-z]+/w400\\.webp$`));
+    await expect.poll(() => thumb.evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
+    expect(await thumb.boundingBox()).toMatchObject({ width: 56, height: 56 });
+    const thumbResponse = await page.request.get(`${curatorOrigin()}${thumbSrc}`);
+    expect(thumbResponse.status()).toBe(200);
+    expect(thumbResponse.headers()['content-type']).toContain('image/webp');
+    expect(thumbResponse.headers()['cache-control']).toContain('no-store');
+    // A file nothing was made from holds its place with a neutral square, the same size.
+    const failedRow = list.getByRole('link', { name: /Processing failed/ });
+    await expect(failedRow.locator('img')).toHaveCount(0);
+    await expect(failedRow.locator('[data-thumb="none"]')).toBeVisible();
+    expect(await failedRow.locator('[data-thumb="none"]').boundingBox()).toMatchObject({ width: 56, height: 56 });
     await list.getByRole('link', { name: /Uncurated photograph/ }).first().click();
     await waitForHydration(page);
     // The row's link lands on the item itself, so on a phone it isn't under the list.

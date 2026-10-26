@@ -35,6 +35,7 @@ const EVT = (n: number) => `evt_${String(n).padStart(24, '0')}`;
 const REV = `sha256-${'a'.repeat(64)}`;
 const ACTIVE = `rev_${'b'.repeat(64)}`;
 
+const THUMB = (n: number) => `/api/curation/media/${P(n)}/${REV}/p_${'c'.repeat(16)}/w400.webp`;
 const SHORT = (n: number) => `ph_0000…${String(n).padStart(4, '0')}`;
 const SERIES: SeriesOption[] = [
     { id: 'ser_harbor', label: 'Harbor', visibility: 'published', members: [{ photoId: P(1), shortId: SHORT(1) }, { photoId: P(2), shortId: SHORT(2) }] },
@@ -42,7 +43,7 @@ const SERIES: SeriesOption[] = [
 ];
 
 function item(overrides: Partial<InboxItem> = {}): InboxItem {
-    return { id: EVT(1), version: 3, type: 'new', status: 'open', group: 'judgment', title: 'Uncurated photograph', photoId: P(9), shortId: SHORT(9), sourcePath: 'trips/harbor-1.jpg', waiting: null, placedBy: null, unplacedSeries: null, ...overrides };
+    return { id: EVT(1), version: 3, type: 'new', status: 'open', group: 'judgment', title: 'Uncurated photograph', photoId: P(9), shortId: SHORT(9), sourcePath: 'trips/harbor-1.jpg', thumbnailUrl: THUMB(9), waiting: null, placedBy: null, unplacedSeries: null, ...overrides };
 }
 
 function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
@@ -468,5 +469,31 @@ describe('the forms', () => {
         expect(screen.queryByRole('button', { name: 'Approve into draft' })).toBeNull();
         await press(screen.getByRole('button', { name: 'Reopen' }));
         expect(sent.forms[1].fields).toMatchObject({ intent: 'reopen', version: '3' });
+    });
+});
+
+describe('thumbnails in the list', () => {
+    it('show the ready set\'s w400 WebP at a fixed size, lazily, with an empty alt beside the file name', () => {
+        renderInbox();
+        const row = screen.getByRole('link', { name: /Uncurated photograph/ });
+        const thumb = row.querySelector('img')!;
+        expect(thumb).toHaveAttribute('src', THUMB(9));
+        expect(thumb.getAttribute('src')).toMatch(/^\/api\/curation\/media\/.+\/w400\.webp$/);
+        expect(thumb).toHaveAttribute('alt', '');
+        expect(thumb).toHaveAttribute('loading', 'lazy');
+        expect(thumb).toHaveAttribute('width', '56');
+        expect(thumb).toHaveAttribute('height', '56');
+        // The file name names the row, not the picture.
+        expect(row).toHaveAccessibleName(/trips\/harbor-1\.jpg/);
+        expect(within(row).queryByRole('img')).toBeNull();
+    });
+
+    it('hold the place with a neutral square when no set is ready', () => {
+        renderInbox(view({ items: [item({ type: 'processing-failure', title: 'Processing failed', photoId: null, shortId: 'no photo ID', thumbnailUrl: null })], selected: null, needsJudgment: 1 }));
+        const row = screen.getByRole('link', { name: /Processing failed/ });
+        expect(row.querySelector('img')).toBeNull();
+        const placeholder = row.querySelector('[data-thumb="none"]')!;
+        expect(placeholder).toHaveAttribute('aria-hidden', 'true');
+        expect(row.firstElementChild).toBe(placeholder);
     });
 });
