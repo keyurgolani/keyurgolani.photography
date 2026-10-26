@@ -219,6 +219,14 @@ describe('loadInbox', () => {
         expect(ready(await loadInbox(ids[0])).selected?.id).toBe(ids[0]);
     });
 
+    it("shows a missing item #17 resolved without the unavailable recovery action, whose Decide later it doesn't offer", async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('missing', fx.catalog.photos[0].id)], { published: true });
+        const stored = (await readEvent(f.root, ids[0]))!;
+        expect(ready(await loadInbox(ids[0])).selected).toMatchObject({ type: 'missing', group: 'judgment', primaryUnavailable: expect.stringContaining('Decide later') });
+        await withCurationLock(f.root, {}, (hold) => writeEvent(f.root, { ...stored, status: 'resolved' }, stored.version, hold));
+        expect(ready(await loadInbox(ids[0])).selected).toMatchObject({ type: 'missing', group: 'settled', primaryUnavailable: null, can: { defer: false, reopen: true } });
+    });
+
     it('lists an item #17 resolved as settled, with nothing to judge but Reopen, and reopens it from the page', async () => {
         const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])]);
         const stored = (await readEvent(f.root, ids[0]))!;
