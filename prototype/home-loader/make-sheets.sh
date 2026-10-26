@@ -11,6 +11,8 @@ node $CS --out "$S/1440-handoff-crop.jpg" --times -1200,-150,0,50,100,150,200,30
  "today (next)=$R/today-next-1440" "(ii) stand-in portrait=$R/proto-ii-standin-1440" "(ii) back+front flattened=$R/proto-ii-composite-1440" "v1.1.0 (lands)=$R/v110-1440"
 node $CS --out "$S/390-handoff.jpg" --times $T --cell 200 --title "390x844 at 2x, touch, the handoff" \
  "today (next)=$R/today-next-390" "(ii) stand-in=$R/proto-ii-standin-390" "(ii) front.png=$R/proto-ii-front-390" "(ii) flattened=$R/proto-ii-composite-390" "v1.1.0=$R/v110-390"
+node $CS --out "$S/390-handoff-crop.jpg" --times -1200,0,100,200,300,600 --cell 260 --crop 360 --title "390x844 at 2x, the portrait (360 px square around the center)" \
+ "today (next)=$R/today-next-390" "(ii) stand-in=$R/proto-ii-standin-390" "(ii) front.png=$R/proto-ii-front-390" "(ii) flattened=$R/proto-ii-composite-390" "v1.1.0=$R/v110-390"
 node $CS --out "$S/1440-i-comparison.jpg" --times -1200,0,150,300,800,1300 --cell 360 --title "(i) no tilt beside today and (ii), no mouse; and no portrait at all" \
  "today (next)=$R/today-next-1440" "(i) stand-in=$R/proto-i-standin-1440" "(ii) stand-in=$R/proto-ii-standin-1440" "no portrait=$R/proto-none-1440"
 if [ -d "$R/proto-ii-standin-1440-corners" ] && grep -q '"refined"\|"zero": "revealStart"' "$R/proto-ii-standin-1440-corners/timeline.json"; then
