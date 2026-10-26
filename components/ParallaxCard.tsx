@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useCallback } from 'react';
+import React, { useRef, useCallback, useEffect } from 'react';
 import styles from './ParallaxCard.module.css';
 
 interface ParallaxCardProps {
@@ -8,6 +8,12 @@ interface ParallaxCardProps {
   cardOffset: number;
   baseLayerOffset: number;
   layerOffsetMultiplier: number;
+  /**
+   * STAGE 1 PROTOTYPE. Follow a mouse over the card from the window instead of
+   * the card's own events, for a card that takes no pointer: on Home the
+   * chrome's layer (z 50) covers the loader once a mouse wakes it.
+   */
+  trackWindow?: boolean;
   children?: React.ReactNode | React.ReactNode[];
 }
 
@@ -16,12 +22,13 @@ const ParallaxCard: React.FC<ParallaxCardProps> = ({
   cardOffset,
   baseLayerOffset,
   layerOffsetMultiplier,
+  trackWindow = false,
   children,
 }) => {
   const cardRef = useRef<HTMLDivElement>(null);
   const layerRefs = useRef<(HTMLDivElement | null)[]>([]);
 
-  const animateCard = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+  const animateCard = useCallback((event: { clientX: number; clientY: number }) => {
     const card = cardRef.current;
     if (!card) return;
 
@@ -62,6 +69,29 @@ const ParallaxCard: React.FC<ParallaxCardProps> = ({
     });
   }, []);
 
+  // The same hover tilt, from the window: inside the card's box it tilts, leaving it resets.
+  useEffect(() => {
+    if (!trackWindow) return;
+    let inside = false;
+    const onMove = (event: PointerEvent) => {
+      if (event.pointerType !== 'mouse') return;
+      const card = cardRef.current;
+      if (!card) return;
+      // The untransformed box and the layers' 10 px overhang, which the card's own events cover too.
+      const box = (card.parentElement ?? card).getBoundingClientRect();
+      const over = event.clientX >= box.left - 10 && event.clientX <= box.right + 10 && event.clientY >= box.top - 10 && event.clientY <= box.bottom + 10;
+      if (over) {
+        inside = true;
+        animateCard(event);
+      } else if (inside) {
+        inside = false;
+        resetTransform();
+      }
+    };
+    window.addEventListener('pointermove', onMove, { passive: true });
+    return () => window.removeEventListener('pointermove', onMove);
+  }, [trackWindow, animateCard, resetTransform]);
+
   // Update refs array size
   const childrenArray = React.Children.toArray(children);
   layerRefs.current = layerRefs.current.slice(0, childrenArray.length);
@@ -70,8 +100,8 @@ const ParallaxCard: React.FC<ParallaxCardProps> = ({
     <div
       ref={cardRef}
       className={`${styles.card} ${className}`}
-      onMouseMove={animateCard}
-      onMouseLeave={resetTransform}
+      onMouseMove={trackWindow ? undefined : animateCard}
+      onMouseLeave={trackWindow ? undefined : resetTransform}
     >
       {React.Children.map(children, (child, index) => {
         const offset = baseLayerOffset + index * layerOffsetMultiplier;

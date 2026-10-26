@@ -257,7 +257,7 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange }: Hero
       </div>
 
       {/* The portrait waits at the center while Home loads, then fades as the reveal opens. */}
-      {/* With no usable portrait the intro plays without one. (ii) lets the card take the pointer so it tilts. */}
+      {/* With no usable portrait the intro plays without one. */}
       {portrait ? (
         <div className={styles.portrait} data-revealing={phase === 'revealing' ? '' : undefined} data-tilt={tilt ? '' : undefined}>
           <LoaderPortrait portrait={portrait} tilt={tilt} />

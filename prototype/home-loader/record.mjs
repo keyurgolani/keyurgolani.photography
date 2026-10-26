@@ -95,7 +95,7 @@ await page.addInitScript(() => {
         const img = portraitImg();
         const s = { t };
         if (m) {
-            const g = (m.style.maskImage || m.style.webkitMaskImage).match(/([\d.]+)px at 50% 50%/);
+            const g = (m.style.maskImage || m.style.webkitMaskImage).match(/radial-gradient\((?:circle )?([\d.]+)px/);
             s.mask = g ? Number(g[1]) : null;
         }
         if (img) {
@@ -108,7 +108,10 @@ await page.addInitScript(() => {
                 s.box = [b.x, b.y, b.width, b.height].map((v) => Math.round(v * 10) / 10);
                 s.boxTransform = getComputedStyle(box).transform;
             }
-            const card = img.closest('[class*="card"]') || (img.closest("[data-loader-portrait]") ? null : img.parentElement?.parentElement?.parentElement);
+            // img, its frame, the layer, the card; the prototype's img sits in a <picture> too.
+            const up = (n, k) => { for (let i = 0; i < k && n; i++) n = n.parentElement; return n; };
+            const card = img.closest('[data-loader-portrait]') ? up(img, 4) : up(img, 3);
+            s.shadow = getComputedStyle(img).boxShadow;
             if (card) s.card = card.style.transform || '';
             const layers = card ? [...card.children].map((l) => l.style.transform || '') : [];
             if (layers.length) s.layers = layers;

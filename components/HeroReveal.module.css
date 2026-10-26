@@ -44,13 +44,6 @@
   pointer-events: none;
 }
 
-/* STAGE 1 PROTOTYPE (ii): the card takes the pointer so it can tilt, as
-   v1.1.0's loader did. */
-.portrait[data-tilt],
-.portrait[data-tilt] * {
-  pointer-events: auto;
-}
-
 .portrait[data-revealing] {
   opacity: 0;
 }

@@ -18,6 +18,9 @@ import styles from './LoaderPortrait.module.css';
  * - `tilt` on, (ii): ParallaxCard's card tilt with today's cardOffset of 50,
  *   and the one layer's own offset at 0, so the image moves only with the
  *   card, and a shadow that follows the tilt (LoaderPortrait.module.css).
+ *   It follows the mouse from the window, since the portrait takes no pointer
+ *   (so it never catches a tap meant for the chrome) and the chrome's layer
+ *   covers it once a mouse wakes it.
  */
 export const LOADER_PORTRAIT_SIZES = '(min-width: 768px) 324px, 260px';
 
@@ -43,7 +46,7 @@ export default function LoaderPortrait({ portrait, tilt }: { portrait: AboutPort
       style={{ '--loader-focus': `${x}% ${y}%` } as React.CSSProperties}
     >
       {tilt ? (
-        <ParallaxCard cardOffset={50} baseLayerOffset={0} layerOffsetMultiplier={0} className="w-full h-full">
+        <ParallaxCard cardOffset={50} baseLayerOffset={0} layerOffsetMultiplier={0} trackWindow className="w-full h-full">
           {image}
         </ParallaxCard>
       ) : (
