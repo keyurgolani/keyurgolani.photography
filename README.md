@@ -113,7 +113,7 @@ sudo chmod 700 portfolio-data
 
 If another process writes the photos, such as a file sync tool running as another user, leave `public/assets/photos` out of that `chown` and give uid 1001 only the folders the watcher writes, as [Who owns the photos](docs/data-root.md#who-owns-the-photos) describes. [docs/data-root.md](docs/data-root.md) also covers what the data root holds, backing it up with the library, restoring it, and the one-time migration that gives every photo its ID.
 
-About's photo isn't in the repository or the image either. Put it in `./site-config/about/portrait.jpg` (or `.jpeg`, `.png`, `.webp`), with an optional `./site-config/about/portrait.json` holding its `alt` text and `focalPoint`. `web` mounts the folder read-only and reads it per request, so replacing the file changes About on the next page load, with no rebuild or restart. Without one, About shows the name in its place. [About's portrait](docs/releasing.md#abouts-portrait) has the fields, the limits, and how to swap it:
+About reads its portrait from the host. Put it in `./site-config/about/portrait.jpg` (or `.jpeg`, `.png`, `.webp`), with an optional `./site-config/about/portrait.json` holding its `alt` text and `focalPoint`. `web` mounts the folder read-only and reads it per request, so replacing the file changes About on the next page load, with no rebuild or restart. Without one, About shows the name in its place. Set the folder up before the first `up -d`: when it's missing, Compose creates it owned by root under a rootful daemon, and `sudo chown -R "$(id -u):$(id -g)" site-config` gives it back. [About's portrait](docs/releasing.md#abouts-portrait) has the fields, the limits, and how to swap it, `portrait.json` included:
 
 ```bash
 mkdir -p site-config/about
