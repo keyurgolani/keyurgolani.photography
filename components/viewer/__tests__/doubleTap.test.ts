@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { DOUBLE_TAP_DISTANCE, DOUBLE_TAP_IDLE, DOUBLE_TAP_INTERVAL, SETTLE, TAP_HOLD, TAP_SLOP, reduceDoubleTap, type DoubleTapInput, type DoubleTapState } from '../doubleTap';
+import { DOUBLE_TAP_DISTANCE, DOUBLE_TAP_IDLE, DOUBLE_TAP_INTERVAL, SETTLE, TAP_HOLD, TAP_SLOP, placeOnPhoto, reduceDoubleTap, zoomScrollBy, type DoubleTapInput, type DoubleTapState } from '../doubleTap';
 import { SWIPE_DISTANCE } from '../swipe';
 
 /** Runs inputs from idle and returns how many times they fired, and the state they left. */
@@ -180,5 +180,27 @@ describe('reduceDoubleTap', () => {
             const held = run([down(1, 200, 300, 1000)]);
             expect(reduceDoubleTap(held.state, { type: 'reset' }).state.down).toEqual([1]);
         });
+    });
+});
+
+describe('the place a double-tap zooms in on', () => {
+    const fitted = { left: 20, top: 100, width: 400, height: 250 };
+
+    it('is the tap\'s share across and down the fitted photograph, a tap beside it counting as its nearest edge', () => {
+        expect(placeOnPhoto(fitted, { x: 120, y: 150 })).toEqual({ x: 0.25, y: 0.2 });
+        expect(placeOnPhoto(fitted, { x: 0, y: 400 })).toEqual({ x: 0, y: 1 });
+        expect(placeOnPhoto(fitted, { x: 500, y: 60 })).toEqual({ x: 1, y: 0 });
+        expect(placeOnPhoto({ ...fitted, width: 0 }, { x: 120, y: 150 })).toBeNull();
+        expect(placeOnPhoto({ ...fitted, height: Number.NaN }, { x: 120, y: 150 })).toBeNull();
+    });
+
+    it('scrolls the zoomed photograph so that place sits under the tap again', () => {
+        const at = { x: 120, y: 150 };
+        const place = { x: 0.25, y: 0.2 };
+        // Unscrolled, the zoomed photograph's place is at 0 + 480 and 60 + 256: scroll by the gap to the tap.
+        expect(zoomScrollBy({ left: 0, top: 60, width: 1920, height: 1280 }, place, at)).toEqual({ left: 360, top: 166 });
+        // Already where the tap is: no scroll. Past it: a scroll back, which the browser clamps at the start.
+        expect(zoomScrollBy({ left: 120 - 480, top: 150 - 256, width: 1920, height: 1280 }, place, at)).toEqual({ left: 0, top: 0 });
+        expect(zoomScrollBy({ left: 0, top: 60, width: 400, height: 250 }, place, { x: 300, y: 400 })).toEqual({ left: -200, top: -290 });
     });
 });

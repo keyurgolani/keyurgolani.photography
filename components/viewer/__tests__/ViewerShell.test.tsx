@@ -721,15 +721,115 @@ describe('ViewerShell, double-tap', () => {
 
     it('does nothing for two taps too far apart in time or place, or off the photograph', () => {
         renderZoomable();
+        // Zoom after each pair, so a pair that fired is never undone by the next one.
         tap(stage(), 1000);
         tap(stage(), 1351);
+        expect(zoom(), 'too far apart in time').toHaveAttribute('aria-pressed', 'false');
         tap(stage(), 3000, { x: 200 });
         tap(stage(), 3150, { x: 225 });
+        expect(zoom(), 'too far apart in place').toHaveAttribute('aria-pressed', 'false');
         tap(step('Next photograph'), 5000);
         tap(step('Next photograph'), 5150);
+        expect(zoom(), 'on Next').toHaveAttribute('aria-pressed', 'false');
         tap(screen.getByRole('button', { name: 'Show technical details' }), 7000);
         tap(screen.getByRole('button', { name: 'Show technical details' }), 7150);
+        expect(zoom(), 'on the technical toggle').toHaveAttribute('aria-pressed', 'false');
+    });
+
+    /** A touchend on `target`, as the browser sends it after the lift's pointerup, and whether the page cancelled it. */
+    function touchEnd(target: EventTarget): boolean {
+        const event = new Event('touchend', { bubbles: true, cancelable: true });
+        act(() => {
+            target.dispatchEvent(event);
+        });
+        return event.defaultPrevented;
+    }
+
+    it('cancels the touchend of the tap that fired, and only that one, so the second tap clicks nothing the new layout put under it', () => {
+        renderZoomable();
+        pointer(stage(), 'pointerdown', { t: 1000 });
+        pointer(stage(), 'pointerup', { t: 1050 });
+        expect(touchEnd(stage()), 'the first tap').toBe(false);
+        pointer(stage(), 'pointerdown', { t: 1150 });
+        pointer(stage(), 'pointerup', { t: 1200 });
+        expect(zoom()).toHaveAttribute('aria-pressed', 'true');
+        expect(touchEnd(stage()), 'the second tap, which zoomed in').toBe(true);
+        // Zooming out, the finger can end over Previous or Next. Its touchend is cancelled too, wherever it lands.
+        tap(stage(), 2000);
+        expect(touchEnd(stage())).toBe(false);
+        pointer(stage(), 'pointerdown', { t: 2150 });
+        pointer(stage(), 'pointerup', { t: 2200 });
         expect(zoom()).toHaveAttribute('aria-pressed', 'false');
+        expect(touchEnd(step('Next photograph')), 'the second tap, which zoomed out').toBe(true);
+        expect(router.replace).not.toHaveBeenCalled();
+        // The next touch's touchend is its own, and a fire whose touchend never came (a synthetic tap) is dropped at the next touch.
+        pointer(stage(), 'pointerdown', { t: 3000 });
+        pointer(stage(), 'pointerup', { t: 3050 });
+        expect(touchEnd(step('Next photograph')), 'a later tap').toBe(false);
+        tap(stage(), 4000);
+        tap(stage(), 4150);
+        tap(step('Next photograph'), 5000);
+        expect(touchEnd(step('Next photograph')), 'a tap after a fire with no touchend').toBe(false);
+    });
+
+    describe('where it zooms', () => {
+        const fitted = { left: 0, top: 100, width: 400, height: 250 };
+        const zoomedIn = { left: 0, top: 60, width: 1920, height: 1280 };
+        beforeEach(() => {
+            vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+                const box = this.tagName === 'FIGURE' ? (this.closest('[data-zoomed]') ? zoomedIn : fitted) : { left: 0, top: 0, width: 0, height: 0 };
+                return { ...box, x: box.left, y: box.top, right: box.left + box.width, bottom: box.top + box.height, toJSON: () => box } as DOMRect;
+            });
+        });
+        afterEach(() => {
+            vi.restoreAllMocks();
+        });
+
+        it('zooms in on the tapped place, which stays under the finger', () => {
+            renderZoomable();
+            // A quarter across and a fifth down the fitted photograph.
+            tap(stage(), 1000, { x: 100, y: 150 });
+            tap(stage(), 1150, { x: 100, y: 150 });
+            expect(zoom()).toHaveAttribute('aria-pressed', 'true');
+            // The zoomed photograph's same place, 480 and 256 px into it, scrolled back under 100, 150.
+            expect(stage().scrollLeft).toBe(0 + 0.25 * 1920 - 100);
+            expect(stage().scrollTop).toBe(60 + 0.2 * 1280 - 150);
+        });
+
+        it('leaves the Zoom button\'s framing as it was, and zooming out scrolls nothing', () => {
+            renderZoomable();
+            act(() => {
+                zoom().click();
+            });
+            expect(zoom()).toHaveAttribute('aria-pressed', 'true');
+            expect([stage().scrollLeft, stage().scrollTop]).toEqual([0, 0]);
+            tap(stage(), 1000, { x: 100, y: 150 });
+            tap(stage(), 1150, { x: 100, y: 150 });
+            expect(zoom()).toHaveAttribute('aria-pressed', 'false');
+            expect([stage().scrollLeft, stage().scrollTop]).toEqual([0, 0]);
+        });
+
+        it('doesn\'t take its own scroll to the place for a fling, so a double-tap right after zooms back out', () => {
+            renderZoomable();
+            tap(stage(), 1000, { x: 100, y: 150 });
+            tap(stage(), 1150, { x: 100, y: 150 });
+            // The region's scroll event arrives at the next frame, or later on a busy one.
+            scrolled(stage(), 1216);
+            scrolled(stage(), 1290);
+            tap(stage(), 1300, { x: 100, y: 150 });
+            tap(stage(), 1450, { x: 100, y: 150 });
+            expect(zoom()).toHaveAttribute('aria-pressed', 'false');
+            // A scroll that moves the region on from there, the visitor's pan, still quiets the taps.
+            tap(stage(), 3000, { x: 100, y: 150 });
+            tap(stage(), 3150, { x: 100, y: 150 });
+            expect(zoom()).toHaveAttribute('aria-pressed', 'true');
+            scrolled(stage(), 3216);
+            stage().scrollLeft += 40;
+            scrolled(stage(), 3400);
+            tap(stage(), 3500, { x: 100, y: 150 });
+            tap(stage(), 3650, { x: 100, y: 150 });
+            expect(zoom()).toHaveAttribute('aria-pressed', 'true');
+        });
     });
 
     it('counts a touch\'s travel on the way, so a touch that goes out and comes back is no tap', () => {
@@ -837,7 +937,7 @@ describe('ViewerShell, double-tap', () => {
         const removeFromRoot = vi.spyOn(root() as HTMLElement, 'removeEventListener');
         unmount();
         expect(removeFromDocument).toHaveBeenCalledWith('scroll', expect.any(Function), { capture: true });
-        for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) {
+        for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'touchend']) {
             expect(removeFromRoot).toHaveBeenCalledWith(type, expect.any(Function));
         }
         removeFromDocument.mockRestore();

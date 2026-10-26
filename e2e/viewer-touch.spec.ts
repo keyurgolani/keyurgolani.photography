@@ -318,6 +318,46 @@ test.describe('double-tap', () => {
         await expectStill(page, P[2], 3);
     });
 
+    test('a double-tap zooms in on the place tapped, which stays under the finger', async ({ page }) => {
+        await openPage(page, P[1]);
+        await settled(page);
+        const frame = stage(page).locator('figure');
+        const fitted = await frame.boundingBox();
+        expect(fitted, 'the fitted photograph').not.toBeNull();
+        // A quarter across, halfway down.
+        const at = { x: fitted!.x + fitted!.width / 4, y: fitted!.y + fitted!.height / 2 };
+        await doubleTap(page, at);
+        await expect(button(page, 'Zoom')).toHaveAttribute('aria-pressed', 'true');
+        const region = viewer(page).getByRole('region', { name: 'Zoomed photograph' });
+        await expect.poll(() => region.evaluate((element) => element.scrollLeft), 'the zoomed photograph scrolled to the place').toBeGreaterThan(0);
+        const zoomed = await frame.boundingBox();
+        expect(zoomed!.width, 'zoomed in').toBeGreaterThan(fitted!.width);
+        expect((at.x - zoomed!.x) / zoomed!.width, 'the same place across sits under the finger').toBeCloseTo(0.25, 2);
+        await expectStill(page, P[1], 2);
+    });
+
+    test('a double-tap that zooms out where Previous or Next sit unzoomed presses neither, and the Viewer stays', async ({ page }) => {
+        // Zoomed out, the stage shrinks, and the second tap's click would land on whatever now sits under the finger.
+        // Only real touches make that click, so this runs on Chromium; WebKit's synthetic taps make none.
+        runsOn(test.info(), 'mobile');
+        await openPage(page, P[1]);
+        for (const name of ['Next photograph', 'Previous photograph']) {
+            const at = await centerOf(button(page, name));
+            const zoom = button(page, 'Zoom');
+            await zoom.tap();
+            await expect(zoom).toHaveAttribute('aria-pressed', 'true');
+            const onPhotograph = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('[data-zoomed]') != null, at);
+            expect(onPhotograph, `zoomed, the photograph covers where ${name} sits unzoomed`).toBe(true);
+            await settled(page);
+            await doubleTap(page, at);
+            await expect(zoom).toHaveAttribute('aria-pressed', 'false');
+            await page.waitForTimeout(300);
+            await expectStill(page, P[1], 2);
+            await expect(announcer(page)).toHaveText('');
+            await settled(page);
+        }
+    });
+
     test('two taps too far apart in time are two taps, and nothing zooms', async ({ page }) => {
         await openPage(page, P[1]);
         await settled(page);

@@ -1,6 +1,6 @@
-// The Viewer's double-tap rule (#9c), with no DOM, so a unit test reads it alone. A double-tap on the photograph does
-// what Zoom does. The stage's `touch-action: pan-y pinch-zoom` (StoryViewer.module.css) turns the browser's own
-// double-tap zoom off, so the Viewer reads the two taps itself.
+// The Viewer's double-tap rule (#9c), with no DOM, so a unit test reads it alone. A double-tap on the photograph's stage
+// does what Zoom does. The stage's `touch-action: pan-y pinch-zoom`, and `manipulation` once zoomed
+// (StoryViewer.module.css), turn the browser's own double-tap zoom off, so the Viewer reads the two taps itself.
 
 /** A tap is a touch that travels less than this, in CSS px, from where it went down. The swipe's own slop. */
 export const TAP_SLOP = 10;
@@ -8,7 +8,7 @@ export const TAP_SLOP = 10;
 export const TAP_HOLD = 300;
 /** The second tap goes down within this many ms of the first tap's lift. */
 export const DOUBLE_TAP_INTERVAL = 300;
-/** And within this many CSS px of where the first tap went down. */
+/** And within this many CSS px of where the first tap went down. A tuning call for the device pass: Android's own slop is wider. */
 export const DOUBLE_TAP_DISTANCE = 24;
 /**
  * No tap counts for this many ms after a drag, a swipe, a cancel (the browser took the touch for a scroll or a pinch),
@@ -22,7 +22,10 @@ export type DoubleTapInput =
     | { type: 'down'; pointerId: number; x: number; y: number; t: number; primary: boolean; eligible: boolean }
     | { type: 'move'; pointerId: number; x: number; y: number }
     | { type: 'up'; pointerId: number; x: number; y: number; t: number }
-    /** `pointercancel` or lost pointer capture. */
+    /**
+     * `pointercancel` only. Not lost pointer capture: useSwipe captures each touch on the stage to the root, so a
+     * `lostpointercapture` follows every lift, and reading it as a cancel would quiet every tap.
+     */
     | { type: 'cancel'; pointerId: number; t: number }
     /** Any scroll: the page, the modal, or the zoomed photograph's pan, including a fling after the finger lifts. */
     | { type: 'scroll'; t: number }
@@ -92,4 +95,31 @@ export function reduceDoubleTap(state: DoubleTapState, input: DoubleTapInput): {
         case 'reset':
             return { state: { ...state, touch: null, first: null }, fire: false };
     }
+}
+
+/** A box on screen, in CSS px, as getBoundingClientRect gives it. */
+export interface ScreenBox {
+    readonly left: number;
+    readonly top: number;
+    readonly width: number;
+    readonly height: number;
+}
+
+const unit = (value: number) => Math.min(1, Math.max(0, value));
+
+/**
+ * Where a tap at `at` lands on the fitted photograph `box`, as a share of its width and height (0 to 1, a tap on the
+ * stage beside the photograph counting as its nearest edge), or null for a box with no size.
+ */
+export function placeOnPhoto(box: ScreenBox, at: { x: number; y: number }): { x: number; y: number } | null {
+    if (!(box.width > 0) || !(box.height > 0)) return null;
+    return { x: unit((at.x - box.left) / box.width), y: unit((at.y - box.top) / box.height) };
+}
+
+/**
+ * How far to scroll the zoomed region, each way, so the same place of the zoomed photograph `box` sits under the tap
+ * at `at` again. The browser clamps the result to the region's scroll range, so a place near an edge stops at it.
+ */
+export function zoomScrollBy(box: ScreenBox, place: { x: number; y: number }, at: { x: number; y: number }): { left: number; top: number } {
+    return { left: box.left + place.x * box.width - at.x, top: box.top + place.y * box.height - at.y };
 }
