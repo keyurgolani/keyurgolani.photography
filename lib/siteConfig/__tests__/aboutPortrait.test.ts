@@ -189,6 +189,18 @@ describe('readAboutPortrait', () => {
         expect(await read()).toMatchObject({ state: 'ready', width: 120, height: 150 });
     });
 
+    it.each([Buffer.from([0]), Buffer.from('\n'), Buffer.alloc(100, 7)])('takes a PNG with bytes after its IEND chunk, %j, since it decodes and nothing is still copying', async (extra) => {
+        put('portrait.png', Buffer.concat([await png(400, 500), extra]));
+        expect(await read()).toMatchObject({ state: 'ready', width: 400, height: 500 });
+        expect(warnings()).toEqual([]);
+    });
+
+    it.each([1, 100])('takes a WebP with %i bytes past its RIFF size, since it decodes and nothing is still copying', async (count) => {
+        put('portrait.webp', Buffer.concat([await sharp(await png(400, 500)).webp().toBuffer(), Buffer.alloc(count, 0)]));
+        expect(await read()).toMatchObject({ state: 'ready', width: 400, height: 500 });
+        expect(warnings()).toEqual([]);
+    });
+
     describe('warns once when portrait.json is older than the portrait, since its alt and crop may describe the previous photo', () => {
         const stale = /^\[about\] about\/portrait\.json is older than about\/portrait\.jpg, so its alt text and crop may describe the previous photo\. Update it for this one, or remove it\.$/;
 
@@ -290,7 +302,7 @@ describe('readAboutPortrait', () => {
         it.each([1, 2, 12])("when a PNG still being copied decodes but is missing its last %i bytes, IEND's", async (cut) => {
             const whole = await png(400, 500);
             put('portrait.png', whole.subarray(0, whole.length - cut));
-            await refused(/^about\/portrait\.png doesn't end with a PNG's IEND chunk, so it may still be copying$/);
+            await refused(/^about\/portrait\.png has no PNG IEND chunk yet, so it may still be copying$/);
         });
 
         it.each([1, 2, 12])('when a WebP is %i bytes shorter than its RIFF header says', async (cut) => {

@@ -128,12 +128,15 @@ function startSet(token: string, logger: Logger): PortraitSet {
 /**
  * The set for `token` while it's the current portrait's, started if it isn't
  * yet. Null for any other token. A kept set that's no longer current, since
- * the file was removed, refused, or swapped, is dropped here.
+ * the file was removed, refused, or swapped, is dropped here. A read that
+ * failed only for the moment, as with too many open files, says nothing about
+ * the file, so it keeps the set, though it serves nothing from it this time.
  */
 function setFor(token: string | null, current: AboutPortraitState, logger: Logger): PortraitSet | null {
     const state = kept();
     const currentToken = current.state === 'ready' ? current.token : null;
-    if (state.set !== null && state.set.token !== currentToken) state.set = null;
+    const unsure = current.state === 'none' && current.transient === true;
+    if (state.set !== null && state.set.token !== currentToken && !unsure) state.set = null;
     if (currentToken === null || currentToken !== token) return null;
     state.set ??= startSet(currentToken, logger);
     return state.set;
