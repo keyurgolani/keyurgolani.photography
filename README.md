@@ -188,7 +188,7 @@ Most commands in this README and in [docs/](docs/) name `-f docker-compose.prod.
   docker compose -f docker-compose.prod.yml run --rm --no-deps web sh -c 'rm -rf /app/.next/cache/images/*'
   docker compose -f docker-compose.prod.yml start web image-watcher
   ```
-- **Take a photo down after the launch**, once a catalog revision is active. The launch closed `/assets/photos`, so its legacy derivatives no longer serve, and the steps above only clear them out of the library. Only a data root restored from before the launch opens them again.
+- **Take a photo down after the launch**, once a catalog revision is active. The launch closed `/assets/photos`, so its legacy derivatives no longer serve, and the steps above only clear them out of the library. Only a data root restored from before the launch, with `web` restarted, or an image from before this release opens them again.
   1. Take the photo out of every series that lists it, then publish. Run each command with the same `run --rm --no-deps image-watcher` form as the commands above, as `node dist/scripts/photos.mjs <command>`. `list` shows the series that list the photo. In each one, `sequence remove <seriesId> <photoId>` takes it out, and a publish then needs these too:
      - A published series needs a cover. If the photo was the cover, the remove clears it, so pick another with `sequence cover <seriesId> <otherPhotoId>`.
      - If it was the opening photograph, the remove clears that too, and the series then has no opening photograph. Pick another with `sequence opening <seriesId> <otherPhotoId>` if you want one. A hand edit has to change or drop `openingPhotoId` itself.
