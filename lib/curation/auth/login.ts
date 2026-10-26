@@ -16,8 +16,8 @@ import { createSession } from './sessions';
  * Attempts run one at a time, so a burst sent together still meets the
  * count. While the lock is on, a login still derives the key, so it takes as
  * long as a wrong passphrase, and it's refused whatever the passphrase: the
- * answer is the same as for a wrong one. The login page says the lock is on,
- * and nothing more. Attempts during the lock don't count or extend it.
+ * answer is the same as for a wrong one. The login page says the lock is on
+ * and about how long it has left, and nothing more. Attempts during the lock don't count or extend it.
  *
  * The state lives in memory, like the sessions, so a restart clears it.
  */
@@ -43,6 +43,12 @@ function state(): LockState {
 /** Whether login is locked at `now`. */
 export function loginLocked(now: number = Date.now()): boolean {
     return state().lockedUntil > now;
+}
+
+/** When the lock on at `now` ends, in ms since the epoch, or null when login isn't locked. For the login page's notice. */
+export function loginLockedUntil(now: number = Date.now()): number | null {
+    const until = state().lockedUntil;
+    return until > now ? until : null;
 }
 
 function recordFailure(now: number): void {

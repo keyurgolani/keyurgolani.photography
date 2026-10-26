@@ -36,6 +36,7 @@ Every visitor and curator surface follows these rules. #1 added them with the br
 | Series pages, `/work/<slug>` | `e2e/series.spec.ts` and `e2e/series-return.spec.ts` from #5, the second for Viewer entry from the cover and the sequence and the return to it | #5 |
 | Viewer, `/work/<slug>/photo/<photoId>` | `e2e/viewer.spec.ts` from #7, `e2e/viewer-modal.spec.ts` and `e2e/viewer-touch.spec.ts` from #9 | #7, then #9 |
 | Site navigation, `SiteNav` | `e2e/shell/nav.spec.ts` from #21, with `server-html`, `theme`, and `confinement` in `e2e/shell/` | #21, then #18 for its reveal on Home |
+| Curator login, `/curation/login` | `e2e/curator-login.spec.ts` from #14's 14-2, at rest, with a refusal, and during the lock | #14 |
 | Curation inbox | Added by #14 | #14 |
 | Publish preview | Added by #16 | #16 |
 | Revision history | Added by #15 | #15 |

@@ -7,8 +7,12 @@ interface SameOriginPostFormProps {
   action: string;
   /** The submit button's text. */
   submitLabel: string;
+  /** The button's text while the post is on its way, such as "Signing in…". The button keeps `submitLabel` if this is left out. */
+  pendingLabel?: string;
   className?: string;
   buttonClassName?: string;
+  /** For the line that says a post didn't go through. */
+  alertClassName?: string;
   /** The fields before the button, if any. */
   children?: ReactNode;
 }
@@ -21,9 +25,10 @@ interface SameOriginPostFormProps {
  * curator's `Origin` check refuses (lib/curation/auth/policy.ts). A fetch to
  * the same origin always sends the real `Origin`. The button stays disabled
  * until this has hydrated, so the form never posts the plain way. The cookie
- * a response sets is kept as for any same-origin fetch.
+ * a response sets is kept as for any same-origin fetch. While the post is
+ * on its way the form is `aria-busy` and the button says `pendingLabel`.
  */
-export default function SameOriginPostForm({ action, submitLabel, className, buttonClassName, children }: SameOriginPostFormProps) {
+export default function SameOriginPostForm({ action, submitLabel, pendingLabel, className, buttonClassName, alertClassName, children }: SameOriginPostFormProps) {
   const [ready, setReady] = useState(false);
   const [sending, setSending] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -51,12 +56,16 @@ export default function SameOriginPostForm({ action, submitLabel, className, but
   }
 
   return (
-    <form className={className} method="post" action={action} onSubmit={submit}>
+    <form className={className} method="post" action={action} onSubmit={submit} aria-busy={sending || undefined}>
       {children}
       <button className={buttonClassName} type="submit" disabled={!ready || sending}>
-        {submitLabel}
+        {sending && pendingLabel ? pendingLabel : submitLabel}
       </button>
-      {failed ? <p role="alert">That didn&apos;t go through. Reload the page and try again.</p> : null}
+      {failed ? (
+        <p className={alertClassName} role="alert">
+          That didn&apos;t go through. Reload the page and try again.
+        </p>
+      ) : null}
     </form>
   );
 }

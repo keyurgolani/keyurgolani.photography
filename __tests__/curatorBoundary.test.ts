@@ -7,6 +7,7 @@ import { makeCuratorSecrets, type TestCuratorSecrets } from '../test/helpers/cur
 import { resetLoginForTests } from '../lib/curation/auth/login';
 import { CURATOR_FRAME_POLICY, CURATOR_RESPONSE_HEADERS } from '../lib/curation/auth/policy';
 import { deleteSession, resetSessionsForTests, SESSION_COOKIE, signSessionId, createSession } from '../lib/curation/auth/sessions';
+import { UNAVAILABLE_CSP, UNAVAILABLE_HTML } from '../lib/curation/auth/unavailable';
 import { config, proxy } from '../proxy';
 
 // proxy.ts on the curator paths (#14's 14-2): the flag, the Host allowlist,
@@ -161,14 +162,28 @@ describe('proxy.ts and the curator session', () => {
     ];
 
     it.each(anonymous)('sends a page request with %s to the login page, with the curator headers', (_, headers) => {
+        // Only a cookie that was sent and no longer counts gets ?ended=1, so the page can say the session ended.
+        const login = headers.cookie && headers.cookie !== `${SESSION_COOKIE}=` ? '/curation/login?ended=1' : '/curation/login';
         for (const pathname of ['/curation', '/curation/inbox', '/Curation', '/curation/login/', '/curation/Login', '/curation/%6cogin']) {
             for (const method of ['GET', 'HEAD']) {
                 const response = send(pathname, { method, headers });
                 expect(response.status, `${method} ${pathname}`).toBe(307);
-                expect(response.headers.get('location')).toBe(`http://${CURATOR_HOST}/curation/login`);
+                expect(response.headers.get('location')).toBe(`http://${CURATOR_HOST}${login}`);
                 expectCuratorHeaders(response);
             }
         }
+    });
+
+    it('says ended for a session that ended, and for a cookie past its 12 hours, but adds nothing else', () => {
+        const id = createSession();
+        const cookie = `${SESSION_COOKIE}=${signSessionId(id, secrets.sessionKey)}`;
+        deleteSession(id);
+        expect(send('/curation', { headers: { cookie } }).headers.get('location')).toBe(`http://${CURATOR_HOST}/curation/login?ended=1`);
+        const old = secrets.cookie(Date.now() - 12 * 3600_000 - 1);
+        expect(send('/curation/inbox', { headers: { cookie: old } }).headers.get('location')).toBe(`http://${CURATOR_HOST}/curation/login?ended=1`);
+        expect(send('/curation', { headers: { cookie: 'theme=dark' } }).headers.get('location')).toBe(`http://${CURATOR_HOST}/curation/login`);
+        // A handler still gets its bare 401.
+        expect(send('/api/curation/events', { headers: { cookie } }).status).toBe(401);
     });
 
     it.each(anonymous)('401s a route handler, /api/curation/media and a server action with %s', (_, headers) => {
@@ -239,13 +254,42 @@ describe('proxy.ts and the curator session', () => {
         expect(send('/curation', { headers: { host: 'rebound.example:3001' } }).status).toBe(421);
     });
 
-    it('503s every path, the login page and the public ones too, while a secret file is missing', () => {
+    it('503s every path, the login page and the public ones too, while a secret file is missing, with one page that says where to look', async () => {
         vi.stubEnv('CURATOR_SESSION_SECRET_FILE', `${secrets.dir}/missing.key`);
-        for (const pathname of ['/curation', '/curation/login', '/api/curation/login', '/api/curation/media/x', '/', '/api/health']) {
+        const answers: Response[] = [];
+        for (const pathname of ['/curation', '/curation/login', '/api/curation/login', '/api/curation/media/x', '/', '/api/health', '/curation?x=<script>']) {
             const response = send(pathname, { headers: { cookie: signedIn } });
             expect(response.status, pathname).toBe(503);
+            answers.push(response);
         }
-        expect(send('/api/curation/login', { method: 'POST', headers: { origin: CURATOR_ORIGIN } }).status).toBe(503);
+        answers.push(send('/api/curation/login', { method: 'POST', headers: { origin: CURATOR_ORIGIN } }));
+        answers.push(send('/curation', { method: 'HEAD' }));
+        const [first] = answers;
+        const body = await first.text();
+        expect(body).toBe(UNAVAILABLE_HTML);
+        for (const response of answers) {
+            expect(response.status).toBe(503);
+            expectCuratorHeaders(response);
+            expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8');
+            expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+            expect(response.headers.get('content-security-policy')).toBe(UNAVAILABLE_CSP);
+            if (response !== first) expect(await response.text()).toBe(body);
+        }
+        // What it says: a secret file, the log, the docs and a restart, and not which file or setting.
+        expect(body).toContain("The curator can't sign you in yet");
+        expect(body).toContain('A secret file it needs is missing or unreadable');
+        expect(body).toContain("The curator's log names the setting");
+        expect(body).toContain('docs/curator.md');
+        expect(body).toContain('restart curator on the server');
+        expect(body).not.toMatch(/CURATOR_|_FILE|\.key|secrets\/|missing\.key/);
+        // It loads nothing and runs nothing.
+        expect(body).not.toMatch(/<script|<link|<img|src=|href=|url\(|@import/i);
+        // Its one style element is the one the policy allows by hash, and the policy allows nothing else.
+        const style = /<style>([\s\S]*?)<\/style>/.exec(body)![1];
+        const { createHash } = await import('node:crypto');
+        expect(UNAVAILABLE_CSP).toBe(
+            `default-src 'none'; style-src 'sha256-${createHash('sha256').update(style).digest('base64')}'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+        );
         vi.stubEnv('CURATION_ENABLED', 'false');
         expect(send('/curation').status).toBe(404);
     });

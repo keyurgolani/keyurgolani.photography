@@ -6,8 +6,9 @@ import {
     isCurationEnabled,
     isCuratorPath,
     isLoginRequest,
-    LOGIN_PAGE,
+    loginRedirectPath,
 } from './lib/curation/auth/policy';
+import { UNAVAILABLE_HEADERS, UNAVAILABLE_HTML } from './lib/curation/auth/unavailable';
 import { hasEncodedSeparator, isPublicDerivativePath, isUnderPhotos, resolvedPathname } from './utils/publicDerivatives';
 
 const PLAIN_TEXT = { 'Content-Type': 'text/plain; charset=utf-8', 'X-Content-Type-Options': 'nosniff' };
@@ -16,10 +17,15 @@ function notFound(): NextResponse {
     return new NextResponse('Not Found', { status: 404, headers: { 'Cache-Control': 'no-store', ...PLAIN_TEXT } });
 }
 
-const DENIAL_TEXT: Record<number, string> = { 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 421: 'Misdirected Request', 503: 'Service Unavailable' };
+const DENIAL_TEXT: Record<number, string> = { 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 421: 'Misdirected Request' };
 
-/** A refused curator request, with every curator response header. */
+/**
+ * A refused curator request, with every curator response header. A 503,
+ * the curator's setup incomplete, is the one fixed page in
+ * lib/curation/auth/unavailable.ts, the same on every path and method.
+ */
 function curatorDenial(status: number): NextResponse {
+    if (status === 503) return new NextResponse(UNAVAILABLE_HTML, { status, headers: UNAVAILABLE_HEADERS });
     return new NextResponse(DENIAL_TEXT[status], {
         status,
         headers: { ...CURATOR_RESPONSE_HEADERS, ...CURATOR_FRAME_POLICY, ...PLAIN_TEXT },
@@ -28,15 +34,16 @@ function curatorDenial(status: number): NextResponse {
 
 /**
  * A curator page asked for without a session: on to the login page, with
- * every curator header. Next takes only an absolute Location from a proxy,
- * so it's built on `host`, which has passed the allowlist by now, and never
- * on anything else the request sent. Next sends it on as a relative one when
- * it's the request's own origin.
+ * every curator header, and `?ended=1` when the request sent a session
+ * cookie that no longer counts (loginRedirectPath()). Next takes only an
+ * absolute Location from a proxy, so it's built on `host`, which has passed
+ * the allowlist by now, and never on anything else the request sent. Next
+ * sends it on as a relative one when it's the request's own origin.
  */
-function toLogin(host: string): NextResponse {
+function toLogin(host: string, cookie: string | null): NextResponse {
     return new NextResponse(null, {
         status: 307,
-        headers: { Location: new URL(LOGIN_PAGE, `http://${host}`).toString(), ...CURATOR_RESPONSE_HEADERS, ...CURATOR_FRAME_POLICY },
+        headers: { Location: new URL(loginRedirectPath(cookie), `http://${host}`).toString(), ...CURATOR_RESPONSE_HEADERS, ...CURATOR_FRAME_POLICY },
     });
 }
 
@@ -91,7 +98,7 @@ export function proxy(request: NextRequest): NextResponse {
             // Next hides the RSC headers from the proxy, so a page's RSC fetch is sent to the login like the page itself.
             const page = !resolvedPathname(pathname).toLowerCase().startsWith('/api');
             const host = request.headers.get('host');
-            if (denial.reason === 'session' && !mutation && page && host) return toLogin(host.toLowerCase());
+            if (denial.reason === 'session' && !mutation && page && host) return toLogin(host.toLowerCase(), request.headers.get('cookie'));
             return curatorDenial(denial.status);
         }
         const response = NextResponse.next();
