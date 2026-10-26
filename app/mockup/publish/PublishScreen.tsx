@@ -311,8 +311,9 @@ function PreviewPanel({ model }: { model: ScreenModel }) {
         <section className={styles.panel} aria-labelledby="preview-heading">
             <header className={styles.panelHeader}>
                 <h2 id="preview-heading">Visitor preview</h2>
-                <a href="/mockup/publish/site" className={styles.textLink}>
+                <a href="/mockup/publish/site" className={styles.textLink} target="_blank" rel="noopener noreferrer">
                     Open full preview
+                    <span className={curator.visuallyHidden}> (opens in a new tab)</span>
                     <ExternalLink size={14} aria-hidden="true" />
                 </a>
             </header>
