@@ -75,9 +75,10 @@ export default function InboxList({ view, listView = false }: { view: ReadyView;
                     <h1 id="inbox-heading">Curation inbox</h1>
                     <p>{summaryText(view)}</p>
                 </div>
-                {/* A plain GET of the page: it reads the inbox again and changes nothing. */}
+                {/* A plain GET of the page: it reads the inbox again and changes nothing. It keeps an open item open; the list view
+                    opens none, so a phone stays on the list (a wide screen's plain URL selects the same first item again). */}
                 <form method="get" action="/curation/inbox">
-                    {selectedId ? <input type="hidden" name="item" value={selectedId} /> : null}
+                    {selectedId && !listView ? <input type="hidden" name="item" value={selectedId} /> : null}
                     <button type="submit" className={styles.refresh} aria-label="Refresh inbox">
                         <RefreshCw size={17} aria-hidden="true" />
                     </button>
