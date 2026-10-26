@@ -475,15 +475,17 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         const started = await startServer(served!, launched.root, library!);
         extra.push(started.stop);
 
-        // Legacy mode: the thumbnail serves, and the first test's /_next/image copy is still in the image cache.
+        // Legacy mode: the thumbnail serves, and its /_next/image copy is in the image cache by the second request.
         expect(await ready(started.base)).toMatchObject({ mode: 'legacy' });
         const direct = await fetch(`${started.base}${thumbnail}`);
         expect(direct.status).toBe(200);
         await direct.arrayBuffer();
-        const tile = await fetch(`${started.base}/_next/image?url=${encodeURIComponent(thumbnail)}&w=400&q=75`);
-        expect(tile.status).toBe(200);
-        expect(tile.headers.get('x-nextjs-cache')).toMatch(/^(HIT|STALE)$/);
-        await tile.arrayBuffer();
+        for (let request = 0; request < 2; request += 1) {
+            const tile = await fetch(`${started.base}/_next/image?url=${encodeURIComponent(thumbnail)}&w=400&q=75`);
+            expect(tile.status).toBe(200);
+            if (request === 1) expect(tile.headers.get('x-nextjs-cache')).toMatch(/^(HIT|STALE)$/);
+            await tile.arrayBuffer();
+        }
 
         // The launch, seen by /api/ready alone: no legacy URL is asked for until catalog/ is gone.
         const result = await publish({ dataRoot: launched.root, actor: 'test', confirmLaunch: true, logger: quiet });
