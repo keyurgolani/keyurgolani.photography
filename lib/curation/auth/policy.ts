@@ -5,7 +5,7 @@ import path from 'node:path';
 import { foldName } from '../../foldName';
 import { resolvedPathname } from '../../../utils/publicDerivatives';
 import { readCuratorSecrets } from './secrets';
-import { sessionFromCookies } from './sessions';
+import { sessionCookieValues, sessionFromCookies } from './sessions';
 
 /**
  * The curator access boundary (#14's 14-2), as pure checks on a request's
@@ -309,6 +309,19 @@ export function evaluateCuratorRequest(
 
 /** The login page, the one curator page that asks for no session. */
 export const LOGIN_PAGE = '/curation/login';
+
+/**
+ * Where a page read without a live session goes: the login page, with
+ * `?ended=1` when the request did send a `curator_session` cookie, so the
+ * page can say the session ended. That tells the browser only that it sent
+ * a cookie, which it already knows: not why the cookie stopped counting.
+ */
+export function loginRedirectPath(cookieHeader: string | null): string {
+    return sessionCookieValues(cookieHeader).some((value) => value !== '') ? `${LOGIN_PAGE}?ended=1` : LOGIN_PAGE;
+}
+
+/** Where logout sends the browser, so the login page can say it worked. */
+export const SIGNED_OUT_PAGE = `${LOGIN_PAGE}?signed-out=1`;
 /** Where the login page's form posts. It asks for no session either, and still needs the Origin. */
 export const LOGIN_HANDLER = '/api/curation/login';
 

@@ -88,7 +88,8 @@ const isSessionRefusal = (refusal: Refusal) => /session/.test(refusal.name);
 
 const digestOf = (error: unknown) => (typeof error === 'object' && error !== null && 'digest' in error ? String((error as { digest: unknown }).digest) : '');
 const isNotFound = (error: unknown) => digestOf(error).startsWith('NEXT_HTTP_ERROR_FALLBACK;404');
-const isLoginRedirect = (error: unknown) => /^NEXT_REDIRECT;replace;\/curation\/login;/.test(digestOf(error));
+// With `?ended=1` when the request sent a session cookie that no longer counts.
+const isLoginRedirect = (error: unknown) => /^NEXT_REDIRECT;replace;\/curation\/login(?:\?ended=1)?;/.test(digestOf(error));
 
 let tempRoot: string;
 let dataRoot: string;
@@ -365,6 +366,7 @@ describe('the curator pages, rendered with the boundary failing', () => {
         const before = snapshot();
         const outcome = await attempt({ ...refusal, headers: () => ({ host: CURATOR_HOST, cookie: refusal.headers().cookie ?? '' }) }, () => CurationPage());
         expect(isLoginRedirect(outcome)).toBe(true);
+        expect(digestOf(outcome).includes('?ended=1')).toBe(Boolean(refusal.headers().cookie));
         expect(snapshot()).toEqual(before);
     });
 
