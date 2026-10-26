@@ -48,7 +48,7 @@ export function curatorThumbnailUrl(photoId: string, assetRevision: string, prof
 /** Where an item sits, the way `curation list` counts it, from D6's shared placement lookup (lib/curation/placement.ts). */
 function groupOf(event: CurationEvent, waiting: string | null, placed: boolean, unplaced: boolean): ItemGroup {
     if (unplaced) return 'unplaced';
-    if (event.status === 'approved' || event.status === 'dismissed') return 'settled';
+    if (event.status === 'approved' || event.status === 'dismissed' || event.status === 'resolved') return 'settled';
     if (placed) return 'placed';
     if (event.status === 'deferred') return 'deferred';
     return needsJudgment(event, waiting, placed) ? 'judgment' : 'waiting';
