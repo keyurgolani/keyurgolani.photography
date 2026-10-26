@@ -151,6 +151,14 @@ describe('the status and the system response', () => {
         // #17's resolved never claims nothing a visitor sees changed: an archive's publish takes the photo down.
         expect(statusLabel(item({ status: 'resolved', group: 'settled' }))).toEqual({ text: 'Resolved', tone: null });
         expect(systemResponse(item({ status: 'resolved', group: 'settled' }), labelOf)).toBe('Resolved, so it needs no judgment.');
+    });
+
+    it("calls a missing item #17's archive approved archived, and says whether the live site still shows it", () => {
+        const archived = (references: Item['references']) => item({ type: 'missing', status: 'approved', group: 'settled', references });
+        expect(statusLabel(archived([]))).toEqual({ text: 'Archived', tone: null });
+        expect(systemResponse(archived([{ kind: 'revision', id: REV }]), labelOf)).toBe('Archived and out of every series in the draft. The live site shows it until you publish.');
+        expect(systemResponse(archived([]), labelOf)).toBe('Archived, and nothing shows it any more.');
+        expect(systemResponse(archived(null), labelOf)).toBe('Archived and out of every series in the draft.');
         expect(systemResponse(item(), labelOf)).toBe('It has a stable ID and waits here as a draft suggestion. Nothing publishes.');
     });
 });

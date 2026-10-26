@@ -318,6 +318,14 @@ describe('the detail', () => {
         expect(screen.getByRole('button', { name: 'Reopen' })).toBeInTheDocument();
     });
 
+    it("shows a missing item #17 archived as archived, with no hint about series or description", () => {
+        renderInbox(view({ selected: detail({ type: 'missing', status: 'approved', group: 'settled', references: [], can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true }, primaryUnavailable: null }) }));
+        expect(screen.getAllByText('Archived').length).toBeGreaterThan(0);
+        expect(screen.getByText('Archived, and nothing shows it any more.')).toBeInTheDocument();
+        expect(screen.queryByText('Reopen it to change its series or description.')).toBeNull();
+        expect(screen.queryByRole('heading', { name: 'Published output protected' })).toBeNull();
+    });
+
     it('says so when the URL names an item the inbox lacks', () => {
         renderInbox(view({ selected: null, missingSelection: EVT(4) }));
         expect(screen.getByText(/isn't in the inbox any more/)).toBeInTheDocument();
