@@ -1,0 +1,4 @@
+today-next-1440 / --viewport 1440x900 --dpr 2 --max-width 1440 --max-height 900
+today-next-1440-mouse / --viewport 1440x900 --dpr 2 --max-width 1440 --max-height 900 --mouse
+today-next-1440-corners / --viewport 1440x900 --dpr 2 --max-width 1440 --max-height 900 --corners
+today-next-390 / --viewport 390x844 --dpr 2 --mobile --max-width 780 --max-height 1688

@@ -33,7 +33,15 @@ const ParallaxCard: React.FC<ParallaxCardProps> = ({
     const offsetX = (elementHCenter - event.clientX) / window.innerWidth;
     const offsetY = (elementVCenter - event.clientY) / window.innerHeight;
 
-    card.style.transform = `translateY(${-offsetX * cardOffset}px) rotateX(${-offsetY * cardOffset}deg) rotateY(${offsetX * (cardOffset * 2)}deg)`;
+    const rotateX = -offsetY * cardOffset;
+    const rotateY = offsetX * (cardOffset * 2);
+    card.style.transform = `translateY(${-offsetX * cardOffset}px) rotateX(${rotateX}deg) rotateY(${rotateY}deg)`;
+    // STAGE 1 PROTOTYPE: how far the edge nearest the pointer lifts, for a shadow that follows the tilt.
+    const liftX = Math.sin((-rotateY * Math.PI) / 180);
+    const liftY = Math.sin((rotateX * Math.PI) / 180);
+    card.style.setProperty('--tilt-x', liftX.toFixed(4));
+    card.style.setProperty('--tilt-y', liftY.toFixed(4));
+    card.style.setProperty('--tilt', Math.hypot(liftX, liftY).toFixed(4));
 
     layerRefs.current.forEach((layer) => {
       if (layer) {
@@ -47,6 +55,7 @@ const ParallaxCard: React.FC<ParallaxCardProps> = ({
     const card = cardRef.current;
     if (card) {
       card.style.transform = '';
+      for (const name of ['--tilt-x', '--tilt-y', '--tilt']) card.style.removeProperty(name);
     }
     layerRefs.current.forEach((layer) => {
       if (layer) layer.style.transform = '';

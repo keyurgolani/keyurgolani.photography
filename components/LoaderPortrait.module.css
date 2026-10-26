@@ -26,3 +26,34 @@
     0 10px 15px -3px rgb(0 0 0 / 0.1),
     0 4px 6px -4px rgb(0 0 0 / 0.1);
 }
+
+/* (ii) with a shadow that follows the tilt. One light, fixed, above and to
+   the left: at rest the shadows are today's three (shadow-lg's two parts and
+   drop-shadow-2xl's 25 px), each leaning right by 0.3 of its drop. As the
+   card tilts, ParallaxCard sets --tilt-x and --tilt-y, the sine of how far
+   the edge nearest the pointer lifts (about 0.2 at most over the card), and
+   --tilt, their length. Each shadow moves twice that, times its own depth,
+   toward the lifted edge, which is away from where the face turns, and its
+   blur grows by up to half again, so the deeper shadows travel and soften
+   more. It's the image's own box-shadow, no second layer, and it eases like
+   the card's transform: 0.1 s ease there and back. */
+.tilted {
+  --lift-x: var(--tilt-x, 0);
+  --lift-y: var(--tilt-y, 0);
+  --lift: var(--tilt, 0);
+  box-shadow:
+    0 0 0 4px rgb(255 255 255 / 0.51),
+    calc(4px * (0.3 + 2 * var(--lift-x))) calc(4px * (1 + 2 * var(--lift-y))) calc(6px * (1 + 1.5 * var(--lift))) -4px rgb(0 0 0 / 0.1),
+    calc(10px * (0.3 + 2 * var(--lift-x))) calc(10px * (1 + 2 * var(--lift-y))) calc(15px * (1 + 1.5 * var(--lift))) -3px rgb(0 0 0 / 0.1),
+    calc(25px * (0.3 + 2 * var(--lift-x))) calc(25px * (1 + 2 * var(--lift-y))) calc(25px * (1 + 1.5 * var(--lift))) 0 rgb(0 0 0 / 0.15);
+  filter: none;
+  transition: box-shadow 0.1s ease;
+}
+
+[data-theme="dark"] .tilted {
+  box-shadow:
+    0 0 0 4px rgb(255 255 255 / 0.19),
+    calc(4px * (0.3 + 2 * var(--lift-x))) calc(4px * (1 + 2 * var(--lift-y))) calc(6px * (1 + 1.5 * var(--lift))) -4px rgb(0 0 0 / 0.1),
+    calc(10px * (0.3 + 2 * var(--lift-x))) calc(10px * (1 + 2 * var(--lift-y))) calc(15px * (1 + 1.5 * var(--lift))) -3px rgb(0 0 0 / 0.1),
+    calc(25px * (0.3 + 2 * var(--lift-x))) calc(25px * (1 + 2 * var(--lift-y))) calc(25px * (1 + 1.5 * var(--lift))) 0 rgb(0 0 0 / 0.15);
+}

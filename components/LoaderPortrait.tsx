@@ -16,7 +16,8 @@ import styles from './LoaderPortrait.module.css';
  *
  * - `tilt` off, (i): the same markup with no handlers, so nothing moves.
  * - `tilt` on, (ii): ParallaxCard's card tilt with today's cardOffset of 50,
- *   and the one layer's own offset at 0, so the image moves only with the card.
+ *   and the one layer's own offset at 0, so the image moves only with the
+ *   card, and a shadow that follows the tilt (LoaderPortrait.module.css).
  */
 export const LOADER_PORTRAIT_SIZES = '(min-width: 768px) 320px, 256px';
 
@@ -31,7 +32,7 @@ export default function LoaderPortrait({ portrait, tilt }: { portrait: AboutPort
         loading="eager"
         fetchPriority="high"
         preload
-        className={styles.image}
+        className={tilt ? `${styles.image} ${styles.tilted}` : styles.image}
       />
     </div>
   );

@@ -28,9 +28,13 @@ const out = opt('out');
 const [vw, vh] = opt('viewport', '1440x900').split('x').map(Number);
 const dpr = Number(opt('dpr', '1'));
 const mobile = flag('mobile');
-const mouse = flag('mouse');
+const corners = flag('corners');
+const mouse = flag('mouse') || corners;
 const photoDelay = Number(opt('photo-delay', '800'));
 const tail = Number(opt('tail', '1500'));
+// Frames come at CSS pixel size, whatever the device pixel ratio.
+const maxW = Number(opt('max-width', String(vw)));
+const maxH = Number(opt('max-height', String(vh)));
 if (!url || !out) throw new Error('usage: record.mjs --url <url> --out <dir> ...');
 const host = new URL(url).hostname;
 if (host !== '127.0.0.1') throw new Error(`Loopback only, refusing ${host}`);
@@ -130,9 +134,28 @@ cdp.on('Page.screencastFrame', async ({ data, metadata, sessionId }) => {
     frames.push({ ts: metadata.timestamp * 1000, data });
     cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
 });
-await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 88, everyNthFrame: 1 });
+await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 88, everyNthFrame: 1, maxWidth: maxW, maxHeight: maxH });
 
 let stopMouse = false;
+// Off the card, then each corner of the card's box in turn (held 500 ms), then
+// the top-right corner again through the handoff, timed from the portrait's first paint.
+const cornerLoop = async () => {
+    const c = [vw / 2, vh / 2];
+    const steps = [[0, [200, 150]], [500, [c[0] - 130, c[1] - 130]], [1000, [c[0] + 130, c[1] - 130]], [1500, [c[0] + 130, c[1] + 130]], [2000, [c[0] - 130, c[1] + 130]], [2500, [c[0] + 130, c[1] - 130]]];
+    let first = null;
+    while (!stopMouse && first === null) {
+        first = await page.evaluate(() => window.__rec?.marks?.portraitFirst ?? null).catch(() => null);
+        if (first === null) await new Promise((r) => setTimeout(r, 10));
+    }
+    for (const [at, [x, y]] of steps) {
+        while (!stopMouse && Date.now() < first + at) await new Promise((r) => setTimeout(r, 5));
+        if (stopMouse) return;
+        // Two short moves, so the card sees a mousemove inside it at the target.
+        await page.mouse.move(x - 2, y - 2).catch(() => {});
+        await page.mouse.move(x, y).catch(() => {});
+        await page.evaluate((s) => { window.__rec.mouse = window.__rec.mouse || []; window.__rec.mouse.push([Date.now(), s]); }, [at, x, y]).catch(() => {});
+    }
+};
 const mouseLoop = async () => {
     // A slow circle over the portrait, 140 px across, a turn every 1.6 s.
     const t0 = Date.now();
@@ -145,7 +168,7 @@ const mouseLoop = async () => {
 
 const navAt = Date.now();
 await page.goto(url, { waitUntil: 'commit' });
-const mousing = mouse ? mouseLoop() : null;
+const mousing = corners ? cornerLoop() : mouse ? mouseLoop() : null;
 // Until the mask is gone, then the tail.
 const deadline = Date.now() + 12000;
 let gone = null;
@@ -173,6 +196,6 @@ for (const [i, f] of frames.entries()) {
 }
 const marks = Object.fromEntries(Object.entries(rec.marks).map(([k, v]) => [k, { sinceNav: v - navAt, sinceReveal: v - zero }]));
 const samples = rec.samples.map((s) => ({ ...s, rel: s.t - zero, t: undefined }));
-fs.writeFileSync(path.join(out, 'timeline.json'), JSON.stringify({ url, viewport: [vw, vh], dpr, mobile, mouse, photoDelay, navAt, zero: 'revealStart', marks, frames: named, samples }, null, 1));
+fs.writeFileSync(path.join(out, 'timeline.json'), JSON.stringify({ url, viewport: [vw, vh], dpr, mobile, mouse: corners ? 'corners' : mouse, mouseSteps: (rec.mouse ?? []).map(([t, s]) => ({ sinceReveal: t - zero, step: s })), photoDelay, navAt, zero: 'revealStart', marks, frames: named, samples }, null, 1));
 const gaps = named.slice(1).map((f, i) => f.rel - named[i].rel);
 console.log(JSON.stringify({ out, frames: named.length, marks, medianGapMs: gaps.sort((a, b) => a - b)[Math.floor(gaps.length / 2)] ?? null }));

@@ -1,0 +1,3 @@
+proto-ii-composite-1440-corners /?loader=tilt --viewport 1440x900 --dpr 2 --max-width 1440 --max-height 900 --corners
+proto-ii-composite-1440 /?loader=tilt --viewport 1440x900 --dpr 2 --max-width 1440 --max-height 900
+proto-ii-composite-390 /?loader=tilt --viewport 390x844 --dpr 2 --mobile --max-width 780 --max-height 1688

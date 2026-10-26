@@ -1,0 +1,1 @@
+proto-none-1440 /?loader=tilt --viewport 1440x900 --dpr 2 --max-width 1440 --max-height 900
