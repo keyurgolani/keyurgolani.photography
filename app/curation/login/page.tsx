@@ -41,9 +41,9 @@ function NoticeText({ notice }: { notice: Notice }) {
     case 'locked':
       return (
         <>
-          Sign-in is paused after five wrong passphrases, and until it ends no passphrase is checked, the right one included. Try again in{' '}
-          {notice.minutes === 1 ? 'about a minute' : `about ${notice.minutes} minutes`}, or restart curator on the server. If those tries weren&apos;t yours,
-          someone else can reach the curator.
+          Sign-in is paused for {notice.minutes === 1 ? 'about one more minute' : `about ${notice.minutes} more minutes`}, after five wrong passphrases. Until
+          then no passphrase is checked, the right one included. Restarting curator on the server also ends it. If those tries weren&apos;t yours, someone else
+          can reach the curator.
         </>
       );
     case 'failed':
@@ -86,6 +86,7 @@ export default async function CuratorLoginPage({ searchParams }: { searchParams:
             className={styles.form}
             buttonClassName={styles.button}
             alertClassName={styles.refusal}
+            alertBeforeButton
             action="/api/curation/login"
             submitLabel="Sign in"
             pendingLabel="Signing in…"

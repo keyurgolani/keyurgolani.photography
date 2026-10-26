@@ -1,6 +1,7 @@
 /* The curator login: the Inbox's header row (the mark and "Portfolio
-   curation" only), then one form on the Gallery After Hours ground, left on
-   the wordmark's edge. The ground fills the window, with no SiteNav above it,
+   curation" only), then one form on the Gallery After Hours ground, centred
+   in the window as one block, a little above the middle, with its text left
+   aligned inside it. The ground fills the window, with no SiteNav above it,
    and it's dark in both themes, as the rest of the curator is. The notice
    tones and the field and header surfaces are the Inbox's
    (app/curation/curator.module.css, from #14's 14-3). Every control is at
@@ -61,7 +62,9 @@
   display: flex;
   flex: 1;
   align-items: center;
-  padding: 3rem var(--site-gutter) 4rem;
+  justify-content: center;
+  /* More below than above, so the block sits a little above the middle. */
+  padding: 3rem var(--site-gutter) max(4rem, 12svh);
 }
 
 .body {
