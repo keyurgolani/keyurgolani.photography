@@ -13,7 +13,7 @@ import path from 'node:path';
 for (const dir of process.argv.slice(2)) {
     const file = path.join(dir, 'timeline.json');
     const t = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (t.zero === 'revealStart(derived)') continue;
+    if (t.marks.revealStart) continue; // marked at recording, or already realigned
     const settleAfterR = path.basename(dir).startsWith('v110') ? 1150 : 1200;
     const gone = t.marks.maskGone.sinceNav;
     const rSinceNav = gone - settleAfterR;
