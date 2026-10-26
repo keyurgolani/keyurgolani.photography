@@ -4,7 +4,10 @@ import { useEffect, useRef, useState, type RefObject } from 'react';
 import { SWIPE_IDLE, claimsTouch, isPinched, reduceSwipe, type SwipeInput, type SwipeState } from './swipe';
 import type { ViewerStep } from './viewerKeys';
 
-/** The photograph's box, where a swipe can start. Controls sit outside it. */
+/**
+ * The photograph's stage, where a swipe or a double-tap can start: the photograph and, on a phone, where the stage takes
+ * the spare height (#9b), the dark ground above and below it, which gives a thumb more room. Controls sit outside it.
+ */
 export const STAGE_SELECTOR = '[data-viewer-stage]';
 
 /**

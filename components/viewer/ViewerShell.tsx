@@ -5,6 +5,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import ViewerChrome, { type ViewerChromeActions } from './ViewerChrome';
 import { ViewerContext, type ViewerChromeState, type ViewerMode, type ViewerShellContext } from './viewerContext';
 import { stepForKey, type ViewerStep } from './viewerKeys';
+import { useDoubleTap } from './useDoubleTap';
 import { useSwipe } from './useSwipe';
 import { boundaryText, positionText } from './viewerLabels';
 import styles from './StoryViewer.module.css';
@@ -33,9 +34,11 @@ function sameChrome(a: ViewerChromeState | null, b: ViewerChromeState): boolean 
  *   focus back on the opener.
  *
  * In both, Left and Right move (see stepForKey), and so does a horizontal
- * swipe on the photograph (see useSwipe). Previous and Next replace the
- * history entry without scrolling, an end announces itself and doesn't move,
- * and each move is announced in a polite live region that's empty at mount.
+ * swipe on the photograph (see useSwipe). A double-tap on the photograph
+ * toggles Zoom, as the Zoom button does (see useDoubleTap). Previous and
+ * Next replace the history entry without scrolling, an end announces itself
+ * and doesn't move, and each move is announced in a polite live region
+ * that's empty at mount.
  * Zoom resets on every move. Nothing slides: the photograph never follows
  * the finger, and the next one replaces it in place, so reduced motion has
  * no slide to remove and the header and the region give the new position at
@@ -145,6 +148,16 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
 
     const pinched = useSwipe(rootRef, { zoomed, zoomedRef, stepRef, photoId: chrome?.photoId ?? null });
 
+    // A double-tap on the photograph is Zoom, and does nothing where Zoom does nothing (no usable set), so it can't leave
+    // the shell zoomed with nothing on screen to show it, which would stop the swipe.
+    const hasImage = chrome?.hasImage ?? false;
+    const toggleZoom = useCallback(() => setZoomed((value) => !value), []);
+    const doubleTapRef = useRef<() => void>(() => undefined);
+    useEffect(() => {
+        doubleTapRef.current = hasImage ? toggleZoom : () => undefined;
+    }, [hasImage, toggleZoom]);
+    useDoubleTap(rootRef, { toggleRef: doubleTapRef, photoId: chrome?.photoId ?? null });
+
     const actions = useMemo<ViewerChromeActions>(() => ({ step, close }), [step, close]);
     const context = useMemo<ViewerShellContext>(() => ({ mode, claimed: chrome !== null, zoomed, headingId, report }), [mode, chrome, zoomed, headingId, report]);
     const surface = (chrome?.accent ? { '--cc-accent': chrome.accent } : undefined) as CSSProperties | undefined;
@@ -152,7 +165,7 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
     const body = (
         <ViewerContext.Provider value={context}>
             {chrome !== null && (
-                <ViewerChrome state={chrome} mode={mode} headingId={headingId} zoomed={zoomed} onZoom={() => setZoomed((value) => !value)} actions={actions} />
+                <ViewerChrome state={chrome} mode={mode} headingId={headingId} zoomed={zoomed} onZoom={toggleZoom} actions={actions} />
             )}
             {children}
             <p className="sr-only" role="status" aria-live="polite" data-viewer-announcer="">

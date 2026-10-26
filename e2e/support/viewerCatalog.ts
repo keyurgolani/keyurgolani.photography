@@ -64,9 +64,12 @@ export function useViewerCatalog(): () => string {
                     sourcePath: 'private/SENTINEL-source.jpg',
                     technical: { Make: 'Fixture Make', Model: 'Fixture Model', FNumber: '2.8', ISO: '200' },
                 },
+                // The four mixes of the optional title and caption (#9b's first screen): P[0] has both, P[1] neither, P[2] a
+                // title alone, and P[3] a caption alone. P[3] is also a tall photograph, so zoomed on a phone it scrolls
+                // both ways (#9c's zoom to the tapped place).
                 photo(1),
-                photo(2),
-                photo(3),
+                { ...photo(2), title: 'Fixture harbor from the pier' },
+                { ...photo(3), height: 1350, caption: 'Fixture ridge caption.' },
                 { ...photo(4), title: 'SENTINEL draft title' },
                 { ...photo(5), title: 'SENTINEL hidden title' },
             ],

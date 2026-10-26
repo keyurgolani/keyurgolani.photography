@@ -123,3 +123,39 @@ export async function twoFingerSpread(page: Page, { from, gap = 40, spread = 80,
     if (realTouches(page)) await cdpGesture(page, fingers, steps, 'lift');
     else await pointerGesture(page, fingers, steps, 'lift');
 }
+
+/**
+ * Two quick taps at `at`, `gap` ms apart from the first lift to the second touch: real touches on Chromium, synthetic
+ * pointer events on WebKit (see realTouches), each held about 40 ms.
+ */
+export async function doubleTap(page: Page, at: Point, { gap = 80 }: { gap?: number } = {}): Promise<void> {
+    if (!realTouches(page)) {
+        await page.evaluate(
+            async ({ at, gap }) => {
+                const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+                const target = document.elementFromPoint(at.x, at.y) ?? document.body;
+                const send = (type: string) =>
+                    target.dispatchEvent(new PointerEvent(type, { pointerId: 1, pointerType: 'touch', isPrimary: true, clientX: at.x, clientY: at.y, bubbles: true, cancelable: true, composed: true }));
+                for (const index of [0, 1]) {
+                    if (index > 0) await pause(gap);
+                    send('pointerdown');
+                    await pause(40);
+                    send('pointerup');
+                }
+            },
+            { at, gap },
+        );
+        return;
+    }
+    const cdp: CDPSession = await page.context().newCDPSession(page);
+    try {
+        for (let index = 0; index < 2; index++) {
+            if (index > 0) await page.waitForTimeout(gap);
+            await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ id: 1, x: at.x, y: at.y }] });
+            await page.waitForTimeout(40);
+            await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+        }
+    } finally {
+        await cdp.detach();
+    }
+}
