@@ -24,6 +24,11 @@
  * and an active /media URL both still serve the revision that request
  * loaded, as `degraded`, so the routes share the reader's state, and that
  * /api/photos keeps that revision's ETag.
+ *
+ * Last, in a third server, it publishes, asks only /api/ready, and then moves
+ * `catalog/` out of the data root. The legacy URLs stay closed, directly and
+ * through /_next/image, so the proxy shares the cutover memory /api/ready's
+ * route has, though the build gives each its own copy of the mode check.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
@@ -461,5 +466,36 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         expect(await listed('catalog', result.revisionId!, started.base)).toContain(url);
         await expectNotModified(tag, result.revisionId!, started.base);
         expect(started.output()).not.toContain(damaged.root);
+    }, 120_000);
+
+    it('keeps the legacy URLs closed once only /api/ready saw the launch, with catalog/ then moved aside', async () => {
+        const launched = await createTestCatalog({ withAssets: true, photos: 2, series: [{ photos: 2 }], seed: 59 });
+        extra.push(() => launched.cleanup());
+        const thumbnail = legacy[1];
+        const started = await startServer(served!, launched.root, library!);
+        extra.push(started.stop);
+
+        // Legacy mode: the thumbnail serves, and the first test's /_next/image copy is still in the image cache.
+        expect(await ready(started.base)).toMatchObject({ mode: 'legacy' });
+        const direct = await fetch(`${started.base}${thumbnail}`);
+        expect(direct.status).toBe(200);
+        await direct.arrayBuffer();
+        const tile = await fetch(`${started.base}/_next/image?url=${encodeURIComponent(thumbnail)}&w=400&q=75`);
+        expect(tile.status).toBe(200);
+        expect(tile.headers.get('x-nextjs-cache')).toMatch(/^(HIT|STALE)$/);
+        await tile.arrayBuffer();
+
+        // The launch, seen by /api/ready alone: no legacy URL is asked for until catalog/ is gone.
+        const result = await publish({ dataRoot: launched.root, actor: 'test', confirmLaunch: true, logger: quiet });
+        expect(result.outcome, result.message).toBe('PUBLISHED');
+        expect(await ready(started.base)).toMatchObject({ mode: 'catalog', revisionId: result.revisionId, revisionNumber: 1 });
+        const catalogDir = catalogPaths(launched.root).dir;
+        fs.renameSync(catalogDir, `${catalogDir}-aside`);
+        // /api/ready's route still remembers the cutover.
+        const after = await fetch(`${started.base}/api/ready`);
+        expect(((await after.json()) as { mode: string }).mode, started.output()).toBe('catalog');
+        await expectContained(thumbnail, started.base);
+        for (const url of legacy) await expectContained(url, started.base);
+        expect(started.process.exitCode).toBeNull();
     }, 120_000);
 });

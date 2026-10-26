@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { NextResponse, type NextRequest } from 'next/server';
 import { catalogMode } from './lib/catalog/mode';
 import { CURATOR_FRAME_POLICY, CURATOR_RESPONSE_HEADERS, evaluateCuratorRequest, isCurationEnabled, isCuratorPath } from './lib/curation/auth/policy';
@@ -18,15 +19,30 @@ function imageRefused(): NextResponse {
     return new NextResponse(IMAGE_URL_NOT_ALLOWED, { status: 400, headers: { 'Cache-Control': 'no-store', ...PLAIN_TEXT } });
 }
 
+/** Whether `root` is a folder that's there. Anything that stops the check counts as not there. */
+async function isFolder(root: string): Promise<boolean> {
+    try {
+        return (await fs.promises.stat(/*turbopackIgnore: true*/ root)).isDirectory();
+    } catch {
+        return false;
+    }
+}
+
 /**
  * Whether the legacy derivatives still serve: only in legacy mode, before
  * the first catalog revision goes live. It's the check /api/ready reports,
  * made per request, so the launch publish closes them with no restart. That
- * check remembers a cutover for as long as the process runs, and answers
- * `catalog` while the data root can't be read, so this fails closed.
+ * check remembers a cutover for as long as the process runs, in every bundle
+ * of it, and answers `catalog` while the data root can't be read, so this
+ * fails closed. With no data root configured, or none at its path, they
+ * don't serve either: the legacy pages answer 503 there already, so nothing
+ * a visitor sees loads them. An existing root that isn't initialized yet,
+ * empty included, is legacy mode and serves them.
  */
 async function servesLegacy(): Promise<boolean> {
-    return (await catalogMode(dataRoot())) === 'legacy';
+    const root = dataRoot();
+    if (root === null || !(await isFolder(root))) return false;
+    return (await catalogMode(root)) === 'legacy';
 }
 
 /**
@@ -66,9 +82,9 @@ const READ_METHODS = new Set(['GET', 'HEAD']);
  *   the checks in lib/curation/auth/policy.ts (bind, `Host`, and `Origin` on
  *   a mutation), and each page, handler and action runs requireCurator()
  *   again.
- * - `/_next/image` is checked only for its `url`: once a catalog revision
- *   is live, it refuses one that reaches /assets/photos with a 400 before
- *   its own cache can answer. Otherwise it passes.
+ * - `/_next/image` is checked only for its `url`: unless the legacy
+ *   derivatives serve, it refuses one that reaches /assets/photos with a 400
+ *   before its own cache can answer. Otherwise it passes.
  * - With `CURATION_ENABLED=true`, every other path needs the curator's
  *   `Host` too (421 otherwise). Only `/_next/static`, outside the matcher,
  *   and `/_next/image` answer any `Host`, with the same bytes as on web.
@@ -79,9 +95,9 @@ const READ_METHODS = new Set(['GET', 'HEAD']);
  * - Under /assets/photos, original sources get a 404 at any depth. The
  *   legacy derivatives (top-level files in thumbnails, medium, and optimized
  *   as .webp, their -avif twins as .avif, and lqip as .txt) serve in legacy
- *   mode only, since the legacy pages load them. Once a catalog revision is
- *   live, photos serve only from the /media sets it holds, so everything
- *   under /assets/photos gets a 404.
+ *   mode only, on a data root that's there, since the legacy pages load
+ *   them. Once a catalog revision is live, photos serve only from the /media
+ *   sets it holds, so everything under /assets/photos gets a 404.
  */
 export async function proxy(request: NextRequest): Promise<NextResponse> {
     const { pathname, searchParams } = request.nextUrl;
