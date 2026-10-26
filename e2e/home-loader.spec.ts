@@ -9,9 +9,9 @@ import { expect, setPhotoFixtures, test } from './support/test';
 // Home's intro shows About's portrait, the stand-in the servers read from
 // their site config folder, and hands off as v1.1.0 did: the portrait glides
 // and shrinks into its place, and stays as the badge, for 3 s and then
-// whenever the chrome shows. On a laptop that's v1.1.0's place, 280 px above
-// the bottom at 0.85; on a phone or a short landscape screen it's one clear of
-// the series title and the nav (HeroReveal.module.css). The badge and the
+// whenever the chrome shows. That's v1.1.0's place, 280 px above the bottom
+// at 0.85, wherever it clears the nav and the series title by 16 px, and the
+// nearest place that does elsewhere (HeroReveal's badgePlace()). The badge and the
 // loading portrait sit under the chrome and take no pointer, and a mouse over
 // either tilts it. While the intro plays, the mouse doesn't wake the chrome. A server without a portrait is covered by the unit tests
 // (components/__tests__/HeroReveal.test.tsx and app/__tests__/page.test.tsx),
@@ -63,19 +63,14 @@ const boxOf = (target: Locator) =>
     });
 
 /**
- * The badge's place, HeroReveal.module.css's: the centre and width of the
- * 256 px box, or 320 px from 768 px wide, once it lands. v1.1.0's on a laptop,
- * centred 280 px above the bottom at 0.85; on a screen taller than it's wide
- * up to 1024 px, centred 439 px above the bottom (470 px from 768 px wide);
- * under 500 px tall in landscape, a quarter of the width right of the middle,
- * 10 px above it, at 0.6.
+ * The badge's place on Home before the cutover, which these servers serve:
+ * v1.1.0's, centred 280 px above the bottom at 0.85 of the 256 px box, or
+ * 320 px from 768 px wide. With no series title, it clears the nav at both
+ * projects' sizes. The catalog Home's places are checked at the end.
  */
 const badgePlace = (page: Page) => {
     const { width, height } = page.viewportSize()!;
-    const box = width >= 768 ? 320 : 256;
-    if (width > height && height < 500) return { x: width * 0.75, y: height / 2 - 10, width: box * 0.6 };
-    if (height >= width && width < 1024) return { x: width / 2, y: height - (box === 320 ? 470 : 439), width: box * 0.85 };
-    return { x: width / 2, y: height - 280, width: box * 0.85 };
+    return { x: width / 2, y: height - 280, width: (width >= 768 ? 320 : 256) * 0.85 };
 };
 
 const opacityOf = (target: Locator) => target.evaluate((el) => Number(getComputedStyle(el).opacity));
@@ -344,27 +339,34 @@ test.describe("the badge's place on the catalog Home", () => {
     test.use({ baseURL: CATALOG_ORIGIN });
 
     type Box = { left: number; top: number; right: number; bottom: number };
-    const intersects = (a: Box, b: Box) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    /** How far apart two boxes are, negative when they overlap. */
+    const gap = (a: Box, b: Box) => Math.max(b.left - a.right, a.left - b.right, b.top - a.bottom, a.top - b.bottom);
 
-    for (const size of [
-        { width: 390, height: 844 },
-        { width: 844, height: 390 },
-        { width: 1440, height: 900 },
-        { width: 1366, height: 768 },
-        { width: 360, height: 740 },
+    for (const { width, height, place } of [
+        { width: 1440, height: 900, place: 'v1.1.0' },
+        { width: 1536, height: 864, place: 'v1.1.0' },
+        { width: 1366, height: 768, place: 'clear' },
+        { width: 1280, height: 800, place: 'clear' },
+        { width: 1024, height: 768, place: 'clear' },
+        { width: 390, height: 844, place: 'clear' },
+        { width: 360, height: 740, place: 'clear' },
+        { width: 844, height: 390, place: 'side' },
     ]) {
-        test(`the landed badge clears the series title and the nav at ${size.width} x ${size.height}`, async ({ page }, testInfo) => {
+        test(`the landed badge keeps 16 px from the series title and the nav at ${width} x ${height}`, async ({ page }, testInfo) => {
             runsOn(testInfo, 'desktop');
-            await page.setViewportSize(size);
+            await page.setViewportSize({ width, height });
             await page.goto('/');
             await waitForHydration(page);
             await expect(main(page)).toHaveAttribute('data-home-intro', 'settled', { timeout: 20_000 });
             await expect(badge(page)).toHaveAttribute('data-landed', '');
-            const place = badgePlace(page);
-            const landed = await boxOf(badge(page));
-            expect(Math.abs(landed.x - place.x)).toBeLessThanOrEqual(1);
-            expect(Math.abs(landed.y - place.y)).toBeLessThanOrEqual(1);
-            expect(Math.abs(landed.width - place.width)).toBeLessThanOrEqual(1);
+            await expect(badge(page)).toHaveAttribute('data-badge-place', place);
+            if (place === 'v1.1.0') {
+                const exact = badgePlace(page);
+                const landed = await boxOf(badge(page));
+                expect(Math.abs(landed.x - exact.x)).toBeLessThanOrEqual(1);
+                expect(Math.abs(landed.y - exact.y)).toBeLessThanOrEqual(1);
+                expect(Math.abs(landed.width - exact.width)).toBeLessThanOrEqual(1);
+            }
             const boxes = await page.evaluate(() => {
                 const box = (el: Element | null) => {
                     if (!el) return null;
@@ -373,15 +375,20 @@ test.describe("the badge's place on the catalog Home", () => {
                 };
                 // The painted oval and its 4 px ring.
                 const face = box(document.querySelector('[data-home-badge] [class*="face"]'));
-                const oval = face && { left: face.left - 4, top: face.top - 4, right: face.right + 4, bottom: face.bottom + 4 };
-                return { oval, title: box(document.querySelector('[data-chrome-region="story"] h1')), nav: box(document.querySelector('nav[aria-label="Primary"]')) };
+                return {
+                    oval: face && { left: face.left - 4, top: face.top - 4, right: face.right + 4, bottom: face.bottom + 4 },
+                    nav: box(document.querySelector('nav[aria-label="Primary"]')),
+                    title: box(document.querySelector('[data-chrome-region="story"] h1')),
+                    statement: box(document.querySelector('[data-chrome-region="story"] p')),
+                    link: box(document.querySelector('[data-chrome-region="story"] a')),
+                };
             });
-            console.log(`badge boxes at ${size.width}x${size.height}: ${JSON.stringify(boxes)}`);
+            console.log(`badge boxes at ${width}x${height}: ${JSON.stringify(boxes)}`);
             expect(boxes.oval).not.toBeNull();
-            expect(boxes.title).not.toBeNull();
-            expect(boxes.nav).not.toBeNull();
-            expect(intersects(boxes.oval!, boxes.title!), 'the badge clears the series title').toBe(false);
-            expect(intersects(boxes.oval!, boxes.nav!), 'the badge clears the nav').toBe(false);
+            for (const name of ['nav', 'title', 'statement', 'link'] as const) {
+                expect(boxes[name], name).not.toBeNull();
+                expect(gap(boxes.oval!, boxes[name]!), `the badge's room from the ${name}`).toBeGreaterThanOrEqual(15.5);
+            }
         });
     }
 });

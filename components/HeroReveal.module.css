@@ -41,52 +41,15 @@
   left: 50%;
   z-index: 42;
   pointer-events: none;
-  /* The badge's place, which HeroReveal's landing glides to on v1.1.0's curve
-     and timing: its centre --badge-rise above the bottom of the screen and
-     --badge-shift right of the middle, at --badge-scale. On a laptop it's
-     v1.1.0's, 280 px above the bottom at 0.85. */
-  --badge-rise: 280px;
-  --badge-shift: 0px;
+  /* The badge's place, which the landing glides to on v1.1.0's curve and
+     timing: its center --badge-dx and --badge-dy from the screen's center,
+     at --badge-scale. This is v1.1.0's, centered 280 px above the bottom at
+     0.85, kept exactly wherever it clears the nav and the series title by
+     16 px. Where it doesn't, badgePlace() (components/badgePlace.ts) sets them from
+     the chrome's measured boxes. */
+  --badge-dx: 0px;
+  --badge-dy: calc(50dvh - 280px);
   --badge-scale: 0.85;
-}
-
-/* Elsewhere v1.1.0's place sits behind the catalog Home's series title, or
-   reaches up behind the nav, so the badge lands where it clears both. The
-   numbers come from the boxes measured at 390 x 844 (photo-home-loader
-   round 1): the nav is 56 px tall, the series title's top is 264 px above the
-   bottom with a two-line title, and the painted oval reaches 110 px above
-   the badge's centre and 125 px below it at 0.85 of the 256 px card (138
-   and 156 px of the 320 px one, from 768 px wide), its ring 4 px more.
-
-   A phone, or any screen taller than it's wide up to 1024 px: centred, with
-   the oval's bottom 314 px above the bottom of the screen, room for one more
-   title line (34 px) and a 16 px gap. */
-@media (orientation: portrait) and (max-width: 1023.98px) {
-  .portrait,
-  .badge {
-    --badge-rise: 439px;
-  }
-}
-
-@media (orientation: portrait) and (min-width: 768px) and (max-width: 1023.98px) {
-  .portrait,
-  .badge {
-    --badge-rise: 470px;
-  }
-}
-
-/* A short landscape screen, under 500 px tall, where v1.1.0's place reaches
-   behind the nav: at 0.6, a quarter of the width right of the middle, past
-   the series title (12ch of the display face from the left gutter, 391 px
-   at 844 x 390), and centred 10 px above the middle of the screen, between
-   the nav and the sequence controls 76 px above the bottom. */
-@media (orientation: landscape) and (max-height: 499.98px) {
-  .portrait,
-  .badge {
-    --badge-rise: calc(50dvh + 10px);
-    --badge-shift: 25vw;
-    --badge-scale: 0.6;
-  }
 }
 
 /* The badge shows for 3 s once it's in place (data-lingering), then exactly

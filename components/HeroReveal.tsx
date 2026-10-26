@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { motion, useMotionValue, useTransform, animate, type AnimationPlaybackControls } from 'framer-motion';
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
+import { badgePlace, boxOf, type BadgePlace, type Box } from './badgePlace';
 import ProfilePicture from './ProfilePicture';
 import { HOME_LOADING_TIMEOUT_MS } from './home/homeChromeConfig';
 import { usePrefersReducedMotion } from './motion/usePrefersReducedMotion';
@@ -45,12 +46,12 @@ export const BADGE_LINGER_MS = 3000;
 
 /**
  * The portrait's transform for landing progress `p`: from the viewport's
- * center at full size to the badge's place, which HeroReveal.module.css sets
- * per screen: v1.1.0's on a laptop, 280 px above the bottom at 0.85, and one
- * clear of the series title and the nav on a phone or a short landscape screen.
+ * center at full size to the badge's place, `--badge-dx` and `--badge-dy`
+ * from the center at `--badge-scale`. HeroReveal.module.css gives v1.1.0's,
+ * and badgePlace() (badgePlace.ts) moves it where that doesn't clear the chrome.
  */
 const landingTransform = (p: number) =>
-  `translate(-50%, -50%) translate(calc(${p} * var(--badge-shift)), calc(${p} * (50dvh - var(--badge-rise)))) scale(calc(1 - ${p} * (1 - var(--badge-scale))))`;
+  `translate(-50%, -50%) translate(calc(${p} * var(--badge-dx)), calc(${p} * var(--badge-dy))) scale(calc(1 - ${p} * (1 - var(--badge-scale))))`;
 
 /**
  * Home's loading state on a first visit with motion: a grain overlay with
@@ -253,6 +254,38 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
 
   const handleUnusable = useCallback(() => setPortraitFailed(true), []);
 
+  // The badge's place, from the chrome's own boxes, measured before the first paint and again whenever Home, the
+  // nav or the story changes size. The chrome is in the document while it's hidden, so its boxes are there to measure.
+  const portraitRef = useRef<HTMLDivElement>(null);
+  const [placeKind, setPlaceKind] = useState<BadgePlace['kind'] | null>(null);
+  useLayoutEffect(() => {
+    const element = portraitRef.current;
+    if (!element || !showPortrait) return;
+    const root = element.closest('main') ?? document.body;
+    const measure = () => {
+      const place = badgePlace(
+        { width: window.innerWidth, height: window.innerHeight },
+        element.offsetWidth,
+        boxOf(root.querySelector('[data-chrome-region="nav"]')),
+        [...root.querySelectorAll('[data-chrome-region="story"] :is(h1, h2, p, a)')].map(boxOf).filter((box): box is Box => box !== null),
+      );
+      if (place === null) {
+        for (const name of ['--badge-dx', '--badge-dy', '--badge-scale']) element.style.removeProperty(name);
+      } else {
+        element.style.setProperty('--badge-dx', `${place.dx}px`);
+        element.style.setProperty('--badge-dy', `${place.dy}px`);
+        element.style.setProperty('--badge-scale', String(place.scale));
+      }
+      setPlaceKind(place?.kind ?? null);
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(root);
+    for (const region of root.querySelectorAll('[data-chrome-region="nav"], [data-chrome-region="story"]')) observer.observe(region);
+    return () => observer.disconnect();
+  }, [showPortrait]);
+
   if (phase === 'settled' && !showPortrait) return null;
 
   return (
@@ -327,8 +360,10 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
       {/* The portrait: one element from the center to its place, so the handoff never restarts it. */}
       {showPortrait && (
         <motion.div
+          ref={portraitRef}
           className={phase === 'settled' ? styles.badge : styles.portrait}
           style={{ transform: portraitTransform }}
+          data-badge-place={placeKind ?? 'v1.1.0'}
           data-home-badge={phase === 'settled' ? '' : undefined}
           data-landed={phase === 'settled' && landed ? '' : undefined}
           data-lingering={phase === 'settled' && landed && lingering ? '' : undefined}

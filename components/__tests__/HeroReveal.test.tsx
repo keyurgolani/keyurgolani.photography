@@ -4,6 +4,7 @@ import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
 import { setPrefersReducedMotion } from '@/test/matchMedia';
+import { badgePlace, type Box } from '../badgePlace';
 import HeroReveal, { BADGE_LINGER_MS, type HeroRevealPhase } from '../HeroReveal';
 import { HOME_LOADING_TIMEOUT_MS } from '../home/homeChromeConfig';
 
@@ -76,8 +77,8 @@ const PORTRAIT: AboutPortraitView = {
 };
 
 /** The landing's ends, on the badge's place from HeroReveal.module.css. */
-const AT_CENTER = 'translate(-50%, -50%) translate(calc(0 * var(--badge-shift)), calc(0 * (50dvh - var(--badge-rise)))) scale(calc(1 - 0 * (1 - var(--badge-scale))))';
-const IN_PLACE = 'translate(-50%, -50%) translate(calc(1 * var(--badge-shift)), calc(1 * (50dvh - var(--badge-rise)))) scale(calc(1 - 1 * (1 - var(--badge-scale))))';
+const AT_CENTER = 'translate(-50%, -50%) translate(calc(0 * var(--badge-dx)), calc(0 * var(--badge-dy))) scale(calc(1 - 0 * (1 - var(--badge-scale))))';
+const IN_PLACE = 'translate(-50%, -50%) translate(calc(1 * var(--badge-dx)), calc(1 * var(--badge-dy))) scale(calc(1 - 1 * (1 - var(--badge-scale))))';
 
 function renderReveal(isLoading: boolean, { portrait = null }: { portrait?: AboutPortraitView | null } = {}) {
   const onSettled = vi.fn();
@@ -407,5 +408,75 @@ describe('HeroReveal', () => {
     view.unmount();
     renderReveal(false, { portrait: PORTRAIT }).unmount();
     expect(add).not.toHaveBeenCalled();
+  });
+});
+
+describe('badgePlace', () => {
+  // The catalog Home's boxes as measured in the browser (photo-home-loader round 2): the nav, then the series title,
+  // statement and link. The card is 320 px from 768 px wide, 256 px below.
+  const box = (left: number, top: number, right: number, bottom: number): Box => ({ left, top, right, bottom });
+  const nav = (width: number) => box(0, 0, width, 56);
+  /** The oval's box, ring included, for a place, as the browser paints it. */
+  const oval = (view: { width: number; height: number }, card: number, place: ReturnType<typeof badgePlace>) => {
+    const { dx, dy, scale } = place ?? { dx: 0, dy: view.height / 2 - 280, scale: 0.85 };
+    const cx = view.width / 2 + dx;
+    const cy = view.height / 2 + dy;
+    const above = card / 2 + 2;
+    const below = (card + 4) * (3620 / 3394) - above;
+    return box(cx - (scale * (card + 4)) / 2 - 4, cy - scale * above - 4, cx + (scale * (card + 4)) / 2 + 4, cy + scale * below + 4);
+  };
+  const gap = (a: Box, b: Box) => Math.max(b.left - a.right, a.left - b.right, b.top - a.bottom, a.top - b.bottom);
+
+  const screens = [
+    { view: { width: 1440, height: 900 }, card: 320, story: [box(48, 566, 553, 700), box(48, 712, 467, 736), box(48, 756, 186, 800)], kind: null },
+    { view: { width: 1536, height: 864 }, card: 320, story: [box(48, 520, 576, 662), box(48, 674, 470, 698), box(48, 718, 186, 762)], kind: null },
+    { view: { width: 1366, height: 768 }, card: 320, story: [box(45, 439, 533, 568), box(45, 580, 465, 604), box(45, 624, 184, 668)], kind: 'clear' },
+    { view: { width: 1280, height: 800 }, card: 320, story: [box(42, 476, 510, 600), box(42, 612, 462, 636), box(42, 656, 181, 700)], kind: 'clear' },
+    { view: { width: 1024, height: 768 }, card: 320, story: [box(34, 461, 441, 569), box(34, 581, 441, 604), box(34, 624, 172, 668)], kind: 'clear' },
+    { view: { width: 390, height: 844 }, card: 256, story: [box(16, 580, 274, 648), box(16, 660, 274, 680), box(16, 700, 155, 744)], kind: 'clear' },
+    { view: { width: 360, height: 740 }, card: 256, story: [box(16, 476, 274, 544), box(16, 556, 274, 576), box(16, 596, 155, 640)], kind: 'clear' },
+    { view: { width: 844, height: 390 }, card: 320, story: [box(28, 95, 392, 192), box(28, 204, 392, 226), box(28, 246, 166, 290)], kind: 'side' },
+  ] as const;
+
+  it.each(screens)('keeps 16 px from the nav and the story at $view.width x $view.height, and moves only where it must', ({ view, card, story, kind }) => {
+    const place = badgePlace(view, card, nav(view.width), [...story]);
+    expect(place?.kind ?? null).toBe(kind);
+    const painted = oval(view, card, place);
+    for (const blocker of [nav(view.width), ...story]) expect(gap(painted, blocker)).toBeGreaterThanOrEqual(16 - 0.01);
+  });
+
+  it("keeps v1.1.0's exact place at 1440 x 900, and lifts the badge at 1366 x 768 only as far as the title needs, at 0.85", () => {
+    expect(badgePlace({ width: 1440, height: 900 }, 320, nav(1440), [...screens[0].story])).toBeNull();
+    const lifted = badgePlace({ width: 1366, height: 768 }, 320, nav(1366), [...screens[2].story])!;
+    expect(lifted.scale).toBe(0.85);
+    expect(lifted.dx).toBe(0);
+    // The oval's bottom 16 px above the title's top.
+    expect(oval({ width: 1366, height: 768 }, 320, lifted).bottom).toBeCloseTo(439 - 16, 5);
+  });
+
+  it('scales down toward 0.6 only when the room above the story is too short for 0.85', () => {
+    // 1024 x 640: the title's top at 333, so 245 px between the 16 px clearances, room for about 0.68.
+    const story = [box(34, 333, 441, 441), box(34, 453, 441, 476), box(34, 496, 172, 540)];
+    const place = badgePlace({ width: 1024, height: 640 }, 320, nav(1024), story)!;
+    expect(place.kind).toBe('clear');
+    expect(place.scale).toBeLessThan(0.85);
+    expect(place.scale).toBeGreaterThanOrEqual(0.6);
+    const painted = oval({ width: 1024, height: 640 }, 320, place);
+    expect(painted.top).toBeGreaterThanOrEqual(56 + 16 - 0.01);
+    expect(painted.bottom).toBeLessThanOrEqual(333 - 16 + 0.01);
+    // The largest scale that fits, to the hundredth.
+    expect(badgePlace({ width: 1024, height: 640 }, 320, nav(1024), story.map((b) => ({ ...b, top: b.top - 4, bottom: b.bottom - 4 })))!.scale).toBeLessThan(place.scale);
+  });
+
+  it("moves down under a nav that v1.1.0's place reaches behind, with no story to clear, as Home before the cutover", () => {
+    const place = badgePlace({ width: 844, height: 390 }, 320, nav(844), [])!;
+    expect(place.kind).toBe('clear');
+    expect(oval({ width: 844, height: 390 }, 320, place).top).toBeGreaterThanOrEqual(72 - 0.01);
+    expect(badgePlace({ width: 1280, height: 800 }, 320, nav(1280), [])).toBeNull();
+    expect(badgePlace({ width: 412, height: 839 }, 256, nav(412), [])).toBeNull();
+  });
+
+  it('leaves the place alone before there is a card to measure', () => {
+    expect(badgePlace({ width: 390, height: 844 }, 0, nav(390), [])).toBeNull();
   });
 });
