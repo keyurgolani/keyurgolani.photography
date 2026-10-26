@@ -187,8 +187,6 @@ async function titleLine(page: Page) {
         const lead = reading?.querySelector('h2 ~ p, h2 ~ div p:not(:first-child)') ?? null;
         const leadTop = lead?.getBoundingClientRect().top ?? NaN;
         const lineHeight = lead ? parseFloat(getComputedStyle(lead).lineHeight) : NaN;
-        // The reading area's next piece after the lead's own: the description after a caption, the technical toggle after a description.
-        const after = lead?.closest('section > *')?.nextElementSibling ?? null;
         return {
             innerHeight,
             frame: box(root.querySelector('[data-viewer-stage] figure')),
@@ -196,33 +194,70 @@ async function titleLine(page: Page) {
             title: box(title),
             leadText: lead?.textContent ?? null,
             leadLineBottom: leadTop + lineHeight,
-            afterTop: after?.getBoundingClientRect().top ?? null,
         };
     });
 }
 
-test('on a wide screen, the title line shows under the photograph in the first screen, as the approved design keeps it, and the screen ends on whole elements', async ({ page }, testInfo) => {
+/**
+ * The reading area's pieces as the first screen cuts them: the title (when shown), the caption, the Description label
+ * and its text, and the technical toggle. Only running text (the caption and the description) may run across the fold.
+ */
+async function foldPieces(page: Page) {
+    return page.locator('[data-surface="viewer"] section[aria-labelledby]').evaluate((reading) => {
+        const pieces = [...reading.querySelectorAll('h2:not(.sr-only), :scope > p, :scope > div > p, :scope > div > button')];
+        return pieces.map((element) => {
+            const { top, bottom } = element.getBoundingClientRect();
+            const running = element.tagName === 'P' && (element.parentElement === reading || element.previousElementSibling !== null);
+            return { text: element.textContent?.trim().slice(0, 40) ?? '', top, bottom, running };
+        });
+    });
+}
+
+test('on a wide screen, the first screen ends on whole elements for every mix of title and caption, and keeps the title line when there is one', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'desktop', 'The wide layout.');
+    // The title and the caption are both optional: both, a title alone, a caption alone (the one-photo series), neither.
+    const mixes = [
+        { name: 'title and caption', photoId: P[0], slug: 'harbor', series: 'Fixture harbor', title: true },
+        { name: 'title only', photoId: P[2], slug: 'harbor', series: 'Fixture harbor', title: true },
+        { name: 'caption only', photoId: P[3], slug: 'ridge', series: 'Fixture ridge', title: false },
+        { name: 'neither', photoId: P[1], slug: 'harbor', series: 'Fixture harbor', title: false },
+    ];
     for (const size of [
         { width: 1440, height: 900 },
         { width: 1366, height: 768 },
         { width: 1280, height: 800 },
     ]) {
         await page.setViewportSize(size);
-        const at = `${size.width} by ${size.height}`;
-        // The first photograph has a title and a caption; the second has neither, so its description leads.
-        for (const [photoId, lead] of [
-            [P[0], 'Fixture authored caption.'],
-            [P[1], 'Fixture description of photograph 0002.'],
-        ] as const) {
-            await openViewer(page, photoId);
+        for (const mix of mixes) {
+            const at = `${size.width} by ${size.height}, ${mix.name}`;
+            await page.goto(`${origin()}${href(mix.photoId, mix.slug)}`);
+            await waitForHydration(page);
+            await expect(header(page).getByRole('heading', { level: 1 })).toHaveText(mix.series);
             const line = await titleLine(page);
-            expect(line.leadText).toBe(lead);
+            const pieces = await foldPieces(page);
+            expect(pieces.length, `${at}: the reading area has pieces`).toBeGreaterThan(1);
             expect(line.frame && line.reading && line.frame.bottom <= line.reading.top, `${at}: the photograph sits above the reading area`).toBe(true);
-            if (photoId === P[0]) expect(line.title && line.title.top >= 0 && line.title.bottom <= line.innerHeight, `${at}: the title shows`).toBe(true);
-            expect(line.leadLineBottom, `${at}: the first line of ${lead} shows`).toBeLessThanOrEqual(line.innerHeight);
-            // The fold falls in the gap under the lead's first line, so the piece after the lead (here the Description label) isn't cut.
-            if (photoId === P[0]) expect(line.afterTop, `${at}: what follows the lead starts under the fold`).toBeGreaterThanOrEqual(line.innerHeight);
+            // Nothing but running text is cut by the fold: no title, label, or control straddles the bottom edge.
+            for (const piece of pieces) {
+                if (piece.running) continue;
+                const straddles = piece.top < line.innerHeight && piece.bottom > line.innerHeight;
+                expect(straddles, `${at}: "${piece.text}" (${Math.round(piece.top)} to ${Math.round(piece.bottom)}) runs across the fold at ${line.innerHeight}`).toBe(false);
+            }
+            if (mix.title) {
+                // The title line shows: the title, and the caption's first line when there is one, with the fold in the gap after it.
+                expect(line.title && line.title.top >= 0 && line.title.bottom <= line.innerHeight, `${at}: the title shows`).toBe(true);
+                if (mix.photoId === P[0]) {
+                    expect(line.leadText).toBe('Fixture authored caption.');
+                    expect(line.leadLineBottom, `${at}: the caption's first line shows`).toBeLessThanOrEqual(line.innerHeight);
+                }
+                // The fold falls in the gap after the title line: the caption's first line, or the title alone.
+                const after = pieces[mix.photoId === P[0] ? 2 : 1];
+                expect(after.top, `${at}: "${after.text}", after the title line, starts under the fold`).toBeGreaterThanOrEqual(line.innerHeight);
+            } else {
+                // No title line to keep: the photograph keeps the whole first screen, and the reading area's rule shows under it.
+                expect(line.reading && line.reading.top, `${at}: the reading area starts on screen`).toBeLessThan(line.innerHeight);
+                expect(pieces[0].top, `${at}: the reading area's first piece starts under the fold`).toBeGreaterThanOrEqual(line.innerHeight);
+            }
             // The photograph still holds the screen.
             expect(line.frame && line.frame.bottom - line.frame.top).toBeGreaterThan(line.innerHeight * 0.6);
         }

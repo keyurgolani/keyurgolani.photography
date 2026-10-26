@@ -204,12 +204,27 @@
    stage chrome above allows 4rem for the stage's padding, more than it takes here, so the lead gives the difference
    back, and the first screen ends half a rem under the lead's first line, in the gap before the next element, never
    through it. A shorter wide screen (a phone held sideways, a laptop at 150%) keeps the whole first screen for the
-   photograph, as it would have before, and fitSizes() in viewerSizes.ts asks for that box's rung there. */
+   photograph, as it would have before, and fitSizes() in viewerSizes.ts asks for that box's rung there.
+   The lead follows what the reading area holds, since the title and the caption are both optional. With no title,
+   there's no title line to keep, so the photograph keeps the whole first screen, as on a shorter screen, and the screen
+   ends in the reading area's top padding. With a title and no caption, the lead is the title's line alone, so the
+   screen ends in the gap under it. fitSizes() never takes the lead off, so these bigger boxes still get a rung that
+   covers them. */
 @media (min-width: 48rem) and (min-height: 40rem) {
   .viewer {
     --viewer-reading-lead: calc(
       4px + var(--viewer-reading-pad) + 1.2 * var(--viewer-title-size) + 0.75rem + 1.5 * var(--gah-type-statement) + 0.5rem -
         (var(--viewer-stage-chrome) - 2 * var(--viewer-stage-pad))
+    );
+  }
+
+  .viewer:not(:has(.title)) {
+    --viewer-reading-lead: 0px;
+  }
+
+  .viewer:has(.title):not(:has(.caption)) {
+    --viewer-reading-lead: calc(
+      4px + var(--viewer-reading-pad) + 1.2 * var(--viewer-title-size) + 0.5rem - (var(--viewer-stage-chrome) - 2 * var(--viewer-stage-pad))
     );
   }
 }
