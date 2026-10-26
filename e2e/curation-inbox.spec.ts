@@ -2,14 +2,30 @@ import path from 'node:path';
 import { request as httpRequest, type APIRequestContext, type Page } from '@playwright/test';
 import { folderBytes } from '../test/helpers/folderBytes';
 import { validateWorkingLayer } from '../lib/catalog/publish';
-import { readAuthoredRecord } from '../lib/catalog/working-layer';
+import { readActivePointer, readAuthoredRecord } from '../lib/catalog/working-layer';
+import { writeAuthoredRecord } from '../lib/catalog/working-layer-writer';
 import { deferEvent } from '../lib/curation/actions';
 import { eventIdOf, eventKey } from '../lib/curation/events';
 import { humanTime } from '../lib/curation/inbox-view';
 import { listEvents, readEvent } from '../lib/curation/repository';
+import { confirmReplacement } from '../lib/curation/resolutions';
 import { startCatalogServer, READY_TIMEOUT, type CatalogServer } from './support/catalogServer';
 import { signIn, startCuratorServer, type CuratorServer } from './support/curatorServer';
-import { createInboxFixture, FAILED_SOURCE, FRESH, FRESH_SOURCES, INBOX_SERIES, PUBLISHED_IDS, openInboxItems, undisclosed, type InboxFixture } from './support/curation-inbox';
+import {
+    createInboxFixture,
+    FAILED_SOURCE,
+    FRESH,
+    FRESH_SOURCES,
+    INBOX_SERIES,
+    PUBLISHED_IDS,
+    openInboxItems,
+    openReplacementItem,
+    REPLACED,
+    REPLACED_SOURCE,
+    REPLACEMENT_REVISION,
+    undisclosed,
+    type InboxFixture,
+} from './support/curation-inbox';
 import { waitForHydration } from './support/hydration';
 import { expect, test } from './support/test';
 
@@ -65,7 +81,7 @@ const webOrigin = () => {
 const eventOf = (photoId: string) => eventIdOf(eventKey('new', { photoId, assetRevision: data().revisionOf(photoId), key: `new:${photoId}:${data().revisionOf(photoId)}` }));
 const layers = () => ({ catalog: folderBytes(path.join(data().root, 'catalog')) });
 /** The answer the last action gave, in the page's polite status region. */
-const answer = (page: Page, state: 'done' | 'stale' | 'invalid') => page.getByRole('status').locator(`[data-state="${state}"]`);
+const answer = (page: Page, state: 'done' | 'stale' | 'invalid' | 'refused') => page.getByRole('status').locator(`[data-state="${state}"]`);
 /** What the last approval or Decide later did, in the strip at the top of the item it opened. */
 const arrival = (page: Page) => page.locator('#item > [role="status"] [data-state="done"]');
 /** The strip is on the first screen, above the photograph and the item's heading. */
@@ -516,6 +532,91 @@ test('Decide later moves on to the next item too, and the last decision, from th
     await expect(summary(page)).toHaveText(/^0 of \d+ items require judgment/);
     await expect(page.getByRole('link', { name: `Open ${path.posix.basename(FAILED_SOURCE)} again` })).toBeVisible();
     for (const id of [missing.id, failed.id]) expect((await readEvent(data().root, id))?.status).toBe('deferred');
+});
+
+test('says what a replacement\'s draft holds before and after Reopen and Decide later, once it was confirmed (#17)', async ({ page }) => {
+    const root = data().root;
+    const eventId = await openReplacementItem(data());
+    const earlier = data().revisionOf(REPLACED);
+    const file = path.posix.basename(REPLACED_SOURCE);
+    const base = (await readActivePointer(root))?.revisionId ?? null;
+    const hint = page.locator('#primary-unavailable');
+    const pinned = async () => (await readAuthoredRecord(root, 'photo', REPLACED))?.assetRevision;
+    // `curation confirm`, which the inbox doesn't offer yet.
+    const confirm = async () => {
+        const shown = (await readEvent(root, eventId))!;
+        expect(await confirmReplacement({ root, eventId, expectedVersion: shown.version, expectedBase: base, actor: 'curator:cli' })).toMatchObject({ ok: true });
+    };
+    // A photos edit of the record's assetRevision, outside the inbox.
+    const edit = async (assetRevision: string) => {
+        const record = (await readAuthoredRecord(root, 'photo', REPLACED))!;
+        await writeAuthoredRecord({ ...record, assetRevision }, { expectedVersion: record.version, root });
+    };
+    const reopen = async (message: string) => {
+        await openInbox(page, eventId);
+        await page.getByRole('button', { name: 'Reopen' }).click();
+        await expect(answer(page, 'done')).toHaveText(message);
+    };
+    /** What Decide later did, on the page it opened: the next item's strip, or the empty state's answer. */
+    const decidedLater = async (text: string) => {
+        await page.getByRole('button', { name: 'Decide later' }).click();
+        await expect(page).not.toHaveURL(new RegExp(eventId));
+        await waitForHydration(page);
+        await expect(page.locator('[data-state="done"]').filter({ hasText: `Left ${file} for later.` })).toHaveText(`${text}Open ${file} again`);
+    };
+
+    // Never confirmed: Decide later writes nothing.
+    await openInbox(page, eventId);
+    await expect(page.getByRole('heading', { level: 2, name: file })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Confirm new asset revision' })).toBeDisabled();
+    await expect(hint).toHaveText(/^Confirming new bytes isn't in the inbox yet, so choose Decide later until it is\./);
+
+    // Confirmed: in the draft only, and nothing on the item offers or recommends Decide later, or a series or description.
+    await confirm();
+    expect(await pinned()).toBe(REPLACEMENT_REVISION);
+    await openInbox(page, eventId);
+    await expect(page.locator('header').getByText('New version confirmed', { exact: true })).toBeVisible();
+    await expect(page.getByText('Suggestion approved')).toHaveCount(0);
+    await expect(page.getByText('The draft uses the new version. Visitors keep the current one until you publish.')).toBeVisible();
+    await expect(page.getByText(/^Live in the active revision/)).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Confirm new asset revision' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Decide later' })).toHaveCount(0);
+    await expect(page.getByText(/choose Decide later|series or description/)).toHaveCount(0);
+    await expect(page.getByText('Reopen it to leave the new version out of the draft. Decide later then puts the earlier version back.')).toBeVisible();
+
+    // Reopened: the draft still uses the new version, and the item says before the click that Decide later puts the earlier one back.
+    await reopen('Reopened. The draft still uses the new version until you decide.');
+    await expect(hint).toHaveText('The draft uses the new version, confirmed earlier. Decide later puts the earlier version back in the draft. Nothing is published until you publish.');
+    await decidedLater(`Left ${file} for later. The draft is back on the earlier version of this photograph, and the next publish uses that one.`);
+    expect(await pinned()).toBe(earlier);
+
+    // A photos edit puts the new version in the draft with no confirm of this item: Decide later keeps it, and says the next publish uses it.
+    await reopen('Reopened.');
+    await edit(REPLACEMENT_REVISION);
+    await openInbox(page, eventId);
+    await expect(hint).toHaveText('The draft already uses the new version, so Decide later keeps it there, and the next publish uses it. Nothing is published until you publish.');
+    await decidedLater(`Left ${file} for later. The draft already uses the new version of this photograph, so the next publish uses it too.`);
+    expect(await pinned()).toBe(REPLACEMENT_REVISION);
+
+    // Confirmed again from the earlier version, reopened, then the draft moves to a third version: Decide later refuses, in its own words, every time.
+    await edit(earlier);
+    await reopen('Reopened.');
+    await confirm();
+    await reopen('Reopened. The draft still uses the new version until you decide.');
+    const third = `sha256-${'c'.repeat(64)}`;
+    await edit(third);
+    const moved = "This photograph's draft moved to another version after the new one was confirmed, so Decide later can't tell which one to put back.";
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+        await openInbox(page, eventId);
+        await expect(hint).toHaveText(`${moved} Set its version with photos edit, or dismiss this item.`);
+        const before = await readEvent(root, eventId);
+        await page.getByRole('button', { name: 'Decide later' }).click();
+        await expect(answer(page, 'refused')).toHaveText(`${moved} Nothing was written. Set its version with photos edit, or dismiss this item.`);
+        await expect(page.getByRole('link', { name: 'Refresh and review again' })).toHaveCount(0);
+        await expect(page.getByText(/changed since the page loaded/)).toHaveCount(0);
+        expect(await readEvent(root, eventId)).toEqual(before);
+        expect(await pinned()).toBe(third);
+    }
 });
 
 /** Every public page and API the approved criterion names, by path, on `web`. */
