@@ -258,6 +258,54 @@ test('dismisses an unreadable file with a reason, then reopens it', async ({ pag
     expect((await readEvent(data().root, failed.id))?.status).toBe('failed');
 });
 
+test('shows a phone one item at a time, and Back to inbox or the browser Back returns to the row it came from', async ({ page, isMobile }) => {
+    await openInbox(page);
+    const list = page.locator('#inbox-list');
+    if (!isMobile) {
+        // A wide screen keeps the list beside the item, so it needs no way back.
+        await expect(list).toBeVisible();
+        await expect(page.locator('#item')).toBeVisible();
+        await expect(page.getByRole('link', { name: 'Back to inbox' })).toBeHidden();
+        return;
+    }
+    // The list alone, until an item is opened.
+    await expect(list).toBeVisible();
+    await expect(page.locator('#item')).toBeHidden();
+    const row = list.getByRole('link').last();
+    await row.scrollIntoViewIfNeeded();
+    const scrolled = await page.evaluate(() => window.scrollY);
+    expect(scrolled).toBeGreaterThan(0);
+    const rowId = (await row.getAttribute('data-row')) ?? '';
+    await row.click();
+    // The URL rows already use for the item; the item alone, its heading focused.
+    await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox?item=${rowId}#item`);
+    await waitForHydration(page);
+    await expect(list).toBeHidden();
+    await expect(page.locator('#item-heading')).toBeFocused();
+    await expect(page.locator('#item-heading')).toBeInViewport();
+
+    await page.getByRole('link', { name: 'Back to inbox' }).click();
+    await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox#row-${rowId}`);
+    await waitForHydration(page);
+    const back = page.locator(`#row-${rowId}`);
+    await expect(back).toBeFocused();
+    await expect(back).toBeInViewport();
+    await expect(page.locator('#item')).toBeHidden();
+    expect(Math.abs((await page.evaluate(() => window.scrollY)) - scrolled)).toBeLessThanOrEqual(2);
+
+    // The browser's Back does the same.
+    await back.click();
+    await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox?item=${rowId}#item`);
+    await waitForHydration(page);
+    await expect(list).toBeHidden();
+    await page.goBack();
+    await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox#row-${rowId}`);
+    await waitForHydration(page);
+    await expect(page.locator(`#row-${rowId}`)).toBeFocused();
+    await expect(page.locator(`#row-${rowId}`)).toBeInViewport();
+    expect(Math.abs((await page.evaluate(() => window.scrollY)) - scrolled)).toBeLessThanOrEqual(2);
+});
+
 /** Every public page and API the approved criterion names, by path, on `web`. */
 function publicPaths(): string[] {
     return ['/', '/work', `/work/${INBOX_SERIES.published.slug}`, `/work/${INBOX_SERIES.draft.slug}`, '/gallery', '/api/photos', '/api/catalog/active', '/api/catalog/photos'];
