@@ -22,7 +22,7 @@ for (let i = 0; i < argv.length; i++) {
 const times = opts.times.split(',').map(Number);
 const cell = Number(opts.cell ?? 480);
 const crop = opts.crop ? Number(opts.crop) : null;
-const LABEL_H = 34, ROW_LABEL_W = 110, HEAD_H = 56;
+const LABEL_H = 34, ROW_LABEL_W = 110, TITLE_H = 32, HEAD_H = 64;
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
 
 for (const c of cols) {
@@ -41,9 +41,9 @@ const layers = [];
 const svgText = (w, h, text, { size = 15, weight = 400, fill = '#e8e8e8', bg = '#16161a', anchor = 'start', x = 8 } = {}) =>
     Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><rect width="100%" height="100%" fill="${bg}"/><text x="${anchor === 'middle' ? w / 2 : x}" y="${h / 2 + size / 3}" font-family="Helvetica, Arial, sans-serif" font-size="${size}" font-weight="${weight}" fill="${fill}" text-anchor="${anchor}">${esc(text)}</text></svg>`);
 
-layers.push({ input: svgText(W, HEAD_H, opts.title ?? '', { size: 18, weight: 700 }), left: 0, top: 0 });
+layers.push({ input: svgText(W, TITLE_H, opts.title ?? '', { size: 16, weight: 700 }), left: 0, top: 0 });
 for (const [ci, c] of cols.entries()) {
-    layers.push({ input: svgText(cell, HEAD_H, c.label, { size: 14, weight: 700, anchor: 'middle', bg: '#202028' }), left: ROW_LABEL_W + ci * cell, top: 0 });
+    layers.push({ input: svgText(cell, HEAD_H - TITLE_H, c.label, { size: 14, weight: 700, anchor: 'middle', bg: '#202028' }), left: ROW_LABEL_W + ci * cell, top: TITLE_H });
 }
 for (const [ri, t] of times.entries()) {
     const top = HEAD_H + ri * (cellH + LABEL_H);
