@@ -1,12 +1,15 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { publish } from '../../lib/catalog/publish';
 import { createTestCatalog, type TestCatalog } from '../../lib/catalog/testing';
 import { authoredRecordDir } from '../../lib/catalog/working-layer';
+import { eventIdOf, eventKey } from '../../lib/curation/events';
 import { createCurationSink } from '../../lib/curation/sink';
+import { readRegistry, writeRegistry } from '../../lib/identity/registry';
 import type { IdentityFact, IdentityFactType } from '../../lib/identity/types';
+import { assetDir } from '../../lib/media/path';
 
 /**
  * The Inbox e2e's data: a published catalog (one published series, one
@@ -32,6 +35,10 @@ export const FRESH_SOURCES: Record<string, string> = {
     [FRESH.reopen]: 'inbox/arrival-reopen.jpg',
 };
 export const FAILED_SOURCE = 'inbox/raw-frame.heic';
+/** #17: the published photograph whose file openReplacementItem() replaces, and the new bytes' asset revision. Sample values. */
+export const REPLACED = PUBLISHED_IDS[0];
+export const REPLACED_SOURCE = 'inbox-harbor/landscape.jpg';
+export const REPLACEMENT_REVISION = `sha256-${createHash('sha256').update('e2e inbox replacement bytes').digest('hex')}`;
 
 export interface InboxFixture {
     catalog: TestCatalog;
@@ -51,7 +58,7 @@ export async function createInboxFixture(): Promise<InboxFixture> {
         root,
         seed: 14,
         withAssets: true,
-        photos: [photo(PUBLISHED_IDS[0]), photo(PUBLISHED_IDS[1]), photo(DRAFT_ID), ...Object.values(FRESH).map((photoId) => photo(photoId, FRESH_SOURCES[photoId]))],
+        photos: [photo(PUBLISHED_IDS[0], REPLACED_SOURCE), photo(PUBLISHED_IDS[1]), photo(DRAFT_ID), ...Object.values(FRESH).map((photoId) => photo(photoId, FRESH_SOURCES[photoId]))],
         series: [
             { ...INBOX_SERIES.published, photoIds: [...PUBLISHED_IDS] },
             { ...INBOX_SERIES.draft, photoIds: [DRAFT_ID], visibility: 'draft' },
@@ -111,6 +118,37 @@ export async function openInboxItems(fixture: InboxFixture): Promise<void> {
     ]);
 }
 
+/**
+ * #17: replace the published photograph's file, as the watcher would see it: the registry observes the new bytes, their
+ * derivative set is committed and ready (the published set's files under the new revision, with a manifest naming it),
+ * and the sink opens the replacement item. The photo record and the active revision keep the published bytes. Returns
+ * the item's ID.
+ */
+export async function openReplacementItem(fixture: InboxFixture): Promise<string> {
+    const photoId = REPLACED;
+    const published = fixture.revisionOf(photoId);
+    const profileId = fixture.catalog.profileId;
+    const from = assetDir({ photoId, assetRevision: published, profileId }, fixture.root);
+    const to = assetDir({ photoId, assetRevision: REPLACEMENT_REVISION, profileId }, fixture.root);
+    fs.cpSync(from, to, { recursive: true });
+    const manifestFile = path.join(to, 'manifest.json');
+    fs.writeFileSync(manifestFile, `${JSON.stringify({ ...JSON.parse(fs.readFileSync(manifestFile, 'utf8')), assetRevision: REPLACEMENT_REVISION }, null, 2)}\n`);
+    const registry = await readRegistry(fixture.root);
+    const record = registry.photos[photoId];
+    const observedAt = '2026-02-01T00:04:00.000Z';
+    record.revisions[REPLACEMENT_REVISION] = {
+        ...record.revisions[published],
+        assetRevision: REPLACEMENT_REVISION,
+        pixelDigest: `sha256-${createHash('sha256').update('e2e inbox replacement pixels').digest('hex')}`,
+        firstSeenAt: observedAt,
+    };
+    record.source = { ...record.source, observedRevision: REPLACEMENT_REVISION, lastSeenAt: observedAt };
+    await writeRegistry(fixture.root, registry, registry.version);
+    const quiet = { log: () => undefined, warn: () => undefined, error: () => undefined };
+    await createCurationSink({ root: fixture.root, logger: quiet })([fact(fixture, 'replaced', photoId, { assetRevision: REPLACEMENT_REVISION, observedAt })]);
+    return eventIdOf(eventKey('replacement', { photoId, assetRevision: REPLACEMENT_REVISION, key: `replaced:${photoId}:${REPLACEMENT_REVISION}` }));
+}
+
 /** Strings no public response may hold while no active revision references the new photographs. */
 export function undisclosed(fixture: InboxFixture): string[] {
     return [
@@ -125,5 +163,8 @@ export function undisclosed(fixture: InboxFixture): string[] {
         ...Object.values(FRESH_SOURCES).map((sourcePath) => path.posix.basename(sourcePath)),
         ...Object.values(FRESH_SOURCES).map((sourcePath) => path.posix.basename(sourcePath, '.jpg')),
         path.posix.basename(FAILED_SOURCE),
+        // A replacement's new bytes stay private until a publish activates them.
+        REPLACEMENT_REVISION,
+        REPLACEMENT_REVISION.slice('sha256-'.length),
     ];
 }
