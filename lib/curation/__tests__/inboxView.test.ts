@@ -17,12 +17,16 @@ import {
     nextItemId,
     PRIMARY_ACTION,
     referencedByText,
+    reopenHint,
+    REPLACEMENT_HINT,
+    replacementHint,
     seriesCaption,
     seriesMembershipText,
     STATUS_LABELS,
     statusLabel,
     systemResponse,
     DEFER_LABEL,
+    type ReplacementDraft,
     type SeriesOption,
 } from '../inbox-view';
 
@@ -154,6 +158,47 @@ describe('the status and the system response', () => {
     });
 });
 
+const draft = (overrides: Partial<ReplacementDraft> = {}): ReplacementDraft => ({ draft: 'new', live: false, decideLater: 'keeps', ...overrides });
+
+describe('a replacement, by what its draft holds (#17)', () => {
+    const confirmed = (replacement: ReplacementDraft | null) => item({ type: 'replacement', status: 'approved', group: 'settled', references: [{ kind: 'revision', id: REV }, { kind: 'series', id: 'ser_harbor' }], replacement });
+
+    it('calls a confirmed replacement confirmed, never an approved suggestion', () => {
+        expect(statusLabel(confirmed(draft()))).toEqual({ text: 'New version confirmed', tone: 'approved' });
+        expect(statusLabel(item({ type: 'replacement' }))).toEqual({ text: 'Draft only', tone: null });
+    });
+
+    it('says the confirmed version is in the draft, not live, while the live revision serves the earlier one', () => {
+        // The active revision holds the photo ID, but its earlier bytes.
+        expect(systemResponse(confirmed(draft()), labelOf)).toBe('The draft uses the new version. Visitors keep the current one until you publish.');
+        expect(systemResponse(confirmed(draft({ live: true })), labelOf)).toBe('The draft uses the new version, and so does the live revision.');
+        expect(systemResponse(confirmed(draft({ draft: 'other', decideLater: 'refuses' })), labelOf)).toBe('Confirmed earlier, but the draft uses another version of this photograph now. Nothing publishes until you publish.');
+        expect(systemResponse(confirmed(null), labelOf)).toBe('The new version was confirmed into the draft. Nothing publishes until you publish.');
+        for (const replacement of [draft(), draft({ draft: 'other' }), null]) expect(systemResponse(confirmed(replacement), labelOf)).not.toMatch(/^Live/);
+    });
+
+    it("says what Reopen is for, with no series or description, which a replacement doesn't have", () => {
+        expect(reopenHint({ type: 'replacement', replacement: draft({ decideLater: 'put-back' }) })).toBe('Reopen it to leave the new version out of the draft. Decide later then puts the earlier version back.');
+        expect(reopenHint({ type: 'replacement', replacement: draft() })).toBe('Reopening it changes nothing in the draft, which keeps the new version.');
+        expect(reopenHint({ type: 'replacement', replacement: draft({ draft: 'other', decideLater: 'refuses' }) })).toBe('Reopening it changes nothing in the draft.');
+        expect(reopenHint({ type: 'new', replacement: null })).toBe('Reopen it to change its series or description.');
+        for (const replacement of [draft(), draft({ decideLater: 'put-back' }), null]) expect(reopenHint({ type: 'replacement', replacement })).not.toMatch(/series|description/);
+    });
+
+    it('says before the click what Decide later does with the draft', () => {
+        // Confirmed, then reopened: Decide later writes the draft, so it never reads like the never-confirmed hint.
+        expect(replacementHint(draft({ decideLater: 'put-back' }))).toBe('The draft uses the new version, confirmed earlier. Decide later puts the earlier version back in the draft. Nothing is published until you publish.');
+        expect(replacementHint(draft({ decideLater: 'put-back' }))).not.toBe(REPLACEMENT_HINT.keeps);
+        // Never confirmed: the draft keeps the version it has.
+        expect(replacementHint(draft({ draft: 'other' }))).toBe(REPLACEMENT_HINT.keeps);
+        expect(replacementHint(null)).toBe(REPLACEMENT_HINT.keeps);
+        // The draft on the new bytes already, by an edit, a rollback, or a lost confirm: Decide later keeps them.
+        expect(replacementHint(draft())).toBe('The draft already uses the new version, so Decide later keeps it there, and the next publish uses it. Nothing is published until you publish.');
+        // The draft moved after the confirm: Decide later refuses, and the hint says what to do instead.
+        expect(replacementHint(draft({ draft: 'other', decideLater: 'refuses' }))).toBe("This photograph's draft moved to another version after the new one was confirmed, so Decide later can't tell which one to put back. Set its version with photos edit, or dismiss this item.");
+    });
+});
+
 describe('what refers to a photograph', () => {
     it('names series by title and keeps the live revision apart from draft series', () => {
         // Active revision, the row below it, has the revision's ID, so this doesn't repeat it.
@@ -175,8 +220,20 @@ describe('the answer an approval or Decide later carries to the page it opens', 
         expect(arrivalMessage('defer', 'harbor-1.jpg', DONE_ANSWER.defer)).toBe('Left harbor-1.jpg for later. Nothing in the draft changed.');
     });
 
-    it('says the draft changed when Decide later put an earlier version back', () => {
-        expect(arrivalMessage('defer', 'harbor-1.jpg', DONE_ANSWER.putBack)).toBe('Left harbor-1.jpg for later. The draft is back on its earlier version, so the next publish ships that one, not the new one.');
+    it('says the draft changed when Decide later put an earlier version back, in the words the answer under the button used', () => {
+        expect(DONE_ANSWER.putBack).toBe('Left for later. The draft is back on the earlier version of this photograph, and the next publish uses that one.');
+        expect(arrivalMessage('defer', 'harbor-1.jpg', DONE_ANSWER.putBack)).toBe('Left harbor-1.jpg for later. The draft is back on the earlier version of this photograph, and the next publish uses that one.');
+    });
+
+    it('says the next publish uses the new version when Decide later kept it in the draft', () => {
+        expect(DONE_ANSWER.keepsNew).toBe('Left for later. The draft already uses the new version of this photograph, so the next publish uses it too.');
+        expect(arrivalMessage('defer', 'harbor-1.jpg', DONE_ANSWER.keepsNew)).toBe('Left harbor-1.jpg for later. The draft already uses the new version of this photograph, so the next publish uses it too.');
+    });
+
+    it('says publish, never ships, and names no version by a pronoun the draft could own', () => {
+        for (const text of [DONE_ANSWER.putBack, DONE_ANSWER.keepsNew, arrivalMessage('defer', 'a.jpg', DONE_ANSWER.putBack), arrivalMessage('defer', 'a.jpg', DONE_ANSWER.keepsNew)]) {
+            expect(text).not.toMatch(/\bships?\b|\bits (earlier|new)\b/);
+        }
     });
 
     it("keeps the action's later notes, such as what still holds publishing back", () => {
