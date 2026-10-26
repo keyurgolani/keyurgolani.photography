@@ -197,7 +197,7 @@ export function editEvent(input: ActionInput & { choices: Choices }): Promise<Ac
     });
 }
 
-/** Leave in draft. */
+/** Defer: leave it in the draft for later (the inbox's Decide later). */
 export function deferEvent(input: ActionInput & { reason?: string }): Promise<ActionOutcome> {
     return act(input, async (step) => {
         requireStatus(step.event, ['open', 'failed'], 'deferred');

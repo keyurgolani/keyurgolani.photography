@@ -268,8 +268,8 @@ describe('the detail', () => {
         expect(screen.getByText('Use the new bytes only after all derivatives succeed')).toBeInTheDocument();
         expect(screen.getByRole('button', { name: 'Confirm new asset revision' })).toBeDisabled();
         // The live action takes the primary place; the unavailable one sits before it, quieter.
-        const row = screen.getByRole('button', { name: 'Leave in draft' }).parentElement!;
-        expect(within(row).getAllByRole('button').map((button) => button.textContent)).toEqual(['Confirm new asset revision', 'Leave in draft']);
+        const row = screen.getByRole('button', { name: 'Decide later' }).parentElement!;
+        expect(within(row).getAllByRole('button').map((button) => button.textContent)).toEqual(['Confirm new asset revision', 'Decide later']);
         expect(screen.queryByRole('combobox', { name: 'Suggested series' })).toBeNull();
         unmount();
         renderInbox(view({ selected: detail({ type: 'missing', can: { approve: false, edit: true, defer: true, dismiss: true, retry: false, reopen: false }, primaryUnavailable: "Locating isn't in the inbox yet." }) }));
@@ -294,7 +294,7 @@ async function press(button: HTMLElement) {
 describe('the forms', () => {
     it('send the item, its version, the active revision, and the shown series, and leave an untouched position out', async () => {
         renderInbox();
-        await press(screen.getByRole('button', { name: 'Review series suggestion' }));
+        await press(screen.getByRole('button', { name: 'Approve into draft' }));
         expect(sent.forms).toEqual([{ action: 'approve', fields: { eventId: EVT(1), version: '3', base: ACTIVE, series: 'ser_harbor', description: '', decorative: 'off', intent: 'approve' } }]);
         expect(await screen.findByText('Done.')).toBeInTheDocument();
     });
@@ -312,7 +312,7 @@ describe('the forms', () => {
         fireEvent.change(screen.getByRole('combobox', { name: 'Proposed sequence position' }), { target: { value: 'editor' } });
         const editor = screen.getByRole('group', { name: 'Place it in Harbor' });
         fireEvent.click(within(editor).getByRole('radio', { name: 'At the start' }));
-        await press(screen.getByRole('button', { name: 'Review series suggestion' }));
+        await press(screen.getByRole('button', { name: 'Approve into draft' }));
         expect(sent.forms[0].fields).toMatchObject({ placement: 'start', series: 'ser_harbor', intent: 'approve' });
         expect(sent.forms[0].fields.seriesTouched).toBeUndefined();
     });
@@ -320,7 +320,7 @@ describe('the forms', () => {
     it('send the decorative flag instead of text', async () => {
         renderInbox();
         fireEvent.click(screen.getByRole('checkbox', { name: /Decorative/ }));
-        await press(screen.getByRole('button', { name: 'Review series suggestion' }));
+        await press(screen.getByRole('button', { name: 'Approve into draft' }));
         expect(sent.forms[0].fields).toMatchObject({ decorative: 'on' });
         // The disabled field isn't sent; the flag stands for the description.
         expect(sent.forms[0].fields.description).toBeUndefined();
@@ -341,19 +341,19 @@ describe('the forms', () => {
         const series = () => screen.getByRole('combobox', { name: 'Suggested series' }) as HTMLSelectElement;
         fireEvent.change(series(), { target: { value: 'ser_draft' } });
         fireEvent.change(screen.getByRole('textbox', { name: 'Draft description' }), { target: { value: '<b>x</b>' } });
-        await press(screen.getByRole('button', { name: 'Review series suggestion' }));
+        await press(screen.getByRole('button', { name: 'Approve into draft' }));
         expect(await screen.findByText(/can’t hold markup/)).toBeInTheDocument();
         expect(series().value).toBe('ser_draft');
         sent.answer = null;
         fireEvent.change(screen.getByRole('textbox', { name: 'Draft description' }), { target: { value: 'Fixed.' } });
-        await press(screen.getByRole('button', { name: 'Review series suggestion' }));
+        await press(screen.getByRole('button', { name: 'Approve into draft' }));
         expect(sent.forms[1].fields.series).toBe(series().value);
     });
 
     it('send "Leave unassigned" when it is the shown default, as it is with no rules file', async () => {
         renderInbox(view({ selected: detail({ suggestions: { series: { value: null, confidence: 'low', producedBy: 'rules@none', producedAt: '2026-02-01T00:00:00.000Z', evidence: [] }, placement: null } }) }));
         expect(screen.getByRole('combobox', { name: 'Suggested series' })).toHaveValue('unassigned');
-        await press(screen.getByRole('button', { name: 'Review series suggestion' }));
+        await press(screen.getByRole('button', { name: 'Approve into draft' }));
         expect(sent.forms[0].fields).toMatchObject({ series: 'unassigned', intent: 'approve' });
         expect(sent.forms[0].fields.seriesTouched).toBeUndefined();
     });
@@ -366,7 +366,7 @@ describe('the forms', () => {
         const box = screen.getByRole('checkbox', { name: /Decorative/ });
         expect(box).toBeChecked();
         fireEvent.click(box);
-        await press(screen.getByRole('button', { name: 'Review series suggestion' }));
+        await press(screen.getByRole('button', { name: 'Approve into draft' }));
         expect(sent.forms[0].fields).toMatchObject({ series: 'ser_harbor', decorative: 'off', descriptionWas: 'decorative', description: '' });
     });
 
@@ -380,7 +380,7 @@ describe('the forms', () => {
         expect(screen.queryByText(/Suggested leaving it unassigned/)).toBeNull();
         expect(screen.getByRole('textbox', { name: 'Draft description' })).toHaveAccessibleDescription('The description it was approved with, stored as reviewed. Clear it to withdraw it.');
         expect(screen.queryByText(/^Nothing is suggested/)).toBeNull();
-        await press(screen.getByRole('button', { name: 'Review series suggestion' }));
+        await press(screen.getByRole('button', { name: 'Approve into draft' }));
         expect(sent.forms[0].fields).toMatchObject({ series: 'ser_harbor', intent: 'approve' });
         expect(sent.forms[0].fields.seriesTouched).toBeUndefined();
     });
@@ -397,7 +397,7 @@ describe('the forms', () => {
         renderInbox();
         const field = screen.getByRole('textbox', { name: 'Draft description' });
         fireEvent.change(field, { target: { value: '<b>x</b>' } });
-        await press(screen.getByRole('button', { name: 'Review series suggestion' }));
+        await press(screen.getByRole('button', { name: 'Approve into draft' }));
         expect(field).toHaveAttribute('aria-invalid', 'true');
         expect(field).toHaveAccessibleDescription(/can’t hold markup/);
         expect(field).toHaveFocus();
@@ -411,10 +411,10 @@ describe('the forms', () => {
     it('put an answer right under the buttons that produced it, above Dismiss', async () => {
         sent.answer = { status: 'stale', action: 'approve', eventId: EVT(1), message: 'This item changed since the page loaded, so nothing was written.', serial: 1 };
         renderInbox();
-        await press(screen.getByRole('button', { name: 'Review series suggestion' }));
+        await press(screen.getByRole('button', { name: 'Approve into draft' }));
         const notice = await screen.findByText(/changed since the page loaded/);
         const dismiss = screen.getByText('Dismiss with a reason');
-        expect(notice.compareDocumentPosition(screen.getByRole('button', { name: 'Review series suggestion' })) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+        expect(notice.compareDocumentPosition(screen.getByRole('button', { name: 'Approve into draft' })) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
         expect(notice.compareDocumentPosition(dismiss) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
@@ -449,7 +449,7 @@ describe('the forms', () => {
         sent.answer = { status: 'stale', action: 'approve', eventId: EVT(1), message: 'This item changed since the page loaded, so nothing was written.', serial: 1 };
         renderInbox();
         fireEvent.change(screen.getByRole('textbox', { name: 'Draft description' }), { target: { value: 'Still here.' } });
-        await press(screen.getByRole('button', { name: 'Review series suggestion' }));
+        await press(screen.getByRole('button', { name: 'Approve into draft' }));
         expect(await screen.findByText(/changed since the page loaded/)).toBeInTheDocument();
         expect(screen.getByRole('link', { name: 'Refresh and review again' })).toHaveAttribute('href', `/curation/inbox?item=${EVT(1)}#item`);
         expect(screen.getByRole('textbox', { name: 'Draft description' })).toHaveValue('Still here.');
@@ -465,7 +465,7 @@ describe('the forms', () => {
         unmount();
         renderInbox(view({ selected: detail({ status: 'approved', can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true } }) }));
         expect(screen.getByText('Suggestion approved')).toBeInTheDocument();
-        expect(screen.queryByRole('button', { name: 'Review series suggestion' })).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Approve into draft' })).toBeNull();
         await press(screen.getByRole('button', { name: 'Reopen' }));
         expect(sent.forms[1].fields).toMatchObject({ intent: 'reopen', version: '3' });
     });

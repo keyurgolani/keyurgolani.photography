@@ -45,18 +45,26 @@ export const SYSTEM_RESPONSE: Record<CurationEventType, string> = {
     'processing-failure': "The watcher couldn't process it, so nothing was made from it.",
 };
 
-/** The primary action the approved mockup names for each type that has one. */
+/**
+ * The primary action for each type that has one. The mockup's own names,
+ * except a new photograph's, which the owner renamed (2026-10-25), since it
+ * commits an approval.
+ */
 export const PRIMARY_ACTION: Partial<Record<CurationEventType, string>> = {
-    new: 'Review series suggestion',
+    new: 'Approve into draft',
     replacement: 'Confirm new asset revision',
     missing: 'Resolve source or archive intentionally',
 };
+
+/** The button that defers an item (14-1's `defer`), as the owner named it (2026-10-25). */
+export const DEFER_LABEL = 'Decide later';
 
 export const STATUS_LABELS: Record<CurationEventStatus, string> = {
     open: 'Draft only',
     // A file that produced nothing isn't a draft of anything.
     failed: 'Not processed',
-    deferred: 'Left in draft',
+    // What Decide later leaves it as. "Draft" names only where an approval goes.
+    deferred: 'Left for later',
     dismissed: 'Dismissed',
     approved: 'Suggestion approved',
 };

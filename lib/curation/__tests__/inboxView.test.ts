@@ -6,11 +6,14 @@ import {
     formStart,
     headTail,
     identityLine,
+    PRIMARY_ACTION,
     referencedByText,
     seriesCaption,
     seriesMembershipText,
+    STATUS_LABELS,
     statusLabel,
     systemResponse,
+    DEFER_LABEL,
     type SeriesOption,
 } from '../inbox-view';
 
@@ -153,5 +156,13 @@ describe('what refers to a photograph', () => {
     it('gives a series membership by title and position', () => {
         expect(seriesMembershipText(P(9), [{ kind: 'revision', id: REV }, { kind: 'series', id: 'ser_harbor' }], SERIES)).toBe('Harbor, position 02');
         expect(seriesMembershipText(P(9), [], SERIES)).toBe('In no series');
+    });
+});
+
+describe('the action names', () => {
+    it('are the owner\'s: Approve into draft, and Decide later, which leaves it for later', () => {
+        expect(PRIMARY_ACTION.new).toBe('Approve into draft');
+        expect(DEFER_LABEL).toBe('Decide later');
+        expect(STATUS_LABELS.deferred).toBe('Left for later');
     });
 });
