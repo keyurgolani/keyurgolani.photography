@@ -18,7 +18,7 @@ import { runCurationCli } from '../commands';
 import { loadInbox } from '../inbox';
 import { runInboxAction, WEB_ACTOR } from '../inbox-form';
 import { defaultDescription, defaultPlacement, defaultSeries, formSeries, parsePlacementValue, placementValue, summaryText, type InboxActionState, type InboxView } from '../inbox-view';
-import { eventDir, readEvent, withCurationLock } from '../repository';
+import { eventDir, readEvent, withCurationLock, writeEvent } from '../repository';
 import { createCurationSink } from '../sink';
 import { createCurationFixture, DRAFT, GPS, PUBLISHED, SERIAL, writeRules, type CurationFixture } from './curationFixtures';
 
@@ -217,6 +217,15 @@ describe('loadInbox', () => {
         expect(view).toMatchObject({ needsJudgment: 0, selected: null, missingSelection: null });
         // Asked for by ID, it still opens.
         expect(ready(await loadInbox(ids[0])).selected?.id).toBe(ids[0]);
+    });
+
+    it('lists an item #17 resolved as settled, with nothing to judge', async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])]);
+        const stored = (await readEvent(f.root, ids[0]))!;
+        await withCurationLock(f.root, {}, (hold) => writeEvent(f.root, { ...stored, status: 'resolved' }, stored.version, hold));
+        const view = ready(await loadInbox(ids[0]));
+        expect(view.selected).toMatchObject({ status: 'resolved', group: 'settled', can: { approve: false, edit: false, defer: false, dismiss: false, retry: false } });
+        expect(view).toMatchObject({ needsJudgment: 0, placed: 0, unplaced: 0 });
     });
 
     it('says so when the URL names an item the inbox lacks, and never echoes a malformed one', async () => {
