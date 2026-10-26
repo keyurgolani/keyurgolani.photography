@@ -159,7 +159,8 @@ function abilities(event: CurationEvent, registry: Registry | null): InboxDetail
 
 /**
  * The hint under the actions. Only while Decide later is offered, since it names Decide later: for a replacement, what
- * Decide later does with the draft now; for a missing source, why its primary action isn't in the inbox yet.
+ * Decide later does with the draft now; for a missing source, why its primary action isn't in the inbox yet. A settled
+ * item (approved, dismissed, or #17's resolved or archived missing item) offers no Decide later, so it gets none.
  */
 function primaryUnavailable(event: CurationEvent, can: InboxDetail['can'], replacement: ReplacementDraft | null): string | null {
     if (PRIMARY_ACTION[event.type] === undefined || event.type === 'new' || !can.defer) return null;

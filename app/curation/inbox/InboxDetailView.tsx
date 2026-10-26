@@ -82,7 +82,8 @@ function TypeBox({ view, detail }: { view: ReadyView; detail: InboxDetail }) {
             </section>
         );
     }
-    if (detail.type === 'missing') {
+    // Settled, as when #17's watcher saw the source back or an archive took it: nothing is left to recover.
+    if (detail.type === 'missing' && detail.group !== 'settled') {
         return (
             <section className={styles.box} aria-labelledby="type-box">
                 <h3 className={styles.boxTitle} id="type-box">
