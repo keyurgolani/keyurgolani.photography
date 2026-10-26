@@ -60,7 +60,9 @@ jobs:
   e2e:
     name: Browser tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The suite alone takes about 19 minutes on next, and the Playwright install
+    # is bounded at three 6-minute tries.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
 
@@ -72,7 +74,20 @@ jobs:
       - run: npm ci
 
       # WebKit runs Home's first-tap cases on the mobile-webkit project. --only-shell applies to Chromium alone.
-      - run: npx playwright install --with-deps --only-shell chromium webkit
+      # The apt half of --with-deps has hung for the whole job on a slow mirror
+      # (#84, #87, #88). Bound each try and retry a hung one.
+      - name: Install Playwright browsers
+        timeout-minutes: 20
+        run: |
+          for try in 1 2 3; do
+            timeout 360 npx playwright install --with-deps --only-shell chromium webkit && exit 0
+            echo "Playwright install try $try failed or took over 6 minutes."
+            # timeout stops npx, not the apt-get it started under sudo, which
+            # would hold the dpkg lock. The runner is throwaway.
+            sudo pkill -9 -f 'apt-get|dpkg' || true
+            sudo dpkg --configure -a || true
+          done
+          exit 1
 
       - run: npm run test:e2e
 
