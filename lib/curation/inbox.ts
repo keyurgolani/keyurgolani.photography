@@ -155,7 +155,8 @@ function abilities(event: CurationEvent, registry: Registry | null): InboxDetail
         dismiss: open,
         // As retryEvent() decides: an identified photograph whose file couldn't be decoded, or whose build failed.
         retry: open && event.photoId !== null && event.assetRevision !== null && failure !== 'unsupported-format' && failure !== 'digest-collision' && (failure === 'undecodable' || failedBuild),
-        reopen: event.status === 'deferred' || event.status === 'dismissed' || event.status === 'approved',
+        // As reopenEvent() decides, which takes #17's resolved items back too.
+        reopen: event.status === 'deferred' || event.status === 'dismissed' || event.status === 'approved' || event.status === 'resolved',
     };
 }
 

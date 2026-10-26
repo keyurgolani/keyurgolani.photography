@@ -219,13 +219,18 @@ describe('loadInbox', () => {
         expect(ready(await loadInbox(ids[0])).selected?.id).toBe(ids[0]);
     });
 
-    it('lists an item #17 resolved as settled, with nothing to judge', async () => {
+    it('lists an item #17 resolved as settled, with nothing to judge but Reopen, and reopens it from the page', async () => {
         const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])]);
         const stored = (await readEvent(f.root, ids[0]))!;
         await withCurationLock(f.root, {}, (hold) => writeEvent(f.root, { ...stored, status: 'resolved' }, stored.version, hold));
         const view = ready(await loadInbox(ids[0]));
-        expect(view.selected).toMatchObject({ status: 'resolved', group: 'settled', can: { approve: false, edit: false, defer: false, dismiss: false, retry: false } });
+        expect(view.selected).toMatchObject({ status: 'resolved', group: 'settled', can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true } });
         expect(view).toMatchObject({ needsJudgment: 0, placed: 0, unplaced: 0 });
+        // The page's Reopen takes it back, as `curation reopen` does.
+        const event = (await readEvent(f.root, ids[0]))!;
+        done(await runInboxAction('reopen', itemForm(event, null)));
+        expect(await readEvent(f.root, ids[0])).toMatchObject({ status: 'open', version: event.version + 1 });
+        expect(ready(await loadInbox(ids[0])).selected).toMatchObject({ group: 'judgment', can: { approve: true, reopen: false } });
     });
 
     it('says so when the URL names an item the inbox lacks, and never echoes a malformed one', async () => {
