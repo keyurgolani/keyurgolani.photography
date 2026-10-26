@@ -69,10 +69,7 @@ function holderName(entry: HolderEntry): string {
 
 /** The active revision and the working-layer series that list `photoId`, named for a note, each once. */
 function holderNames(list: readonly AssetReference[], photoId: string): string[] {
-    const holders = list
-        .filter((entry) => entry.photoId === photoId && (entry.source === 'active-revision' || entry.source === 'working-layer-series'))
-        .map((entry) => (entry.source === 'active-revision' ? `the active revision ${entry.holder}` : `the series ${entry.holder}`));
-    return [...new Set(holders)];
+    return holderEntries(list, photoId).map(holderName);
 }
 
 /** What keeps a photo from being merged into another, which retires it. */
