@@ -4,9 +4,10 @@ import { expectReflow } from './support/reflow';
 import { checkSurface } from './support/surface';
 import { expectMinTargetSize } from './support/targets';
 import { expect, test } from './support/test';
-import { centerOf, doubleTap, realTouches, touchDrag, twoFingerSpread } from './support/touch';
-import { P, href, useViewerCatalog } from './support/viewerCatalog';
+import { centerOf, doubleTap, flick, holdFinger, realTouches, touchDrag, twoFingerSpread } from './support/touch';
+import { P, SHAPES, href, useViewerCatalog } from './support/viewerCatalog';
 import { SETTLE } from '../components/viewer/doubleTap';
+import { CLAIM_SLOP, PEEK_GAP, SETTLE_SLOW, rubberBand } from '../components/viewer/swipe';
 
 // #9 PR 2: touch and presentation, on #7's published fixture. Swipes run on
 // the touch projects: real touches through CDP on `mobile`, and synthetic
@@ -102,10 +103,10 @@ async function recordEvents(page: Page): Promise<() => Promise<string[]>> {
     return () => page.evaluate(() => (window as unknown as { kgEvents?: string[] }).kgEvents ?? ['no log']);
 }
 
-/** A one-finger swipe across the middle of the photograph. */
-async function swipe(page: Page, dx: number, { dy = 0, end = 'lift' as 'lift' | 'cancel', on = stage(page) } = {}): Promise<void> {
+/** A one-finger swipe across the middle of the photograph: a flick, unless `duration` spreads its moves out. */
+async function swipe(page: Page, dx: number, { dy = 0, end = 'lift' as 'lift' | 'cancel', on = stage(page), duration = 0 } = {}): Promise<void> {
     const center = await centerOf(on);
-    await touchDrag(page, { from: center, dx, dy, end });
+    await touchDrag(page, { from: center, dx, dy, end, duration });
 }
 
 /** Resolves once `region`'s scroll position holds still across two 100 ms looks, so any fling after a real drag is over. */
@@ -213,8 +214,9 @@ test.describe('swipe', () => {
         if (size) await page.setViewportSize({ width: size.width, height: 400 });
         await openPage(page, P[0]);
         expect(await page.evaluate(() => document.documentElement.scrollHeight > window.innerHeight), 'the page can scroll').toBe(true);
-        await swipe(page, -40);
-        await swipe(page, 40);
+        // Slow drags, 40 px over 400 ms, so neither is a flick (9a).
+        await swipe(page, -40, { duration: 400 });
+        await swipe(page, 40, { duration: 400 });
         await expectStill(page, P[0], 1);
         // 60 across and 120 up: well past 48, but under 1.25 times the vertical travel.
         await swipe(page, -60, { dy: -120 });
@@ -291,6 +293,197 @@ test.describe('swipe', () => {
     });
 });
 
+test.describe('the photograph follows the finger (9a)', () => {
+    test.beforeEach(() => runsOn(test.info(), 'mobile', 'mobile-webkit'));
+
+    const track = (page: Page) => stage(page).locator('[data-viewer-track]');
+    /** How far across the photograph's strip sits from its rest, in CSS px. */
+    const offset = (page: Page) =>
+        track(page).evaluate((element) => {
+            const transform = getComputedStyle(element).transform;
+            return transform === 'none' ? 0 : new DOMMatrixReadOnly(transform).m41;
+        });
+    const atRest = (page: Page) => expect.poll(() => track(page).evaluate((element) => getComputedStyle(element).transform), { message: 'the photograph is back at rest' }).toBe('none');
+    /** Wait until a finger's touch has the neighbors on hand: a first touch asks for them. */
+    const peeksIn = async (page: Page, count: number) => expect(stage(page).locator('[data-viewer-peek]')).toHaveCount(count);
+
+    test('the photograph tracks the finger 1:1 from the claim, the next one peeks in 16 px behind it, and nothing else moves', async ({ page }) => {
+        await openPage(page, P[1]);
+        const from = await centerOf(stage(page));
+        const before = { header: await header(page).boundingBox(), reading: await viewer(page).locator('[data-viewer-reading]').boundingBox() };
+        const finger = await holdFinger(page, from);
+        await peeksIn(page, 2);
+        // Past the claim, then on: the photograph moves with the finger from where it was claimed, with no jump.
+        await finger.moveTo({ x: from.x - CLAIM_SLOP - 2, y: from.y });
+        await finger.moveTo({ x: from.x - 102, y: from.y + 3 });
+        await expect.poll(() => offset(page)).toBeCloseTo(-90, 0);
+        const slot = await track(page).boundingBox();
+        const next = await stage(page).locator('[data-viewer-peek="next"]').boundingBox();
+        expect(next && slot && next.x - (slot.x + slot.width), 'the gap the next photograph peeks in behind').toBeCloseTo(PEEK_GAP, 0);
+        await expect(stage(page).locator('[data-viewer-peek="next"] img')).toBeVisible();
+        // The header, the counter, and the reading area stay put while it's held.
+        expect(await header(page).boundingBox()).toEqual(before.header);
+        expect(await viewer(page).locator('[data-viewer-reading]').boundingBox()).toEqual(before.reading);
+        await expect(header(page)).toContainText('02 / 03');
+        // Back to 40 px, short of the rule, and lifted there: it slides back, and nothing changes.
+        await finger.moveTo({ x: from.x - 40, y: from.y + 3 });
+        await page.waitForTimeout(120);
+        await finger.lift();
+        await atRest(page);
+        await expectStill(page, P[1], 2);
+        await expect(announcer(page)).toHaveText('');
+    });
+
+    test('a short fast flick moves, and a short slow drag springs back', async ({ page }) => {
+        await openPage(page, P[0]);
+        // 36 px over 400 ms: under 48, and slow, so it springs back.
+        await swipe(page, -36, { duration: 400 });
+        await atRest(page);
+        await expectStill(page, P[0], 1);
+        // 32 px, quickly: a flick.
+        await flick(page, await centerOf(stage(page)), -32);
+        await expectStill(page, P[1], 2);
+        await flick(page, await centerOf(stage(page)), 32);
+        await expectStill(page, P[0], 1);
+        await atRest(page);
+    });
+
+    test('a swipe settles onward with no overshoot, inside the settle time, and lands at rest on the new photograph', async ({ page }) => {
+        await openPage(page, P[0]);
+        const from = await centerOf(stage(page));
+        const finger = await holdFinger(page, from);
+        await peeksIn(page, 1);
+        for (const dx of [-12, -40, -80, -120]) await finger.moveTo({ x: from.x + dx, y: from.y });
+        const stageBox = await stage(page).boundingBox();
+        // Every frame from the lift until it's at rest: where the arriving photograph's slot sits across, on the track
+        // that shows it (the peek before its page arrives, the track itself after).
+        await page.evaluate((arriving) => {
+            const record = { lefts: [] as number[], times: [] as number[], start: performance.now(), running: true };
+            (window as unknown as { kgSettle: typeof record }).kgSettle = record;
+            const sample = () => {
+                if (!record.running) return;
+                const arrived = document.querySelector('[data-viewer-photo]')?.getAttribute('data-viewer-photo') === arriving;
+                const slot = document.querySelector(arrived ? '[data-viewer-track]' : '[data-viewer-peek="next"]');
+                const box = slot?.getBoundingClientRect();
+                if (box) {
+                    record.lefts.push(box.left);
+                    record.times.push(performance.now() - record.start);
+                }
+                requestAnimationFrame(sample);
+            };
+            requestAnimationFrame(sample);
+        }, P[1]);
+        await finger.lift();
+        await expectStill(page, P[1], 2);
+        await atRest(page);
+        const { lefts, times } = await page.evaluate(() => {
+            const record = (window as unknown as { kgSettle: { lefts: number[]; times: number[]; running: boolean } }).kgSettle;
+            record.running = false;
+            return record;
+        });
+        const restLeft = stageBox!.x + (await stage(page).evaluate((element) => parseFloat(getComputedStyle(element).paddingLeft)));
+        // It only ever goes one way, toward its rest, and never past it.
+        for (let index = 1; index < lefts.length; index++) expect(lefts[index], `frame ${index} at ${Math.round(times[index])} ms`).toBeLessThanOrEqual(lefts[index - 1] + 0.5);
+        for (const left of lefts) expect(left).toBeGreaterThanOrEqual(restLeft - 0.5);
+        // At rest within the settle and a few frames of slack for the test's own sampling.
+        const landed = times[lefts.findIndex((left) => Math.abs(left - restLeft) < 0.5)];
+        expect(landed, 'the settle landed').toBeLessThanOrEqual(SETTLE_SLOW + 120);
+    });
+
+    test('at the first photograph the pull meets the rubber band, announces the end, and slides back', async ({ page }) => {
+        await openPage(page, P[0]);
+        const from = await centerOf(stage(page));
+        const width = await track(page).evaluate((element) => element.clientWidth);
+        const finger = await holdFinger(page, from);
+        await finger.moveTo({ x: from.x + 10, y: from.y });
+        await finger.moveTo({ x: from.x + 180, y: from.y });
+        // 170 px past the claim gives the rubber band's share.
+        await expect.poll(() => offset(page)).toBeCloseTo(rubberBand(170, width), 0);
+        expect(await offset(page)).toBeLessThan(100);
+        await page.waitForTimeout(120);
+        await finger.lift();
+        await expect(announcer(page)).toHaveText('First photograph in Fixture harbor.');
+        await atRest(page);
+        await expectStill(page, P[0], 1);
+    });
+
+    test('a mostly vertical drag never moves the photograph', async ({ page }) => {
+        const size = page.viewportSize();
+        if (size) await page.setViewportSize({ width: size.width, height: 400 });
+        await openPage(page, P[0]);
+        const from = await centerOf(stage(page));
+        const finger = await holdFinger(page, from);
+        await finger.moveTo({ x: from.x - 4, y: from.y - 20 });
+        await finger.moveTo({ x: from.x - 30, y: from.y - 120 });
+        expect(await offset(page)).toBe(0);
+        await finger.lift();
+        await expectStill(page, P[0], 1);
+        if (realTouches(page)) await expect.poll(() => page.evaluate(() => window.scrollY), 'the drag scrolled the page').toBeGreaterThan(0);
+    });
+
+    test('under reduced motion the photograph stays still under the finger and the move is a cut at the lift', async ({ page }) => {
+        await page.emulateMedia({ reducedMotion: 'reduce' });
+        await openPage(page, P[1]);
+        const from = await centerOf(stage(page));
+        const finger = await holdFinger(page, from);
+        await finger.moveTo({ x: from.x - 20, y: from.y });
+        await finger.moveTo({ x: from.x - 120, y: from.y });
+        expect(await offset(page)).toBe(0);
+        await expect(stage(page).locator('[data-viewer-peek]')).toHaveCount(0);
+        await finger.lift();
+        await expectStill(page, P[2], 3);
+        expect(await offset(page)).toBe(0);
+    });
+});
+
+test.describe('the fixed stage (9a)', () => {
+    test.beforeEach(() => runsOn(test.info(), 'desktop', 'mobile'));
+
+    test('a wide, a tall, and a 3:2 photograph each fit and center in the same stage, and the reading area stays put', async ({ page }) => {
+        const boxes: { stage: unknown; reading: number; frame: { x: number; y: number; width: number; height: number } }[] = [];
+        for (const photoId of SHAPES) {
+            await page.goto(`${origin()}${href(photoId, 'shapes')}`);
+            await waitForHydration(page);
+            const measured = await viewer(page).evaluate((root) => {
+                const rect = (element: Element | null) => {
+                    const box = element?.getBoundingClientRect();
+                    return box ? { x: box.x, y: box.y + window.scrollY, width: box.width, height: box.height } : null;
+                };
+                const stageElement = root.querySelector('[data-viewer-stage]');
+                const track = root.querySelector('[data-viewer-track]');
+                return {
+                    stage: rect(stageElement),
+                    track: rect(track),
+                    frame: rect(root.querySelector('[data-viewer-current]')),
+                    reading: rect(root.querySelector('[data-viewer-reading]')),
+                    // A wide screen keeps the photograph to four fifths of the viewport's width (fitSizes).
+                    widest: window.innerWidth >= 768 ? window.innerWidth * 0.8 : window.innerWidth,
+                };
+            });
+            const { stage: stageBox, track, frame, reading, widest } = measured;
+            expect(stageBox && track && frame && reading, photoId).toBeTruthy();
+            // Aspect-fit: the whole photograph inside its slot, as large as the slot and the width cap let its shape be,
+            // and centered both ways.
+            const ratio = frame!.width / frame!.height;
+            expect(frame!.width, `${photoId} fits its slot`).toBeCloseTo(Math.min(track!.width, widest, track!.height * ratio), 0);
+            expect(frame!.height).toBeLessThanOrEqual(track!.height + 0.5);
+            expect(frame!.x - track!.x).toBeCloseTo(track!.x + track!.width - (frame!.x + frame!.width), 0);
+            expect(frame!.y - track!.y).toBeCloseTo(track!.y + track!.height - (frame!.y + frame!.height), 0);
+            boxes.push({ stage: stageBox, reading: reading!.y, frame: frame! });
+        }
+        // The same stage and the same reading area for all three.
+        for (const box of boxes.slice(1)) {
+            expect(box.stage).toEqual(boxes[0].stage);
+            expect(box.reading).toBeCloseTo(boxes[0].reading, 1);
+        }
+        // And the shapes really differ: wide, tall, 3:2.
+        const ratios = boxes.map(({ frame }) => frame.width / frame.height);
+        expect(ratios[0]).toBeCloseTo(3, 1);
+        expect(ratios[1]).toBeCloseTo(2 / 3, 1);
+        expect(ratios[2]).toBeCloseTo(1.5, 1);
+    });
+});
+
 test.describe('double-tap', () => {
     // #9c: the stage's touch-action turns the browser's double-tap zoom off, so the Viewer reads two taps on the
     // photograph as its own Zoom (components/viewer/doubleTap.ts has the thresholds, both sides of each).
@@ -338,9 +531,11 @@ test.describe('double-tap', () => {
 
     test('on a tall photograph, a double-tap near its top or its bottom keeps that place under the finger down the photograph too', async ({ page }) => {
         // The one-photo series' photograph is 2:3, so zoomed it's taller than its box on a phone and scrolls both ways.
+        // Since 9a its fitted box fits the phone's stage above the reading area, a little smaller than the zoomed box's
+        // height, so the place near the bottom is 70% down: at 80% the scroll would need to go past its end.
         for (const [where, share] of [
             ['top', 0.2],
-            ['bottom', 0.8],
+            ['bottom', 0.7],
         ] as const) {
             await page.goto(`${origin()}${href(P[3], 'ridge')}`);
             await waitForHydration(page);

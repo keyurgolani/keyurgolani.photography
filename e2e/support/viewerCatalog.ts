@@ -34,6 +34,8 @@ export const SENTINELS = [
 ];
 
 export const HARBOR = [P[0], P[1], P[2]];
+/** 9a's mixed shapes, in a series of their own: a wide panorama, a tall portrait, and a 3:2 between them. */
+export const SHAPES = [id(7), id(8), id(9)];
 export const href = (photoId: string, slug = 'harbor') => `/work/${slug}/photo/${photoId}`;
 
 /**
@@ -72,6 +74,9 @@ export function useViewerCatalog(): () => string {
                 { ...photo(3), height: 1350, caption: 'Fixture ridge caption.' },
                 { ...photo(4), title: 'SENTINEL draft title' },
                 { ...photo(5), title: 'SENTINEL hidden title' },
+                { id: SHAPES[0], width: 1200, height: 400, title: 'Fixture shoreline', caption: 'Fixture wide caption.', accent: '#3f7a8c' },
+                { id: SHAPES[1], width: 600, height: 900, title: 'Fixture tower', caption: 'Fixture tall caption.', accent: '#a0583a' },
+                { id: SHAPES[2], width: 900, height: 600, title: 'Fixture dunes', caption: 'Fixture middle caption.', accent: '#6b6fd0' },
             ],
             series: [
                 {
@@ -85,6 +90,7 @@ export function useViewerCatalog(): () => string {
                     photoIds: HARBOR,
                 },
                 { id: 'ser_e2e-ridge', slug: 'ridge', title: 'Fixture ridge', photoIds: [P[3]] },
+                { id: 'ser_e2e-shapes', slug: 'shapes', title: 'Fixture shapes', photoIds: SHAPES },
                 { id: 'ser_e2e-draft', slug: 'draft', title: 'SENTINEL draft title', photoIds: [P[4]], visibility: 'draft' },
                 { id: 'ser_e2e-hidden', slug: 'sentinel-hidden', title: 'SENTINEL hidden title', photoIds: [P[5]], visibility: 'hidden' },
             ],
