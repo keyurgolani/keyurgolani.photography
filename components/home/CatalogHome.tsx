@@ -7,6 +7,7 @@ import { usePrefersReducedMotion } from '@/components/motion/usePrefersReducedMo
 import LoadingState from '@/components/site/LoadingState';
 import SiteNav from '@/components/site/SiteNav';
 import type { HomeSeries, PublishedHome } from '@/lib/catalog/projections/home';
+import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
 import { hasCompletedHomeHeroIntro, markHomeHeroIntroCompleted } from '@/utils/homeHeroCache';
 import CatalogSequence from './CatalogSequence';
 import HomeChromeController, { HomeChrome, HomeVignette } from './HomeChromeController';
@@ -24,9 +25,10 @@ import styles from './CatalogHome.module.css';
  * series plays in its authored order from its opening photograph inside
  * #18's chrome, with #2's playback as the only timer. Nothing featured is
  * the empty state, with no intro and the chrome held up by #18's no-photo
- * hold. Every prop ships to visitors, so it takes only the projection.
+ * hold. Every prop ships to visitors, so it takes only the projection and
+ * About's portrait view, whose URLs and alt About already shows.
  */
-export default function CatalogHome({ home }: { home: PublishedHome }) {
+export default function CatalogHome({ home, portrait = null }: { home: PublishedHome; portrait?: AboutPortraitView | null }) {
   const series = home.featuredSeries;
   if (series === null) {
     return (
@@ -39,7 +41,7 @@ export default function CatalogHome({ home }: { home: PublishedHome }) {
   return (
     <HomeChromeController initialLoading={!introCompleted} initialIntro={introCompleted ? 'settled' : 'loading'}>
       {/* A new revision starts over on its own opening photograph, so no screen mixes two revisions. */}
-      <FeaturedHome key={home.catalogRevision} revisionId={home.catalogRevision} series={series} />
+      <FeaturedHome key={home.catalogRevision} revisionId={home.catalogRevision} series={series} portrait={portrait} />
     </HomeChromeController>
   );
 }
@@ -72,7 +74,7 @@ const withoutId = (set: ReadonlySet<string>, id: string) => {
   return next;
 };
 
-function FeaturedHome({ revisionId, series }: { revisionId: string; series: HomeSeries }) {
+function FeaturedHome({ revisionId, series, portrait }: { revisionId: string; series: HomeSeries; portrait: AboutPortraitView | null }) {
   const { reportPhoto, reportIntro, loading } = useHomeChrome();
   const reducedMotion = usePrefersReducedMotion();
   const [isSettled, setIsSettled] = useState(hasCompletedHomeHeroIntro);
@@ -129,8 +131,8 @@ function FeaturedHome({ revisionId, series }: { revisionId: string; series: Home
 
   return (
     <div className="contents" data-playback={playback.playbackState}>
-      {/* The intro is Home's loading state on a first visit with motion, and renders nothing once settled. */}
-      <HeroReveal isLoading={loading} onSettled={handleSettled} onPhaseChange={reportIntro} />
+      {/* The intro is Home's loading state on a first visit with motion, and leaves About's portrait as the badge. */}
+      <HeroReveal isLoading={loading} onSettled={handleSettled} onPhaseChange={reportIntro} portrait={portrait} />
 
       {/* This layer takes the pointer instead of the photograph, so a drag or a long press never picks up the image. */}
       <div className="absolute inset-0 z-0 [&>*]:pointer-events-none">

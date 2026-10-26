@@ -38,7 +38,11 @@ describe("About's portrait source", () => {
         }
     });
 
-    it("leaves Home's loading portrait, the one other use of the profile pictures, as it was", () => {
-        expect(read('components/HeroReveal.tsx')).toContain("import profileFront from '../public/assets/profile/front.png';");
+    it("is what Home's intro and badge show too: the Home page reads it per request, and nothing it reaches imports an image or public/", () => {
+        const { files } = importGraph('app/page.tsx');
+        expect(files).toEqual(expect.arrayContaining(['lib/siteConfig/portraitVariants.ts', 'components/HeroReveal.tsx', 'components/ProfilePicture.tsx']));
+        expect(files.filter((file) => /\.(png|jpe?g|webp|avif|gif|svg)$/i.test(file) || file.startsWith('public/'))).toEqual([]);
+        expect(read('app/page.tsx')).toMatch(/^export const dynamic = 'force-dynamic';$/m);
+        expect(fs.existsSync(path.join(REPO_ROOT, 'public/assets/profile'))).toBe(false);
     });
 });

@@ -1,3 +1,4 @@
+/* The tilt eases there and back over 0.1 s, from and to this perspective. */
 .card {
   transform-style: preserve-3d;
   transform: perspective(800px);
@@ -8,13 +9,13 @@
   height: 100%;
 }
 
+/* v1.1.0's layer box: 10 px past the card on every side, its content centered. */
 .layer {
   position: absolute;
   top: -10px;
   left: -10px;
   right: -10px;
   bottom: -10px;
-  transition: transform 0.1s ease;
   display: flex;
   justify-content: center;
   align-items: center;

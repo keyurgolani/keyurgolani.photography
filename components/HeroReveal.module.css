@@ -27,29 +27,39 @@
   opacity: 0.06;
 }
 
-/* The loading portrait, centered over the grain. It takes no pointer, so it
-   never tilts or catches a tap meant for the chrome, and it fades out as the
-   reveal opens. */
-.portrait {
+/* The portrait, at the center while Home loads (.portrait), then in its
+   place as the badge (.badge); HeroReveal's transform moves it between the
+   two. It sits over the grain and the ripples, and under Home's scrim (49)
+   and chrome (50), as the photograph does, so the chrome's controls stay on
+   top of it on any screen and its text keeps the contrast the scrim gives it
+   over a photograph. It takes no pointer, so it never catches a click or a
+   tap meant for the chrome: its tilt follows the mouse from the window. */
+.portrait,
+.badge {
   position: fixed;
   top: 50%;
   left: 50%;
   z-index: 42;
   pointer-events: none;
-  translate: -50% -50%;
-  transition: opacity 300ms ease-out;
 }
 
-.portrait * {
-  pointer-events: none;
-}
-
-.portrait[data-revealing] {
+/* The badge shows for 3 s once it's in place (data-lingering), then exactly
+   when Home's chrome does, and fades with v1.1.0's 1 s ease-in-out. */
+.badge {
   opacity: 0;
+  transition: opacity 1s ease-in-out;
+}
+
+.badge[data-lingering],
+[data-interface-state='interactive'] .badge[data-landed],
+main:has([data-home-chrome] :focus-visible) .badge[data-landed] {
+  opacity: 1;
 }
 
 /* The intro never shows under reduced motion. HeroReveal renders none of it
-   there once React runs, and these rules cover the server HTML before then. */
+   there once React runs, and these rules cover the server HTML before then.
+   The badge still comes and goes in its place, at once, under the site's
+   reduced-motion rule in globals.css. */
 @media (prefers-reduced-motion: reduce) {
   .grainOverlay,
   .ripples,
