@@ -138,7 +138,9 @@ test('passes the automated and keyboard checks, at rest and with a refusal', asy
     await checkSurface(page, { controls: loginControls(page) });
     // The hidden username for password managers is out of reach and out of the tree.
     await expect(page.locator('input[name="username"]')).toBeHidden();
-    await expect(page.getByRole('textbox')).toHaveCount(0);
+    // Playwright counts a password field as a textbox, so the passphrase is the only one.
+    await expect(page.getByRole('textbox')).toHaveCount(1);
+    await expect(page.getByRole('textbox')).toHaveAccessibleName('Passphrase');
 
     // Enter in the field submits, and so does Space on the button.
     await passphrase(page).fill('not the passphrase');
