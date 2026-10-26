@@ -255,7 +255,7 @@ test('clears a decorative flag on a reopened item, so the description gate holds
     expect(validation.issues.filter((issue) => issue.code === 'description.required' && issue.record.id === FRESH.reopen)).toHaveLength(1);
 });
 
-test('dismisses an unreadable file with a reason, then reopens it', async ({ page }) => {
+test('dismisses an unreadable file with a reason, then reopens it', async ({ page, isMobile }) => {
     const { events } = await listEvents(data().root);
     const failed = events.find((event) => event.type === 'processing-failure')!;
     await openInbox(page, failed.id);
@@ -265,7 +265,10 @@ test('dismisses an unreadable file with a reason, then reopens it', async ({ pag
     await page.getByRole('textbox', { name: 'Reason' }).fill('An export from another app; the JPEG is already in.');
     await page.getByRole('button', { name: 'Dismiss', exact: true }).click();
     await expect(answer(page, 'done')).toHaveText('Dismissed.');
-    await expect(page.getByRole('heading', { name: 'Settled' })).toBeVisible();
+    await expect(page.locator('header').getByText('Dismissed', { exact: true })).toBeVisible();
+    // A wide screen lists it under Settled beside the item; a phone shows the item alone, so the list waits behind Back to inbox.
+    if (isMobile) await expect(page.getByRole('heading', { name: 'Settled' })).toBeHidden();
+    else await expect(page.getByRole('heading', { name: 'Settled' })).toBeVisible();
     await page.getByRole('button', { name: 'Reopen' }).click();
     await expect(answer(page, 'done')).toHaveText('Reopened.');
     expect((await readEvent(data().root, failed.id))?.status).toBe('failed');
