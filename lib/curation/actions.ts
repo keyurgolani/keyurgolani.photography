@@ -239,8 +239,8 @@ export function reopenEvent(input: ActionInput & { reason?: string }): Promise<A
         const notes = event.status !== 'approved'
             ? ['Reopened.']
             : event.type === 'replacement'
-                ? [`Reopened. The photo record keeps the revision it pins. ${await draftNote(path.resolve(input.root), event)}`]
-                : [await reopenedApprovalNote(path.resolve(input.root), event)];
+                ? [`Reopened. The photo record keeps the revision it pins. ${await draftNote(path.resolve(/*turbopackIgnore: true*/ input.root), event)}`]
+                : [await reopenedApprovalNote(path.resolve(/*turbopackIgnore: true*/ input.root), event)];
         return { event: decided(step, input, { action: 'reopen', ...(input.reason ? { reason: input.reason } : {}) }, status), notes };
     });
 }

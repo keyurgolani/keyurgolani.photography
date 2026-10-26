@@ -111,7 +111,7 @@ export function confirmReplacement(input: ActionInput & { faults?: ConfirmFaults
         if (event.photoId === null || event.assetRevision === null) fail('refused', `The event ${event.id} names no photo and revision. Nothing was written.`);
         const photoId = event.photoId as string;
         const assetRevision = event.assetRevision as string;
-        const root = path.resolve(input.root);
+        const root = path.resolve(/*turbopackIgnore: true*/ input.root);
 
         const registry = await readRegistryOrFail(root);
         const photo = Object.hasOwn(registry.photos, photoId) ? registry.photos[photoId] : undefined;
@@ -203,7 +203,7 @@ export function leaveInDraft(input: ActionInput & { reason?: string; faults?: Co
         if (event.type !== 'replacement' || event.photoId === null || event.assetRevision === null) return defer(['Left in draft.']);
         const photoId = event.photoId;
         const revision = event.assetRevision;
-        const root = path.resolve(input.root);
+        const root = path.resolve(/*turbopackIgnore: true*/ input.root);
         const registry = await readRegistryOrFail(root);
         const record = await readAuthored<AuthoredPhoto>(root, 'photo', photoId);
         // Reopen's note and curation show describe this same plan (pins.ts), so they promise what this does.
