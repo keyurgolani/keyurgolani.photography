@@ -308,6 +308,8 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
     const [seen] = useState(order);
     // The version an approval or Decide later was sent for. Once the page shows a newer one, the refresh after it has landed, and `open` is current.
     const sentVersion = useRef<number | null>(null);
+    // Where the page was when a submit named this item in the URL, and what the page showed then. See the effect below.
+    const pinned = useRef<{ scrollY: number; state: InboxActionState; detail: InboxDetail } | null>(null);
     // Submitting by hand, not through <form action>, so React never resets the form after an answer: a reset would put
     // each select back to its page-load option while the curator's choice is still what the form sends.
     const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -318,12 +320,25 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
         const intent = form.get('intent');
         sentVersion.current = intent === 'approve' || intent === 'defer' ? detail.version : null;
         // On the plain inbox URL a wide screen shows the first item that needs judgment, and the refresh after an action
-        // would show the next one in its place, with no answer. Naming this item in the URL first keeps it on the page,
-        // so its answer shows and moving on runs. The data must not be Next's own history state, or its router skips the
-        // new URL, which the action posts to. Nothing else changes: it's the URL this item's row links to.
-        if (new URLSearchParams(window.location.search).get('item') !== detail.id) window.history.replaceState(null, '', itemUrl(detail.id));
+        // would show the next one in its place, with no answer. Naming this item in the URL before the action is sent
+        // keeps it on the page, so its answer shows and moving on runs. The data must not be Next's own history state, or
+        // its router skips the new URL, which the action posts to. It's the URL this item's row links to.
+        pinned.current = null;
+        if (new URLSearchParams(window.location.search).get('item') !== detail.id) {
+            pinned.current = { scrollY: window.scrollY, state, detail };
+            window.history.replaceState(null, '', itemUrl(detail.id));
+        }
         startTransition(() => dispatch(form));
     };
+    // The refresh after a finished action renders the URL's new search, so Next's router scrolls the page to the top,
+    // away from the curator's place and the answer under the buttons. Once both the answer and the refreshed item are
+    // in, in one commit or two, this puts the scroll back. An answer that wrote nothing refreshes nothing, so nothing moved.
+    useEffect(() => {
+        const pin = pinned.current;
+        if (pin === null || state === pin.state || state.status !== 'done' || detail === pin.detail) return;
+        pinned.current = null;
+        window.scrollTo({ top: pin.scrollY, behavior: 'instant' });
+    }, [state, detail]);
     // After an approval or Decide later, open the next item that needs a decision (owner, 2026-10-25). Reopen and the rest stay on the item.
     useEffect(() => {
         if (state.status !== 'done' || (state.action !== 'approve' && state.action !== 'defer') || state.eventId !== detail.id) return;

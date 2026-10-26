@@ -13,11 +13,13 @@ import { setDataDir } from '@/test/helpers/tempDataRoot';
 // what each form sends is checked here and what each action does is
 // lib/curation/__tests__/inbox.test.ts's.
 
-const sent = vi.hoisted(() => ({ forms: [] as { action: string; fields: Record<string, string> }[], answer: null as InboxActionState | null }));
+// `urls` is the page's URL as each action was called, so a test can tell what the URL said when the action went.
+const sent = vi.hoisted(() => ({ forms: [] as { action: string; fields: Record<string, string> }[], urls: [] as string[], answer: null as InboxActionState | null }));
 
 vi.mock('../actions', () => {
     const make = (action: string) => async (_previous: InboxActionState, form: FormData): Promise<InboxActionState> => {
         sent.forms.push({ action, fields: Object.fromEntries([...form.entries()].map(([name, value]) => [name, String(value)])) });
+        sent.urls.push(window.location.pathname + window.location.search + window.location.hash);
         return sent.answer ?? { status: 'done', action: action as 'approve', eventId: String(form.get('eventId')), message: 'Done.', serial: sent.forms.length };
     };
     return { approveItem: make('approve'), editItem: make('edit'), deferItem: make('defer'), dismissItem: make('dismiss'), retryItem: make('retry'), reopenItem: make('reopen') };
@@ -29,6 +31,7 @@ const { navigation, rememberedRow, rememberRow } = await import('../journey');
 
 beforeEach(() => {
     sent.forms = [];
+    sent.urls = [];
     sent.answer = null;
     window.sessionStorage.clear();
     // A submit names its item in the URL (#item and all) when the URL doesn't, so each test starts from a plain one.
@@ -37,6 +40,8 @@ beforeEach(() => {
 
 // jsdom has no scrollIntoView, which LandOnItem calls once the URL says #item, as it does after a submit. Tests that check it put their own in.
 if (typeof Element.prototype.scrollIntoView !== 'function') Element.prototype.scrollIntoView = () => undefined;
+// Nor a working scrollTo, which a finished action from a URL that didn't name the item calls to put the scroll back, as every test's '/' is.
+window.scrollTo = (() => undefined) as typeof window.scrollTo;
 
 const P = (n: number) => `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const EVT = (n: number) => `evt_${String(n).padStart(24, '0')}`;
@@ -790,7 +795,8 @@ describe('acting from the plain inbox URL', () => {
             await press(screen.getByRole('button', { name: 'Approve into draft' }));
             // Not Next's history state, so its router takes the new URL, the one the action posts to.
             expect(pinned).toHaveBeenCalledWith(null, '', `/curation/inbox?item=${EVT(1)}#item`);
-            expect(pinned.mock.invocationCallOrder[0]).toBeLessThan(Math.min(...vi.mocked(replace).mock.invocationCallOrder, Infinity));
+            // Before the action is called, so it goes out from the URL that names the item.
+            expect(sent.urls).toEqual([`/curation/inbox?item=${EVT(1)}#item`]);
             expect(window.location.search).toBe(`?item=${EVT(1)}`);
             expect(sent.forms).toHaveLength(1);
             // The refresh now shows the same item, at its next version, and the page moves on from it.
@@ -802,6 +808,46 @@ describe('acting from the plain inbox URL', () => {
         } finally {
             pinned.mockRestore();
             replace.mockRestore();
+            at('/');
+        }
+    });
+
+    it('puts the scroll back once a finished action that stays has its answer and its refresh in', async () => {
+        at('/curation/inbox');
+        const scrolledTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
+        const y = vi.spyOn(window, 'scrollY', 'get').mockReturnValue(457);
+        try {
+            const { rerender } = renderInbox(view({ items: three(), needsJudgment: 3 }), true);
+            await press(screen.getByRole('button', { name: 'Save edits' }));
+            expect(await screen.findByText('Done.')).toBeInTheDocument();
+            // The answer alone moved nothing yet: the refresh, which is what scrolls the page, hasn't landed.
+            expect(scrolledTo).not.toHaveBeenCalled();
+            await act(async () => rerender(tree(view({ items: three(), needsJudgment: 3, selected: detail({ version: 4 }) }), true)));
+            expect(scrolledTo).toHaveBeenCalledTimes(1);
+            expect(scrolledTo).toHaveBeenCalledWith({ top: 457, behavior: 'instant' });
+            // Once only: later renders leave the curator's scrolling alone.
+            await act(async () => rerender(tree(view({ items: three(), needsJudgment: 3, selected: detail({ version: 4 }) }), true)));
+            expect(scrolledTo).toHaveBeenCalledTimes(1);
+        } finally {
+            y.mockRestore();
+            scrolledTo.mockRestore();
+            at('/');
+        }
+    });
+
+    it('leaves the scroll alone after an answer that wrote nothing, which refreshes nothing', async () => {
+        at('/curation/inbox');
+        const scrolledTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
+        sent.answer = { status: 'stale', action: 'approve', eventId: EVT(1), message: 'This item changed since the page loaded, so nothing was written.', serial: 1 };
+        try {
+            const { rerender } = renderInbox(view({ items: three(), needsJudgment: 3 }), true);
+            await press(screen.getByRole('button', { name: 'Approve into draft' }));
+            expect(await screen.findByText(/changed since the page loaded/)).toBeInTheDocument();
+            // A later render, say from the curator's own refresh, is no reason to move the page either.
+            await act(async () => rerender(tree(view({ items: three(), needsJudgment: 3, selected: detail({ version: 4 }) }), true)));
+            expect(scrolledTo).not.toHaveBeenCalled();
+        } finally {
+            scrolledTo.mockRestore();
             at('/');
         }
     });
