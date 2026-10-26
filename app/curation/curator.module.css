@@ -17,6 +17,9 @@
   --curator-tone-change-bg: #37331e;
   --curator-tone-alert-ink: #e3b2aa;
   --curator-tone-alert-bg: #452923;
+  /* A settled item's alert badge: the type stays named, with no alarm left in it. */
+  --curator-tone-settled-ink: #c4c9c6;
+  --curator-tone-settled-bg: #2a2f2c;
   --curator-lock-rule: #385146;
   --curator-lock-bg: #14221c;
   --curator-lock-icon: #9cccb5;
@@ -320,6 +323,11 @@
 .badge[data-tone='alert'] {
   color: var(--curator-tone-alert-ink);
   background: var(--curator-tone-alert-bg);
+}
+
+.badge[data-tone='settled'] {
+  color: var(--curator-tone-settled-ink);
+  background: var(--curator-tone-settled-bg);
 }
 
 /* Detail */

@@ -224,7 +224,42 @@ describe('loadInbox', () => {
         const stored = (await readEvent(f.root, ids[0]))!;
         expect(ready(await loadInbox(ids[0])).selected).toMatchObject({ type: 'missing', group: 'judgment', primaryUnavailable: expect.stringContaining('Decide later') });
         await withCurationLock(f.root, {}, (hold) => writeEvent(f.root, { ...stored, status: 'resolved' }, stored.version, hold));
-        expect(ready(await loadInbox(ids[0])).selected).toMatchObject({ type: 'missing', group: 'settled', primaryUnavailable: null, can: { defer: false, reopen: true } });
+        // Its source is back, so the page offers no Reopen either: reopened, it would say the source is missing (#17).
+        expect(ready(await loadInbox(ids[0])).selected).toMatchObject({ type: 'missing', group: 'settled', primaryUnavailable: null, can: { defer: false, reopen: false } });
+    });
+
+    it("doesn't reopen a resolved missing item from the page, even from an old form, while `curation reopen` still does", async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('missing', fx.catalog.photos[0].id)], { published: true });
+        const stored = (await readEvent(f.root, ids[0]))!;
+        await withCurationLock(f.root, {}, (hold) => writeEvent(f.root, { ...stored, status: 'resolved' }, stored.version, hold));
+        const resolved = (await readEvent(f.root, ids[0]))!;
+        const before = layers(f.root);
+        expect(await runInboxAction('reopen', itemForm(resolved, f.catalog.revisionId))).toMatchObject({
+            status: 'refused',
+            message: "Its source is back, so this item stays resolved, and the inbox doesn't reopen it. Nothing was written.",
+        });
+        expect(await readEvent(f.root, ids[0])).toMatchObject({ status: 'resolved', version: resolved.version });
+        expect(layers(f.root)).toEqual(before);
+        // The CLI keeps its own behaviour.
+        const run = await runCurationCli(['reopen', ids[0], '--version', String(resolved.version), '--base', f.catalog.revisionId], { dataRoot: f.root });
+        expect(run.exitCode).toBe(0);
+        expect(await readEvent(f.root, ids[0])).toMatchObject({ status: 'open' });
+    });
+
+    it('drops the Decide later hint from a confirmed replacement, which offers no Decide later', async () => {
+        const { f } = await inbox(() => [], { published: true });
+        const registry = await readRegistry(f.root);
+        const photo = registry.photos[f.catalog.photos[3].id];
+        const next = `sha256-${'d'.repeat(64)}`;
+        photo.revisions[next] = { ...Object.values(photo.revisions)[0], assetRevision: next };
+        await writeRegistry(f.root, registry, registry.version);
+        const replaced = f.fact('replaced', f.catalog.photos[3].id, { assetRevision: next });
+        await createCurationSink({ root: f.root, logger: quiet })([replaced]);
+        const id = eventIdOf(eventKey('replacement', replaced));
+        expect(ready(await loadInbox(id)).selected).toMatchObject({ type: 'replacement', status: 'open', can: { defer: true }, primaryUnavailable: expect.stringContaining('Decide later') });
+        const stored = (await readEvent(f.root, id))!;
+        await withCurationLock(f.root, {}, (hold) => writeEvent(f.root, { ...stored, status: 'approved' }, stored.version, hold));
+        expect(ready(await loadInbox(id)).selected).toMatchObject({ type: 'replacement', status: 'approved', group: 'settled', can: { defer: false }, primaryUnavailable: null });
     });
 
     it('lists an item #17 resolved as settled, with nothing to judge but Reopen, and reopens it from the page', async () => {

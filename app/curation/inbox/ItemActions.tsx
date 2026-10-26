@@ -377,7 +377,8 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
     }, [state, detail.id, detail.version, detail.sourcePath, seen, open]);
     const primary = PRIMARY_ACTION[detail.type];
     const { can } = detail;
-    const unavailable = primary !== undefined && detail.type !== 'new' && detail.primaryUnavailable !== null;
+    // A new photograph's approve is unavailable only while a pending bind merges it (#17); its hint says why.
+    const unavailable = primary !== undefined && detail.primaryUnavailable !== null && (detail.type !== 'new' || !can.approve);
     // A replacement whose Decide later the page already knows would refuse shows it disabled, with the hint as its reason.
     const deferRefuses = can.defer && detail.type === 'replacement' && decideLaterRefuses(detail.replacement);
     // A replacement's Confirm has its own short reason; the hint beside it is about Decide later.
@@ -431,7 +432,7 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
                         {detail.primaryUnavailable}
                     </p>
                 ) : null}
-                {detail.status === 'approved' && detail.type !== 'missing' ? <p className={styles.hint}>{reopenHint(detail)}</p> : null}
+                {detail.status === 'approved' ? <p className={styles.hint}>{reopenHint(detail)}</p> : null}
             </form>
 
             {can.retry ? (
