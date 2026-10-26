@@ -235,7 +235,7 @@ if ! jq -e "[.services.curator.volumes[]? | select($DATA_ROOT_MOUNT)] | length =
 fi
 echo "curator starts only by name, publishes 127.0.0.1:3001 alone on a network of its own, and runs as uid 1001."
 
-# 11. The curator's secret files (docs/curator.md): ./secrets is mounted into
+# 12. The curator's secret files (docs/curator.md): ./secrets is mounted into
 #     curator alone, once, read-only, at /run/secrets/curator, and never
 #     created when missing. No service carries a secret or names another
 #     place for one in its environment, so the files are the only source.
