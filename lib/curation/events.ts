@@ -316,3 +316,31 @@ export const FAILURE_TEXT: Record<(typeof FAILURE_REASONS)[number], string> = {
     'digest-collision': "Another file in the library looks like the same photograph but isn't the same size, so the watcher set this one aside.",
     undecodable: 'The file could not be decoded.',
 };
+
+/**
+ * #17: the reasons the watcher's `close` writes on an item (lib/curation/sources.ts), kept here with closeCauseOf(),
+ * which reads them back for the inbox page, so the two can't drift apart.
+ */
+export const CLOSE_REASONS = {
+    back: (where: string, same: boolean) =>
+        same ? `The source is back ${where} with the same bytes, so nothing changed.` : `The source is back ${where} with other bytes, which its replacement item reviews.`,
+    merged: (into: string) => `A bind gave these bytes to ${into}, whose replacement item reviews them.`,
+    archived: 'The photograph is archived.',
+    built: (profileId: string) => `Its derivative set built under ${profileId}.`,
+    gone: 'The registry no longer holds the photograph.',
+    moved: "The source holds other bytes now, which the photograph's newer items cover.",
+} as const;
+
+export type CloseCause = 'same-file' | 'other-bytes' | 'merged' | 'archived' | 'built' | 'gone' | 'moved';
+
+/** Which of CLOSE_REASONS a watcher's close reason is, or null for any other text. */
+export function closeCauseOf(reason: string): CloseCause | null {
+    if (reason === CLOSE_REASONS.archived) return 'archived';
+    if (reason === CLOSE_REASONS.gone) return 'gone';
+    if (reason === CLOSE_REASONS.moved) return 'moved';
+    const back = /^The source is back .+ with (the same|other) bytes, /.exec(reason);
+    if (back) return back[1] === 'the same' ? 'same-file' : 'other-bytes';
+    if (reason.startsWith('A bind gave these bytes to ')) return 'merged';
+    if (reason.startsWith('Its derivative set built under ')) return 'built';
+    return null;
+}

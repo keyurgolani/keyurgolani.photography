@@ -5,7 +5,7 @@ import { dataRootStatus, libraryRoot } from '../storage/config';
 import { approveEvent, dismissEvent, editEvent, reopenEvent, retryEvent, type ActionInput, type ActionOutcome, type Choices } from './actions';
 import { scrub } from './commands';
 import { EVENT_ID_RE, type CurationEvent, type CuratorDescription } from './events';
-import { DONE_ANSWER, MOVED_ANSWER, parsePlacementValue, type InboxActionKind, type InboxActionState } from './inbox-view';
+import { BIND_WAITING_NEXT, DONE_ANSWER, MOVED_ANSWER, parsePlacementValue, type InboxActionKind, type InboxActionState } from './inbox-view';
 import { readDraftPlan } from './pins';
 import { leaveInDraft } from './resolutions';
 import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from './text';
@@ -157,7 +157,9 @@ const REFUSAL_WORDING: [RegExp, (match: RegExpMatchArray) => string][] = [
     [/^There is no series /, () => "That series isn't in the working layer any more. Refresh the inbox. Nothing was written."],
     [/ is (open|deferred|dismissed|approved|failed|resolved), so it can't be ([a-z]+)\./, (match) => `This item is ${match[1]}, so it can't be ${match[2]}. Refresh the inbox.`],
     // #17's approve, while a bind that merges the photograph waits for the watcher.
-    [/ is merged into .* by the bind decision /, () => "A bind waiting for the watcher's next pass merges this photograph into another one, so it can't be approved. If the watcher refuses the bind, approve it then. Nothing was written."],
+    [/ is merged into .* by the bind decision /, () => `A bind waiting for the watcher's next pass makes this file the new version of another photograph, so it can't be approved. ${BIND_WAITING_NEXT} Nothing was written.`],
+    // #17: the page doesn't offer Reopen on a missing item whose source came back, so only an old form reaches this.
+    [/ is a missing item the watcher resolved once its source was present again/, () => "Its source is back, so this item stays resolved, and the inbox doesn't reopen it. Nothing was written."],
     [/^Nothing failed for /, () => "Nothing failed for this photograph, so there's nothing to retry."],
     [/has no photo ID, so there is nothing to retry/, () => "This file has no photo ID, so there's nothing to retry."],
     [/can't be dismissed/, () => "Something still shows this photograph, so it can't be dismissed. Restore the source, or take it out of its series and publish first. Nothing was written."],
@@ -257,7 +259,7 @@ export async function runInboxAction(kind: InboxActionKind, form: unknown, optio
                 outcome = await retryEvent({ ...input, reason: reasonFrom(form, false) });
                 break;
             case 'reopen':
-                outcome = await reopenEvent({ ...input, reason: reasonFrom(form, false) });
+                outcome = await reopenEvent({ ...input, reason: reasonFrom(form, false), keepResolvedMissing: true });
                 break;
         }
     } catch (error) {
