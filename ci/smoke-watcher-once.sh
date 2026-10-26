@@ -3,8 +3,10 @@
 # dependencies, runs its watcher with --once against a generated fixture
 # library and checks that it never deletes a derivative, then starts the web
 # server on that library and checks that the removed image endpoints return
-# 404, and that nothing under /assets/photos is served, legacy derivatives
-# and original source files alike, directly or through /_next/image.
+# 404, that the legacy derivatives serve, directly and through /_next/image,
+# as they do until a catalog revision goes live, and that original source
+# files never do. This web has no data root, so it stays in legacy mode;
+# ci/smoke-catalog.sh checks that a live revision closes the derivatives.
 #
 #   IMAGE=ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke ci/smoke-watcher-once.sh
 #
@@ -147,21 +149,34 @@ code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$BASE_URL/api/imag
 [ "$code" = 404 ] || fail "GET /api/image?src=portrait.png returned $code, expected 404."
 echo "The removed image endpoints return 404."
 
-# 6. Nothing under /assets/photos serves, the derivatives the watcher just
-#    wrote included: every one 404s with a no-store response, and
-#    /_next/image refuses each with 400, for the reason that images.localPatterns
-#    doesn't allow it. Photos serve only from /media.
-for asset in optimized/portrait.webp thumbnails-avif/square.avif lqip/landscape.txt portrait.png square.webp portrait%2Epng; do
+# 6. In legacy mode the derivatives the watcher just wrote serve, never as
+#    immutable, and /_next/image optimizes them. Original source files 404
+#    with a no-store response, and /_next/image refuses them with 400, for
+#    the reason that images.localPatterns doesn't allow them.
+for asset in optimized/portrait.webp thumbnails-avif/square.avif lqip/landscape.txt; do
+  code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$BASE_URL/assets/photos/$asset") ||
+    fail "GET /assets/photos/$asset failed."
+  [ "$code" = 200 ] || fail "GET /assets/photos/$asset returned $code, expected 200 in legacy mode."
+  cache_control=$(tr -d '\r' <"$TMP/headers.txt" | grep -i '^cache-control:' || true)
+  case $cache_control in
+    *immutable*) fail "/assets/photos/$asset sends immutable ($cache_control)." ;;
+  esac
+done
+for asset in portrait.png square.webp portrait%2Epng; do
   code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$BASE_URL/assets/photos/$asset") ||
     fail "GET /assets/photos/$asset failed."
   [ "$code" = 404 ] || fail "GET /assets/photos/$asset returned $code, expected 404."
   tr -d '\r' <"$TMP/headers.txt" | grep -qix 'cache-control: no-store' || fail "The 404 for /assets/photos/$asset did not send Cache-Control: no-store."
 done
-for url in %2Fassets%2Fphotos%2Foptimized%2Fportrait.webp %2Fassets%2Fphotos%2Fthumbnails-avif%2Fsquare.avif %2Fassets%2Fphotos%2Fportrait.png; do
-  code=$(curl -sS --max-time 30 -o "$TMP/image-error.txt" -w '%{http_code}' "$BASE_URL/_next/image?url=$url&w=400&q=75") ||
+for url in %2Fassets%2Fphotos%2Foptimized%2Fportrait.webp %2Fassets%2Fphotos%2Fthumbnails-avif%2Fsquare.avif; do
+  code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$BASE_URL/_next/image?url=$url&w=400&q=75") ||
     fail "GET /_next/image?url=$url failed."
-  [ "$code" = 400 ] || fail "GET /_next/image?url=$url returned $code, expected 400."
-  [ "$(cat "$TMP/image-error.txt")" = "$NOT_ALLOWED" ] ||
-    fail "GET /_next/image?url=$url answered 400 with '$(cat "$TMP/image-error.txt")', expected '$NOT_ALLOWED'."
+  [ "$code" = 200 ] || fail "GET /_next/image?url=$url returned $code, expected 200 in legacy mode."
+  tr -d '\r' <"$TMP/headers.txt" | grep -qi '^content-type: image/' || fail "GET /_next/image?url=$url did not answer with an image."
 done
-echo "Legacy derivatives and originals return 404, and /_next/image refuses both with 400."
+code=$(curl -sS --max-time 30 -o "$TMP/image-error.txt" -w '%{http_code}' "$BASE_URL/_next/image?url=%2Fassets%2Fphotos%2Fportrait.png&w=400&q=75") ||
+  fail "GET /_next/image for portrait.png failed."
+[ "$code" = 400 ] || fail "GET /_next/image for portrait.png returned $code, expected 400."
+[ "$(cat "$TMP/image-error.txt")" = "$NOT_ALLOWED" ] ||
+  fail "GET /_next/image for portrait.png answered 400 with '$(cat "$TMP/image-error.txt")', expected '$NOT_ALLOWED'."
+echo "In legacy mode the derivatives serve, directly and through /_next/image, and originals return 404, and 400 through /_next/image."
