@@ -1,3 +1,4 @@
+import { StrictMode } from 'react';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCurationFixture } from '@/lib/curation/__tests__/curationFixtures';
@@ -24,13 +25,18 @@ vi.mock('../actions', () => {
 
 const { default: InboxList } = await import('../InboxList');
 const { default: InboxDetailView } = await import('../InboxDetailView');
-const { navigation, rememberRow } = await import('../journey');
+const { navigation, rememberedRow, rememberRow } = await import('../journey');
 
 beforeEach(() => {
     sent.forms = [];
     sent.answer = null;
     window.sessionStorage.clear();
+    // A submit names its item in the URL (#item and all) when the URL doesn't, so each test starts from a plain one.
+    window.history.replaceState(null, '', '/');
 });
+
+// jsdom has no scrollIntoView, which LandOnItem calls once the URL says #item, as it does after a submit. Tests that check it put their own in.
+if (typeof Element.prototype.scrollIntoView !== 'function') Element.prototype.scrollIntoView = () => undefined;
 
 const P = (n: number) => `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const EVT = (n: number) => `evt_${String(n).padStart(24, '0')}`;
@@ -599,7 +605,13 @@ describe('moving on after a decision', () => {
             await act(async () => rerender(tree(decided(three(), 'approved', [EVT(2), EVT(3)]))));
             expect(replace).toHaveBeenCalledTimes(1);
             expect(replace).toHaveBeenCalledWith(`/curation/inbox?item=${EVT(2)}#item`);
-            expect(JSON.parse(window.sessionStorage.getItem('curation-inbox:arrival')!)).toMatchObject({ to: EVT(2), from: EVT(1), fromName: 'harbor-1.jpg', message: 'Done.' });
+            // The answer names the file it decided, since the page it opens shows another.
+            expect(JSON.parse(window.sessionStorage.getItem('curation-inbox:arrival')!)).toMatchObject({
+                to: EVT(2),
+                from: EVT(1),
+                fromName: 'harbor-1.jpg',
+                message: 'Approved harbor-1.jpg into the draft. Nothing is published until you publish.',
+            });
             // Back to inbox from there returns to that item's row.
             expect(JSON.parse(window.sessionStorage.getItem('curation-inbox:return')!)).toMatchObject({ id: EVT(2) });
         } finally {
@@ -658,34 +670,200 @@ describe('moving on after a decision', () => {
         }
     });
 
-    it('says on the next item what was done, in the live region, with the way back to the item decided', () => {
-        window.sessionStorage.setItem('curation-inbox:arrival', JSON.stringify({ to: EVT(1), from: EVT(5), fromName: 'harbor-0.jpg', message: 'Approved into the draft. Nothing is published until you publish.', at: Date.now() }));
+    /** An answer an approval or Decide later carried to the page it opens. */
+    const carry = (to: string | null, fields: Partial<{ from: string; fromName: string; message: string; at: number }> = {}) =>
+        window.sessionStorage.setItem(
+            'curation-inbox:arrival',
+            JSON.stringify({ to, from: EVT(5), fromName: 'harbor-0.jpg', message: 'Approved harbor-0.jpg into the draft. Nothing is published until you publish.', at: Date.now(), ...fields }),
+        );
+    const strip = () => document.querySelector<HTMLElement>('#item [role="status"]')!;
+
+    it('says at the top of the next item what was done, naming the file, with the way back to it', () => {
+        carry(EVT(1));
         renderInbox();
-        const answer = screen.getByText(/Next up/).closest<HTMLElement>('[role="status"]')!;
-        expect(answer).toHaveTextContent('Approved into the draft. Nothing is published until you publish. Next up: harbor-1.jpg.');
+        const answer = strip();
+        expect(answer).toHaveAttribute('aria-live', 'polite');
+        expect(answer).toHaveTextContent(/^Approved harbor-0\.jpg into the draft\. Nothing is published until you publish\.Open harbor-0\.jpg again$/);
         expect(within(answer).getByRole('link', { name: 'Open harbor-0.jpg again' })).toHaveAttribute('href', `/curation/inbox?item=${EVT(5)}#item`);
+        // Above the photograph and the form: right after Back to inbox, before anything else in the item.
+        const item = document.getElementById('item')!;
+        const children = [...item.children];
+        expect(children.indexOf(answer)).toBe(children.indexOf(screen.getByRole('link', { name: 'Back to inbox' })) + 1);
+        expect(answer.compareDocumentPosition(screen.getByRole('img', { name: /^Candidate photograph/ })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        // It's the only copy, so it's read once, and there's no "Next up": the heading under it names this item.
+        expect(screen.getAllByText(/Approved harbor-0\.jpg/)).toHaveLength(1);
+        expect(screen.queryByText(/Next up/)).toBeNull();
         // Read once.
         expect(window.sessionStorage.getItem('curation-inbox:arrival')).toBeNull();
     });
 
-    it('ignores an answer meant for another item, or left over from an earlier visit', () => {
-        window.sessionStorage.setItem('curation-inbox:arrival', JSON.stringify({ to: EVT(2), from: EVT(5), fromName: 'x.jpg', message: 'Done.', at: Date.now() }));
-        const { unmount } = renderInbox();
-        expect(screen.queryByText(/Next up/)).toBeNull();
-        unmount();
-        window.sessionStorage.setItem('curation-inbox:arrival', JSON.stringify({ to: EVT(1), from: EVT(5), fromName: 'x.jpg', message: 'Done.', at: Date.now() - 60_000 }));
+    it('lands on the item again once the strip is in it, so scroll anchoring never leaves the strip above the screen', () => {
+        const scrolled = vi.fn();
+        const original = Element.prototype.scrollIntoView;
+        Element.prototype.scrollIntoView = scrolled;
+        window.location.hash = '#item';
+        carry(EVT(1));
+        try {
+            renderInbox();
+            expect(strip()).toHaveTextContent(/^Approved harbor-0\.jpg/);
+            // LandOnItem's landing, then the strip's, after it rendered.
+            expect(scrolled.mock.contexts).toEqual([document.getElementById('item'), document.getElementById('item')]);
+            expect(scrolled).toHaveBeenLastCalledWith({ block: 'start' });
+        } finally {
+            window.location.hash = '';
+            Element.prototype.scrollIntoView = original;
+        }
+    });
+
+    it('keeps the answer under Strict Mode, whose second effect run finds the storage already read', () => {
+        carry(EVT(1));
+        render(<StrictMode>{tree(view())}</StrictMode>);
+        expect(strip()).toHaveTextContent(/^Approved harbor-0\.jpg into the draft\./);
+    });
+
+    it('leaves the answer up until the next action on the item, whose own answer shows by the buttons', async () => {
+        carry(EVT(1));
         renderInbox();
-        expect(screen.queryByText(/Next up/)).toBeNull();
+        expect(strip()).toHaveTextContent(/^Approved harbor-0\.jpg/);
+        await press(screen.getByRole('button', { name: 'Save edits' }));
+        expect(strip()).toBeEmptyDOMElement();
+        expect(await screen.findByText('Done.')).toBeInTheDocument();
+    });
+
+    it('ignores an answer meant for another item, or left over from an earlier visit', () => {
+        carry(EVT(2), { fromName: 'x.jpg' });
+        const { unmount } = renderInbox();
+        expect(screen.queryByText(/x\.jpg/)).toBeNull();
+        expect(strip()).toBeEmptyDOMElement();
+        unmount();
+        carry(EVT(1), { fromName: 'x.jpg', at: Date.now() - 60_000 });
+        renderInbox();
+        expect(screen.queryByText(/x\.jpg/)).toBeNull();
     });
 
     it('shows the empty state after the last decision, says what was done, and moves focus there', () => {
-        window.sessionStorage.setItem('curation-inbox:arrival', JSON.stringify({ to: null, from: EVT(1), fromName: 'harbor-1.jpg', message: 'Left for later. It stays a draft suggestion.', at: Date.now() }));
+        carry(null, { from: EVT(1), fromName: 'harbor-1.jpg', message: 'Left harbor-1.jpg for later. Nothing in the draft changed.' });
         renderInbox(view({ items: [item({ status: 'deferred', group: 'deferred' })], needsJudgment: 0, selected: null }), true);
-        expect(screen.getByRole('status')).toHaveTextContent('Left for later. It stays a draft suggestion. Nothing else requires judgment.');
+        // Said once: the line that takes focus already says nothing requires judgment.
+        expect(screen.getByRole('status')).toHaveTextContent(/^Left harbor-1\.jpg for later\. Nothing in the draft changed\.Open harbor-1\.jpg again$/);
         expect(screen.getByRole('link', { name: 'Open harbor-1.jpg again' })).toHaveAttribute('href', `/curation/inbox?item=${EVT(1)}#item`);
         expect(screen.getByText('Nothing requires judgment right now.')).toHaveFocus();
         // The wide screen's detail side says it quietly too, rather than opening an item nobody needs to decide.
         expect(screen.getByRole('region', { name: 'Item' })).toHaveTextContent('Nothing left to decide. Pick an item from the list to look at it again.');
         expect(screen.getByRole('heading', { name: 'Left for later' })).toBeInTheDocument();
+    });
+
+    it('still shows the last answer at the top of the list when a new item arrived before the page loaded', () => {
+        carry(null, { from: EVT(5), fromName: 'harbor-0.jpg' });
+        // The watcher opened EVT(1) in between, so something needs judgment and a wide screen selects it.
+        renderInbox(view(), true);
+        const answer = document.querySelector<HTMLElement>('#inbox-list [role="status"]')!;
+        expect(answer).toHaveTextContent(/^Approved harbor-0\.jpg into the draft\./);
+        expect(within(answer).getByRole('link', { name: 'Open harbor-0.jpg again' })).toBeInTheDocument();
+        // Read once, and not by the selected item's own strip.
+        expect(strip()).toBeEmptyDOMElement();
+        expect(window.sessionStorage.getItem('curation-inbox:arrival')).toBeNull();
+        // Focus isn't taken: the empty state it would go to isn't there.
+        expect(document.body).toHaveFocus();
+    });
+
+    it('leaves an answer for the empty state alone on an item page', () => {
+        carry(null);
+        renderInbox();
+        expect(screen.queryByText(/harbor-0\.jpg/)).toBeNull();
+        expect(window.sessionStorage.getItem('curation-inbox:arrival')).not.toBeNull();
+    });
+});
+
+describe('acting from the plain inbox URL', () => {
+    const three = () => [item(), item({ id: EVT(2), sourcePath: 'trips/harbor-2.jpg' }), item({ id: EVT(3), sourcePath: 'trips/harbor-3.jpg' })];
+    // As Next's router leaves the history entry: its own state, which its patched replaceState passes through unsynced.
+    const at = (url: string) => window.history.replaceState({ __NA: true }, '', url);
+
+    it("names the item in the URL before sending, so the refresh after the action shows it again and moving on runs", async () => {
+        at('/curation/inbox');
+        const replace = vi.spyOn(navigation, 'replace').mockImplementation(() => undefined);
+        const pinned = vi.spyOn(window.history, 'replaceState');
+        try {
+            // A wide screen on /curation/inbox selects the first item that needs judgment.
+            const { rerender } = renderInbox(view({ items: three(), needsJudgment: 3 }), true);
+            await press(screen.getByRole('button', { name: 'Approve into draft' }));
+            // Not Next's history state, so its router takes the new URL, the one the action posts to.
+            expect(pinned).toHaveBeenCalledWith(null, '', `/curation/inbox?item=${EVT(1)}#item`);
+            expect(pinned.mock.invocationCallOrder[0]).toBeLessThan(Math.min(...vi.mocked(replace).mock.invocationCallOrder, Infinity));
+            expect(window.location.search).toBe(`?item=${EVT(1)}`);
+            expect(sent.forms).toHaveLength(1);
+            // The refresh now shows the same item, at its next version, and the page moves on from it.
+            const refreshed = three().map((entry) => (entry.id === EVT(1) ? { ...entry, status: 'approved' as const, group: 'settled' as const, version: 4 } : entry));
+            await act(async () =>
+                rerender(tree(view({ items: refreshed, needsJudgment: 2, selected: detail({ status: 'approved', group: 'settled', version: 4, can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true } }) }))),
+            );
+            expect(replace).toHaveBeenCalledWith(`/curation/inbox?item=${EVT(2)}#item`);
+        } finally {
+            pinned.mockRestore();
+            replace.mockRestore();
+            at('/');
+        }
+    });
+
+    it('leaves the URL alone when it already names the item', async () => {
+        at(`/curation/inbox?item=${EVT(1)}`);
+        const pinned = vi.spyOn(window.history, 'replaceState');
+        try {
+            renderInbox(view({ items: three(), needsJudgment: 3 }));
+            await press(screen.getByRole('button', { name: 'Decide later' }));
+            expect(pinned).not.toHaveBeenCalled();
+            expect(sent.forms[0].fields.intent).toBe('defer');
+        } finally {
+            pinned.mockRestore();
+            at('/');
+        }
+    });
+});
+
+describe("a phone's list view", () => {
+    /** The stylesheet's phone width, matched or not, for this test's matchMedia. */
+    const width = (phone: boolean) => {
+        const listeners = new Set<() => void>();
+        const list = { matches: phone, media: '(max-width: 767px)', addEventListener: (_: string, fn: () => void) => listeners.add(fn), removeEventListener: (_: string, fn: () => void) => listeners.delete(fn) };
+        const spy = vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => (query === '(max-width: 767px)' ? list : { matches: false, media: query, addEventListener: () => undefined, removeEventListener: () => undefined }) as unknown as MediaQueryList);
+        return {
+            spy,
+            resize(next: boolean) {
+                list.matches = next;
+                for (const fn of listeners) fn();
+            },
+        };
+    };
+
+    it("marks no row current, since no item is open there, and a wide screen keeps the selected item's mark", () => {
+        const media = width(true);
+        try {
+            renderInbox(view({ items: [item(), item({ id: EVT(2) })] }), true);
+            const rows = screen.getAllByRole('link', { name: /Uncurated photograph/ });
+            expect(rows.filter((row) => row.hasAttribute('aria-current'))).toHaveLength(0);
+            // Widened, the item shows beside the list again, and so does its mark.
+            act(() => media.resize(false));
+            expect(rows[0]).toHaveAttribute('aria-current', 'true');
+        } finally {
+            media.spy.mockRestore();
+        }
+    });
+
+    it('keeps the mark on an item page, where the item is open', () => {
+        const media = width(true);
+        try {
+            renderInbox(view({ items: [item(), item({ id: EVT(2) })] }));
+            expect(screen.getAllByRole('link', { name: /Uncurated photograph/ })[0]).toHaveAttribute('aria-current', 'true');
+        } finally {
+            media.spy.mockRestore();
+        }
+    });
+
+    it('trusts no remembered row whose ID is not an event ID', () => {
+        window.sessionStorage.setItem('curation-inbox:return', JSON.stringify({ id: 'evt_<img>', scrollY: 40 }));
+        expect(rememberedRow()).toBeNull();
+        window.sessionStorage.setItem('curation-inbox:return', JSON.stringify({ id: EVT(2), scrollY: 40 }));
+        expect(rememberedRow()).toEqual({ id: EVT(2), scrollY: 40 });
     });
 });
