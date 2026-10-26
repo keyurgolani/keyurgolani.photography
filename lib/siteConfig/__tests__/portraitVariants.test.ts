@@ -7,10 +7,18 @@ import sharp from 'sharp';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { KEPT_VALUES, leakyJpeg, PRIVATE_VALUES } from '../../../test/fixtures/exif';
 import { assertOutsideRepository } from '../../../test/helpers/tempDataRoot';
+import { encodeVariant } from '../../identity/profile';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../../identity/variants';
 import { readAboutPortrait, resetAboutPortraitReader } from '../aboutPortrait';
 import { SITE_CONFIG_ENV } from '../dir';
-import { aboutPortraitView, createPortraitHandler, portraitUrl, portraitVariant, resetPortraitVariants } from '../portraitVariants';
+import { aboutPortraitView, createPortraitHandler, ENCODE_RETRY, portraitUrl, portraitVariant, resetPortraitVariants } from '../portraitVariants';
+
+// The real encoder, wrapped, so a test can make one encode fail or return something else.
+vi.mock('../../identity/profile', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../../identity/profile')>();
+    return { ...actual, encodeVariant: vi.fn(actual.encodeVariant) };
+});
+const encode = vi.mocked(encodeVariant);
 
 let root: string;
 const quiet = { log: () => undefined, warn: () => undefined };
@@ -25,6 +33,14 @@ async function jpeg(width = 900, height = 1200, color = { r: 180, g: 120, b: 60 
     return sharp({ create: { width, height, channels: 3, background: color } }).jpeg().toBuffer();
 }
 
+/** Write a new picture over the portrait, with a later mtime, as a swap would. */
+async function swapTo(color: { r: number; g: number; b: number }, seconds: number): Promise<string> {
+    put('portrait.jpg', await jpeg(900, 1200, color));
+    const time = new Date(Date.now() + seconds * 1000);
+    fs.utimesSync(about('portrait.jpg'), time, time);
+    return currentToken();
+}
+
 async function currentToken(): Promise<string> {
     const portrait = await readAboutPortrait({ logger: quiet });
     if (portrait.state !== 'ready') throw new Error(`no portrait: ${portrait.reason}`);
@@ -37,17 +53,20 @@ const get = (url: string, headers: Record<string, string> = {}) => {
     return handler(new Request(new URL(url, 'http://test'), { headers }), { params: Promise.resolve({ token, variant }) });
 };
 
-beforeEach(() => {
+beforeEach(async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'site-config-'));
     assertOutsideRepository(root);
     vi.stubEnv(SITE_CONFIG_ENV, root);
     resetAboutPortraitReader();
-    resetPortraitVariants();
+    await resetPortraitVariants();
 });
 
-afterEach(() => {
+afterEach(async () => {
+    // A set still encoding in the background finishes before the next test counts encodes.
+    await resetPortraitVariants();
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
+    encode.mockReset();
     fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -69,6 +88,23 @@ describe('the portrait derivatives', () => {
                 expect({ exif: metadata.exif, xmp: metadata.xmp, iptc: metadata.iptc }, `${width}.${format}`).toEqual({ exif: undefined, xmp: undefined, iptc: undefined });
                 const text = (data as Buffer).toString('latin1');
                 for (const value of [...Object.values(PRIVATE_VALUES), ...Object.values(KEPT_VALUES), 'GPS', 'Exif']) expect(text, `${width}.${format} holds ${value}`).not.toContain(value);
+            }
+        }
+    });
+
+    it.each(['jpg', 'png', 'webp'] as const)('drop a Display P3 ICC profile from a .%s source', async (extension) => {
+        const created = sharp({ create: { width: 900, height: 1200, channels: 3, background: { r: 200, g: 60, b: 40 } } }).withIccProfile('p3');
+        const source = await (extension === 'jpg' ? created.jpeg() : extension === 'png' ? created.png() : created.webp()).toBuffer();
+        const { icc } = await sharp(source).metadata();
+        // The source really carries the profile, so a pass below means the encoder dropped it.
+        expect(icc).toBeDefined();
+        put(`portrait.${extension}`, source);
+        const token = await currentToken();
+        for (const width of VARIANT_WIDTHS) {
+            for (const format of VARIANT_FORMATS) {
+                const data = await portraitVariant(token, width, format, { logger: quiet });
+                expect(data, `${width}.${format}`).not.toBeNull();
+                expect((await sharp(data as Buffer).metadata()).icc, `${width}.${format}`).toBeUndefined();
             }
         }
     });
@@ -190,18 +226,20 @@ describe('GET /about/portrait/<token>/<variant>', () => {
         expect(response.headers.get('cache-control')).toBe('no-store');
     });
 
-    it('serves a swapped portrait at its new URL with no restart, and keeps the one before for pages already sent', async () => {
+    const expectGone = async (token: string) => {
+        const response = await get(portraitUrl(token, 'w800', 'avif'));
+        expect(response.status, `${token} still answers`).toBe(404);
+        expect(response.headers.get('cache-control')).toBe('no-store');
+    };
+
+    it('serves a swapped portrait at its new URL with no restart, and the one before stops answering at once', async () => {
         put('portrait.jpg', await jpeg());
         const before = await currentToken();
         expect((await get(portraitUrl(before, 'w800', 'avif'))).status).toBe(200);
-        put('portrait.jpg', await jpeg(900, 1200, { r: 30, g: 90, b: 150 }));
-        const time = new Date(Date.now() + 10_000);
-        fs.utimesSync(about('portrait.jpg'), time, time);
-        const after = await currentToken();
+        const after = await swapTo({ r: 30, g: 90, b: 150 }, 10);
         expect(after).not.toBe(before);
         expect((await get(portraitUrl(after, 'w800', 'avif'))).status).toBe(200);
-        // A page rendered just before the swap still loads its image.
-        expect((await get(portraitUrl(before, 'w800', 'avif'))).status).toBe(200);
+        await expectGone(before);
     });
 
     it('stops serving a portrait once it is removed and its set was never started', async () => {
@@ -209,5 +247,169 @@ describe('GET /about/portrait/<token>/<variant>', () => {
         const token = await currentToken();
         fs.rmSync(about('portrait.jpg'));
         expect((await get(portraitUrl(token, 'w800', 'webp'))).status).toBe(404);
+    });
+
+    it('stops serving a portrait at once when it is removed after its set was built', async () => {
+        put('portrait.jpg', await jpeg());
+        const token = await currentToken();
+        expect((await get(portraitUrl(token, 'w800', 'avif'))).status).toBe(200);
+        fs.rmSync(about('portrait.jpg'));
+        await expectGone(token);
+        // Its ETag gets no 304 either.
+        expect((await get(portraitUrl(token, 'w800', 'avif'), { 'If-None-Match': `"${token}-w800-avif"` })).status).toBe(404);
+    });
+
+    it('stops serving a portrait at once when it is replaced by a file that is refused', async () => {
+        put('portrait.jpg', await jpeg());
+        const token = await currentToken();
+        expect((await get(portraitUrl(token, 'w800', 'avif'))).status).toBe(200);
+        put('portrait.jpg', 'not a picture');
+        expect(await readAboutPortrait({ logger: quiet })).toMatchObject({ state: 'none' });
+        await expectGone(token);
+    });
+
+    it('drops the old set when About renders with no portrait, so nothing holds the removed photo', async () => {
+        put('portrait.jpg', await jpeg());
+        const token = await currentToken();
+        expect((await get(portraitUrl(token, 'w800', 'avif'))).status).toBe(200);
+        fs.rmSync(about('portrait.jpg'));
+        expect(await aboutPortraitView('Pat Artist', { logger: quiet })).toBeNull();
+        // Put back, the same bytes get the same token, and its set is encoded again rather than kept.
+        put('portrait.jpg', await jpeg());
+        expect(await currentToken()).toBe(token);
+        const calls = encode.mock.calls.length;
+        expect((await get(portraitUrl(token, 'w800', 'avif'))).status).toBe(200);
+        expect(encode.mock.calls.length).toBeGreaterThan(calls);
+    });
+
+    it('answers nothing for a portrait removed while its variant was encoding', async () => {
+        put('portrait.jpg', await jpeg());
+        const token = await currentToken();
+        encode.mockImplementationOnce(async (...args) => {
+            fs.rmSync(about('portrait.jpg'));
+            return (await vi.importActual<typeof import('../../identity/profile')>('../../identity/profile')).encodeVariant(...args);
+        });
+        await expectGone(token);
+    });
+
+    it('serves only the current portrait through a swap back and forth: A, B, A, then C', async () => {
+        const a = { r: 180, g: 120, b: 60 };
+        put('portrait.jpg', await jpeg(900, 1200, a));
+        const tokenA = await currentToken();
+        expect((await get(portraitUrl(tokenA, 'w800', 'avif'))).status).toBe(200);
+        const tokenB = await swapTo({ r: 30, g: 90, b: 150 }, 10);
+        expect((await get(portraitUrl(tokenB, 'w800', 'avif'))).status).toBe(200);
+        await expectGone(tokenA);
+        expect(await swapTo(a, 20)).toBe(tokenA);
+        expect((await get(portraitUrl(tokenA, 'w800', 'avif'))).status).toBe(200);
+        await expectGone(tokenB);
+        const tokenC = await swapTo({ r: 90, g: 160, b: 40 }, 30);
+        expect((await get(portraitUrl(tokenC, 'w800', 'avif'))).status).toBe(200);
+        await expectGone(tokenA);
+        await expectGone(tokenB);
+    });
+});
+
+describe('a variant that fails to encode', () => {
+    const logger = { log: vi.fn(), warn: vi.fn() };
+    const variant = (token: string) => portraitVariant(token, 'w1200', 'avif', { logger });
+    const encodesOf = (name: string) => encode.mock.calls.filter(([, width, format]) => `${width}.${format}` === name).length;
+
+    beforeEach(() => {
+        logger.warn.mockClear();
+    });
+
+    it('is a 404 until its wait is up, then the next request encodes it again', async () => {
+        put('portrait.jpg', await jpeg());
+        const token = await currentToken();
+        const now = Date.now();
+        const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+        // w1200.avif encodes first.
+        encode.mockRejectedValueOnce(new Error('out of memory'));
+        expect(await variant(token)).toBeNull();
+        // The other variants are fine.
+        expect(await portraitVariant(token, 'w800', 'webp', { logger })).not.toBeNull();
+        clock.mockReturnValue(now + ENCODE_RETRY.firstMs - 1);
+        expect(await variant(token)).toBeNull();
+        expect(encodesOf('w1200.avif')).toBe(1);
+        clock.mockReturnValue(now + ENCODE_RETRY.firstMs);
+        expect(await variant(token)).not.toBeNull();
+        expect(encodesOf('w1200.avif')).toBe(2);
+        // Only the failed variant is encoded again.
+        expect(encodesOf('w800.webp')).toBe(1);
+        expect((await get(portraitUrl(token, 'w1200', 'avif'))).status).toBe(200);
+    });
+
+    it('waits twice as long after each failure, up to the cap, and logs once for the file', async () => {
+        put('portrait.jpg', await jpeg());
+        const token = await currentToken();
+        let now = Date.now();
+        vi.spyOn(Date, 'now').mockImplementation(() => now);
+        const real = encode.getMockImplementation();
+        encode.mockImplementation(async (...args) => {
+            if (`${args[1]}.${args[2]}` === 'w1200.avif') throw new Error('corrupt');
+            return (real as typeof encodeVariant)(...args);
+        });
+        expect(await variant(token)).toBeNull();
+        const waits: number[] = [];
+        for (let round = 0; round < 9; round += 1) {
+            // A burst of requests in the wait encodes nothing.
+            const before = encodesOf('w1200.avif');
+            for (let request = 0; request < 5; request += 1) expect(await variant(token)).toBeNull();
+            expect(encodesOf('w1200.avif')).toBe(before);
+            // Find when the next retry runs, to the millisecond.
+            let wait = 1;
+            while (encodesOf('w1200.avif') === before) {
+                now += 1000;
+                wait += 1000;
+                await variant(token);
+            }
+            waits.push(wait - 1);
+        }
+        expect(waits).toEqual([10_000, 20_000, 40_000, 80_000, 160_000, 320_000, 600_000, 600_000, 600_000]);
+        expect(logger.warn).toHaveBeenCalledTimes(1);
+        expect(logger.warn.mock.calls[0][0]).toMatch(/^\[about\] The portrait's w1200\.avif couldn't be encoded \(corrupt\), so it isn't served\. A later request tries it again\.$/);
+    });
+
+    it('is refused, not served, when the encoder hands back EXIF', async () => {
+        put('portrait.jpg', await jpeg());
+        const token = await currentToken();
+        const { jpeg: leaky } = await leakyJpeg();
+        encode.mockResolvedValueOnce(await sharp(leaky).keepExif().avif().toBuffer());
+        expect(await variant(token)).toBeNull();
+        expect((await get(portraitUrl(token, 'w1200', 'avif'))).status).toBe(404);
+        expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/^\[about\] The portrait's w1200\.avif kept metadata, so it isn't served/));
+    });
+
+    it('is refused, not served, when the encoder hands back an ICC profile', async () => {
+        put('portrait.jpg', await jpeg());
+        const token = await currentToken();
+        const withProfile = await sharp(await jpeg()).withIccProfile('p3').avif().toBuffer();
+        expect((await sharp(withProfile).metadata()).icc).toBeDefined();
+        encode.mockResolvedValueOnce(withProfile);
+        expect(await variant(token)).toBeNull();
+        expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/kept metadata/));
+    });
+});
+
+describe('the source read for encoding', () => {
+    it('gives nothing, and keeps no set, when the file changes between its check and the read', async () => {
+        put('portrait.jpg', await jpeg());
+        const token = await currentToken();
+        const other = await jpeg(900, 1200, { r: 10, g: 200, b: 90 });
+        const open = fs.promises.open.bind(fs.promises);
+        // The swap lands after the stat that keeps the token current and before the bytes are read again.
+        vi.spyOn(fs.promises, 'open').mockImplementationOnce(async (...args: Parameters<typeof open>) => {
+            fs.writeFileSync(about('portrait.jpg'), other);
+            return open(...args);
+        });
+        expect(await portraitVariant(token, 'w800', 'webp', { logger: quiet })).toBeNull();
+        expect(encode).not.toHaveBeenCalled();
+        const time = new Date(Date.now() + 10_000);
+        fs.utimesSync(about('portrait.jpg'), time, time);
+        const next = await currentToken();
+        expect(next).not.toBe(token);
+        expect(await portraitVariant(token, 'w800', 'webp', { logger: quiet })).toBeNull();
+        expect(await portraitVariant(next, 'w800', 'webp', { logger: quiet })).not.toBeNull();
     });
 });

@@ -126,6 +126,10 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')("About's portrait from the h
         const leaky = PORTRAIT_URL.exec((await page()).html)?.[0];
         expect(leaky).toBeDefined();
         expect(leaky).not.toBe(url);
+        // The swapped-out portrait stops answering at once.
+        const old = await fetch(`${base}${url}`);
+        expect(old.status).toBe(404);
+        expect(old.headers.get('cache-control')).toBe('no-store');
         const stripped = Buffer.from(await (await fetch(`${base}${leaky}`)).arrayBuffer());
         expect((await sharp(stripped).metadata()).exif).toBeUndefined();
         for (const value of [...Object.values(PRIVATE_VALUES), 'GPS']) expect(stripped.toString('latin1')).not.toContain(value);
@@ -137,10 +141,12 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')("About's portrait from the h
         const { status, html } = await page();
         expect(status).toBe(200);
         expect(html).not.toMatch(PORTRAIT_URL);
-        const response = await fetch(`${base}/about/portrait/${'0'.repeat(32)}/w800.webp`);
-        expect(response.status).toBe(404);
-        expect(response.headers.get('cache-control')).toBe('no-store');
         expect(before).toMatch(/^[0-9a-f]{32}$/);
+        for (const token of [before, '0'.repeat(32)]) {
+            const response = await fetch(`${base}/about/portrait/${token}/w800.webp`);
+            expect(response.status, token).toBe(404);
+            expect(response.headers.get('cache-control')).toBe('no-store');
+        }
         expect(output).toContain('[about] No portrait: there is no about/portrait.jpg, .jpeg, .png, or .webp, so About shows the name instead.');
         expect(output).not.toContain(siteConfig);
     });
