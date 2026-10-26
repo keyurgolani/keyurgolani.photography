@@ -16,6 +16,7 @@ export default async function CurationPage() {
   await requireCurator({ read: true });
   return (
     <StatusPage
+      standalone
       heading="Curation"
       actions={<SameOriginPostForm action="/api/curation/logout" submitLabel="Sign out" />}
     >

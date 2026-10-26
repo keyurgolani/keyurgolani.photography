@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { attemptLogin, MAX_FAILURES, resetLoginForTests } from '../lib/curation/auth/login';
+import { attemptLogin, LOCK_MS, MAX_FAILURES, resetLoginForTests } from '../lib/curation/auth/login';
 import { parsePassphraseHash } from '../lib/curation/auth/passphrase';
 import { evaluateCuratorRequest } from '../lib/curation/auth/policy';
 import { createSession, resetSessionsForTests, SESSION_COOKIE, sessionFromCookies, signSessionId } from '../lib/curation/auth/sessions';
@@ -130,12 +130,12 @@ describe('POST /api/curation/login', () => {
 });
 
 describe('POST /api/curation/logout', () => {
-    it('ends the session, clears the cookie, and sends the curator to the login page', async () => {
+    it('ends the session, clears the cookie, and sends the curator to the login page, which says so', async () => {
         const cookie = cookieFrom(await postLogin(form(secrets.passphrase)))!;
         requestHeaders = new Headers({ host: HOST, origin: ORIGIN, cookie });
         const response = await logout();
         expect(response.status).toBe(303);
-        expect(response.headers.get('location')).toBe('/curation/login');
+        expect(response.headers.get('location')).toBe('/curation/login?signed-out=1');
         expect(response.headers.get('set-cookie')).toMatch(new RegExp(`^${SESSION_COOKIE}=; .*Max-Age=0`));
         expect(sessionFromCookies(cookie, secrets.sessionKey)).toBeNull();
     });
@@ -166,31 +166,122 @@ describe('the login page', () => {
         return renderToStaticMarkup(await LoginPage({ searchParams: Promise.resolve(search) }));
     }
 
+    /** The passphrase field's own tag. */
+    const field = (html: string) => /<input[^>]*id="curator-passphrase"[^>]*>/.exec(html)?.[0] ?? '';
+    /** The notice's text, with tags dropped and entities read. */
+    const notice = (html: string) =>
+        (/<p id="curator-login-notice"[^>]*>([\s\S]*?)<\/p>/.exec(html)?.[1] ?? '')
+            .replace(/<[^>]+>/g, '')
+            .replace(/&#x27;/g, "'");
+    const hash = () => parsePassphraseHash(fs.readFileSync(secrets.hashFile, 'utf8'))!;
+
     it('is a form that posts the passphrase to /api/curation/login, with a button that waits for the page to hydrate', async () => {
         const html = await render();
         expect(html).toContain('action="/api/curation/login"');
         expect(html).toContain('method="post"');
         expect(html).toMatch(/<button[^>]*type="submit"[^>]*disabled=""[^>]*>Sign in<\/button>/);
         expect(html).toMatch(/<label[^>]*for="curator-passphrase"/);
-        expect(html).toMatch(/<input[^>]*type="password"[^>]*>/);
-        expect(html).toMatch(/<input[^>]*name="passphrase"/);
+        expect(field(html)).toMatch(/type="password"/);
+        expect(field(html)).toMatch(/name="passphrase"/);
+        expect(field(html)).toMatch(/autoComplete="current-password"|autocomplete="current-password"/);
+        expect(field(html)).not.toMatch(/aria-invalid|aria-describedby/);
         expect(html).not.toContain('role="alert"');
+        expect(html).not.toContain('curator-login-notice');
     });
 
-    it('says a login failed, without saying why', async () => {
+    it('says "Sign in" throughout, under the curator\'s wordmark', async () => {
+        const html = await render();
+        expect(html).toContain('<h1');
+        expect(html).toMatch(/<h1[^>]*>Sign in to curation<\/h1>/);
+        expect(html).toMatch(/<header[^>]*>[\s\S]*Portfolio curation[\s\S]*<\/header>/);
+        // The words a reader sees, not the paths in the markup.
+        expect(html.replace(/<[^>]+>/g, ' ')).not.toMatch(/log ?in/i);
+    });
+
+    it('carries a fixed username for password managers, hidden, out of the tab order, and not sent as anything the handler reads', async () => {
+        const html = await render();
+        const username = /<input[^>]*name="username"[^>]*>/.exec(html)?.[0] ?? '';
+        expect(username).toMatch(/autoComplete="username"|autocomplete="username"/);
+        expect(username).toContain('value="curator"');
+        expect(username).toContain('hidden=""');
+        expect(username).toContain('aria-hidden="true"');
+        expect(username).toContain('tabindex="-1"');
+        expect(username).toMatch(/readOnly=""|readonly=""/);
+        // It comes before the passphrase, where password managers look for it.
+        expect(html.indexOf('name="username"')).toBeLessThan(html.indexOf('name="passphrase"'));
+    });
+
+    it('says a login failed, without saying why, under the field, and ties it to the field', async () => {
         const html = await render({ failed: '1' });
-        expect(html).toContain('role="alert"');
-        expect(html).toContain('That didn&#x27;t sign you in.');
+        expect(notice(html)).toBe("That didn't sign you in. Check the passphrase and try again.");
+        expect(field(html)).toContain('aria-invalid="true"');
+        expect(field(html)).toContain('aria-describedby="curator-login-notice"');
+        // Under the field, before the button.
+        expect(html.indexOf('id="curator-passphrase"')).toBeLessThan(html.indexOf('id="curator-login-notice"'));
+        expect(html.indexOf('id="curator-login-notice"')).toBeLessThan(html.indexOf('<button'));
         expect(html).not.toMatch(/paused/);
     });
 
-    it('says the lock is on while it is, and nothing about any passphrase', async () => {
-        const hash = parsePassphraseHash(fs.readFileSync(secrets.hashFile, 'utf8'))!;
-        for (let i = 0; i < MAX_FAILURES; i++) await attemptLogin('not the passphrase', hash);
+    it.each([
+        ['the right passphrase', () => secrets.passphrase],
+        ['a wrong one', () => 'still not the passphrase'],
+    ])('while the lock is on, answers %s with the lock notice alone, how long it has left, and the restart', async (_, passphrase) => {
+        for (let i = 0; i < MAX_FAILURES; i++) await postLogin(form('not the passphrase'));
+        const response = await postLogin(form(passphrase()));
+        expect(response.headers.get('location')).toBe('/curation/login?failed=1');
+        expect(response.headers.get('set-cookie')).toBeNull();
         const html = await render({ failed: '1' });
-        expect(html).toContain('Login is paused for 15 minutes');
-        expect(html).toContain('That didn&#x27;t sign you in.');
+        const text = notice(html);
+        expect(text).toMatch(/^Sign-in is paused after five wrong passphrases, and until it ends no passphrase is checked, the right one included\./);
+        expect(text).toContain('Try again in about 15 minutes, or restart curator on the server.');
+        expect(text).toContain("If those tries weren't yours, someone else can reach the curator.");
+        expect(html).not.toContain('Check the passphrase');
+        expect(html).not.toContain("didn't sign you in");
         expect(html).not.toContain(secrets.passphrase);
+        // The field may hold the right passphrase, so it isn't marked invalid, but the notice describes it.
+        expect(field(html)).not.toContain('aria-invalid');
+        expect(field(html)).toContain('aria-describedby="curator-login-notice"');
+    });
+
+    it('rounds the time left up to whole minutes, and says a minute when that is all that is left', async () => {
+        const start = Date.now();
+        for (let i = 0; i < MAX_FAILURES; i++) await attemptLogin('not the passphrase', hash(), () => start);
+        const spy = vi.spyOn(Date, 'now');
+        try {
+            spy.mockReturnValue(start + 3 * 60_000 + 1);
+            expect(notice(await render())).toContain('Try again in about 12 minutes,');
+            spy.mockReturnValue(start + LOCK_MS - 30_000);
+            expect(notice(await render())).toContain('Try again in about a minute,');
+            spy.mockReturnValue(start + LOCK_MS);
+            expect(await render()).not.toContain('curator-login-notice');
+        } finally {
+            spy.mockRestore();
+        }
+    });
+
+    it('says the lock is on to a fresh load as well, with nothing about any passphrase', async () => {
+        for (let i = 0; i < MAX_FAILURES; i++) await attemptLogin('not the passphrase', hash());
+        const html = await render();
+        expect(notice(html)).toMatch(/^Sign-in is paused/);
+        expect(html).not.toContain(secrets.passphrase);
+    });
+
+    it.each([
+        [{ 'signed-out': '1' }, "You're signed out."],
+        [{ ended: '1' }, 'Your session ended. Sign in again.'],
+    ])('for %j, says %j in a status line above the form', async (search, text) => {
+        const html = await render(search);
+        expect(notice(html)).toBe(text);
+        expect(html).toMatch(/<p id="curator-login-notice"[^>]*role="status"/);
+        expect(html.indexOf('id="curator-login-notice"')).toBeLessThan(html.indexOf('<form'));
+        expect(field(html)).not.toContain('aria-invalid');
+        expect(field(html)).toContain('aria-describedby="curator-login-notice"');
+    });
+
+    it('puts a failure ahead of a session note, and the lock ahead of both', async () => {
+        expect(notice(await render({ failed: '1', ended: '1', 'signed-out': '1' }))).toMatch(/^That didn't sign you in/);
+        for (let i = 0; i < MAX_FAILURES; i++) await attemptLogin('not the passphrase', hash());
+        expect(notice(await render({ failed: '1', ended: '1' }))).toMatch(/^Sign-in is paused/);
     });
 
     it('sends a signed-in curator on to /curation', async () => {

@@ -1,7 +1,7 @@
 import 'server-only';
 import { headers } from 'next/headers';
 import { notFound, redirect } from 'next/navigation';
-import { evaluateCuratorRequest, LOGIN_PAGE, type CuratorDenial } from './policy';
+import { evaluateCuratorRequest, loginRedirectPath, type CuratorDenial } from './policy';
 import { readCuratorSecrets } from './secrets';
 import { deleteSession, sessionFromCookies } from './sessions';
 
@@ -43,7 +43,8 @@ async function check(options: { read?: boolean }, session: 'required' | 'not-che
  * stricter check. A page or a GET handler passes `{ read: true }`; a request
  * carrying `Next-Action` is still checked as a mutation.
  *
- * A read without a session redirects to the login page. Every other refusal
+ * A read without a session redirects to the login page (with `?ended=1` if
+ * it sent a session cookie that no longer counts). Every other refusal
  * calls notFound(), so nothing after it runs. proxy.ts has already answered
  * any request it saw with the precise status: 404, 503, 421, 403, or 401 for
  * a handler, an action or an RSC request without a session.
@@ -51,7 +52,7 @@ async function check(options: { read?: boolean }, session: 'required' | 'not-che
 export async function requireCurator(options: { read?: boolean } = {}): Promise<CuratorAccess> {
     const result = await check(options, 'required');
     if ('access' in result) return result.access;
-    if (result.denial.reason === 'session' && !result.mutation) redirect(LOGIN_PAGE);
+    if (result.denial.reason === 'session' && !result.mutation) redirect(loginRedirectPath((await headers()).get('cookie')));
     notFound();
 }
 

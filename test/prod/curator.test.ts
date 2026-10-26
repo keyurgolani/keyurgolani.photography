@@ -278,7 +278,10 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the curator boundary on the
         const out = await send(port, '/api/curation/logout', { method: 'POST', body: '', headers: { cookie, origin } });
         expect(out.status).toBe(303);
         expect(out.headers['set-cookie']?.[0]).toMatch(/^curator_session=; .*Max-Age=0/);
-        expect((await send(port, '/curation', { headers: { cookie } })).status).toBe(307);
+        expect(out.headers.location).toBe('/curation/login?signed-out=1');
+        const replayed = await send(port, '/curation', { headers: { cookie } });
+        expect(replayed.status).toBe(307);
+        expect(new URL(String(replayed.headers.location), origin).href).toBe(`${origin}/curation/login?ended=1`);
         expect((await send(port, '/api/curation/events', { headers: { cookie } })).status).toBe(401);
         expect(snapshot()).toEqual(before);
 
@@ -322,7 +325,21 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the curator boundary on the
             await new Promise((resolve) => setTimeout(resolve, 250));
         }
         expect(health).toBe(503);
-        for (const pathname of ['/curation', '/curation/login', '/api/curation/events', '/']) expect((await send(port, pathname)).status, pathname).toBe(503);
+        const pages: Answer[] = [];
+        for (const pathname of ['/curation', '/curation/login', '/api/curation/events', '/']) {
+            const answer = await send(port, pathname);
+            expect(answer.status, pathname).toBe(503);
+            pages.push(answer);
+        }
+        // One page on every path, which says where to look, loads nothing, and isn't cached.
+        for (const answer of pages) {
+            expect(answer.body).toBe(pages[0].body);
+            expect(answer.headers['content-type']).toBe('text/html; charset=utf-8');
+            expect(String(answer.headers['cache-control'])).toContain('no-store');
+            expect(String(answer.headers['content-security-policy'])).toMatch(/^default-src 'none'; style-src 'sha256-[A-Za-z0-9+/=]+'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'$/);
+        }
+        expect(pages[0].body).toContain("The curator's log names the setting");
+        expect(pages[0].body).not.toContain('CURATOR_SESSION_SECRET_FILE');
         const login = await send(port, '/api/curation/login', {
             method: 'POST',
             body: new URLSearchParams({ passphrase: secrets.passphrase }).toString(),

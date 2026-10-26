@@ -60,15 +60,17 @@ A new passphrase hash counts from the next login. A new session secret, or any r
 
 ### When one is missing
 
-With `CURATION_ENABLED=true` and a secret file missing, unreadable, readable by anyone but its owner, or not one these commands wrote, the curator answers 503 on every path, the login page and `/api/health` included, and logs which setting is wrong, never a value. It never runs without them. Without the `secrets` folder at all, Docker won't start `curator`. With the flag off, the curator paths are 404 as always.
+With `CURATION_ENABLED=true` and a secret file missing, unreadable, readable by anyone but its owner, or not one these commands wrote, the curator answers 503 on every path, the login page and `/api/health` included, and logs which setting is wrong, never a value. The 503 is one small page, the same on every path: it says a secret file is missing or unreadable and points to the log and this section, without naming the file (`lib/curation/auth/unavailable.ts`). It never runs without them. Without the `secrets` folder at all, Docker won't start `curator`. With the flag off, the curator paths are 404 as always.
 
 ## Signing in
 
-Open `http://127.0.0.1:3001/curation` (or `localhost`) through the tunnel. Without a session, it sends you to `/curation/login`. Enter the passphrase, and you're back at `/curation`.
+Open `http://127.0.0.1:3001/curation` (or `localhost`) through the tunnel. Without a session, it sends you to `/curation/login`. Enter the passphrase, and you're back at `/curation`. Pick one of the two names and keep to it: your password manager files the passphrase per name (under the username `curator`, which the page supplies), and a session on one name doesn't count on the other.
+
+The login page says what happened last: a wrong passphrase, the lock, "You're signed out." after Sign out, or "Your session ended. Sign in again." when the browser sent a session cookie that no longer counts, after a restart or a new session secret. (The 12-hour end takes the cookie out of the browser too, so that one lands on the plain page.)
 
 - **Sessions.** A login starts a new session, a random 32-byte ID the curator keeps in its memory, and ends any session the browser had. It lasts 12 hours, then you sign in again. **Sign out** (a POST) ends it at once: the curator deletes it, so a copy of the cookie is worth nothing after. A restart of `curator` ends every session, which is fine: sign in again.
 - **The cookie.** `curator_session` holds the session ID and an HMAC-SHA256 tag of it under the session secret. It's `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/` and `Max-Age=43200`. Browsers keep `Secure` cookies on `http://localhost` and `http://127.0.0.1`, which is what the tunnel serves (`e2e/curator-login.spec.ts` checks both). Cookies are kept by host name, not port, so other servers on your own machine's `localhost` get the cookie too; sign out when you're done.
-- **The lockout.** Five failed logins within 15 minutes lock login for 15 minutes. It's one lock for the whole curator, not one per client: every request comes over loopback, so every client looks the same, and whatever else a client sends to tell itself apart is the client's to change. While it's on, the right passphrase is refused too, with the same answer as a wrong one, and the login page says the lock is on. Someone who can reach the port can keep you locked out; that is someone who already has the host or your tunnel. A restart of `curator` clears the lock.
+- **The lockout.** Five failed logins within 15 minutes lock login for 15 minutes. It's one lock for the whole curator, not one per client: every request comes over loopback, so every client looks the same, and whatever else a client sends to tell itself apart is the client's to change. While it's on, the right passphrase is refused too, with the same answer as a wrong one, and the login page says only that the lock is on, about how many minutes it has left, and that a restart ends it. Someone who can reach the port can keep you locked out; that is someone who already has the host or your tunnel. A restart of `curator` clears the lock.
 
 ## Turning it on and off
 

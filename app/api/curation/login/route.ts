@@ -1,6 +1,7 @@
 import { requireCuratorLogin } from '@/lib/curation/auth';
 import { attemptLogin } from '@/lib/curation/auth/login';
 import { readCuratorSecrets } from '@/lib/curation/auth/secrets';
+import { curatorUnavailable } from '@/lib/curation/auth/unavailable';
 import { deleteSession, sessionCookie, sessionFromCookies } from '@/lib/curation/auth/sessions';
 
 /**
@@ -13,7 +14,7 @@ import { deleteSession, sessionCookie, sessionFromCookies } from '@/lib/curation
  * the session ID changes at every login), and sends the curator to
  * `/curation` with the cookie. Anything else, a wrong passphrase or the
  * lock, gets the same answer: back to the login page with `failed=1`, no
- * cookie. The page itself says when the lock is on.
+ * cookie. The page itself says when the lock is on, and then says only that.
  */
 export const dynamic = 'force-dynamic';
 
@@ -42,7 +43,7 @@ async function passphraseFrom(request: Request): Promise<string> {
 export async function POST(request: Request): Promise<Response> {
     await requireCuratorLogin();
     const secrets = readCuratorSecrets(process.env);
-    if ('problem' in secrets) return new Response('Service Unavailable', { status: 503, headers: { 'Cache-Control': 'no-store' } });
+    if ('problem' in secrets) return curatorUnavailable();
     const { passphrase: hash, sessionKey } = secrets.secrets;
     const outcome = await attemptLogin(await passphraseFrom(request), hash);
     if (!outcome.ok) return seeOther(FAILED);
