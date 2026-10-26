@@ -339,6 +339,12 @@ test('shows a phone one item at a time, and Back to inbox or the browser Back re
     // The list alone, until an item is opened.
     await expect(list).toBeVisible();
     await expect(page.locator('#item')).toBeHidden();
+    // Refresh reads the list again and stays on it: the item the server selects for a wide screen doesn't open.
+    await page.getByRole('button', { name: 'Refresh inbox' }).click();
+    await expect(page).toHaveURL(new RegExp(`^${curatorOrigin()}/curation/inbox\\??$`));
+    await waitForHydration(page);
+    await expect(list).toBeVisible();
+    await expect(page.locator('#item')).toBeHidden();
     const row = list.getByRole('link').last();
     await row.scrollIntoViewIfNeeded();
     const scrolled = await page.evaluate(() => window.scrollY);

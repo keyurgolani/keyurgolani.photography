@@ -896,8 +896,10 @@ p.fieldError {
     text-decoration: none;
   }
 
+  /* No rule under it here: Back to inbox's rule is just above, the notice has its own box, and the photo's ground below already separates it. */
   .arrivalStrip:not(:empty) {
     padding: 0.75rem 1.125rem;
+    border-bottom: 0;
   }
 
   /* The list view opens no item, so the row the server selected for a wide screen isn't marked here (ReturnToRow drops its aria-current too). */
