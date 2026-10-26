@@ -1,4 +1,4 @@
-import { Check } from 'lucide-react';
+import { ArrowLeft, Check } from 'lucide-react';
 import styles from '../curator.module.css';
 import EventBadge from './EventBadge';
 import ItemActions from './ItemActions';
@@ -115,6 +115,20 @@ function TypeBox({ view, detail }: { view: ReadyView; detail: InboxDetail }) {
 const sentence = (text: string) => `${text[0].toUpperCase()}${text.slice(1)}`;
 
 /**
+ * A phone's way back from the one item it shows to the whole list, landing
+ * on the row it came from (`#row-<id>`, which ReturnToRow takes). A wide
+ * screen shows the list beside the item, so it hides this.
+ */
+function BackToInbox({ itemId }: { itemId: string | null }) {
+    return (
+        <a className={styles.backToList} href={itemId ? `/curation/inbox#row-${itemId}` : '/curation/inbox'}>
+            <ArrowLeft size={16} aria-hidden="true" />
+            Back to inbox
+        </a>
+    );
+}
+
+/**
  * The detail side of the Inbox: what identifies the photograph first (the
  * photograph, its file name, folder and capture date), then its short IDs,
  * what the system did, the suggestion, and the actions. Every full ID and
@@ -123,7 +137,7 @@ const sentence = (text: string) => `${text[0].toUpperCase()}${text.slice(1)}`;
 export default function InboxDetailView({ view }: { view: ReadyView }) {
     const detail = view.selected;
     if (detail === null) {
-        // An empty inbox says so once, in the list. On a wide screen the detail side keeps one quiet line, so it isn't blank; a phone stacks the two, so it shows nothing there.
+        // An empty inbox says so once, in the list. On a wide screen the detail side keeps one quiet line, so it isn't blank; a phone shows the list alone then.
         if (view.items.length === 0 && !view.missingSelection) {
             return (
                 <section className={`${styles.state} ${styles.emptyPane}`} aria-label="Item">
@@ -133,6 +147,7 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
         }
         return (
             <section className={styles.state} aria-label="Item">
+                {view.missingSelection ? <BackToInbox itemId={null} /> : null}
                 {view.missingSelection ? <p role="status">That item isn&apos;t in the inbox any more. Pick another from the list.</p> : <p>Pick an item from the list to review it.</p>}
             </section>
         );
@@ -141,13 +156,10 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
     const file = fileParts(detail.sourcePath);
     const status = statusLabel(detail);
     return (
-        // `id="item"` is where every row's link lands, so a phone shows the item and not the top of the list.
-        // tabIndex -1: LandOnItem focuses it on arrival, and it stays out of the tab order.
-        <section className={styles.detail} id="item" aria-labelledby="item-heading" tabIndex={-1}>
-            <LandOnItem targetId="item" />
-            <a className={styles.backToList} href="#inbox-list">
-                All items ({view.items.length})
-            </a>
+        // `id="item"` is where every row's link lands; a phone shows only this then.
+        <section className={styles.detail} id="item" aria-labelledby="item-heading">
+            <LandOnItem targetId="item" focusId="item-heading" />
+            <BackToInbox itemId={detail.id} />
             <div className={styles.photo}>
                 {/* Sticky on a wide screen, so the photograph stays in view while the curator describes it. */}
                 <div className={styles.photoFrame}>
@@ -163,7 +175,10 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
             <div className={styles.fields}>
                 <header className={styles.fieldsHeader}>
                     <div>
-                        <h2 id="item-heading">{file.name}</h2>
+                        {/* tabIndex -1: LandOnItem focuses it when a row opens the item, and it stays out of the tab order. */}
+                        <h2 id="item-heading" tabIndex={-1}>
+                            {file.name}
+                        </h2>
                         <p className={styles.identityLine}>{identityLine(detail.sourcePath, detail.capturedDate)}</p>
                     </div>
                     <span className={styles.status} data-tone={status.tone ?? undefined}>

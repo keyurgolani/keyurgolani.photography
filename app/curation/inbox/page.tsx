@@ -54,8 +54,9 @@ export default async function InboxPage({ searchParams }: InboxPageProps) {
                     </a>
                 </main>
             ) : (
-                <main className={styles.body}>
-                    <InboxList view={view} />
+                // A phone shows one side at a time (owner, 2026-10-25): the list, or the item the URL names. A wide screen shows both.
+                <main className={styles.body} data-view={item === null ? 'list' : 'item'}>
+                    <InboxList view={view} listView={item === null} />
                     <InboxDetailView view={view} />
                 </main>
             )}

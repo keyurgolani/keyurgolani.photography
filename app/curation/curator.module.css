@@ -354,11 +354,9 @@
   display: none;
 }
 
-/* The item takes focus when a row's link lands on it, so the next Tab starts
-   in its form. It isn't a control and isn't in the tab order, so it shows no ring;
-   every control inside it keeps the focus token. */
-.body .detail:focus,
-.body .detail:focus-visible {
+/* The item's heading takes focus when a row opens the item. It isn't a control, so it shows no ring. */
+.fieldsHeader h2:focus,
+.fieldsHeader h2:focus-visible {
   outline: none;
   box-shadow: none !important;
 }
@@ -806,6 +804,12 @@ p.fieldError {
     display: none;
   }
 
+  /* One side at a time (owner, 2026-10-25): the list until the curator opens an item, then that item alone, with Back to inbox. */
+  .body[data-view='item'] > .list,
+  .body[data-view='list'] > :not(.list) {
+    display: none;
+  }
+
   .detail {
     display: block;
     /* A row's #item link lands here. The page keeps 6rem of scroll padding for focus; the item starts at the top instead. */
@@ -816,6 +820,7 @@ p.fieldError {
     display: flex;
     min-height: 44px;
     align-items: center;
+    gap: 0.375rem;
     padding: 0 1.125rem;
     border-bottom: 1px solid var(--curator-rule);
     color: var(--gah-ink-soft);
