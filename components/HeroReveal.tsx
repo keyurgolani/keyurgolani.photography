@@ -2,11 +2,10 @@
 
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { motion, useMotionValue, useTransform, animate, type AnimationPlaybackControls } from 'framer-motion';
-import ProfilePicture from './ProfilePicture';
+import LoaderPortrait from './LoaderPortrait';
+import { useLoaderPortrait } from './home/LoaderPortraitContext';
 import { HOME_LOADING_TIMEOUT_MS } from './home/homeChromeConfig';
 import { usePrefersReducedMotion } from './motion/usePrefersReducedMotion';
-import profileBack from '../public/assets/profile/back.png';
-import profileFront from '../public/assets/profile/front.png';
 import styles from './HeroReveal.module.css';
 
 export type HeroRevealPhase = 'loading' | 'revealing' | 'settled';
@@ -39,6 +38,8 @@ const HERO_EXIT_DEADLINE_MS = HOME_LOADING_TIMEOUT_MS - RIPPLE_FADE_LEAD_MS - RE
  */
 export default function HeroReveal({ isLoading, onSettled, onPhaseChange }: HeroRevealProps) {
   const reducedMotion = usePrefersReducedMotion();
+  // STAGE 1 PROTOTYPE: About's one portrait from the site config folder, or none.
+  const { portrait, tilt } = useLoaderPortrait();
   // Settled is terminal: once there, no preference change replays the intro.
   const [phase, setPhase] = useState<HeroRevealPhase>(() => (isLoading && !reducedMotion ? 'loading' : 'settled'));
   const settledRef = useRef(phase === 'settled');
@@ -256,9 +257,12 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange }: Hero
       </div>
 
       {/* The portrait waits at the center while Home loads, then fades as the reveal opens. */}
-      <div className={styles.portrait} data-revealing={phase === 'revealing' ? '' : undefined}>
-        <ProfilePicture profileBack={profileBack} profileFront={profileFront} />
-      </div>
+      {/* With no usable portrait the intro plays without one. (ii) lets the card take the pointer so it tilts. */}
+      {portrait ? (
+        <div className={styles.portrait} data-revealing={phase === 'revealing' ? '' : undefined} data-tilt={tilt ? '' : undefined}>
+          <LoaderPortrait portrait={portrait} tilt={tilt} />
+        </div>
+      ) : null}
     </>
   );
 }

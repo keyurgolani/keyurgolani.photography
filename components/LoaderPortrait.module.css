@@ -1,0 +1,28 @@
+/* STAGE 1 PROTOTYPE. The size today's two layers paint at: next/image's
+   320 px wide image, at front.png's 3394 x 3620 shape, never wider than the
+   frame (324 px from md up, 260 px below). Any portrait fills that oval with
+   object-fit: cover at its focal point.
+   Today's look is two images stacked: two 4 px rings at 30% white (10% dark)
+   on top of each other, which reads as one at 51% (19% dark); the back's
+   shadow-lg; and the front's drop-shadow-2xl. One image carries all three. */
+.image {
+  display: block;
+  width: min(100%, 320px);
+  height: auto;
+  aspect-ratio: 3394 / 3620;
+  object-fit: cover;
+  object-position: var(--loader-focus, 50% 50%);
+  border-radius: 9999px;
+  box-shadow:
+    0 0 0 4px rgb(255 255 255 / 0.51),
+    0 10px 15px -3px rgb(0 0 0 / 0.1),
+    0 4px 6px -4px rgb(0 0 0 / 0.1);
+  filter: drop-shadow(0 25px 25px rgb(0 0 0 / 0.15));
+}
+
+[data-theme="dark"] .image {
+  box-shadow:
+    0 0 0 4px rgb(255 255 255 / 0.19),
+    0 10px 15px -3px rgb(0 0 0 / 0.1),
+    0 4px 6px -4px rgb(0 0 0 / 0.1);
+}
