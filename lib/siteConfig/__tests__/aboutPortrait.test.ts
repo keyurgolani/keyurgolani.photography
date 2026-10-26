@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -175,6 +176,57 @@ describe('readAboutPortrait', () => {
         expect(await read()).toMatchObject({ state: 'ready', alt: 'New alt', focalPoint: null });
     });
 
+    it('takes a PNG copied in place once its last bytes land, under a new token', async () => {
+        const whole = await png(400, 500);
+        put('portrait.png', whole.subarray(0, whole.length - 12));
+        expect(await read()).toMatchObject({ state: 'none' });
+        fs.appendFileSync(about('portrait.png'), whole.subarray(whole.length - 12));
+        expect(await read()).toMatchObject({ state: 'ready', width: 400, height: 500, sha256: createHash('sha256').update(whole).digest('hex') });
+    });
+
+    it("takes a JPEG with data after its end marker, as a phone's motion photo has", async () => {
+        put('portrait.jpg', Buffer.concat([await jpeg(), Buffer.from('ftypmp42 a trailing video')]));
+        expect(await read()).toMatchObject({ state: 'ready', width: 120, height: 150 });
+    });
+
+    describe('warns once when portrait.json is older than the portrait, since its alt and crop may describe the previous photo', () => {
+        const stale = /^\[about\] about\/portrait\.json is older than about\/portrait\.jpg, so its alt text and crop may describe the previous photo\. Update it for this one, or remove it\.$/;
+
+        it('after a swap that left portrait.json as it was', async () => {
+            put('portrait.json', JSON.stringify({ alt: 'The old photo' }));
+            put('portrait.jpg', await jpeg());
+            bump('portrait.jpg', 10);
+            expect(await read()).toMatchObject({ state: 'ready', alt: 'The old photo' });
+            expect(warnings()).toHaveLength(1);
+            expect(warnings()[0]).toMatch(stale);
+            // Once per photo: the same file again logs nothing more.
+            bump('portrait.jpg', 20);
+            await read();
+            expect(warnings()).toHaveLength(1);
+            // The next photo, still with the old portrait.json, logs again.
+            put('portrait.jpg', await jpeg(120, 150, { r: 20, g: 90, b: 160 }));
+            bump('portrait.jpg', 30);
+            await read();
+            expect(warnings()).toHaveLength(2);
+            expect(warnings()[1]).toMatch(stale);
+        });
+
+        it('and not when portrait.json was updated with the photo', async () => {
+            put('portrait.jpg', await jpeg());
+            put('portrait.json', JSON.stringify({ alt: 'The new photo' }));
+            bump('portrait.json', 10);
+            expect(await read()).toMatchObject({ state: 'ready', alt: 'The new photo' });
+            expect(warnings()).toEqual([]);
+        });
+
+        it('and not without a portrait.json', async () => {
+            put('portrait.jpg', await jpeg());
+            bump('portrait.jpg', 10);
+            await read();
+            expect(warnings()).toEqual([]);
+        });
+    });
+
     describe('gives none, and one warning naming only the relative path and the reason', () => {
         const refused = async (reason: RegExp) => {
             const result = await read();
@@ -233,6 +285,18 @@ describe('readAboutPortrait', () => {
             const whole = await jpeg(400, 500);
             put('portrait.jpg', whole.subarray(0, Math.floor(whole.length / 2)));
             await refused(/^about\/portrait\.jpg can't be decoded$/);
+        });
+
+        it.each([1, 2, 12])("when a PNG still being copied decodes but is missing its last %i bytes, IEND's", async (cut) => {
+            const whole = await png(400, 500);
+            put('portrait.png', whole.subarray(0, whole.length - cut));
+            await refused(/^about\/portrait\.png doesn't end with a PNG's IEND chunk, so it may still be copying$/);
+        });
+
+        it.each([1, 2, 12])('when a WebP is %i bytes shorter than its RIFF header says', async (cut) => {
+            const whole = await sharp(await png(400, 500)).webp().toBuffer();
+            put('portrait.webp', whole.subarray(0, whole.length - cut));
+            await refused(new RegExp(`^about/portrait\\.webp is ${whole.length - cut} bytes, but its RIFF header says ${whole.length}, so it may still be copying$`));
         });
 
         it('when the file is over the size limit, without reading it', async () => {

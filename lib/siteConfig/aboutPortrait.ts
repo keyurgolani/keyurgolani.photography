@@ -93,21 +93,28 @@ const PortraitJson = z.strictObject({
 
 type Logger = Pick<Console, 'log' | 'warn'>;
 
+/** One read: the state, the key it's cached under, and whether portrait.json is older than the portrait. */
+interface ReadResult {
+    result: AboutPortraitState;
+    key: string | null;
+    staleJson?: boolean;
+}
+
 /** What was read last, by the stat signature of what it read. Shared through globalThis, since instrumentation and the routes are bundled apart. */
 interface ReaderMemory {
     key: string | null;
     result: AboutPortraitState | null;
     /** The read under way, by the listing's key, so a burst of requests after a swap decodes the file once. */
-    reading: { key: string; done: Promise<{ result: AboutPortraitState; key: string | null }> } | null;
-    /** The last line logged for the portrait and for the JSON, so each is logged once per change. */
-    logged: { portrait: string | null; json: string | null };
+    reading: { key: string; done: Promise<ReadResult> } | null;
+    /** The last line logged for the portrait and for the JSON, so each is logged once per change, and the token the stale JSON was last logged for. */
+    logged: { portrait: string | null; json: string | null; staleJson: string | null };
 }
 
 const MEMORY = Symbol.for('keyurgolani.photography.aboutPortrait.reader');
 
 function memory(): ReaderMemory {
     const holder = globalThis as typeof globalThis & { [MEMORY]?: ReaderMemory };
-    holder[MEMORY] ??= { key: null, result: null, reading: null, logged: { portrait: null, json: null } };
+    holder[MEMORY] ??= { key: null, result: null, reading: null, logged: { portrait: null, json: null, staleJson: null } };
     return holder[MEMORY];
 }
 
@@ -117,7 +124,7 @@ export function resetAboutPortraitReader(): void {
     state.key = null;
     state.result = null;
     state.reading = null;
-    state.logged = { portrait: null, json: null };
+    state.logged = { portrait: null, json: null, staleJson: null };
 }
 
 const signature = (stats: fs.Stats | null) => (stats === null ? '-' : `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}`);
@@ -140,6 +147,27 @@ export function sniffFormat(bytes: Uint8Array): PortraitFormat | null {
     if (bytes.length >= png.length && png.every((byte, index) => bytes[index] === byte)) return 'png';
     const ascii = (start: number, end: number) => Buffer.from(bytes.subarray(start, end)).toString('latin1');
     if (bytes.length >= 12 && ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP') return 'webp';
+    return null;
+}
+
+const PNG_IEND = Buffer.from([0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]);
+
+/**
+ * Why the bytes stop short of the end their format writes, or null. A file
+ * still being copied in place can decode before its last bytes land, so it
+ * waits for a later request, which sees the new size and reads it again.
+ * A JPEG's end isn't checked: a phone's motion photo and some cameras write
+ * data after the end marker, and a JPEG cut short already fails the decode.
+ */
+export function incompleteReason(format: PortraitFormat, bytes: Uint8Array): string | null {
+    if (format === 'png') {
+        const tail = bytes.subarray(Math.max(0, bytes.length - PNG_IEND.length));
+        return Buffer.from(tail).equals(PNG_IEND) ? null : "doesn't end with a PNG's IEND chunk, so it may still be copying";
+    }
+    if (format === 'webp') {
+        const declared = bytes.length >= 8 ? Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).readUInt32LE(4) + 8 : -1;
+        return declared === bytes.length ? null : `is ${bytes.length} bytes, but its RIFF header says ${declared}, so it may still be copying`;
+    }
     return null;
 }
 
@@ -236,6 +264,8 @@ async function inspect(name: (typeof PORTRAIT_NAMES)[number], bytes: Buffer): Pr
     const sniffed = sniffFormat(bytes);
     if (sniffed === null) return { problem: "isn't a JPEG, PNG, or WebP file" };
     if (sniffed !== expected) return { problem: `holds ${sniffed.toUpperCase()} data, but its name says ${expected.toUpperCase()}` };
+    const incomplete = incompleteReason(expected, bytes);
+    if (incomplete !== null) return { problem: incomplete };
     let metadata: Metadata;
     try {
         metadata = await sharp(bytes, { limitInputPixels: false }).metadata();
@@ -257,7 +287,7 @@ async function inspect(name: (typeof PORTRAIT_NAMES)[number], bytes: Buffer): Pr
     return turned ? { width: height, height: width } : { width, height };
 }
 
-async function readState(listing: Extract<Listing, { kind: 'files' }>, logger: Logger): Promise<{ result: AboutPortraitState; key: string | null }> {
+async function readState(listing: Extract<Listing, { kind: 'files' }>, logger: Logger): Promise<ReadResult> {
     const relative = `${PORTRAIT_DIR}/${listing.name}`;
     if (listing.file.isSymbolicLink()) return { result: { state: 'none', reason: `${relative} is a symlink, which isn't followed` }, key: null };
     if (!listing.file.isFile()) return { result: { state: 'none', reason: `${relative} isn't a regular file` }, key: null };
@@ -273,9 +303,12 @@ async function readState(listing: Extract<Listing, { kind: 'files' }>, logger: L
     const json = await readJson(listing.dir, listing.json);
     logOnce('json', json.problem ? `[about] ${json.problem}, so About uses the default alt text and a centered crop.` : null, logger);
     const sha256 = createHash('sha256').update(read.bytes).digest('hex');
+    // A photo swapped without its portrait.json keeps the old alt text and crop.
+    const staleJson = !json.problem && listing.json !== null && listing.json.mtimeMs < read.stats.mtimeMs;
     return {
         result: { state: 'ready', file: relative, format: FORMAT_BY_NAME[listing.name], sha256, token: portraitToken(sha256), ...size, alt: json.alt, focalPoint: json.focalPoint },
         key,
+        staleJson,
     };
 }
 
@@ -298,6 +331,7 @@ function logOnce(channel: 'portrait' | 'json', line: string | null, logger: Logg
 export async function readAboutPortrait({ logger = console }: { logger?: Logger } = {}): Promise<AboutPortraitState> {
     const state = memory();
     let result: AboutPortraitState;
+    let staleJson = false;
     try {
         const listing = await list();
         if (listing.kind === 'problem') {
@@ -317,6 +351,7 @@ export async function readAboutPortrait({ logger = console }: { logger?: Logger 
             const read = await state.reading.done;
             state.key = read.key;
             result = read.result;
+            staleJson = read.staleJson === true;
         }
     } catch (error) {
         state.key = null;
@@ -325,6 +360,10 @@ export async function readAboutPortrait({ logger = console }: { logger?: Logger 
     state.result = result;
     if (result.state === 'ready') {
         logOnce('portrait', `[about] About shows ${result.file}, ${result.width} x ${result.height} px, sha256 ${result.sha256.slice(0, 12)}.`, logger, 'log');
+        if (staleJson && state.logged.staleJson !== result.token) {
+            state.logged.staleJson = result.token;
+            logger.warn(`[about] ${PORTRAIT_DIR}/${PORTRAIT_JSON} is older than ${result.file}, so its alt text and crop may describe the previous photo. Update it for this one, or remove it.`);
+        }
     } else {
         logOnce('json', null, logger);
         logOnce('portrait', `[about] No portrait: ${result.reason}, so About shows the name instead.`, logger);
