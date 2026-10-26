@@ -460,7 +460,7 @@ export function bindReplacement(input: ActionInput & { path?: string; reason?: s
     return act(input, async (step) => {
         const { event } = step;
         requireStatus(event, MISSING_STATES, 'bound');
-        const root = path.resolve(input.root);
+        const root = path.resolve(/*turbopackIgnore: true*/ input.root);
         const registry = await readRegistryOrFail(root);
         const photo = missingPhoto(event, registry, 'bind');
         if (photo.sourceHealth === 'archived') fail('refused', `${photo.photoId} is archived, so nothing can be bound to it. Nothing was written.`);
@@ -534,7 +534,7 @@ export function archiveMissing(input: ActionInput & { reason?: string; faults?: 
         if (input.expectedBase === undefined && step.active !== null) {
             fail('needs-choice', `archive needs --base ${step.active}, the active revision it was reviewed against. Show it again if that isn't the one. Nothing was written.`);
         }
-        const root = path.resolve(input.root);
+        const root = path.resolve(/*turbopackIgnore: true*/ input.root);
         // The bind writes under the curation lock this holds, and the watcher commits the registry before it files
         // the decision as applied, so this looks first: a bind still waiting shows here, and one applied since shows
         // in the registry read below as the photo present again.
