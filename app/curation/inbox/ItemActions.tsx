@@ -19,6 +19,7 @@ import {
     placementLabel,
     placementValue,
     PRIMARY_ACTION,
+    reopenHint,
     seriesCaption,
     seriesName,
     suggestionEvidence,
@@ -390,7 +391,7 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
                         {detail.primaryUnavailable}
                     </p>
                 ) : null}
-                {detail.status === 'approved' ? <p className={styles.hint}>Reopen it to change its series or description.</p> : null}
+                {detail.status === 'approved' ? <p className={styles.hint}>{reopenHint(detail)}</p> : null}
             </form>
 
             {can.retry ? (
