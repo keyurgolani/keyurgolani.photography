@@ -392,6 +392,13 @@ describe('the detail', () => {
         expect(screen.getByRole('button', { name: 'Confirm new asset revision' })).toHaveAccessibleDescription(CONFIRM_UNAVAILABLE);
     });
 
+    it("drops a settled missing item's recovery box, which #17's resolved or archived item no longer needs", () => {
+        renderInbox(view({ selected: detail({ type: 'missing', status: 'resolved', group: 'settled', can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true }, primaryUnavailable: null }) }));
+        expect(screen.queryByRole('heading', { name: 'Published output protected' })).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Resolve source or archive intentionally' })).toBeNull();
+        expect(screen.getByRole('button', { name: 'Reopen' })).toBeInTheDocument();
+    });
+
     it('says so when the URL names an item the inbox lacks', () => {
         renderInbox(view({ selected: null, missingSelection: EVT(4) }));
         expect(screen.getByText(/isn't in the inbox any more/)).toBeInTheDocument();
