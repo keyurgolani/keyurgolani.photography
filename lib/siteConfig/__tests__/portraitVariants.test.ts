@@ -307,7 +307,8 @@ describe('GET /about/portrait/<token>/<variant>', () => {
         expect((await get(portraitUrl(tokenC, 'w800', 'avif'))).status).toBe(200);
         await expectGone(tokenA);
         await expectGone(tokenB);
-    });
+        // Four real AVIF encodes; on a loaded CI runner they took 5.2 s.
+    }, 30_000);
 });
 
 describe('a variant that fails to encode', () => {
