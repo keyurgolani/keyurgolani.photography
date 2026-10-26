@@ -7,7 +7,7 @@ import { rollback } from '../../catalog/rollback';
 import { authoredRecordDir, readAuthoredRecord } from '../../catalog/working-layer';
 import { writeAuthoredRecord } from '../../catalog/working-layer-writer';
 import { buildDerivativeSet, stagingRoot, type WriterFaults } from '../../identity/derivatives';
-import { readRegistry } from '../../identity/registry';
+import { readRegistry, writeRegistry } from '../../identity/registry';
 import { runIdentityOnce } from '../../identity/watcherStep';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../../identity/variants';
 import { MANIFEST_FILE } from '../../storage/publish';
@@ -16,7 +16,8 @@ import { approveEvent, deferEvent, reopenEvent, retryEvent } from '../actions';
 import { createCandidateSink, replacementEventIds, settleCandidates, settlingAfterBuild } from '../candidates';
 import { curationUsage, runCurationCli } from '../commands';
 import { eventIdOf, eventKey, type CurationEvent } from '../events';
-import { DONE_ANSWER } from '../inbox-view';
+import { loadInbox } from '../inbox';
+import { CONFIRMED_LABEL, DONE_ANSWER, MOVED_ANSWER, reopenHint, REPLACEMENT_HINT, statusLabel, systemResponse, type InboxDetail } from '../inbox-view';
 import { listEvents, readEvent, withCurationLock, writeEvent } from '../repository';
 import { confirmReplacement, leaveInDraft } from '../resolutions';
 import { createCurationSink } from '../sink';
@@ -43,7 +44,7 @@ import {
 const revalidated = vi.hoisted(() => [] as string[]);
 vi.mock('@/lib/curation/auth', async (importOriginal) => ({ ...(await importOriginal<object>()), requireCurator: async () => ({}) }));
 vi.mock('next/cache', () => ({ revalidatePath: (path: string) => void revalidated.push(path) }));
-const { deferItem } = await import('../../../app/curation/inbox/actions');
+const { deferItem, reopenItem } = await import('../../../app/curation/inbox/actions');
 
 /**
  * #17-1 on temp roots, through #10's real writer and #13's real publish:
@@ -497,6 +498,126 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         expect(left.ok && left.event.decisions.at(-1)).not.toHaveProperty('fromRevision');
         expect(left.ok && left.notes.join(' ')).toContain(`photo record keeps ${c}.`);
         expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
+    });
+
+    /** The page's form for `event`, as ItemFields sends it. */
+    const pageForm = (w: World, event: CurationEvent) => {
+        const form = new FormData();
+        for (const [name, value] of Object.entries({ eventId: event.id, version: String(event.version), base: w.revisionId ?? 'none' })) form.set(name, value);
+        return form;
+    };
+    /** The item as the inbox page shows it. */
+    const shown = async (w: World, id = w.eventId): Promise<InboxDetail> => {
+        const view = await loadInbox(id);
+        if (view.state !== 'ready' || view.selected === null) throw new Error(`The inbox shows no ${id}.`);
+        return view.selected;
+    };
+    const labelOf = (seriesId: string) => seriesId;
+
+    it('says on the page, before each click, what the draft holds and what Decide later then does', async () => {
+        const w = await world();
+        await w.build(w.job(w.b));
+        // Never confirmed: Decide later writes nothing, and the hint says to choose it.
+        const ready = await shown(w);
+        expect(ready.replacement).toEqual({ draft: 'other', live: false, decideLater: 'keeps' });
+        expect(ready.primaryUnavailable).toBe(REPLACEMENT_HINT.keeps);
+
+        // Confirmed (curation confirm): in the draft only, while the live revision serves A.
+        const confirmed = await confirm(w, await w.event());
+        expect(confirmed).toMatchObject({ ok: true });
+        const done = await shown(w);
+        expect(done.replacement).toEqual({ draft: 'new', live: false, decideLater: 'put-back' });
+        expect(statusLabel(done)).toEqual({ text: CONFIRMED_LABEL, tone: 'approved' });
+        expect(systemResponse(done, labelOf)).toBe('The draft uses the new version. Visitors keep the current one until you publish.');
+        // No Decide later on a confirmed item, so no hint to choose it, and Reopen's hint says what it's for.
+        expect(done.can.defer).toBe(false);
+        expect(done.primaryUnavailable).toBeNull();
+        expect(reopenHint(done)).toBe('Reopen it to leave the new version out of the draft. Decide later then puts the earlier version back.');
+
+        // Reopen on the page says the draft still uses the new version.
+        const reopened = await reopenItem({ status: 'idle' }, pageForm(w, (confirmed as { event: CurationEvent }).event));
+        expect(reopened).toMatchObject({ status: 'done', action: 'reopen', message: DONE_ANSWER.reopenedPutBack });
+        // And the reopened item says what Decide later will do, in words the never-confirmed one doesn't use.
+        const open = await shown(w);
+        expect(open.can.defer).toBe(true);
+        expect(open.primaryUnavailable).toBe(REPLACEMENT_HINT.putBack);
+        expect(open.primaryUnavailable).not.toBe(ready.primaryUnavailable);
+        expect((await photoRecord(w)).assetRevision).toBe(w.b);
+
+        // Published, the live revision serves the new version too.
+        const live = await publish({ dataRoot: w.root, actor: OWNER, logger: { log: () => undefined } });
+        expect(live.outcome).toBe('PUBLISHED');
+        w.revisionId = live.revisionId as string;
+        expect(await confirm(w, await w.event())).toMatchObject({ ok: true });
+        const published = await shown(w);
+        expect(published.replacement).toMatchObject({ draft: 'new', live: true });
+        expect(systemResponse(published, labelOf)).toBe('The draft uses the new version, and so does the live revision.');
+    });
+
+    it('refuses Decide later on the page in its own words once the photo record moved since the confirm, and says the same after a refresh', async () => {
+        const w = await world();
+        await w.build(w.job(w.b));
+        const confirmed = await confirm(w, await w.event());
+        const reopened = await reopen(w, (confirmed as { event: CurationEvent }).event);
+        // A photos edit, or a rollback's rebase, moves the record off the confirm's bytes.
+        const record = await photoRecord(w);
+        await writeAuthoredRecord({ ...record, assetRevision: `sha256-${'c'.repeat(64)}` }, { expectedVersion: record.version, root: w.root });
+        // The page says so before the click.
+        const before = await shown(w);
+        expect(before.replacement).toEqual({ draft: 'other', live: false, decideLater: 'refuses' });
+        expect(before.primaryUnavailable).toBe(REPLACEMENT_HINT.refuses);
+        const written = layers(w);
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            // A refresh changes nothing, so the answer names what changed and what to do, every time.
+            revalidated.length = 0;
+            const state = await deferItem({ status: 'idle' }, pageForm(w, await w.event(reopened.id)));
+            expect(state).toMatchObject({ status: 'refused', action: 'defer', eventId: reopened.id, message: MOVED_ANSWER });
+            expect(state.status !== 'idle' && state.message).not.toMatch(/changed since the page loaded|Refresh|sha256-|ph_/);
+            expect(revalidated).toEqual([]);
+            expect(layers(w)).toEqual(written);
+        }
+        expect(await w.event(reopened.id)).toEqual(reopened);
+    });
+
+    it('says on the page that the next publish uses the new version when Decide later keeps it in the draft', async () => {
+        const w = await world();
+        await w.build(w.job(w.b));
+        // A crash between confirm's two writes leaves the record on B with no confirm on record, as a photos edit or a rollback would.
+        await expect(confirm(w, await w.event(), { faults: { afterWrite: () => { throw new Error('killed'); } } })).rejects.toThrow('killed');
+        const before = await shown(w);
+        expect(before.replacement).toEqual({ draft: 'new', live: false, decideLater: 'keeps' });
+        expect(before.primaryUnavailable).toBe(REPLACEMENT_HINT.keepsNew);
+        const authored = treeBytes(path.join(w.root, 'authored'));
+        const state = await deferItem({ status: 'idle' }, pageForm(w, await w.event()));
+        expect(state).toMatchObject({ status: 'done', action: 'defer', message: DONE_ANSWER.keepsNew });
+        expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
+        expect((await photoRecord(w)).assetRevision).toBe(w.b);
+    });
+
+    it('says why the page can\'t put the earlier version back when its set is not ready or does not check out', async () => {
+        const w = await world();
+        await w.build(w.job(w.b));
+        const confirmed = await confirm(w, await w.event());
+        await reopen(w, (confirmed as { event: CurationEvent }).event);
+        const written = layers(w);
+        // A's set doesn't check out against its manifest.
+        const file = path.join(setDir(w, w.a), 'w400.webp');
+        const bytes = fs.readFileSync(file);
+        fs.writeFileSync(file, Buffer.from('not the committed bytes'));
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const damaged = await deferItem({ status: 'idle' }, pageForm(w, await w.event()));
+        expect(damaged).toMatchObject({ status: 'failed', action: 'defer', message: "The earlier version of this photograph has derivatives that don't check out, so Decide later can't put it back. The draft keeps the new version. Nothing was written. The server log names the problem." });
+        expect(warn).toHaveBeenCalledTimes(1);
+        fs.writeFileSync(file, bytes);
+        // A's set isn't ready in the registry.
+        const registry = await readRegistry(w.root);
+        registry.photos[w.p].revisions[w.a].profiles[w.profileId] = { state: 'failed', attempts: 1, error: 'fixture' };
+        await writeRegistry(w.root, registry, registry.version);
+        const notReady = await deferItem({ status: 'idle' }, pageForm(w, await w.event()));
+        expect(notReady).toMatchObject({ status: 'refused', action: 'defer', message: "The earlier version of this photograph has no ready derivatives, so Decide later can't put it back. The draft keeps the new version. Nothing was written." });
+        expect(layers(w).authored).toEqual(written.authored);
+        expect(layers(w).curation).toEqual(written.curation);
+        expect((await photoRecord(w)).assetRevision).toBe(w.b);
     });
 
     it('leaves an item never confirmed in draft with no write', async () => {

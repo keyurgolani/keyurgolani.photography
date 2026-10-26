@@ -87,6 +87,7 @@ function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
         reviewedBy: null,
         can: { approve: true, edit: true, defer: true, dismiss: true, retry: false, reopen: false },
         primaryUnavailable: null,
+        replacement: null,
         ...overrides,
     };
 }
@@ -324,6 +325,21 @@ describe('the detail', () => {
         expect(screen.getByText('Suggestion approved')).toBeInTheDocument();
         expect(screen.getByText('System response').nextElementSibling).toHaveTextContent('In the draft, in Draft series. Nothing publishes until you publish.');
         expect(screen.queryAllByText(/Approved into the draft/)).toHaveLength(0);
+    });
+
+    it('says what a confirmed replacement holds, with no Decide later hint and no series or description to change (#17)', () => {
+        const live = [{ kind: 'revision' as const, id: ACTIVE }, { kind: 'series' as const, id: 'ser_harbor' }];
+        renderInbox(view({ selected: detail({ type: 'replacement', status: 'approved', group: 'settled', references: live, replacement: { draft: 'new', live: false, decideLater: 'put-back' }, can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true }, primaryUnavailable: null }) }));
+        expect(screen.getByText('New version confirmed')).toBeInTheDocument();
+        expect(screen.queryByText('Suggestion approved')).toBeNull();
+        expect(screen.getByText('System response').nextElementSibling).toHaveTextContent('The draft uses the new version. Visitors keep the current one until you publish.');
+        expect(screen.queryByText(/^Live in the active revision/)).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Confirm new asset revision' })).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Decide later' })).toBeNull();
+        expect(screen.queryByText(/choose Decide later/)).toBeNull();
+        expect(screen.queryByText(/series or description/)).toBeNull();
+        expect(screen.getByText('Reopen it to leave the new version out of the draft. Decide later then puts the earlier version back.')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Reopen' })).toBeInTheDocument();
     });
 
     it('offers the suggested series, Leave unassigned, and the positions in that series', () => {
