@@ -87,6 +87,8 @@ function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
         can: { approve: true, edit: true, defer: true, dismiss: true, retry: false, reopen: false },
         primaryUnavailable: null,
         replacement: null,
+        resolvedBy: null,
+        bindWaiting: null,
         ...overrides,
     };
 }
@@ -324,6 +326,47 @@ describe('the detail', () => {
         expect(screen.getByText('Archived, and nothing shows it any more.')).toBeInTheDocument();
         expect(screen.queryByText('Reopen it to change its series or description.')).toBeNull();
         expect(screen.queryByRole('heading', { name: 'Published output protected' })).toBeNull();
+        // Its Reopen says what it doesn't do (#17).
+        expect(screen.getByText("Reopening doesn't undo the archive. The photograph stays archived and out of every series.")).toBeInTheDocument();
+    });
+
+    it('words a resolved missing item by its cause, with no Reopen, and quiets its badge in the settled list', () => {
+        const settled = item({ type: 'missing', status: 'resolved', group: 'settled', title: 'Source file back' });
+        renderInbox(view({ items: [settled], needsJudgment: 0, selected: detail({ type: 'missing', status: 'resolved', group: 'settled', title: 'Source file back', resolvedBy: { kind: 'same-file' }, can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: false }, primaryUnavailable: null }) }));
+        expect(screen.getByText('The same file came back, so nothing a visitor sees changed.')).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Reopen' })).toBeNull();
+        const row = screen.getByRole('link', { name: /Source file back/ });
+        expect(within(row).getByText('Missing source')).toHaveAttribute('data-tone', 'settled');
+        expect(within(row).queryByText('Source file missing')).toBeNull();
+    });
+
+    it("badges an open missing item by what shows it, and shows no badge when that can't be read", () => {
+        const missing = (references: InboxDetail['references']) => detail({ type: 'missing', references, can: { approve: false, edit: true, defer: true, dismiss: false, retry: false, reopen: false }, primaryUnavailable: "Locating isn't in the inbox yet." });
+        const { unmount } = renderInbox(view({ selected: missing([{ kind: 'revision', id: ACTIVE }]) }));
+        expect(screen.getByText('Still live')).toBeInTheDocument();
+        expect(screen.queryByText('Draft only')).toBeNull();
+        // An open alert stays an alert.
+        expect(screen.getAllByText('Missing source').some((badge) => badge.getAttribute('data-tone') === 'alert')).toBe(true);
+        unmount();
+        renderInbox(view({ selected: missing(null) }));
+        expect(screen.queryByText('Still live')).toBeNull();
+        expect(screen.queryByText('Draft only')).toBeNull();
+    });
+
+    it('offers no approve while a pending bind merges the photograph, and says why before any click', () => {
+        const hint = "A bind waiting for the watcher's next pass makes this file the new version of harbor/landscape.jpg. Refresh after the watcher runs: this item closes if the bind went through, and you can approve it if it didn't.";
+        renderInbox(view({ selected: detail({ bindWaiting: { kind: 'merge', into: 'harbor/landscape.jpg' }, can: { approve: false, edit: true, defer: true, dismiss: true, retry: false, reopen: false }, primaryUnavailable: hint }) }));
+        const approve = screen.getByRole('button', { name: 'Approve into draft' });
+        expect(approve).toBeDisabled();
+        expect(approve).toHaveAccessibleDescription(hint);
+        expect(screen.getByRole('button', { name: 'Decide later' })).toBeEnabled();
+        expect(screen.getByRole('button', { name: 'Save edits' })).toBeEnabled();
+    });
+
+    it('says on a missing item that a bind waits for the watcher', () => {
+        renderInbox(view({ selected: detail({ type: 'missing', bindWaiting: { kind: 'bind', path: 'harbor/landscape.jpg' }, can: { approve: false, edit: true, defer: true, dismiss: false, retry: false, reopen: false }, primaryUnavailable: "Locating isn't in the inbox yet." }) }));
+        expect(screen.getByText('Bind waiting')).toBeInTheDocument();
+        expect(screen.getByText("A bind waiting for the watcher's next pass gives this photograph the file at harbor/landscape.jpg. Refresh after the watcher runs: this item closes once the bind goes through.")).toBeInTheDocument();
     });
 
     it('says so when the URL names an item the inbox lacks', () => {

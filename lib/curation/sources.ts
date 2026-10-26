@@ -8,6 +8,7 @@ import type { DerivativeJob, IdentityFact, PhotoRecord, Registry } from '../iden
 import { dataRootStatus } from '../storage/config';
 import { candidateOf, readUsableEvent, replacementEventIds, type BuildFunction, type OwedSettles } from './candidates';
 import {
+    CLOSE_REASONS,
     CURATION_SCHEMA_VERSION,
     eventIdOf,
     eventKey,
@@ -100,9 +101,7 @@ export function missingChange(event: CurationEvent, registry: Registry, at: stri
     if (!photo) return null;
     if (STILL_OPEN.has(event.status) && isPresent(photo)) {
         const where = photo.source.path === event.derivedFacts.sourcePath ? 'at its path' : `at ${photo.source.path}`;
-        const reason = photo.source.observedRevision === event.assetRevision
-            ? `The source is back ${where} with the same bytes, so nothing changed.`
-            : `The source is back ${where} with other bytes, which its replacement item reviews.`;
+        const reason = CLOSE_REASONS.back(where, photo.source.observedRevision === event.assetRevision);
         return withDecision(event, watcherDecision('close', at, reason), { status: 'resolved' });
     }
     // Closed by the watcher: resolved here, or dismissed by #14's sink when the same bytes came back at the same path.
@@ -120,7 +119,7 @@ export function mergedChange(event: CurationEvent, registry: Registry, at: strin
     if (event.type !== 'new' || !STILL_OPEN.has(event.status)) return null;
     const into = photoOf(registry, event.photoId)?.mergedInto;
     if (into === undefined) return null;
-    return withDecision(event, watcherDecision('close', at, `A bind gave these bytes to ${into}, whose replacement item reviews them.`), { status: 'resolved' });
+    return withDecision(event, watcherDecision('close', at, CLOSE_REASONS.merged(into)), { status: 'resolved' });
 }
 
 /**
@@ -135,7 +134,7 @@ export function archivedChange(event: CurationEvent, registry: Registry, at: str
     if (event.type !== 'new' || !(STILL_OPEN.has(event.status) || event.status === 'approved')) return null;
     const photo = photoOf(registry, event.photoId);
     if (photo?.sourceHealth !== 'archived' || photo.mergedInto !== undefined) return null;
-    return withDecision(event, watcherDecision('close', at, 'The photograph is archived.'), { status: 'resolved' });
+    return withDecision(event, watcherDecision('close', at, CLOSE_REASONS.archived), { status: 'resolved' });
 }
 
 const sameFailure = (a: Candidate | undefined, b: Candidate) => a?.state === b.state && a.profileId === b.profileId && a.failure === b.failure;
@@ -190,7 +189,7 @@ export function failureChange(photo: PhotoRecord, registry: Registry, existing: 
         return null;
     }
     if (view.state === 'ready' && existing !== null && STILL_OPEN.has(existing.status)) {
-        return withDecision(existing, watcherDecision('close', at, `Its derivative set built under ${view.profileId}.`), {
+        return withDecision(existing, watcherDecision('close', at, CLOSE_REASONS.built(view.profileId)), {
             status: 'resolved',
             candidate: { state: 'ready', profileId: view.profileId, at },
         });
@@ -203,7 +202,7 @@ export function staleFailureChange(event: CurationEvent, registry: Registry, at:
     if (!isFailureItem(event) || !STILL_OPEN.has(event.status)) return null;
     const photo = photoOf(registry, event.photoId);
     if (photo && !isRetired(photo) && photo.source.observedRevision === event.assetRevision) return null;
-    const reason = !photo ? 'The registry no longer holds the photograph.' : isRetired(photo) ? 'The photograph is archived.' : 'The source holds other bytes now, which the photograph\'s newer items cover.';
+    const reason = !photo ? CLOSE_REASONS.gone : isRetired(photo) ? CLOSE_REASONS.archived : CLOSE_REASONS.moved;
     return withDecision(event, watcherDecision('close', at, reason), { status: 'resolved' });
 }
 

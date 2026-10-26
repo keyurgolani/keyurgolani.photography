@@ -35,6 +35,17 @@ export function itemTitle(type: CurationEventType, waiting: boolean): string {
     }
 }
 
+/**
+ * #17: a settled missing item's title, so the list's settled group never reads "Source file missing" for a source
+ * that's back or a photograph that's archived. Null for every other item, which keeps its type's title.
+ */
+export function settledMissingTitle(status: CurationEventStatus, cause: ResolvedCause | null): string | null {
+    // Only #17's archive approves a missing item, and only a source present again resolves one.
+    if (status === 'approved') return 'Photograph archived';
+    if (status === 'resolved') return cause?.kind === 'bound' ? 'Bound to a new file' : 'Source file back';
+    return null;
+}
+
 /** What the system did with the item, by type. Never a claim about what a visitor sees changing. */
 export const SYSTEM_RESPONSE: Record<CurationEventType, string> = {
     new: 'It has a stable ID and waits here as a draft suggestion. Nothing publishes.',
@@ -216,11 +227,69 @@ export interface InboxDetail extends InboxItem {
     can: { approve: boolean; edit: boolean; defer: boolean; dismiss: boolean; retry: boolean; reopen: boolean };
     /**
      * The hint under the actions while the type's primary action isn't in the inbox and Decide later is offered: why
-     * it isn't, or for a replacement, what Decide later does with the draft now. Null when neither applies.
+     * it isn't, or for a replacement, what Decide later does with the draft now. For a new photograph a pending bind
+     * merges, why it can't be approved yet. Null when none applies.
      */
     primaryUnavailable: string | null;
     /** For a replacement of a known photo and revision, what its draft holds and what Decide later does with it. Null otherwise. */
     replacement: ReplacementDraft | null;
+    /** #17: what closed a resolved item, or null for any other status, or when the page can't tell. */
+    resolvedBy: ResolvedCause | null;
+    /** #17: a bind decision waiting for the watcher's next pass that involves this item's photograph, or null. */
+    bindWaiting: BindWaiting | null;
+}
+
+/**
+ * #17: what the watcher's close on a resolved item says happened. `same-file` and `other-bytes` are a missing
+ * source back, `bound` one back through a bind, `merged` a new photograph a bind gave to another, whose file is
+ * `into` (library-relative, or null when the registry can't say), `archived` an archived photograph, and `built`,
+ * `gone` and `moved` a failed build that built, whose photograph the registry dropped, or whose file moved on.
+ */
+export type ResolvedCause =
+    | { kind: 'same-file' | 'other-bytes' | 'bound' | 'archived' | 'built' | 'gone' | 'moved' }
+    | { kind: 'merged'; into: string | null };
+
+/**
+ * #17: a pending bind for the item's photograph. `merge`: it makes this new photograph's file the new version of the
+ * photograph at `into` (library-relative, or null when the registry can't say). `bind`: it gives this missing
+ * photograph the file at `path`.
+ */
+export type BindWaiting = { kind: 'merge'; into: string | null } | { kind: 'bind'; path: string };
+
+/** The last sentence of every word on a pending merge, the hint and approve's refusal alike. */
+export const BIND_WAITING_NEXT = "Refresh after the watcher runs: this item closes if the bind went through, and you can approve it if it didn't.";
+
+/** What the page says about a pending bind, before any click. */
+export function bindWaitingText(waiting: BindWaiting): string {
+    if (waiting.kind === 'merge') {
+        const into = waiting.into === null ? 'another photograph' : waiting.into;
+        return `A bind waiting for the watcher's next pass makes this file the new version of ${into}. ${BIND_WAITING_NEXT}`;
+    }
+    return `A bind waiting for the watcher's next pass gives this photograph the file at ${waiting.path}. Refresh after the watcher runs: this item closes once the bind goes through.`;
+}
+
+/** What a resolved item's system response says, by what closed it: never IDs, and never a bare "Resolved". */
+export function resolvedResponse(cause: ResolvedCause | null, type: CurationEventType): string {
+    switch (cause?.kind) {
+        case 'same-file':
+            return 'The same file came back, so nothing a visitor sees changed.';
+        case 'other-bytes':
+            return 'The file came back with other bytes, so its replacement item reviews the new version. Visitors keep the current one until you confirm it and publish.';
+        case 'bound':
+            return 'Bound to the new file, so its replacement item reviews the new version. Visitors keep the current one until you confirm it and publish.';
+        case 'merged':
+            return `A bind made this file the new version of ${cause.into ?? 'another photograph'}, so that photograph's replacement item reviews it.`;
+        case 'archived':
+            return type === 'processing-failure' ? 'The photograph is archived, so nothing needs retrying.' : 'The photograph is archived, so this file needs no judgment.';
+        case 'built':
+            return 'Its derivatives built on a later try, so nothing needs retrying.';
+        case 'gone':
+            return 'The registry no longer holds the photograph, so nothing needs retrying.';
+        case 'moved':
+            return "The file holds other bytes now, and the photograph's newer items cover them.";
+        default:
+            return 'The watcher closed it. History says what it found.';
+    }
 }
 
 /**
@@ -473,13 +542,19 @@ export function descriptionHint(detail: Pick<InboxDetail, 'edits' | 'placed'>): 
     return 'Nothing is suggested. What you type here is stored as reviewed, and publishing waits until the photograph has a description or is marked decorative.';
 }
 
-type StateFacts = Pick<InboxDetail, 'type' | 'status' | 'group' | 'unplacedSeries' | 'placed' | 'lastApprovedSeries' | 'references'> & Partial<Pick<InboxDetail, 'replacement'>>;
+type StateFacts = Pick<InboxDetail, 'type' | 'status' | 'group' | 'unplacedSeries' | 'placed' | 'lastApprovedSeries' | 'references'> & Partial<Pick<InboxDetail, 'replacement' | 'resolvedBy'>>;
 
 /** The status beside the item's identity, from its status and where it sits now, so an approval nothing holds never reads approved. */
-export function statusLabel(item: Pick<InboxItem, 'status' | 'group'> & Partial<Pick<InboxItem, 'type'>>): { text: string; tone: 'approved' | 'change' | null } {
+export function statusLabel(item: Pick<InboxItem, 'status' | 'group'> & Partial<Pick<InboxItem, 'type'> & Pick<InboxDetail, 'references'>>): { text: string | null; tone: 'approved' | 'change' | null } {
     if (item.group === 'unplaced') return { text: 'Approved, no longer placed', tone: 'change' };
     // Only #17's archive approves a missing item.
     if (item.type === 'missing' && item.status === 'approved') return { text: 'Archived', tone: null };
+    // "Draft only" is a new photograph's word. An open missing item's photograph is wherever it was, and the watcher kept all of it.
+    if (item.type === 'missing' && item.status === 'open') {
+        if (item.references === undefined || item.references === null) return { text: null, tone: null };
+        if (item.references.some((ref) => ref.kind === 'revision')) return { text: 'Still live', tone: null };
+        return { text: item.references.length > 0 ? 'Draft only' : 'Not shown anywhere', tone: null };
+    }
     if (item.status === 'approved') return { text: item.type === 'replacement' ? CONFIRMED_LABEL : STATUS_LABELS.approved, tone: 'approved' };
     return { text: STATUS_LABELS[item.status], tone: null };
 }
@@ -502,10 +577,16 @@ export function systemResponse(item: StateFacts, labelOf: (seriesId: string) => 
         return 'The new version was confirmed into the draft. Nothing publishes until you publish.';
     }
     if (item.type === 'missing' && item.status === 'approved') {
-        // #17's archive: out of every series in the draft, and off the site once a publish leaves it out.
-        const live = item.references?.some((ref) => ref.kind === 'revision') ?? false;
+        // #17's archive: out of every series in the draft, and off the site once a publish leaves it out. A rollback, or
+        // photos sequence insert, can put it back in a draft series, which a publish then refuses (`<id> is archived`).
+        if (item.references === null) return "Archived. Can't tell what shows it now: a revision or working-layer file can't be read.";
+        const live = item.references.some((ref) => ref.kind === 'revision');
+        const listed = item.references.filter((ref) => ref.kind === 'series').map((ref) => labelOf(ref.id));
+        if (listed.length > 0) {
+            return `Archived, but the draft lists it in ${joined(listed)} again, so a publish refuses it until it's taken out.${live ? ' The live site still shows it.' : ''}`;
+        }
         if (live) return 'Archived and out of every series in the draft. The live site shows it until you publish.';
-        return item.references === null ? 'Archived and out of every series in the draft.' : 'Archived, and nothing shows it any more.';
+        return 'Archived, and nothing shows it any more.';
     }
     if (item.status === 'approved') {
         // Live only when the active revision is known to hold it; when the holders can't be read, it claims nothing about live.
@@ -519,12 +600,20 @@ export function systemResponse(item: StateFacts, labelOf: (seriesId: string) => 
         return held.length > 0 ? `In the draft, in ${joined(held.map(labelOf))}. Nothing publishes until you publish.` : 'In the draft, unassigned. Nothing publishes until you publish.';
     }
     if (item.status === 'dismissed') return 'Dismissed, so it needs no judgment. Nothing a visitor sees changed.';
-    if (item.status === 'resolved') return 'Resolved, so it needs no judgment.';
+    if (item.status === 'resolved') return resolvedResponse(item.resolvedBy ?? null, item.type);
     return SYSTEM_RESPONSE[item.type];
 }
 
-/** The hint under an approved item's Reopen: what reopening it is for. A replacement has no series or description to change. */
-export function reopenHint(item: Pick<InboxDetail, 'type' | 'replacement'>): string {
+/**
+ * The hint under an approved item's Reopen: what reopening it is for. A replacement has no series or description to
+ * change, and reopening an archived missing item undoes nothing.
+ */
+export function reopenHint(item: Pick<InboxDetail, 'type' | 'replacement'> & Partial<Pick<InboxDetail, 'references'>>): string {
+    if (item.type === 'missing') {
+        // #17's archive: the registry keeps the photograph archived, and the series removals stay.
+        const listed = item.references?.some((ref) => ref.kind === 'series') ?? false;
+        return listed ? "Reopening doesn't undo the archive. The photograph stays archived." : "Reopening doesn't undo the archive. The photograph stays archived and out of every series.";
+    }
     if (item.type !== 'replacement') return 'Reopen it to change its series or description.';
     if (item.replacement?.decideLater === 'put-back') return 'Reopen it to leave the new version out of the draft. Decide later then puts the earlier version back.';
     return item.replacement?.draft === 'new' ? 'Reopening it changes nothing in the draft, which keeps the new version.' : 'Reopening it changes nothing in the draft.';

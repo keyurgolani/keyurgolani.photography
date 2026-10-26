@@ -231,11 +231,18 @@ export function dismissEvent(input: ActionInput & { reason: string }): Promise<A
     });
 }
 
-/** Put a deferred, dismissed, approved, or resolved event back in the inbox. An approval's working-layer writes stay. */
-export function reopenEvent(input: ActionInput & { reason?: string }): Promise<ActionOutcome> {
+/**
+ * Put a deferred, dismissed, approved, or resolved event back in the inbox. An approval's working-layer writes stay.
+ * `keepResolvedMissing` is the inbox page's: it refuses a missing item the watcher resolved, whose source is present
+ * again, so the page never brings back an item that says it's missing. `curation reopen` takes it back.
+ */
+export function reopenEvent(input: ActionInput & { reason?: string; keepResolvedMissing?: boolean }): Promise<ActionOutcome> {
     return act(input, async (step) => {
         const { event } = step;
         requireStatus(event, ['deferred', 'dismissed', 'approved', 'resolved'], 'reopened');
+        if (input.keepResolvedMissing && event.type === 'missing' && event.status === 'resolved') {
+            fail('refused', `${event.id} is a missing item the watcher resolved once its source was present again, so the inbox doesn't reopen it. curation reopen does. Nothing was written.`);
+        }
         const status: CurationEventStatus = event.type === 'processing-failure' ? 'failed' : 'open';
         const notes = event.status !== 'approved'
             ? ['Reopened.']

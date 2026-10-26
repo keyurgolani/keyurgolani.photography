@@ -350,7 +350,8 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
     }, [state, detail.id, detail.version, detail.sourcePath, seen, open]);
     const primary = PRIMARY_ACTION[detail.type];
     const { can } = detail;
-    const unavailable = primary !== undefined && detail.type !== 'new' && detail.primaryUnavailable !== null;
+    // A new photograph's approve is unavailable only while a pending bind merges it (#17); its hint says why.
+    const unavailable = primary !== undefined && detail.primaryUnavailable !== null && (detail.type !== 'new' || !can.approve);
     const anyButton = unavailable || (detail.type === 'new' && (can.edit || can.approve)) || can.defer;
     const slot = slotOf(state, can.dismiss);
     return (
@@ -391,7 +392,7 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
                         {detail.primaryUnavailable}
                     </p>
                 ) : null}
-                {detail.status === 'approved' && detail.type !== 'missing' ? <p className={styles.hint}>{reopenHint(detail)}</p> : null}
+                {detail.status === 'approved' ? <p className={styles.hint}>{reopenHint(detail)}</p> : null}
             </form>
 
             {can.retry ? (
