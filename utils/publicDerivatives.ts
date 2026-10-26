@@ -1,10 +1,14 @@
+import { DERIVATIVE_FOLDERS } from '../lib/derivativeFolders.mjs';
 import { foldName } from '../lib/foldName';
 
-/*
- * The path checks proxy.ts runs. Every path under /assets/photos is private,
- * original sources at any depth and the legacy basename derivatives alike,
- * since the site serves photos only from /media.
+/**
+ * The legacy derivative files the site may serve from /assets/photos: top-level
+ * files in these folders with these extensions. Every other path under
+ * /assets/photos, original sources at any depth included, is private.
  */
+export const PUBLIC_DERIVATIVE_FOLDERS: Readonly<Record<string, string>> = DERIVATIVE_FOLDERS;
+
+const PHOTOS_PREFIX = '/assets/photos/';
 
 /** Decode a request pathname once, the way Next's file lookup does, or return it as sent if it doesn't decode. */
 function decodePathname(pathname: string): string {
@@ -48,4 +52,27 @@ export function resolvedPathname(pathname: string): string {
 export function isUnderPhotos(pathname: string): boolean {
     const [first, second] = resolvedPathname(pathname).split('/').slice(1).map((segment) => foldName(segment).replace(/[^a-z0-9]/g, ''));
     return first === 'assets' && second === 'photos';
+}
+
+/**
+ * Whether a request pathname, as sent and possibly percent-encoded, names a
+ * public legacy derivative. One that doesn't decode is never one, since Next
+ * can't serve such a path either and would answer 500.
+ */
+export function isPublicDerivativePath(pathname: string): boolean {
+    let decoded: string;
+    try {
+        decoded = decodeURIComponent(pathname);
+    } catch {
+        return false;
+    }
+    if (!decoded.startsWith(PHOTOS_PREFIX)) return false;
+    const segments = decoded.slice(PHOTOS_PREFIX.length).split('/');
+    if (segments.length !== 2) return false;
+    const [folder, name] = segments;
+    if (!Object.prototype.hasOwnProperty.call(PUBLIC_DERIVATIVE_FOLDERS, folder)) return false;
+    const extension = PUBLIC_DERIVATIVE_FOLDERS[folder];
+    // Dot-files there are temp files from an interrupted write, or OS metadata.
+    if (name.startsWith('.') || name.length <= extension.length || !name.endsWith(extension)) return false;
+    return !name.includes('\\') && !name.includes('\0');
 }

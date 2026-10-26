@@ -1,11 +1,46 @@
 import { NextResponse, type NextRequest } from 'next/server';
+import { catalogMode } from './lib/catalog/mode';
 import { CURATOR_FRAME_POLICY, CURATOR_RESPONSE_HEADERS, evaluateCuratorRequest, isCurationEnabled, isCuratorPath } from './lib/curation/auth/policy';
-import { hasEncodedSeparator, isUnderPhotos } from './utils/privatePaths';
+import { dataRoot } from './lib/storage/config';
+import { hasEncodedSeparator, isPublicDerivativePath, isUnderPhotos } from './utils/publicDerivatives';
+
+/** The body Next's /_next/image sends for a `url` images.localPatterns doesn't allow. */
+export const IMAGE_URL_NOT_ALLOWED = '"url" parameter is not allowed';
 
 const PLAIN_TEXT = { 'Content-Type': 'text/plain; charset=utf-8', 'X-Content-Type-Options': 'nosniff' };
 
 function notFound(): NextResponse {
     return new NextResponse('Not Found', { status: 404, headers: { 'Cache-Control': 'no-store', ...PLAIN_TEXT } });
+}
+
+/** /_next/image's own answer for a url it doesn't allow, with nothing cached. */
+function imageRefused(): NextResponse {
+    return new NextResponse(IMAGE_URL_NOT_ALLOWED, { status: 400, headers: { 'Cache-Control': 'no-store', ...PLAIN_TEXT } });
+}
+
+/**
+ * Whether the legacy derivatives still serve: only in legacy mode, before
+ * the first catalog revision goes live. It's the check /api/ready reports,
+ * made per request, so the launch publish closes them with no restart. That
+ * check remembers a cutover for as long as the process runs, and answers
+ * `catalog` while the data root can't be read, so this fails closed.
+ */
+async function servesLegacy(): Promise<boolean> {
+    return (await catalogMode(dataRoot())) === 'legacy';
+}
+
+/**
+ * Whether a /_next/image `url` reaches /assets/photos, the way the image
+ * optimizer would fetch it. One that doesn't parse counts, the safe side.
+ */
+function reachesPhotos(url: string): boolean {
+    let pathname: string;
+    try {
+        pathname = new URL(url, 'http://n').pathname;
+    } catch {
+        return true;
+    }
+    return hasEncodedSeparator(pathname) || isUnderPhotos(pathname);
 }
 
 const DENIAL_TEXT: Record<number, string> = { 403: 'Forbidden', 404: 'Not Found', 421: 'Misdirected Request', 503: 'Service Unavailable' };
@@ -31,21 +66,31 @@ const READ_METHODS = new Set(['GET', 'HEAD']);
  *   the checks in lib/curation/auth/policy.ts (bind, `Host`, and `Origin` on
  *   a mutation), and each page, handler and action runs requireCurator()
  *   again.
+ * - `/_next/image` is checked only for its `url`: once a catalog revision
+ *   is live, it refuses one that reaches /assets/photos with a 400 before
+ *   its own cache can answer. Otherwise it passes.
  * - With `CURATION_ENABLED=true`, every other path needs the curator's
- *   `Host` too (421 otherwise). Only `/_next/static` and `/_next/image`,
- *   outside the matcher, answer any `Host`, with the same bytes as on web.
+ *   `Host` too (421 otherwise). Only `/_next/static`, outside the matcher,
+ *   and `/_next/image` answer any `Host`, with the same bytes as on web.
  * - Every other path takes only GET, HEAD and OPTIONS. Nothing outside the
  *   curator prefixes mutates (the route-inventory test), so a POST there,
  *   such as a server action ID posted to `/`, gets a 404 before Next looks
  *   for the action.
- * - Everything under /assets/photos gets a 404: original sources at any
- *   depth, and the legacy basename derivatives too, since the site serves
- *   photos only from the /media sets the active catalog revision holds.
+ * - Under /assets/photos, original sources get a 404 at any depth. The
+ *   legacy derivatives (top-level files in thumbnails, medium, and optimized
+ *   as .webp, their -avif twins as .avif, and lqip as .txt) serve in legacy
+ *   mode only, since the legacy pages load them. Once a catalog revision is
+ *   live, photos serve only from the /media sets it holds, so everything
+ *   under /assets/photos gets a 404.
  */
-export function proxy(request: NextRequest): NextResponse {
-    const { pathname } = request.nextUrl;
+export async function proxy(request: NextRequest): Promise<NextResponse> {
+    const { pathname, searchParams } = request.nextUrl;
     // next dev decodes these into separators and resolves `..` before it looks for a file.
     if (hasEncodedSeparator(pathname)) return notFound();
+    if (pathname === '/_next/image') {
+        if (searchParams.getAll('url').some(reachesPhotos) && !(await servesLegacy())) return imageRefused();
+        return NextResponse.next();
+    }
     const method = request.method.toUpperCase();
     if (isCuratorPath(pathname)) {
         const denial = evaluateCuratorRequest(
@@ -74,8 +119,9 @@ export function proxy(request: NextRequest): NextResponse {
         if (denial !== null) return curatorDenial(denial.status);
     }
     if (!READ_METHODS.has(method) && method !== 'OPTIONS') return notFound();
-    if (isUnderPhotos(pathname)) return notFound();
-    return NextResponse.next();
+    if (!isUnderPhotos(pathname)) return NextResponse.next();
+    if (isPublicDerivativePath(pathname) && (await servesLegacy())) return NextResponse.next();
+    return notFound();
 }
 
 export const config = {
@@ -86,5 +132,7 @@ export const config = {
         // Next's own paths too, once they carry a percent sign, since next dev
         // resolves an encoded `..` in them before it looks for a file.
         '/_next/(.*%.*)',
+        // The image optimizer, which serves from its own cache before it fetches the url.
+        '/_next/image',
     ],
 };
