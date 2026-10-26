@@ -234,6 +234,27 @@ test('stores the series it shows after a refused answer', async ({ page }) => {
     expect((await readAuthoredRecord(data().root, 'series', shown))?.photoIds).toContain(FRESH.refused);
 });
 
+test('keeps the curator where they were after Save edits from the plain inbox URL, with the answer in view', async ({ page, isMobile }) => {
+    // A phone's plain URL shows the list alone, so only a wide screen has an item to save there.
+    test.skip(isMobile, 'a wide screen shows an item on the plain inbox URL');
+    await openInbox(page);
+    await expect(itemHeading(page, FRESH.unassigned)).toBeVisible();
+    await page.getByRole('textbox', { name: 'Draft description' }).fill('A harbor wall, saved from the plain inbox URL.');
+    const save = page.getByRole('button', { name: 'Save edits' });
+    await save.scrollIntoViewIfNeeded();
+    await page.evaluate(() => window.scrollBy(0, 40));
+    const before = await page.evaluate(() => window.scrollY);
+    expect(before).toBeGreaterThan(0);
+    await save.click();
+    await expect(answer(page, 'done')).toHaveText(/^Saved your edits/);
+    // The save named the item in the URL, and the refresh after it brought the same item back.
+    await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox?item=${eventOf(FRESH.unassigned)}#item`);
+    await expect(itemHeading(page, FRESH.unassigned)).toBeVisible();
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBeCloseTo(before, 0);
+    await expect(answer(page, 'done')).toBeInViewport();
+    expect((await readEvent(data().root, eventOf(FRESH.unassigned)))?.edits?.description).toMatchObject({ text: 'A harbor wall, saved from the plain inbox URL.' });
+});
+
 test('approves "Leave unassigned" when no rules file suggests a series, from the plain inbox URL', async ({ page, isMobile }) => {
     // /curation/inbox with no item, as the header's Inbox link opens it. A wide screen shows the first item that needs judgment beside the list.
     await openInbox(page);
