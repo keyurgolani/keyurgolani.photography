@@ -42,12 +42,16 @@ if [ -z "$listen" ] || print -r -- "$listen" | grep -v "127\.0\.0\.1:$port " | g
 fi
 # Warm the route once (and the portrait variants), so the first recording isn't a cold compile.
 curl -s -o /dev/null "http://127.0.0.1:$port/"
+# And every portrait variant the page names, so none is still encoding when a recording asks for it.
+for u in $(curl -s "http://127.0.0.1:$port/" | grep -oE '/about/portrait/[0-9a-f]{32}/w[0-9]+\.(avif|webp)' | sort -u); do
+  curl -s -o /dev/null "http://127.0.0.1:$port$u"
+done
 sleep 2
 code=0
 while read -r name urlpath rest; do
   [ -z "$name" ] && continue
   case $name in \#*) continue ;; esac
-  rm -rf "$outroot/$name"
+  [ -e "$outroot/$name" ] && mv "$outroot/$name" ~/.Trash/"ll-$name-$(date +%s)"
   echo "== $name"
   node "$here/record.mjs" --url "http://127.0.0.1:$port$urlpath" --out "$outroot/$name" ${=rest} || code=1
 done < "$plan"
