@@ -69,6 +69,13 @@
   max-width: 26rem;
 }
 
+/* A short window, such as 200% zoom on a laptop: less air above the form, so the button stays in the first screen. */
+@media (max-height: 34rem) {
+  .main {
+    padding-block: 1.5rem 2rem;
+  }
+}
+
 /* The serif and its weight come from the global heading rule. A working
    screen's heading, smaller than a visitor status page's display size. */
 .heading {
