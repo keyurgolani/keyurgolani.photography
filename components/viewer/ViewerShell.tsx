@@ -5,7 +5,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import { usePrefersReducedMotion } from '@/components/motion/usePrefersReducedMotion';
 import { StageMotion } from './stageMotion';
 import ViewerChrome, { type ViewerChromeActions } from './ViewerChrome';
-import { ViewerContext, type ViewerChromeState, type ViewerMode, type ViewerPeek, type ViewerShellContext } from './viewerContext';
+import { ViewerContext, peekKey, type ViewerChromeState, type ViewerMode, type ViewerPeek, type ViewerShellContext } from './viewerContext';
 import { stepForKey, type ViewerStep } from './viewerKeys';
 import { useDoubleTap } from './useDoubleTap';
 import { useSwipe, type SwipeShell } from './useSwipe';
@@ -18,6 +18,23 @@ function sameChrome(a: ViewerChromeState | null, b: ViewerChromeState): boolean 
 }
 
 const NO_PEEKS: ReadonlyMap<string, ViewerPeek> = new Map();
+
+type PrefetchOptions = NonNullable<Parameters<ReturnType<typeof useRouter>['prefetch']>[1]>;
+/**
+ * Next's `PrefetchKind.FULL`, which `next/navigation` doesn't export: the whole page, not only up to a loading
+ * boundary, since the Viewer's page is dynamic and has none.
+ */
+const FULL_PREFETCH = { kind: 'full' } as unknown as PrefetchOptions;
+
+/** Runs `task` once the browser is idle, or soon where it can't say; returns the cancel. */
+function whenIdle(task: () => void): () => void {
+    if (typeof window.requestIdleCallback === 'function') {
+        const handle = window.requestIdleCallback(task, { timeout: 2000 });
+        return () => window.cancelIdleCallback(handle);
+    }
+    const handle = window.setTimeout(task, 200);
+    return () => window.clearTimeout(handle);
+}
 
 /**
  * A neighbor's peek from 9a's endpoint, in the revision this photograph came from, or null when it can't be had
@@ -69,12 +86,15 @@ async function fetchPeek(slug: string, photoId: string, revisionId: string): Pro
  * move settles in: from the lift for a swipe, and from its arrival for
  * Previous, Next, and the arrow keys, so every move looks the same. The
  * header and the reading area stay put. The counter and the accent rules
- * change once, at the lift (or the press), and the words under the
- * photograph with a 200 ms fade, out then, and in when the photograph's page
- * arrives. While a move is on its way, another waits for it. Under reduced
- * motion nothing slides or fades: the next photograph replaces this one in
- * place when it arrives, and the header and the region give the new position
- * at once, as before 9a.
+ * change once, at the lift (or the press). The words under the photograph
+ * stay as they are until the photograph's page arrives, and change then with
+ * a 200 ms fade, so the reading area is never empty. Once the Viewer is idle
+ * it prefetches the neighbors' pages, so a move's page usually arrives
+ * inside its settle. While a move is on its way, no swipe can start, and the
+ * latest press of a control or a key is remembered and runs once the
+ * photograph arrives. Under reduced motion nothing slides or fades: the next
+ * photograph replaces this one in place when it arrives, and the header and
+ * the region give the new position at once, as before 9a.
  */
 export default function ViewerShell({ mode, children }: { mode: ViewerMode; children: ReactNode }) {
     const router = useRouter();
@@ -91,7 +111,9 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
     /** The move decided and on its way, from the photograph it leaves, so the counter and accents show it at once. */
     const [pending, setPending] = useState<{ from: string; direction: ViewerStep } | null>(null);
     const pendingRef = useRef<typeof pending>(null);
-    /** The peeks the shell has: every photograph it has shown, and the neighbors it asked the endpoint for. */
+    /** The latest press of a control or a key while a move was on its way, which runs once its photograph arrives. */
+    const queued = useRef<ViewerStep | null>(null);
+    /** The peeks the shell has, by peekKey (revision and photo ID): every photograph it has shown, and the neighbors it asked the endpoint for. */
     const [peeks, setPeeks] = useState<ReadonlyMap<string, ViewerPeek>>(NO_PEEKS);
     /** Set once a finger goes down on the photograph: from then on, each photograph's neighbors are asked for. */
     const engaged = useRef(false);
@@ -108,39 +130,54 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         router.back();
     }, [router]);
 
+    const swipeShell = useRef<SwipeShell>({ zoomed, motion: false, previous: false, next: false, pending: () => false, step: () => undefined, engage: () => undefined });
+    const { pinched, drop: dropGesture } = useSwipe(rootRef, { zoomed, shellRef: swipeShell, motionRef, photoId: chrome?.photoId ?? null });
+
     const step = useCallback(
         (direction: ViewerStep, settling = false) => {
             if (chrome === null) return;
+            const motion = reduced ? null : motionRef.current;
+            // A move already on its way is the one the visitor sees settling. A press or a key now is remembered, the
+            // latest one, and runs once that photograph arrives (the arrival effect below).
+            if (motion !== null && pendingRef.current !== null) {
+                if (!settling) queued.current = direction;
+                return;
+            }
             const href = direction === 'previous' ? chrome.previousHref : chrome.nextHref;
             if (href === null) {
                 setMessage(boundaryText(direction, chrome.seriesTitle));
                 return;
             }
-            const motion = reduced ? null : motionRef.current;
-            // A move already on its way is the one the visitor sees settling, so another waits for its photograph.
-            if (motion !== null && pendingRef.current !== null) return;
             setZoomed(false);
             movedWith.current = { direction, held: document.activeElement };
             if (motion !== null) {
-                if (!settling) motion.reset();
-                motion.wordsOut();
+                if (!settling) {
+                    // A press or a key while a finger holds the photograph: the move is the press's. The gesture ends
+                    // with no move, and the photograph slides back while the page comes.
+                    dropGesture();
+                    if (motion.heldOffset() !== 0) motion.release(null, 0);
+                }
+                motion.holdWords();
                 const next = { from: chrome.photoId, direction };
                 pendingRef.current = next;
                 setPending(next);
             }
             router.replace(href, { scroll: false });
         },
-        [chrome, router, reduced],
+        [chrome, router, reduced, dropGesture],
     );
 
     /** Ask for the current photograph's neighbors, once each, if a finger has gone down on the photograph. */
     const askForPeeks = useCallback((state: ViewerChromeState | null) => {
         if (state === null || !engaged.current) return;
         for (const photoId of [state.previousPhotoId, state.nextPhotoId]) {
-            if (photoId === null || requested.current.has(photoId)) continue;
-            requested.current.add(photoId);
+            if (photoId === null) continue;
+            // By revision too: after a publish, a neighbor's set from the revision before isn't this one's.
+            const key = peekKey(state.revisionId, photoId);
+            if (requested.current.has(key)) continue;
+            requested.current.add(key);
             void fetchPeek(state.seriesSlug, photoId, state.revisionId).then((peek) => {
-                if (peek !== null) setPeeks((current) => (current.has(photoId) ? current : new Map(current).set(photoId, peek)));
+                if (peek !== null) setPeeks((current) => (current.has(key) ? current : new Map(current).set(key, peek)));
             });
         }
     }, []);
@@ -152,9 +189,10 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         const first = shownPhoto.current === null;
         shownPhoto.current = chrome.photoId;
         // Every photograph shown can peek back in once the Viewer moves on from it.
-        const { photoId, image, accent } = chrome;
-        requested.current.add(photoId);
-        setPeeks((current) => (current.has(photoId) ? current : new Map(current).set(photoId, { image, accent })));
+        const { image, accent } = chrome;
+        const key = peekKey(chrome.revisionId, chrome.photoId);
+        requested.current.add(key);
+        setPeeks((current) => (current.has(key) ? current : new Map(current).set(key, { image, accent })));
         if (first) return;
         setZoomed(false);
         setMessage(positionText(chrome.position, chrome.total));
@@ -180,6 +218,17 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
     useEffect(() => {
         if (!reduced) askForPeeks(chrome);
     }, [chrome, reduced, askForPeeks]);
+
+    // Once the Viewer is idle, the neighbors' pages (their RSC payloads, no image), so a move's page is usually there
+    // by the time its settle lands, and the words change with it. Next keeps one request per page however often it's asked.
+    const previousHref = chrome?.previousHref ?? null;
+    const nextHref = chrome?.nextHref ?? null;
+    useEffect(() => {
+        if (previousHref === null && nextHref === null) return;
+        return whenIdle(() => {
+            for (const href of [nextHref, previousHref]) if (href !== null) router.prefetch(href, FULL_PREFETCH);
+        });
+    }, [previousHref, nextHref, router]);
 
     // The stage's motion, on the root, which outlives every move. Reduced motion drops any slide in flight.
     useLayoutEffect(() => {
@@ -222,12 +271,28 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         engaged.current = true;
         askForPeeks(chrome);
     }, [reduced, askForPeeks, chrome]);
-    const swipeShell = useRef<SwipeShell>({ zoomed, motion: false, previous: false, next: false, step: () => undefined, engage: () => undefined });
     useEffect(() => {
         zoomedRef.current = zoomed;
         stepRef.current = step;
-        swipeShell.current = { zoomed, motion: !reduced, previous: chrome?.previousHref != null, next: chrome?.nextHref != null, step, engage };
+        swipeShell.current = {
+            zoomed,
+            motion: !reduced,
+            previous: chrome?.previousHref != null,
+            next: chrome?.nextHref != null,
+            pending: () => pendingRef.current !== null,
+            step,
+            engage,
+        };
     }, [zoomed, step, reduced, chrome, engage]);
+
+    // The press remembered while the last move was on its way runs once its photograph is in, with that one's
+    // neighbors. After the effect above, so it runs with this photograph's step.
+    useEffect(() => {
+        const direction = queued.current;
+        if (direction === null || pendingRef.current !== null) return;
+        queued.current = null;
+        stepRef.current(direction);
+    }, [chrome]);
 
     // Keys come from the document in both modes, so they still work when focus falls to the body under the open
     // modal (Tab past the end, or a tap on the photograph in WebKit). In the modal, a key aimed anywhere but the
@@ -249,8 +314,6 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         return () => document.removeEventListener('keydown', onKey);
     }, [mode]);
 
-    const pinched = useSwipe(rootRef, { zoomed, shellRef: swipeShell, motionRef, photoId: chrome?.photoId ?? null });
-
     // A double-tap on the photograph is Zoom, and does nothing where Zoom does nothing (no usable set), so it can't leave
     // the shell zoomed with nothing on screen to show it, which would stop the swipe.
     const hasImage = chrome?.hasImage ?? false;
@@ -270,7 +333,7 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
     const shown = useMemo<ViewerChromeState | null>(() => {
         if (chrome === null || pending === null || pending.from !== chrome.photoId) return chrome;
         const to = pending.direction === 'next' ? chrome.nextPhotoId : chrome.previousPhotoId;
-        const peek = to === null ? undefined : peeks.get(to);
+        const peek = to === null ? undefined : peeks.get(peekKey(chrome.revisionId, to));
         return { ...chrome, position: chrome.position + (pending.direction === 'next' ? 1 : -1), accent: peek === undefined ? chrome.accent : peek.accent };
     }, [chrome, pending, peeks]);
     const surface = (shown?.accent ? { '--cc-accent': shown.accent } : undefined) as CSSProperties | undefined;
@@ -281,6 +344,8 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
                 <ViewerChrome state={shown} mode={mode} headingId={headingId} zoomed={zoomed} onZoom={toggleZoom} actions={actions} />
             )}
             {children}
+            {/* The leaving photograph's words, over the new ones for the 70 ms of their fade out (StageMotion.wordsIn). Empty otherwise. */}
+            <div className={styles.leaving} data-viewer-leaving="" aria-hidden="true" />
             <p className="sr-only" role="status" aria-live="polite" data-viewer-announcer="">
                 {message}
             </p>

@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import {
     CLAIM_SLOP,
+    CONTROL_SLOPE,
     FLICK_DISTANCE,
     FLICK_SPEED,
     PEEK_GAP,
@@ -15,6 +16,7 @@ import {
     SWIPE_RATIO,
     POINTER_STOPPED,
     VELOCITY_WINDOW,
+    caughtBase,
     claimsTouch,
     followOffset,
     followTravel,
@@ -26,6 +28,7 @@ import {
     rubberBand,
     settleOf,
     swipeStep,
+    unbandedPull,
     type Sample,
     type SwipeInput,
     type SwipeState,
@@ -204,9 +207,17 @@ describe('the flick (9a)', () => {
         // The ratio still holds: a flick that's mostly down the page is a scroll.
         [-30, 24, -1, 'next'],
         [-30, 24.1, -1, null],
-        // Past 48 the distance rule moves, whatever the speed.
+        // Past 48 the distance rule moves, at any speed the same way, and at rest.
         [-60, 0, 0, 'next'],
-        [-60, 0, 1.5, 'next'],
+        [-60, 0, -1.5, 'next'],
+        [80, 0, 0.2, 'previous'],
+        // But flicked back the other way at 0.5 px/ms or faster, it cancels, however far it went, as a paging view does
+        // on iOS and Android. Slower than that back, the distance still moves.
+        [-80, 0, 0.5, null],
+        [-200, 0, 1.2, null],
+        [80, 0, -0.8, null],
+        [-80, 0, 0.49, 'next'],
+        [80, 0, -0.3, 'previous'],
     ])('dx %d, dy %d at %d px/ms asks for %s', (dx, dy, velocity, expected) => {
         expect(swipeStep(dx, dy, velocity)).toBe(expected);
     });
@@ -292,6 +303,25 @@ describe('followOffset and followTravel', () => {
         expect(followTravel(null, 100)).toBeNull();
     });
 
+    it('picks up a pull caught past an end where the rubber band had it, so the photograph doesn\'t jump (71 px stays 71 px)', () => {
+        const first = { previous: false, next: true };
+        for (const offset of [71, 30.4, 95, 200]) {
+            const base = caughtBase(offset, 390, first);
+            expect(followOffset(0, base, 390, first), `${offset} px`).toBeCloseTo(offset, 6);
+            // And it goes on from there with the band, a little less per px as the pull grows.
+            expect(followOffset(10, base, 390, first)).toBeGreaterThan(offset);
+            expect(followOffset(10, base, 390, first) - offset).toBeLessThan(10);
+        }
+        expect(caughtBase(-71, 390, { previous: true, next: false })).toBeCloseTo(-unbandedPull(71, 390), 6);
+        expect(followOffset(0, caughtBase(-71, 390, { previous: true, next: false }), 390, { previous: true, next: false })).toBeCloseTo(-71, 6);
+        // Where there's a photograph that way, the offset is the drag's start as it is.
+        expect(caughtBase(71, 390, { previous: true, next: true })).toBe(71);
+        expect(caughtBase(-71, 390, first)).toBe(-71);
+        expect(unbandedPull(rubberBand(170, 390), 390)).toBeCloseTo(170, 6);
+        expect(unbandedPull(0, 390)).toBe(0);
+        expect(Number.isFinite(unbandedPull(390, 390))).toBe(true);
+    });
+
     it('meets the rubber band toward an end, and only toward it', () => {
         expect(followOffset(170, 0, 390, { previous: false, next: true })).toBeCloseTo(rubberBand(170, 390));
         expect(followOffset(-170, 0, 390, { previous: false, next: true })).toBe(-170);
@@ -339,14 +369,38 @@ describe('settleOf', () => {
                 expect(value).toBeLessThanOrEqual(1);
             }
             expect([x2, y2]).toEqual([0.36, 1]);
-            // The opening slope matches the finger's speed in the curve's units, or the at-rest floor of 1.5.
-            const wanted = Math.max(1.5, (speed * duration) / distance);
+            // The opening slope matches the finger's speed in the curve's units, with no floor: at rest it opens flat.
+            const wanted = (speed * duration) / distance;
             if (wanted * 0.22 <= 1) expect(y1 / x1).toBeCloseTo(wanted, 2);
             else {
                 expect(y1).toBe(1);
                 expect(x1).toBeCloseTo(Math.max(0.04, 1 / wanted), 3);
             }
         }
+    });
+
+    it.each([0.3, 0.6, 1.5])('starts a settle at the release speed, %d px/ms, never faster', (speed) => {
+        // A commit on a 406 px pitch let go 64 px out, and a slide back from 40 px.
+        for (const [kind, distance] of [
+            ['commit', 342],
+            ['return', 40],
+        ] as const) {
+            const { duration, easing } = settleOf(kind, distance, speed);
+            const [x1, y1] = parse(easing);
+            // The curve's opening slope, back in CSS px per ms.
+            const start = y1 === 1 ? Infinity : ((y1 / x1) * distance) / duration;
+            if (y1 < 1) expect(start, `${kind} at ${speed}`).toBeCloseTo(speed, 2);
+            // A short slide back can't open that fast inside the unit square, so it opens as fast as the square allows.
+            else expect(x1).toBeCloseTo(Math.max(0.04, distance / (speed * duration)), 3);
+        }
+    });
+
+    it('opens a move by a control or a key, which has no finger speed, at the mockup\'s slope', () => {
+        expect(CONTROL_SLOPE).toBe(1.5);
+        const [x1, y1] = parse(settleOf('commit', 406, 0, CONTROL_SLOPE).easing);
+        expect(y1 / x1).toBeCloseTo(1.5, 2);
+        // A release at rest opens flat, from a standstill.
+        expect(parse(settleOf('commit', 342, 0).easing).slice(0, 2)).toEqual([0.22, 0]);
     });
 
     it('keeps the 16 px gap the neighbors peek in through', () => {
@@ -378,6 +432,23 @@ describe('reduceSwipe, with motion (9a)', () => {
         }
         expect(last?.step).toBeNull();
         expect(last?.release).toMatchObject({ step: null, dx: -30, velocity: 0, followed: true });
+    });
+
+    it('releases a gesture with no step when a second finger lands, so the photograph it held slides back', () => {
+        const held = [down(1, 200, 300), move(195, 0), move(170, 50), move(114, 100)].reduce((state, input) => reduceSwipe(state, input).state, SWIPE_IDLE);
+        const second = reduceSwipe(held, down(2, 260, 320, { primary: false }));
+        expect(second.step).toBeNull();
+        expect(second.release).toEqual({ step: null, dx: 0, dy: 0, velocity: 0, followed: true });
+        expect(second.state).toEqual({ down: [1, 2], start: null });
+        // Neither lift moves or releases again.
+        const after = reduceSwipe(reduceSwipe(second.state, lift(60, 200)).state, { type: 'up', pointerId: 2, x: 300, y: 320, t: 210 });
+        expect(after.release).toBeUndefined();
+        expect(after.state).toEqual(SWIPE_IDLE);
+        // A gesture never claimed sideways releases too, and says so.
+        const unclaimed = reduceSwipe(reduceSwipe(SWIPE_IDLE, down(1, 200, 300)).state, down(2, 260, 320, { primary: false }));
+        expect(unclaimed.release).toMatchObject({ step: null, followed: false });
+        // A finger down with no gesture in flight releases nothing.
+        expect(reduceSwipe({ down: [1], start: null }, down(2, 260, 320, { primary: false })).release).toBeUndefined();
     });
 
     it('releases a cancelled gesture with no step, and says whether the photograph followed it', () => {

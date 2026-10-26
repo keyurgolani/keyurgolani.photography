@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useRef, useState, type RefObject } from 'react';
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import type { StageMotion } from './stageMotion';
-import { SWIPE_IDLE, claimsTouch, followOffset, followTravel, isPinched, reduceSwipe, type SwipeInput, type SwipeState } from './swipe';
+import { SWIPE_IDLE, caughtBase, claimsTouch, followOffset, followTravel, isPinched, reduceSwipe, type SwipeInput, type SwipeState } from './swipe';
 import type { ViewerStep } from './viewerKeys';
 
 /**
@@ -19,6 +19,8 @@ export interface SwipeShell {
     /** Whether there's a photograph each way, so a pull toward an end meets the rubber band. */
     previous: boolean;
     next: boolean;
+    /** Whether a move (by any route: a swipe, a control, a key) is on its way, so no swipe can start until it arrives. */
+    pending(): boolean;
     /** The move the swipe asks for, at the lift. `settling` when the photograph is already settling into it. */
     step(step: ViewerStep, settling: boolean): void;
     /** A finger went down on the photograph: the shell starts fetching the neighbors that peek in. */
@@ -48,12 +50,15 @@ export interface SwipeShell {
  * motion it stays still and the move is the cut at the lift, as before.
  *
  * `shellRef` is the shell's, kept current by it; `zoomed` and `photoId` are
- * there for the reset. `motionRef` holds the shell's StageMotion.
+ * there for the reset. `motionRef` holds the shell's StageMotion. It returns
+ * whether the page is pinch-zoomed, and `drop`, which ends the gesture in
+ * flight with no move, for a move by a control or a key while a finger holds
+ * the photograph.
  */
 export function useSwipe(
     rootRef: RefObject<HTMLElement | null>,
     { zoomed, shellRef, motionRef, photoId }: { zoomed: boolean; shellRef: RefObject<SwipeShell>; motionRef: RefObject<StageMotion | null>; photoId: string | null },
-): boolean {
+): { pinched: boolean; drop: () => void } {
     const state = useRef<SwipeState>(SWIPE_IDLE);
     /** Whether the touch the gesture follows is claimed from the browser: null until its axis is settled (claimsTouch). */
     const claim = useRef<boolean | null>(null);
@@ -93,11 +98,13 @@ export function useSwipe(
             const onStage = target !== null && target.closest(STAGE_SELECTOR) !== null;
             const shell = shellRef.current;
             const motion = shell.motion ? motionRef.current : null;
-            // A move already decided is on its way, so a finger can't start another until its photograph arrives.
-            const eligible = onStage && !shell.zoomed && !isPinched(window.visualViewport?.scale) && motion?.pendingStep() == null;
+            // A move already decided is on its way, by a swipe, a control, or a key, so a finger can't start another until
+            // its photograph arrives.
+            const eligible = onStage && !shell.zoomed && !isPinched(window.visualViewport?.scale) && !shell.pending() && motion?.pendingStep() == null;
             apply({ type: 'down', pointerId: event.pointerId, x: event.clientX, y: event.clientY, t: event.timeStamp, primary: event.isPrimary, eligible });
             if (state.current.start?.pointerId !== event.pointerId) return;
-            base.current = motion?.catch() ?? 0;
+            // Caught past an end, the drag picks up the pull the rubber band gave, so the photograph stays where it was caught.
+            base.current = motion === null ? 0 : caughtBase(motion.catch(), motion.width(), { previous: shell.previous, next: shell.next });
             shell.engage();
             try {
                 root.setPointerCapture?.(event.pointerId);
@@ -159,5 +166,10 @@ export function useSwipe(
         if (had && motion !== null && motion.pendingStep() === null) motion.release(null, 0);
     }, [photoId, zoomed, pinched, motionRef]);
 
-    return pinched;
+    const drop = useCallback(() => {
+        state.current = reduceSwipe(state.current, { type: 'reset' }).state;
+        claim.current = null;
+    }, []);
+
+    return { pinched, drop };
 }

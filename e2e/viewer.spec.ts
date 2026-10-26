@@ -111,10 +111,16 @@ test('nothing outside the allowlist reaches the served HTML or the RSC payload o
         (url) => url.pathname.startsWith('/work/harbor/photo/'),
         async (route) => {
             if (route.request().headers()['rsc'] !== '1') return route.fallback();
-            const response = await route.fetch();
-            const body = await response.text();
-            payloads.push(body);
-            await route.fulfill({ response, body });
+            // The idle prefetch (9a) is one of these too. A navigation can cancel one in flight, and then there's no body.
+            let fetched: { response: Awaited<ReturnType<typeof route.fetch>>; body: string };
+            try {
+                const response = await route.fetch();
+                fetched = { response, body: await response.text() };
+            } catch {
+                return;
+            }
+            payloads.push(fetched.body);
+            await route.fulfill({ response: fetched.response, body: fetched.body }).catch(() => undefined);
         },
     );
     await openViewer(page, P[1]);
@@ -189,6 +195,7 @@ async function titleLine(page: Page) {
         const lineHeight = lead ? parseFloat(getComputedStyle(lead).lineHeight) : NaN;
         return {
             innerHeight,
+            stage: box(root.querySelector('[data-viewer-stage]')),
             frame: box(root.querySelector('[data-viewer-stage] figure')),
             reading: box(reading ?? null),
             title: box(title),
@@ -201,19 +208,21 @@ async function titleLine(page: Page) {
 /**
  * The reading area's pieces as the first screen cuts them: the title (when shown), the caption, the Description label
  * and its text, and the technical toggle. Only running text (the caption and the description) may run across the fold.
+ * `lead` marks the pieces in the title line's block (the title and the caption), which comes first.
  */
 async function foldPieces(page: Page) {
     return page.locator('[data-surface="viewer"] section[aria-labelledby]').evaluate((reading) => {
+        const lead = reading.firstElementChild;
         const pieces = [...reading.querySelectorAll('h2:not(.sr-only), :scope > p, :scope > div > p, :scope > div > button')];
         return pieces.map((element) => {
             const { top, bottom } = element.getBoundingClientRect();
             const running = element.tagName === 'P' && (element.parentElement === reading || element.previousElementSibling !== null);
-            return { text: element.textContent?.trim().slice(0, 40) ?? '', top, bottom, running };
+            return { text: element.textContent?.trim().slice(0, 40) ?? '', top, bottom, running, lead: element.parentElement === lead };
         });
     });
 }
 
-test('on a wide screen, the first screen ends on whole elements for every mix of title and caption, and keeps the title line when there is one', async ({ page }, testInfo) => {
+test('on a wide screen, the first screen ends on whole elements for every mix of title and caption, keeps the title line when there is one, and the same stage for all', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'desktop', 'The wide layout.');
     // The title and the caption are both optional: both, a title alone, a caption alone (the one-photo series), neither.
     const mixes = [
@@ -228,6 +237,7 @@ test('on a wide screen, the first screen ends on whole elements for every mix of
         { width: 1280, height: 800 },
     ]) {
         await page.setViewportSize(size);
+        const stages: unknown[] = [];
         for (const mix of mixes) {
             const at = `${size.width} by ${size.height}, ${mix.name}`;
             await page.goto(`${origin()}${href(mix.photoId, mix.slug)}`);
@@ -254,13 +264,20 @@ test('on a wide screen, the first screen ends on whole elements for every mix of
                 const after = pieces[mix.photoId === P[0] ? 2 : 1];
                 expect(after.top, `${at}: "${after.text}", after the title line, starts under the fold`).toBeGreaterThanOrEqual(line.innerHeight);
             } else {
-                // No title line to keep: the photograph keeps the whole first screen, and the reading area's rule shows under it.
+                // No title (9a's fixed stage): the title line's block keeps its height, so the stage doesn't grow into it.
+                // A caption shows in it, and everything after it starts under the fold.
                 expect(line.reading && line.reading.top, `${at}: the reading area starts on screen`).toBeLessThan(line.innerHeight);
-                expect(pieces[0].top, `${at}: the reading area's first piece starts under the fold`).toBeGreaterThanOrEqual(line.innerHeight);
+                for (const piece of pieces.filter((candidate) => candidate.lead)) expect(piece.top, `${at}: "${piece.text}" shows`).toBeLessThan(line.innerHeight);
+                const rest = pieces.filter((candidate) => !candidate.lead);
+                expect(rest.length, `${at}: the reading area has pieces after the title line`).toBeGreaterThan(0);
+                for (const piece of rest) expect(piece.top, `${at}: "${piece.text}" starts under the fold`).toBeGreaterThanOrEqual(line.innerHeight);
             }
             // The photograph still holds the screen.
             expect(line.frame && line.frame.bottom - line.frame.top).toBeGreaterThan(line.innerHeight * 0.6);
+            stages.push(line.stage);
         }
+        // One stage for every mix, whatever the reading area holds.
+        for (const stage of stages.slice(1)) expect(stage, `${size.width} by ${size.height}`).toEqual(stages[0]);
     }
 });
 
@@ -279,31 +296,52 @@ test('on a wide screen under 40rem tall, a phone held sideways or a laptop at 15
     }
 });
 
-test('on a phone, the reading area sits at the foot of the first screen, with the photograph centered above it and no empty ground under it', async ({ page }, testInfo) => {
+test('on a phone, the stage takes the screen less a fixed reading allowance, with the photograph centered in it, and the reading area runs on to the foot of the page', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'mobile', 'The narrow layout.');
     await page.setViewportSize({ width: 390, height: 844 });
-    await openViewer(page, P[1]);
-    const layout = await page.locator('[data-surface="viewer"]').evaluate((root) => {
-        const rect = (selector: string) => root.querySelector(selector)?.getBoundingClientRect() ?? null;
-        return {
-            innerHeight,
-            scrollHeight: document.documentElement.scrollHeight,
-            stage: rect('[data-viewer-stage]'),
-            frame: rect('[data-viewer-stage] figure'),
-            reading: rect('section[aria-labelledby]'),
-        };
-    });
-    expect(layout.scrollHeight, 'the Viewer is one screen').toBeLessThanOrEqual(layout.innerHeight);
-    expect(layout.reading && layout.reading.bottom, 'the reading area reaches the foot of the screen').toBeCloseTo(layout.innerHeight, 0);
-    const { stage, frame } = layout;
-    expect(stage && frame, 'the stage and the photograph').toBeTruthy();
-    if (stage && frame) {
+    const layouts = [];
+    // A reading area with a title and a caption, and one with neither: different lengths, the same stage (9a).
+    for (const photoId of [P[0], P[1]]) {
+        await openViewer(page, photoId);
+        layouts.push(
+            await page.locator('[data-surface="viewer"]').evaluate((root) => {
+                const rect = (selector: string) => {
+                    const box = root.querySelector(selector)?.getBoundingClientRect();
+                    return box ? { top: box.top + scrollY, bottom: box.bottom + scrollY, height: box.height } : null;
+                };
+                return {
+                    innerHeight,
+                    scrollHeight: document.documentElement.scrollHeight,
+                    header: rect('header'),
+                    stage: rect('[data-viewer-stage]'),
+                    frame: rect('[data-viewer-stage] figure'),
+                    next: rect('[data-viewer-step="next"]'),
+                    reading: rect('section[aria-labelledby]'),
+                };
+            }),
+        );
+    }
+    for (const layout of layouts) {
+        const { stage, frame, reading, header: bar, next: arrow } = layout;
+        expect(stage && frame && reading && bar && arrow, 'the pieces').toBeTruthy();
+        if (!(stage && frame && reading && bar && arrow)) continue;
+        // The header, the stage, the arrows' row, and the reading area's start fill the first screen, from the screen alone.
+        // One row: the 44 px controls, the padding, and the accent rule. A second row would add another 44.
+        expect(bar.height, 'the header keeps its one row').toBeLessThanOrEqual(60.5);
+        expect(stage.height, 'the stage is the screen less the header, the arrows, and the allowance').toBeGreaterThan(layout.innerHeight * 0.6);
+        expect(reading.top, 'the reading area starts in the first screen').toBeLessThan(layout.innerHeight);
+        expect(reading.top, 'and keeps its allowance there').toBeLessThanOrEqual(layout.innerHeight - 80);
+        expect(arrow.bottom).toBeLessThanOrEqual(reading.top);
+        // The reading area runs on to the foot of the page, with no empty ground under it.
+        expect(reading.bottom, 'the reading area reaches the foot of the page').toBeCloseTo(Math.max(layout.innerHeight, layout.scrollHeight), 0);
         const above = frame.top - stage.top;
         const below = stage.bottom - frame.bottom;
         // The stage keeps its top padding and none at the bottom, where the arrows' row sits.
         expect(Math.abs(above - below)).toBeLessThan(40);
         expect(below, 'the stage took the spare height').toBeGreaterThan(40);
     }
+    expect(layouts[1].stage, 'the same stage for a long and a short reading area').toEqual(layouts[0].stage);
+    expect(layouts[1].reading?.top).toBeCloseTo(layouts[0].reading?.top ?? NaN, 1);
 });
 
 test('the Viewer passes the #1 checks, and its controls reflow', async ({ page }) => {

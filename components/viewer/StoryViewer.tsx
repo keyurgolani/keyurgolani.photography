@@ -6,7 +6,7 @@ import ResponsivePhoto from '@/components/ResponsivePhoto';
 // Types only: the projection pulls the catalog schema and node:crypto in, which must stay out of the client bundle.
 import type { PublishedViewerPhoto } from '@/lib/catalog/projections/viewer';
 import ViewerChrome from './ViewerChrome';
-import { ViewerContext, type ViewerChromeState, type ViewerPeek } from './viewerContext';
+import { ViewerContext, peekKey, type ViewerChromeState, type ViewerPeek } from './viewerContext';
 import {
     DESCRIPTION_LABEL,
     HIDE_TECHNICAL,
@@ -168,7 +168,7 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
     const zoomedIn = zoomed && largest !== null;
     // The neighbors that peek in while the photograph follows the finger (9a), once the shell has them. Never zoomed.
     const peeks = shell?.peeks;
-    const peekOf = (photoId: string | null) => (zoomedIn || photoId === null ? undefined : peeks?.get(photoId));
+    const peekOf = (photoId: string | null) => (zoomedIn || photoId === null ? undefined : peeks?.get(peekKey(viewer.catalogRevision, photoId)));
     const previousPeek = peekOf(viewer.previousPhotoId);
     const nextPeek = peekOf(viewer.nextPhotoId);
 
@@ -210,10 +210,13 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
             </div>
 
             <section className={styles.reading} aria-labelledby={readingId} data-viewer-reading="">
-                <h2 id={readingId} className={photo.title === null ? 'sr-only' : styles.title}>
-                    {photo.title ?? positionText(position, total)}
-                </h2>
-                {photo.caption !== null && <p className={styles.caption}>{photo.caption}</p>}
+                {/* The title line, which the first screen keeps in view on a wide screen, the same height with or without them. */}
+                <div className={styles.lead}>
+                    <h2 id={readingId} className={photo.title === null ? 'sr-only' : styles.title}>
+                        {photo.title ?? positionText(position, total)}
+                    </h2>
+                    {photo.caption !== null && <p className={styles.caption}>{photo.caption}</p>}
+                </div>
                 {(photo.description !== null || pendingCopy !== null) && (
                     <div className={styles.description}>
                         <p className={styles.label}>{DESCRIPTION_LABEL}</p>

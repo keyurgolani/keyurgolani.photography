@@ -1,16 +1,21 @@
 // The Viewer photograph's motion (9a), straight on the DOM, so a frame of a drag never waits on React. The rule (where
 // the photograph sits, when it moves, how it settles) is swipe.ts's; this only puts it on screen.
-import { PEEK_GAP, settleOf, type SettleKind } from './swipe';
+import { CONTROL_SLOPE, PEEK_GAP, settleOf, type SettleKind } from './swipe';
 import type { ViewerStep } from './viewerKeys';
 
 /** The strip StoryViewer renders on the stage: the photograph, and the neighbors that peek in beside it. Only it moves. */
 export const TRACK_SELECTOR = '[data-viewer-track]';
 /** The reading area, whose words change once per move, with a short fade. */
 export const READING_SELECTOR = '[data-viewer-reading]';
+/**
+ * Where the leaving photograph's words wait out their fade, over the new reading area: an empty, hidden box the
+ * shell renders in the reading area's place, which only this fills.
+ */
+export const LEAVING_SELECTOR = '[data-viewer-leaving]';
 
-/** The words fade out over this many ms when a move is decided... */
+/** The leaving words fade out over this many ms once the new photograph's page arrives... */
 export const WORDS_OUT = 70;
-/** ...and the new photograph's fade in over this many, 200 ms in all. */
+/** ...and the new photograph's fade in over this many after them, 200 ms in all. */
 export const WORDS_IN = 130;
 const WORDS_IN_EASING = 'cubic-bezier(0.25, 1, 0.5, 1)';
 
@@ -40,8 +45,9 @@ export class StageMotion {
     private running: Running | null = null;
     /** Where the drag holds the track, while it does. */
     private held: { element: HTMLElement; offset: number } | null = null;
-    /** When the words of the photograph that's leaving began to fade, for the fade in to follow on. */
-    private wordsOutAt: number | null = null;
+    /** A copy of the leaving photograph's words, taken when its move was decided, to fade out once the new ones are in. */
+    private leaving: Element | null = null;
+    private leavingFade: Animation | null = null;
 
     constructor(private readonly root: HTMLElement) {}
 
@@ -140,36 +146,76 @@ export class StageMotion {
             return;
         }
         const from = step === 'next' ? this.pitch() : -this.pitch();
-        this.settle(element, from, 0, null, 0, 'commit');
+        this.settle(element, from, 0, null, 0, 'commit', CONTROL_SLOPE);
     }
 
-    /** Drop any settle or hold and put the track at rest, as Zoom, a pinch, reduced motion, or unmount need. */
+    /** Drop any settle, hold, or words in their fade, and put the track at rest, as Zoom, a pinch, reduced motion, or unmount need. */
     reset(): void {
         this.stop();
         this.held = null;
         const element = this.track();
         if (element !== null) this.rest(element);
+        this.leaving = null;
+        this.clearLeaving();
     }
 
-    /** Fade the words under the photograph out, once a move is decided. */
-    wordsOut(): void {
+    /**
+     * A move is decided: keep a copy of the words under the photograph, which stay on screen as they are, at full
+     * opacity, until the new photograph's page arrives (wordsIn), however long that takes, so the reading area is never
+     * empty. The copy has no IDs, so nothing on the page points at it.
+     */
+    holdWords(): void {
         const reading = this.root.querySelector(READING_SELECTOR);
         if (reading === null || !animates(reading)) return;
-        this.wordsOutAt = performance.now();
-        for (const child of reading.children) child.animate([{ opacity: 1 }, { opacity: 0 }], { duration: WORDS_OUT, easing: 'linear', fill: 'forwards' });
+        const copy = reading.cloneNode(true) as Element;
+        copy.removeAttribute('data-viewer-reading');
+        copy.removeAttribute('aria-labelledby');
+        copy.removeAttribute('id');
+        for (const element of copy.querySelectorAll('[id]')) element.removeAttribute('id');
+        // Its controls are pictures of the old ones for 70 ms: nothing in it takes focus or a click.
+        copy.setAttribute('inert', '');
+        this.leaving = copy;
     }
 
-    /** Fade the new photograph's words in, after what's left of the fade out, so the change takes 200 ms in all. */
+    /**
+     * The new photograph's page arrived, with its words in the reading area: the held copy of the old ones covers them
+     * and fades out over WORDS_OUT, then the new ones fade in over WORDS_IN, 200 ms in all, from the arrival.
+     */
     wordsIn(): void {
+        const copy = this.leaving;
+        this.leaving = null;
         const reading = this.root.querySelector(READING_SELECTOR);
-        const outAt = this.wordsOutAt;
-        this.wordsOutAt = null;
-        if (reading === null || outAt === null || !animates(reading)) return;
-        const delay = Math.max(0, WORDS_OUT - (performance.now() - outAt));
-        for (const child of reading.children) child.animate([{ opacity: 0 }, { opacity: 1 }], { duration: WORDS_IN, delay, easing: WORDS_IN_EASING, fill: 'backwards' });
+        const holder = this.root.querySelector(LEAVING_SELECTOR);
+        if (copy === null || reading === null || holder === null || !animates(holder)) return;
+        this.clearLeaving();
+        holder.replaceChildren(copy);
+        const fade = copy.animate([{ opacity: 1 }, { opacity: 0 }], { duration: WORDS_OUT, easing: 'linear', fill: 'forwards' });
+        this.leavingFade = fade;
+        fade.onfinish = () => {
+            if (this.leavingFade === fade) this.clearLeaving();
+        };
+        for (const child of reading.children) child.animate([{ opacity: 0 }, { opacity: 1 }], { duration: WORDS_IN, delay: WORDS_OUT, easing: WORDS_IN_EASING, fill: 'backwards' });
     }
 
-    private settle(element: HTMLElement, from: number, to: number, step: ViewerStep | null, velocity: number, kind: SettleKind = step === null ? 'return' : 'commit'): number {
+    private clearLeaving(): void {
+        const fade = this.leavingFade;
+        this.leavingFade = null;
+        if (fade) {
+            fade.onfinish = null;
+            fade.cancel();
+        }
+        this.root.querySelector(LEAVING_SELECTOR)?.replaceChildren();
+    }
+
+    private settle(
+        element: HTMLElement,
+        from: number,
+        to: number,
+        step: ViewerStep | null,
+        velocity: number,
+        kind: SettleKind = step === null ? 'return' : 'commit',
+        openingSlope = 0,
+    ): number {
         this.stop();
         const distance = Math.abs(to - from);
         if (distance < 0.5) {
@@ -179,7 +225,7 @@ export class StageMotion {
         }
         // The finger's speed toward where the photograph is going.
         const speed = velocity * Math.sign(to - from);
-        const { duration, easing } = settleOf(kind, distance, speed);
+        const { duration, easing } = settleOf(kind, distance, speed, openingSlope);
         this.animate(element, from, to, step, duration, easing, 0);
         return duration;
     }

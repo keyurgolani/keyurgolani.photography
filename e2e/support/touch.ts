@@ -147,6 +147,54 @@ export async function flick(page: Page, from: Point, dx: number): Promise<void> 
     }
 }
 
+/**
+ * A finger dragged `out` across, a move a frame at a time, then flicked `back` the other way and lifted at speed: a
+ * drag thrown back. Its last steps out are nearly still, so the speed at the lift is the flick's (over the last 80 ms,
+ * about 0.6 px/ms or more for 50 px back). Real touches on Chromium, where the flick's moves and
+ * the lift go out together as in flick(); synthetic pointer events on WebKit.
+ */
+export async function dragThenFlick(page: Page, from: Point, out: number, back: number): Promise<void> {
+    const path = [0.1, 0.33, 0.66, 0.985, 1].map((share) => from.x + out * share);
+    if (!realTouches(page)) {
+        await page.evaluate(
+            async ({ from, path, out, back }) => {
+                const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+                const target = document.elementFromPoint(from.x, from.y) ?? document.body;
+                const send = (type: string, x: number) =>
+                    target.dispatchEvent(new PointerEvent(type, { pointerId: 1, pointerType: 'touch', isPrimary: true, clientX: x, clientY: from.y, bubbles: true, cancelable: true, composed: true }));
+                send('pointerdown', from.x);
+                for (const x of path) {
+                    await pause(20);
+                    send('pointermove', x);
+                }
+                await pause(50);
+                send('pointermove', from.x + out + back / 2);
+                await pause(8);
+                send('pointermove', from.x + out + back);
+                send('pointerup', from.x + out + back);
+            },
+            { from, path, out, back },
+        );
+        return;
+    }
+    const cdp: CDPSession = await page.context().newCDPSession(page);
+    try {
+        const point = (x: number) => [{ id: 1, x, y: from.y }];
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: point(from.x) });
+        for (const x of path) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: point(x) });
+        // Short of the 80 ms window, so the last step out is still in it: headless Chromium delivers the flick's moves a
+        // frame later with one time, and the speed is read from that step to them.
+        await page.waitForTimeout(16);
+        await Promise.all([
+            cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: point(from.x + out + back / 2) }),
+            cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: point(from.x + out + back) }),
+            cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }),
+        ]);
+    } finally {
+        await cdp.detach();
+    }
+}
+
 /** A finger held on the screen: moved to a point, then lifted or cancelled, with the page free to be read between. */
 export interface HeldFinger {
     moveTo(point: Point): Promise<void>;

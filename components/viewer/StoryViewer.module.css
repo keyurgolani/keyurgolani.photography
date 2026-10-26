@@ -24,6 +24,9 @@
   /* The reading area's own sizes, shared with the lead it keeps in the first screen below. */
   --viewer-reading-pad: clamp(1rem, 2.5vw, 1.75rem);
   --viewer-title-size: clamp(1.25rem, 1.05rem + 0.8vw, 1.75rem);
+  /* The reading area's share of the first screen, the same for every photograph whatever it holds (9a's fixed stage):
+     its accent rule and top padding, a title's line, the gap, the first line of a caption, and half a rem under it. */
+  --viewer-reading-allowance: calc(4px + var(--viewer-reading-pad) + 1.2 * var(--viewer-title-size) + 0.75rem + 1.5 * var(--gah-type-statement) + 0.5rem);
   /* Room the first screen keeps under the photograph on a wide, tall enough screen (#9b), set below. Zero elsewhere. */
   --viewer-reading-lead: 0px;
   /* The fixed stage (9a) on a wide screen: the tallest box a photograph takes, whatever its shape, so the stage never
@@ -92,9 +95,10 @@
   }
 }
 
+/* A small basis, so at 360 the heading shares the row with Close and Zoom and its title takes the ellipsis. */
 .heading {
   display: flex;
-  flex: 1 1 8rem;
+  flex: 1 1 4rem;
   flex-wrap: wrap;
   align-items: baseline;
   justify-content: center;
@@ -104,11 +108,18 @@
 }
 
 /* The serif and its weight come from the global heading rule. */
+/* One line, between Close and Zoom, so the header keeps its height and the stage under it never moves. A title too long
+   for it ends in an ellipsis on screen only: the heading's text is whole, for screen readers and find in page. */
 .series {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
   margin: 0;
+  overflow: hidden;
   font-size: clamp(1rem, 0.9rem + 0.5vw, 1.25rem);
   line-height: 1.2;
-  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .position {
@@ -253,33 +264,23 @@
   }
 }
 
-/* The title line in the first screen (#9b), on a wide screen at least 40rem tall: the reading area's accent rule and top
-   padding, the title's line, the gap, and the first line of the caption, as the approved design keeps it in view. The
-   stage chrome above allows 4rem for the stage's padding, more than it takes here, so the lead gives the difference
-   back, and the first screen ends half a rem under the lead's first line, in the gap before the next element, never
-   through it. A shorter wide screen (a phone held sideways, a laptop at 150%) keeps the whole first screen for the
-   photograph, as it would have before, and fitSizes() in viewerSizes.ts asks for that box's rung there.
-   The lead follows what the reading area holds, since the title and the caption are both optional. With no title,
-   there's no title line to keep, so the photograph keeps the whole first screen, as on a shorter screen, and the screen
-   ends in the reading area's top padding. With a title and no caption, the lead is the title's line alone, so the
-   screen ends in the gap under it. fitSizes() never takes the lead off, so these bigger boxes still get a rung that
-   covers them. */
+/* The title line in the first screen (#9b), on a wide screen at least 40rem tall: the reading area's allowance, as the
+   approved design keeps the title and the caption's first line in view. The stage chrome above allows 4rem for the
+   stage's padding, more than it takes here, so the lead gives the difference back. A shorter wide screen (a phone held
+   sideways, a laptop at 150%) keeps the whole first screen for the photograph, as it would have before, and fitSizes()
+   in viewerSizes.ts asks for that box's rung there.
+   The lead is the same for every photograph (9a's fixed stage), though the title and the caption are both optional, so
+   the stage never changes height from one photograph to the next. The title and the caption sit in a block at least
+   the title line's height (.lead), so whatever it holds, the next element starts under the first screen, which ends
+   half a rem under the block's caption line, in the gap after it, never through an element. With no title or caption
+   the block is empty ground, under the stage. */
 @media (min-width: 48rem) and (min-height: 40rem) {
   .viewer {
-    --viewer-reading-lead: calc(
-      4px + var(--viewer-reading-pad) + 1.2 * var(--viewer-title-size) + 0.75rem + 1.5 * var(--gah-type-statement) + 0.5rem -
-        (var(--viewer-stage-chrome) - 2 * var(--viewer-stage-pad))
-    );
+    --viewer-reading-lead: calc(var(--viewer-reading-allowance) - (var(--viewer-stage-chrome) - 2 * var(--viewer-stage-pad)));
   }
 
-  .viewer:not(:has(.title)) {
-    --viewer-reading-lead: 0px;
-  }
-
-  .viewer:has(.title):not(:has(.caption)) {
-    --viewer-reading-lead: calc(
-      4px + var(--viewer-reading-pad) + 1.2 * var(--viewer-title-size) + 0.5rem - (var(--viewer-stage-chrome) - 2 * var(--viewer-stage-pad))
-    );
+  .lead {
+    min-height: calc(1.2 * var(--viewer-title-size) + 0.75rem + 1.5 * var(--gah-type-statement));
   }
 }
 
@@ -370,6 +371,25 @@
   max-width: 68ch;
 }
 
+/* The title and the caption, which the first screen keeps in view on a wide screen (above). */
+.lead {
+  display: grid;
+  align-content: start;
+  gap: 0.75rem;
+}
+
+/* The leaving photograph's words, over the new ones in the reading area's place while they fade (9a's StageMotion):
+   no size of its own, so it never moves the page, and clipped to the reading area. Empty the rest of the time. */
+.leaving {
+  grid-area: reading;
+  align-self: stretch;
+  position: relative;
+  z-index: 1;
+  overflow: clip;
+  contain: size;
+  pointer-events: none;
+}
+
 .title {
   margin: 0;
   font-size: var(--viewer-title-size);
@@ -443,15 +463,22 @@
 
 /* Narrow screens: the photograph takes the width, and Previous and Next sit in a row under it, at the edges.
    As in the approved mockup, the stage takes the height the screen has left and centers the photograph in it, so the
-   arrows and the reading area sit at the foot of the screen, under the thumb, with no empty ground below them (#9b).
-   When the reading area is long, the stage takes only its own height and the page scrolls. */
+   arrows and the start of the reading area sit at the foot of the first screen, under the thumb (#9b). The reading area
+   runs on from there to the foot of the page, and a long one scrolls. */
 @media (max-width: 47.99rem) {
   .viewer {
+    /* The arrows' row under the stage: the arrow, and its margins (below). */
+    --viewer-step-gap: clamp(0.5rem, 2vw, 1.5rem);
+    --viewer-step-row: calc(44px + var(--viewer-step-gap) + var(--viewer-stage-pad));
+    /* The phone's fixed stage (9a): the small viewport (so the browser's bars coming and going never resize it) less
+       the header, the arrows, and the reading area's allowance, the same for every photograph whatever its copy, and
+       never less than a square or 72svh, whichever is less. */
+    --viewer-phone-stage: max(
+      calc(min(100vw, 72svh) + var(--viewer-stage-pad)),
+      calc(100svh - var(--viewer-header) - var(--viewer-step-row) - var(--viewer-reading-allowance))
+    );
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    /* The phone's stage (9a), as in the approved mockup's: the screen the header, the arrows, and the reading area leave,
-       and never less than a square or 72dvh, whichever is less, so a long reading area scrolls under a usable stage. It
-       holds no size of its own (container-type below), so a wide and a tall photograph get the same stage. */
-    grid-template-rows: auto minmax(calc(min(100vw, 72dvh) + var(--viewer-stage-pad)), 1fr) auto auto;
+    grid-template-rows: auto auto auto minmax(auto, 1fr);
     grid-template-areas:
       'header header'
       'viewport viewport'
@@ -461,20 +488,22 @@
   }
 
   .viewport {
-    height: auto;
+    height: var(--viewer-phone-stage);
     padding-block: var(--viewer-stage-pad) 0;
-    /* The photograph fits the stage the grid gives it (cqh), rather than the stage fitting the photograph. */
+    /* The photograph fits the stage (cqh), rather than the stage fitting the photograph. */
     container-type: size;
   }
 
-  /* Zoomed, the stage grows to the zoomed photograph up to its cap, as before 9a: the zoomed box sizes itself. */
+  /* Zoomed, the stage grows to the zoomed photograph up to its cap, as before 9a: the zoomed box sizes itself. It never
+     shrinks below the fixed stage, so Zoom never pulls the arrows and the reading area up under a finger. */
   .viewport[data-zoomed] {
+    min-height: var(--viewer-phone-stage);
     container-type: normal;
   }
 
   .previous,
   .next {
-    margin-block: clamp(0.5rem, 2vw, 1.5rem) var(--viewer-stage-pad);
+    margin-block: var(--viewer-step-gap) var(--viewer-stage-pad);
   }
 
   .previous {

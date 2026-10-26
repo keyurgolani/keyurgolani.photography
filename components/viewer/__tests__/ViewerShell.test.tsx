@@ -1050,7 +1050,7 @@ describe('ViewerShell, the photograph follows the finger (9a)', () => {
         expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
     });
 
-    it('shows the move in the counter and the accent rules at the lift, and holds any other move until the photograph arrives', async () => {
+    it('shows the move in the counter and the accent rules at the lift, and remembers the latest press until the photograph arrives', async () => {
         const { move } = renderWithImages('page', 2);
         pointer(stage(), 'pointerdown', { x: 200, t: 0 });
         await settle();
@@ -1061,17 +1061,198 @@ describe('ViewerShell, the photograph follows the finger (9a)', () => {
         // The root carries the accent for both rules, the arriving photograph's from its peek.
         expect(root()?.style.getPropertyValue('--cc-accent')).toBe('#000003');
         expect(document.querySelector<HTMLElement>('[data-viewer-photo]')?.style.getPropertyValue('--cc-accent')).toBe('');
-        // Another move waits: a key, a control, or a swipe asks for nothing until the photograph arrives.
-        fireEvent.keyDown(document.body, { key: 'ArrowLeft' });
+        // While it's on its way, a key and a control ask for nothing yet, and a swipe can't start.
+        fireEvent.keyDown(document.body, { key: 'ArrowRight' });
         fireEvent.click(step('Previous photograph'));
         pointer(stage(), 'pointerdown', { x: 200, t: 600 });
+        pointer(root() as HTMLElement, 'pointermove', { x: 150, t: 650 });
         pointer(root() as HTMLElement, 'pointerup', { x: 100, t: 700 });
         expect(router.replace).toHaveBeenCalledOnce();
+        // It arrives, and the latest press, Previous, runs from there.
         move(3);
-        expect(counter()).toBe('03 / 03');
         expect(announcer()).toHaveTextContent('Photograph 3 of 3');
-        fireEvent.keyDown(document.body, { key: 'ArrowLeft' });
+        expect(router.replace).toHaveBeenCalledTimes(2);
         expect(router.replace).toHaveBeenLastCalledWith(photoHref(2), { scroll: false });
+        expect(counter()).toBe('02 / 03');
+        // Once that one arrives there's nothing left to run.
+        move(2);
+        expect(router.replace).toHaveBeenCalledTimes(2);
+        fireEvent.keyDown(document.body, { key: 'ArrowLeft' });
+        expect(router.replace).toHaveBeenLastCalledWith(photoHref(1), { scroll: false });
+    });
+
+    it('runs a remembered press toward an end as the end, once the photograph arrives', () => {
+        const { move } = renderWithImages('page', 2);
+        fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+        fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+        expect(router.replace).toHaveBeenCalledOnce();
+        move(3);
+        expect(router.replace).toHaveBeenCalledOnce();
+        expect(announcer()).toHaveTextContent('Last photograph in Fixture series.');
+    });
+
+    it('starts no swipe while a move by a key or a control is on its way: no follow, no settle, and one move', () => {
+        const { move } = renderWithImages('page', 2);
+        for (const press of [() => fireEvent.keyDown(document.body, { key: 'ArrowRight' }), () => fireEvent.click(step('Next photograph'))]) {
+            router.replace.mockClear();
+            press();
+            expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
+            // The other way, as a quick swipe back after a tap on Next goes.
+            pointer(stage(), 'pointerdown', { x: 200, t: 0 });
+            pointer(root() as HTMLElement, 'pointermove', { x: 215, t: 16 });
+            pointer(root() as HTMLElement, 'pointermove', { x: 320, t: 100 });
+            expect(track().style.transform).toBe('');
+            expect(track()).not.toHaveAttribute('data-moving');
+            pointer(root() as HTMLElement, 'pointerup', { x: 320, t: 120 });
+            expect(router.replace).toHaveBeenCalledOnce();
+            expect(counter()).toBe('03 / 03');
+            move(3);
+            expect(counter()).toBe('03 / 03');
+            expect(track().style.transform).toBe('');
+            expect(router.replace).toHaveBeenCalledOnce();
+            move(2);
+        }
+    });
+
+    it('drops a held gesture when a key or a control moves: the photograph slides back and follows no more', () => {
+        renderWithImages('page', 2);
+        pointer(stage(), 'pointerdown', { x: 200, t: 0 });
+        pointer(root() as HTMLElement, 'pointermove', { x: 188, t: 16 });
+        pointer(root() as HTMLElement, 'pointermove', { x: 140, t: 100 });
+        expect(track().style.transform).toBe('translate3d(-48px, 0, 0)');
+        fireEvent.keyDown(document.body, { key: 'ArrowLeft' });
+        expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(1), { scroll: false });
+        // With no Web Animations in jsdom, the slide back lands at once.
+        expect(track().style.transform).toBe('');
+        pointer(root() as HTMLElement, 'pointermove', { x: 60, t: 200 });
+        expect(track().style.transform).toBe('');
+        pointer(root() as HTMLElement, 'pointerup', { x: 40, t: 220 });
+        expect(router.replace).toHaveBeenCalledOnce();
+        expect(counter()).toBe('01 / 03');
+    });
+
+    it('slides the photograph back when a second finger lands mid-drag, and neither lift moves', () => {
+        renderWithImages('page', 2);
+        const second = (type: string, x: number) => {
+            const event = new PointerEvent(type, { pointerId: 2, clientX: x, clientY: 320, pointerType: 'touch', isPrimary: false, bubbles: true, cancelable: true });
+            act(() => {
+                stage().dispatchEvent(event);
+            });
+        };
+        pointer(stage(), 'pointerdown', { x: 200, t: 0 });
+        pointer(root() as HTMLElement, 'pointermove', { x: 188, t: 16 });
+        pointer(root() as HTMLElement, 'pointermove', { x: 114, t: 100 });
+        expect(track().style.transform).toBe('translate3d(-74px, 0, 0)');
+        second('pointerdown', 260);
+        expect(track().style.transform).toBe('');
+        expect(track()).not.toHaveAttribute('data-moving');
+        pointer(root() as HTMLElement, 'pointermove', { x: 60, t: 200 });
+        expect(track().style.transform).toBe('');
+        second('pointerup', 300);
+        pointer(root() as HTMLElement, 'pointerup', { x: 40, t: 220 });
+        expect(router.replace).not.toHaveBeenCalled();
+        expect(counter()).toBe('02 / 03');
+    });
+
+    it('prefetches the neighbors\' pages in full once the Viewer is idle, and asks for no image or peek', async () => {
+        const { move } = renderWithImages('page', 2);
+        expect(router.prefetch).not.toHaveBeenCalled();
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 250));
+        });
+        expect(router.prefetch.mock.calls).toEqual([
+            [photoHref(3), { kind: 'full' }],
+            [photoHref(1), { kind: 'full' }],
+        ]);
+        expect(fetchMock).not.toHaveBeenCalled();
+        move(3);
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 250));
+        });
+        // At the last photograph there's only the one before.
+        expect(router.prefetch).toHaveBeenLastCalledWith(photoHref(2), { kind: 'full' });
+        expect(router.prefetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('keeps the peeks by revision: after a publish, a neighbor is asked for again in the new one', async () => {
+        const revised = (n: number) => {
+            const viewer = { ...model(n, true, true), catalogRevision: `rev_${'b'.repeat(64)}` };
+            return (
+                <StoryViewer key={viewer.photo.id} viewer={viewer} closeHref="/work/fixture" previousHref={photoHref(n - 1)} nextHref={n < 3 ? photoHref(n + 1) : null} pendingCopy={null} />
+            );
+        };
+        const view = renderWithImages('page', 2);
+        pointer(stage(), 'pointerdown');
+        pointer(stage(), 'pointerup');
+        await settle();
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        view.rerender(<ViewerShell mode="page">{revised(3)}</ViewerShell>);
+        await settle();
+        // Photograph 2 was shown, but in the revision before, so it's asked for in the new one.
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+        expect(fetchMock.mock.calls[2][0]).toBe(`/api/catalog/series/fixture/photos/${id(2)}?revision=rev_${'b'.repeat(64)}`);
+        expect(peeks()).toEqual(['previous']);
+    });
+
+    describe('the words under the photograph', () => {
+        const animations: { target: Element; keyframes: Keyframe[]; options: KeyframeAnimationOptions; animation: { currentTime: number; onfinish: (() => void) | null; cancel: () => void } }[] = [];
+        beforeEach(() => {
+            animations.length = 0;
+            Object.assign(Element.prototype, {
+                animate(this: Element, keyframes: Keyframe[], options: KeyframeAnimationOptions) {
+                    const animation = { currentTime: 0, onfinish: null, cancel: vi.fn() };
+                    animations.push({ target: this, keyframes, options, animation });
+                    return animation as unknown as Animation;
+                },
+            });
+        });
+        afterEach(() => {
+            delete (Element.prototype as Partial<Element>).animate;
+        });
+        const reading = () => document.querySelector('[data-viewer-reading]') as HTMLElement;
+        const leaving = () => document.querySelector('[data-viewer-leaving]') as HTMLElement;
+        const fadesOf = (element: Element) => animations.filter((entry) => entry.target === element || element.contains(entry.target)).filter((entry) => 'opacity' in entry.keyframes[0]);
+
+        it('keeps the old words, whole, until the new photograph arrives, then fades them out over 70 ms and the new ones in over 130', () => {
+            const { move } = renderWithImages('page', 2);
+            expect(leaving()).toBeEmptyDOMElement();
+            expect(leaving()).toHaveAttribute('aria-hidden', 'true');
+            fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+            // On its way, however long the page takes: the old words stay as they are, and nothing fades.
+            expect(within(reading()).getByText('Fixture title 2')).toBeInTheDocument();
+            expect(fadesOf(reading())).toEqual([]);
+            expect(leaving()).toBeEmptyDOMElement();
+            move(3);
+            // The page is in: the old words cover the new ones and fade out, the new ones fade in after them.
+            expect(within(reading()).getByText('Fixture title 3')).toBeInTheDocument();
+            expect(leaving()).toHaveTextContent('Fixture title 2');
+            expect(leaving().querySelector('[id]')).toBeNull();
+            expect(leaving().firstElementChild).toHaveAttribute('inert');
+            expect(leaving().querySelector('[data-viewer-reading]')).toBeNull();
+            const out = fadesOf(leaving());
+            expect(out).toHaveLength(1);
+            expect(out[0].keyframes).toEqual([{ opacity: 1 }, { opacity: 0 }]);
+            expect(out[0].options).toMatchObject({ duration: 70 });
+            const fadesIn = fadesOf(reading());
+            expect(fadesIn.length).toBe(reading().children.length);
+            for (const entry of fadesIn) {
+                expect(entry.keyframes).toEqual([{ opacity: 0 }, { opacity: 1 }]);
+                expect(entry.options).toMatchObject({ duration: 130, delay: 70, fill: 'backwards' });
+            }
+            // Its fade done, the copy goes.
+            act(() => out[0].animation.onfinish?.());
+            expect(leaving()).toBeEmptyDOMElement();
+        });
+
+        it('under reduced motion changes the words in place when the photograph arrives, with no fade', () => {
+            setPrefersReducedMotion(true);
+            const { move } = renderWithImages('page', 2);
+            fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+            move(3);
+            expect(within(reading()).getByText('Fixture title 3')).toBeInTheDocument();
+            expect(leaving()).toBeEmptyDOMElement();
+            expect(animations).toEqual([]);
+        });
     });
 
     it('asks for each new photograph\'s neighbors once a finger has touched one, and the one it left peeks back in', async () => {

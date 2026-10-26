@@ -4,8 +4,8 @@ import { expectReflow } from './support/reflow';
 import { checkSurface } from './support/surface';
 import { expectMinTargetSize } from './support/targets';
 import { expect, test } from './support/test';
-import { centerOf, doubleTap, flick, holdFinger, realTouches, touchDrag, twoFingerSpread } from './support/touch';
-import { P, SHAPES, href, useViewerCatalog } from './support/viewerCatalog';
+import { centerOf, doubleTap, dragThenFlick, flick, holdFinger, realTouches, touchDrag, twoFingerSpread } from './support/touch';
+import { LONG_CAPTION, P, SHAPES, SHAPES_TITLE, href, useViewerCatalog } from './support/viewerCatalog';
 import { SETTLE } from '../components/viewer/doubleTap';
 import { CLAIM_SLOP, PEEK_GAP, SETTLE_SLOW, rubberBand } from '../components/viewer/swipe';
 
@@ -123,6 +123,26 @@ async function scrollSettled(region: Locator): Promise<void> {
         .toBe(true);
 }
 
+/**
+ * Holds every request for the Viewer pages of `photoIds` (the RSC payload of a move or of the idle prefetch) for `ms`,
+ * so a move is still on its way when the test acts. Call it before the page loads, so the prefetch is held too.
+ * Returns how many it has held.
+ */
+async function holdPages(page: Page, photoIds: readonly string[], ms = 1500): Promise<() => number> {
+    let held = 0;
+    const paths = new Set(photoIds.map((photoId) => href(photoId)));
+    await page.route(
+        (url) => paths.has(url.pathname),
+        async (route) => {
+            if (route.request().resourceType() === 'document') return route.fallback();
+            held += 1;
+            await new Promise((resolve) => setTimeout(resolve, ms));
+            await route.fallback();
+        },
+    );
+    return () => held;
+}
+
 /** The URL and header still show photograph `n` of 3. */
 async function expectStill(page: Page, photoId: string, n: number): Promise<void> {
     await expect(page).toHaveURL(`${origin()}${href(photoId)}`);
@@ -185,19 +205,12 @@ test.describe('swipe', () => {
     });
 
     test('Close during a slow move lands on the series with focus on the opener, never on a Viewer URL with no Viewer', async ({ page }, testInfo) => {
+        // Photograph 2's payload takes a second and a half, the idle prefetch's too, so Close comes while the move is
+        // still in flight.
+        const held = await holdPages(page, [P[1]]);
         await openFromSeries(page, P[0], testInfo);
-        // Photograph 2's payload takes a second and a half, so Close comes while the move is still in flight.
-        let held = 0;
-        await page.route(
-            (url) => url.pathname === href(P[1]),
-            async (route) => {
-                held += 1;
-                await new Promise((resolve) => setTimeout(resolve, 1500));
-                await route.fallback();
-            },
-        );
         await swipe(page, -150);
-        await expect.poll(() => held, 'the move asked for photograph 2').toBeGreaterThan(0);
+        await expect.poll(held, 'the move asked for photograph 2').toBeGreaterThan(0);
         await button(page, 'Close').tap();
         await expect(page).toHaveURL(`${origin()}/work/harbor`);
         await expect(page.locator('dialog')).toHaveCount(0);
@@ -421,6 +434,128 @@ test.describe('the photograph follows the finger (9a)', () => {
         if (realTouches(page)) await expect.poll(() => page.evaluate(() => window.scrollY), 'the drag scrolled the page').toBeGreaterThan(0);
     });
 
+    test('a drag past 48 px flicked back the other way cancels and slides back, as a paging view does', async ({ page }) => {
+        await openPage(page, P[1]);
+        await dragThenFlick(page, await centerOf(stage(page)), -120, 50);
+        await atRest(page);
+        await expectStill(page, P[1], 2);
+        await expect(announcer(page)).toHaveText('');
+        // The same drag let go at rest moves.
+        await swipe(page, -70, { duration: 300 });
+        await expectStill(page, P[2], 3);
+    });
+
+    test('a finger that catches the slide back at an end holds the photograph where it caught it, with no jump', async ({ page }) => {
+        await openPage(page, P[0]);
+        const from = await centerOf(stage(page));
+        const pull = await holdFinger(page, from);
+        await pull.moveTo({ x: from.x + 10, y: from.y });
+        await pull.moveTo({ x: from.x + 180, y: from.y });
+        await expect.poll(() => offset(page)).toBeGreaterThan(60);
+        await page.waitForTimeout(120);
+        await pull.lift();
+        // Caught early in the slide back, while it's still well out.
+        await page.waitForTimeout(30);
+        const caught = await holdFinger(page, from);
+        const held = await offset(page);
+        expect(held, 'caught out past the end').toBeGreaterThan(20);
+        await caught.moveTo({ x: from.x + 12, y: from.y });
+        // At the claim the photograph is where the finger caught it, not pulled back through the band a second time.
+        expect(Math.abs((await offset(page)) - held), `caught at ${held.toFixed(1)}`).toBeLessThan(3);
+        await caught.moveTo({ x: from.x + 40, y: from.y });
+        const further = await offset(page);
+        expect(further).toBeGreaterThan(held);
+        expect(further - held, 'the band still gives less than the finger').toBeLessThan(28);
+        await page.waitForTimeout(120);
+        await caught.lift();
+        await atRest(page);
+        await expectStill(page, P[0], 1);
+    });
+
+    test('a second finger mid-drag slides the photograph back and nothing moves, with both still down', async ({ page }) => {
+        test.skip(!realTouches(page), 'Two real touches, through CDP.');
+        await openPage(page, P[1]);
+        const from = await centerOf(stage(page));
+        const cdp = await page.context().newCDPSession(page);
+        const send = (type: 'touchStart' | 'touchMove' | 'touchEnd', touchPoints: { id: number; x: number; y: number }[]) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints });
+        try {
+            await send('touchStart', [{ id: 1, ...from }]);
+            for (const dx of [-12, -40, -86]) await send('touchMove', [{ id: 1, x: from.x + dx, y: from.y }]);
+            await expect.poll(() => offset(page)).toBeLessThan(-60);
+            await send('touchStart', [
+                { id: 1, x: from.x - 86, y: from.y },
+                { id: 2, x: from.x + 40, y: from.y + 30 },
+            ]);
+            // Both fingers still down: the photograph is already on its way back to rest, and stays there.
+            await atRest(page);
+            await expect(track(page)).not.toHaveAttribute('data-moving');
+            await send('touchMove', [
+                { id: 1, x: from.x - 120, y: from.y },
+                { id: 2, x: from.x + 60, y: from.y + 30 },
+            ]);
+            expect(await offset(page)).toBe(0);
+            await send('touchEnd', [{ id: 1, x: from.x - 120, y: from.y }]);
+            await send('touchEnd', []);
+        } finally {
+            await cdp.detach();
+        }
+        await page.waitForTimeout(400);
+        expect(await offset(page)).toBe(0);
+        await expectStill(page, P[1], 2);
+    });
+
+    test('while a move by a key or Next is on its way, a swipe the other way neither follows nor settles, and the page lands where the move went', async ({ page }) => {
+        // Long enough that the page is still on its way after the swipe's lift.
+        await holdPages(page, [P[0], P[1], P[2]], 3000);
+        for (const press of ['key', 'tap'] as const) {
+            await openPage(page, P[0]);
+            if (press === 'key') await page.keyboard.press('ArrowRight');
+            else await button(page, 'Next photograph').tap();
+            await expect(header(page)).toContainText('02 / 03');
+            // A quick swipe back, as after a tap on Next.
+            const from = await centerOf(stage(page));
+            const finger = await holdFinger(page, from);
+            await finger.moveTo({ x: from.x + 14, y: from.y });
+            await finger.moveTo({ x: from.x + 120, y: from.y });
+            expect(await offset(page), `${press}: no follow`).toBe(0);
+            await finger.lift();
+            await page.waitForTimeout(300);
+            // Still on its way: the swipe settled nothing, either way.
+            expect(new URL(page.url()).pathname, `${press}: still on its way`).toBe(href(P[0]));
+            expect(await offset(page), `${press}: no settle`).toBe(0);
+            await expect(track(page)).not.toHaveAttribute('data-moving');
+            await expect(header(page)).toContainText('02 / 03');
+            // Both the idle prefetch and the move's own request are held, so give it their time.
+            await expect(page).toHaveURL(`${origin()}${href(P[1])}`, { timeout: 10_000 });
+            await expectStill(page, P[1], 2);
+            await atRest(page);
+        }
+    });
+
+    test('on a slow page the old words stay, whole, until the new photograph arrives, and are never blank', async ({ page }) => {
+        const held = await holdPages(page, [P[1]]);
+        await openPage(page, P[0]);
+        const reading = viewer(page).locator('[data-viewer-reading]');
+        await expect(reading.getByRole('heading', { name: 'Fixture harbor at dusk' })).toBeVisible();
+        await flick(page, await centerOf(stage(page)), -60);
+        await expect.poll(held, 'the move asked for photograph 2').toBeGreaterThan(0);
+        // On its way: the counter shows the move, and the words under the photograph are the old ones at full opacity.
+        await expect(header(page)).toContainText('02 / 03');
+        for (let look = 0; look < 5; look++) {
+            const words = await reading.evaluate((element) => ({
+                text: element.querySelector('h2')?.textContent,
+                opacity: Math.min(...[...element.children].map((child) => Number(getComputedStyle(child).opacity))),
+            }));
+            expect(words, `look ${look}`).toEqual({ text: 'Fixture harbor at dusk', opacity: 1 });
+            await page.waitForTimeout(150);
+        }
+        // Then it lands, and the new words are in.
+        await expectStill(page, P[1], 2);
+        await expect(reading.getByRole('heading', { name: 'Fixture harbor at dusk' })).toHaveCount(0);
+        await expect.poll(() => reading.evaluate((element) => Math.min(...[...element.children].map((child) => Number(getComputedStyle(child).opacity))))).toBe(1);
+        await expect(viewer(page).locator('[data-viewer-leaving]')).toBeEmpty();
+    });
+
     test('under reduced motion the photograph stays still under the finger and the move is a cut at the lift', async ({ page }) => {
         await page.emulateMedia({ reducedMotion: 'reduce' });
         await openPage(page, P[1]);
@@ -439,48 +574,144 @@ test.describe('the photograph follows the finger (9a)', () => {
 test.describe('the fixed stage (9a)', () => {
     test.beforeEach(() => runsOn(test.info(), 'desktop', 'mobile'));
 
-    test('a wide, a tall, and a 3:2 photograph each fit and center in the same stage, and the reading area stays put', async ({ page }) => {
-        const boxes: { stage: unknown; reading: number; frame: { x: number; y: number; width: number; height: number } }[] = [];
-        for (const photoId of SHAPES) {
-            await page.goto(`${origin()}${href(photoId, 'shapes')}`);
+    /** The stage, the track, the photograph, and the reading area, in page coordinates. */
+    const measure = (page: Page) =>
+        viewer(page).evaluate((root) => {
+            const rect = (element: Element | null) => {
+                const box = element?.getBoundingClientRect();
+                return box ? { x: box.x, y: box.y + window.scrollY, width: box.width, height: box.height } : null;
+            };
+            return {
+                stage: rect(root.querySelector('[data-viewer-stage]')),
+                track: rect(root.querySelector('[data-viewer-track]')),
+                frame: rect(root.querySelector('[data-viewer-current]')),
+                reading: rect(root.querySelector('[data-viewer-reading]')),
+                // A wide screen keeps the photograph to four fifths of the viewport's width (fitSizes).
+                widest: window.innerWidth >= 768 ? window.innerWidth * 0.8 : window.innerWidth,
+            };
+        });
+
+    for (const size of [
+        { width: 1440, height: 900, project: 'desktop' },
+        { width: 1280, height: 800, project: 'desktop' },
+        { width: 390, height: 844, project: 'mobile' },
+    ]) {
+        test(`at ${size.width} by ${size.height}, a wide photo with no copy, a tall one with a title alone, and a 3:2 with a long caption fit and center in one stage, with the reading area put`, async ({ page }, testInfo) => {
+            test.skip(testInfo.project.name !== size.project, `The ${size.project} layout.`);
+            await page.setViewportSize(size);
+            const boxes: { stage: unknown; reading: number; frame: { x: number; y: number; width: number; height: number } }[] = [];
+            for (const photoId of SHAPES) {
+                await page.goto(`${origin()}${href(photoId, 'shapes')}`);
+                await waitForHydration(page);
+                const { stage: stageBox, track, frame, reading, widest } = await measure(page);
+                expect(stageBox && track && frame && reading, photoId).toBeTruthy();
+                // Aspect-fit: the whole photograph inside its slot, as large as the slot and the width cap let its shape be,
+                // and centered both ways.
+                const ratio = frame!.width / frame!.height;
+                expect(frame!.width, `${photoId} fits its slot`).toBeCloseTo(Math.min(track!.width, widest, track!.height * ratio), 0);
+                expect(frame!.height).toBeLessThanOrEqual(track!.height + 0.5);
+                expect(frame!.x - track!.x).toBeCloseTo(track!.x + track!.width - (frame!.x + frame!.width), 0);
+                expect(frame!.y - track!.y).toBeCloseTo(track!.y + track!.height - (frame!.y + frame!.height), 0);
+                boxes.push({ stage: stageBox, reading: reading!.y, frame: frame! });
+            }
+            // The same stage and the same reading area for all three, whatever they hold.
+            for (const box of boxes.slice(1)) {
+                expect(box.stage).toEqual(boxes[0].stage);
+                expect(box.reading).toBeCloseTo(boxes[0].reading, 1);
+            }
+            // And they really differ: wide, tall, 3:2, and no copy, a title, a long caption.
+            const ratios = boxes.map(({ frame }) => frame.width / frame.height);
+            expect(ratios[0]).toBeCloseTo(3, 1);
+            expect(ratios[1]).toBeCloseTo(2 / 3, 1);
+            expect(ratios[2]).toBeCloseTo(1.5, 1);
+            const reading = viewer(page).locator('[data-viewer-reading]');
+            await expect(reading).toContainText(LONG_CAPTION);
+            expect(await reading.evaluate((element) => element.querySelector('p')!.getBoundingClientRect().height)).toBeGreaterThan(60);
+        });
+    }
+
+    test('moving from a long reading area to a short one, the arriving photograph never jumps at the swap', async ({ page }, testInfo) => {
+        await page.setViewportSize(testInfo.project.name === 'desktop' ? { width: 1440, height: 900 } : { width: 390, height: 844 });
+        await page.goto(`${origin()}${href(SHAPES[2], 'shapes')}`);
+        await waitForHydration(page);
+        const before = await measure(page);
+        // Every frame from the move until it's at rest: where the arriving photograph sits down the page and how tall it
+        // is, as the neighbor that peeks in before its page arrives and as the photograph after.
+        const record = () =>
+            page.evaluate((arriving) => {
+                const log: { y: number; height: number; arrived: boolean }[] = [];
+                (window as unknown as { kgSwap: { log: typeof log; running: boolean } }).kgSwap = { log, running: true };
+                const sample = () => {
+                    const state = (window as unknown as { kgSwap: { running: boolean } }).kgSwap;
+                    if (!state.running) return;
+                    const arrived = document.querySelector('[data-viewer-photo]')?.getAttribute('data-viewer-photo') === arriving;
+                    const frame = document.querySelector(arrived ? '[data-viewer-current]' : '[data-viewer-peek="previous"] > *');
+                    const box = frame?.getBoundingClientRect();
+                    if (box) log.push({ y: box.y + window.scrollY, height: box.height, arrived });
+                    requestAnimationFrame(sample);
+                };
+                requestAnimationFrame(sample);
+            }, SHAPES[1]);
+        if (testInfo.project.use.hasTouch) {
+            // A swipe toward the right, with the tall photograph peeking in, on a phone.
+            const from = await centerOf(stage(page));
+            const finger = await holdFinger(page, from);
+            await expect(stage(page).locator('[data-viewer-peek]')).toHaveCount(1);
+            await finger.moveTo({ x: from.x + 20, y: from.y });
+            await finger.moveTo({ x: from.x + 140, y: from.y });
+            await record();
+            await finger.lift();
+        } else {
+            // The arrow key, at 1440.
+            await record();
+            await page.keyboard.press('ArrowLeft');
+        }
+        await expect(page).toHaveURL(`${origin()}${href(SHAPES[1], 'shapes')}`);
+        await expect.poll(() => stage(page).locator('[data-viewer-track]').evaluate((element) => getComputedStyle(element).transform)).toBe('none');
+        const log = await page.evaluate(() => {
+            const state = (window as unknown as { kgSwap: { log: { y: number; height: number; arrived: boolean }[]; running: boolean } }).kgSwap;
+            state.running = false;
+            return state.log;
+        });
+        const after = await measure(page);
+        expect(log.some((entry) => entry.arrived), 'frames after the page arrived').toBe(true);
+        for (const entry of log) {
+            expect(entry.y, `${entry.arrived ? 'arrived' : 'peeking'} at ${entry.y}`).toBeCloseTo(after.frame!.y, 0);
+            expect(entry.height).toBeCloseTo(after.frame!.height, 0);
+        }
+        // The stage and the reading area stayed put across the move.
+        expect(after.stage).toEqual(before.stage);
+        expect(after.reading!.y).toBeCloseTo(before.reading!.y, 1);
+    });
+
+    test('on a phone, a long series title stays on one line between Close and Zoom, whole for screen readers', async ({ page }, testInfo) => {
+        test.skip(testInfo.project.name !== 'mobile', 'The narrow header.');
+        for (const width of [390, 360]) {
+            await page.setViewportSize({ width, height: 800 });
+            await page.goto(`${origin()}${href(SHAPES[0], 'shapes')}`);
             await waitForHydration(page);
-            const measured = await viewer(page).evaluate((root) => {
-                const rect = (element: Element | null) => {
-                    const box = element?.getBoundingClientRect();
-                    return box ? { x: box.x, y: box.y + window.scrollY, width: box.width, height: box.height } : null;
-                };
-                const stageElement = root.querySelector('[data-viewer-stage]');
-                const track = root.querySelector('[data-viewer-track]');
-                return {
-                    stage: rect(stageElement),
-                    track: rect(track),
-                    frame: rect(root.querySelector('[data-viewer-current]')),
-                    reading: rect(root.querySelector('[data-viewer-reading]')),
-                    // A wide screen keeps the photograph to four fifths of the viewport's width (fitSizes).
-                    widest: window.innerWidth >= 768 ? window.innerWidth * 0.8 : window.innerWidth,
-                };
-            });
-            const { stage: stageBox, track, frame, reading, widest } = measured;
-            expect(stageBox && track && frame && reading, photoId).toBeTruthy();
-            // Aspect-fit: the whole photograph inside its slot, as large as the slot and the width cap let its shape be,
-            // and centered both ways.
-            const ratio = frame!.width / frame!.height;
-            expect(frame!.width, `${photoId} fits its slot`).toBeCloseTo(Math.min(track!.width, widest, track!.height * ratio), 0);
-            expect(frame!.height).toBeLessThanOrEqual(track!.height + 0.5);
-            expect(frame!.x - track!.x).toBeCloseTo(track!.x + track!.width - (frame!.x + frame!.width), 0);
-            expect(frame!.y - track!.y).toBeCloseTo(track!.y + track!.height - (frame!.y + frame!.height), 0);
-            boxes.push({ stage: stageBox, reading: reading!.y, frame: frame! });
+            const title = header(page).getByRole('heading', { level: 1 });
+            await expect(title).toHaveText(SHAPES_TITLE);
+            await expect(title).toHaveAccessibleName(SHAPES_TITLE);
+            const line = await title.evaluate((element) => ({
+                height: element.getBoundingClientRect().height,
+                lineHeight: parseFloat(getComputedStyle(element).lineHeight),
+                cut: element.scrollWidth > element.clientWidth,
+                overflow: getComputedStyle(element).textOverflow,
+            }));
+            expect(line.height, `${width}: one line`).toBeLessThan(line.lineHeight * 1.5);
+            expect(line, `${width}: cut with an ellipsis`).toMatchObject({ cut: true, overflow: 'ellipsis' });
+            // The header keeps its row, and Close and Zoom stay whole and on screen beside it.
+            // One row: the 44 px controls, the padding, and the accent rule. A second row would add another 44.
+            expect((await header(page).boundingBox())!.height, `${width}: the header's height`).toBeLessThanOrEqual(60.5);
+            for (const name of ['Close', 'Zoom']) {
+                const control = header(page).getByRole(name === 'Close' ? 'link' : 'button', { name });
+                const box = (await control.boundingBox())!;
+                expect(box.x).toBeGreaterThanOrEqual(0);
+                expect(box.x + box.width).toBeLessThanOrEqual(width);
+            }
+            expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
         }
-        // The same stage and the same reading area for all three.
-        for (const box of boxes.slice(1)) {
-            expect(box.stage).toEqual(boxes[0].stage);
-            expect(box.reading).toBeCloseTo(boxes[0].reading, 1);
-        }
-        // And the shapes really differ: wide, tall, 3:2.
-        const ratios = boxes.map(({ frame }) => frame.width / frame.height);
-        expect(ratios[0]).toBeCloseTo(3, 1);
-        expect(ratios[1]).toBeCloseTo(2 / 3, 1);
-        expect(ratios[2]).toBeCloseTo(1.5, 1);
     });
 });
 
@@ -565,7 +796,11 @@ test.describe('double-tap', () => {
         // Zoomed out, the stage shrinks, and the second tap's click would land on whatever now sits under the finger.
         // Only real touches make that click, so this runs on Chromium; WebKit's synthetic taps make none.
         runsOn(test.info(), 'mobile');
-        await openPage(page, P[1]);
+        // The tall photograph between two others: zoomed, it's taller than the fixed stage (9a), so the stage grows over
+        // the arrows' row. A 3:2 one zoomed is shorter than the stage, which then keeps its height and covers nothing.
+        await page.goto(`${origin()}${href(SHAPES[1], 'shapes')}`);
+        await waitForHydration(page);
+        await expect(header(page)).toContainText('02 / 03');
         for (const name of ['Next photograph', 'Previous photograph']) {
             const at = await centerOf(button(page, name));
             const zoom = button(page, 'Zoom');
@@ -577,10 +812,23 @@ test.describe('double-tap', () => {
             await doubleTap(page, at);
             await expect(zoom).toHaveAttribute('aria-pressed', 'false');
             await page.waitForTimeout(300);
-            await expectStill(page, P[1], 2);
+            await expect(page).toHaveURL(`${origin()}${href(SHAPES[1], 'shapes')}`);
+            await expect(header(page)).toContainText('02 / 03');
             await expect(announcer(page)).toHaveText('');
             await settled(page);
         }
+    });
+
+    test('Zoom never shrinks the phone\'s stage, so the arrows and the reading area never move up under a finger', async ({ page }) => {
+        runsOn(test.info(), 'mobile');
+        // A 3:2 photograph, whose zoomed box is shorter than the fixed stage.
+        await openPage(page, P[1]);
+        const before = { next: await button(page, 'Next photograph').boundingBox(), stage: await stage(page).boundingBox() };
+        await button(page, 'Zoom').tap();
+        await expect(button(page, 'Zoom')).toHaveAttribute('aria-pressed', 'true');
+        const after = { next: await button(page, 'Next photograph').boundingBox(), stage: await stage(page).boundingBox() };
+        expect(after.stage!.height).toBeGreaterThanOrEqual(before.stage!.height - 0.5);
+        expect(after.next!.y).toBeGreaterThanOrEqual(before.next!.y - 0.5);
     });
 
     test('two taps too far apart in time are two taps, and nothing zooms', async ({ page }) => {

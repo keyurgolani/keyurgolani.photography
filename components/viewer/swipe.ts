@@ -41,8 +41,11 @@ export const SETTLE_REST_SPEED = 0.2;
 export const SETTLE_FAST_SPEED = 1.2;
 /** The curve's closing control point, `cubic-bezier(x1, y1, 0.36, 1)`: an ease-out that lands with no overshoot. */
 export const SETTLE_X2 = 0.36;
-/** The opening slope of a release at rest, so even a slow settle starts by moving and eases in to its stop. */
-const REST_SLOPE = 1.5;
+/**
+ * The opening slope of a move by a control or an arrow key, which has no finger speed to start from: the approved
+ * mockup's, so the slide sets off at once and eases in to its stop.
+ */
+export const CONTROL_SLOPE = 1.5;
 /** Where the opening control point sits across when the release speed leaves room for it. */
 const OPENING_X = 0.22;
 
@@ -72,12 +75,15 @@ export function isPinched(scale: number | undefined): boolean {
  * `dx` is): at least SWIPE_DISTANCE across, or a flick of at least
  * FLICK_DISTANCE still going FLICK_SPEED or faster the same way, and either
  * way SWIPE_RATIO times as far across as down. The path doesn't count, so a
- * drag out and back short of the rule doesn't move. Toward the left is Next,
- * as a page turns.
+ * drag out and back short of the rule doesn't move. A finger flicked back
+ * the other way at FLICK_SPEED or faster cancels, however far it went, as a
+ * paging view does on iOS and Android. Toward the left is Next, as a page
+ * turns.
  */
 export function swipeStep(dx: number, dy: number, velocity = 0): ViewerStep | null {
     const across = Math.abs(dx);
     if (across < SWIPE_RATIO * Math.abs(dy)) return null;
+    if (Math.abs(velocity) >= FLICK_SPEED && Math.sign(velocity) !== Math.sign(dx)) return null;
     const flick = across >= FLICK_DISTANCE && Math.sign(velocity) === Math.sign(dx) && Math.abs(velocity) >= FLICK_SPEED;
     if (across < SWIPE_DISTANCE && !flick) return null;
     return dx < 0 ? 'next' : 'previous';
@@ -121,6 +127,27 @@ export function rubberBand(over: number, width: number, c = RUBBER_BAND): number
 }
 
 /**
+ * The pull that rubberBand() turns into `offset`, so a finger that catches the photograph past an end picks the pull up
+ * where it was (followOffset(0, base) is `offset` again): `(d / c) * (1 / (1 - o / d) - 1)`. Nothing for no offset.
+ */
+export function unbandedPull(offset: number, width: number, c = RUBBER_BAND): number {
+    if (!(width > 0) || offset <= 0) return 0;
+    // The band never reaches the whole stage, so an offset at or past it has no pull: hold it just short.
+    const share = Math.min(offset / width, 1 - 1e-6);
+    return (width / c) * (1 / (1 - share) - 1);
+}
+
+/**
+ * Where a drag starts from when a finger catches the photograph `offset` from its rest mid-settle: the offset itself,
+ * or past an end, the pull that gives it, so the photograph stays where it was caught (followOffset).
+ */
+export function caughtBase(offset: number, width: number, { previous, next }: { previous: boolean; next: boolean }): number {
+    if (offset > 0 && !previous) return unbandedPull(offset, width);
+    if (offset < 0 && !next) return -unbandedPull(-offset, width);
+    return offset;
+}
+
+/**
  * Where the photograph sits across while it follows the finger, in CSS px
  * from its rest: 1:1 with the finger from where the touch was claimed, so it
  * doesn't jump the claim's slop, plus `base`, where a settle the finger
@@ -151,18 +178,21 @@ const round = (value: number) => Number(value.toFixed(3));
  * SETTLE_FAST at SETTLE_FAST_SPEED or faster toward it, or back to its rest
  * (`return`) in RETURN_SLOW down to SETTLE_FAST. `distance` is how far it
  * has left to go, and `speed` the finger's toward there (negative, away
- * from it, counts as at rest). The curve is an ease-out whose opening slope
- * is that speed, so the photograph carries on as fast as the finger had it
- * and never jumps or stalls at the lift, and whose control points stay in
- * the unit square, so it never overshoots its stop.
+ * from it, counts as at rest). The curve opens at that speed, so the
+ * photograph carries on as fast as the finger had it and never kicks
+ * forward or stalls at the lift: a slow release eases in from its own
+ * speed, and one at rest from a standstill. `minSlope` is a floor on that
+ * opening slope, in the curve's units, for a move with no finger behind it
+ * (CONTROL_SLOPE). Its control points stay in the unit square, so it never
+ * overshoots its stop.
  */
-export function settleOf(kind: SettleKind, distance: number, speed: number): Settle {
+export function settleOf(kind: SettleKind, distance: number, speed: number, minSlope = 0): Settle {
     const toward = Math.max(0, speed);
     const longest = kind === 'commit' ? SETTLE_SLOW : RETURN_SLOW;
     const share = Math.min(1, Math.max(0, (toward - SETTLE_REST_SPEED) / (SETTLE_FAST_SPEED - SETTLE_REST_SPEED)));
     const duration = Math.round(longest - (longest - SETTLE_FAST) * share);
     // The curve's slope at its start, in units of the whole distance over the whole duration.
-    const slope = Math.max(REST_SLOPE, distance > 0 ? (toward * duration) / distance : REST_SLOPE);
+    const slope = Math.max(minSlope, distance > 0 ? (toward * duration) / distance : 0);
     let x1 = OPENING_X;
     let y1 = Math.min(1, x1 * slope);
     if (slope * x1 > 1) {
@@ -174,7 +204,7 @@ export function settleOf(kind: SettleKind, distance: number, speed: number): Set
 
 export type SwipeInput =
     /**
-     * A pointer went down. `eligible` when it's on the photograph, unzoomed. `primary` when no other pointer of its kind
+     * A pointer went down. `eligible` when it's on the photograph, unzoomed, with no move on its way. `primary` when no other pointer of its kind
      * is down. `t` is the event's time in ms; without one, a gesture's speed is unknown and only its distance counts.
      */
     | { type: 'down'; pointerId: number; x: number; y: number; t?: number; primary: boolean; eligible: boolean }
@@ -242,8 +272,9 @@ export function followTravel(gesture: SwipeGesture | null, x: number): number | 
  * One step of the recognizer. A gesture starts with the only pointer down,
  * on the photograph, unzoomed, and moves the Viewer only when that pointer
  * lifts past the rule (swipeStep). A second pointer anywhere (a pinch, or a
- * tap on a control) ends it, and nothing starts until every pointer is up. A
- * cancel or lost capture ends it without a move. A reset drops the gesture
+ * tap on a control) ends it with a release and no move, so the photograph
+ * slides back, and nothing starts until every pointer is up. A cancel or
+ * lost capture ends it without a move. A reset drops the gesture
  * but keeps count of the fingers still down. A primary pointer means no other
  * is down, so it clears any the browser never reported lifting. Its moves
  * settle the axis once, at CLAIM_SLOP (claimsTouch), and keep the samples the
@@ -257,7 +288,11 @@ export function reduceSwipe(state: SwipeState, input: SwipeInput): { state: Swip
             // Where it went down is the speed's first sample, as on Android. A lift with no move after it never flicks.
             const samples = input.t === undefined ? [] : [{ x: input.x, t: input.t }];
             const start = others.length === 0 && input.eligible ? { pointerId: input.pointerId, x: input.x, y: input.y, samples, claimedAt: null, vertical: false, moved: false } : null;
-            return { state: { down: [...others, input.pointerId], start }, step: null };
+            const after = { down: [...others, input.pointerId], start };
+            // Another finger landing ends the gesture in flight with no move: the photograph it held slides back.
+            const ended = state.start !== null && state.start.pointerId !== input.pointerId ? state.start : null;
+            if (ended === null) return { state: after, step: null };
+            return { state: after, step: null, release: { step: null, dx: 0, dy: 0, velocity: 0, followed: ended.claimedAt !== null } };
         }
         case 'move': {
             const { start } = state;

@@ -39,6 +39,11 @@ export interface ViewerPeek {
     accent: string | null;
 }
 
+/** How the shell keeps a peek: by the revision it came from and the photo, so a publish mid-session never peeks in a set from the revision before. */
+export function peekKey(revisionId: string, photoId: string): string {
+    return `${revisionId}/${photoId}`;
+}
+
 export interface ViewerShellContext {
     mode: ViewerMode;
     /** True once the shell renders the controls itself. Until then (the server HTML and hydration) the photograph renders them. */
@@ -48,7 +53,7 @@ export interface ViewerShellContext {
     headingId: string;
     report(state: ViewerChromeState): void;
     /**
-     * The neighbors that peek in, by photo ID, once a visitor has touched the photograph or moved. Empty under reduced
+     * The neighbors that peek in, by peekKey(), once a visitor has touched the photograph or moved. Empty under reduced
      * motion, where nothing follows the finger, and until then, so a first load shows one photograph (#6).
      */
     peeks: ReadonlyMap<string, ViewerPeek>;
