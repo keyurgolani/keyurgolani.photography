@@ -1,5 +1,6 @@
 import { act, render } from '@testing-library/react';
 import { StrictMode } from 'react';
+import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
 import { setPrefersReducedMotion } from '@/test/matchMedia';
@@ -152,6 +153,14 @@ describe('HeroReveal', () => {
     expect(badge()).not.toHaveAttribute('data-lingering');
     expect(badge()).toHaveAttribute('data-landed');
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a return visit paints the badge in place and shown from its first frame, so it never fades in', () => {
+    // The first paint, before any effect runs: what the server sends, and what a client navigation first commits.
+    const html = renderToString(<HeroReveal isLoading={false} onSettled={() => {}} portrait={PORTRAIT} />);
+    const badgeTag = /<div[^>]*data-home-badge[^>]*>/.exec(html)?.[0] ?? '';
+    expect(badgeTag).toContain('data-landed');
+    expect(badgeTag).toContain('data-lingering');
   });
 
   it("a first visit loads over the grain with the portrait at the center, which glides to its place on v1.1.0's timings and stays as the badge", () => {
