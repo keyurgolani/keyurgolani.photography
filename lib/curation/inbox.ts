@@ -140,8 +140,8 @@ function abilities(event: CurationEvent, registry: Registry | null): InboxDetail
 function primaryUnavailable(event: CurationEvent): string | null {
     if (PRIMARY_ACTION[event.type] === undefined || event.type === 'new') return null;
     return event.type === 'replacement'
-        ? "Confirming new bytes isn't in the inbox yet. Leave it in draft until it is; the published photograph keeps its current revision."
-        : "Locating, binding, and archiving aren't in the inbox yet. Leave it in draft until they are; the published output stays protected.";
+        ? "Confirming new bytes isn't in the inbox yet, so choose Decide later until it is. The published photograph keeps its current revision."
+        : "Locating, binding, and archiving aren't in the inbox yet, so choose Decide later until they are. The published output stays protected.";
 }
 
 /** The photo record and the series holding it, for a photograph an approval already placed. */
