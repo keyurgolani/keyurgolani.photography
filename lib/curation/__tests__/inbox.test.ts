@@ -173,8 +173,19 @@ describe('loadInbox', () => {
         const event = (await readEvent(f.root, ids[0]))!;
         registry.photos[event.photoId!].revisions[event.assetRevision!].profiles[f.catalog.profileId] = { state: 'ready', attempts: 1 };
         await writeRegistry(f.root, registry, registry.version);
-        const detail = ready(await loadInbox(ids[0])).selected!;
+        const view = ready(await loadInbox(ids[0]));
+        const detail = view.selected!;
         expect(detail.previewUrl).toBe(`/api/curation/media/${event.photoId}/${event.assetRevision}/${f.catalog.profileId}/w800.webp`);
+        // Its row's thumbnail is the same set's smallest WebP, never the original.
+        expect(view.items[0].thumbnailUrl).toBe(`/api/curation/media/${event.photoId}/${event.assetRevision}/${f.catalog.profileId}/w400.webp`);
+    });
+
+    it('gives a row no thumbnail while no derivative set is ready, or when nothing was made from the file', async () => {
+        const { ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0]), fx.fact('processing-failed', null, { reason: 'unsupported-format' })]);
+        const view = ready(await loadInbox(ids[0]));
+        expect(view.items).toHaveLength(2);
+        // The fixture's derivatives are pending, and the failed file has no photo ID.
+        expect(view.items.map((item) => item.thumbnailUrl)).toEqual([null, null]);
     });
 
     it('says so when the URL names an item the inbox lacks, and never echoes a malformed one', async () => {

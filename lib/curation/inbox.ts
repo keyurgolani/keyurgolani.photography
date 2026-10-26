@@ -35,6 +35,11 @@ export function curatorPreviewUrl(photoId: string, assetRevision: string, profil
     return `/api/curation/media/${photoId}/${assetRevision}/${profileId}/w800.webp`;
 }
 
+/** The same route's smallest WebP, w400, for a list row's thumbnail. Never the original. */
+export function curatorThumbnailUrl(photoId: string, assetRevision: string, profileId: string): string {
+    return `/api/curation/media/${photoId}/${assetRevision}/${profileId}/w400.webp`;
+}
+
 /** Where an item sits, the way `curation list` counts it, from D6's shared placement lookup (lib/curation/placement.ts). */
 function groupOf(event: CurationEvent, waiting: string | null, placed: boolean, unplaced: boolean): ItemGroup {
     if (unplaced) return 'unplaced';
@@ -46,7 +51,8 @@ function groupOf(event: CurationEvent, waiting: string | null, placed: boolean, 
 
 const GROUP_ORDER: Record<ItemGroup, number> = { judgment: 0, unplaced: 1, waiting: 2, deferred: 3, placed: 4, settled: 5 };
 
-function itemOf(event: CurationEvent, waiting: string | null, placed: string | null, unplaced: string | null): InboxItem {
+function itemOf(event: CurationEvent, registry: Registry | null, waiting: string | null, placed: string | null, unplaced: string | null): InboxItem {
+    const ready = readyProfile(event, registry);
     return {
         id: event.id,
         version: event.version,
@@ -57,6 +63,7 @@ function itemOf(event: CurationEvent, waiting: string | null, placed: string | n
         photoId: event.photoId,
         shortId: shortIdOf(event.photoId),
         sourcePath: printable(event.derivedFacts.sourcePath),
+        thumbnailUrl: ready && event.photoId && event.assetRevision ? curatorThumbnailUrl(event.photoId, event.assetRevision, ready) : null,
         waiting,
         placedBy: placed,
         unplacedSeries: unplaced,
@@ -74,14 +81,23 @@ function identityText(event: CurationEvent, registry: Registry | null): string {
     return parts.join(', ');
 }
 
+/** The profile of the item's ready derivative set, the current profile first, or null when none is ready. */
+function readyProfile(event: CurationEvent, registry: Registry | null): string | null {
+    if (event.photoId === null || event.assetRevision === null) return null;
+    const revision = registry?.photos[event.photoId]?.revisions[event.assetRevision];
+    if (!revision) return null;
+    const profileId = currentProfileId();
+    if (revision.profiles[profileId]?.state === 'ready') return profileId;
+    return Object.entries(revision.profiles).find(([, entry]) => entry.state === 'ready')?.[0] ?? null;
+}
+
 /** Each profile's state, and how many tries a failed one took. A build's error text may name a host path, so it never shows. */
 function derivativeText(event: CurationEvent, registry: Registry | null): { text: string; ready: string | null } {
     if (event.photoId === null || event.assetRevision === null) return { text: 'None. Nothing was made from it.', ready: null };
     const revision = registry?.photos[event.photoId]?.revisions[event.assetRevision];
     const profiles = revision ? Object.entries(revision.profiles) : [];
     if (profiles.length === 0) return { text: 'None built yet.', ready: null };
-    const profileId = currentProfileId();
-    const ready = revision?.profiles[profileId]?.state === 'ready' ? profileId : (profiles.find(([, entry]) => entry.state === 'ready')?.[0] ?? null);
+    const ready = readyProfile(event, registry);
     const text = profiles
         .map(([id, entry]) => `${id} ${entry.state}${entry.state === 'failed' ? ` after ${entry.attempts} attempt${entry.attempts === 1 ? '' : 's'}` : ''}`)
         .join(', ');
@@ -236,7 +252,7 @@ export async function loadInbox(selectedId: string | null): Promise<InboxView> {
     // The same lookup `curation list` and `show` use, so the page and the CLI count alike.
     const placements = await placedItems(root, events);
     const items = events
-        .map((event) => itemOf(event, waitingReason(event, registry, profileId), placements.placed.get(event.id) ?? null, placements.unplaced.get(event.id) ?? null))
+        .map((event) => itemOf(event, registry, waitingReason(event, registry, profileId), placements.placed.get(event.id) ?? null, placements.unplaced.get(event.id) ?? null))
         .sort((a, b) => GROUP_ORDER[a.group] - GROUP_ORDER[b.group]);
     const active = (await readActivePointer(root))?.revisionId ?? null;
     const { series, problem } = await seriesOptions(root);
