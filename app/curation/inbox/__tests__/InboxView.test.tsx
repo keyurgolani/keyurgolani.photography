@@ -24,7 +24,7 @@ vi.mock('../actions', () => {
 
 const { default: InboxList } = await import('../InboxList');
 const { default: InboxDetailView } = await import('../InboxDetailView');
-const { rememberRow } = await import('../journey');
+const { navigation, rememberRow } = await import('../journey');
 
 beforeEach(() => {
     sent.forms = [];
@@ -577,5 +577,115 @@ describe('one item at a time on a phone', () => {
         } finally {
             scrolledTo.mockRestore();
         }
+    });
+});
+
+describe('moving on after a decision', () => {
+    const three = () => [item(), item({ id: EVT(2), sourcePath: 'trips/harbor-2.jpg' }), item({ id: EVT(3), sourcePath: 'trips/harbor-3.jpg' })];
+    /** The page as the refresh after a finished action shows it: the item decided, at its next version. */
+    const decided = (items: InboxItem[], status: 'approved' | 'deferred', open: string[]) => {
+        const group = status === 'approved' ? ('settled' as const) : ('deferred' as const);
+        const refreshed = items.map((entry) => (entry.id === EVT(1) ? { ...entry, status, group, version: 4 } : open.includes(entry.id) ? entry : { ...entry, status: 'approved' as const, group: 'settled' as const }));
+        return view({ items: refreshed, needsJudgment: open.length, selected: detail({ status, group, version: 4, can: { approve: false, edit: status === 'deferred', defer: false, dismiss: status === 'deferred', retry: false, reopen: true } }) });
+    };
+
+    it('opens the next item that needs a decision once the approval is in, and carries the answer there', async () => {
+        const replace = vi.spyOn(navigation, 'replace').mockImplementation(() => undefined);
+        try {
+            const { rerender } = renderInbox(view({ items: three(), needsJudgment: 3 }));
+            await press(screen.getByRole('button', { name: 'Approve into draft' }));
+            // The answer alone doesn't move the page: the refresh that follows it says what's left.
+            expect(replace).not.toHaveBeenCalled();
+            await act(async () => rerender(tree(decided(three(), 'approved', [EVT(2), EVT(3)]))));
+            expect(replace).toHaveBeenCalledTimes(1);
+            expect(replace).toHaveBeenCalledWith(`/curation/inbox?item=${EVT(2)}#item`);
+            expect(JSON.parse(window.sessionStorage.getItem('curation-inbox:arrival')!)).toMatchObject({ to: EVT(2), from: EVT(1), fromName: 'harbor-1.jpg', message: 'Done.' });
+            // Back to inbox from there returns to that item's row.
+            expect(JSON.parse(window.sessionStorage.getItem('curation-inbox:return')!)).toMatchObject({ id: EVT(2) });
+        } finally {
+            replace.mockRestore();
+        }
+    });
+
+    it('skips an item someone else decided meanwhile', async () => {
+        const replace = vi.spyOn(navigation, 'replace').mockImplementation(() => undefined);
+        try {
+            const { rerender } = renderInbox(view({ items: three(), needsJudgment: 3 }));
+            await press(screen.getByRole('button', { name: 'Decide later' }));
+            // The CLI approved the second one while this one was open.
+            await act(async () => rerender(tree(decided(three(), 'deferred', [EVT(3)]))));
+            expect(replace).toHaveBeenCalledWith(`/curation/inbox?item=${EVT(3)}#item`);
+            expect(sent.forms[0].fields.intent).toBe('defer');
+        } finally {
+            replace.mockRestore();
+        }
+    });
+
+    it('opens the empty inbox when nothing else needs a decision', async () => {
+        const replace = vi.spyOn(navigation, 'replace').mockImplementation(() => undefined);
+        try {
+            const { rerender } = renderInbox(view({ items: three(), needsJudgment: 3 }));
+            await press(screen.getByRole('button', { name: 'Approve into draft' }));
+            await act(async () => rerender(tree(decided(three(), 'approved', []))));
+            expect(replace).toHaveBeenCalledWith('/curation/inbox');
+            expect(JSON.parse(window.sessionStorage.getItem('curation-inbox:arrival')!)).toMatchObject({ to: null, from: EVT(1) });
+        } finally {
+            replace.mockRestore();
+        }
+    });
+
+    it('stays on the item after Save edits, Reopen, or an answer that wrote nothing', async () => {
+        const replace = vi.spyOn(navigation, 'replace').mockImplementation(() => undefined);
+        try {
+            const { rerender, unmount } = renderInbox(view({ items: three(), needsJudgment: 3 }));
+            await press(screen.getByRole('button', { name: 'Save edits' }));
+            await act(async () => rerender(tree(view({ items: three(), needsJudgment: 3, selected: detail({ version: 4 }) }))));
+            unmount();
+            sent.answer = { status: 'stale', action: 'approve', eventId: EVT(1), message: 'This item changed since the page loaded, so nothing was written.', serial: 1 };
+            const stale = renderInbox(view({ items: three(), needsJudgment: 3 }));
+            await press(screen.getByRole('button', { name: 'Approve into draft' }));
+            await act(async () => stale.rerender(tree(view({ items: three(), needsJudgment: 3, selected: detail({ version: 5, status: 'deferred' }) }))));
+            stale.unmount();
+            sent.answer = null;
+            const approved = view({ items: three(), needsJudgment: 2, selected: detail({ status: 'approved', group: 'settled', can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true } }) });
+            const reopen = renderInbox(approved);
+            await press(screen.getByRole('button', { name: 'Reopen' }));
+            await act(async () => reopen.rerender(tree(view({ items: three(), needsJudgment: 3, selected: detail({ version: 4 }) }))));
+            expect(replace).not.toHaveBeenCalled();
+            expect(await screen.findByText('Done.')).toBeInTheDocument();
+        } finally {
+            replace.mockRestore();
+        }
+    });
+
+    it('says on the next item what was done, in the live region, with the way back to the item decided', () => {
+        window.sessionStorage.setItem('curation-inbox:arrival', JSON.stringify({ to: EVT(1), from: EVT(5), fromName: 'harbor-0.jpg', message: 'Approved into the draft. Nothing is published until you publish.', at: Date.now() }));
+        renderInbox();
+        const answer = screen.getByText(/Next up/).closest<HTMLElement>('[role="status"]')!;
+        expect(answer).toHaveTextContent('Approved into the draft. Nothing is published until you publish. Next up: harbor-1.jpg.');
+        expect(within(answer).getByRole('link', { name: 'Open harbor-0.jpg again' })).toHaveAttribute('href', `/curation/inbox?item=${EVT(5)}#item`);
+        // Read once.
+        expect(window.sessionStorage.getItem('curation-inbox:arrival')).toBeNull();
+    });
+
+    it('ignores an answer meant for another item, or left over from an earlier visit', () => {
+        window.sessionStorage.setItem('curation-inbox:arrival', JSON.stringify({ to: EVT(2), from: EVT(5), fromName: 'x.jpg', message: 'Done.', at: Date.now() }));
+        const { unmount } = renderInbox();
+        expect(screen.queryByText(/Next up/)).toBeNull();
+        unmount();
+        window.sessionStorage.setItem('curation-inbox:arrival', JSON.stringify({ to: EVT(1), from: EVT(5), fromName: 'x.jpg', message: 'Done.', at: Date.now() - 60_000 }));
+        renderInbox();
+        expect(screen.queryByText(/Next up/)).toBeNull();
+    });
+
+    it('shows the empty state after the last decision, says what was done, and moves focus there', () => {
+        window.sessionStorage.setItem('curation-inbox:arrival', JSON.stringify({ to: null, from: EVT(1), fromName: 'harbor-1.jpg', message: 'Left for later. It stays a draft suggestion.', at: Date.now() }));
+        renderInbox(view({ items: [item({ status: 'deferred', group: 'deferred' })], needsJudgment: 0, selected: null }), true);
+        expect(screen.getByRole('status')).toHaveTextContent('Left for later. It stays a draft suggestion. Nothing else requires judgment.');
+        expect(screen.getByRole('link', { name: 'Open harbor-1.jpg again' })).toHaveAttribute('href', `/curation/inbox?item=${EVT(1)}#item`);
+        expect(screen.getByText('Nothing requires judgment right now.')).toHaveFocus();
+        // The wide screen's detail side says it quietly too, rather than opening an item nobody needs to decide.
+        expect(screen.getByRole('region', { name: 'Item' })).toHaveTextContent('Nothing left to decide. Pick an item from the list to look at it again.');
+        expect(screen.getByRole('heading', { name: 'Left for later' })).toBeInTheDocument();
     });
 });

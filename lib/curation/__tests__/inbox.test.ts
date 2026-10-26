@@ -188,6 +188,17 @@ describe('loadInbox', () => {
         expect(view.items.map((item) => item.thumbnailUrl)).toEqual([null, null]);
     });
 
+    it('selects nothing when nothing needs judgment, so the page shows its empty state', async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])]);
+        const event = (await readEvent(f.root, ids[0]))!;
+        expect(await deferEvent({ root: f.root, eventId: ids[0], expectedVersion: event.version, actor: 'curator:cli' })).toMatchObject({ ok: true });
+        const view = ready(await loadInbox(null));
+        expect(view.items.map((item) => item.group)).toEqual(['deferred']);
+        expect(view).toMatchObject({ needsJudgment: 0, selected: null, missingSelection: null });
+        // Asked for by ID, it still opens.
+        expect(ready(await loadInbox(ids[0])).selected?.id).toBe(ids[0]);
+    });
+
     it('says so when the URL names an item the inbox lacks, and never echoes a malformed one', async () => {
         await inbox((fx) => [fx.fact('new', fx.fresh[0])]);
         expect(ready(await loadInbox(`evt_${'0'.repeat(24)}`))).toMatchObject({ selected: null, missingSelection: `evt_${'0'.repeat(24)}` });

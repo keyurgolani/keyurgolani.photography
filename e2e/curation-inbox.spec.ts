@@ -142,8 +142,17 @@ test('approves a new photograph into the draft with the typed description, and p
     await page.getByRole('combobox', { name: 'Proposed sequence position' }).selectOption('start');
     await page.getByRole('textbox', { name: 'Draft description' }).fill('A harbor wall at first light, typed in the e2e.');
     await page.getByRole('button', { name: 'Approve into draft' }).click();
+    // The next item that needs a decision opens, in list order, with its heading focused, and says what was done.
+    await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox?item=${eventOf(FRESH.stale)}#item`);
+    await waitForHydration(page);
+    await expect(itemHeading(page, FRESH.stale)).toBeFocused();
     await expect(answer(page, 'done')).toHaveText(/^Approved into the draft\. Nothing is published until you publish\./);
+    await expect(answer(page, 'done')).toContainText('Next up: arrival-stale.jpg.');
+    // The approved item is one link away, where Reopen is.
+    await page.getByRole('link', { name: 'Open arrival-approve.jpg again' }).click();
+    await waitForHydration(page);
     await expect(page.getByText('Suggestion approved')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Reopen' })).toBeVisible();
     expect(layers()).toEqual(before);
     expect((await readAuthoredRecord(data().root, 'photo', FRESH.approve))?.alt).toEqual({ kind: 'described', text: 'A harbor wall at first light, typed in the e2e.', reviewed: true });
     expect((await readAuthoredRecord(data().root, 'series', INBOX_SERIES.draft.id))?.photoIds[0]).toBe(FRESH.approve);
@@ -227,8 +236,12 @@ test('clears a decorative flag on a reopened item, so the description gate holds
     await page.getByRole('checkbox', { name: /Decorative/ }).check();
     await page.getByRole('button', { name: 'Approve into draft' }).click();
     await expect(answer(page, 'done')).toHaveText(/^Approved into the draft/);
+    // The approval moved on to the next item; Reopen is on the approved one, and stays there once pressed.
+    await page.getByRole('link', { name: 'Open arrival-reopen.jpg again' }).click();
+    await waitForHydration(page);
     await page.getByRole('button', { name: 'Reopen' }).click();
     await expect(answer(page, 'done')).toHaveText('Reopened.');
+    await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox?item=${eventOf(FRESH.reopen)}#item`);
     // The reopened form starts from the photo record and the series that holds it.
     await openInbox(page, eventOf(FRESH.reopen));
     await expect(page.getByRole('combobox', { name: 'Suggested series' })).toHaveValue(INBOX_SERIES.published.id);
@@ -304,6 +317,27 @@ test('shows a phone one item at a time, and Back to inbox or the browser Back re
     await expect(page.locator(`#row-${rowId}`)).toBeFocused();
     await expect(page.locator(`#row-${rowId}`)).toBeInViewport();
     expect(Math.abs((await page.evaluate(() => window.scrollY)) - scrolled)).toBeLessThanOrEqual(2);
+});
+
+test('Decide later moves on to the next item too, and the last decision shows the empty state', async ({ page }) => {
+    const { events } = await listEvents(data().root);
+    const missing = events.find((event) => event.type === 'missing')!;
+    const failed = events.find((event) => event.type === 'processing-failure')!;
+    await openInbox(page, missing.id, { landed: true });
+    await page.getByRole('button', { name: 'Decide later' }).click();
+    await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox?item=${failed.id}#item`);
+    await waitForHydration(page);
+    await expect(page.getByRole('heading', { level: 2, name: path.posix.basename(FAILED_SOURCE) })).toBeFocused();
+    await expect(answer(page, 'done')).toContainText(`Left for later. It stays a draft suggestion. Next up: ${path.posix.basename(FAILED_SOURCE)}.`);
+    await page.getByRole('button', { name: 'Decide later' }).click();
+    // Nothing else needs a decision, so the inbox opens on its empty state and says so.
+    await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox`);
+    await waitForHydration(page);
+    await expect(page.getByText('Nothing requires judgment right now.')).toBeFocused();
+    await expect(answer(page, 'done')).toContainText('Left for later. It stays a draft suggestion. Nothing else requires judgment.');
+    await expect(summary(page)).toHaveText(/^0 of \d+ items require judgment/);
+    await expect(page.getByRole('link', { name: `Open ${path.posix.basename(FAILED_SOURCE)} again` })).toBeVisible();
+    for (const id of [missing.id, failed.id]) expect((await readEvent(data().root, id))?.status).toBe('deferred');
 });
 
 /** Every public page and API the approved criterion names, by path, on `web`. */

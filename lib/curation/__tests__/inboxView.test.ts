@@ -6,6 +6,7 @@ import {
     formStart,
     headTail,
     identityLine,
+    nextItemId,
     PRIMARY_ACTION,
     referencedByText,
     seriesCaption,
@@ -156,6 +157,46 @@ describe('what refers to a photograph', () => {
     it('gives a series membership by title and position', () => {
         expect(seriesMembershipText(P(9), [{ kind: 'revision', id: REV }, { kind: 'series', id: 'ser_harbor' }], SERIES)).toBe('Harbor, position 02');
         expect(seriesMembershipText(P(9), [], SERIES)).toBe('In no series');
+    });
+});
+
+describe('the next item after an approval or Decide later', () => {
+    // The list as the curator saw it: four items that needed a decision, then one already settled.
+    const seen = ['evt_a', 'evt_b', 'evt_c', 'evt_d', 'evt_settled'];
+
+    it('is the next one in list order that still needs a decision', () => {
+        expect(nextItemId(seen, 'evt_a', ['evt_b', 'evt_c', 'evt_d'])).toBe('evt_b');
+        expect(nextItemId(seen, 'evt_b', ['evt_a', 'evt_c', 'evt_d'])).toBe('evt_c');
+    });
+
+    it('wraps to the top of the list from the last item', () => {
+        expect(nextItemId(seen, 'evt_d', ['evt_a', 'evt_b', 'evt_c'])).toBe('evt_a');
+        // Past the settled rows at the end, too.
+        expect(nextItemId(seen, 'evt_settled', ['evt_b'])).toBe('evt_b');
+    });
+
+    it('is none when nothing else needs a decision, so the page shows the empty state', () => {
+        expect(nextItemId(seen, 'evt_a', [])).toBeNull();
+        // The refresh can still list the decided item, if it was read before the write; it never opens itself again.
+        expect(nextItemId(seen, 'evt_a', ['evt_a'])).toBeNull();
+    });
+
+    it('skips an item someone else decided while this one was open', () => {
+        // The CLI approved evt_b behind the page: the fresh list no longer has it.
+        expect(nextItemId(seen, 'evt_a', ['evt_c', 'evt_d'])).toBe('evt_c');
+        // Every later one went too, so it wraps to the one before.
+        expect(nextItemId(seen, 'evt_c', ['evt_a'])).toBe('evt_a');
+    });
+
+    it('still finds the next one when the open item itself left the list the page shows', () => {
+        // Opened from "Left for later", which the page lists after the items needing a decision.
+        expect(nextItemId(seen, 'evt_later', ['evt_b', 'evt_c'])).toBe('evt_b');
+    });
+
+    it('goes to an item that arrived since the page loaded once none it showed is left', () => {
+        expect(nextItemId(seen, 'evt_d', ['evt_new'])).toBe('evt_new');
+        // Ones it showed come first.
+        expect(nextItemId(seen, 'evt_a', ['evt_new', 'evt_c'])).toBe('evt_c');
     });
 });
 
