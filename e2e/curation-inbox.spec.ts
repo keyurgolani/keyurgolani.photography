@@ -123,7 +123,7 @@ test('approves a new photograph into the draft with the typed description, and p
     await page.getByRole('combobox', { name: 'Suggested series' }).selectOption(INBOX_SERIES.draft.id);
     await page.getByRole('combobox', { name: 'Proposed sequence position' }).selectOption('start');
     await page.getByRole('textbox', { name: 'Draft description' }).fill('A harbor wall at first light, typed in the e2e.');
-    await page.getByRole('button', { name: 'Review series suggestion' }).click();
+    await page.getByRole('button', { name: 'Approve into draft' }).click();
     await expect(answer(page, 'done')).toHaveText(/^Approved into the draft\. Nothing is published until you publish\./);
     await expect(page.getByText('Suggestion approved')).toBeVisible();
     expect(layers()).toEqual(before);
@@ -142,7 +142,7 @@ test('turns away an action on an item that changed since the page loaded, and wr
     expect(await deferEvent({ root: data().root, eventId, expectedVersion: shown.version, actor: 'curator:cli' })).toMatchObject({ ok: true });
     const moved = (await readEvent(data().root, eventId))!;
     await page.getByRole('textbox', { name: 'Draft description' }).fill('Typed before the refresh.');
-    await page.getByRole('button', { name: 'Review series suggestion' }).click();
+    await page.getByRole('button', { name: 'Approve into draft' }).click();
     await expect(answer(page, 'stale')).toContainText('changed since the page loaded');
     await expect(page.getByRole('textbox', { name: 'Draft description' })).toHaveValue('Typed before the refresh.');
     expect(await readEvent(data().root, eventId)).toEqual(moved);
@@ -151,7 +151,7 @@ test('turns away an action on an item that changed since the page loaded, and wr
     await expect(refresh).toHaveAttribute('href', `/curation/inbox?item=${eventId}#item`);
     await refresh.click();
     await waitForHydration(page);
-    await expect(page.locator('header').getByText('Left in draft', { exact: true })).toBeVisible();
+    await expect(page.locator('header').getByText('Left for later', { exact: true })).toBeVisible();
 });
 
 test('clears a saved Decorative flag the curator unchecks, so the description gate holds the photo back', async ({ page }) => {
@@ -167,7 +167,7 @@ test('clears a saved Decorative flag the curator unchecks, so the description ga
     await expect(answer(page, 'done')).toHaveText(/^Saved your edits/);
     expect((await readEvent(data().root, eventOf(FRESH.decorative)))?.edits?.description).toBeNull();
     await page.getByRole('combobox', { name: 'Suggested series' }).selectOption(INBOX_SERIES.published.id);
-    await page.getByRole('button', { name: 'Review series suggestion' }).click();
+    await page.getByRole('button', { name: 'Approve into draft' }).click();
     await expect(answer(page, 'done')).toContainText('no description yet');
     expect((await readAuthoredRecord(data().root, 'photo', FRESH.decorative))?.alt).toBeNull();
     // #13's description gate, as publish runs it, holds the photograph back.
@@ -181,7 +181,7 @@ test('stores the series it shows after a refused answer', async ({ page }) => {
     await series.selectOption(INBOX_SERIES.draft.id);
     const description = page.getByRole('textbox', { name: 'Draft description' });
     await description.fill('<b>Harbor</b>');
-    await page.getByRole('button', { name: 'Review series suggestion' }).click();
+    await page.getByRole('button', { name: 'Approve into draft' }).click();
     // The refusal shows by the description field, which is marked and takes focus.
     await expect(description).toHaveAccessibleDescription(/markup/);
     await expect(description).toHaveAttribute('aria-invalid', 'true');
@@ -190,7 +190,7 @@ test('stores the series it shows after a refused answer', async ({ page }) => {
     await page.getByRole('textbox', { name: 'Draft description' }).fill('Harbor wall, fixed after the refusal.');
     // Read before approving: an approved item no longer offers the suggestion.
     const shown = await series.inputValue();
-    await page.getByRole('button', { name: 'Review series suggestion' }).click();
+    await page.getByRole('button', { name: 'Approve into draft' }).click();
     await expect(answer(page, 'done')).toBeVisible();
     expect((await readAuthoredRecord(data().root, 'series', shown))?.photoIds).toContain(FRESH.refused);
 });
@@ -198,7 +198,7 @@ test('stores the series it shows after a refused answer', async ({ page }) => {
 test('approves "Leave unassigned" when no rules file suggests a series', async ({ page }) => {
     await openInbox(page, eventOf(FRESH.unassigned));
     await expect(page.getByRole('combobox', { name: 'Suggested series' })).toHaveValue('unassigned');
-    await page.getByRole('button', { name: 'Review series suggestion' }).click();
+    await page.getByRole('button', { name: 'Approve into draft' }).click();
     await expect(answer(page, 'done')).toBeVisible();
     expect((await readEvent(data().root, eventOf(FRESH.unassigned)))?.decisions.at(-1)).toMatchObject({ action: 'approve', seriesId: null });
 });
@@ -207,7 +207,7 @@ test('clears a decorative flag on a reopened item, so the description gate holds
     await openInbox(page, eventOf(FRESH.reopen));
     await page.getByRole('combobox', { name: 'Suggested series' }).selectOption(INBOX_SERIES.published.id);
     await page.getByRole('checkbox', { name: /Decorative/ }).check();
-    await page.getByRole('button', { name: 'Review series suggestion' }).click();
+    await page.getByRole('button', { name: 'Approve into draft' }).click();
     await expect(answer(page, 'done')).toHaveText(/^Approved into the draft/);
     await page.getByRole('button', { name: 'Reopen' }).click();
     await expect(answer(page, 'done')).toHaveText('Reopened.');
@@ -217,7 +217,7 @@ test('clears a decorative flag on a reopened item, so the description gate holds
     const box = page.getByRole('checkbox', { name: /Decorative/ });
     await expect(box).toBeChecked();
     await box.uncheck();
-    await page.getByRole('button', { name: 'Review series suggestion' }).click();
+    await page.getByRole('button', { name: 'Approve into draft' }).click();
     await expect(answer(page, 'done')).toContainText('no description yet');
     expect((await readAuthoredRecord(data().root, 'photo', FRESH.reopen))?.alt).toBeNull();
     const validation = await validateWorkingLayer({ dataRoot: data().root });

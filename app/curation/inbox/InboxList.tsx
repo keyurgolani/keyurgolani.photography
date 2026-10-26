@@ -8,7 +8,7 @@ type ReadyView = Extract<InboxView, { state: 'ready' }>;
 const GROUP_HEADINGS: Record<Exclude<ItemGroup, 'judgment'>, string> = {
     unplaced: 'No longer placed',
     waiting: 'Waiting',
-    deferred: 'Left in draft',
+    deferred: 'Left for later',
     placed: 'Already placed',
     settled: 'Settled',
 };

@@ -5,6 +5,7 @@ import { Save } from 'lucide-react';
 import styles from '../curator.module.css';
 import { approveItem, deferItem, dismissItem, editItem, reopenItem, retryItem } from './actions';
 import {
+    DEFER_LABEL,
     defaultDescription,
     defaultPlacement,
     descriptionHint,
@@ -327,7 +328,7 @@ export default function ItemActions({ detail, activeRevisionId, series, seriesPr
                         ) : null}
                         {can.defer ? (
                             <button type="submit" name="intent" value="defer" className={styles.button} disabled={pending}>
-                                Leave in draft
+                                {DEFER_LABEL}
                             </button>
                         ) : null}
                         {primary && detail.type === 'new' && can.approve ? (

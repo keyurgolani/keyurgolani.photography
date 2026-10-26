@@ -130,7 +130,7 @@ const STATUS_FOR: Record<Exclude<ActionOutcome, { ok: true }>['code'], Exclude<I
 const DONE: Record<InboxActionKind, string> = {
     approve: 'Approved into the draft. Nothing is published until you publish.',
     edit: 'Saved your edits. Nothing in the draft changed.',
-    defer: 'Left in draft.',
+    defer: 'Left for later. It stays a draft suggestion.',
     dismiss: 'Dismissed.',
     retry: 'Asked the watcher to process it again on its next pass.',
     reopen: 'Reopened.',
