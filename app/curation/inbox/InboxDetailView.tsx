@@ -1,5 +1,6 @@
 import { ArrowLeft, Check } from 'lucide-react';
 import styles from '../curator.module.css';
+import ArrivalStrip from './ArrivalStrip';
 import EventBadge from './EventBadge';
 import ItemActions from './ItemActions';
 import LandOnItem from './LandOnItem';
@@ -160,6 +161,8 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
         <section className={styles.detail} id="item" aria-labelledby="item-heading">
             <LandOnItem targetId="item" focusId="item-heading" />
             <BackToInbox itemId={detail.id} />
+            {/* What the last approval or Decide later did, above the photograph and the form, when it opened this item. */}
+            <ArrivalStrip key={detail.id} itemId={detail.id} />
             <div className={styles.photo}>
                 {/* Sticky on a wide screen, so the photograph stays in view while the curator describes it. */}
                 <div className={styles.photoFrame}>

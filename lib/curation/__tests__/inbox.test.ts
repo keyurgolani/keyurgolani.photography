@@ -7,6 +7,8 @@ import { folderBytes } from '../../../test/helpers/folderBytes';
 import { setDataDir, writeDataRootMarker } from '../../../test/helpers/tempDataRoot';
 import { authoredRecordDir, readAuthoredRecord } from '../../catalog/working-layer';
 import { AUTHORED_LOCK, writeAuthoredRecord } from '../../catalog/working-layer-writer';
+import { profileIdOf } from '../../identity/ids';
+import { PROFILE_1 } from '../../identity/profile';
 import { readRegistry, writeRegistry } from '../../identity/registry';
 import type { IdentityFact } from '../../identity/types';
 import { withLock } from '../../storage/lock';
@@ -178,6 +180,24 @@ describe('loadInbox', () => {
         expect(detail.previewUrl).toBe(`/api/curation/media/${event.photoId}/${event.assetRevision}/${f.catalog.profileId}/w800.webp`);
         // Its row's thumbnail is the same set's smallest WebP, never the original.
         expect(view.items[0].thumbnailUrl).toBe(`/api/curation/media/${event.photoId}/${event.assetRevision}/${f.catalog.profileId}/w400.webp`);
+    });
+
+    it("prefers the current profile's set when an older profile's is ready too, whichever the registry lists first", async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])]);
+        const registry = await readRegistry(f.root);
+        const event = (await readEvent(f.root, ids[0]))!;
+        const revision = registry.photos[event.photoId!].revisions[event.assetRevision!];
+        const older = profileIdOf(PROFILE_1, { sharp: '0.0.1', vips: '0.0.1' });
+        expect(older).not.toBe(f.catalog.profileId);
+        revision.profiles = { [older]: { state: 'ready', attempts: 1 }, [f.catalog.profileId]: { state: 'ready', attempts: 1 } };
+        await writeRegistry(f.root, registry, registry.version);
+        const view = ready(await loadInbox(ids[0]));
+        expect(view.selected!.previewUrl).toBe(`/api/curation/media/${event.photoId}/${event.assetRevision}/${f.catalog.profileId}/w800.webp`);
+        expect(view.items[0].thumbnailUrl).toBe(`/api/curation/media/${event.photoId}/${event.assetRevision}/${f.catalog.profileId}/w400.webp`);
+        // With only the older one ready, it's that one.
+        revision.profiles = { [older]: { state: 'ready', attempts: 1 }, [f.catalog.profileId]: { state: 'pending', attempts: 0 } };
+        await writeRegistry(f.root, registry, (await readRegistry(f.root)).version);
+        expect(ready(await loadInbox(ids[0])).items[0].thumbnailUrl).toBe(`/api/curation/media/${event.photoId}/${event.assetRevision}/${older}/w400.webp`);
     });
 
     it('gives a row no thumbnail while no derivative set is ready, or when nothing was made from the file', async () => {

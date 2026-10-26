@@ -59,6 +59,24 @@ export const PRIMARY_ACTION: Partial<Record<CurationEventType, string>> = {
 /** The button that defers an item (14-1's `defer`), as the owner named it (2026-10-25). */
 export const DEFER_LABEL = 'Decide later';
 
+/** What an approval and Decide later answer on the item they were taken on. Any later notes from the action follow. */
+export const DONE_ANSWER = {
+    approve: 'Approved into the draft. Nothing is published until you publish.',
+    defer: 'Left for later. Nothing in the draft changed.',
+} as const;
+
+/**
+ * The answer an approval or Decide later carries to the page it opens. That
+ * page shows another item, or none, so the answer names the file it decided
+ * (design review, 2026-10-25). `message` is the action's own answer; any
+ * notes after its first sentences, such as a missing description, follow.
+ */
+export function arrivalMessage(action: keyof typeof DONE_ANSWER, fileName: string, message: string): string {
+    const head = action === 'approve' ? `Approved ${fileName} into the draft. Nothing is published until you publish.` : `Left ${fileName} for later. Nothing in the draft changed.`;
+    const notes = message.startsWith(DONE_ANSWER[action]) ? message.slice(DONE_ANSWER[action].length).trim() : '';
+    return notes ? `${head} ${notes}` : head;
+}
+
 export const STATUS_LABELS: Record<CurationEventStatus, string> = {
     open: 'Draft only',
     // A file that produced nothing isn't a draft of anything.

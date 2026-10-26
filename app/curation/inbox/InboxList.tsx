@@ -83,8 +83,8 @@ export default function InboxList({ view, listView = false }: { view: ReadyView;
                     </button>
                 </form>
             </header>
-            {/* The last decision's answer, when it left nothing else to decide. */}
-            <EmptyArrival active={view.needsJudgment === 0} />
+            {/* The last decision's answer, when it left nothing else to decide. It opens the list itself, so only the list view takes it. */}
+            {listView ? <EmptyArrival empty={view.needsJudgment === 0} /> : null}
             {view.items.length === 0 && view.problems.length === 0 ? (
                 <div className={styles.empty}>
                     <h2 id="inbox-empty" tabIndex={-1}>

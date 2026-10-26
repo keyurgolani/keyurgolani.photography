@@ -35,9 +35,32 @@ function restore(fromCache: boolean) {
     target.focus({ preventScroll: true });
 }
 
+/** The phone layout's width, where the list view shows the list alone. As the stylesheet's breakpoint. */
+const PHONE = '(max-width: 767px)';
+
+/**
+ * On a phone's list view no item is open, so the row the server marked
+ * selected (the first that needs judgment, which a wide screen shows beside
+ * the list) isn't current there (design review, 2026-10-25). Only the focused
+ * row reads as where the curator is then. A wide screen keeps the mark.
+ */
+function currentOnlyWhenShown(): () => void {
+    const row = document.querySelector<HTMLElement>('#inbox-list a[data-row][aria-current="true"]');
+    if (row === null || typeof window.matchMedia !== 'function') return () => undefined;
+    const phone = window.matchMedia(PHONE);
+    const sync = () => {
+        if (phone.matches) row.removeAttribute('aria-current');
+        else row.setAttribute('aria-current', 'true');
+    };
+    sync();
+    phone.addEventListener('change', sync);
+    return () => phone.removeEventListener('change', sync);
+}
+
 /** On the list: remembers the row a click leaves from, and, on the list view, returns to it. */
 export default function ReturnToRow({ listView }: { listView: boolean }) {
     useEffect(() => {
+        const unmark = listView ? currentOnlyWhenShown() : () => undefined;
         const list = document.getElementById('inbox-list');
         const leave = (event: MouseEvent) => {
             const row = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[data-row]') : null;
@@ -51,6 +74,7 @@ export default function ReturnToRow({ listView }: { listView: boolean }) {
         window.addEventListener('pageshow', shown);
         if (listView) restore(false);
         return () => {
+            unmark();
             list?.removeEventListener('click', leave);
             window.removeEventListener('pageshow', shown);
         };
