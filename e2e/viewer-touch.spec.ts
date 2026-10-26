@@ -336,6 +336,36 @@ test.describe('double-tap', () => {
         await expectStill(page, P[1], 2);
     });
 
+    test('on a tall photograph, a double-tap near its top or its bottom keeps that place under the finger down the photograph too', async ({ page }) => {
+        // The one-photo series' photograph is 2:3, so zoomed it's taller than its box on a phone and scrolls both ways.
+        for (const [where, share] of [
+            ['top', 0.2],
+            ['bottom', 0.8],
+        ] as const) {
+            await page.goto(`${origin()}${href(P[3], 'ridge')}`);
+            await waitForHydration(page);
+            await expect(header(page).getByRole('heading', { level: 1 })).toHaveText('Fixture ridge');
+            await settled(page);
+            const frame = stage(page).locator('figure');
+            const fitted = await frame.boundingBox();
+            expect(fitted, 'the fitted photograph').not.toBeNull();
+            const at = { x: fitted!.x + fitted!.width / 2, y: fitted!.y + fitted!.height * share };
+            await doubleTap(page, at);
+            await expect(button(page, 'Zoom')).toHaveAttribute('aria-pressed', 'true');
+            const region = viewer(page).getByRole('region', { name: 'Zoomed photograph' });
+            const scroll = () => region.evaluate((element) => ({ top: element.scrollTop, range: element.scrollHeight - element.clientHeight }));
+            await expect.poll(async () => (await scroll()).range, 'the zoomed photograph is taller than its box').toBeGreaterThan(0);
+            // Scrolled down to the place, and short of either end, so no clamp did the work.
+            await expect.poll(async () => (await scroll()).top, `near the ${where}, the zoomed photograph scrolled down to the place`).toBeGreaterThan(0);
+            const { top, range } = await scroll();
+            expect(top, `near the ${where}, the scroll stops short of the end`).toBeLessThan(range);
+            const zoomed = await frame.boundingBox();
+            expect(zoomed!.height, 'zoomed in').toBeGreaterThan(fitted!.height);
+            expect((at.y - zoomed!.y) / zoomed!.height, `near the ${where}, the same place down sits under the finger`).toBeCloseTo(share, 2);
+            expect((at.x - zoomed!.x) / zoomed!.width, 'and the same place across').toBeCloseTo(0.5, 2);
+        }
+    });
+
     test('a double-tap that zooms out where Previous or Next sit unzoomed presses neither, and the Viewer stays', async ({ page }) => {
         // Zoomed out, the stage shrinks, and the second tap's click would land on whatever now sits under the finger.
         // Only real touches make that click, so this runs on Chromium; WebKit's synthetic taps make none.

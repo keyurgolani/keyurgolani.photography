@@ -11,8 +11,8 @@ describe('fitSizes', () => {
     it('takes the header and the stage\'s padding off the height cap on a short wide screen, and keeps the share elsewhere', () => {
         expect(fitSizes(2400, 1600)).toBe(
             [
-                '(min-width: 48rem) and (max-height: 39.99rem) and (min-aspect-ratio: 1875/1000) calc(150vh - 11.25rem)',
-                '(min-width: 48rem) and (max-height: 39.99rem) 80vw',
+                '(min-width: 48rem) and (height < 40rem) and (min-aspect-ratio: 1875/1000) calc(150vh - 11.25rem)',
+                '(min-width: 48rem) and (height < 40rem) 80vw',
                 '(min-width: 48rem) and (min-aspect-ratio: 1875/1000) 150vh',
                 '(min-width: 48rem) 80vw',
                 '(min-aspect-ratio: 1500/1000) 150vh',
@@ -29,7 +29,7 @@ describe('fitSizes', () => {
             });
         });
         expect([...reserves]).toEqual(['(min-width: 48rem) and (min-height: 40rem)']);
-        expect(fitSizes(2400, 1600)).toContain('(min-width: 48rem) and (max-height: 39.99rem) ');
+        expect(fitSizes(2400, 1600)).toContain('(min-width: 48rem) and (height < 40rem) ');
     });
 
     it('keeps the lead to what the reading area holds: the title line, the title alone, or nothing with no title', () => {
