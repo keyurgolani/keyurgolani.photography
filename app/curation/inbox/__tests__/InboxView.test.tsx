@@ -896,6 +896,16 @@ describe("a phone's list view", () => {
         }
     });
 
+    it('refreshes the list view as the list, and an item page as that item', () => {
+        const refreshed = () => new FormData(screen.getByRole('button', { name: 'Refresh inbox' }).closest('form')!).get('item');
+        const list = renderInbox(view({ items: [item(), item({ id: EVT(2) })] }), true);
+        // The server still selects the first item for a wide screen, but a phone's list opens none, so Refresh mustn't open it.
+        expect(refreshed()).toBeNull();
+        list.unmount();
+        renderInbox(view({ items: [item(), item({ id: EVT(2) })] }));
+        expect(refreshed()).toBe(EVT(1));
+    });
+
     it('keeps the mark on an item page, where the item is open', () => {
         const media = width(true);
         try {
