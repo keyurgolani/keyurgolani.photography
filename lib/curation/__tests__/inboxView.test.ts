@@ -168,6 +168,10 @@ describe('the answer an approval or Decide later carries to the page it opens', 
         expect(arrivalMessage('defer', 'harbor-1.jpg', DONE_ANSWER.defer)).toBe('Left harbor-1.jpg for later. Nothing in the draft changed.');
     });
 
+    it('says the draft changed when Decide later put an earlier version back', () => {
+        expect(arrivalMessage('defer', 'harbor-1.jpg', DONE_ANSWER.putBack)).toBe('Left harbor-1.jpg for later. The draft is back on its earlier version, so the next publish ships that one, not the new one.');
+    });
+
     it("keeps the action's later notes, such as what still holds publishing back", () => {
         const notes = 'It has no description yet, so publish holds it back.';
         expect(arrivalMessage('approve', 'harbor-1.jpg', `${DONE_ANSWER.approve} ${notes}`)).toBe(`Approved harbor-1.jpg into the draft. Nothing is published until you publish. ${notes}`);
