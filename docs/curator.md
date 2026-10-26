@@ -2,6 +2,8 @@
 
 The curator is the private side of the site, where you review new photographs before they reach the draft (#14). It runs as its own service, `curator`, from the same image as `web`. Only `/curation/**` and `/api/curation/**` are curator paths. You sign in at `/curation/login`, and `/curation` leads to the inbox, `/curation/inbox`, where each item the watcher opened waits for you: approve a new photograph into the draft (**Approve into draft**), edit its suggestion (**Save edits**), leave it for later (**Decide later**, which keeps it a draft suggestion), dismiss it with a reason, retry processing, or reopen it. None of them publishes, and an item that changed since the page loaded is turned away with nothing written, so refresh and review it again. Photograph previews come from `/api/curation/media/`, which serves a derivative set to the curator only and is never cached.
 
+On a phone the inbox shows one thing at a time: the list, or the item you opened, with **Back to inbox** (or the browser's Back) returning to the list where you left it.
+
 ## Who can reach it
 
 Whoever can open port 3001 on the host's loopback and knows the curator's passphrase. Nobody else.

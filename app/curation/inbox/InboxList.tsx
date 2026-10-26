@@ -1,6 +1,7 @@
 import { ImageOff, RefreshCw } from 'lucide-react';
 import styles from '../curator.module.css';
 import EventBadge from './EventBadge';
+import ReturnToRow from './ReturnToRow';
 import { summaryText, type InboxItem, type InboxView, type ItemGroup } from '@/lib/curation/inbox-view';
 
 type ReadyView = Extract<InboxView, { state: 'ready' }>;
@@ -38,8 +39,8 @@ function Thumbnail({ url }: { url: string | null }) {
 function ItemLink({ item, selected }: { item: InboxItem; selected: boolean }) {
     return (
         <li>
-            {/* `#item` lands on the item itself, past the list on a phone, and past every row for a keyboard. */}
-            <a className={styles.item} href={`/curation/inbox?item=${item.id}#item`} aria-current={selected ? 'true' : undefined}>
+            {/* `#item` lands on the item itself: on a phone it's all the page shows, and a keyboard starts in its form. */}
+            <a className={styles.item} id={`row-${item.id}`} data-row={item.id} href={`/curation/inbox?item=${item.id}#item`} aria-current={selected ? 'true' : undefined}>
                 <Thumbnail url={item.thumbnailUrl} />
                 <span className={styles.itemText}>
                     <EventBadge type={item.type} />
@@ -56,13 +57,18 @@ function ItemLink({ item, selected }: { item: InboxItem; selected: boolean }) {
     );
 }
 
-/** The list side of the Inbox: the summary, Refresh, and every item by group, those that need judgment first. */
-export default function InboxList({ view }: { view: ReadyView }) {
+/**
+ * The list side of the Inbox: the summary, Refresh, and every item by group,
+ * those that need judgment first. `listView` is a visit to the list itself
+ * (no item in the URL), which is what a phone shows then.
+ */
+export default function InboxList({ view, listView = false }: { view: ReadyView; listView?: boolean }) {
     const selectedId = view.selected?.id ?? null;
     const judgment = view.items.filter((item) => item.group === 'judgment');
     const others = (['unplaced', 'waiting', 'deferred', 'placed', 'settled'] as const).map((group) => ({ group, items: view.items.filter((item) => item.group === group) }));
     return (
         <section className={styles.list} id="inbox-list" aria-labelledby="inbox-heading">
+            <ReturnToRow listView={listView} />
             <header className={styles.listHeader}>
                 <div>
                     <h1 id="inbox-heading">Curation inbox</h1>

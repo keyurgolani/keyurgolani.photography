@@ -24,10 +24,12 @@ vi.mock('../actions', () => {
 
 const { default: InboxList } = await import('../InboxList');
 const { default: InboxDetailView } = await import('../InboxDetailView');
+const { rememberRow } = await import('../journey');
 
 beforeEach(() => {
     sent.forms = [];
     sent.answer = null;
+    window.sessionStorage.clear();
 });
 
 const P = (n: number) => `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -81,21 +83,21 @@ function view(overrides: Partial<Extract<InboxView, { state: 'ready' }>> = {}): 
     return { state: 'ready', activeRevisionId: ACTIVE, needsJudgment: 1, waiting: 0, placed: 0, unplaced: 0, placementUnknown: false, items: [item()], problems: [], series: SERIES, seriesProblem: null, selected: detail(), missingSelection: null, ...overrides };
 }
 
-const renderInbox = (v = view()) =>
-    render(
-        <main>
-            <InboxList view={v} />
-            <InboxDetailView view={v} />
-        </main>,
-    );
+const tree = (v: ReturnType<typeof view>, listView = false) => (
+    <main>
+        <InboxList view={v} listView={listView} />
+        <InboxDetailView view={v} />
+    </main>
+);
+const renderInbox = (v = view(), listView = false) => render(tree(v, listView));
 
 describe('the list', () => {
     it('says how many items need judgment, links each, and marks the open one', () => {
         renderInbox(view({ items: [item(), item({ id: EVT(2), type: 'replacement', group: 'waiting', title: 'Replacement building', waiting: 'its new derivatives are still building' })], waiting: 1 }));
         expect(screen.getByRole('heading', { level: 1, name: 'Curation inbox' })).toBeInTheDocument();
         expect(screen.getByText('1 of 2 items requires judgment, 1 waiting')).toBeInTheDocument();
-        // The back link counts the same items the summary does.
-        expect(screen.getByRole('link', { name: 'All items (2)' })).toHaveAttribute('href', '#inbox-list');
+        // A phone's way back lands on the open item's row.
+        expect(screen.getByRole('link', { name: 'Back to inbox' })).toHaveAttribute('href', `/curation/inbox#row-${EVT(1)}`);
         const links = screen.getAllByRole('link', { name: /photograph|Replacement/ });
         // Each lands on the item itself, past the list, on a phone and for a keyboard alike.
         expect(links.map((link) => link.getAttribute('href'))).toEqual([`/curation/inbox?item=${EVT(1)}#item`, `/curation/inbox?item=${EVT(2)}#item`]);
@@ -107,7 +109,7 @@ describe('the list', () => {
         expect(screen.getByRole('button', { name: 'Refresh inbox' }).closest('form')).toHaveAttribute('method', 'get');
     });
 
-    it('brings the item into view and focus when the URL asks for it, as a row link does', () => {
+    it('brings the item into view, and its heading into focus, when the URL asks for it, as a row link does', () => {
         const scrolled = vi.fn();
         const original = Element.prototype.scrollIntoView;
         Element.prototype.scrollIntoView = scrolled;
@@ -117,8 +119,11 @@ describe('the list', () => {
             const target = document.getElementById('item')!;
             expect(scrolled).toHaveBeenCalledTimes(1);
             expect(scrolled.mock.contexts[0]).toBe(target);
-            expect(target).toHaveFocus();
-            expect(target).toHaveAttribute('tabindex', '-1');
+            // The heading names the photograph, so a screen reader says which one opened.
+            const heading = screen.getByRole('heading', { level: 2, name: 'harbor-1.jpg' });
+            expect(heading).toHaveFocus();
+            expect(heading).toHaveAttribute('tabindex', '-1');
+            expect(target).not.toHaveAttribute('tabindex');
         } finally {
             window.location.hash = '';
             Element.prototype.scrollIntoView = original;
@@ -132,7 +137,7 @@ describe('the list', () => {
         try {
             renderInbox();
             expect(scrolled).not.toHaveBeenCalled();
-            expect(document.getElementById('item')).not.toHaveFocus();
+            expect(screen.getByRole('heading', { level: 2, name: 'harbor-1.jpg' })).not.toHaveFocus();
         } finally {
             Element.prototype.scrollIntoView = original;
         }
@@ -161,10 +166,9 @@ describe('the list', () => {
         expect(screen.getAllByText(/Nothing requires judgment/)).toHaveLength(1);
     });
 
-    it('names the total beside the count needing judgment once settled items are listed too, matching "All items (N)"', () => {
+    it('names the total beside the count needing judgment once settled items are listed too', () => {
         renderInbox(view({ items: [item(), item({ id: EVT(2), status: 'approved', group: 'settled' }), item({ id: EVT(3), status: 'dismissed', group: 'settled' })] }));
         expect(screen.getByText('1 of 3 items requires judgment')).toBeInTheDocument();
-        expect(screen.getByRole('link', { name: 'All items (3)' })).toBeInTheDocument();
     });
 
     it('shows a source name with control, bidi, and zero-width characters escaped, in its row and its heading', async () => {
@@ -219,8 +223,9 @@ describe('the detail', () => {
         expect(within(facts).getByText('Referenced by').nextElementSibling).toHaveTextContent('Nothing');
         expect(screen.getByRole('heading', { name: 'Reviewable suggestion' })).toBeInTheDocument();
         expect(screen.getByText(/high confidence, by rules@abc/)).toBeInTheDocument();
-        // On a phone, a way back to every item from the top of the detail.
-        expect(screen.getByRole('link', { name: 'All items (1)' })).toHaveAttribute('href', '#inbox-list');
+        // On a phone, a way back to the list from the top of the detail, to this item's row.
+        expect(screen.getByRole('link', { name: 'Back to inbox' })).toHaveAttribute('href', `/curation/inbox#row-${EVT(1)}`);
+        expect(screen.getByRole('link', { name: 'Back to inbox' }).compareDocumentPosition(screen.getByRole('img', { name: /^Candidate photograph/ })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         expect(document.getElementById('inbox-list')).toBeInTheDocument();
     });
 
@@ -495,5 +500,82 @@ describe('thumbnails in the list', () => {
         const placeholder = row.querySelector('[data-thumb="none"]')!;
         expect(placeholder).toHaveAttribute('aria-hidden', 'true');
         expect(row.firstElementChild).toBe(placeholder);
+    });
+});
+
+describe('one item at a time on a phone', () => {
+    it('links every row to its item, and names each row for the way back', () => {
+        renderInbox(view({ items: [item(), item({ id: EVT(2) })] }));
+        const rows = screen.getAllByRole('link', { name: /Uncurated photograph/ });
+        expect(rows.map((row) => row.id)).toEqual([`row-${EVT(1)}`, `row-${EVT(2)}`]);
+        expect(rows.map((row) => row.dataset.row)).toEqual([EVT(1), EVT(2)]);
+    });
+
+    it('offers Back to inbox for an item the inbox no longer has', () => {
+        renderInbox(view({ selected: null, missingSelection: EVT(4) }));
+        expect(screen.getByRole('link', { name: 'Back to inbox' })).toHaveAttribute('href', '/curation/inbox');
+    });
+
+    it('remembers the row a tap leaves the list from, and how far down the list was', () => {
+        renderInbox(view({ items: [item(), item({ id: EVT(2) })] }));
+        window.scrollY = 640;
+        try {
+            const row = screen.getAllByRole('link', { name: /Uncurated photograph/ })[1];
+            row.addEventListener('click', (event) => event.preventDefault(), { once: true });
+            fireEvent.click(within(row).getByText('Uncurated photograph'));
+            expect(JSON.parse(window.sessionStorage.getItem('curation-inbox:return')!)).toEqual({ id: EVT(2), scrollY: 640 });
+        } finally {
+            window.scrollY = 0;
+        }
+    });
+
+    it('returns Back to inbox to the remembered scroll, with the row it came from focused', () => {
+        const scrolledTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
+        // In view once scrolled back, so nothing else moves it.
+        const box = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({ top: 200, bottom: 272, left: 0, right: 390, width: 390, height: 72, x: 0, y: 200, toJSON: () => ({}) });
+        const scrolled = vi.fn();
+        const original = Element.prototype.scrollIntoView;
+        Element.prototype.scrollIntoView = scrolled;
+        rememberRow(EVT(2), 640);
+        window.location.hash = `#row-${EVT(2)}`;
+        try {
+            renderInbox(view({ items: [item(), item({ id: EVT(2) })] }), true);
+            expect(scrolledTo).toHaveBeenCalledWith(0, 640);
+            expect(scrolled.mock.contexts).not.toContain(document.getElementById(`row-${EVT(2)}`));
+            expect(document.getElementById(`row-${EVT(2)}`)).toHaveFocus();
+        } finally {
+            window.location.hash = '';
+            scrolledTo.mockRestore();
+            box.mockRestore();
+            Element.prototype.scrollIntoView = original;
+        }
+    });
+
+    it('scrolls a row it has no memory of into view, and focuses it', () => {
+        const scrolled = vi.fn();
+        const original = Element.prototype.scrollIntoView;
+        Element.prototype.scrollIntoView = scrolled;
+        window.location.hash = `#row-${EVT(2)}`;
+        try {
+            renderInbox(view({ items: [item(), item({ id: EVT(2) })] }), true);
+            const row = document.getElementById(`row-${EVT(2)}`)!;
+            expect(scrolled.mock.contexts).toContain(row);
+            expect(row).toHaveFocus();
+        } finally {
+            window.location.hash = '';
+            Element.prototype.scrollIntoView = original;
+        }
+    });
+
+    it('leaves a plain visit to the list alone', () => {
+        const scrolledTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
+        rememberRow(EVT(2), 640);
+        try {
+            renderInbox(view({ items: [item(), item({ id: EVT(2) })] }), true);
+            expect(scrolledTo).not.toHaveBeenCalled();
+            expect(document.getElementById(`row-${EVT(2)}`)).not.toHaveFocus();
+        } finally {
+            scrolledTo.mockRestore();
+        }
     });
 });
