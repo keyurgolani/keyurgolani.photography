@@ -1,6 +1,7 @@
 import type { Locator, Page } from '@playwright/test';
 import { artist } from '../data/artist';
 import { expectNoA11yViolations } from './support/a11y';
+import { STAND_IN_PORTRAIT } from './support/aboutPortrait';
 import { expectFocusRingVisible, expectNoFadeOnBlur, expectRingNotClipped } from './support/focus';
 import { waitForHydration } from './support/hydration';
 import { expectReflow } from './support/reflow';
@@ -126,6 +127,8 @@ test('the Site source link and the rest drop their focus ring at once on blur', 
 // #12's statement and portrait: the content from data/artist.ts, the reading
 // order, the portrait's size, alt, and fallback, long copy, 200% text, and
 // stacking. The motion checks on the portrait are in about-links.spec.ts.
+// The portrait is the generated stand-in the servers read from their site
+// config folder (e2e/support/write-site-config.ts), never a committed file.
 
 const { profile } = artist;
 /** Absorbs subpixel layout. */
@@ -212,19 +215,35 @@ test.describe('the statement and portrait', () => {
         await expect(primary(page)).toHaveAttribute('data-surface', 'about');
     });
 
-    test('the portrait loads content-hashed through /_next/image with its alt, intrinsic size, and focal point', async ({ page }) => {
+    test("the portrait loads from the host's site config folder, content-hashed, upright, and stripped, with portrait.json's alt and focal point", async ({ page }) => {
         await openAbout(page);
-        const image = portrait(page).getByRole('img', { name: profile.portrait?.alt, exact: true });
-        await expect(image).toHaveAttribute('width', String(profile.portrait?.width));
-        await expect(image).toHaveAttribute('height', String(profile.portrait?.height));
-        await expect(image).toHaveAttribute('sizes', /\S/);
+        const image = portrait(page).getByRole('img', { name: STAND_IN_PORTRAIT.alt, exact: true });
+        await expect(image).toHaveAttribute('width', String(STAND_IN_PORTRAIT.width));
+        await expect(image).toHaveAttribute('height', String(STAND_IN_PORTRAIT.height));
         await expect.poll(() => image.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth > 0)).toBe(true);
         const source = new URL(await image.evaluate((el: HTMLImageElement) => el.currentSrc));
-        expect(source.pathname).toBe('/_next/image');
-        expect(source.searchParams.get('url')).toMatch(/^\/_next\/static\/media\/front\.[\w-]+\.png$/);
-        const { x, y } = profile.portrait?.focalPoint ?? { x: 50, y: 50 };
+        expect(source.pathname).toMatch(/^\/about\/portrait\/[0-9a-f]{32}\/w(400|800|1200|1920)\.(avif|webp)$/);
+        // Stored on its side with EXIF orientation 6: the server turned it upright.
+        const natural = await image.evaluate((el: HTMLImageElement) => ({ width: el.naturalWidth, height: el.naturalHeight }));
+        expect(natural.height).toBeGreaterThan(natural.width);
+        const { x, y } = STAND_IN_PORTRAIT.focalPoint;
         await expect(image).toHaveCSS('object-position', `${x}% ${y}%`);
         await expect(image).toHaveCSS('object-fit', 'cover');
+
+        const response = await page.request.get(source.pathname);
+        expect(response.status()).toBe(200);
+        expect(response.headers()['cache-control']).toBe('public, max-age=31536000, immutable');
+        const body = await response.body();
+        // The stand-in carries EXIF with GPS and a camera serial. None of it reaches a visitor.
+        for (const marker of ['Exif', 'GPS', 'STAND-IN-SERIAL', 'Stand-in Camera']) expect(body.includes(Buffer.from(marker, 'latin1')), marker).toBe(false);
+        // The page names no static or optimizer copy of a portrait.
+        expect(await page.content()).not.toMatch(/_next\/static\/media\/front|assets\/profile|_next\/image\?url=%2F_next%2Fstatic%2Fmedia%2Ffront/);
+    });
+
+    test('a token that is not the current portrait is a no-store 404', async ({ page }) => {
+        const response = await page.request.get(`/about/portrait/${'0'.repeat(32)}/w800.webp`);
+        expect(response.status()).toBe(404);
+        expect(response.headers()['cache-control']).toBe('no-store');
     });
 
     test('come first in main: the first focusable element in main is an external link, after the heading', async ({ page }) => {
@@ -249,8 +268,8 @@ test.describe('the statement and portrait', () => {
         await testInfo.attach(`about-${testInfo.project.name}.png`, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
     });
 
-    test('a failed portrait request leaves the name and alias as text and no broken image', async ({ page }) => {
-        await page.route('**/_next/image**', (route) => route.fulfill({ status: 500, body: '' }));
+    test('a failed portrait request leaves the name panel and no broken image', async ({ page }) => {
+        await page.route('**/about/portrait/**', (route) => route.fulfill({ status: 500, body: '' }));
         await openAbout(page);
         await expect(portrait(page)).toHaveText(caption);
         await expect(main(page).locator('img')).toHaveCount(0);

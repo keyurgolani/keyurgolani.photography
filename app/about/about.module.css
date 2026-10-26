@@ -78,13 +78,16 @@
   }
 }
 
-/* The focal point from data/artist.ts is the object-position, set inline. */
+/* The focal point from the host's portrait.json is the object-position,
+   set inline on .photo as --portrait-focus. The <picture> ResponsivePhoto
+   renders is inline, so the image is placed against .photo directly. */
 .image {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
+  object-position: var(--portrait-focus, 50% 50%);
 }
 
 .caption {
@@ -97,13 +100,19 @@
   overflow-wrap: anywhere;
 }
 
-/* A failed portrait: the same frame and height, with the name and alias as
-   text on paper instead of a broken image. */
+/* No portrait, or one that failed to load: the same frame and height, lit
+   from inside like a paper shade. A soft pool of light sits high in the
+   panel over the shade's horizontal ribs, and the name is set in the
+   statement's serif at the foot, where the photo's caption band would be.
+   It reads as a deliberate name plate, never as a missing image. */
 .fallback {
-  justify-content: center;
+  justify-content: flex-end;
   min-height: clamp(250px, 42svh, 380px);
-  padding: 1.5rem;
-  background: var(--lts-paper);
+  padding: clamp(1.25rem, 1rem + 1.5vw, 2.25rem);
+  background:
+    radial-gradient(ellipse 78% 58% at 50% 36%, rgba(255, 252, 240, 0.96) 0%, rgba(253, 246, 226, 0.7) 42%, rgba(244, 236, 215, 0) 78%),
+    repeating-linear-gradient(180deg, rgba(93, 73, 42, 0.07) 0 1px, transparent 1px 2.125rem),
+    #ecdfbf;
 }
 
 @media (min-width: 64rem) {
@@ -112,14 +121,30 @@
   }
 }
 
-.fallbackName,
-.name {
+.fallbackName {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
   margin: 0;
   color: var(--lts-ink);
-  font-family: var(--font-sans), sans-serif;
-  font-size: 1rem;
-  line-height: 1.4;
   overflow-wrap: anywhere;
+}
+
+.fallbackFullName {
+  max-width: 12ch;
+  font-family: var(--font-serif), serif;
+  font-size: clamp(2.25rem, 1.6rem + 2.2vw, 3.5rem);
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+}
+
+.fallbackAlias {
+  color: var(--lts-ink-soft);
+  font-family: var(--font-sans), sans-serif;
+  font-size: 0.9375rem;
+  line-height: 1.4;
 }
 
 .article {

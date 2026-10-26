@@ -25,6 +25,21 @@ function emptyLibrary(): string {
   return created;
 }
 
+/**
+ * The site config folder both servers read About's portrait from, which
+ * the first server's command fills with the generated stand-in
+ * (e2e/support/write-site-config.ts) before it builds. Made once, like the
+ * empty library, and removed when that process exits.
+ */
+function siteConfig(): string {
+  const existing = process.env.E2E_SITE_CONFIG_DIR;
+  if (existing) return existing;
+  const created = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-site-config-'));
+  process.env.E2E_SITE_CONFIG_DIR = created;
+  process.once('exit', () => fs.rmSync(created, { recursive: true, force: true }));
+  return created;
+}
+
 // The catalog-mode server, for the catalog Home specs. E2E_CATALOG_PORT picks another port.
 const catalogPort = process.env.E2E_CATALOG_PORT || '3101';
 const catalogOrigin = `http://${host}:${catalogPort}`;
@@ -77,7 +92,7 @@ export default defineConfig({
   webServer: [
     {
       // next start warns that output: 'standalone' expects server.js, but it serves.
-      command: `npm run build && npm run start -- --hostname ${host} --port ${port}`,
+      command: `npx tsx e2e/support/write-site-config.ts "${siteConfig()}" && npm run build && npm run start -- --hostname ${host} --port ${port}`,
       url: origin,
       timeout: 240_000,
       reuseExistingServer: !process.env.CI,
@@ -86,7 +101,7 @@ export default defineConfig({
       // build (utils/artistProfile.ts). It belongs here, in the catalog server
       // below, and in metadata.spec.ts's own server only, never in the
       // Dockerfile, Compose files, or workflows.
-      env: { PHOTOGRAPHY_LIBRARY_DIR: emptyLibrary(), ALLOW_PROVISIONAL_COPY: '1' },
+      env: { PHOTOGRAPHY_LIBRARY_DIR: emptyLibrary(), PHOTOGRAPHY_SITE_CONFIG_DIR: siteConfig(), ALLOW_PROVISIONAL_COPY: '1' },
     },
     {
       // Playwright starts these in order, so this one serves the build the first one made, after the cutover.
@@ -94,7 +109,7 @@ export default defineConfig({
       url: `${catalogOrigin}/api/health`,
       timeout: 120_000,
       reuseExistingServer: !process.env.CI,
-      env: { PHOTOGRAPHY_LIBRARY_DIR: emptyLibrary(), PHOTOGRAPHY_DATA_DIR: catalogDataRoot(), ALLOW_PROVISIONAL_COPY: '1' },
+      env: { PHOTOGRAPHY_LIBRARY_DIR: emptyLibrary(), PHOTOGRAPHY_DATA_DIR: catalogDataRoot(), PHOTOGRAPHY_SITE_CONFIG_DIR: siteConfig(), ALLOW_PROVISIONAL_COPY: '1' },
     },
   ],
 });

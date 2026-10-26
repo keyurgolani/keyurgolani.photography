@@ -113,6 +113,14 @@ sudo chmod 700 portfolio-data
 
 If another process writes the photos, such as a file sync tool running as another user, leave `public/assets/photos` out of that `chown` and give uid 1001 only the folders the watcher writes, as [Who owns the photos](docs/data-root.md#who-owns-the-photos) describes. [docs/data-root.md](docs/data-root.md) also covers what the data root holds, backing it up with the library, restoring it, and the one-time migration that gives every photo its ID.
 
+About's photo isn't in the repository or the image either. Put it in `./site-config/about/portrait.jpg` (or `.jpeg`, `.png`, `.webp`), with an optional `./site-config/about/portrait.json` holding its `alt` text and `focalPoint`. `web` mounts the folder read-only and reads it per request, so replacing the file changes About on the next page load, with no rebuild or restart. Without one, About shows the name in its place. [About's portrait](docs/releasing.md#abouts-portrait) has the fields, the limits, and how to swap it:
+
+```bash
+mkdir -p site-config/about
+cp ~/portrait.jpg site-config/about/portrait.jpg
+chmod -R a+rX site-config
+```
+
 Then pull and start:
 
 ```bash
@@ -323,6 +331,7 @@ docker compose -f docker-compose.prod.yml run --rm --no-deps -T -e PHOTOS_ACTOR=
 |----------|-------------|---------|
 | `SITE_URL` | The site's public origin, like `https://keyurgolani.photography`, for share links and the share image URL. Read on every request, never at build time. Unset or invalid, share links point at `http://localhost:3000`, and a production server logs one warning at startup that names the reason, never the value. | none |
 | `PHOTOGRAPHY_LIBRARY_DIR` | Photo library folder for the watcher and `/api/photos`. The site serves photos only from `public/assets/photos`, so leave it unset outside tests. | `public/assets/photos` |
+| `PHOTOGRAPHY_SITE_CONFIG_DIR` | The site config folder, which holds About's portrait as `about/portrait.jpg` (or `.jpeg`, `.png`, `.webp`) and its optional `about/portrait.json`. Read per request, never at build time, and never written. It must sit outside `public/` and the library. `docker-compose.prod.yml` mounts `./site-config` read-only at `/config/site` and sets it there. See [About's portrait](docs/releasing.md#abouts-portrait). | `site-config` |
 | `PHOTOGRAPHY_DATA_DIR` | Private data root for photo identity state and the `/media` sets. It must sit outside `public/` and the library, on a filesystem that supports hard links (not exFAT or FAT), since each version of its documents is written with `link()`. The watcher's identity step runs only once `photos:migrate --apply` has initialized it, and until then the watcher logs why once. Outside production it defaults to `./portfolio-data`, so `npm run images:watch` and the dev compose watch with identity on (every depth, polled) even when it's unset. In production nothing changes until it's set. Both compose files set it to `/data/portfolio` and mount `./portfolio-data` there. To edit a document there by hand, copy its newest version to the next number without changing its owner or mode: from a shell in the watcher's image when it runs in the containers, or as root with `sudo cp -n -p` otherwise. Edit the copy, and do it only while no command runs. Never edit a version in place. [`docs/data-root.md`](docs/data-root.md) has the steps. | `portfolio-data`, none in production |
 
 The Home slideshow interval isn't configurable. It's `HOME_AUTO_ADVANCE_MS` (12000 ms) in `components/home/homePlayback.ts`.

@@ -1,5 +1,6 @@
 import sharp from 'sharp';
 import { profileIdOf } from './ids';
+import type { VariantFormat, VariantWidth } from './variants';
 
 /**
  * Derivative profile 1: processImage()'s encoder settings plus autoOrient()
@@ -28,4 +29,20 @@ export const PROFILE_1 = {
 /** The profile new revisions get, for the installed Sharp and libvips. */
 export function currentProfileId(versions: { sharp: string; vips: string } = { sharp: sharp.versions.sharp, vips: sharp.versions.vips }): string {
     return profileIdOf(PROFILE_1, versions);
+}
+
+/**
+ * Encode one variant the way profile 1 says: upright, inside the width and
+ * the height cap, never enlarged, and with no metadata, since Sharp writes
+ * none unless asked. The watcher's sets and About's portrait both use it.
+ */
+export async function encodeVariant(source: Buffer, width: VariantWidth, format: VariantFormat, options: { limitInputPixels?: number } = {}): Promise<Buffer> {
+    const recipe = PROFILE_1.variants[width];
+    const resized = sharp(source, options).autoOrient().resize(recipe.width, PROFILE_1.maxHeight, PROFILE_1.resize);
+    return (format === 'avif' ? resized.avif(recipe.avif) : resized.webp(recipe.webp)).toBuffer();
+}
+
+/** The width a variant comes out at from an upright `width` x `height` source: inside its target width and the height cap, never enlarged. */
+export function variantWidthFor(width: number, height: number, target: number): number {
+    return Math.max(1, Math.round(width * Math.min(target / width, PROFILE_1.maxHeight / height, 1)));
 }

@@ -1,36 +1,29 @@
-import type { StaticImageData } from 'next/image';
 import React from 'react';
 import ExternalLinks from '../../components/ExternalLinks';
 import type { ArtistProfile, ExternalDestination } from '../../data/artist';
+import type { AboutPortraitView } from '../../lib/siteConfig/portraitVariants';
 import ArtistPortrait from './ArtistPortrait';
-import NameLine from './NameLine';
 import styles from './about.module.css';
 
 export interface AboutViewProps {
   profile: ArtistProfile;
-  /** The portrait file, used only when the profile has a portrait. */
-  portraitSrc: StaticImageData | string;
+  /** The host's portrait, or null for the no-photo layout. */
+  portrait: AboutPortraitView | null;
   destinations: ExternalDestination[];
 }
 
 /**
  * About on Light Takes Shape paper. Inside main the DOM order is the reading
- * order at every width: the portrait (or the name, without one), the
+ * order at every width: the portrait (or the name panel, without one), the
  * statement heading, its paragraphs, any biography, then the external links.
  * The CSS never reorders it.
  */
-export default function AboutView({ profile, portraitSrc, destinations }: AboutViewProps) {
-  const { name, alias, portrait } = profile;
+export default function AboutView({ profile, portrait, destinations }: AboutViewProps) {
+  const { name, alias } = profile;
   return (
     <main data-surface="about" className={styles.root}>
       <div className={styles.layout}>
-        {portrait ? (
-          <ArtistPortrait portrait={{ ...portrait, src: portraitSrc }} name={name} alias={alias} />
-        ) : (
-          <p data-testid="about-portrait" className={styles.name}>
-            <NameLine name={name} alias={alias} />
-          </p>
-        )}
+        <ArtistPortrait portrait={portrait} name={name} alias={alias} />
         <article className={styles.article}>
           <h1 data-testid="about-heading" className={styles.heading}>
             {profile.statementHeading}

@@ -4,11 +4,13 @@ import { DERIVATIVE_FOLDERS } from './lib/derivativeFolders.mjs';
 const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
-  // lib/storage/config.ts keeps its run-time paths out of the trace. These
-  // excludes keep out the default data root, whose registry holds curator-only
-  // metadata, and the library's original photos, should anything else reach them.
+  // lib/storage/config.ts and lib/siteConfig/dir.ts keep their run-time paths
+  // out of the trace. These excludes keep out the default data root, whose
+  // registry holds curator-only metadata, the library's original photos, and
+  // the default site config folder, whose portrait is read from the host and
+  // never ships in the image, should anything else reach them.
   outputFileTracingExcludes: {
-    '*': ['./portfolio-data/**/*', './public/assets/photos/**/*'],
+    '*': ['./portfolio-data/**/*', './public/assets/photos/**/*', './site-config/**/*'],
   },
   images: {
     formats: ['image/avif', 'image/webp'],

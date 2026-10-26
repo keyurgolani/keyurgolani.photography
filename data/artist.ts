@@ -1,6 +1,8 @@
 /**
  * The artist's authored details: About's profile and its external
- * destinations. Only people edit this file. Photo ingestion, EXIF, and the
+ * destinations. The portrait isn't here: it's a file on the host, read at run
+ * time from the site config folder, with its alt text and focal point beside
+ * it (lib/siteConfig/aboutPortrait.ts). Only people edit this file. Photo ingestion, EXIF, and the
  * catalog never write it, and it compiles at `next build`. Copy is plain text
  * that renders as React text, with no markup, class names, or layout hints.
  */
@@ -30,27 +32,10 @@ export type ExternalDestination = {
  */
 export type CopyStatus = 'provisional' | 'approved';
 
-/**
- * The portrait's authored facts. The file itself is a static import in
- * `data/artistPortraitImage.ts`, since Playwright, which imports this module,
- * can't load a `.png`. Swapping the portrait changes that import and these
- * fields together.
- */
-export type ArtistPortrait = {
-  /** The file's intrinsic size in px. */
-  width: number;
-  height: number;
-  alt: string;
-  /** Percent from the top left, 0 to 100. The crop's `object-position`, 50/50 when unset. */
-  focalPoint?: { x: number; y: number };
-};
-
 export type ArtistProfile = {
   copyStatus: CopyStatus;
   name: string;
   alias?: string;
-  /** Unset, About shows the name and alias in its place. */
-  portrait?: ArtistPortrait;
   /** About's `h1`. */
   statementHeading: string;
   statementParagraphs: string[];
@@ -73,12 +58,6 @@ export const artist: Artist = {
     copyStatus: 'approved',
     name: 'Keyur Golani',
     alias: 'ISerialClicker',
-    portrait: {
-      width: 3394,
-      height: 3620,
-      alt: 'Keyur Golani in aviator sunglasses and a dark knit turtleneck, smiling toward the camera',
-      focalPoint: { x: 52, y: 26 },
-    },
     statementHeading: 'A curious soul',
     statementParagraphs: [
       "I'm a software engineer doing photography. I photograph where I live, in the Pacific Northwest, and when I travel.",

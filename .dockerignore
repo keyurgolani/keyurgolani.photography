@@ -29,3 +29,6 @@ public/assets/photos/*
 !public/assets/photos/README.md
 !public/assets/photos/.gitkeep
 portfolio-data
+# The site config folder, so a checkout holding the owner's portrait never
+# copies it into the image. web reads it from a read-only mount instead.
+site-config
