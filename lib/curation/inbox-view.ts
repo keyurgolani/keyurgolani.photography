@@ -111,6 +111,8 @@ export const STATUS_LABELS: Record<CurationEventStatus, string> = {
     deferred: 'Left for later',
     dismissed: 'Dismissed',
     approved: 'Suggestion approved',
+    // #17's: the watcher, a bind, or an archive closed it, since what it reported is over.
+    resolved: 'Resolved',
 };
 
 /** The status of a confirmed replacement (#17), which was never a suggestion. */
@@ -509,6 +511,7 @@ export function systemResponse(item: StateFacts, labelOf: (seriesId: string) => 
         return held.length > 0 ? `In the draft, in ${joined(held.map(labelOf))}. Nothing publishes until you publish.` : 'In the draft, unassigned. Nothing publishes until you publish.';
     }
     if (item.status === 'dismissed') return 'Dismissed, so it needs no judgment. Nothing a visitor sees changed.';
+    if (item.status === 'resolved') return 'Resolved, so it needs no judgment.';
     return SYSTEM_RESPONSE[item.type];
 }
 
