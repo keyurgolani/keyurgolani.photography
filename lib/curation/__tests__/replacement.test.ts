@@ -16,6 +16,7 @@ import { approveEvent, deferEvent, reopenEvent, retryEvent } from '../actions';
 import { createCandidateSink, replacementEventIds, settleCandidates, settlingAfterBuild } from '../candidates';
 import { curationUsage, runCurationCli } from '../commands';
 import { eventIdOf, eventKey, type CurationEvent } from '../events';
+import { DONE_ANSWER } from '../inbox-view';
 import { listEvents, readEvent, withCurationLock, writeEvent } from '../repository';
 import { confirmReplacement, leaveInDraft } from '../resolutions';
 import { createCurationSink } from '../sink';
@@ -36,6 +37,13 @@ import {
     type Images,
     type World,
 } from './replacementWorld';
+
+// The inbox page's server actions, past requireCurator() (the route-inventory test covers its refusals), and with no
+// Next request for revalidatePath() to refresh.
+const revalidated = vi.hoisted(() => [] as string[]);
+vi.mock('@/lib/curation/auth', async (importOriginal) => ({ ...(await importOriginal<object>()), requireCurator: async () => ({}) }));
+vi.mock('next/cache', () => ({ revalidatePath: (path: string) => void revalidated.push(path) }));
+const { deferItem } = await import('../../../app/curation/inbox/actions');
 
 /**
  * #17-1 on temp roots, through #10's real writer and #13's real publish:
@@ -210,6 +218,24 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         // Confirm from there pins B again.
         expect(await confirm(w, (left as { event: CurationEvent }).event)).toMatchObject({ ok: true, event: { decisions: expect.arrayContaining([expect.objectContaining({ action: 'confirm', fromRevision: w.a })]) } });
         expect((await photoRecord(w)).assetRevision).toBe(w.b);
+    });
+
+    it('puts the revision back the same way when the inbox page leaves it for later, and says the draft changed', async () => {
+        const w = await world();
+        await w.build(w.job(w.b));
+        const confirmed = await confirm(w, await w.event());
+        expect(confirmed).toMatchObject({ ok: true });
+        const reopened = await reopen(w, (confirmed as { event: CurationEvent }).event);
+        expect((await photoRecord(w)).assetRevision).toBe(w.b);
+
+        const form = new FormData();
+        for (const [name, value] of Object.entries({ eventId: reopened.id, version: String(reopened.version), base: w.revisionId ?? 'none' })) form.set(name, value);
+        revalidated.length = 0;
+        const state = await deferItem({ status: 'idle' }, form);
+        expect(state).toMatchObject({ status: 'done', action: 'defer', eventId: reopened.id, message: DONE_ANSWER.putBack });
+        expect(revalidated).toEqual(['/curation/inbox']);
+        expect((await w.event(reopened.id)).decisions.at(-1)).toMatchObject({ action: 'defer', fromRevision: w.a, writes: [{ record: `photo:${w.p}` }] });
+        expect((await photoRecord(w)).assetRevision).toBe(w.a);
     });
 
     it('puts A back after B went live, and the next publish ships A', async () => {
@@ -480,6 +506,18 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         const left = await leave(w, await w.event());
         expect(left).toMatchObject({ ok: true, event: { status: 'deferred' } });
         expect(left.ok && left.notes.join(' ')).toContain(`keeps ${w.a}`);
+        expect(treeBytes(path.join(w.root, 'authored'))).toEqual(before);
+    });
+
+    it('leaves an item never confirmed for later from the inbox page with no write, and says nothing in the draft changed', async () => {
+        const w = await world();
+        await w.build(w.job(w.b));
+        const before = treeBytes(path.join(w.root, 'authored'));
+        const event = await w.event();
+        const form = new FormData();
+        for (const [name, value] of Object.entries({ eventId: event.id, version: String(event.version), base: w.revisionId ?? 'none' })) form.set(name, value);
+        expect(await deferItem({ status: 'idle' }, form)).toMatchObject({ status: 'done', action: 'defer', message: DONE_ANSWER.defer });
+        expect(await w.event(event.id)).toMatchObject({ status: 'deferred' });
         expect(treeBytes(path.join(w.root, 'authored'))).toEqual(before);
     });
 });

@@ -66,7 +66,16 @@ export const DEFER_LABEL = 'Decide later';
 export const DONE_ANSWER = {
     approve: 'Approved into the draft. Nothing is published until you publish.',
     defer: 'Left for later. Nothing in the draft changed.',
+    /** Decide later on a reopened replacement whose confirm it undid: #17's leaveInDraft() put the earlier version back. */
+    putBack: 'Left for later. The draft is back on the earlier version of this photograph, so the next publish ships that one, not the new one.',
 } as const;
+
+/** What each answer says on the page it opens, which names the file it decided. */
+const ARRIVAL_HEAD: Record<keyof typeof DONE_ANSWER, (fileName: string) => string> = {
+    approve: (fileName) => `Approved ${fileName} into the draft. Nothing is published until you publish.`,
+    defer: (fileName) => `Left ${fileName} for later. Nothing in the draft changed.`,
+    putBack: (fileName) => `Left ${fileName} for later. The draft is back on its earlier version, so the next publish ships that one, not the new one.`,
+};
 
 /**
  * The answer an approval or Decide later carries to the page it opens. That
@@ -74,9 +83,10 @@ export const DONE_ANSWER = {
  * (design review, 2026-10-25). `message` is the action's own answer; any
  * notes after its first sentences, such as a missing description, follow.
  */
-export function arrivalMessage(action: keyof typeof DONE_ANSWER, fileName: string, message: string): string {
-    const head = action === 'approve' ? `Approved ${fileName} into the draft. Nothing is published until you publish.` : `Left ${fileName} for later. Nothing in the draft changed.`;
-    const notes = message.startsWith(DONE_ANSWER[action]) ? message.slice(DONE_ANSWER[action].length).trim() : '';
+export function arrivalMessage(action: 'approve' | 'defer', fileName: string, message: string): string {
+    const answer = action === 'defer' && message.startsWith(DONE_ANSWER.putBack) ? 'putBack' : action;
+    const head = ARRIVAL_HEAD[answer](fileName);
+    const notes = message.startsWith(DONE_ANSWER[answer]) ? message.slice(DONE_ANSWER[answer].length).trim() : '';
     return notes ? `${head} ${notes}` : head;
 }
 

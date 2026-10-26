@@ -199,7 +199,7 @@ export function editEvent(input: ActionInput & { choices: Choices }): Promise<Ac
     });
 }
 
-/** Defer: leave it in the draft for later (the inbox's Decide later). The CLI's defer runs #17's leaveInDraft(), which is this for every type but a confirmed replacement. */
+/** Defer: leave it in the draft for later. The CLI's defer and the inbox's Decide later run #17's leaveInDraft(), which is this for every type but a confirmed replacement. */
 export function deferEvent(input: ActionInput & { reason?: string }): Promise<ActionOutcome> {
     return act(input, async (step) => {
         requireStatus(step.event, ['open', 'failed'], 'deferred');

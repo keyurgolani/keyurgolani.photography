@@ -1,10 +1,11 @@
 import { REVISION_ID_RE, SERIES_ID_RE } from '../catalog/schema';
 import { PHOTO_ID_RE } from '../identity/ids';
 import { dataRootStatus, libraryRoot } from '../storage/config';
-import { approveEvent, deferEvent, dismissEvent, editEvent, reopenEvent, retryEvent, type ActionInput, type ActionOutcome, type Choices } from './actions';
+import { approveEvent, dismissEvent, editEvent, reopenEvent, retryEvent, type ActionInput, type ActionOutcome, type Choices } from './actions';
 import { scrub } from './commands';
 import { EVENT_ID_RE, type CuratorDescription } from './events';
 import { DONE_ANSWER, parsePlacementValue, type InboxActionKind, type InboxActionState } from './inbox-view';
+import { leaveInDraft } from './resolutions';
 import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from './text';
 
 /**
@@ -216,7 +217,9 @@ export async function runInboxAction(kind: InboxActionKind, form: unknown, optio
                 outcome = await editEvent({ ...input, choices: choicesFrom(form, 'edit') });
                 break;
             case 'defer':
-                outcome = await deferEvent({ ...input, reason: reasonFrom(form, false) });
+                // As the CLI's defer: #17's leaveInDraft(), which is 14-1's defer for every type but a replacement. On a
+                // reopened replacement whose confirm landed, it puts back the revision that confirm replaced, as reopen's note says.
+                outcome = await leaveInDraft({ ...input, reason: reasonFrom(form, false) });
                 break;
             case 'dismiss':
                 outcome = await dismissEvent({ ...input, reason: reasonFrom(form, true) as string });
@@ -237,7 +240,9 @@ export async function runInboxAction(kind: InboxActionKind, form: unknown, optio
     if (outcome.ok) {
         // An approval's later notes say what still holds publishing back, such as a missing or unreviewed description.
         const extra = kind === 'approve' ? outcome.notes.slice(1) : [];
-        return answer('done', outcome.event.id, [DONE[kind], ...extra].join(' '));
+        // Decide later that put an earlier revision back changed the draft, so it can't say nothing did.
+        const head = kind === 'defer' && (outcome.event.decisions.at(-1)?.writes?.length ?? 0) > 0 ? DONE_ANSWER.putBack : DONE[kind];
+        return answer('done', outcome.event.id, [head, ...extra].join(' '));
     }
     if (outcome.code === 'stale' || outcome.code === 'not-found') return answer('stale', input.eventId, staleWording(outcome.code, outcome.message));
     if (outcome.code === 'locked') return answer('busy', input.eventId, 'Another change is being written right now, so nothing was written. Try again in a moment.');
