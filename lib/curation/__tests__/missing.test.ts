@@ -18,6 +18,7 @@ import { approveEvent, retryEvent } from '../actions';
 import { pendingMergeOf } from '../binds';
 import { withCurationLock } from '../repository';
 import { inboxAlertLines, inboxAlerts } from '../alerts';
+import { pageWording } from '../inbox-form';
 import { parseCurationArgs, runCurationCli } from '../commands';
 import type { CurationEvent } from '../events';
 import { listEvents } from '../repository';
@@ -436,7 +437,10 @@ describe('other bytes back', { timeout: 60_000 }, () => {
 
         const authored = treeBytes(path.join(w.root, 'authored'));
         const approve = () => approveEvent({ root: w.root, eventId: newItem.id, expectedVersion: newItem.version, expectedBase: w.revisionId, actor: ACTOR, choices: { seriesId: SERIES, placement: 'end' } });
-        expect(await approve()).toMatchObject({ ok: false, code: 'refused', message: expect.stringContaining(`${n} is merged into ${w.p} by the bind decision`) });
+        const refused = await approve();
+        expect(refused).toMatchObject({ ok: false, code: 'refused', message: expect.stringContaining(`${n} is merged into ${w.p} by the bind decision`) });
+        // The inbox page says why, with no ID in it.
+        expect(pageWording((refused as { message: string }).message)).toBe("A bind waiting for the watcher's next pass merges this photograph into another one, so it can't be approved. If the watcher refuses the bind, approve it then. Nothing was written.");
         const run = await runCurationCli(['approve', newItem.id, '--version', String(newItem.version), '--base', w.revisionId, '--series', SERIES, '--end'], { dataRoot: w.root, libraryRoot: w.lib.root }, {});
         expect(run.exitCode).toBe(1);
         expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
