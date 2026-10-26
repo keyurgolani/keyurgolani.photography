@@ -1,7 +1,10 @@
 // @vitest-environment node
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { NextRequest } from 'next/server';
 import { unstable_doesMiddlewareMatch, unstable_getResponseFromNextConfig } from 'next/experimental/testing/server';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import nextConfig from '../next.config.mjs';
 import { CURATOR_FRAME_POLICY, CURATOR_RESPONSE_HEADERS } from '../lib/curation/auth/policy';
 import { config, proxy } from '../proxy';
@@ -61,6 +64,16 @@ describe('proxy.ts with CURATION_ENABLED off', () => {
 });
 
 describe('proxy.ts with CURATION_ENABLED=true', () => {
+    let emptyDataRoot = '';
+
+    beforeAll(() => {
+        emptyDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'curator-data-root-'));
+    });
+
+    afterAll(() => {
+        fs.rmSync(emptyDataRoot, { recursive: true, force: true });
+    });
+
     beforeEach(() => {
         vi.stubEnv('CURATION_ENABLED', 'true');
     });
@@ -112,6 +125,8 @@ describe('proxy.ts with CURATION_ENABLED=true', () => {
     });
 
     it('holds every path on the curator process to the Host allowlist, the public ones too', async () => {
+        // An empty data root, so the legacy derivative below passes on an allowed Host (legacy mode).
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', emptyDataRoot);
         for (const pathname of ['/', '/gallery', '/api/photos', '/api/health', '/media/p/r/w/x.webp', '/assets/photos/optimized/a.webp']) {
             for (const host of ['keyurgolani.photography', 'rebound.example:3001', '127.0.0.1:3000']) {
                 const response = await send(pathname, { headers: { host } });

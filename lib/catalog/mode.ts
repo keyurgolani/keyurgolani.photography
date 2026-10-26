@@ -13,8 +13,20 @@ export interface ModeCheck {
     unreadable?: string;
 }
 
-/** Data roots this process has seen cut over. */
-const cutOver = new Set<string>();
+/**
+ * Where the process keeps the data roots it has seen cut over. The build
+ * inlines this module separately into the proxy and into each server
+ * bundle, so a module-level Set would give each its own memory, and the
+ * proxy could forget a cutover /api/ready remembers. One Set on globalThis,
+ * under a registered symbol every copy finds, is the process's only memory.
+ */
+export const CUTOVER_KEY = Symbol.for('keyurgolani.photography.catalogCutover');
+
+/** Data roots this process has seen cut over, shared by every bundle. */
+function cutOver(): Set<string> {
+    const store = globalThis as typeof globalThis & { [CUTOVER_KEY]?: Set<string> };
+    return (store[CUTOVER_KEY] ??= new Set<string>());
+}
 
 type Evidence = { found: boolean } | { unreadable: string };
 
@@ -84,11 +96,11 @@ async function hasCommittedActivation(root: string): Promise<Evidence> {
 export async function checkCatalogMode(root: string | null, read?: PointerRead): Promise<ModeCheck> {
     if (root === null) return { mode: 'legacy' };
     const resolved = path.resolve(/*turbopackIgnore: true*/ root);
-    if (cutOver.has(resolved)) return { mode: 'catalog' };
+    if (cutOver().has(resolved)) return { mode: 'catalog' };
     const pointer = pointerEvidence(read ?? await readPointer(resolved));
     const committed = 'found' in pointer && pointer.found ? pointer : await hasCommittedActivation(resolved);
     if (('found' in pointer && pointer.found) || ('found' in committed && committed.found)) {
-        cutOver.add(resolved);
+        cutOver().add(resolved);
         return { mode: 'catalog' };
     }
     if ('unreadable' in pointer) return { mode: 'catalog', unreadable: pointer.unreadable };

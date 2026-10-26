@@ -5,8 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { NextRequest } from 'next/server';
 import { unstable_doesMiddlewareMatch } from 'next/experimental/testing/server';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { VARIANT_BYTES } from '../lib/catalog/__tests__/catalogFixtures';
+import { CUTOVER_KEY } from '../lib/catalog/mode';
 import { publish } from '../lib/catalog/publish';
 import { createTestCatalog, type TestCatalog } from '../lib/catalog/testing';
 import { catalogPaths } from '../lib/catalog/working-layer';
@@ -50,6 +51,7 @@ async function expectImageRefused(url: string, run: Proxy = proxy): Promise<void
 /** A fresh copy of the proxy and the mode check behind it, as a newly started server has: no cutover remembered. */
 async function freshProxy(): Promise<Proxy> {
     vi.resetModules();
+    Reflect.deleteProperty(globalThis, CUTOVER_KEY);
     return (await import('../proxy')).proxy;
 }
 
@@ -305,6 +307,87 @@ describe('the switch at the launch', { timeout: 60_000 }, () => {
         }
         // Nothing showed a cutover, so nothing is remembered.
         expect(await passes(thumbnail, run)).toBe(true);
+    });
+});
+
+describe('the data root the mode is read from', { timeout: 60_000 }, () => {
+    const thumbnail = '/assets/photos/thumbnails/landscape.webp';
+    const nodeEnv = process.env.NODE_ENV;
+
+    afterEach(() => {
+        vi.stubEnv('NODE_ENV', nodeEnv);
+    });
+
+    /** The legacy derivative and its /_next/image copy both serve, or both are refused. */
+    async function expectServes(serves: boolean): Promise<void> {
+        if (serves) {
+            expect(await passes(thumbnail), thumbnail).toBe(true);
+            expect(await passes(imageUrl(thumbnail)), thumbnail).toBe(true);
+        } else {
+            await expectNotFound(thumbnail);
+            await expectImageRefused(imageUrl(thumbnail));
+        }
+        // An original never serves.
+        await expectNotFound('/assets/photos/landscape.jpg');
+    }
+
+    it('refuses them with no data root, as in production with PHOTOGRAPHY_DATA_DIR unset, where the legacy pages answer 503', async () => {
+        vi.stubEnv('NODE_ENV', 'production');
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', '');
+        await expectServes(false);
+    });
+
+    it('refuses them while nothing is at the data root\'s path', async () => {
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', path.join(legacyRoot(), 'missing'));
+        await expectServes(false);
+    });
+
+    it('refuses them while a file is at the data root\'s path', async () => {
+        const file = path.join(legacyRoot(), 'data-root');
+        fs.writeFileSync(file, '');
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', file);
+        await expectServes(false);
+    });
+
+    it('serves them from an empty data root, as on a host before the migration and in the release smoke', async () => {
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', legacyRoot());
+        await expectServes(true);
+    });
+
+    it('serves them from a data root with no data-root.json and no catalog revision yet', async () => {
+        const root = legacyRoot();
+        fs.mkdirSync(catalogPaths(root).active, { recursive: true });
+        fs.mkdirSync(catalogPaths(root).activationsDir, { recursive: true });
+        fs.writeFileSync(path.join(root, 'notes.txt'), 'not initialized');
+        expect(fs.existsSync(path.join(root, 'data-root.json'))).toBe(false);
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', root);
+        await expectServes(true);
+    });
+
+    it('refuses them while the data root can\'t be read, and serves them again once it can', async () => {
+        const root = legacyRoot();
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', root);
+        fs.chmodSync(root, 0o000);
+        try {
+            await expectServes(false);
+        } finally {
+            fs.chmodSync(root, 0o700);
+        }
+        await expectServes(true);
+    });
+
+    it('refuses them on a data root with a live catalog revision', async () => {
+        const catalog = await testCatalog(35);
+        await launch(catalog.root);
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', catalog.root);
+        await expectServes(false);
+    });
+
+    it('refuses them while the data root\'s catalog is a file', async () => {
+        const root = legacyRoot();
+        fs.writeFileSync(catalogPaths(root).dir, '');
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', root);
+        await expectServes(false);
     });
 });
 
