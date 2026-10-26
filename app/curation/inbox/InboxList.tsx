@@ -1,5 +1,6 @@
 import { ImageOff, RefreshCw } from 'lucide-react';
 import styles from '../curator.module.css';
+import EmptyArrival from './EmptyArrival';
 import EventBadge from './EventBadge';
 import ReturnToRow from './ReturnToRow';
 import { summaryText, type InboxItem, type InboxView, type ItemGroup } from '@/lib/curation/inbox-view';
@@ -82,9 +83,13 @@ export default function InboxList({ view, listView = false }: { view: ReadyView;
                     </button>
                 </form>
             </header>
+            {/* The last decision's answer, when it left nothing else to decide. */}
+            <EmptyArrival active={view.needsJudgment === 0} />
             {view.items.length === 0 && view.problems.length === 0 ? (
                 <div className={styles.empty}>
-                    <h2>Nothing requires judgment</h2>
+                    <h2 id="inbox-empty" tabIndex={-1}>
+                        Nothing requires judgment
+                    </h2>
                     <p>Add photographs to the library folder. The watcher picks them up, and each one shows up here as a draft suggestion. Nothing publishes from the inbox.</p>
                 </div>
             ) : null}
@@ -95,7 +100,9 @@ export default function InboxList({ view, listView = false }: { view: ReadyView;
                     ))}
                 </ul>
             ) : view.items.length > 0 ? (
-                <p className={styles.empty}>Nothing requires judgment right now.</p>
+                <p className={styles.empty} id="inbox-empty" tabIndex={-1}>
+                    Nothing requires judgment right now.
+                </p>
             ) : null}
             {others
                 .filter(({ items }) => items.length > 0)

@@ -236,8 +236,10 @@ async function seriesOptions(root: string): Promise<{ series: SeriesOption[]; pr
 
 /**
  * The inbox as the page shows it, with `selectedId`'s event in full. With no
- * selection, the first item that needs judgment is selected. A data root
- * that isn't ready is `not-ready`, and nothing else is read.
+ * selection, the first item that needs judgment is selected, and none when
+ * nothing does, so the page shows its empty state (as it does once the last
+ * decision opens no next item). A data root that isn't ready is
+ * `not-ready`, and nothing else is read.
  */
 export async function loadInbox(selectedId: string | null): Promise<InboxView> {
     const status = dataRootStatus();
@@ -258,7 +260,7 @@ export async function loadInbox(selectedId: string | null): Promise<InboxView> {
     const { series, problem } = await seriesOptions(root);
 
     const wanted = selectedId !== null && EVENT_ID_RE.test(selectedId) ? selectedId : null;
-    const fallback = items.find((item) => item.group === 'judgment') ?? items.find((item) => item.group !== 'settled') ?? null;
+    const fallback = items.find((item) => item.group === 'judgment') ?? null;
     const chosen = selectedId === null ? fallback : wanted === null ? null : (items.find((item) => item.id === wanted) ?? null);
     const event = chosen ? events.find((entry) => entry.id === chosen.id) ?? null : null;
 

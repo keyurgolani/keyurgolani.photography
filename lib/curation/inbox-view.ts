@@ -442,6 +442,26 @@ export function seriesMembershipText(photoId: string | null, references: readonl
     return rows.length === 0 ? 'In no series' : rows.join('; ');
 }
 
+/**
+ * The item to open after an approval or Decide later (owner, 2026-10-25):
+ * the next one after `currentId` in `seen`, the list order the curator saw,
+ * that still needs a decision in `open`, read after the action. It wraps at
+ * the end, and skips any item someone else resolved meanwhile. An item that
+ * arrived since the page loaded comes after those, in `open`'s order. Null
+ * when nothing else needs a decision, so the page shows the empty state.
+ */
+export function nextItemId(seen: readonly string[], currentId: string, open: readonly string[]): string | null {
+    const waiting = new Set(open);
+    waiting.delete(currentId);
+    if (waiting.size === 0) return null;
+    const at = seen.indexOf(currentId);
+    for (let step = 1; step <= seen.length; step += 1) {
+        const id = seen[(at + step) % seen.length];
+        if (waiting.has(id)) return id;
+    }
+    return open.find((id) => waiting.has(id)) ?? null;
+}
+
 /** What a curator action answered, as the page shows it. */
 export type InboxActionKind = 'approve' | 'edit' | 'defer' | 'dismiss' | 'retry' | 'reopen';
 
