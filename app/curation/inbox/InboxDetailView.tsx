@@ -137,11 +137,11 @@ function BackToInbox({ itemId }: { itemId: string | null }) {
 export default function InboxDetailView({ view }: { view: ReadyView }) {
     const detail = view.selected;
     if (detail === null) {
-        // An empty inbox says so once, in the list. On a wide screen the detail side keeps one quiet line, so it isn't blank; a phone shows the list alone then.
-        if (view.items.length === 0 && !view.missingSelection) {
+        // Nothing needs judgment, so nothing is selected: the list says so once. On a wide screen the detail side keeps one quiet line, so it isn't blank; a phone shows the list alone then.
+        if (view.needsJudgment === 0 && !view.missingSelection) {
             return (
                 <section className={`${styles.state} ${styles.emptyPane}`} aria-label="Item">
-                    <p>Nothing to review. A new photograph opens here once the watcher picks it up.</p>
+                    <p>{view.items.length === 0 ? 'Nothing to review. A new photograph opens here once the watcher picks it up.' : 'Nothing left to decide. Pick an item from the list to look at it again.'}</p>
                 </section>
             );
         }
@@ -175,7 +175,7 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
             <div className={styles.fields}>
                 <header className={styles.fieldsHeader}>
                     <div>
-                        {/* tabIndex -1: LandOnItem focuses it when a row opens the item, and it stays out of the tab order. */}
+                        {/* tabIndex -1: LandOnItem focuses it when a row or the next item opens, and it stays out of the tab order. */}
                         <h2 id="item-heading" tabIndex={-1}>
                             {file.name}
                         </h2>
@@ -200,6 +200,8 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
                 <ItemActions
                     key={detail.id}
                     detail={detail}
+                    order={view.items.map((item) => item.id)}
+                    open={view.items.filter((item) => item.group === 'judgment').map((item) => item.id)}
                     activeRevisionId={view.activeRevisionId}
                     series={view.series}
                     seriesProblem={view.seriesProblem}

@@ -4,13 +4,16 @@ import { startTransition, useActionState, useEffect, useRef, useState, type Form
 import { Save } from 'lucide-react';
 import styles from '../curator.module.css';
 import { approveItem, deferItem, dismissItem, editItem, reopenItem, retryItem } from './actions';
+import { itemUrl, moveOn, takeArrival, type Arrival } from './journey';
 import {
     DEFER_LABEL,
+    fileParts,
     defaultDescription,
     defaultPlacement,
     descriptionHint,
     formStart,
     IDLE,
+    nextItemId,
     parsePlacementValue,
     placementLabel,
     placementValue,
@@ -42,6 +45,10 @@ async function dispatchByIntent(previous: InboxActionState, form: FormData): Pro
 
 interface ItemActionsProps {
     detail: InboxDetail;
+    /** Every item's ID, in list order. The order the curator saw is what the next item follows. */
+    order: string[];
+    /** The items that need a decision now, in list order. A finished action's page refresh brings them up to date. */
+    open: string[];
     activeRevisionId: string | null;
     series: SeriesOption[];
     seriesProblem: string | null;
@@ -106,11 +113,25 @@ function slotOf(state: InboxActionState, canDismiss: boolean): AnswerSlot | null
     return 'actions';
 }
 
+/** What the last approval or Decide later did, shown on the item it opened, with the way back to the item it decided. */
+function ArrivalNotice({ arrival, detail }: { arrival: Arrival; detail: InboxDetail }) {
+    return (
+        <div className={`${styles.notice} ${styles.arrival}`} data-tone="done" data-state="done">
+            <p>
+                {arrival.message} Next up: {fileParts(detail.sourcePath).name}.
+            </p>
+            <a className={styles.linkButton} href={itemUrl(arrival.from)}>
+                Open {arrival.fromName} again
+            </a>
+        </div>
+    );
+}
+
 /** A polite live region, there from the start, so an answer put in it is read out. */
-function AnswerRegion({ show, state, detail }: { show: boolean; state: InboxActionState; detail: InboxDetail }) {
+function AnswerRegion({ show, state, detail, arrival = null }: { show: boolean; state: InboxActionState; detail: InboxDetail; arrival?: Arrival | null }) {
     return (
         <div role="status" aria-live="polite" className={styles.answer}>
-            {show ? <Notice state={state} detail={detail} /> : null}
+            {show ? <Notice state={state} detail={detail} /> : arrival ? <ArrivalNotice arrival={arrival} detail={detail} /> : null}
         </div>
     );
 }
@@ -290,8 +311,13 @@ function SuggestionFields({ detail, series, seriesProblem, answer }: Pick<ItemAc
 }
 
 /** 14-1's actions on the selected item, each a form the page's server actions take. */
-export default function ItemActions({ detail, activeRevisionId, series, seriesProblem, note }: ItemActionsProps) {
+export default function ItemActions({ detail, order, open, activeRevisionId, series, seriesProblem, note }: ItemActionsProps) {
     const [state, dispatch, pending] = useActionState(dispatchByIntent, IDLE);
+    // The list order as the page first showed it, so the next item is the one after this in the list the curator saw.
+    const [seen] = useState(order);
+    // The version an approval or Decide later was sent for. Once the page shows a newer one, the refresh after it has landed, and `open` is current.
+    const sentVersion = useRef<number | null>(null);
+    const [arrival, setArrival] = useState<Arrival | null>(null);
     // Submitting by hand, not through <form action>, so React never resets the form after an answer: a reset would put
     // each select back to its page-load option while the curator's choice is still what the form sends.
     const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -299,8 +325,21 @@ export default function ItemActions({ detail, activeRevisionId, series, seriesPr
         const submitter = (event.nativeEvent as SubmitEvent).submitter;
         const form = new FormData(event.currentTarget);
         if (submitter instanceof HTMLButtonElement && submitter.name) form.set(submitter.name, submitter.value);
+        const intent = form.get('intent');
+        sentVersion.current = intent === 'approve' || intent === 'defer' ? detail.version : null;
         startTransition(() => dispatch(form));
     };
+    // The answer an approval or Decide later carried here from the item before, once.
+    useEffect(() => {
+        setArrival(takeArrival(detail.id));
+    }, [detail.id]);
+    // After an approval or Decide later, open the next item that needs a decision (owner, 2026-10-25). Reopen and the rest stay on the item.
+    useEffect(() => {
+        if (state.status !== 'done' || (state.action !== 'approve' && state.action !== 'defer') || state.eventId !== detail.id) return;
+        if (sentVersion.current === null || detail.version === sentVersion.current) return;
+        sentVersion.current = null;
+        moveOn({ to: nextItemId(seen, detail.id, open), from: detail.id, fromName: fileParts(detail.sourcePath).name, message: state.message });
+    }, [state, detail.id, detail.version, detail.sourcePath, seen, open]);
     const primary = PRIMARY_ACTION[detail.type];
     const { can } = detail;
     const unavailable = primary !== undefined && detail.type !== 'new' && detail.primaryUnavailable !== null;
@@ -366,7 +405,7 @@ export default function ItemActions({ detail, activeRevisionId, series, seriesPr
             ) : null}
 
             {/* Every answer but a dismissal or a refused description lands here, right under the buttons that produced it. */}
-            <AnswerRegion show={slot === 'actions'} state={state} detail={detail} />
+            <AnswerRegion show={slot === 'actions'} state={state} detail={detail} arrival={state.status === 'idle' ? arrival : null} />
 
             {can.dismiss ? (
                 <details className={styles.more}>

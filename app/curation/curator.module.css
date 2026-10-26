@@ -354,9 +354,13 @@
   display: none;
 }
 
-/* The item's heading takes focus when a row opens the item. It isn't a control, so it shows no ring. */
+/* The item's heading takes focus when a row or the next item opens. It isn't a control, so it shows no ring. */
 .fieldsHeader h2:focus,
-.fieldsHeader h2:focus-visible {
+.fieldsHeader h2:focus-visible,
+.list .empty:focus,
+.list .empty h2:focus,
+.list .empty h2:focus-visible,
+.list .empty:focus-visible {
   outline: none;
   box-shadow: none !important;
 }
@@ -685,6 +689,11 @@ p.fieldError {
 
 .notice p {
   margin: 0;
+}
+
+/* The answer an approval or Decide later brought to the page it opened. In the list it needs the list's own inset. */
+.list .arrival {
+  margin: 1rem 1rem 0;
 }
 
 .notice a,
