@@ -155,7 +155,9 @@ const REFUSAL_WORDING: [RegExp, (match: RegExpMatchArray) => string][] = [
     [/is already in .*an approval doesn't take a photograph out of a series/, () => "This photograph is already in a series, and approving doesn't take it out of one. Keep its series to approve it. Nothing was written."],
     [/can't be read, so nothing shows whether one holds/, () => "A series can't be read, so nothing shows whether one still holds this photograph. Nothing was written."],
     [/^There is no series /, () => "That series isn't in the working layer any more. Refresh the inbox. Nothing was written."],
-    [/ is (open|deferred|dismissed|approved|failed), so it can't be ([a-z]+)\./, (match) => `This item is ${match[1]}, so it can't be ${match[2]}. Refresh the inbox.`],
+    [/ is (open|deferred|dismissed|approved|failed|resolved), so it can't be ([a-z]+)\./, (match) => `This item is ${match[1]}, so it can't be ${match[2]}. Refresh the inbox.`],
+    // #17's approve, while a bind that merges the photograph waits for the watcher.
+    [/ is merged into .* by the bind decision /, () => "A bind waiting for the watcher's next pass merges this photograph into another one, so it can't be approved. If the watcher refuses the bind, approve it then. Nothing was written."],
     [/^Nothing failed for /, () => "Nothing failed for this photograph, so there's nothing to retry."],
     [/has no photo ID, so there is nothing to retry/, () => "This file has no photo ID, so there's nothing to retry."],
     [/can't be dismissed/, () => "Something still shows this photograph, so it can't be dismissed. Restore the source, or take it out of its series and publish first. Nothing was written."],

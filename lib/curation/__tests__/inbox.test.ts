@@ -16,7 +16,7 @@ import { approveEvent, deferEvent, reopenEvent } from '../actions';
 import { eventIdOf, eventKey, type CurationEvent, type CurationEventType } from '../events';
 import { runCurationCli } from '../commands';
 import { loadInbox } from '../inbox';
-import { runInboxAction, WEB_ACTOR } from '../inbox-form';
+import { pageWording, runInboxAction, WEB_ACTOR } from '../inbox-form';
 import { defaultDescription, defaultPlacement, defaultSeries, formSeries, parsePlacementValue, placementValue, summaryText, type InboxActionState, type InboxView } from '../inbox-view';
 import { eventDir, readEvent, withCurationLock, writeEvent } from '../repository';
 import { createCurationSink } from '../sink';
@@ -231,6 +231,8 @@ describe('loadInbox', () => {
         done(await runInboxAction('reopen', itemForm(event, null)));
         expect(await readEvent(f.root, ids[0])).toMatchObject({ status: 'open', version: event.version + 1 });
         expect(ready(await loadInbox(ids[0])).selected).toMatchObject({ group: 'judgment', can: { approve: true, reopen: false } });
+        // A form sent for it after it was resolved hears so in page words.
+        expect(pageWording(`The event ${ids[0]} is resolved, so it can't be approved. Reopen it first.`)).toBe("This item is resolved, so it can't be approved. Refresh the inbox.");
     });
 
     it('says so when the URL names an item the inbox lacks, and never echoes a malformed one', async () => {
