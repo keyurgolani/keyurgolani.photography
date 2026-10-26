@@ -19,7 +19,7 @@ import styles from './LoaderPortrait.module.css';
  *   and the one layer's own offset at 0, so the image moves only with the
  *   card, and a shadow that follows the tilt (LoaderPortrait.module.css).
  */
-export const LOADER_PORTRAIT_SIZES = '(min-width: 768px) 320px, 256px';
+export const LOADER_PORTRAIT_SIZES = '(min-width: 768px) 324px, 260px';
 
 export default function LoaderPortrait({ portrait, tilt }: { portrait: AboutPortraitView; tilt: boolean }) {
   const { x, y } = portrait.focalPoint;

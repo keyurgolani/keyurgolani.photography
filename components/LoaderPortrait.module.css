@@ -1,13 +1,14 @@
-/* STAGE 1 PROTOTYPE. The size today's two layers paint at: next/image's
-   320 px wide image, at front.png's 3394 x 3620 shape, never wider than the
-   frame (324 px from md up, 260 px below). Any portrait fills that oval with
+/* STAGE 1 PROTOTYPE. The size today's two layers paint at, measured: the
+   frame's full width (324 px from md up, 260 px below; next/image's 800 px
+   rung is wider than that at 2x) at front.png's 3394 x 3620 shape, so
+   324 x 345.5 and 260 x 277.2. Any portrait fills that oval with
    object-fit: cover at its focal point.
    Today's look is two images stacked: two 4 px rings at 30% white (10% dark)
    on top of each other, which reads as one at 51% (19% dark); the back's
    shadow-lg; and the front's drop-shadow-2xl. One image carries all three. */
 .image {
   display: block;
-  width: min(100%, 320px);
+  width: 100%;
   height: auto;
   aspect-ratio: 3394 / 3620;
   object-fit: cover;

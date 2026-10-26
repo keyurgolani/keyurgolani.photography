@@ -77,7 +77,7 @@ await page.route((u) => u.hostname !== '127.0.0.1', (route) => route.abort());
 await page.addInitScript(() => {
     const rec = { start: Date.now(), samples: [], marks: {} };
     window.__rec = rec;
-    const maskEl = () => [...document.querySelectorAll('div')].find((d) => /radial-gradient\(circle/.test(d.style.maskImage || d.style.webkitMaskImage || ''));
+    const maskEl = () => [...document.querySelectorAll('div')].find((d) => /radial-gradient\(/.test(d.style.maskImage || d.style.webkitMaskImage || ''));
     // The loader portrait: the old Home's two layers, or the prototype's single image.
     const portraitImg = () => document.querySelector('img[alt="Profile Front"]') || document.querySelector('[data-loader-portrait] img');
     const fixedAncestor = (el) => {
@@ -95,7 +95,7 @@ await page.addInitScript(() => {
         const img = portraitImg();
         const s = { t };
         if (m) {
-            const g = (m.style.maskImage || m.style.webkitMaskImage).match(/circle ([\d.]+)px/);
+            const g = (m.style.maskImage || m.style.webkitMaskImage).match(/([\d.]+)px at 50% 50%/);
             s.mask = g ? Number(g[1]) : null;
         }
         if (img) {
