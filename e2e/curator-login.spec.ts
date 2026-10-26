@@ -198,8 +198,8 @@ test('during the lock, says only that it is on, how long it has left and the res
             await page.getByRole('button', { name: 'Sign in' }).click();
             await expect(page, label).toHaveURL(`${origin}/curation/login?failed=1`);
             const notice = page.locator('#curator-login-notice');
-            await expect(notice, label).toContainText('Sign-in is paused after five wrong passphrases');
-            await expect(notice, label).toContainText(/Try again in about (?:1[0-5] minutes|a minute), or restart curator on the server\./);
+            await expect(notice, label).toContainText(/^Sign-in is paused for about (?:1[0-5] more minutes|one more minute), after five wrong passphrases\./);
+            await expect(notice, label).toContainText('Restarting curator on the server also ends it.');
             await expect(page.getByText('Check the passphrase'), label).toHaveCount(0);
             await expect(passphrase(page), label).not.toHaveAttribute('aria-invalid', 'true');
             await expect(passphrase(page), label).toHaveAccessibleDescription(/^Sign-in is paused/);

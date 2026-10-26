@@ -13,6 +13,8 @@ interface SameOriginPostFormProps {
   buttonClassName?: string;
   /** For the line that says a post didn't go through. */
   alertClassName?: string;
+  /** Puts that line after the fields, ahead of the button, where a form shows its refusals under the field. It follows the button otherwise. */
+  alertBeforeButton?: boolean;
   /** The fields before the button, if any. */
   children?: ReactNode;
 }
@@ -28,7 +30,16 @@ interface SameOriginPostFormProps {
  * a response sets is kept as for any same-origin fetch. While the post is
  * on its way the form is `aria-busy` and the button says `pendingLabel`.
  */
-export default function SameOriginPostForm({ action, submitLabel, pendingLabel, className, buttonClassName, alertClassName, children }: SameOriginPostFormProps) {
+export default function SameOriginPostForm({
+  action,
+  submitLabel,
+  pendingLabel,
+  className,
+  buttonClassName,
+  alertClassName,
+  alertBeforeButton = false,
+  children,
+}: SameOriginPostFormProps) {
   const [ready, setReady] = useState(false);
   const [sending, setSending] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -55,17 +66,20 @@ export default function SameOriginPostForm({ action, submitLabel, pendingLabel, 
     setSending(false);
   }
 
+  const alert = failed ? (
+    <p className={alertClassName} role="alert">
+      That didn&apos;t go through. Reload the page and try again.
+    </p>
+  ) : null;
+
   return (
     <form className={className} method="post" action={action} onSubmit={submit} aria-busy={sending || undefined}>
       {children}
+      {alertBeforeButton ? alert : null}
       <button className={buttonClassName} type="submit" disabled={!ready || sending}>
         {sending && pendingLabel ? pendingLabel : submitLabel}
       </button>
-      {failed ? (
-        <p className={alertClassName} role="alert">
-          That didn&apos;t go through. Reload the page and try again.
-        </p>
-      ) : null}
+      {alertBeforeButton ? null : alert}
     </form>
   );
 }

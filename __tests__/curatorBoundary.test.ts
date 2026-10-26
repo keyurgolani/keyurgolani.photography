@@ -277,7 +277,7 @@ describe('proxy.ts and the curator session', () => {
         }
         // What it says: a secret file, the log, the docs and a restart, and not which file or setting.
         expect(body).toContain("The curator can't sign you in yet");
-        expect(body).toContain('A secret file it needs is missing or unreadable');
+        expect(body).toContain('A secret file it needs is missing, unreadable, readable by anyone but its owner, or not in the format the setup commands write');
         expect(body).toContain("The curator's log names the setting");
         expect(body).toContain('docs/curator.md');
         expect(body).toContain('restart curator on the server');
@@ -290,6 +290,9 @@ describe('proxy.ts and the curator session', () => {
         expect(UNAVAILABLE_CSP).toBe(
             `default-src 'none'; style-src 'sha256-${createHash('sha256').update(style).digest('base64')}'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
         );
+        // Pinned, so a change to the page's style shows up here and in review as a new hash.
+        expect(UNAVAILABLE_CSP).toContain("style-src 'sha256-fj0ebWXHwvVv1kgLyhVoWoE/rLskEH0aMg+FPaFVIUs=';");
+        expect(body.match(/<style>/g)).toHaveLength(1);
         vi.stubEnv('CURATION_ENABLED', 'false');
         expect(send('/curation').status).toBe(404);
     });

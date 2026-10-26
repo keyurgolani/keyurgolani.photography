@@ -232,8 +232,9 @@ describe('the login page', () => {
         expect(response.headers.get('set-cookie')).toBeNull();
         const html = await render({ failed: '1' });
         const text = notice(html);
-        expect(text).toMatch(/^Sign-in is paused after five wrong passphrases, and until it ends no passphrase is checked, the right one included\./);
-        expect(text).toContain('Try again in about 15 minutes, or restart curator on the server.');
+        // The time left comes first.
+        expect(text).toMatch(/^Sign-in is paused for about 15 more minutes, after five wrong passphrases\. Until then no passphrase is checked, the right one included\./);
+        expect(text).toContain('Restarting curator on the server also ends it.');
         expect(text).toContain("If those tries weren't yours, someone else can reach the curator.");
         expect(html).not.toContain('Check the passphrase');
         expect(html).not.toContain("didn't sign you in");
@@ -249,9 +250,9 @@ describe('the login page', () => {
         const spy = vi.spyOn(Date, 'now');
         try {
             spy.mockReturnValue(start + 3 * 60_000 + 1);
-            expect(notice(await render())).toContain('Try again in about 12 minutes,');
+            expect(notice(await render())).toMatch(/^Sign-in is paused for about 12 more minutes,/);
             spy.mockReturnValue(start + LOCK_MS - 30_000);
-            expect(notice(await render())).toContain('Try again in about a minute,');
+            expect(notice(await render())).toMatch(/^Sign-in is paused for about one more minute,/);
             spy.mockReturnValue(start + LOCK_MS);
             expect(await render()).not.toContain('curator-login-notice');
         } finally {

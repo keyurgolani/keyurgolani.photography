@@ -60,7 +60,7 @@ A new passphrase hash counts from the next login. A new session secret, or any r
 
 ### When one is missing
 
-With `CURATION_ENABLED=true` and a secret file missing, unreadable, readable by anyone but its owner, or not one these commands wrote, the curator answers 503 on every path, the login page and `/api/health` included, and logs which setting is wrong, never a value. The 503 is one small page, the same on every path: it says a secret file is missing or unreadable and points to the log and this section, without naming the file (`lib/curation/auth/unavailable.ts`). It never runs without them. Without the `secrets` folder at all, Docker won't start `curator`. With the flag off, the curator paths are 404 as always.
+With `CURATION_ENABLED=true` and a secret file missing, unreadable, readable by anyone but its owner, or not one these commands wrote, the curator answers 503 on every path, the login page and `/api/health` included, and logs which setting is wrong, never a value. The 503 is one small page, the same on every path: it names those four causes and points to the log and this section, without naming the file (`lib/curation/auth/unavailable.ts`). It never runs without them. Without the `secrets` folder at all, Docker won't start `curator`. With the flag off, the curator paths are 404 as always.
 
 ## Signing in
 
