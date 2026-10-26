@@ -50,7 +50,7 @@ test('setPhotoFixtures swaps the list the page sees', async ({ page }) => {
     await expect.poll(() => galleryImages(page)).toEqual(expectedImages(['gray', 'white']));
 });
 
-test('photo routes serve fixtures by basename, 404 unknown files, and pass other images through', async ({ page }) => {
+test('photo routes serve fixtures by basename, 404 unknown files, and pass other images through to the server, which refuses any but a derivative', async ({ page }) => {
     await page.goto('/gallery');
     await waitForHydration(page);
     const responses = await page.evaluate((urls) =>
@@ -62,13 +62,13 @@ test('photo routes serve fixtures by basename, 404 unknown files, and pass other
         '/assets/photos/missing.jpg',
         '/_next/image?url=%2Fassets%2Fphotos%2Fphoto-01.jpg&w=400&q=75',
         '/_next/image?url=%2Fassets%2Fphotos%2Fmissing.jpg&w=400&q=75',
-        '/_next/image?url=%2Fassets%2Fprofile%2Ffront.png&w=400&q=75',
+        '/_next/image?url=%2Fvite.svg&w=400&q=75',
     ]);
     expect(responses).toEqual([
         '200 image/jpeg',
         '404 text/plain',
         '200 image/jpeg',
         '404 text/plain',
-        expect.stringMatching(/^200 image\//),
+        expect.stringMatching(/^400 /),
     ]);
 });

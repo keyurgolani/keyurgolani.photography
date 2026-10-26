@@ -153,8 +153,9 @@ const SHORT_SCREENS = [
 const PROBES = [[0, 0], [-10, -12], [10, -12], [-10, 12], [10, 12], [-18, 0], [18, 0], [0, -18], [0, 18]] as const;
 
 /**
- * Settled Home has no portrait now, so at each of `screens` Previous keeps
- * its ring in view and its hit, once Home has opened in `state`.
+ * Settled Home's portrait is the badge now, under the chrome and taking no
+ * pointer, so at each of `screens` Previous keeps its ring in view and its
+ * hit, once Home has opened in `state`.
  */
 function shortScreenChecks(state: 'advancing' | 'reduced-motion', screens: readonly (readonly [number, number])[]) {
     for (const [width, height] of screens) {

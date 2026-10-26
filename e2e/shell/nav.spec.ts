@@ -161,7 +161,7 @@ test.describe('on /about at short screens, over the in-flow portrait', () => {
 
 test.describe('on / on a short screen', () => {
     // The screens where the settled portrait once reached up behind SiteNav and took the hit at every link's centre.
-    // Settled Home has no portrait now, and keyboard focus reveals the chrome and holds it.
+    // Settled Home's portrait is the badge now, under the chrome and taking no pointer, and keyboard focus reveals the chrome and holds it.
     const SHORT_SCREENS = [[640, 400], [667, 375], [568, 320], [740, 360], [736, 414], [768, 400]] as const;
     const portrait = (page: Page) => page.locator('[class*="portrait"]');
 

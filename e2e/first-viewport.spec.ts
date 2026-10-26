@@ -120,12 +120,13 @@ interface Measured {
     document: { transfer: number };
     media: MediaRequest[];
     api: string[];
-    /** Home's intro portraits, through /_next/image. Not catalog images, but part of the first load. */
-    portraits: number;
+    /** About's portrait, which Home's intro and badge show: the variants asked for. Not catalog images, but part of the first load. */
+    portraits: string[];
     other: number;
 }
 
 const MEDIA = /^\/media\/(ph_[^/]+)\/[^/]+\/[^/]+\/w(\d+)\.(avif|webp)$/;
+const PORTRAIT = /^\/about\/portrait\/[0-9a-f]{32}\/w(\d+)\.(avif|webp)$/;
 
 /** Open `path` in a fresh context, wait until the first load is quiet, and sort what it asked for. */
 async function measure(browser: Browser, profile: Profile, path: string): Promise<Measured> {
@@ -152,7 +153,7 @@ async function measure(browser: Browser, profile: Profile, path: string): Promis
     const media: MediaRequest[] = [];
     const api: string[] = [];
     let other = 0;
-    let portraits = 0;
+    const portraits: string[] = [];
     let document = { transfer: 0 };
     for (const { request, bytes, transfer } of all) {
         const url = new URL(request.url());
@@ -160,7 +161,7 @@ async function measure(browser: Browser, profile: Profile, path: string): Promis
         if (request.resourceType() === 'document') document = { transfer };
         else if (match) media.push({ photoId: match[1], rung: Number(match[2]), format: match[3], url: url.pathname, bytes });
         else if (url.pathname.startsWith('/api/')) api.push(url.pathname);
-        else if (url.pathname === '/_next/image') portraits += 1;
+        else if (PORTRAIT.test(url.pathname)) portraits.push(url.pathname);
         else other += 1;
     }
     return { page, document, media, api, portraits, other };
@@ -181,7 +182,7 @@ for (const profile of Object.keys(PROFILES) as Profile[]) {
                     imageKiB: Number((bytes / KIB).toFixed(1)),
                     rungs: [...new Set(media.map((request) => request.rung))].sort((a, b) => a - b),
                     api: api.length,
-                    portraits,
+                    portraits: portraits.length,
                     other,
                 };
                 console.log(`[first-viewport] ${screen}/${profile} ${JSON.stringify(report[`${screen}/${profile}`])}`);
@@ -200,7 +201,9 @@ for (const profile of Object.keys(PROFILES) as Profile[]) {
                     expect(cap, `${request.url} is on a screen that shows only its lead`).toBeDefined();
                     expect(request.rung, request.url).toBeLessThanOrEqual(cap!);
                 }
-                expect(portraits, 'the intro portraits, Home only').toBeLessThanOrEqual(screen === 'home' ? 2 : 0);
+                // One small variant of About's portrait, for the intro and the badge, and only on Home.
+                expect(portraits.length, "About's portrait, Home only").toBe(screen === 'home' ? 1 : 0);
+                for (const url of portraits) expect(Number(PORTRAIT.exec(url)![1]), url).toBeLessThanOrEqual(800);
 
                 if ('images' in policy) {
                     // Payload: the lead at its rung, and the rest of the request cap at theirs, at the fixture's declared AVIF sizes.
@@ -241,7 +244,7 @@ test('each server HTML holds its lead photograph and a preload carrying the same
     for (const screen of SCREENS) {
         const html = await (await request.get(`${origin()}${pathOf(screen)}`)).text();
         const attribute = (tag: string, name: string) => new RegExp(`\\s${name}="([^"]*)"`, 'i').exec(tag)?.[1];
-        // Home's intro portraits have preloads of their own, through /_next/image; these are the catalog's.
+        // Home's portrait has a preload of its own, from /about/portrait/; these are the catalog's.
         const preloads = [...html.matchAll(/<link\b[^>]*>/g)]
             .map((match) => match[0])
             .filter((tag) => attribute(tag, 'rel') === 'preload' && attribute(tag, 'as') === 'image' && attribute(tag, 'imagesrcset')?.startsWith('/media/'));
