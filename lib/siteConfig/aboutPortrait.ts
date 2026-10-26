@@ -142,7 +142,8 @@ const transientOf = (error: unknown): { transient?: true } => (isTransient(error
 
 const signature = (stats: fs.Stats | null) => (stats === null ? '-' : `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}`);
 
-const megabytes = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+/** A limit as the owner reads it: 40.0 MB for the portrait, 16 KB for portrait.json. */
+const sizeLabel = (bytes: number) => (bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`);
 
 async function lstatOrNull(target: string): Promise<fs.Stats | null> {
     try {
@@ -163,7 +164,22 @@ export function sniffFormat(bytes: Uint8Array): PortraitFormat | null {
     return null;
 }
 
-const PNG_IEND = Buffer.from([0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]);
+/**
+ * Whether a PNG's chunks, walked from the signature (length, type, data,
+ * CRC), reach an IEND chunk that starts on a chunk boundary and ends inside
+ * the bytes. IEND's bytes inside an earlier chunk, such as an embedded
+ * thumbnail, don't count, and anything after the real IEND is ignored.
+ */
+function pngReachesIend(bytes: Buffer): boolean {
+    let offset = 8;
+    while (offset + 12 <= bytes.length) {
+        const end = offset + 12 + bytes.readUInt32BE(offset);
+        if (end > bytes.length) return false;
+        if (bytes.toString('latin1', offset + 4, offset + 8) === 'IEND') return true;
+        offset = end;
+    }
+    return false;
+}
 
 /**
  * Why the bytes stop short of the end their format writes, or null. A file
@@ -176,11 +192,12 @@ const PNG_IEND = Buffer.from([0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x
  */
 export function incompleteReason(format: PortraitFormat, bytes: Uint8Array): string | null {
     if (format === 'png') {
-        return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).lastIndexOf(PNG_IEND) >= 0 ? null : "has no PNG IEND chunk yet, so it may still be copying";
+        return pngReachesIend(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)) ? null : "has no PNG IEND chunk yet, so it may still be copying";
     }
     if (format === 'webp') {
         const declared = bytes.length >= 8 ? Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).readUInt32LE(4) + 8 : Infinity;
-        return declared <= bytes.length ? null : `is ${bytes.length} bytes, but its RIFF header says ${declared}, so it may still be copying`;
+        // No byte counts in the reason: a file still growing would log a new line on every request.
+        return declared <= bytes.length ? null : 'is shorter than its RIFF header says, so it may still be copying';
     }
     return null;
 }
@@ -239,7 +256,7 @@ async function readCapped(file: string, maxBytes: number): Promise<{ bytes: Buff
     if (opened === null) return { problem: "isn't a regular file" };
     try {
         const stats = await opened.handle.stat();
-        if (stats.size > maxBytes) return { problem: `is ${megabytes(stats.size)}, over the ${megabytes(maxBytes)} limit` };
+        if (stats.size > maxBytes) return { problem: `is over the ${sizeLabel(maxBytes)} limit` };
         const bytes = await opened.handle.readFile();
         if (bytes.length !== stats.size) return { problem: 'changed while it was read' };
         return { bytes, stats };
@@ -306,7 +323,8 @@ async function readState(listing: Extract<Listing, { kind: 'files' }>, logger: L
     if (listing.file.isSymbolicLink()) return { result: { state: 'none', reason: `${relative} is a symlink, which isn't followed` }, key: null };
     if (!listing.file.isFile()) return { result: { state: 'none', reason: `${relative} isn't a regular file` }, key: null };
     if (listing.file.size > PORTRAIT_LIMITS.maxBytes) {
-        return { result: { state: 'none', reason: `${relative} is ${megabytes(listing.file.size)}, over the ${megabytes(PORTRAIT_LIMITS.maxBytes)} limit` }, key: keyOf(listing) };
+        // Not the file's own size, which changes while it's copied, so one file over the limit logs once.
+        return { result: { state: 'none', reason: `${relative} is over the ${sizeLabel(PORTRAIT_LIMITS.maxBytes)} limit` }, key: keyOf(listing) };
     }
     const read = await readCapped(path.join(/*turbopackIgnore: true*/ listing.dir, listing.name), PORTRAIT_LIMITS.maxBytes);
     if ('problem' in read) return { result: { state: 'none', reason: `${relative} ${read.problem}`, ...(read.transient ? { transient: true as const } : {}) }, key: null };
@@ -380,7 +398,7 @@ export async function readAboutPortrait({ logger = console }: { logger?: Logger 
         }
     } else {
         logOnce('json', null, logger);
-        logOnce('portrait', `[about] No portrait: ${result.reason}, so About shows the name instead.`, logger);
+        logOnce('portrait', `[about] No portrait: ${result.reason}, so About shows the name, and Home's intro plays without a portrait.`, logger);
     }
     return result;
 }
@@ -390,11 +408,20 @@ export async function checkAboutPortrait(options: { logger?: Logger } = {}): Pro
     await readAboutPortrait(options);
 }
 
-/** The source bytes for `token`, read again and checked against it, or null once the file holds something else. */
-export async function readPortraitSource(token: string): Promise<Buffer | null> {
+/**
+ * The source bytes for `token`, read again and checked against it; null once
+ * the file holds something else, or is gone or refused; or `'unsure'` when a
+ * read failed only for the moment, as with too many open files, which says
+ * nothing about the file.
+ */
+export async function readPortraitSource(token: string): Promise<Buffer | 'unsure' | null> {
     const current = await readAboutPortrait();
+    if (current.state === 'none' && current.transient === true) return 'unsure';
     if (current.state !== 'ready' || current.token !== token) return null;
-    const read = await readCapped(path.join(/*turbopackIgnore: true*/ siteConfigDir(), current.file), PORTRAIT_LIMITS.maxBytes).catch(() => null);
-    if (read === null || 'problem' in read) return null;
+    const read = await readCapped(path.join(/*turbopackIgnore: true*/ siteConfigDir(), current.file), PORTRAIT_LIMITS.maxBytes).catch((error: unknown) =>
+        isTransient(error) ? ('unsure' as const) : null,
+    );
+    if (read === 'unsure' || read === null) return read;
+    if ('problem' in read) return read.transient ? 'unsure' : null;
     return createHash('sha256').update(read.bytes).digest('hex') === current.sha256 ? read.bytes : null;
 }

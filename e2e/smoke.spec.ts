@@ -56,7 +56,9 @@ test('photo routes serve fixtures by basename, 404 unknown files, and pass other
     const responses = await page.evaluate((urls) =>
         Promise.all(urls.map(async (url) => {
             const response = await fetch(url);
-            return `${response.status} ${response.headers.get('content-type')}`;
+            const head = `${response.status} ${response.headers.get('content-type')}`;
+            // A refusal's body says which one: localPatterns refusing the URL, or Next refusing an SVG it fetched.
+            return response.status === 400 ? `${head} ${await response.text()}` : head;
         })), [
         '/assets/photos/white.jpg',
         '/assets/photos/missing.jpg',
@@ -69,6 +71,6 @@ test('photo routes serve fixtures by basename, 404 unknown files, and pass other
         '404 text/plain',
         '200 image/jpeg',
         '404 text/plain',
-        expect.stringMatching(/^400 /),
+        expect.stringMatching(/^400 .*"url" parameter is not allowed/),
     ]);
 });

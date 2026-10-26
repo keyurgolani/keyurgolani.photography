@@ -91,6 +91,7 @@ function encodeInto(set: PortraitSet, names: string[], logger: Logger): void {
     const source = readPortraitSource(set.token);
     void source.then((bytes) => {
         // The source changed before it was read: nothing is worth keeping, so a later request reads it again.
+        // A read that failed only for the moment keeps the set and what it already encoded, as setFor does.
         if (bytes === null && kept().set === set) kept().set = null;
     });
     let previous: Promise<unknown> = kept().queue.then(() => source);
@@ -100,6 +101,11 @@ function encodeInto(set: PortraitSet, names: string[], logger: Logger): void {
             const bytes = await source;
             // A set dropped since, by a swap or a removal, encodes nothing more.
             if (bytes === null || kept().set !== set) return null;
+            // Not read this time: the next request for it tries again, with no wait and nothing logged.
+            if (bytes === 'unsure') {
+                set.failed.add(name);
+                return null;
+            }
             try {
                 const data = await encodeVariant(bytes, width, format, { limitInputPixels: PORTRAIT_LIMITS.maxPixels });
                 if (await carriesMetadata(data)) return failed(set, name, 'kept metadata', logger);

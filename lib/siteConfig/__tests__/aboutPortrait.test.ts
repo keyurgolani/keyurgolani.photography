@@ -245,7 +245,7 @@ describe('readAboutPortrait', () => {
             expect(result.state).toBe('none');
             if (result.state === 'none') expect(result.reason).toMatch(reason);
             expect(warnings()).toHaveLength(1);
-            expect(warnings()[0]).toMatch(/^\[about\] No portrait: .*, so About shows the name instead\.$/);
+            expect(warnings()[0]).toMatch(/^\[about\] No portrait: .*, so About shows the name, and Home's intro plays without a portrait\.$/);
             expect(warnings()[0]).not.toContain(root);
             expect(warnings()[0]).not.toContain(os.tmpdir());
             // The same state again logs nothing more.
@@ -308,7 +308,29 @@ describe('readAboutPortrait', () => {
         it.each([1, 2, 12])('when a WebP is %i bytes shorter than its RIFF header says', async (cut) => {
             const whole = await sharp(await png(400, 500)).webp().toBuffer();
             put('portrait.webp', whole.subarray(0, whole.length - cut));
-            await refused(new RegExp(`^about/portrait\\.webp is ${whole.length - cut} bytes, but its RIFF header says ${whole.length}, so it may still be copying$`));
+            await refused(/^about\/portrait\.webp is shorter than its RIFF header says, so it may still be copying$/);
+        });
+
+        it('when a PNG still being copied stops inside a chunk whose data holds IEND\'s bytes, as an embedded thumbnail can', async () => {
+            const whole = await png(400, 500);
+            const iend = whole.length - 12;
+            const chunk = (type: string, data: Buffer) => {
+                const length = Buffer.alloc(4);
+                length.writeUInt32BE(data.length);
+                const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+                const crc = Buffer.alloc(4);
+                crc.writeUInt32BE(crc32(body));
+                return Buffer.concat([length, body, crc]);
+            };
+            // A tEXt chunk after IDAT whose text carries a whole IEND chunk, then the real IEND.
+            const text = chunk('tEXt', Buffer.concat([Buffer.from('Comment\0', 'latin1'), whole.subarray(iend), Buffer.alloc(400, 0x41)]));
+            const withText = Buffer.concat([whole.subarray(0, iend), text, whole.subarray(iend)]);
+            put('portrait.png', withText.subarray(0, iend + 100));
+            await refused(/^about\/portrait\.png has no PNG IEND chunk yet, so it may still be copying$/);
+            // The whole file, its real IEND last, is taken.
+            put('portrait.png', withText);
+            bump('portrait.png');
+            expect(await read()).toMatchObject({ state: 'ready', width: 400, height: 500 });
         });
 
         it('when the file is over the size limit, without reading it', async () => {
@@ -318,7 +340,7 @@ describe('readAboutPortrait', () => {
             fs.ftruncateSync(handle, PORTRAIT_LIMITS.maxBytes + 1);
             fs.closeSync(handle);
             const readFile = vi.spyOn(fs.promises, 'readFile');
-            await refused(/^about\/portrait\.jpg is 40\.0 MB, over the 40\.0 MB limit$/);
+            await refused(/^about\/portrait\.jpg is over the 40\.0 MB limit$/);
             expect(readFile).not.toHaveBeenCalled();
         });
 
@@ -416,13 +438,37 @@ describe('readAboutPortrait', () => {
 
         it('is over its size limit', async () => {
             put('portrait.json', JSON.stringify({ alt: 'x'.repeat(PORTRAIT_LIMITS.maxJsonBytes) }));
-            await ignored(/^\[about\] about\/portrait\.json is .* over the .* limit/);
+            await ignored(/^\[about\] about\/portrait\.json is over the 16 KB limit/);
         });
 
         it('is a symlink', async () => {
             put('real.json', JSON.stringify({ alt: 'From the link' }));
             fs.symlinkSync(about('real.json'), about('portrait.json'));
             await ignored(/^\[about\] about\/portrait\.json is a symlink, which isn't followed/);
+        });
+    });
+
+    describe('logs one line for a file copied in place, however many requests read it while it grows', () => {
+        it('a WebP short of its RIFF size', async () => {
+            const whole = await sharp(await png(400, 500)).webp().toBuffer();
+            for (let step = 1; step <= 20; step += 1) {
+                put('portrait.webp', whole.subarray(0, whole.length - 21 + step));
+                bump('portrait.webp', step);
+                expect((await read()).state).toBe('none');
+            }
+            expect(warnings()).toEqual(["[about] No portrait: about/portrait.webp is shorter than its RIFF header says, so it may still be copying, so About shows the name, and Home's intro plays without a portrait."]);
+        });
+
+        it('a file over the size limit', async () => {
+            fs.mkdirSync(about(), { recursive: true });
+            for (let step = 1; step <= 20; step += 1) {
+                const handle = fs.openSync(about('portrait.jpg'), 'w');
+                fs.ftruncateSync(handle, PORTRAIT_LIMITS.maxBytes + step * 200_000);
+                fs.closeSync(handle);
+                bump('portrait.jpg', step);
+                expect((await read()).state).toBe('none');
+            }
+            expect(warnings()).toEqual(["[about] No portrait: about/portrait.jpg is over the 40.0 MB limit, so About shows the name, and Home's intro plays without a portrait."]);
         });
     });
 
@@ -433,7 +479,7 @@ describe('readAboutPortrait', () => {
         bump('portrait.jpg');
         expect((await read()).state).toBe('ready');
         expect(lines()).toEqual([
-            "[about] No portrait: about/portrait.jpg isn't a JPEG, PNG, or WebP file, so About shows the name instead.",
+            "[about] No portrait: about/portrait.jpg isn't a JPEG, PNG, or WebP file, so About shows the name, and Home's intro plays without a portrait.",
             expect.stringMatching(/^\[about\] About shows about\/portrait\.jpg, 120 x 150 px, sha256 [0-9a-f]{12}\.$/),
         ]);
     });
@@ -452,6 +498,6 @@ describe('checkAboutPortrait', () => {
         await checkAboutPortrait({ logger });
         await read();
         await read();
-        expect(lines()).toEqual(["[about] No portrait: about/ does not exist, so About shows the name instead."]);
+        expect(lines()).toEqual(["[about] No portrait: about/ does not exist, so About shows the name, and Home's intro plays without a portrait."]);
     });
 });

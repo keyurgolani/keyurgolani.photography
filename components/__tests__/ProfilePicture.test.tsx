@@ -83,12 +83,19 @@ describe('ProfilePicture', () => {
   it('takes no pointer itself: the tilt follows the mouse from the window, and stops listening once gone', () => {
     const add = vi.spyOn(window, 'addEventListener');
     const remove = vi.spyOn(window, 'removeEventListener');
+    const addOnPage = vi.spyOn(document.documentElement, 'addEventListener');
+    const removeOnPage = vi.spyOn(document.documentElement, 'removeEventListener');
     const { card, unmount } = renderPicture();
     expect(card.getAttributeNames().filter((name) => name.startsWith('on'))).toEqual([]);
-    const listener = add.mock.calls.find(([type]) => type === 'pointermove')?.[1];
-    expect(listener).toBeDefined();
+    const move = add.mock.calls.find(([type]) => type === 'pointermove');
+    expect(move?.[1]).toBeDefined();
+    // Passive, so following the mouse never holds up a scroll.
+    expect(move?.[2]).toEqual({ passive: true });
+    const leave = addOnPage.mock.calls.find(([type]) => type === 'pointerleave')?.[1];
+    expect(leave).toBeDefined();
     unmount();
-    expect(remove).toHaveBeenCalledWith('pointermove', listener);
+    expect(remove).toHaveBeenCalledWith('pointermove', move?.[1]);
+    expect(removeOnPage).toHaveBeenCalledWith('pointerleave', leave);
   });
 
   it('never tilts for a touch or a pen, so a tap leaves nothing turned', () => {
