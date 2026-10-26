@@ -691,9 +691,46 @@ p.fieldError {
   margin: 0;
 }
 
-/* The answer an approval or Decide later brought to the page it opened. In the list it needs the list's own inset. */
+/* The answer an approval or Decide later brought to the page it opened: the
+   done tone, its check, one sentence and the way back, in one row when it
+   fits. In the list it needs the list's own inset. */
+.arrival {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.375rem 0.375rem 0.375rem 0.75rem;
+}
+
+.arrival svg {
+  flex: none;
+  color: var(--curator-lock-icon);
+}
+
+.arrival p {
+  flex: 1 1 16rem;
+}
+
+.notice.arrival a {
+  margin-top: 0;
+}
+
 .list .arrival {
   margin: 1rem 1rem 0;
+}
+
+/* At the top of the item, across the photograph and the form, so it's on the first screen. Empty, it takes no room. */
+.arrivalStrip {
+  grid-column: 1 / -1;
+}
+
+.arrivalStrip:not(:empty) {
+  padding: 1rem clamp(1rem, 2.5%, 2.5rem);
+  border-bottom: 1px solid var(--curator-rule);
+}
+
+.arrivalStrip .notice {
+  margin-top: 0;
 }
 
 .notice a,
@@ -737,7 +774,9 @@ p.fieldError {
   display: inline-flex;
   min-height: 44px;
   align-items: center;
-  padding: 0 0.875rem;
+  /* Room above and below, so a long file name wraps clear of the border. */
+  padding: 0.5rem 0.875rem;
+  text-align: start;
   border: 1px solid var(--gah-rule-strong);
   border-radius: var(--gah-radius);
   color: var(--gah-ink);
@@ -825,17 +864,30 @@ p.fieldError {
     scroll-margin-top: -6rem;
   }
 
+  /* The phone's main way out of an item, so it reads as navigation at the controls' size, and stays at the top while the form scrolls. */
   .backToList {
+    position: sticky;
+    top: 0;
+    z-index: 1;
     display: flex;
     min-height: 44px;
     align-items: center;
     gap: 0.375rem;
     padding: 0 1.125rem;
     border-bottom: 1px solid var(--curator-rule);
-    color: var(--gah-ink-soft);
-    font-size: var(--gah-type-label);
-    text-decoration: underline;
-    text-underline-offset: 0.2em;
+    color: var(--gah-ink);
+    background: var(--gah-surface);
+    font-size: var(--gah-type-ui);
+    text-decoration: none;
+  }
+
+  .arrivalStrip:not(:empty) {
+    padding: 0.75rem 1.125rem;
+  }
+
+  /* The list view opens no item, so the row the server selected for a wide screen isn't marked here (ReturnToRow drops its aria-current too). */
+  .body[data-view='list'] .item[aria-current='true'] {
+    background: transparent;
   }
 
   .photo {

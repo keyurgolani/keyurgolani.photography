@@ -1,7 +1,9 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import {
+    arrivalMessage,
     descriptionHint,
+    DONE_ANSWER,
     fileParts,
     formStart,
     headTail,
@@ -157,6 +159,22 @@ describe('what refers to a photograph', () => {
     it('gives a series membership by title and position', () => {
         expect(seriesMembershipText(P(9), [{ kind: 'revision', id: REV }, { kind: 'series', id: 'ser_harbor' }], SERIES)).toBe('Harbor, position 02');
         expect(seriesMembershipText(P(9), [], SERIES)).toBe('In no series');
+    });
+});
+
+describe('the answer an approval or Decide later carries to the page it opens', () => {
+    it('names the file it decided, since that page shows another', () => {
+        expect(arrivalMessage('approve', 'harbor-1.jpg', DONE_ANSWER.approve)).toBe('Approved harbor-1.jpg into the draft. Nothing is published until you publish.');
+        expect(arrivalMessage('defer', 'harbor-1.jpg', DONE_ANSWER.defer)).toBe('Left harbor-1.jpg for later. Nothing in the draft changed.');
+    });
+
+    it("keeps the action's later notes, such as what still holds publishing back", () => {
+        const notes = 'It has no description yet, so publish holds it back.';
+        expect(arrivalMessage('approve', 'harbor-1.jpg', `${DONE_ANSWER.approve} ${notes}`)).toBe(`Approved harbor-1.jpg into the draft. Nothing is published until you publish. ${notes}`);
+    });
+
+    it('says only its own sentence for an answer it does not recognize', () => {
+        expect(arrivalMessage('approve', 'harbor-1.jpg', 'Done.')).toBe('Approved harbor-1.jpg into the draft. Nothing is published until you publish.');
     });
 });
 

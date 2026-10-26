@@ -52,6 +52,7 @@ describe('the public routes', () => {
             'app/api/curation/logout/route.ts',
             'app/api/curation/media/[photoId]/[assetRevision]/[profileId]/[variant]/route.ts',
             'app/curation/CuratorHeader.tsx',
+            'app/curation/inbox/ArrivalStrip.tsx',
             'app/curation/inbox/EmptyArrival.tsx',
             'app/curation/inbox/EventBadge.tsx',
             'app/curation/inbox/InboxDetailView.tsx',

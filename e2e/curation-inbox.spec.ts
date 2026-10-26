@@ -65,6 +65,17 @@ const eventOf = (photoId: string) => eventIdOf(eventKey('new', { photoId, assetR
 const layers = () => ({ catalog: folderBytes(path.join(data().root, 'catalog')) });
 /** The answer the last action gave, in the page's polite status region. */
 const answer = (page: Page, state: 'done' | 'stale' | 'invalid') => page.getByRole('status').locator(`[data-state="${state}"]`);
+/** What the last approval or Decide later did, in the strip at the top of the item it opened. */
+const arrival = (page: Page) => page.locator('#item > [role="status"] [data-state="done"]');
+/** The strip is on the first screen, above the photograph and the item's heading. */
+async function arrivedOnTop(page: Page) {
+    const strip = arrival(page);
+    await expect(strip).toBeInViewport({ ratio: 1 });
+    const box = (await strip.boundingBox())!;
+    // The photograph's column follows the strip, and the heading is in the form beside or under it.
+    for (const below of [page.locator('#item > [role="status"] + *'), page.locator('#item-heading')]) expect(box.y + box.height).toBeLessThanOrEqual((await below.boundingBox())!.y);
+    await expect(page.getByText(/Next up/)).toHaveCount(0);
+}
 const summary = (page: Page) => page.getByRole('region', { name: 'Curation inbox' }).locator('header p');
 /** The item's heading: its source file's name, which is what tells the curator which photograph it is. */
 const itemHeading = (page: Page, photoId: string) => page.getByRole('heading', { level: 2, name: path.posix.basename(FRESH_SOURCES[photoId]) });
@@ -146,8 +157,9 @@ test('approves a new photograph into the draft with the typed description, and p
     await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox?item=${eventOf(FRESH.stale)}#item`);
     await waitForHydration(page);
     await expect(itemHeading(page, FRESH.stale)).toBeFocused();
-    await expect(answer(page, 'done')).toHaveText(/^Approved into the draft\. Nothing is published until you publish\./);
-    await expect(answer(page, 'done')).toContainText('Next up: arrival-stale.jpg.');
+    // At the top of the item, naming the file it approved, since the heading under it names this one.
+    await expect(arrival(page)).toHaveText(/^Approved arrival-approve\.jpg into the draft\. Nothing is published until you publish\./);
+    await arrivedOnTop(page);
     // The approved item is one link away, where Reopen is.
     await page.getByRole('link', { name: 'Open arrival-approve.jpg again' }).click();
     await waitForHydration(page);
@@ -222,11 +234,28 @@ test('stores the series it shows after a refused answer', async ({ page }) => {
     expect((await readAuthoredRecord(data().root, 'series', shown))?.photoIds).toContain(FRESH.refused);
 });
 
-test('approves "Leave unassigned" when no rules file suggests a series', async ({ page }) => {
-    await openInbox(page, eventOf(FRESH.unassigned));
+test('approves "Leave unassigned" when no rules file suggests a series, from the plain inbox URL', async ({ page, isMobile }) => {
+    // /curation/inbox with no item, as the header's Inbox link opens it. A wide screen shows the first item that needs judgment beside the list.
+    await openInbox(page);
+    if (isMobile) {
+        // A phone shows the list alone, with no row marked current, since nothing is open; the curator opens the first.
+        const rows = page.getByRole('list', { name: 'Requires judgment' }).getByRole('link');
+        await expect(page.locator('#inbox-list a[aria-current]')).toHaveCount(0);
+        await rows.first().click();
+        await waitForHydration(page);
+    } else {
+        await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox`);
+    }
+    await expect(itemHeading(page, FRESH.unassigned)).toBeVisible();
     await expect(page.getByRole('combobox', { name: 'Suggested series' })).toHaveValue('unassigned');
     await page.getByRole('button', { name: 'Approve into draft' }).click();
-    await expect(answer(page, 'done')).toBeVisible();
+    // It moves on from there too, and says what it did.
+    await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox?item=${eventOf(FRESH.reopen)}#item`);
+    await waitForHydration(page);
+    await expect(itemHeading(page, FRESH.reopen)).toBeFocused();
+    await expect(arrival(page)).toHaveText(/^Approved arrival-unassigned\.jpg into the draft\. Nothing is published until you publish\./);
+    await arrivedOnTop(page);
+    await expect(arrival(page).getByRole('link', { name: 'Open arrival-unassigned.jpg again' })).toHaveAttribute('href', `/curation/inbox?item=${eventOf(FRESH.unassigned)}#item`);
     expect((await readEvent(data().root, eventOf(FRESH.unassigned)))?.decisions.at(-1)).toMatchObject({ action: 'approve', seriesId: null });
 });
 
@@ -235,7 +264,9 @@ test('clears a decorative flag on a reopened item, so the description gate holds
     await page.getByRole('combobox', { name: 'Suggested series' }).selectOption(INBOX_SERIES.published.id);
     await page.getByRole('checkbox', { name: /Decorative/ }).check();
     await page.getByRole('button', { name: 'Approve into draft' }).click();
-    await expect(answer(page, 'done')).toHaveText(/^Approved into the draft/);
+    await expect(page).toHaveURL(/\?item=evt_[0-9a-f]{24}#item$/);
+    await expect(page).not.toHaveURL(new RegExp(eventOf(FRESH.reopen)));
+    await expect(arrival(page)).toHaveText(/^Approved arrival-reopen\.jpg into the draft/);
     // The approval moved on to the next item; Reopen is on the approved one, and stays there once pressed.
     await page.getByRole('link', { name: 'Open arrival-reopen.jpg again' }).click();
     await waitForHydration(page);
@@ -299,14 +330,23 @@ test('shows a phone one item at a time, and Back to inbox or the browser Back re
     await expect(list).toBeHidden();
     await expect(page.locator('#item-heading')).toBeFocused();
     await expect(page.locator('#item-heading')).toBeInViewport();
+    // Back to inbox stays at the top while the form scrolls, so the way out is always one tap.
+    const backLink = page.getByRole('link', { name: 'Back to inbox' });
+    await page.evaluate(() => window.scrollTo(0, 1200));
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(600);
+    await expect(backLink).toBeInViewport({ ratio: 1 });
+    expect((await backLink.boundingBox())?.y).toBe(0);
+    expect((await backLink.boundingBox())?.height).toBeGreaterThanOrEqual(44);
 
-    await page.getByRole('link', { name: 'Back to inbox' }).click();
+    await backLink.click();
     await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox#row-${rowId}`);
     await waitForHydration(page);
     const back = page.locator(`#row-${rowId}`);
     await expect(back).toBeFocused();
     await expect(back).toBeInViewport();
     await expect(page.locator('#item')).toBeHidden();
+    // Only the row it came back to reads as where the curator is: no other row is marked current.
+    await expect(list.locator('a[aria-current]')).toHaveCount(0);
     expect(Math.abs((await page.evaluate(() => window.scrollY)) - scrolled)).toBeLessThanOrEqual(2);
 
     // The browser's Back does the same.
@@ -322,7 +362,7 @@ test('shows a phone one item at a time, and Back to inbox or the browser Back re
     expect(Math.abs((await page.evaluate(() => window.scrollY)) - scrolled)).toBeLessThanOrEqual(2);
 });
 
-test('Decide later moves on to the next item too, and the last decision shows the empty state', async ({ page }) => {
+test('Decide later moves on to the next item too, and the last decision, from the plain inbox URL, shows the empty state', async ({ page, isMobile }) => {
     const { events } = await listEvents(data().root);
     const missing = events.find((event) => event.type === 'missing')!;
     const failed = events.find((event) => event.type === 'processing-failure')!;
@@ -331,13 +371,24 @@ test('Decide later moves on to the next item too, and the last decision shows th
     await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox?item=${failed.id}#item`);
     await waitForHydration(page);
     await expect(page.getByRole('heading', { level: 2, name: path.posix.basename(FAILED_SOURCE) })).toBeFocused();
-    await expect(answer(page, 'done')).toContainText(`Left for later. It stays a draft suggestion. Next up: ${path.posix.basename(FAILED_SOURCE)}.`);
+    const missingName = path.posix.basename(missing.derivedFacts.sourcePath);
+    await expect(arrival(page)).toHaveText(`Left ${missingName} for later. Nothing in the draft changed.Open ${missingName} again`);
+    await arrivedOnTop(page);
+    // The last one, from /curation/inbox with no item: a wide screen shows it beside the list, a phone opens its row.
+    await openInbox(page);
+    if (isMobile) {
+        await page.getByRole('list', { name: 'Requires judgment' }).getByRole('link').first().click();
+        await waitForHydration(page);
+    }
+    await expect(page.getByRole('heading', { level: 2, name: path.posix.basename(FAILED_SOURCE) })).toBeVisible();
     await page.getByRole('button', { name: 'Decide later' }).click();
     // Nothing else needs a decision, so the inbox opens on its empty state and says so.
     await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox`);
     await waitForHydration(page);
     await expect(page.getByText('Nothing requires judgment right now.')).toBeFocused();
-    await expect(answer(page, 'done')).toContainText('Left for later. It stays a draft suggestion. Nothing else requires judgment.');
+    await expect(answer(page, 'done')).toHaveText(`Left ${path.posix.basename(FAILED_SOURCE)} for later. Nothing in the draft changed.Open ${path.posix.basename(FAILED_SOURCE)} again`);
+    // Said once: the focused line says nothing requires judgment.
+    await expect(page.getByText('Nothing else requires judgment')).toHaveCount(0);
     await expect(summary(page)).toHaveText(/^0 of \d+ items require judgment/);
     await expect(page.getByRole('link', { name: `Open ${path.posix.basename(FAILED_SOURCE)} again` })).toBeVisible();
     for (const id of [missing.id, failed.id]) expect((await readEvent(data().root, id))?.status).toBe('deferred');
@@ -376,6 +427,7 @@ test('discloses no unpublished photograph on any public page or API, and serves 
             for (const pathname of [
                 `/media/${set}/w800.webp`,
                 `/media/${set}/w1920.avif`,
+                `/api/curation/media/${set}/w400.webp`,
                 `/api/curation/media/${set}/w800.webp`,
                 `/_next/image?url=${encodeURIComponent(`/media/${set}/w800.webp`)}&w=800&q=75`,
                 `/assets/photos/${FRESH_SOURCES[photoId]}`,

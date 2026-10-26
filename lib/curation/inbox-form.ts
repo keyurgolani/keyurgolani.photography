@@ -4,7 +4,7 @@ import { dataRootStatus, libraryRoot } from '../storage/config';
 import { approveEvent, deferEvent, dismissEvent, editEvent, reopenEvent, retryEvent, type ActionInput, type ActionOutcome, type Choices } from './actions';
 import { scrub } from './commands';
 import { EVENT_ID_RE, type CuratorDescription } from './events';
-import { parsePlacementValue, type InboxActionKind, type InboxActionState } from './inbox-view';
+import { DONE_ANSWER, parsePlacementValue, type InboxActionKind, type InboxActionState } from './inbox-view';
 import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from './text';
 
 /**
@@ -128,9 +128,9 @@ const STATUS_FOR: Record<Exclude<ActionOutcome, { ok: true }>['code'], Exclude<I
 };
 
 const DONE: Record<InboxActionKind, string> = {
-    approve: 'Approved into the draft. Nothing is published until you publish.',
+    approve: DONE_ANSWER.approve,
     edit: 'Saved your edits. Nothing in the draft changed.',
-    defer: 'Left for later. It stays a draft suggestion.',
+    defer: DONE_ANSWER.defer,
     dismiss: 'Dismissed.',
     retry: 'Asked the watcher to process it again on its next pass.',
     reopen: 'Reopened.',
