@@ -59,7 +59,7 @@ export type DecisionState =
 async function findIn(dir: string, decisionId: string): Promise<string | null> {
     try {
         const name = (await fs.promises.readdir(dir)).find((entry) => entry.endsWith(`-${decisionId}.json`));
-        return name === undefined ? null : path.join(dir, name);
+        return name === undefined ? null : path.join(/*turbopackIgnore: true*/ dir, name);
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return null;
         throw error;
@@ -70,11 +70,11 @@ async function findIn(dir: string, decisionId: string): Promise<string | null> {
 export async function decisionState(root: string, decisionId: string): Promise<DecisionState> {
     const dir = identityPaths(root).decisions;
     if (await findIn(dir, decisionId)) return { state: 'pending' };
-    if (await findIn(path.join(dir, 'applied'), decisionId)) return { state: 'applied' };
-    const rejected = await findIn(path.join(dir, 'rejected'), decisionId);
+    if (await findIn(path.join(/*turbopackIgnore: true*/ dir, 'applied'), decisionId)) return { state: 'applied' };
+    const rejected = await findIn(path.join(/*turbopackIgnore: true*/ dir, 'rejected'), decisionId);
     if (rejected === null) return { state: 'unknown' };
     try {
-        const record: unknown = JSON.parse(await fs.promises.readFile(rejected, 'utf8'));
+        const record: unknown = JSON.parse(await fs.promises.readFile(/*turbopackIgnore: true*/ rejected, 'utf8'));
         const reason = typeof record === 'object' && record !== null && typeof (record as { reason?: unknown }).reason === 'string' ? (record as { reason: string }).reason : null;
         return reason === null ? { state: 'unknown' } : { state: 'rejected', reason };
     } catch {
