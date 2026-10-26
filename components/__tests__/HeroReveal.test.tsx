@@ -74,8 +74,9 @@ const PORTRAIT: AboutPortraitView = {
   focalPoint: { x: 50, y: 32 },
 };
 
-const AT_CENTER = 'translate(-50%, -50%) translateY(calc(0 * (50dvh - 280px))) scale(1)';
-const IN_PLACE = 'translate(-50%, -50%) translateY(calc(1 * (50dvh - 280px))) scale(0.85)';
+/** The landing's ends, on the badge's place from HeroReveal.module.css. */
+const AT_CENTER = 'translate(-50%, -50%) translate(calc(0 * var(--badge-shift)), calc(0 * (50dvh - var(--badge-rise)))) scale(calc(1 - 0 * (1 - var(--badge-scale))))';
+const IN_PLACE = 'translate(-50%, -50%) translate(calc(1 * var(--badge-shift)), calc(1 * (50dvh - var(--badge-rise)))) scale(calc(1 - 1 * (1 - var(--badge-scale))))';
 
 function renderReveal(isLoading: boolean, { portrait = null }: { portrait?: AboutPortraitView | null } = {}) {
   const onSettled = vi.fn();

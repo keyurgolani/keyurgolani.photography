@@ -1,15 +1,19 @@
 import type { Locator, Page, TestInfo } from '@playwright/test';
+import sharp from 'sharp';
 import { STAND_IN_PORTRAIT } from './support/aboutPortrait';
+import { CATALOG_ORIGIN } from './support/catalog-home';
 import { expectHomeImmersive, photoPoint } from './support/home';
 import { waitForHydration } from './support/hydration';
 import { expect, setPhotoFixtures, test } from './support/test';
 
 // Home's intro shows About's portrait, the stand-in the servers read from
 // their site config folder, and hands off as v1.1.0 did: the portrait glides
-// down and shrinks into its place 280 px above the bottom, at 0.85, and stays
-// as the badge, for 3 s and then whenever the chrome shows. The badge and the
+// and shrinks into its place, and stays as the badge, for 3 s and then
+// whenever the chrome shows. On a laptop that's v1.1.0's place, 280 px above
+// the bottom at 0.85; on a phone or a short landscape screen it's one clear of
+// the series title and the nav (HeroReveal.module.css). The badge and the
 // loading portrait sit under the chrome and take no pointer, and a mouse over
-// either tilts it. A server without a portrait is covered by the unit tests
+// either tilts it. While the intro plays, the mouse doesn't wake the chrome. A server without a portrait is covered by the unit tests
 // (components/__tests__/HeroReveal.test.tsx and app/__tests__/page.test.tsx),
 // since every server here reads the same folder.
 
@@ -58,13 +62,31 @@ const boxOf = (target: Locator) =>
         return { x: left + width / 2, y: top + height / 2, width };
     });
 
-/** The badge's place, v1.1.0's: centred, 280 px above the bottom, at 0.85 of the 256 px box, or 320 px from 768 px wide. */
+/**
+ * The badge's place, HeroReveal.module.css's: the centre and width of the
+ * 256 px box, or 320 px from 768 px wide, once it lands. v1.1.0's on a laptop,
+ * centred 280 px above the bottom at 0.85; on a screen taller than it's wide
+ * up to 1024 px, centred 439 px above the bottom (470 px from 768 px wide);
+ * under 500 px tall in landscape, a quarter of the width right of the middle,
+ * 10 px above it, at 0.6.
+ */
 const badgePlace = (page: Page) => {
     const { width, height } = page.viewportSize()!;
-    return { x: width / 2, y: height - 280, width: (width >= 768 ? 320 : 256) * 0.85 };
+    const box = width >= 768 ? 320 : 256;
+    if (width > height && height < 500) return { x: width * 0.75, y: height / 2 - 10, width: box * 0.6 };
+    if (height >= width && width < 1024) return { x: width / 2, y: height - (box === 320 ? 470 : 439), width: box * 0.85 };
+    return { x: width / 2, y: height - 280, width: box * 0.85 };
 };
 
 const opacityOf = (target: Locator) => target.evaluate((el) => Number(getComputedStyle(el).opacity));
+
+/** The mean relative luminance, 0 to 255, of what's painted in `clip`. */
+async function luminanceOf(page: Page, clip: { x: number; y: number; width: number; height: number }) {
+    const { data, info } = await sharp(await page.screenshot({ clip })).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    let sum = 0;
+    for (let i = 0; i < data.length; i += info.channels) sum += 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+    return sum / (data.length / info.channels);
+}
 
 /** The token in the URL an image shows. */
 const tokenOf = (src: string) => /\/about\/portrait\/([0-9a-f]{32})\/w(\d+)\.(avif|webp)$/.exec(new URL(src).pathname);
@@ -99,17 +121,17 @@ test.describe("About's portrait in the intro", () => {
         expect(about).toContain(`/about/portrait/${shown![1]}/`);
     });
 
-    test('glides down and shrinks into its place without fading, and stays there as the badge for 3 s, then goes with the chrome', async ({ page }, testInfo) => {
+    test('glides and shrinks into its place without fading, and stays there as the badge for 3 s, then goes with the chrome', async ({ page }, testInfo) => {
         runsOn(testInfo, 'desktop', 'mobile');
         // Every frame from the first: the portrait's opacity and its box, under either class.
         await page.addInitScript(() => {
-            const samples: { opacity: number; y: number; width: number; badge: boolean }[] = [];
+            const samples: { opacity: number; x: number; y: number; width: number; badge: boolean }[] = [];
             (window as unknown as { __portrait: typeof samples }).__portrait = samples;
             const sample = () => {
                 const el = document.querySelector<HTMLElement>('[class*="portrait"], [data-home-badge]');
                 if (el && document.documentElement.hasAttribute('data-hydrated')) {
-                    const { top, height, width } = el.getBoundingClientRect();
-                    samples.push({ opacity: Number(getComputedStyle(el).opacity), y: top + height / 2, width, badge: el.hasAttribute('data-home-badge') });
+                    const { left, top, height, width } = el.getBoundingClientRect();
+                    samples.push({ opacity: Number(getComputedStyle(el).opacity), x: left + width / 2, y: top + height / 2, width, badge: el.hasAttribute('data-home-badge') });
                 }
                 requestAnimationFrame(sample);
             };
@@ -126,17 +148,22 @@ test.describe("About's portrait in the intro", () => {
         await expect(badge(page)).toHaveAttribute('data-lingering', '');
         expect(await opacityOf(badge(page))).toBe(1);
 
-        const samples = await page.evaluate(() => (window as unknown as { __portrait: { opacity: number; y: number; width: number; badge: boolean }[] }).__portrait);
-        const { height } = page.viewportSize()!;
+        const samples = await page.evaluate(() => (window as unknown as { __portrait: { opacity: number; x: number; y: number; width: number; badge: boolean }[] }).__portrait);
+        const { width, height } = page.viewportSize()!;
         expect(samples.length).toBeGreaterThan(10);
         expect(samples.filter((s) => s.opacity < 1), 'the portrait never fades on the way').toEqual([]);
-        // Down and smaller, frame on frame, from the centre to its place.
+        // Toward its place and smaller, frame on frame, from the centre.
+        const towards = (from: number, to: number) => (to >= from ? 1 : -1);
+        const [dx, dy] = [towards(width / 2, place.x), towards(height / 2, place.y)];
         for (let i = 1; i < samples.length; i++) {
-            expect(samples[i].y, `frame ${i}`).toBeGreaterThanOrEqual(samples[i - 1].y - 0.5);
+            expect((samples[i].x - samples[i - 1].x) * dx, `frame ${i}`).toBeGreaterThanOrEqual(-0.5);
+            expect((samples[i].y - samples[i - 1].y) * dy, `frame ${i}`).toBeGreaterThanOrEqual(-0.5);
             expect(samples[i].width, `frame ${i}`).toBeLessThanOrEqual(samples[i - 1].width + 0.5);
         }
+        expect(Math.abs(samples[0].x - width / 2)).toBeLessThanOrEqual(1);
         expect(Math.abs(samples[0].y - height / 2)).toBeLessThanOrEqual(1);
-        expect(samples.some((s) => s.y > height / 2 + 5 && s.y < place.y - 5), 'it passes through the frames between').toBe(true);
+        const start = samples[0].width;
+        expect(samples.some((s) => s.width < start - 5 && s.width > place.width + 5), 'it passes through the frames between').toBe(true);
 
         // Its 3 s, then it goes with the chrome, and comes back with it.
         await expectHomeImmersive(page);
@@ -233,21 +260,52 @@ test.describe("About's portrait in the intro", () => {
 });
 
 test.describe('the tilt and the chrome', () => {
-    test('a mouse over the loading portrait tilts it in perspective while the woken nav keeps its clicks', async ({ page }, testInfo) => {
+    test("a mouse over the loading portrait tilts it and leaves the chrome asleep, so nothing dims it, as on v1.1.0, and Tab wakes the chrome at once", async ({ page }, testInfo) => {
         runsOn(testInfo, 'desktop');
-        await openLoading(page);
+        setPhotoFixtures(page, ['white', 'gray', 'black']);
+        await holdPhotos(page);
+        // Paused before the load, so the intro stays at its loading frame for as long as the test takes.
+        await page.clock.install();
+        await page.clock.pauseAt(Date.now() + 1000);
+        await page.goto('/');
+        await waitForHydration(page);
+        await expect(main(page)).toHaveAttribute('data-home-intro', 'loading');
+        const image = loading(page).getByRole('img');
+        await expect.poll(() => image.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth > 0)).toBe(true);
+        const face = await loading(page).locator('[class*="face"]').boundingBox();
+        // The middle of the oval, where the scrim would darken it most, before any mouse.
+        const clip = { x: face!.x + face!.width / 4, y: face!.y + face!.height / 4, width: face!.width / 2, height: face!.height / 2 };
+        const rest = await luminanceOf(page, clip);
+
         const { x, y } = await boxOf(loading(page));
         await page.mouse.move(x + 20, y + 20);
         await page.mouse.move(x + 120, y + 120, { steps: 3 });
-        await expect(main(page)).toHaveAttribute('data-interface-state', 'interactive');
         await expect.poll(() => card(loading(page)).evaluate((el) => el.style.transform)).toMatch(/^perspective\(800px\) translateY\(.+\) rotateX\(.+deg\) rotateY\(.+deg\)$/);
         expect(Number(await card(loading(page)).evaluate((el) => el.style.getPropertyValue('--tilt')))).toBeGreaterThan(0);
-        // Off the card, it comes back to rest.
-        await page.mouse.move(40, y);
-        await expect.poll(() => card(loading(page)).evaluate((el) => el.style.transform)).toBe('');
+        await expect(main(page)).toHaveAttribute('data-interface-state', 'immersive');
+        await expect(page.locator('[data-home-vignette]')).toHaveCSS('opacity', '0');
 
-        // The nav is on top and takes its click while the intro is still up.
+        // Off the card, still moving: it comes back to rest, as bright as before the mouse came.
+        await page.mouse.move(40, y);
+        await page.mouse.move(60, y + 10, { steps: 2 });
+        await expect.poll(() => card(loading(page)).evaluate((el) => el.style.transform)).toBe('');
+        // The card's 0.1 s ease back, and the scrim's 220 ms fade had one started.
+        await page.waitForTimeout(400);
+        await expect(main(page)).toHaveAttribute('data-interface-state', 'immersive');
+        const after = await luminanceOf(page, clip);
+        expect(Math.abs(after - rest) / rest, `the portrait's luminance, ${after.toFixed(1)} against ${rest.toFixed(1)} at rest`).toBeLessThan(0.02);
+
+        // Tab wakes the chrome at once, with focus drawn on a nav control over the intro.
+        const inNav = () => page.evaluate(() => !!document.activeElement?.closest('nav[aria-label="Primary"]'));
+        for (let press = 0; press < 5 && !(await inNav()); press++) await page.keyboard.press('Tab');
+        expect(await page.evaluate(() => document.activeElement?.matches(':focus-visible') ?? false)).toBe(true);
+        expect(await inNav()).toBe(true);
+        await expect(page.locator('[data-home-chrome]')).toHaveCSS('opacity', '1');
+        await expect(main(page)).toHaveAttribute('data-chrome-holds', /keyboard-focus/);
         await expect(main(page)).toHaveAttribute('data-home-intro', 'loading');
+
+        // The woken nav takes its click while the intro is still up.
+        await page.clock.resume();
         const about = navLink(page, 'About');
         const centre = await boxOf(about);
         expect(await page.evaluate(([px, py]) => !!document.elementFromPoint(px, py)?.closest('a[href="/about"]'), [centre.x, centre.y])).toBe(true);
@@ -280,4 +338,50 @@ test.describe('the tilt and the chrome', () => {
         await page.keyboard.press('Enter');
         await expect(page).toHaveURL('/gallery');
     });
+});
+
+test.describe("the badge's place on the catalog Home", () => {
+    test.use({ baseURL: CATALOG_ORIGIN });
+
+    type Box = { left: number; top: number; right: number; bottom: number };
+    const intersects = (a: Box, b: Box) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+
+    for (const size of [
+        { width: 390, height: 844 },
+        { width: 844, height: 390 },
+        { width: 1440, height: 900 },
+        { width: 1366, height: 768 },
+        { width: 360, height: 740 },
+    ]) {
+        test(`the landed badge clears the series title and the nav at ${size.width} x ${size.height}`, async ({ page }, testInfo) => {
+            runsOn(testInfo, 'desktop');
+            await page.setViewportSize(size);
+            await page.goto('/');
+            await waitForHydration(page);
+            await expect(main(page)).toHaveAttribute('data-home-intro', 'settled', { timeout: 20_000 });
+            await expect(badge(page)).toHaveAttribute('data-landed', '');
+            const place = badgePlace(page);
+            const landed = await boxOf(badge(page));
+            expect(Math.abs(landed.x - place.x)).toBeLessThanOrEqual(1);
+            expect(Math.abs(landed.y - place.y)).toBeLessThanOrEqual(1);
+            expect(Math.abs(landed.width - place.width)).toBeLessThanOrEqual(1);
+            const boxes = await page.evaluate(() => {
+                const box = (el: Element | null) => {
+                    if (!el) return null;
+                    const { left, top, right, bottom } = el.getBoundingClientRect();
+                    return { left, top, right, bottom };
+                };
+                // The painted oval and its 4 px ring.
+                const face = box(document.querySelector('[data-home-badge] [class*="face"]'));
+                const oval = face && { left: face.left - 4, top: face.top - 4, right: face.right + 4, bottom: face.bottom + 4 };
+                return { oval, title: box(document.querySelector('[data-chrome-region="story"] h1')), nav: box(document.querySelector('nav[aria-label="Primary"]')) };
+            });
+            console.log(`badge boxes at ${size.width}x${size.height}: ${JSON.stringify(boxes)}`);
+            expect(boxes.oval).not.toBeNull();
+            expect(boxes.title).not.toBeNull();
+            expect(boxes.nav).not.toBeNull();
+            expect(intersects(boxes.oval!, boxes.title!), 'the badge clears the series title').toBe(false);
+            expect(intersects(boxes.oval!, boxes.nav!), 'the badge clears the nav').toBe(false);
+        });
+    }
 });

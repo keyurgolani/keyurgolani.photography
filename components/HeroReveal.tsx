@@ -45,16 +45,19 @@ export const BADGE_LINGER_MS = 3000;
 
 /**
  * The portrait's transform for landing progress `p`: from the viewport's
- * center at full size to 280 px above its bottom at 0.85, v1.1.0's place.
+ * center at full size to the badge's place, which HeroReveal.module.css sets
+ * per screen: v1.1.0's on a laptop, 280 px above the bottom at 0.85, and one
+ * clear of the series title and the nav on a phone or a short landscape screen.
  */
-const landingTransform = (p: number) => `translate(-50%, -50%) translateY(calc(${p} * (50dvh - 280px))) scale(${1 - 0.15 * p})`;
+const landingTransform = (p: number) =>
+  `translate(-50%, -50%) translate(calc(${p} * var(--badge-shift)), calc(${p} * (50dvh - var(--badge-rise)))) scale(calc(1 - ${p} * (1 - var(--badge-scale))))`;
 
 /**
  * Home's loading state on a first visit with motion: a grain overlay with
  * ripples around About's portrait at the center. Once loading ends, or at
  * the exit deadline if it hasn't, a hole opens from the center onto the
- * photograph, and the portrait glides down and shrinks into its place above
- * the bottom of the screen, v1.1.0's handoff. There it stays as Home's badge:
+ * photograph, and the portrait glides and shrinks into its place as the
+ * badge, v1.1.0's handoff. There it stays as Home's badge:
  * for 3 s, then whenever Home's chrome shows. A return visit starts with the
  * badge in place, and reduced motion fades it in there once loading ends.
  * With no usable portrait the intro plays without one and there's no badge.
