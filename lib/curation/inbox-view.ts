@@ -103,6 +103,8 @@ export interface InboxItem {
     shortId: string;
     /** Library-relative, with anything unprintable escaped. What tells one row from the next. */
     sourcePath: string;
+    /** A curator-only URL for the row's thumbnail, the ready set's w400 WebP, or null when no set is ready. */
+    thumbnailUrl: string | null;
     waiting: string | null;
     /** What holds its photo, for an item settled by placement, or null. */
     placedBy: string | null;

@@ -1,4 +1,4 @@
-import { RefreshCw } from 'lucide-react';
+import { ImageOff, RefreshCw } from 'lucide-react';
 import styles from '../curator.module.css';
 import EventBadge from './EventBadge';
 import { summaryText, type InboxItem, type InboxView, type ItemGroup } from '@/lib/curation/inbox-view';
@@ -15,19 +15,42 @@ const GROUP_HEADINGS: Record<Exclude<ItemGroup, 'judgment'>, string> = {
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
+/** 56 CSS px square, so a row is the same height whether its thumbnail has loaded, is still loading, or has none. */
+const THUMB = 56;
+
+/**
+ * The row's thumbnail: the ready set's w400 WebP from the curator-only
+ * route, never the original, loaded only as the row nears the screen. Its
+ * alt is empty, since the file name beside it names the photograph. With no
+ * ready set, a neutral square holds its place.
+ */
+function Thumbnail({ url }: { url: string | null }) {
+    if (url === null) {
+        return (
+            <span className={styles.thumb} data-thumb="none" aria-hidden="true">
+                <ImageOff size={18} />
+            </span>
+        );
+    }
+    return <img className={styles.thumb} src={url} alt="" width={THUMB} height={THUMB} loading="lazy" decoding="async" />;
+}
+
 function ItemLink({ item, selected }: { item: InboxItem; selected: boolean }) {
     return (
         <li>
             {/* `#item` lands on the item itself, past the list on a phone, and past every row for a keyboard. */}
             <a className={styles.item} href={`/curation/inbox?item=${item.id}#item`} aria-current={selected ? 'true' : undefined}>
-                <EventBadge type={item.type} />
-                <strong>{item.title}</strong>
-                <span className={styles.itemMeta}>
-                    <span className={styles.itemFile}>{item.sourcePath}</span>
-                    <small>{item.shortId}</small>
+                <Thumbnail url={item.thumbnailUrl} />
+                <span className={styles.itemText}>
+                    <EventBadge type={item.type} />
+                    <strong>{item.title}</strong>
+                    <span className={styles.itemMeta}>
+                        <span className={styles.itemFile}>{item.sourcePath}</span>
+                        <small>{item.shortId}</small>
+                    </span>
+                    {item.waiting ? <span className={styles.waitingNote}>Waiting: {item.waiting}</span> : null}
+                    {item.placedBy ? <span className={styles.waitingNote}>Already placed</span> : null}
                 </span>
-                {item.waiting ? <span className={styles.waitingNote}>Waiting: {item.waiting}</span> : null}
-                {item.placedBy ? <span className={styles.waitingNote}>Already placed</span> : null}
             </a>
         </li>
     );
