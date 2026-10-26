@@ -13,6 +13,11 @@ export interface WidthRule {
     media?: string;
     /** The box's width there, in vw. */
     vw: number;
+    /**
+     * A fixed height the box gives up there, in rem, on top of the viewport share: the header and the stage's padding,
+     * where they're a large part of a short screen. The height cap is then `calc(heightVh vh - offset)` times the shape.
+     */
+    offsetRem?: number;
 }
 
 const round = (value: number, places: number) => Number(value.toFixed(places));
@@ -21,10 +26,12 @@ export function heightCappedSizes(width: number, height: number, heightVh: numbe
     const shape = width / height;
     const cappedVh = round(heightVh * shape, 2);
     return rules
-        .flatMap(({ media, vw }) => {
-            // The height binds once viewport width over height passes this.
+        .flatMap(({ media, vw, offsetRem }) => {
+            // The height binds once viewport width over height passes this, and sooner with an offset, where the width
+            // rule's larger size still covers the box.
             const aspect = `(min-aspect-ratio: ${Math.round(((heightVh * shape) / vw) * 1000)}/1000)`;
-            return [`${media ? `${media} and ` : ''}${aspect} ${cappedVh}vh`, `${media ? `${media} ` : ''}${vw}vw`];
+            const capped = offsetRem ? `calc(${cappedVh}vh - ${round(offsetRem * shape, 4)}rem)` : `${cappedVh}vh`;
+            return [`${media ? `${media} and ` : ''}${aspect} ${capped}`, `${media ? `${media} ` : ''}${vw}vw`];
         })
         .join(', ');
 }

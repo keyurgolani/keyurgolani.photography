@@ -187,6 +187,8 @@ async function titleLine(page: Page) {
         const lead = reading?.querySelector('h2 ~ p, h2 ~ div p:not(:first-child)') ?? null;
         const leadTop = lead?.getBoundingClientRect().top ?? NaN;
         const lineHeight = lead ? parseFloat(getComputedStyle(lead).lineHeight) : NaN;
+        // The reading area's next piece after the lead's own: the description after a caption, the technical toggle after a description.
+        const after = lead?.closest('section > *')?.nextElementSibling ?? null;
         return {
             innerHeight,
             frame: box(root.querySelector('[data-viewer-stage] figure')),
@@ -194,26 +196,51 @@ async function titleLine(page: Page) {
             title: box(title),
             leadText: lead?.textContent ?? null,
             leadLineBottom: leadTop + lineHeight,
+            afterTop: after?.getBoundingClientRect().top ?? null,
         };
     });
 }
 
-test('at 1440 by 900, the title line shows under the photograph in the first screen, as the approved design keeps it', async ({ page }, testInfo) => {
+test('on a wide screen, the title line shows under the photograph in the first screen, as the approved design keeps it, and the screen ends on whole elements', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'desktop', 'The wide layout.');
-    await page.setViewportSize({ width: 1440, height: 900 });
-    // The first photograph has a title and a caption; the second has neither, so its description leads.
-    for (const [photoId, lead] of [
-        [P[0], 'Fixture authored caption.'],
-        [P[1], 'Fixture description of photograph 0002.'],
-    ] as const) {
-        await openViewer(page, photoId);
+    for (const size of [
+        { width: 1440, height: 900 },
+        { width: 1366, height: 768 },
+        { width: 1280, height: 800 },
+    ]) {
+        await page.setViewportSize(size);
+        const at = `${size.width} by ${size.height}`;
+        // The first photograph has a title and a caption; the second has neither, so its description leads.
+        for (const [photoId, lead] of [
+            [P[0], 'Fixture authored caption.'],
+            [P[1], 'Fixture description of photograph 0002.'],
+        ] as const) {
+            await openViewer(page, photoId);
+            const line = await titleLine(page);
+            expect(line.leadText).toBe(lead);
+            expect(line.frame && line.reading && line.frame.bottom <= line.reading.top, `${at}: the photograph sits above the reading area`).toBe(true);
+            if (photoId === P[0]) expect(line.title && line.title.top >= 0 && line.title.bottom <= line.innerHeight, `${at}: the title shows`).toBe(true);
+            expect(line.leadLineBottom, `${at}: the first line of ${lead} shows`).toBeLessThanOrEqual(line.innerHeight);
+            // The fold falls in the gap under the lead's first line, so the piece after the lead (here the Description label) isn't cut.
+            if (photoId === P[0]) expect(line.afterTop, `${at}: what follows the lead starts under the fold`).toBeGreaterThanOrEqual(line.innerHeight);
+            // The photograph still holds the screen.
+            expect(line.frame && line.frame.bottom - line.frame.top).toBeGreaterThan(line.innerHeight * 0.6);
+        }
+    }
+});
+
+test('on a wide screen under 40rem tall, a phone held sideways or a laptop at 150%, the photograph keeps the whole first screen', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'desktop', 'The wide layout.');
+    for (const size of [
+        { width: 844, height: 390 },
+        { width: 915, height: 412 },
+        { width: 960, height: 600 },
+    ]) {
+        await page.setViewportSize(size);
+        await openViewer(page, P[0]);
         const line = await titleLine(page);
-        expect(line.leadText).toBe(lead);
-        expect(line.frame && line.reading && line.frame.bottom <= line.reading.top, 'the photograph sits above the reading area').toBe(true);
-        if (photoId === P[0]) expect(line.title && line.title.top >= 0 && line.title.bottom <= line.innerHeight, 'the title shows').toBe(true);
-        expect(line.leadLineBottom, `the first line of ${lead} shows`).toBeLessThanOrEqual(line.innerHeight);
-        // The photograph still holds the screen.
-        expect(line.frame && line.frame.bottom - line.frame.top).toBeGreaterThan(line.innerHeight * 0.6);
+        // All the header (3.5rem) and the stage chrome (4rem) leave, with no room kept for the title line.
+        expect(line.frame && line.frame.bottom - line.frame.top, `${size.width} by ${size.height}`).toBeCloseTo(size.height - 120, 0);
     }
 });
 
