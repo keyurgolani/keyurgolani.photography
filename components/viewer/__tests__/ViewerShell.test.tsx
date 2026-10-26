@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { PublishedViewerPhoto, ViewerImage } from '@/lib/catalog/projections/viewer';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '@/lib/identity/variants';
 import { mediaUrl } from '@/lib/media/url';
+import { setPrefersReducedMotion } from '@/test/matchMedia';
 import StoryViewer from '../StoryViewer';
 import ViewerShell from '../ViewerShell';
 import type { ViewerMode } from '../viewerContext';
@@ -362,11 +363,12 @@ describe('ViewerShell, as the modal', () => {
     });
 
     it('moves on a swipe in the modal too', () => {
-        renderShell('modal', 2);
+        const { move } = renderShell('modal', 2);
         swipe(stage(), -80);
         expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
+        move(3);
         swipe(stage(), 80);
-        expect(router.replace).toHaveBeenLastCalledWith(photoHref(1), { scroll: false });
+        expect(router.replace).toHaveBeenLastCalledWith(photoHref(2), { scroll: false });
     });
 
     it('closes the dialog when it unmounts without asking for a Back, and leaves no listener', () => {
@@ -842,11 +844,12 @@ describe('ViewerShell, double-tap', () => {
     });
 
     it('never fires on a swipe, and a double-tap never moves: a swipe right after it still moves', () => {
-        renderZoomable();
+        const { move } = renderZoomable();
         // A swipe, then a tap within the settle: no Zoom, and the swipe moved.
         pointer(stage(), 'pointerdown', { t: 1000 });
         pointer(stage(), 'pointerup', { x: 100, t: 1080 });
         expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
+        move(3);
         tap(stage(), 1200);
         tap(stage(), 1300);
         expect(zoom()).toHaveAttribute('aria-pressed', 'false');
@@ -860,8 +863,8 @@ describe('ViewerShell, double-tap', () => {
         expect(zoom()).toHaveAttribute('aria-pressed', 'false');
         expect(router.replace).not.toHaveBeenCalled();
         pointer(stage(), 'pointerdown', { t: 4300 });
-        pointer(stage(), 'pointerup', { x: 100, t: 4380 });
-        expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
+        pointer(stage(), 'pointerup', { x: 300, t: 4380 });
+        expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(2), { scroll: false });
     });
 
     it('quiets taps during and right after any scroll, so a tap that stops a fling never zooms', () => {
@@ -941,5 +944,189 @@ describe('ViewerShell, double-tap', () => {
             expect(removeFromRoot).toHaveBeenCalledWith(type, expect.any(Function));
         }
         removeFromDocument.mockRestore();
+    });
+});
+
+describe('ViewerShell, the photograph follows the finger (9a)', () => {
+    const setPointerCapture = vi.fn();
+    const fetchMock = vi.fn();
+    beforeAll(() => {
+        Object.assign(HTMLElement.prototype, { setPointerCapture });
+    });
+    afterAll(() => {
+        delete (HTMLElement.prototype as Partial<HTMLElement>).setPointerCapture;
+    });
+    beforeEach(() => {
+        fetchMock.mockImplementation(async (url: string) => {
+            const photoId = /photos\/([^/?]+)/.exec(url)?.[1] ?? '';
+            const n = Number(photoId.slice(-12));
+            return new Response(JSON.stringify({ revisionId: `rev_${'a'.repeat(64)}`, photoId, image: imageOf(n), accent: `#00000${n}` }), { status: 200 });
+        });
+        vi.stubGlobal('fetch', fetchMock);
+        // jsdom lays nothing out: a 390 px stage, as on a phone.
+        vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(390);
+    });
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        vi.restoreAllMocks();
+    });
+
+    function renderWithImages(mode: ViewerMode, n: number) {
+        const view = render(<ViewerShell mode={mode}>{photo(n, true)}</ViewerShell>);
+        return { ...view, move: (to: number) => view.rerender(<ViewerShell mode={mode}>{photo(to, true)}</ViewerShell>) };
+    }
+    function pointer(target: EventTarget, type: string, { x = 200, y = 300, t = 0 } = {}) {
+        const event = new PointerEvent(type, { pointerId: 1, clientX: x, clientY: y, pointerType: 'touch', isPrimary: true, bubbles: true, cancelable: true });
+        Object.defineProperty(event, 'timeStamp', { value: t });
+        act(() => {
+            target.dispatchEvent(event);
+        });
+    }
+    const track = () => document.querySelector<HTMLElement>('[data-viewer-track]') as HTMLElement;
+    const peeks = () => [...document.querySelectorAll('[data-viewer-peek]')].map((element) => element.getAttribute('data-viewer-peek'));
+    const counter = () => document.querySelector('header p > span[aria-hidden="true"]')?.textContent;
+    /** Lets the peek fetches resolve and their state land. */
+    const settle = () => act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    it('asks for no neighbor on a load, and for both, in the revision shown, once a finger goes down on the photograph', async () => {
+        renderWithImages('page', 2);
+        await settle();
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(peeks()).toEqual([]);
+        pointer(stage(), 'pointerdown');
+        pointer(stage(), 'pointerup');
+        await settle();
+        expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+            `/api/catalog/series/fixture/photos/${id(1)}?revision=rev_${'a'.repeat(64)}`,
+            `/api/catalog/series/fixture/photos/${id(3)}?revision=rev_${'a'.repeat(64)}`,
+        ]);
+        // The neighbors peek in beside the photograph, hidden from assistive technology and never a figure.
+        expect(peeks()).toEqual(['previous', 'next']);
+        for (const element of document.querySelectorAll('[data-viewer-peek]')) expect(element).toHaveAttribute('aria-hidden', 'true');
+        expect(stage().querySelectorAll('figure')).toHaveLength(1);
+        expect(stage().querySelectorAll('[data-viewer-peek] img[alt=""]')).toHaveLength(2);
+        // Once each: another touch asks again for nothing.
+        pointer(stage(), 'pointerdown');
+        pointer(stage(), 'pointerup');
+        await settle();
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('follows a sideways drag 1:1 from the claim, and meets the rubber band at the first photograph', () => {
+        const { unmount } = renderWithImages('page', 2);
+        pointer(stage(), 'pointerdown', { x: 200, t: 0 });
+        pointer(root() as HTMLElement, 'pointermove', { x: 188, t: 16 });
+        expect(track().style.transform).toBe('translate3d(0px, 0, 0)');
+        pointer(root() as HTMLElement, 'pointermove', { x: 100, t: 200 });
+        expect(track().style.transform).toBe('translate3d(-88px, 0, 0)');
+        pointer(root() as HTMLElement, 'pointermove', { x: 300, t: 400 });
+        expect(track().style.transform).toBe('translate3d(112px, 0, 0)');
+        // Lifted slowly short of the rule, and with no Web Animations in jsdom, it's back at rest at once.
+        pointer(root() as HTMLElement, 'pointerup', { x: 230, t: 800 });
+        expect(router.replace).not.toHaveBeenCalled();
+        expect(track().style.transform).toBe('');
+        unmount();
+        renderWithImages('page', 1);
+        pointer(stage(), 'pointerdown', { x: 200, t: 0 });
+        pointer(root() as HTMLElement, 'pointermove', { x: 212, t: 16 });
+        pointer(root() as HTMLElement, 'pointermove', { x: 382, t: 200 });
+        const offset = Number(/\((-?[\d.]+)px/.exec(track().style.transform)?.[1]);
+        expect(offset).toBeCloseTo((1 - 1 / ((170 * 0.55) / 390 + 1)) * 390, 6);
+        // Past 48 toward the end: it announces the end and slides back.
+        pointer(root() as HTMLElement, 'pointerup', { x: 382, t: 600 });
+        expect(router.replace).not.toHaveBeenCalled();
+        expect(announcer()).toHaveTextContent('First photograph in Fixture series.');
+        expect(track().style.transform).toBe('');
+    });
+
+    it('moves on a short fast flick', () => {
+        renderWithImages('page', 2);
+        pointer(stage(), 'pointerdown', { x: 200, t: 0 });
+        pointer(root() as HTMLElement, 'pointermove', { x: 188, t: 8 });
+        pointer(root() as HTMLElement, 'pointermove', { x: 175, t: 24 });
+        pointer(root() as HTMLElement, 'pointerup', { x: 170, t: 32 });
+        expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
+    });
+
+    it('shows the move in the counter and the accent rules at the lift, and holds any other move until the photograph arrives', async () => {
+        const { move } = renderWithImages('page', 2);
+        pointer(stage(), 'pointerdown', { x: 200, t: 0 });
+        await settle();
+        pointer(root() as HTMLElement, 'pointermove', { x: 150, t: 100 });
+        pointer(root() as HTMLElement, 'pointerup', { x: 100, t: 400 });
+        expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
+        expect(counter()).toBe('03 / 03');
+        // The root carries the accent for both rules, the arriving photograph's from its peek.
+        expect(root()?.style.getPropertyValue('--cc-accent')).toBe('#000003');
+        expect(document.querySelector<HTMLElement>('[data-viewer-photo]')?.style.getPropertyValue('--cc-accent')).toBe('');
+        // Another move waits: a key, a control, or a swipe asks for nothing until the photograph arrives.
+        fireEvent.keyDown(document.body, { key: 'ArrowLeft' });
+        fireEvent.click(step('Previous photograph'));
+        pointer(stage(), 'pointerdown', { x: 200, t: 600 });
+        pointer(root() as HTMLElement, 'pointerup', { x: 100, t: 700 });
+        expect(router.replace).toHaveBeenCalledOnce();
+        move(3);
+        expect(counter()).toBe('03 / 03');
+        expect(announcer()).toHaveTextContent('Photograph 3 of 3');
+        fireEvent.keyDown(document.body, { key: 'ArrowLeft' });
+        expect(router.replace).toHaveBeenLastCalledWith(photoHref(2), { scroll: false });
+    });
+
+    it('asks for each new photograph\'s neighbors once a finger has touched one, and the one it left peeks back in', async () => {
+        const { move } = renderWithImages('page', 1);
+        pointer(stage(), 'pointerdown');
+        pointer(stage(), 'pointerup');
+        await settle();
+        expect(fetchMock).toHaveBeenCalledOnce();
+        move(2);
+        await settle();
+        // Photograph 1 was shown, so only 3 is asked for.
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(fetchMock.mock.calls[1][0]).toContain(id(3));
+        expect(peeks()).toEqual(['previous', 'next']);
+    });
+
+    it('under reduced motion follows nothing, asks for no neighbor, and changes the counter when the photograph arrives', async () => {
+        setPrefersReducedMotion(true);
+        const { move } = renderWithImages('page', 2);
+        pointer(stage(), 'pointerdown', { x: 200, t: 0 });
+        pointer(root() as HTMLElement, 'pointermove', { x: 150, t: 100 });
+        expect(track().style.transform).toBe('');
+        pointer(root() as HTMLElement, 'pointerup', { x: 100, t: 400 });
+        await settle();
+        expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(counter()).toBe('02 / 03');
+        move(3);
+        expect(counter()).toBe('03 / 03');
+        expect(peeks()).toEqual([]);
+        expect(document.querySelectorAll('[data-moving]')).toHaveLength(0);
+    });
+
+    it('asks for no neighbor when the fetch fails, and still follows and moves', async () => {
+        fetchMock.mockRejectedValue(new TypeError('offline'));
+        renderWithImages('page', 2);
+        pointer(stage(), 'pointerdown', { x: 200, t: 0 });
+        await settle();
+        pointer(root() as HTMLElement, 'pointermove', { x: 188, t: 16 });
+        pointer(root() as HTMLElement, 'pointermove', { x: 150, t: 100 });
+        expect(track().style.transform).toBe('translate3d(-38px, 0, 0)');
+        pointer(root() as HTMLElement, 'pointerup', { x: 100, t: 400 });
+        expect(router.replace).toHaveBeenCalledOnce();
+        expect(peeks()).toEqual([]);
+    });
+
+    it('never follows a double-tap: the photograph stays at rest and Zoom toggles', () => {
+        renderWithImages('page', 2);
+        for (const t of [1000, 1150]) {
+            pointer(stage(), 'pointerdown', { t });
+            pointer(root() as HTMLElement, 'pointermove', { x: 203, t: t + 20 });
+            expect(track().style.transform).toBe('');
+            pointer(root() as HTMLElement, 'pointerup', { x: 203, t: t + 50 });
+        }
+        expect(screen.getByRole('button', { name: 'Zoom' })).toHaveAttribute('aria-pressed', 'true');
+        expect(router.replace).not.toHaveBeenCalled();
     });
 });

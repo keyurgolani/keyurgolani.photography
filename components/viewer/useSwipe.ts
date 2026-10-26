@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useRef, useState, type RefObject } from 'react';
-import { SWIPE_IDLE, claimsTouch, isPinched, reduceSwipe, type SwipeInput, type SwipeState } from './swipe';
+import type { StageMotion } from './stageMotion';
+import { SWIPE_IDLE, claimsTouch, followOffset, followTravel, isPinched, reduceSwipe, type SwipeInput, type SwipeState } from './swipe';
 import type { ViewerStep } from './viewerKeys';
 
 /**
@@ -9,6 +10,20 @@ import type { ViewerStep } from './viewerKeys';
  * the spare height (#9b), the dark ground above and below it, which gives a thumb more room. Controls sit outside it.
  */
 export const STAGE_SELECTOR = '[data-viewer-stage]';
+
+/** What the swipe reads from the shell as it goes, kept current there. */
+export interface SwipeShell {
+    zoomed: boolean;
+    /** False under reduced motion: nothing follows the finger, and a move is the cut at the lift. */
+    motion: boolean;
+    /** Whether there's a photograph each way, so a pull toward an end meets the rubber band. */
+    previous: boolean;
+    next: boolean;
+    /** The move the swipe asks for, at the lift. `settling` when the photograph is already settling into it. */
+    step(step: ViewerStep, settling: boolean): void;
+    /** A finger went down on the photograph: the shell starts fetching the neighbors that peek in. */
+    engage(): void;
+}
 
 /**
  * Swipes on the Viewer's shell root (#9), which outlives every move, so a
@@ -26,21 +41,24 @@ export const STAGE_SELECTOR = '[data-viewer-stage]';
  * has its `touchmove`s cancelled (claimsTouch), so Chromium leaves no fling
  * behind it to swallow the next tap.
  *
- * `zoomedRef` and `stepRef` are the shell's, kept current by it; `zoomed`
- * and `photoId` are there for the reset.
+ * With motion (9a), the photograph follows a touch claimed sideways 1:1 from
+ * the claim, with the neighbors peeking in, and meets a rubber band toward an
+ * end. At the lift it settles onward into the move, or back. A finger that
+ * goes down on it while it slides back catches it there. Under reduced
+ * motion it stays still and the move is the cut at the lift, as before.
+ *
+ * `shellRef` is the shell's, kept current by it; `zoomed` and `photoId` are
+ * there for the reset. `motionRef` holds the shell's StageMotion.
  */
 export function useSwipe(
     rootRef: RefObject<HTMLElement | null>,
-    {
-        zoomed,
-        zoomedRef,
-        stepRef,
-        photoId,
-    }: { zoomed: boolean; zoomedRef: RefObject<boolean>; stepRef: RefObject<(step: ViewerStep) => void>; photoId: string | null },
+    { zoomed, shellRef, motionRef, photoId }: { zoomed: boolean; shellRef: RefObject<SwipeShell>; motionRef: RefObject<StageMotion | null>; photoId: string | null },
 ): boolean {
     const state = useRef<SwipeState>(SWIPE_IDLE);
     /** Whether the touch the gesture follows is claimed from the browser: null until its axis is settled (claimsTouch). */
     const claim = useRef<boolean | null>(null);
+    /** Where a caught settle held the photograph when the finger went down, which the drag starts from. */
+    const base = useRef(0);
     const [pinched, setPinched] = useState(false);
 
     useEffect(() => {
@@ -58,22 +76,51 @@ export function useSwipe(
         const apply = (input: SwipeInput) => {
             const result = reduceSwipe(state.current, input);
             state.current = result.state;
-            if (result.step !== null) stepRef.current(result.step);
+            const { release } = result;
+            if (release === undefined) return;
+            const shell = shellRef.current;
+            const motion = shell.motion ? motionRef.current : null;
+            const step = release.step;
+            // Toward an end there's nothing to bring in: the photograph slides back, and the step announces the end.
+            const toward = step === null ? false : step === 'next' ? shell.next : shell.previous;
+            const settles = motion !== null && (release.followed || motion.heldOffset() !== 0);
+            if (settles) motion.release(toward ? step : null, release.velocity);
+            if (step !== null) shell.step(step, settles && toward);
         };
         const onDown = (event: PointerEvent) => {
             claim.current = null;
             const target = event.target instanceof Element ? event.target : null;
             const onStage = target !== null && target.closest(STAGE_SELECTOR) !== null;
-            const eligible = onStage && !zoomedRef.current && !isPinched(window.visualViewport?.scale);
-            apply({ type: 'down', pointerId: event.pointerId, x: event.clientX, y: event.clientY, primary: event.isPrimary, eligible });
+            const shell = shellRef.current;
+            const motion = shell.motion ? motionRef.current : null;
+            // A move already decided is on its way, so a finger can't start another until its photograph arrives.
+            const eligible = onStage && !shell.zoomed && !isPinched(window.visualViewport?.scale) && motion?.pendingStep() == null;
+            apply({ type: 'down', pointerId: event.pointerId, x: event.clientX, y: event.clientY, t: event.timeStamp, primary: event.isPrimary, eligible });
             if (state.current.start?.pointerId !== event.pointerId) return;
+            base.current = motion?.catch() ?? 0;
+            shell.engage();
             try {
                 root.setPointerCapture?.(event.pointerId);
             } catch {
                 // A pointer the browser no longer counts as down can't be captured; its lift or cancel still reaches the root.
             }
         };
-        const onUp = (event: PointerEvent) => apply({ type: 'up', pointerId: event.pointerId, x: event.clientX, y: event.clientY });
+        const onMove = (event: PointerEvent) => {
+            const { start } = state.current;
+            if (start === null || start.pointerId !== event.pointerId) return;
+            // Every sample the browser took since the last event, so a quick flick, which it coalesces into a frame or two,
+            // still has its speed (releaseVelocity). WebKit has no coalesced events, and there the event is the one sample.
+            const coalesced = typeof event.getCoalescedEvents === 'function' ? event.getCoalescedEvents() : [];
+            for (const sample of coalesced.length > 0 ? coalesced : [event]) {
+                apply({ type: 'move', pointerId: event.pointerId, x: sample.clientX, y: sample.clientY, t: sample.timeStamp });
+            }
+            const shell = shellRef.current;
+            const motion = shell.motion ? motionRef.current : null;
+            const travel = followTravel(state.current.start, event.clientX);
+            if (motion === null || travel === null) return;
+            motion.hold(followOffset(travel, base.current, motion.width(), { previous: shell.previous, next: shell.next }));
+        };
+        const onUp = (event: PointerEvent) => apply({ type: 'up', pointerId: event.pointerId, x: event.clientX, y: event.clientY, t: event.timeStamp });
         const onCancel = (event: PointerEvent) => apply({ type: 'cancel', pointerId: event.pointerId });
         // A sideways drag the swipe follows is the Viewer's: its moves are cancelled, so the browser starts no fling at
         // the lift that would swallow the next tap (claimsTouch). The browser fires each pointer event before its touch
@@ -86,12 +133,14 @@ export function useSwipe(
             if (claim.current === true && event.cancelable) event.preventDefault();
         };
         root.addEventListener('pointerdown', onDown);
+        root.addEventListener('pointermove', onMove);
         root.addEventListener('pointerup', onUp);
         root.addEventListener('pointercancel', onCancel);
         root.addEventListener('lostpointercapture', onCancel);
         root.addEventListener('touchmove', onTouchMove, { passive: false });
         return () => {
             root.removeEventListener('pointerdown', onDown);
+            root.removeEventListener('pointermove', onMove);
             root.removeEventListener('pointerup', onUp);
             root.removeEventListener('pointercancel', onCancel);
             root.removeEventListener('lostpointercapture', onCancel);
@@ -99,12 +148,16 @@ export function useSwipe(
             state.current = SWIPE_IDLE;
             claim.current = null;
         };
-    }, [rootRef, zoomedRef, stepRef]);
+    }, [rootRef, shellRef, motionRef]);
 
-    // A move by any route, Zoom either way, or a pinch ends the gesture in flight.
+    // A move by any route, Zoom either way, or a pinch ends the gesture in flight. A gesture the photograph was
+    // following slides back first, unless the move is the one it asked for.
     useEffect(() => {
+        const had = state.current.start !== null;
         state.current = reduceSwipe(state.current, { type: 'reset' }).state;
-    }, [photoId, zoomed, pinched]);
+        const motion = motionRef.current;
+        if (had && motion !== null && motion.pendingStep() === null) motion.release(null, 0);
+    }, [photoId, zoomed, pinched, motionRef]);
 
     return pinched;
 }

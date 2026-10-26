@@ -6,7 +6,7 @@ import ResponsivePhoto from '@/components/ResponsivePhoto';
 // Types only: the projection pulls the catalog schema and node:crypto in, which must stay out of the client bundle.
 import type { PublishedViewerPhoto } from '@/lib/catalog/projections/viewer';
 import ViewerChrome from './ViewerChrome';
-import { ViewerContext, type ViewerChromeState } from './viewerContext';
+import { ViewerContext, type ViewerChromeState, type ViewerPeek } from './viewerContext';
 import {
     DESCRIPTION_LABEL,
     HIDE_TECHNICAL,
@@ -51,13 +51,13 @@ function Photograph({ image, alt, zoomedWidth }: { image: ViewerImage; alt: stri
     const shape = { '--ratio': `${image.width} / ${image.height}` } as CSSProperties;
     if (failed) {
         return (
-            <div className={styles.missing} style={shape} data-photo="unavailable">
+            <div className={styles.missing} style={shape} data-photo="unavailable" data-viewer-current="">
                 <span className={styles.missingLabel}>{UNAVAILABLE_LABEL}</span>
             </div>
         );
     }
     return (
-        <figure className={styles.frame} style={zoomedWidth === null ? shape : ({ ...shape, '--zoom-width': `${zoomedWidth}px` } as CSSProperties)}>
+        <figure className={styles.frame} style={zoomedWidth === null ? shape : ({ ...shape, '--zoom-width': `${zoomedWidth}px` } as CSSProperties)} data-viewer-current="">
             <ResponsivePhoto
                 ref={element}
                 asset={image}
@@ -70,6 +70,39 @@ function Photograph({ image, alt, zoomedWidth }: { image: ViewerImage; alt: stri
                 className={styles.image}
             />
         </figure>
+    );
+}
+
+/**
+ * A neighbor peeking in beside the photograph while it follows the finger
+ * (9a), in its own fitted box, at the same sizes the photograph asks for, so
+ * the file it loads is the one the photograph shows once the move lands.
+ * Decorative: it's the next photograph's picture, not its content, so it's
+ * hidden from assistive technology, and its box isn't a figure.
+ */
+function Peek({ side, peek }: { side: 'previous' | 'next'; peek: ViewerPeek }) {
+    const { image } = peek;
+    const [failed, setFailed] = useState(false);
+    return (
+        <div className={styles.peek} data-viewer-peek={side} aria-hidden="true">
+            {image === null || failed ? (
+                <div className={styles.missing} style={image === null ? undefined : ({ '--ratio': `${image.width} / ${image.height}` } as CSSProperties)}>
+                    <span className={styles.missingLabel}>{UNAVAILABLE_LABEL}</span>
+                </div>
+            ) : (
+                <div className={styles.frame} style={{ '--ratio': `${image.width} / ${image.height}` } as CSSProperties}>
+                    <ResponsivePhoto
+                        asset={image}
+                        alt=""
+                        sizes={fitSizes(image.width, image.height)}
+                        loading="eager"
+                        fetchPriority="low"
+                        onError={() => setFailed(true)}
+                        className={styles.image}
+                    />
+                </div>
+            )}
+        </div>
     );
 }
 
@@ -100,8 +133,23 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
     const accent = accentValue(photo.accent, series.accent);
     const { image } = photo;
     const chrome = useMemo<ViewerChromeState>(
-        () => ({ photoId: photo.id, seriesTitle: series.title, closeHref, previousHref, nextHref, position, total, hasImage: image !== null, accent }),
-        [photo.id, series.title, closeHref, previousHref, nextHref, position, total, image, accent],
+        () => ({
+            photoId: photo.id,
+            seriesTitle: series.title,
+            closeHref,
+            previousHref,
+            nextHref,
+            position,
+            total,
+            hasImage: image !== null,
+            accent,
+            seriesSlug: series.slug,
+            revisionId: viewer.catalogRevision,
+            previousPhotoId: viewer.previousPhotoId,
+            nextPhotoId: viewer.nextPhotoId,
+            image,
+        }),
+        [photo.id, series.title, series.slug, closeHref, previousHref, nextHref, position, total, image, accent, viewer.catalogRevision, viewer.previousPhotoId, viewer.nextPhotoId],
     );
     const report = shell?.report;
     // Before paint, so the shell's controls replace these in the same frame and show this photograph's state.
@@ -118,6 +166,11 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
     });
     const largest = image === null ? null : image.variants.w1920.webp.width;
     const zoomedIn = zoomed && largest !== null;
+    // The neighbors that peek in while the photograph follows the finger (9a), once the shell has them. Never zoomed.
+    const peeks = shell?.peeks;
+    const peekOf = (photoId: string | null) => (zoomedIn || photoId === null ? undefined : peeks?.get(photoId));
+    const previousPeek = peekOf(viewer.previousPhotoId);
+    const nextPeek = peekOf(viewer.nextPhotoId);
 
     const content: ReactNode = (
         <>
@@ -141,17 +194,22 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
                 role={zoomedIn ? 'region' : undefined}
                 aria-label={zoomedIn ? 'Zoomed photograph' : undefined}
             >
-                {image === null ? (
-                    <div className={styles.missing} data-photo="unavailable">
-                        <span className={styles.missingLabel}>{UNAVAILABLE_LABEL}</span>
-                    </div>
-                ) : (
-                    // Keyed on the file, so the next photograph starts without the last one's failure.
-                    <Photograph key={image.variants.w1200.webp.url} image={image} alt={photo.alt} zoomedWidth={zoomedIn ? largest : null} />
-                )}
+                {/* The strip the swipe moves (9a's StageMotion): the photograph, with its neighbors beside it once they peek in. */}
+                <div className={styles.track} data-viewer-track="">
+                    {previousPeek && <Peek key={viewer.previousPhotoId} side="previous" peek={previousPeek} />}
+                    {image === null ? (
+                        <div className={styles.missing} data-photo="unavailable" data-viewer-current="">
+                            <span className={styles.missingLabel}>{UNAVAILABLE_LABEL}</span>
+                        </div>
+                    ) : (
+                        // Keyed on the file, so the next photograph starts without the last one's failure.
+                        <Photograph key={image.variants.w1200.webp.url} image={image} alt={photo.alt} zoomedWidth={zoomedIn ? largest : null} />
+                    )}
+                    {nextPeek && <Peek key={viewer.nextPhotoId} side="next" peek={nextPeek} />}
+                </div>
             </div>
 
-            <section className={styles.reading} aria-labelledby={readingId}>
+            <section className={styles.reading} aria-labelledby={readingId} data-viewer-reading="">
                 <h2 id={readingId} className={photo.title === null ? 'sr-only' : styles.title}>
                     {photo.title ?? positionText(position, total)}
                 </h2>
@@ -207,8 +265,9 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
         );
     }
     // In the shell its pieces sit in the shell's grid, and the accent reaches the controls it renders before the shell takes them.
+    // Once the shell has them, its root carries the accent for both rules, so a move can change them together at the lift.
     return (
-        <div className={styles.content} style={surface} data-viewer-photo={photo.id}>
+        <div className={styles.content} style={claimed ? undefined : surface} data-viewer-photo={photo.id}>
             {content}
         </div>
     );

@@ -6,6 +6,9 @@ import { DOUBLE_TAP_IDLE, placeOnPhoto, reduceDoubleTap, zoomScrollBy, type Doub
 import { isPinched } from './swipe';
 import { STAGE_SELECTOR } from './useSwipe';
 
+/** The photograph's own box on the stage, beside any neighbors peeking in (9a). */
+const CURRENT_SELECTOR = '[data-viewer-current]';
+
 /**
  * A double-tap on the photograph's stage toggles Zoom (#9c), on touch only, on the Viewer's shell root, which outlives
  * every move. The stage is the photograph and, on a phone, the dark ground above and below it that the stage takes up
@@ -42,11 +45,11 @@ export function useDoubleTap(rootRef: RefObject<HTMLElement | null>, { toggleRef
         const toggleAt = (at: { x: number; y: number }) => {
             const stage = root.querySelector<HTMLElement>(STAGE_SELECTOR);
             const zoomingIn = stage !== null && !stage.hasAttribute('data-zoomed');
-            const fitted = zoomingIn ? stage.firstElementChild?.getBoundingClientRect() : undefined;
+            const fitted = zoomingIn ? stage.querySelector(CURRENT_SELECTOR)?.getBoundingClientRect() : undefined;
             flushSync(() => toggleRef.current());
             const place = fitted ? placeOnPhoto(fitted, at) : null;
             if (stage === null || place === null || !stage.hasAttribute('data-zoomed')) return;
-            const zoomed = stage.firstElementChild?.getBoundingClientRect();
+            const zoomed = stage.querySelector(CURRENT_SELECTOR)?.getBoundingClientRect();
             if (!zoomed) return;
             const by = zoomScrollBy(zoomed, place, at);
             stage.scrollLeft += by.left;

@@ -26,9 +26,14 @@
   --viewer-title-size: clamp(1.25rem, 1.05rem + 0.8vw, 1.75rem);
   /* Room the first screen keeps under the photograph on a wide, tall enough screen (#9b), set below. Zero elsewhere. */
   --viewer-reading-lead: 0px;
+  /* The fixed stage (9a) on a wide screen: the tallest box a photograph takes, whatever its shape, so the stage never
+     resizes from one photograph to the next. A wide or a tall one is fitted and centered in it, and the reading area
+     under it stays put. The zoomed box keeps the same cap on a phone too. */
+  --viewer-stage-height: calc(100dvh - var(--viewer-header) - var(--viewer-stage-chrome) - var(--viewer-reading-lead));
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  grid-template-rows: auto minmax(auto, 1fr) auto;
+  /* The reading area takes what the stage leaves, so its ground reaches the foot of the screen under a short one. */
+  grid-template-rows: auto auto minmax(auto, 1fr);
   grid-template-areas:
     'header header header'
     'previous viewport next'
@@ -77,6 +82,14 @@
   padding: 0.375rem var(--site-gutter);
   border-bottom: 4px solid var(--cc-accent, var(--cc-rule));
   background: var(--cc-chrome);
+}
+
+/* The accent rules take a move's color at the lift (9a), over about a settle. Reduced motion changes them at once. */
+@media (prefers-reduced-motion: no-preference) {
+  .header,
+  .reading {
+    transition: border-color 240ms ease-out;
+  }
 }
 
 .heading {
@@ -160,11 +173,51 @@
   grid-area: viewport;
   align-self: stretch;
   display: grid;
-  place-items: center;
   min-width: 0;
+  /* The fixed stage on a wide screen: the box and its padding, never the photograph's own height. A phone's is below. */
+  height: calc(var(--viewer-stage-height) + 2 * var(--viewer-stage-pad));
   padding-block: var(--viewer-stage-pad);
+  /* The neighbors wait beside the photograph (9a), outside the stage, so the page never scrolls sideways to them. */
+  overflow: clip;
   /* #9's swipe: the browser keeps vertical scroll and pinch zoom, and leaves a sideways drag to the Viewer. */
   touch-action: pan-y pinch-zoom;
+}
+
+/* The strip the swipe moves (StageMotion): the photograph centered in the stage, and the neighbors one stage and the
+   16 px gap away each side (swipe.ts's PEEK_GAP), each fitted and centered in a slot of its own the stage's size. */
+.track {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 0;
+}
+
+.track[data-moving] {
+  will-change: transform;
+}
+
+.peek {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.peek[data-viewer-peek='previous'] {
+  right: calc(100% + 16px);
+  left: calc(-100% - 16px);
+}
+
+.peek[data-viewer-peek='next'] {
+  left: calc(100% + 16px);
+  right: calc(-100% - 16px);
+}
+
+/* Zoomed, the photograph is the stage's scroll content, as before 9a, and no neighbor shows. */
+.viewport[data-zoomed] .track {
+  display: contents;
 }
 
 /* While the page is pinch-zoomed (useSwipe sets data-pinched on the root), a sideways drag pans the page, and swipe is off. */
@@ -174,7 +227,8 @@
 
 /* Zoomed, the photograph keeps the largest variant's width and the box scrolls, so a drag pans it both ways and never moves the Viewer. Pinch zoom is never turned off. */
 .viewport[data-zoomed] {
-  max-height: calc(100dvh - var(--viewer-header) - var(--viewer-stage-chrome) - var(--viewer-reading-lead));
+  height: auto;
+  max-height: var(--viewer-stage-height);
   overflow: auto;
   place-items: safe center;
   /* Pans both ways and pinches, as auto does, but no browser double-tap zoom: a double-tap here is the Viewer's Zoom (useDoubleTap). */
@@ -188,7 +242,7 @@
 .frame,
 .missing {
   --fit-vw: 100vw;
-  width: min(100%, var(--fit-vw), calc((100dvh - var(--viewer-header) - var(--viewer-stage-chrome) - var(--viewer-reading-lead)) * var(--ratio, 3 / 2)));
+  width: min(100%, var(--fit-vw), calc(var(--viewer-stage-height) * var(--ratio, 3 / 2)));
   aspect-ratio: var(--ratio, 3 / 2);
 }
 
@@ -394,7 +448,10 @@
 @media (max-width: 47.99rem) {
   .viewer {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    grid-template-rows: auto minmax(auto, 1fr) auto auto;
+    /* The phone's stage (9a), as in the approved mockup's: the screen the header, the arrows, and the reading area leave,
+       and never less than a square or 72dvh, whichever is less, so a long reading area scrolls under a usable stage. It
+       holds no size of its own (container-type below), so a wide and a tall photograph get the same stage. */
+    grid-template-rows: auto minmax(calc(min(100vw, 72dvh) + var(--viewer-stage-pad)), 1fr) auto auto;
     grid-template-areas:
       'header header'
       'viewport viewport'
@@ -404,7 +461,15 @@
   }
 
   .viewport {
+    height: auto;
     padding-block: var(--viewer-stage-pad) 0;
+    /* The photograph fits the stage the grid gives it (cqh), rather than the stage fitting the photograph. */
+    container-type: size;
+  }
+
+  /* Zoomed, the stage grows to the zoomed photograph up to its cap, as before 9a: the zoomed box sizes itself. */
+  .viewport[data-zoomed] {
+    container-type: normal;
   }
 
   .previous,
@@ -423,6 +488,6 @@
   /* The box, not the image, takes the height cap, so it stays reserved from the record's shape (#6). */
   .frame,
   .missing {
-    width: min(100%, 72dvh * var(--ratio, 3 / 2));
+    width: min(100%, 100cqh * var(--ratio, 3 / 2));
   }
 }

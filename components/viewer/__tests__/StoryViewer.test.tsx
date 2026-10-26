@@ -210,7 +210,8 @@ describe('StoryViewer', () => {
         expect(missing).toHaveTextContent(UNAVAILABLE_LABEL);
         expect(missing?.getAttribute('style')).toContain('--ratio: 2400 / 1600');
         expect(container.querySelector('img, picture')).toBeNull();
-        const stage = missing?.parentElement?.parentElement;
+        // The box sits on the stage's track (9a), and the stage on the Viewer's grid beside the moves.
+        const stage = missing?.closest('[data-viewer-stage]')?.parentElement;
         for (const name of ['Previous photograph', 'Next photograph']) expect(screen.getByRole('link', { name }).parentElement).toBe(stage);
         expect(screen.getByRole('link', { name: 'Close' })).toHaveAttribute('href', '/work/fixture');
         // The next photograph starts without the failure.
@@ -237,7 +238,7 @@ describe('StoryViewer', () => {
         expect(screen.queryByRole('region', { name: 'Zoomed photograph' })).toBeNull();
         // Previous and Next stay links on the Viewer's grid, beside the box's own stage cell.
         const root = container.querySelector('[data-surface="viewer"]');
-        expect(missing?.parentElement?.parentElement).toBe(root);
+        expect(missing?.closest('[data-viewer-stage]')?.parentElement).toBe(root);
         for (const name of ['Previous photograph', 'Next photograph']) {
             const link = screen.getByRole('link', { name });
             expect(link).toHaveAttribute('data-replace', 'true');
