@@ -195,7 +195,7 @@ export type InboxView =
 
 /** "N items require judgment" (or "N of M items", once other items are listed too), then what waits, what's already placed, and what's no longer placed, counted as `curation list` counts them. */
 export function summaryText(view: { needsJudgment: number; waiting: number; placed?: number; unplaced?: number; items?: readonly unknown[] }): string {
-    // "All items (N)" counts every item, settled ones too, so once that differs from the count needing judgment, the summary names both.
+    // Once the list holds more than the items needing judgment (settled ones too), the summary names both counts.
     const n = view.needsJudgment;
     const total = view.items?.length ?? n;
     const judgment = total === n ? `${n} ${n === 1 ? 'item requires' : 'items require'} judgment` : `${n} of ${total} ${total === 1 ? 'item requires' : n === 1 ? 'items requires' : 'items require'} judgment`;
