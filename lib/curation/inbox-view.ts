@@ -240,9 +240,10 @@ export interface ReplacementDraft {
     live: boolean;
     /**
      * What Decide later does now: puts the earlier version back (`put-back`), refuses since the draft moved to another
-     * version after this item's confirm (`refuses`), or writes nothing (`keeps`).
+     * version after this item's confirm (`refuses`) or the earlier version has no ready set (`blocked`), or writes
+     * nothing (`keeps`).
      */
-    decideLater: 'put-back' | 'refuses' | 'keeps';
+    decideLater: 'put-back' | 'refuses' | 'blocked' | 'keeps';
 }
 
 /** The hint under a replacement's actions, by what Decide later does with its draft now. */
@@ -252,12 +253,23 @@ export const REPLACEMENT_HINT = {
     keepsNew: 'The draft already uses the new version, so Decide later keeps it there, and the next publish uses it. Nothing is published until you publish.',
     putBack: 'The draft uses the new version, confirmed earlier. Decide later puts the earlier version back in the draft. Nothing is published until you publish.',
     refuses: "This photograph's draft moved to another version after the new one was confirmed, so Decide later can't tell which one to put back. Set its version with photos edit, or dismiss this item.",
+    /** As leaveInDraft()'s refusal says it after the click (lib/curation/inbox-form.ts REFUSAL_WORDING). */
+    blocked: "The earlier version of this photograph has no ready derivatives, so Decide later can't put it back. The draft keeps the new version.",
 } as const;
+
+/** Why a replacement's Confirm is disabled, for that button alone; the hint beside it is about Decide later. */
+export const CONFIRM_UNAVAILABLE = "Confirming new bytes isn't in the inbox yet.";
+
+/** Decide later can't do anything for this draft, so the page shows it disabled with the hint as its reason. */
+export function decideLaterRefuses(replacement: ReplacementDraft | null): boolean {
+    return replacement?.decideLater === 'refuses' || replacement?.decideLater === 'blocked';
+}
 
 /** The replacement hint for a draft, as primaryUnavailable carries it. */
 export function replacementHint(replacement: ReplacementDraft | null): string {
     if (replacement?.decideLater === 'put-back') return REPLACEMENT_HINT.putBack;
     if (replacement?.decideLater === 'refuses') return REPLACEMENT_HINT.refuses;
+    if (replacement?.decideLater === 'blocked') return REPLACEMENT_HINT.blocked;
     return replacement?.draft === 'new' ? REPLACEMENT_HINT.keepsNew : REPLACEMENT_HINT.keeps;
 }
 
@@ -590,6 +602,8 @@ export function hasPublishedStatement(detail: Pick<InboxDetail, 'photoId' | 'ref
 export function reopenHint(item: Pick<InboxDetail, 'type' | 'replacement'>): string {
     if (item.type !== 'replacement') return 'Reopen it to change its series or description.';
     if (item.replacement?.decideLater === 'put-back') return 'Reopen it to leave the new version out of the draft. Decide later then puts the earlier version back.';
+    // Reopening doesn't make the earlier set ready, so no put back is promised.
+    if (item.replacement?.decideLater === 'blocked') return "Reopening it changes nothing in the draft, which keeps the new version. The earlier version has no ready derivatives, so Decide later can't put it back.";
     return item.replacement?.draft === 'new' ? 'Reopening it changes nothing in the draft, which keeps the new version.' : 'Reopening it changes nothing in the draft.';
 }
 

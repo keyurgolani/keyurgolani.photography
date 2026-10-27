@@ -613,6 +613,11 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         const registry = await readRegistry(w.root);
         registry.photos[w.p].revisions[w.a].profiles[w.profileId] = { state: 'failed', attempts: 1, error: 'fixture' };
         await writeRegistry(w.root, registry, registry.version);
+        // The page says so before the click, rather than promising the put back the click would refuse.
+        const before = await shown(w);
+        expect(before.replacement).toEqual({ draft: 'new', live: false, decideLater: 'blocked' });
+        expect(before.primaryUnavailable).toBe(REPLACEMENT_HINT.blocked);
+        expect(before.primaryUnavailable).not.toMatch(/puts the earlier version back/);
         const notReady = await deferItem({ status: 'idle' }, pageForm(w, await w.event()));
         expect(notReady).toMatchObject({ status: 'refused', action: 'defer', message: "The earlier version of this photograph has no ready derivatives, so Decide later can't put it back. The draft keeps the new version. Nothing was written." });
         expect(layers(w).authored).toEqual(written.authored);
@@ -628,6 +633,20 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         expect(left).toMatchObject({ ok: true, event: { status: 'deferred' } });
         expect(left.ok && left.notes.join(' ')).toContain(`keeps ${w.a}`);
         expect(treeBytes(path.join(w.root, 'authored'))).toEqual(before);
+    });
+
+    it("doesn't promise a confirmed item's Reopen will let Decide later put back an earlier version with no ready set", async () => {
+        const w = await world();
+        await w.build(w.job(w.b));
+        const confirmed = await confirm(w, await w.event());
+        expect(confirmed).toMatchObject({ ok: true });
+        expect(reopenHint(await shown(w))).toMatch(/Decide later then puts the earlier version back/);
+        const registry = await readRegistry(w.root);
+        registry.photos[w.p].revisions[w.a].profiles[w.profileId] = { state: 'failed', attempts: 1, error: 'fixture' };
+        await writeRegistry(w.root, registry, registry.version);
+        const done = await shown(w);
+        expect(done.replacement).toEqual({ draft: 'new', live: false, decideLater: 'blocked' });
+        expect(reopenHint(done)).toBe("Reopening it changes nothing in the draft, which keeps the new version. The earlier version has no ready derivatives, so Decide later can't put it back.");
     });
 
     it('leaves an item never confirmed for later from the inbox page with no write, and says nothing in the draft changed', async () => {

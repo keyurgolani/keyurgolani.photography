@@ -21,6 +21,7 @@ import {
     type ReplacementDraft,
     type SeriesOption,
 } from './inbox-view';
+import { candidateOf } from './candidates';
 import { readDraftPlan } from './pins';
 import { placedItems } from './placement';
 import { listEvents } from './repository';
@@ -192,7 +193,9 @@ async function replacementOf(root: string, event: CurationEvent, registry: Regis
     return {
         draft: pinned === null ? 'none' : pinned === revision ? 'new' : 'other',
         live,
-        decideLater: plan.kind === 'put-back' ? 'put-back' : plan.kind === 'moved' ? 'refuses' : 'keeps',
+        // As leaveInDraft() checks after the plan: an earlier version with no ready set can't be put back. A set that doesn't
+        // check out against its manifest needs every file hashed, which a page load doesn't do; the answer after the click says so.
+        decideLater: plan.kind === 'put-back' ? (candidateOf(registry, photoId, plan.putBack).state === 'ready' ? 'put-back' : 'blocked') : plan.kind === 'moved' ? 'refuses' : 'keeps',
     };
 }
 
