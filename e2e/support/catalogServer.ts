@@ -47,6 +47,11 @@ export interface CatalogServerOptions {
     env?: Record<string, string>;
     /** SITE_URL for this server only. Unset otherwise, whatever this shell has. */
     siteUrl?: string;
+    /**
+     * A site config folder of its own, for a spec that takes the portrait
+     * away while the harness's servers keep theirs. Defaults to theirs.
+     */
+    siteConfig?: string;
 }
 
 /** The settings that turn a server into the curator. A plain catalog server never inherits them from this shell. */
@@ -56,12 +61,14 @@ const CURATOR_SETTINGS = ['CURATION_ENABLED', 'CURATOR_TUNNEL_PORT', 'CURATION_B
  * Serve the build with `dataRoot` as its data root, and wait until it
  * answers. `port` pins the port, for a machine that hands out ranges; it
  * defaults to a free one. `siteUrl` sets SITE_URL for this server only; it
- * is unset otherwise, whatever this shell has.
+ * is unset otherwise, whatever this shell has. `siteConfig` gives it a site
+ * config folder of its own, for a spec that takes the portrait away while
+ * the harness's servers keep theirs; it defaults to theirs.
  */
 export async function startCatalogServer(dataRoot: string, port?: number, options: CatalogServerOptions = {}): Promise<CatalogServer> {
     const library = options.library ?? process.env.E2E_EMPTY_LIBRARY;
+    const siteConfig = options.siteConfig ?? process.env.E2E_SITE_CONFIG_DIR;
     if (!library) throw new Error('playwright.config.ts sets E2E_EMPTY_LIBRARY, so the server never reads a real photo library');
-    const siteConfig = process.env.E2E_SITE_CONFIG_DIR;
     if (!siteConfig) throw new Error("playwright.config.ts sets E2E_SITE_CONFIG_DIR, so the server reads the stand-in portrait, never the checkout's site config folder");
     const listen = port ?? (await freePort());
     // Only these roots, whatever this shell points PHOTOGRAPHY_* at, and the curator only when asked.

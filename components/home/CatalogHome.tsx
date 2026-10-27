@@ -160,6 +160,7 @@ function FeaturedHome({ revisionId, series, portrait }: { revisionId: string; se
         story={
           <div className={styles.story}>
             <div className={styles.copy}>
+              <span className={styles.panel} aria-hidden="true" data-chrome-panel="" />
               <h1 className={styles.title}>{series.title}</h1>
               {series.shortStatement !== null && <p className={styles.statement}>{series.shortStatement}</p>}
             </div>

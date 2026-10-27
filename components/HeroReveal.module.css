@@ -44,8 +44,8 @@
   /* The badge's place, which the landing glides to on v1.1.0's curve and
      timing: its center --badge-dx and --badge-dy from the screen's center,
      at --badge-scale. This is v1.1.0's, centered 280 px above the bottom at
-     0.85, kept exactly wherever it clears the nav and the series title by
-     16 px. Where it doesn't, badgePlace() (components/badgePlace.ts) sets them from
+     0.85, kept exactly wherever it clears the nav, the series title and the
+     title's panel by 16 px. Where it doesn't, badgePlace() (components/badgePlace.ts) sets them from
      the chrome's measured boxes. */
   --badge-dx: 0px;
   --badge-dy: calc(50dvh - 280px);

@@ -24,7 +24,7 @@ export interface BadgePlace {
 /** v1.1.0's place: centered, 280 px above the bottom, at 0.85. */
 const V110_RISE = 280;
 const V110_SCALE = 0.85;
-/** The least room the painted oval keeps from the nav and from the series title, statement and link. */
+/** The least room the painted oval keeps from the nav, from the series title, statement and link, and from the title's panel. */
 const BADGE_CLEARANCE = 16;
 /** The ring around the oval. */
 const RING = 4;
@@ -48,8 +48,10 @@ const within = (a: Box, b: Box, gap: number) => a.left < b.right + gap && b.left
 
 /**
  * The badge's place for a `view`-sized screen, from the measured boxes of the
- * nav and the story's title, statement and link. Null keeps v1.1.0's exact
- * place, wherever it clears all of them by BADGE_CLEARANCE. Otherwise the
+ * nav and the story's title, statement and link, and the dark panel behind
+ * the title and statement from 640 px wide (CatalogHome's `data-chrome-panel`,
+ * its fade included). Null keeps v1.1.0's exact place, wherever it clears all
+ * of them by BADGE_CLEARANCE. Otherwise the
  * badge stays centered and moves the least from v1.1.0's place that clears
  * them: up above the story (or down, under a nav it reached behind), at 0.85,
  * scaled down toward 0.6 only when the room between the nav and the story is
