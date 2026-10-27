@@ -6,7 +6,7 @@ import { withLock } from '../../storage/lock';
 import { revisionIdOf } from '../schema';
 import { blockingIssues, publish, validateStored, validateWorkingLayer, type PublishResult } from '../publish';
 import { readRevisionFile } from '../repository';
-import { hashValue, restampable } from '../review';
+import { fieldReview, hashValue, restampable } from '../review';
 import { rollback } from '../rollback';
 import { registeredRules, runRules } from '../ruleset';
 import { applySequenceOp } from '../sequence';
@@ -241,6 +241,29 @@ describe('writeAuthoredRecord() stamps', { timeout: 60_000 }, () => {
         expect(written.review?.fields.title?.valueHash).not.toBe(hashValue('Fixture title, by hand.'));
         // A suggested description stays a suggestion: only Mark description ready, which writes reviewed: true, clears it.
         expect(written.review?.fields.alt).toMatchObject({ origin: 'generated' });
+    });
+
+    // 16-3, high review H1: the screen's review vouches for the value, not for the inbox item that placed it, so the item stays linked.
+    it('keeps the inbox item and the confirm a stamp named when the screen marks the field reviewed, so a later reopen still reads as reopened', async () => {
+        const f = await fixture();
+        const first = published(await f.publish());
+        const id = f.catalog.photos[0].id;
+        const event = { id: 'evt_0123456789abcdef01234567', version: 3 };
+        await f.edit<AuthoredPhoto>('photo', id, (photo) => {
+            photo.caption = 'Fixture caption, from the Inbox.';
+        }, { review: { baseRevisionId: null, origin: 'curator', event, actor: ACTOR, reviewedAt: AT } });
+        const before = await f.read<AuthoredPhoto>('photo', id);
+        expect(before.review?.fields.caption).toMatchObject({ event, baseRevisionId: null });
+        const written = await f.edit<AuthoredPhoto>('photo', id, () => undefined, {
+            review: { baseRevisionId: first, origin: 'curator', reviewedValues: { caption: hashValue(before.caption) }, actor: ACTOR, reviewedAt: '2026-06-01T00:00:00.000Z' },
+        });
+        expect(written.review?.fields.caption).toMatchObject({ baseRevisionId: first, actor: ACTOR, reviewedAt: '2026-06-01T00:00:00.000Z', event });
+        // The item is open again: the field reads as reopened, whatever the base says.
+        const active = await readRevisionFile(f.root, first);
+        if (active === null) throw new Error('No active revision');
+        const layer = { site: await f.read<AuthoredSite>('site', 'site'), series: [], photos: [written] } as unknown as Parameters<typeof fieldReview>[1]['layer'];
+        const inbox = new Map([[event.id, { id: event.id, type: 'new', status: 'open', photoId: id, lastObservedAt: AT } as never]]);
+        expect(fieldReview({ record: { kind: 'photo', id }, field: 'caption' }, { layer, active: { revisionId: first, content: active.content }, review: { bases: new Map(), inbox, unreadable: new Set() } })).toMatchObject({ state: 'stale', reason: 'item-reopened', eventId: event.id });
     });
 
     it('records the cover photo\'s pinned revision on a series cover', async () => {

@@ -135,9 +135,16 @@
   font-size: var(--gah-type-label);
 }
 
-/* Out of date: the stale rows recede, so the page doesn't look current below its heading. */
+/* Out of date: the stale rows recede, so the page doesn't look current below
+   its heading. 0.8 keeps the muted ink at about 4.7:1 on the box (0.6 left it
+   near 3.3:1), and the review chips lose their colour, so "Reviewed" stops
+   reading as current; grayscale keeps their luminance, so their contrast holds. */
 .ledger[data-out-of-date='true'] .rows {
-  opacity: 0.6;
+  opacity: 0.8;
+}
+
+.ledger[data-out-of-date='true'] :is(.review, .blocks) {
+  filter: grayscale(1);
 }
 
 .group {
@@ -270,6 +277,10 @@
   margin: 0.625rem 0 0;
 }
 
+.compare[data-single='true'] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .compare > div {
   min-width: 0;
   padding: 0.5rem 0.625rem;
@@ -348,6 +359,11 @@
   display: grid;
   justify-items: end;
   gap: 0;
+}
+
+/* The refusal spans the row, not the button's width. */
+.restamp .refusal {
+  justify-self: stretch;
 }
 
 .fixHint {
@@ -470,7 +486,8 @@
 }
 
 /* A refused review stays in place, unavailable, beside the strip that says why. */
-.fixActions button[data-off='true'] {
+.fixActions button[data-off='true'],
+.restamp button[data-off='true'] {
   border-color: var(--gah-rule-strong);
   color: var(--gah-ink-muted);
   background: transparent;
@@ -573,6 +590,7 @@
 
 /* A link that is the one way on (Load the updated ledger): the primary's fill. */
 .primaryLink {
+  gap: 0.45rem;
   border-color: var(--curator-primary);
   color: var(--curator-primary-ink);
   background: var(--curator-primary);
@@ -790,6 +808,23 @@
 
   .restamp {
     justify-items: stretch;
+  }
+
+  /* Every fix on a phone is one full-width action, centred like the bar's, with a command under its Inbox link. */
+  .restamp form,
+  .restamp button,
+  .inboxFix > a {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .inboxFix {
+    display: grid;
+    gap: 0.5rem;
+  }
+
+  .fixActions > a {
+    justify-content: center;
   }
 
   /* The bar's two buttons sit side by side; below about 330 px they wrap.

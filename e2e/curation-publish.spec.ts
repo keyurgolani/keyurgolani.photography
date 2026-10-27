@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Locator, Page } from '@playwright/test';
-import { readActivePointer } from '../lib/catalog/working-layer';
+import { readActivePointer, readAuthoredRecord } from '../lib/catalog/working-layer';
 import {
     blockRevisionFile,
     BREAKWATER_TITLE,
@@ -12,6 +12,7 @@ import {
     holdCatalogLock,
     publishFromCli,
     reopenBreakwater,
+    SALT_ROADS,
     type PublishFixture,
 } from '../test/helpers/publishFixture';
 import { startCatalogServer, READY_TIMEOUT, type CatalogServer } from './support/catalogServer';
@@ -124,17 +125,56 @@ async function fixFromRows(page: Page): Promise<void> {
     await expect(page.getByText('Blocks publishing')).toHaveCount(0);
 }
 
+/** The next server action the page sends, held back so it never reaches the server, with what it would have sent. */
+async function holdNextAction(page: Page): Promise<() => Promise<{ id: string; type: string; body: Buffer }>> {
+    let held: { id: string; type: string; body: Buffer } | null = null;
+    await page.route(`${origin()}/curation/publish**`, async (route) => {
+        const sent = route.request();
+        const id = await sent.headerValue('next-action');
+        if (sent.method() !== 'POST' || id === null) return route.continue();
+        held = { id, type: (await sent.headerValue('content-type')) ?? '', body: sent.postDataBuffer() ?? Buffer.alloc(0) };
+        await route.abort();
+    });
+    return async () => {
+        await expect.poll(() => held !== null).toBe(true);
+        return held as unknown as { id: string; type: string; body: Buffer };
+    };
+}
+
 test('anonymous requests get the boundary, on the curator and on web, and write nothing', async ({ page, request }) => {
     const before = (await readActivePointer(fixture.root))?.revisionId;
     const anonymous = await request.get(`${origin()}/curation/publish`, { maxRedirects: 0 });
     expect([302, 303, 307, 404]).toContain(anonymous.status());
     expect(await anonymous.text()).not.toContain('Change ledger');
-    await page.goto(`${origin()}/curation/publish`);
-    await expect(page.getByRole('heading', { name: /Preview catalog revision/ })).toHaveCount(0);
-    // A post as the screen's action would send it, without a session.
-    const post = await request.post(`${origin()}/curation/publish`, { form: { intent: 'publish', draftId: 'rev_'.padEnd(68, '0') }, maxRedirects: 0 });
-    expect([302, 303, 307, 403, 404, 405]).toContain(post.status());
     expect((await request.get(`${webOrigin()}/curation/publish`)).status()).toBe(404);
+
+    // The screen's own action, as a signed-in page sends it: a review write, held back from the server, then sent
+    // from the same origin with no session. The boundary answers 401 before the action runs, and nothing is written.
+    await open(page);
+    const held = await holdNextAction(page);
+    await page.getByRole('button', { name: named('Still right, mark reviewed: Pier lamps position in Salt Roads') }).click();
+    const action = await held();
+    const series = (await readAuthoredRecord(fixture.root, 'series', SALT_ROADS))?.version;
+    const post = await request.post(`${origin()}/curation/publish`, {
+        headers: { 'next-action': action.id, 'content-type': action.type, origin: origin(), accept: 'text/x-component' },
+        data: action.body,
+        maxRedirects: 0,
+    });
+    expect(post.status()).toBe(401);
+    expect((await readAuthoredRecord(fixture.root, 'series', SALT_ROADS))?.version).toBe(series);
+    expect((await readActivePointer(fixture.root))?.revisionId).toBe(before);
+});
+
+test('writes nothing when the session ended while the page was open', async ({ page }) => {
+    await open(page);
+    const before = (await readActivePointer(fixture.root))?.revisionId;
+    const series = (await readAuthoredRecord(fixture.root, 'series', SALT_ROADS))?.version;
+    // The page's session cookie is gone, as when the session ends while the page is open.
+    await page.context().clearCookies();
+    const refused = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().startsWith(`${origin()}/curation/publish`));
+    await page.getByRole('button', { name: named('Still right, mark reviewed: Pier lamps position in Salt Roads') }).click();
+    expect((await refused).status()).toBe(401);
+    expect((await readAuthoredRecord(fixture.root, 'series', SALT_ROADS))?.version).toBe(series);
     expect((await readActivePointer(fixture.root))?.revisionId).toBe(before);
 });
 
@@ -324,6 +364,7 @@ test.describe('without JavaScript', () => {
         await expect(page.getByRole('heading', { level: 1 })).toHaveText('Preview catalog revision 3');
         await expect(page.getByText(/Pier lamps moves from position 7 to 2 in Salt Roads/)).toBeVisible();
         await expect(page.locator('main > [role="status"]')).toHaveCount(1);
+        await expect(page.getByText('Validate, Publish and the fixes need JavaScript. Nothing is written without it.')).toBeVisible();
         const before = (await readActivePointer(fixture.root))?.revisionId;
         const posted = page.waitForResponse((response) => response.request().method() === 'POST');
         await validate(page).click();
@@ -345,6 +386,11 @@ test.describe('the #1 checks', () => {
             await validate(page).focus();
             await page.keyboard.press('Enter');
             await expect(result(page)).toHaveText('Publication blocked');
+            // The whole answer comes into view clear of the bar, its last blocker link included.
+            const last = await page.locator('ol li a').last().boundingBox();
+            const top = await bar(page).boundingBox();
+            expect(last && top && last.y + last.height <= top.y).toBe(true);
+            expect(last && last.y >= 0).toBe(true);
             await checkSurface(page, {
                 controls: [
                     page.getByRole('link', { name: /Open full preview/ }),

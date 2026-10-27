@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useActionState, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { Fragment, useActionState, useEffect, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from 'react';
 import { Check, CircleAlert, Clock, ExternalLink, FileCheck2, Link2, RefreshCw, Sparkles, Undo2, UploadCloud, type LucideIcon } from 'lucide-react';
 import curator from '../curator.module.css';
 import { itemUrl } from '../inbox/journey';
@@ -33,10 +33,16 @@ import styles from './publish.module.css';
  * its heading takes focus. Without JavaScript the screen reads in full and
  * a fix opens from its link (`?fix=`), but the curator boundary refuses the
  * post: these pages send no referrer, so a form navigation's Origin is
- * "null", and a mutation needs a same-origin one.
+ * "null", and a mutation needs a same-origin one. A line under the bar says
+ * so then.
  */
 
 type Labels = DisplayFacts['compareLabels'];
+
+// The browser's time zone, which is the owner's, for the times an answer names, as the Inbox's LocalTime reads it.
+const never = () => () => undefined;
+const browserZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
+const serverZone = () => 'UTC';
 
 const REVIEW: Record<ReviewLabel, { text: string; icon: LucideIcon; tone: 'done' | 'alert' | 'change' | 'quiet' }> = {
     reviewed: { text: 'Reviewed', icon: Check, tone: 'done' },
@@ -78,7 +84,8 @@ function OrderBlock({ compare, side }: { compare: OrderCompare; side: 'before' |
     const entries = compare[side];
     const runs = orderRuns(compare);
     const movedAt = side === 'before' ? compare.from : compare.to;
-    const note = side === 'before' ? `, moves to ${compare.to}` : `, moved from ${compare.from}`;
+    // An added entry (`from` 0) has no place before, so only the draft's side marks it.
+    const note = side === 'before' ? `, moves to ${compare.to}` : compare.from === 0 ? ', new here' : `, moved from ${compare.from}`;
     return (
         <>
             {runs.map((run, index) => {
@@ -114,6 +121,16 @@ function OrderBlock({ compare, side }: { compare: OrderCompare; side: 'before' |
 }
 
 function Comparison({ compare, labels }: { compare: Compare; labels: Labels }) {
+    if (compare.type === 'description') {
+        return (
+            <dl className={styles.compare} data-single="true">
+                <div>
+                    <dt>{compare.label}</dt>
+                    <dd>{compare.text}</dd>
+                </div>
+            </dl>
+        );
+    }
     if (compare.type === 'text') {
         return (
             <dl className={styles.compare}>
@@ -227,6 +244,7 @@ function FixAction({ row, fix, ctx }: { row: LedgerRow; fix: Fix; ctx: FixContex
                         <input type="hidden" name="photoId" value={fix.photoId} />
                         <input type="hidden" name="version" value={fix.version} />
                         <input type="hidden" name="valueHash" value={fix.valueHash} />
+                        <input type="hidden" name="active" value={ctx.view.active.revisionId} />
                         <a
                             className={curator.linkButton}
                             href={`/curation/publish#${row.id}-summary`}
@@ -282,6 +300,7 @@ function FixAction({ row, fix, ctx }: { row: LedgerRow; fix: Fix; ctx: FixContex
                     <input type="hidden" name="version" value={fix.target.version} />
                     <input type="hidden" name="hashes" value={JSON.stringify(fix.target.hashes)} />
                     <input type="hidden" name="field" value={fix.field} />
+                    <input type="hidden" name="active" value={ctx.view.active.revisionId} />
                     <button
                         type="submit"
                         className={curator.button}
@@ -408,6 +427,17 @@ function BlockerLink({ blocker, ctx }: { blocker: Blocker; ctx: FixContext }) {
     return null;
 }
 
+/** Scrolls `box` the least it takes to show it whole between the top of the window and the sticky bar, or to its top when it's taller. */
+function bringClearOfBar(box: HTMLElement) {
+    const gap = 16;
+    const bar = document.querySelector('[data-sticky-bar]')?.getBoundingClientRect().height ?? 0;
+    const room = window.innerHeight - bar - gap;
+    const { top, bottom, height } = box.getBoundingClientRect();
+    if (height > room - gap) window.scrollBy({ top: top - gap, behavior: 'instant' });
+    else if (bottom > room) window.scrollBy({ top: bottom - room, behavior: 'instant' });
+    else if (top < gap) window.scrollBy({ top: top - gap, behavior: 'instant' });
+}
+
 /** An instant jump that moves focus with it, so the next Tab starts from the row. */
 function jumpTo(event: MouseEvent<HTMLAnchorElement>, id: string) {
     const target = document.getElementById(id);
@@ -420,9 +450,9 @@ function jumpTo(event: MouseEvent<HTMLAnchorElement>, id: string) {
 const ICON: Record<'done' | 'change' | 'alert', LucideIcon> = { done: Check, change: RefreshCw, alert: CircleAlert };
 
 /** The one result slot, above the bar: every answer to Validate or Publish, its heading the focus target. */
-function ResultSlot({ answer, view, facts, ctx }: { answer: Answer | null; view: ScreenView; facts: DisplayFacts; ctx: FixContext }) {
+function ResultSlot({ answer, view, facts, ctx, zone }: { answer: Answer | null; view: ScreenView; facts: DisplayFacts; ctx: FixContext; zone: string }) {
     if (!answer) return null;
-    const copy = resultCopy(answer, view);
+    const copy = resultCopy(answer, view, zone);
     if (!copy) return null;
     // Busy waits on another process, so it shows a clock, not the reload icon.
     const Icon = answer.kind === 'busy' ? Clock : ICON[copy.tone];
@@ -497,7 +527,8 @@ function ActionBar({ view, facts, pending, sent, ctx }: { view: ScreenView; fact
                 className={primary ? `${curator.button} ${curator.primary}` : curator.button}
                 aria-disabled={state !== 'available' || pending ? true : undefined}
                 aria-describedby={intent === 'publish' && bar.reason && state !== 'available' ? 'publish-reason' : undefined}
-                data-off={state !== 'available' && !waiting ? 'true' : undefined}
+                // While either press waits, the other button reads as unavailable too; the waiting one keeps its pending look.
+                data-off={(state !== 'available' || pending) && !waiting ? 'true' : undefined}
                 data-pending={waiting ? 'true' : undefined}
                 data-primary={primary ? 'true' : undefined}
                 onClick={(event) => (state !== 'available' ? event.preventDefault() : ctx.guard(event, intent))}
@@ -520,6 +551,9 @@ function ActionBar({ view, facts, pending, sent, ctx }: { view: ScreenView; fact
                     {publishing ? `Revision ${view.active.number} stays live until the switch.` : bar.reason}
                 </p>
             ) : null}
+            <noscript>
+                <p className={styles.reason}>Validate, Publish and the fixes need JavaScript. Nothing is written without it.</p>
+            </noscript>
         </form>
     );
 }
@@ -539,7 +573,7 @@ function PreviewPanel({ facts }: { facts: DisplayFacts }) {
                 ) : null}
             </header>
             {panel.frameSrc ? (
-                <PreviewFrame src={panel.frameSrc} height="22rem" focusable={false} marker={panel.marker} title={panel.frameTitle} embedded />
+                <PreviewFrame src={panel.frameSrc} height="22rem" focusable={false} marker={panel.marker} title={panel.frameTitle} embedded scrollToId={panel.scrollToId} />
             ) : (
                 <p className={styles.frameNote}>{panel.frameNote}</p>
             )}
@@ -582,6 +616,12 @@ export default function PublishScreen({ view, previewHref, openFix, action }: Pu
     const [focusFix, setFocusFix] = useState(0);
     const facts = displayFacts(view, state.result, previewHref);
     const busy = pending;
+    const zone = useSyncExternalStore(never, browserZone, serverZone);
+    // Set on the click itself, so a second click before React renders the pending state is ignored too.
+    const pressed = useRef(false);
+    useEffect(() => {
+        if (!pending) pressed.current = false;
+    }, [pending]);
     const refusal = state.answer?.kind === 'fix-refused' ? { rowId: state.answer.rowId, text: state.answer.text } : null;
 
     const ctx: FixContext = {
@@ -603,10 +643,11 @@ export default function PublishScreen({ view, previewHref, openFix, action }: Pu
         },
         // While Validate or Publish is pending, a second press is ignored, and so is every fix.
         guard: (event: MouseEvent<HTMLButtonElement>, intent?: Intent) => {
-            if (busy) {
+            if (busy || pressed.current) {
                 event.preventDefault();
                 return;
             }
+            pressed.current = true;
             setSent(intent ?? null);
         },
     };
@@ -644,7 +685,13 @@ export default function PublishScreen({ view, previewHref, openFix, action }: Pu
         requestAnimationFrame(() => {
             const target = document.getElementById(id) ?? document.getElementById('ledger-heading');
             target?.focus({ preventScroll: true });
-            target?.scrollIntoView({ block: answer.kind === 'fixed' ? 'start' : 'nearest', behavior: 'instant' });
+            if (answer.kind === 'fixed') {
+                target?.scrollIntoView({ block: 'start', behavior: 'instant' });
+                return;
+            }
+            // The whole answer, its blocker links included, comes into view clear of the sticky bar; one taller than the room starts at the top.
+            const box = (answer.kind === 'fix-refused' ? target : target?.closest('section')) ?? target;
+            if (box) bringClearOfBar(box);
         });
     }, [state]);
 
@@ -692,7 +739,7 @@ export default function PublishScreen({ view, previewHref, openFix, action }: Pu
                         <Group heading={facts.groups.authored} rows={ledger.authored} tone="authored" facts={facts} ctx={ctx} />
                         <Group heading={facts.groups.derived} rows={ledger.derived} tone="derived" facts={facts} ctx={ctx} />
                         <Group heading="Source health" rows={ledger.health} tone="health" facts={facts} ctx={ctx} />
-                        <ResultSlot answer={state.result} view={view} facts={facts} ctx={ctx} />
+                        <ResultSlot answer={state.result} view={view} facts={facts} ctx={ctx} zone={zone} />
                         <ActionBar view={view} facts={facts} pending={pending} sent={sent} ctx={ctx} />
                     </section>
                 )}

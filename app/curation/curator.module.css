@@ -898,12 +898,13 @@ main.state {
   .signOut:hover,
   .item:hover,
   .refresh:hover,
-  .button:hover:not(:disabled),
-  .linkButton:hover {
+  /* An unavailable control (aria-disabled, so it stays focusable) takes no hover, so its muted label never lands on a hover fill (16-3). */
+  .button:hover:not(:disabled):not([aria-disabled='true']),
+  .linkButton:hover:not([aria-disabled='true']) {
     background: var(--curator-active);
   }
 
-  .primary:hover:not(:disabled) {
+  .primary:hover:not(:disabled):not([aria-disabled='true']) {
     background: var(--gah-ink);
   }
 }

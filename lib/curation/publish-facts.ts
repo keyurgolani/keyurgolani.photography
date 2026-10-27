@@ -21,13 +21,18 @@ export interface OrderCompare {
     type: 'list';
     before: string[];
     after: string[];
-    /** The moved entry, by name, and its 1-based positions. */
+    /** The moved entry, by name, and its 1-based positions. `from` is 0 for an entry the draft adds. */
     moved: string;
     from: number;
     to: number;
 }
 
-export type Compare = { type: 'text'; before: string | null; after: string | null } | { type: 'images'; before: Picture | null; after: Picture | null } | OrderCompare;
+export type Compare =
+    | { type: 'text'; before: string | null; after: string | null }
+    | { type: 'images'; before: Picture | null; after: Picture | null }
+    | OrderCompare
+    /** A new photograph's description, on its own: there is no published one to set it beside. */
+    | { type: 'description'; label: 'Description' | 'Generated description'; text: string };
 
 /** The record a stamp-only review writes, and exactly what the screen showed of it. */
 export interface ReviewTarget {
@@ -99,12 +104,12 @@ export interface PanelView {
     /** The most affected series' name and photo counts, or null when the candidate changes none. */
     count: string;
     copyLine: string;
-    /** The frame's address for a pending draft: the preview's Viewer of the first changed photograph. */
+    /** The frame's address for a pending draft: the preview's page of the most affected series. */
     draftSrc: string | null;
-    /** The same place on the live site. */
+    /** The same page on the live site. */
     liveSrc: string;
-    /** "This draft can't be previewed: <reason>." in place of the frame. */
-    unavailable?: string;
+    /** The first changed photograph's entry on that page, which the frame scrolls its own window to. */
+    scrollToId?: string;
 }
 
 /** Everything a page load knows: Unvalidated, or one of the Nothing states. */
@@ -128,14 +133,22 @@ export type Answer =
     | { kind: 'blocked-at-publish'; lead: string; blockers: Blocker[]; ledger: Ledger }
     | { kind: 'valid'; stakes: string }
     | { kind: 'published'; live: RevisionFacts; previous: RevisionFacts | null }
-    | { kind: 'already-live'; live: RevisionFacts; previous: RevisionFacts | null; by: string }
+    | { kind: 'already-live'; live: RevisionFacts; previous: RevisionFacts | null; by: Publisher | null }
     | { kind: 'changed'; body: string }
-    | { kind: 'someone-published'; live: RevisionFacts; previous: RevisionFacts | null; by: string }
-    | { kind: 'busy'; body: string; retry: 'validate' | 'publish' }
+    | { kind: 'someone-published'; live: RevisionFacts; previous: RevisionFacts | null; by: Publisher | null }
+    /** `lock`: the catalog lock (a publish or rollback) or the authored lock (any working-catalog write). `since`: when its holder took it. */
+    | { kind: 'busy'; lock: 'catalog' | 'authored'; since: string | null; retry: 'validate' | 'publish' }
     | { kind: 'failed'; heading: string; body: string; live: RevisionFacts | null; previous: RevisionFacts | null; retry: 'validate' | 'publish' }
     | { kind: 'not-validated' }
     | { kind: 'fixed'; rowId: string }
     | { kind: 'fix-refused'; rowId: string; text: string };
+
+/** Who made the active revision live, read from its activation: a publish or a rollback, by an actor, at a time. */
+export interface Publisher {
+    actor: string;
+    kind: 'publish' | 'rollback';
+    at: string;
+}
 
 export type Intent = 'validate' | 'publish' | 'mark-description' | 'mark-reviewed';
 
@@ -179,6 +192,7 @@ export interface DisplayFacts {
         frameTitle: string;
         frameSrc: string | null;
         frameNote?: string;
+        scrollToId?: string;
         count?: string;
         copyLine?: string;
         rollback: string | null;
@@ -213,10 +227,26 @@ export function blockingRows(ledger: Ledger): number {
     return [...ledger.authored, ...ledger.derived].filter((row) => row.blocks).length;
 }
 
+/** The Publish screen's and the Inbox's actor (lib/curation/inbox-form.ts's WEB_ACTOR), repeated here so this module stays client-safe. */
+const WEB_ACTOR = 'curator:web';
+
 /** Who did a thing, in the owner's words: "from this screen" for the web actor, the CLI's actor and command otherwise. */
 export function actorPhrase(actor: string, command = 'photos publish'): string {
-    if (actor === 'curator:web') return 'from this screen';
+    if (actor === WEB_ACTOR) return 'from this screen';
     return `${actor}, with ${command}`;
+}
+
+/**
+ * Who made the active revision live, as one sentence: a rollback says so,
+ * and a publish from this screen in another tab or window says that.
+ * `elsewhere`: the answer is about a revision this page didn't publish.
+ */
+export function publisherLine(by: Publisher | null, timeZone: string, elsewhere: boolean): string {
+    if (by === null) return elsewhere ? 'It went live from the command line.' : 'It is live now.';
+    const at = timeOf(by.at, timeZone);
+    if (by.kind === 'rollback') return by.actor === WEB_ACTOR ? `It was rolled back from this screen at ${at}.` : `${by.actor} rolled it back at ${at}, with photos rollback.`;
+    if (by.actor === WEB_ACTOR) return elsewhere ? `It went live from this screen at ${at}, in another tab or window.` : `It went live from this screen at ${at}.`;
+    return `${by.actor} published it at ${at}, with photos publish.`;
 }
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -227,10 +257,20 @@ export function dayOf(iso: string): string {
     return Number.isNaN(at.getTime()) ? iso : `${at.getUTCDate()} ${MONTHS[at.getUTCMonth()]}`;
 }
 
-/** "14:05", from an ISO time, in UTC. */
-export function timeOf(iso: string): string {
+/**
+ * "14:05", from an ISO time, in `timeZone`. The screen passes the browser's
+ * zone, which is the owner's, as the Inbox's LocalTime does; the server's
+ * default is UTC, and an answer is only ever rendered in the browser.
+ */
+export function timeOf(iso: string, timeZone = 'UTC'): string {
     const at = new Date(iso);
-    return Number.isNaN(at.getTime()) ? iso : `${String(at.getUTCHours()).padStart(2, '0')}:${String(at.getUTCMinutes()).padStart(2, '0')}`;
+    if (Number.isNaN(at.getTime())) return iso;
+    try {
+        const part = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(at).map((entry) => [entry.type, entry.value]));
+        return `${part.hour}:${part.minute}`;
+    } catch {
+        return `${String(at.getUTCHours()).padStart(2, '0')}:${String(at.getUTCMinutes()).padStart(2, '0')}`;
+    }
 }
 
 /** The positions an order compare shows: one either side of both ends of the move, runs that touch merged. */
@@ -307,6 +347,7 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
         };
     }
 
+    // `alert`: a publish that failed after the switch. Its Publish is the way to finish, so it holds the validation it ran on.
     const live = (current: RevisionFacts, previous: RevisionFacts | null, ledgerHeading: string, bar: DisplayFacts['bar'], alert = false): DisplayFacts => ({
         mode: 'live',
         heading: `Revision ${current.number} is live`,
@@ -324,6 +365,7 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
             marker: `Live, revision ${current.number}`,
             frameTitle: `The live site, revision ${current.number}`,
             frameSrc: view.panel.liveSrc,
+            ...(view.panel.scrollToId ? { scrollToId: view.panel.scrollToId } : {}),
             count: view.panel.count.replace(/, was \d+$/, ''),
             copyLine: 'What visitors see now.',
             rollback: rollbackLine(false, current, previous),
@@ -331,7 +373,7 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
         bar,
         ledger,
         blockers: [],
-        validated: false,
+        validated: alert,
     });
 
     if (answer?.kind === 'published') return live(answer.live, answer.previous, `Published in revision ${answer.live.number}`, null);
@@ -399,8 +441,9 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
             link: previewHref ? { label: 'Open full preview', href: previewHref } : null,
             marker: 'Preview · not public',
             frameTitle: 'Visitor preview of the draft catalog',
-            frameSrc: view.panel.unavailable ? null : view.panel.draftSrc,
-            ...(view.panel.unavailable ? { frameNote: view.panel.unavailable } : {}),
+            // No "can't be previewed" state: the page and the frame compile the same candidate, so the page can't render while the frame fails to.
+            frameSrc: view.panel.draftSrc,
+            ...(view.panel.scrollToId ? { scrollToId: view.panel.scrollToId } : {}),
             count: view.panel.count,
             copyLine: view.panel.copyLine,
             rollback: rollbackLine(true, view.active, null),
@@ -413,7 +456,7 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
 }
 
 /** The result's heading and text for an answer (the approved lines where the spec keeps them). */
-export function resultCopy(answer: Answer, view: ScreenView): { tone: 'done' | 'change' | 'alert'; heading: string; body: string[] } | null {
+export function resultCopy(answer: Answer, view: ScreenView, timeZone = 'UTC'): { tone: 'done' | 'change' | 'alert'; heading: string; body: string[] } | null {
     const n = view.draftNumber;
     switch (answer.kind) {
         case 'blocked':
@@ -425,13 +468,17 @@ export function resultCopy(answer: Answer, view: ScreenView): { tone: 'done' | '
         case 'published':
             return { tone: 'done', heading: `Revision ${answer.live.number} published atomically`, body: ['Visitor APIs now revalidate against the new catalog ETag.'] };
         case 'already-live':
-            return { tone: 'done', heading: `Revision ${answer.live.number} is already live`, body: [`${answer.by} Nothing more to publish, and nothing new was written.`] };
+            return { tone: 'done', heading: `Revision ${answer.live.number} is already live`, body: [`${publisherLine(answer.by, timeZone, false)} Nothing more to publish, and nothing new was written.`] };
         case 'changed':
             return { tone: 'change', heading: 'The working catalog changed', body: [answer.body] };
         case 'someone-published':
-            return { tone: 'change', heading: `Revision ${answer.live.number} went live from the command line`, body: [`${answer.by} Nothing was published from here.`] };
-        case 'busy':
-            return { tone: 'change', heading: 'Another publish or rollback is running', body: [answer.body] };
+            return { tone: 'change', heading: someoneHeading(answer.live, answer.by), body: [`${publisherLine(answer.by, timeZone, true)} Nothing was published from here.`] };
+        case 'busy': {
+            const since = answer.since ? `It started at ${timeOf(answer.since, timeZone)}. ` : '';
+            const again = answer.retry === 'validate' ? 'Validate again when it finishes.' : 'Publish again when it finishes.';
+            const heading = answer.lock === 'catalog' ? 'Another publish or rollback is running' : 'Another change to the working catalog is being saved';
+            return { tone: 'change', heading, body: [`${since}Nothing changed here. ${again}`] };
+        }
         case 'failed':
             return { tone: 'alert', heading: answer.heading, body: [answer.body] };
         case 'not-validated':
@@ -439,4 +486,11 @@ export function resultCopy(answer: Answer, view: ScreenView): { tone: 'done' | '
         default:
             return null;
     }
+}
+
+/** The heading for a revision another process or page made live: a rollback, this screen elsewhere, or the command line. */
+function someoneHeading(live: RevisionFacts, by: Publisher | null): string {
+    if (by?.kind === 'rollback') return `Revision ${live.number} is live again`;
+    if (by?.actor === WEB_ACTOR) return `Revision ${live.number} went live from another page`;
+    return `Revision ${live.number} went live from the command line`;
 }

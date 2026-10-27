@@ -5,7 +5,8 @@ import { previewBasePath, previewFrameHref, previewRoutes } from '@/lib/catalog/
 import { listActivations, readRevisionFile, revisionNumberFor } from '@/lib/catalog/repository';
 import { readReviewContext } from '@/lib/catalog/review-context';
 import { createRouteBuilder } from '@/lib/catalog/routes';
-import type { ActivePointer, Activation, Issue, RevisionFile, WorkingLayer } from '@/lib/catalog/types';
+import { fieldReview, inboxReviewOf, type FieldReviewState, type ReviewEnv } from '@/lib/catalog/review';
+import type { ActivePointer, Activation, Issue, IssueRecord, RevisionFile, WorkingLayer } from '@/lib/catalog/types';
 import { readActivePointer, readWorkingLayer } from '@/lib/catalog/working-layer';
 import type { ReviewContext } from '@/lib/catalog/review';
 import { readRegistry } from '@/lib/identity/registry';
@@ -73,6 +74,22 @@ export async function readSnapshot(): Promise<Snapshot | null> {
     return { root, pointer, layer, registry, active, activations, compiled, review, diff };
 }
 
+/**
+ * Each of `fields` of one record as review reads it now, from a fresh read:
+ * fieldReview()'s state, and what the inbox item its stamp names says on its
+ * own, which a stale base would hide behind its own reason. The screen's
+ * review writes check both before they write (16-3).
+ */
+export async function reviewNow(root: string, record: IssueRecord, fields: readonly string[]): Promise<{ field: string; state: FieldReviewState; inbox: FieldReviewState | null }[]> {
+    const pointer = await readActivePointer(root);
+    const layer = await readWorkingLayer(root);
+    const active = pointer ? await readRevisionFile(root, pointer.revisionId) : null;
+    if (pointer && active === null) throw new Error('The active pointer names a revision with no file.');
+    const review = await readReviewContext(root, layer, active?.revisionId ?? null);
+    const env: ReviewEnv = { layer, active: active ? { revisionId: active.revisionId, content: active.content } : null, review };
+    return fields.map((field) => ({ field, state: fieldReview({ record, field }, env), inbox: inboxReviewOf({ record, field }, env) }));
+}
+
 /** The ledger and its blockers for a snapshot: predicted on a page load (`issues` null), or from an answer's diagnostics. */
 export function ledgerOf(snapshot: Snapshot, issues: readonly Issue[] | null): { ledger: Ledger; blockers: Blocker[] } {
     const routes = previewRoutes(snapshot.compiled.candidateId);
@@ -100,7 +117,9 @@ export function viewOf(snapshot: Snapshot): ScreenView {
     const series = target.seriesId ? compiled.content.series.find((entry) => entry.id === target.seriesId) ?? active.content.series.find((entry) => entry.id === target.seriesId) : undefined;
     const preview = previewRoutes(draftId);
     const live = createRouteBuilder();
-    const at = (routes: typeof live) => (series ? (target.photoId ? routes.photoHref(series.slug, target.photoId) : routes.seriesHref(series.slug)) : routes.workHref());
+    // The series page, scrolled inside the frame to the changed photograph: the Viewer would bring its own Close and Zoom,
+    // which an inert frame can't use, and a `#photo-` fragment scrolls the Publish page too (round 2 of the mockup).
+    const at = (routes: typeof live) => (series ? routes.seriesHref(series.slug) : routes.workHref());
     const kind: ScreenView['kind'] = draftId === active.revisionId ? 'nothing' : diff.empty ? 'no-visible-change' : 'ledger';
     // The Nothing states show the live site as it is: its own series, at the top.
     const liveSeries = kind === 'ledger' ? series : active.content.series[0];
@@ -119,6 +138,7 @@ export function viewOf(snapshot: Snapshot): ScreenView {
             ...lines,
             draftSrc: kind === 'ledger' ? at(preview) : null,
             liveSrc: kind === 'ledger' ? at(live) : liveSeries ? live.seriesHref(liveSeries.slug) : live.workHref(),
+            ...(kind === 'ledger' && series && target.photoId ? { scrollToId: `photo-${target.photoId}` } : {}),
         },
     };
 }

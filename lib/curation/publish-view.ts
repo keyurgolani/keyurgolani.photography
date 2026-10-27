@@ -82,13 +82,19 @@ const RESTAMP: Partial<Record<NonNullable<FieldReviewState['reason']>, string>> 
     generated: 'Mark reviewed',
 };
 
-const INBOX_REASONS = new Set(['item-reopened', 'newer-item', 'item-unreadable']);
+/** The reasons only the Inbox settles. */
+export const INBOX_REASONS: ReadonlySet<string> = new Set(['item-reopened', 'newer-item', 'item-unreadable', 'inbox-unread']);
+
+/** Whether "Mark reviewed" may clear this field's state: its reason is one the screen restamps, and it isn't a generated description, whose review is its own fix. */
+export function restampReason(state: FieldReviewState): boolean {
+    return state.state !== 'reviewed' && state.reason !== undefined && RESTAMP[state.reason] !== undefined && !isGeneratedAlt(state);
+}
 
 /** What the CLI or a restore has to do, for a reason the screen can't clear. */
 const HINT_ONLY: Partial<Record<NonNullable<FieldReviewState['reason']>, string>> = {
     'no-record': 'Its record is gone from the working layer. Restore it from a backup, or publish without the change.',
-    'backfill-unreadable': 'authored/review-backfill.json can’t be read. Restore it from the data-root backup; never edit or delete it.',
-    'inbox-unread': 'The inbox couldn’t be read. Load the page again.',
+    'backfill-unreadable': "authored/review-backfill.json can't be read. Restore it from the data-root backup; never edit or delete it.",
+    'inbox-unread': "The inbox couldn't be read. Load the page again.",
 };
 
 const valueOf = (record: AuthoredRecord, field: string): unknown => (record as unknown as Record<string, unknown>)[field];
@@ -305,8 +311,14 @@ function compareOf(change: CatalogChange, input: LedgerInput, names: Names): { c
             return { compare: { type: 'images', before: pictureOf(was, input.media.live, altText(was)), after: pictureOf(now, input.media.draft, altText(now)) } };
         }
         if (category === 'new') {
+            // Its description, labelled, while the description is what the row waits on or was just reviewed; under an Inbox
+            // reason it has nothing to do with what the row says.
             const text = altValue((now?.alt ?? null) as Json);
-            return text === null ? {} : { compare: { type: 'text', before: null, after: text } };
+            const open = change.review.fields.filter((entry) => entry.state !== 'reviewed');
+            if (text === null || (open.length > 0 && !isGeneratedAlt(open[0]))) return {};
+            const authored = recordIn(input.layer, record);
+            const generated = authored?.kind === 'photo' && authored.alt?.kind === 'described' && authored.alt.reviewed === false;
+            return { compare: { type: 'description', label: generated ? 'Generated description' : 'Description', text } };
         }
         if (field === 'alt') return { compare: { type: 'text', before: altValue(change.before), after: altValue(change.after) } };
         if (TEXT_FIELDS.has(field)) return { compare: { type: 'text', before: asText(change.before), after: asText(change.after) } };
@@ -331,6 +343,11 @@ function compareOf(change: CatalogChange, input: LedgerInput, names: Names): { c
     // The site: Home's featured series, or the Work order.
     const was = Array.isArray(change.before) ? change.before.map(String) : [];
     const now = Array.isArray(change.after) ? change.after.map(String) : [];
+    // An entry the draft adds is the change, not the ones it pushes down.
+    const added = now.find((id) => !was.includes(id));
+    if (added !== undefined) {
+        return { compare: { type: 'list', before: was.map((id) => names.series(id)), after: now.map((id) => names.series(id)), moved: names.series(added), from: 0, to: now.indexOf(added) + 1 } };
+    }
     const moved = now.find((id, index) => was.indexOf(id) !== index && was.includes(id)) ?? now[0];
     if (moved === undefined) return {};
     return { compare: { type: 'list', before: was.map((id) => names.series(id)), after: now.map((id) => names.series(id)), moved: names.series(moved), from: was.indexOf(moved) + 1, to: now.indexOf(moved) + 1 } };
@@ -346,7 +363,7 @@ function reasonDetail(entry: FieldReviewState, activations: readonly Activation[
             return base === null ? `Reviewed against an earlier revision. Revision ${active ?? ''} published it differently.` : `Reviewed against revision ${base}. Revision ${active ?? ''} published it differently.`;
         }
         case 'base-unreadable':
-            return 'Reviewed against a revision that can’t be read now, so check it against what is live.';
+            return "Reviewed against a revision that can't be read now, so check it against what is live.";
         case 'asset-replaced':
             return 'Reviewed with the earlier image. The photograph has new bytes.';
         case 'cover-replaced':

@@ -31,6 +31,8 @@ describe('PreviewFrame', () => {
         expect(screen.queryByRole('region', { name: 'Visitor preview' })).toBeNull();
         const frame = screen.getByTitle('The live site, revision 19');
         expect(frame).toHaveAttribute('inert');
+        // The inert iframe's title isn't read, so the picture carries it.
+        expect(screen.getByRole('img', { name: 'The live site, revision 19' })).toContainElement(frame);
         expect(screen.getByText('Live, revision 19')).toBeInTheDocument();
         expect(screen.queryByText('Preview · not public')).toBeNull();
     });

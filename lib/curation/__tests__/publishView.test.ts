@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { CatalogChange, CatalogDiff } from '../../catalog/diff';
 import type { FieldReviewReason, FieldReviewState, ReviewContext } from '../../catalog/review';
 import type { CandidateContent, RevisionContent, WorkingLayer } from '../../catalog/types';
-import { actorPhrase, countLine, displayFacts, orderRuns, resultCopy, type Ledger, type ScreenView } from '../publish-facts';
+import { actorPhrase, countLine, displayFacts, orderRuns, resultCopy, timeOf, type Ledger, type ScreenView } from '../publish-facts';
 import { buildLedger } from '../publish-view';
 
 // #16's Publish screen (16-3): the join over 16-1's reason list, and the
@@ -148,11 +148,13 @@ describe('facts by state', () => {
             countAlert: true,
             bar: { validate: 'hidden', publish: 'available', reason: 'Visitors already see revision 19. Publishing again finishes the switch.' },
             panel: { marker: 'Live, revision 19', rollback: 'Revision 18 is kept. `photos rollback` returns to it.' },
+            // Publish is the way to finish, so it goes with the validation it ran on, and the server doesn't refuse it.
+            validated: true,
         });
     });
 
     it('drops the draft facts from the panel and keeps one action when the ledger is out of date', () => {
-        const facts = displayFacts(view(), { kind: 'someone-published', live: live19, previous: was18, by: 'keyur published it at 14:05, with photos publish.' }, null);
+        const facts = displayFacts(view(), { kind: 'someone-published', live: live19, previous: was18, by: { actor: 'keyur', kind: 'publish', at: '2026-10-27T14:05:00.000Z' } }, null);
         expect(facts.panel).toEqual(expect.objectContaining({ frameSrc: null, link: null, rollback: 'Revision 18 is kept. `photos rollback` returns to it.' }));
         expect(facts.panel.count).toBeUndefined();
         expect(facts.panel.copyLine).toBeUndefined();
@@ -176,6 +178,40 @@ describe('facts by state', () => {
         expect(orderRuns({ before: Array(8).fill('x'), after: Array(8).fill('x'), from: 7, to: 2 })).toEqual([[1, 2, 3], [6, 7, 8]]);
         expect(orderRuns({ before: ['a', 'b'], after: ['b', 'a'], from: 2, to: 1 })).toEqual([[1, 2]]);
         expect(orderRuns({ before: Array(5).fill('x'), after: Array(5).fill('x'), from: 4, to: 2 })).toEqual([[1, 2, 3, 4, 5]]);
+    });
+
+    it('says what made a revision live: the command line, this screen in another tab, or a rollback', () => {
+        const at = '2026-10-27T14:05:00.000Z';
+        expect(resultCopy({ kind: 'someone-published', live: live19, previous: was18, by: { actor: 'keyur', kind: 'publish', at } }, view())).toEqual({
+            tone: 'change',
+            heading: 'Revision 19 went live from the command line',
+            body: ['keyur published it at 14:05, with photos publish. Nothing was published from here.'],
+        });
+        expect(resultCopy({ kind: 'someone-published', live: live19, previous: was18, by: { actor: 'curator:web', kind: 'publish', at } }, view())).toEqual({
+            tone: 'change',
+            heading: 'Revision 19 went live from another page',
+            body: ['It went live from this screen at 14:05, in another tab or window. Nothing was published from here.'],
+        });
+        const back = { number: 17, revisionId: REV(7), hash: '77777777' };
+        expect(resultCopy({ kind: 'someone-published', live: back, previous: was18, by: { actor: 'keyur', kind: 'rollback', at } }, view())).toEqual({
+            tone: 'change',
+            heading: 'Revision 17 is live again',
+            body: ['keyur rolled it back at 14:05, with photos rollback. Nothing was published from here.'],
+        });
+        expect(resultCopy({ kind: 'already-live', live: live19, previous: was18, by: { actor: 'curator:web', kind: 'publish', at } }, view())?.body).toEqual(['It went live from this screen at 14:05. Nothing more to publish, and nothing new was written.']);
+    });
+
+    it('names the lock that is held, and says the times in the zone it is given', () => {
+        const at = '2026-10-27T14:05:00.000Z';
+        expect(resultCopy({ kind: 'busy', lock: 'catalog', since: at, retry: 'publish' }, view())).toEqual({ tone: 'change', heading: 'Another publish or rollback is running', body: ['It started at 14:05. Nothing changed here. Publish again when it finishes.'] });
+        expect(resultCopy({ kind: 'busy', lock: 'authored', since: null, retry: 'validate' }, view())).toEqual({ tone: 'change', heading: 'Another change to the working catalog is being saved', body: ['Nothing changed here. Validate again when it finishes.'] });
+        expect(timeOf(at, 'America/Los_Angeles')).toBe('07:05');
+        expect(resultCopy({ kind: 'busy', lock: 'catalog', since: at, retry: 'publish' }, view(), 'Asia/Kolkata')?.body).toEqual(['It started at 19:35. Nothing changed here. Publish again when it finishes.']);
+    });
+
+    it('says No visitor-visible changes for a candidate visitors would see no difference in, with no bar', () => {
+        const facts = displayFacts({ ...view(), kind: 'no-visible-change' }, null, null);
+        expect(facts).toMatchObject({ mode: 'nothing', heading: 'Nothing to publish', lead: 'No visitor-visible changes. Edits to hidden or draft series stay saved and publish when the series becomes visible.', bar: null, showFixes: false });
     });
 
     it('says who did a thing without a producer ID', () => {
