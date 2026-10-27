@@ -32,8 +32,13 @@ interface Route {
     nav: boolean;
     /** The ground the body paints, and the bottom row shows. html is always the Gallery After Hours ground. */
     ground: Rgb;
-    /** Whether the bottom row's edges are the page's own ground. Home's stage is a photograph to the edge, and the legacy Gallery repaints with the theme. */
-    bottom: 'ground' | 'none';
+    /**
+     * What the bottom row's edges show: the page's own ground, within `tolerance`; the same pixels in both themes, where
+     * the Viewer's chrome bar sits at the bottom; or nothing to check, since Home's stage is a photograph to the edge and
+     * the legacy Gallery repaints with the theme.
+     */
+    bottom: 'ground' | 'same' | 'none';
+    tolerance?: number;
 }
 
 const ROUTES: readonly Route[] = [
@@ -41,8 +46,9 @@ const ROUTES: readonly Route[] = [
     { name: 'Work', path: '/work', nav: true, ground: GAH_GROUND, bottom: 'ground' },
     { name: 'a series', path: `/work/${HOME_SERIES.slug}`, nav: true, ground: GAH_GROUND, bottom: 'ground' },
     // The Viewer paints its Chromatic Chapters ground on the body too, the same in both themes (#7).
-    { name: 'the Viewer', path: `/work/${HOME_SERIES.slug}/photo/${HOME_OPENING}`, nav: false, ground: CC_GROUND, bottom: 'ground' },
-    { name: 'About', path: '/about', nav: true, ground: PAPER, bottom: 'ground' },
+    { name: 'the Viewer', path: `/work/${HOME_SERIES.slug}/photo/${HOME_OPENING}`, nav: false, ground: CC_GROUND, bottom: 'same' },
+    // The paper's ribs darken it by under 5% at the edges.
+    { name: 'About', path: '/about', nav: true, ground: PAPER, bottom: 'ground', tolerance: 10 },
     { name: 'the 404', path: '/does-not-exist', nav: true, ground: GAH_GROUND, bottom: 'ground' },
     { name: 'the legacy Gallery', path: `${LEGACY_ORIGIN}/gallery`, nav: true, ground: GAH_GROUND, bottom: 'none' },
 ];
@@ -106,8 +112,10 @@ for (const viewport of VIEWPORTS) {
             if (route.bottom !== 'none') {
                 for (const [theme, edges] of [['dark', dark.bottom], ['light', light.bottom]] as const) {
                     expect(edges, `the bottom row in the ${theme} theme`).not.toBeNull();
-                    const off = edges!.filter((pixel) => !near(pixel, route.ground));
-                    expect(off, `bottom-row edge pixels off the ground ${route.ground} in the ${theme} theme`).toEqual([]);
+                    if (route.bottom === 'ground') {
+                        const off = edges!.filter((pixel) => !near(pixel, route.ground, route.tolerance));
+                        expect(off, `bottom-row edge pixels off the ground ${route.ground} in the ${theme} theme`).toEqual([]);
+                    }
                 }
                 const differ = light.bottom!.filter((pixel, i) => !near(pixel, dark.bottom![i]));
                 expect(differ, 'bottom-row edge pixels that change with the theme').toEqual([]);

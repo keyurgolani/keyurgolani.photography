@@ -15,7 +15,8 @@ const PAINT_PROPERTIES = ['background-color', 'background-image', 'color', 'bord
 
 /**
  * The nav's paint. The toggle swaps its icon and name by theme with
- * display: none, so only rendered elements count, keyed by tag. The ground
+ * display: none, so only rendered elements count, keyed by tag, and an svg's
+ * shapes count as the svg. The ground
  * walks the ancestors from the nav up and paints each background-color under
  * the last, ending on the canvas: html's background, or body's when html has
  * none, or white.
@@ -27,7 +28,10 @@ export function navPaint(nav: Locator): Promise<NavPaint> {
             if (!parts) return [0, 0, 0, 0];
             return [Number(parts[1]), Number(parts[2]), Number(parts[3]), parts[4] === undefined ? 1 : Number(parts[4])];
         };
-        const rendered = [el, ...Array.from(el.querySelectorAll('*'))].filter((node) => (node as HTMLElement).getClientRects().length > 0);
+        // An icon's own shapes differ by design (the sun and the moon), so an svg counts as one element.
+        const rendered = [el, ...Array.from(el.querySelectorAll('*'))].filter(
+            (node) => node.parentElement?.closest('svg') === null && (node as HTMLElement).getClientRects().length > 0,
+        );
         const styles = rendered.map((node) => {
             const style = getComputedStyle(node);
             return `${node.tagName.toLowerCase()} ${properties.map((name) => `${name}: ${style.getPropertyValue(name)}`).join('; ')}`;
