@@ -412,4 +412,33 @@ describe('the curator pages, rendered with the boundary failing', () => {
         const outcome = await attempt({ env: { CURATION_ENABLED: 'true' }, headers: () => ({ host: CURATOR_HOST, cookie: live() }) }, loginPage);
         expect(digestOf(outcome)).toMatch(/^NEXT_REDIRECT;replace;\/curation;/);
     });
+
+    const inboxPage = async () => {
+        const { default: InboxPage } = await import('../app/curation/inbox/page');
+        return InboxPage({ searchParams: Promise.resolve({}) });
+    };
+
+    it.each(PAGE_REFUSALS.filter((refusal) => !isSessionRefusal(refusal)).map((refusal) => [refusal.name, refusal] as const))(
+        '/curation/inbox 404s with %s and reads nothing',
+        async (_, refusal) => {
+            const before = snapshot();
+            const outcome = await attempt({ ...refusal, headers: () => ({ host: refusal.headers().host ?? '', cookie: refusal.headers().cookie ?? '' }) }, inboxPage);
+            expect(isNotFound(outcome)).toBe(true);
+            expect(snapshot()).toEqual(before);
+        },
+    );
+
+    it.each(PAGE_REFUSALS.filter(isSessionRefusal).map((refusal) => [refusal.name, refusal] as const))('/curation/inbox sends a request with %s to the login page, and reads nothing', async (_, refusal) => {
+        const before = snapshot();
+        const outcome = await attempt({ ...refusal, headers: () => ({ host: CURATOR_HOST, cookie: refusal.headers().cookie ?? '' }) }, inboxPage);
+        expect(isLoginRedirect(outcome)).toBe(true);
+        expect(snapshot()).toEqual(before);
+    });
+
+    it('/curation/inbox renders on an allowed Host with the flag on and a live session, and writes nothing', async () => {
+        const before = snapshot();
+        const outcome = await attempt({ env: { CURATION_ENABLED: 'true' }, headers: () => ({ host: CURATOR_HOST, cookie: live() }) }, inboxPage);
+        expect(outcome).toBe('resolved');
+        expect(snapshot()).toEqual(before);
+    });
 });

@@ -280,6 +280,6 @@ export function shortPhotoId(id: string | null): string {
 /** What a failure reason means, without a stack trace or a host path. */
 export const FAILURE_TEXT: Record<(typeof FAILURE_REASONS)[number], string> = {
     'unsupported-format': 'The file is not a format the watcher reads.',
-    'digest-collision': 'Its bytes digest matches another file of another size, so it was set aside.',
+    'digest-collision': "Another file in the library looks like the same photograph but isn't the same size, so the watcher set this one aside.",
     undecodable: 'The file could not be decoded.',
 };

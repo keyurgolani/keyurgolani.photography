@@ -1,7 +1,9 @@
+import { Profiler, Suspense } from 'react';
+import { hydrateRoot } from 'react-dom/client';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ThemeProvider, useTheme } from '../ThemeContext';
+import { ThemeProvider, useTheme, useThemeToggle } from '../ThemeContext';
 
 function Probe() {
   const { theme, toggleTheme } = useTheme();
@@ -50,6 +52,117 @@ describe('ThemeProvider', () => {
       </ThemeProvider>,
     );
     expect(screen.getByRole('button')).toHaveTextContent('light');
+  });
+
+  it('renders once for a stored light theme, so no context change reaches a boundary still streaming in', () => {
+    // A second commit on mount would be a context change above every Suspense boundary, which React then renders
+    // again on the client instead of hydrating: the curator's inbox, opened in the light theme, didn't land on #item.
+    html.setAttribute('data-theme', 'light');
+    const commits: string[] = [];
+    render(
+      <Profiler id="theme" onRender={(_id, phase) => commits.push(phase)}>
+        <ThemeProvider>
+          <p>child</p>
+        </ThemeProvider>
+      </Profiler>,
+    );
+    expect(html.dataset.hydrated).toBe('true');
+    expect(commits).toEqual(['mount']);
+  });
+
+  describe('hydrating a stored light theme', () => {
+    function Toggle() {
+      const toggle = useThemeToggle();
+      return (
+        <button type="button" onClick={toggle}>
+          toggle
+        </button>
+      );
+    }
+
+    async function hydrate(tree: React.ReactElement) {
+      const container = document.createElement('div');
+      container.innerHTML = renderToString(tree);
+      document.body.appendChild(container);
+      // The inline script put the stored light theme on <html> before React ran.
+      html.setAttribute('data-theme', 'light');
+      const recovered: unknown[] = [];
+      let root: ReturnType<typeof hydrateRoot> | undefined;
+      const streamed = container.querySelector('[data-streamed]');
+      await act(async () => {
+        root = hydrateRoot(container, tree, { onRecoverableError: (error) => recovered.push(error) });
+      });
+      return {
+        container,
+        recovered,
+        streamed,
+        done: () => {
+          act(() => root?.unmount());
+          container.remove();
+        },
+      };
+    }
+
+    it('takes one commit, so the provider never changes its value under the page', async () => {
+      const commits: string[] = [];
+      const { recovered, done } = await hydrate(
+        <Profiler id="theme" onRender={(_id, phase) => commits.push(phase)}>
+          <ThemeProvider>
+            <Toggle />
+          </ThemeProvider>
+        </Profiler>,
+      );
+      try {
+        expect(html.dataset.hydrated).toBe('true');
+        expect(recovered).toEqual([]);
+        expect(commits).toEqual(['mount']);
+      } finally {
+        done();
+      }
+    });
+
+    // What this pins: hydrating over a pending boundary keeps the server's fallback and recovers from nothing. It passes on the
+    // old provider too: jsdom gives the boundary no content to reveal, so a client render of it never commits. The bug itself,
+    // a pending boundary rendered again on the client, is the inbox e2e's light-theme phone case; the commit count above pins its
+    // cause.
+    it('hydrates over a boundary still pending, keeping the server fallback, with nothing to recover from', async () => {
+      // The server's HTML for a boundary still pending, waiting for its reveal (`$~`; jsdom's document has finished loading,
+      // where React reads a bare `$?` as a boundary the server gave up on).
+      const pending = '<button type="button">toggle</button><!--$~--><template id="B:0"></template><p data-fallback="">loading</p><!--/$-->';
+      const never = new Promise<never>(() => undefined);
+      function Streamed(): React.ReactElement {
+        throw never;
+      }
+      const container = document.createElement('div');
+      container.innerHTML = pending;
+      document.body.appendChild(container);
+      html.setAttribute('data-theme', 'light');
+      const fallback = container.querySelector('[data-fallback]');
+      const recovered: unknown[] = [];
+      let root: ReturnType<typeof hydrateRoot> | undefined;
+      try {
+        await act(async () => {
+          root = hydrateRoot(
+            container,
+            <ThemeProvider>
+              <Toggle />
+              <Suspense fallback={<p data-fallback="">loading</p>}>
+                <Streamed />
+              </Suspense>
+            </ThemeProvider>,
+            { onRecoverableError: (error) => recovered.push(error) },
+          );
+        });
+        expect(html.dataset.hydrated).toBe('true');
+        expect(recovered).toEqual([]);
+        // Still the server's fallback, inside the server's pending marker: nothing rendered it again.
+        expect(container.querySelector('[data-fallback]')).toBe(fallback);
+        expect(container.innerHTML).toContain('<!--$~-->');
+      } finally {
+        act(() => root?.unmount());
+        container.remove();
+      }
+    });
   });
 
   it('marks <html> hydrated once its children have committed', () => {

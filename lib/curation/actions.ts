@@ -99,7 +99,7 @@ type Change = { event: CurationEvent; notes?: string[] };
 
 /** The checks every action shares, then `change`, then the event write, all under the curation lock. */
 async function act(input: ActionInput, change: (step: Step) => Promise<Change>): Promise<ActionOutcome> {
-    const root = path.resolve(input.root);
+    const root = path.resolve(/*turbopackIgnore: true*/ input.root);
     const status = dataRootStatus({ versioned: true, root });
     if (status.state !== 'ready') return { ok: false, code: 'not-ready', message: `The data root is ${status.state}. Nothing was written.` };
     if (!Number.isInteger(input.expectedVersion) || input.expectedVersion < 1) return { ok: false, code: 'needs-choice', message: '--version takes the event version list or show printed.' };
@@ -197,7 +197,7 @@ export function editEvent(input: ActionInput & { choices: Choices }): Promise<Ac
     });
 }
 
-/** Leave in draft. */
+/** Defer: leave it in the draft for later (the inbox's Decide later). */
 export function deferEvent(input: ActionInput & { reason?: string }): Promise<ActionOutcome> {
     return act(input, async (step) => {
         requireStatus(step.event, ['open', 'failed'], 'deferred');
@@ -219,7 +219,7 @@ export function dismissEvent(input: ActionInput & { reason: string }): Promise<A
         requireStatus(event, OPEN_STATES, 'dismissed');
         if (!input.reason) fail('needs-choice', 'dismiss needs a reason.');
         if (event.type === 'missing' && event.photoId !== null) {
-            const holders = await publishedReferences(path.resolve(input.root), event.photoId);
+            const holders = await publishedReferences(path.resolve(/*turbopackIgnore: true*/ input.root), event.photoId);
             if (holders.length > 0) {
                 fail('refused', `${event.photoId}'s source is missing, and ${holders.join(' and ')} still ${holders.length === 1 ? 'references' : 'reference'} it, so it can't be dismissed. Restore the source, or remove it from the series and publish first. Nothing was written.`);
             }
@@ -266,7 +266,7 @@ export function retryEvent(input: ActionInput & { reason?: string }): Promise<Ac
     return act(input, async (step) => {
         const { event } = step;
         requireStatus(event, OPEN_STATES, 'retried');
-        const root = path.resolve(input.root);
+        const root = path.resolve(/*turbopackIgnore: true*/ input.root);
         if (event.photoId === null || event.assetRevision === null) fail('refused', `The event ${event.id} has no photo ID, so there is nothing to retry. Retry needs a photograph #10 has identified.`);
         const failure = event.derivedFacts.failure;
         if (failure === 'unsupported-format' || failure === 'digest-collision') {
@@ -317,6 +317,11 @@ function resolveChoices(event: CurationEvent, choices: Choices): { seriesId: str
     return { seriesId, placement: placement ?? 'end', picked, description: choices.description !== undefined ? choices.description : edits?.description };
 }
 
+/** The refusal for "unassigned" while a series that might hold the photo can't be read. The page words it through lib/curation/inbox-form.ts. */
+function unreadableSeriesMessage(unreadable: readonly string[], photoId: string): string {
+    return `The series ${unreadable.join(' and ')} can't be read, so nothing shows whether one holds ${photoId}. Fix the series first. Nothing was written.`;
+}
+
 /**
  * Approve a new photograph into the draft: its photo record at the event's
  * asset revision, and, unless it's left unassigned, its place in the chosen
@@ -327,7 +332,20 @@ export interface ApproveFaults {
     beforePlacement?(): void | Promise<void>;
 }
 
-export function approveEvent(input: ActionInput & { choices: Choices; faults?: ApproveFaults }): Promise<ActionOutcome> {
+export function approveEvent(
+    input: ActionInput & {
+        choices: Choices;
+        faults?: ApproveFaults;
+        /**
+         * Refuse "unassigned" for a photograph a series holds, or while a series
+         * can't be read. The inbox page sets it, since "Leave unassigned" there
+         * reads as taking the photo out. The CLI leaves it off: `--unassigned`
+         * records that the last approval chose no series, which D6's placement
+         * lookup reads once the series drops the photo.
+         */
+        keepPlaced?: boolean;
+    },
+): Promise<ActionOutcome> {
     return act(input, async (step) => {
         const { event } = step;
         if (event.type !== 'new') {
@@ -340,8 +358,9 @@ export function approveEvent(input: ActionInput & { choices: Choices; faults?: A
         }
         const photoId = event.photoId as string;
         const assetRevision = event.assetRevision as string;
-        const root = path.resolve(input.root);
-        const { seriesId, placement, picked, description } = resolveChoices(event, input.choices);
+        const root = path.resolve(/*turbopackIgnore: true*/ input.root);
+        // Resolved under the authored lock, so the series that hold the photo can't change between the read and the write.
+        let resolved!: ReturnType<typeof resolveChoices>;
         let kept = false;
 
         const registry = await readRegistry(root).catch((error: unknown) => fail('damaged', `The identity registry can't be read: ${(error as Error).message}. Nothing was written.`));
@@ -359,10 +378,36 @@ export function approveEvent(input: ActionInput & { choices: Choices; faults?: A
                 if (((await readActivePointer(root))?.revisionId ?? null) !== step.active) {
                     fail('stale', 'The active revision moved while the approval waited for the authored lock. Show it again and review it. Nothing was written.');
                 }
+                // A photograph an earlier approval placed starts from where it is now, as the page shows it: the one
+                // series that holds it, or unassigned when none does. A first approval takes the suggestion, on both.
+                let choices = input.choices;
+                const approvedBefore = event.decisions.some((decision) => decision.action === 'approve');
+                if (approvedBefore && choices.seriesId === undefined && event.edits?.seriesId === undefined) {
+                    const all = await readAuthoredSeries(root);
+                    const holding = all.series.filter((entry) => entry.photoIds.includes(photoId));
+                    if (holding.length === 1) choices = { ...choices, seriesId: holding[0].id };
+                    else if (holding.length === 0) {
+                        // A series that can't be read might hold it, so "unassigned" would be a guess. Refused as keepPlaced refuses it below.
+                        const unreadable = all.problems.filter((problem) => problem.kind === 'series').map((problem) => problem.id);
+                        if (unreadable.length > 0) fail('refused', unreadableSeriesMessage(unreadable, photoId));
+                        choices = { ...choices, seriesId: null };
+                    }
+                }
+                resolved = resolveChoices(event, choices);
+                const { seriesId, placement, picked, description } = resolved;
                 const existing = await readAuthored<AuthoredPhoto>(root, 'photo', photoId);
                 // Check the placement before writing anything, so a refused one leaves the working layer as it was.
                 let op: SeriesOp | null = null;
                 let series: AuthoredSeries | null = null;
+                if (seriesId === null && input.keepPlaced) {
+                    // Approving never takes a photograph out of a series, so the page can't record "unassigned" for one a series holds.
+                    const all = await readAuthoredSeries(root);
+                    const unreadable = all.problems.filter((problem) => problem.kind === 'series').map((problem) => problem.id);
+                    // As #8's membership check does: a series that can't be read might hold it, so nothing shows it's free.
+                    if (unreadable.length > 0) fail('refused', unreadableSeriesMessage(unreadable, photoId));
+                    const holding = all.series.filter((entry) => entry.photoIds.includes(photoId)).map((entry) => entry.id);
+                    if (holding.length > 0) fail('refused', `${photoId} is already in ${holding.join(' and ')}, and an approval doesn't take a photograph out of a series. Nothing was written.`);
+                }
                 if (seriesId !== null && placement !== null) {
                     series = await readAuthored<AuthoredSeries>(root, 'series', seriesId);
                     if (series === null) fail('refused', `There is no series ${seriesId}. Nothing was written.`);
@@ -384,7 +429,8 @@ export function approveEvent(input: ActionInput & { choices: Choices; faults?: A
                 if (existing && existing.assetRevision !== assetRevision) {
                     fail('refused', `${photoId}'s photo record pins ${existing.assetRevision}, not this event's ${assetRevision}. Confirming new bytes for a photograph is #17's. Nothing was written.`);
                 }
-                const alt: AuthoredAlt = description ? altOf(description) : existing?.alt ?? null;
+                // A clear wins over what the photo record holds, so a reopened item can withdraw a description or the decorative flag.
+                const alt: AuthoredAlt = description === null ? null : description ? altOf(description) : existing?.alt ?? null;
                 const unchanged = existing !== null && JSON.stringify(existing.alt) === JSON.stringify(alt);
                 if (!unchanged) {
                     const record = existing ? { ...existing, alt } : { kind: 'photo' as const, id: photoId, assetRevision, alt };
@@ -417,14 +463,18 @@ export function approveEvent(input: ActionInput & { choices: Choices; faults?: A
             throw error;
         }
 
+        const { seriesId, placement } = resolved;
         if (seriesId === null) notes.unshift('Approved and left unassigned: the photo record is in the draft, in no series.');
         else if (kept) notes.unshift(`Approved into ${seriesId}, where it kept its place, in the draft. Nothing is published until photos publish runs.`);
         else notes.unshift(`Approved into ${seriesId} at ${placementText(placement as Placement)}, in the draft. Nothing is published until photos publish runs.`);
-        // A saved position is used up by the approval that applied it, so a later reopen and approve keeps any hand reorder.
+        // Saved choices are used up by the approval: it took them or overrode them. So a later reopen starts from the
+        // working layer, and a reopen and approve keeps any hand reorder.
         let edits = event.edits;
-        if (edits?.placement !== undefined) {
-            const { placement: _used, ...rest } = edits;
-            void _used;
+        if (edits !== null) {
+            const { placement: _placement, seriesId: _series, description: _description, ...rest } = edits;
+            void _placement;
+            void _series;
+            void _description;
             edits = rest;
         }
         const next = decided(step, input, { action: 'approve', seriesId, ...(placement && !kept ? { placement } : {}), writes }, 'approved', { edits });
