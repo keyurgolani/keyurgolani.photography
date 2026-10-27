@@ -148,7 +148,7 @@ describe('facts by state', () => {
             countLine: "The publish didn't finish. Publish again to finish it.",
             countAlert: true,
             bar: { validate: 'hidden', publish: 'available', reason: 'Visitors already see revision 19. Publishing again finishes the switch.' },
-            panel: { marker: 'Live, revision 19', rollback: 'Revision 18 is kept. `photos rollback` returns to it.' },
+            panel: { marker: 'Live, revision 19', rollback: 'Revision 18 is kept. Restore it from History, below.' },
             // Publish is the way to finish, so it goes with the validation it ran on, and the server doesn't refuse it.
             validated: true,
         });
@@ -156,7 +156,7 @@ describe('facts by state', () => {
 
     it('drops the draft facts from the panel and keeps one action when the ledger is out of date', () => {
         const facts = displayFacts(view(), { kind: 'someone-published', live: live19, previous: was18, by: { actor: 'keyur', kind: 'publish', at: '2026-10-27T14:05:00.000Z' } }, null);
-        expect(facts.panel).toEqual(expect.objectContaining({ frameSrc: null, link: null, rollback: 'Revision 18 is kept. `photos rollback` returns to it.' }));
+        expect(facts.panel).toEqual(expect.objectContaining({ frameSrc: null, link: null, rollback: 'Revision 18 is kept. Restore it from History, below.' }));
         expect(facts.panel.count).toBeUndefined();
         expect(facts.panel.copyLine).toBeUndefined();
         expect(facts.bar).toEqual({ validate: 'hidden', publish: 'hidden', loadUpdated: true });

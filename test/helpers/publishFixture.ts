@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { publish } from '../../lib/catalog/publish';
-import { CATALOG_LOCK, revisionFilePath } from '../../lib/catalog/repository';
+import { CATALOG_LOCK, readRevisionFile, revisionFilePath } from '../../lib/catalog/repository';
 import { hashValue } from '../../lib/catalog/review';
 import { createTestCatalog, type TestCatalog } from '../../lib/catalog/testing';
 import type { AuthoredPhoto } from '../../lib/catalog/types';
@@ -13,6 +13,7 @@ import { approveEvent, reopenEvent } from '../../lib/curation/actions';
 import { eventIdOf, eventKey } from '../../lib/curation/events';
 import { readEvent } from '../../lib/curation/repository';
 import { createCurationSink } from '../../lib/curation/sink';
+import { assetDir } from '../../lib/media/path';
 import { withLock } from '../../lib/storage/lock';
 
 /**
@@ -199,4 +200,31 @@ export async function reopenBreakwater(fixture: PublishFixture): Promise<void> {
     const pointer = await readActivePointer(fixture.root);
     const reopened = await reopenEvent({ root: fixture.root, eventId: event.id, expectedVersion: event.version, expectedBase: pointer?.revisionId ?? null, actor: 'curator:web' });
     if (!reopened.ok) throw new Error(`The reopen didn't go through: ${reopened.code}: ${reopened.message}`);
+}
+
+// 15-4's History.
+
+/**
+ * The publish fixture with its draft fixed and published from the command
+ * line: revisions 1 to 3 committed, revision 3 live, nothing pending, so a
+ * restore rebases a working layer with no edits of its own.
+ */
+export async function createHistoryFixture({ dir }: { dir?: string } = {}): Promise<PublishFixture & { live: string }> {
+    const fixture = await createPublishFixture({ dir });
+    await fixBoth(fixture);
+    const live = await publishFromCli(fixture);
+    return { ...fixture, live };
+}
+
+/**
+ * Set a photograph's derivative set aside, as a lost disk would leave it, so
+ * a stored revision that publishes it fails the asset rules. Returns the undo.
+ */
+export async function setAssetsAside(fixture: PublishFixture, revisionId: string, photoId: string): Promise<() => void> {
+    const revision = await readRevisionFile(fixture.root, revisionId);
+    const photo = revision?.content.photos.find((entry) => entry.id === photoId);
+    if (!photo) throw new Error(`${revisionId} doesn't publish ${photoId}`);
+    const dir = assetDir({ photoId, assetRevision: photo.assetRevision, profileId: photo.profileId }, fixture.root);
+    fs.renameSync(dir, `${dir}.aside`);
+    return () => fs.renameSync(`${dir}.aside`, dir);
 }

@@ -1,0 +1,462 @@
+/* #15's 15-4: the History section and restore dialog on the Publish screen,
+   on the curator tokens that .page sets and 16-3's publish styles. A box like
+   the ledger, last on the screen; no primary-styled control outside the
+   dialog. States are text with an icon, never colour alone; every control is
+   at least 44 px; hover only under a fine pointer; nothing moves. */
+
+.history {
+  grid-area: history;
+  min-width: 0;
+  margin-top: 1.25rem;
+  padding: 1.25rem 1.25rem 0.75rem;
+  border: 1px solid var(--curator-rule);
+  background: var(--curator-box);
+  scroll-margin-top: 1rem;
+}
+
+/* In the two-column grid the row gap already spaces it from the ledger. */
+[data-ledger='yes'] > .history {
+  margin-top: 0;
+}
+
+.history h2 {
+  margin: 0;
+  font-family: var(--gah-font-sans);
+  font-size: 1.0625rem;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.history h2:focus,
+.title:focus,
+.dialog h2:focus {
+  outline: none;
+  box-shadow: none !important;
+}
+
+.lead {
+  max-width: 62ch;
+  margin: 0.375rem 0 0;
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
+  text-wrap: pretty;
+}
+
+.done {
+  margin-top: 1rem;
+}
+
+.entries {
+  margin: 0.875rem 0 0;
+  padding: 0;
+  border-top: 1px solid var(--curator-rule);
+  list-style: none;
+}
+
+/* The text, and the one action at the foot of the right side. */
+.entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  column-gap: 1.25rem;
+  padding: 0.875rem 0;
+  border-bottom: 1px solid var(--curator-rule);
+  scroll-margin-top: 1rem;
+}
+
+.entry:last-child {
+  border-bottom: 0;
+}
+
+/* A jump or Show older lands on the title: the entry takes a static tint, as 16-3's rows do. */
+.entry:has(.title:focus) {
+  background: var(--curator-active);
+  box-shadow: 0 0 0 0.625rem var(--curator-active);
+}
+
+.text {
+  min-width: 0;
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem 0.625rem;
+}
+
+.title {
+  margin: 0.4rem 0 0;
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-ui);
+  font-weight: 500;
+  letter-spacing: 0;
+  scroll-margin-top: 1rem;
+}
+
+.when,
+.from {
+  margin: 0.2rem 0 0;
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
+  text-wrap: pretty;
+}
+
+/* The owner's own words, in quotes, or a CLI note: the sans at the label size, below the title (review r1 P2-6). */
+.reason {
+  max-width: 62ch;
+  margin: 0.3rem 0 0;
+  color: var(--gah-ink);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-label);
+  line-height: 1.45;
+}
+
+.notePrefix {
+  color: var(--gah-ink-muted);
+}
+
+/* Validate or Publish is pending: why every Restore is unavailable. */
+.paused {
+  margin: 0.5rem 0 0;
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}
+
+.action button[data-off='true'] {
+  color: var(--gah-ink-muted);
+  cursor: not-allowed;
+}
+
+.facts {
+  margin: 0.3rem 0 0;
+  color: var(--gah-ink-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--gah-type-label);
+}
+
+.why {
+  display: flex;
+  max-width: 62ch;
+  align-items: flex-start;
+  gap: 0.4rem;
+  margin: 0.5rem 0 0;
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
+}
+
+.why svg {
+  flex: none;
+  margin-top: 0.15rem;
+}
+
+.why[data-tone='alert'] svg {
+  color: var(--curator-tone-alert-ink);
+}
+
+.why[data-tone='done'] svg {
+  color: var(--curator-lock-icon);
+}
+
+.action {
+  align-self: end;
+}
+
+.more {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.75rem 0 0.25rem;
+  border-top: 1px solid var(--curator-rule);
+}
+
+.more p {
+  margin: 0;
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
+}
+
+/* The restore dialog: a modal box on the curator ground, its body scrolling
+   between the heading and the actions. The body pads by more than the focus
+   ring, so its scroll clip never cuts one. */
+
+.dialog {
+  width: min(40rem, calc(100vw - 2rem));
+  max-width: none;
+  max-height: calc(100dvh - 3rem);
+  padding: 0;
+  border: 1px solid var(--gah-rule-strong);
+  border-radius: var(--gah-radius);
+  color: var(--gah-ink);
+  background: var(--curator-box);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-ui);
+}
+
+.dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.dialog::backdrop {
+  background: rgb(0 0 0 / 0.66);
+}
+
+.form {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.dialogBody {
+  min-height: 0;
+  /* Fills the dialog, so the actions sit at its foot on a phone (review r1 P3-1). */
+  flex: 1 1 auto;
+  overflow-y: auto;
+  scroll-padding-block: 1rem;
+  padding: 1.25rem 1.25rem 1rem;
+}
+
+.dialog h2 {
+  margin: 0;
+  font-family: var(--gah-font-sans);
+  font-size: 1.25rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.stakes {
+  max-width: 62ch;
+  margin: 0.5rem 0 0;
+  color: var(--gah-ink-soft);
+  text-wrap: pretty;
+}
+
+/* The compare-and-swap precondition, shown: what is live now, and what comes back. */
+.cas {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 1rem 0 0;
+}
+
+.cas > div {
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--curator-rule);
+  background: var(--curator-field);
+}
+
+.cas dt {
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+  letter-spacing: var(--gah-label-tracking);
+  text-transform: uppercase;
+}
+
+.cas dd {
+  margin: 0.25rem 0 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--gah-type-label);
+}
+
+.casNote {
+  margin: 0.5rem 0 0;
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}
+
+.impactHeading {
+  margin: 1.25rem 0 0;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--curator-rule);
+  color: var(--curator-tone-change-ink);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-label);
+  font-weight: 500;
+  letter-spacing: var(--gah-label-tracking);
+  text-transform: uppercase;
+}
+
+.impact {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.impact li {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--curator-rule);
+  overflow-wrap: anywhere;
+}
+
+.draftNote {
+  font-size: var(--gah-type-label);
+}
+
+.draftNote p {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+}
+
+.draftNote svg {
+  flex: none;
+  margin-top: 0.15rem;
+  color: var(--curator-tone-change-ink);
+}
+
+/* The names past 5: a native disclosure, no script, one Tab stop only when present. */
+.moreNames summary {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  color: var(--gah-ink);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+  cursor: pointer;
+}
+
+.moreNames p {
+  margin: 0 0 0.25rem;
+  color: var(--gah-ink-soft);
+}
+
+.editorial {
+  font-size: var(--gah-type-label);
+}
+
+.field {
+  display: grid;
+  gap: 0.3rem;
+  margin-top: 1.25rem;
+}
+
+.field label {
+  font-weight: 500;
+}
+
+.hint {
+  margin: 0;
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}
+
+.field textarea {
+  min-height: 5.5rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--gah-rule-strong);
+  border-radius: var(--gah-radius);
+  color: var(--gah-ink);
+  background: var(--curator-field);
+  font: inherit;
+  resize: vertical;
+}
+
+.field textarea[aria-invalid='true'] {
+  border-color: var(--curator-tone-alert-ink);
+}
+
+.fieldError {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  margin: 0;
+  color: var(--curator-tone-alert-ink);
+  font-size: var(--gah-type-label);
+}
+
+.fieldError svg {
+  flex: none;
+  margin-top: 0.15rem;
+}
+
+.dialogResult {
+  margin-top: 1.25rem;
+}
+
+/* The answers' headings are h3 here (h2 in 16-3's slot): the sans, as 16-3's. */
+.dialog .dialogResult h3,
+.history .done h3 {
+  font-family: var(--gah-font-sans);
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.reasons {
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reasons li {
+  padding: 0.5rem 0 0;
+  border-top: 1px solid var(--curator-tone-alert-ink);
+  font-size: var(--gah-type-label);
+}
+
+/* The dialog's foot: Cancel or Close, then its one primary, on the box with the rule above. */
+.dialogActions {
+  flex: none;
+  padding: 0.875rem 1.25rem max(0.875rem, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--curator-rule);
+  background: var(--curator-box);
+}
+
+.dialogActions button[data-off='true'] {
+  color: var(--gah-ink-muted);
+  cursor: not-allowed;
+}
+
+/* The phone: the entry stacks with its action full width, and the dialog fills the screen. */
+@media (max-width: 767px) {
+  .history {
+    padding: 1rem 1rem 0.5rem;
+  }
+
+  .entry {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .action {
+    display: flex;
+    margin-top: 0.75rem;
+  }
+
+  .action > button,
+  .more > a {
+    flex: 1 1 100%;
+  }
+
+  .dialog {
+    width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .dialogBody {
+    padding: 1.125rem 1.125rem 1rem;
+  }
+
+  .cas {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.5rem;
+  }
+
+  .dialogActions {
+    padding-inline: 1.125rem;
+  }
+
+  .dialog .dialogActions > a,
+  .dialog .dialogActions > button {
+    flex: 1 1 9rem;
+    min-width: 0;
+    justify-content: center;
+    text-align: center;
+  }
+}

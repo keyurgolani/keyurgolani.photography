@@ -476,6 +476,21 @@ function fixOf(change: CatalogChange, input: LedgerInput, names: Names): Fix | u
     return { type: 'hint', text: HINT_ONLY[first.reason ?? 'no-record'] ?? 'Review the change with the photos command, then validate again.' };
 }
 
+/** The fields #13's rebase left in conflict, by record (the `working.conflicts` rule's input). */
+function conflictFields(layer: WorkingLayer): { kind: IssueRecord['kind']; id: string; field: string }[] {
+    const of = (kind: IssueRecord['kind'], id: string, conflicts: { field: string }[] | undefined) => (conflicts ?? []).map((conflict) => ({ kind, id, field: conflict.field }));
+    return [
+        ...(layer.site ? of('site', 'site', layer.site.conflicts) : []),
+        ...layer.series.flatMap((series) => of('series', series.id, series.conflicts)),
+        ...layer.photos.flatMap((photo) => of('photo', photo.id, photo.conflicts)),
+    ];
+}
+
+/** A conflict's fix: the edit that settles the field, with the record's full ID. Marking it reviewed would leave the conflicts entry. */
+function conflictFix(change: CatalogChange): Fix {
+    return { type: 'hint', text: 'Keep one value with photos edit, which clears the conflict, then validate again.', command: `photos edit ${change.record.kind === 'site' ? 'site' : change.record.id}` };
+}
+
 /** The owner's name for a field. */
 function fieldName(entry: Pick<FieldReviewState, 'record' | 'field'>): string {
     const map = entry.record.kind === 'photo' ? PHOTO_FIELD : entry.record.kind === 'series' ? SERIES_FIELD : { featuredSeriesIds: 'featured series', seriesOrder: 'Work order' } as Record<string, string>;
@@ -529,6 +544,8 @@ export function buildLedger(input: LedgerInput): { ledger: Ledger; blockers: Blo
     const built = rowsOf(input, names);
     const blockers: Blocker[] = [];
     const marked = new Set<string>();
+    const conflicts = conflictFields(input.layer);
+    const conflictOf = (change: CatalogChange) => conflicts.some((key) => key.kind === change.record.kind && key.id === change.record.id && (change.field === key.field || change.field.startsWith(`${key.field}[`)));
 
     const mark = (rowId: string, entry: FieldReviewState | undefined, issue: Issue | null) => {
         const row = built.rows.get(rowId);
@@ -536,9 +553,16 @@ export function buildLedger(input: LedgerInput): { ledger: Ledger; blockers: Blo
         if (!row || !change) return;
         if (!marked.has(rowId)) {
             marked.add(rowId);
-            const fix = fixOf(change, input, names);
+            const conflict = conflictOf(change);
+            const fix = conflict ? conflictFix(change) : fixOf(change, input, names);
             row.blocks = true;
             if (fix) row.fix = fix;
+            if (conflict) {
+                // 15-4: a field a restore's rebase left in conflict. Its own label, not "Stale review", and the edit that settles it.
+                const live = activeNumber(input);
+                row.review = 'conflict';
+                row.detail = `Your draft and revision ${live ?? 'live now'} both changed it.`;
+            }
             // Every blocker names its row's record, so the list and the row say the same thing.
             const record = names.record(change.record);
             blockers.push({
@@ -546,7 +570,7 @@ export function buildLedger(input: LedgerInput): { ledger: Ledger; blockers: Blo
                 rowId,
                 record,
                 field: entry ? blockerField(change, entry, names) : blockerField(change, { record: change.record, field: change.field }, names),
-                message: blockerMessage(change, entry, issue, input),
+                message: conflict ? 'This field changed both here and in the live revision, in different ways.' : blockerMessage(change, entry, issue, input),
                 link: linkOf(fix, record),
             });
         }
@@ -557,7 +581,8 @@ export function buildLedger(input: LedgerInput): { ledger: Ledger; blockers: Blo
         for (const [rowId, change] of built.change) {
             if (!change.visible) continue;
             const entry = change.review.fields.find((field) => field.state !== 'reviewed');
-            if (entry) mark(rowId, entry, null);
+            // A rebase conflict blocks too (working.conflicts), and the load predicts it from the layer, not the rules.
+            if (entry || conflictOf(change)) mark(rowId, entry, null);
         }
     } else {
         for (const issue of input.issues) {

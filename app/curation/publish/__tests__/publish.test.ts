@@ -132,7 +132,7 @@ describe('the page read', () => {
         const screen = await view();
         expect(screen.kind).toBe('nothing');
         const facts = displayFacts(screen, null, null);
-        expect(facts).toMatchObject({ mode: 'nothing', heading: 'Nothing to publish', bar: null, panel: { title: 'Live site', marker: 'Live, revision 3', rollback: 'Revision 2 is kept. `photos rollback` returns to it.' } });
+        expect(facts).toMatchObject({ mode: 'nothing', heading: 'Nothing to publish', bar: null, panel: { title: 'Live site', marker: 'Live, revision 3', rollback: 'Revision 2 is kept. Restore it from History, below.' } });
     });
 });
 
@@ -180,7 +180,7 @@ describe('Validate and Publish', () => {
         // The page isn't rendered again from the new pointer, which would read as Nothing to publish in place of the answer.
         expect(revalidated.filter((entry) => entry === '/' || entry === '/curation/publish')).toEqual(['/curation/publish', '/curation/publish']);
         const live = displayFacts(fixed, published.result, null);
-        expect(live).toMatchObject({ mode: 'live', heading: 'Revision 3 is live', bar: null, groups: { authored: 'Authored', derived: 'Derived' }, compareLabels: { before: 'Before', after: 'Now live' }, panel: { title: 'Live site', marker: 'Live, revision 3', rollback: 'Revision 2 is kept. `photos rollback` returns to it.' } });
+        expect(live).toMatchObject({ mode: 'live', heading: 'Revision 3 is live', bar: null, groups: { authored: 'Authored', derived: 'Derived' }, compareLabels: { before: 'Before', after: 'Now live' }, panel: { title: 'Live site', marker: 'Live, revision 3', rollback: 'Revision 2 is kept. Restore it from History, below.' } });
         expect(JSON.stringify({ ...live, ledger: undefined })).not.toMatch(/draft|preview/i);
     });
 
@@ -231,7 +231,7 @@ describe('Validate and Publish', () => {
         expect(answer).toMatchObject({ kind: 'someone-published', live: { number: 3 }, previous: { number: 2 }, by: { actor: 'keyur', kind: 'publish', at: expect.any(String) } });
         const facts = displayFacts(screen, answer, null);
         expect(facts.revision.current).toBe('Current public revision 3');
-        expect(facts.panel.rollback).toBe('Revision 2 is kept. `photos rollback` returns to it.');
+        expect(facts.panel.rollback).toBe('Revision 2 is kept. Restore it from History, below.');
         expect(facts.heading).toBe('Preview your draft');
     });
 

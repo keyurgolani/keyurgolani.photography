@@ -14,6 +14,8 @@ import type { Registry } from '@/lib/identity/types';
 import { dataRootStatus } from '@/lib/storage/config';
 import type { Blocker, Ledger, RevisionFacts, ScreenView } from '@/lib/curation/publish-facts';
 import { buildLedger, Names, panelLines, panelTarget } from '@/lib/curation/publish-view';
+import type { HistoryView } from '@/lib/curation/publish-history';
+import { loadHistoryView, type HistoryLoadOptions } from './history-load';
 
 /**
  * The Publish screen's read (16-3): the data root's status, #13's snapshot
@@ -24,7 +26,7 @@ import { buildLedger, Names, panelLines, panelTarget } from '@/lib/curation/publ
  */
 
 export type PublishPage =
-    | { state: 'ready'; view: ScreenView; previewHref: string }
+    | { state: 'ready'; view: ScreenView; previewHref: string; history: HistoryView }
     | { state: 'not-launched' }
     | { state: 'unreadable' };
 
@@ -150,17 +152,30 @@ function liveLines(active: RevisionFile, names: Names): { count: string; copyLin
     return { count: `${names.series(first.id)}: ${n} ${n === 1 ? 'photograph' : 'photographs'}`, copyLine: 'What visitors see now.' };
 }
 
+/** The ledger rows a restore's rebase left in conflict, with their records' names, for History's done notice. */
+export function conflictRows(view: ScreenView): { rowId: string; record: string }[] {
+    const rows = [...view.ledger.authored, ...view.ledger.derived].filter((row) => row.review === 'conflict');
+    return rows.map((row) => ({ rowId: row.id, record: view.blockers.find((blocker) => blocker.rowId === row.id)?.record ?? row.summary }));
+}
+
+/** The page's query: 15-4's `?history=`, `?check=` and `?restored=`. */
+export type PageQuery = Pick<HistoryLoadOptions, 'shown' | 'check' | 'restored'>;
+
 /** The page's read. A read error is logged without its details on the page, which can name a host path. */
-export async function loadPublishPage(): Promise<PublishPage> {
+export async function loadPublishPage(query: PageQuery = {}): Promise<PublishPage> {
     let snapshot: Snapshot | null;
+    let view: ScreenView;
+    let history: HistoryView;
     try {
         snapshot = await readSnapshot();
+        if (snapshot === null) return { state: 'not-launched' };
+        view = viewOf(snapshot);
+        history = await loadHistoryView(snapshot.root, { ...query, draftPending: view.kind === 'ledger', conflicts: conflictRows(view) });
     } catch (error) {
         console.error('[curation] The Publish screen could not be read:', error);
         return { state: 'unreadable' };
     }
-    if (snapshot === null) return { state: 'not-launched' };
-    return { state: 'ready', view: viewOf(snapshot), previewHref: previewFrameHref(snapshot.compiled.candidateId) };
+    return { state: 'ready', view, previewHref: previewFrameHref(snapshot.compiled.candidateId), history };
 }
 
 /** The visitor site's base inside the preview of `draftId`, re-exported for the screen's frame. */
