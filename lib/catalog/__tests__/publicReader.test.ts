@@ -6,6 +6,7 @@ import { importGraph } from '../../../test/helpers/importGraph';
 import { REPO_ROOT } from '../../../test/helpers/runTsx';
 import { versionFile } from '../../storage/document';
 import { withLock } from '../../storage/lock';
+import { CUTOVER_KEY } from '../mode';
 import { activateRevision, publish, type PublishOptions, type PublishResult } from '../publish';
 import { CATALOG_LOCK, revisionFilePath } from '../repository';
 import { createTestCatalog } from '../testing';
@@ -23,6 +24,7 @@ afterEach(async () => {
 /** A fresh copy of the reader's modules, as a newly started process has: nothing cut over, cached, or loaded. */
 async function freshProcess() {
     vi.resetModules();
+    Reflect.deleteProperty(globalThis, CUTOVER_KEY);
     return { ...await import('../public-reader'), ...await import('../mode') };
 }
 
@@ -250,6 +252,19 @@ describe('the public reader', { timeout: 60_000 }, () => {
         expect(await checkCatalogMode(root)).toEqual({ mode: 'catalog' });
         fs.rmSync(catalogPaths(root).dir, { recursive: true, force: true });
         expect(await checkCatalogMode(root)).toEqual({ mode: 'catalog' });
+    });
+
+    it('shares the cutover memory between copies of the mode check, as the separate server bundles in one process load it', async () => {
+        const { root, published } = await fixture(14);
+        const route = await freshProcess();
+        await published();
+        expect(await route.checkCatalogMode(root)).toEqual({ mode: 'catalog' });
+        // A second copy, as the proxy's bundle has, that never saw the cutover itself.
+        vi.resetModules();
+        const proxyCopy = await import('../mode');
+        expect(proxyCopy.checkCatalogMode).not.toBe(route.checkCatalogMode);
+        fs.rmSync(catalogPaths(root).dir, { recursive: true, force: true });
+        expect(await proxyCopy.checkCatalogMode(root)).toEqual({ mode: 'catalog' });
     });
 
     it('reads a revision once for concurrent cold requests, and tries again after a read that failed', async () => {

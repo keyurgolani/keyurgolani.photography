@@ -44,9 +44,13 @@ const nextConfig = {
     // high. localPatterns below keeps originals out of /_next/image entirely.
     maximumResponseBody: 500_000_000,
     // /_next/image optimizes only the legacy derivatives, so it answers 400
-    // for an original photo and for any other public file. About's portrait,
-    // which Home's intro shows too, comes from the site config folder at
-    // /about/portrait/, never through /_next/image.
+    // for an original photo and for any other public file. Next adds
+    // /_next/static/media/** itself at load, for statically imported images,
+    // and proxy.ts 404s a path there that encodes its way out. About's
+    // portrait, which Home's intro shows too, comes from the site config
+    // folder at /about/portrait/, never through /_next/image. This list is
+    // fixed when the server starts, so it can't follow the launch: unless the
+    // legacy derivatives serve, proxy.ts refuses these urls at /_next/image too.
     localPatterns: [
       // Every image derivative folder, by its extension. The LQIP text files aren't images.
       ...Object.entries(DERIVATIVE_FOLDERS)

@@ -3,8 +3,12 @@
 # dependencies, runs its watcher with --once against a generated fixture
 # library and checks that it never deletes a derivative, then starts the web
 # server on that library and checks that the removed image endpoints return
-# 404, legacy derivatives no longer send `immutable`, and original source
-# files are never served, directly or through /_next/image.
+# 404, that the legacy derivatives serve, directly and through /_next/image,
+# as they do until a catalog revision goes live, and that original source
+# files never do. This web has an empty data root, as a host has before the
+# migration, so it stays in legacy mode; ci/smoke-catalog.sh checks that a
+# live revision closes the derivatives. A second web with no data root at all
+# refuses them, since its legacy pages answer 503 anyway.
 #
 #   IMAGE=ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke ci/smoke-watcher-once.sh
 #
@@ -23,8 +27,13 @@ read -r -a WATCHER <<<"$WATCHER_CMD"
 
 TMP=$(mktemp -d)
 LIB=$TMP/library
+DATA=$TMP/data
 WEB=photography-smoke-watcher-$$
 WEB_STARTED=false
+UNSET=photography-smoke-watcher-unset-$$
+UNSET_STARTED=false
+# The body of /_next/image's 400 for a url images.localPatterns doesn't allow.
+NOT_ALLOWED='"url" parameter is not allowed'
 OUTPUTS=(
   thumbnails/%s.webp medium/%s.webp optimized/%s.webp
   thumbnails-avif/%s.avif medium-avif/%s.avif optimized-avif/%s.avif
@@ -45,6 +54,13 @@ cleanup() {
       docker logs "$WEB"
     fi
     docker rm -f "$WEB" >/dev/null
+  fi
+  if [ "$UNSET_STARTED" = true ]; then
+    if [ "$status" -ne 0 ]; then
+      echo "Web container (no data root) logs:"
+      docker logs "$UNSET"
+    fi
+    docker rm -f "$UNSET" >/dev/null
   fi
   # The watcher creates the derivative folders as uid 1001. Remove them with
   # the image under test, so cleanup never pulls anything.
@@ -122,19 +138,30 @@ set -e
 [ "$code" -eq 1 ] || fail "--once exited $code on a missing library root, expected 1."
 echo "--once exited 1 on a missing library root."
 
-# 5. The web server, with the library at its default path. Next serves only
-#    public/ files present at startup, so it starts after the derivatives exist.
-docker run -d --pull never --name "$WEB" -p 127.0.0.1::3000 -v "$LIB:/app/public/assets/photos" "$IMAGE" >/dev/null
-WEB_STARTED=true
-address=$(docker port "$WEB" 3000/tcp)
-address=${address%%$'\n'*}
-BASE_URL=http://127.0.0.1:${address##*:}
+# Sets WEB_URL to container $1's port 3000 on 127.0.0.1, once GET / answers 200.
+wait_for_web() {
+  local address deadline
+  address=$(docker port "$1" 3000/tcp)
+  address=${address%%$'\n'*}
+  WEB_URL=http://127.0.0.1:${address##*:}
+  deadline=$((SECONDS + 60))
+  until [ "$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "$WEB_URL/")" = 200 ]; do
+    [ "$SECONDS" -lt "$deadline" ] || fail "GET / on $1 did not return 200 within 60s."
+    sleep 1
+  done
+}
 
-deadline=$((SECONDS + 60))
-until [ "$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "$BASE_URL/")" = 200 ]; do
-  [ "$SECONDS" -lt "$deadline" ] || fail "GET / did not return 200 within 60s."
-  sleep 1
-done
+# 5. The web server, with the library at its default path and an empty data
+#    root mounted read-only where production mounts it, as before the
+#    migration. Next serves only public/ files present at startup, so it
+#    starts after the derivatives exist.
+mkdir "$DATA"
+chmod 755 "$DATA"
+docker run -d --pull never --name "$WEB" -p 127.0.0.1::3000 -e PHOTOGRAPHY_DATA_DIR=/data/portfolio \
+  -v "$LIB:/app/public/assets/photos" -v "$DATA:/data/portfolio:ro" "$IMAGE" >/dev/null
+WEB_STARTED=true
+wait_for_web "$WEB"
+BASE_URL=$WEB_URL
 echo "GET / returned 200."
 
 code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/api/photos/optimize") ||
@@ -145,25 +172,56 @@ code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$BASE_URL/api/imag
 [ "$code" = 404 ] || fail "GET /api/image?src=portrait.png returned $code, expected 404."
 echo "The removed image endpoints return 404."
 
-code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' \
-  "$BASE_URL/assets/photos/optimized/portrait.webp") || fail "GET optimized/portrait.webp failed."
-[ "$code" = 200 ] || fail "GET optimized/portrait.webp returned $code, expected 200."
-cache_control=$(tr -d '\r' <"$TMP/headers.txt" | grep -i '^cache-control:' || true)
-case $cache_control in
-  *immutable*) fail "optimized/portrait.webp still sends immutable ($cache_control)." ;;
-esac
-echo "optimized/portrait.webp returned 200 with ${cache_control:-no Cache-Control header}."
-
-# 6. Original source files 404, and /_next/image refuses them with 400.
-for original in portrait.png square.webp portrait%2Epng; do
-  code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$BASE_URL/assets/photos/$original") ||
-    fail "GET /assets/photos/$original failed."
-  [ "$code" = 404 ] || fail "GET /assets/photos/$original returned $code, expected 404."
+# 6. In legacy mode the derivatives the watcher just wrote serve, never as
+#    immutable, and /_next/image optimizes them. Original source files 404
+#    with a no-store response, and /_next/image refuses them with 400, for
+#    the reason that images.localPatterns doesn't allow them.
+for asset in optimized/portrait.webp thumbnails-avif/square.avif lqip/landscape.txt; do
+  code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$BASE_URL/assets/photos/$asset") ||
+    fail "GET /assets/photos/$asset failed."
+  [ "$code" = 200 ] || fail "GET /assets/photos/$asset returned $code, expected 200 in legacy mode."
+  cache_control=$(tr -d '\r' <"$TMP/headers.txt" | grep -i '^cache-control:' || true)
+  case $cache_control in
+    *immutable*) fail "/assets/photos/$asset sends immutable ($cache_control)." ;;
+  esac
 done
-code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$BASE_URL/_next/image?url=%2Fassets%2Fphotos%2Fportrait.png&w=400&q=75") ||
+for asset in portrait.png square.webp portrait%2Epng; do
+  code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$BASE_URL/assets/photos/$asset") ||
+    fail "GET /assets/photos/$asset failed."
+  [ "$code" = 404 ] || fail "GET /assets/photos/$asset returned $code, expected 404."
+  tr -d '\r' <"$TMP/headers.txt" | grep -qix 'cache-control: no-store' || fail "The 404 for /assets/photos/$asset did not send Cache-Control: no-store."
+done
+for url in %2Fassets%2Fphotos%2Foptimized%2Fportrait.webp %2Fassets%2Fphotos%2Fthumbnails-avif%2Fsquare.avif; do
+  code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$BASE_URL/_next/image?url=$url&w=400&q=75") ||
+    fail "GET /_next/image?url=$url failed."
+  [ "$code" = 200 ] || fail "GET /_next/image?url=$url returned $code, expected 200 in legacy mode."
+  tr -d '\r' <"$TMP/headers.txt" | grep -qi '^content-type: image/' || fail "GET /_next/image?url=$url did not answer with an image."
+done
+code=$(curl -sS --max-time 30 -o "$TMP/image-error.txt" -w '%{http_code}' "$BASE_URL/_next/image?url=%2Fassets%2Fphotos%2Fportrait.png&w=400&q=75") ||
   fail "GET /_next/image for portrait.png failed."
 [ "$code" = 400 ] || fail "GET /_next/image for portrait.png returned $code, expected 400."
-code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$BASE_URL/_next/image?url=%2Fassets%2Fphotos%2Foptimized%2Fportrait.webp&w=400&q=75") ||
-  fail "GET /_next/image for optimized/portrait.webp failed."
-[ "$code" = 200 ] || fail "GET /_next/image for optimized/portrait.webp returned $code, expected 200."
-echo "Originals return 404, and /_next/image serves derivatives but refuses originals."
+[ "$(cat "$TMP/image-error.txt")" = "$NOT_ALLOWED" ] ||
+  fail "GET /_next/image for portrait.png answered 400 with '$(cat "$TMP/image-error.txt")', expected '$NOT_ALLOWED'."
+echo "In legacy mode the derivatives serve, directly and through /_next/image, and originals return 404, and 400 through /_next/image."
+
+# 7. With no data root, the legacy pages answer 503, so the derivatives are
+#    refused too: 404 with no-store directly, and /_next/image's own 400.
+docker run -d --pull never --name "$UNSET" -p 127.0.0.1::3000 -v "$LIB:/app/public/assets/photos" "$IMAGE" >/dev/null
+UNSET_STARTED=true
+wait_for_web "$UNSET"
+UNSET_URL=$WEB_URL
+for asset in optimized/portrait.webp thumbnails-avif/square.avif lqip/landscape.txt portrait.png; do
+  code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$UNSET_URL/assets/photos/$asset") ||
+    fail "GET /assets/photos/$asset with no data root failed."
+  [ "$code" = 404 ] || fail "GET /assets/photos/$asset with no data root returned $code, expected 404."
+  tr -d '\r' <"$TMP/headers.txt" | grep -qix 'cache-control: no-store' ||
+    fail "The 404 for /assets/photos/$asset with no data root did not send Cache-Control: no-store."
+done
+for url in %2Fassets%2Fphotos%2Foptimized%2Fportrait.webp %2Fassets%2Fphotos%2Fthumbnails-avif%2Fsquare.avif; do
+  code=$(curl -sS --max-time 30 -o "$TMP/image-error.txt" -w '%{http_code}' "$UNSET_URL/_next/image?url=$url&w=400&q=75") ||
+    fail "GET /_next/image?url=$url with no data root failed."
+  [ "$code" = 400 ] || fail "GET /_next/image?url=$url with no data root returned $code, expected 400."
+  [ "$(cat "$TMP/image-error.txt")" = "$NOT_ALLOWED" ] ||
+    fail "GET /_next/image?url=$url with no data root answered 400 with '$(cat "$TMP/image-error.txt")', expected '$NOT_ALLOWED'."
+done
+echo "With no data root, the derivatives return 404, and 400 through /_next/image."

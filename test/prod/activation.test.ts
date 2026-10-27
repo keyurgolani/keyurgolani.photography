@@ -4,13 +4,18 @@
  * .next/standalone. Plain `npm test` skips it unless RUN_PROD_TESTS=1, since
  * it needs that build.
  *
- * It serves the copy on a temp data root and library, publishes twice and
- * rolls back once from this process, and checks after each step that
+ * It serves the copy on a temp data root, with the library where the image
+ * mounts it, at the copy's public/assets/photos. Before the launch it checks
+ * that the legacy gallery lists a photo whose derivatives serve, directly and
+ * through /_next/image. It then publishes twice and rolls back once from this
+ * process, checks that the first publish closes those derivatives with no
+ * restart, /_next/image's cached copy included, and checks after each step that
  * /api/ready, /api/photos, and /media follow the active revision with the
  * same server process, and that the /api/photos ETag answers If-None-Match
  * with 304 only while the same revision and build are served. It then scans
  * the public JSON and pages for legacy and original paths, checks the cache
- * headers of /media and a legacy derivative, and restarts the server, once
+ * headers of /media, checks that a legacy derivative on disk still 404s
+ * directly and gets a 400 from /_next/image, and restarts the server, once
  * as it was and once with a new build ID. The copy is what lets it add a
  * legacy file and change the build ID without touching the build.
  *
@@ -19,6 +24,11 @@
  * and an active /media URL both still serve the revision that request
  * loaded, as `degraded`, so the routes share the reader's state, and that
  * /api/photos keeps that revision's ETag.
+ *
+ * Last, in a third server, it publishes, asks only /api/ready, and then moves
+ * `catalog/` out of the data root. The legacy URLs stay closed, directly and
+ * through /_next/image, so the proxy shares the cutover memory /api/ready's
+ * route has, though the build gives each its own copy of the mode check.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
@@ -26,6 +36,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import sharp from 'sharp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { activateRevision, publish, type PublishResult } from '../../lib/catalog/publish';
 import { CATALOG_LOCK } from '../../lib/catalog/repository';
@@ -33,6 +44,7 @@ import { createTestCatalog, type TestCatalog } from '../../lib/catalog/testing';
 import { catalogETag, readBuildId } from '../../lib/catalog/validators';
 import { writeAuthoredRecord } from '../../lib/catalog/working-layer-writer';
 import { catalogPaths, readActivePointer, readWorkingLayer } from '../../lib/catalog/working-layer';
+import { DERIVATIVE_FOLDERS } from '../../lib/derivativeFolders.mjs';
 import { legacyUrls } from '../../lib/identity/legacyUrls';
 import { mediaUrl } from '../../lib/media/url';
 import { versionFile } from '../../lib/storage/document';
@@ -40,6 +52,12 @@ import { withLock } from '../../lib/storage/lock';
 
 const STANDALONE = path.resolve(import.meta.dirname, '../../.next/standalone');
 const IMMUTABLE = 'public, max-age=31536000, immutable';
+/** What Next sends for a public file, so a cache that follows the origin keeps none. */
+const PUBLIC_FILE = 'public, max-age=0';
+/** What /_next/image sends for an optimized copy, from images.minimumCacheTTL: a shared cache may keep it a day. */
+const OPTIMIZED_COPY = 'public, max-age=86400, must-revalidate';
+/** /_next/image's body for a url it doesn't allow. */
+const NOT_ALLOWED = '"url" parameter is not allowed';
 const quiet = { log: () => undefined };
 /** The pages a visitor loads, server-rendered per request. */
 const PAGES = ['/', '/gallery', '/about'];
@@ -112,8 +130,12 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
     /** The server the first three tests use. */
     let server: Server | undefined;
     let base = '';
-    /** The base name of a catalog photo's source, which has a legacy derivative in the copy's public/. */
+    /** The base name of a catalog photo's source, whose seven legacy derivatives are in the copy's public/. */
     let legacyBase = '';
+    /** That photo's legacy URLs: the original, then the derivatives in DERIVATIVE_FOLDERS order. */
+    let legacy: string[] = [];
+    /** The /_next/image URL the legacy gallery loaded that photo's thumbnail through, before the launch. */
+    let optimizedThumbnail = '';
     /** Set by the first test, for the ones after it. */
     let first: PublishResult | undefined;
     const extra: (() => Promise<void>)[] = [];
@@ -134,13 +156,20 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         served = fs.mkdtempSync(path.join(os.tmpdir(), 'prod-test-standalone-'));
         fs.cpSync(STANDALONE, served, { recursive: true, verbatimSymlinks: true });
         catalog = await createTestCatalog({ withAssets: true, photos: 3, series: [{ photos: 2 }, { photos: 1, visibility: 'draft' }], seed: 47 });
-        library = fs.mkdtempSync(path.join(os.tmpdir(), 'prod-test-library-'));
-        // A legacy derivative named after a catalog photo's source, where the image mounts the library.
+        // The library where the image mounts it, so the server serves what legacy mode lists.
+        library = path.join(served, 'public/assets/photos');
+        // All seven legacy derivatives of a catalog photo's source, so the legacy gallery lists it. Next serves only
+        // the public/ files present when it starts, so they're written first.
         const source = Object.values(catalog.registry.photos)[0].source.path;
         legacyBase = path.posix.basename(source, path.posix.extname(source));
-        const legacy = path.join(served, 'public/assets/photos/optimized', `${legacyBase}.webp`);
-        fs.mkdirSync(path.dirname(legacy), { recursive: true });
-        fs.writeFileSync(legacy, 'legacy bytes');
+        legacy = legacyUrls(source);
+        const picture = sharp({ create: { width: 64, height: 48, channels: 3, background: '#7a8899' } });
+        const bytes = { '.webp': await picture.clone().webp().toBuffer(), '.avif': await picture.clone().avif().toBuffer() };
+        for (const [folder, extension] of Object.entries(DERIVATIVE_FOLDERS)) {
+            const file = path.join(library, folder, `${legacyBase}${extension}`);
+            fs.mkdirSync(path.dirname(file), { recursive: true });
+            fs.writeFileSync(file, extension === '.txt' ? `data:image/webp;base64,${bytes['.webp'].toString('base64')}` : bytes[extension as '.webp' | '.avif']);
+        }
         await start();
     }, 180_000);
 
@@ -225,11 +254,59 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         await response.arrayBuffer();
     }
 
+    /** A legacy URL is closed: a 404 directly, and /_next/image's own 400, with nothing cached. */
+    async function expectContained(url: string, at = base): Promise<void> {
+        const direct = await fetch(`${at}${url}`);
+        expect(direct.status, url).toBe(404);
+        expect(direct.headers.get('cache-control'), url).toBe('no-store');
+        await direct.arrayBuffer();
+        const optimized = await fetch(`${at}/_next/image?url=${encodeURIComponent(url)}&w=400&q=75`);
+        expect(optimized.status, url).toBe(400);
+        expect(optimized.headers.get('cache-control'), url).toBe('no-store');
+        expect(await optimized.text(), url).toBe(NOT_ALLOWED);
+    }
+
     async function published(): Promise<PublishResult> {
         const result = await publish({ dataRoot: catalog!.root, actor: 'test', confirmLaunch: true, logger: quiet });
         expect(result.outcome, result.message).toBe('PUBLISHED');
         return result;
     }
+
+    it('serves the legacy gallery before the launch: its photo, each derivative, and /_next/image', async () => {
+        expect(await ready()).toEqual({ mode: 'legacy', state: 'ok', revisionId: null, revisionNumber: null, activatedAt: null });
+        const response = await photos();
+        expect(response.status).toBe(200);
+        const items = (await response.json()) as Record<string, string>[];
+        expect(items.map((item) => item.thumbnail)).toEqual([legacy[1]]);
+        const [, thumbnail, medium, optimized, thumbnailAvif, mediumAvif, optimizedAvif] = legacy;
+        expect(items[0]).toMatchObject({ src: optimized, thumbnail, medium, optimized, thumbnailAvif, mediumAvif, optimizedAvif });
+
+        const gallery = await fetch(`${base}/gallery`);
+        expect(gallery.status).toBe(200);
+        expect(gallery.headers.get('content-type')).toContain('text/html');
+        await gallery.arrayBuffer();
+
+        // Each derivative, as the Lightbox and the LQIP read them. A cache that follows the origin keeps none.
+        for (const url of legacy.slice(1)) {
+            const derivative = await fetch(`${base}${url}`);
+            expect(derivative.status, url).toBe(200);
+            expect(derivative.headers.get('cache-control'), url).toBe(PUBLIC_FILE);
+            await derivative.arrayBuffer();
+        }
+        // The original never serves.
+        await expectRefused(legacy[0]);
+
+        // The gallery's tiles load through /_next/image. The second request is a hit in Next's image cache.
+        optimizedThumbnail = `/_next/image?url=${encodeURIComponent(thumbnail)}&w=400&q=75`;
+        for (const expected of ['MISS', 'HIT']) {
+            const tile = await fetch(`${base}${optimizedThumbnail}`);
+            expect(tile.status).toBe(200);
+            expect(tile.headers.get('content-type')).toMatch(/^image\//);
+            expect(tile.headers.get('cache-control')).toBe(OPTIMIZED_COPY);
+            expect(tile.headers.get('x-nextjs-cache')).toBe(expected);
+            await tile.arrayBuffer();
+        }
+    }, 60_000);
 
     it('follows each activation and a rollback without a restart, with a new ETag for each', async () => {
         const root = catalog!.root;
@@ -242,14 +319,20 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         const firstUrls = shown.photoIds.map(urlOf);
         const draftUrl = urlOf(draft.photoIds[0]);
 
-        // Before the first activation: legacy mode, and an empty library lists nothing, with no ETag.
+        // Before the first activation: legacy mode, listing the photo with legacy derivatives, with no ETag.
+        expect(optimizedThumbnail, 'the first test loaded the legacy gallery').not.toBe('');
         expect(await ready()).toEqual({ mode: 'legacy', state: 'ok', revisionId: null, revisionNumber: null, activatedAt: null });
-        expect(await listed('legacy', 'legacy')).toEqual([]);
+        expect(await listed('legacy', 'legacy')).toEqual([legacy[2]]);
         for (const url of [...firstUrls, draftUrl]) await expectRefused(url);
 
         // The first publish lists and serves the published series only, and its tag gets 304.
         first = await published();
         expect(await ready()).toMatchObject({ mode: 'catalog', state: 'ok', revisionId: first.revisionId, revisionNumber: 1 });
+        // The launch closes every legacy URL in the same process, and /_next/image refuses before its cache answers.
+        for (const url of legacy) await expectContained(url);
+        const tile = await fetch(`${base}${optimizedThumbnail}`);
+        expect(tile.status).toBe(400);
+        expect(await tile.text()).toBe(NOT_ALLOWED);
         expect(await listed('catalog', first.revisionId!)).toEqual(firstUrls);
         const firstTag = expectedTag(first.revisionId!);
         await expectNotModified(firstTag, first.revisionId!);
@@ -295,7 +378,7 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         expect(server!.process.pid).toBe(pid);
     }, 120_000);
 
-    it('names no legacy derivative or original path in public JSON or pages, and caches only /media as immutable', async () => {
+    it('names no legacy derivative or original path in public JSON or pages, and serves no legacy derivative', async () => {
         expect(first, 'the first test published').toBeDefined();
         const forbidden = ['/assets/photos/', '%2Fassets%2Fphotos', '\\/assets\\/photos'];
         for (const photo of Object.values(catalog!.registry.photos)) {
@@ -319,11 +402,8 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
             for (const needle of forbidden) expect(text.includes(needle), `${url} names ${needle}`).toBe(false);
         }
 
-        // A legacy basename derivative is served, but never as immutable.
-        const legacy = await fetch(`${base}/assets/photos/optimized/${encodeURIComponent(legacyBase)}.webp`);
-        expect(legacy.status).toBe(200);
-        expect(legacy.headers.get('cache-control') ?? '').not.toContain('immutable');
-        await legacy.arrayBuffer();
+        // A legacy basename derivative on disk 404s with nothing cached, and /_next/image refuses it.
+        await expectContained(`/assets/photos/optimized/${encodeURIComponent(legacyBase)}.webp`);
 
         // /api/image is gone.
         const image = await fetch(`${base}/api/image?src=${encodeURIComponent(`${legacyBase}.jpg`)}&w=800`);
@@ -340,6 +420,8 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         await start();
         expect(await listed('catalog', revisionId)).toHaveLength(2);
         await expectNotModified(tag, revisionId);
+        // A server started after the launch keeps the legacy URLs closed: the committed activation shows the cutover.
+        for (const url of legacy) await expectContained(url);
 
         // A deploy: the same revision on a new build.
         await stop();
@@ -384,5 +466,38 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         expect(await listed('catalog', result.revisionId!, started.base)).toContain(url);
         await expectNotModified(tag, result.revisionId!, started.base);
         expect(started.output()).not.toContain(damaged.root);
+    }, 120_000);
+
+    it('keeps the legacy URLs closed once only /api/ready saw the launch, with catalog/ then moved aside', async () => {
+        const launched = await createTestCatalog({ withAssets: true, photos: 2, series: [{ photos: 2 }], seed: 59 });
+        extra.push(() => launched.cleanup());
+        const thumbnail = legacy[1];
+        const started = await startServer(served!, launched.root, library!);
+        extra.push(started.stop);
+
+        // Legacy mode: the thumbnail serves, and its /_next/image copy is in the image cache by the second request.
+        expect(await ready(started.base)).toMatchObject({ mode: 'legacy' });
+        const direct = await fetch(`${started.base}${thumbnail}`);
+        expect(direct.status).toBe(200);
+        await direct.arrayBuffer();
+        for (let request = 0; request < 2; request += 1) {
+            const tile = await fetch(`${started.base}/_next/image?url=${encodeURIComponent(thumbnail)}&w=400&q=75`);
+            expect(tile.status).toBe(200);
+            if (request === 1) expect(tile.headers.get('x-nextjs-cache')).toMatch(/^(HIT|STALE)$/);
+            await tile.arrayBuffer();
+        }
+
+        // The launch, seen by /api/ready alone: no legacy URL is asked for until catalog/ is gone.
+        const result = await publish({ dataRoot: launched.root, actor: 'test', confirmLaunch: true, logger: quiet });
+        expect(result.outcome, result.message).toBe('PUBLISHED');
+        expect(await ready(started.base)).toMatchObject({ mode: 'catalog', revisionId: result.revisionId, revisionNumber: 1 });
+        const catalogDir = catalogPaths(launched.root).dir;
+        fs.renameSync(catalogDir, `${catalogDir}-aside`);
+        // /api/ready's route still remembers the cutover.
+        const after = await fetch(`${started.base}/api/ready`);
+        expect(((await after.json()) as { mode: string }).mode, started.output()).toBe('catalog');
+        await expectContained(thumbnail, started.base);
+        for (const url of legacy) await expectContained(url, started.base);
+        expect(started.process.exitCode).toBeNull();
     }, 120_000);
 });
