@@ -169,6 +169,10 @@
   font-size: var(--gah-type-ui);
   font-weight: 500;
   cursor: pointer;
+}
+
+/* The button fades between its states only once the form has settled, so it doesn't fade in from disabled when the page hydrates (SameOriginPostForm). */
+.form[data-settled] .button {
   transition: background-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard);
 }
 
