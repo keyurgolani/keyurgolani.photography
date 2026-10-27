@@ -23,6 +23,13 @@ async function failOnce(alertBeforeButton: boolean) {
 }
 
 describe('SameOriginPostForm', () => {
+  it('marks the form settled once the button is enabled, so its first enable never fades', async () => {
+    const { container } = render(<SameOriginPostForm action="/api/curation/login" submitLabel="Sign in" />);
+    const button = screen.getByRole('button', { name: 'Sign in' });
+    await vi.waitFor(() => expect(button).toBeEnabled());
+    expect(container.querySelector('form')).toHaveAttribute('data-settled', 'true');
+  });
+
   it("puts the line that says a post didn't go through under the fields, ahead of the button, when asked", async () => {
     const { alert, button, refusal } = await failOnce(true);
     // After the server's refusal and the field, before the button: one home for every refusal.

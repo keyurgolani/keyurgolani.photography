@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 
 interface SameOriginPostFormProps {
   /** The same-origin URL the form posts to. */
@@ -29,6 +29,11 @@ interface SameOriginPostFormProps {
  * until this has hydrated, so the form never posts the plain way. The cookie
  * a response sets is kept as for any same-origin fetch. While the post is
  * on its way the form is `aria-busy` and the button says `pendingLabel`.
+ *
+ * The form takes `data-settled` once the button's first enable has been
+ * styled, so a button that fades between its states (the login's) fades only
+ * on real changes, never from disabled at hydration: for its first 160 ms
+ * that fade showed the label at too little contrast.
  */
 export default function SameOriginPostForm({
   action,
@@ -43,8 +48,17 @@ export default function SameOriginPostForm({
   const [ready, setReady] = useState(false);
   const [sending, setSending] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [settled, setSettled] = useState(false);
+  const button = useRef<HTMLButtonElement>(null);
 
   useEffect(() => setReady(true), []);
+  useLayoutEffect(() => {
+    if (!ready || !button.current) return;
+    // Reading a computed value makes the browser style the enabled button now, while no transition applies, so it
+    // takes its enabled look at once. data-settled then lands before the browser paints.
+    void getComputedStyle(button.current).backgroundColor;
+    setSettled(true);
+  }, [ready]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -73,10 +87,10 @@ export default function SameOriginPostForm({
   ) : null;
 
   return (
-    <form className={className} method="post" action={action} onSubmit={submit} aria-busy={sending || undefined}>
+    <form className={className} method="post" action={action} onSubmit={submit} aria-busy={sending || undefined} data-settled={settled || undefined}>
       {children}
       {alertBeforeButton ? alert : null}
-      <button className={buttonClassName} type="submit" disabled={!ready || sending}>
+      <button ref={button} className={buttonClassName} type="submit" disabled={!ready || sending}>
         {sending && pendingLabel ? pendingLabel : submitLabel}
       </button>
       {alertBeforeButton ? null : alert}

@@ -54,6 +54,17 @@ const passphrase = (page: Page) => page.getByLabel('Passphrase');
 /** The login's controls for checkSurface(): the wordmark, the field and the button. */
 const loginControls = (page: Page) => [page.getByRole('banner').getByRole('link'), passphrase(page), page.getByRole('main').getByRole('button')];
 
+/**
+ * Waits until the Sign in button is enabled and no transition is running on
+ * it, so axe reads the colours it rests at. It is disabled until the page
+ * hydrates, and it fades between its states.
+ */
+async function buttonAtRest(page: Page): Promise<void> {
+    const button = page.getByRole('main').getByRole('button');
+    await expect(button).toBeEnabled();
+    await button.evaluate((element) => Promise.all(element.getAnimations().map((animation) => animation.finished)));
+}
+
 for (const name of ['localhost', '127.0.0.1']) {
     test(`keeps and sends the Secure session cookie on http://${name}`, async ({ browser, browserName }) => {
         // Playwright's Linux WebKit drops a Secure cookie set over plain http (localhost and 127.0.0.1), so the
@@ -142,6 +153,7 @@ test('keeps a session on one name to that name, as cookies are kept by host', as
 test('passes the automated and keyboard checks, at rest and with a refusal', async ({ page }) => {
     const origin = server().origin;
     await page.goto(`${origin}/curation/login`);
+    await buttonAtRest(page);
     await checkSurface(page, { controls: loginControls(page) });
     // The hidden username for password managers is out of reach and out of the tree.
     await expect(page.locator('input[name="username"]')).toBeHidden();
@@ -153,6 +165,7 @@ test('passes the automated and keyboard checks, at rest and with a refusal', asy
     await passphrase(page).fill('not the passphrase');
     await passphrase(page).press('Enter');
     await expect(page).toHaveURL(`${origin}/curation/login?failed=1`);
+    await buttonAtRest(page);
     await checkSurface(page, { controls: loginControls(page) });
     await page.goto(`${origin}/curation/login`);
     await waitForHydration(page);
@@ -207,6 +220,7 @@ test('during the lock, says only that it is on, how long it has left and the res
             await expect(passphrase(page), label).toHaveAccessibleDescription(/^Sign-in is paused/);
             expect((await context.cookies(origin)).filter((cookie) => cookie.name === 'curator_session'), label).toEqual([]);
         }
+        await buttonAtRest(page);
         await expectNoA11yViolations(page);
     } finally {
         await context.close();
