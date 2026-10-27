@@ -212,6 +212,37 @@ describe('writeAuthoredRecord() stamps', { timeout: 60_000 }, () => {
         expect(written.review?.fields.caption?.valueHash).not.toBe(hashValue('Fixture caption, by hand.'));
     });
 
+    // 16-3: the Publish screen's review of exactly the value it showed (decision 2), which restamp can't give.
+    it('stamps a hand edit or a stale review the screen showed when its value still matches, and nothing else, and never the description', async () => {
+        const f = await fixture();
+        const first = published(await f.publish());
+        const id = f.catalog.photos[0].id;
+        await f.edit<AuthoredPhoto>('photo', id, (photo) => {
+            photo.alt = { kind: 'described', text: 'Fixture suggested.', reviewed: false };
+        });
+        await f.handEdit<AuthoredPhoto>('photo', id, (photo) => {
+            photo.caption = 'Fixture caption, by hand.';
+            photo.title = 'Fixture title, by hand.';
+        });
+        const before = await f.read<AuthoredPhoto>('photo', id);
+        const written = await f.edit<AuthoredPhoto>('photo', id, () => undefined, {
+            review: {
+                baseRevisionId: first,
+                origin: 'curator',
+                reviewedValues: { caption: hashValue('Fixture caption, by hand.'), title: hashValue('Not what it holds.'), alt: hashValue(before.alt) },
+                actor: ACTOR,
+                reviewedAt: AT,
+            },
+        });
+        expect(written.caption).toBe('Fixture caption, by hand.');
+        expect(written.review?.fields.caption).toMatchObject({ valueHash: hashValue('Fixture caption, by hand.'), origin: 'curator', baseRevisionId: first, actor: ACTOR, reviewedAt: AT });
+        // A hash of another value stamps nothing: the title keeps the stamp that doesn't cover its hand edit.
+        expect(written.review?.fields.title).toEqual(before.review?.fields.title);
+        expect(written.review?.fields.title?.valueHash).not.toBe(hashValue('Fixture title, by hand.'));
+        // A suggested description stays a suggestion: only Mark description ready, which writes reviewed: true, clears it.
+        expect(written.review?.fields.alt).toMatchObject({ origin: 'generated' });
+    });
+
     it('records the cover photo\'s pinned revision on a series cover', async () => {
         const f = await fixture();
         published(await f.publish());

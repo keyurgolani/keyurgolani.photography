@@ -1,0 +1,822 @@
+/* #16's Publish screen (16-3): the approved Gallery After Hours mockup
+   (ProposedPublish) at full size, on the Inbox's curator tokens
+   (app/curation/curator.module.css, whose custom properties .page sets).
+   States, kinds and review are text with an icon, never color alone. Every
+   control is at least 44 px, hover applies only under a fine pointer, and
+   nothing moves: a jump is instant and reduced motion has nothing to undo. */
+
+.body {
+  max-width: 88rem;
+  margin: 0 auto;
+  padding: 2rem var(--site-gutter) 3rem;
+}
+
+/* Heading */
+
+.heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1.5rem;
+}
+
+.heading h1 {
+  margin: 0;
+  font-family: var(--gah-font-sans);
+  font-size: clamp(1.625rem, 2.4vw, 2.125rem);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+
+.lead {
+  max-width: 62ch;
+  margin: 0.5rem 0 0;
+  color: var(--gah-ink-soft);
+  text-wrap: pretty;
+}
+
+/* What changes and what blocks, on the first screen, in text (not a live region). */
+.countLine {
+  max-width: 62ch;
+  margin: 0.375rem 0 0;
+  color: var(--gah-ink);
+  font-variant-numeric: tabular-nums;
+  text-wrap: pretty;
+}
+
+/* Failed with the pointer moved: the first screen says the publish didn't finish, in the alert tone. */
+.countLine[data-tone='alert'] {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  color: var(--curator-tone-alert-ink);
+}
+
+.countLine[data-tone='alert'] svg {
+  flex: none;
+  margin-top: 0.2rem;
+}
+
+.inboxLink {
+  margin: 1rem 0 0;
+}
+
+.revisions {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.125rem;
+  margin: 0;
+  color: var(--gah-ink-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--gah-type-label);
+}
+
+.revisions span:first-child {
+  color: var(--gah-ink-soft);
+}
+
+/* Nothing to publish and No visible change: one centred column, the
+   heading block, Open the Inbox, then the panel at the column's width. */
+.body[data-layout='column'] {
+  max-width: 44rem;
+}
+
+.body[data-layout='column'] .heading {
+  display: block;
+}
+
+.body[data-layout='column'] .revisions {
+  align-items: flex-start;
+  margin-top: 0.75rem;
+}
+
+.layout[data-ledger='no'] {
+  display: block;
+}
+
+/* Two columns: the ledger, and the preview panel beside it. The DOM has the
+   panel first, the phone's order, so focus follows what a phone shows. */
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(20rem, 34%);
+  grid-template-areas: 'ledger panel';
+  align-items: start;
+  gap: 1.25rem;
+  margin-top: 1.5rem;
+}
+
+.ledger,
+.panel {
+  border: 1px solid var(--curator-rule);
+  background: var(--curator-box);
+}
+
+.ledger {
+  grid-area: ledger;
+  min-width: 0;
+  padding: 1.25rem 1.25rem 1rem;
+}
+
+.ledger h2 {
+  margin: 0 0 0.5rem;
+  font-family: var(--gah-font-sans);
+  font-size: 1.0625rem;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.outOfDate {
+  margin: 0;
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
+}
+
+/* Out of date: the stale rows recede, so the page doesn't look current below its heading. */
+.ledger[data-out-of-date='true'] .rows {
+  opacity: 0.6;
+}
+
+.group {
+  margin-top: 1.25rem;
+}
+
+.groupHeading {
+  margin: 0;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--curator-rule);
+  color: var(--curator-tone-change-ink);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-label);
+  font-weight: 500;
+  letter-spacing: var(--gah-label-tracking);
+  text-transform: uppercase;
+}
+
+.group[data-group='derived'] .groupHeading {
+  color: var(--curator-suggestion);
+}
+
+.group[data-group='health'] .groupHeading {
+  color: var(--gah-ink-muted);
+}
+
+.count {
+  color: var(--gah-ink-muted);
+}
+
+.rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  padding: 0.875rem 0;
+  border-bottom: 1px solid var(--curator-rule);
+  scroll-margin-top: 1rem;
+}
+
+.rowMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem 0.625rem;
+}
+
+.review,
+.blocks {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.45rem;
+  border: 1px solid transparent;
+  border-radius: var(--gah-radius);
+  font-size: var(--gah-type-label);
+}
+
+.review[data-tone='done'] {
+  color: var(--curator-approved-ink);
+  background: var(--curator-approved-bg);
+}
+
+.review[data-tone='alert'] {
+  color: var(--curator-tone-alert-ink);
+  background: var(--curator-tone-alert-bg);
+}
+
+.review[data-tone='change'] {
+  color: var(--curator-tone-change-ink);
+  background: var(--curator-tone-change-bg);
+}
+
+.review[data-tone='quiet'] {
+  color: var(--gah-ink-soft);
+  border: 1px solid var(--curator-rule);
+}
+
+.kind {
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+  letter-spacing: var(--gah-label-tracking);
+  text-transform: uppercase;
+}
+
+/* First in a blocking row's meta line: the alert pair inverted (7.0:1), so it
+   is the one solid chip on the row, set apart from an alert-toned review
+   badge beside it. No side stripe and no row tint; the full alert box
+   belongs to the result. */
+.blocks {
+  border-color: var(--curator-tone-alert-ink);
+  color: var(--curator-tone-alert-bg);
+  background: var(--curator-tone-alert-ink);
+  font-weight: 500;
+}
+
+.summary {
+  margin: 0.45rem 0 0;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+  scroll-margin-top: 1rem;
+}
+
+/* A focus target, not a control, so it shows no ring (as the Inbox's
+   headings). The row it belongs to takes a static tint instead, so a blocker
+   link's jump lands somewhere a sighted keyboard user can see. */
+.summary:focus {
+  outline: none;
+  box-shadow: none !important;
+}
+
+.row:has(> .summary:focus) {
+  background: var(--curator-active);
+  box-shadow: 0 0 0 0.625rem var(--curator-active);
+}
+
+.detail {
+  margin: 0.2rem 0 0;
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
+}
+
+/* Before and after: two labelled blocks, side by side where there's room. */
+.compare {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 0.625rem 0 0;
+}
+
+.compare > div {
+  min-width: 0;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--curator-rule);
+  background: var(--curator-field);
+}
+
+.compare dt {
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+  letter-spacing: var(--gah-label-tracking);
+  text-transform: uppercase;
+}
+
+.compare dd {
+  margin: 0.25rem 0 0;
+  color: var(--gah-ink);
+  font-size: var(--gah-type-label);
+  overflow-wrap: anywhere;
+}
+
+.none {
+  color: var(--gah-ink-muted);
+  font-style: italic;
+}
+
+/* A replacement or a cover: both images in one box, side by side, filling the column. */
+.compareImages {
+  padding: 0.5rem 0.625rem 0.625rem;
+  border: 1px solid var(--curator-rule);
+  background: var(--curator-field);
+}
+
+.compareImages > div {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.compareImage {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 3 / 2;
+  object-fit: cover;
+}
+
+/* Orders show their real positions: the reset hides list numbers, so they come back here. */
+.order {
+  margin: 0;
+  padding-left: 1.75rem;
+  list-style: decimal;
+  font-variant-numeric: tabular-nums;
+}
+
+.order li::marker {
+  color: var(--gah-ink-muted);
+}
+
+.moved {
+  font-weight: 500;
+}
+
+.orderGap {
+  margin: 0.125rem 0 0.125rem 1.75rem;
+  color: var(--gah-ink-muted);
+}
+
+.rowFix {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.625rem;
+}
+
+.restamp {
+  display: grid;
+  justify-items: end;
+  gap: 0;
+}
+
+.fixHint {
+  max-width: 62ch;
+  margin: 0;
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
+}
+
+.inboxFix {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem 0.75rem;
+}
+
+/* The inline description review, under its row. */
+.fix {
+  width: 100%;
+  padding: 0.875rem;
+  border: 1px solid var(--gah-rule-strong);
+  background: var(--curator-field);
+}
+
+.fix h4 {
+  margin: 0 0 0.75rem;
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-ui);
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.fix h4:focus {
+  outline: none;
+  box-shadow: none !important;
+}
+
+.fixBody {
+  display: grid;
+  grid-template-columns: minmax(0, 15rem) minmax(0, 1fr);
+  gap: 1rem;
+}
+
+.fixImage {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.fixLabel {
+  margin: 0;
+  color: var(--curator-suggestion);
+  font-size: var(--gah-type-label);
+  letter-spacing: var(--gah-label-tracking);
+  text-transform: uppercase;
+}
+
+.fixText {
+  margin: 0.375rem 0 0.625rem;
+  font-family: var(--gah-font-serif);
+  font-size: 1.0625rem;
+  line-height: 1.4;
+}
+
+.fixNote {
+  margin: 0.375rem 0 0;
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
+}
+
+.fixActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.875rem;
+}
+
+.inlineLink {
+  color: var(--gah-ink);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+/* Full IDs, so a command can be copied and run; they wrap rather than overflow. */
+.code {
+  color: var(--gah-ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--gah-type-label);
+  overflow-wrap: anywhere;
+}
+
+/* A refused fix, under its action: a full-border alert strip, no side stripe. */
+.refusal {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  width: 100%;
+  margin-top: 0.875rem;
+}
+
+.refusal p {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+}
+
+.refusal p svg {
+  flex: none;
+  margin-top: 0.2rem;
+  color: var(--curator-tone-alert-ink);
+}
+
+.refusal:focus {
+  outline: none;
+  box-shadow: none !important;
+}
+
+/* A refused review stays in place, unavailable, beside the strip that says why. */
+.fixActions button[data-off='true'] {
+  border-color: var(--gah-rule-strong);
+  color: var(--gah-ink-muted);
+  background: transparent;
+  cursor: not-allowed;
+}
+
+/* The result slot, between the ledger and the bar: every answer to Validate or Publish. */
+
+.result {
+  margin-top: 1.25rem;
+}
+
+/* At the ledger heading's size, not the body's. */
+.resultHeading {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.375rem !important;
+  font-size: 1.0625rem !important;
+  scroll-margin-top: 1rem;
+}
+
+.result[data-tone='alert'] .resultHeading svg {
+  color: var(--curator-tone-alert-ink);
+}
+
+.result[data-tone='done'] .resultHeading svg {
+  color: var(--curator-lock-icon);
+}
+
+.result[data-tone='change'] .resultHeading svg {
+  color: var(--curator-tone-change-ink);
+}
+
+.resultHeading:focus {
+  outline: none;
+  box-shadow: none !important;
+}
+
+.result p {
+  color: var(--gah-ink-soft);
+}
+
+.result p + p {
+  margin-top: 0.25rem;
+}
+
+.errors {
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.errors li {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.625rem 0;
+  border-top: 1px solid var(--curator-tone-alert-ink);
+  font-size: var(--gah-type-label);
+}
+
+.errors strong {
+  font-weight: 500;
+  font-size: var(--gah-type-ui);
+}
+
+.errorActions a {
+  font-size: var(--gah-type-ui);
+}
+
+.errorActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.5rem 1rem;
+  margin-top: 0.375rem;
+}
+
+.textLink {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--gah-ink);
+  font-size: var(--gah-type-label);
+}
+
+.resultLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem !important;
+}
+
+.resultLinks a {
+  margin-top: 0 !important;
+  gap: 0.35rem;
+}
+
+/* A link that is the one way on (Load the updated ledger): the primary's fill. */
+.primaryLink {
+  border-color: var(--curator-primary);
+  color: var(--curator-primary-ink);
+  background: var(--curator-primary);
+}
+
+/* Validate and Publish: the ledger section's last child, sticky at the
+   bottom of the window while the ledger scrolls, at rest at its end. It
+   spans the box to its borders, on the box colour, with the rule above it.
+   z-index 1 is the curator layer (the Inbox's sticky back link). */
+
+.actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  margin: 1.25rem -1.25rem -1rem;
+  padding: 0.875rem 1.25rem max(1rem, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--curator-rule);
+  background: var(--curator-box);
+}
+
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+/* aria-disabled, not disabled, so it stays focusable and its reason is read. */
+.buttons button[data-off='true'] {
+  border-color: var(--gah-rule-strong);
+  color: var(--gah-ink-muted);
+  background: transparent;
+  cursor: not-allowed;
+}
+
+/* Pending is not the unavailable look. The primary keeps its fill, softened
+   toward the box, its ink unchanged (7.1:1); Validate keeps its outline, at
+   full ink on the active ground, so it never reads as the main action. */
+.buttons button[data-pending='true'] {
+  border-color: var(--gah-rule-strong);
+  color: var(--gah-ink);
+  background: var(--curator-active);
+  cursor: progress;
+}
+
+.buttons button[data-pending='true'][data-primary='true'] {
+  border-color: color-mix(in srgb, var(--curator-primary) 75%, var(--curator-box));
+  color: var(--curator-primary-ink);
+  background: color-mix(in srgb, var(--curator-primary) 75%, var(--curator-box));
+}
+
+.reason {
+  margin: 0.5rem 0 0;
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+  text-align: right;
+}
+
+
+/* The visitor preview panel */
+
+/* No overflow clip: it would cut the focus ring of the header's link (contract rule 4). */
+.panel {
+  grid-area: panel;
+}
+
+/* On desktop the panel stays in view while the ledger scrolls, as the
+   Inbox's photo does; a short window scrolls it with the page, so its
+   footer is never cut off. */
+@media (min-width: 768px) and (min-height: 40rem) {
+  .panel {
+    position: sticky;
+    top: 1rem;
+    align-self: start;
+  }
+}
+
+/* Out of date: a line in place of the frame. */
+.frameNote {
+  margin: 0;
+  padding: 1.5rem 0.875rem;
+  border-bottom: 1px solid var(--curator-rule);
+  color: var(--gah-ink-soft);
+  background: var(--curator-field);
+}
+
+.panelHeader {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0 0.875rem;
+  border-bottom: 1px solid var(--curator-rule);
+}
+
+.panelHeader h2 {
+  margin: 0;
+  color: var(--gah-ink-soft);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-label);
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.panelText {
+  padding: 0.875rem;
+}
+
+.panelText p {
+  margin: 0;
+}
+
+.panelCount {
+  color: var(--gah-ink);
+  font-weight: 500;
+}
+
+.panelCopy {
+  margin-top: 0.25rem !important;
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
+}
+
+.panelFooter {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.75rem 0.875rem;
+  border-top: 1px solid var(--curator-rule);
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
+}
+
+.panelFooter svg {
+  flex: none;
+  margin-top: 0.1rem;
+}
+
+.command {
+  display: inline-block;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--curator-rule);
+  background: var(--curator-field);
+  color: var(--gah-ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--gah-type-label);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .textLink:hover {
+    color: var(--curator-primary);
+  }
+
+  .primaryLink:hover {
+    color: var(--curator-primary-ink);
+    background: var(--gah-ink);
+  }
+}
+
+/* The phone: one column, the approved order (preview, then the ledger). */
+@media (max-width: 767px) {
+  .body {
+    padding: 1.25rem 1.125rem 2.5rem;
+  }
+
+  .heading {
+    display: block;
+  }
+
+  .revisions {
+    align-items: flex-start;
+    margin-top: 0.75rem !important;
+  }
+
+  .layout {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    margin-top: 1.25rem;
+  }
+
+  .ledger {
+    padding: 1rem 1rem 0.75rem;
+  }
+
+  .actions {
+    margin: 1rem -1rem -0.75rem;
+    padding: 0.75rem 1rem max(0.75rem, env(safe-area-inset-bottom));
+  }
+
+  .compare,
+  .fixBody {
+    grid-template-columns: 1fr;
+  }
+
+  /* The two images stay side by side in their box, even on a phone. */
+  .compare.compareImages {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+  }
+
+  .rowFix,
+  .fixActions,
+  .buttons,
+  .errorActions {
+    justify-content: stretch;
+  }
+
+  .rowFix > *,
+  .fixActions > * {
+    flex: 1 1 auto;
+  }
+
+  .restamp {
+    justify-items: stretch;
+  }
+
+  /* The bar's two buttons sit side by side; below about 330 px they wrap.
+     Labels wrap inside the button rather than truncate. */
+  .buttons > button {
+    flex: 1 1 9rem;
+    min-width: 0;
+    padding-block: 0.375rem;
+    text-align: center;
+  }
+
+  /* One link per blocker, full width like every other phone action, and so is every action in a result or a refusal. */
+  .errorActions > a,
+  .resultLinks > a,
+  .refusal > a,
+  .buttons > a {
+    flex: 1 1 100%;
+    justify-content: center;
+  }
+
+  .reason {
+    text-align: left;
+  }
+}
+
+@media (max-width: 399px) {
+  .buttons svg {
+    display: none;
+  }
+}

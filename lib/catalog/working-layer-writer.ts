@@ -100,6 +100,12 @@ export interface ReviewInputs {
      * stays unreviewed.
      */
     restamp?: readonly string[];
+    /**
+     * #16's Publish screen: fields the curator marked reviewed, by the hash of
+     * the value the screen showed (review.ts's StampInputs). The writer stamps
+     * each one that still holds that value, under the same hold.
+     */
+    reviewedValues?: Readonly<Record<string, string>>;
     actor: string;
     reviewedAt: string;
 }
@@ -223,6 +229,7 @@ async function commit(
             ...(review?.event ? { event: review.event } : {}),
             ...(review?.asset ? { asset: review.asset } : {}),
             ...(review?.restamp ? { restamp: review.restamp } : {}),
+            ...(review?.reviewedValues ? { reviewedValues: review.reviewedValues } : {}),
             actor: review?.actor ?? DEFAULT_REVIEW_ACTOR,
             reviewedAt: review?.reviewedAt ?? new Date().toISOString(),
         }, { next: await coverAsset(root, unstamped.value), existing: await coverAsset(root, existing), backfill });

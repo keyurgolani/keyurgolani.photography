@@ -207,6 +207,15 @@ export interface StampInputs {
     asset?: { from: string; to: string; profileId: string };
     /** Fields the write leaves as they are but reviews again, as restampable() picks them. */
     restamp?: readonly string[];
+    /**
+     * #16's Publish screen: fields the curator looked at and marked reviewed,
+     * each with the hashValue() of the value the screen showed. Each is stamped
+     * as the curator's review when the record still holds that value, whatever
+     * its stamp said (a hand edit, a suggestion in a field other than the
+     * description, or a review the active revision or new bytes made stale).
+     * A field holding anything else keeps its stamp.
+     */
+    reviewedValues?: Readonly<Record<string, string>>;
     actor: string;
     reviewedAt: string;
 }
@@ -241,6 +250,8 @@ export function restampable(record: AuthoredRecord, fields: readonly string[], b
  * never reviews what it didn't touch, except a field `inputs.restamp` names
  * whose stamp reviewed the value it still holds (restampable()). `covers`
  * holds the pinned revisions of the cover photos `next` and `existing` name.
+ * A field `inputs.reviewedValues` names with the hash of the value it holds
+ * gets a fresh stamp too: the Publish screen's review of exactly that value.
  */
 export function stampWrite(
     existing: AuthoredRecord | null,
@@ -256,7 +267,8 @@ export function stampWrite(
         const value = valueOf(next, field);
         const hash = hashValue(value);
         const before = existing ? valueOf(existing, field) : undefined;
-        if (hashValue(before) === hash && !settled.has(field) && !(inputs.restamp?.includes(field) && refreshable(prior[field], value))) {
+        const reviewedHere = inputs.reviewedValues !== undefined && Object.hasOwn(inputs.reviewedValues, field) && inputs.reviewedValues[field] === hash;
+        if (hashValue(before) === hash && !settled.has(field) && !reviewedHere && !(inputs.restamp?.includes(field) && refreshable(prior[field], value))) {
             if (prior[field]) fields[field] = prior[field];
             continue;
         }
