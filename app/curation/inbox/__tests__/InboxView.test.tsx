@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCurationFixture } from '@/lib/curation/__tests__/curationFixtures';
 import { eventIdOf, eventKey } from '@/lib/curation/events';
 import { loadInbox } from '@/lib/curation/inbox';
-import { humanTime, type InboxActionState, type InboxDetail, type InboxItem, type InboxView, type SeriesOption } from '@/lib/curation/inbox-view';
+import { CONFIRM_UNAVAILABLE, humanTime, REPLACEMENT_HINT, type InboxActionState, type InboxDetail, type InboxItem, type InboxView, type SeriesOption } from '@/lib/curation/inbox-view';
 import { createCurationSink } from '@/lib/curation/sink';
 import { setDataDir } from '@/test/helpers/tempDataRoot';
 
@@ -87,6 +87,7 @@ function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
         reviewedBy: null,
         can: { approve: true, edit: true, defer: true, dismiss: true, retry: false, reopen: false },
         primaryUnavailable: null,
+        replacement: null,
         ...overrides,
     };
 }
@@ -326,6 +327,21 @@ describe('the detail', () => {
         expect(screen.queryAllByText(/Approved into the draft/)).toHaveLength(0);
     });
 
+    it('says what a confirmed replacement holds, with no Decide later hint and no series or description to change (#17)', () => {
+        const live = [{ kind: 'revision' as const, id: ACTIVE }, { kind: 'series' as const, id: 'ser_harbor' }];
+        renderInbox(view({ selected: detail({ type: 'replacement', status: 'approved', group: 'settled', references: live, replacement: { draft: 'new', live: false, decideLater: 'put-back' }, can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true }, primaryUnavailable: null }) }));
+        expect(screen.getByText('New version confirmed')).toBeInTheDocument();
+        expect(screen.queryByText('Suggestion approved')).toBeNull();
+        expect(screen.getByText('System response').nextElementSibling).toHaveTextContent('The draft uses the new version. Visitors keep the current one until you publish.');
+        expect(screen.queryByText(/^Live in the active revision/)).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Confirm new asset revision' })).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Decide later' })).toBeNull();
+        expect(screen.queryByText(/choose Decide later/)).toBeNull();
+        expect(screen.queryByText(/series or description/)).toBeNull();
+        expect(screen.getByText('Reopen it to leave the new version out of the draft. Decide later then puts the earlier version back.')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Reopen' })).toBeInTheDocument();
+    });
+
     it('offers the suggested series, Leave unassigned, and the positions in that series', () => {
         renderInbox();
         const series = screen.getByRole('combobox', { name: 'Suggested series' });
@@ -356,6 +372,24 @@ describe('the detail', () => {
         expect(screen.getByRole('heading', { name: 'Published output protected' })).toBeInTheDocument();
         expect(screen.getByText('Archive after removing series references')).toBeInTheDocument();
         expect(screen.getByRole('button', { name: 'Resolve source or archive intentionally' })).toBeDisabled();
+    });
+
+    it("shows Decide later disabled, with the hint as its reason, where the page knows it would refuse, and gives Confirm its own reason", () => {
+        for (const [decideLater, hint] of [['refuses', REPLACEMENT_HINT.refuses], ['blocked', REPLACEMENT_HINT.blocked]] as const) {
+            const { unmount } = renderInbox(view({ selected: detail({ type: 'replacement', title: 'Replacement ready', replacement: { draft: decideLater === 'refuses' ? 'other' : 'new', live: false, decideLater }, can: { approve: false, edit: true, defer: true, dismiss: true, retry: false, reopen: false }, primaryUnavailable: hint }) }));
+            const later = screen.getByRole('button', { name: 'Decide later' });
+            expect(later).toBeDisabled();
+            expect(later).toHaveAccessibleDescription(hint);
+            expect(later).not.toHaveAttribute('type', 'submit');
+            // Said once: no refusal can stack under it, since the button can't be pressed.
+            expect(screen.getAllByText(hint)).toHaveLength(1);
+            expect(screen.getByRole('button', { name: 'Confirm new asset revision' })).toHaveAccessibleDescription(CONFIRM_UNAVAILABLE);
+            unmount();
+        }
+        // Where Decide later can work, it's live, and Confirm still says only why it's disabled.
+        renderInbox(view({ selected: detail({ type: 'replacement', title: 'Replacement ready', replacement: { draft: 'new', live: false, decideLater: 'put-back' }, can: { approve: false, edit: true, defer: true, dismiss: true, retry: false, reopen: false }, primaryUnavailable: REPLACEMENT_HINT.putBack }) }));
+        expect(screen.getByRole('button', { name: 'Decide later' })).toBeEnabled();
+        expect(screen.getByRole('button', { name: 'Confirm new asset revision' })).toHaveAccessibleDescription(CONFIRM_UNAVAILABLE);
     });
 
     it('says so when the URL names an item the inbox lacks', () => {

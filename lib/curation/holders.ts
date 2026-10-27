@@ -9,8 +9,11 @@ import { references, ReferenceScanError, type AssetReference } from '../catalog/
 
 export type Holders = { holders: string[] } | { unknown: ReferenceScanError };
 
+/** A holder by kind and ID. */
+type HolderEntry = { kind: 'revision' | 'series'; id: string };
+
 /** The same holders by kind and ID, for the curator's page, which names a series by its title. */
-export type HolderEntries = { entries: { kind: 'revision' | 'series'; id: string }[] } | { unknown: ReferenceScanError };
+export type HolderEntries = { entries: HolderEntry[] } | { unknown: ReferenceScanError };
 
 /** A references() scan, kept for one call site's lifetime. Undefined until the first use. */
 export interface ReferenceCache {
@@ -25,7 +28,7 @@ export interface ReferenceCache {
 export async function photoHolders(root: string, photoId: string, cache: ReferenceCache = {}): Promise<Holders> {
     const found = await photoHolderEntries(root, photoId, cache);
     if ('unknown' in found) return found;
-    return { holders: found.entries.map((entry) => (entry.kind === 'revision' ? `the active revision ${entry.id}` : `the series ${entry.id}`)) };
+    return { holders: found.entries.map(holderName) };
 }
 
 /** photoHolders(), by kind and ID: one scan, one rule, so the page and the CLI never disagree about who holds a photograph. */
@@ -39,14 +42,24 @@ export async function photoHolderEntries(root: string, photoId: string, cache: R
         }
     }
     if (cache.list instanceof ReferenceScanError) return { unknown: cache.list };
+    return { entries: holderEntries(cache.list, photoId) };
+}
+
+/** The active revision and the working-layer series that list `photoId`, by kind and ID, each once. */
+function holderEntries(list: readonly AssetReference[], photoId: string): HolderEntry[] {
     const seen = new Set<string>();
-    const entries: { kind: 'revision' | 'series'; id: string }[] = [];
-    for (const entry of cache.list) {
+    const entries: HolderEntry[] = [];
+    for (const entry of list) {
         if (entry.photoId !== photoId || (entry.source !== 'active-revision' && entry.source !== 'working-layer-series')) continue;
         const kind = entry.source === 'active-revision' ? 'revision' : 'series';
         if (seen.has(`${kind}:${entry.holder}`)) continue;
         seen.add(`${kind}:${entry.holder}`);
         entries.push({ kind, id: entry.holder });
     }
-    return { entries };
+    return entries;
+}
+
+/** A holder as a note names it. */
+function holderName(entry: HolderEntry): string {
+    return entry.kind === 'revision' ? `the active revision ${entry.id}` : `the series ${entry.id}`;
 }

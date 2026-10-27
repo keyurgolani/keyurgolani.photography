@@ -43,7 +43,9 @@
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import chokidar from 'chokidar';
+import { createCandidateSink, owedSettles, settlingAfterBuild } from '../lib/curation/candidates';
 import { createCurationSink } from '../lib/curation/sink';
+import { buildDerivativeSet } from '../lib/identity/derivatives';
 import { jsonLogSink } from '../lib/identity/pass';
 import { scanKind } from '../lib/identity/scan';
 import { createIdentityStep, runIdentityOnce, watchIdentity, type IdentityWatch } from '../lib/identity/watcherStep';
@@ -103,9 +105,21 @@ function requireLibraryRoot(): string {
     return root;
 }
 
-/** Where the identity step's facts go: the log, and the curation inbox, which opens a draft item for each. */
+/** The replacement items a build couldn't settle yet, which the candidate sink settles on its next delivery. One per process. */
+const owed = owedSettles();
+
+/**
+ * Where the identity step's facts go: the log, the curation inbox, which
+ * opens a draft item for each, then #17's candidate sink, which records on
+ * each replacement item whether its new set is ready or failed.
+ */
 function factSinks() {
-    return [jsonLogSink(), createCurationSink()];
+    return [jsonLogSink(), createCurationSink(), createCandidateSink({ owed })];
+}
+
+/** The derivative worker's builds, each followed by recording its set on the revision's replacement item, or owing that to the candidate sink. */
+function workerBuilds() {
+    return { build: settlingAfterBuild(buildDerivativeSet, { owed }) };
 }
 
 /** A file the identity scan reads, or any folder, since a moved folder moves the photos in it. */
@@ -143,6 +157,7 @@ function startWatcher(): void {
     let watch: IdentityWatch | null = null;
     const identity = createIdentityStep({
         sinks: factSinks(),
+        worker: workerBuilds(),
         legacyIdle: () => handlers.idle(),
         requestPass: (reason, delayMs) => watch?.schedule(reason, delayMs),
     });
@@ -206,7 +221,7 @@ async function runOnce(): Promise<number> {
     ensureDirectories();
     const handlers = createWatcherHandlers();
     const legacy = await processOnce(handlers, { force: FORCE });
-    const identity = await runIdentityOnce({ sinks: factSinks(), legacyIdle: () => handlers.idle() });
+    const identity = await runIdentityOnce({ sinks: factSinks(), worker: workerBuilds(), legacyIdle: () => handlers.idle() });
     return Math.max(legacy, identity);
 }
 

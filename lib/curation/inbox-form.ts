@@ -1,10 +1,13 @@
 import { REVISION_ID_RE, SERIES_ID_RE } from '../catalog/schema';
+import { readAuthoredRecord } from '../catalog/working-layer';
 import { PHOTO_ID_RE } from '../identity/ids';
 import { dataRootStatus, libraryRoot } from '../storage/config';
-import { approveEvent, deferEvent, dismissEvent, editEvent, reopenEvent, retryEvent, type ActionInput, type ActionOutcome, type Choices } from './actions';
+import { approveEvent, dismissEvent, editEvent, reopenEvent, retryEvent, type ActionInput, type ActionOutcome, type Choices } from './actions';
 import { scrub } from './commands';
-import { EVENT_ID_RE, type CuratorDescription } from './events';
-import { DONE_ANSWER, parsePlacementValue, type InboxActionKind, type InboxActionState } from './inbox-view';
+import { EVENT_ID_RE, type CurationEvent, type CuratorDescription } from './events';
+import { DONE_ANSWER, MOVED_ANSWER, parsePlacementValue, type InboxActionKind, type InboxActionState } from './inbox-view';
+import { readDraftPlan } from './pins';
+import { leaveInDraft } from './resolutions';
 import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from './text';
 
 /**
@@ -156,6 +159,9 @@ const REFUSAL_WORDING: [RegExp, (match: RegExpMatchArray) => string][] = [
     [/^Nothing failed for /, () => "Nothing failed for this photograph, so there's nothing to retry."],
     [/has no photo ID, so there is nothing to retry/, () => "This file has no photo ID, so there's nothing to retry."],
     [/can't be dismissed/, () => "Something still shows this photograph, so it can't be dismissed. Restore the source, or take it out of its series and publish first. Nothing was written."],
+    // #17's Decide later on a confirmed replacement, when the earlier version it would put back has no set that checks out.
+    [/, the revision to put back, has no ready derivative set/, () => "The earlier version of this photograph has no ready derivatives, so Decide later can't put it back. The draft keeps the new version. Nothing was written."],
+    [/doesn't check out .*so it can't be put back\./, () => "The earlier version of this photograph has derivatives that don't check out, so Decide later can't put it back. The draft keeps the new version. Nothing was written. The server log names the problem."],
     [/photo record pins /, () => "Its photo record holds other bytes, and confirming new bytes isn't an inbox step yet. Nothing was written."],
 ];
 
@@ -179,11 +185,33 @@ export function pageWording(message: string, status: 'refused' | 'invalid' | 'fa
     return NOT_FOR_THE_PAGE.test(message) ? FALLBACK[status] : message;
 }
 
+/** #17: leaveInDraft()'s refusal once the photo record moved off this item's confirm. Refreshing changes nothing, so it isn't stale. */
+const MOVED_REFUSAL = /photo record pins \S+ now, not \S+ as this item's confirm left it/;
+
+/**
+ * #17: what the draft holds after a reopen or Decide later on a replacement, for the answers that say it. `putBack`
+ * after a reopen whose Decide later would put the earlier version back; `keepsNew` after a Decide later that wrote
+ * nothing while the photo record pins the item's new bytes. Null otherwise, and when the record can't be read.
+ */
+async function replacementAnswer(root: string, kind: InboxActionKind, event: CurationEvent): Promise<string | null> {
+    if (event.type !== 'replacement' || event.photoId === null || event.assetRevision === null) return null;
+    const photoId = event.photoId;
+    try {
+        const readPinned = async () => (await readAuthoredRecord(root, 'photo', photoId))?.assetRevision ?? null;
+        if (kind === 'reopen') return (await readDraftPlan(root, event, readPinned)).kind === 'put-back' ? DONE_ANSWER.reopenedPutBack : null;
+        if (kind === 'defer') return (event.decisions.at(-1)?.writes?.length ?? 0) === 0 && (await readPinned()) === event.assetRevision ? DONE_ANSWER.keepsNew : null;
+    } catch {
+        // The plain answer is still true: it claims nothing about the draft.
+    }
+    return null;
+}
+
 /** A stale answer, by what moved. 14-1's own text names IDs and the CLI, so none of it shows. */
 function staleWording(code: 'stale' | 'not-found', message: string): string {
     if (code === 'not-found') return "This item isn't in the inbox any more, so nothing was written. Refresh the inbox.";
     if (/active revision/.test(message)) return 'A publish or rollback happened since the page loaded, so nothing was written. Refresh and review it again.';
     if (/source changed/.test(message)) return "The photograph's source changed since the page loaded, so nothing was written. Refresh and review the newer item.";
+    if (/photo record moved while leaving it in draft waited/.test(message)) return "This photograph's draft changed while Decide later waited, so nothing was written. Refresh and review it again.";
     return 'This item changed since the page loaded, so nothing was written. Refresh and review it again.';
 }
 
@@ -216,7 +244,9 @@ export async function runInboxAction(kind: InboxActionKind, form: unknown, optio
                 outcome = await editEvent({ ...input, choices: choicesFrom(form, 'edit') });
                 break;
             case 'defer':
-                outcome = await deferEvent({ ...input, reason: reasonFrom(form, false) });
+                // As the CLI's defer: #17's leaveInDraft(), which is 14-1's defer for every type but a replacement. On a
+                // reopened replacement whose confirm landed, it puts back the revision that confirm replaced, as reopen's note says.
+                outcome = await leaveInDraft({ ...input, reason: reasonFrom(form, false) });
                 break;
             case 'dismiss':
                 outcome = await dismissEvent({ ...input, reason: reasonFrom(form, true) as string });
@@ -237,8 +267,13 @@ export async function runInboxAction(kind: InboxActionKind, form: unknown, optio
     if (outcome.ok) {
         // An approval's later notes say what still holds publishing back, such as a missing or unreviewed description.
         const extra = kind === 'approve' ? outcome.notes.slice(1) : [];
-        return answer('done', outcome.event.id, [DONE[kind], ...extra].join(' '));
+        // Decide later that put an earlier revision back changed the draft, so it can't say nothing did. One that kept a
+        // replacement's new version in the draft says the next publish uses it, as the CLI's defer does.
+        const head = kind === 'defer' && (outcome.event.decisions.at(-1)?.writes?.length ?? 0) > 0 ? DONE_ANSWER.putBack : ((await replacementAnswer(input.root, kind, outcome.event)) ?? DONE[kind]);
+        return answer('done', outcome.event.id, [head, ...extra].join(' '));
     }
+    // Refreshing doesn't change what the draft holds, so this refusal names what changed and what to do, with no refresh to offer.
+    if (kind === 'defer' && outcome.code === 'stale' && MOVED_REFUSAL.test(outcome.message)) return answer('refused', input.eventId, MOVED_ANSWER);
     if (outcome.code === 'stale' || outcome.code === 'not-found') return answer('stale', input.eventId, staleWording(outcome.code, outcome.message));
     if (outcome.code === 'locked') return answer('busy', input.eventId, 'Another change is being written right now, so nothing was written. Try again in a moment.');
     const status = STATUS_FOR[outcome.code] as 'refused' | 'invalid' | 'failed';

@@ -62,11 +62,36 @@ export const PRIMARY_ACTION: Partial<Record<CurationEventType, string>> = {
 /** The button that defers an item (14-1's `defer`), as the owner named it (2026-10-25). */
 export const DEFER_LABEL = 'Decide later';
 
-/** What an approval and Decide later answer on the item they were taken on. Any later notes from the action follow. */
+/**
+ * What Decide later says after "Left for later." (or "Left <file> for later.") about the draft, by what it did. Only a
+ * replacement (#17) gets the last two: `putBack` when leaveInDraft() put the earlier version back, `keepsNew` when the
+ * draft already used the new version and still does.
+ */
+const DEFER_TAIL = {
+    defer: 'Nothing in the draft changed.',
+    putBack: 'The draft is back on the earlier version of this photograph, and the next publish uses that one.',
+    keepsNew: 'The draft already uses the new version of this photograph, so the next publish uses it too.',
+} as const;
+
+/** What an approval, Decide later, and Reopen answer on the item they were taken on. Any later notes from the action follow. */
 export const DONE_ANSWER = {
     approve: 'Approved into the draft. Nothing is published until you publish.',
-    defer: 'Left for later. Nothing in the draft changed.',
+    defer: `Left for later. ${DEFER_TAIL.defer}`,
+    putBack: `Left for later. ${DEFER_TAIL.putBack}`,
+    keepsNew: `Left for later. ${DEFER_TAIL.keepsNew}`,
+    /** Reopen on a confirmed replacement whose Decide later would put the earlier version back. */
+    reopenedPutBack: 'Reopened. The draft still uses the new version until you decide.',
 } as const;
+
+type ArrivalAnswer = 'approve' | keyof typeof DEFER_TAIL;
+
+/** What each answer says on the page it opens, which names the file it decided. The same words as under the button. */
+const ARRIVAL_HEAD: Record<ArrivalAnswer, (fileName: string) => string> = {
+    approve: (fileName) => `Approved ${fileName} into the draft. Nothing is published until you publish.`,
+    defer: (fileName) => `Left ${fileName} for later. ${DEFER_TAIL.defer}`,
+    putBack: (fileName) => `Left ${fileName} for later. ${DEFER_TAIL.putBack}`,
+    keepsNew: (fileName) => `Left ${fileName} for later. ${DEFER_TAIL.keepsNew}`,
+};
 
 /**
  * The answer an approval or Decide later carries to the page it opens. That
@@ -74,9 +99,10 @@ export const DONE_ANSWER = {
  * (design review, 2026-10-25). `message` is the action's own answer; any
  * notes after its first sentences, such as a missing description, follow.
  */
-export function arrivalMessage(action: keyof typeof DONE_ANSWER, fileName: string, message: string): string {
-    const head = action === 'approve' ? `Approved ${fileName} into the draft. Nothing is published until you publish.` : `Left ${fileName} for later. Nothing in the draft changed.`;
-    const notes = message.startsWith(DONE_ANSWER[action]) ? message.slice(DONE_ANSWER[action].length).trim() : '';
+export function arrivalMessage(action: 'approve' | 'defer', fileName: string, message: string): string {
+    const answer: ArrivalAnswer = action === 'approve' ? 'approve' : (['putBack', 'keepsNew'] as const).find((kind) => message.startsWith(DONE_ANSWER[kind])) ?? 'defer';
+    const head = ARRIVAL_HEAD[answer](fileName);
+    const notes = message.startsWith(DONE_ANSWER[answer]) ? message.slice(DONE_ANSWER[answer].length).trim() : '';
     return notes ? `${head} ${notes}` : head;
 }
 
@@ -89,6 +115,9 @@ export const STATUS_LABELS: Record<CurationEventStatus, string> = {
     dismissed: 'Dismissed',
     approved: 'Suggestion approved',
 };
+
+/** The status of a confirmed replacement (#17), which was never a suggestion. */
+export const CONFIRMED_LABEL = 'New version confirmed';
 
 /** Where an item sits in the list. */
 /**
@@ -189,9 +218,63 @@ export interface InboxDetail extends InboxItem {
     reviewedBy: string | null;
     /** What each action would do now, so the page offers only those that can work. */
     can: { approve: boolean; edit: boolean; defer: boolean; dismiss: boolean; retry: boolean; reopen: boolean };
-    /** Why the type's primary action isn't offered here, when it isn't. */
+    /**
+     * The hint under the actions while the type's primary action isn't in the inbox and Decide later is offered: why
+     * it isn't, or for a replacement, what Decide later does with the draft now. Null when neither applies.
+     */
     primaryUnavailable: string | null;
+    /** For a replacement of a known photo and revision, what its draft holds and what Decide later does with it. Null otherwise. */
+    replacement: ReplacementDraft | null;
 }
+
+/**
+ * #17: a replacement item's draft, from the same plan leaveInDraft() acts on
+ * (lib/curation/pins.ts draftPlan()), so the page says before the click what
+ * Decide later then does. Never an ID: the page names versions as new,
+ * earlier, or another.
+ */
+export interface ReplacementDraft {
+    /** Which version the photograph's draft (its photo record) uses: this item's new one, another, or none, with no record yet. */
+    draft: 'new' | 'other' | 'none';
+    /** The active revision serves this item's new version. */
+    live: boolean;
+    /**
+     * What Decide later does now: puts the earlier version back (`put-back`), refuses since the draft moved to another
+     * version after this item's confirm (`refuses`) or the earlier version has no ready set (`blocked`), or writes
+     * nothing (`keeps`).
+     */
+    decideLater: 'put-back' | 'refuses' | 'blocked' | 'keeps';
+}
+
+/** The hint under a replacement's actions, by what Decide later does with its draft now. */
+export const REPLACEMENT_HINT = {
+    /** Never confirmed, or the draft already on another version: Decide later writes nothing. */
+    keeps: "Confirming new bytes isn't in the inbox yet, so choose Decide later until it is. The published photograph keeps its current revision.",
+    keepsNew: 'The draft already uses the new version, so Decide later keeps it there, and the next publish uses it. Nothing is published until you publish.',
+    putBack: 'The draft uses the new version, confirmed earlier. Decide later puts the earlier version back in the draft. Nothing is published until you publish.',
+    refuses: "This photograph's draft moved to another version after the new one was confirmed, so Decide later can't tell which one to put back. Set its version with photos edit, or dismiss this item.",
+    /** As leaveInDraft()'s refusal says it after the click (lib/curation/inbox-form.ts REFUSAL_WORDING). */
+    blocked: "The earlier version of this photograph has no ready derivatives, so Decide later can't put it back. The draft keeps the new version.",
+} as const;
+
+/** Why a replacement's Confirm is disabled, for that button alone; the hint beside it is about Decide later. */
+export const CONFIRM_UNAVAILABLE = "Confirming new bytes isn't in the inbox yet.";
+
+/** Decide later can't do anything for this draft, so the page shows it disabled with the hint as its reason. */
+export function decideLaterRefuses(replacement: ReplacementDraft | null): boolean {
+    return replacement?.decideLater === 'refuses' || replacement?.decideLater === 'blocked';
+}
+
+/** The replacement hint for a draft, as primaryUnavailable carries it. */
+export function replacementHint(replacement: ReplacementDraft | null): string {
+    if (replacement?.decideLater === 'put-back') return REPLACEMENT_HINT.putBack;
+    if (replacement?.decideLater === 'refuses') return REPLACEMENT_HINT.refuses;
+    if (replacement?.decideLater === 'blocked') return REPLACEMENT_HINT.blocked;
+    return replacement?.draft === 'new' ? REPLACEMENT_HINT.keepsNew : REPLACEMENT_HINT.keeps;
+}
+
+/** What Decide later answers when the draft moved after the confirm (the `refuses` plan): what changed, and what to do. */
+export const MOVED_ANSWER = "This photograph's draft moved to another version after the new one was confirmed, so Decide later can't tell which one to put back. Nothing was written. Set its version with photos edit, or dismiss this item.";
 
 export type InboxView =
     | { state: 'not-ready'; message: string }
@@ -431,12 +514,12 @@ export function descriptionHint(detail: Pick<InboxDetail, 'edits' | 'placed'>): 
     return 'Nothing is suggested. What you type here is stored as reviewed, and publishing waits until the photograph has a description or is marked decorative.';
 }
 
-type StateFacts = Pick<InboxDetail, 'type' | 'status' | 'group' | 'unplacedSeries' | 'placed' | 'lastApprovedSeries' | 'references'>;
+type StateFacts = Pick<InboxDetail, 'type' | 'status' | 'group' | 'unplacedSeries' | 'placed' | 'lastApprovedSeries' | 'references'> & Partial<Pick<InboxDetail, 'replacement'>>;
 
 /** The status beside the item's identity, from its status and where it sits now, so an approval nothing holds never reads approved. */
-export function statusLabel(item: Pick<InboxItem, 'status' | 'group'>): { text: string; tone: 'approved' | 'change' | null } {
+export function statusLabel(item: Pick<InboxItem, 'status' | 'group'> & Partial<Pick<InboxItem, 'type'>>): { text: string; tone: 'approved' | 'change' | null } {
     if (item.group === 'unplaced') return { text: 'Approved, no longer placed', tone: 'change' };
-    if (item.status === 'approved') return { text: STATUS_LABELS.approved, tone: 'approved' };
+    if (item.status === 'approved') return { text: item.type === 'replacement' ? CONFIRMED_LABEL : STATUS_LABELS.approved, tone: 'approved' };
     return { text: STATUS_LABELS[item.status], tone: null };
 }
 
@@ -449,6 +532,13 @@ function joined(names: string[]): string {
 export function systemResponse(item: StateFacts, labelOf: (seriesId: string) => string): string {
     if (item.group === 'unplaced' && item.unplacedSeries) {
         return `It was approved into ${labelOf(item.unplacedSeries)}, but nothing holds its photo now, so it sits in the draft unassigned. Nothing publishes.`;
+    }
+    if (item.status === 'approved' && item.type === 'replacement') {
+        // A confirm writes the draft only. Which version the draft and the live revision use is the item's own fact, not the photo ID's.
+        const replacement = item.replacement ?? null;
+        if (replacement?.draft === 'new') return replacement.live ? 'The draft uses the new version, and so does the live revision.' : 'The draft uses the new version. Visitors keep the current one until you publish.';
+        if (replacement) return 'Confirmed earlier, but the draft uses another version of this photograph now. Nothing publishes until you publish.';
+        return 'The new version was confirmed into the draft. Nothing publishes until you publish.';
     }
     if (item.status === 'approved') {
         // Live only when the active revision is known to hold it; when the holders can't be read, it claims nothing about live.
@@ -506,6 +596,15 @@ export function failureNotice(detail: Pick<InboxDetail, 'type' | 'failure' | 'fa
  */
 export function hasPublishedStatement(detail: Pick<InboxDetail, 'photoId' | 'references'>): boolean {
     return detail.photoId !== null && (detail.references?.some((ref) => ref.kind === 'revision') ?? true);
+}
+
+/** The hint under an approved item's Reopen: what reopening it is for. A replacement has no series or description to change. */
+export function reopenHint(item: Pick<InboxDetail, 'type' | 'replacement'>): string {
+    if (item.type !== 'replacement') return 'Reopen it to change its series or description.';
+    if (item.replacement?.decideLater === 'put-back') return 'Reopen it to leave the new version out of the draft. Decide later then puts the earlier version back.';
+    // Reopening doesn't make the earlier set ready, so no put back is promised.
+    if (item.replacement?.decideLater === 'blocked') return "Reopening it changes nothing in the draft, which keeps the new version. The earlier version has no ready derivatives, so Decide later can't put it back.";
+    return item.replacement?.draft === 'new' ? 'Reopening it changes nothing in the draft, which keeps the new version.' : 'Reopening it changes nothing in the draft.';
 }
 
 const visibilityNote = (option: SeriesOption | undefined) => (option && option.visibility !== 'published' ? ` (${option.visibility})` : '');

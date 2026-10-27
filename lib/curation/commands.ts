@@ -2,7 +2,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { references, ReferenceScanError } from '../catalog/references';
 import { REVISION_ID_RE, SERIES_ID_RE } from '../catalog/schema';
-import { readActivePointer } from '../catalog/working-layer';
+import { readActivePointer, readAuthoredRecord } from '../catalog/working-layer';
 import { PHOTO_ID_RE } from '../identity/ids';
 import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
@@ -11,7 +11,6 @@ import { realpathLoose } from '../storage/fsx';
 import {
     ACTION_EXIT_CODES,
     approveEvent,
-    deferEvent,
     dismissEvent,
     editEvent,
     placementText,
@@ -24,6 +23,8 @@ import {
 import { currentProfileId } from '../identity/profile';
 import { EVENT_ID_RE, EVENT_STATUSES, FAILURE_TEXT, needsJudgment, shortPhotoId, waitingReason, type CurationEvent, type CurationEventStatus, type Placement } from './events';
 import { placedItems } from './placement';
+import { draftPlanText, readDraftPlan, replacedBy } from './pins';
+import { confirmReplacement, leaveInDraft } from './resolutions';
 import { EventUnusableError, listEvents, readEvent, type EventProblem } from './repository';
 import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from './text';
 
@@ -60,6 +61,7 @@ export type CurationCommand =
     | { command: 'show'; eventId: string; json: boolean }
     | { command: 'edit' | 'approve'; eventId: string; version: number; base?: string | null; choices: Choices }
     | { command: 'defer' | 'reopen' | 'retry'; eventId: string; version: number; base?: string | null; reason?: string }
+    | { command: 'confirm'; eventId: string; version: number; base?: string | null }
     | { command: 'dismiss'; eventId: string; version: number; base?: string | null; reason: string };
 
 /** The program the CLI runs as when none is given: the source under tsx. */
@@ -76,8 +78,14 @@ export function curationUsage(program: string = DEFAULT_PROGRAM): string {
   ${program} curation dismiss <eventId> --version <n> --reason <text>
   ${program} curation retry <eventId> --version <n> [--reason <text>]
   ${program} curation reopen <eventId> --version <n> [--reason <text>]
+  ${program} curation confirm <eventId> --version <n>
+        Confirm new asset revision: a replacement's photo record takes the new bytes, once all derivatives succeed.
+        To keep the revision the draft pins instead, leave it in draft with defer. On a confirmed
+        replacement, reopen and then defer put back the revision the confirm replaced, while that
+        confirm is still the inbox's latest change to the photo's revision; reopen and show say
+        what defer will do.
     Every item command also takes --base <revisionId|none> (the active revision it was reviewed against) and --actor <name>.
-    approve needs --base once a revision is active.`;
+    approve and confirm need --base once a revision is active.`;
 }
 
 export class CurationUsageError extends Error {}
@@ -86,7 +94,7 @@ const usage = (message: string): never => {
     throw new CurationUsageError(message);
 };
 
-const ITEM_COMMANDS = ['edit', 'approve', 'defer', 'dismiss', 'retry', 'reopen'] as const;
+const ITEM_COMMANDS = ['edit', 'approve', 'defer', 'dismiss', 'retry', 'reopen', 'confirm'] as const;
 
 function text(value: string, field: string, max: number): string {
     const checked = ownerText(value, { field, max });
@@ -150,7 +158,7 @@ export function parseCurationArgs(args: readonly string[]): CurationCommand {
     }
     const choiceFlags = ['series', 'unassigned', 'start', 'end', 'after', 'description', 'decorative', 'clear-description'];
     const common = ['version', 'base', 'actor'];
-    only(command === 'edit' || command === 'approve' ? [...common, ...choiceFlags] : [...common, 'reason']);
+    only(command === 'edit' || command === 'approve' ? [...common, ...choiceFlags] : command === 'confirm' ? common : [...common, 'reason']);
     if (positionals.length !== 1) usage(`curation ${command} needs one event ID.`);
     const [eventId] = positionals;
     if (!EVENT_ID_RE.test(eventId)) usage(`${eventId} is not an event ID.`);
@@ -192,6 +200,7 @@ export function parseCurationArgs(args: readonly string[]): CurationCommand {
         }
         return { command, ...item, choices };
     }
+    if (command === 'confirm') return { command, ...item };
     const reason = values.reason === undefined ? undefined : text(values.reason as string, '--reason', MAX_REASON_LENGTH);
     if (command === 'dismiss') {
         if (reason === undefined) usage('curation dismiss needs --reason <text>.');
@@ -392,6 +401,47 @@ function factLines(event: CurationEvent): string[] {
     return lines;
 }
 
+const CANDIDATE_FAILURE_TEXT = {
+    superseded: 'the source changed again before it was built',
+    integrity: "a set in place for these bytes doesn't match its manifest",
+    undecodable: "the new file can't be decoded",
+    build: 'building it failed',
+} as const;
+
+/** #17's lines for a replacement: its derivative set, what the photo record pins now, and what confirming keeps. */
+async function replacementLines(root: string, event: CurationEvent, registry: Registry | null): Promise<string[]> {
+    if (event.type !== 'replacement' || event.photoId === null) return [];
+    const candidate = event.candidate;
+    const set = !candidate
+        ? 'still building. Use the new bytes only after all derivatives succeed.'
+        : candidate.state === 'ready'
+            ? `ready under ${candidate.profileId}, every derivative built and checked.`
+            : `failed under ${candidate.profileId}: ${CANDIDATE_FAILURE_TEXT[candidate.failure ?? 'build']}.`;
+    let pinned: string;
+    // The revision the record pins, null for no record, undefined when it can't be read.
+    let revision: string | null | undefined;
+    try {
+        const record = await readAuthoredRecord(root, 'photo', event.photoId);
+        revision = record ? record.assetRevision : null;
+        pinned = record ? record.assetRevision : 'nothing yet: the photograph has no photo record in the working layer';
+    } catch {
+        pinned = "can't tell: its photo record can't be read";
+    }
+    // The plan leaveInDraft() acts on, so this says what defer does now.
+    let draft: string;
+    try {
+        if (revision === undefined || registry === null) throw new Error('unreadable');
+        draft = draftPlanText(await readDraftPlan(root, event, async () => revision, registry), replacedBy(event)) ?? '';
+    } catch {
+        draft = "What leaving it in draft (defer) would do can't be told now, since the photo record or the registry can't be read.";
+    }
+    return [
+        `New derivative set: ${set}`,
+        `Photo record pins: ${pinned}`,
+        `Confirm new asset revision keeps ${event.photoId}'s series, position, title, description, and story.${draft ? ` ${draft}` : ''}`,
+    ];
+}
+
 async function show(root: string, command: Extract<CurationCommand, { command: 'show' }>): Promise<CommandResult> {
     let event: CurationEvent | null;
     try {
@@ -416,6 +466,7 @@ async function show(root: string, command: Extract<CurationCommand, { command: '
         ...((series) => (series === undefined ? [] : unplacedLines(event, series, active)))(unplaced.get(event.id)),
         ...(unknown === null ? [] : [unknownPlacementLine(unknown)]),
         `Asset revision: ${event.assetRevision ?? 'none'}`,
+        ...(await replacementLines(root, event, registry)),
         `Observed: ${event.observedAt}${event.lastObservedAt !== event.observedAt ? `, last ${event.lastObservedAt}` : ''}`,
         ...factLines(event),
         ...suggestionLines(event),
@@ -433,6 +484,7 @@ async function show(root: string, command: Extract<CurationCommand, { command: '
                 ...(decision.reason ? [`"${printable(decision.reason)}"`] : []),
                 ...(decision.writes?.length ? [`wrote ${decision.writes.map((entry) => `${entry.record} v${entry.version}`).join(', ')}`] : []),
                 ...(decision.identityDecisionId ? [`identity decision ${decision.identityDecisionId}`] : []),
+                ...(decision.fromRevision ? [decision.action === 'defer' ? `put back ${decision.fromRevision}` : `in place of ${decision.fromRevision}`] : []),
             ];
             lines.push(`  ${decision.at} ${decision.action} by ${printable(decision.by)}${extra.length ? `: ${extra.join(', ')}` : ''}`);
         }
@@ -470,13 +522,16 @@ async function run(context: CurationContext, command: CurationCommand): Promise<
         case 'approve':
             return report(await approveEvent({ ...input, choices: command.choices }));
         case 'defer':
-            return report(await deferEvent({ ...input, reason: command.reason }));
+            // #17's leave in draft: #14's defer for every type, and for a confirmed replacement, the earlier revision put back.
+            return report(await leaveInDraft({ ...input, reason: command.reason }));
         case 'dismiss':
             return report(await dismissEvent({ ...input, reason: command.reason }));
         case 'retry':
             return report(await retryEvent({ ...input, reason: command.reason }));
         case 'reopen':
             return report(await reopenEvent({ ...input, reason: command.reason }));
+        case 'confirm':
+            return report(await confirmReplacement(input));
     }
 }
 

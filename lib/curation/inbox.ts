@@ -5,11 +5,12 @@ import type { Registry } from '../identity/types';
 import { dataRootStatus, libraryRoot } from '../storage/config';
 import { printable, scrub } from './commands';
 import { EVENT_ID_RE, FAILURE_TEXT, needsJudgment, waitingReason, type CurationEvent } from './events';
-import { photoHolderEntries } from './holders';
+import { photoHolderEntries, type ReferenceCache } from './holders';
 import {
     humanDate,
     itemTitle,
     PRIMARY_ACTION,
+    replacementHint,
     seriesName,
     shortIdOf,
     type HolderRef,
@@ -17,8 +18,11 @@ import {
     type InboxItem,
     type InboxView,
     type ItemGroup,
+    type ReplacementDraft,
     type SeriesOption,
 } from './inbox-view';
+import { candidateOf } from './candidates';
+import { readDraftPlan } from './pins';
 import { placedItems } from './placement';
 import { listEvents } from './repository';
 
@@ -155,11 +159,44 @@ function abilities(event: CurationEvent, registry: Registry | null): InboxDetail
     };
 }
 
-function primaryUnavailable(event: CurationEvent): string | null {
-    if (PRIMARY_ACTION[event.type] === undefined || event.type === 'new') return null;
+/**
+ * The hint under the actions. Only while Decide later is offered, since it names Decide later: for a replacement, what
+ * Decide later does with the draft now; for a missing source, why its primary action isn't in the inbox yet.
+ */
+function primaryUnavailable(event: CurationEvent, can: InboxDetail['can'], replacement: ReplacementDraft | null): string | null {
+    if (PRIMARY_ACTION[event.type] === undefined || event.type === 'new' || !can.defer) return null;
     return event.type === 'replacement'
-        ? "Confirming new bytes isn't in the inbox yet, so choose Decide later until it is. The published photograph keeps its current revision."
+        ? replacementHint(replacement)
         : "Locating, binding, and archiving aren't in the inbox yet, so choose Decide later until they are. The published output stays protected.";
+}
+
+/**
+ * #17: a replacement's draft, and what Decide later does with it, from the plan leaveInDraft() acts on. `cache` holds
+ * the references() scan photoHolderEntries() already made, whose active-revision entry says which bytes are live. Null
+ * for any other item, and when the photo record or the inbox's pins can't be read: the page then claims nothing.
+ */
+async function replacementOf(root: string, event: CurationEvent, registry: Registry | null, cache: ReferenceCache): Promise<ReplacementDraft | null> {
+    if (event.type !== 'replacement' || event.photoId === null || event.assetRevision === null || registry === null) return null;
+    const photoId = event.photoId;
+    const revision = event.assetRevision;
+    let pinned: string | null;
+    let plan: Awaited<ReturnType<typeof readDraftPlan>>;
+    try {
+        const read = (await readAuthoredRecord(root, 'photo', photoId))?.assetRevision ?? null;
+        pinned = read;
+        plan = await readDraftPlan(root, event, async () => read, registry);
+    } catch {
+        return null;
+    }
+    const list = Array.isArray(cache.list) ? cache.list : [];
+    const live = list.some((entry) => entry.source === 'active-revision' && entry.photoId === photoId && entry.assetRevision === revision);
+    return {
+        draft: pinned === null ? 'none' : pinned === revision ? 'new' : 'other',
+        live,
+        // As leaveInDraft() checks after the plan: an earlier version with no ready set can't be put back. A set that doesn't
+        // check out against its manifest needs every file hashed, which a page load doesn't do; the answer after the click says so.
+        decideLater: plan.kind === 'put-back' ? (candidateOf(registry, photoId, plan.putBack).state === 'ready' ? 'put-back' : 'blocked') : plan.kind === 'moved' ? 'refuses' : 'keeps',
+    };
 }
 
 /** The photo record and the series holding it, for a photograph an approval already placed. */
@@ -179,12 +216,15 @@ async function placedOf(root: string, event: CurationEvent, series: readonly Ser
 async function detailOf(root: string, event: CurationEvent, item: InboxItem, registry: Registry | null, scrubbed: (text: string) => string, series: readonly SeriesOption[]): Promise<InboxDetail> {
     const derivatives = derivativeText(event, registry);
     let references: HolderRef[] | null = null;
+    const cache: ReferenceCache = {};
     if (event.photoId !== null) {
-        const found = await photoHolderEntries(root, event.photoId);
+        const found = await photoHolderEntries(root, event.photoId, cache);
         references = 'unknown' in found ? null : found.entries;
     } else {
         references = [];
     }
+    const replacement = await replacementOf(root, event, registry, cache);
+    const can = { ...abilities(event, registry), ...(event.type === 'missing' && references?.length !== 0 ? { dismiss: false } : {}) };
     const suggestedSeries = event.suggestions.series;
     const placement = event.suggestions.placement;
     return {
@@ -220,8 +260,9 @@ async function detailOf(root: string, event: CurationEvent, item: InboxItem, reg
         decisions: event.decisions.map((decision) => ({ action: decision.action, at: decision.at, by: printable(decision.by), detail: decisionDetail(decision, series) })),
         reviewedAt: event.reviewedAt,
         reviewedBy: event.reviewedBy === null ? null : printable(event.reviewedBy),
-        can: { ...abilities(event, registry), ...(event.type === 'missing' && references?.length !== 0 ? { dismiss: false } : {}) },
-        primaryUnavailable: primaryUnavailable(event),
+        can,
+        primaryUnavailable: primaryUnavailable(event, can, replacement),
+        replacement,
     };
 }
 
