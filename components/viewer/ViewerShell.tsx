@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { usePrefersReducedMotion } from '@/components/motion/usePrefersReducedMotion';
+import { useSiteRoutes } from '@/components/site/siteRoutesContext';
 import { StageMotion } from './stageMotion';
 import ViewerChrome, { type ViewerChromeActions } from './ViewerChrome';
 import { ViewerContext, peekKey, type ViewerChromeState, type ViewerMode, type ViewerPeek, type ViewerShellContext } from './viewerContext';
@@ -44,9 +45,10 @@ const REVISED = 'revised';
  * error, a network failure): the photograph then follows the finger with nothing beside it. REVISED when the endpoint
  * serves another revision (its 409), so this photograph's page is from the one before.
  */
-async function fetchPeek(slug: string, photoId: string, revisionId: string): Promise<ViewerPeek | typeof REVISED | null> {
+async function fetchPeek(catalogApiHref: (path: string) => string, slug: string, photoId: string, revisionId: string): Promise<ViewerPeek | typeof REVISED | null> {
     try {
-        const path = `/api/catalog/series/${encodeURIComponent(slug)}/photos/${encodeURIComponent(photoId)}?revision=${encodeURIComponent(revisionId)}`;
+        // Through the site's routes, so #16's preview asks its own mirror and never the public endpoint.
+        const path = catalogApiHref(`series/${encodeURIComponent(slug)}/photos/${encodeURIComponent(photoId)}?revision=${encodeURIComponent(revisionId)}`);
         const response = await fetch(path, { headers: { accept: 'application/json' } });
         if (response.status === 409) return REVISED;
         if (!response.ok) return null;
@@ -104,6 +106,7 @@ async function fetchPeek(slug: string, photoId: string, revisionId: string): Pro
  */
 export default function ViewerShell({ mode, children }: { mode: ViewerMode; children: ReactNode }) {
     const router = useRouter();
+    const { catalogApiHref } = useSiteRoutes();
     const [chrome, setChrome] = useState<ViewerChromeState | null>(null);
     const [zoomed, setZoomed] = useState(false);
     const [message, setMessage] = useState('');
@@ -203,7 +206,7 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
                 const key = peekKey(state.revisionId, photoId);
                 if (requested.current.has(key)) continue;
                 requested.current.add(key);
-                void fetchPeek(state.seriesSlug, photoId, state.revisionId).then((peek) => {
+                void fetchPeek(catalogApiHref, state.seriesSlug, photoId, state.revisionId).then((peek) => {
                     if (peek === REVISED) {
                         outdated.current = state.revisionId;
                         dropStalePages();
@@ -211,7 +214,7 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
                 });
             }
         },
-        [dropStalePages],
+        [dropStalePages, catalogApiHref],
     );
 
     // A new photograph: announce its position, and if focus was inside the photograph that left, put it on the control for the direction moved.

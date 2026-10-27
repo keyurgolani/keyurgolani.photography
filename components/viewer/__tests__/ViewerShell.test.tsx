@@ -7,6 +7,7 @@ import { VARIANT_FORMATS, VARIANT_WIDTHS } from '@/lib/identity/variants';
 import { mediaUrl } from '@/lib/media/url';
 import { setPrefersReducedMotion } from '@/test/matchMedia';
 import StoryViewer from '../StoryViewer';
+import SiteRoutesProvider from '@/components/site/SiteRoutes';
 import ViewerShell from '../ViewerShell';
 import type { ViewerMode } from '../viewerContext';
 
@@ -1012,6 +1013,22 @@ describe('ViewerShell, the photograph follows the finger (9a)', () => {
         pointer(stage(), 'pointerup');
         await settle();
         expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("asks #16's preview for the neighbors inside it, never the public endpoint", async () => {
+        const basePath = `/curation/preview/rev_${'b'.repeat(64)}/site`;
+        render(
+            <SiteRoutesProvider basePath={basePath}>
+                <ViewerShell mode="page">{photo(2, true)}</ViewerShell>
+            </SiteRoutesProvider>,
+        );
+        pointer(stage(), 'pointerdown');
+        pointer(stage(), 'pointerup');
+        await settle();
+        expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+            `${basePath}/api/catalog/series/fixture/photos/${id(1)}?revision=rev_${'a'.repeat(64)}`,
+            `${basePath}/api/catalog/series/fixture/photos/${id(3)}?revision=rev_${'a'.repeat(64)}`,
+        ]);
     });
 
     it('follows a sideways drag 1:1 from the claim, and meets the rubber band at the first photograph', () => {
