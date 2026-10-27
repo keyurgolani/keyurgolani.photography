@@ -189,10 +189,12 @@ test('opens on the draft: the count line, the badges, one empty live region, and
     await expect(page.getByText('Blocks publishing')).toHaveCount(2);
     await expect(page.locator('#publish-reason')).toHaveText('2 changes block publishing. Fix them, then validate.');
     await expect(publishButton(page)).toHaveAttribute('aria-disabled', 'true');
-    // The frame opens on the new photograph's Viewer, inert, and loading it never scrolls the page.
+    // The frame opens on the new photograph's series page, inert and named, and loading it never scrolls the page
+    // (curation-publish-frame.spec.ts waits for the frame to settle on the photograph).
     const frame = page.locator('iframe');
-    await expect(frame).toHaveAttribute('src', /\/site\/work\/low-tide-hours\/photo\/ph_/);
+    await expect(frame).toHaveAttribute('src', /\/site\/work\/low-tide-hours$/);
     await expect(frame).toHaveAttribute('inert');
+    await expect(page.getByRole('img', { name: 'Visitor preview of the draft catalog' })).toHaveCount(1);
     await page.waitForTimeout(500);
     expect(await page.evaluate(() => window.scrollY)).toBe(0);
     await expect(page.getByRole('region', { name: 'Visitor preview' })).toHaveCount(1);
@@ -364,7 +366,8 @@ test.describe('without JavaScript', () => {
         await expect(page.getByRole('heading', { level: 1 })).toHaveText('Preview catalog revision 3');
         await expect(page.getByText(/Pier lamps moves from position 7 to 2 in Salt Roads/)).toBeVisible();
         await expect(page.locator('main > [role="status"]')).toHaveCount(1);
-        await expect(page.getByText('Validate, Publish and the fixes need JavaScript. Nothing is written without it.')).toBeVisible();
+        // Playwright turns scripts off without telling the parser, which then keeps <noscript> as raw text, so this reads the line from it.
+        expect(await bar(page).locator('noscript').textContent()).toContain('Validate, Publish and the fixes need JavaScript. Nothing is written without it.');
         const before = (await readActivePointer(fixture.root))?.revisionId;
         const posted = page.waitForResponse((response) => response.request().method() === 'POST');
         await validate(page).click();
