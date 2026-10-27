@@ -1,7 +1,13 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
+import { SOURCE_EXTENSIONS } from '../../identity/scan';
+import { FAILURE_REASONS } from '../events';
 import {
     arrivalMessage,
+    failureNotice,
+    hasPublishedStatement,
+    humanDate,
+    humanTime,
     descriptionHint,
     DONE_ANSWER,
     fileParts,
@@ -223,5 +229,62 @@ describe('the action names', () => {
         expect(PRIMARY_ACTION.new).toBe('Approve into draft');
         expect(DEFER_LABEL).toBe('Decide later');
         expect(STATUS_LABELS.deferred).toBe('Left for later');
+    });
+});
+
+describe('dates', () => {
+    it('says a date and a stored time the way the Inbox does, and leaves anything else as it is', () => {
+        expect(humanDate('2024-01-04')).toBe('4 January 2024');
+        expect(humanDate('2024-13-04')).toBeNull();
+        expect(humanDate('January 2024')).toBeNull();
+        expect(humanTime('2026-02-01T00:03:00.000Z')).toBe('1 February 2026, 00:03 UTC');
+        expect(humanTime('2026-02-01T23:59:00-08:00')).toBe('2 February 2026, 07:59 UTC');
+        expect(humanTime('not a time')).toBe('not a time');
+        expect(identityLine('inbox/a.jpg', '2024-01-04')).toBe('In inbox, captured 4 January 2024');
+    });
+});
+
+describe('a processing failure', () => {
+    const failed = (code: (typeof FAILURE_REASONS)[number] | null, overrides: Partial<Parameters<typeof failureNotice>[0]> = {}) =>
+        failureNotice({
+            type: 'processing-failure',
+            failure: code ? `Reason for ${code}.` : null,
+            failureCode: code,
+            status: 'failed',
+            can: { approve: false, edit: true, defer: true, dismiss: true, retry: false, reopen: false },
+            ...overrides,
+        });
+
+    it('says why, and what the owner can do next, for every reason the watcher gives', () => {
+        for (const code of FAILURE_REASONS) {
+            const notice = failed(code)!;
+            expect(notice.reason).toBe(`Reason for ${code}.`);
+            expect(notice.next).toMatch(/dismiss this one with a reason/);
+            expect(notice.next).toMatch(/Decide later keeps it here meanwhile\.$/);
+        }
+        expect(failed('undecodable', { can: { approve: false, edit: true, defer: true, dismiss: true, retry: true, reopen: false } })!.next).toMatch(/Then choose Retry processing\./);
+        expect(failed(null)!.reason).toBe("The watcher couldn't process the file.");
+    });
+
+    it('names the formats the watcher reads, as lib/identity/scan.ts lists them', () => {
+        const next = failed('unsupported-format')!.next!;
+        const named = { '.jpg': 'JPEG', '.jpeg': 'JPEG', '.png': 'PNG', '.webp': 'WebP' } as Record<string, string>;
+        for (const extension of SOURCE_EXTENSIONS) expect(next).toContain(named[extension]);
+        expect(next).toMatch(/^The watcher reads JPEG, PNG and WebP\. Export the photograph as one of those into the library/);
+    });
+
+    it('offers no next step once settled, and is nothing for any other item', () => {
+        expect(failed('unsupported-format', { status: 'dismissed', can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true } })).toEqual({ reason: 'Reason for unsupported-format.', next: null });
+        expect(failed('unsupported-format', { type: 'new' })).toBeNull();
+    });
+});
+
+describe('the published statement note', () => {
+    it('belongs only to a photograph the active revision holds', () => {
+        expect(hasPublishedStatement({ photoId: P(1), references: [{ kind: 'revision', id: REV }, { kind: 'series', id: 'ser_harbor' }] })).toBe(true);
+        expect(hasPublishedStatement({ photoId: P(1), references: [{ kind: 'series', id: 'ser_harbor' }] })).toBe(false);
+        expect(hasPublishedStatement({ photoId: P(1), references: [] })).toBe(false);
+        expect(hasPublishedStatement({ photoId: P(1), references: null })).toBe(false);
+        expect(hasPublishedStatement({ photoId: null, references: [] })).toBe(false);
     });
 });

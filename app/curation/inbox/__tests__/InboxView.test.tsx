@@ -67,11 +67,12 @@ function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
         lastObservedAt: '2026-02-01T00:00:00.000Z',
         capturedDate: '2024-06-01',
         fromPath: null,
-        identity: `${P(9)}, source present`,
+        identity: 'Source present',
         derivatives: 'p_1 ready',
         previewUrl: `/api/curation/media/${P(9)}/${REV}/p_${'c'.repeat(16)}/w800.webp`,
-        facts: [{ label: 'Capture date', value: '2024-06-01' }],
+        facts: [{ label: 'Capture date', value: '1 June 2024', dateTime: '2024-06-01' }],
         failure: null,
+        failureCode: null,
         candidates: [],
         references: [],
         suggestions: {
@@ -154,27 +155,38 @@ describe('the list', () => {
         }
     });
 
-    it('tells rows apart by source file and the ID head and tail', () => {
-        renderInbox(view({ items: [item(), item({ id: EVT(2), photoId: P(10), shortId: SHORT(10), sourcePath: 'trips/harbor-2.jpg' })] }));
+    it('leads each row with its file name, then the type, the folder and the ID head and tail', () => {
+        renderInbox(view({ items: [item(), item({ id: EVT(2), photoId: P(10), shortId: SHORT(10), sourcePath: 'trips/harbor-2.jpg' }), item({ id: EVT(3), photoId: P(11), shortId: SHORT(11), sourcePath: 'top.jpg' })] }));
         const links = screen.getAllByRole('link', { name: /Uncurated photograph/ });
-        expect(within(links[0]).getByText('trips/harbor-1.jpg')).toBeInTheDocument();
+        // The bold slot is what tells the rows apart; "Uncurated photograph" is the small line under it.
+        expect(links.map((link) => link.querySelector('strong')?.textContent)).toEqual(['harbor-1.jpg', 'harbor-2.jpg', 'top.jpg']);
+        expect(within(links[0]).getByText('Uncurated photograph').tagName).not.toBe('STRONG');
+        expect(within(links[0]).getByText('trips/')).toBeInTheDocument();
         expect(within(links[0]).getByText('ph_0000…0009')).toBeInTheDocument();
-        expect(within(links[1]).getByText('trips/harbor-2.jpg')).toBeInTheDocument();
         expect(within(links[1]).getByText('ph_0000…0010')).toBeInTheDocument();
+        // A file at the top of the library has no folder to show.
+        expect(within(links[2]).queryByText(/\/$/)).toBeNull();
+        // The badge, then the name: what a screen reader hears first after the type. jsdom runs the parts together, as it lays nothing out.
+        expect(links[0]).toHaveAccessibleName(/^New photograph\s*harbor-1\.jpg\s*Uncurated photograph/);
     });
 
-    it('shows the empty state once, with where photographs go in', () => {
+    it('says an empty inbox is empty once, in one wording, with where photographs go in', () => {
         renderInbox(view({ items: [], needsJudgment: 0, selected: null }));
         expect(screen.getByRole('heading', { name: 'Nothing requires judgment' })).toBeInTheDocument();
-        expect(screen.getByText('0 items require judgment')).toBeInTheDocument();
+        // No count above it, and nothing on the detail side, so "nothing" is said once.
+        expect(screen.queryByText(/items? requires? judgment/)).toBeNull();
+        expect(screen.queryByRole('region', { name: 'Item' })).toBeNull();
+        expect(screen.queryByText(/Nothing to review/)).toBeNull();
         expect(screen.getAllByText(/library folder/)).toHaveLength(1);
         expect(screen.queryByText(/its suggestion shows here/)).toBeNull();
         expect(screen.queryByRole('form')).toBeNull();
-        // The detail side keeps one quiet line, so a wide screen isn't blank, and doesn't repeat the list.
-        const pane = screen.getByRole('region', { name: 'Item' });
-        expect(pane).toHaveTextContent('Nothing to review. A new photograph opens here once the watcher picks it up.');
-        expect(within(pane).queryByRole('heading')).toBeNull();
         expect(screen.getAllByText(/Nothing requires judgment/)).toHaveLength(1);
+    });
+
+    it('keeps the count and the quiet line on the detail side once items are listed but none needs judgment', () => {
+        renderInbox(view({ items: [item({ status: 'approved', group: 'settled' })], needsJudgment: 0, selected: null }));
+        expect(screen.getByText('0 of 1 item requires judgment')).toBeInTheDocument();
+        expect(screen.getByRole('region', { name: 'Item' })).toHaveTextContent('Nothing left to decide. Pick an item from the list to look at it again.');
     });
 
     it('names the total beside the count needing judgment once settled items are listed too', () => {
@@ -201,7 +213,8 @@ describe('the list', () => {
                 // eslint-disable-next-line no-control-regex
                 expect(shown.textContent).not.toMatch(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/u);
             }
-            expect(within(row).getByText(`trips/${escaped}`)).toBeInTheDocument();
+            expect(within(row).getByText(escaped)).toBeInTheDocument();
+            expect(within(row).getByText('trips/')).toBeInTheDocument();
         } finally {
             restore();
             await f.cleanup();
@@ -216,28 +229,71 @@ describe('the list', () => {
 });
 
 describe('the detail', () => {
-    it('leads with the file name, its folder and capture date, and the photograph; the full IDs sit in Source facts', () => {
+    it('leads with the file name, its folder and capture date, and the photograph; each ID shows once, in full, at the top', () => {
         renderInbox();
         expect(screen.getByRole('img', { name: 'Candidate photograph harbor-1.jpg' })).toHaveAttribute('src', expect.stringMatching(/^\/api\/curation\/media\//));
         expect(screen.getByRole('heading', { level: 2, name: 'harbor-1.jpg' })).toBeInTheDocument();
         expect(screen.getByText('In trips, captured 1 June 2024')).toBeInTheDocument();
         const top = screen.getByRole('heading', { level: 2, name: 'harbor-1.jpg' }).closest('header')!.nextElementSibling as HTMLElement;
-        expect(within(top).getByText('Stable photo identity').nextElementSibling).toHaveTextContent('ph_0000…0009');
-        expect(within(top).getByText('Asset revision').nextElementSibling).toHaveTextContent('sha256-aaaa…aaaa');
+        // The whole value is the text, so a copy takes all of it; CSS shortens it in the middle, and its title shows it whole.
+        for (const [label, full] of [['Stable photo identity', P(9)], ['Asset revision', REV]]) {
+            const cell = within(top).getByText(label).nextElementSibling as HTMLElement;
+            expect(cell).toHaveTextContent(full);
+            expect(cell.querySelector(`[title="${full}"]`)).not.toBeNull();
+        }
         expect(within(top).getByText('System response')).toBeInTheDocument();
         expect(screen.getByText('Draft only')).toBeInTheDocument();
-        expect(screen.getByText('Published statement remains unchanged.')).toBeInTheDocument();
-        // Source facts sit apart from the suggestion the curator edits, and keep the full values.
+        // A new photograph has no published statement to keep.
+        expect(screen.queryByText('Published statement remains unchanged.')).toBeNull();
+        // Source facts sit apart from the suggestion the curator edits, and repeat neither ID.
         const facts = screen.getByRole('region', { name: 'Source facts' });
-        expect(within(facts).getByText(REV)).toBeInTheDocument();
-        expect(within(facts).getByText(`${P(9)}, source present`)).toBeInTheDocument();
+        expect(facts).not.toHaveTextContent(P(9));
+        expect(facts).not.toHaveTextContent(REV);
+        expect(within(facts).queryByText('Asset revision')).toBeNull();
+        expect(within(facts).getByText('Identity status').nextElementSibling).toHaveTextContent('Source present');
         expect(within(facts).getByText('Referenced by').nextElementSibling).toHaveTextContent('Nothing');
+        // One date format: the capture date and the observed time in words, each with its stored value in <time>.
+        expect(within(facts).getByText('Capture date').nextElementSibling!.querySelector('time')).toHaveAttribute('dateTime', '2024-06-01');
+        expect(within(facts).getByText('Capture date').nextElementSibling).toHaveTextContent('1 June 2024');
+        const observed = within(facts).getByText('Observed').nextElementSibling!.querySelector('time')!;
+        expect(observed).toHaveTextContent('1 February 2026, 00:00 UTC');
+        expect(observed).toHaveAttribute('dateTime', '2026-02-01T00:00:00.000Z');
+        expect(observed).toHaveAttribute('title', '2026-02-01T00:00:00.000Z');
+        expect(screen.queryByText(/\d{4}-\d{2}-\d{2}T/)).toBeNull();
         expect(screen.getByRole('heading', { name: 'Reviewable suggestion' })).toBeInTheDocument();
         expect(screen.getByText(/high confidence, by rules@abc/)).toBeInTheDocument();
         // On a phone, a way back to the list from the top of the detail, to this item's row.
         expect(screen.getByRole('link', { name: 'Back to inbox' })).toHaveAttribute('href', `/curation/inbox#row-${EVT(1)}`);
         expect(screen.getByRole('link', { name: 'Back to inbox' }).compareDocumentPosition(screen.getByRole('img', { name: /^Candidate photograph/ })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         expect(document.getElementById('inbox-list')).toBeInTheDocument();
+    });
+
+    it('says why a file failed, and what to do, at the top of the item in the refusal tone, and not again in Source facts', () => {
+        renderInbox(view({
+            selected: detail({
+                type: 'processing-failure', status: 'failed', title: 'Processing failed', photoId: null, shortId: 'no photo ID', assetRevision: null, previewUrl: null, identity: 'None yet. This file has no photo ID.',
+                sourcePath: 'inbox/raw-frame.heic', facts: [], failure: 'The file is not a format the watcher reads.', failureCode: 'unsupported-format',
+                can: { approve: false, edit: true, defer: true, dismiss: true, retry: false, reopen: false },
+            }),
+        }));
+        const strip = screen.getByText('The file is not a format the watcher reads.').closest('[data-state="failure"]') as HTMLElement;
+        expect(strip).toHaveAttribute('data-tone', 'alert');
+        expect(strip).toHaveTextContent(/Export the photograph as one of those into the library/);
+        expect(strip).toHaveTextContent(/Decide later keeps it here meanwhile\.$/);
+        // Above the facts and the actions, right under the file's name.
+        const heading = screen.getByRole('heading', { level: 2, name: 'raw-frame.heic' });
+        expect(heading.closest('header')!.nextElementSibling).toBe(strip);
+        const facts = screen.getByRole('region', { name: 'Source facts' });
+        expect(within(facts).queryByText('Failure')).toBeNull();
+        expect(screen.getAllByText('The file is not a format the watcher reads.')).toHaveLength(1);
+        // No photograph, so no published statement to keep.
+        expect(screen.queryByText('Published statement remains unchanged.')).toBeNull();
+    });
+
+    it('says the published statement remains unchanged only where the active revision holds the photograph', () => {
+        renderInbox(view({ selected: detail({ type: 'missing', references: [{ kind: 'revision', id: ACTIVE }], can: { approve: false, edit: true, defer: true, dismiss: false, retry: false, reopen: false }, primaryUnavailable: "Locating isn't in the inbox yet." }) }));
+        expect(screen.getByText('Published statement remains unchanged.')).toBeInTheDocument();
+        expect(screen.queryByText(/not a format the watcher reads/)).toBeNull();
     });
 
     it('names series by title and keeps the live revision apart, for a replacement and in Source facts', () => {
@@ -457,9 +513,15 @@ describe('the forms', () => {
         }
     });
 
-    it('take the description on one line, as the server stores it', () => {
+    it('take the description in a box three lines tall that keeps it on one line, as the server stores it', () => {
         renderInbox();
-        expect(screen.getByRole('textbox', { name: 'Draft description' }).tagName).toBe('INPUT');
+        const field = screen.getByRole('textbox', { name: 'Draft description' });
+        expect(field.tagName).toBe('TEXTAREA');
+        expect(field).toHaveAttribute('rows', '3');
+        // Enter adds no line break, and a pasted one becomes a space.
+        expect(fireEvent.keyDown(field, { key: 'Enter' })).toBe(false);
+        fireEvent.change(field, { target: { value: 'Harbor at dawn,\nfrom the pier.\r\nFog.' } });
+        expect(field).toHaveValue('Harbor at dawn, from the pier. Fog.');
     });
 
     it('show a stale answer with a way to refresh, and keep what the curator typed', async () => {
@@ -500,7 +562,7 @@ describe('thumbnails in the list', () => {
         expect(thumb).toHaveAttribute('width', '56');
         expect(thumb).toHaveAttribute('height', '56');
         // The file name names the row, not the picture.
-        expect(row).toHaveAccessibleName(/trips\/harbor-1\.jpg/);
+        expect(row).toHaveAccessibleName(/harbor-1\.jpg/);
         expect(within(row).queryByRole('img')).toBeNull();
     });
 

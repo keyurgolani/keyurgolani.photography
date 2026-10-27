@@ -92,7 +92,7 @@ test.beforeEach(async ({ page }) => {
     await signIn(page, curator.origin, curator.passphrase);
 });
 
-test('the curator header leads, and an empty inbox says nothing requires judgment', async ({ page }) => {
+test('the curator header leads, and an empty inbox says once that nothing requires judgment', async ({ page }) => {
     // The login lands on /curation, which leads on to the inbox.
     await page.getByRole('link', { name: 'Open the inbox' }).click();
     await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox`);
@@ -102,8 +102,10 @@ test('the curator header leads, and an empty inbox says nothing requires judgmen
     await expect(screens.getByRole('link', { name: 'Inbox' })).toHaveAttribute('aria-current', 'page');
     await expect(screens.getByText('Preview & publish')).toBeVisible();
     await expect(page.getByRole('heading', { level: 1, name: 'Curation inbox' })).toBeVisible();
-    await expect(summary(page)).toHaveText('0 items require judgment');
+    // Said once: no count above it, and nothing beside it on a wide screen.
+    await expect(summary(page)).toHaveCount(0);
     await expect(page.getByRole('heading', { name: 'Nothing requires judgment' })).toBeVisible();
+    await expect(page.getByText(/Nothing (requires judgment|to review)/)).toHaveCount(1);
 });
 
 test('lists what the watcher opened, and shows the selected photograph from the curator-only route', async ({ page }) => {
@@ -112,9 +114,11 @@ test('lists what the watcher opened, and shows the selected photograph from the 
     await expect(summary(page)).toHaveText('8 items require judgment');
     const list = page.getByRole('list', { name: 'Requires judgment' });
     await expect(list.getByRole('link')).toHaveCount(8);
-    // Each row names its source file, so rows of new photographs tell apart.
-    const approveRow = list.getByRole('link', { name: new RegExp(FRESH_SOURCES[FRESH.approve]) });
+    // Each row leads with its source file's name, so rows of new photographs tell apart.
+    const approveName = path.posix.basename(FRESH_SOURCES[FRESH.approve]);
+    const approveRow = list.getByRole('link', { name: new RegExp(approveName.replace('.', '\\.')) });
     await expect(approveRow).toHaveCount(1);
+    await expect(approveRow.locator('strong')).toHaveText(approveName);
     // And shows a thumbnail: the set's smallest WebP from the curator-only route, at a fixed size, loaded lazily, with an empty alt.
     const thumb = approveRow.locator('img');
     await expect(thumb).toHaveAttribute('alt', '');
@@ -142,8 +146,12 @@ test('lists what the watcher opened, and shows the selected photograph from the 
     const response = await page.request.get(`${curatorOrigin()}${await preview.getAttribute('src')}`);
     expect(response.status()).toBe(200);
     expect(response.headers()['cache-control']).toContain('no-store');
-    await expect(page.getByText('Published statement remains unchanged.')).toBeVisible();
+    // A new photograph has no published statement to keep; the missing published one below does.
+    await expect(page.getByText('Published statement remains unchanged.')).toHaveCount(0);
     await expect(page.getByRole('combobox', { name: 'Suggested series' })).toBeVisible();
+    // Three lines at least, for a sentence.
+    const description = page.getByRole('textbox', { name: 'Draft description' });
+    expect((await description.boundingBox())!.height).toBeGreaterThanOrEqual(3 * 16);
 });
 
 test('approves a new photograph into the draft with the typed description, and publishes nothing', async ({ page }) => {
@@ -311,7 +319,9 @@ test('dismisses an unreadable file with a reason, then reopens it', async ({ pag
     const { events } = await listEvents(data().root);
     const failed = events.find((event) => event.type === 'processing-failure')!;
     await openInbox(page, failed.id);
-    await expect(page.getByText('The file is not a format the watcher reads.')).toBeVisible();
+    // Why, and what to do, on the first screen, not only in Source facts.
+    await expect(page.getByText('The file is not a format the watcher reads.')).toBeInViewport();
+    await expect(page.getByText(/^The watcher reads JPEG, PNG and WebP\./)).toBeInViewport();
     await expect(page.getByRole('button', { name: 'Retry processing' })).toHaveCount(0);
     await page.getByText('Dismiss with a reason').click();
     await page.getByRole('textbox', { name: 'Reason' }).fill('An export from another app; the JPEG is already in.');
@@ -417,6 +427,8 @@ test('Decide later moves on to the next item too, and the last decision, from th
     const missing = events.find((event) => event.type === 'missing')!;
     const failed = events.find((event) => event.type === 'processing-failure')!;
     await openInbox(page, missing.id, { landed: true });
+    // The active revision holds it, so its published statement is kept, and the page says so.
+    await expect(page.getByText('Published statement remains unchanged.')).toBeVisible();
     await page.getByRole('button', { name: 'Decide later' }).click();
     await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox?item=${failed.id}#item`);
     await waitForHydration(page);

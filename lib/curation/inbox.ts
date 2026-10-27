@@ -7,6 +7,7 @@ import { printable, scrub } from './commands';
 import { EVENT_ID_RE, FAILURE_TEXT, needsJudgment, waitingReason, type CurationEvent } from './events';
 import { photoHolderEntries } from './holders';
 import {
+    humanDate,
     itemTitle,
     PRIMARY_ACTION,
     seriesName,
@@ -71,10 +72,11 @@ function itemOf(event: CurationEvent, registry: Registry | null, waiting: string
 }
 
 function identityText(event: CurationEvent, registry: Registry | null): string {
+    // The photo ID itself shows once, at the top of the item, so this says only what the registry knows of it.
     if (event.photoId === null) return 'None yet. This file has no photo ID.';
     const photo = registry?.photos[event.photoId];
-    if (!photo) return `${event.photoId}, which the registry no longer holds.`;
-    const parts = [`${event.photoId}, source ${photo.sourceHealth}`];
+    if (!photo) return 'The registry no longer holds its photo ID.';
+    const parts = [`Source ${photo.sourceHealth}`];
     if (photo.mergedInto) parts.push(`merged into ${photo.mergedInto}`);
     if (photo.duplicateOf) parts.push(`a copy of ${photo.duplicateOf}`);
     if (event.assetRevision !== null && photo.source.observedRevision !== event.assetRevision) parts.push(`its source now holds ${photo.source.observedRevision}`);
@@ -104,10 +106,10 @@ function derivativeText(event: CurationEvent, registry: Registry | null): { text
     return { text, ready };
 }
 
-function factsOf(event: CurationEvent): { label: string; value: string }[] {
+function factsOf(event: CurationEvent): InboxDetail['facts'] {
     const facts = event.derivedFacts;
-    const rows: { label: string; value: string }[] = [];
-    if (facts.capturedDate) rows.push({ label: 'Capture date', value: facts.capturedDate });
+    const rows: InboxDetail['facts'] = [];
+    if (facts.capturedDate) rows.push({ label: 'Capture date', value: humanDate(facts.capturedDate) ?? facts.capturedDate, dateTime: facts.capturedDate });
     else if (facts.capturedDate === null) rows.push({ label: 'Capture date', value: 'None in the file' });
     if (facts.width && facts.height) rows.push({ label: 'Size', value: `${facts.width} x ${facts.height}` });
     if (facts.sourceFormat) rows.push({ label: 'Format', value: facts.sourceFormat });
@@ -197,6 +199,7 @@ async function detailOf(root: string, event: CurationEvent, item: InboxItem, reg
         previewUrl: derivatives.ready && event.photoId && event.assetRevision ? curatorPreviewUrl(event.photoId, event.assetRevision, derivatives.ready) : null,
         facts: factsOf(event),
         failure: event.derivedFacts.failure ? FAILURE_TEXT[event.derivedFacts.failure] : null,
+        failureCode: event.derivedFacts.failure ?? null,
         candidates: event.derivedFacts.candidates ?? [],
         references,
         suggestions: {

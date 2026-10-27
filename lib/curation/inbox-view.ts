@@ -8,6 +8,9 @@
 
 import type { CurationEventStatus, CurationEventType, Placement } from './events';
 
+/** The watcher's reasons for making nothing from a file, as lib/curation/events.ts's FAILURE_REASONS names them. */
+export type FailureCode = 'unsupported-format' | 'digest-collision' | 'undecodable';
+
 export const BADGE_LABELS: Record<CurationEventType, string> = {
     new: 'New photograph',
     replacement: 'Replacement',
@@ -156,8 +159,11 @@ export interface InboxDetail extends InboxItem {
     derivatives: string;
     /** A curator-only URL for the candidate's w800 WebP, or null when no set is ready. */
     previewUrl: string | null;
-    facts: { label: string; value: string }[];
+    /** What the file holds, in words. A date carries its `YYYY-MM-DD` as `dateTime`, for the page's `<time>`. */
+    facts: { label: string; value: string; dateTime?: string }[];
+    /** Why the watcher made nothing from the file, in words, and the reason's code. */
     failure: string | null;
+    failureCode: FailureCode | null;
     candidates: string[];
     /** Who still shows it: the active revision, or a working-layer series. Null when it can't be told. */
     references: HolderRef[] | null;
@@ -334,11 +340,30 @@ export function fileParts(sourcePath: string): { name: string; folder: string | 
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
+/** A `YYYY-MM-DD` date as the Inbox says dates, `4 January 2024`, or null for anything else. */
+export function humanDate(date: string): string | null {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+    const month = match ? MONTHS[Number(match[2]) - 1] : undefined;
+    return match && month ? `${Number(match[3])} ${month} ${match[1]}` : null;
+}
+
+/**
+ * A stored timestamp the same way, with its time in UTC, as the watcher and
+ * the actions write it: `1 February 2026, 00:03 UTC`. Anything that isn't a
+ * timestamp shows as it is.
+ */
+export function humanTime(iso: string): string {
+    const at = new Date(iso);
+    if (!/^\d{4}-\d{2}-\d{2}T/.test(iso) || Number.isNaN(at.getTime())) return iso;
+    const day = humanDate(at.toISOString().slice(0, 10));
+    return `${day}, ${at.toISOString().slice(11, 16)} UTC`;
+}
+
 /** The line under the file name: its folder and its capture date, which tell the owner which photograph this is. */
 export function identityLine(sourcePath: string, capturedDate: string | null): string {
     const { folder } = fileParts(sourcePath);
-    const match = capturedDate === null ? null : /^(\d{4})-(\d{2})-(\d{2})$/.exec(capturedDate);
-    const date = match ? `captured ${Number(match[3])} ${MONTHS[Number(match[2]) - 1]} ${match[1]}` : 'no capture date read';
+    const day = capturedDate === null ? null : humanDate(capturedDate);
+    const date = day ? `captured ${day}` : 'no capture date read';
     return `${folder === null ? 'At the top of the library' : `In ${folder}`}, ${date}`;
 }
 
@@ -432,6 +457,43 @@ export function systemResponse(item: StateFacts, labelOf: (seriesId: string) => 
     }
     if (item.status === 'dismissed') return 'Dismissed, so it needs no judgment. Nothing a visitor sees changed.';
     return SYSTEM_RESPONSE[item.type];
+}
+
+/**
+ * Why the watcher made nothing from a file, and what the owner can do about
+ * it, for the strip at the top of a processing failure, so neither waits in
+ * Source facts. Null for every other item. `next` is null once the item is
+ * settled. The formats are lib/identity/scan.ts's SOURCE_EXTENSIONS.
+ */
+export function failureNotice(detail: Pick<InboxDetail, 'type' | 'failure' | 'failureCode' | 'status' | 'can'>): { reason: string; next: string | null } | null {
+    if (detail.type !== 'processing-failure') return null;
+    const reason = detail.failure ?? "The watcher couldn't process the file.";
+    if (detail.status !== 'failed' && detail.status !== 'open' && detail.status !== 'deferred') return { reason, next: null };
+    const keep = detail.can.defer ? ' Decide later keeps it here meanwhile.' : '';
+    switch (detail.failureCode) {
+        case 'unsupported-format':
+            return { reason, next: `The watcher reads JPEG, PNG and WebP. Export the photograph as one of those into the library, and it shows up here as a new photograph. Then dismiss this one with a reason.${keep}` };
+        case 'digest-collision':
+            return { reason, next: `Check which of the two files is the photograph you mean, and take the other out of the library, or dismiss this one with a reason.${keep}` };
+        case 'undecodable':
+            return {
+                reason,
+                next: detail.can.retry
+                    ? `Check that the file opens, and put a good copy in its place in the library. Then choose Retry processing.${keep}`
+                    : `Check that the file opens, and put a good copy in its place in the library, or dismiss this one with a reason.${keep}`,
+            };
+        default:
+            return { reason, next: detail.can.retry ? `Choose Retry processing to try it again, or dismiss it with a reason.${keep}` : `Dismiss it with a reason.${keep}` };
+    }
+}
+
+/**
+ * Whether the item's photograph has a published statement to keep: the
+ * active revision holds it. Only then does the page say the statement
+ * remains unchanged; a new photograph or a file with no photo ID has none.
+ */
+export function hasPublishedStatement(detail: Pick<InboxDetail, 'photoId' | 'references'>): boolean {
+    return detail.photoId !== null && (detail.references?.some((ref) => ref.kind === 'revision') ?? false);
 }
 
 const visibilityNote = (option: SeriesOption | undefined) => (option && option.visibility !== 'published' ? ` (${option.visibility})` : '');

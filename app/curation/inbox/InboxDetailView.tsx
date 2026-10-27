@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { ArrowLeft, Check } from 'lucide-react';
 import styles from '../curator.module.css';
 import ArrivalStrip from './ArrivalStrip';
@@ -5,8 +6,10 @@ import EventBadge from './EventBadge';
 import ItemActions from './ItemActions';
 import LandOnItem from './LandOnItem';
 import {
+    failureNotice,
     fileParts,
-    headTail,
+    hasPublishedStatement,
+    humanTime,
     identityLine,
     referencedByText,
     seriesMembershipText,
@@ -21,9 +24,36 @@ type ReadyView = Extract<InboxView, { state: 'ready' }>;
 
 interface FactRow {
     label: string;
-    value: string;
-    /** An ID or a hash, set in the mono face. */
+    value: ReactNode;
+    /** An ID or a hash, set in the mono face and shortened in the middle to fit. */
     mono?: boolean;
+    /** A date the value says in words, as `<time>` takes it. */
+    dateTime?: string;
+}
+
+/**
+ * An ID or a hash in full, shortened in the middle when the cell is too
+ * narrow: the head gives way to an ellipsis and the last four characters
+ * stay. The text is the whole value, so selecting and copying it takes all of
+ * it, and its title shows it whole.
+ */
+function MiddleEllipsis({ value }: { value: string }) {
+    const tail = value.length > 12 ? value.slice(-4) : '';
+    return (
+        <span className={styles.middle} title={value}>
+            <span>{value.slice(0, value.length - tail.length)}</span>
+            {tail ? <span>{tail}</span> : null}
+        </span>
+    );
+}
+
+/** A stored timestamp in the Inbox's words, with the stored value in `dateTime` and as its title. */
+function When({ at }: { at: string }) {
+    return (
+        <time dateTime={at} title={at}>
+            {humanTime(at)}
+        </time>
+    );
 }
 
 function Facts({ rows }: { rows: FactRow[] }) {
@@ -32,28 +62,53 @@ function Facts({ rows }: { rows: FactRow[] }) {
             {rows.map((row) => (
                 <div key={row.label}>
                     <dt>{row.label}</dt>
-                    <dd className={row.mono ? styles.mono : undefined}>{row.value}</dd>
+                    <dd className={row.mono ? styles.mono : undefined}>
+                        {row.mono && typeof row.value === 'string' ? <MiddleEllipsis value={row.value} /> : row.dateTime ? <time dateTime={row.dateTime}>{row.value}</time> : row.value}
+                    </dd>
                 </div>
             ))}
         </dl>
     );
 }
 
-/** What the watcher saw, kept apart from anything the curator decides, with every ID and hash in full. */
+/**
+ * What the watcher saw, kept apart from anything the curator decides. The
+ * photo ID and the asset revision show once, at the top of the item, and a
+ * processing failure's reason in the strip there.
+ */
 function SourceFacts({ view, detail }: { view: ReadyView; detail: InboxDetail }) {
     const rows: FactRow[] = [
         { label: 'Source file', value: detail.sourcePath },
         ...(detail.fromPath ? [{ label: 'Moved from', value: detail.fromPath }] : []),
         { label: 'Identity status', value: detail.identity },
-        ...(detail.assetRevision ? [{ label: 'Asset revision', value: detail.assetRevision, mono: true }] : []),
         { label: 'Derivatives', value: detail.derivatives },
         ...detail.facts,
-        ...(detail.failure ? [{ label: 'Failure', value: detail.failure }] : []),
         ...(detail.candidates.length > 0 ? [{ label: 'Candidates', value: detail.candidates.join(', ') }] : []),
         { label: 'Referenced by', value: referencedByText(detail.references, view.series) },
         { label: 'Active revision', value: view.activeRevisionId ?? 'None yet', mono: view.activeRevisionId !== null },
-        { label: 'Observed', value: detail.lastObservedAt !== detail.observedAt ? `${detail.observedAt}, last ${detail.lastObservedAt}` : detail.observedAt },
-        ...(detail.reviewedAt ? [{ label: 'Reviewed', value: `${detail.reviewedAt} by ${detail.reviewedBy ?? 'unknown'}` }] : []),
+        {
+            label: 'Observed',
+            value:
+                detail.lastObservedAt !== detail.observedAt ? (
+                    <>
+                        <When at={detail.observedAt} />, last <When at={detail.lastObservedAt} />
+                    </>
+                ) : (
+                    <When at={detail.observedAt} />
+                ),
+        },
+        ...(detail.reviewedAt
+            ? [
+                  {
+                      label: 'Reviewed',
+                      value: (
+                          <>
+                              <When at={detail.reviewedAt} /> by {detail.reviewedBy ?? 'unknown'}
+                          </>
+                      ),
+                  },
+              ]
+            : []),
     ];
     return (
         <section className={styles.box} aria-labelledby="source-facts">
@@ -138,11 +193,13 @@ function BackToInbox({ itemId }: { itemId: string | null }) {
 export default function InboxDetailView({ view }: { view: ReadyView }) {
     const detail = view.selected;
     if (detail === null) {
-        // Nothing needs judgment, so nothing is selected: the list says so once. On a wide screen the detail side keeps one quiet line, so it isn't blank; a phone shows the list alone then.
+        // Nothing needs judgment, so nothing is selected: the list says so once. Once items are listed, a wide screen's detail side keeps one quiet line pointing at them; a phone shows the list alone then.
         if (view.needsJudgment === 0 && !view.missingSelection) {
+            // An empty inbox: the list says so, once, and this side stays empty (walkthrough, 018ec79a).
+            if (view.items.length === 0) return null;
             return (
                 <section className={`${styles.state} ${styles.emptyPane}`} aria-label="Item">
-                    <p>{view.items.length === 0 ? 'Nothing to review. A new photograph opens here once the watcher picks it up.' : 'Nothing left to decide. Pick an item from the list to look at it again.'}</p>
+                    <p>Nothing left to decide. Pick an item from the list to look at it again.</p>
                 </section>
             );
         }
@@ -156,6 +213,7 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
     const labelOf = (seriesId: string) => seriesName(view.series, seriesId);
     const file = fileParts(detail.sourcePath);
     const status = statusLabel(detail);
+    const failure = failureNotice(detail);
     return (
         // `id="item"` is where every row's link lands; a phone shows only this then.
         <section className={styles.detail} id="item" aria-labelledby="item-heading">
@@ -188,10 +246,20 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
                         {status.text}
                     </span>
                 </header>
+                {/* A processing failure says why, and what to do, on the first screen, in the refusal tone. */}
+                {failure ? (
+                    <div className={`${styles.notice} ${styles.failure}`} data-tone="alert" data-state="failure">
+                        <p>
+                            <strong>{failure.reason}</strong>
+                        </p>
+                        {failure.next ? <p>{failure.next}</p> : null}
+                    </div>
+                ) : null}
                 <Facts
                     rows={[
-                        { label: 'Stable photo identity', value: detail.shortId, mono: detail.photoId !== null },
-                        { label: 'Asset revision', value: detail.assetRevision ? headTail(detail.assetRevision) : 'None', mono: detail.assetRevision !== null },
+                        // Each in full, once, shortened in the middle to fit.
+                        { label: 'Stable photo identity', value: detail.photoId ?? detail.shortId, mono: detail.photoId !== null },
+                        { label: 'Asset revision', value: detail.assetRevision ?? 'None', mono: detail.assetRevision !== null },
                         { label: 'System response', value: systemResponse(detail, labelOf) },
                         ...(detail.waiting ? [{ label: 'Waiting', value: `${sentence(detail.waiting)}. Act on it once the set is ready.` }] : []),
                         // As `curation show` says it, from the same placement lookup.
@@ -208,14 +276,17 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
                     activeRevisionId={view.activeRevisionId}
                     series={view.series}
                     seriesProblem={view.seriesProblem}
+                    // Only where the photograph has a published statement to keep: the active revision holds it.
                     note={
-                        <div className={styles.lock}>
-                            <Check size={17} aria-hidden="true" />
-                            <p>
-                                <strong>Published statement remains unchanged.</strong>
-                                Automatic analysis can draft a revision, but it cannot edit the public series or its order.
-                            </p>
-                        </div>
+                        hasPublishedStatement(detail) ? (
+                            <div className={styles.lock}>
+                                <Check size={17} aria-hidden="true" />
+                                <p>
+                                    <strong>Published statement remains unchanged.</strong>
+                                    Automatic analysis can draft a revision, but it cannot edit the public series or its order.
+                                </p>
+                            </div>
+                        ) : null
                     }
                 />
                 <SourceFacts view={view} detail={detail} />
@@ -225,7 +296,7 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
                         <ol className={styles.history}>
                             {detail.decisions.map((decision, index) => (
                                 <li key={index}>
-                                    {decision.at} {decision.action} by {decision.by}
+                                    <When at={decision.at} /> {decision.action} by {decision.by}
                                     {decision.detail ? `: ${decision.detail}` : ''}
                                 </li>
                             ))}

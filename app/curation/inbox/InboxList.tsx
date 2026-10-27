@@ -3,7 +3,7 @@ import styles from '../curator.module.css';
 import EmptyArrival from './EmptyArrival';
 import EventBadge from './EventBadge';
 import ReturnToRow from './ReturnToRow';
-import { summaryText, type InboxItem, type InboxView, type ItemGroup } from '@/lib/curation/inbox-view';
+import { fileParts, summaryText, type InboxItem, type InboxView, type ItemGroup } from '@/lib/curation/inbox-view';
 
 type ReadyView = Extract<InboxView, { state: 'ready' }>;
 
@@ -37,7 +37,13 @@ function Thumbnail({ url }: { url: string | null }) {
     return <img className={styles.thumb} src={url} alt="" width={THUMB} height={THUMB} loading="lazy" decoding="async" />;
 }
 
+/**
+ * A row leads with its file's name, which is what tells one photograph from
+ * the next; the type's title is the small line under it, beside the folder
+ * and the ID's head and tail.
+ */
 function ItemLink({ item, selected }: { item: InboxItem; selected: boolean }) {
+    const { name, folder } = fileParts(item.sourcePath);
     return (
         <li>
             {/* `#item` lands on the item itself: on a phone it's all the page shows, and a keyboard starts in its form. */}
@@ -45,9 +51,10 @@ function ItemLink({ item, selected }: { item: InboxItem; selected: boolean }) {
                 <Thumbnail url={item.thumbnailUrl} />
                 <span className={styles.itemText}>
                     <EventBadge type={item.type} />
-                    <strong>{item.title}</strong>
+                    <strong className={styles.itemName}>{name}</strong>
+                    <span className={styles.itemTitle}>{item.title}</span>
                     <span className={styles.itemMeta}>
-                        <span className={styles.itemFile}>{item.sourcePath}</span>
+                        {folder === null ? null : <span className={styles.itemFile}>{folder}/</span>}
                         <small>{item.shortId}</small>
                     </span>
                     {item.waiting ? <span className={styles.waitingNote}>Waiting: {item.waiting}</span> : null}
@@ -67,13 +74,15 @@ export default function InboxList({ view, listView = false }: { view: ReadyView;
     const selectedId = view.selected?.id ?? null;
     const judgment = view.items.filter((item) => item.group === 'judgment');
     const others = (['unplaced', 'waiting', 'deferred', 'placed', 'settled'] as const).map((group) => ({ group, items: view.items.filter((item) => item.group === group) }));
+    const empty = view.items.length === 0 && view.problems.length === 0;
     return (
         <section className={styles.list} id="inbox-list" aria-labelledby="inbox-heading">
             <ReturnToRow listView={listView} />
             <header className={styles.listHeader}>
                 <div>
                     <h1 id="inbox-heading">Curation inbox</h1>
-                    <p>{summaryText(view)}</p>
+                    {/* An empty inbox says it once, in the empty state below. */}
+                    {empty ? null : <p>{summaryText(view)}</p>}
                 </div>
                 {/* A plain GET of the page: it reads the inbox again and changes nothing. It keeps an open item open; the list view
                     opens none, so a phone stays on the list (a wide screen's plain URL selects the same first item again). */}
@@ -86,7 +95,7 @@ export default function InboxList({ view, listView = false }: { view: ReadyView;
             </header>
             {/* The last decision's answer, when it left nothing else to decide. It opens the list itself, so only the list view takes it. */}
             {listView ? <EmptyArrival empty={view.needsJudgment === 0} /> : null}
-            {view.items.length === 0 && view.problems.length === 0 ? (
+            {empty ? (
                 <div className={styles.empty}>
                     <h2 id="inbox-empty" tabIndex={-1}>
                         Nothing requires judgment

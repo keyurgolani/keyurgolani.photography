@@ -256,6 +256,17 @@
   font-weight: 500;
 }
 
+/* The file name leads the row, so it wraps rather than overflow. */
+.itemName {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.itemTitle {
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
+}
+
 .item small,
 .mono {
   color: var(--gah-ink-muted);
@@ -317,7 +328,8 @@
   display: grid;
   min-width: 0;
   grid-template-columns: minmax(0, 41%) minmax(0, 59%);
-  align-content: start;
+  /* The arrival strip, then the photograph and the form, which take the rest, so the photograph's ground reaches the list's end. */
+  grid-template-rows: auto 1fr;
 }
 
 .photo {
@@ -325,22 +337,25 @@
   background: var(--gah-ground);
 }
 
-/* The column runs the detail's full height; the frame inside it stays at the
-   top of the screen, so the photograph is in view while the curator works
+/* The column runs the detail's full height; the frame inside it stays on
+   screen, a screen tall, so the photograph is in view while the curator works
    the form beside it. Only on the wide layout, where it has its own column
-   and covers nothing. */
+   and covers nothing. The photograph takes the column's width, keeping its
+   own proportions, and sits in the middle of the frame. */
 .photoFrame {
   position: sticky;
   top: 0;
   display: grid;
-  padding: 4rem 6% 6%;
-  align-content: start;
+  min-height: 100svh;
+  padding: 3.5rem 6% 6%;
+  align-content: center;
   justify-items: center;
 }
 
 .photoFrame img {
-  max-width: 100%;
-  max-height: calc(100svh - 7rem);
+  width: 100%;
+  height: auto;
+  max-height: calc(100svh - 6rem);
   object-fit: contain;
 }
 
@@ -443,6 +458,24 @@
   overflow-wrap: anywhere;
 }
 
+/* An ID or a hash on one line: the head gives way to an ellipsis, the last four characters stay. */
+.middle {
+  display: flex;
+  max-width: 100%;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.middle > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.middle > span + span {
+  flex: none;
+}
+
 .box {
   margin-top: 1rem;
   padding: 0.875rem;
@@ -497,6 +530,14 @@
 textarea.control {
   min-height: 5rem;
   resize: vertical;
+}
+
+/* Three lines at least, growing with what's typed (ItemActions sizes it where field-sizing doesn't). */
+textarea.description {
+  min-height: calc(3lh + 1rem + 2px);
+  field-sizing: content;
+  resize: none;
+  overflow: hidden;
 }
 
 .check {
@@ -689,6 +730,19 @@ p.fieldError {
 
 .notice p {
   margin: 0;
+}
+
+.notice p + p {
+  margin-top: 0.375rem;
+}
+
+.failure {
+  font-size: var(--gah-type-label);
+}
+
+.failure strong {
+  font-size: var(--gah-type-ui);
+  font-weight: 500;
 }
 
 /* The answer an approval or Decide later brought to the page it opened: the
@@ -913,7 +967,9 @@ p.fieldError {
 
   .photoFrame {
     position: relative;
+    min-height: 0;
     padding: 3.25rem 1.125rem 0.75rem;
+    align-content: start;
   }
 
   /* Short enough that the file name shows under it on a phone and at 200% zoom. */

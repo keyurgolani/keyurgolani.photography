@@ -53,7 +53,7 @@ interface ItemActionsProps {
     activeRevisionId: string | null;
     series: SeriesOption[];
     seriesProblem: string | null;
-    /** The "Published statement remains unchanged" note, between the suggestion and the actions. */
+    /** The "Published statement remains unchanged" note, between the suggestion and the actions, where the photograph has one. */
     note: ReactNode;
 }
 
@@ -157,11 +157,18 @@ function SuggestionFields({ detail, series, seriesProblem, answer }: Pick<ItemAc
     const evidence = suggestionEvidence(suggested);
     // A refused description shows by the field, and the field takes focus, so the curator is where the fix goes.
     const descriptionError = answer.status === 'invalid' && answer.field === 'description' ? answer.message : null;
-    const descriptionRef = useRef<HTMLInputElement>(null);
+    const descriptionRef = useRef<HTMLTextAreaElement>(null);
     const answerSerial = answer.status === 'idle' ? 0 : answer.serial;
     useEffect(() => {
         if (descriptionError) descriptionRef.current?.focus();
     }, [answerSerial, descriptionError]);
+    // The box grows with what's typed: CSS does it where field-sizing works, and this elsewhere.
+    useEffect(() => {
+        const box = descriptionRef.current;
+        if (box === null || (typeof CSS !== 'undefined' && CSS.supports?.('field-sizing', 'content'))) return;
+        box.style.height = 'auto';
+        box.style.height = `${box.scrollHeight + box.offsetHeight - box.clientHeight}px`;
+    }, [description]);
     // A position chosen for one series means nothing in another, so a new series starts from its own default.
     const pickSeries = (value: string) => {
         setSeriesValue(value);
@@ -209,16 +216,20 @@ function SuggestionFields({ detail, series, seriesProblem, answer }: Pick<ItemAc
 
             <label className={styles.label}>
                 Draft description
-                {/* One line, as the server stores it: a description can't hold a line break. */}
-                <input
+                {/* Three lines at least, so it reads as a sentence to write, and it grows. A description can't hold a line
+                    break, as the server stores it, so Enter adds none and a pasted one becomes a space. */}
+                <textarea
                     ref={descriptionRef}
-                    type="text"
-                    className={styles.control}
+                    rows={3}
+                    className={`${styles.control} ${styles.description}`}
                     name="description"
                     value={description}
                     disabled={decorative}
                     autoComplete="off"
-                    onChange={(event) => setDescription(event.target.value)}
+                    onKeyDown={(event) => {
+                        if (event.key === 'Enter' && !event.nativeEvent.isComposing) event.preventDefault();
+                    }}
+                    onChange={(event) => setDescription(event.target.value.replace(/\r\n|[\r\n]/g, ' '))}
                     aria-invalid={descriptionError ? true : undefined}
                     aria-describedby={descriptionError ? 'description-error description-hint' : 'description-hint'}
                 />
