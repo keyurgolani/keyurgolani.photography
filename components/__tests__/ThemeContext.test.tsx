@@ -1,3 +1,4 @@
+import { Profiler } from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -50,6 +51,22 @@ describe('ThemeProvider', () => {
       </ThemeProvider>,
     );
     expect(screen.getByRole('button')).toHaveTextContent('light');
+  });
+
+  it('renders once for a stored light theme, so no context change reaches a boundary still streaming in', () => {
+    // A second commit on mount would be a context change above every Suspense boundary, which React then renders
+    // again on the client instead of hydrating: the curator's inbox, opened in the light theme, didn't land on #item.
+    html.setAttribute('data-theme', 'light');
+    const commits: string[] = [];
+    render(
+      <Profiler id="theme" onRender={(_id, phase) => commits.push(phase)}>
+        <ThemeProvider>
+          <p>child</p>
+        </ThemeProvider>
+      </Profiler>,
+    );
+    expect(html.dataset.hydrated).toBe('true');
+    expect(commits).toEqual(['mount']);
   });
 
   it('marks <html> hydrated once its children have committed', () => {

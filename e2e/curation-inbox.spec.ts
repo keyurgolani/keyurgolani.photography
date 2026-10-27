@@ -389,6 +389,29 @@ test('shows a phone one item at a time, and Back to inbox or the browser Back re
     expect(Math.abs((await page.evaluate(() => window.scrollY)) - scrolled)).toBeLessThanOrEqual(2);
 });
 
+// The walkthrough on 018ec79a found a phone in the light theme left at the top of the page; the curator is dark in both, and lands the same.
+for (const theme of ['dark', 'light'] as const) {
+    test(`lands a phone's opened item at the top in the ${theme} theme, its heading focused`, async ({ page, isMobile }) => {
+        test.skip(!isMobile, 'a wide screen shows the item beside the list');
+        await page.evaluate((stored) => localStorage.setItem('theme', stored), theme);
+        await openInbox(page);
+        await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+        const row = page.locator('#inbox-list').getByRole('link').first();
+        const rowId = (await row.getAttribute('data-row')) ?? '';
+        // A full load of the row's URL, as a tap on it makes.
+        await row.click();
+        await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox?item=${rowId}#item`);
+        await waitForHydration(page);
+        await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+        // Through the load event too, so a late layout can't take the page back to the header.
+        await page.waitForLoadState('load');
+        await expect(page.locator('#item-heading')).toBeFocused();
+        await expect.poll(() => page.evaluate(() => Math.round(document.getElementById('item')!.getBoundingClientRect().top))).toBe(0);
+        expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+        expect((await page.getByRole('link', { name: 'Back to inbox' }).boundingBox())?.y).toBe(0);
+    });
+}
+
 test('Decide later moves on to the next item too, and the last decision, from the plain inbox URL, shows the empty state', async ({ page, isMobile }) => {
     const { events } = await listEvents(data().root);
     const missing = events.find((event) => event.type === 'missing')!;
