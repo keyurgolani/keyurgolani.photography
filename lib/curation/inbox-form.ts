@@ -202,10 +202,11 @@ async function replacementAnswer(root: string, kind: InboxActionKind, event: Cur
     if (event.type !== 'replacement' || event.photoId === null || event.assetRevision === null) return null;
     const photoId = event.photoId;
     try {
-        const readPinned = async () => (await readAuthoredRecord(root, 'photo', photoId))?.assetRevision ?? null;
+        // 16-1: readDraftPlan() reads the photo record itself, so it can see the record's confirm stamp.
+        const readRecord = () => readAuthoredRecord(root, 'photo', photoId);
         // A `blocked` put back gets the plain answer: Decide later can't change the draft then.
-        if (kind === 'reopen') return (await readDraftPlan(root, event, readPinned)).kind === 'put-back' ? DONE_ANSWER.reopenedPutBack : null;
-        if (kind === 'defer') return (event.decisions.at(-1)?.writes?.length ?? 0) === 0 && (await readPinned()) === event.assetRevision ? DONE_ANSWER.keepsNew : null;
+        if (kind === 'reopen') return (await readDraftPlan(root, event, readRecord)).kind === 'put-back' ? DONE_ANSWER.reopenedPutBack : null;
+        if (kind === 'defer') return (event.decisions.at(-1)?.writes?.length ?? 0) === 0 && ((await readRecord())?.assetRevision ?? null) === event.assetRevision ? DONE_ANSWER.keepsNew : null;
     } catch {
         // The plain answer is still true: it claims nothing about the draft.
     }

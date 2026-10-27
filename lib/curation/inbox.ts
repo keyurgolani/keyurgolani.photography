@@ -244,9 +244,10 @@ async function replacementOf(root: string, event: CurationEvent, registry: Regis
     let pinned: string | null;
     let plan: Awaited<ReturnType<typeof readDraftPlan>>;
     try {
-        const read = (await readAuthoredRecord(root, 'photo', photoId))?.assetRevision ?? null;
-        pinned = read;
-        plan = await readDraftPlan(root, event, async () => read, registry);
+        // 16-1: readDraftPlan() takes the photo record, not its pinned revision, so it can see the confirm stamp.
+        const record = await readAuthoredRecord(root, 'photo', photoId);
+        pinned = record?.assetRevision ?? null;
+        plan = await readDraftPlan(root, event, async () => record, registry);
     } catch {
         return null;
     }
