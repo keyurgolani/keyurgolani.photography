@@ -569,7 +569,7 @@ test('says what a replacement\'s draft holds before and after Reopen and Decide 
     await openInbox(page, eventId);
     await expect(page.getByRole('heading', { level: 2, name: file })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Confirm new asset revision' })).toBeDisabled();
-    await expect(hint).toHaveText(/^Confirming new bytes isn't in the inbox yet, so choose Decide later until it is\./);
+    await expect(hint).toHaveText(/^Confirming a new version isn't in the inbox yet, so choose Decide later until it is\./);
 
     // Confirmed: in the draft only, and nothing on the item offers or recommends Decide later, or a series or description.
     await confirm();
@@ -614,7 +614,7 @@ test('says what a replacement\'s draft holds before and after Reopen and Decide 
         const later = page.getByRole('button', { name: 'Decide later' });
         await expect(later).toBeDisabled();
         await expect(later).toHaveAccessibleDescription(moved);
-        await expect(page.getByRole('button', { name: 'Confirm new asset revision' })).toHaveAccessibleDescription("Confirming new bytes isn't in the inbox yet.");
+        await expect(page.getByRole('button', { name: 'Confirm new asset revision' })).toHaveAccessibleDescription("Confirming a new version isn't in the inbox yet.");
         // Said once, and nothing to refresh.
         await expect(page.getByText(moved)).toHaveCount(1);
         await expect(page.getByRole('link', { name: 'Refresh and review again' })).toHaveCount(0);

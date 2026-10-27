@@ -18,6 +18,7 @@ import { curationUsage, runCurationCli } from '../commands';
 import { eventIdOf, eventKey, type CurationEvent } from '../events';
 import { loadInbox } from '../inbox';
 import { CONFIRMED_LABEL, DONE_ANSWER, MOVED_ANSWER, reopenHint, REPLACEMENT_HINT, statusLabel, systemResponse, type InboxDetail } from '../inbox-view';
+import { draftPlanText, readDraftPlan } from '../pins';
 import { listEvents, readEvent, withCurationLock, writeEvent } from '../repository';
 import { confirmReplacement, leaveInDraft } from '../resolutions';
 import { createCurationSink } from '../sink';
@@ -619,7 +620,7 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         expect(before.primaryUnavailable).toBe(REPLACEMENT_HINT.blocked);
         expect(before.primaryUnavailable).not.toMatch(/puts the earlier version back/);
         const notReady = await deferItem({ status: 'idle' }, pageForm(w, await w.event()));
-        expect(notReady).toMatchObject({ status: 'refused', action: 'defer', message: "The earlier version of this photograph has no ready derivatives, so Decide later can't put it back. The draft keeps the new version. Nothing was written." });
+        expect(notReady).toMatchObject({ status: 'refused', action: 'defer', message: "The earlier version of this photograph isn't ready to show on the site, so Decide later can't put it back. The draft keeps the new version. Nothing was written. To keep it, dismiss this item, or leave it open until the earlier version is ready again." });
         expect(layers(w).authored).toEqual(written.authored);
         expect(layers(w).curation).toEqual(written.curation);
         expect((await photoRecord(w)).assetRevision).toBe(w.b);
@@ -646,7 +647,15 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         await writeRegistry(w.root, registry, registry.version);
         const done = await shown(w);
         expect(done.replacement).toEqual({ draft: 'new', live: false, decideLater: 'blocked' });
-        expect(reopenHint(done)).toBe("Reopening it changes nothing in the draft, which keeps the new version. The earlier version has no ready derivatives, so Decide later can't put it back.");
+        expect(reopenHint(done)).toBe("Reopening it changes nothing in the draft, which keeps the new version. The earlier version isn't ready to show on the site, so Decide later can't put it back.");
+        // The CLI says the same: curation show and reopen's note don't promise the put back that defer refuses.
+        const plan = await readDraftPlan(w.root, await w.event(), async () => w.b);
+        expect(plan).toMatchObject({ kind: 'blocked', putBack: w.a, revision: w.b });
+        expect(draftPlanText(plan)).toBe(`Leaving it in draft (defer) refuses for now: ${w.a}, the revision this item's confirm replaced, has no ready derivative set, so it can't be put back. The draft keeps ${w.b}.`);
+        // And Reopen on the page answers plainly, since Decide later can't change the draft then.
+        const reopened = await reopenItem({ status: 'idle' }, pageForm(w, await w.event()));
+        expect(reopened).toMatchObject({ status: 'done', action: 'reopen', message: 'Reopened.' });
+        expect(reopened.status !== 'idle' && reopened.message).not.toMatch(/until you decide/);
     });
 
     it('leaves an item never confirmed for later from the inbox page with no write, and says nothing in the draft changed', async () => {
