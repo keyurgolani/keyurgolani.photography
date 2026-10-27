@@ -5,6 +5,7 @@ import { validateWorkingLayer } from '../lib/catalog/publish';
 import { readAuthoredRecord } from '../lib/catalog/working-layer';
 import { deferEvent } from '../lib/curation/actions';
 import { eventIdOf, eventKey } from '../lib/curation/events';
+import { humanTime } from '../lib/curation/inbox-view';
 import { listEvents, readEvent } from '../lib/curation/repository';
 import { startCatalogServer, READY_TIMEOUT, type CatalogServer } from './support/catalogServer';
 import { signIn, startCuratorServer, type CuratorServer } from './support/curatorServer';
@@ -175,6 +176,44 @@ test('lists what the watcher opened, and shows the selected photograph from the 
             return selection.toString();
         });
         expect(copied).toBe(value);
+    }
+});
+
+// The server sends times in UTC; once the page runs they read in the browser's own zone, after hydration, so nothing mismatches.
+test("reads times in the browser's zone with no hydration error, and in UTC with the zone named without JavaScript", async ({ page, browser }) => {
+    const url = `${curatorOrigin()}/curation/inbox?item=${eventOf(FRESH.approve)}#item`;
+    const storageState = await page.context().storageState();
+    // This project's device, so a phone stays a phone.
+    const { viewport, deviceScaleFactor, isMobile, hasTouch, userAgent } = test.info().project.use;
+    const device = { viewport, deviceScaleFactor, isMobile, hasTouch, userAgent };
+    const observed = (on: Page) => on.getByRole('region', { name: 'Source facts' }).locator('dt', { hasText: /^Observed$/ }).locator('xpath=following-sibling::dd[1]/time').first();
+    const zoned = await browser.newContext({ ...device, storageState, timezoneId: 'America/Los_Angeles' });
+    try {
+        const local = await zoned.newPage();
+        const problems: string[] = [];
+        local.on('console', (message) => {
+            if (message.type() === 'error' || /hydrat/i.test(message.text())) problems.push(message.text());
+        });
+        local.on('pageerror', (error) => problems.push(error.message));
+        await local.goto(url);
+        await waitForHydration(local);
+        await local.waitForLoadState('load');
+        const stored = (await observed(local).getAttribute('datetime')) ?? '';
+        await expect(observed(local)).toHaveText(humanTime(stored, 'America/Los_Angeles'));
+        await expect(observed(local)).toHaveText(/ P[SD]T$/);
+        expect(problems.filter((text) => /hydrat|#418|#423|#425|did not match/i.test(text))).toEqual([]);
+    } finally {
+        await zoned.close();
+    }
+    const plain = await browser.newContext({ ...device, storageState, javaScriptEnabled: false });
+    try {
+        const still = await plain.newPage();
+        await still.goto(url);
+        const stored = (await observed(still).getAttribute('datetime')) ?? '';
+        await expect(observed(still)).toHaveText(humanTime(stored));
+        await expect(observed(still)).toHaveText(/ UTC$/);
+    } finally {
+        await plain.close();
     }
 });
 
