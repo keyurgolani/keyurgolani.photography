@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import SameOriginPostForm from '@/components/site/SameOriginPostForm';
 import StatusPage from '@/components/site/StatusPage';
 import { requireCurator } from '@/lib/curation/auth';
 
@@ -14,8 +15,12 @@ export const metadata: Metadata = { title: 'Curation', robots: { index: false, f
 export default async function CurationPage() {
   await requireCurator({ read: true });
   return (
-    <StatusPage heading="Curation" actions={null}>
-      The curator is on. The inbox isn&apos;t built yet.
+    <StatusPage
+      standalone
+      heading="Curation"
+      actions={<SameOriginPostForm action="/api/curation/logout" submitLabel="Sign out" />}
+    >
+      The curator is on, and you&apos;re signed in. The inbox isn&apos;t built yet.
     </StatusPage>
   );
 }

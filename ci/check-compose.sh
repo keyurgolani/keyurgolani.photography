@@ -4,9 +4,9 @@
 # Compose starts by default, that every published port is on the host's
 # loopback, that the data root, the library, web's image cache, and the
 # site config folder mounts keep their guarantees, and that the curator (#14)
-# is the only service with CURATION_ENABLED, starts only by name, and
-# publishes on 127.0.0.1:3001 alone. Compose runs from an empty project
-# directory so a local .env can't leak in.
+# is the only service with CURATION_ENABLED, starts only by name, publishes
+# on 127.0.0.1:3001 alone, and is the only service that mounts ./secrets.
+# Compose runs from an empty project directory so a local .env can't leak in.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -234,3 +234,21 @@ if ! jq -e "[.services.curator.volumes[]? | select($DATA_ROOT_MOUNT)] | length =
   fail "curator must mount the data root once, at /data/portfolio, read-write."
 fi
 echo "curator starts only by name, publishes 127.0.0.1:3001 alone on a network of its own, and runs as uid 1001."
+
+# 12. The curator's secret files (docs/curator.md): ./secrets is mounted into
+#     curator alone, once, read-only, at /run/secrets/curator, and never
+#     created when missing. No service carries a secret or names another
+#     place for one in its environment, so the files are the only source.
+SECRETS_MOUNT='((.source // "") | test("/secrets/?$")) or ((.target // "") | startswith("/run/secrets"))'
+if ! jq -e "[.services.curator.volumes[]? | select($SECRETS_MOUNT)]
+    | length == 1 and all(.type == \"bind\" and .target == \"/run/secrets/curator\" and .read_only == true and .bind.create_host_path == false)" <<<"$resolved" >/dev/null; then
+  fail "curator must mount ./secrets once, at /run/secrets/curator, as a read-only bind with bind.create_host_path: false."
+fi
+if ! jq -e "([.services | to_entries[] | select(.key != \"curator\") | .value.volumes[]? | select($SECRETS_MOUNT)] | length == 0)
+    and ([.services[] | .secrets // [] | length] | add // 0) == 0 and ((.secrets // {}) | length) == 0" <<<"$resolved" >/dev/null; then
+  fail "No service but curator may mount ./secrets or use Compose secrets."
+fi
+if ! jq -e '[.services[] | .environment // {} | keys[] | select(test("PASSPHRASE|SESSION_SECRET|SECRET_FILE"))] | length == 0' <<<"$resolved" >/dev/null; then
+  fail "No service may set a passphrase, a session secret, or a secret file path in its environment. curator reads the files from its mount."
+fi
+echo "Only curator mounts ./secrets, read-only, and no environment carries a secret."

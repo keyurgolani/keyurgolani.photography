@@ -1,9 +1,18 @@
 import fs from 'node:fs';
 import { NextResponse, type NextRequest } from 'next/server';
 import { catalogMode } from './lib/catalog/mode';
-import { CURATOR_FRAME_POLICY, CURATOR_RESPONSE_HEADERS, evaluateCuratorRequest, isCurationEnabled, isCuratorPath } from './lib/curation/auth/policy';
+import {
+    CURATOR_FRAME_POLICY,
+    CURATOR_RESPONSE_HEADERS,
+    evaluateCuratorRequest,
+    isCurationEnabled,
+    isCuratorPath,
+    isLoginRequest,
+    loginRedirectPath,
+} from './lib/curation/auth/policy';
+import { UNAVAILABLE_HEADERS, UNAVAILABLE_HTML } from './lib/curation/auth/unavailable';
 import { dataRoot } from './lib/storage/config';
-import { hasEncodedSeparator, isPublicDerivativePath, isUnderPhotos } from './utils/publicDerivatives';
+import { hasEncodedSeparator, isPublicDerivativePath, isUnderPhotos, resolvedPathname } from './utils/publicDerivatives';
 
 /** The body Next's /_next/image sends for a `url` images.localPatterns doesn't allow. */
 export const IMAGE_URL_NOT_ALLOWED = '"url" parameter is not allowed';
@@ -59,13 +68,33 @@ function reachesPhotos(url: string): boolean {
     return hasEncodedSeparator(pathname) || isUnderPhotos(pathname);
 }
 
-const DENIAL_TEXT: Record<number, string> = { 403: 'Forbidden', 404: 'Not Found', 421: 'Misdirected Request', 503: 'Service Unavailable' };
+const DENIAL_TEXT: Record<number, string> = { 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 421: 'Misdirected Request' };
 
-/** A refused curator request, with every curator response header. */
+/**
+ * A refused curator request, with every curator response header. A 503,
+ * the curator's setup incomplete, is the one fixed page in
+ * lib/curation/auth/unavailable.ts, the same on every path and method.
+ */
 function curatorDenial(status: number): NextResponse {
+    if (status === 503) return new NextResponse(UNAVAILABLE_HTML, { status, headers: UNAVAILABLE_HEADERS });
     return new NextResponse(DENIAL_TEXT[status], {
         status,
         headers: { ...CURATOR_RESPONSE_HEADERS, ...CURATOR_FRAME_POLICY, ...PLAIN_TEXT },
+    });
+}
+
+/**
+ * A curator page asked for without a session: on to the login page, with
+ * every curator header, and `?ended=1` when the request sent a session
+ * cookie that no longer counts (loginRedirectPath()). Next takes only an
+ * absolute Location from a proxy, so it's built on `host`, which has passed
+ * the allowlist by now, and never on anything else the request sent. Next
+ * sends it on as a relative one when it's the request's own origin.
+ */
+function toLogin(host: string, cookie: string | null): NextResponse {
+    return new NextResponse(null, {
+        status: 307,
+        headers: { Location: new URL(loginRedirectPath(cookie), `http://${host}`).toString(), ...CURATOR_RESPONSE_HEADERS, ...CURATOR_FRAME_POLICY },
     });
 }
 
@@ -79,9 +108,12 @@ const READ_METHODS = new Set(['GET', 'HEAD']);
  * - Any path that encodes a slash or a backslash gets a 404.
  * - `/curation/**` and `/api/curation/**` get a 404 while `CURATION_ENABLED`
  *   isn't exactly `true`, read on every request. With it on, they pass only
- *   the checks in lib/curation/auth/policy.ts (bind, `Host`, and `Origin` on
- *   a mutation), and each page, handler and action runs requireCurator()
- *   again.
+ *   the checks in lib/curation/auth/policy.ts (the bind and the secret
+ *   files, `Host`, `Origin` on a mutation, and a live session), and each
+ *   page, handler and action runs requireCurator() again. Without a session,
+ *   a page, or its RSC payload, is sent to `/curation/login`, and a route
+ *   handler or a server action gets 401. Only a read of `/curation/login` and
+ *   a POST to `/api/curation/login` skip the session.
  * - `/_next/image` is checked only for its `url`: unless the legacy
  *   derivatives serve, it refuses one that reaches /assets/photos with a 400
  *   before its own cache can answer. Otherwise it passes.
@@ -109,17 +141,26 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
     }
     const method = request.method.toUpperCase();
     if (isCuratorPath(pathname)) {
+        const action = request.headers.has('next-action');
+        const mutation = !READ_METHODS.has(method) || action;
         const denial = evaluateCuratorRequest(
             {
                 host: request.headers.get('host'),
                 origin: request.headers.get('origin'),
                 forwardedHost: request.headers.get('x-forwarded-host'),
-                mutation: !READ_METHODS.has(method) || request.headers.has('next-action'),
+                mutation,
+                session: isLoginRequest(pathname, method, action) ? 'not-checked' : { cookie: request.headers.get('cookie') },
             },
             process.env,
             process.argv,
         );
-        if (denial !== null) return curatorDenial(denial.status);
+        if (denial !== null) {
+            // Next hides the RSC headers from the proxy, so a page's RSC fetch is sent to the login like the page itself.
+            const page = !resolvedPathname(pathname).toLowerCase().startsWith('/api');
+            const host = request.headers.get('host');
+            if (denial.reason === 'session' && !mutation && page && host) return toLogin(host.toLowerCase(), request.headers.get('cookie'));
+            return curatorDenial(denial.status);
+        }
         const response = NextResponse.next();
         for (const [name, value] of Object.entries(CURATOR_RESPONSE_HEADERS)) response.headers.set(name, value);
         return response;
@@ -128,7 +169,7 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
     // Host too, so nothing it serves differs by Host from what the tunnel sees.
     if (isCurationEnabled(process.env)) {
         const denial = evaluateCuratorRequest(
-            { host: request.headers.get('host'), origin: null, forwardedHost: request.headers.get('x-forwarded-host'), mutation: false },
+            { host: request.headers.get('host'), origin: null, forwardedHost: request.headers.get('x-forwarded-host'), mutation: false, session: 'not-checked' },
             process.env,
             process.argv,
         );

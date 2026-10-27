@@ -113,8 +113,8 @@ services:
   #   docker compose -f docker-compose.prod.yml stop curator
   # The same image as web, with the curator flag on, which no other service
   # sets. It publishes only on the host's 127.0.0.1:3001, and from another
-  # machine the way in is an SSH tunnel to that port, which is the
-  # authentication. It reads the library and writes the data root, as the
+  # machine the way in is an SSH tunnel to that port, and then the curator's
+  # passphrase login. It reads the library and writes the data root, as the
   # watcher's uid, on a network of its own, so no other container can reach it.
   curator:
     image: ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?Set PHOTOGRAPHY_IMAGE_TAG to a release tag, for example v1.1.0}
@@ -135,6 +135,16 @@ services:
       - type: bind
         source: ./portfolio-data
         target: /data/portfolio
+        bind:
+          create_host_path: false
+      # The passphrase hash and the session secret, made at deploy time
+      # (docs/curator.md), owned by uid 1001 and readable by it alone. Read-only,
+      # mounted into curator and no other service. Never created when missing,
+      # and a missing or unusable file is a 503 on every path.
+      - type: bind
+        source: ./secrets
+        target: /run/secrets/curator
+        read_only: true
         bind:
           create_host_path: false
     # On only while the owner runs it, so a reboot never brings it back.

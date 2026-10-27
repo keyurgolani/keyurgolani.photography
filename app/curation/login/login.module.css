@@ -1,0 +1,198 @@
+/* The curator login: the Inbox's header row (the mark and "Portfolio
+   curation" only), then one form on the Gallery After Hours ground, centred
+   in the window as one block, a little above the middle, with its text left
+   aligned inside it. The ground fills the window, with no SiteNav above it,
+   and it's dark in both themes, as the rest of the curator is. The notice
+   tones and the field and header surfaces are the Inbox's
+   (app/curation/curator.module.css, from #14's 14-3). Every control is at
+   least 44 px (contract rule 5), and hover applies only under a fine pointer
+   (rule 3). */
+
+.page {
+  --login-header: #171a18;
+  --login-rule: #343936;
+  --login-field: #0f1210;
+  --login-alert-ink: #e3b2aa;
+  --login-alert-bg: #452923;
+  --login-done-rule: #385146;
+  --login-done-bg: #14221c;
+
+  display: flex;
+  min-height: 100svh;
+  flex-direction: column;
+  background: var(--gah-ground);
+  color: var(--gah-ink);
+  color-scheme: dark;
+  font-family: var(--gah-font-sans);
+}
+
+.header {
+  display: flex;
+  min-height: var(--site-nav-height);
+  align-items: center;
+  padding: 0.375rem var(--site-gutter);
+  border-bottom: 1px solid var(--login-rule);
+  background: var(--login-header);
+}
+
+.wordmark {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 0.625rem;
+  color: var(--gah-ink);
+  font-size: var(--gah-type-label);
+  font-weight: 500;
+  letter-spacing: var(--gah-label-tracking);
+  text-decoration: none;
+}
+
+.monogram {
+  display: inline-grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  border: 1px solid var(--gah-rule-strong);
+  border-radius: 50%;
+  font-family: var(--gah-font-serif);
+  font-size: var(--gah-type-label);
+}
+
+.main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  /* More below than above, so the block sits a little above the middle. */
+  padding: 3rem var(--site-gutter) max(4rem, 12svh);
+}
+
+.body {
+  width: 100%;
+  max-width: 26rem;
+}
+
+/* A short window, such as 200% zoom on a laptop: less air above the form, so the button stays in the first screen. */
+@media (max-height: 34rem) {
+  .main {
+    padding-block: 1.5rem 2rem;
+  }
+}
+
+/* The serif and its weight come from the global heading rule. A working
+   screen's heading, smaller than a visitor status page's display size. */
+.heading {
+  margin: 0;
+  font-size: clamp(2rem, 1.6rem + 1.6vw, 2.75rem);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+.text {
+  margin: 1rem 0 0;
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-statement);
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 2rem;
+}
+
+.label {
+  font-size: var(--gah-type-ui);
+  font-weight: 500;
+}
+
+.input {
+  min-height: 44px;
+  padding: 0 0.75rem;
+  border: 1px solid var(--gah-rule-strong);
+  border-radius: var(--gah-radius);
+  background: var(--login-field);
+  color: var(--gah-ink);
+  font: inherit;
+  font-size: 1rem;
+}
+
+.input[aria-invalid='true'] {
+  border-color: var(--login-alert-ink);
+}
+
+/* Notices, as the Inbox draws them: a full border and a tint, never color
+   alone and never a side stripe. A refusal sits under the field it's about,
+   clear of the focused field's ring; a status line sits above the form. */
+.refusal,
+.status {
+  margin: 0;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid;
+  border-radius: var(--gah-radius);
+  color: var(--gah-ink);
+  font-size: var(--gah-type-ui);
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.refusal {
+  margin-top: calc(var(--focus-ring-offset) + var(--focus-ring-width) - 0.125rem);
+  border-color: var(--login-alert-ink);
+  background: var(--login-alert-bg);
+}
+
+.status {
+  margin-top: 1.5rem;
+  border-color: var(--login-done-rule);
+  background: var(--login-done-bg);
+}
+
+.status + .form {
+  margin-top: 1.5rem;
+}
+
+.button {
+  align-self: flex-start;
+  min-width: 7.5rem;
+  min-height: 44px;
+  margin-top: 0.75rem;
+  padding: 0 1.125rem;
+  border: 1px solid var(--gah-action);
+  border-radius: var(--gah-radius);
+  background: var(--gah-action);
+  color: var(--gah-action-ink);
+  font: inherit;
+  font-size: var(--gah-type-ui);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard);
+}
+
+/* Before the page hydrates, and while a sign-in is on its way. */
+.button:disabled {
+  border-color: var(--gah-rule-strong);
+  background: transparent;
+  color: var(--gah-ink-muted);
+  cursor: not-allowed;
+}
+
+.form[aria-busy='true'] .button:disabled {
+  cursor: progress;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  /* The action's near-white is too close to the ink to step up to, so hover steps down toward the ground. */
+  .button:enabled:hover {
+    border-color: color-mix(in srgb, var(--gah-action) 82%, var(--gah-ground));
+    background: color-mix(in srgb, var(--gah-action) 82%, var(--gah-ground));
+  }
+
+  .wordmark:hover {
+    text-decoration: underline;
+    text-underline-offset: 0.25em;
+  }
+}

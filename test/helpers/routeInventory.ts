@@ -15,7 +15,10 @@
  * route (share images, icons, sitemap, robots, manifest), server action,
  * generateMetadata and generateViewport must call requireCurator(), imported
  * from `@/lib/curation/auth`, as its first statement, a mutation without
- * `{ read: true }`. Pages, handlers and metadata routes must be
+ * `{ read: true }`. requireCurator() asks for a live session. Only the login
+ * page's render exports and its form's POST handler (`/curation/login` and
+ * `/api/curation/login`) may call requireCuratorLogin() instead, which makes
+ * every other check but the session. Pages, handlers and metadata routes must be
  * `force-dynamic`. The fallback files (not-found, loading, error,
  * global-error, forbidden, unauthorized) either call it too or import no
  * data. No file outside curator code may import a curator action module.
@@ -29,6 +32,9 @@ import { isCuratorPath } from '../../lib/curation/auth/policy';
 /** The URL prefixes curator code serves. */
 export const CURATOR_URLS = ['/curation', '/api/curation'];
 
+/** The guards a curator entry point may open with. */
+const GUARDS = new Set(['requireCurator', 'requireCuratorLogin']);
+
 /** The folders and files production code lives in. Tests, fixtures and build output don't count. */
 const PRODUCTION_ROOTS = ['app', 'components', 'lib', 'utils', 'scripts', 'data', 'proxy.ts', 'instrumentation.ts'];
 
@@ -40,6 +46,9 @@ const HTTP_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', '
 
 /** Next's file conventions under app/, by the file's name without its extension. */
 type Convention = 'render' | 'fallback' | 'client-fallback' | 'metadata' | 'route';
+
+/** The two URLs whose entry points may skip the session, and the convention each has there. */
+const LOGIN_URLS: Record<string, Convention> = { 'curation/login': 'render', 'api/curation/login': 'route' };
 
 function conventionOf(file: string): Convention | null {
     if (!file.startsWith('app/') || !/\.(?:ts|tsx|js|jsx|mjs)$/.test(file)) return null;
@@ -146,13 +155,20 @@ function bodyAfterDirectives(statements: ts.NodeArray<ts.Statement>): ts.Stateme
     return statements.slice(i);
 }
 
+/** A body's opening guard: which one, and whether it checks as a mutation or a read. */
+interface Guard {
+    name: 'requireCurator' | 'requireCuratorLogin';
+    kind: 'mutation' | 'read';
+}
+
 /**
- * How a body's first statement calls requireCurator(): `mutation` for a call
- * without `{ read: true }`, `read` for one with it, or null when the first
- * statement is anything else, an un-awaited call included. Where the name
- * comes from is checkedImport()'s job.
+ * How a body's first statement calls a guard: requireCurator() or
+ * requireCuratorLogin(), as a `mutation` without `{ read: true }` or a
+ * `read` with it, or null when the first statement is anything else, an
+ * un-awaited call included. Where the name comes from is
+ * importsRealGuard()'s job.
  */
-function guardOf(body: ts.ConciseBody | undefined): 'mutation' | 'read' | null {
+function guardOf(body: ts.ConciseBody | undefined): Guard | null {
     if (!body || !ts.isBlock(body)) return null;
     const [first] = bodyAfterDirectives(body.statements);
     if (!first) return null;
@@ -161,14 +177,21 @@ function guardOf(body: ts.ConciseBody | undefined): 'mutation' | 'read' | null {
     else if (ts.isVariableStatement(first) && first.declarationList.declarations.length === 1) expression = first.declarationList.declarations[0].initializer;
     if (!expression || !ts.isAwaitExpression(expression)) return null;
     const call = expression.expression;
-    if (!ts.isCallExpression(call) || !ts.isIdentifier(call.expression) || call.expression.text !== 'requireCurator') return null;
+    if (!ts.isCallExpression(call) || !ts.isIdentifier(call.expression) || !GUARDS.has(call.expression.text)) return null;
+    const name = call.expression.text as Guard['name'];
     const [options] = call.arguments;
-    if (!options) return 'mutation';
+    if (!options) return { name, kind: 'mutation' };
     if (!ts.isObjectLiteralExpression(options) || call.arguments.length !== 1) return null;
     const read = options.properties.find((property) => property.name && ts.isIdentifier(property.name) && property.name.text === 'read');
-    if (!read) return options.properties.length === 0 ? 'mutation' : null;
+    if (!read) return options.properties.length === 0 ? { name, kind: 'mutation' } : null;
     if (options.properties.length !== 1 || !ts.isPropertyAssignment(read)) return null;
-    return read.initializer.kind === ts.SyntaxKind.TrueKeyword ? 'read' : null;
+    return read.initializer.kind === ts.SyntaxKind.TrueKeyword ? { name, kind: 'read' } : null;
+}
+
+/** Whether every URL an `app/` file answers is a login URL, with the convention that URL allows. */
+function isLoginFile(file: string, convention: Convention | null): boolean {
+    const urls = urlsOf(file).map((segments) => segments.join('/'));
+    return urls.length > 0 && urls.every((url) => LOGIN_URLS[url] !== undefined && LOGIN_URLS[url] === convention);
 }
 
 /** The repository file a relative or `@/` specifier names, or null for a package, a built-in, or one that doesn't resolve. */
@@ -192,8 +215,8 @@ function namesAuthModule(root: string, from: string, specifier: string): boolean
     return /^lib\/curation\/auth(?:\/index(?:\.[cm]?[jt]sx?)?)?$/.test(target);
 }
 
-/** Whether `requireCurator` in this file is the real one: a named import, unrenamed, from lib/curation/auth, and nothing local by that name. */
-function importsRealGuard(root: string, file: string, source: ts.SourceFile): boolean {
+/** Whether guard `name` in this file is the real one: a named import, unrenamed, from lib/curation/auth, and nothing local by that name. */
+function importsRealGuard(root: string, file: string, source: ts.SourceFile, name: string): boolean {
     let imported = false;
     let local = false;
     for (const statement of source.statements) {
@@ -201,16 +224,16 @@ function importsRealGuard(root: string, file: string, source: ts.SourceFile): bo
             const bindings = statement.importClause?.namedBindings;
             if (statement.importClause?.isTypeOnly || !bindings || !ts.isNamedImports(bindings)) continue;
             for (const element of bindings.elements) {
-                if (element.name.text !== 'requireCurator') continue;
-                const unrenamed = !element.propertyName || element.propertyName.text === 'requireCurator';
+                if (element.name.text !== name) continue;
+                const unrenamed = !element.propertyName || element.propertyName.text === name;
                 if (unrenamed && !element.isTypeOnly && namesAuthModule(root, file, statement.moduleSpecifier.text)) imported = true;
                 else local = true;
             }
-        } else if (ts.isFunctionDeclaration(statement) && statement.name?.text === 'requireCurator') {
+        } else if (ts.isFunctionDeclaration(statement) && statement.name?.text === name) {
             local = true;
         } else if (ts.isVariableStatement(statement)) {
-            if (statement.declarationList.declarations.some((declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === 'requireCurator')) local = true;
-        } else if (ts.isImportEqualsDeclaration(statement) && statement.name.text === 'requireCurator') {
+            if (statement.declarationList.declarations.some((declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === name)) local = true;
+        } else if (ts.isImportEqualsDeclaration(statement) && statement.name.text === name) {
             local = true;
         }
     }
@@ -336,13 +359,24 @@ export function routeInventory(root: string): Inventory {
         const source = parsed.get(file)!;
         const curator = isCuratorFile(file);
         const convention = conventionOf(file);
-        /** Whether something in this file had to call requireCurator() and does. */
-        let guarded = false;
-        const need = (fn: FunctionLike | null, kind: 'read' | 'mutation'): boolean => {
+        /** The guards this file's checked entry points call. */
+        const guardsUsed = new Set<string>();
+        /**
+         * Whether `fn` opens with the guard it needs: any guard for a read, a
+         * mutation guard for a mutation, and requireCurator() itself, which
+         * asks for a session, unless `login` allows requireCuratorLogin().
+         */
+        const need = (fn: FunctionLike | null, kind: 'read' | 'mutation', login = false): boolean => {
             const guard = fn ? guardOf(fn.body) : null;
-            if (guard !== null) guarded = true;
-            return kind === 'read' ? guard !== null : guard === 'mutation';
+            if (guard === null || fn === null) return false;
+            guardsUsed.add(guard.name);
+            if (guard.name === 'requireCuratorLogin' && !login) {
+                inventory.violations.push(`${file}#${functionName(fn)} calls requireCuratorLogin(), which skips the session, outside the login page and its form's handler. Call requireCurator().`);
+                return true;
+            }
+            return kind === 'read' ? true : guard.kind === 'mutation';
         };
+        const login = isLoginFile(file, convention);
 
         // Server actions, file-level and inline.
         const fileLevel = hasDirective(source.statements, 'use server');
@@ -376,7 +410,7 @@ export function routeInventory(root: string): Inventory {
                 inventory.handlers.push(`${file}#${name}`);
                 const read = READ_METHODS.has(name);
                 if (!read && !curator) inventory.violations.push(`${file} exports ${name}, a mutating handler outside ${where}.`);
-                if (curator && !need(fn, read ? 'read' : 'mutation')) {
+                if (curator && !need(fn, read ? 'read' : 'mutation', login && name === 'POST')) {
                     inventory.violations.push(`${file}#${name} is a curator handler whose first statement isn't await requireCurator(${read ? '{ read: true }' : ''}).`);
                 }
             }
@@ -385,8 +419,9 @@ export function routeInventory(root: string): Inventory {
         if (curator && (convention === 'render' || convention === 'metadata')) {
             const guardedExports = convention === 'render' ? RENDER_EXPORTS : METADATA_EXPORTS;
             const exported = exportsOf(source);
+            const loginPage = login && path.posix.basename(file).startsWith('page.');
             for (const { name, fn } of exported) {
-                if (guardedExports.has(name) && !need(fn, 'read')) inventory.violations.push(`${file}#${name} renders curator content without await requireCurator() first.`);
+                if (guardedExports.has(name) && !need(fn, 'read', loginPage)) inventory.violations.push(`${file}#${name} renders curator content without await requireCurator() first.`);
                 if (name === 'generateStaticParams') inventory.violations.push(`${file} exports generateStaticParams, which renders curator pages at build time.`);
             }
             if (!exported.some(({ name }) => name === 'default')) inventory.violations.push(`${file} has no default export to guard.`);
@@ -410,8 +445,8 @@ export function routeInventory(root: string): Inventory {
             if ((base.startsWith('page.') || convention !== 'render') && !isForceDynamic(source)) inventory.violations.push(`${file} isn't force-dynamic.`);
         }
 
-        if (guarded && !importsRealGuard(root, file, source)) {
-            inventory.violations.push(`${file} calls requireCurator() without importing it, unrenamed, from @/lib/curation/auth.`);
+        for (const name of guardsUsed) {
+            if (!importsRealGuard(root, file, source, name)) inventory.violations.push(`${file} calls ${name}() without importing it, unrenamed, from @/lib/curation/auth.`);
         }
     }
 

@@ -1,6 +1,7 @@
 // @vitest-environment node
 import os from 'node:os';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { makeCuratorSecrets, type TestCuratorSecrets } from '../../../../test/helpers/curatorSecrets';
 import {
     bindProblem,
     externalInterfaceCount,
@@ -25,10 +26,19 @@ const DEV_CHILD = ['/usr/local/bin/node', '/repo/node_modules/next/dist/server/l
 const DEV_ENV = { __NEXT_DEV_SERVER: '1', NEXT_PRIVATE_WORKER: '1' };
 const listening = (...addresses: string[]): BindProbe => ({ containerized: () => false, sockets: () => addresses, interfaces: () => 1 });
 
+/** The curator on, with test secret files, which beforeAll adds. */
 const ON: CuratorEnv = { CURATION_ENABLED: 'true', HOSTNAME: '127.0.0.1' };
+let secrets: TestCuratorSecrets;
+
+beforeAll(async () => {
+    secrets = await makeCuratorSecrets();
+    Object.assign(ON, secrets.env);
+});
+
+afterAll(() => secrets.cleanup());
 
 function request(overrides: Partial<CuratorRequest> = {}): CuratorRequest {
-    return { host: '127.0.0.1:3001', origin: null, forwardedHost: null, mutation: false, ...overrides };
+    return { host: '127.0.0.1:3001', origin: null, forwardedHost: null, mutation: false, session: 'not-checked', ...overrides };
 }
 
 const evaluate = (overrides: Partial<CuratorRequest>, env: CuratorEnv = ON, probe: BindProbe = notContainer) =>
