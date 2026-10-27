@@ -24,7 +24,7 @@ export interface BadgePlace {
 /** v1.1.0's place: centered, 280 px above the bottom, at 0.85. */
 const V110_RISE = 280;
 const V110_SCALE = 0.85;
-/** The least room the painted oval keeps from the nav and from the series title, statement and link. */
+/** The least room the painted oval keeps from the nav, from the series title, statement and link, and from the title's panel. */
 const BADGE_CLEARANCE = 16;
 /** The ring around the oval. */
 const RING = 4;
@@ -44,12 +44,28 @@ function ovalReach(card: number, scale: number) {
   return { half: (scale * width) / 2 + RING, above: scale * above + RING, below: scale * (width * FACE_HEIGHT_PER_WIDTH - above) + RING };
 }
 
+/** ProfilePicture's card from `md` (768 px) up, so on every screen from 85rem. */
+const WIDE_CARD = 320;
+
+/**
+ * The lane v1.1.0's badge takes on a wide screen: px from the screen's center
+ * to the left edge of its painted oval at 0.85 on the 320 px card, plus
+ * BADGE_CLEARANCE. From 85rem up, CatalogHome caps the story's copy so the
+ * title's panel, fade included, ends this far left of the center
+ * (CatalogHome.module.css), and the badge keeps v1.1.0's exact place beside
+ * the title. A title that still reaches it, such as one long word, falls back
+ * to badgePlace()'s measured lift.
+ */
+export const V110_LANE = ovalReach(WIDE_CARD, V110_SCALE).half + BADGE_CLEARANCE;
+
 const within = (a: Box, b: Box, gap: number) => a.left < b.right + gap && b.left < a.right + gap && a.top < b.bottom + gap && b.top < a.bottom + gap;
 
 /**
  * The badge's place for a `view`-sized screen, from the measured boxes of the
- * nav and the story's title, statement and link. Null keeps v1.1.0's exact
- * place, wherever it clears all of them by BADGE_CLEARANCE. Otherwise the
+ * nav and the story's title, statement and link, and the dark panel behind
+ * the title and statement from 640 px wide (CatalogHome's `data-chrome-panel`,
+ * its fade included). Null keeps v1.1.0's exact place, wherever it clears all
+ * of them by BADGE_CLEARANCE. Otherwise the
  * badge stays centered and moves the least from v1.1.0's place that clears
  * them: up above the story (or down, under a nav it reached behind), at 0.85,
  * scaled down toward 0.6 only when the room between the nav and the story is

@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import React, { useCallback, useEffect, useState } from 'react';
+import { V110_LANE } from '@/components/badgePlace';
 import HeroReveal from '@/components/HeroReveal';
 import { usePrefersReducedMotion } from '@/components/motion/usePrefersReducedMotion';
 import LoadingState from '@/components/site/LoadingState';
@@ -159,7 +160,12 @@ function FeaturedHome({ revisionId, series, portrait }: { revisionId: string; se
         nav={<SiteNav />}
         story={
           <div className={styles.story}>
-            <div className={styles.copy}>
+            <div
+              className={styles.copy}
+              data-badge-lane={portrait ? '' : undefined}
+              style={portrait ? ({ '--badge-lane': `${V110_LANE}px` } as React.CSSProperties) : undefined}
+            >
+              <span className={styles.panel} aria-hidden="true" data-chrome-panel="" />
               <h1 className={styles.title}>{series.title}</h1>
               {series.shortStatement !== null && <p className={styles.statement}>{series.shortStatement}</p>}
             </div>
