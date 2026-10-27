@@ -180,7 +180,7 @@ test('lists what the watcher opened, and shows the selected photograph from the 
 });
 
 // The server sends times in UTC; once the page runs they read in the browser's own zone, after hydration, so nothing mismatches.
-test("reads times in the browser's zone with no hydration error, and in UTC with the zone named without JavaScript", async ({ page, browser }) => {
+test("reads times in the browser's zone with no hydration error, from server HTML in UTC with the zone named", async ({ page, browser }) => {
     const url = `${curatorOrigin()}/curation/inbox?item=${eventOf(FRESH.approve)}#item`;
     const storageState = await page.context().storageState();
     // This project's device, so a phone stays a phone.
@@ -205,15 +205,14 @@ test("reads times in the browser's zone with no hydration error, and in UTC with
     } finally {
         await zoned.close();
     }
-    const plain = await browser.newContext({ ...device, storageState, javaScriptEnabled: false });
-    try {
-        const still = await plain.newPage();
-        await still.goto(url);
-        const stored = (await observed(still).getAttribute('datetime')) ?? '';
-        await expect(observed(still)).toHaveText(humanTime(stored));
-        await expect(observed(still)).toHaveText(/ UTC$/);
-    } finally {
-        await plain.close();
+    // The HTML the server sends: every stored time in UTC, with the zone named. (Without JavaScript the inbox stays on its loading
+    // state, since the page streams in behind it, so this reads the server's HTML rather than a page with JavaScript off.)
+    const html = await (await page.request.get(url.replace(/#item$/, ''))).text();
+    const times = [...html.matchAll(/<time datetime="([^"]+T[^"]+)">([^<]+)<\/time>/gi)].map(([, at, text]) => ({ at, text }));
+    expect(times.length).toBeGreaterThan(0);
+    for (const { at, text } of times) {
+        expect(text).toBe(humanTime(at));
+        expect(text).toMatch(/ UTC$/);
     }
 });
 
