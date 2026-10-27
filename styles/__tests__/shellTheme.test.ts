@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 // #21: the shell looks the same under both themes, and the light theme drives
 // only the legacy variables and dark: variants. These read the shell's own
 // stylesheets and the ground under it, so no theme value reaches the nav, its
-// toggle, or the html and body the nav's glass sits over.
+// toggle, or the body the nav's glass sits over.
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const source = (file: string) => fs.readFileSync(path.join(ROOT, file), 'utf8');
@@ -87,12 +87,22 @@ describe('the ground under the shell', () => {
     return { plain, themed };
   }
 
-  it('is --gah-ground on html and body, so the nav glass and the strip below a short page read the same in both themes', () => {
+  // html stays unpainted, so the canvas takes body's ground: the window's edge, overscroll included, shows About's
+  // paper and the Viewer's ground where their body rules override it, and --gah-ground everywhere else.
+  it('is --gah-ground on body alone, so the nav glass and the strip below a short page read the same in both themes', () => {
     const { plain } = grounds();
-    expect(plain).toEqual([
-      { selector: 'html', value: 'var(--gah-ground)' },
-      { selector: 'body', value: 'var(--gah-ground)' },
-    ]);
+    expect(plain).toEqual([{ selector: 'body', value: 'var(--gah-ground)' }]);
+  });
+
+  it("gives body the shell's ink, so text that sets no color of its own reads on that ground in both themes", () => {
+    const colors: string[] = [];
+    globals.walkRules((rule) => {
+      if (!rule.selectors.some((selector) => selector.trim() === 'body')) return;
+      rule.walkDecls('color', (decl) => {
+        colors.push(decl.value);
+      });
+    });
+    expect(colors).toEqual(['var(--gah-ink)']);
   });
 
   it('never changes with the theme', () => {

@@ -76,19 +76,17 @@ html {
     --caption-bg-color: rgba(5, 5, 5, 0.85);
 }
 
-/* The shell owns its ground, in both themes (#21: the light theme drives only
-   the legacy variables and dark: variants). html and body paint
-   --gah-ground, so a translucent SiteNav reads the same over either theme, and
-   no light strip shows below a short page or on overscroll. The legacy
-   Gallery paints its own themed ground on its main, and About's paper goes on
-   the body in about.module.css. */
-html {
-    background-color: var(--gah-ground);
-}
-
+/* The shell owns its ground and its ink, in both themes (#21: the light theme
+   drives only the legacy variables and dark: variants). body paints
+   --gah-ground, so a translucent SiteNav reads the same over either theme.
+   html stays unpainted, so body's ground is the canvas: no light strip below a
+   short page or on overscroll, and About's paper (about.module.css) and the
+   Viewer's ground (StoryViewer.module.css), which override body, reach the
+   window's edge too. The legacy Gallery paints its own themed ground and ink
+   on its main. */
 body {
     background-color: var(--gah-ground);
-    color: var(--primary-color);
+    color: var(--gah-ink);
     font-family: var(--font-secondary); /* Body font */
     transition: background-color var(--transition-duration) ease, color var(--transition-duration) ease;
     -webkit-font-smoothing: antialiased;

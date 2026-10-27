@@ -7,12 +7,14 @@ import styles from './ThemeToggle.module.css';
 
 /**
  * What the theme reaches while the shell looks the same in both themes (#21):
- * the legacy variables, which paint Home's opening and the legacy Gallery's
- * photo grid. The shell, Work, the series pages, the Viewer, About, and the
- * 404 don't change. Rewrite it when #13 removes the legacy Gallery, or when
- * the owner answers #21's light-theme question.
+ * the legacy variables, which paint Home's opening and the legacy Gallery.
+ * The shell, Work, the series pages, the Viewer, About, and the 404 don't
+ * change. It names the Gallery archive, not its photo grid, so it stays true
+ * after the catalog cutover sends /gallery to Work, which the theme doesn't
+ * reach. Rewrite it when #13 removes the legacy Gallery, or when the owner
+ * answers #21's light-theme question.
  */
-export const THEME_TOGGLE_DESCRIPTION = "Changes only Home's opening screen and the photo grid; other pages keep their colors.";
+export const THEME_TOGGLE_DESCRIPTION = "Changes only Home's opening screen and the Gallery archive; other pages keep their colors.";
 
 /**
  * A plain 44 by 44 button in `SiteNav` that flips the theme. It renders both
