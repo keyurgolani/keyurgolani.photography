@@ -111,6 +111,7 @@ const layouts = {
 const handlers = {
     pages: (await import('../[draftId]/site/api/catalog/series/[slug]/pages/[cursor]/route')).GET,
     records: (await import('../[draftId]/site/api/catalog/home/photos/[photoId]/route')).GET,
+    peek: (await import('../[draftId]/site/api/catalog/series/[slug]/photos/[photoId]/route')).GET,
     media: (await import('../[draftId]/site/media/[photoId]/[assetRevision]/[profileId]/[variant]/route')).GET,
 };
 
@@ -170,6 +171,8 @@ function surfaces(id: string): Record<string, () => unknown> {
         'load-more': () => handlers.pages(url(`${previewBase(id)}/api/catalog/series/${LONG}/pages/${cursor}`), params({ draftId: id, slug: LONG, cursor })),
         'home records': () => handlers.records(url(`${previewBase(id)}/api/catalog/home/photos/${photo.id}?revision=${id}`), params({ draftId: id, photoId: photo.id })),
         image: () => handlers.media(url(`${previewBase(id)}/media/${photo.id}/${photo.assetRevision}/${photo.profileId}/w400.avif`), params(media)),
+        // 9a's Viewer peek, which the Viewer asks for once a finger goes down on the photograph.
+        peek: () => handlers.peek(url(`${previewBase(id)}/api/catalog/series/${LONG}/photos/${photo.id}?revision=${id}`), params({ draftId: id, slug: LONG, photoId: photo.id })),
     };
 }
 
@@ -197,13 +200,13 @@ describe('without a session', () => {
         const cookie = secrets.cookie();
         as(cookie);
         // Warm the cache through the subresources themselves.
-        for (const name of ['load-more', 'home records', 'image']) expect(await outcome(surfaces(draftId)[name]), name).toMatchObject({ kind: 'response', status: 200 });
+        for (const name of ['load-more', 'home records', 'peek', 'image']) expect(await outcome(surfaces(draftId)[name]), name).toMatchObject({ kind: 'response', status: 200 });
         const state = previewReaderStateForTests();
         expect(state.kept.size).toBeGreaterThan(0);
         deleteSession(sessionFromCookies(cookie, secrets.sessionKey)!);
         const reads = [vi.spyOn(state.kept, 'get'), vi.spyOn(state.kept, 'has'), vi.spyOn(state.compiling, 'get')];
         vi.mocked(loadPreviewCatalog).mockClear();
-        for (const name of ['load-more', 'home records', 'image']) expect(await outcome(surfaces(draftId)[name]), name).toEqual({ kind: 'thrown', digest: ENDED_REDIRECT });
+        for (const name of ['load-more', 'home records', 'peek', 'image']) expect(await outcome(surfaces(draftId)[name]), name).toEqual({ kind: 'thrown', digest: ENDED_REDIRECT });
         for (const spy of reads) expect(spy).not.toHaveBeenCalled();
         expect(loadPreviewCatalog).not.toHaveBeenCalled();
     });
@@ -293,7 +296,7 @@ describe('signed in', () => {
     it('answers a draft that is not the current one with the not-found page, a 409 from the mirrors, and a 404 for its images', async () => {
         const unknown = surfaces(UNKNOWN);
         for (const name of ['frame page', 'home', 'work', 'series', 'viewer']) expect(await outcome(unknown[name]), name).toEqual({ kind: 'thrown', digest: NOT_FOUND });
-        for (const name of ['load-more', 'home records']) expect(await outcome(unknown[name]), name).toMatchObject({ kind: 'response', status: 409 });
+        for (const name of ['load-more', 'home records', 'peek']) expect(await outcome(unknown[name]), name).toMatchObject({ kind: 'response', status: 409 });
         expect(await outcome(unknown.image)).toMatchObject({ kind: 'response', status: 404 });
     });
 
@@ -312,8 +315,8 @@ describe('signed in', () => {
         expect((frame.props.children as ReactElement<{ src: string }>).props.src).toBe(previewBasePath(draftId));
     });
 
-    it('serves load-more and the Home records from the draft, no-store with no ETag', async () => {
-        for (const name of ['load-more', 'home records']) {
+    it("serves load-more, the Home records and the Viewer's peek from the draft, no-store with no ETag", async () => {
+        for (const name of ['load-more', 'home records', 'peek']) {
             const answer = await outcome(surfaces(draftId)[name]);
             if (answer.kind !== 'response') throw new Error(`${name}: ${JSON.stringify(answer)}`);
             expect(answer.status, name).toBe(200);

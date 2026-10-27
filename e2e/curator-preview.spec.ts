@@ -282,9 +282,15 @@ test.describe('signed in', () => {
             await expect(page).toHaveURL(`${origin()}${base()}/work/${NEW.slug}/photo/${id(5)}`);
             await expect(page.getByRole('link', { name: 'Close' })).toHaveAttribute('href', `${base()}/work/${NEW.slug}`);
             for (const path of await linkPaths(page)) expect(path.startsWith(base()), path).toBe(true);
-            // The photograph comes from the preview's media route, never /_next/image.
-            const source = await page.locator('[data-surface="viewer"] img').first().evaluate((image) => (image as HTMLImageElement).currentSrc);
-            expect(new URL(source).pathname.startsWith(`${base()}/media/${id(5)}/`)).toBe(true);
+            // The photograph comes from the preview's media route, never /_next/image. The current one: #89's stage can
+            // still hold the photograph it left while it moves.
+            const current = page.locator('[data-surface="viewer"] [data-viewer-current] img');
+            await expect.poll(() => current.evaluate((image) => new URL((image as HTMLImageElement).currentSrc).pathname)).toMatch(new RegExp(`^${base()}/media/${id(5)}/`));
+            // A finger on the photograph asks for its neighbors' peeks (9a), from the preview's own mirror.
+            const peek = page.waitForRequest((request) => new URL(request.url()).pathname.startsWith(`${base()}/api/catalog/series/${NEW.slug}/photos/`));
+            const stage = page.locator('[data-viewer-stage]');
+            for (const type of ['pointerdown', 'pointerup']) await stage.dispatchEvent(type, { pointerId: 1, pointerType: 'touch', isPrimary: true, clientX: 200, clientY: 300 });
+            await peek;
             expectInsidePreview(log);
             // A series the draft hides is the preview's not-found page, its links inside the preview.
             const hidden = await page.goto(`${origin()}${base()}/work/${GONE.slug}`);
