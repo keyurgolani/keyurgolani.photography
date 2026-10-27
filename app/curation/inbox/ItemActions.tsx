@@ -415,7 +415,8 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
                                 {DEFER_LABEL}
                             </button>
                         ) : can.defer ? (
-                            <button type="submit" name="intent" value="defer" className={styles.button} disabled={pending}>
+                            // On a replacement the hint says what Decide later does to the draft, so it describes the button.
+                            <button type="submit" name="intent" value="defer" className={styles.button} disabled={pending} aria-describedby={detail.type === 'replacement' && detail.primaryUnavailable ? 'primary-unavailable' : undefined}>
                                 {DEFER_LABEL}
                             </button>
                         ) : null}

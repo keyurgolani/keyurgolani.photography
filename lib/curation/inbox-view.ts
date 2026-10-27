@@ -333,19 +333,23 @@ export interface ReplacementDraft {
     decideLater: 'put-back' | 'refuses' | 'blocked' | 'keeps';
 }
 
+/** Why Decide later can't put back an earlier version that isn't ready, and the way out, for the hint and the refusal. */
+export const BLOCKED_WHY = "The earlier version of this photograph isn't ready to show on the site, so Decide later can't put it back. The draft keeps the new version.";
+export const BLOCKED_NEXT = 'To keep it, dismiss this item, or leave it open until the earlier version is ready again.';
+
 /** The hint under a replacement's actions, by what Decide later does with its draft now. */
 export const REPLACEMENT_HINT = {
     /** Never confirmed, or the draft already on another version: Decide later writes nothing. */
-    keeps: "Confirming new bytes isn't in the inbox yet, so choose Decide later until it is. The published photograph keeps its current revision.",
+    keeps: "Confirming a new version isn't in the inbox yet, so choose Decide later until it is. The published photograph keeps its current revision.",
     keepsNew: 'The draft already uses the new version, so Decide later keeps it there, and the next publish uses it. Nothing is published until you publish.',
     putBack: 'The draft uses the new version, confirmed earlier. Decide later puts the earlier version back in the draft. Nothing is published until you publish.',
     refuses: "This photograph's draft moved to another version after the new one was confirmed, so Decide later can't tell which one to put back. Set its version with photos edit, or dismiss this item.",
     /** As leaveInDraft()'s refusal says it after the click (lib/curation/inbox-form.ts REFUSAL_WORDING). */
-    blocked: "The earlier version of this photograph has no ready derivatives, so Decide later can't put it back. The draft keeps the new version.",
+    blocked: `${BLOCKED_WHY} ${BLOCKED_NEXT}`,
 } as const;
 
 /** Why a replacement's Confirm is disabled, for that button alone; the hint beside it is about Decide later. */
-export const CONFIRM_UNAVAILABLE = "Confirming new bytes isn't in the inbox yet.";
+export const CONFIRM_UNAVAILABLE = "Confirming a new version isn't in the inbox yet.";
 
 /** Decide later can't do anything for this draft, so the page shows it disabled with the hint as its reason. */
 export function decideLaterRefuses(replacement: ReplacementDraft | null): boolean {
@@ -672,8 +676,13 @@ export function systemResponse(item: StateFacts, labelOf: (seriesId: string) => 
  * Source facts. Null for every other item. `next` is null once the item is
  * settled. The formats are lib/identity/scan.ts's SOURCE_EXTENSIONS.
  */
-export function failureNotice(detail: Pick<InboxDetail, 'type' | 'failure' | 'failureCode' | 'status' | 'can' | 'sourcePath'>): { reason: string; next: string | null } | null {
+export function failureNotice(
+    detail: Pick<InboxDetail, 'type' | 'failure' | 'failureCode' | 'status' | 'can' | 'sourcePath'> & Partial<Pick<InboxDetail, 'group'>>,
+): { reason: string; next: string | null } | null {
     if (detail.type !== 'processing-failure') return null;
+    // A settled item, dismissed or closed by the watcher (#17), has nothing to warn about: System response says what
+    // settled it, and Source facts keeps the reason.
+    if (detail.group === 'settled') return null;
     // A format it doesn't read is named by the file's own extension, which says more to the owner than "not a format".
     const extension = /\.([a-z0-9]{2,5})$/i.exec(fileParts(detail.sourcePath).name)?.[1];
     const reason =
@@ -724,7 +733,7 @@ export function reopenHint(item: Pick<InboxDetail, 'type' | 'replacement'> & Par
     if (item.type !== 'replacement') return 'Reopen it to change its series or description.';
     if (item.replacement?.decideLater === 'put-back') return 'Reopen it to leave the new version out of the draft. Decide later then puts the earlier version back.';
     // Reopening doesn't make the earlier set ready, so no put back is promised.
-    if (item.replacement?.decideLater === 'blocked') return "Reopening it changes nothing in the draft, which keeps the new version. The earlier version has no ready derivatives, so Decide later can't put it back.";
+    if (item.replacement?.decideLater === 'blocked') return "Reopening it changes nothing in the draft, which keeps the new version. The earlier version isn't ready to show on the site, so Decide later can't put it back.";
     return item.replacement?.draft === 'new' ? 'Reopening it changes nothing in the draft, which keeps the new version.' : 'Reopening it changes nothing in the draft.';
 }
 

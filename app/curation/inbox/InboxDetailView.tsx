@@ -60,6 +60,8 @@ function SourceFacts({ view, detail }: { view: ReadyView; detail: InboxDetail })
         { label: 'Identity status', value: detail.identity },
         { label: 'Derivatives', value: detail.derivatives },
         ...detail.facts,
+        // A processing failure's reason is in the strip at the top while it's open, and here once it's settled.
+        ...(detail.failure && failureNotice(detail) === null ? [{ label: 'Failure', value: detail.failure }] : []),
         ...(detail.candidates.length > 0 ? [{ label: 'Candidates', value: detail.candidates.join(', ') }] : []),
         { label: 'Referenced by', value: referencedByText(detail.references, view.series) },
         { label: 'Active revision', value: view.activeRevisionId ?? 'None yet', mono: view.activeRevisionId !== null },

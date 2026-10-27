@@ -476,6 +476,14 @@ describe('a processing failure', () => {
         expect(failed('unsupported-format', { status: 'dismissed', can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true } })).toEqual({ reason: 'Reason for unsupported-format.', next: null });
         expect(failed('unsupported-format', { type: 'new' })).toBeNull();
     });
+
+    it('shows no strip once the item is settled, dismissed or closed by the watcher', () => {
+        const settled = { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true };
+        expect(failed('unsupported-format', { status: 'dismissed', group: 'settled', can: settled })).toBeNull();
+        // A failed build closed once its set built on a later try: no failure code, and nothing to warn about.
+        expect(failed(null, { status: 'resolved', group: 'settled', can: settled })).toBeNull();
+        expect(failed('unsupported-format', { group: 'judgment' })).not.toBeNull();
+    });
 });
 
 describe('the published statement note', () => {

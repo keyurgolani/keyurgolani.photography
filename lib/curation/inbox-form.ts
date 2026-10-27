@@ -5,7 +5,7 @@ import { dataRootStatus, libraryRoot } from '../storage/config';
 import { approveEvent, dismissEvent, editEvent, reopenEvent, retryEvent, type ActionInput, type ActionOutcome, type Choices } from './actions';
 import { scrub } from './commands';
 import { EVENT_ID_RE, type CurationEvent, type CuratorDescription } from './events';
-import { BIND_WAITING_NEXT, DONE_ANSWER, MOVED_ANSWER, parsePlacementValue, type InboxActionKind, type InboxActionState } from './inbox-view';
+import { BIND_WAITING_NEXT, BLOCKED_NEXT, BLOCKED_WHY, DONE_ANSWER, MOVED_ANSWER, parsePlacementValue, type InboxActionKind, type InboxActionState } from './inbox-view';
 import { readDraftPlan } from './pins';
 import { leaveInDraft } from './resolutions';
 import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from './text';
@@ -165,7 +165,7 @@ const REFUSAL_WORDING: [RegExp, (match: RegExpMatchArray) => string][] = [
     [/has no photo ID, so there is nothing to retry/, () => "This file has no photo ID, so there's nothing to retry."],
     [/can't be dismissed/, () => "Something still shows this photograph, so it can't be dismissed. Restore the source, or take it out of its series and publish first. Nothing was written."],
     // #17's Decide later on a confirmed replacement, when the earlier version it would put back has no set that checks out.
-    [/, the revision to put back, has no ready derivative set/, () => "The earlier version of this photograph has no ready derivatives, so Decide later can't put it back. The draft keeps the new version. Nothing was written."],
+    [/, the revision to put back, has no ready derivative set/, () => `${BLOCKED_WHY} Nothing was written. ${BLOCKED_NEXT}`],
     [/doesn't check out .*so it can't be put back\./, () => "The earlier version of this photograph has derivatives that don't check out, so Decide later can't put it back. The draft keeps the new version. Nothing was written. The server log names the problem."],
     [/photo record pins /, () => "Its photo record holds other bytes, and confirming new bytes isn't an inbox step yet. Nothing was written."],
 ];
@@ -203,6 +203,7 @@ async function replacementAnswer(root: string, kind: InboxActionKind, event: Cur
     const photoId = event.photoId;
     try {
         const readPinned = async () => (await readAuthoredRecord(root, 'photo', photoId))?.assetRevision ?? null;
+        // A `blocked` put back gets the plain answer: Decide later can't change the draft then.
         if (kind === 'reopen') return (await readDraftPlan(root, event, readPinned)).kind === 'put-back' ? DONE_ANSWER.reopenedPutBack : null;
         if (kind === 'defer') return (event.decisions.at(-1)?.writes?.length ?? 0) === 0 && (await readPinned()) === event.assetRevision ? DONE_ANSWER.keepsNew : null;
     } catch {

@@ -1,6 +1,6 @@
 import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
-import { readUsableEvent, replacementEventIds } from './candidates';
+import { candidateOf, readUsableEvent, replacementEventIds } from './candidates';
 import { eventIdOf, eventKey, type CurationEvent } from './events';
 
 /**
@@ -77,7 +77,12 @@ export type DraftPlan =
     | { kind: 'unexplained'; photoId: string; revision: string; pin: Pin | null }
     /** The record pins the item's bytes as the latest pin set them, and that pin records nothing to put back. `own` when it is this item's confirm. */
     | { kind: 'keeps'; photoId: string; revision: string; pin: Pin; own: boolean }
-    | { kind: 'put-back'; photoId: string; revision: string; putBack: string };
+    | { kind: 'put-back'; photoId: string; revision: string; putBack: string }
+    /**
+     * A put back whose revision has no ready derivative set, which leaveInDraft() refuses after the plan. Only
+     * readDraftPlan() says so, for the inbox page, reopen's note and `curation show`, so none of them promises it.
+     */
+    | { kind: 'blocked'; photoId: string; revision: string; putBack: string };
 
 /** The plan for `event`, given the revision its photo record pins (null for no record) and the inbox's latest pin of the photo. */
 export function draftPlan(event: CurationEvent, pinned: string | null, pin: Pin | null): DraftPlan {
@@ -96,12 +101,19 @@ export function draftPlan(event: CurationEvent, pinned: string | null, pin: Pin 
     return { kind: 'put-back', photoId, revision, putBack: own.fromRevision };
 }
 
-/** draftPlan() read from the data root: the photo record through `readPinned`, the latest pin through the registry. */
+/**
+ * draftPlan() read from the data root: the photo record through `readPinned`, the latest pin through the registry.
+ * A put back is `blocked` when its revision has no ready set, as leaveInDraft() checks after the plan. A set that's
+ * ready but doesn't check out against its manifest needs every file hashed, so only the defer itself finds that.
+ */
 export async function readDraftPlan(root: string, event: CurationEvent, readPinned: (photoId: string) => Promise<string | null>, registry?: Registry): Promise<DraftPlan> {
     if (event.type !== 'replacement' || event.photoId === null || event.assetRevision === null) return { kind: 'plain' };
     const pinned = await readPinned(event.photoId);
     if (pinned === null) return draftPlan(event, null, null);
-    return draftPlan(event, pinned, await latestPin(root, registry ?? (await readRegistry(root)), event.photoId));
+    const read = registry ?? (await readRegistry(root));
+    const plan = draftPlan(event, pinned, await latestPin(root, read, event.photoId));
+    if (plan.kind === 'put-back' && candidateOf(read, plan.photoId, plan.putBack).state !== 'ready') return { ...plan, kind: 'blocked' };
+    return plan;
 }
 
 /**
@@ -130,6 +142,8 @@ export function draftPlanText(plan: DraftPlan, replaced?: string): string | null
         }
         case 'put-back':
             return `Leaving it in draft (defer) puts back ${plan.putBack}, the revision this item's confirm replaced.`;
+        case 'blocked':
+            return `Leaving it in draft (defer) refuses for now: ${plan.putBack}, the revision this item's confirm replaced, has no ready derivative set, so it can't be put back. The draft keeps ${plan.revision}.`;
     }
 }
 

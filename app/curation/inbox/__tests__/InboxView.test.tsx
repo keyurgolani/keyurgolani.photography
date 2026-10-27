@@ -276,6 +276,20 @@ describe('the detail', () => {
         expect(document.getElementById('inbox-list')).toBeInTheDocument();
     });
 
+    it('drops the failure strip once a processing failure is settled, and keeps its reason in Source facts', () => {
+        renderInbox(view({
+            selected: detail({
+                type: 'processing-failure', status: 'dismissed', group: 'settled', title: 'Processing failed', photoId: null, shortId: 'no photo ID', assetRevision: null, previewUrl: null, identity: 'None yet. This file has no photo ID.',
+                sourcePath: 'inbox/raw-frame.heic', facts: [], failure: 'The file is not a format the watcher reads.', failureCode: 'unsupported-format',
+                can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true },
+            }),
+        }));
+        expect(document.querySelector('[data-state="failure"]')).toBeNull();
+        expect(screen.queryByText(/watcher doesn't read/)).toBeNull();
+        const facts = screen.getByRole('region', { name: 'Source facts' });
+        expect(within(facts).getByText('Failure').nextElementSibling).toHaveTextContent('The file is not a format the watcher reads.');
+    });
+
     it('says why a file failed, and what to do, at the top of the item in the refusal tone, and not again in Source facts', () => {
         renderInbox(view({
             selected: detail({
@@ -361,7 +375,7 @@ describe('the detail', () => {
     });
 
     it('shows a replacement and a missing source with their own boxes and no primary action yet', () => {
-        const { unmount } = renderInbox(view({ selected: detail({ type: 'replacement', title: 'Replacement ready', can: { approve: false, edit: true, defer: true, dismiss: true, retry: false, reopen: false }, primaryUnavailable: "Confirming new bytes isn't in the inbox yet." }) }));
+        const { unmount } = renderInbox(view({ selected: detail({ type: 'replacement', title: 'Replacement ready', can: { approve: false, edit: true, defer: true, dismiss: true, retry: false, reopen: false }, primaryUnavailable: "Confirming a new version isn't in the inbox yet." }) }));
         expect(screen.getByRole('heading', { name: 'Identity-preserving replacement' })).toBeInTheDocument();
         expect(screen.getByText('Use the new bytes only after all derivatives succeed')).toBeInTheDocument();
         expect(screen.getByRole('button', { name: 'Confirm new asset revision' })).toBeDisabled();
@@ -391,7 +405,10 @@ describe('the detail', () => {
         // Where Decide later can work, it's live, and Confirm still says only why it's disabled.
         renderInbox(view({ selected: detail({ type: 'replacement', title: 'Replacement ready', replacement: { draft: 'new', live: false, decideLater: 'put-back' }, can: { approve: false, edit: true, defer: true, dismiss: true, retry: false, reopen: false }, primaryUnavailable: REPLACEMENT_HINT.putBack }) }));
         expect(screen.getByRole('button', { name: 'Decide later' })).toBeEnabled();
+        // The live one is described by the hint too, so a keyboard or screen reader hears what it does to the draft.
+        expect(screen.getByRole('button', { name: 'Decide later' })).toHaveAccessibleDescription(REPLACEMENT_HINT.putBack);
         expect(screen.getByRole('button', { name: 'Confirm new asset revision' })).toHaveAccessibleDescription(CONFIRM_UNAVAILABLE);
+        expect(CONFIRM_UNAVAILABLE).not.toMatch(/bytes/);
     });
 
     it("drops a settled missing item's recovery box, which #17's resolved or archived item no longer needs", () => {
