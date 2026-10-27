@@ -36,6 +36,14 @@
   font-family: var(--gah-font-sans);
   font-size: var(--gah-type-ui);
   line-height: 1.45;
+  /* The curator is dark in both site themes, so the browser's own controls, scrollbars and selection are too (16-3). */
+  color-scheme: dark;
+}
+
+/* The canvas under the curator, which overscroll and a phone's retracting URL bar show, is the curator's ground, not the light site theme's. */
+:global(html):has(.page),
+:global(body):has(.page) {
+  background: var(--gah-surface);
 }
 
 /* Header */
@@ -836,6 +844,26 @@ p.fieldError {
   color: var(--gah-ink-soft);
 }
 
+/* A whole-page state (the Inbox's and Publish's: can't be read, not
+   available, nothing live yet) is composed, not parked: its block is centred
+   on both axes, a little above optical centre, with the text left-aligned
+   inside a 38rem column. The in-pane .state sections (the Inbox's detail
+   side) aren't a main, so they keep their place (16-3, #87 delta). */
+.page:has(> main.state) {
+  display: flex;
+  flex-direction: column;
+}
+
+main.state {
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  max-width: none;
+  padding: 3rem max(var(--site-gutter), calc((100% - 38rem) / 2)) max(4rem, 12svh);
+}
+
 /* The detail side of an empty inbox: one muted line, wide screens only, since the list already says the inbox is empty. */
 .emptyPane p {
   margin: 0;
@@ -923,6 +951,12 @@ p.fieldError {
 
   .emptyPane {
     display: none;
+  }
+
+  /* On a phone the whole-page block is top-weighted. */
+  main.state {
+    justify-content: flex-start;
+    padding-top: 12svh;
   }
 
   /* One side at a time (owner, 2026-10-25): the list until the curator opens an item, then that item alone, with Back to inbox. */

@@ -1,0 +1,304 @@
+// @vitest-environment node
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { hashValue } from '@/lib/catalog/review';
+import { readActivePointer, readAuthoredRecord } from '@/lib/catalog/working-layer';
+import { writeAuthoredRecord } from '@/lib/catalog/working-layer-writer';
+import { displayFacts, IDLE_STATE, type Answer, type LedgerRow, type PublishState, type ScreenView } from '@/lib/curation/publish-facts';
+import { setDataDir } from '@/test/helpers/tempDataRoot';
+import {
+    blockRevisionFile,
+    BREAKWATER,
+    BREAKWATER_TITLE,
+    createPublishFixture,
+    editBehindThePage,
+    fixBoth,
+    holdCatalogLock,
+    LOW_TIDE_IDS,
+    publishFromCli,
+    reopenBreakwater,
+    SALT_ROADS,
+    type PublishFixture,
+} from '@/test/helpers/publishFixture';
+
+// #16's Publish screen (16-3) on real data roots: the page's read, the join
+// of rows and blockers, and every answer the one server action gives, through
+// the same publish() the CLI runs. requireCurator() is the boundary's, tested
+// with the login; here it lets every call through. Test values only.
+
+const revalidated: string[] = [];
+vi.mock('@/lib/curation/auth', async (importOriginal) => ({ ...(await importOriginal<object>()), requireCurator: async () => ({}) }));
+vi.mock('next/cache', () => ({ revalidatePath: (path: string) => void revalidated.push(path) }));
+
+const { loadPublishPage } = await import('../load');
+const { publishAction } = await import('../actions');
+
+let fixture: PublishFixture;
+let restore: () => void;
+
+beforeEach(async () => {
+    fixture = await createPublishFixture();
+    restore = setDataDir(fixture.root);
+    revalidated.length = 0;
+}, 60_000);
+
+afterEach(async () => {
+    restore();
+    await fixture.cleanup();
+});
+
+async function view(): Promise<ScreenView> {
+    const page = await loadPublishPage();
+    if (page.state !== 'ready') throw new Error(`The page is ${page.state}`);
+    return page.view;
+}
+
+const rowsOf = (screen: Pick<ScreenView, 'ledger'>): LedgerRow[] => [...screen.ledger.authored, ...screen.ledger.derived, ...screen.ledger.health];
+const rowAbout = (screen: Pick<ScreenView, 'ledger'>, summary: string | RegExp) => {
+    const row = rowsOf(screen).find((entry) => (typeof summary === 'string' ? entry.summary === summary : summary.test(entry.summary)));
+    if (!row) throw new Error(`No row says ${String(summary)}: ${rowsOf(screen).map((entry) => entry.summary).join(' | ')}`);
+    return row;
+};
+
+function form(fields: Record<string, string | number>): FormData {
+    const data = new FormData();
+    for (const [name, value] of Object.entries(fields)) data.set(name, String(value));
+    return data;
+}
+
+async function act(screen: ScreenView, intent: 'validate' | 'publish', previous: PublishState = IDLE_STATE, extra: Record<string, string> = {}) {
+    return publishAction(previous, form({ intent, draftId: screen.draftId, active: screen.active.revisionId, ...(intent === 'publish' ? { validated: screen.draftId } : {}), ...extra }));
+}
+
+const answerOf = (state: PublishState): Answer => {
+    if (!state.answer) throw new Error('No answer');
+    return state.answer;
+};
+
+describe('the page read', () => {
+    it('shows the draft as the approved mockup does: rows in visitor terms, two blockers known on load, and the panel on the new photograph', async () => {
+        const screen = await view();
+        expect(screen.kind).toBe('ledger');
+        expect(screen.draftNumber).toBe(3);
+        expect(screen.active).toMatchObject({ number: 2, revisionId: fixture.revisions[1] });
+        expect(screen.previous).toMatchObject({ number: 1 });
+        const added = rowAbout(screen, `Add ${BREAKWATER_TITLE} to Low Tide Hours after photograph 04`);
+        expect(added).toMatchObject({ kind: 'New', review: 'generated', blocks: true, fix: { type: 'description', photoId: BREAKWATER, text: expect.stringMatching(/^Six wooden posts/) } });
+        expect(added.fix?.type === 'description' && added.fix.inboxItem).toBe(fixture.breakwaterEvent);
+        const moved = rowAbout(screen, 'Pier lamps moves from position 7 to 2 in Salt Roads');
+        expect(moved).toMatchObject({ kind: 'Moved', review: 'stale', blocks: true, detail: 'Reviewed against revision 1. Revision 2 published it differently.', fix: { type: 'restamp', label: 'Still right, mark reviewed', record: 'Pier lamps position in Salt Roads' } });
+        expect(moved.compare).toMatchObject({ type: 'list', moved: 'Pier lamps', from: 7, to: 2 });
+        expect(rowAbout(screen, 'Home features Salt Roads first')).toMatchObject({ review: 'reviewed', blocks: false });
+        expect(rowAbout(screen, 'Low Tide Hours: the short statement changes')).toMatchObject({ review: 'reviewed', compare: { type: 'text', before: expect.stringMatching(/^Five/), after: expect.stringMatching(/^Six/) } });
+        // No row names a raw ID or a hash.
+        for (const row of rowsOf(screen)) expect(row.summary).not.toMatch(/ph_|rev_|sha256-/);
+        // The blockers the page knows on load are exactly the rows that say so.
+        expect(screen.blockers.map((blocker) => blocker.rowId).sort()).toEqual(rowsOf(screen).filter((row) => row.blocks).map((row) => row.id).sort());
+        expect(screen.blockers.map((blocker) => blocker.link.type).sort()).toEqual(['description', 'restamp']);
+        const facts = displayFacts(screen, null, '/curation/preview/x');
+        expect(facts.countLine).toMatch(/^\d+ changes for visitors: \d+ authored, \d+ derived\. 2 block publishing\.$/);
+        expect(facts.bar).toMatchObject({ validate: 'available', publish: 'unavailable', reason: '2 changes block publishing. Fix them, then validate.' });
+        // The frame opens on the new photograph's Viewer in the preview, never a fragment of the series page.
+        expect(screen.panel.draftSrc).toBe(`/curation/preview/${screen.draftId}/site/work/low-tide-hours/photo/${BREAKWATER}`);
+        expect(screen.panel.liveSrc).toBe(`/work/low-tide-hours/photo/${BREAKWATER}`);
+        expect(screen.panel.count).toBe('Low Tide Hours: 6 photographs, was 5');
+        expect(facts.panel.rollback).toBe('Last-known-good revision 2 remains rollback-ready.');
+    });
+
+    it('says nothing to publish once the working catalog is the live revision, with the rollback line one back', async () => {
+        await fixBoth(fixture);
+        await publishFromCli(fixture);
+        const screen = await view();
+        expect(screen.kind).toBe('nothing');
+        const facts = displayFacts(screen, null, null);
+        expect(facts).toMatchObject({ mode: 'nothing', heading: 'Nothing to publish', bar: null, panel: { title: 'Live site', marker: 'Live, revision 3', rollback: 'Revision 2 is kept. `photos rollback` returns to it.' } });
+    });
+});
+
+describe('Validate and Publish', () => {
+    it('blocks with one list item per blocking row, then validates and publishes once both fixes are made from their rows', async () => {
+        const screen = await view();
+        const blocked = await act(screen, 'validate');
+        const answer = answerOf(blocked);
+        if (answer.kind !== 'blocked') throw new Error(`Validate answered ${answer.kind}`);
+        expect(answer.lead).toBe('2 changes need you before revision 3 can publish. Revision 2 stays live.');
+        // The join: every blocker has exactly one row that says so, and every blocking row a blocker.
+        const blocking = rowsOf(answer).filter((row) => row.blocks).map((row) => row.id).sort();
+        expect(answer.blockers.map((blocker) => blocker.rowId).sort()).toEqual(blocking);
+        expect(answer.blockers.find((blocker) => blocker.link.type === 'restamp')).toMatchObject({ record: 'Salt Roads', field: 'order (Pier lamps)', link: { name: 'Pier lamps position in Salt Roads' } });
+
+        // Mark description ready, from the row.
+        const added = rowAbout(screen, `Add ${BREAKWATER_TITLE} to Low Tide Hours after photograph 04`);
+        if (added.fix?.type !== 'description') throw new Error('No description fix');
+        const marked = await publishAction(blocked, form({ intent: 'mark-description', rowId: added.id, photoId: added.fix.photoId, version: added.fix.version, valueHash: added.fix.valueHash }));
+        expect(marked.answer).toEqual({ kind: 'fixed', rowId: added.id });
+        expect(marked.result).toBeNull();
+        expect(revalidated).toContain('/curation/publish');
+        expect((await readAuthoredRecord(fixture.root, 'photo', BREAKWATER))?.alt).toMatchObject({ reviewed: true });
+
+        // Still right, mark reviewed: only the stamp moves, never the value.
+        const moved = rowAbout(await view(), 'Pier lamps moves from position 7 to 2 in Salt Roads');
+        if (moved.fix?.type !== 'restamp') throw new Error('No restamp fix');
+        const before = await readAuthoredRecord(fixture.root, 'series', SALT_ROADS);
+        const restamped = await publishAction(marked, form({ intent: 'mark-reviewed', rowId: moved.id, kind: moved.fix.target.kind, id: moved.fix.target.id, version: moved.fix.target.version, hashes: JSON.stringify(moved.fix.target.hashes), field: moved.fix.field }));
+        expect(restamped.answer).toEqual({ kind: 'fixed', rowId: moved.id });
+        const after = await readAuthoredRecord(fixture.root, 'series', SALT_ROADS);
+        expect(after?.photoIds).toEqual(before?.photoIds);
+        expect(after?.review?.fields.photoIds).toMatchObject({ origin: 'curator', actor: 'curator:web', baseRevisionId: fixture.revisions[1], valueHash: hashValue(before?.photoIds) });
+
+        const fixed = await view();
+        expect(fixed.blockers).toEqual([]);
+        expect(rowAbout(fixed, 'Pier lamps moves from position 7 to 2 in Salt Roads')).toMatchObject({ review: 'reviewed', blocks: false, detail: expect.stringMatching(/^Reviewed from this screen on /) });
+        const valid = await act(fixed, 'validate', restamped);
+        expect(valid.answer).toMatchObject({ kind: 'valid', stakes: expect.stringMatching(/^Publishing makes these \d+ changes live on every page\. Revision 2 stays rollback-ready\.$/) });
+        expect(displayFacts(fixed, valid.result, null).bar).toMatchObject({ publish: 'available' });
+
+        const published = await act(fixed, 'publish', valid);
+        expect(published.answer).toMatchObject({ kind: 'published', live: { number: 3, revisionId: fixed.draftId }, previous: { number: 2 } });
+        expect((await readActivePointer(fixture.root))?.revisionId).toBe(fixed.draftId);
+        // The page isn't rendered again from the new pointer, which would read as Nothing to publish in place of the answer.
+        expect(revalidated.filter((entry) => entry === '/' || entry === '/curation/publish')).toEqual(['/curation/publish', '/curation/publish']);
+        const live = displayFacts(fixed, published.result, null);
+        expect(live).toMatchObject({ mode: 'live', heading: 'Revision 3 is live', bar: null, groups: { authored: 'Authored', derived: 'Derived' }, compareLabels: { before: 'Before', after: 'Now live' }, panel: { title: 'Live site', marker: 'Live, revision 3', rollback: 'Revision 2 is kept. `photos rollback` returns to it.' } });
+        expect(JSON.stringify({ ...live, ledger: undefined })).not.toMatch(/draft|preview/i);
+    });
+
+    it("won't publish without a passing validation of this candidate, even when the form skips the page's gate", async () => {
+        const screen = await view();
+        const state = await publishAction(IDLE_STATE, form({ intent: 'publish', draftId: screen.draftId, active: screen.active.revisionId }));
+        expect(state.answer).toEqual({ kind: 'not-validated' });
+        expect((await readActivePointer(fixture.root))?.revisionId).toBe(fixture.revisions[1]);
+    });
+
+    it('blocks at publish when a review goes stale after Validate, and the stale row says so with its Inbox fix', async () => {
+        await fixBoth(fixture);
+        const screen = await view();
+        const valid = await act(screen, 'validate');
+        expect(valid.answer?.kind).toBe('valid');
+        await reopenBreakwater(fixture);
+        const stopped = await act(screen, 'publish', valid);
+        const answer = answerOf(stopped);
+        if (answer.kind !== 'blocked-at-publish') throw new Error(`Publish answered ${answer.kind}`);
+        expect(answer.lead).toBe('1 change went stale since you validated. Revision 2 stays live.');
+        const row = rowAbout(answer, `Add ${BREAKWATER_TITLE} to Low Tide Hours after photograph 04`);
+        expect(row).toMatchObject({ review: 'stale', blocks: true, detail: 'Its Inbox item needs a decision again.', fix: { type: 'inbox', eventId: fixture.breakwaterEvent } });
+        expect(answer.blockers).toEqual([expect.objectContaining({ rowId: row.id, record: BREAKWATER_TITLE, field: 'place in Low Tide Hours', link: { type: 'inbox', record: BREAKWATER_TITLE, eventId: fixture.breakwaterEvent } })]);
+        expect((await readActivePointer(fixture.root))?.revisionId).toBe(fixture.revisions[1]);
+        expect(displayFacts(screen, stopped.result, null).bar).toMatchObject({ publish: 'unavailable', reason: 'Fix the change above, then validate again.' });
+    });
+
+    it('stops with the working catalog changed, and keeps revision 2 on every line', async () => {
+        await fixBoth(fixture);
+        const screen = await view();
+        const valid = await act(screen, 'validate');
+        await editBehindThePage(fixture);
+        const changed = await act(screen, 'publish', valid);
+        expect(changed.answer).toEqual({ kind: 'changed', body: 'It changed after this page loaded, so nothing was published. Revision 2 stays live.' });
+        const facts = displayFacts(screen, changed.result, null);
+        expect(facts).toMatchObject({ mode: 'out-of-date', heading: 'Preview your draft', ledgerHeading: 'Change ledger, out of date', showFixes: false, bar: { loadUpdated: true, validate: 'hidden', publish: 'hidden' }, revision: { current: 'Current public revision 2' } });
+        expect(facts.panel).toMatchObject({ frameSrc: null, frameNote: 'Load the updated ledger to preview the new draft.' });
+        expect(facts.panel.count).toBeUndefined();
+    });
+
+    it('says who published from the command line meanwhile, with the new pointer on the page', async () => {
+        await fixBoth(fixture);
+        const screen = await view();
+        const valid = await act(screen, 'validate');
+        await editBehindThePage(fixture);
+        await publishFromCli(fixture, 'keyur');
+        const answer = answerOf(await act(screen, 'publish', valid));
+        expect(answer).toMatchObject({ kind: 'someone-published', live: { number: 3 }, previous: { number: 2 }, by: expect.stringMatching(/^keyur published it at \d\d:\d\d, with photos publish\.$/) });
+        const facts = displayFacts(screen, answer, null);
+        expect(facts.revision.current).toBe('Current public revision 3');
+        expect(facts.panel.rollback).toBe('Revision 2 is kept. `photos rollback` returns to it.');
+        expect(facts.heading).toBe('Preview your draft');
+    });
+
+    it('says already live when this candidate went live meanwhile, and writes nothing more', async () => {
+        await fixBoth(fixture);
+        const screen = await view();
+        const valid = await act(screen, 'validate');
+        const live = await publishFromCli(fixture, 'keyur');
+        expect(live).toBe(screen.draftId);
+        const answer = answerOf(await act(screen, 'publish', valid));
+        expect(answer).toMatchObject({ kind: 'already-live', live: { number: 3, revisionId: screen.draftId }, by: expect.stringMatching(/^keyur published it at /) });
+        expect(displayFacts(screen, answer, null)).toMatchObject({ mode: 'live', ledgerHeading: 'Live in revision 3' });
+    });
+
+    it('answers busy while another process holds the catalog lock, and the validation still holds for the retry', async () => {
+        await fixBoth(fixture);
+        const screen = await view();
+        const valid = await act(screen, 'validate');
+        const release = await holdCatalogLock(fixture);
+        try {
+            const busy = await act(screen, 'publish', valid);
+            expect(busy.answer).toMatchObject({ kind: 'busy', retry: 'publish', body: expect.stringMatching(/Nothing changed here\. Publish again when it finishes\.$/) });
+            expect(displayFacts(screen, busy.result, null)).toMatchObject({ validated: true, bar: { publish: 'available' } });
+            const validating = await act(screen, 'validate', valid);
+            expect(validating.answer).toMatchObject({ kind: 'busy', retry: 'validate' });
+            expect(displayFacts(screen, validating.result, null).bar).toMatchObject({ publish: 'unavailable' });
+        } finally {
+            await release();
+        }
+        expect((await readActivePointer(fixture.root))?.revisionId).toBe(fixture.revisions[1]);
+        // Once the other process lets go, the retry goes through on the validation that still holds.
+        expect((await act(screen, 'publish', valid)).answer).toMatchObject({ kind: 'published', live: { number: 3 } });
+    });
+
+    it('answers failed when the publish stops before the switch, and Publish stays the retry', async () => {
+        await fixBoth(fixture);
+        const screen = await view();
+        const valid = await act(screen, 'validate');
+        const undo = blockRevisionFile(fixture, screen.draftId);
+        let failed: PublishState;
+        try {
+            failed = await act(screen, 'publish', valid);
+        } finally {
+            undo();
+        }
+        expect(failed.answer).toMatchObject({ kind: 'failed', heading: 'The publish stopped before revision 3 went live', body: 'Revision 2 is still live, and visitors see no change. The server log names what failed. Publish again to retry.', live: null });
+        expect(displayFacts(screen, failed.result, null)).toMatchObject({ mode: 'draft', validated: true, bar: { publish: 'available' } });
+        expect((await readActivePointer(fixture.root))?.revisionId).toBe(fixture.revisions[1]);
+        // The retry goes through.
+        expect((await act(screen, 'publish', failed)).answer).toMatchObject({ kind: 'published', live: { number: 3 } });
+    });
+});
+
+describe('the review fixes', () => {
+    it('refuses Mark description ready with nothing written once the description moved, and keeps the result in place', async () => {
+        const screen = await view();
+        const blocked = await act(screen, 'validate');
+        const added = rowAbout(screen, `Add ${BREAKWATER_TITLE} to Low Tide Hours after photograph 04`);
+        if (added.fix?.type !== 'description') throw new Error('No description fix');
+        const record = await readAuthoredRecord(fixture.root, 'photo', BREAKWATER);
+        if (record === null) throw new Error('No photo record');
+        await writeAuthoredRecord({ ...record, alt: { kind: 'described', text: 'Changed in the Inbox meanwhile.', reviewed: false } }, { expectedVersion: record.version, root: fixture.root });
+        const refused = await publishAction(blocked, form({ intent: 'mark-description', rowId: added.id, photoId: BREAKWATER, version: added.fix.version, valueHash: added.fix.valueHash }));
+        expect(refused.answer).toEqual({ kind: 'fix-refused', rowId: added.id, text: 'The description changed since the page loaded, so nothing was written.' });
+        expect(refused.result).toBe(blocked.result);
+        expect((await readAuthoredRecord(fixture.root, 'photo', BREAKWATER))?.alt).toMatchObject({ text: 'Changed in the Inbox meanwhile.', reviewed: false });
+        expect(revalidated).not.toContain('/curation/publish');
+    });
+
+    it('refuses Still right, mark reviewed once the order moved, and stamps nothing', async () => {
+        const screen = await view();
+        const moved = rowAbout(screen, 'Pier lamps moves from position 7 to 2 in Salt Roads');
+        if (moved.fix?.type !== 'restamp') throw new Error('No restamp fix');
+        const series = await readAuthoredRecord(fixture.root, 'series', SALT_ROADS);
+        if (series === null) throw new Error('No series');
+        const reordered = [...series.photoIds].reverse();
+        await writeAuthoredRecord({ ...series, photoIds: reordered }, { expectedVersion: series.version, root: fixture.root });
+        const stamped = (await readAuthoredRecord(fixture.root, 'series', SALT_ROADS))?.review?.fields.photoIds;
+        const refused = await publishAction(IDLE_STATE, form({ intent: 'mark-reviewed', rowId: moved.id, kind: 'series', id: SALT_ROADS, version: moved.fix.target.version, hashes: JSON.stringify(moved.fix.target.hashes), field: moved.fix.field }));
+        expect(refused.answer).toEqual({ kind: 'fix-refused', rowId: moved.id, text: 'The order changed since the page loaded, so nothing was written.' });
+        expect((await readAuthoredRecord(fixture.root, 'series', SALT_ROADS))?.review?.fields.photoIds).toEqual(stamped);
+    });
+
+    it("refuses a stamp for a value the screen didn't show, even at the version it read", async () => {
+        const screen = await view();
+        const moved = rowAbout(screen, 'Pier lamps moves from position 7 to 2 in Salt Roads');
+        if (moved.fix?.type !== 'restamp') throw new Error('No restamp fix');
+        const refused = await publishAction(IDLE_STATE, form({ intent: 'mark-reviewed', rowId: moved.id, kind: 'series', id: SALT_ROADS, version: moved.fix.target.version, hashes: JSON.stringify({ photoIds: hashValue(LOW_TIDE_IDS) }), field: 'order' }));
+        expect(refused.answer).toMatchObject({ kind: 'fix-refused' });
+        expect(rowAbout(await view(), 'Pier lamps moves from position 7 to 2 in Salt Roads')).toMatchObject({ review: 'stale', blocks: true });
+    });
+});

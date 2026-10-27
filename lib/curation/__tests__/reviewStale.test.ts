@@ -112,7 +112,7 @@ describe('a stale approval after a #17 replacement', { timeout: 120_000 }, () =>
         expect(described.outcome).toBe('VALIDATION_FAILED');
         expect(review(described.issues)).toEqual([expect.objectContaining({ record: { kind: 'photo', id: photoId }, field: 'alt', message: expect.stringContaining('Stale review') })]);
         // A still-right value can't be marked reviewed before the Publish screen, and the hint says so instead of pointing at a no-op.
-        expect(review(described.issues)[0].hint).toBe('Check it still fits the new bytes. If it needs a change, make it with photos edit. If it is still right, the Publish screen\'s review clears it; until that ships, change it with photos edit and change it back.');
+        expect(review(described.issues)[0].hint).toBe('Check it still fits the new bytes. If it needs a change, make it with photos edit. If it is still right, mark it reviewed on the Publish screen.');
 
         // Described again for the new bytes, it publishes, on them.
         const record = (await readAuthoredRecord(w.root, 'photo', photoId)) as AuthoredPhoto;
