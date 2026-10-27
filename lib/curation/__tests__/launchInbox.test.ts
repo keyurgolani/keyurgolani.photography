@@ -14,7 +14,7 @@ import { STABILITY_MS } from '../../identity/reconcile';
  * new items for photos `sequence set` placed need no judgment, and the one
  * photo left out still does. Then the rehearsal's rollback: approve that
  * photo, publish it, roll back, and the approval reads as no longer placed
- * until it is reopened and approved again.
+ * until it is reopened and approved again, and the next publish goes through.
  */
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -59,19 +59,21 @@ describe('the inbox after the launch path', () => {
         const id = (source: string) => listed.find((row) => row.source === source)?.photoId as string;
         const [landscape, portrait, square] = [id('landscape.jpg'), id('portrait.png'), id('square.webp')];
 
-        fs.mkdirSync(data.file('authored', 'series', SERIES), { recursive: true, mode: 0o700 });
-        fs.writeFileSync(data.file('authored', 'series', SERIES, 'v1.json'), `${JSON.stringify({
-            schemaVersion: 1,
-            version: 1,
-            baseRevisionId: null,
+        // The series record through photos edit, which reviews what it writes (#16): a record made by hand after the upgrade would read as not reviewed.
+        const seriesFile = path.join(path.dirname(data.root), 'series.json');
+        fs.writeFileSync(seriesFile, `${JSON.stringify({
             kind: 'series',
             id: SERIES,
             slug: 'launch-inbox',
             title: 'Launch inbox fixture series',
             statement: 'A fixture statement for the launch inbox test. Not real copy.',
             shortStatement: 'A fixture short statement.',
+            photoIds: [],
+            chapters: [],
+            cover: null,
             visibility: 'published',
         }, null, 2)}\n`);
+        expect(ok(await photos('edit', SERIES, '--file', seriesFile))).toContain(`Saved series ${SERIES} as version 1.`);
         ok(await photos('sequence', 'set', SERIES, landscape, portrait));
 
         // Placed in the draft: settled before any publish.
@@ -104,6 +106,10 @@ describe('the inbox after the launch path', () => {
         // The rehearsal's rollback: approve the third photo into the series, publish it as revision 2, and roll back to 1.
         const item = byPhoto.get(square) as Listed['events'][number];
         ok(await photos('curation', 'approve', item.id, '--version', String(item.version), '--series', SERIES, '--description', 'A purple fixture checkerboard.', '--base', candidate ?? ''));
+        // A title and a caption too, so the recovery's publish covers every field the photo record holds, not only its description and bytes.
+        const titles = path.join(path.dirname(data.root), 'titles.csv');
+        fs.writeFileSync(titles, ['photoId,title,caption', `${square},A fixture title.,A fixture caption.`, ''].join('\n'));
+        ok(await photos('describe', '--import', titles));
         const second = /PUBLISHED: Published (rev_[0-9a-f]{64}) as revision 2\./.exec(ok(await photos('publish', '--actor', 'launch-inbox')))?.[1];
         expect(second).toBeDefined();
         expect(await inbox()).toMatchObject({ needsJudgment: 0, placed: 2, unplaced: 0, events: [] });
@@ -135,5 +141,11 @@ describe('the inbox after the launch path', () => {
         expect(await inbox()).toMatchObject({ needsJudgment: 0, placed: 2, unplaced: 0, events: [] });
         expect(JSON.parse(ok(await photos('list', '--unassigned', '--json')))).toEqual([]);
         expect(ok(await photos('curation', 'show', item.id))).not.toContain('No longer placed');
+
+        // And the recovery ends in a publish: the approval reviews the photo record's fields again, against the active revision.
+        const recovered = await photos('publish', '--actor', 'launch-inbox');
+        expect(recovered.code, `${recovered.stdout}\n${recovered.stderr}`).toBe(0);
+        expect(recovered.stdout).toMatch(/PUBLISHED: Published rev_[0-9a-f]{64} as revision \d+\./);
+        expect(JSON.parse(ok(await photos('list', '--unassigned', '--json')))).toEqual([]);
     });
 });

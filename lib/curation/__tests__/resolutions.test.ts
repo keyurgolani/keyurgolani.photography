@@ -9,7 +9,7 @@ import { readVersionedDocument, writeVersionedDocument } from '../../storage/doc
 import { reopenEvent } from '../actions';
 import { eventIdOf, eventKey, type CurationEvent } from '../events';
 import { readEvent } from '../repository';
-import { confirmReplacement, leaveInDraft } from '../resolutions';
+import { confirmReplacement, leaveInDraft, ownerCopyOf } from '../resolutions';
 import { createWorld, makeImages, P_PATH, photoRecord, removeTemplate, replacementEventId, setDir, treeBytes, type Images, type World } from './replacementWorld';
 
 // The real writer, watched, so a test can read what each resolution handed it.
@@ -258,7 +258,7 @@ describe('leave in draft\'s guards', { timeout: 60_000 }, () => {
         expect(writer).not.toHaveBeenCalled();
     });
 
-    it('counts a put back as the inbox\'s pin, so a later confirm whose event a crash lost names A as the last pin, and puts nothing back', async () => {
+    it('counts a put back as the inbox\'s pin, and a confirm whose event a crash lost puts A back by its own review stamp', async () => {
         const w = await readyWorld();
         // B confirmed in place of A, then put back to A.
         const left = await leave(w, await confirmedAndReopened(w));
@@ -274,15 +274,21 @@ describe('leave in draft\'s guards', { timeout: 60_000 }, () => {
         await expect(confirm(w, item, { faults: { afterWrite: () => { throw new Error('killed'); } } })).rejects.toThrow('killed');
         expect((await photoRecord(w)).assetRevision).toBe(c);
 
-        // The inbox last pinned A, by the put back, not B, by the confirm it undid. Nothing shows C's confirm put the record
-        // on C, so confirm again records nothing to put back, and leave in draft keeps C.
+        // The inbox last pinned A, by the put back, not B, by the confirm it undid. #16's stamp on the record shows C's
+        // confirm wrote it in place of A, so confirm again records A, and leave in draft puts A back.
         const again = await confirm(w, await w.event(item.id));
-        expect(again.ok && again.event.decisions.at(-1)).toMatchObject({ action: 'confirm', writes: [] });
-        expect(again.ok && again.event.decisions.at(-1)).not.toHaveProperty('fromRevision');
-        expect(again.ok && again.notes.join(' ')).toContain(`already pins ${c}, though the inbox last pinned ${w.a}, so nothing in the working layer changed.`);
-        const before = authored(w);
-        expect(await leave(w, await reopen(w, (again as { event: CurationEvent }).event))).toMatchObject({ ok: true, event: { status: 'deferred' } });
-        expect((await photoRecord(w)).assetRevision).toBe(c);
-        expect(authored(w)).toEqual(before);
+        expect(again.ok && again.event.decisions.at(-1)).toMatchObject({ action: 'confirm', fromRevision: w.a, writes: [] });
+        expect(again.ok && again.notes.join(' ')).toContain(`already pins ${c}: its review stamp shows a confirm of this item wrote it, in place of ${w.a}`);
+        expect(await leave(w, await reopen(w, (again as { event: CurationEvent }).event))).toMatchObject({ ok: true, event: { status: 'deferred', decisions: expect.arrayContaining([expect.objectContaining({ action: 'defer', fromRevision: w.a })]) } });
+        expect((await photoRecord(w)).assetRevision).toBe(w.a);
+    });
+});
+
+describe('ownerCopyOf()', () => {
+    it('counts the owner\'s copy and never #16\'s review stamps, which are the writer\'s metadata', () => {
+        const stamp = { valueHash: '0'.repeat(64), origin: 'curator' as const, baseRevisionId: null, actor: 'cli', reviewedAt: '2026-05-01T00:00:00.000Z' };
+        const bare = { schemaVersion: 1 as const, version: 2, baseRevisionId: null, kind: 'photo' as const, id: 'ph_00000000-0000-4000-8000-000000000001', assetRevision: `sha256-${'a'.repeat(64)}`, alt: null };
+        expect(ownerCopyOf({ ...bare, review: { fields: { assetRevision: stamp, alt: stamp } } })).toEqual([]);
+        expect(ownerCopyOf({ ...bare, title: 'Fixture title.', review: { fields: { title: stamp } } })).toEqual(['title']);
     });
 });

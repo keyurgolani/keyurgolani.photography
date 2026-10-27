@@ -9,6 +9,9 @@ import { candidateFile, compileCandidate, type CompileResult } from './compile';
 import { onLegacySite } from './legacy-photos';
 import { LAUNCH_ORDER_RULE_IDS } from './order-rules';
 import { rebaseWorkingLayer, type RebaseReport } from './rebase';
+import type { ReviewContext } from './review';
+import { ensureReviewBackfill } from './review-backfill';
+import { readReviewContext } from './review-context';
 import {
     ActivePointerMovedError,
     assertRevisionId,
@@ -62,8 +65,9 @@ export { rebaseWorkingLayer, type RebaseOptions, type RebaseReport } from './reb
  *  13. Rebase the working layer onto the new revision.
  *
  * Steps 10 to 12 are commitActivation(), the only writer of the pointer.
- * Through step 9 a stop writes at most the candidate, its diagnostics, and
- * `last-publish.json`, so the pointer changes only when a publish lands,
+ * Through step 9 a stop writes at most the candidate, its diagnostics,
+ * `last-publish.json`, and, once after the upgrade, #16's review backfill
+ * marker (review-backfill.ts), so the pointer changes only when a publish lands,
  * or when step 1 settles an interrupted one. A retry after a crash at any
  * step gets the same revision ID and at most one committed activation.
  */
@@ -378,7 +382,11 @@ export async function recover(options: RecoverOptions): Promise<RecoveryReport> 
     if (active !== null && options.rebase !== false) {
         const layer = await readWorkingLayer(root);
         const behind = [layer.site, ...layer.series, ...layer.photos].some((record) => record !== null && record.baseRevisionId !== active.revisionId);
-        if (behind) report.rebased = await rebaseWorkingLayer({ root, targetRevisionId: active.revisionId, waitMs: options.authoredWaitMs });
+        if (behind) {
+            // A publish's target came from this working layer, so #16's reviews move with it. A rollback's didn't.
+            const published = (await listActivations(root)).find((activation) => activation.activationId === active.activationId)?.kind === 'publish';
+            report.rebased = await rebaseWorkingLayer({ root, targetRevisionId: active.revisionId, waitMs: options.authoredWaitMs, published });
+        }
     }
     return report;
 }
@@ -389,6 +397,8 @@ interface Snapshot {
     pointer: ActivePointer | null;
     active: RevisionFile | null;
     compiled: CompileResult;
+    /** #16's review bases and inbox, for the review rules. */
+    review: ReviewContext;
 }
 
 /**
@@ -403,7 +413,11 @@ async function snapshotAndCompile(root: string, options: { lock: boolean; author
     let layer: WorkingLayer;
     try {
         layer = options.lock
-            ? await withLock(AUTHORED_LOCK, { root, leaseMs: AUTHORED_LEASE_MS, waitMs: options.authoredWaitMs ?? AUTHORED_WAIT_MS }, () => readWorkingLayer(root))
+            ? await withLock(AUTHORED_LOCK, { root, leaseMs: AUTHORED_LEASE_MS, waitMs: options.authoredWaitMs ?? AUTHORED_WAIT_MS }, async () => {
+                // #16's one-time review backfill, if no tool write has recorded it yet.
+                await ensureReviewBackfill(root);
+                return readWorkingLayer(root);
+            })
             : await readWorkingLayer(root);
     } catch (error) {
         if (error instanceof LockTimeoutError) throw new Stop('AUTHORED_LOCKED', error.message, { holder: error.holder });
@@ -414,7 +428,8 @@ async function snapshotAndCompile(root: string, options: { lock: boolean; author
     const active = pointer ? await readRevisionFile(root, pointer.revisionId) : null;
     if (pointer && active === null) throw new CatalogIntegrityError(ACTIVE_POINTER_NAME, `${ACTIVE_POINTER_NAME} names ${pointer.revisionId}, which has no revision file.`);
     const compiled = await compileCandidate({ layer, registry, root, active, reprofile: options.reprofile, profileId: options.profileId });
-    return { layer, registry, pointer, active, compiled };
+    const review = await readReviewContext(root, layer, pointer?.revisionId ?? null);
+    return { layer, registry, pointer, active, compiled, review };
 }
 
 /** The active revision's photographs the candidate leaves out, by photo ID, each with the series that showed it. */
@@ -435,6 +450,7 @@ function ruleContext(root: string, snapshot: Snapshot) {
         registry: snapshot.registry,
         roots: { dataRoot: root, libraryRoot: libraryRoot() },
         excluded: snapshot.compiled.excluded,
+        review: snapshot.review,
     };
 }
 
@@ -770,7 +786,7 @@ export async function publish(options: PublishOptions): Promise<PublishResult> {
         await step(7);
 
         // 8. A dry run stops here.
-        if (dryRun) throw new Stop('DRY_RUN_OK', `${compiled.candidateId} passes validation. Nothing was written but the candidate and its diagnostics.`);
+        if (dryRun) throw new Stop('DRY_RUN_OK', `${compiled.candidateId} passes validation. Nothing was written but the candidate and its diagnostics, and, on the first command after the upgrade, the one-time review backfill.`);
         await step(8);
 
         // 9. The revision file, written once.
@@ -798,7 +814,7 @@ export async function publish(options: PublishOptions): Promise<PublishResult> {
 
         // 13. Rebase onto the new revision, merging against the snapshot.
         try {
-            await rebaseWorkingLayer({ root, targetRevisionId: compiled.candidateId, snapshot: layer, registry, waitMs: options.authoredWaitMs });
+            await rebaseWorkingLayer({ root, targetRevisionId: compiled.candidateId, snapshot: layer, registry, waitMs: options.authoredWaitMs, published: true });
             result.rebased = true;
         } catch (error) {
             if (!(error instanceof LockTimeoutError)) throw error;

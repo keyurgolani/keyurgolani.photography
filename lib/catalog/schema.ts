@@ -161,6 +161,30 @@ export const activePointerSchema = z.strictObject({ schemaVersion: z.literal(CAT
  * only the active revision changed. Without it, both sides changed the field.
  */
 const conflictSchema = z.strictObject({ field: z.string().min(1), base: z.json(), active: z.json(), baseUnreadable: z.literal(true).optional() });
+
+/**
+ * #16's review stamp on one authored field: what the curator reviewed, as
+ * the writer recorded it when the value was written. Managed, like
+ * `baseRevisionId`: only the writer sets it (lib/catalog/review.ts).
+ */
+export const fieldReviewSchema = z.strictObject({
+    /** SHA-256 hex of the canonical JSON of the value reviewed, null for an absent one. A value changed since, by hand, no longer matches. */
+    valueHash: z.string().regex(HEX_64_RE),
+    /** `curator`: typed or chosen through a tool. `generated`: a suggestion or a policy write nobody accepted yet. `migration`: the backfill of a record written before stamps. */
+    origin: z.enum(['curator', 'generated', 'migration']),
+    /** The active revision the value was reviewed against, null before the first activation. */
+    baseRevisionId: revisionId.nullable(),
+    /** A photo field: the asset revision the record pinned. A series cover: the cover photo's. */
+    assetRevision: assetRevision.optional(),
+    /** The inbox item, and the version of it, the curator reviewed, when the write settled one. */
+    event: z.strictObject({ id: z.string().min(1), version: positiveInt }).optional(),
+    /** `assetRevision` set by #17's confirm or Leave in draft: the revision it replaced, the one it set, and that set's profile. */
+    asset: z.strictObject({ from: assetRevision, to: assetRevision, profileId }).optional(),
+    actor: z.string().min(1),
+    reviewedAt: timestamp,
+});
+export const reviewStampSchema = z.strictObject({ fields: z.record(z.string().min(1), fieldReviewSchema) });
+
 const authoredFields = {
     schemaVersion: z.literal(CATALOG_SCHEMA_VERSION),
     /** Bumped on every tool write. The compare-and-swap key. */
@@ -168,6 +192,8 @@ const authoredFields = {
     /** The active revision at the record's creation or last rebase. */
     baseRevisionId: revisionId.nullable(),
     conflicts: z.array(conflictSchema).optional(),
+    /** #16's review stamps, by field. Absent on a record no tool has written since they were added, which reads as backfilled. */
+    review: reviewStampSchema.optional(),
 };
 
 export const authoredSiteSchema = z.strictObject({
