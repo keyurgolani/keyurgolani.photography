@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../../identity/variants';
 import { createCatalogReader, createRouteBuilder, toAssetProjection } from '../reader';
+import { stripBasePath } from '../routes';
 import type { CandidateContent, PublicPhotoRecord, RevisionContent, SeriesRecord } from '../types';
 
 const ASSET = `sha256-${'a'.repeat(64)}`;
@@ -140,6 +141,21 @@ describe('createRouteBuilder', () => {
 
     it('encodes segments and refuses a malformed base path', () => {
         expect(createRouteBuilder().seriesHref('a b/c')).toBe('/work/a%20b%2Fc');
-        for (const basePath of ['preview', '/preview/', '//preview']) expect(() => createRouteBuilder({ basePath })).toThrow(TypeError);
+        for (const basePath of ['preview', '/preview/', '//preview', '/\\preview', '/pre view', '/preview//site']) expect(() => createRouteBuilder({ basePath })).toThrow(TypeError);
+    });
+
+    it('builds About, the catalog endpoints, and /media the same way (#16)', () => {
+        const media = '/media/ph_1/sha256-a/p1/w400.avif';
+        const pub = createRouteBuilder();
+        expect([pub.aboutHref(), pub.catalogApiHref('series/a/pages/c'), pub.mediaHref(media)]).toEqual(['/about', '/api/catalog/series/a/pages/c', media]);
+        const preview = createRouteBuilder({ basePath: '/curation/preview/rev_x/site' });
+        expect([preview.aboutHref(), preview.catalogApiHref('home/photos/p?revision=r'), preview.mediaHref(media)])
+            .toEqual(['/curation/preview/rev_x/site/about', '/curation/preview/rev_x/site/api/catalog/home/photos/p?revision=r', `/curation/preview/rev_x/site${media}`]);
+    });
+
+    it('strips a base path from a pathname, and only a whole one', () => {
+        const base = '/curation/preview/rev_x/site';
+        expect([stripBasePath('/work', ''), stripBasePath(base, base), stripBasePath(`${base}/work/a`, base), stripBasePath(`${base}x/work`, base), stripBasePath('/work', base)])
+            .toEqual(['/work', '/', '/work/a', null, null]);
     });
 });
