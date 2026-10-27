@@ -177,10 +177,21 @@ describe('every screen projection serializes byte for byte as pinned', () => {
             home: 'f845063265e99c501e1b34aec4a5a11bf328956c557309bddd3efc3ec49f0abc',
             homePhotos: '8f69315859b0700845222df618546e45c05d7be6c5c7e909af128a184f377a67',
             work: '97961e986a7d4bea8bc005f8681ac88436337e467112928a0c29e0185c23a569',
-            series: 'e07466d2a385701f8a954e1cef8bf948a148c10cbc854e6b2d378cd70bd80ccb',
+            // 16-2: a series page's continuation path comes from the route builder, so a preview's points at its own mirror.
+            series: '1e5733d2c9fd8d57a584d21e0eb63cb8fd73f8733a39380e4915b02ce3a88dde',
             continuation: '6abcadfe8b9f3d40f2e35a6aa155a069cee65838c5447d499904cbc68bf09b6f',
             viewer: '1136163489bec2b4359e954545cbf835bb912d34314de30d0a8bba15239be96b',
         });
+    });
+
+    // 16-2: a public page's continuation names the public endpoint, a preview's names the preview's mirror of it.
+    it("points a series page's continuation at the builder's own catalog endpoint", async () => {
+        const nextOf = (out: Record<string, unknown[]>) =>
+            out.series.map((entry) => ((entry as unknown[]).at(-1) as { kind: string; page?: { nextHref: string | null } }).page?.nextHref ?? null).filter((href): href is string => href !== null);
+        const [pub, pre] = [nextOf(await screens(publicRoutes)), nextOf(await screens(previewRoutes))];
+        expect(pub.length).toBeGreaterThan(0);
+        expect(pub.every((href) => href.startsWith('/api/catalog/series/'))).toBe(true);
+        expect(pre).toEqual(pub.map((href) => `/preview/fixture${href}`));
     });
 
     it('walks every kind of answer, so the pins cover each guard', async () => {
