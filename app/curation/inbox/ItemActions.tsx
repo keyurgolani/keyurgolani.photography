@@ -7,6 +7,8 @@ import { approveItem, deferItem, dismissItem, editItem, reopenItem, retryItem } 
 import { itemUrl, moveOn } from './journey';
 import {
     arrivalMessage,
+    CONFIRM_UNAVAILABLE,
+    decideLaterRefuses,
     DEFER_LABEL,
     fileParts,
     defaultDescription,
@@ -376,6 +378,10 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
     const primary = PRIMARY_ACTION[detail.type];
     const { can } = detail;
     const unavailable = primary !== undefined && detail.type !== 'new' && detail.primaryUnavailable !== null;
+    // A replacement whose Decide later the page already knows would refuse shows it disabled, with the hint as its reason.
+    const deferRefuses = can.defer && detail.type === 'replacement' && decideLaterRefuses(detail.replacement);
+    // A replacement's Confirm has its own short reason; the hint beside it is about Decide later.
+    const confirmReason = detail.type === 'replacement' ? 'confirm-unavailable' : 'primary-unavailable';
     const anyButton = unavailable || (detail.type === 'new' && (can.edit || can.approve)) || can.defer;
     const slot = slotOf(state, can.dismiss);
     return (
@@ -389,16 +395,25 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
                     <div className={styles.actions}>
                         {/* An action the inbox can't take yet stays visible with its reason, before the live ones and quieter than them. */}
                         {unavailable ? (
-                            <button type="button" className={`${styles.button} ${styles.unavailable}`} disabled aria-describedby="primary-unavailable">
+                            <button type="button" className={`${styles.button} ${styles.unavailable}`} disabled aria-describedby={confirmReason}>
                                 {primary}
                             </button>
+                        ) : null}
+                        {unavailable && confirmReason === 'confirm-unavailable' ? (
+                            <span className={styles.visuallyHidden} id="confirm-unavailable">
+                                {CONFIRM_UNAVAILABLE}
+                            </span>
                         ) : null}
                         {detail.type === 'new' && can.edit ? (
                             <button type="submit" name="intent" value="edit" className={styles.button} disabled={pending}>
                                 Save edits
                             </button>
                         ) : null}
-                        {can.defer ? (
+                        {can.defer && deferRefuses ? (
+                            <button type="button" className={`${styles.button} ${styles.unavailable}`} disabled aria-describedby="primary-unavailable">
+                                {DEFER_LABEL}
+                            </button>
+                        ) : can.defer ? (
                             <button type="submit" name="intent" value="defer" className={styles.button} disabled={pending}>
                                 {DEFER_LABEL}
                             </button>

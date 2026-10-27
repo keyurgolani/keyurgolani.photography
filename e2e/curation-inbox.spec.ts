@@ -598,22 +598,26 @@ test('says what a replacement\'s draft holds before and after Reopen and Decide 
     await decidedLater(`Left ${file} for later. The draft already uses the new version of this photograph, so the next publish uses it too.`);
     expect(await pinned()).toBe(REPLACEMENT_REVISION);
 
-    // Confirmed again from the earlier version, reopened, then the draft moves to a third version: Decide later refuses, in its own words, every time.
+    // Confirmed again from the earlier version, reopened, then the draft moves to a third version: the page knows Decide later
+    // would refuse, so it shows it disabled, with the hint, in its own words, as its reason, every time.
     await edit(earlier);
     await reopen('Reopened.');
     await confirm();
     await reopen('Reopened. The draft still uses the new version until you decide.');
     const third = `sha256-${'c'.repeat(64)}`;
     await edit(third);
-    const moved = "This photograph's draft moved to another version after the new one was confirmed, so Decide later can't tell which one to put back.";
+    const moved = "This photograph's draft moved to another version after the new one was confirmed, so Decide later can't tell which one to put back. Set its version with photos edit, or dismiss this item.";
     for (let attempt = 0; attempt < 2; attempt += 1) {
         await openInbox(page, eventId);
-        await expect(hint).toHaveText(`${moved} Set its version with photos edit, or dismiss this item.`);
+        await expect(hint).toHaveText(moved);
         const before = await readEvent(root, eventId);
-        await page.getByRole('button', { name: 'Decide later' }).click();
-        await expect(answer(page, 'refused')).toHaveText(`${moved} Nothing was written. Set its version with photos edit, or dismiss this item.`);
+        const later = page.getByRole('button', { name: 'Decide later' });
+        await expect(later).toBeDisabled();
+        await expect(later).toHaveAccessibleDescription(moved);
+        await expect(page.getByRole('button', { name: 'Confirm new asset revision' })).toHaveAccessibleDescription("Confirming new bytes isn't in the inbox yet.");
+        // Said once, and nothing to refresh.
+        await expect(page.getByText(moved)).toHaveCount(1);
         await expect(page.getByRole('link', { name: 'Refresh and review again' })).toHaveCount(0);
-        await expect(page.getByText(/changed since the page loaded/)).toHaveCount(0);
         expect(await readEvent(root, eventId)).toEqual(before);
         expect(await pinned()).toBe(third);
     }
