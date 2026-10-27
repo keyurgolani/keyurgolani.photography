@@ -141,7 +141,7 @@ describe('createRouteBuilder', () => {
 
     it('encodes segments and refuses a malformed base path', () => {
         expect(createRouteBuilder().seriesHref('a b/c')).toBe('/work/a%20b%2Fc');
-        for (const basePath of ['preview', '/preview/', '//preview']) expect(() => createRouteBuilder({ basePath })).toThrow(TypeError);
+        for (const basePath of ['preview', '/preview/', '//preview', '/\\preview', '/pre view', '/preview//site']) expect(() => createRouteBuilder({ basePath })).toThrow(TypeError);
     });
 
     it('builds About, the catalog endpoints, and /media the same way (#16)', () => {

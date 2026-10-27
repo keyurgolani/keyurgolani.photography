@@ -360,6 +360,7 @@ describe('proxy.ts on the preview paths', () => {
             `/curation/preview/${id}/site/work/${LONG}/photo/${photo.id}`,
             `/curation/preview/${id}/site/api/catalog/series/${LONG}/pages/x`,
             `/curation/preview/${id}/site/api/catalog/home/photos/${photo.id}?revision=${id}`,
+            `/curation/preview/${id}/site/api/catalog/series/${LONG}/photos/${photo.id}?revision=${id}`,
             `/curation/preview/${id}/site/media/${photo.id}/${photo.assetRevision}/${photo.profileId}/w400.avif`,
             `/curation/preview/${id}/anything`,
             `/curation/preview/${id}/site/gallery`,

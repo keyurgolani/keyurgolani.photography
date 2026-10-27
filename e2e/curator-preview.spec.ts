@@ -129,6 +129,7 @@ const previewPaths = (draft: string) => [
     `${base(draft)}/work/${KEPT.slug}/photo/${id(1)}`,
     `${base(draft)}/api/catalog/series/${KEPT.slug}/pages/x`,
     `${base(draft)}/api/catalog/home/photos/${id(1)}?revision=${draft}`,
+    `${base(draft)}/api/catalog/series/${KEPT.slug}/photos/${id(1)}?revision=${draft}`,
     imagePath(draft, id(4)),
     // Paths no route matches, which the preview's catch-all pages answer.
     `/curation/preview/${draft}/anything`,

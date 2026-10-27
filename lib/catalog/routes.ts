@@ -18,7 +18,8 @@ export interface RouteBuilder {
     mediaHref(path: string): string;
 }
 
-const BASE_PATH_RE = /^\/[^/](?:.*[^/])?$/;
+// Plain path segments only: a `basePath` such as `/\host` would read as protocol-relative to a browser.
+const BASE_PATH_RE = /^(?:\/[A-Za-z0-9._~-]+)+$/;
 
 export function createRouteBuilder({ basePath = '' }: { basePath?: string } = {}): RouteBuilder {
     if (basePath !== '' && !BASE_PATH_RE.test(basePath)) {
