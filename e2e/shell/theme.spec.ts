@@ -8,8 +8,17 @@ test.skip(({ isMobile }) => isMobile, 'The desktop project covers it. SiteNav ru
 const toggle = (page: Page) => page.getByRole('button', { name: /^Switch to (dark|light) mode$/ });
 /** The body's background, or '' while the parser hasn't reached the body yet. */
 const bodyBackground = (page: Page) => page.evaluate(() => (document.body ? getComputedStyle(document.body).backgroundColor : ''));
+/** The legacy Gallery's main, the one ground the theme paints, or '' while the parser hasn't reached it yet. */
+const galleryBackground = (page: Page) =>
+    page.evaluate(() => {
+        const main = document.querySelector('main');
+        return main ? getComputedStyle(main).backgroundColor : '';
+    });
+/** The legacy Gallery in each theme. */
 const LIGHT_GROUND = 'rgb(250, 250, 250)';
 const DARK_GROUND = 'rgb(5, 5, 5)';
+/** The shell's Gallery After Hours ground on html and body, the same in both themes (#21). */
+const SHELL_GROUND = 'rgb(8, 10, 9)';
 /** About's Light Takes Shape paper, the same in both themes. */
 const PAPER = 'rgb(244, 236, 215)';
 
@@ -23,7 +32,7 @@ function watchErrors(page: Page) {
     return problems;
 }
 
-test('a stored light theme is on <html> and the body before any Next.js script runs', async ({ page }) => {
+test('a stored light theme is on <html>, and paints the legacy Gallery, before any Next.js script runs', async ({ page }) => {
     await page.addInitScript(() => localStorage.setItem('theme', 'light'));
     // Hold the scripts, not the stylesheets: a pending stylesheet at the top of <head> blocks the inline script.
     let release = () => {};
@@ -38,8 +47,10 @@ test('a stored light theme is on <html> and the body before any Next.js script r
     const problems = watchErrors(page);
     await page.goto('/gallery', { waitUntil: 'commit' });
 
-    await expect.poll(() => bodyBackground(page)).toBe(LIGHT_GROUND);
+    await expect.poll(() => galleryBackground(page)).toBe(LIGHT_GROUND);
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+    // The shell owns the ground under the nav, so only the Gallery's own main follows the theme.
+    expect(await bodyBackground(page)).toBe(SHELL_GROUND);
     expect(await page.evaluate(() => document.documentElement.hasAttribute('data-hydrated')), 'React has not hydrated yet').toBe(false);
 
     release();
@@ -67,7 +78,8 @@ test('a stored value other than light or dark leaves the dark theme', async ({ p
     await page.goto('/gallery');
     await waitForHydration(page);
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-    expect(await bodyBackground(page)).toBe(DARK_GROUND);
+    expect(await galleryBackground(page)).toBe(DARK_GROUND);
+    expect(await bodyBackground(page)).toBe(SHELL_GROUND);
 });
 
 for (const theme of ['dark', 'light'] as const) {
@@ -110,7 +122,7 @@ test.describe('with JavaScript disabled', () => {
     test.use({ javaScriptEnabled: false });
 
     for (const [path, heading, ground, groundName] of [
-        ['/gallery', 'Gallery', DARK_GROUND, 'the dark ground'],
+        ['/gallery', 'Gallery', SHELL_GROUND, 'the dark ground'],
         ['/about', artist.profile.statementHeading, PAPER, "About's paper"],
     ] as const) {
         test(`${path} shows its heading and SiteNav on ${groundName}`, async ({ page }) => {
