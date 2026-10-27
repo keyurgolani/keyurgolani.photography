@@ -113,15 +113,21 @@ function linkProblem(root: string): string | null {
     } catch (error) {
         return `a file can't be created in it: ${(error as Error).message}`;
     }
+    let problem: string | null = null;
     try {
         fs.linkSync(probe, `${probe}.link`);
-        return null;
     } catch (error) {
-        return `its filesystem can't hold hard links, which every versioned write needs: ${(error as Error).message}`;
-    } finally {
-        fs.rmSync(`${probe}.link`, { force: true });
-        fs.rmSync(probe, { force: true });
+        problem = `its filesystem can't hold hard links, which every versioned write needs: ${(error as Error).message}`;
     }
+    // Each name on its own, so one that can't go doesn't keep the other, and a root that can't drop a file isn't ready.
+    for (const name of [`${probe}.link`, probe]) {
+        try {
+            fs.rmSync(name, { force: true });
+        } catch (error) {
+            problem ??= `a probe file can't be removed from it (${failure(error)})`;
+        }
+    }
+    return problem;
 }
 
 /**

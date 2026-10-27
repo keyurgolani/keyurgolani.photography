@@ -191,6 +191,22 @@ describe('dataRootState', () => {
             expect(second.files()).toEqual([DATA_ROOT_FILE]);
         });
 
+        it("is unwritable, and doesn't throw, when a probe file can't be removed", () => {
+            const data = tempDataRoot();
+            const real = fs.rmSync;
+            let failed = false;
+            vi.spyOn(fs, 'rmSync').mockImplementation(((target: fs.PathLike, options?: fs.RmOptions) => {
+                if (!failed && String(target).endsWith('.link')) {
+                    failed = true;
+                    throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+                }
+                return real(target, options);
+            }) as typeof fs.rmSync);
+            expect(dataRootStatus({ versioned: true })).toMatchObject({ state: 'unwritable', detail: expect.stringContaining("a probe file can't be removed from it (EPERM)") });
+            // The other name still went.
+            expect(data.files().filter((name) => !name.endsWith('.link'))).toEqual([DATA_ROOT_FILE]);
+        });
+
         it('is probed again each time, and leaves nothing behind', () => {
             const data = tempDataRoot();
             const link = vi.spyOn(fs, 'linkSync');
