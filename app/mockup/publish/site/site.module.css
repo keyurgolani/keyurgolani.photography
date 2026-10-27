@@ -83,3 +83,27 @@
 .grid li {
   scroll-margin-top: 1rem;
 }
+
+/* The stand-in Viewer: the photograph first, its name under it. */
+.viewer {
+  padding: 0.5rem var(--site-gutter) 2rem;
+}
+
+.viewer img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 2;
+  object-fit: cover;
+}
+
+.viewerTitle {
+  margin: 0.75rem 0 0;
+  font-family: var(--gah-font-serif);
+  font-size: 1.25rem;
+}
+
+.viewerMeta {
+  margin: 0.25rem 0 0;
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}

@@ -155,7 +155,9 @@ const ledger = (stage: Stage, harbor: Parameters<typeof derived>[0] = stage === 
     health,
 });
 
-const FRAME_SRC = `/mockup/publish/site#photo-${BREAKWATER_ID}`;
+// The changed photograph's Viewer, not the series page's #photo- fragment: round 2's shots showed the
+// fragment scrolls the Publish page in Chromium (spec, Visitor preview panel, the fallback).
+const FRAME_SRC = '/mockup/publish/site/photo';
 
 const DRAFT_PANEL: Panel = {
     title: 'Visitor preview',
