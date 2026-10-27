@@ -169,6 +169,50 @@ describe('dataRootState', () => {
         expect(data.files()).toEqual([DATA_ROOT_FILE]);
     });
 
+    describe('a root it already probed for hard links', () => {
+        const ENOTSUP = () => {
+            throw Object.assign(new Error('ENOTSUP: operation not supported, link'), { code: 'ENOTSUP' });
+        };
+        /** Every stat of these roots reports one device and inode, as a root removed and made again can on Linux. */
+        function sameInode(roots: string[], birthtimeMs?: number) {
+            const real = fs.statSync;
+            vi.spyOn(fs, 'statSync').mockImplementation(((target: fs.PathLike, options?: fs.StatSyncOptions) => {
+                const stat = real(target, options) as fs.Stats;
+                if (!roots.includes(path.resolve(String(target)))) return stat;
+                return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { dev: 7, ino: 4242, ...(birthtimeMs === undefined ? {} : { birthtimeMs }) });
+            }) as typeof fs.statSync);
+        }
+
+        it("isn't taken for a new root that has its inode back", () => {
+            const first = tempDataRoot();
+            const second = tempDataRoot();
+            sameInode([first.root, second.root]);
+            expect(dataRootStatus({ versioned: true, root: first.root })).toMatchObject({ state: 'ready', root: first.root });
+            // The new root's filesystem can't hold hard links, and it has to be probed to find that out.
+            vi.spyOn(fs, 'linkSync').mockImplementation(ENOTSUP);
+            expect(dataRootStatus({ versioned: true })).toMatchObject({ state: 'unwritable', root: second.root, detail: expect.stringContaining("can't hold hard links") });
+            expect(second.files()).toEqual([DATA_ROOT_FILE]);
+        });
+
+        it('is probed again each time where the filesystem keeps no birth time', () => {
+            const data = tempDataRoot();
+            sameInode([data.root], 0);
+            const link = vi.spyOn(fs, 'linkSync');
+            expect(dataRootState({ versioned: true })).toBe('ready');
+            expect(dataRootState({ versioned: true })).toBe('ready');
+            expect(link).toHaveBeenCalledTimes(2);
+        });
+
+        it('is probed once while it is the same root', () => {
+            const data = tempDataRoot();
+            expect(dataRootState({ versioned: true })).toBe('ready');
+            const link = vi.spyOn(fs, 'linkSync');
+            expect(dataRootState({ versioned: true })).toBe('ready');
+            expect(link).not.toHaveBeenCalled();
+            expect(data.files()).toEqual([DATA_ROOT_FILE]);
+        });
+    });
+
     it.skipIf(isRoot)('is unavailable when data-root.json exists but cannot be read', () => {
         const data = tempDataRoot();
         fs.chmodSync(data.file(DATA_ROOT_FILE), 0o000);

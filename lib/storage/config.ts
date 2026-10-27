@@ -98,17 +98,20 @@ function canAccess(target: string, mode: number): boolean {
     }
 }
 
-// Data roots, by device and inode, that held a hard link in this process
+// Data roots, by device, inode and birth time, that held a hard link in this process. The inode alone isn't enough: a root
+// removed and made again can get the inode back (Linux reuses them quickly), and it may sit on another filesystem by then.
 const linkCapableRoots = new Set<string>();
 
 /**
  * Why `root` can't take a versioned write, or null when it can. Each one
  * commits its version with link(), so this links a probe file there and
- * removes both names. A root that passes isn't probed again.
+ * removes both names. A root that passes isn't probed again, while it's the
+ * same root: the same device, inode and birth time.
  */
 function linkProblem(root: string, stat: fs.Stats): string | null {
-    const key = `${stat.dev}:${stat.ino}`;
-    if (linkCapableRoots.has(key)) return null;
+    // With no birth time to tell a recreated root from the one probed (0 where the filesystem keeps none), it's probed each time.
+    const key = stat.birthtimeMs > 0 ? `${stat.dev}:${stat.ino}:${stat.birthtimeMs}` : null;
+    if (key !== null && linkCapableRoots.has(key)) return null;
     const probe = path.join(/*turbopackIgnore: true*/ root, `.link-probe-${process.pid}-${randomUUID()}`);
     try {
         fs.writeFileSync(probe, '', { flag: 'wx', mode: PRIVATE_FILE_MODE });
@@ -117,7 +120,7 @@ function linkProblem(root: string, stat: fs.Stats): string | null {
     }
     try {
         fs.linkSync(probe, `${probe}.link`);
-        linkCapableRoots.add(key);
+        if (key !== null) linkCapableRoots.add(key);
         return null;
     } catch (error) {
         return `its filesystem can't hold hard links, which every versioned write needs: ${(error as Error).message}`;
