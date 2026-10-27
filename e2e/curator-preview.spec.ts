@@ -1,4 +1,4 @@
-import type { APIRequestContext, APIResponse, Browser, BrowserContext, Frame, Page } from '@playwright/test';
+import { devices, type APIRequestContext, type APIResponse, type Browser, type BrowserContext, type Frame, type Page } from '@playwright/test';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../lib/identity/variants';
 import { publish, validateWorkingLayer } from '../lib/catalog/publish';
 import { createTestCatalog, type TestCatalog, type VariantByteTable } from '../lib/catalog/testing';
@@ -7,6 +7,7 @@ import { writeAuthoredRecord } from '../lib/catalog/working-layer-writer';
 import { READY_TIMEOUT } from './support/catalogServer';
 import { signIn, startCuratorServer, type CuratorServer } from './support/curatorServer';
 import { expectHomeImmersive } from './support/home';
+import { centerOf, holdFinger } from './support/touch';
 import { waitForHydration } from './support/hydration';
 import { expect, test } from './support/test';
 
@@ -262,6 +263,30 @@ test.describe('signed in', () => {
         }
     });
 
+    test("asks for a touched photograph's neighbors (9a) from the preview's own mirror, never the public endpoint", async ({ browser }) => {
+        // A phone, with touch: the Viewer asks for its neighbors' peeks once a finger goes down on the photograph.
+        const context = await browser.newContext({ ...devices['Pixel 7'] });
+        try {
+            const page = await context.newPage();
+            await signIn(page, origin(), server().passphrase);
+            const log = requestLog(page);
+            await page.goto(`${origin()}${base()}/work/${NEW.slug}/photo/${id(4)}`);
+            await waitForHydration(page);
+            const stage = page.locator('[data-viewer-stage]');
+            await expect(stage).toBeVisible();
+            const peek = page.waitForResponse((response) => new URL(response.url()).pathname === `${base()}/api/catalog/series/${NEW.slug}/photos/${id(5)}`);
+            const finger = await holdFinger(page, await centerOf(stage));
+            const answer = await peek;
+            await finger.lift();
+            expect(answer.status()).toBe(200);
+            expect(answer.headers()['cache-control']).toContain('no-store');
+            expect(JSON.stringify(await answer.json())).toContain(`"${base()}/media/${id(5)}/`);
+            expectInsidePreview(log);
+        } finally {
+            await context.close();
+        }
+    });
+
     test('opens a draft-only series and its Viewer under the preview, with Close, Previous and Next inside it', async ({ browser }) => {
         const { context, page } = await signedIn(browser);
         try {
@@ -286,11 +311,6 @@ test.describe('signed in', () => {
             // still hold the photograph it left while it moves.
             const current = page.locator('[data-surface="viewer"] [data-viewer-current] img');
             await expect.poll(() => current.evaluate((image) => new URL((image as HTMLImageElement).currentSrc).pathname)).toMatch(new RegExp(`^${base()}/media/${id(5)}/`));
-            // A finger on the photograph asks for its neighbors' peeks (9a), from the preview's own mirror.
-            const peek = page.waitForRequest((request) => new URL(request.url()).pathname.startsWith(`${base()}/api/catalog/series/${NEW.slug}/photos/`));
-            const stage = page.locator('[data-viewer-stage]');
-            for (const type of ['pointerdown', 'pointerup']) await stage.dispatchEvent(type, { pointerId: 1, pointerType: 'touch', isPrimary: true, clientX: 200, clientY: 300 });
-            await peek;
             expectInsidePreview(log);
             // A series the draft hides is the preview's not-found page, its links inside the preview.
             const hidden = await page.goto(`${origin()}${base()}/work/${GONE.slug}`);
