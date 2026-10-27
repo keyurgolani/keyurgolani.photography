@@ -654,6 +654,12 @@
   }
 }
 
+/* 15-4: in the column (nothing pending) History follows the panel, so a
+   sticky panel would cover it and the done notice that takes focus there. */
+.layout[data-ledger='no'] .panel {
+  position: static;
+}
+
 /* Out of date: a line in place of the frame. */
 .frameNote {
   margin: 0;

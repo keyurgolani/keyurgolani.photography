@@ -332,6 +332,14 @@
   margin-top: 1.25rem;
 }
 
+/* The answers' headings are h3 here (h2 in 16-3's slot): the sans, as 16-3's. */
+.dialog .dialogResult h3,
+.history .done h3 {
+  font-family: var(--gah-font-sans);
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
 .reasons {
   margin: 0.5rem 0 0;
   padding: 0;
