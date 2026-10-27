@@ -4,7 +4,7 @@ import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
 import { setPrefersReducedMotion } from '@/test/matchMedia';
-import { badgePlace, type Box } from '../badgePlace';
+import { badgePlace, V110_LANE, type Box } from '../badgePlace';
 import HeroReveal, { BADGE_LINGER_MS, type HeroRevealPhase } from '../HeroReveal';
 import { HOME_LOADING_TIMEOUT_MS } from '../home/homeChromeConfig';
 
@@ -460,9 +460,10 @@ describe('HeroReveal', () => {
 });
 
 describe('badgePlace', () => {
-  // The catalog Home's boxes as measured in the browser (photo-home-loader round 2): the nav, then the series title,
-  // statement and link, and from 640 px wide the title's dark panel behind them. The card is 320 px from 768 px wide,
-  // 256 px below.
+  // The catalog Home's boxes as measured in the browser (photo-home-loader round 2, and #96's review probe from 85rem):
+  // the nav, then the series title, statement and link, and from 640 px wide the title's dark panel behind them. From
+  // 85rem the copy is capped to yield the badge's lane (CatalogHome.module.css), so the title breaks narrower there.
+  // The card is 320 px from 768 px wide, 256 px below.
   const box = (left: number, top: number, right: number, bottom: number): Box => ({ left, top, right, bottom });
   const nav = (width: number) => box(0, 0, width, 56);
   /**
@@ -483,9 +484,9 @@ describe('badgePlace', () => {
   const gap = (a: Box, b: Box) => Math.max(b.left - a.right, a.left - b.right, b.top - a.bottom, a.top - b.bottom);
 
   const screens = [
-    { view: { width: 1440, height: 900 }, card: 320, story: story(box(48, 566, 553, 700), box(48, 712, 467, 736), box(48, 756, 186, 800), true), kind: 'clear' },
-    { view: { width: 1536, height: 864 }, card: 320, story: story(box(48, 520, 576, 662), box(48, 674, 470, 698), box(48, 718, 186, 762), true), kind: 'clear' },
-    { view: { width: 1366, height: 768 }, card: 320, story: story(box(45, 439, 533, 568), box(45, 580, 465, 604), box(45, 624, 184, 668), true), kind: 'clear' },
+    { view: { width: 1440, height: 900 }, card: 320, story: story(box(48, 566, 466, 700), box(48, 712, 466, 736), box(48, 756, 186, 800), true), kind: null },
+    { view: { width: 1536, height: 864 }, card: 320, story: story(box(48, 527, 514, 664), box(48, 676, 468, 700), box(48, 720, 186, 764), true), kind: null },
+    { view: { width: 1366, height: 768 }, card: 320, story: story(box(45, 439, 429, 568), box(45, 580, 429, 604), box(45, 624, 184, 668), true), kind: null },
     { view: { width: 1280, height: 800 }, card: 320, story: story(box(42, 476, 510, 600), box(42, 612, 462, 636), box(42, 656, 181, 700), true), kind: 'clear' },
     { view: { width: 1024, height: 768 }, card: 320, story: story(box(34, 461, 441, 569), box(34, 581, 441, 604), box(34, 624, 172, 668), true), kind: 'clear' },
     { view: { width: 390, height: 844 }, card: 256, story: story(box(16, 580, 274, 648), box(16, 660, 274, 680), box(16, 700, 155, 744), false), kind: 'clear' },
@@ -500,22 +501,43 @@ describe('badgePlace', () => {
     for (const blocker of [nav(view.width), ...story]) expect(gap(painted, blocker)).toBeGreaterThanOrEqual(16 - 0.01);
   });
 
+  // The same screens with a copy the cap doesn't narrow enough, as a long title or one long word would leave it.
+  const wide1440 = story(box(48, 566, 553, 700), box(48, 712, 467, 736), box(48, 756, 186, 800), true);
+  const wide1366 = story(box(45, 439, 533, 568), box(45, 580, 465, 604), box(45, 624, 184, 668), true);
+
   it("keeps v1.1.0's exact place where it clears the text and the panel, and otherwise lifts the badge only as far as they need, at 0.85", () => {
     // 1440 x 900: v1.1.0's place clears the title, statement and link, so the text alone leaves it where it is.
-    const text = screens[0].story.slice(0, 3);
+    const text = wide1440.slice(0, 3);
     expect(badgePlace({ width: 1440, height: 900 }, 320, nav(1440), [...text])).toBeNull();
     // Its panel reaches under the oval's left side, so the badge lifts until it's 16 px above the panel's top.
-    const lifted = badgePlace({ width: 1440, height: 900 }, 320, nav(1440), [...screens[0].story])!;
+    const lifted = badgePlace({ width: 1440, height: 900 }, 320, nav(1440), [...wide1440])!;
     expect(lifted).toMatchObject({ kind: 'clear', dx: 0, scale: 0.85 });
     expect(oval({ width: 1440, height: 900 }, 320, lifted).bottom).toBeCloseTo(566 - 48 - 16, 5);
     // A panel that ends 16 px short of the oval leaves v1.1.0's place alone.
-    const short = { ...screens[0].story[3], right: 1440 / 2 - (0.85 * 324) / 2 - 4 - 16 };
+    const short = { ...wide1440[3], right: 1440 / 2 - (0.85 * 324) / 2 - 4 - 16 };
     expect(badgePlace({ width: 1440, height: 900 }, 320, nav(1440), [...text, short])).toBeNull();
     // 1366 x 768: just room above the panel at 0.85, under the nav's 16 px.
-    const tight = badgePlace({ width: 1366, height: 768 }, 320, nav(1366), [...screens[2].story])!;
+    const tight = badgePlace({ width: 1366, height: 768 }, 320, nav(1366), [...wide1366])!;
     expect(tight).toMatchObject({ kind: 'clear', dx: 0, scale: 0.85 });
     expect(oval({ width: 1366, height: 768 }, 320, tight).bottom).toBeCloseTo(439 - 48 - 16, 5);
     expect(oval({ width: 1366, height: 768 }, 320, tight).top).toBeGreaterThanOrEqual(56 + 16 - 0.01);
+  });
+
+  it("gives the story a lane that ends its panel exactly 16 px short of v1.1.0's badge on every screen from 85rem", () => {
+    // v1.1.0's painted oval at 0.85 on the 320 px card reaches 141.7 px left of the center.
+    expect(V110_LANE).toBeCloseTo((0.85 * 324) / 2 + 4 + 16, 9);
+    for (const [width, height] of [[1360, 768], [1366, 768], [1440, 900], [1536, 864], [1680, 1050], [1920, 1080], [2560, 1440]]) {
+      // CatalogHome.module.css: the copy starts at the gutter and is at most 50vw - lane - 6rem - gutter wide, and the
+      // panel reaches 6rem past it. A copy at the cap, two lines tall, as at 1440.
+      const gutter = Math.min(Math.max(16, 0.033 * width), 48);
+      const right = gutter + (width / 2 - V110_LANE - 96 - gutter);
+      const top = height - 334;
+      const title = box(gutter, top, right, top + 134);
+      const statement = box(gutter, top + 146, right, top + 170);
+      const boxes = [title, statement, box(gutter, top + 190, gutter + 138, top + 234), panel(title, statement)];
+      expect(badgePlace({ width, height }, 320, nav(width), boxes), `${width} x ${height}`).toBeNull();
+      expect(gap(oval({ width, height }, 320, null), boxes[3])).toBeCloseTo(16, 9);
+    }
   });
 
   it('scales down toward 0.6 only when the room above the story is too short for 0.85', () => {

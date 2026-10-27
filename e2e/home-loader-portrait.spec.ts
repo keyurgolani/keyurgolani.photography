@@ -68,24 +68,35 @@ const origin = () => {
 
 const main = (page: Page) => page.locator('main[data-interface-state]');
 
-/** Records, on the page's own clock, when React hydrated Home, every intro phase Home reported, and when it settled. */
+/** How long the intro has to stay settled after it settles, past the badge's linger, so a replay would show. */
+const STAYS_SETTLED_MS = 3000;
+
+type IntroRecord = { hydrated: number | null; settled: number | null; phases: string[]; grainAfterSettled: number };
+
+/**
+ * Records, on the page's own clock, when React hydrated Home, every intro phase Home reported, when it first
+ * settled, and how many times the grain was in the document after that.
+ */
 async function recordIntro(page: Page) {
     await page.addInitScript(() => {
-        const record = { hydrated: null as number | null, settled: null as number | null, phases: [] as string[] };
-        (window as unknown as { __intro: typeof record }).__intro = record;
+        const record: IntroRecord = { hydrated: null, settled: null, phases: [], grainAfterSettled: 0 };
+        (window as unknown as { __intro: IntroRecord }).__intro = record;
         new MutationObserver(() => {
             if (record.hydrated === null && document.documentElement.hasAttribute('data-hydrated')) record.hydrated = performance.now();
             const phase = document.querySelector('main[data-home-intro]')?.getAttribute('data-home-intro');
             if (phase && record.phases.at(-1) !== phase) record.phases.push(phase);
             if (phase === 'settled' && record.settled === null) record.settled = performance.now();
+            else if (record.settled !== null && document.querySelector('[class*="grainOverlay"]')) record.grainAfterSettled += 1;
         }).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-hydrated', 'data-home-intro'] });
     });
 }
 
+const introRecord = (page: Page) => page.evaluate(() => (window as unknown as { __intro: IntroRecord }).__intro);
+
 /** The intro played and settled within Home's loading bound, onto the photograph, with no badge and no broken image. */
 async function expectSettledWithinBound(page: Page) {
     await expect(main(page)).toHaveAttribute('data-home-intro', 'settled', { timeout: HOME_LOADING_TIMEOUT_MS + SLACK_MS });
-    const intro = await page.evaluate(() => (window as unknown as { __intro: { hydrated: number | null; settled: number | null; phases: string[] } }).__intro);
+    const intro = await introRecord(page);
     expect(intro.phases[0], 'the intro played').toBe('loading');
     expect(intro.hydrated).not.toBeNull();
     expect(intro.settled! - intro.hydrated!, 'ms from hydration to settled').toBeLessThanOrEqual(HOME_LOADING_TIMEOUT_MS + SLACK_MS);
@@ -94,6 +105,13 @@ async function expectSettledWithinBound(page: Page) {
     await expect(page.locator('[data-home-badge]')).toHaveCount(0);
     const broken = await page.locator('main img').evaluateAll((images) => images.filter((el) => (el as HTMLImageElement).complete && (el as HTMLImageElement).naturalWidth === 0).length);
     expect(broken, 'broken images').toBe(0);
+    // It stays settled: no replay of the intro, and no grain, for 3 s after.
+    await page.waitForTimeout(STAYS_SETTLED_MS);
+    const after = await introRecord(page);
+    expect(after.phases.slice(after.phases.indexOf('settled')), 'phases after the intro settled').toEqual(['settled']);
+    expect(after.grainAfterSettled, 'the grain came back after the intro settled').toBe(0);
+    await expect(main(page)).toHaveAttribute('data-home-intro', 'settled');
+    await expect(page.locator('[class*="grainOverlay"]')).toHaveCount(0);
 }
 
 test('with no portrait when Home renders, the intro plays without one and settles within the loading bound', async ({ page }) => {

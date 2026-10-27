@@ -3,7 +3,9 @@ import { StrictMode } from 'react';
 import { renderToString } from 'react-dom/server';
 import { preloadsIn, serverHtml } from '@/test/helpers/serverHtml';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
+import { V110_LANE } from '@/components/badgePlace';
 import type { HomeImage, HomePhoto, PublishedHome } from '@/lib/catalog/projections/home';
+import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
 import { HOME_CHROME_IDLE_MS, HOME_LOADING_TIMEOUT_MS } from '../homeChromeConfig';
 import { HOME_AUTO_ADVANCE_MS } from '../homePlayback';
 
@@ -278,6 +280,23 @@ describe('CatalogHome', () => {
       expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('<em>Fixture</em> & series');
       expect(screen.getByText('**not** <b>bold</b>')).toBeInTheDocument();
       expect(document.querySelector('em, b')).toBeNull();
+    });
+
+    it("yields the badge's lane from 85rem only where Home has the badge, from badgePlace's own constant", async () => {
+      const { default: CatalogHome } = await import('../CatalogHome');
+      const portrait: AboutPortraitView = {
+        asset: { width: 1600, height: 2000, variants: {} as AboutPortraitView['asset']['variants'] },
+        alt: 'A stand-in portrait',
+        focalPoint: { x: 50, y: 32 },
+      };
+      const copy = () => document.querySelector('[data-chrome-region="story"] [data-chrome-panel]')!.parentElement!;
+      const view = render(<CatalogHome home={published()} portrait={portrait} />);
+      expect(copy()).toHaveAttribute('data-badge-lane', '');
+      expect(copy().style.getPropertyValue('--badge-lane')).toBe(`${V110_LANE}px`);
+      view.unmount();
+      render(<CatalogHome home={published()} />);
+      expect(copy()).not.toHaveAttribute('data-badge-lane');
+      expect(copy().style.getPropertyValue('--badge-lane')).toBe('');
     });
 
     it('leaves the statement out when it is blank', async () => {
