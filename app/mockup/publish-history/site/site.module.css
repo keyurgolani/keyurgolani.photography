@@ -1,0 +1,109 @@
+/* The stand-in visitor page inside the mockup's preview frame. */
+.site {
+  min-height: 100svh;
+  background: var(--gah-ground);
+  color: var(--gah-ink);
+  font-family: var(--gah-font-sans);
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: var(--site-nav-height);
+  padding: 0 var(--site-gutter);
+}
+
+.nav nav {
+  display: flex;
+  gap: 1.25rem;
+  font-size: var(--gah-type-label);
+}
+
+.nav a {
+  color: var(--gah-ink-soft);
+  text-decoration: none;
+}
+
+.mark {
+  font-family: var(--gah-font-serif);
+}
+
+.main {
+  padding: 1.5rem var(--site-gutter) 3rem;
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--gah-label);
+  font-size: var(--gah-type-label);
+  letter-spacing: var(--gah-label-tracking);
+  text-transform: uppercase;
+}
+
+.main h1 {
+  margin: 0.5rem 0 0.75rem;
+  font-family: var(--gah-font-serif);
+  font-size: clamp(2rem, 6vw, 3.5rem);
+  font-weight: 400;
+  line-height: 1.05;
+}
+
+.statement {
+  max-width: 40ch;
+  margin: 0 0 1.5rem;
+  color: var(--gah-ink-soft);
+  font-family: var(--gah-font-serif);
+  font-size: 1.05rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.grid img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 2;
+  object-fit: cover;
+}
+
+.grid span {
+  display: block;
+  margin-top: 0.35rem;
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}
+
+.grid li {
+  scroll-margin-top: 1rem;
+}
+
+/* The stand-in Viewer: the photograph first, its name under it. */
+.viewer {
+  padding: 0.5rem var(--site-gutter) 2rem;
+}
+
+.viewer img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 2;
+  object-fit: cover;
+}
+
+.viewerTitle {
+  margin: 0.75rem 0 0;
+  font-family: var(--gah-font-serif);
+  font-size: 1.25rem;
+}
+
+.viewerMeta {
+  margin: 0.25rem 0 0;
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}

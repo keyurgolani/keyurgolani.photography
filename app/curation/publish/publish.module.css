@@ -103,7 +103,10 @@
 .layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(20rem, 34%);
-  grid-template-areas: 'ledger panel';
+  grid-template-areas:
+    'ledger panel'
+    'history panel';
+  grid-template-rows: auto 1fr;
   align-items: start;
   gap: 1.25rem;
   margin-top: 1.5rem;

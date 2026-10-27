@@ -570,9 +570,11 @@ interface PublishScreenProps {
      * so this client module never imports server code, not even the action's.
      */
     action: (previous: PublishState, form: FormData) => Promise<PublishState>;
+    /** 15-4's History section: the layout's last area, under the ledger (or under the panel when nothing is pending). */
+    history?: ReactNode;
 }
 
-export default function PublishScreen({ view, previewHref, openFix, action }: PublishScreenProps) {
+export default function PublishScreen({ view, previewHref, openFix, action, history }: PublishScreenProps) {
     const [state, dispatch, pending] = useActionState(action, IDLE_STATE);
     // The press that's waiting, for the live region and the pending label. Set on the click, before the post.
     const [sent, setSent] = useState<Intent | null>(null);
@@ -696,6 +698,7 @@ export default function PublishScreen({ view, previewHref, openFix, action }: Pu
                         <ActionBar view={view} facts={facts} pending={pending} sent={sent} ctx={ctx} />
                     </section>
                 )}
+                {history}
             </div>
         </main>
     );

@@ -254,7 +254,8 @@ export function orderRuns({ before, after, from, to }: Pick<OrderCompare, 'befor
 /** The rollback line: while a draft is pending, the active revision (approved line); otherwise the activation before the active one. */
 function rollbackLine(pending: boolean, active: RevisionFacts, previous: RevisionFacts | null): string | null {
     if (pending) return `Last-known-good revision ${active.number} remains rollback-ready.`;
-    return previous ? `Revision ${previous.number} is kept. \`photos rollback\` returns to it.` : null;
+    // 15-4: History is on the screen now, so the line points there instead of at the CLI.
+    return previous ? `Revision ${previous.number} is kept. Restore it from History, below.` : null;
 }
 
 const PREVIEW_PANEL_TITLE = 'Visitor preview';
