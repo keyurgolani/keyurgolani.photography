@@ -160,6 +160,7 @@ const REFUSAL_WORDING: [RegExp, (match: RegExpMatchArray) => string][] = [
     [/ is merged into .* by the bind decision /, () => `A bind waiting for the watcher's next pass makes this file the new version of another photograph, so it can't be approved. ${BIND_WAITING_NEXT} Nothing was written.`],
     // #17: the page doesn't offer Reopen on a missing item whose source came back, so only an old form reaches this.
     [/ is a missing item the watcher resolved once its source was present again/, () => "Its source is back, so this item stays resolved, and the inbox doesn't reopen it. Nothing was written."],
+    [/ is a missing item the watcher dismissed once the same bytes came back at its path/, () => "The same file is back at its path, so this item stays closed, and the inbox doesn't reopen it. Nothing was written."],
     [/^Nothing failed for /, () => "Nothing failed for this photograph, so there's nothing to retry."],
     [/has no photo ID, so there is nothing to retry/, () => "This file has no photo ID, so there's nothing to retry."],
     [/can't be dismissed/, () => "Something still shows this photograph, so it can't be dismissed. Restore the source, or take it out of its series and publish first. Nothing was written."],

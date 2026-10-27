@@ -34,7 +34,7 @@ import {
     type ResolvedCause,
     type SeriesOption,
 } from '../inbox-view';
-import { CLOSE_REASONS, closeCauseOf } from '../events';
+import { backAtItsPath, CLOSE_REASONS, closeCauseOf, SAME_BYTES_BACK, type CurationEvent } from '../events';
 
 // The words the Inbox page puts beside an item, from what the item holds:
 // pure, so each case reads here without the page or a data root.
@@ -171,7 +171,12 @@ describe('the status and the system response', () => {
         expect(resolved('missing', { kind: 'same-file' })).toBe('The same file came back, so nothing a visitor sees changed.');
         expect(resolved('missing', { kind: 'other-bytes' })).toBe('The file came back with other bytes, so its replacement item reviews the new version. Visitors keep the current one until you confirm it and publish.');
         expect(resolved('missing', { kind: 'bound' })).toBe('Bound to the new file, so its replacement item reviews the new version. Visitors keep the current one until you confirm it and publish.');
-        expect(resolved('new', { kind: 'merged', into: 'harbor/landscape.jpg' })).toBe("A bind made this file the new version of harbor/landscape.jpg, so that photograph's replacement item reviews it.");
+        expect(resolved('new', { kind: 'merged', into: 'harbor/landscape.jpg' })).toBe("A bind made this file the new version of the photograph that was at harbor/landscape.jpg, so that photograph's replacement item reviews it.");
+        // A file replaced in place shares its path with the photograph it became, so the sentence never names its own file as the other.
+        expect(systemResponse(item({ status: 'resolved', group: 'settled', resolvedBy: { kind: 'merged', into: 'harbor/landscape.jpg' }, sourcePath: 'harbor/landscape.jpg' }), labelOf)).toBe(
+            "A bind made this file the new version of the photograph that was at this path, so that photograph's replacement item reviews it.",
+        );
+        expect(systemResponse(item({ status: 'resolved', group: 'settled', resolvedBy: { kind: 'merged', into: 'harbor/landscape.jpg' }, sourcePath: 'harbor/other.jpg' }), labelOf)).toContain('the photograph that was at harbor/landscape.jpg,');
         expect(resolved('new', { kind: 'merged', into: null })).toBe("A bind made this file the new version of another photograph, so that photograph's replacement item reviews it.");
         expect(resolved('new', { kind: 'archived' })).toBe('The photograph is archived, so this file needs no judgment.');
         expect(resolved('processing-failure', { kind: 'archived' })).toBe('The photograph is archived, so nothing needs retrying.');
@@ -200,6 +205,9 @@ describe('the status and the system response', () => {
         expect(settledMissingTitle('approved', null)).toBe('Photograph archived');
         expect(settledMissingTitle('resolved', { kind: 'same-file' })).toBe('Source file back');
         expect(settledMissingTitle('resolved', { kind: 'bound' })).toBe('Bound to a new file');
+        expect(settledMissingTitle('dismissed', { kind: 'same-file' })).toBe('Source file back');
+        // A curator's dismiss keeps the type's title.
+        expect(settledMissingTitle('dismissed', null)).toBeNull();
         expect(settledMissingTitle('open', null)).toBeNull();
         expect(settledMissingTitle('deferred', null)).toBeNull();
     });
@@ -215,7 +223,9 @@ describe('the status and the system response', () => {
     });
 
     it('says what a pending bind does before any click, ending as the approve refusal does', () => {
-        expect(bindWaitingText({ kind: 'merge', into: 'harbor/landscape.jpg' })).toBe(`A bind waiting for the watcher's next pass makes this file the new version of harbor/landscape.jpg. ${BIND_WAITING_NEXT}`);
+        expect(bindWaitingText({ kind: 'merge', into: 'harbor/landscape.jpg' })).toBe(`A bind waiting for the watcher's next pass makes this file the new version of the photograph that was at harbor/landscape.jpg. ${BIND_WAITING_NEXT}`);
+        expect(bindWaitingText({ kind: 'merge', into: 'harbor/landscape.jpg' }, 'harbor/landscape.jpg')).toBe(`A bind waiting for the watcher's next pass makes this file the new version of the photograph that was at this path. ${BIND_WAITING_NEXT}`);
+        expect(bindWaitingText({ kind: 'merge', into: 'harbor/landscape.jpg' }, 'harbor/other.jpg')).toContain('the photograph that was at harbor/landscape.jpg.');
         expect(bindWaitingText({ kind: 'merge', into: null })).toContain('the new version of another photograph.');
         expect(bindWaitingText({ kind: 'bind', path: 'harbor/landscape.jpg' })).toBe("A bind waiting for the watcher's next pass gives this photograph the file at harbor/landscape.jpg. Refresh after the watcher runs: this item closes once the bind goes through.");
     });
@@ -232,15 +242,37 @@ describe('the status and the system response', () => {
 
     it('never says an archived photograph is out of every series while a draft series lists it again, as a rollback or sequence insert leaves it', () => {
         const archived = (references: Item['references']) => item({ type: 'missing', status: 'approved', group: 'settled', references });
-        expect(systemResponse(archived([{ kind: 'series', id: 'ser_harbor' }]), labelOf)).toBe("Archived, but the draft lists it in Harbor again, so a publish refuses it until it's taken out.");
+        expect(systemResponse(archived([{ kind: 'series', id: 'ser_harbor' }]), labelOf)).toBe("Archived, but the draft lists it in Harbor again, so nothing publishes until it's taken out.");
         expect(systemResponse(archived([{ kind: 'revision', id: REV }, { kind: 'series', id: 'ser_harbor' }, { kind: 'series', id: 'ser_draft' }]), labelOf)).toBe(
-            "Archived, but the draft lists it in Harbor and Draft series again, so a publish refuses it until it's taken out. The live site still shows it.",
+            "Archived, but the draft lists it in Harbor and Draft series again, so nothing publishes until it's taken out. The live site still shows it.",
         );
     });
 
     it("says reopening an archived missing item doesn't undo the archive", () => {
         expect(reopenHint({ type: 'missing', replacement: null, references: [] })).toBe("Reopening doesn't undo the archive. The photograph stays archived and out of every series.");
         expect(reopenHint({ type: 'missing', replacement: null, references: [{ kind: 'series', id: 'ser_harbor' }] })).toBe("Reopening doesn't undo the archive. The photograph stays archived.");
+        // When the page can't read what lists it, the hint claims nothing about series, as the status line can't tell.
+        expect(reopenHint({ type: 'missing', replacement: null, references: null })).toBe("Reopening doesn't undo the archive. The photograph stays archived.");
+    });
+
+    it("words a missing item the watcher dismissed for the same bytes back at its path as the same file back, not a curator's dismiss", () => {
+        const back = item({ type: 'missing', status: 'dismissed', group: 'settled', resolvedBy: { kind: 'same-file' } });
+        expect(systemResponse(back, labelOf)).toBe('The same file came back at its path, so nothing a visitor sees changed.');
+        expect(systemResponse(item({ type: 'missing', status: 'dismissed', group: 'settled', resolvedBy: null }), labelOf)).toBe('Dismissed, so it needs no judgment. Nothing a visitor sees changed.');
+    });
+
+    it("tells the watcher's same-bytes dismiss of a missing item from any other dismiss", () => {
+        const dismissed = (by: string, reason: string | undefined, type: CurationEvent['type'] = 'missing'): Pick<CurationEvent, 'type' | 'status' | 'decisions'> => ({
+            type,
+            status: 'dismissed',
+            decisions: [{ action: 'dismiss', at: '2026-10-26T00:00:00.000Z', by, baseRevisionId: null, ...(reason === undefined ? {} : { reason }) }],
+        });
+        expect(backAtItsPath(dismissed('watcher', SAME_BYTES_BACK('harbor/landscape.jpg')))).toBe(true);
+        expect(backAtItsPath(dismissed('curator:test', SAME_BYTES_BACK('harbor/landscape.jpg')))).toBe(false);
+        expect(backAtItsPath(dismissed('watcher', 'Some other reason.'))).toBe(false);
+        expect(backAtItsPath(dismissed('watcher', undefined))).toBe(false);
+        expect(backAtItsPath(dismissed('watcher', SAME_BYTES_BACK('harbor/landscape.jpg'), 'new'))).toBe(false);
+        expect(backAtItsPath({ ...dismissed('watcher', SAME_BYTES_BACK('harbor/landscape.jpg')), status: 'open' })).toBe(false);
     });
 });
 
