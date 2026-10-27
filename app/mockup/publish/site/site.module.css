@@ -79,3 +79,7 @@
   color: var(--gah-ink-muted);
   font-size: var(--gah-type-label);
 }
+
+.grid li {
+  scroll-margin-top: 1rem;
+}

@@ -11,6 +11,20 @@ export interface PreviewFrameProps {
      * preview" is the keyboard way in. Defaults to true, as 16-2 ships it.
      */
     focusable?: boolean;
+    /**
+     * 16-3 mockup addition: the toolbar's marker. "Preview · not public" by
+     * default; the Publish screen's live states pass "Live, revision N".
+     */
+    marker?: string;
+    /** 16-3 mockup addition: the iframe's title, in the embedding state's terms. */
+    title?: string;
+    /**
+     * 16-3 mockup addition: true when another region already names the frame
+     * (the Publish screen's "Visitor preview" panel). The frame then drops
+     * its own region label, so a screen reader doesn't hear two regions with
+     * one name, and its marker takes the panel's inset, not the site gutter.
+     */
+    embedded?: boolean;
 }
 
 /**
@@ -22,15 +36,17 @@ export interface PreviewFrameProps {
  * preview renders it alone, and #16's Publish screen embeds it as its
  * visitor preview panel.
  *
- * Copied from 16-2 (`fd2d6841`) for the 16-3 mockup, with `focusable` added.
+ * Copied from 16-2 (`fd2d6841`) for the 16-3 mockup, with `focusable`,
+ * `marker`, `title` and `embedded` added.
  */
-export default function PreviewFrame({ src, height, focusable = true }: PreviewFrameProps) {
+export default function PreviewFrame({ src, height, focusable = true, marker = 'Preview · not public', title = 'Visitor preview of the draft catalog', embedded = false }: PreviewFrameProps) {
+    const Frame = embedded ? 'div' : 'section';
     return (
-        <section className={styles.frame} aria-label="Visitor preview" style={height ? { height } : undefined}>
+        <Frame className={styles.frame} aria-label={embedded ? undefined : 'Visitor preview'} data-embedded={embedded ? 'true' : undefined} style={height ? { height } : undefined}>
             <p className={styles.toolbar}>
-                <span className={styles.marker}>Preview · not public</span>
+                <span className={styles.marker}>{marker}</span>
             </p>
-            <iframe className={styles.site} src={src} title="Visitor preview of the draft catalog" referrerPolicy="no-referrer" tabIndex={focusable ? undefined : -1} />
-        </section>
+            <iframe className={styles.site} src={src} title={title} referrerPolicy="no-referrer" tabIndex={focusable ? undefined : -1} />
+        </Frame>
     );
 }

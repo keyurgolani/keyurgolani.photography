@@ -34,3 +34,8 @@
   border: 0;
   background: var(--gah-ground);
 }
+
+/* Embedded in a panel (the Publish screen), the marker takes the panel's inset. */
+.frame[data-embedded='true'] .toolbar {
+  padding: 0 0.875rem;
+}

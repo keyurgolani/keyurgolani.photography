@@ -28,10 +28,22 @@
   line-height: 1.15;
 }
 
-.heading p {
+.lead {
   max-width: 62ch;
   margin: 0.5rem 0 0;
   color: var(--gah-ink-soft);
+}
+
+/* What changes and what blocks, on the first screen, in text (not a live region). */
+.countLine {
+  max-width: 62ch;
+  margin: 0.375rem 0 0;
+  color: var(--gah-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.inboxLink {
+  margin: 1rem 0 0;
 }
 
 .revisions {
@@ -40,8 +52,8 @@
   flex-direction: column;
   align-items: flex-end;
   gap: 0.125rem;
-  margin: 0 !important;
-  color: var(--gah-ink-muted) !important;
+  margin: 0;
+  color: var(--gah-ink-muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: var(--gah-type-label);
 }
@@ -50,21 +62,23 @@
   color: var(--gah-ink-soft);
 }
 
-.topNotice {
-  margin-top: 1.5rem;
+/* Nothing to publish and No visible change: one centred column, the
+   heading block, Open the Inbox, then the panel at the column's width. */
+.body[data-layout='column'] {
+  max-width: 44rem;
 }
 
-.noticeHeading {
-  font-weight: 500;
+.body[data-layout='column'] .heading {
+  display: block;
 }
 
-.topNotice p + p {
-  margin-top: 0.25rem;
-  color: var(--gah-ink-soft);
-}
-
-.topNotice a {
+.body[data-layout='column'] .revisions {
+  align-items: flex-start;
   margin-top: 0.75rem;
+}
+
+.layout[data-ledger='no'] {
+  display: block;
 }
 
 /* Two columns: the ledger, and the preview panel beside it. The DOM has the
@@ -99,9 +113,10 @@
   letter-spacing: 0;
 }
 
-.emptyLedger {
-  margin: 0 0 1rem;
+.outOfDate {
+  margin: 0;
   color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
 }
 
 .group {
@@ -141,14 +156,7 @@
 .row {
   padding: 0.875rem 0;
   border-bottom: 1px solid var(--curator-rule);
-  scroll-margin-top: 1.5rem;
-}
-
-/* A blocking row carries a rule on its leading edge as well as its "Blocks publishing" text. */
-.row[data-blocks='true'] {
-  margin-left: -1.25rem;
-  padding-left: calc(1.25rem - 3px);
-  border-left: 3px solid var(--curator-tone-alert-ink);
+  scroll-margin-top: 1rem;
 }
 
 .rowMeta {
@@ -158,11 +166,13 @@
   gap: 0.375rem 0.625rem;
 }
 
-.review {
+.review,
+.blocks {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
   padding: 0.15rem 0.45rem;
+  border: 1px solid transparent;
   border-radius: var(--gah-radius);
   font-size: var(--gah-type-label);
 }
@@ -194,9 +204,13 @@
   text-transform: uppercase;
 }
 
+/* First in a blocking row's meta line: filled like an alert-toned review
+   badge, and set apart from one by its full border and weight. No side
+   stripe and no row tint; the full alert box belongs to the result. */
 .blocks {
+  border-color: var(--curator-tone-alert-ink);
   color: var(--curator-tone-alert-ink);
-  font-size: var(--gah-type-label);
+  background: var(--curator-tone-alert-bg);
   font-weight: 500;
 }
 
@@ -204,6 +218,13 @@
   margin: 0.45rem 0 0;
   font-weight: 500;
   overflow-wrap: anywhere;
+  scroll-margin-top: 1rem;
+}
+
+/* A focus target, not a control, so it shows no ring (as the Inbox's headings). */
+.summary:focus {
+  outline: none;
+  box-shadow: none !important;
 }
 
 .detail {
@@ -246,24 +267,58 @@
   font-style: italic;
 }
 
+/* A replacement or a cover: both images in one box, side by side, filling the column. */
+.compareImages {
+  padding: 0.5rem 0.625rem 0.625rem;
+  border: 1px solid var(--curator-rule);
+  background: var(--curator-field);
+}
+
+.compareImages > div {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
 .compareImage {
   display: block;
   width: 100%;
-  max-width: 15rem;
   height: auto;
   aspect-ratio: 3 / 2;
   object-fit: cover;
 }
 
+/* Orders show their real positions: the reset hides list numbers, so they come back here. */
 .order {
   margin: 0;
-  padding-left: 1.25rem;
+  padding-left: 1.75rem;
+  list-style: decimal;
+  font-variant-numeric: tabular-nums;
+}
+
+.order li::marker {
+  color: var(--gah-ink-muted);
+}
+
+.moved {
+  font-weight: 500;
+}
+
+.orderGap {
+  margin: 0.125rem 0 0.125rem 1.75rem;
+  color: var(--gah-ink-muted);
 }
 
 .rowFix {
   display: flex;
   justify-content: flex-end;
   margin-top: 0.625rem;
+}
+
+.restamp {
+  display: grid;
+  justify-items: end;
+  gap: 0;
 }
 
 .inboxFix {
@@ -336,18 +391,62 @@
   margin-top: 0.875rem;
 }
 
-/* The validation result, between the ledger and the actions. */
+.inlineLink {
+  color: var(--gah-ink);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+/* Full IDs, so a command can be copied and run; they wrap rather than overflow. */
+.code {
+  color: var(--gah-ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--gah-type-label);
+  overflow-wrap: anywhere;
+}
+
+/* A refused fix, under its action: a full-border alert strip, no side stripe. */
+.refusal {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  width: 100%;
+  margin-top: 0.875rem;
+}
+
+.refusal p {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+}
+
+.refusal p svg {
+  flex: none;
+  margin-top: 0.2rem;
+  color: var(--curator-tone-alert-ink);
+}
+
+.refusal:focus {
+  outline: none;
+  box-shadow: none !important;
+}
+
+/* The result slot, between the ledger and the bar: every answer to Validate or Publish. */
 
 .result {
   margin-top: 1.25rem;
 }
 
+/* At the ledger heading's size, not the body's. */
 .resultHeading {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  margin: 0 0 0.25rem !important;
-  font-size: var(--gah-type-ui) !important;
+  margin: 0 0 0.375rem !important;
+  font-size: 1.0625rem !important;
+  scroll-margin-top: 1rem;
 }
 
 .result[data-tone='alert'] .resultHeading svg {
@@ -358,6 +457,10 @@
   color: var(--curator-lock-icon);
 }
 
+.result[data-tone='change'] .resultHeading svg {
+  color: var(--curator-tone-change-ink);
+}
+
 .resultHeading:focus {
   outline: none;
   box-shadow: none !important;
@@ -365,6 +468,10 @@
 
 .result p {
   color: var(--gah-ink-soft);
+}
+
+.result p + p {
+  margin-top: 0.25rem;
 }
 
 .errors {
@@ -390,9 +497,9 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 0.5rem 1rem;
-  margin-top: 0.25rem;
+  margin-top: 0.375rem;
 }
 
 .textLink {
@@ -413,14 +520,29 @@
 
 .resultLinks a {
   margin-top: 0 !important;
+  gap: 0.35rem;
 }
 
-/* Validate and Publish */
+/* A link that is the one way on (Load the updated ledger): the primary's fill. */
+.primaryLink {
+  border-color: var(--curator-primary);
+  color: var(--curator-primary-ink);
+  background: var(--curator-primary);
+}
+
+/* Validate and Publish: the ledger section's last child, sticky at the
+   bottom of the window while the ledger scrolls, at rest at its end. It
+   spans the box to its borders, on the box colour, with the rule above it.
+   z-index 1 is the curator layer (the Inbox's sticky back link). */
 
 .actions {
-  margin-top: 1.25rem;
-  padding-top: 1rem;
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  margin: 1.25rem -1.25rem -1rem;
+  padding: 0.875rem 1.25rem 1rem;
   border-top: 1px solid var(--curator-rule);
+  background: var(--curator-box);
 }
 
 .buttons {
@@ -431,23 +553,21 @@
   gap: 0.5rem;
 }
 
-.status {
-  flex: 1 1 14rem;
-  margin: 0;
-  color: var(--gah-ink-soft);
-  font-size: var(--gah-type-label);
-}
-
-.status:empty {
-  display: none;
-}
-
 /* aria-disabled, not disabled, so it stays focusable and its reason is read. */
 .buttons button[data-off='true'] {
   border-color: var(--gah-rule-strong);
   color: var(--gah-ink-muted);
   background: transparent;
   cursor: not-allowed;
+}
+
+/* Pending is not the unavailable look: the primary fill, softened toward the
+   box, its ink unchanged (7.1:1). */
+.buttons button[data-pending='true'] {
+  border-color: color-mix(in srgb, var(--curator-primary) 75%, var(--curator-box));
+  color: var(--curator-primary-ink);
+  background: color-mix(in srgb, var(--curator-primary) 75%, var(--curator-box));
+  cursor: progress;
 }
 
 .reason {
@@ -488,6 +608,26 @@
   overflow: hidden;
 }
 
+/* On desktop the panel stays in view while the ledger scrolls, as the
+   Inbox's photo does; a short window scrolls it with the page, so its
+   footer is never cut off. */
+@media (min-width: 768px) and (min-height: 40rem) {
+  .panel {
+    position: sticky;
+    top: 1rem;
+    align-self: start;
+  }
+}
+
+/* Out of date: a line in place of the frame. */
+.frameNote {
+  margin: 0;
+  padding: 1.5rem 0.875rem;
+  border-bottom: 1px solid var(--curator-rule);
+  color: var(--gah-ink-soft);
+  background: var(--curator-field);
+}
+
 .panelHeader {
   display: flex;
   align-items: center;
@@ -514,23 +654,15 @@
   margin: 0;
 }
 
-.panelSeries {
-  font-family: var(--gah-font-serif);
-  font-size: 1.5rem;
-  line-height: 1.15;
-}
-
 .panelCount {
-  margin-top: 0.375rem !important;
-  color: var(--curator-suggestion);
-  font-size: var(--gah-type-label);
+  color: var(--gah-ink);
+  font-weight: 500;
 }
 
 .panelCopy {
-  margin-top: 0.375rem !important;
+  margin-top: 0.25rem !important;
   color: var(--gah-ink-soft);
-  font-family: var(--gah-font-serif);
-  font-size: 0.9375rem;
+  font-size: var(--gah-type-label);
 }
 
 .panelFooter {
@@ -562,6 +694,11 @@
   .textLink:hover {
     color: var(--curator-primary);
   }
+
+  .primaryLink:hover {
+    color: var(--curator-primary-ink);
+    background: var(--gah-ink);
+  }
 }
 
 /* The phone: one column, the approved order (preview, then the ledger). */
@@ -590,14 +727,20 @@
     padding: 1rem 1rem 0.75rem;
   }
 
-  .row[data-blocks='true'] {
-    margin-left: -1rem;
-    padding-left: calc(1rem - 3px);
+  .actions {
+    margin: 1rem -1rem -0.75rem;
+    padding: 0.75rem 1rem;
   }
 
   .compare,
   .fixBody {
     grid-template-columns: 1fr;
+  }
+
+  /* The two images stay side by side in their box, even on a phone. */
+  .compare.compareImages {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
   }
 
   .rowFix,
@@ -610,12 +753,36 @@
 
   .rowFix > *,
   .fixActions > *,
-  .buttons > button,
   .confirmActions > * {
     flex: 1 1 auto;
   }
 
+  .restamp {
+    justify-items: stretch;
+  }
+
+  /* The bar's two buttons sit side by side; below about 330 px they wrap.
+     Labels wrap inside the button rather than truncate. */
+  .buttons > button {
+    flex: 1 1 9rem;
+    min-width: 0;
+    padding-block: 0.375rem;
+    text-align: center;
+  }
+
+  /* One link per blocker, full width like every other phone action. */
+  .errorActions > a {
+    flex: 1 1 100%;
+    justify-content: center;
+  }
+
   .reason {
     text-align: left;
+  }
+}
+
+@media (max-width: 399px) {
+  .buttons svg {
+    display: none;
   }
 }
