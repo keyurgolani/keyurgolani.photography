@@ -138,6 +138,8 @@ async function outcome(run: () => unknown): Promise<Outcome> {
 }
 
 const LOGIN_REDIRECT = expect.stringMatching(/^NEXT_REDIRECT;replace;\/curation\/login;307;/);
+/** #87: a request that sent a session cookie, forged or ended, is told the session ended. */
+const ENDED_REDIRECT = expect.stringMatching(/^NEXT_REDIRECT;replace;\/curation\/login\?ended=1;307;/);
 const NOT_FOUND = 'NEXT_HTTP_ERROR_FALLBACK;404';
 
 const params = <T extends object>(value: T) => ({ params: Promise.resolve(value) });
@@ -184,7 +186,7 @@ describe('without a session', () => {
                     const a = await outcome(existing[name]);
                     const b = await outcome(other[name]);
                     expect(a, `${name} ${id}`).toEqual(b);
-                    expect(a, name).toEqual({ kind: 'thrown', digest: LOGIN_REDIRECT });
+                    expect(a, name).toEqual({ kind: 'thrown', digest: cookie === null ? LOGIN_REDIRECT : ENDED_REDIRECT });
                 }
             }
         }
@@ -201,17 +203,17 @@ describe('without a session', () => {
         deleteSession(sessionFromCookies(cookie, secrets.sessionKey)!);
         const reads = [vi.spyOn(state.kept, 'get'), vi.spyOn(state.kept, 'has'), vi.spyOn(state.compiling, 'get')];
         vi.mocked(loadPreviewCatalog).mockClear();
-        for (const name of ['load-more', 'home records', 'image']) expect(await outcome(surfaces(draftId)[name]), name).toEqual({ kind: 'thrown', digest: LOGIN_REDIRECT });
+        for (const name of ['load-more', 'home records', 'image']) expect(await outcome(surfaces(draftId)[name]), name).toEqual({ kind: 'thrown', digest: ENDED_REDIRECT });
         for (const spy of reads) expect(spy).not.toHaveBeenCalled();
         expect(loadPreviewCatalog).not.toHaveBeenCalled();
     });
 
-    it('answers after logout as before login: the session is revoked', async () => {
+    it('answers after logout as for any ended session: the session is revoked', async () => {
         const cookie = secrets.cookie();
         as(cookie);
         expect((await outcome(surfaces(draftId).home)).kind).toBe('element');
         deleteSession(sessionFromCookies(cookie, secrets.sessionKey)!);
-        for (const [name, run] of Object.entries(surfaces(draftId))) expect(await outcome(run), name).toEqual({ kind: 'thrown', digest: LOGIN_REDIRECT });
+        for (const [name, run] of Object.entries(surfaces(draftId))) expect(await outcome(run), name).toEqual({ kind: 'thrown', digest: ENDED_REDIRECT });
     });
 });
 
@@ -367,19 +369,20 @@ describe('proxy.ts on the preview paths', () => {
             for (const id of others) {
                 const other = paths(id);
                 for (let at = 0; at < existing.length; at += 1) {
-                    const a = await answer(send(existing[at], headers));
-                    const b = await answer(send(other[at], headers));
+                    // proxy() is async since #92's cutover gate.
+                    const a = await answer(await send(existing[at], headers));
+                    const b = await answer(await send(other[at], headers));
                     expect(a, other[at]).toEqual(b);
                     expect(a.status, existing[at]).toBe(307);
-                    expect(Object.fromEntries(a.headers).location, existing[at]).toBe(`http://${HOST}/curation/login`);
+                    expect(Object.fromEntries(a.headers).location, existing[at]).toBe(`http://${HOST}/curation/login${headers.cookie ? '?ended=1' : ''}`);
                 }
             }
         }
         expect(loadPreviewCatalog).not.toHaveBeenCalled();
     });
 
-    it('lets a signed-in request through to the routes, which check again', () => {
-        const response = send(`/curation/preview/${draftId}/site`, { cookie: secrets.cookie() });
+    it('lets a signed-in request through to the routes, which check again', async () => {
+        const response = await send(`/curation/preview/${draftId}/site`, { cookie: secrets.cookie() });
         expect(response.headers.get('x-middleware-next')).toBe('1');
     });
 });
