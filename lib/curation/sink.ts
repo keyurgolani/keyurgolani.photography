@@ -11,6 +11,7 @@ import {
     eventKey,
     fingerprintOf,
     KEPT_FACT_IDS,
+    SAME_BYTES_BACK,
     type CurationEvent,
     type CurationEventType,
     type DerivedFacts,
@@ -273,7 +274,7 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                         status: 'dismissed',
                         lastObservedAt: fact.observedAt > current.lastObservedAt ? fact.observedAt : current.lastObservedAt,
                         factIds: [...current.factIds, fact.factId].slice(-KEPT_FACT_IDS),
-                        decisions: [...current.decisions, { action: 'dismiss', at: producedAt, by: 'watcher', baseRevisionId: active, reason: `The same bytes came back at ${fact.path}, so nothing is missing.` }],
+                        decisions: [...current.decisions, { action: 'dismiss', at: producedAt, by: 'watcher', baseRevisionId: active, reason: SAME_BYTES_BACK(fact.path) }],
                         reviewedAt: producedAt,
                         reviewedBy: 'watcher',
                     };
