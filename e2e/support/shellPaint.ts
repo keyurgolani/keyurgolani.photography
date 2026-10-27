@@ -87,6 +87,22 @@ export async function bottomRowEdges(page: Page, edge = 8): Promise<Rgb[]> {
     return pixels;
 }
 
+/**
+ * The window's own ground: the canvas, read with every child of the body
+ * taken out of layout, so nothing but the canvas shows. It's what overscroll
+ * and a collapsing mobile toolbar reveal past the page, which a headless
+ * browser can't do itself. The canvas is html's background, or body's when
+ * html has none.
+ */
+export async function windowGround(page: Page): Promise<Rgb> {
+    const style = await page.addStyleTag({ content: 'body > * { display: none !important; } body { transition: none !important; }' });
+    try {
+        return mean(await page.screenshot({ animations: 'disabled', caret: 'hide' }));
+    } finally {
+        await style.evaluate((node) => node.parentNode?.removeChild(node));
+    }
+}
+
 /** The computed background-color of html and body. */
 export function rootGrounds(page: Page): Promise<{ html: string; body: string }> {
     return page.evaluate(() => ({ html: getComputedStyle(document.documentElement).backgroundColor, body: getComputedStyle(document.body).backgroundColor }));

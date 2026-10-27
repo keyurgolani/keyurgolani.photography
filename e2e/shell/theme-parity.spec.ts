@@ -2,14 +2,17 @@ import type { Page } from '@playwright/test';
 import { CATALOG_ORIGIN, HOME_OPENING, HOME_SERIES } from '../support/catalog-home';
 import { expectHomeImmersive } from '../support/home';
 import { waitForHydration } from '../support/hydration';
-import { bottomRowEdges, navPaint, navPixels, near, rootGrounds, type Rgb } from '../support/shellPaint';
+import { bottomRowEdges, navPaint, navPixels, near, rootGrounds, windowGround, type Rgb } from '../support/shellPaint';
 import { expect, test } from '../support/test';
 
 // #21: the shell looks the same under both themes. SiteNav's background, ink,
 // and border, as computed and as painted, match between the dark and the
 // light theme on every page that has it, at 1440 and 390. And the shell owns
-// its ground: html and body paint it, and the bottom row of a page scrolled to
-// its end shows the page's own ground in both themes, never a light strip.
+// its ground: body paints it and html stays unpainted, so the window's own
+// ground (what overscroll shows) is the page's: About's paper, the Viewer's
+// ground, the Gallery After Hours ground elsewhere. The bottom row of a page
+// scrolled to its end shows the page's own ground in both themes, never a
+// light strip.
 // The catalog-mode server serves the published Home fixture, so Work, the
 // series, and the Viewer are real pages. The legacy Gallery, on the harness
 // server, is the one page the theme repaints, below its nav.
@@ -22,6 +25,8 @@ const GAH_GROUND: Rgb = [8, 10, 9];
 const PAPER: Rgb = [244, 236, 215];
 const CC_GROUND: Rgb = [17, 21, 19];
 const css = ([r, g, b]: Rgb) => `rgb(${r}, ${g}, ${b})`;
+/** html's computed background when nothing paints it, which leaves the canvas to body's. */
+const UNPAINTED = 'rgba(0, 0, 0, 0)';
 
 const primary = (page: Page) => page.getByRole('navigation', { name: 'Primary' });
 
@@ -30,7 +35,7 @@ interface Route {
     path: string;
     /** Whether SiteNav renders here. The Viewer has none. */
     nav: boolean;
-    /** The ground the body paints, and the bottom row shows. html is always the Gallery After Hours ground. */
+    /** The ground the body paints, and so the window's: the canvas past the page, and the bottom row. html paints none. */
     ground: Rgb;
     /**
      * What the bottom row's edges show: the page's own ground, within `tolerance`; the same pixels in both themes, where
@@ -78,6 +83,8 @@ async function read(page: Page, route: Route) {
         roots: await rootGrounds(page),
         bottom: route.bottom === 'none' ? null : await bottomRowEdges(page),
         scroll: await page.evaluate(() => ({ height: document.documentElement.scrollHeight, viewport: window.innerHeight })),
+        // Last, since it takes the page out of layout for the read.
+        window: await windowGround(page),
     };
 }
 
@@ -103,10 +110,12 @@ for (const viewport of VIEWPORTS) {
             }
 
             const ground = css(route.ground);
-            for (const [theme, roots] of [['dark', dark.roots], ['light', light.roots]] as const) {
-                expect(roots.html, `html's ground in the ${theme} theme`).toBe(css(GAH_GROUND));
+            for (const [theme, seen] of [['dark', dark], ['light', light]] as const) {
+                // A painted html would keep About's paper and the Viewer's ground off the canvas.
+                expect(seen.roots.html, `html's ground in the ${theme} theme`).toBe(UNPAINTED);
                 // About's body is paper and the Viewer's its own ground, in both themes; every other body is the Gallery After Hours ground.
-                expect(roots.body, `body's ground in the ${theme} theme`).toBe(ground);
+                expect(seen.roots.body, `body's ground in the ${theme} theme`).toBe(ground);
+                expect(near(seen.window, route.ground), `the window's ground in the ${theme} theme: ${seen.window}, not ${route.ground}`).toBe(true);
             }
 
             if (route.bottom !== 'none') {

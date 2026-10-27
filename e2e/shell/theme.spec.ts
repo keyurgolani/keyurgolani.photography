@@ -17,7 +17,7 @@ const galleryBackground = (page: Page) =>
 /** The legacy Gallery in each theme. */
 const LIGHT_GROUND = 'rgb(250, 250, 250)';
 const DARK_GROUND = 'rgb(5, 5, 5)';
-/** The shell's Gallery After Hours ground on html and body, the same in both themes (#21). */
+/** The shell's Gallery After Hours ground on the body, the same in both themes (#21). */
 const SHELL_GROUND = 'rgb(8, 10, 9)';
 /** About's Light Takes Shape paper, the same in both themes. */
 const PAPER = 'rgb(244, 236, 215)';
@@ -131,6 +131,8 @@ test.describe('with JavaScript disabled', () => {
             await expect(page.getByRole('heading', { level: 1, name: heading })).toBeVisible();
             await expect(page.getByRole('navigation', { name: 'Primary' })).toBeVisible();
             expect(await bodyBackground(page)).toBe(ground);
+            // The Gallery's heading sits on its own main, which paints the dark theme's ground.
+            if (path === '/gallery') expect(await galleryBackground(page)).toBe(DARK_GROUND);
         });
     }
 });

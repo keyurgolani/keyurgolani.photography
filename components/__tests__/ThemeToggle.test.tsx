@@ -24,7 +24,8 @@ describe('ThemeToggle', () => {
     const button = screen.getByRole('button');
     expect(button).toHaveAccessibleDescription(THEME_TOGGLE_DESCRIPTION);
     expect(button.textContent).not.toContain(THEME_TOGGLE_DESCRIPTION);
-    expect(THEME_TOGGLE_DESCRIPTION).toMatch(/photo grid/);
+    // It names the page, not its content: after the catalog cutover /gallery goes to Work, a photo grid the theme doesn't reach.
+    expect(THEME_TOGGLE_DESCRIPTION).toBe("Changes only Home's opening screen and the Gallery archive; other pages keep their colors.");
   });
 
   it('keeps the description out of view, so nothing shows beside the icon', () => {
