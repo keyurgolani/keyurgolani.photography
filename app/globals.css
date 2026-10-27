@@ -76,9 +76,17 @@ html {
     --caption-bg-color: rgba(5, 5, 5, 0.85);
 }
 
+/* The shell owns its ground and its ink, in both themes (#21: the light theme
+   drives only the legacy variables and dark: variants). body paints
+   --gah-ground, so a translucent SiteNav reads the same over either theme.
+   html stays unpainted, so body's ground is the canvas: no light strip below a
+   short page or on overscroll, and About's paper (about.module.css) and the
+   Viewer's ground (StoryViewer.module.css), which override body, reach the
+   window's edge too. The legacy Gallery paints its own themed ground and ink
+   on its main. */
 body {
-    background-color: var(--background-color);
-    color: var(--primary-color);
+    background-color: var(--gah-ground);
+    color: var(--gah-ink);
     font-family: var(--font-secondary); /* Body font */
     transition: background-color var(--transition-duration) ease, color var(--transition-duration) ease;
     -webkit-font-smoothing: antialiased;
@@ -224,11 +232,6 @@ h1, h2, h3, h4, h5, h6 {
     transform: translateY(0);
 }
 
-body {
-    background-color: var(--background-color);
-    color: var(--primary-color);
-    transition: background-color var(--transition-duration) ease, color var(--transition-duration) ease;
-}
 
 /* ============================================
    Lightbox - Clean Minimal Design with Glass Effect
