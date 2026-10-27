@@ -60,7 +60,7 @@ A new passphrase hash counts from the next login. A new session secret, or any r
 
 ### When one is missing
 
-With `CURATION_ENABLED=true` and a secret file missing, unreadable, readable by anyone but its owner, or not one these commands wrote, the curator answers 503 on every path, the login page and `/api/health` included, and logs which setting is wrong, never a value. The 503 is one small page, the same on every path: it names those four causes and points to the log and this section, without naming the file (`lib/curation/auth/unavailable.ts`). It never runs without them. Without the `secrets` folder at all, Docker won't start `curator`. With the flag off, the curator paths are 404 as always.
+With `CURATION_ENABLED=true` and a secret file missing, unreadable, readable by anyone but its owner, or not one these commands wrote, the curator answers 503 on every path `proxy.ts` sees, the login page and `/api/health` included (Next's own `/_next/static` and `/_next/image` aren't curator content), and logs which setting is wrong, never a value. The 503 is one small page, the same on every path: it names those four causes and points to the log and this section, without naming the file (`lib/curation/auth/unavailable.ts`). It never runs without them. Without the `secrets` folder at all, Docker won't start `curator`. With the flag off, the curator paths are 404 as always.
 
 ## Signing in
 
@@ -85,14 +85,14 @@ Its restart policy is `no`, so a reboot or a Docker restart leaves it off. It re
 
 ## What keeps it private
 
-Each of these holds on its own. `proxy.ts` checks the first five on every request, and `requireCurator()` checks them again (`lib/curation/auth/policy.ts`).
+Each of these holds on its own. `proxy.ts` checks the first six on every request, and `requireCurator()` checks them again (`lib/curation/auth/policy.ts`).
 
 - **The flag.** `CURATION_ENABLED` turns the curator on, and only the exact value `true` does. It's read on every request, never at build time, so the one image serves both. While it's off, every curator path answers 404. Only `curator` sets it; `web` never does, and CI fails a Compose file that sets it anywhere else.
 - **The bind.** With the flag on, a server told to listen beyond loopback stops at startup with a message, and refuses every curator request until it exits. See the rule below.
 - **The `Host` allowlist.** With the flag on, every request `proxy.ts` sees on the curator process, its public paths included, needs `Host: 127.0.0.1:3001` or `localhost:3001`, or the same names on `CURATOR_TUNNEL_PORT`. Any other answers 421. That turns away a page that points its own domain name at `127.0.0.1` (DNS rebinding). The service's healthcheck sends `Host: localhost:3001` for the same reason. Next's build files under `/_next/static` don't pass through `proxy.ts`, and `/_next/image` passes through it only for its `url` check, so both answer any `Host`. They're the same bytes `web` serves to anyone.
 - **The `Origin` check.** Anything that can change state (every method but GET and HEAD, and every server action) also needs an `Origin` naming the same host and port over `http`. Anything else answers 403. That turns away a form or script on another site posting to the curator through your open tunnel. Login and logout are POSTs, so they need it too.
 - **The session.** Every curator path but the login page and its form needs a live session. Without one, a page and its RSC fetch go to `/curation/login` (a 307), and a route handler or a server action answers 401.
-- **The secret files.** With either one missing or unusable, every path answers 503.
+- **The secret files.** With either one missing or unusable, every path `proxy.ts` sees answers 503.
 - **The headers.** Every curator response sends `Cache-Control: no-store`, `X-Robots-Tag: noindex, nofollow`, `Referrer-Policy: no-referrer`, and `Content-Security-Policy: frame-ancestors 'none'`, and every curator page renders per request.
 - **Read-only everywhere else.** Outside the curator paths the site takes only GET, HEAD and OPTIONS, so a server action posted to `/` answers 404. `web` mounts the library and the data root read-only, and `/media` serves only what the active catalog revision holds.
 

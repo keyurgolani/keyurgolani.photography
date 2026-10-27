@@ -124,7 +124,9 @@ for (const name of ['localhost', '127.0.0.1']) {
     });
 }
 
-test('keeps a session on one name to that name, as cookies are kept by host', async ({ browser }) => {
+test('keeps a session on one name to that name, as cookies are kept by host', async ({ browser, browserName }) => {
+    // It signs in on http://127.0.0.1 first, where Linux WebKit drops the Secure cookie (see above).
+    test.fail(browserName === 'webkit', 'WebKit on Linux drops Secure cookies over plain http, on localhost and 127.0.0.1');
     const port = portOf();
     const context = await browser.newContext();
     const page = await context.newPage();
