@@ -481,7 +481,7 @@ describe('a processing failure', () => {
         const settled = { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true };
         expect(failed('unsupported-format', { status: 'dismissed', group: 'settled', can: settled })).toBeNull();
         // A failed build closed once its set built on a later try: no failure code, and nothing to warn about.
-        expect(failed(null, { status: 'approved', group: 'settled', can: settled })).toBeNull();
+        expect(failed(null, { status: 'resolved', group: 'settled', can: settled })).toBeNull();
         expect(failed('unsupported-format', { group: 'judgment' })).not.toBeNull();
     });
 });
