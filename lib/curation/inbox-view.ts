@@ -676,8 +676,13 @@ export function systemResponse(item: StateFacts, labelOf: (seriesId: string) => 
  * Source facts. Null for every other item. `next` is null once the item is
  * settled. The formats are lib/identity/scan.ts's SOURCE_EXTENSIONS.
  */
-export function failureNotice(detail: Pick<InboxDetail, 'type' | 'failure' | 'failureCode' | 'status' | 'can' | 'sourcePath'>): { reason: string; next: string | null } | null {
+export function failureNotice(
+    detail: Pick<InboxDetail, 'type' | 'failure' | 'failureCode' | 'status' | 'can' | 'sourcePath'> & Partial<Pick<InboxDetail, 'group'>>,
+): { reason: string; next: string | null } | null {
     if (detail.type !== 'processing-failure') return null;
+    // A settled item, dismissed or closed by the watcher (#17), has nothing to warn about: System response says what
+    // settled it, and Source facts keeps the reason.
+    if (detail.group === 'settled') return null;
     // A format it doesn't read is named by the file's own extension, which says more to the owner than "not a format".
     const extension = /\.([a-z0-9]{2,5})$/i.exec(fileParts(detail.sourcePath).name)?.[1];
     const reason =

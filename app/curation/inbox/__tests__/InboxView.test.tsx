@@ -276,6 +276,20 @@ describe('the detail', () => {
         expect(document.getElementById('inbox-list')).toBeInTheDocument();
     });
 
+    it('drops the failure strip once a processing failure is settled, and keeps its reason in Source facts', () => {
+        renderInbox(view({
+            selected: detail({
+                type: 'processing-failure', status: 'dismissed', group: 'settled', title: 'Processing failed', photoId: null, shortId: 'no photo ID', assetRevision: null, previewUrl: null, identity: 'None yet. This file has no photo ID.',
+                sourcePath: 'inbox/raw-frame.heic', facts: [], failure: 'The file is not a format the watcher reads.', failureCode: 'unsupported-format',
+                can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true },
+            }),
+        }));
+        expect(document.querySelector('[data-state="failure"]')).toBeNull();
+        expect(screen.queryByText(/watcher doesn't read/)).toBeNull();
+        const facts = screen.getByRole('region', { name: 'Source facts' });
+        expect(within(facts).getByText('Failure').nextElementSibling).toHaveTextContent('The file is not a format the watcher reads.');
+    });
+
     it('says why a file failed, and what to do, at the top of the item in the refusal tone, and not again in Source facts', () => {
         renderInbox(view({
             selected: detail({
