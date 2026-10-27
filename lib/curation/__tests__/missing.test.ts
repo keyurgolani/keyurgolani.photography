@@ -18,7 +18,7 @@ import { approveEvent, retryEvent } from '../actions';
 import { pendingMergeOf } from '../binds';
 import { withCurationLock } from '../repository';
 import { inboxAlertLines, inboxAlerts } from '../alerts';
-import { pageWording } from '../inbox-form';
+import { pageWording, runInboxAction } from '../inbox-form';
 import { loadInbox } from '../inbox';
 import { BIND_WAITING_NEXT, seriesName, systemResponse, type InboxDetail, type InboxView } from '../inbox-view';
 import { rollback } from '../../catalog/rollback';
@@ -192,6 +192,39 @@ describe('the same bytes back', { timeout: 60_000 }, () => {
         expect(back.view.items.find((entry) => entry.id === w.missingId)).toMatchObject({ title: 'Source file back' });
     });
 
+    it("read on the page as the same file back at its own path, which the watcher dismisses, and refuse an old form's Reopen, while `curation reopen` still takes it", async () => {
+        const w = await world();
+        removeP(w);
+        await w.pass();
+        fs.writeFileSync(w.lib.file(P_PATH), images.original);
+        await w.pass();
+        const dismissed = await w.event(w.missingId);
+        expect(dismissed).toMatchObject({ status: 'dismissed' });
+        expect(dismissed.decisions.at(-1)).toMatchObject({ action: 'dismiss', by: 'watcher' });
+
+        const back = await pageItem(w.missingId);
+        expect(back.detail).toMatchObject({ status: 'dismissed', group: 'settled', title: 'Source file back', resolvedBy: { kind: 'same-file' }, can: { reopen: false }, primaryUnavailable: null });
+        expect(back.response).toBe('The same file came back at its path, so nothing a visitor sees changed.');
+        expect(back.view.items.find((entry) => entry.id === w.missingId)).toMatchObject({ title: 'Source file back' });
+
+        // A form from before the page stopped offering Reopen: refused under the lock, writing nothing.
+        const base = (await readActivePointer(w.root))?.revisionId as string;
+        const form = new FormData();
+        for (const [name, value] of Object.entries({ eventId: dismissed.id, version: String(dismissed.version), base })) form.set(name, value);
+        const before = layers(w);
+        expect(await runInboxAction('reopen', form)).toMatchObject({
+            status: 'refused',
+            message: "The same file is back at its path, so this item stays closed, and the inbox doesn't reopen it. Nothing was written.",
+        });
+        expect(await w.event(w.missingId)).toMatchObject({ status: 'dismissed', version: dismissed.version });
+        expect(layers(w)).toEqual(before);
+
+        // The CLI keeps its own behaviour.
+        const run = await runCurationCli(['reopen', dismissed.id, '--version', String(dismissed.version), '--base', base], { dataRoot: w.root, libraryRoot: w.lib.root }, {});
+        expect(run.exitCode).toBe(0);
+        expect(await w.event(w.missingId)).toMatchObject({ status: 'open' });
+    });
+
     it('open the closed item again when the source goes missing again', async () => {
         const w = await world();
         removeP(w);
@@ -302,7 +335,8 @@ describe('other bytes back', { timeout: 60_000 }, () => {
         expect(missing.response).toBe('Bound to the new file, so its replacement item reviews the new version. Visitors keep the current one until you confirm it and publish.');
         const merged = await pageItem(newItem.id);
         expect(merged.detail).toMatchObject({ status: 'resolved', resolvedBy: { kind: 'merged', into: P_PATH }, can: { reopen: false } });
-        expect(merged.response).toBe(`A bind made this file the new version of ${P_PATH}, so that photograph's replacement item reviews it.`);
+        // The file replaced P's in place, so the sentence says "this path" rather than naming its own file as the other.
+        expect(merged.response).toBe("A bind made this file the new version of the photograph that was at this path, so that photograph's replacement item reviews it.");
         for (const response of [missing.response, merged.response]) expect(response).not.toMatch(/\b(ph|evt)_|needs no judgment/);
     });
 
@@ -505,7 +539,7 @@ describe('other bytes back', { timeout: 60_000 }, () => {
         // The new photograph: no approve, and the hint says why and what to do, as the refusal ends.
         const fresh = (await pageItem(newItem.id)).detail;
         expect(fresh).toMatchObject({ can: { approve: false, edit: true, defer: true }, bindWaiting: { kind: 'merge', into: P_PATH } });
-        expect(fresh.primaryUnavailable).toBe(`A bind waiting for the watcher's next pass makes this file the new version of ${P_PATH}. ${BIND_WAITING_NEXT}`);
+        expect(fresh.primaryUnavailable).toBe(`A bind waiting for the watcher's next pass makes this file the new version of the photograph that was at this path. ${BIND_WAITING_NEXT}`);
         expect(fresh.primaryUnavailable).not.toMatch(/\b(ph|evt)_/);
         // The missing item says a bind waits.
         expect((await pageItem(w.missingId)).detail).toMatchObject({ bindWaiting: { kind: 'bind', path: P_PATH } });
@@ -514,6 +548,28 @@ describe('other bytes back', { timeout: 60_000 }, () => {
         await w.pass();
         expect((await pageItem(newItem.id)).detail).toMatchObject({ status: 'resolved', bindWaiting: null, primaryUnavailable: null });
         expect((await pageItem(w.missingId)).detail).toMatchObject({ status: 'resolved', bindWaiting: null });
+    });
+
+    it("claim no waiting bind when a decision file can't be read, and leave approve to refuse under the lock", async () => {
+        const w = await world();
+        const { newItem } = await otherBytes(w);
+        const dir = identityPaths(w.root).decisions;
+        fs.mkdirSync(dir, { recursive: true });
+        const unreadable = path.join(dir, 'zz-unreadable.json');
+        fs.writeFileSync(unreadable, '{}');
+        fs.chmodSync(unreadable, 0o000);
+        try {
+            // The page can't tell whether that file merges the photograph, so it says nothing about one and offers approve.
+            expect((await pageItem(newItem.id)).detail).toMatchObject({ can: { approve: true }, bindWaiting: null, primaryUnavailable: null });
+            expect((await pageItem(w.missingId)).detail).toMatchObject({ bindWaiting: null });
+            const authored = treeBytes(path.join(w.root, 'authored'));
+            const approved = await approveEvent({ root: w.root, eventId: newItem.id, expectedVersion: newItem.version, expectedBase: w.revisionId, actor: ACTOR, choices: { seriesId: SERIES, placement: 'end' } });
+            expect(approved).toMatchObject({ ok: false, code: 'damaged' });
+            expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
+            expect((await w.event(newItem.id)).version).toBe(newItem.version);
+        } finally {
+            fs.chmodSync(unreadable, 0o600);
+        }
     });
 
     it('refuse approving the photo a pending bind merges when the watcher applies the bind during the approval', async () => {
@@ -923,6 +979,19 @@ describe('archive, then publish', { timeout: 60_000 }, () => {
 });
 
 describe("archiving a missing photo and its new item", { timeout: 60_000 }, () => {
+    /**
+     * What the page sentence promises while a draft series lists the archived photo: nothing publishes. Here the draft
+     * is the live revision, so a publish finds it already active; with any other change, it refuses the photo by name.
+     */
+    async function expectNothingPublishes(w: MissingWorld): Promise<void> {
+        expect(await w.publish({ dryRun: true })).toMatchObject({ outcome: 'NO_CHANGES' });
+        await editQ(w);
+        expect(await w.publish({ dryRun: true })).toMatchObject({
+            outcome: 'VALIDATION_FAILED',
+            issues: expect.arrayContaining([expect.objectContaining({ code: 'order.unpublishable-member', severity: 'error', message: `${w.p} is archived.` })]),
+        });
+    }
+
     const cli = async (w: MissingWorld, ...args: string[]) => runCurationCli(args, { dataRoot: w.root, libraryRoot: w.lib.root }, {});
     const newItemOf = async (w: MissingWorld) => (await listEvents(w.root)).events.find((event) => event.type === 'new' && event.photoId === w.p) as CurationEvent;
 
@@ -987,9 +1056,9 @@ describe("archiving a missing photo and its new item", { timeout: 60_000 }, () =
         expect(await applySequenceOp({ dataRoot: w.root }, { kind: 'insert', seriesId: SERIES, photoId: w.p, at: 'end' }, { expectedVersion: (await series(w)).version, actor: { kind: 'editor' } })).toMatchObject({ ok: true });
         const listed = await pageItem(w.missingId);
         const title = seriesName(listed.view.series, SERIES);
-        expect(listed.response).toBe(`Archived, but the draft lists it in ${title} again, so a publish refuses it until it's taken out. The live site still shows it.`);
+        expect(listed.response).toBe(`Archived, but the draft lists it in ${title} again, so nothing publishes until it's taken out. The live site still shows it.`);
         // What the sentence says a publish does.
-        expect(await w.publish({ dryRun: true })).not.toMatchObject({ outcome: 'DRY_RUN_OK' });
+        await expectNothingPublishes(w);
     });
 
     it("says an archived photo is listed again after a rollback to a revision that showed it, never 'out of every series'", async () => {
@@ -1002,8 +1071,8 @@ describe("archiving a missing photo and its new item", { timeout: 60_000 }, () =
         expect((await w.registry()).photos[w.p].sourceHealth).toBe('archived');
         const after = await pageItem(w.missingId);
         expect(after.detail).toMatchObject({ status: 'approved', references: expect.arrayContaining([{ kind: 'revision', id: w.revisionId }, { kind: 'series', id: SERIES }]) });
-        expect(after.response).toBe(`Archived, but the draft lists it in ${seriesName(after.view.series, SERIES)} again, so a publish refuses it until it's taken out. The live site still shows it.`);
-        expect(await w.publish({ dryRun: true })).not.toMatchObject({ outcome: 'DRY_RUN_OK' });
+        expect(after.response).toBe(`Archived, but the draft lists it in ${seriesName(after.view.series, SERIES)} again, so nothing publishes until it's taken out. The live site still shows it.`);
+        await expectNothingPublishes(w);
     });
 
     it('lets the curator reopen the closed item, as before', async () => {

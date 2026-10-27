@@ -9,7 +9,7 @@ import type { Registry } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
 import { LockTimeoutError, withLock, type LockContext } from '../storage/lock';
 import { pendingMergeOf } from './binds';
-import { unplacedApproval, type CurationDecision, type CurationEvent, type CurationEventStatus, type CuratorDescription, type CuratorEdits, type Placement } from './events';
+import { backAtItsPath, unplacedApproval, type CurationDecision, type CurationEvent, type CurationEventStatus, type CuratorDescription, type CuratorEdits, type Placement } from './events';
 import { photoHolders } from './holders';
 import { placementIndex } from './placement';
 import { draftPlanText, readDraftPlan, replacedBy } from './pins';
@@ -233,8 +233,9 @@ export function dismissEvent(input: ActionInput & { reason: string }): Promise<A
 
 /**
  * Put a deferred, dismissed, approved, or resolved event back in the inbox. An approval's working-layer writes stay.
- * `keepResolvedMissing` is the inbox page's: it refuses a missing item the watcher resolved, whose source is present
- * again, so the page never brings back an item that says it's missing. `curation reopen` takes it back.
+ * `keepResolvedMissing` is the inbox page's: it refuses a missing item the watcher resolved, or dismissed because the
+ * same bytes came back at its path, whose source is present again, so the page never brings back an item that says
+ * it's missing. `curation reopen` takes either back.
  */
 export function reopenEvent(input: ActionInput & { reason?: string; keepResolvedMissing?: boolean }): Promise<ActionOutcome> {
     return act(input, async (step) => {
@@ -242,6 +243,9 @@ export function reopenEvent(input: ActionInput & { reason?: string; keepResolved
         requireStatus(event, ['deferred', 'dismissed', 'approved', 'resolved'], 'reopened');
         if (input.keepResolvedMissing && event.type === 'missing' && event.status === 'resolved') {
             fail('refused', `${event.id} is a missing item the watcher resolved once its source was present again, so the inbox doesn't reopen it. curation reopen does. Nothing was written.`);
+        }
+        if (input.keepResolvedMissing && backAtItsPath(event)) {
+            fail('refused', `${event.id} is a missing item the watcher dismissed once the same bytes came back at its path, so the inbox doesn't reopen it. curation reopen does. Nothing was written.`);
         }
         const status: CurationEventStatus = event.type === 'processing-failure' ? 'failed' : 'open';
         const notes = event.status !== 'approved'

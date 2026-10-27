@@ -344,3 +344,19 @@ export function closeCauseOf(reason: string): CloseCause | null {
     if (reason.startsWith('Its derivative set built under ')) return 'built';
     return null;
 }
+
+/**
+ * #17: the reason 14-1's sink writes when it dismisses a missing item because the same bytes came back at the
+ * photograph's own path (lib/curation/sink.ts closeMissing()), kept here with backAtItsPath(), which reads it back.
+ */
+export const SAME_BYTES_BACK = (where: string) => `The same bytes came back at ${where}, so nothing is missing.`;
+
+/**
+ * #17: a missing item the watcher dismissed because its source came back at its own path with the same bytes. Like a
+ * resolved missing item, it would read as missing and unresolved if the page reopened it.
+ */
+export function backAtItsPath(event: Pick<CurationEvent, 'type' | 'status' | 'decisions'>): boolean {
+    if (event.type !== 'missing' || event.status !== 'dismissed') return false;
+    const dismiss = event.decisions.findLast((decision) => decision.action === 'dismiss');
+    return dismiss?.by === 'watcher' && dismiss.reason !== undefined && /^The same bytes came back at .+, so nothing is missing\.$/.test(dismiss.reason);
+}
