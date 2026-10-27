@@ -173,20 +173,27 @@ describe('dataRootState', () => {
         const ENOTSUP = () => {
             throw Object.assign(new Error('ENOTSUP: operation not supported, link'), { code: 'ENOTSUP' });
         };
-        /** Every stat of these roots reports one device and inode, as a root removed and made again can on Linux. */
-        function sameInode(roots: string[], birthtimeMs?: number) {
+        /**
+         * Every stat of these roots reports one device and inode, as a root removed and made again can on Linux.
+         * `birthtimeMs` is one for all of them, or one per root in the same order.
+         */
+        function sameInode(roots: string[], birthtimeMs?: number | number[]) {
             const real = fs.statSync;
             vi.spyOn(fs, 'statSync').mockImplementation(((target: fs.PathLike, options?: fs.StatSyncOptions) => {
                 const stat = real(target, options) as fs.Stats;
-                if (!roots.includes(path.resolve(String(target)))) return stat;
-                return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { dev: 7, ino: 4242, ...(birthtimeMs === undefined ? {} : { birthtimeMs }) });
+                const at = roots.indexOf(path.resolve(String(target)));
+                if (at === -1) return stat;
+                const birth = Array.isArray(birthtimeMs) ? birthtimeMs[at] : birthtimeMs;
+                return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { dev: 7, ino: 4242, ...(birth === undefined ? {} : { birthtimeMs: birth }) });
             }) as typeof fs.statSync);
         }
 
         it("isn't taken for a new root that has its inode back", () => {
             const first = tempDataRoot();
             const second = tempDataRoot();
-            sameInode([first.root, second.root]);
+            // Their own birth times, set apart: Linux stamps them from a clock that ticks every few
+            // milliseconds, so two roots made back to back can share one.
+            sameInode([first.root, second.root], [1_700_000_000_000, 1_700_000_060_000]);
             expect(dataRootStatus({ versioned: true, root: first.root })).toMatchObject({ state: 'ready', root: first.root });
             // The new root's filesystem can't hold hard links, and it has to be probed to find that out.
             vi.spyOn(fs, 'linkSync').mockImplementation(ENOTSUP);
