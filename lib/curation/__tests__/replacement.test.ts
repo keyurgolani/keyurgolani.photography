@@ -614,11 +614,12 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         expect(open.primaryUnavailable).not.toBe(ready.primaryUnavailable);
         expect((await photoRecord(w)).assetRevision).toBe(w.b);
 
-        // Published, the live revision serves the new version too.
+        // Published, the live revision serves the new version too. 16-1's review gate holds a reopened item's
+        // bytes back from a publish, so the item is confirmed again first.
+        expect(await confirm(w, await w.event())).toMatchObject({ ok: true });
         const live = await publish({ dataRoot: w.root, actor: OWNER, logger: { log: () => undefined } });
         expect(live.outcome).toBe('PUBLISHED');
         w.revisionId = live.revisionId as string;
-        expect(await confirm(w, await w.event())).toMatchObject({ ok: true });
         const published = await shown(w);
         expect(published.replacement).toMatchObject({ draft: 'new', live: true });
         expect(systemResponse(published, labelOf)).toBe('The draft uses the new version, and so does the live revision.');
