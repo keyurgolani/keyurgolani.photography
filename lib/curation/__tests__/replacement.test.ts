@@ -720,7 +720,7 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         expect(done.replacement).toEqual({ draft: 'new', live: false, decideLater: 'blocked' });
         expect(reopenHint(done)).toBe("Reopening it changes nothing in the draft, which keeps the new version. The earlier version isn't ready to show on the site, so Decide later can't put it back.");
         // The CLI says the same: curation show and reopen's note don't promise the put back that defer refuses.
-        const plan = await readDraftPlan(w.root, await w.event(), async () => w.b);
+        const plan = await readDraftPlan(w.root, await w.event(), (photoId) => readAuthoredRecord(w.root, 'photo', photoId));
         expect(plan).toMatchObject({ kind: 'blocked', putBack: w.a, revision: w.b });
         expect(draftPlanText(plan)).toBe(`Leaving it in draft (defer) refuses for now: ${w.a}, the revision this item's confirm replaced, has no ready derivative set, so it can't be put back. The draft keeps ${w.b}.`);
         // And Reopen on the page answers plainly, since Decide later can't change the draft then.
