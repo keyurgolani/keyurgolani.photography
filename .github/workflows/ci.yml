@@ -79,6 +79,10 @@ jobs:
       - name: Install Playwright browsers
         timeout-minutes: 20
         run: |
+          # A stalled package download should fail and retry in seconds, not
+          # sit until the try's 6 minutes are up (#87's run stalled on fonts
+          # from the Azure mirror all three tries).
+          printf '%s\n' 'Acquire::http::Timeout "20";' 'Acquire::https::Timeout "20";' 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/99ci-timeouts >/dev/null
           for try in 1 2 3; do
             timeout 360 npx playwright install --with-deps --only-shell chromium webkit && exit 0
             echo "Playwright install try $try failed or took over 6 minutes."
@@ -86,6 +90,8 @@ jobs:
             # would hold the dpkg lock. The runner is throwaway.
             sudo pkill -9 -f 'apt-get|dpkg' || true
             sudo dpkg --configure -a || true
+            # Try the main Ubuntu archive instead of the runner's mirror next time.
+            sudo sed -i 's#http://azure.archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
           done
           exit 1
 
