@@ -252,6 +252,17 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
     };
   }, [reducedMotion, beginExit]);
 
+  // Home's loading bound, whatever becomes of the exit's own timers. They're one-shot and armed once, so anything
+  // that clears them without unmounting, as React does when it disconnects a hidden Activity's effects, would leave
+  // the grain up for good. From any state short of settled, this settles the intro HOME_LOADING_TIMEOUT_MS after
+  // mount, and it arms again whenever its effect runs again. The clamp keeps a wall clock set back from stretching it.
+  useEffect(() => {
+    if (phase === 'settled') return;
+    const left = Math.min(HOME_LOADING_TIMEOUT_MS, Math.max(0, mountTimeRef.current + HOME_LOADING_TIMEOUT_MS - Date.now()));
+    const timer = setTimeout(settle, left);
+    return () => clearTimeout(timer);
+  }, [phase, settle]);
+
   const handleUnusable = useCallback(() => setPortraitFailed(true), []);
 
   // The badge's place, from the chrome's own boxes, measured before the first paint and again whenever Home, the
@@ -267,7 +278,7 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
         { width: window.innerWidth, height: window.innerHeight },
         element.offsetWidth,
         boxOf(root.querySelector('[data-chrome-region="nav"]')),
-        [...root.querySelectorAll('[data-chrome-region="story"] :is(h1, h2, p, a)')].map(boxOf).filter((box): box is Box => box !== null),
+        [...root.querySelectorAll('[data-chrome-region="story"] :is(h1, h2, p, a, [data-chrome-panel])')].map(boxOf).filter((box): box is Box => box !== null),
       );
       if (place === null) {
         for (const name of ['--badge-dx', '--badge-dy', '--badge-scale']) element.style.removeProperty(name);

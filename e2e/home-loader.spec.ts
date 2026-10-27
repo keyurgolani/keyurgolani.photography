@@ -10,12 +10,11 @@ import { expect, setPhotoFixtures, test } from './support/test';
 // their site config folder, and hands off as v1.1.0 did: the portrait glides
 // and shrinks into its place, and stays as the badge, for 3 s and then
 // whenever the chrome shows. That's v1.1.0's place, 280 px above the bottom
-// at 0.85, wherever it clears the nav and the series title by 16 px, and the
+// at 0.85, wherever it clears the nav, the series title and its panel by 16 px, and the
 // nearest place that does elsewhere (HeroReveal's badgePlace()). The badge and the
 // loading portrait sit under the chrome and take no pointer, and a mouse over
-// either tilts it. While the intro plays, the mouse doesn't wake the chrome. A server without a portrait is covered by the unit tests
-// (components/__tests__/HeroReveal.test.tsx and app/__tests__/page.test.tsx),
-// since every server here reads the same folder.
+// either tilts it. While the intro plays, the mouse doesn't wake the chrome. A server without a portrait, from the
+// start or from partway through, is home-loader-portrait.spec.ts, on a server with a site config folder of its own.
 
 /** BADGE_LINGER_MS in components/HeroReveal.tsx. */
 const LINGER = 3000;
@@ -343,8 +342,8 @@ test.describe("the badge's place on the catalog Home", () => {
     const gap = (a: Box, b: Box) => Math.max(b.left - a.right, a.left - b.right, b.top - a.bottom, a.top - b.bottom);
 
     for (const { width, height, place } of [
-        { width: 1440, height: 900, place: 'v1.1.0' },
-        { width: 1536, height: 864, place: 'v1.1.0' },
+        { width: 1440, height: 900, place: 'clear' },
+        { width: 1536, height: 864, place: 'clear' },
         { width: 1366, height: 768, place: 'clear' },
         { width: 1280, height: 800, place: 'clear' },
         { width: 1024, height: 768, place: 'clear' },
@@ -352,7 +351,7 @@ test.describe("the badge's place on the catalog Home", () => {
         { width: 360, height: 740, place: 'clear' },
         { width: 844, height: 390, place: 'side' },
     ]) {
-        test(`the landed badge keeps 16 px from the series title and the nav at ${width} x ${height}`, async ({ page }, testInfo) => {
+        test(`the landed badge keeps 16 px from the series title, its panel and the nav at ${width} x ${height}`, async ({ page }, testInfo) => {
             runsOn(testInfo, 'desktop');
             await page.setViewportSize({ width, height });
             await page.goto('/');
@@ -381,6 +380,7 @@ test.describe("the badge's place on the catalog Home", () => {
                     title: box(document.querySelector('[data-chrome-region="story"] h1')),
                     statement: box(document.querySelector('[data-chrome-region="story"] p')),
                     link: box(document.querySelector('[data-chrome-region="story"] a')),
+                    panel: box(document.querySelector('[data-chrome-region="story"] [data-chrome-panel]')),
                 };
             });
             console.log(`badge boxes at ${width}x${height}: ${JSON.stringify(boxes)}`);
@@ -389,6 +389,10 @@ test.describe("the badge's place on the catalog Home", () => {
                 expect(boxes[name], name).not.toBeNull();
                 expect(gap(boxes.oval!, boxes[name]!), `the badge's room from the ${name}`).toBeGreaterThanOrEqual(15.5);
             }
+            // The title's dark panel from 640 px wide, its fade included; a narrower screen has none.
+            const panel = boxes.panel && boxes.panel.right > boxes.panel.left ? boxes.panel : null;
+            expect(panel === null, 'the panel is drawn from 640 px wide').toBe(width < 640);
+            if (panel) expect(gap(boxes.oval!, panel), "the badge's room from the title's panel").toBeGreaterThanOrEqual(15.5);
         });
     }
 });

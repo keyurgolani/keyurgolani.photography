@@ -1,5 +1,5 @@
 import { act, render } from '@testing-library/react';
-import { StrictMode } from 'react';
+import { Activity, StrictMode } from 'react';
 import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
@@ -301,11 +301,59 @@ describe('HeroReveal', () => {
     setLoading(false);
     advance(RIPPLES_MS - 1000 + LEAD_MS);
     expect(phases).toEqual(['loading', 'revealing']);
-    // Only the landing's start and the exit's end are left: no deadline starts a second exit.
-    expect(vi.getTimerCount()).toBe(2);
+    // Only the landing's start, the exit's end and Home's bound are left: no deadline starts a second exit.
+    expect(vi.getTimerCount()).toBe(3);
     advance(EXIT_DEADLINE_MS);
     expect(framer.animate).toHaveBeenCalledTimes(2);
     expect(phases).toEqual(['loading', 'revealing', 'settled']);
+  });
+
+  // Every way the portrait can go, with the photograph early or never: the intro is over by Home's loading bound.
+  const portraitPaths = [
+    { path: 'absent at render', portrait: null, after: () => {} },
+    // Its URL 404s once the file is gone, or the server fails it: ProfilePicture reports it unusable.
+    {
+      path: 'removed after render',
+      portrait: PORTRAIT,
+      after: () => {
+        advance(700);
+        act(() => picture.props.at(-1)!.onUnusable!());
+      },
+    },
+    { path: 'erroring', portrait: PORTRAIT, after: () => act(() => picture.props.at(-1)!.onUnusable!()) },
+    // Still on its way when the intro ends: nothing waits for it.
+    { path: 'slow', portrait: PORTRAIT, after: () => {} },
+  ];
+  for (const { path, portrait, after } of portraitPaths) {
+    for (const photo of ['early', 'never'] as const) {
+      it(`with the portrait ${path} and the photograph ${photo}, the intro settles within ${HOME_LOADING_TIMEOUT_MS} ms`, () => {
+        const mounted = Date.now();
+        const { phases, overlay, setLoading } = renderReveal(true, { portrait });
+        after();
+        if (photo === 'early') setLoading(false);
+        advance(HOME_LOADING_TIMEOUT_MS - (Date.now() - mounted));
+        expect(phases.at(-1)).toBe('settled');
+        expect(overlay()).toBeNull();
+      });
+    }
+  }
+
+  it("keeps Home's bound when React disconnects the intro's effects mid-exit and connects them again, as a hidden Activity does", () => {
+    const onPhaseChange = vi.fn();
+    const tree = (mode: 'visible' | 'hidden', loading: boolean) => (
+      <Activity mode={mode}>
+        <HeroReveal isLoading={loading} onSettled={() => {}} onPhaseChange={onPhaseChange} />
+      </Activity>
+    );
+    const view = render(tree('visible', true));
+    view.rerender(tree('visible', false));
+    // The exit has begun: the ripples are fading, and the mask opens 300 ms on.
+    advance(RIPPLES_MS + 100);
+    view.rerender(tree('hidden', false));
+    view.rerender(tree('visible', false));
+    advance(HOME_LOADING_TIMEOUT_MS - RIPPLES_MS - 100);
+    expect(onPhaseChange).toHaveBeenLastCalledWith('settled');
+    expect(view.container.querySelector('svg')).toBeNull();
   });
 
   it('under reduce at mount renders no intro, and settles once', () => {
@@ -413,9 +461,16 @@ describe('HeroReveal', () => {
 
 describe('badgePlace', () => {
   // The catalog Home's boxes as measured in the browser (photo-home-loader round 2): the nav, then the series title,
-  // statement and link. The card is 320 px from 768 px wide, 256 px below.
+  // statement and link, and from 640 px wide the title's dark panel behind them. The card is 320 px from 768 px wide,
+  // 256 px below.
   const box = (left: number, top: number, right: number, bottom: number): Box => ({ left, top, right, bottom });
   const nav = (width: number) => box(0, 0, width, 56);
+  /**
+   * The title's panel, as CatalogHome.module.css draws it from 640 px wide: from the screen's left edge, 3rem above
+   * the title, 6rem right of the longer of the title and statement (its fade included), and 1.5rem below the statement.
+   */
+  const panel = (title: Box, statement: Box) => box(0, title.top - 48, Math.max(title.right, statement.right) + 96, statement.bottom + 24);
+  const story = (title: Box, statement: Box, link: Box, wide: boolean) => (wide ? [title, statement, link, panel(title, statement)] : [title, statement, link]);
   /** The oval's box, ring included, for a place, as the browser paints it. */
   const oval = (view: { width: number; height: number }, card: number, place: ReturnType<typeof badgePlace>) => {
     const { dx, dy, scale } = place ?? { dx: 0, dy: view.height / 2 - 280, scale: 0.85 };
@@ -428,30 +483,39 @@ describe('badgePlace', () => {
   const gap = (a: Box, b: Box) => Math.max(b.left - a.right, a.left - b.right, b.top - a.bottom, a.top - b.bottom);
 
   const screens = [
-    { view: { width: 1440, height: 900 }, card: 320, story: [box(48, 566, 553, 700), box(48, 712, 467, 736), box(48, 756, 186, 800)], kind: null },
-    { view: { width: 1536, height: 864 }, card: 320, story: [box(48, 520, 576, 662), box(48, 674, 470, 698), box(48, 718, 186, 762)], kind: null },
-    { view: { width: 1366, height: 768 }, card: 320, story: [box(45, 439, 533, 568), box(45, 580, 465, 604), box(45, 624, 184, 668)], kind: 'clear' },
-    { view: { width: 1280, height: 800 }, card: 320, story: [box(42, 476, 510, 600), box(42, 612, 462, 636), box(42, 656, 181, 700)], kind: 'clear' },
-    { view: { width: 1024, height: 768 }, card: 320, story: [box(34, 461, 441, 569), box(34, 581, 441, 604), box(34, 624, 172, 668)], kind: 'clear' },
-    { view: { width: 390, height: 844 }, card: 256, story: [box(16, 580, 274, 648), box(16, 660, 274, 680), box(16, 700, 155, 744)], kind: 'clear' },
-    { view: { width: 360, height: 740 }, card: 256, story: [box(16, 476, 274, 544), box(16, 556, 274, 576), box(16, 596, 155, 640)], kind: 'clear' },
-    { view: { width: 844, height: 390 }, card: 320, story: [box(28, 95, 392, 192), box(28, 204, 392, 226), box(28, 246, 166, 290)], kind: 'side' },
+    { view: { width: 1440, height: 900 }, card: 320, story: story(box(48, 566, 553, 700), box(48, 712, 467, 736), box(48, 756, 186, 800), true), kind: 'clear' },
+    { view: { width: 1536, height: 864 }, card: 320, story: story(box(48, 520, 576, 662), box(48, 674, 470, 698), box(48, 718, 186, 762), true), kind: 'clear' },
+    { view: { width: 1366, height: 768 }, card: 320, story: story(box(45, 439, 533, 568), box(45, 580, 465, 604), box(45, 624, 184, 668), true), kind: 'clear' },
+    { view: { width: 1280, height: 800 }, card: 320, story: story(box(42, 476, 510, 600), box(42, 612, 462, 636), box(42, 656, 181, 700), true), kind: 'clear' },
+    { view: { width: 1024, height: 768 }, card: 320, story: story(box(34, 461, 441, 569), box(34, 581, 441, 604), box(34, 624, 172, 668), true), kind: 'clear' },
+    { view: { width: 390, height: 844 }, card: 256, story: story(box(16, 580, 274, 648), box(16, 660, 274, 680), box(16, 700, 155, 744), false), kind: 'clear' },
+    { view: { width: 360, height: 740 }, card: 256, story: story(box(16, 476, 274, 544), box(16, 556, 274, 576), box(16, 596, 155, 640), false), kind: 'clear' },
+    { view: { width: 844, height: 390 }, card: 320, story: story(box(28, 95, 392, 192), box(28, 204, 392, 226), box(28, 246, 166, 290), true), kind: 'side' },
   ] as const;
 
-  it.each(screens)('keeps 16 px from the nav and the story at $view.width x $view.height, and moves only where it must', ({ view, card, story, kind }) => {
+  it.each(screens)('keeps 16 px from the nav, the story and its panel at $view.width x $view.height, and moves only where it must', ({ view, card, story, kind }) => {
     const place = badgePlace(view, card, nav(view.width), [...story]);
     expect(place?.kind ?? null).toBe(kind);
     const painted = oval(view, card, place);
     for (const blocker of [nav(view.width), ...story]) expect(gap(painted, blocker)).toBeGreaterThanOrEqual(16 - 0.01);
   });
 
-  it("keeps v1.1.0's exact place at 1440 x 900, and lifts the badge at 1366 x 768 only as far as the title needs, at 0.85", () => {
-    expect(badgePlace({ width: 1440, height: 900 }, 320, nav(1440), [...screens[0].story])).toBeNull();
-    const lifted = badgePlace({ width: 1366, height: 768 }, 320, nav(1366), [...screens[2].story])!;
-    expect(lifted.scale).toBe(0.85);
-    expect(lifted.dx).toBe(0);
-    // The oval's bottom 16 px above the title's top.
-    expect(oval({ width: 1366, height: 768 }, 320, lifted).bottom).toBeCloseTo(439 - 16, 5);
+  it("keeps v1.1.0's exact place where it clears the text and the panel, and otherwise lifts the badge only as far as they need, at 0.85", () => {
+    // 1440 x 900: v1.1.0's place clears the title, statement and link, so the text alone leaves it where it is.
+    const text = screens[0].story.slice(0, 3);
+    expect(badgePlace({ width: 1440, height: 900 }, 320, nav(1440), [...text])).toBeNull();
+    // Its panel reaches under the oval's left side, so the badge lifts until it's 16 px above the panel's top.
+    const lifted = badgePlace({ width: 1440, height: 900 }, 320, nav(1440), [...screens[0].story])!;
+    expect(lifted).toMatchObject({ kind: 'clear', dx: 0, scale: 0.85 });
+    expect(oval({ width: 1440, height: 900 }, 320, lifted).bottom).toBeCloseTo(566 - 48 - 16, 5);
+    // A panel that ends 16 px short of the oval leaves v1.1.0's place alone.
+    const short = { ...screens[0].story[3], right: 1440 / 2 - (0.85 * 324) / 2 - 4 - 16 };
+    expect(badgePlace({ width: 1440, height: 900 }, 320, nav(1440), [...text, short])).toBeNull();
+    // 1366 x 768: just room above the panel at 0.85, under the nav's 16 px.
+    const tight = badgePlace({ width: 1366, height: 768 }, 320, nav(1366), [...screens[2].story])!;
+    expect(tight).toMatchObject({ kind: 'clear', dx: 0, scale: 0.85 });
+    expect(oval({ width: 1366, height: 768 }, 320, tight).bottom).toBeCloseTo(439 - 48 - 16, 5);
+    expect(oval({ width: 1366, height: 768 }, 320, tight).top).toBeGreaterThanOrEqual(56 + 16 - 0.01);
   });
 
   it('scales down toward 0.6 only when the room above the story is too short for 0.85', () => {
