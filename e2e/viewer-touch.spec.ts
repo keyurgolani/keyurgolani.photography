@@ -715,6 +715,63 @@ test.describe('the fixed stage (9a)', () => {
     });
 });
 
+test.describe('arrow keys (9a)', () => {
+    test.beforeEach(() => runsOn(test.info(), 'desktop'));
+
+    test('a key pressed while the last move is on its way slides the next photograph in from where the one it leaves is, with no jump', async ({ page }) => {
+        await page.setViewportSize({ width: 1440, height: 900 });
+        await openPage(page, P[0]);
+        // Every slide at a tenth of its speed, so the second page lands while the first slide is still going, however
+        // quick the server.
+        const cdp = await page.context().newCDPSession(page);
+        await cdp.send('Animation.enable');
+        await cdp.send('Animation.setPlaybackRate', { playbackRate: 0.1 });
+        const pitch = await stage(page).evaluate((element) => element.clientWidth);
+        // Every frame: where photograph 2's center sits across, as the photograph, then as the neighbor beside 3.
+        await page.evaluate((second) => {
+            const log: { x: number; as: 'photograph' | 'neighbor' }[] = [];
+            const state = { log, running: true };
+            (window as unknown as { kgKeys: typeof state }).kgKeys = state;
+            const sample = () => {
+                if (!state.running) return;
+                const current = document.querySelector('[data-viewer-photo]')?.getAttribute('data-viewer-photo');
+                const element = current === second ? document.querySelector('[data-viewer-current]') : document.querySelector('[data-viewer-peek="previous"] > *');
+                const box = current === second || document.querySelector('[data-viewer-peek="previous"]') ? element?.getBoundingClientRect() : undefined;
+                if (box) log.push({ x: box.x + box.width / 2, as: current === second ? 'photograph' : 'neighbor' });
+                requestAnimationFrame(sample);
+            };
+            requestAnimationFrame(sample);
+        }, P[1]);
+        await page.keyboard.press('ArrowRight');
+        await page.waitForTimeout(60);
+        await page.keyboard.press('ArrowRight');
+        await expectStill(page, P[2], 3);
+        await expect
+            .poll(() => stage(page).locator('[data-viewer-track]').evaluate((element) => getComputedStyle(element).transform), { timeout: 15_000 })
+            .toBe('none');
+        const log = await page.evaluate(() => {
+            const state = (window as unknown as { kgKeys: { log: { x: number; as: string }[]; running: boolean } }).kgKeys;
+            state.running = false;
+            return state.log;
+        });
+        // Where a photograph's center rests: 3's now, as 2's would have.
+        const rest = (await stage(page).locator('[data-viewer-current]').boundingBox())!;
+        const center = rest.x + rest.width / 2;
+        const asPhotograph = log.filter((entry) => entry.as === 'photograph');
+        expect(asPhotograph.length, 'frames of photograph 2 sliding in').toBeGreaterThan(0);
+        expect(log.some((entry) => entry.as === 'neighbor'), 'frames of photograph 2 beside 3').toBe(true);
+        // The case: photograph 3's page landed while 2 was still a good way from its rest.
+        expect(Math.abs(asPhotograph.at(-1)!.x - center)).toBeGreaterThan(100);
+        // At a tenth of the speed a frame moves it a few px. A slide started over from a stage away would jump it
+        // most of a stage in one frame.
+        for (let n = 1; n < log.length; n += 1) {
+            expect(Math.abs(log[n].x - log[n - 1].x), `frame ${n}, ${log[n - 1].as} to ${log[n].as}`).toBeLessThan(pitch * 0.15);
+        }
+        // It leaves to the left, as 3 comes in: never back to the right.
+        for (let n = 1; n < log.length; n += 1) expect(log[n].x).toBeLessThanOrEqual(log[n - 1].x + 1);
+    });
+});
+
 test.describe('double-tap', () => {
     // #9c: the stage's touch-action turns the browser's double-tap zoom off, so the Viewer reads two taps on the
     // photograph as its own Zoom (components/viewer/doubleTap.ts has the thresholds, both sides of each).

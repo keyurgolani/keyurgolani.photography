@@ -36,14 +36,19 @@ function whenIdle(task: () => void): () => void {
     return () => window.clearTimeout(handle);
 }
 
+/** The endpoint's answer when the revision asked for isn't the one it serves any more. */
+const REVISED = 'revised';
+
 /**
- * A neighbor's peek from 9a's endpoint, in the revision this photograph came from, or null when it can't be had
- * (an error, another revision served, a network failure): the photograph then follows the finger with nothing beside it.
+ * A neighbor's peek from 9a's endpoint, in the revision this photograph came from, or null when it can't be had (an
+ * error, a network failure): the photograph then follows the finger with nothing beside it. REVISED when the endpoint
+ * serves another revision (its 409), so this photograph's page is from the one before.
  */
-async function fetchPeek(slug: string, photoId: string, revisionId: string): Promise<ViewerPeek | null> {
+async function fetchPeek(slug: string, photoId: string, revisionId: string): Promise<ViewerPeek | typeof REVISED | null> {
     try {
         const path = `/api/catalog/series/${encodeURIComponent(slug)}/photos/${encodeURIComponent(photoId)}?revision=${encodeURIComponent(revisionId)}`;
         const response = await fetch(path, { headers: { accept: 'application/json' } });
+        if (response.status === 409) return REVISED;
         if (!response.ok) return null;
         const body: unknown = await response.json();
         if (typeof body !== 'object' || body === null || (body as { photoId?: unknown }).photoId !== photoId) return null;
@@ -85,12 +90,13 @@ async function fetchPeek(slug: string, photoId: string, revisionId: string): Pro
  * sets come from the peek endpoint then, never on a first load, #6), and a
  * move settles in: from the lift for a swipe, and from its arrival for
  * Previous, Next, and the arrow keys, so every move looks the same. The
- * header and the reading area stay put. The counter and the accent rules
- * change once, at the lift (or the press). The words under the photograph
+ * header and the reading area stay put. The counter, the accent rules and
+ * the arrows' ends change once, at the lift (or the press). The words under the photograph
  * stay as they are until the photograph's page arrives, and change then with
  * a 200 ms fade, so the reading area is never empty. Once the Viewer is idle
  * it prefetches the neighbors' pages, so a move's page usually arrives
- * inside its settle. While a move is on its way, no swipe can start, and the
+ * inside its settle, and once it learns of a publish it drops those pages
+ * (dropStalePages). While a move is on its way, no swipe can start, and the
  * latest press of a control or a key is remembered and runs once the
  * photograph arrives. Under reduced motion nothing slides or fades: the next
  * photograph replaces this one in place when it arrives, and the header and
@@ -118,6 +124,12 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
     /** Set once a finger goes down on the photograph: from then on, each photograph's neighbors are asked for. */
     const engaged = useRef(false);
     const requested = useRef(new Set<string>());
+    /** The revision the last photograph shown came from. */
+    const shownRevision = useRef<string | null>(null);
+    /** A revision the shell has learned isn't served any more, until it drops the pages it prefetched (dropStalePages). */
+    const outdated = useRef<string | null>(null);
+    /** The revision the shell last dropped its prefetched pages for, so it does that once per publish. */
+    const refreshedFrom = useRef<string | null>(null);
 
     const report = useCallback((state: ViewerChromeState) => {
         setChrome((current) => (sameChrome(current, state) ? current : state));
@@ -167,20 +179,40 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         [chrome, router, reduced, dropGesture],
     );
 
+    /**
+     * After a publish: Next keeps the neighbors' prefetched pages for minutes, by URL alone, so a move could land on the
+     * revision before. A refresh drops them, and renders this photograph again in the revision served. Never while a
+     * move is on its way: the arrival effect runs it once that photograph is in.
+     */
+    const dropStalePages = useCallback(() => {
+        const revision = outdated.current;
+        if (revision === null || pendingRef.current !== null) return;
+        outdated.current = null;
+        if (refreshedFrom.current === revision) return;
+        refreshedFrom.current = revision;
+        router.refresh();
+    }, [router]);
+
     /** Ask for the current photograph's neighbors, once each, if a finger has gone down on the photograph. */
-    const askForPeeks = useCallback((state: ViewerChromeState | null) => {
-        if (state === null || !engaged.current) return;
-        for (const photoId of [state.previousPhotoId, state.nextPhotoId]) {
-            if (photoId === null) continue;
-            // By revision too: after a publish, a neighbor's set from the revision before isn't this one's.
-            const key = peekKey(state.revisionId, photoId);
-            if (requested.current.has(key)) continue;
-            requested.current.add(key);
-            void fetchPeek(state.seriesSlug, photoId, state.revisionId).then((peek) => {
-                if (peek !== null) setPeeks((current) => (current.has(key) ? current : new Map(current).set(key, peek)));
-            });
-        }
-    }, []);
+    const askForPeeks = useCallback(
+        (state: ViewerChromeState | null) => {
+            if (state === null || !engaged.current) return;
+            for (const photoId of [state.previousPhotoId, state.nextPhotoId]) {
+                if (photoId === null) continue;
+                // By revision too: after a publish, a neighbor's set from the revision before isn't this one's.
+                const key = peekKey(state.revisionId, photoId);
+                if (requested.current.has(key)) continue;
+                requested.current.add(key);
+                void fetchPeek(state.seriesSlug, photoId, state.revisionId).then((peek) => {
+                    if (peek === REVISED) {
+                        outdated.current = state.revisionId;
+                        dropStalePages();
+                    } else if (peek !== null) setPeeks((current) => (current.has(key) ? current : new Map(current).set(key, peek)));
+                });
+            }
+        },
+        [dropStalePages],
+    );
 
     // A new photograph: announce its position, and if focus was inside the photograph that left, put it on the control for the direction moved.
     // Focus that was on the page itself (a swipe, or an arrow with nothing focused) stays there: a move never moves keyboard focus.
@@ -285,6 +317,16 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         };
     }, [zoomed, step, reduced, chrome, engage]);
 
+    // A photograph from another revision than the last one shown means a publish: drop the pages prefetched before it.
+    // So does a peek's 409 that came while a move was on its way. Before the press below, which may start a move.
+    useEffect(() => {
+        if (chrome === null) return;
+        const before = shownRevision.current;
+        shownRevision.current = chrome.revisionId;
+        if (before !== null && before !== chrome.revisionId) outdated.current = before;
+        dropStalePages();
+    }, [chrome, dropStalePages]);
+
     // The press remembered while the last move was on its way runs once its photograph is in, with that one's
     // neighbors. After the effect above, so it runs with this photograph's step.
     useEffect(() => {
@@ -329,12 +371,22 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         () => ({ mode, claimed: chrome !== null, zoomed, headingId, report, peeks: reduced ? NO_PEEKS : peeks }),
         [mode, chrome, zoomed, headingId, report, reduced, peeks],
     );
-    // The counter and the accents show a move once it's decided, before its photograph arrives.
+    // The counter, the accents and the arrows' ends show a move once it's decided, before its photograph arrives.
     const shown = useMemo<ViewerChromeState | null>(() => {
         if (chrome === null || pending === null || pending.from !== chrome.photoId) return chrome;
         const to = pending.direction === 'next' ? chrome.nextPhotoId : chrome.previousPhotoId;
         const peek = to === null ? undefined : peeks.get(peekKey(chrome.revisionId, to));
-        return { ...chrome, position: chrome.position + (pending.direction === 'next' ? 1 : -1), accent: peek === undefined ? chrome.accent : peek.accent };
+        const position = chrome.position + (pending.direction === 'next' ? 1 : -1);
+        // The arrows read only whether an href is there, and a press now is remembered (step), so the arriving
+        // photograph's place says which ends to show: its own neighbors' hrefs come with its page.
+        const toward = pending.direction === 'next' ? chrome.nextHref : chrome.previousHref;
+        return {
+            ...chrome,
+            position,
+            accent: peek === undefined ? chrome.accent : peek.accent,
+            previousHref: position > 1 ? toward : null,
+            nextHref: position < chrome.total ? toward : null,
+        };
     }, [chrome, pending, peeks]);
     const surface = (shown?.accent ? { '--cc-accent': shown.accent } : undefined) as CSSProperties | undefined;
 

@@ -1175,12 +1175,7 @@ describe('ViewerShell, the photograph follows the finger (9a)', () => {
     });
 
     it('keeps the peeks by revision: after a publish, a neighbor is asked for again in the new one', async () => {
-        const revised = (n: number) => {
-            const viewer = { ...model(n, true, true), catalogRevision: `rev_${'b'.repeat(64)}` };
-            return (
-                <StoryViewer key={viewer.photo.id} viewer={viewer} closeHref="/work/fixture" previousHref={photoHref(n - 1)} nextHref={n < 3 ? photoHref(n + 1) : null} pendingCopy={null} />
-            );
-        };
+        const revised = republished;
         const view = renderWithImages('page', 2);
         pointer(stage(), 'pointerdown');
         pointer(stage(), 'pointerup');
@@ -1192,6 +1187,164 @@ describe('ViewerShell, the photograph follows the finger (9a)', () => {
         expect(fetchMock).toHaveBeenCalledTimes(3);
         expect(fetchMock.mock.calls[2][0]).toBe(`/api/catalog/series/fixture/photos/${id(2)}?revision=rev_${'b'.repeat(64)}`);
         expect(peeks()).toEqual(['previous']);
+    });
+
+    /** Photo n in a revision published after the fixture's. */
+    const republished = (n: number) => {
+        const viewer = { ...model(n, true, true), catalogRevision: `rev_${'b'.repeat(64)}` };
+        return (
+            <StoryViewer key={viewer.photo.id} viewer={viewer} closeHref="/work/fixture" previousHref={n > 1 ? photoHref(n - 1) : null} nextHref={n < 3 ? photoHref(n + 1) : null} pendingCopy={null} />
+        );
+    };
+
+    it('drops the pages it prefetched when a peek says another revision is served, once for both neighbors', async () => {
+        // The fixture's revision is the one before: the endpoint serves the republished one.
+        const served = fetchMock.getMockImplementation()!;
+        fetchMock.mockImplementation(async (url: string) => (url.includes(`rev_${'a'.repeat(64)}`) ? new Response('{}', { status: 409 }) : served(url)));
+        const view = renderWithImages('page', 2);
+        await settle();
+        expect(router.refresh).not.toHaveBeenCalled();
+        pointer(stage(), 'pointerdown');
+        pointer(stage(), 'pointerup');
+        await settle();
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(router.refresh).toHaveBeenCalledOnce();
+        expect(peeks()).toEqual([]);
+        // The refresh renders the same photograph in the revision served, which asks for nothing more to be dropped,
+        // and its neighbors peek in from that one.
+        view.rerender(<ViewerShell mode="page">{republished(2)}</ViewerShell>);
+        await settle();
+        expect(router.refresh).toHaveBeenCalledOnce();
+        expect(fetchMock).toHaveBeenCalledTimes(4);
+        expect(peeks()).toEqual(['previous', 'next']);
+    });
+
+    it('drops the pages it prefetched when a move lands in another revision, and not on a move in the same one', async () => {
+        const view = renderWithImages('page', 1);
+        fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+        view.rerender(<ViewerShell mode="page">{photo(2, true)}</ViewerShell>);
+        await settle();
+        expect(router.refresh).not.toHaveBeenCalled();
+        fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+        view.rerender(<ViewerShell mode="page">{republished(3)}</ViewerShell>);
+        await settle();
+        expect(router.refresh).toHaveBeenCalledOnce();
+        fireEvent.keyDown(document.body, { key: 'ArrowLeft' });
+        view.rerender(<ViewerShell mode="page">{republished(2)}</ViewerShell>);
+        await settle();
+        expect(router.refresh).toHaveBeenCalledOnce();
+    });
+
+    it('waits for a move on its way to land before it drops the prefetched pages for a peek\'s 409', async () => {
+        let answer: (response: Response) => void = () => undefined;
+        fetchMock.mockImplementation(() => new Promise<Response>((resolve) => (answer = resolve)));
+        const { move } = renderWithImages('page', 3);
+        pointer(stage(), 'pointerdown');
+        pointer(stage(), 'pointerup');
+        expect(fetchMock).toHaveBeenCalledOnce();
+        fireEvent.keyDown(document.body, { key: 'ArrowLeft' });
+        answer(new Response('{}', { status: 409 }));
+        await settle();
+        expect(router.refresh).not.toHaveBeenCalled();
+        move(2);
+        await settle();
+        expect(router.refresh).toHaveBeenCalledOnce();
+    });
+
+    it('shows the arriving photograph\'s ends on the arrows while its page is on its way, as the counter does', () => {
+        const { move } = renderWithImages('page', 1);
+        const previous = () => step('Previous photograph');
+        const next = () => step('Next photograph');
+        expect(previous()).toHaveAttribute('aria-disabled', 'true');
+        fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+        expect(counter()).toBe('02 / 03');
+        expect(previous()).not.toHaveAttribute('aria-disabled');
+        expect(next()).not.toHaveAttribute('aria-disabled');
+        move(2);
+        fireEvent.click(next());
+        expect(counter()).toBe('03 / 03');
+        expect(next()).toHaveAttribute('aria-disabled', 'true');
+        expect(previous()).not.toHaveAttribute('aria-disabled');
+        // A press of the end it shows is remembered like any other, and announces the end once the photograph is in.
+        fireEvent.click(next());
+        move(3);
+        expect(next()).toHaveAttribute('aria-disabled', 'true');
+        expect(announcer()).toHaveTextContent('Last photograph in Fixture series.');
+        expect(router.replace).toHaveBeenCalledTimes(2);
+    });
+
+    describe('a move by a control or a key slides in', () => {
+        const slides: { target: Element; keyframes: Keyframe[]; options: KeyframeAnimationOptions; progress: number | null }[] = [];
+        beforeEach(() => {
+            slides.length = 0;
+            Object.assign(Element.prototype, {
+                animate(this: Element, keyframes: Keyframe[], options: KeyframeAnimationOptions) {
+                    const entry = { target: this, keyframes, options, progress: 0 as number | null };
+                    if ('transform' in keyframes[0]) slides.push(entry);
+                    return { currentTime: 0, onfinish: null, cancel: vi.fn(), effect: { getComputedTiming: () => ({ progress: entry.progress }) } } as unknown as Animation;
+                },
+            });
+        });
+        afterEach(() => {
+            delete (Element.prototype as Partial<Element>).animate;
+        });
+        const parse = (easing: string | undefined) => (/^cubic-bezier\(([^)]+)\)$/.exec(easing ?? '')?.[1] ?? '').split(',').map(Number);
+        const from = (slide: (typeof slides)[number]) => Number(/\((-?[\d.]+)px/.exec(String(slide.keyframes[0].transform))?.[1]);
+        /** One stage and the gap: the 390 px stage and the 16 px between it and a neighbor. */
+        const PITCH = 406;
+
+        it('from the side it comes from, opening at the mockup\'s 1.5 slope and easing to its stop in 280 ms', () => {
+            for (const [press, to, side] of [
+                [() => fireEvent.keyDown(document.body, { key: 'ArrowRight' }), 3, 1],
+                [() => fireEvent.click(step('Next photograph')), 3, 1],
+                [() => fireEvent.keyDown(document.body, { key: 'ArrowLeft' }), 1, -1],
+                [() => fireEvent.click(step('Previous photograph')), 1, -1],
+            ] as const) {
+                const { move, unmount } = renderWithImages('page', 2);
+                slides.length = 0;
+                press();
+                move(to);
+                expect(slides).toHaveLength(1);
+                const [slide] = slides;
+                expect(slide.target).toBe(track());
+                expect(slide.keyframes).toEqual([{ transform: `translate3d(${side * PITCH}px, 0, 0)` }, { transform: 'translate3d(0px, 0, 0)' }]);
+                expect(slide.options.duration).toBe(280);
+                const [x1, y1, x2, y2] = parse(slide.options.easing as string);
+                expect(y1 / x1).toBeCloseTo(1.5, 2);
+                expect([x2, y2]).toEqual([0.36, 1]);
+                unmount();
+            }
+        });
+
+        it('from where the photograph it leaves is, when that one is still sliding in, so a remembered press never jumps', () => {
+            const { move } = renderWithImages('page', 1);
+            fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+            fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+            move(2);
+            // Photograph 2 slides in, and the remembered press is on its way to 3.
+            expect(router.replace).toHaveBeenLastCalledWith(photoHref(3), { scroll: false });
+            const second = slides.at(-1)!;
+            expect(from(second)).toBe(PITCH);
+            // A quarter of the way in, by its curve: photograph 2 still sits most of a stage to the right when 3's page lands.
+            second.progress = 0.25;
+            move(3);
+            const third = slides.at(-1)!;
+            // Photograph 2 sits a stage left of 3 on the new track, so the track starts a stage right of where 2 was.
+            expect(from(third)).toBeCloseTo(0.75 * PITCH + PITCH, 6);
+            expect(third.keyframes[1]).toEqual({ transform: 'translate3d(0px, 0, 0)' });
+            const [x1, y1] = parse(third.options.easing as string);
+            expect(y1 / x1).toBeCloseTo(1.5, 2);
+            // A press back the other way while 3 is still sliding in starts a stage left of where 3 is.
+            third.progress = 0.5;
+            fireEvent.keyDown(document.body, { key: 'ArrowLeft' });
+            move(2);
+            expect(from(slides.at(-1)!)).toBeCloseTo(0.5 * from(third) - PITCH, 6);
+            // One that had landed starts a whole stage over, as from rest.
+            slides.at(-1)!.progress = null;
+            fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+            move(3);
+            expect(from(slides.at(-1)!)).toBe(PITCH);
+        });
     });
 
     describe('the words under the photograph', () => {

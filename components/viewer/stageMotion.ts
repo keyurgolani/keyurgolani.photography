@@ -118,7 +118,9 @@ export class StageMotion {
     /**
      * The page for a move arrived: its track holds the photograph that was arriving at its rest. A settle into that move
      * goes on on the new track, one stage over, at the same point of the same curve. A move that didn't settle in from
-     * a drag (Previous, Next, an arrow key) slides in now from the side it comes from.
+     * a drag (Previous, Next, an arrow key) slides in now from the side it comes from, or, when the photograph it
+     * leaves was still sliding (a press remembered during the last move, or one soon after it landed), from where that
+     * photograph is, so nothing jumps.
      */
     arrive(step: ViewerStep | null): void {
         const element = this.track();
@@ -140,12 +142,14 @@ export class StageMotion {
             this.animate(element, running.from + shift, running.to + shift, null, running.duration, running.easing, Number(time));
             return;
         }
+        // The photograph leaving sits one stage over on the new track: wherever a slide left it, or at its rest.
+        const leaving = running === null ? 0 : this.offsetNow(running);
         this.stop();
         if (step === null) {
             this.rest(element);
             return;
         }
-        const from = step === 'next' ? this.pitch() : -this.pitch();
+        const from = leaving + (step === 'next' ? this.pitch() : -this.pitch());
         this.settle(element, from, 0, null, 0, 'commit', CONTROL_SLOPE);
     }
 
@@ -269,6 +273,16 @@ export class StageMotion {
             running.animation.onfinish = null;
             running.animation.cancel();
         }
+    }
+
+    /**
+     * Where a slide has its track now, from its own clock: the track it moves may have left the page already, with the
+     * photograph it showed, which has no computed style then.
+     */
+    private offsetNow(running: Running): number {
+        const progress = running.animation?.effect?.getComputedTiming().progress;
+        if (progress === null || progress === undefined) return running.to;
+        return running.from + (running.to - running.from) * progress;
     }
 
     private offsetOf(element: HTMLElement): number {
