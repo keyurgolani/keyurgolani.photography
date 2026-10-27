@@ -60,11 +60,25 @@ export const ThemeProvider = ({children}: { children: ReactNode }) => {
     );
 };
 
-export const useTheme = (): ThemeContextType => {
+/**
+ * The toggle alone, from the context, with no subscription: a caller that never reads the theme never re-renders
+ * when it changes, or after hydration.
+ */
+export const useThemeToggle = (): (() => void) => {
     const context = useContext(ThemeContext);
-    const theme = useSyncExternalStore(subscribe, readTheme, serverTheme);
     if (!context) {
-        throw new Error('useTheme must be used within a ThemeProvider');
+        throw new Error('useThemeToggle must be used within a ThemeProvider');
     }
-    return {theme, toggleTheme: context.toggleTheme};
+    return context.toggleTheme;
+};
+
+/**
+ * The theme and the toggle. The caller subscribes to the theme, so in the light theme it renders again right after
+ * hydration. Keep it to leaves: a caller must not wrap streamed content (a Suspense boundary or children that stream
+ * in), since that re-render would make React render the boundary again on the client instead of hydrating it.
+ */
+export const useTheme = (): ThemeContextType => {
+    const toggle = useThemeToggle();
+    const theme = useSyncExternalStore(subscribe, readTheme, serverTheme);
+    return {theme, toggleTheme: toggle};
 };

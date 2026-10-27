@@ -235,11 +235,13 @@ describe('the detail', () => {
         expect(screen.getByRole('heading', { level: 2, name: 'harbor-1.jpg' })).toBeInTheDocument();
         expect(screen.getByText('In trips, captured 1 June 2024')).toBeInTheDocument();
         const top = screen.getByRole('heading', { level: 2, name: 'harbor-1.jpg' }).closest('header')!.nextElementSibling as HTMLElement;
-        // The whole value is the text, so a copy takes all of it; CSS shortens it in the middle, and its title shows it whole.
+        // The whole value is one text node, so a copy takes it whole, with no line break inside.
         for (const [label, full] of [['Stable photo identity', P(9)], ['Asset revision', REV]]) {
             const cell = within(top).getByText(label).nextElementSibling as HTMLElement;
-            expect(cell).toHaveTextContent(full);
-            expect(cell.querySelector(`[title="${full}"]`)).not.toBeNull();
+            expect(cell.childNodes).toHaveLength(1);
+            expect(cell.firstChild?.nodeType).toBe(Node.TEXT_NODE);
+            expect(cell.textContent).toBe(full);
+            expect(cell).not.toHaveAttribute('title');
         }
         expect(within(top).getByText('System response')).toBeInTheDocument();
         expect(screen.getByText('Draft only')).toBeInTheDocument();
@@ -258,7 +260,7 @@ describe('the detail', () => {
         const observed = within(facts).getByText('Observed').nextElementSibling!.querySelector('time')!;
         expect(observed).toHaveTextContent('1 February 2026, 00:00 UTC');
         expect(observed).toHaveAttribute('dateTime', '2026-02-01T00:00:00.000Z');
-        expect(observed).toHaveAttribute('title', '2026-02-01T00:00:00.000Z');
+        expect(observed).not.toHaveAttribute('title');
         expect(screen.queryByText(/\d{4}-\d{2}-\d{2}T/)).toBeNull();
         expect(screen.getByRole('heading', { name: 'Reviewable suggestion' })).toBeInTheDocument();
         expect(screen.getByText(/high confidence, by rules@abc/)).toBeInTheDocument();
@@ -520,7 +522,7 @@ describe('the forms', () => {
         expect(field).toHaveAttribute('rows', '3');
         // Enter adds no line break, and a pasted one becomes a space.
         expect(fireEvent.keyDown(field, { key: 'Enter' })).toBe(false);
-        fireEvent.change(field, { target: { value: 'Harbor at dawn,\nfrom the pier.\r\nFog.' } });
+        fireEvent.change(field, { target: { value: 'Harbor at dawn,\nfrom the pier. \r\n\r\n  Fog.' } });
         expect(field).toHaveValue('Harbor at dawn, from the pier. Fog.');
     });
 

@@ -2,7 +2,7 @@
 
 import { Moon, Sun } from 'lucide-react';
 import { useId } from 'react';
-import { useTheme } from './ThemeContext';
+import { useThemeToggle } from './ThemeContext';
 import styles from './ThemeToggle.module.css';
 
 /**
@@ -24,7 +24,7 @@ export const THEME_TOGGLE_DESCRIPTION = "Changes only Home's opening screen and 
  * a `hidden` node, so it's read with the button and never shows.
  */
 export default function ThemeToggle() {
-  const { toggleTheme } = useTheme();
+  const toggleTheme = useThemeToggle();
   const descriptionId = useId();
   return (
     <>

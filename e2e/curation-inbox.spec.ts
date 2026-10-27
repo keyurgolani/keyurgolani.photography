@@ -152,6 +152,20 @@ test('lists what the watcher opened, and shows the selected photograph from the 
     // Three lines at least, for a sentence.
     const description = page.getByRole('textbox', { name: 'Draft description' });
     expect((await description.boundingBox())!.height).toBeGreaterThanOrEqual(3 * 16);
+    // Each ID shows once, in full, and copies whole: the selected text is the value, on one line.
+    for (const [label, value] of [['Stable photo identity', FRESH.approve], ['Asset revision', data().revisionOf(FRESH.approve)]]) {
+        const cell = page.locator('#item dt').filter({ hasText: new RegExp(`^${label}$`) }).locator('xpath=following-sibling::dd[1]');
+        await expect(cell).toHaveCount(1);
+        const copied = await cell.evaluate((dd) => {
+            const range = document.createRange();
+            range.selectNodeContents(dd);
+            const selection = window.getSelection()!;
+            selection.removeAllRanges();
+            selection.addRange(range);
+            return selection.toString();
+        });
+        expect(copied).toBe(value);
+    }
 });
 
 test('approves a new photograph into the draft with the typed description, and publishes nothing', async ({ page }) => {

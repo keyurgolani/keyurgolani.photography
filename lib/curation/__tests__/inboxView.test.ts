@@ -262,7 +262,13 @@ describe('a processing failure', () => {
             expect(notice.next).toMatch(/dismiss this one with a reason/);
             expect(notice.next).toMatch(/Decide later keeps it here meanwhile\.$/);
         }
-        expect(failed('undecodable', { can: { approve: false, edit: true, defer: true, dismiss: true, retry: true, reopen: false } })!.next).toMatch(/Then choose Retry processing\./);
+        // Retry or a good copy, never both: a copy is a new revision, which Retry would not read.
+        expect(failed('undecodable', { can: { approve: false, edit: true, defer: true, dismiss: true, retry: true, reopen: false } })!.next).toBe(
+            "If the file opens, choose Retry processing. If it doesn't, put a good copy in its place in the library, which the watcher picks up as a new revision, then dismiss this one with a reason. Decide later keeps it here meanwhile.",
+        );
+        expect(failed('undecodable')!.next).not.toMatch(/Retry/);
+        // The failure names no other file, so neither does the step.
+        expect(failed('digest-collision')!.next).toMatch(/^Find the other copy in the library and keep the one you mean/);
         expect(failed(null)!.reason).toBe("The watcher couldn't process the file.");
     });
 
@@ -280,11 +286,11 @@ describe('a processing failure', () => {
 });
 
 describe('the published statement note', () => {
-    it('belongs only to a photograph the active revision holds', () => {
+    it('belongs to a photograph the active revision holds, or may, when the holders can\'t be read', () => {
         expect(hasPublishedStatement({ photoId: P(1), references: [{ kind: 'revision', id: REV }, { kind: 'series', id: 'ser_harbor' }] })).toBe(true);
         expect(hasPublishedStatement({ photoId: P(1), references: [{ kind: 'series', id: 'ser_harbor' }] })).toBe(false);
         expect(hasPublishedStatement({ photoId: P(1), references: [] })).toBe(false);
-        expect(hasPublishedStatement({ photoId: P(1), references: null })).toBe(false);
+        expect(hasPublishedStatement({ photoId: P(1), references: null })).toBe(true);
         expect(hasPublishedStatement({ photoId: null, references: [] })).toBe(false);
     });
 });

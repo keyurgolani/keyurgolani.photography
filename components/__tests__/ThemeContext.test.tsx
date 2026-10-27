@@ -1,8 +1,9 @@
-import { Profiler } from 'react';
+import { Profiler, Suspense } from 'react';
+import { hydrateRoot } from 'react-dom/client';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ThemeProvider, useTheme } from '../ThemeContext';
+import { ThemeProvider, useTheme, useThemeToggle } from '../ThemeContext';
 
 function Probe() {
   const { theme, toggleTheme } = useTheme();
@@ -67,6 +68,76 @@ describe('ThemeProvider', () => {
     );
     expect(html.dataset.hydrated).toBe('true');
     expect(commits).toEqual(['mount']);
+  });
+
+  describe('hydrating a stored light theme', () => {
+    function Toggle() {
+      const toggle = useThemeToggle();
+      return (
+        <button type="button" onClick={toggle}>
+          toggle
+        </button>
+      );
+    }
+
+    async function hydrate(tree: React.ReactElement) {
+      const container = document.createElement('div');
+      container.innerHTML = renderToString(tree);
+      document.body.appendChild(container);
+      // The inline script put the stored light theme on <html> before React ran.
+      html.setAttribute('data-theme', 'light');
+      const recovered: unknown[] = [];
+      let root: ReturnType<typeof hydrateRoot> | undefined;
+      const streamed = container.querySelector('[data-streamed]');
+      await act(async () => {
+        root = hydrateRoot(container, tree, { onRecoverableError: (error) => recovered.push(error) });
+      });
+      return {
+        container,
+        recovered,
+        streamed,
+        done: () => {
+          act(() => root?.unmount());
+          container.remove();
+        },
+      };
+    }
+
+    it('takes one commit, so the provider never changes its value under the page', async () => {
+      const commits: string[] = [];
+      const { recovered, done } = await hydrate(
+        <Profiler id="theme" onRender={(_id, phase) => commits.push(phase)}>
+          <ThemeProvider>
+            <Toggle />
+          </ThemeProvider>
+        </Profiler>,
+      );
+      try {
+        expect(html.dataset.hydrated).toBe('true');
+        expect(recovered).toEqual([]);
+        expect(commits).toEqual(['mount']);
+      } finally {
+        done();
+      }
+    });
+
+    it('hydrates a Suspense boundary under it in place, with nothing to recover from', async () => {
+      const { container, recovered, streamed, done } = await hydrate(
+        <ThemeProvider>
+          <Toggle />
+          <Suspense fallback={<p>loading</p>}>
+            <p data-streamed="">streamed</p>
+          </Suspense>
+        </ThemeProvider>,
+      );
+      try {
+        expect(recovered).toEqual([]);
+        // The server's node, kept: the boundary was hydrated, not rendered again on the client.
+        expect(container.querySelector('[data-streamed]')).toBe(streamed);
+      } finally {
+        done();
+      }
+    });
   });
 
   it('marks <html> hydrated once its children have committed', () => {

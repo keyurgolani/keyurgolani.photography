@@ -458,22 +458,9 @@
   overflow-wrap: anywhere;
 }
 
-/* An ID or a hash on one line: the head gives way to an ellipsis, the last four characters stay. */
-.middle {
-  display: flex;
-  max-width: 100%;
-  min-width: 0;
-  white-space: nowrap;
-}
-
-.middle > span:first-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.middle > span + span {
-  flex: none;
+/* An ID or a hash is one run of text that fills each line and wraps anywhere, so `sha256-` never sits alone and a copy takes it whole. */
+.facts dd.mono {
+  word-break: break-all;
 }
 
 .box {
@@ -537,7 +524,7 @@ textarea.description {
   min-height: calc(3lh + 1rem + 2px);
   field-sizing: content;
   resize: none;
-  overflow: hidden;
+  overflow-y: auto;
 }
 
 .check {

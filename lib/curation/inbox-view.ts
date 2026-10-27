@@ -474,12 +474,14 @@ export function failureNotice(detail: Pick<InboxDetail, 'type' | 'failure' | 'fa
         case 'unsupported-format':
             return { reason, next: `The watcher reads JPEG, PNG and WebP. Export the photograph as one of those into the library, and it shows up here as a new photograph. Then dismiss this one with a reason.${keep}` };
         case 'digest-collision':
-            return { reason, next: `Check which of the two files is the photograph you mean, and take the other out of the library, or dismiss this one with a reason.${keep}` };
+            // The failure doesn't record the other file, so the step can't name it.
+            return { reason, next: `Find the other copy in the library and keep the one you mean, or dismiss this one with a reason.${keep}` };
         case 'undecodable':
             return {
                 reason,
+                // Two ways out, never both: Retry reads this revision again, and a good copy is a new revision the watcher picks up by itself.
                 next: detail.can.retry
-                    ? `Check that the file opens, and put a good copy in its place in the library. Then choose Retry processing.${keep}`
+                    ? `If the file opens, choose Retry processing. If it doesn't, put a good copy in its place in the library, which the watcher picks up as a new revision, then dismiss this one with a reason.${keep}`
                     : `Check that the file opens, and put a good copy in its place in the library, or dismiss this one with a reason.${keep}`,
             };
         default:
@@ -489,11 +491,12 @@ export function failureNotice(detail: Pick<InboxDetail, 'type' | 'failure' | 'fa
 
 /**
  * Whether the item's photograph has a published statement to keep: the
- * active revision holds it. Only then does the page say the statement
- * remains unchanged; a new photograph or a file with no photo ID has none.
+ * active revision holds it, or the holders can't be read, so it may. Only
+ * then does the page say the statement remains unchanged; a new photograph
+ * nothing holds, or a file with no photo ID, has none.
  */
 export function hasPublishedStatement(detail: Pick<InboxDetail, 'photoId' | 'references'>): boolean {
-    return detail.photoId !== null && (detail.references?.some((ref) => ref.kind === 'revision') ?? false);
+    return detail.photoId !== null && (detail.references?.some((ref) => ref.kind === 'revision') ?? true);
 }
 
 const visibilityNote = (option: SeriesOption | undefined) => (option && option.visibility !== 'published' ? ` (${option.visibility})` : '');

@@ -25,35 +25,15 @@ type ReadyView = Extract<InboxView, { state: 'ready' }>;
 interface FactRow {
     label: string;
     value: ReactNode;
-    /** An ID or a hash, set in the mono face and shortened in the middle to fit. */
+    /** An ID or a hash, set in the mono face as one run of text that wraps anywhere, so a copy takes it whole. */
     mono?: boolean;
     /** A date the value says in words, as `<time>` takes it. */
     dateTime?: string;
 }
 
-/**
- * An ID or a hash in full, shortened in the middle when the cell is too
- * narrow: the head gives way to an ellipsis and the last four characters
- * stay. The text is the whole value, so selecting and copying it takes all of
- * it, and its title shows it whole.
- */
-function MiddleEllipsis({ value }: { value: string }) {
-    const tail = value.length > 12 ? value.slice(-4) : '';
-    return (
-        <span className={styles.middle} title={value}>
-            <span>{value.slice(0, value.length - tail.length)}</span>
-            {tail ? <span>{tail}</span> : null}
-        </span>
-    );
-}
-
-/** A stored timestamp in the Inbox's words, with the stored value in `dateTime` and as its title. */
+/** A stored timestamp in the Inbox's words, with the stored value in `dateTime`. */
 function When({ at }: { at: string }) {
-    return (
-        <time dateTime={at} title={at}>
-            {humanTime(at)}
-        </time>
-    );
+    return <time dateTime={at}>{humanTime(at)}</time>;
 }
 
 function Facts({ rows }: { rows: FactRow[] }) {
@@ -63,7 +43,7 @@ function Facts({ rows }: { rows: FactRow[] }) {
                 <div key={row.label}>
                     <dt>{row.label}</dt>
                     <dd className={row.mono ? styles.mono : undefined}>
-                        {row.mono && typeof row.value === 'string' ? <MiddleEllipsis value={row.value} /> : row.dateTime ? <time dateTime={row.dateTime}>{row.value}</time> : row.value}
+                        {row.dateTime ? <time dateTime={row.dateTime}>{row.value}</time> : row.value}
                     </dd>
                 </div>
             ))}
@@ -186,9 +166,9 @@ function BackToInbox({ itemId }: { itemId: string | null }) {
 
 /**
  * The detail side of the Inbox: what identifies the photograph first (the
- * photograph, its file name, folder and capture date), then its short IDs,
- * what the system did, the suggestion, and the actions. Every full ID and
- * hash sits in Source facts below.
+ * photograph, its file name, folder and capture date), then its photo ID and
+ * asset revision in full, what the system did, the suggestion, and the
+ * actions. Source facts below repeats neither ID.
  */
 export default function InboxDetailView({ view }: { view: ReadyView }) {
     const detail = view.selected;
@@ -257,7 +237,7 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
                 ) : null}
                 <Facts
                     rows={[
-                        // Each in full, once, shortened in the middle to fit.
+                        // Each in full, once, as one run of text.
                         { label: 'Stable photo identity', value: detail.photoId ?? detail.shortId, mono: detail.photoId !== null },
                         { label: 'Asset revision', value: detail.assetRevision ?? 'None', mono: detail.assetRevision !== null },
                         { label: 'System response', value: systemResponse(detail, labelOf) },

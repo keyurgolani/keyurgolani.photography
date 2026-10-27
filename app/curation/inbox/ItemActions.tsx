@@ -162,12 +162,26 @@ function SuggestionFields({ detail, series, seriesProblem, answer }: Pick<ItemAc
     useEffect(() => {
         if (descriptionError) descriptionRef.current?.focus();
     }, [answerSerial, descriptionError]);
-    // The box grows with what's typed: CSS does it where field-sizing works, and this elsewhere.
+    // The box grows with what's typed: CSS does it where field-sizing works, and this elsewhere, again whenever the
+    // box's width changes or the fonts arrive, since either rewraps the text.
     useEffect(() => {
         const box = descriptionRef.current;
         if (box === null || (typeof CSS !== 'undefined' && CSS.supports?.('field-sizing', 'content'))) return;
-        box.style.height = 'auto';
-        box.style.height = `${box.scrollHeight + box.offsetHeight - box.clientHeight}px`;
+        let width = -1;
+        const fit = () => {
+            box.style.height = 'auto';
+            box.style.height = `${box.scrollHeight + box.offsetHeight - box.clientHeight}px`;
+        };
+        fit();
+        void document.fonts?.ready.then(fit);
+        if (typeof ResizeObserver !== 'function') return;
+        const observer = new ResizeObserver(([entry]) => {
+            if (entry.contentRect.width === width) return;
+            width = entry.contentRect.width;
+            fit();
+        });
+        observer.observe(box);
+        return () => observer.disconnect();
     }, [description]);
     // A position chosen for one series means nothing in another, so a new series starts from its own default.
     const pickSeries = (value: string) => {
@@ -217,7 +231,7 @@ function SuggestionFields({ detail, series, seriesProblem, answer }: Pick<ItemAc
             <label className={styles.label}>
                 Draft description
                 {/* Three lines at least, so it reads as a sentence to write, and it grows. A description can't hold a line
-                    break, as the server stores it, so Enter adds none and a pasted one becomes a space. */}
+                    break, as the server stores it, so Enter adds none and a pasted run of them, with the spaces around it, becomes one space. */}
                 <textarea
                     ref={descriptionRef}
                     rows={3}
@@ -229,7 +243,7 @@ function SuggestionFields({ detail, series, seriesProblem, answer }: Pick<ItemAc
                     onKeyDown={(event) => {
                         if (event.key === 'Enter' && !event.nativeEvent.isComposing) event.preventDefault();
                     }}
-                    onChange={(event) => setDescription(event.target.value.replace(/\r\n|[\r\n]/g, ' '))}
+                    onChange={(event) => setDescription(event.target.value.replace(/[^\S\r\n]*(?:\r\n|[\r\n])+\s*/g, ' '))}
                     aria-invalid={descriptionError ? true : undefined}
                     aria-describedby={descriptionError ? 'description-error description-hint' : 'description-hint'}
                 />
