@@ -426,7 +426,8 @@ test.describe('signed in', () => {
             await page.goto(`${origin()}/curation`);
             await waitForHydration(page);
             await page.getByRole('button', { name: 'Sign out' }).click();
-            await expect(page).toHaveURL(`${origin()}/curation/login`);
+            // #87's logout lands on the login with `?signed-out=1`, so the page can say so.
+            await expect(page).toHaveURL(`${origin()}/curation/login?signed-out=1`);
             for (const path of previewPaths(draftId)) {
                 const response = await page.request.get(`${origin()}${path}`, { maxRedirects: 0 });
                 expect(response.status(), path).toBe(307);
