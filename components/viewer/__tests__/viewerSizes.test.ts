@@ -32,20 +32,29 @@ describe('fitSizes', () => {
         expect(fitSizes(2400, 1600)).toContain('(min-width: 48rem) and (height < 40rem) ');
     });
 
-    it('keeps the lead to what the reading area holds: the title line, the title alone, or nothing with no title', () => {
+    it('keeps one lead for every photograph, whatever its title and caption (9a\'s fixed stage), and a title line that holds it', () => {
         const leads = new Map<string, string>();
+        const blocks = new Map<string, string>();
         css.walkAtRules('media', (rule: AtRule) => {
             rule.walkDecls('--viewer-reading-lead', (decl) => {
                 leads.set((decl.parent as Rule).selector, decl.value.replace(/\s+/g, ' '));
             });
+            rule.walkDecls('min-height', (decl) => {
+                if ((decl.parent as Rule).selector === '.lead') blocks.set(rule.params, decl.value.replace(/\s+/g, ' '));
+            });
         });
-        expect([...leads.keys()]).toEqual(['.viewer', '.viewer:not(:has(.title))', '.viewer:has(.title):not(:has(.caption))']);
-        expect(leads.get('.viewer:not(:has(.title))')).toBe('0px');
-        // The title alone is the whole title line less the caption's first line and the gap above it.
-        const caption = ' + 0.75rem + 1.5 * var(--gah-type-statement)';
-        const full = leads.get('.viewer')!;
-        expect(full).toContain(caption);
-        expect(leads.get('.viewer:has(.title):not(:has(.caption))')).toBe(full.replace(caption, ''));
+        // No rule reads what the reading area holds, so the stage can't change height from one photograph to the next.
+        expect([...leads.keys()]).toEqual(['.viewer']);
+        expect(css.toString()).not.toMatch(/:has\(\.(title|caption)/);
+        expect(leads.get('.viewer')).toBe('calc(var(--viewer-reading-allowance) - (var(--viewer-stage-chrome) - 2 * var(--viewer-stage-pad)))');
+        let allowance = '';
+        css.walkDecls('--viewer-reading-allowance', (decl) => {
+            allowance = decl.value.replace(/\s+/g, ' ');
+        });
+        // The allowance is the title's line and the caption's first one, with the rule, the padding, and the gaps.
+        expect(allowance).toBe('calc(4px + var(--viewer-reading-pad) + 1.2 * var(--viewer-title-size) + 0.75rem + 1.5 * var(--gah-type-statement) + 0.5rem)');
+        // Where the lead applies, the title and the caption sit in a block that tall, so what follows starts under the first screen.
+        expect(blocks).toEqual(new Map([['(min-width: 48rem) and (min-height: 40rem)', 'calc(1.2 * var(--viewer-title-size) + 0.75rem + 1.5 * var(--gah-type-statement))']]));
     });
 
     it('takes off what the CSS box does there: the header and the stage chrome', () => {

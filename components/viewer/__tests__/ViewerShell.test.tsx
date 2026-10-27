@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { PublishedViewerPhoto, ViewerImage } from '@/lib/catalog/projections/viewer';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '@/lib/identity/variants';
 import { mediaUrl } from '@/lib/media/url';
+import { setPrefersReducedMotion } from '@/test/matchMedia';
 import StoryViewer from '../StoryViewer';
 import ViewerShell from '../ViewerShell';
 import type { ViewerMode } from '../viewerContext';
@@ -362,11 +363,12 @@ describe('ViewerShell, as the modal', () => {
     });
 
     it('moves on a swipe in the modal too', () => {
-        renderShell('modal', 2);
+        const { move } = renderShell('modal', 2);
         swipe(stage(), -80);
         expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
+        move(3);
         swipe(stage(), 80);
-        expect(router.replace).toHaveBeenLastCalledWith(photoHref(1), { scroll: false });
+        expect(router.replace).toHaveBeenLastCalledWith(photoHref(2), { scroll: false });
     });
 
     it('closes the dialog when it unmounts without asking for a Back, and leaves no listener', () => {
@@ -842,11 +844,12 @@ describe('ViewerShell, double-tap', () => {
     });
 
     it('never fires on a swipe, and a double-tap never moves: a swipe right after it still moves', () => {
-        renderZoomable();
+        const { move } = renderZoomable();
         // A swipe, then a tap within the settle: no Zoom, and the swipe moved.
         pointer(stage(), 'pointerdown', { t: 1000 });
         pointer(stage(), 'pointerup', { x: 100, t: 1080 });
         expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
+        move(3);
         tap(stage(), 1200);
         tap(stage(), 1300);
         expect(zoom()).toHaveAttribute('aria-pressed', 'false');
@@ -860,8 +863,8 @@ describe('ViewerShell, double-tap', () => {
         expect(zoom()).toHaveAttribute('aria-pressed', 'false');
         expect(router.replace).not.toHaveBeenCalled();
         pointer(stage(), 'pointerdown', { t: 4300 });
-        pointer(stage(), 'pointerup', { x: 100, t: 4380 });
-        expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
+        pointer(stage(), 'pointerup', { x: 300, t: 4380 });
+        expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(2), { scroll: false });
     });
 
     it('quiets taps during and right after any scroll, so a tap that stops a fling never zooms', () => {
@@ -941,5 +944,523 @@ describe('ViewerShell, double-tap', () => {
             expect(removeFromRoot).toHaveBeenCalledWith(type, expect.any(Function));
         }
         removeFromDocument.mockRestore();
+    });
+});
+
+describe('ViewerShell, the photograph follows the finger (9a)', () => {
+    const setPointerCapture = vi.fn();
+    const fetchMock = vi.fn();
+    beforeAll(() => {
+        Object.assign(HTMLElement.prototype, { setPointerCapture });
+    });
+    afterAll(() => {
+        delete (HTMLElement.prototype as Partial<HTMLElement>).setPointerCapture;
+    });
+    beforeEach(() => {
+        fetchMock.mockImplementation(async (url: string) => {
+            const photoId = /photos\/([^/?]+)/.exec(url)?.[1] ?? '';
+            const n = Number(photoId.slice(-12));
+            return new Response(JSON.stringify({ revisionId: `rev_${'a'.repeat(64)}`, photoId, image: imageOf(n), accent: `#00000${n}` }), { status: 200 });
+        });
+        vi.stubGlobal('fetch', fetchMock);
+        // jsdom lays nothing out: a 390 px stage, as on a phone.
+        vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(390);
+    });
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        vi.restoreAllMocks();
+    });
+
+    function renderWithImages(mode: ViewerMode, n: number) {
+        const view = render(<ViewerShell mode={mode}>{photo(n, true)}</ViewerShell>);
+        return { ...view, move: (to: number) => view.rerender(<ViewerShell mode={mode}>{photo(to, true)}</ViewerShell>) };
+    }
+    function pointer(target: EventTarget, type: string, { x = 200, y = 300, t = 0 } = {}) {
+        const event = new PointerEvent(type, { pointerId: 1, clientX: x, clientY: y, pointerType: 'touch', isPrimary: true, bubbles: true, cancelable: true });
+        Object.defineProperty(event, 'timeStamp', { value: t });
+        act(() => {
+            target.dispatchEvent(event);
+        });
+    }
+    const track = () => document.querySelector<HTMLElement>('[data-viewer-track]') as HTMLElement;
+    const peeks = () => [...document.querySelectorAll('[data-viewer-peek]')].map((element) => element.getAttribute('data-viewer-peek'));
+    const counter = () => document.querySelector('header p > span[aria-hidden="true"]')?.textContent;
+    /** Lets the peek fetches resolve and their state land. */
+    const settle = () => act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    it('asks for no neighbor on a load, and for both, in the revision shown, once a finger goes down on the photograph', async () => {
+        renderWithImages('page', 2);
+        await settle();
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(peeks()).toEqual([]);
+        pointer(stage(), 'pointerdown');
+        pointer(stage(), 'pointerup');
+        await settle();
+        expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+            `/api/catalog/series/fixture/photos/${id(1)}?revision=rev_${'a'.repeat(64)}`,
+            `/api/catalog/series/fixture/photos/${id(3)}?revision=rev_${'a'.repeat(64)}`,
+        ]);
+        // The neighbors peek in beside the photograph, hidden from assistive technology and never a figure.
+        expect(peeks()).toEqual(['previous', 'next']);
+        for (const element of document.querySelectorAll('[data-viewer-peek]')) expect(element).toHaveAttribute('aria-hidden', 'true');
+        expect(stage().querySelectorAll('figure')).toHaveLength(1);
+        expect(stage().querySelectorAll('[data-viewer-peek] img[alt=""]')).toHaveLength(2);
+        // Once each: another touch asks again for nothing.
+        pointer(stage(), 'pointerdown');
+        pointer(stage(), 'pointerup');
+        await settle();
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('follows a sideways drag 1:1 from the claim, and meets the rubber band at the first photograph', () => {
+        const { unmount } = renderWithImages('page', 2);
+        pointer(stage(), 'pointerdown', { x: 200, t: 0 });
+        pointer(root() as HTMLElement, 'pointermove', { x: 188, t: 16 });
+        expect(track().style.transform).toBe('translate3d(0px, 0, 0)');
+        pointer(root() as HTMLElement, 'pointermove', { x: 100, t: 200 });
+        expect(track().style.transform).toBe('translate3d(-88px, 0, 0)');
+        pointer(root() as HTMLElement, 'pointermove', { x: 300, t: 400 });
+        expect(track().style.transform).toBe('translate3d(112px, 0, 0)');
+        // Lifted slowly short of the rule, and with no Web Animations in jsdom, it's back at rest at once.
+        pointer(root() as HTMLElement, 'pointerup', { x: 230, t: 800 });
+        expect(router.replace).not.toHaveBeenCalled();
+        expect(track().style.transform).toBe('');
+        unmount();
+        renderWithImages('page', 1);
+        pointer(stage(), 'pointerdown', { x: 200, t: 0 });
+        pointer(root() as HTMLElement, 'pointermove', { x: 212, t: 16 });
+        pointer(root() as HTMLElement, 'pointermove', { x: 382, t: 200 });
+        const offset = Number(/\((-?[\d.]+)px/.exec(track().style.transform)?.[1]);
+        expect(offset).toBeCloseTo((1 - 1 / ((170 * 0.55) / 390 + 1)) * 390, 6);
+        // Past 48 toward the end: it announces the end and slides back.
+        pointer(root() as HTMLElement, 'pointerup', { x: 382, t: 600 });
+        expect(router.replace).not.toHaveBeenCalled();
+        expect(announcer()).toHaveTextContent('First photograph in Fixture series.');
+        expect(track().style.transform).toBe('');
+    });
+
+    it('moves on a short fast flick', () => {
+        renderWithImages('page', 2);
+        pointer(stage(), 'pointerdown', { x: 200, t: 0 });
+        pointer(root() as HTMLElement, 'pointermove', { x: 188, t: 8 });
+        pointer(root() as HTMLElement, 'pointermove', { x: 175, t: 24 });
+        pointer(root() as HTMLElement, 'pointerup', { x: 170, t: 32 });
+        expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
+    });
+
+    it('shows the move in the counter and the accent rules at the lift, and remembers the latest press until the photograph arrives', async () => {
+        const { move } = renderWithImages('page', 2);
+        pointer(stage(), 'pointerdown', { x: 200, t: 0 });
+        await settle();
+        pointer(root() as HTMLElement, 'pointermove', { x: 150, t: 100 });
+        pointer(root() as HTMLElement, 'pointerup', { x: 100, t: 400 });
+        expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
+        expect(counter()).toBe('03 / 03');
+        // The root carries the accent for both rules, the arriving photograph's from its peek.
+        expect(root()?.style.getPropertyValue('--cc-accent')).toBe('#000003');
+        expect(document.querySelector<HTMLElement>('[data-viewer-photo]')?.style.getPropertyValue('--cc-accent')).toBe('');
+        // While it's on its way, a key and a control ask for nothing yet, and a swipe can't start.
+        fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+        fireEvent.click(step('Previous photograph'));
+        pointer(stage(), 'pointerdown', { x: 200, t: 600 });
+        pointer(root() as HTMLElement, 'pointermove', { x: 150, t: 650 });
+        pointer(root() as HTMLElement, 'pointerup', { x: 100, t: 700 });
+        expect(router.replace).toHaveBeenCalledOnce();
+        // It arrives, and the latest press, Previous, runs from there.
+        move(3);
+        expect(announcer()).toHaveTextContent('Photograph 3 of 3');
+        expect(router.replace).toHaveBeenCalledTimes(2);
+        expect(router.replace).toHaveBeenLastCalledWith(photoHref(2), { scroll: false });
+        expect(counter()).toBe('02 / 03');
+        // Once that one arrives there's nothing left to run.
+        move(2);
+        expect(router.replace).toHaveBeenCalledTimes(2);
+        fireEvent.keyDown(document.body, { key: 'ArrowLeft' });
+        expect(router.replace).toHaveBeenLastCalledWith(photoHref(1), { scroll: false });
+    });
+
+    it('runs a remembered press toward an end as the end, once the photograph arrives', () => {
+        const { move } = renderWithImages('page', 2);
+        fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+        fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+        expect(router.replace).toHaveBeenCalledOnce();
+        move(3);
+        expect(router.replace).toHaveBeenCalledOnce();
+        expect(announcer()).toHaveTextContent('Last photograph in Fixture series.');
+    });
+
+    it('starts no swipe while a move by a key or a control is on its way: no follow, no settle, and one move', () => {
+        const { move } = renderWithImages('page', 2);
+        for (const press of [() => fireEvent.keyDown(document.body, { key: 'ArrowRight' }), () => fireEvent.click(step('Next photograph'))]) {
+            router.replace.mockClear();
+            press();
+            expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
+            // The other way, as a quick swipe back after a tap on Next goes.
+            pointer(stage(), 'pointerdown', { x: 200, t: 0 });
+            pointer(root() as HTMLElement, 'pointermove', { x: 215, t: 16 });
+            pointer(root() as HTMLElement, 'pointermove', { x: 320, t: 100 });
+            expect(track().style.transform).toBe('');
+            expect(track()).not.toHaveAttribute('data-moving');
+            pointer(root() as HTMLElement, 'pointerup', { x: 320, t: 120 });
+            expect(router.replace).toHaveBeenCalledOnce();
+            expect(counter()).toBe('03 / 03');
+            move(3);
+            expect(counter()).toBe('03 / 03');
+            expect(track().style.transform).toBe('');
+            expect(router.replace).toHaveBeenCalledOnce();
+            move(2);
+        }
+    });
+
+    it('drops a held gesture when a key or a control moves: the photograph slides back and follows no more', () => {
+        renderWithImages('page', 2);
+        pointer(stage(), 'pointerdown', { x: 200, t: 0 });
+        pointer(root() as HTMLElement, 'pointermove', { x: 188, t: 16 });
+        pointer(root() as HTMLElement, 'pointermove', { x: 140, t: 100 });
+        expect(track().style.transform).toBe('translate3d(-48px, 0, 0)');
+        fireEvent.keyDown(document.body, { key: 'ArrowLeft' });
+        expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(1), { scroll: false });
+        // With no Web Animations in jsdom, the slide back lands at once.
+        expect(track().style.transform).toBe('');
+        pointer(root() as HTMLElement, 'pointermove', { x: 60, t: 200 });
+        expect(track().style.transform).toBe('');
+        pointer(root() as HTMLElement, 'pointerup', { x: 40, t: 220 });
+        expect(router.replace).toHaveBeenCalledOnce();
+        expect(counter()).toBe('01 / 03');
+    });
+
+    it('slides the photograph back when a second finger lands mid-drag, and neither lift moves', () => {
+        renderWithImages('page', 2);
+        const second = (type: string, x: number) => {
+            const event = new PointerEvent(type, { pointerId: 2, clientX: x, clientY: 320, pointerType: 'touch', isPrimary: false, bubbles: true, cancelable: true });
+            act(() => {
+                stage().dispatchEvent(event);
+            });
+        };
+        pointer(stage(), 'pointerdown', { x: 200, t: 0 });
+        pointer(root() as HTMLElement, 'pointermove', { x: 188, t: 16 });
+        pointer(root() as HTMLElement, 'pointermove', { x: 114, t: 100 });
+        expect(track().style.transform).toBe('translate3d(-74px, 0, 0)');
+        second('pointerdown', 260);
+        expect(track().style.transform).toBe('');
+        expect(track()).not.toHaveAttribute('data-moving');
+        pointer(root() as HTMLElement, 'pointermove', { x: 60, t: 200 });
+        expect(track().style.transform).toBe('');
+        second('pointerup', 300);
+        pointer(root() as HTMLElement, 'pointerup', { x: 40, t: 220 });
+        expect(router.replace).not.toHaveBeenCalled();
+        expect(counter()).toBe('02 / 03');
+    });
+
+    it('prefetches the neighbors\' pages in full once the Viewer is idle, and asks for no image or peek', async () => {
+        const { move } = renderWithImages('page', 2);
+        expect(router.prefetch).not.toHaveBeenCalled();
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 250));
+        });
+        expect(router.prefetch.mock.calls).toEqual([
+            [photoHref(3), { kind: 'full' }],
+            [photoHref(1), { kind: 'full' }],
+        ]);
+        expect(fetchMock).not.toHaveBeenCalled();
+        move(3);
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 250));
+        });
+        // At the last photograph there's only the one before.
+        expect(router.prefetch).toHaveBeenLastCalledWith(photoHref(2), { kind: 'full' });
+        expect(router.prefetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('keeps the peeks by revision: after a publish, a neighbor is asked for again in the new one', async () => {
+        const revised = republished;
+        const view = renderWithImages('page', 2);
+        pointer(stage(), 'pointerdown');
+        pointer(stage(), 'pointerup');
+        await settle();
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        view.rerender(<ViewerShell mode="page">{revised(3)}</ViewerShell>);
+        await settle();
+        // Photograph 2 was shown, but in the revision before, so it's asked for in the new one.
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+        expect(fetchMock.mock.calls[2][0]).toBe(`/api/catalog/series/fixture/photos/${id(2)}?revision=rev_${'b'.repeat(64)}`);
+        expect(peeks()).toEqual(['previous']);
+    });
+
+    /** Photo n in a revision published after the fixture's. */
+    const republished = (n: number) => {
+        const viewer = { ...model(n, true, true), catalogRevision: `rev_${'b'.repeat(64)}` };
+        return (
+            <StoryViewer key={viewer.photo.id} viewer={viewer} closeHref="/work/fixture" previousHref={n > 1 ? photoHref(n - 1) : null} nextHref={n < 3 ? photoHref(n + 1) : null} pendingCopy={null} />
+        );
+    };
+
+    it('drops the pages it prefetched when a peek says another revision is served, once for both neighbors', async () => {
+        // The fixture's revision is the one before: the endpoint serves the republished one.
+        const served = fetchMock.getMockImplementation()!;
+        fetchMock.mockImplementation(async (url: string) => (url.includes(`rev_${'a'.repeat(64)}`) ? new Response('{}', { status: 409 }) : served(url)));
+        const view = renderWithImages('page', 2);
+        await settle();
+        expect(router.refresh).not.toHaveBeenCalled();
+        pointer(stage(), 'pointerdown');
+        pointer(stage(), 'pointerup');
+        await settle();
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(router.refresh).toHaveBeenCalledOnce();
+        expect(peeks()).toEqual([]);
+        // The refresh renders the same photograph in the revision served, which asks for nothing more to be dropped,
+        // and its neighbors peek in from that one.
+        view.rerender(<ViewerShell mode="page">{republished(2)}</ViewerShell>);
+        await settle();
+        expect(router.refresh).toHaveBeenCalledOnce();
+        expect(fetchMock).toHaveBeenCalledTimes(4);
+        expect(peeks()).toEqual(['previous', 'next']);
+    });
+
+    it('drops the pages it prefetched when a move lands in another revision, and not on a move in the same one', async () => {
+        const view = renderWithImages('page', 1);
+        fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+        view.rerender(<ViewerShell mode="page">{photo(2, true)}</ViewerShell>);
+        await settle();
+        expect(router.refresh).not.toHaveBeenCalled();
+        fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+        view.rerender(<ViewerShell mode="page">{republished(3)}</ViewerShell>);
+        await settle();
+        expect(router.refresh).toHaveBeenCalledOnce();
+        fireEvent.keyDown(document.body, { key: 'ArrowLeft' });
+        view.rerender(<ViewerShell mode="page">{republished(2)}</ViewerShell>);
+        await settle();
+        expect(router.refresh).toHaveBeenCalledOnce();
+    });
+
+    it('waits for a move on its way to land before it drops the prefetched pages for a peek\'s 409', async () => {
+        let answer: (response: Response) => void = () => undefined;
+        fetchMock.mockImplementation(() => new Promise<Response>((resolve) => (answer = resolve)));
+        const { move } = renderWithImages('page', 3);
+        pointer(stage(), 'pointerdown');
+        pointer(stage(), 'pointerup');
+        expect(fetchMock).toHaveBeenCalledOnce();
+        fireEvent.keyDown(document.body, { key: 'ArrowLeft' });
+        answer(new Response('{}', { status: 409 }));
+        await settle();
+        expect(router.refresh).not.toHaveBeenCalled();
+        move(2);
+        await settle();
+        expect(router.refresh).toHaveBeenCalledOnce();
+    });
+
+    it('shows the arriving photograph\'s ends on the arrows while its page is on its way, as the counter does', () => {
+        const { move } = renderWithImages('page', 1);
+        const previous = () => step('Previous photograph');
+        const next = () => step('Next photograph');
+        expect(previous()).toHaveAttribute('aria-disabled', 'true');
+        fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+        expect(counter()).toBe('02 / 03');
+        expect(previous()).not.toHaveAttribute('aria-disabled');
+        expect(next()).not.toHaveAttribute('aria-disabled');
+        move(2);
+        fireEvent.click(next());
+        expect(counter()).toBe('03 / 03');
+        expect(next()).toHaveAttribute('aria-disabled', 'true');
+        expect(previous()).not.toHaveAttribute('aria-disabled');
+        // A press of the end it shows is remembered like any other, and announces the end once the photograph is in.
+        fireEvent.click(next());
+        move(3);
+        expect(next()).toHaveAttribute('aria-disabled', 'true');
+        expect(announcer()).toHaveTextContent('Last photograph in Fixture series.');
+        expect(router.replace).toHaveBeenCalledTimes(2);
+    });
+
+    describe('a move by a control or a key slides in', () => {
+        const slides: { target: Element; keyframes: Keyframe[]; options: KeyframeAnimationOptions; progress: number | null }[] = [];
+        beforeEach(() => {
+            slides.length = 0;
+            Object.assign(Element.prototype, {
+                animate(this: Element, keyframes: Keyframe[], options: KeyframeAnimationOptions) {
+                    const entry = { target: this, keyframes, options, progress: 0 as number | null };
+                    if ('transform' in keyframes[0]) slides.push(entry);
+                    return { currentTime: 0, onfinish: null, cancel: vi.fn(), effect: { getComputedTiming: () => ({ progress: entry.progress }) } } as unknown as Animation;
+                },
+            });
+        });
+        afterEach(() => {
+            delete (Element.prototype as Partial<Element>).animate;
+        });
+        const parse = (easing: string | undefined) => (/^cubic-bezier\(([^)]+)\)$/.exec(easing ?? '')?.[1] ?? '').split(',').map(Number);
+        const from = (slide: (typeof slides)[number]) => Number(/\((-?[\d.]+)px/.exec(String(slide.keyframes[0].transform))?.[1]);
+        /** One stage and the gap: the 390 px stage and the 16 px between it and a neighbor. */
+        const PITCH = 406;
+
+        it('from the side it comes from, opening at the mockup\'s 1.5 slope and easing to its stop in 280 ms', () => {
+            for (const [press, to, side] of [
+                [() => fireEvent.keyDown(document.body, { key: 'ArrowRight' }), 3, 1],
+                [() => fireEvent.click(step('Next photograph')), 3, 1],
+                [() => fireEvent.keyDown(document.body, { key: 'ArrowLeft' }), 1, -1],
+                [() => fireEvent.click(step('Previous photograph')), 1, -1],
+            ] as const) {
+                const { move, unmount } = renderWithImages('page', 2);
+                slides.length = 0;
+                press();
+                move(to);
+                expect(slides).toHaveLength(1);
+                const [slide] = slides;
+                expect(slide.target).toBe(track());
+                expect(slide.keyframes).toEqual([{ transform: `translate3d(${side * PITCH}px, 0, 0)` }, { transform: 'translate3d(0px, 0, 0)' }]);
+                expect(slide.options.duration).toBe(280);
+                const [x1, y1, x2, y2] = parse(slide.options.easing as string);
+                expect(y1 / x1).toBeCloseTo(1.5, 2);
+                expect([x2, y2]).toEqual([0.36, 1]);
+                unmount();
+            }
+        });
+
+        it('from where the photograph it leaves is, when that one is still sliding in, so a remembered press never jumps', () => {
+            const { move } = renderWithImages('page', 1);
+            fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+            fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+            move(2);
+            // Photograph 2 slides in, and the remembered press is on its way to 3.
+            expect(router.replace).toHaveBeenLastCalledWith(photoHref(3), { scroll: false });
+            const second = slides.at(-1)!;
+            expect(from(second)).toBe(PITCH);
+            // A quarter of the way in, by its curve: photograph 2 still sits most of a stage to the right when 3's page lands.
+            second.progress = 0.25;
+            move(3);
+            const third = slides.at(-1)!;
+            // Photograph 2 sits a stage left of 3 on the new track, so the track starts a stage right of where 2 was.
+            expect(from(third)).toBeCloseTo(0.75 * PITCH + PITCH, 6);
+            expect(third.keyframes[1]).toEqual({ transform: 'translate3d(0px, 0, 0)' });
+            const [x1, y1] = parse(third.options.easing as string);
+            expect(y1 / x1).toBeCloseTo(1.5, 2);
+            // A press back the other way while 3 is still sliding in starts a stage left of where 3 is.
+            third.progress = 0.5;
+            fireEvent.keyDown(document.body, { key: 'ArrowLeft' });
+            move(2);
+            expect(from(slides.at(-1)!)).toBeCloseTo(0.5 * from(third) - PITCH, 6);
+            // One that had landed starts a whole stage over, as from rest.
+            slides.at(-1)!.progress = null;
+            fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+            move(3);
+            expect(from(slides.at(-1)!)).toBe(PITCH);
+        });
+    });
+
+    describe('the words under the photograph', () => {
+        const animations: { target: Element; keyframes: Keyframe[]; options: KeyframeAnimationOptions; animation: { currentTime: number; onfinish: (() => void) | null; cancel: () => void } }[] = [];
+        beforeEach(() => {
+            animations.length = 0;
+            Object.assign(Element.prototype, {
+                animate(this: Element, keyframes: Keyframe[], options: KeyframeAnimationOptions) {
+                    const animation = { currentTime: 0, onfinish: null, cancel: vi.fn() };
+                    animations.push({ target: this, keyframes, options, animation });
+                    return animation as unknown as Animation;
+                },
+            });
+        });
+        afterEach(() => {
+            delete (Element.prototype as Partial<Element>).animate;
+        });
+        const reading = () => document.querySelector('[data-viewer-reading]') as HTMLElement;
+        const leaving = () => document.querySelector('[data-viewer-leaving]') as HTMLElement;
+        const fadesOf = (element: Element) => animations.filter((entry) => entry.target === element || element.contains(entry.target)).filter((entry) => 'opacity' in entry.keyframes[0]);
+
+        it('keeps the old words, whole, until the new photograph arrives, then fades them out over 70 ms and the new ones in over 130', () => {
+            const { move } = renderWithImages('page', 2);
+            expect(leaving()).toBeEmptyDOMElement();
+            expect(leaving()).toHaveAttribute('aria-hidden', 'true');
+            fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+            // On its way, however long the page takes: the old words stay as they are, and nothing fades.
+            expect(within(reading()).getByText('Fixture title 2')).toBeInTheDocument();
+            expect(fadesOf(reading())).toEqual([]);
+            expect(leaving()).toBeEmptyDOMElement();
+            move(3);
+            // The page is in: the old words cover the new ones and fade out, the new ones fade in after them.
+            expect(within(reading()).getByText('Fixture title 3')).toBeInTheDocument();
+            expect(leaving()).toHaveTextContent('Fixture title 2');
+            expect(leaving().querySelector('[id]')).toBeNull();
+            expect(leaving().firstElementChild).toHaveAttribute('inert');
+            expect(leaving().querySelector('[data-viewer-reading]')).toBeNull();
+            const out = fadesOf(leaving());
+            expect(out).toHaveLength(1);
+            expect(out[0].keyframes).toEqual([{ opacity: 1 }, { opacity: 0 }]);
+            expect(out[0].options).toMatchObject({ duration: 70 });
+            const fadesIn = fadesOf(reading());
+            expect(fadesIn.length).toBe(reading().children.length);
+            for (const entry of fadesIn) {
+                expect(entry.keyframes).toEqual([{ opacity: 0 }, { opacity: 1 }]);
+                expect(entry.options).toMatchObject({ duration: 130, delay: 70, fill: 'backwards' });
+            }
+            // Its fade done, the copy goes.
+            act(() => out[0].animation.onfinish?.());
+            expect(leaving()).toBeEmptyDOMElement();
+        });
+
+        it('under reduced motion changes the words in place when the photograph arrives, with no fade', () => {
+            setPrefersReducedMotion(true);
+            const { move } = renderWithImages('page', 2);
+            fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+            move(3);
+            expect(within(reading()).getByText('Fixture title 3')).toBeInTheDocument();
+            expect(leaving()).toBeEmptyDOMElement();
+            expect(animations).toEqual([]);
+        });
+    });
+
+    it('asks for each new photograph\'s neighbors once a finger has touched one, and the one it left peeks back in', async () => {
+        const { move } = renderWithImages('page', 1);
+        pointer(stage(), 'pointerdown');
+        pointer(stage(), 'pointerup');
+        await settle();
+        expect(fetchMock).toHaveBeenCalledOnce();
+        move(2);
+        await settle();
+        // Photograph 1 was shown, so only 3 is asked for.
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(fetchMock.mock.calls[1][0]).toContain(id(3));
+        expect(peeks()).toEqual(['previous', 'next']);
+    });
+
+    it('under reduced motion follows nothing, asks for no neighbor, and changes the counter when the photograph arrives', async () => {
+        setPrefersReducedMotion(true);
+        const { move } = renderWithImages('page', 2);
+        pointer(stage(), 'pointerdown', { x: 200, t: 0 });
+        pointer(root() as HTMLElement, 'pointermove', { x: 150, t: 100 });
+        expect(track().style.transform).toBe('');
+        pointer(root() as HTMLElement, 'pointerup', { x: 100, t: 400 });
+        await settle();
+        expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(counter()).toBe('02 / 03');
+        move(3);
+        expect(counter()).toBe('03 / 03');
+        expect(peeks()).toEqual([]);
+        expect(document.querySelectorAll('[data-moving]')).toHaveLength(0);
+    });
+
+    it('asks for no neighbor when the fetch fails, and still follows and moves', async () => {
+        fetchMock.mockRejectedValue(new TypeError('offline'));
+        renderWithImages('page', 2);
+        pointer(stage(), 'pointerdown', { x: 200, t: 0 });
+        await settle();
+        pointer(root() as HTMLElement, 'pointermove', { x: 188, t: 16 });
+        pointer(root() as HTMLElement, 'pointermove', { x: 150, t: 100 });
+        expect(track().style.transform).toBe('translate3d(-38px, 0, 0)');
+        pointer(root() as HTMLElement, 'pointerup', { x: 100, t: 400 });
+        expect(router.replace).toHaveBeenCalledOnce();
+        expect(peeks()).toEqual([]);
+    });
+
+    it('never follows a double-tap: the photograph stays at rest and Zoom toggles', () => {
+        renderWithImages('page', 2);
+        for (const t of [1000, 1150]) {
+            pointer(stage(), 'pointerdown', { t });
+            pointer(root() as HTMLElement, 'pointermove', { x: 203, t: t + 20 });
+            expect(track().style.transform).toBe('');
+            pointer(root() as HTMLElement, 'pointerup', { x: 203, t: t + 50 });
+        }
+        expect(screen.getByRole('button', { name: 'Zoom' })).toHaveAttribute('aria-pressed', 'true');
+        expect(router.replace).not.toHaveBeenCalled();
     });
 });

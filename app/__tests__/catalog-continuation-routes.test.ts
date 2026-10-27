@@ -5,9 +5,9 @@ import { encodeSeriesCursor } from '@/lib/catalog/cursor';
 import { createCatalogReader, type CatalogContent } from '@/lib/catalog/reader';
 import { buildTestCatalog, type TestCatalogContent } from '@/lib/catalog/testing';
 
-// #6's two continuation endpoints over HTTP: status, body, and cache
-// headers for every answer, on a reader the tests serve as the active
-// catalog. lib/catalog/__tests__/seriesContinuation.test.ts and home.test.ts
+// #6's two continuation endpoints, and 9a's Viewer peek, over HTTP: status,
+// body, and cache headers for every answer, on a reader the tests serve as
+// the active catalog. lib/catalog/__tests__/seriesContinuation.test.ts and home.test.ts
 // cover what each page holds.
 
 const state = vi.hoisted(() => ({ catalog: null as unknown, loads: 0, throws: null as Error | null }));
@@ -26,6 +26,7 @@ vi.mock('@/lib/catalog/public-reader', async (importOriginal) => {
 
 const seriesRoute = await import('../api/catalog/series/[slug]/pages/[cursor]/route');
 const homeRoute = await import('../api/catalog/home/photos/[photoId]/route');
+const peekRoute = await import('../api/catalog/series/[slug]/photos/[photoId]/route');
 
 const id = (n: number) => `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const LONG = Array.from({ length: 250 }, (_, n) => id(n + 1));
@@ -39,9 +40,13 @@ let logged: ReturnType<typeof vi.spyOn>;
 beforeAll(async () => {
     fixture = await buildTestCatalog({
         seed: 67,
-        photos: [...LONG, ...FEATURED, ...DRAFT].map((photoId) => ({ id: photoId })),
+        photos: [...LONG, ...FEATURED, ...DRAFT].map((photoId) => ({
+            id: photoId,
+            // One photo with an accent of its own and one without, under a series that has one, for the peek's accent.
+            ...(photoId === FEATURED[1] && { accent: '#123456', title: 'SENTINEL peek title', caption: 'SENTINEL peek caption' }),
+        })),
         series: [
-            { id: 'ser_fixture-featured', slug: 'fixture-featured', photoIds: FEATURED },
+            { id: 'ser_fixture-featured', slug: 'fixture-featured', photoIds: FEATURED, accent: '#abcdef' },
             { id: 'ser_fixture-long', slug: 'fixture-long', slugAliases: ['old-fixture-long'], photoIds: LONG },
             { id: 'ser_fixture-draft', slug: 'fixture-draft', photoIds: DRAFT, visibility: 'draft' },
         ],
@@ -80,6 +85,11 @@ function homeGET(photoId: string, query: string, headers: Record<string, string>
     return homeRoute.GET(request, { params: Promise.resolve({ photoId }) });
 }
 
+function peekGET(slug: string, photoId: string, query: string, headers: Record<string, string> = {}): Promise<Response> {
+    const request = new Request(`http://127.0.0.1/api/catalog/series/${slug}/photos/${photoId}${query}`, { headers });
+    return peekRoute.GET(request, { params: Promise.resolve({ slug, photoId }) });
+}
+
 /** An error answer: the status, a fixed body, `no-store`, and no ETag, revision, or mode header. */
 async function expectError(response: Response, status: number, body: unknown): Promise<void> {
     expect(response.status).toBe(status);
@@ -94,9 +104,9 @@ async function headersAndBody(response: Response) {
     return { status: response.status, headers: [...response.headers.entries()], body: await response.text() };
 }
 
-describe('both endpoints', () => {
+describe('every endpoint', () => {
     it('render per request and set no revalidate', () => {
-        for (const route of [seriesRoute, homeRoute]) {
+        for (const route of [seriesRoute, homeRoute, peekRoute]) {
             expect(route.dynamic).toBe('force-dynamic');
             expect('revalidate' in route).toBe(false);
         }
@@ -224,5 +234,73 @@ describe('GET /api/catalog/home/photos/[photoId]', () => {
         state.throws = Object.assign(new Error('/private/data is gone'), { code: 'ENOENT' });
         await expectError(await homeGET(FEATURED[0], revision()), 500, { reason: 'internal' });
         expect(JSON.parse(String(logged.mock.calls[0][0]))).toEqual({ event: 'catalog.response.failed', route: '/api/catalog/home/photos/[photoId]', error: 'ENOENT' });
+    });
+});
+
+describe('GET /api/catalog/series/[slug]/photos/[photoId]', () => {
+    const revision = (value = fixture.revisionId) => `?revision=${value}`;
+
+    it('answers the photograph\'s set and accent alone, with no-cache, a weak revision ETag, and the revision', async () => {
+        const response = await peekGET('fixture-featured', FEATURED[1], revision());
+        expect(response.status).toBe(200);
+        expect(response.headers.get('cache-control')).toBe('no-cache');
+        expect(response.headers.get('etag')).toMatch(/^W\/"[A-Za-z0-9_-]{22}"$/);
+        expect(response.headers.get('x-catalog-revision')).toBe(fixture.revisionId);
+        const text = await response.text();
+        const body = JSON.parse(text);
+        // Only what the peek shows: no title, caption, description, alt, or technical facts.
+        expect(Object.keys(body).sort()).toEqual(['accent', 'image', 'photoId', 'revisionId']);
+        expect(text).not.toContain('SENTINEL');
+        expect(body).toMatchObject({ revisionId: fixture.revisionId, photoId: FEATURED[1], accent: '#123456' });
+        expect(body.image).toMatchObject({ width: expect.any(Number), height: expect.any(Number), assetRevision: expect.any(String) });
+        expect(body.image.variants.w1200.avif.url).toMatch(new RegExp(`^/media/${FEATURED[1]}/`));
+        // A photo with no accent of its own takes the series'.
+        expect((await (await peekGET('fixture-featured', FEATURED[2], revision())).json()).accent).toBe('#abcdef');
+    });
+
+    it('answers 304 to its own ETag, and each photograph has its own', async () => {
+        const first = (await peekGET('fixture-featured', FEATURED[0], revision())).headers.get('etag') as string;
+        expect((await peekGET('fixture-featured', FEATURED[2], revision())).headers.get('etag')).not.toBe(first);
+        expect((await peekGET('fixture-featured', FEATURED[0], revision(), { 'If-None-Match': first })).status).toBe(304);
+    });
+
+    it('answers 409 when the Viewer\'s revision isn\'t the one served, before it looks at the photograph', async () => {
+        await expectError(await peekGET('fixture-featured', FEATURED[0], revision(REVISION_B)), 409, { reason: 'revision-changed' });
+        await expectError(await peekGET('fixture-draft', DRAFT[0], revision(REVISION_B)), 409, { reason: 'revision-changed' });
+    });
+
+    it('answers 400 for no revision, two of them, or a malformed one, without reading the catalog', async () => {
+        for (const query of ['', '?revision=', `?revision=${fixture.revisionId}&revision=${fixture.revisionId}`, '?revision=rev_a', `?rev=${fixture.revisionId}`]) {
+            await expectError(await peekGET('fixture-featured', FEATURED[0], query), 400, { reason: 'bad-request' });
+        }
+        expect(state.loads).toBe(0);
+    });
+
+    it('answers one identical 404 for whatever the Viewer can\'t serve, a former slug, and legacy mode', async () => {
+        const answers = [];
+        for (const [slug, photoId] of [
+            // Another series' photograph, a draft series, an unknown photograph, a malformed ID, an unknown and a former slug.
+            ['fixture-featured', LONG[0]],
+            ['fixture-draft', DRAFT[0]],
+            ['fixture-featured', id(999)],
+            ['fixture-featured', 'ph_x'],
+            ['no-such-series', FEATURED[0]],
+            ['old-fixture-long', LONG[0]],
+        ]) {
+            answers.push(await headersAndBody(await peekGET(slug, photoId, revision())));
+        }
+        state.catalog = { mode: 'legacy' };
+        answers.push(await headersAndBody(await peekGET('fixture-featured', FEATURED[0], revision())));
+        expect(answers[0].status).toBe(404);
+        expect(JSON.parse(answers[0].body)).toEqual({ reason: 'not-found' });
+        for (const answer of answers) expect(answer).toEqual(answers[0]);
+    });
+
+    it('answers 503 while the catalog is unavailable, and 500 with a path-free log line when reading it throws', async () => {
+        state.catalog = { mode: 'catalog', state: 'unavailable', reason: 'revision-unreadable' };
+        await expectError(await peekGET('fixture-featured', FEATURED[0], revision()), 503, { reason: 'revision-unreadable' });
+        state.throws = Object.assign(new Error('/private/data is gone'), { code: 'ENOENT' });
+        await expectError(await peekGET('fixture-featured', FEATURED[0], revision()), 500, { reason: 'internal' });
+        expect(JSON.parse(String(logged.mock.calls[0][0]))).toEqual({ event: 'catalog.response.failed', route: '/api/catalog/series/[slug]/photos/[photoId]', error: 'ENOENT' });
     });
 });

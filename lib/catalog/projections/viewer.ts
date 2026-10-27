@@ -6,6 +6,7 @@ import { TECHNICAL_KEYS, type TechnicalKey } from '../../identity/metadata';
 import type { VariantFormat, VariantWidth } from '../../identity/variants';
 import { sequencePosition } from '../order';
 import type { CatalogContent, CatalogReader } from '../reader';
+import { REVISION_ID_RE } from '../schema';
 import type { SeriesRecord } from '../types';
 import { imageOf, type Ladder } from './ladder';
 import { openableSeries, seriesParams, text, type ScreenCatalog } from './shared';
@@ -264,4 +265,69 @@ export async function viewerPhotoFrom<Reason extends string>(
     if (catalog.mode === 'legacy') return NOT_FOUND;
     if (catalog.state === 'unavailable') return { kind: 'unavailable', reason: catalog.reason };
     return catalog.reader.getViewerPhoto(params.slug, params.photoId);
+}
+
+/**
+ * A neighbor's photograph as the Viewer shows it peeking in beside the one
+ * under the finger (9a): its set and the accent the Viewer paints its rules
+ * with, nothing else. The Viewer asks for it only once a visitor touches the
+ * photograph, so a first load still ships one photograph (#6).
+ */
+export interface ViewerPeek {
+    revisionId: string;
+    photoId: string;
+    /** The same set the photo's own Viewer ships, or null when it has none, so the peek shows the missing-image state. */
+    image: ViewerImage | null;
+    /** The photo's accent, else the series', already checked as `#rrggbb`, or null. */
+    accent: string | null;
+}
+
+export type ViewerPeekResult =
+    | { kind: 'ok'; peek: ViewerPeek }
+    /** Whatever the Viewer route answers not-found, and a former slug too: the Viewer only asks with the canonical one. */
+    | { kind: 'not-found' }
+    /** No `revision`, more than one, or a malformed one. */
+    | { kind: 'bad-request' }
+    /** The revision isn't the one being served, so the Viewer never peeks at a photo from another one. */
+    | { kind: 'revision-changed' };
+
+/** The peek of one Viewer answer: the set and the accent, field by field from the projection, which checked both. */
+export function viewerPeekOf(viewer: PublishedViewerPhoto): ViewerPeek {
+    return {
+        revisionId: viewer.catalogRevision,
+        photoId: viewer.photo.id,
+        image: viewer.photo.image,
+        accent: viewer.photo.accent ?? viewer.series.accent,
+    };
+}
+
+/**
+ * The peek endpoint's answer for the site as it stands, for
+ * `/api/catalog/series/<slug>/photos/<photoId>?revision=<revisionId>`. As
+ * homePhotosFrom() does: malformed params are not-found and a missing or
+ * malformed revision a bad request, both before the catalog is read; legacy
+ * mode is not-found; an unavailable catalog is unavailable, for a 503; a
+ * revision other than the one served is revision-changed, checked before
+ * the photo, so neither answer says whether a photo it doesn't publish
+ * exists. Anything else is viewerPhotoOf()'s answer on the served revision,
+ * so a peek is not-found exactly when the photo's Viewer is (a former slug
+ * included, which the Viewer never asks with).
+ */
+export async function viewerPeekFrom<Reason extends string>(
+    load: () => Promise<ScreenCatalog<Pick<CatalogReader, 'revision' | 'getViewerPhoto'>, Reason>>,
+    slug: unknown,
+    photoId: unknown,
+    revisionId: string | null,
+): Promise<ViewerPeekResult | { kind: 'unavailable'; reason: Reason }> {
+    const params = viewerParams(slug, photoId);
+    if (params === null) return { kind: 'not-found' };
+    if (revisionId === null || !REVISION_ID_RE.test(revisionId)) return { kind: 'bad-request' };
+    const catalog = await load();
+    if (catalog.mode === 'legacy') return { kind: 'not-found' };
+    if (catalog.state === 'unavailable') return { kind: 'unavailable', reason: catalog.reason };
+    const { reader } = catalog;
+    if (reader.revision().revisionId !== revisionId) return { kind: 'revision-changed' };
+    const result = reader.getViewerPhoto(params.slug, params.photoId);
+    if (result.kind !== 'ok') return { kind: 'not-found' };
+    return { kind: 'ok', peek: viewerPeekOf(result.viewer) };
 }
