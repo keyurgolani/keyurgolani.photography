@@ -44,6 +44,20 @@ function ovalReach(card: number, scale: number) {
   return { half: (scale * width) / 2 + RING, above: scale * above + RING, below: scale * (width * FACE_HEIGHT_PER_WIDTH - above) + RING };
 }
 
+/** ProfilePicture's card from `md` (768 px) up, so on every screen from 85rem. */
+const WIDE_CARD = 320;
+
+/**
+ * The lane v1.1.0's badge takes on a wide screen: px from the screen's center
+ * to the left edge of its painted oval at 0.85 on the 320 px card, plus
+ * BADGE_CLEARANCE. From 85rem up, CatalogHome caps the story's copy so the
+ * title's panel, fade included, ends this far left of the center
+ * (CatalogHome.module.css), and the badge keeps v1.1.0's exact place beside
+ * the title. A title that still reaches it, such as one long word, falls back
+ * to badgePlace()'s measured lift.
+ */
+export const V110_LANE = ovalReach(WIDE_CARD, V110_SCALE).half + BADGE_CLEARANCE;
+
 const within = (a: Box, b: Box, gap: number) => a.left < b.right + gap && b.left < a.right + gap && a.top < b.bottom + gap && b.top < a.bottom + gap;
 
 /**

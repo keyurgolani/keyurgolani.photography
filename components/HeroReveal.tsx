@@ -253,8 +253,8 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
   }, [reducedMotion, beginExit]);
 
   // Home's loading bound, whatever becomes of the exit's own timers. They're one-shot and armed once, so anything
-  // that clears them without unmounting, as React does when it disconnects a hidden Activity's effects, would leave
-  // the grain up for good. From any state short of settled, this settles the intro HOME_LOADING_TIMEOUT_MS after
+  // that clears them without unmounting would leave the grain up for good. React does that if Home is ever kept in a
+  // hidden Activity (Next wraps routes in one only with `cacheComponents`, which this app doesn't set). From any state short of settled, this settles the intro HOME_LOADING_TIMEOUT_MS after
   // mount, and it arms again whenever its effect runs again. The clamp keeps a wall clock set back from stretching it.
   useEffect(() => {
     if (phase === 'settled') return;

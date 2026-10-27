@@ -341,12 +341,14 @@ test.describe("the badge's place on the catalog Home", () => {
     /** How far apart two boxes are, negative when they overlap. */
     const gap = (a: Box, b: Box) => Math.max(b.left - a.right, a.left - b.right, b.top - a.bottom, a.top - b.bottom);
 
-    for (const { width, height, place } of [
-        { width: 1440, height: 900, place: 'clear' },
-        { width: 1536, height: 864, place: 'clear' },
-        { width: 1366, height: 768, place: 'clear' },
-        { width: 1280, height: 800, place: 'clear' },
-        { width: 1024, height: 768, place: 'clear' },
+    // From 85rem the story yields the badge's lane, so the badge keeps v1.1.0's exact place beside a two-line title,
+    // and the panel's fade ends 16 px before it. Below, the title keeps its width and the badge lifts above it.
+    for (const { width, height, place, titleLines } of [
+        { width: 1440, height: 900, place: 'v1.1.0', titleLines: 2 },
+        { width: 1536, height: 864, place: 'v1.1.0', titleLines: 2 },
+        { width: 1366, height: 768, place: 'v1.1.0', titleLines: 2 },
+        { width: 1280, height: 800, place: 'clear', titleLines: 2 },
+        { width: 1024, height: 768, place: 'clear', titleLines: 2 },
         { width: 390, height: 844, place: 'clear' },
         { width: 360, height: 740, place: 'clear' },
         { width: 844, height: 390, place: 'side' },
@@ -383,7 +385,9 @@ test.describe("the badge's place on the catalog Home", () => {
                     panel: box(document.querySelector('[data-chrome-region="story"] [data-chrome-panel]')),
                 };
             });
-            console.log(`badge boxes at ${width}x${height}: ${JSON.stringify(boxes)}`);
+            const lines = await page.locator('[data-chrome-region="story"] h1').evaluate((el) => Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)));
+            console.log(`badge boxes at ${width}x${height}: ${JSON.stringify(boxes)}, title lines ${lines}`);
+            if (titleLines !== undefined) expect(lines, "the series title's lines").toBe(titleLines);
             expect(boxes.oval).not.toBeNull();
             for (const name of ['nav', 'title', 'statement', 'link'] as const) {
                 expect(boxes[name], name).not.toBeNull();
@@ -393,6 +397,8 @@ test.describe("the badge's place on the catalog Home", () => {
             const panel = boxes.panel && boxes.panel.right > boxes.panel.left ? boxes.panel : null;
             expect(panel === null, 'the panel is drawn from 640 px wide').toBe(width < 640);
             if (panel) expect(gap(boxes.oval!, panel), "the badge's room from the title's panel").toBeGreaterThanOrEqual(15.5);
+            // In v1.1.0's place from 85rem, the lane is exact: the panel ends 16 px before the oval, not further.
+            if (panel && place === 'v1.1.0') expect(boxes.oval!.left - panel.right, 'the panel ends 16 px before the badge').toBeLessThanOrEqual(17);
         });
     }
 });
