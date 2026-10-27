@@ -340,14 +340,16 @@
 /* The column runs the detail's full height; the frame inside it stays on
    screen, a screen tall, so the photograph is in view while the curator works
    the form beside it. Only on the wide layout, where it has its own column
-   and covers nothing. The photograph takes the column's width, keeping its
-   own proportions, and sits in the middle of the frame. */
+   and covers nothing. The photograph takes the column's width inside one
+   small mat, the phone's inset, keeping its own proportions, and sits in the
+   middle of the frame. At 41/59 a landscape photograph can't be wider than
+   the column. */
 .photoFrame {
   position: sticky;
   top: 0;
   display: grid;
   min-height: 100svh;
-  padding: 3.5rem 6% 6%;
+  padding: 3.5rem 1.125rem 1.125rem;
   align-content: center;
   justify-items: center;
 }
@@ -362,7 +364,8 @@
 .photoFrame > .badge {
   position: absolute;
   top: 1rem;
-  left: 1rem;
+  /* One left edge with the photograph, at both widths. */
+  left: 1.125rem;
 }
 
 .backToList {
@@ -545,6 +548,12 @@ textarea.description {
   margin: 0.3rem 0 0;
   color: var(--gah-ink-muted);
   font-size: var(--gah-type-label);
+}
+
+/* Clear of the focus ring of the field above it. */
+.label + .hint,
+.label + input[type='hidden'] + .hint {
+  margin-top: calc(var(--focus-ring-width) + var(--focus-ring-offset) + 0.25rem);
 }
 
 /* A refusal about one field, under that field. Marked by its border and the field's aria-invalid, not by color alone.
@@ -950,6 +959,11 @@ p.fieldError {
 
   .photo {
     min-height: 12rem;
+  }
+
+  /* Nothing to show, so the file's name and why it failed come up the screen. */
+  .photo:has(.noPreview) {
+    min-height: 0;
   }
 
   .photoFrame {

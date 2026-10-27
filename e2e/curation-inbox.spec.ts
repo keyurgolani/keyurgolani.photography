@@ -80,6 +80,10 @@ const summary = (page: Page) => page.getByRole('region', { name: 'Curation inbox
 /** The item's heading: its source file's name, which is what tells the curator which photograph it is. */
 const itemHeading = (page: Page, photoId: string) => page.getByRole('heading', { level: 2, name: path.posix.basename(FRESH_SOURCES[photoId]) });
 
+/** About 320 characters: four lines or more at 1440, six or so on a phone. */
+const LONG_DESCRIPTION =
+    'Harbor wall at first light, the tide out and the stones still wet, two gulls on the iron rail, the ferry just leaving the far pier with its lights on, a man in a yellow coat walking his dog along the seawall, and the hills behind the town still grey with fog that the sun has not yet burned off the water.';
+
 /** `landed` opens the item on `#item`, as its row link does, so a link back to the same URL only scrolls unless the page reloads it. */
 async function openInbox(page: Page, item?: string, { landed = false }: { landed?: boolean } = {}) {
     await page.goto(`${curatorOrigin()}/curation/inbox${item ? `?item=${item}` : ''}${landed ? '#item' : ''}`);
@@ -151,7 +155,13 @@ test('lists what the watcher opened, and shows the selected photograph from the 
     await expect(page.getByRole('combobox', { name: 'Suggested series' })).toBeVisible();
     // Three lines at least, for a sentence.
     const description = page.getByRole('textbox', { name: 'Draft description' });
-    expect((await description.boundingBox())!.height).toBeGreaterThanOrEqual(3 * 16);
+    const empty = (await description.boundingBox())!.height;
+    expect(empty).toBeGreaterThanOrEqual(3 * 16);
+    // And it grows with a long description, with nothing hidden behind a scrollbar.
+    await description.fill(LONG_DESCRIPTION);
+    await expect.poll(async () => (await description.boundingBox())!.height).toBeGreaterThan(empty);
+    expect(await description.evaluate((box) => box.scrollHeight - box.clientHeight)).toBeLessThanOrEqual(1);
+    await description.fill('');
     // Each ID shows once, in full, and copies whole: the selected text is the value, on one line.
     for (const [label, value] of [['Stable photo identity', FRESH.approve], ['Asset revision', data().revisionOf(FRESH.approve)]]) {
         const cell = page.locator('#item dt').filter({ hasText: new RegExp(`^${label}$`) }).locator('xpath=following-sibling::dd[1]');
@@ -334,7 +344,7 @@ test('dismisses an unreadable file with a reason, then reopens it', async ({ pag
     const failed = events.find((event) => event.type === 'processing-failure')!;
     await openInbox(page, failed.id);
     // Why, and what to do, on the first screen, not only in Source facts.
-    await expect(page.getByText('The file is not a format the watcher reads.')).toBeInViewport();
+    await expect(page.getByText("This is a HEIC file, which the watcher doesn't read.")).toBeInViewport();
     await expect(page.getByText(/^The watcher reads JPEG, PNG and WebP\./)).toBeInViewport();
     await expect(page.getByRole('button', { name: 'Retry processing' })).toHaveCount(0);
     await page.getByText('Dismiss with a reason').click();

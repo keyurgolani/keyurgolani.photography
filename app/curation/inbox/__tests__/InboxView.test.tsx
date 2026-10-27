@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCurationFixture } from '@/lib/curation/__tests__/curationFixtures';
 import { eventIdOf, eventKey } from '@/lib/curation/events';
 import { loadInbox } from '@/lib/curation/inbox';
-import type { InboxActionState, InboxDetail, InboxItem, InboxView, SeriesOption } from '@/lib/curation/inbox-view';
+import { humanTime, type InboxActionState, type InboxDetail, type InboxItem, type InboxView, type SeriesOption } from '@/lib/curation/inbox-view';
 import { createCurationSink } from '@/lib/curation/sink';
 import { setDataDir } from '@/test/helpers/tempDataRoot';
 
@@ -229,15 +229,16 @@ describe('the list', () => {
 });
 
 describe('the detail', () => {
-    it('leads with the file name, its folder and capture date, and the photograph; each ID shows once, in full, at the top', () => {
+    it('leads with the file name, its folder and capture date, and the photograph; the photo ID at the top, the revision in Source facts, each once in full', () => {
         renderInbox();
         expect(screen.getByRole('img', { name: 'Candidate photograph harbor-1.jpg' })).toHaveAttribute('src', expect.stringMatching(/^\/api\/curation\/media\//));
         expect(screen.getByRole('heading', { level: 2, name: 'harbor-1.jpg' })).toBeInTheDocument();
         expect(screen.getByText('In trips, captured 1 June 2024')).toBeInTheDocument();
         const top = screen.getByRole('heading', { level: 2, name: 'harbor-1.jpg' }).closest('header')!.nextElementSibling as HTMLElement;
+        const facts = screen.getByRole('region', { name: 'Source facts' });
         // The whole value is one text node, so a copy takes it whole, with no line break inside.
-        for (const [label, full] of [['Stable photo identity', P(9)], ['Asset revision', REV]]) {
-            const cell = within(top).getByText(label).nextElementSibling as HTMLElement;
+        for (const [where, label, full] of [[top, 'Stable photo identity', P(9)], [facts, 'Asset revision', REV]] as const) {
+            const cell = within(where).getByText(label).nextElementSibling as HTMLElement;
             expect(cell.childNodes).toHaveLength(1);
             expect(cell.firstChild?.nodeType).toBe(Node.TEXT_NODE);
             expect(cell.textContent).toBe(full);
@@ -247,18 +248,20 @@ describe('the detail', () => {
         expect(screen.getByText('Draft only')).toBeInTheDocument();
         // A new photograph has no published statement to keep.
         expect(screen.queryByText('Published statement remains unchanged.')).toBeNull();
-        // Source facts sit apart from the suggestion the curator edits, and repeat neither ID.
-        const facts = screen.getByRole('region', { name: 'Source facts' });
+        // The top keeps to human facts: no hash there. Source facts sit apart from the suggestion, and don't repeat the photo ID.
+        expect(top).not.toHaveTextContent(REV);
+        expect(within(top).queryByText('Asset revision')).toBeNull();
         expect(facts).not.toHaveTextContent(P(9));
-        expect(facts).not.toHaveTextContent(REV);
-        expect(within(facts).queryByText('Asset revision')).toBeNull();
+        expect(within(facts).getByText('Source file').parentElement!.nextElementSibling).toHaveTextContent(/^Asset revision/);
         expect(within(facts).getByText('Identity status').nextElementSibling).toHaveTextContent('Source present');
         expect(within(facts).getByText('Referenced by').nextElementSibling).toHaveTextContent('Nothing');
         // One date format: the capture date and the observed time in words, each with its stored value in <time>.
         expect(within(facts).getByText('Capture date').nextElementSibling!.querySelector('time')).toHaveAttribute('dateTime', '2024-06-01');
         expect(within(facts).getByText('Capture date').nextElementSibling).toHaveTextContent('1 June 2024');
         const observed = within(facts).getByText('Observed').nextElementSibling!.querySelector('time')!;
-        expect(observed).toHaveTextContent('1 February 2026, 00:00 UTC');
+        // In the browser's own zone once the page runs; the server sends UTC.
+        expect(observed).toHaveTextContent(humanTime('2026-02-01T00:00:00.000Z', Intl.DateTimeFormat().resolvedOptions().timeZone));
+        expect(observed).toHaveTextContent(/^\d{1,2} [A-Z][a-z]+ 202[56], \d{2}:\d{2} \S+$/);
         expect(observed).toHaveAttribute('dateTime', '2026-02-01T00:00:00.000Z');
         expect(observed).not.toHaveAttribute('title');
         expect(screen.queryByText(/\d{4}-\d{2}-\d{2}T/)).toBeNull();
@@ -278,7 +281,7 @@ describe('the detail', () => {
                 can: { approve: false, edit: true, defer: true, dismiss: true, retry: false, reopen: false },
             }),
         }));
-        const strip = screen.getByText('The file is not a format the watcher reads.').closest('[data-state="failure"]') as HTMLElement;
+        const strip = screen.getByText("This is a HEIC file, which the watcher doesn't read.").closest('[data-state="failure"]') as HTMLElement;
         expect(strip).toHaveAttribute('data-tone', 'alert');
         expect(strip).toHaveTextContent(/Export the photograph as one of those into the library/);
         expect(strip).toHaveTextContent(/Decide later keeps it here meanwhile\.$/);
@@ -287,7 +290,9 @@ describe('the detail', () => {
         expect(heading.closest('header')!.nextElementSibling).toBe(strip);
         const facts = screen.getByRole('region', { name: 'Source facts' });
         expect(within(facts).queryByText('Failure')).toBeNull();
-        expect(screen.getAllByText('The file is not a format the watcher reads.')).toHaveLength(1);
+        expect(screen.getAllByText(/watcher doesn't read|not a format the watcher reads/)).toHaveLength(1);
+        // "No photo ID", as a value, in the detail.
+        expect(screen.getByText('Stable photo identity').nextElementSibling).toHaveTextContent(/^No photo ID$/);
         // No photograph, so no published statement to keep.
         expect(screen.queryByText('Published statement remains unchanged.')).toBeNull();
     });
@@ -302,7 +307,7 @@ describe('the detail', () => {
         renderInbox(view({ selected: detail({ type: 'replacement', photoId: P(2), shortId: SHORT(2), references: [{ kind: 'revision', id: ACTIVE }, { kind: 'series', id: 'ser_harbor' }, { kind: 'series', id: 'ser_draft' }], can: { approve: false, edit: true, defer: true, dismiss: false, retry: false, reopen: false }, primaryUnavailable: 'Not yet.' }) }));
         expect(screen.getByText('Series membership').nextElementSibling).toHaveTextContent('Harbor, position 02; Draft series');
         expect(screen.getByText('Title, description, and story stay attached to ph_0000…0002')).toBeInTheDocument();
-        expect(screen.getByText('Referenced by').nextElementSibling).toHaveTextContent('The live revision (rev_bbbb…bbbb); series Harbor and Draft series (draft)');
+        expect(screen.getByText('Referenced by').nextElementSibling).toHaveTextContent('The live revision; series Harbor and Draft series (draft)');
         expect(screen.queryByText(/ser_harbor/)).toBeNull();
     });
 

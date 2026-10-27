@@ -348,15 +348,21 @@ export function humanDate(date: string): string | null {
 }
 
 /**
- * A stored timestamp the same way, with its time in UTC, as the watcher and
- * the actions write it: `1 February 2026, 00:03 UTC`. Anything that isn't a
- * timestamp shows as it is.
+ * A stored timestamp the same way, in `timeZone` with its abbreviation:
+ * `1 February 2026, 00:03 UTC` by default, as the server sends it, and the
+ * browser's own zone once the page runs. Anything that isn't a timestamp, or
+ * a zone the runtime doesn't know, shows as it is.
  */
-export function humanTime(iso: string): string {
+export function humanTime(iso: string, timeZone = 'UTC'): string {
     const at = new Date(iso);
     if (!/^\d{4}-\d{2}-\d{2}T/.test(iso) || Number.isNaN(at.getTime())) return iso;
-    const day = humanDate(at.toISOString().slice(0, 10));
-    return `${day}, ${at.toISOString().slice(11, 16)} UTC`;
+    try {
+        const format = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'short' });
+        const part = Object.fromEntries(format.formatToParts(at).map((entry) => [entry.type, entry.value]));
+        return `${humanDate(`${part.year}-${part.month}-${part.day}`)}, ${part.hour}:${part.minute} ${part.timeZoneName}`;
+    } catch {
+        return iso;
+    }
 }
 
 /** The line under the file name: its folder and its capture date, which tell the owner which photograph this is. */
@@ -465,9 +471,12 @@ export function systemResponse(item: StateFacts, labelOf: (seriesId: string) => 
  * Source facts. Null for every other item. `next` is null once the item is
  * settled. The formats are lib/identity/scan.ts's SOURCE_EXTENSIONS.
  */
-export function failureNotice(detail: Pick<InboxDetail, 'type' | 'failure' | 'failureCode' | 'status' | 'can'>): { reason: string; next: string | null } | null {
+export function failureNotice(detail: Pick<InboxDetail, 'type' | 'failure' | 'failureCode' | 'status' | 'can' | 'sourcePath'>): { reason: string; next: string | null } | null {
     if (detail.type !== 'processing-failure') return null;
-    const reason = detail.failure ?? "The watcher couldn't process the file.";
+    // A format it doesn't read is named by the file's own extension, which says more to the owner than "not a format".
+    const extension = /\.([a-z0-9]{2,5})$/i.exec(fileParts(detail.sourcePath).name)?.[1];
+    const reason =
+        detail.failureCode === 'unsupported-format' && extension ? `This is a ${extension.toUpperCase()} file, which the watcher doesn't read.` : (detail.failure ?? "The watcher couldn't process the file.");
     if (detail.status !== 'failed' && detail.status !== 'open' && detail.status !== 'deferred') return { reason, next: null };
     const keep = detail.can.defer ? ' Decide later keeps it here meanwhile.' : '';
     switch (detail.failureCode) {
@@ -507,7 +516,8 @@ export function referencedByText(references: readonly HolderRef[] | null, series
     if (references.length === 0) return 'Nothing';
     const revision = references.find((ref) => ref.kind === 'revision');
     const names = references.filter((ref) => ref.kind === 'series').map((ref) => `${seriesName(series, ref.id)}${visibilityNote(series.find((option) => option.id === ref.id))}`);
-    const live = revision ? `The live revision (${headTail(revision.id)})` : null;
+    // The revision's ID is Active revision's, the row below, so it isn't repeated here.
+    const live = revision ? 'The live revision' : null;
     if (names.length === 0) return live as string;
     return live ? `${live}; series ${joined(names)}` : `Series ${joined(names)}, not published`;
 }

@@ -59,6 +59,7 @@ describe('the public routes', () => {
             'app/curation/inbox/InboxList.tsx',
             'app/curation/inbox/ItemActions.tsx',
             'app/curation/inbox/LandOnItem.tsx',
+            'app/curation/inbox/LocalTime.tsx',
             'app/curation/inbox/ReturnToRow.tsx',
             'app/curation/inbox/actions.ts',
             'app/curation/inbox/journey.ts',

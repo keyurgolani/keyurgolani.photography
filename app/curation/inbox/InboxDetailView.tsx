@@ -5,11 +5,11 @@ import ArrivalStrip from './ArrivalStrip';
 import EventBadge from './EventBadge';
 import ItemActions from './ItemActions';
 import LandOnItem from './LandOnItem';
+import LocalTime from './LocalTime';
 import {
     failureNotice,
     fileParts,
     hasPublishedStatement,
-    humanTime,
     identityLine,
     referencedByText,
     seriesMembershipText,
@@ -31,11 +31,6 @@ interface FactRow {
     dateTime?: string;
 }
 
-/** A stored timestamp in the Inbox's words, with the stored value in `dateTime`. */
-function When({ at }: { at: string }) {
-    return <time dateTime={at}>{humanTime(at)}</time>;
-}
-
 function Facts({ rows }: { rows: FactRow[] }) {
     return (
         <dl className={styles.facts}>
@@ -52,13 +47,14 @@ function Facts({ rows }: { rows: FactRow[] }) {
 }
 
 /**
- * What the watcher saw, kept apart from anything the curator decides. The
- * photo ID and the asset revision show once, at the top of the item, and a
- * processing failure's reason in the strip there.
+ * What the watcher saw, kept apart from anything the curator decides, with
+ * the asset revision in full. The photo ID shows once, at the top of the
+ * item, and a processing failure's reason in the strip there.
  */
 function SourceFacts({ view, detail }: { view: ReadyView; detail: InboxDetail }) {
     const rows: FactRow[] = [
         { label: 'Source file', value: detail.sourcePath },
+        { label: 'Asset revision', value: detail.assetRevision ?? 'None', mono: detail.assetRevision !== null },
         ...(detail.fromPath ? [{ label: 'Moved from', value: detail.fromPath }] : []),
         { label: 'Identity status', value: detail.identity },
         { label: 'Derivatives', value: detail.derivatives },
@@ -71,10 +67,10 @@ function SourceFacts({ view, detail }: { view: ReadyView; detail: InboxDetail })
             value:
                 detail.lastObservedAt !== detail.observedAt ? (
                     <>
-                        <When at={detail.observedAt} />, last <When at={detail.lastObservedAt} />
+                        <LocalTime at={detail.observedAt} />, last <LocalTime at={detail.lastObservedAt} />
                     </>
                 ) : (
-                    <When at={detail.observedAt} />
+                    <LocalTime at={detail.observedAt} />
                 ),
         },
         ...(detail.reviewedAt
@@ -83,7 +79,7 @@ function SourceFacts({ view, detail }: { view: ReadyView; detail: InboxDetail })
                       label: 'Reviewed',
                       value: (
                           <>
-                              <When at={detail.reviewedAt} /> by {detail.reviewedBy ?? 'unknown'}
+                              <LocalTime at={detail.reviewedAt} /> by {detail.reviewedBy ?? 'unknown'}
                           </>
                       ),
                   },
@@ -166,9 +162,9 @@ function BackToInbox({ itemId }: { itemId: string | null }) {
 
 /**
  * The detail side of the Inbox: what identifies the photograph first (the
- * photograph, its file name, folder and capture date), then its photo ID and
- * asset revision in full, what the system did, the suggestion, and the
- * actions. Source facts below repeats neither ID.
+ * photograph, its file name, folder and capture date), then its photo ID in
+ * full, what the system did, the suggestion, and the actions. Source facts
+ * below holds the asset revision in full, and repeats neither.
  */
 export default function InboxDetailView({ view }: { view: ReadyView }) {
     const detail = view.selected;
@@ -237,9 +233,8 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
                 ) : null}
                 <Facts
                     rows={[
-                        // Each in full, once, as one run of text.
-                        { label: 'Stable photo identity', value: detail.photoId ?? detail.shortId, mono: detail.photoId !== null },
-                        { label: 'Asset revision', value: detail.assetRevision ?? 'None', mono: detail.assetRevision !== null },
+                        // In full, once, as one run of text. The asset revision's hash is in Source facts, so the top stays human facts.
+                        { label: 'Stable photo identity', value: detail.photoId ?? 'No photo ID', mono: detail.photoId !== null },
                         { label: 'System response', value: systemResponse(detail, labelOf) },
                         ...(detail.waiting ? [{ label: 'Waiting', value: `${sentence(detail.waiting)}. Act on it once the set is ready.` }] : []),
                         // As `curation show` says it, from the same placement lookup.
@@ -276,7 +271,7 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
                         <ol className={styles.history}>
                             {detail.decisions.map((decision, index) => (
                                 <li key={index}>
-                                    <When at={decision.at} /> {decision.action} by {decision.by}
+                                    <LocalTime at={decision.at} /> {decision.action} by {decision.by}
                                     {decision.detail ? `: ${decision.detail}` : ''}
                                 </li>
                             ))}

@@ -156,7 +156,8 @@ describe('the status and the system response', () => {
 
 describe('what refers to a photograph', () => {
     it('names series by title and keeps the live revision apart from draft series', () => {
-        expect(referencedByText([{ kind: 'revision', id: REV }, { kind: 'series', id: 'ser_harbor' }, { kind: 'series', id: 'ser_draft' }], SERIES)).toBe('The live revision (rev_bbbb…1234); series Harbor and Draft series (draft)');
+        // Active revision, the row below it, has the revision's ID, so this doesn't repeat it.
+        expect(referencedByText([{ kind: 'revision', id: REV }, { kind: 'series', id: 'ser_harbor' }, { kind: 'series', id: 'ser_draft' }], SERIES)).toBe('The live revision; series Harbor and Draft series (draft)');
         expect(referencedByText([{ kind: 'series', id: 'ser_draft' }], SERIES)).toBe('Series Draft series (draft), not published');
         expect(referencedByText([], SERIES)).toBe('Nothing');
         expect(referencedByText(null, SERIES)).toMatch(/^Can't tell/);
@@ -240,6 +241,10 @@ describe('dates', () => {
         expect(humanTime('2026-02-01T00:03:00.000Z')).toBe('1 February 2026, 00:03 UTC');
         expect(humanTime('2026-02-01T23:59:00-08:00')).toBe('2 February 2026, 07:59 UTC');
         expect(humanTime('not a time')).toBe('not a time');
+        // The browser's own zone, once the page runs, with its abbreviation.
+        expect(humanTime('2026-02-01T00:03:00.000Z', 'America/Los_Angeles')).toBe('31 January 2026, 16:03 PST');
+        expect(humanTime('2026-07-01T00:03:00.000Z', 'Asia/Kolkata')).toMatch(/^1 July 2026, 05:33 (GMT\+5:30|IST)$/);
+        expect(humanTime('2026-02-01T00:03:00.000Z', 'Not/AZone')).toBe('2026-02-01T00:03:00.000Z');
         expect(identityLine('inbox/a.jpg', '2024-01-04')).toBe('In inbox, captured 4 January 2024');
     });
 });
@@ -252,6 +257,7 @@ describe('a processing failure', () => {
             failureCode: code,
             status: 'failed',
             can: { approve: false, edit: true, defer: true, dismiss: true, retry: false, reopen: false },
+            sourcePath: 'inbox/no-extension',
             ...overrides,
         });
 
@@ -277,6 +283,14 @@ describe('a processing failure', () => {
         const named = { '.jpg': 'JPEG', '.jpeg': 'JPEG', '.png': 'PNG', '.webp': 'WebP' } as Record<string, string>;
         for (const extension of SOURCE_EXTENSIONS) expect(next).toContain(named[extension]);
         expect(next).toMatch(/^The watcher reads JPEG, PNG and WebP\. Export the photograph as one of those into the library/);
+    });
+
+    it("names a format it doesn't read by the file's own extension", () => {
+        expect(failed('unsupported-format', { sourcePath: 'inbox/raw-frame.heic' })!.reason).toBe("This is a HEIC file, which the watcher doesn't read.");
+        expect(failed('unsupported-format', { sourcePath: 'inbox/IMG_0001.CR3' })!.reason).toBe("This is a CR3 file, which the watcher doesn't read.");
+        // No extension to name: the watcher's own words.
+        expect(failed('unsupported-format')!.reason).toBe('Reason for unsupported-format.');
+        expect(failed('undecodable', { sourcePath: 'inbox/a.jpg' })!.reason).toBe('Reason for undecodable.');
     });
 
     it('offers no next step once settled, and is nothing for any other item', () => {

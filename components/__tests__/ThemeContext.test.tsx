@@ -121,21 +121,46 @@ describe('ThemeProvider', () => {
       }
     });
 
-    it('hydrates a Suspense boundary under it in place, with nothing to recover from', async () => {
-      const { container, recovered, streamed, done } = await hydrate(
-        <ThemeProvider>
-          <Toggle />
-          <Suspense fallback={<p>loading</p>}>
-            <p data-streamed="">streamed</p>
-          </Suspense>
-        </ThemeProvider>,
-      );
+    // What this pins: hydrating over a pending boundary keeps the server's fallback and recovers from nothing. It passes on the
+    // old provider too: jsdom gives the boundary no content to reveal, so a client render of it never commits. The bug itself,
+    // a pending boundary rendered again on the client, is the inbox e2e's light-theme phone case; the commit count above pins its
+    // cause.
+    it('hydrates over a boundary still pending, keeping the server fallback, with nothing to recover from', async () => {
+      // The server's HTML for a boundary still pending, waiting for its reveal (`$~`; jsdom's document has finished loading,
+      // where React reads a bare `$?` as a boundary the server gave up on).
+      const pending = '<button type="button">toggle</button><!--$~--><template id="B:0"></template><p data-fallback="">loading</p><!--/$-->';
+      const never = new Promise<never>(() => undefined);
+      function Streamed(): React.ReactElement {
+        throw never;
+      }
+      const container = document.createElement('div');
+      container.innerHTML = pending;
+      document.body.appendChild(container);
+      html.setAttribute('data-theme', 'light');
+      const fallback = container.querySelector('[data-fallback]');
+      const recovered: unknown[] = [];
+      let root: ReturnType<typeof hydrateRoot> | undefined;
       try {
+        await act(async () => {
+          root = hydrateRoot(
+            container,
+            <ThemeProvider>
+              <Toggle />
+              <Suspense fallback={<p data-fallback="">loading</p>}>
+                <Streamed />
+              </Suspense>
+            </ThemeProvider>,
+            { onRecoverableError: (error) => recovered.push(error) },
+          );
+        });
+        expect(html.dataset.hydrated).toBe('true');
         expect(recovered).toEqual([]);
-        // The server's node, kept: the boundary was hydrated, not rendered again on the client.
-        expect(container.querySelector('[data-streamed]')).toBe(streamed);
+        // Still the server's fallback, inside the server's pending marker: nothing rendered it again.
+        expect(container.querySelector('[data-fallback]')).toBe(fallback);
+        expect(container.innerHTML).toContain('<!--$~-->');
       } finally {
-        done();
+        act(() => root?.unmount());
+        container.remove();
       }
     });
   });
