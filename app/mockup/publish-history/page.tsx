@@ -32,7 +32,7 @@ export default async function PublishHistoryMockup({ searchParams }: MockupProps
         <div className={styles.page}>
             <CuratorHeader active="publish" publishHref="/curation/publish" />
             {state.screen === 'ready' && state.view && state.history ? (
-                <PublishScreen view={state.view} previewHref="/mockup/publish-history/site" openFix={null} action={mockPublishAction} history={<HistorySection model={state.history} />} />
+                <PublishScreen view={state.view} previewHref="/mockup/publish-history/site" openFix={null} action={mockPublishAction} initialState={state.answer} history={<HistorySection model={state.history} />} />
             ) : state.screen === 'not-launched' ? (
                 <main className={styles.state}>
                     <p role="status" className={styles.visuallyHidden} />

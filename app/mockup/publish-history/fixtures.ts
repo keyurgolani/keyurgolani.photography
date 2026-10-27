@@ -1,4 +1,4 @@
-import type { Ledger, RevisionFacts, ScreenView } from '@/lib/curation/publish-facts';
+import type { Ledger, PublishState, RevisionFacts, ScreenView } from '@/lib/curation/publish-facts';
 import type { DialogState, Entry, HistoryModel, Plan, Result } from './model';
 
 /**
@@ -34,7 +34,7 @@ function nothingView(active: RevisionFacts, previous: RevisionFacts | null): Scr
         kind: 'nothing',
         ledger: EMPTY_LEDGER,
         blockers: [],
-        panel: { count: 'Harbor Nights: 7 photographs', copyLine: 'What visitors see now.', draftSrc: null, liveSrc: SITE },
+        panel: { count: 'Low Tide Hours: 6 photographs', copyLine: 'What visitors see now.', draftSrc: null, liveSrc: SITE },
     };
 }
 
@@ -53,12 +53,12 @@ function draftView(active: RevisionFacts, conflict = false): ScreenView {
             {
                 id: 'chg-0000000000000002',
                 kind: 'Changed',
-                review: conflict ? 'stale' : 'reviewed',
+                review: conflict ? 'conflict' : 'reviewed',
                 summary: 'Low Tide Hours: the short statement changes',
                 ...(conflict ? { detail: `Your draft and revision ${active.number} both changed it.` } : {}),
                 blocks: conflict,
                 compare: { type: 'text', before: 'Five mornings on the estuary before the water comes back.', after: 'Six mornings on the estuary before the water comes back.' },
-                ...(conflict ? { fix: { type: 'hint' as const, text: 'Choose which statement stays with photos edit, then validate again.' } } : {}),
+                ...(conflict ? { fix: { type: 'hint' as const, text: 'Keep one statement with photos edit, which clears the conflict, then validate again.' } } : {}),
             },
         ],
         derived: [{ id: 'chg-0000000000000003', kind: 'Recalculated', review: 'automatic', summary: 'Low Tide Hours: 7 photographs, was 6', blocks: false }],
@@ -73,7 +73,7 @@ function draftView(active: RevisionFacts, conflict = false): ScreenView {
         kind: 'ledger',
         ledger,
         blockers: conflict
-            ? [{ key: 'b1', rowId: 'chg-0000000000000002', record: 'Low Tide Hours', field: 'statement', message: `Your draft and revision ${active.number} both changed it.`, link: { type: 'row', record: 'Low Tide Hours' } }]
+            ? [{ key: 'b1', rowId: 'chg-0000000000000002', record: 'Low Tide Hours', field: 'statement', message: 'This field changed both here and in the active revision, in different ways.', link: { type: 'row', record: 'Low Tide Hours' } }]
             : [],
         panel: { count: 'Low Tide Hours: 7 photographs, was 6', copyLine: 'Draft revision 7, not public.', draftSrc: SITE, liveSrc: SITE },
     };
@@ -81,55 +81,57 @@ function draftView(active: RevisionFacts, conflict = false): ScreenView {
 
 // The entries. Newest first, by sequence.
 
+const LIVE_TEXT = "This is what visitors see, so there's nothing to restore.";
+
 const E = {
     restored5: {
         sequence: 8,
         title: 'Revision 5',
         badge: { text: 'Live now', tone: 'done' },
-        kind: 'Restored',
+        kind: 'Restore',
         when: 'Restored 27 October at 09:12, from this screen.',
         reason: { text: 'The new Harbor Nights cover is cropped wrong on phones.', quoted: true },
-        from: 'Replaced revision 6.',
-        held: '3 series, 25 photographs. Against revision 4: 1 series added, 7 photographs added.',
+        from: 'Replaced revision 6: removed 2 photographs, brought back 1, changed 1 series.',
+        held: '3 series, 25 photographs in all.',
         facts: 'Entry 8 · 9a1b33c0',
-        eligibility: { type: 'text', text: 'Visitors see this revision now.', tone: 'done' },
+        eligibility: { type: 'text', text: LIVE_TEXT, tone: 'quiet' },
     },
     rev6Live: {
         sequence: 7,
         title: 'Revision 6',
         badge: { text: 'Live now', tone: 'done' },
-        kind: 'Published',
+        kind: 'Publish',
         when: 'Published 26 October at 14:05, from this screen.',
-        from: 'Replaced revision 5.',
-        held: '3 series, 26 photographs. Against revision 5: 2 photographs added, 1 removed, 1 series changed.',
+        from: 'Replaced revision 5: 2 photographs added, 1 removed, 1 series changed.',
+        held: '3 series, 26 photographs in all.',
         facts: 'Entry 7 · 3fa1c2d9',
-        eligibility: { type: 'text', text: 'Visitors see this revision now.', tone: 'done' },
+        eligibility: { type: 'text', text: LIVE_TEXT, tone: 'quiet' },
     },
     rev5: {
         sequence: 6,
         title: 'Revision 5',
-        kind: 'Published',
+        kind: 'Publish',
         when: 'Published 25 October at 18:40, from this screen.',
-        from: 'Replaced revision 4.',
-        held: '3 series, 25 photographs. Against revision 4: 1 series added, 7 photographs added.',
+        from: 'Replaced revision 4: 1 series added, 7 photographs added.',
+        held: '3 series, 25 photographs in all.',
         facts: 'Entry 6 · 9a1b33c0',
         eligibility: { type: 'restore', revision: 5 },
     },
     rev4Blocked: {
         sequence: 5,
         title: 'Revision 4',
-        kind: 'Published',
+        kind: 'Publish',
         when: 'Published 14 October at 10:22 by keyur, with photos publish.',
         reason: { text: 'Salt Roads order after the print review', quoted: false },
-        from: 'Replaced revision 3.',
-        held: "2 series, 18 photographs. Against revision 3: Home's featured series or the Work order changed.",
+        from: "Replaced revision 3: Home's featured series changed.",
+        held: '2 series, 18 photographs in all.',
         facts: 'Entry 5 · 77c0e5a1',
         eligibility: { type: 'text', text: "It can't come back as it was: a description in it names a file on this computer.", tone: 'alert' },
     },
     rev3Unreadable: {
         sequence: 4,
         title: 'Revision 3',
-        kind: 'Published',
+        kind: 'Publish',
         when: 'Published 2 October at 14:11 by keyur, with photos publish.',
         from: 'Replaced revision 2.',
         facts: 'Entry 4 · 0b6e2f94',
@@ -139,7 +141,7 @@ const E = {
         sequence: 3,
         title: "A publish that didn't finish",
         badge: { text: "Didn't finish", tone: 'quiet' },
-        kind: 'Published',
+        kind: 'Publish',
         when: 'Started 2 October at 13:58 by keyur, with photos publish.',
         from: 'It never went live, so visitors never saw it.',
         facts: 'Entry 3',
@@ -148,21 +150,21 @@ const E = {
     rev2: {
         sequence: 2,
         title: 'Revision 2',
-        kind: 'Published',
+        kind: 'Publish',
         when: 'Published 20 September at 09:03, from this screen.',
-        from: 'Replaced revision 1.',
-        held: '2 series, 18 photographs. Against revision 1: 4 photographs added.',
+        from: 'Replaced revision 1: 4 photographs added.',
+        held: '2 series, 18 photographs in all.',
         facts: 'Entry 2 · 5d21c8aa',
         eligibility: { type: 'restore', revision: 2 },
     },
     rev1: {
         sequence: 1,
         title: 'Revision 1',
-        kind: 'Published',
+        kind: 'Publish',
         when: 'Published 3 September at 20:15 by keyur, with photos publish.',
         reason: { text: 'Launch', quoted: false },
         from: 'The first revision.',
-        held: '2 series, 14 photographs.',
+        held: '2 series, 14 photographs in all.',
         facts: 'Entry 1 · e8f4a019',
         eligibility: { type: 'restore', revision: 1 },
     },
@@ -174,7 +176,7 @@ const LIST: Entry[] = [E.rev6Live, E.rev5, E.rev4Blocked, E.rev3Unreadable, E.in
 const AFTER: Entry[] = [
     E.restored5,
     { ...E.rev6Live, badge: undefined, eligibility: { type: 'restore', revision: 6 } },
-    { ...E.rev5, eligibility: { type: 'text', text: 'Live now, as entry 8 above.', tone: 'quiet' } },
+    { ...E.rev5, eligibility: { type: 'text', text: 'Live now: restored on 27 October, above.', tone: 'quiet' } },
     E.rev4Blocked,
     E.rev3Unreadable,
     E.interrupted,
@@ -182,14 +184,41 @@ const AFTER: Entry[] = [
     E.rev1,
 ];
 
-const LEAD = 'Every revision that went live, newest first. Restoring one makes it live again as a new entry. Nothing is deleted.';
+const LEAD = 'Every publish and restore, newest first. Restoring one makes it live again as a new entry. Nothing is deleted.';
+
+// After Publish revision 7 from this screen: the answer carries History read again (spec, History by 16-3 state).
+const AFTER_PUBLISH: Entry[] = [
+    {
+        sequence: 8,
+        title: 'Revision 7',
+        badge: { text: 'Live now', tone: 'done' },
+        kind: 'Publish',
+        when: 'Published 27 October at 10:02, from this screen.',
+        from: 'Replaced revision 6: 1 photograph added, 1 series changed.',
+        held: '3 series, 27 photographs in all.',
+        facts: 'Entry 8 · c41d09e2',
+        eligibility: { type: 'text', text: LIVE_TEXT, tone: 'quiet' },
+    },
+    { ...E.rev6Live, badge: undefined, eligibility: { type: 'restore', revision: 6 } },
+    E.rev5,
+    E.rev4Blocked,
+    E.rev3Unreadable,
+    E.interrupted,
+    E.rev2,
+    E.rev1,
+];
 
 const PLAN_5: Plan = {
     revision: 5,
     hash: R[5].hash,
     active: 6,
     activeHash: R[6].hash,
-    impact: ['Brings back 1 photograph: Tide gauge', 'Removes 2 photographs: Night ferry, Harbor wall at dusk', 'Changes 1 series: Harbor Nights', "Changes Home's featured series or the Work order."],
+    impact: [
+        { text: 'Removes 2 photographs: Night ferry, Harbor wall at dusk' },
+        { text: 'Brings back 1 photograph: Tide gauge' },
+        { text: 'Changes 1 series: Harbor Nights' },
+        { text: "Changes Home's featured series." },
+    ],
 };
 
 const PLANS: Record<number, Plan> = {
@@ -200,10 +229,11 @@ const PLANS: Record<number, Plan> = {
         active: 6,
         activeHash: R[6].hash,
         impact: [
-            'Removes 1 series: Harbor Nights',
-            'Removes 8 photographs: Night ferry, Harbor wall at dusk, Pier lamps at night, Ferry steps, Lamp post, and 3 more',
-            'Changes 1 series: Salt Roads',
-            "Changes Home's featured series or the Work order.",
+            { text: 'Removes 1 series: Harbor Nights' },
+            { text: 'Removes 8 photographs: Night ferry, Harbor wall at dusk, Pier lamps at night, Ferry steps, Lamp post', more: ['Quay at dusk', 'Harbor lights', 'Tide gauge'] },
+            { text: 'Changes 1 series: Salt Roads' },
+            { text: "Changes Home's featured series." },
+            { text: 'Changes the order of series on Work.' },
         ],
         editorial: "Today's checks flag Salt Roads' accent color: it's hard to read on the Viewer's dark bands.",
     },
@@ -212,11 +242,16 @@ const PLANS: Record<number, Plan> = {
         hash: R[1].hash,
         active: 6,
         activeHash: R[6].hash,
-        impact: ['Removes 1 series: Harbor Nights', 'Removes 12 photographs: Night ferry, Harbor wall at dusk, Pier lamps at night, Ferry steps, Lamp post, and 7 more', 'Changes 2 series: Low Tide Hours, Salt Roads', "Changes Home's featured series or the Work order."],
+        impact: [
+            { text: 'Removes 1 series: Harbor Nights' },
+            { text: 'Removes 12 photographs: Night ferry, Harbor wall at dusk, Pier lamps at night, Ferry steps, Lamp post', more: ['Quay at dusk', 'Harbor lights', 'Tide gauge', 'Coast road', 'Dune fence', 'Salt pans', 'Slipway'] },
+            { text: 'Changes 2 series: Low Tide Hours, Salt Roads' },
+            { text: "Changes Home's featured series." },
+        ],
     },
 };
 
-const DRAFT_NOTE = 'Your draft stays. Its changes move onto revision 5, and this screen shows them against revision 5 next.';
+const DRAFT_NOTE = 'Your draft stays, and this screen then compares it against revision 5. If a change in it clashes with revision 5, Publish stays locked until you settle that change.';
 const REASON = 'The new Harbor Nights cover is cropped wrong on phones.';
 
 const history = (extra: Partial<HistoryModel> = {}): HistoryModel => ({ lead: LEAD, entries: LIST, plans: PLANS, ...extra });
@@ -235,13 +270,15 @@ const LONG: Entry[] = Array.from({ length: 10 }, (_, index) => {
         sequence,
         title: `Revision ${restore ? number - 12 : number}`,
         ...(live ? { badge: { text: 'Live now', tone: 'done' as const } } : {}),
-        kind: restore ? ('Restored' as const) : ('Published' as const),
+        kind: restore ? ('Restore' as const) : ('Publish' as const),
         when: `${restore ? 'Restored' : 'Published'} ${day} October at ${String(9 + (index % 8)).padStart(2, '0')}:${String((index * 7) % 60).padStart(2, '0')}, from this screen.`,
         ...(restore ? { reason: { text: 'Put the old Salt Roads order back for the show.', quoted: true } } : {}),
-        from: `Replaced revision ${number - 1}.`,
-        held: `4 series, ${40 - index} photographs. Against revision ${number - 1}: ${index % 3 === 0 ? '1 photograph added' : index % 3 === 1 ? '2 photographs changed' : '1 series changed'}.`,
+        from: restore
+            ? `Replaced revision ${number - 1}: removed 3 photographs, changed the order of series on Work.`
+            : `Replaced revision ${number - 1}: ${index % 3 === 0 ? '1 photograph added' : index % 3 === 1 ? '2 photographs changed' : '1 series changed'}.`,
+        held: `4 series, ${40 - index} photographs in all.`,
         facts: `Entry ${sequence} · ${hash}`,
-        eligibility: live ? { type: 'text' as const, text: 'Visitors see this revision now.', tone: 'done' as const } : { type: 'restore' as const, revision: restore ? number - 12 : number },
+        eligibility: live ? { type: 'text' as const, text: LIVE_TEXT, tone: 'quiet' as const } : { type: 'restore' as const, revision: restore ? number - 12 : number },
     };
 });
 
@@ -249,6 +286,8 @@ export interface MockState {
     screen: 'ready' | 'not-launched' | 'unreadable';
     view?: ScreenView;
     history?: HistoryModel;
+    /** A state after one of 16-3's own answers. */
+    answer?: PublishState;
 }
 
 const ready = (view: ScreenView, model: HistoryModel): MockState => ({ screen: 'ready', view, history: model });
@@ -262,14 +301,14 @@ export const STATES: Record<string, MockState> = {
     'with-draft': ready(draftView(R[6]), history()),
     single: ready(nothingView(R[1], null), {
         lead: 'Revision 1 is the first, and the only one so far. Each publish adds an entry here, and any earlier one can be restored.',
-        entries: [{ ...E.rev1, badge: { text: 'Live now', tone: 'done' }, eligibility: { type: 'text', text: 'Visitors see this revision now.', tone: 'done' } }],
+        entries: [{ ...E.rev1, badge: { text: 'Live now', tone: 'done' }, eligibility: { type: 'text', text: LIVE_TEXT, tone: 'quiet' } }],
         plans: {},
     }),
     long: ready(nothingView(rev(41, LONG[0].facts.slice(-8)), rev(40, LONG[1].facts.slice(-8))), {
         lead: LEAD,
         entries: LONG,
         total: 48,
-        more: { label: 'Show 10 older entries', href: '/mockup/publish-history?state=long#entry-38' },
+        more: { label: 'Show 10 older entries', href: '/mockup/publish-history?state=long#entry-38-title' },
         plans: {},
     }),
     empty: { screen: 'not-launched' },
@@ -292,7 +331,8 @@ export const STATES: Record<string, MockState> = {
         plans: {},
         done: {
             heading: 'Revision 5 is live again',
-            body: ['Visitors see it on their next page load. Revision 6 is kept in History.', 'Your draft now compares against revision 5. 1 draft change conflicts with revision 5. Publish lists it until you settle it.'],
+            body: ['Visitors see it on their next page load. Revision 6 is kept in History.', '1 change in your draft clashes with revision 5.'],
+            jump: { label: 'Go to the change: Low Tide Hours', target: 'chg-0000000000000002-summary' },
         },
     }),
     changed: ready(
@@ -302,14 +342,15 @@ export const STATES: Record<string, MockState> = {
                 tone: 'change',
                 heading: 'Revision 7 went live while this was open',
                 body: ['keyur published it at 09:10, with photos publish. The list above is out of date, so nothing was restored.'],
-                actions: ['close', 'reload'],
+                actions: ['close-reload', 'reload'],
+                moved: { impact: 'past' },
             }),
         }),
     ),
     locked: ready(
         LIST_VIEW,
         history({
-            dialog: dialog('result', { tone: 'change', clock: true, heading: 'Another publish or restore is running', body: ['It started at 09:10. Nothing changed. Restore again when it finishes.'], actions: ['cancel', 'retry'] }),
+            dialog: dialog('result', { tone: 'change', clock: true, heading: 'Another publish or restore is running', body: ['It started at 09:10. Nothing changed, and revision 6 stays live. Restore again once it finishes, usually within a minute.'], actions: ['cancel', 'retry'] }),
         }),
     ),
     refused: ready(
@@ -320,13 +361,13 @@ export const STATES: Record<string, MockState> = {
                 heading: "Revision 5 can't come back",
                 body: ["Today's checks refuse it, so nothing was restored. Revision 6 stays live."],
                 list: ['2 of its photographs no longer have their image files: Tide gauge, Ferry steps.'],
-                actions: ['close'],
+                actions: ['close', 'reload'],
             }),
         }),
     ),
     'already-live': ready(
         LIST_VIEW,
-        history({ dialog: dialog('result', { tone: 'done', heading: 'Revision 5 is already live', body: ['It went live at 09:11, from this screen. Nothing more to do.'], actions: ['close', 'reload'] }) }),
+        history({ dialog: dialog('result', { tone: 'done', heading: 'Revision 5 is already live', body: ['It went live at 09:11, from this screen. Nothing more to do.'], actions: ['close-reload'], moved: { impact: 'hide' } }) }),
     ),
     interrupted: ready(
         LIST_VIEW,
@@ -342,9 +383,14 @@ export const STATES: Record<string, MockState> = {
     'interrupted-live': ready(
         LIST_VIEW,
         history({
-            dialog: dialog('result', { tone: 'alert', heading: "Revision 5 is live, but the restore didn't finish", body: ['Visitors see revision 5. Restore again to finish recording it.'], actions: ['close', 'finish'] }),
+            dialog: dialog('result', { tone: 'alert', heading: "Revision 5 is live, but the restore didn't finish", body: ['Visitors see revision 5. Finish restoring it so History records it.'], actions: ['close-reload', 'finish'], moved: { impact: 'hide' } }),
         }),
     ),
+    // Published from this screen (16-3's answer in place): History comes back with the answer, revision 7 marked live, no Restore on it.
+    'after-publish': {
+        ...ready(draftView(R[6]), history({ afterAnswer: { lead: LEAD, entries: AFTER_PUBLISH, plans: { 6: { ...PLAN_5, revision: 6, hash: R[6].hash, active: 7, activeHash: R[7].hash } } } })),
+        answer: { serial: 1, intent: 'publish', answer: { kind: 'published', live: R[7], previous: R[6] }, result: { kind: 'published', live: R[7], previous: R[6] } },
+    },
 };
 
 export const STATE_ORDER = Object.keys(STATES);

@@ -5,6 +5,7 @@ import { Check, CircleAlert, Clock, ExternalLink, FileCheck2, Link2, RefreshCw, 
 import curator from '../curator.module.css';
 import { itemUrl } from '../inbox/journey';
 import PreviewFrame from '@/components/curation/PreviewFrame';
+import { PublishAnswerContext } from './HistoryContext';
 import {
     displayFacts,
     IDLE_STATE,
@@ -43,6 +44,8 @@ const REVIEW: Record<ReviewLabel, { text: string; icon: LucideIcon; tone: 'done'
     'not-reviewed': { text: 'Not reviewed', icon: CircleAlert, tone: 'alert' },
     stale: { text: 'Stale review', icon: Clock, tone: 'alert' },
     generated: { text: 'Generated · not reviewed', icon: Sparkles, tone: 'alert' },
+    // 15-4: a field a restore's rebase left in conflict (the working.conflicts rule).
+    conflict: { text: 'Conflicts with the live revision', icon: CircleAlert, tone: 'alert' },
     automatic: { text: 'Automatic', icon: RefreshCw, tone: 'quiet' },
     confirmed: { text: 'Confirmed in Inbox', icon: Link2, tone: 'quiet' },
     published: { text: 'Published', icon: Check, tone: 'done' },
@@ -58,6 +61,22 @@ function withCode(text: string): ReactNode {
         ) : (
             part
         ),
+    );
+}
+
+/** 15-4: "Restore it from History, below." as an in-page link that moves focus there. */
+function withHistoryLink(text: string): ReactNode {
+    const phrase = 'History, below';
+    const at = text.indexOf(phrase);
+    if (at < 0) return withCode(text);
+    return (
+        <>
+            {withCode(text.slice(0, at))}
+            <a className={styles.inlineLink} href="#history-heading" onClick={(event) => jumpTo(event, 'history-heading')}>
+                {phrase}
+            </a>
+            {text.slice(at + phrase.length)}
+        </>
     );
 }
 
@@ -552,7 +571,7 @@ function PreviewPanel({ facts }: { facts: DisplayFacts }) {
             {panel.rollback ? (
                 <footer className={styles.panelFooter}>
                     <Undo2 size={15} aria-hidden="true" />
-                    <span>{withCode(panel.rollback)}</span>
+                    <span>{withHistoryLink(panel.rollback)}</span>
                 </footer>
             ) : null}
         </section>
@@ -572,10 +591,12 @@ interface PublishScreenProps {
     action: (previous: PublishState, form: FormData) => Promise<PublishState>;
     /** 15-4's History section: the layout's last area, under the ledger (or under the panel when nothing is pending). */
     history?: ReactNode;
+    /** The mockup's seam for a state after an answer. The build starts from IDLE_STATE. */
+    initialState?: PublishState;
 }
 
-export default function PublishScreen({ view, previewHref, openFix, action, history }: PublishScreenProps) {
-    const [state, dispatch, pending] = useActionState(action, IDLE_STATE);
+export default function PublishScreen({ view, previewHref, openFix, action, history, initialState }: PublishScreenProps) {
+    const [state, dispatch, pending] = useActionState(action, initialState ?? IDLE_STATE);
     // The press that's waiting, for the live region and the pending label. Set on the click, before the post.
     const [sent, setSent] = useState<Intent | null>(null);
     const [open, setOpen] = useState<string | null>(openFix);
@@ -698,7 +719,7 @@ export default function PublishScreen({ view, previewHref, openFix, action, hist
                         <ActionBar view={view} facts={facts} pending={pending} sent={sent} ctx={ctx} />
                     </section>
                 )}
-                {history}
+                <PublishAnswerContext.Provider value={{ result: state.result, pending, sent }}>{history}</PublishAnswerContext.Provider>
             </div>
         </main>
     );

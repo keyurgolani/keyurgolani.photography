@@ -7,7 +7,7 @@
  * renders what displayFacts() says for the page and its latest answer.
  */
 
-export type ReviewLabel = 'reviewed' | 'not-reviewed' | 'stale' | 'generated' | 'automatic' | 'confirmed' | 'published';
+export type ReviewLabel = 'reviewed' | 'not-reviewed' | 'stale' | 'generated' | 'automatic' | 'confirmed' | 'published' | 'conflict';
 
 export type KindLabel = 'New' | 'Removed' | 'Changed' | 'Moved' | 'Hidden' | 'Route' | 'New image' | 'Recalculated' | 'Source health';
 

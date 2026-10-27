@@ -1,9 +1,11 @@
 'use client';
 
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type MouseEvent } from 'react';
 import { Check, CircleAlert, CircleDashed, Clock, ExternalLink, RefreshCw, Undo2, type LucideIcon } from 'lucide-react';
 import curator from '@/app/curation/curator.module.css';
 import publish from '@/app/curation/publish/publish.module.css';
+import { usePublishAnswer } from '@/app/curation/publish/HistoryContext';
+import type { Answer } from '@/lib/curation/publish-facts';
 import type { DialogState, Entry, HistoryModel, Plan, Result, ResultAction } from './model';
 import styles from './history.module.css';
 
@@ -19,9 +21,26 @@ import styles from './history.module.css';
 
 const Pause = () => <span className={curator.visuallyHidden}>, </span>;
 
+/** 16-3's answers that move the pointer, or find it moved: History read again comes with them. */
+function movedPointer(answer: Answer | null): boolean {
+    if (!answer) return false;
+    return answer.kind === 'published' || answer.kind === 'already-live' || answer.kind === 'someone-published' || (answer.kind === 'failed' && answer.live !== null);
+}
+
+/** 16-3's instant jump that moves focus with it. */
+function jumpTo(event: MouseEvent<HTMLAnchorElement>, id: string) {
+    const target = document.getElementById(id);
+    if (!target) return;
+    event.preventDefault();
+    target.focus({ preventScroll: true });
+    target.scrollIntoView({ block: 'start', behavior: 'instant' });
+}
+
+const RELOAD = '/mockup/publish-history?state=list';
+
 const TONE_ICON: Record<'done' | 'alert' | 'change', LucideIcon> = { done: Check, alert: CircleAlert, change: RefreshCw };
 
-function EntryItem({ entry, onRestore }: { entry: Entry; onRestore: (sequence: number, revision: number) => void }) {
+function EntryItem({ entry, paused, onRestore }: { entry: Entry; paused: boolean; onRestore: (sequence: number, revision: number) => void }) {
     const { sequence, badge, eligibility } = entry;
     return (
         <li className={styles.entry} id={`entry-${sequence}`}>
@@ -42,7 +61,18 @@ function EntryItem({ entry, onRestore }: { entry: Entry; onRestore: (sequence: n
                     {entry.title}
                 </h3>
                 <p className={styles.when}>{entry.when}</p>
-                {entry.reason ? <p className={styles.reason}>{entry.reason.quoted ? `“${entry.reason.text}”` : `Note: ${entry.reason.text}`}</p> : null}
+                {entry.reason ? (
+                    <p className={styles.reason}>
+                        {entry.reason.quoted ? (
+                            `“${entry.reason.text}”`
+                        ) : (
+                            <>
+                                <span className={styles.notePrefix}>Note: </span>
+                                {entry.reason.text}
+                            </>
+                        )}
+                    </p>
+                ) : null}
                 <p className={styles.from}>
                     {entry.from}
                     {entry.held ? ` ${entry.held}` : ''}
@@ -58,7 +88,15 @@ function EntryItem({ entry, onRestore }: { entry: Entry; onRestore: (sequence: n
             </div>
             {eligibility.type === 'restore' ? (
                 <div className={styles.action}>
-                    <button type="button" id={`restore-${sequence}`} className={curator.button} onClick={() => onRestore(sequence, eligibility.revision)}>
+                    <button
+                        type="button"
+                        id={`restore-${sequence}`}
+                        className={curator.button}
+                        aria-disabled={paused || undefined}
+                        aria-describedby={paused ? 'history-paused' : undefined}
+                        data-off={paused ? 'true' : undefined}
+                        onClick={() => (paused ? undefined : onRestore(sequence, eligibility.revision))}
+                    >
                         <Undo2 size={16} aria-hidden="true" />
                         Restore revision {eligibility.revision}
                     </button>
@@ -71,7 +109,7 @@ function EntryItem({ entry, onRestore }: { entry: Entry; onRestore: (sequence: n
 function ResultBlock({ result }: { result: Result }) {
     const Icon = result.clock ? Clock : TONE_ICON[result.tone];
     return (
-        <section className={`${curator.notice} ${publish.result} ${styles.dialogResult}`} data-tone={result.tone} aria-labelledby="restore-result-heading">
+        <section id="restore-result" className={`${curator.notice} ${publish.result} ${styles.dialogResult}`} data-tone={result.tone} aria-labelledby="restore-result-heading">
             <h3 id="restore-result-heading" tabIndex={-1} className={publish.resultHeading}>
                 <Icon size={18} aria-hidden="true" />
                 {result.heading}
@@ -96,6 +134,7 @@ function RestoreDialog({ state, onClose, onSubmit }: { state: DialogState; onClo
     const pending = phase === 'pending';
     const missing = phase === 'reason-missing';
     const n = plan.revision;
+    const moved = phase === 'result' ? result?.moved : undefined;
 
     // Open as a modal, then focus by phase: the heading, the empty reason, the pending button, or the answer's heading.
     useEffect(() => {
@@ -103,7 +142,11 @@ function RestoreDialog({ state, onClose, onSubmit }: { state: DialogState; onClo
         if (!element) return;
         if (!element.open) element.showModal();
         const id = missing ? 'restore-reason' : pending ? 'restore-submit' : phase === 'result' ? 'restore-result-heading' : 'restore-heading';
-        requestAnimationFrame(() => document.getElementById(id)?.focus());
+        requestAnimationFrame(() => {
+            // After an answer its whole box comes into view at the top of the body, above the actions, at both widths.
+            if (phase === 'result') document.getElementById('restore-result')?.scrollIntoView({ block: 'start', behavior: 'instant' });
+            document.getElementById(id)?.focus({ preventScroll: phase === 'result' });
+        });
     }, [phase, missing, pending]);
 
     const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -115,6 +158,14 @@ function RestoreDialog({ state, onClose, onSubmit }: { state: DialogState; onClo
 
     const actions: ResultAction[] = phase === 'result' && result ? result.actions : ['cancel', 'retry'];
     const button = (action: ResultAction) => {
+        if (action === 'close-reload') {
+            // The answer moved the pointer, so the page behind is stale: closing reloads it.
+            return (
+                <a key={action} className={curator.linkButton} href={RELOAD}>
+                    Close and reload
+                </a>
+            );
+        }
         if (action === 'cancel' || action === 'close') {
             return (
                 <button key={action} type="button" className={curator.button} aria-disabled={pending || undefined} data-off={pending ? 'true' : undefined} onClick={() => (pending ? undefined : onClose())}>
@@ -124,7 +175,7 @@ function RestoreDialog({ state, onClose, onSubmit }: { state: DialogState; onClo
         }
         if (action === 'reload') {
             return (
-                <a key={action} className={`${curator.linkButton} ${publish.primaryLink}`} href="/mockup/publish-history?state=list">
+                <a key={action} className={`${curator.linkButton} ${publish.primaryLink}`} href={RELOAD}>
                     <RefreshCw size={16} aria-hidden="true" />
                     Load the updated page
                 </a>
@@ -171,11 +222,13 @@ function RestoreDialog({ state, onClose, onSubmit }: { state: DialogState; onClo
                         Restore revision {n}?
                     </h2>
                     <p id="restore-stakes" className={styles.stakes}>
-                        Visitors see revision {plan.active} now. Restoring makes revision {n} live again on every page. Revision {plan.active} stays in History, so you can restore it later.
+                        {moved
+                            ? `This page loaded while revision ${plan.active} was live.`
+                            : `Visitors see revision ${plan.active} now. Restoring makes revision ${n} live again on every page. Revision ${plan.active} stays in History, so you can restore it later.`}
                     </p>
                     <dl className={styles.cas}>
                         <div>
-                            <dt>Live now</dt>
+                            <dt>{moved ? 'Live when you opened this' : 'Live now'}</dt>
                             <dd>
                                 Revision {plan.active} · {plan.activeHash}
                             </dd>
@@ -188,13 +241,32 @@ function RestoreDialog({ state, onClose, onSubmit }: { state: DialogState; onClo
                         </div>
                     </dl>
                     <p className={styles.casNote}>If another revision goes live before you confirm, nothing is restored.</p>
-                    <h3 className={styles.impactHeading}>What changes for visitors</h3>
-                    <ul className={styles.impact}>
-                        {plan.impact.map((line) => (
-                            <li key={line}>{line}</li>
-                        ))}
-                    </ul>
-                    {plan.draftNote ? <p className={styles.draftNote}>{plan.draftNote}</p> : null}
+                    {moved?.impact === 'hide' ? null : (
+                        <>
+                            <h3 className={styles.impactHeading}>{moved ? `What it would have changed, against revision ${plan.active}` : 'What changes for visitors'}</h3>
+                            <ul className={styles.impact}>
+                                {plan.impact.map((line) => (
+                                    <li key={line.text}>
+                                        {line.text}
+                                        {line.more ? (
+                                            <details className={styles.moreNames}>
+                                                <summary>and {line.more.length} more</summary>
+                                                <p>{line.more.join(', ')}</p>
+                                            </details>
+                                        ) : null}
+                                    </li>
+                                ))}
+                            </ul>
+                        </>
+                    )}
+                    {plan.draftNote ? (
+                        <div className={`${curator.notice} ${styles.draftNote}`} data-tone="change">
+                            <p>
+                                <CircleAlert size={15} aria-hidden="true" />
+                                {plan.draftNote}
+                            </p>
+                        </div>
+                    ) : null}
                     {plan.editorial ? <Editorial text={plan.editorial} /> : null}
                     <div className={styles.field}>
                         <label htmlFor="restore-reason">Why are you restoring it?</label>
@@ -236,7 +308,10 @@ function Editorial({ text }: { text: string }) {
     );
 }
 
-export default function HistorySection({ model }: { model: HistoryModel }) {
+export default function HistorySection({ model: loaded }: { model: HistoryModel }) {
+    // 16-3's answer: one that moved the pointer carries History read again; a pending press pauses Restore.
+    const { result: answer, pending: publishing, sent } = usePublishAnswer();
+    const model = movedPointer(answer) && loaded.afterAnswer ? loaded.afterAnswer : loaded;
     const [dialog, setDialog] = useState<DialogState | null>(model.dialog ?? null);
     const opener = useRef<number | null>(model.dialog?.opener ?? null);
 
@@ -268,6 +343,11 @@ export default function HistorySection({ model }: { model: HistoryModel }) {
                 History
             </h2>
             <p className={styles.lead}>{model.lead}</p>
+            {publishing ? (
+                <p id="history-paused" className={styles.paused}>
+                    {sent === 'publish' ? 'Restore waits until this publish answers.' : 'Restore waits until this check answers.'}
+                </p>
+            ) : null}
             {model.done ? (
                 <section className={`${curator.notice} ${publish.result} ${styles.done}`} data-tone="done" aria-labelledby="history-result-heading">
                     <h3 id="history-result-heading" tabIndex={-1} className={publish.resultHeading}>
@@ -278,6 +358,11 @@ export default function HistorySection({ model }: { model: HistoryModel }) {
                         <p key={line}>{line}</p>
                     ))}
                     <p className={publish.resultLinks}>
+                        {model.done.jump ? (
+                            <a className={curator.linkButton} href={`#${model.done.jump.target}`} onClick={(event) => jumpTo(event, model.done?.jump?.target ?? '')}>
+                                {model.done.jump.label}
+                            </a>
+                        ) : null}
                         <a className={curator.linkButton} href="/mockup/publish-history/site" target="_blank" rel="noopener noreferrer">
                             Open the site
                             <span className={curator.visuallyHidden}> (opens in a new tab)</span>
@@ -288,7 +373,7 @@ export default function HistorySection({ model }: { model: HistoryModel }) {
             ) : null}
             <ol className={styles.entries}>
                 {model.entries.map((entry) => (
-                    <EntryItem key={entry.sequence} entry={entry} onRestore={open} />
+                    <EntryItem key={entry.sequence} entry={entry} paused={publishing} onRestore={open} />
                 ))}
             </ol>
             {model.total && model.more ? (

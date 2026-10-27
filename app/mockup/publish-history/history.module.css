@@ -102,14 +102,30 @@
   text-wrap: pretty;
 }
 
-/* The owner's own words: the serif the site uses for his. */
+/* The owner's own words, in quotes, or a CLI note: the sans at the label size, below the title (review r1 P2-6). */
 .reason {
   max-width: 62ch;
   margin: 0.3rem 0 0;
   color: var(--gah-ink);
-  font-family: var(--gah-font-serif);
-  font-size: 1rem;
-  line-height: 1.4;
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-label);
+  line-height: 1.45;
+}
+
+.notePrefix {
+  color: var(--gah-ink-muted);
+}
+
+/* Validate or Publish is pending: why every Restore is unavailable. */
+.paused {
+  margin: 0.5rem 0 0;
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}
+
+.action button[data-off='true'] {
+  color: var(--gah-ink-muted);
+  cursor: not-allowed;
 }
 
 .facts {
@@ -197,7 +213,10 @@
 
 .dialogBody {
   min-height: 0;
+  /* Fills the dialog, so the actions sit at its foot on a phone (review r1 P3-1). */
+  flex: 1 1 auto;
   overflow-y: auto;
+  scroll-padding-block: 1rem;
   padding: 1.25rem 1.25rem 1rem;
 }
 
@@ -274,9 +293,35 @@
 }
 
 .draftNote {
-  margin: 0.75rem 0 0;
-  color: var(--gah-ink-soft);
   font-size: var(--gah-type-label);
+}
+
+.draftNote p {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+}
+
+.draftNote svg {
+  flex: none;
+  margin-top: 0.15rem;
+  color: var(--curator-tone-change-ink);
+}
+
+/* The names past 5: a native disclosure, no script, one Tab stop only when present. */
+.moreNames summary {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  color: var(--gah-ink);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+  cursor: pointer;
+}
+
+.moreNames p {
+  margin: 0 0 0.25rem;
+  color: var(--gah-ink-soft);
 }
 
 .editorial {
