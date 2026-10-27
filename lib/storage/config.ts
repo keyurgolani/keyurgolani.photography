@@ -98,36 +98,36 @@ function canAccess(target: string, mode: number): boolean {
     }
 }
 
-// Data roots, by device, inode and birth time, that held a hard link in this process. The inode alone isn't enough: a root
-// removed and made again can get the inode back (Linux reuses them quickly), and it may sit on another filesystem by then.
-const linkCapableRoots = new Set<string>();
-
 /**
  * Why `root` can't take a versioned write, or null when it can. Each one
  * commits its version with link(), so this links a probe file there and
- * removes both names. A root that passes isn't probed again, while it's the
- * same root: the same device, inode and birth time.
+ * removes both names. It probes every time: nothing about a folder tells a root
+ * removed and made again from the one probed before (Linux hands the inode back
+ * quickly, and stamps birth times from a clock that ticks every few
+ * milliseconds), and the callers are write paths, where four calls cost nothing.
  */
-function linkProblem(root: string, stat: fs.Stats): string | null {
-    // With no birth time to tell a recreated root from the one probed (0 where the filesystem keeps none), it's probed each time.
-    const key = stat.birthtimeMs > 0 ? `${stat.dev}:${stat.ino}:${stat.birthtimeMs}` : null;
-    if (key !== null && linkCapableRoots.has(key)) return null;
+function linkProblem(root: string): string | null {
     const probe = path.join(/*turbopackIgnore: true*/ root, `.link-probe-${process.pid}-${randomUUID()}`);
     try {
         fs.writeFileSync(probe, '', { flag: 'wx', mode: PRIVATE_FILE_MODE });
     } catch (error) {
         return `a file can't be created in it: ${(error as Error).message}`;
     }
+    let problem: string | null = null;
     try {
         fs.linkSync(probe, `${probe}.link`);
-        if (key !== null) linkCapableRoots.add(key);
-        return null;
     } catch (error) {
-        return `its filesystem can't hold hard links, which every versioned write needs: ${(error as Error).message}`;
-    } finally {
-        fs.rmSync(`${probe}.link`, { force: true });
-        fs.rmSync(probe, { force: true });
+        problem = `its filesystem can't hold hard links, which every versioned write needs: ${(error as Error).message}`;
     }
+    // Each name on its own, so one that can't go doesn't keep the other, and a root that can't drop a file isn't ready.
+    for (const name of [`${probe}.link`, probe]) {
+        try {
+            fs.rmSync(name, { force: true });
+        } catch (error) {
+            problem ??= `a probe file can't be removed from it (${failure(error)})`;
+        }
+    }
+    return problem;
 }
 
 /**
@@ -211,7 +211,7 @@ export function dataRootStatus(
     if (marker.kind === 'unreadable') return { state: 'unavailable', root, cause: 'marker-unreadable', detail: marker.detail };
     if (write || versioned) {
         if (!canAccess(root, fs.constants.W_OK)) return { state: 'unwritable', root, detail: 'it is not writable' };
-        const problem = versioned ? linkProblem(root, stat) : null;
+        const problem = versioned ? linkProblem(root) : null;
         if (problem !== null) return { state: 'unwritable', root, detail: problem };
     }
     if (marker.kind !== 'valid') return { state: 'uninitialized', root, detail: marker.detail };
