@@ -10,6 +10,7 @@ import {
     HISTORY_LEAD,
     impactLines,
     LIVE_TEXT,
+    localize,
     publishWords,
     restorableRevisions,
     restoreResult,
@@ -74,15 +75,26 @@ function row(input: Row): EntryInput {
     };
 }
 
+/** Every day and time token named in UTC, as the screen names them before hydration. */
+const local = <T,>(value: T): T => JSON.parse(JSON.stringify(value), (_, entry: unknown) => (typeof entry === 'string' ? localize(entry) : entry)) as T;
+
 const view = (rows: EntryInput[], planned: Record<number, PlanStatus> = {}, shown = 10, extra: Partial<HistoryViewInput> = {}) =>
-    historyView({
+    local(historyView({
         rows,
         shown,
         planned: new Map(Object.entries(planned).map(([n, status]) => [rev(Number(n)), status])),
         plans: {},
         hrefs: { check: (revision, sequence) => `/c?check=${revision}#entry-${sequence}-title`, more: (count, first) => `/c?history=${count}#entry-${first}-title` },
         ...extra,
+    }));
+
+describe('times', () => {
+    it("name a day and a time in the owner's zone, UTC before the browser says which", () => {
+        const text = localize('Published {{day:2026-10-27T03:30:00.000Z}} at {{time:2026-10-27T03:30:00.000Z}}.');
+        expect(text).toBe('Published 27 October at 03:30.');
+        expect(localize('Published {{day:2026-10-27T03:30:00.000Z}} at {{time:2026-10-27T03:30:00.000Z}}.', 'America/Los_Angeles')).toBe('Published 26 October at 20:30.');
     });
+});
 
 describe('the change lines', () => {
     it('lead with the change and put the noun on the first count only', () => {
@@ -247,12 +259,12 @@ describe("the dialog's answers", () => {
     const facts = (patch: Partial<OutcomeFacts> = {}): OutcomeFacts => ({ target: 5, active: 6, pointer: { revisionId: rev(6), number: 6 }, targetRevisionId: rev(5), liveBy: null, holderSince: null, reasons: [], settled: false, ...patch });
 
     it('changed under you: says who made the new one live, keeps the impact as what it would have changed, and offers one way on', () => {
-        const result = restoreResult('ACTIVE_CHANGED', facts({ pointer: { revisionId: rev(7), number: 7 }, liveBy: { actor: 'keyur', kind: 'publish', at: '2026-10-27T09:10:00.000Z' } }));
+        const result = local(restoreResult('ACTIVE_CHANGED', facts({ pointer: { revisionId: rev(7), number: 7 }, liveBy: { actor: 'keyur', kind: 'publish', at: '2026-10-27T09:10:00.000Z' } })));
         expect(result).toEqual({ tone: 'change', heading: 'Revision 7 went live while this was open', body: ['keyur published it at 09:10, with photos publish. The list above is out of date, so nothing was restored.'], actions: ['reload'], moved: { impact: 'past' } });
     });
 
     it('lock held: when it started, what stays live, and the retry', () => {
-        expect(restoreResult('CATALOG_LOCKED', facts({ holderSince: '2026-10-27T09:10:00.000Z' }))).toEqual({
+        expect(local(restoreResult('CATALOG_LOCKED', facts({ holderSince: '2026-10-27T09:10:00.000Z' })))).toEqual({
             tone: 'change',
             clock: true,
             heading: 'Another publish or restore is running',
@@ -262,27 +274,27 @@ describe("the dialog's answers", () => {
     });
 
     it('refused by the checks: the reasons, and Load the updated page so the entry picks up its reason', () => {
-        expect(restoreResult('VALIDATION_FAILED', facts({ reasons: ['2 of its photographs no longer have their image files: Tide gauge, Ferry steps'] }))).toEqual({
+        expect(local(restoreResult('VALIDATION_FAILED', facts({ reasons: ['2 of its photographs no longer have their image files: Tide gauge, Ferry steps'] })))).toEqual({
             tone: 'alert',
             heading: "Revision 5 can't come back",
             body: ["Today's checks refuse it, so nothing was restored. Revision 6 stays live."],
             list: ['2 of its photographs no longer have their image files: Tide gauge, Ferry steps.'],
             actions: ['close', 'reload'],
         });
-        expect(restoreResult('NOT_ELIGIBLE', facts()).heading).toBe("Revision 5 never went live, so it can't come back");
-        expect(restoreResult('NOTHING_ACTIVE', facts()).actions).toEqual(['reload']);
-        expect(restoreResult('DATA_ROOT_NOT_READY', facts()).heading).toBe("The data root isn't ready");
+        expect(local(restoreResult('NOT_ELIGIBLE', facts())).heading).toBe("Revision 5 never went live, so it can't come back");
+        expect(local(restoreResult('NOTHING_ACTIVE', facts())).actions).toEqual(['reload']);
+        expect(local(restoreResult('DATA_ROOT_NOT_READY', facts())).heading).toBe("The data root isn't ready");
     });
 
     it('already live: moved facts, nothing more to do, and Close and reload', () => {
-        const result = restoreResult('NO_CHANGES', facts({ pointer: { revisionId: rev(5), number: 5 }, liveBy: { actor: 'curator:web', kind: 'rollback', at: '2026-10-27T09:11:00.000Z' }, settled: true }));
+        const result = local(restoreResult('NO_CHANGES', facts({ pointer: { revisionId: rev(5), number: 5 }, liveBy: { actor: 'curator:web', kind: 'rollback', at: '2026-10-27T09:11:00.000Z' }, settled: true })));
         expect(result).toEqual({ tone: 'done', heading: 'Revision 5 is already live', body: ['It went live at 09:11, from this screen. Nothing more to do.', 'History now records the restore that was interrupted.'], actions: ['close-reload'], moved: { impact: 'hide' } });
     });
 
     it('interrupted: before the switch, the retry; after it, Finish restoring', () => {
-        expect(restoreResult('STORAGE_ERROR', facts())).toEqual({ tone: 'alert', heading: 'The restore stopped before revision 5 went live', body: ['Revision 6 is still live, and visitors see no change. The server log names what failed. Restore again to retry.'], actions: ['cancel', 'retry'] });
+        expect(local(restoreResult('STORAGE_ERROR', facts()))).toEqual({ tone: 'alert', heading: 'The restore stopped before revision 5 went live', body: ['Revision 6 is still live, and visitors see no change. The server log names what failed. Restore again to retry.'], actions: ['cancel', 'retry'] });
         for (const outcome of ['STORAGE_ERROR', 'INTEGRITY_MISMATCH', 'LOCK_LOST'] as const) {
-            expect(restoreResult(outcome, facts({ pointer: { revisionId: rev(5), number: 5 } }))).toEqual({ tone: 'alert', heading: "Revision 5 is live, but the restore didn't finish", body: ['Visitors see revision 5. Finish restoring it so History records it.'], actions: ['close-reload', 'finish'], moved: { impact: 'hide' } });
+            expect(local(restoreResult(outcome, facts({ pointer: { revisionId: rev(5), number: 5 } })))).toEqual({ tone: 'alert', heading: "Revision 5 is live, but the restore didn't finish", body: ['Visitors see revision 5. Finish restoring it so History records it.'], actions: ['close-reload', 'finish'], moved: { impact: 'hide' } });
         }
     });
 });

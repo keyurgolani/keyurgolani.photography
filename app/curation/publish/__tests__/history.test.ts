@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { listActivations } from '@/lib/catalog/repository';
 import { readActivePointer, readAuthoredRecord } from '@/lib/catalog/working-layer';
 import { IDLE_STATE, type Answer, type ScreenView } from '@/lib/curation/publish-facts';
-import { RESTORE_IDLE, type HistoryView, type RestoreState } from '@/lib/curation/publish-history';
+import { localize, RESTORE_IDLE, type HistoryView, type RestoreState } from '@/lib/curation/publish-history';
 import { resetLoginForTests } from '@/lib/curation/auth/login';
 import { resetSessionsForTests } from '@/lib/curation/auth/sessions';
 import { makeCuratorSecrets, type TestCuratorSecrets } from '@/test/helpers/curatorSecrets';
@@ -107,7 +107,7 @@ describe('the page read', () => {
             ['Revision 2', 'Publish', 'Live now', 'text'],
             ['Revision 1', 'Publish', null, 'restore'],
         ]);
-        expect(history.entries[0].when).toMatch(/^Published \d+ \w+ at \d\d:\d\d by keyur, with photos publish\.$/);
+        expect(localize(history.entries[0].when)).toMatch(/^Published \d+ \w+ at \d\d:\d\d by keyur, with photos publish\.$/);
         expect(history.entries[0].reason).toEqual({ text: 'fixture revision 2', quoted: false });
         expect(history.entries[0].from).toBe('Replaced revision 1: 1 series changed.');
         const plan = history.plans[1];
@@ -171,10 +171,10 @@ describe('the answers', () => {
         expect(after.history.done).toEqual({ heading: 'Revision 2 is live again', body: ['Visitors see it on their next page load. Revision 3 is kept in History.'] });
         const [top, three, two] = after.history.entries;
         expect(top).toMatchObject({ title: 'Revision 2', kind: 'Restore', badge: { text: 'Live now' }, reason: { text: 'The new order reads wrong.', quoted: true }, eligibility: { type: 'text' } });
-        expect(top.when).toMatch(/^Restored \d+ \w+ at \d\d:\d\d, from this screen\.$/);
+        expect(localize(top.when)).toMatch(/^Restored \d+ \w+ at \d\d:\d\d, from this screen\.$/);
         expect(top.from).toMatch(/^Replaced revision 3: /);
         expect(three.eligibility).toEqual({ type: 'restore', revision: 3 });
-        expect(two.eligibility).toMatchObject({ type: 'text', text: expect.stringMatching(/^Live now: restored on \d+ \w+, above\.$/) });
+        expect(two.eligibility.type === 'text' && localize(two.eligibility.text)).toMatch(/^Live now: restored on \d+ \w+, above\.$/);
         // A stale or made-up ?restored= claims nothing.
         expect((await page({ restored: 3 })).history.done).toBeUndefined();
     });
@@ -203,7 +203,7 @@ describe('the answers', () => {
             const before = (await listActivations(fixture.root)).length;
             const result = resultOf(await restore(history, 2));
             expect(result).toMatchObject({ tone: 'change', clock: true, heading: 'Another publish or restore is running', actions: ['cancel', 'retry'] });
-            expect(result.body[0]).toMatch(/^It started at \d\d:\d\d\. Nothing changed, and revision 3 stays live\./);
+            expect(localize(result.body[0])).toMatch(/^It started at \d\d:\d\d\. Nothing changed, and revision 3 stays live\./);
             expect((await listActivations(fixture.root)).length).toBe(before);
         } finally {
             await release();
@@ -252,7 +252,7 @@ describe("16-3's answer carries History", () => {
             ['Revision 2', null, 'restore'],
             ['Revision 1', null, 'restore'],
         ]);
-        expect(history?.entries[0].when).toMatch(/, from this screen\.$/);
+        expect(localize(history?.entries[0].when ?? '')).toMatch(/, from this screen\.$/);
         expect(history?.plans[2]?.draftNote).toBeUndefined();
     });
 

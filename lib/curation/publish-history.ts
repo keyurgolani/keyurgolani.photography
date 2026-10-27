@@ -3,6 +3,28 @@ import type { RollbackOutcome } from '@/lib/catalog/rollback';
 import type { Activation, Issue } from '@/lib/catalog/types';
 import { dayOf, timeOf } from './publish-facts';
 
+// Times. The server words History, and the browser names its times, in the owner's zone, as 16-3's answers do: a
+// time or a day goes into the text as a token, and localize() fills it in where it's rendered.
+const TOKEN = /\{\{(day|time):([^}]+)\}\}/g;
+export const dayToken = (iso: string) => `{{day:${iso}}}`;
+export const timeToken = (iso: string) => `{{time:${iso}}}`;
+
+/** "26 October", from an ISO time, in `timeZone`. */
+export function dayIn(iso: string, timeZone = 'UTC'): string {
+    const at = new Date(iso);
+    if (Number.isNaN(at.getTime())) return iso;
+    try {
+        return new Intl.DateTimeFormat('en-GB', { timeZone, day: 'numeric', month: 'long' }).format(at);
+    } catch {
+        return dayOf(iso);
+    }
+}
+
+/** The text with its day and time tokens named in `timeZone`. */
+export function localize(text: string, timeZone = 'UTC'): string {
+    return text.replace(TOKEN, (_, kind: string, iso: string) => (kind === 'time' ? timeOf(iso, timeZone) : dayIn(iso, timeZone)));
+}
+
 /**
  * #15's 15-4: History and restore on the Publish screen. The view the
  * section and its restore dialog render, already in the owner's words, and
@@ -265,7 +287,7 @@ function entryOf(row: EntryInput, index: Map<string, EntryInput>, liveRow: Entry
             title: restore ? "A restore that didn't finish" : "A publish that didn't finish",
             badge: { text: "Didn't finish", tone: 'quiet' },
             kind: restore ? 'Restore' : 'Publish',
-            when: `Started ${dayOf(at)} at ${timeOf(at)}${byPhrase(activation.actor, command)}.`,
+            when: `Started ${dayToken(at)} at ${timeToken(at)}${byPhrase(activation.actor, command)}.`,
             ...(activation.reason !== SCREEN_REASON ? { reason: { text: activation.reason, quoted: restore } } : {}),
             from: 'It never went live, so visitors never saw it.',
             facts: `Entry ${activation.sequence}`,
@@ -296,12 +318,12 @@ function entryOf(row: EntryInput, index: Map<string, EntryInput>, liveRow: Entry
         if (live) return { type: 'text', text: LIVE_TEXT, tone: 'quiet' };
         if (summary === null) return { type: 'text', text: UNREADABLE_TEXT, tone: 'alert' };
         if (liveRow && liveRow.activation.revisionId === activation.revisionId) {
-            const day = dayOf(liveRow.activation.committedAt ?? liveRow.activation.startedAt);
+            const day = dayToken(liveRow.activation.committedAt ?? liveRow.activation.startedAt);
             return { type: 'text', text: `Live now: ${liveRow.activation.kind === 'rollback' ? 'restored' : 'published'} on ${day}, above.`, tone: 'quiet' };
         }
         const newest = newestFor(input.rows, activation.revisionId);
         if (newest && newest.activation.sequence !== activation.sequence) {
-            return { type: 'text', text: `Restore it from its newest entry, ${dayOf(newest.activation.committedAt ?? newest.activation.startedAt)}, above.`, tone: 'quiet' };
+            return { type: 'text', text: `Restore it from its newest entry, ${dayToken(newest.activation.committedAt ?? newest.activation.startedAt)}, above.`, tone: 'quiet' };
         }
         const plan = input.planned.get(activation.revisionId);
         if (!plan) return { type: 'check', revision: activation.revisionNumber, href: input.hrefs.check(activation.revisionNumber, activation.sequence) };
@@ -315,7 +337,7 @@ function entryOf(row: EntryInput, index: Map<string, EntryInput>, liveRow: Entry
         title: `Revision ${activation.revisionNumber}`,
         ...(live ? { badge: { text: 'Live now', tone: 'done' as const } } : {}),
         kind: restore ? 'Restore' : 'Publish',
-        when: `${restore ? 'Restored' : 'Published'} ${dayOf(at)} at ${timeOf(at)}${byPhrase(activation.actor, command)}.`,
+        when: `${restore ? 'Restored' : 'Published'} ${dayToken(at)} at ${timeToken(at)}${byPhrase(activation.actor, command)}.`,
         ...(restore || activation.reason !== SCREEN_REASON ? { reason: { text: activation.reason, quoted: restore } } : {}),
         from,
         ...(summary ? { held: `${plural(summary.seriesCount, 'series', 'series')}, ${plural(summary.photoCount, 'photograph')} in all.` } : {}),
@@ -450,7 +472,7 @@ export function restoreResult(outcome: RollbackOutcome, facts: OutcomeFacts): Re
         case 'ACTIVE_CHANGED': {
             const now = facts.pointer?.number ?? null;
             const who = facts.liveBy
-                ? `${facts.liveBy.actor === WEB_ACTOR_ID ? `It went live at ${timeOf(facts.liveBy.at)}, from this screen.` : `${facts.liveBy.actor} ${facts.liveBy.kind === 'rollback' ? 'restored' : 'published'} it at ${timeOf(facts.liveBy.at)}, with photos ${facts.liveBy.kind === 'rollback' ? 'rollback' : 'publish'}.`} `
+                ? `${facts.liveBy.actor === WEB_ACTOR_ID ? `It went live at ${timeToken(facts.liveBy.at)}, from this screen.` : `${facts.liveBy.actor} ${facts.liveBy.kind === 'rollback' ? 'restored' : 'published'} it at ${timeToken(facts.liveBy.at)}, with photos ${facts.liveBy.kind === 'rollback' ? 'rollback' : 'publish'}.`} `
                 : '';
             return {
                 tone: 'change',
@@ -461,7 +483,7 @@ export function restoreResult(outcome: RollbackOutcome, facts: OutcomeFacts): Re
             };
         }
         case 'CATALOG_LOCKED': {
-            const since = facts.holderSince ? `It started at ${timeOf(facts.holderSince)}. ` : '';
+            const since = facts.holderSince ? `It started at ${timeToken(facts.holderSince)}. ` : '';
             return { tone: 'change', clock: true, heading: 'Another publish or restore is running', body: [`${since}Nothing changed, and revision ${m} stays live. Restore again once it finishes, usually within a minute.`], actions: ['cancel', 'retry'] };
         }
         case 'VALIDATION_FAILED':
@@ -477,7 +499,7 @@ export function restoreResult(outcome: RollbackOutcome, facts: OutcomeFacts): Re
         case 'NOTHING_ACTIVE':
             return { tone: 'alert', heading: 'Nothing is live yet', body: ['There is nothing to restore from. Nothing was restored.'], actions: ['reload'] };
         case 'NO_CHANGES': {
-            const at = facts.liveBy ? ` at ${timeOf(facts.liveBy.at)}${byPhrase(facts.liveBy.actor, facts.liveBy.kind === 'rollback' ? 'photos rollback' : 'photos publish')}` : '';
+            const at = facts.liveBy ? ` at ${timeToken(facts.liveBy.at)}${byPhrase(facts.liveBy.actor, facts.liveBy.kind === 'rollback' ? 'photos rollback' : 'photos publish')}` : '';
             const body = [`It went live${at}. Nothing more to do.`];
             if (facts.settled) body.push('History now records the restore that was interrupted.');
             return { tone: 'done', heading: `Revision ${n} is already live`, body, actions: ['close-reload'], moved: { impact: 'hide' } };

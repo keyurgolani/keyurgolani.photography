@@ -766,7 +766,7 @@ export default function PublishScreen({ view, previewHref, openFix, action, hist
                         <ActionBar view={view} facts={facts} pending={pending} sent={sent} ctx={ctx} />
                     </section>
                 )}
-                <PublishAnswerContext.Provider value={{ result: state.result, pending, sent }}>{history}</PublishAnswerContext.Provider>
+                <PublishAnswerContext.Provider value={{ result: state.result, pending, sent, zone }}>{history}</PublishAnswerContext.Provider>
             </div>
         </main>
     );

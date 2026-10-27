@@ -248,7 +248,8 @@ export function actorPhrase(actor: string, command = 'photos publish'): string {
 export function publisherLine(by: Publisher | null, timeZone: string, elsewhere: boolean): string {
     if (by === null) return elsewhere ? 'It went live from the command line.' : 'It is live now.';
     const at = timeOf(by.at, timeZone);
-    if (by.kind === 'rollback') return by.actor === WEB_ACTOR ? `It was rolled back from this screen at ${at}.` : `${by.actor} rolled it back at ${at}, with photos rollback.`;
+    // 15-4: the screen's word for a rollback is Restore (spec, Decided 3); the command keeps its name.
+    if (by.kind === 'rollback') return by.actor === WEB_ACTOR ? `It was restored from this screen at ${at}.` : `${by.actor} restored it at ${at}, with photos rollback.`;
     if (by.actor === WEB_ACTOR) return elsewhere ? `It went live from this screen at ${at}, in another tab or window.` : `It went live from this screen at ${at}.`;
     return `${by.actor} published it at ${at}, with photos publish.`;
 }

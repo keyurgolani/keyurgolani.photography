@@ -197,7 +197,7 @@ describe('facts by state', () => {
         expect(resultCopy({ kind: 'someone-published', live: back, previous: was18, by: { actor: 'keyur', kind: 'rollback', at } }, view())).toEqual({
             tone: 'change',
             heading: 'Revision 17 is live again',
-            body: ['keyur rolled it back at 14:05, with photos rollback. Nothing was published from here.'],
+            body: ['keyur restored it at 14:05, with photos rollback. Nothing was published from here.'],
         });
         expect(resultCopy({ kind: 'already-live', live: live19, previous: was18, by: { actor: 'curator:web', kind: 'publish', at } }, view())?.body).toEqual(['It went live from this screen at 14:05. Nothing more to publish, and nothing new was written.']);
     });

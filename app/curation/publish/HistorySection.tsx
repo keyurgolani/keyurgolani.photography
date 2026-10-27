@@ -6,7 +6,7 @@ import curator from '../curator.module.css';
 import { usePublishAnswer } from './HistoryContext';
 import { jumpTo } from './jump';
 import type { Answer } from '@/lib/curation/publish-facts';
-import { RESTORE_IDLE, type EntryView, type HistoryView, type PlanView, type RestoreResult, type RestoreState, type ResultAction } from '@/lib/curation/publish-history';
+import { localize, RESTORE_IDLE, type EntryView, type HistoryView, type PlanView, type RestoreResult, type RestoreState, type ResultAction } from '@/lib/curation/publish-history';
 import styles from './history.module.css';
 import publish from './publish.module.css';
 
@@ -37,7 +37,7 @@ function answeredHistory(answer: Answer | null): HistoryView | null {
     return null;
 }
 
-function EntryItem({ entry, paused, onRestore }: { entry: EntryView; paused: boolean; onRestore: (sequence: number, revision: number) => void }) {
+function EntryItem({ entry, paused, zone, onRestore }: { entry: EntryView; paused: boolean; zone: string; onRestore: (sequence: number, revision: number) => void }) {
     const { sequence, badge, eligibility } = entry;
     return (
         <li className={styles.entry} id={`entry-${sequence}`}>
@@ -57,7 +57,7 @@ function EntryItem({ entry, paused, onRestore }: { entry: EntryView; paused: boo
                 <h3 className={styles.title} id={`entry-${sequence}-title`} tabIndex={-1} aria-describedby={`entry-${sequence}-state`}>
                     {entry.title}
                 </h3>
-                <p className={styles.when}>{entry.when}</p>
+                <p className={styles.when}>{localize(entry.when, zone)}</p>
                 {entry.reason ? (
                     <p className={styles.reason}>
                         {entry.reason.quoted ? (
@@ -79,7 +79,7 @@ function EntryItem({ entry, paused, onRestore }: { entry: EntryView; paused: boo
                 {eligibility.type === 'text' ? (
                     <p className={styles.why} data-tone={eligibility.tone}>
                         {eligibility.tone === 'alert' ? <CircleAlert size={15} aria-hidden="true" /> : null}
-                        {eligibility.text}
+                        {localize(eligibility.text, zone)}
                     </p>
                 ) : null}
             </div>
@@ -114,21 +114,21 @@ function EntryItem({ entry, paused, onRestore }: { entry: EntryView; paused: boo
     );
 }
 
-function ResultBlock({ result }: { result: RestoreResult }) {
+function ResultBlock({ result, zone }: { result: RestoreResult; zone: string }) {
     const Icon = result.clock ? Clock : TONE_ICON[result.tone];
     return (
         <section id="restore-result" className={`${curator.notice} ${publish.result} ${styles.dialogResult}`} data-tone={result.tone} aria-labelledby="restore-result-heading">
             <h3 id="restore-result-heading" tabIndex={-1} className={publish.resultHeading}>
                 <Icon size={18} aria-hidden="true" />
-                {result.heading}
+                {localize(result.heading, zone)}
             </h3>
             {result.body.map((line) => (
-                <p key={line}>{line}</p>
+                <p key={line}>{localize(line, zone)}</p>
             ))}
             {result.list ? (
                 <ul className={styles.reasons}>
                     {result.list.map((line) => (
-                        <li key={line}>{line}</li>
+                        <li key={line}>{localize(line, zone)}</li>
                     ))}
                 </ul>
             ) : null}
@@ -138,6 +138,7 @@ function ResultBlock({ result }: { result: RestoreResult }) {
 
 interface DialogProps {
     plan: PlanView;
+    zone: string;
     /** Rendered open on the server for `?restore=`, without JavaScript. */
     staticOpen: boolean;
     action: (previous: RestoreState, form: FormData) => Promise<RestoreState>;
@@ -145,7 +146,7 @@ interface DialogProps {
 }
 
 /** The restore dialog: one mounted dialog across its phases, the typed reason kept in state. */
-function RestoreDialog({ plan, staticOpen, action, onClose }: DialogProps) {
+function RestoreDialog({ plan, zone, staticOpen, action, onClose }: DialogProps) {
     const ref = useRef<HTMLDialogElement>(null);
     const [state, dispatch, pending] = useActionState(action, RESTORE_IDLE);
     const [reason, setReason] = useState('');
@@ -339,7 +340,7 @@ function RestoreDialog({ plan, staticOpen, action, onClose }: DialogProps) {
                             </p>
                         ) : null}
                     </div>
-                    {result ? <ResultBlock result={result} /> : null}
+                    {result ? <ResultBlock result={result} zone={zone} /> : null}
                 </div>
                 <div className={`${publish.buttons} ${styles.dialogActions}`}>{actions.map(button)}</div>
             </form>
@@ -357,7 +358,7 @@ interface HistorySectionProps {
 
 export default function HistorySection({ view: loaded, action, openRestore }: HistorySectionProps) {
     // 16-3's answer: one that moved the pointer carries History read again; a pending press pauses Restore.
-    const { result: answer, pending: publishing, sent } = usePublishAnswer();
+    const { result: answer, pending: publishing, sent, zone } = usePublishAnswer();
     const view = answeredHistory(answer) ?? loaded;
     const fromUrl = openRestore !== null && view.plans[openRestore] ? openRestore : null;
     const [open, setOpen] = useState<{ revision: number; opener: number | null; staticOpen: boolean } | null>(fromUrl === null ? null : { revision: fromUrl, opener: null, staticOpen: true });
@@ -416,7 +417,7 @@ export default function HistorySection({ view: loaded, action, openRestore }: Hi
             ) : null}
             <ol className={styles.entries}>
                 {view.entries.map((entry) => (
-                    <EntryItem key={entry.sequence} entry={entry} paused={publishing} onRestore={(sequence, revision) => setOpen({ revision, opener: sequence, staticOpen: false })} />
+                    <EntryItem key={entry.sequence} entry={entry} paused={publishing} zone={zone} onRestore={(sequence, revision) => setOpen({ revision, opener: sequence, staticOpen: false })} />
                 ))}
             </ol>
             {view.count ? (
@@ -429,7 +430,7 @@ export default function HistorySection({ view: loaded, action, openRestore }: Hi
                     ) : null}
                 </div>
             ) : null}
-            {open && plan ? <RestoreDialog key={`${open.revision}-${open.opener ?? 'url'}`} plan={plan} staticOpen={open.staticOpen} action={action} onClose={close} /> : null}
+            {open && plan ? <RestoreDialog key={`${open.revision}-${open.opener ?? 'url'}`} plan={plan} zone={zone} staticOpen={open.staticOpen} action={action} onClose={close} /> : null}
         </section>
     );
 }

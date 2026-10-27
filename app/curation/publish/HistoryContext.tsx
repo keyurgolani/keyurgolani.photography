@@ -14,8 +14,10 @@ export interface PublishAnswerState {
     result: Answer | null;
     pending: boolean;
     sent: Intent | null;
+    /** The browser's time zone, which is the owner's, for History's times, as 16-3's answers name theirs. UTC before hydration. */
+    zone: string;
 }
 
-export const PublishAnswerContext = createContext<PublishAnswerState>({ result: null, pending: false, sent: null });
+export const PublishAnswerContext = createContext<PublishAnswerState>({ result: null, pending: false, sent: null, zone: 'UTC' });
 
 export const usePublishAnswer = () => useContext(PublishAnswerContext);
