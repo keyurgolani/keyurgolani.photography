@@ -56,11 +56,11 @@ const loginControls = (page: Page) => [page.getByRole('banner').getByRole('link'
 
 for (const name of ['localhost', '127.0.0.1']) {
     test(`keeps and sends the Secure session cookie on http://${name}`, async ({ browser, browserName }) => {
-        // Playwright's Linux WebKit drops a Secure cookie set over plain http on localhost, so the
+        // Playwright's Linux WebKit drops a Secure cookie set over plain http (localhost and 127.0.0.1), so the
         // sign-in comes back to the login (CI on #87 b26906cc). Chromium and Firefox keep it, and real
         // Safari is unverified. Kept as an expected failure, not a skip: if WebKit starts keeping the
         // cookie, this flips and says so. docs/curator.md tells the owner to use Chrome or Firefox.
-        test.fail(browserName === 'webkit' && name === 'localhost', 'WebKit on Linux drops Secure cookies over http://localhost');
+        test.fail(browserName === 'webkit', 'WebKit on Linux drops Secure cookies over plain http, on localhost and 127.0.0.1');
         const origin = `http://${name}:${portOf()}`;
         const context = await browser.newContext();
         const page = await context.newPage();
