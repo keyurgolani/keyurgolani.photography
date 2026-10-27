@@ -19,11 +19,17 @@ export const CURATION_SCHEMA_VERSION = 1;
 export const EVENT_TYPES = ['new', 'replacement', 'missing', 'reappeared', 'ambiguous', 'processing-failure'] as const;
 export type CurationEventType = (typeof EVENT_TYPES)[number];
 
-export const EVENT_STATUSES = ['open', 'deferred', 'dismissed', 'approved', 'failed'] as const;
+/** `resolved` is #17's: the watcher closed the item because what it reported is over, such as a missing source back again. */
+export const EVENT_STATUSES = ['open', 'deferred', 'dismissed', 'approved', 'failed', 'resolved'] as const;
 export type CurationEventStatus = (typeof EVENT_STATUSES)[number];
 
-/** `confirm` is #17's "Confirm new asset revision", for a replacement. */
-export const ACTIONS = ['edit', 'approve', 'defer', 'dismiss', 'retry', 'reopen', 'confirm'] as const;
+/**
+ * `confirm` is #17's "Confirm new asset revision", for a replacement. `bind`
+ * and `archive` are #17's "Bind an intentional replacement" and "Archive
+ * after removing series references", for a missing source. `close` is the
+ * watcher's, when it resolves an item.
+ */
+export const ACTIONS = ['edit', 'approve', 'defer', 'dismiss', 'retry', 'reopen', 'confirm', 'bind', 'archive', 'close'] as const;
 export type CurationAction = (typeof ACTIONS)[number];
 
 /** `evt_` plus 24 hex of the SHA-256 of the event's key. Event folders are named only by this. */
@@ -133,6 +139,8 @@ export const decisionSchema = z.strictObject({
     identityDecisionId: z.string().optional(),
     /** For a confirm: the asset revision the photo record pinned before it, which the event's replaces. For a defer: the one it put back. */
     fromRevision: z.string().regex(ASSET_REVISION_RE).optional(),
+    /** For a bind: the library-relative path the #10 `bind` decision gives the photo. */
+    path: libraryPath.optional(),
 });
 export type CurationDecision = z.infer<typeof decisionSchema>;
 
@@ -144,7 +152,8 @@ export type CandidateFailure = (typeof CANDIDATE_FAILURES)[number];
  * #17: what became of a replacement's derivative set, once #10's registry
  * says. Absent while the set is still building. `ready` means the set is
  * committed with its manifest, under `profileId`; only then can the
- * replacement be confirmed.
+ * replacement be confirmed. A `processing-failure` item for a build that
+ * failed carries one too (lib/curation/sources.ts).
  */
 export const candidateSchema = z.strictObject({
     state: z.enum(['ready', 'failed']),
@@ -174,7 +183,7 @@ export const curationEventSchema = z.strictObject({
     derivedFacts: derivedFactsSchema,
     suggestions: suggestionsSchema,
     edits: editsSchema.nullable(),
-    /** A replacement's derivative set, once it is ready or failed (#17). Other types never have one. */
+    /** A replacement's derivative set, once it is ready or failed, or a failed build's (#17). Other types never have one. */
     candidate: candidateSchema.optional(),
     /** Every curator action, oldest first. */
     decisions: z.array(decisionSchema),
@@ -307,3 +316,47 @@ export const FAILURE_TEXT: Record<(typeof FAILURE_REASONS)[number], string> = {
     'digest-collision': "Another file in the library looks like the same photograph but isn't the same size, so the watcher set this one aside.",
     undecodable: 'The file could not be decoded.',
 };
+
+/**
+ * #17: the reasons the watcher's `close` writes on an item (lib/curation/sources.ts), kept here with closeCauseOf(),
+ * which reads them back for the inbox page, so the two can't drift apart.
+ */
+export const CLOSE_REASONS = {
+    back: (where: string, same: boolean) =>
+        same ? `The source is back ${where} with the same bytes, so nothing changed.` : `The source is back ${where} with other bytes, which its replacement item reviews.`,
+    merged: (into: string) => `A bind gave these bytes to ${into}, whose replacement item reviews them.`,
+    archived: 'The photograph is archived.',
+    built: (profileId: string) => `Its derivative set built under ${profileId}.`,
+    gone: 'The registry no longer holds the photograph.',
+    moved: "The source holds other bytes now, which the photograph's newer items cover.",
+} as const;
+
+export type CloseCause = 'same-file' | 'other-bytes' | 'merged' | 'archived' | 'built' | 'gone' | 'moved';
+
+/** Which of CLOSE_REASONS a watcher's close reason is, or null for any other text. */
+export function closeCauseOf(reason: string): CloseCause | null {
+    if (reason === CLOSE_REASONS.archived) return 'archived';
+    if (reason === CLOSE_REASONS.gone) return 'gone';
+    if (reason === CLOSE_REASONS.moved) return 'moved';
+    const back = /^The source is back .+ with (the same|other) bytes, /.exec(reason);
+    if (back) return back[1] === 'the same' ? 'same-file' : 'other-bytes';
+    if (reason.startsWith('A bind gave these bytes to ')) return 'merged';
+    if (reason.startsWith('Its derivative set built under ')) return 'built';
+    return null;
+}
+
+/**
+ * #17: the reason 14-1's sink writes when it dismisses a missing item because the same bytes came back at the
+ * photograph's own path (lib/curation/sink.ts closeMissing()), kept here with backAtItsPath(), which reads it back.
+ */
+export const SAME_BYTES_BACK = (where: string) => `The same bytes came back at ${where}, so nothing is missing.`;
+
+/**
+ * #17: a missing item the watcher dismissed because its source came back at its own path with the same bytes. Like a
+ * resolved missing item, it would read as missing and unresolved if the page reopened it.
+ */
+export function backAtItsPath(event: Pick<CurationEvent, 'type' | 'status' | 'decisions'>): boolean {
+    if (event.type !== 'missing' || event.status !== 'dismissed') return false;
+    const dismiss = event.decisions.findLast((decision) => decision.action === 'dismiss');
+    return dismiss?.by === 'watcher' && dismiss.reason !== undefined && /^The same bytes came back at .+, so nothing is missing\.$/.test(dismiss.reason);
+}

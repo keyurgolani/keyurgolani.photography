@@ -38,8 +38,9 @@
  *   npx tsx scripts/photos.ts status [--json]
  *     The data root, the catalog mode and active revision, the last publish,
  *     registry counts, the working layer's records, how many photos no series
- *     lists and how many have no reviewed description, and the watcher's
- *     heartbeat. Exits 1 unless the data root is ready and everything reads.
+ *     lists and how many have no reviewed description, the curation inbox's
+ *     open missing sources and failures (#17), and the watcher's heartbeat.
+ *     Exits 1 unless the data root is ready and everything reads.
  *
  *   npx tsx scripts/photos.ts list [--unassigned] [--json]
  *     Every photo the registry holds, but not archived ones, with its library
@@ -144,6 +145,13 @@
  *     puts back the revision the confirm replaced, while that confirm is
  *     still the inbox's latest change to the photo's revision. reopen and
  *     show say what defer will do.
+ *   npx tsx scripts/photos.ts curation bind <eventId> --version <n> [--path <library path>]
+ *   npx tsx scripts/photos.ts curation archive <eventId> --version <n>
+ *     #17's settlements of a missing source: bind an intentional replacement
+ *     (#10's bind decision), or archive after removing series references,
+ *     which is the takedown once photos publish runs. archive needs --base
+ *     once a revision is active. publish --dry-run lists what would leave
+ *     the site under Removed.
  *     The curation inbox (lib/curation/commands.ts). New photographs wait
  *     here until approved into the draft; nothing here publishes. Item
  *     commands take the --version that list or show printed, and --base

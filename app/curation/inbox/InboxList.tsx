@@ -50,7 +50,7 @@ function ItemLink({ item, selected }: { item: InboxItem; selected: boolean }) {
             <a className={styles.item} id={`row-${item.id}`} data-row={item.id} href={`/curation/inbox?item=${item.id}#item`} aria-current={selected ? 'true' : undefined}>
                 <Thumbnail url={item.thumbnailUrl} />
                 <span className={styles.itemText}>
-                    <EventBadge type={item.type} />
+                    <EventBadge type={item.type} settled={item.group === 'settled'} />
                     <strong className={styles.itemName}>{name}</strong>
                     <span className={styles.itemTitle}>{item.title}</span>
                     <span className={styles.itemMeta}>

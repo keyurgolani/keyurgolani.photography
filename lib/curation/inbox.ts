@@ -3,22 +3,27 @@ import { currentProfileId } from '../identity/profile';
 import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
 import { dataRootStatus, libraryRoot } from '../storage/config';
+import { pendingBindOf, pendingMergeOf } from './binds';
 import { printable, scrub } from './commands';
-import { EVENT_ID_RE, FAILURE_TEXT, needsJudgment, waitingReason, type CurationEvent } from './events';
+import { backAtItsPath, closeCauseOf, EVENT_ID_RE, FAILURE_TEXT, needsJudgment, waitingReason, type CurationEvent } from './events';
 import { photoHolderEntries, type ReferenceCache } from './holders';
 import {
+    bindWaitingText,
     humanDate,
     itemTitle,
     PRIMARY_ACTION,
     replacementHint,
     seriesName,
+    settledMissingTitle,
     shortIdOf,
     type HolderRef,
     type InboxDetail,
     type InboxItem,
     type InboxView,
+    type BindWaiting,
     type ItemGroup,
     type ReplacementDraft,
+    type ResolvedCause,
     type SeriesOption,
 } from './inbox-view';
 import { candidateOf } from './candidates';
@@ -48,7 +53,7 @@ export function curatorThumbnailUrl(photoId: string, assetRevision: string, prof
 /** Where an item sits, the way `curation list` counts it, from D6's shared placement lookup (lib/curation/placement.ts). */
 function groupOf(event: CurationEvent, waiting: string | null, placed: boolean, unplaced: boolean): ItemGroup {
     if (unplaced) return 'unplaced';
-    if (event.status === 'approved' || event.status === 'dismissed') return 'settled';
+    if (event.status === 'approved' || event.status === 'dismissed' || event.status === 'resolved') return 'settled';
     if (placed) return 'placed';
     if (event.status === 'deferred') return 'deferred';
     return needsJudgment(event, waiting, placed) ? 'judgment' : 'waiting';
@@ -64,7 +69,7 @@ function itemOf(event: CurationEvent, registry: Registry | null, waiting: string
         type: event.type,
         status: event.status,
         group: groupOf(event, waiting, placed !== null, unplaced !== null),
-        title: unplaced !== null ? 'Approved, no longer placed' : itemTitle(event.type, waiting !== null),
+        title: unplaced !== null ? 'Approved, no longer placed' : ((event.type === 'missing' ? settledMissingTitle(event.status, resolvedCauseOf(event, registry)) : null) ?? itemTitle(event.type, waiting !== null)),
         photoId: event.photoId,
         shortId: shortIdOf(event.photoId),
         sourcePath: printable(event.derivedFacts.sourcePath),
@@ -73,6 +78,56 @@ function itemOf(event: CurationEvent, registry: Registry | null, waiting: string
         placedBy: placed,
         unplacedSeries: unplaced,
     };
+}
+
+/**
+ * #17: what closed a resolved item, from the watcher's last close (CLOSE_REASONS). A missing item whose source came
+ * back with other bytes was bound when a bind sits between its last opening and the close. A missing item the
+ * watcher dismissed because the same bytes came back at its path (SAME_BYTES_BACK) is `same-file` too. Null for any
+ * other status, and for a close the page doesn't know.
+ */
+function resolvedCauseOf(event: CurationEvent, registry: Registry | null): ResolvedCause | null {
+    if (backAtItsPath(event)) return { kind: 'same-file' };
+    if (event.status !== 'resolved') return null;
+    const at = event.decisions.findLastIndex((decision) => decision.action === 'close');
+    const close = event.decisions[at];
+    if (close === undefined || close.by !== 'watcher' || close.reason === undefined) return null;
+    const cause = closeCauseOf(close.reason);
+    if (cause === 'other-bytes') {
+        const before = event.decisions.slice(0, at);
+        const opened = before.findLastIndex((decision) => decision.action === 'reopen');
+        return { kind: before.slice(opened + 1).some((decision) => decision.action === 'bind') ? 'bound' : 'other-bytes' };
+    }
+    if (cause === 'merged') {
+        const into = event.photoId === null ? undefined : registry?.photos[event.photoId]?.mergedInto;
+        const intoPath = into === undefined ? undefined : registry?.photos[into]?.source.path;
+        return { kind: 'merged', into: intoPath === undefined ? null : printable(intoPath) };
+    }
+    return cause === null ? null : { kind: cause };
+}
+
+/**
+ * #17: a bind waiting for the watcher that involves the item's photograph: one that merges a new photograph's open
+ * item, or one that gives a missing item's photograph a file. Null when none waits, and when a decision file can't be
+ * read: the page then claims nothing, and approve still refuses under the lock.
+ */
+async function bindWaitingOf(root: string, event: CurationEvent, registry: Registry | null): Promise<BindWaiting | null> {
+    if (event.photoId === null || !(event.status === 'open' || event.status === 'deferred')) return null;
+    try {
+        if (event.type === 'new') {
+            const merge = await pendingMergeOf(root, event.photoId);
+            if (merge === null) return null;
+            const intoPath = registry?.photos[merge.into]?.source.path;
+            return { kind: 'merge', into: intoPath === undefined ? null : printable(intoPath) };
+        }
+        if (event.type === 'missing') {
+            const bind = await pendingBindOf(root, event.photoId);
+            return bind === null ? null : { kind: 'bind', path: printable(bind.path) };
+        }
+    } catch {
+        return null;
+    }
+    return null;
 }
 
 function identityText(event: CurationEvent, registry: Registry | null): string {
@@ -148,6 +203,7 @@ function abilities(event: CurationEvent, registry: Registry | null): InboxDetail
     const failure = event.derivedFacts.failure;
     const revision = event.photoId !== null && event.assetRevision !== null ? registry?.photos[event.photoId]?.revisions[event.assetRevision] : undefined;
     const failedBuild = revision !== undefined && Object.values(revision.profiles).some((profile) => profile.state === 'failed');
+    const merged = event.photoId !== null && registry?.photos[event.photoId]?.mergedInto !== undefined;
     return {
         approve: event.type === 'new' && (event.status === 'open' || event.status === 'deferred'),
         edit: open,
@@ -155,15 +211,22 @@ function abilities(event: CurationEvent, registry: Registry | null): InboxDetail
         dismiss: open,
         // As retryEvent() decides: an identified photograph whose file couldn't be decoded, or whose build failed.
         retry: open && event.photoId !== null && event.assetRevision !== null && failure !== 'unsupported-format' && failure !== 'digest-collision' && (failure === 'undecodable' || failedBuild),
-        reopen: event.status === 'deferred' || event.status === 'dismissed' || event.status === 'approved',
+        // As reopenEvent() decides, which takes #17's resolved items back too, but not a missing item the watcher
+        // resolved, or dismissed because the same bytes came back at its path: its source is present again, so
+        // reopened it would read as missing and unresolved until the watcher's next start. Nor a new item whose photo
+        // a bind merged, whose approve can only be refused. `curation reopen` takes all three.
+        reopen: event.status === 'deferred' || (event.status === 'dismissed' && !backAtItsPath(event)) || event.status === 'approved' || (event.status === 'resolved' && event.type !== 'missing' && !merged),
     };
 }
 
 /**
  * The hint under the actions. Only while Decide later is offered, since it names Decide later: for a replacement, what
- * Decide later does with the draft now; for a missing source, why its primary action isn't in the inbox yet.
+ * Decide later does with the draft now; for a missing source, why its primary action isn't in the inbox yet. A settled
+ * item (approved, dismissed, or #17's resolved or archived missing item) offers no Decide later, so it gets none.
  */
-function primaryUnavailable(event: CurationEvent, can: InboxDetail['can'], replacement: ReplacementDraft | null): string | null {
+function primaryUnavailable(event: CurationEvent, can: InboxDetail['can'], replacement: ReplacementDraft | null, bindWaiting: BindWaiting | null): string | null {
+    // #17: a new photograph a pending bind merges can't be approved, so the page says why before any click.
+    if (event.type === 'new' && bindWaiting?.kind === 'merge') return bindWaitingText(bindWaiting, printable(event.derivedFacts.sourcePath));
     if (PRIMARY_ACTION[event.type] === undefined || event.type === 'new' || !can.defer) return null;
     return event.type === 'replacement'
         ? replacementHint(replacement)
@@ -224,7 +287,13 @@ async function detailOf(root: string, event: CurationEvent, item: InboxItem, reg
         references = [];
     }
     const replacement = await replacementOf(root, event, registry, cache);
-    const can = { ...abilities(event, registry), ...(event.type === 'missing' && references?.length !== 0 ? { dismiss: false } : {}) };
+    const bindWaiting = await bindWaitingOf(root, event, registry);
+    const can = {
+        ...abilities(event, registry),
+        ...(event.type === 'missing' && references?.length !== 0 ? { dismiss: false } : {}),
+        // approveEvent() refuses a photograph a pending bind merges, so the page doesn't offer it.
+        ...(bindWaiting?.kind === 'merge' ? { approve: false } : {}),
+    };
     const suggestedSeries = event.suggestions.series;
     const placement = event.suggestions.placement;
     return {
@@ -261,8 +330,10 @@ async function detailOf(root: string, event: CurationEvent, item: InboxItem, reg
         reviewedAt: event.reviewedAt,
         reviewedBy: event.reviewedBy === null ? null : printable(event.reviewedBy),
         can,
-        primaryUnavailable: primaryUnavailable(event, can, replacement),
+        primaryUnavailable: primaryUnavailable(event, can, replacement, bindWaiting),
         replacement,
+        resolvedBy: resolvedCauseOf(event, registry),
+        bindWaiting,
     };
 }
 

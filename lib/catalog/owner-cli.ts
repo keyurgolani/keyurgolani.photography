@@ -236,6 +236,18 @@ function launchLines(result: PublishResult): string[] {
     return lines;
 }
 
+/** #17: what a publish takes off the site, which shows here before it publishes, until #16's preview does. */
+function removedLines(result: PublishResult): string[] {
+    const { removed } = result;
+    if (!removed) return [];
+    if (removed.length === 0) return ['Removed: nothing. Every photograph the active revision shows stays on the site.'];
+    return [
+        `Removed: ${count(removed.length, 'photograph')} the active revision shows ${removed.length === 1 ? 'leaves' : 'leave'} the site${result.outcome === 'PUBLISHED' ? '' : ' if this publishes'}:`,
+        ...removed.slice(0, PRINTED_ISSUES).map((entry) => `  ${entry.photoId}${entry.series.length ? `, from ${entry.series.join(', ')}` : ''}`),
+        ...(removed.length > PRINTED_ISSUES ? [`  and ${removed.length - PRINTED_ISSUES} more`] : []),
+    ];
+}
+
 /** The lines `photos publish` prints for a result. */
 export function publishReport(result: PublishResult, root: string): string[] {
     const lines = [`[photos] ${result.outcome}: ${result.message}`];
@@ -243,6 +255,7 @@ export function publishReport(result: PublishResult, root: string): string[] {
     if (result.revisionId) lines.push(`Active: ${result.revisionId}${result.revisionNumber === null ? '' : `, revision ${result.revisionNumber}`}`);
     if (result.missingRules?.length) lines.push(`Missing rules: ${result.missingRules.join(', ')}`);
     lines.push(...launchLines(result));
+    lines.push(...removedLines(result));
     if (result.reprofiled) {
         const { moved, kept } = result.reprofiled;
         if (moved.length) lines.push(`Moved to the current profile: ${moved.slice(0, PRINTED_ISSUES).join(', ')}${moved.length > PRINTED_ISSUES ? `, and ${moved.length - PRINTED_ISSUES} more` : ''}`);

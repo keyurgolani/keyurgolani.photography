@@ -16,6 +16,7 @@ import {
     seriesName,
     statusLabel,
     systemResponse,
+    bindWaitingText,
     type InboxDetail,
     type InboxView,
 } from '@/lib/curation/inbox-view';
@@ -113,7 +114,8 @@ function TypeBox({ view, detail }: { view: ReadyView; detail: InboxDetail }) {
             </section>
         );
     }
-    if (detail.type === 'missing') {
+    // Settled, as when #17's watcher saw the source back or an archive took it: nothing is left to recover.
+    if (detail.type === 'missing' && detail.group !== 'settled') {
         return (
             <section className={styles.box} aria-labelledby="type-box">
                 <h3 className={styles.boxTitle} id="type-box">
@@ -200,7 +202,7 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
             <div className={styles.photo}>
                 {/* Sticky on a wide screen, so the photograph stays in view while the curator describes it. */}
                 <div className={styles.photoFrame}>
-                    <EventBadge type={detail.type} />
+                    <EventBadge type={detail.type} settled={detail.group === 'settled'} />
                     {detail.previewUrl ? (
                         // A private, uncached preview of one derivative, so next/image's optimizer and its cache stay out of it.
                         <img src={detail.previewUrl} alt={`Candidate photograph ${file.name}`} width={800} decoding="async" />
@@ -218,9 +220,11 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
                         </h2>
                         <p className={styles.identityLine}>{identityLine(detail.sourcePath, detail.capturedDate)}</p>
                     </div>
-                    <span className={styles.status} data-tone={status.tone ?? undefined}>
-                        {status.text}
-                    </span>
+                    {status.text === null ? null : (
+                        <span className={styles.status} data-tone={status.tone ?? undefined}>
+                            {status.text}
+                        </span>
+                    )}
                 </header>
                 {/* A processing failure says why, and what to do, on the first screen, in the refusal tone. */}
                 {failure ? (
@@ -237,6 +241,8 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
                         { label: 'Stable photo identity', value: detail.photoId ?? 'No photo ID', mono: detail.photoId !== null },
                         { label: 'System response', value: systemResponse(detail, labelOf) },
                         ...(detail.waiting ? [{ label: 'Waiting', value: `${sentence(detail.waiting)}. Act on it once the set is ready.` }] : []),
+                        // #17: a new photograph's pending merge says so under its unavailable approve instead.
+                        ...(detail.bindWaiting?.kind === 'bind' ? [{ label: 'Bind waiting', value: bindWaitingText(detail.bindWaiting) }] : []),
                         // As `curation show` says it, from the same placement lookup.
                         ...(detail.placedBy ? [{ label: 'Already placed', value: `${sentence(detail.placedBy)}, so it needs no judgment while it stays there.` }] : []),
                         ...(detail.unplacedSeries ? [{ label: 'No longer placed', value: `To put it back, reopen it and approve it into ${labelOf(detail.unplacedSeries)}.` }] : []),

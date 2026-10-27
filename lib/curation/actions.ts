@@ -8,7 +8,8 @@ import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
 import { LockTimeoutError, withLock, type LockContext } from '../storage/lock';
-import { unplacedApproval, type CurationDecision, type CurationEvent, type CurationEventStatus, type CuratorDescription, type CuratorEdits, type Placement } from './events';
+import { pendingMergeOf } from './binds';
+import { backAtItsPath, unplacedApproval, type CurationDecision, type CurationEvent, type CurationEventStatus, type CuratorDescription, type CuratorEdits, type Placement } from './events';
 import { photoHolders } from './holders';
 import { placementIndex } from './placement';
 import { draftPlanText, readDraftPlan, replacedBy } from './pins';
@@ -143,7 +144,7 @@ export async function act(input: ActionInput, change: (step: Step) => Promise<Ch
 
 export function requireStatus(event: CurationEvent, allowed: readonly CurationEventStatus[], action: string): void {
     if (allowed.includes(event.status)) return;
-    const hint = event.status === 'approved' || event.status === 'dismissed' ? ' Reopen it first.' : '';
+    const hint = event.status === 'approved' || event.status === 'dismissed' || event.status === 'resolved' ? ' Reopen it first.' : '';
     fail('refused', `The event ${event.id} is ${event.status}, so it can't be ${action}.${hint}`);
 }
 
@@ -230,11 +231,22 @@ export function dismissEvent(input: ActionInput & { reason: string }): Promise<A
     });
 }
 
-/** Put a deferred, dismissed, or approved event back in the inbox. An approval's working-layer writes stay. */
-export function reopenEvent(input: ActionInput & { reason?: string }): Promise<ActionOutcome> {
+/**
+ * Put a deferred, dismissed, approved, or resolved event back in the inbox. An approval's working-layer writes stay.
+ * `keepResolvedMissing` is the inbox page's: it refuses a missing item the watcher resolved, or dismissed because the
+ * same bytes came back at its path, whose source is present again, so the page never brings back an item that says
+ * it's missing. `curation reopen` takes either back.
+ */
+export function reopenEvent(input: ActionInput & { reason?: string; keepResolvedMissing?: boolean }): Promise<ActionOutcome> {
     return act(input, async (step) => {
         const { event } = step;
-        requireStatus(event, ['deferred', 'dismissed', 'approved'], 'reopened');
+        requireStatus(event, ['deferred', 'dismissed', 'approved', 'resolved'], 'reopened');
+        if (input.keepResolvedMissing && event.type === 'missing' && event.status === 'resolved') {
+            fail('refused', `${event.id} is a missing item the watcher resolved once its source was present again, so the inbox doesn't reopen it. curation reopen does. Nothing was written.`);
+        }
+        if (input.keepResolvedMissing && backAtItsPath(event)) {
+            fail('refused', `${event.id} is a missing item the watcher dismissed once the same bytes came back at its path, so the inbox doesn't reopen it. curation reopen does. Nothing was written.`);
+        }
         const status: CurationEventStatus = event.type === 'processing-failure' ? 'failed' : 'open';
         const notes = event.status !== 'approved'
             ? ['Reopened.']
@@ -379,10 +391,17 @@ export function approveEvent(
         let resolved!: ReturnType<typeof resolveChoices>;
         let kept = false;
 
+        // #17's bind writes its decision under the curation lock this holds, so no new one appears from here on. This
+        // looks first: the watcher commits a merge to the registry before it files the decision as applied, so a
+        // pending decision is either seen here or already a merge in the registry read below, which is then stale.
+        const merge = await pendingMergeOf(root, photoId).catch((error: unknown) => fail('damaged', `${(error as Error).message}. Nothing was written.`));
+        if (merge) {
+            fail('refused', `${photoId} is merged into ${merge.into} by the bind decision ${merge.decisionId}, which the watcher applies on its next pass. A series would then list a retired photograph, so it can't be approved. If the watcher refuses the bind, approve it then. Nothing was written.`);
+        }
         const registry = await readRegistry(root).catch((error: unknown) => fail('damaged', `The identity registry can't be read: ${(error as Error).message}. Nothing was written.`));
         const photo = registry.photos[photoId];
-        if (!photo || photo.sourceHealth !== 'present' || photo.source.observedRevision !== assetRevision) {
-            const now = !photo ? 'is not in the registry' : photo.sourceHealth !== 'present' ? `is ${photo.sourceHealth}` : `is now ${photo.source.observedRevision}`;
+        if (!photo || photo.mergedInto !== undefined || photo.sourceHealth !== 'present' || photo.source.observedRevision !== assetRevision) {
+            const now = !photo ? 'is not in the registry' : photo.mergedInto !== undefined ? `was merged into ${photo.mergedInto}` : photo.sourceHealth !== 'present' ? `is ${photo.sourceHealth}` : `is now ${photo.source.observedRevision}`;
             fail('stale', `The source changed since this event: ${photoId} ${now}. Review the newer event instead. Nothing was written.`);
         }
 

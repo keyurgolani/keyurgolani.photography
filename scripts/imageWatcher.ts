@@ -45,6 +45,7 @@ import { parseArgs } from 'node:util';
 import chokidar from 'chokidar';
 import { createCandidateSink, owedSettles, settlingAfterBuild } from '../lib/curation/candidates';
 import { createCurationSink } from '../lib/curation/sink';
+import { createSourcesSink, recordingFailuresAfterBuild } from '../lib/curation/sources';
 import { buildDerivativeSet } from '../lib/identity/derivatives';
 import { jsonLogSink } from '../lib/identity/pass';
 import { scanKind } from '../lib/identity/scan';
@@ -108,18 +109,23 @@ function requireLibraryRoot(): string {
 /** The replacement items a build couldn't settle yet, which the candidate sink settles on its next delivery. One per process. */
 const owed = owedSettles();
 
+/** The failed-build items a build couldn't settle yet, which the sources sink settles on its next delivery. One per process. */
+const owedSources = owedSettles();
+
 /**
  * Where the identity step's facts go: the log, the curation inbox, which
  * opens a draft item for each, then #17's candidate sink, which records on
- * each replacement item whether its new set is ready or failed.
+ * each replacement item whether its new set is ready or failed, and #17's
+ * sources sink, which closes a missing item once its source is back and
+ * opens an item for each build that stays failed.
  */
 function factSinks() {
-    return [jsonLogSink(), createCurationSink(), createCandidateSink({ owed })];
+    return [jsonLogSink(), createCurationSink(), createCandidateSink({ owed }), createSourcesSink({ owed: owedSources })];
 }
 
-/** The derivative worker's builds, each followed by recording its set on the revision's replacement item, or owing that to the candidate sink. */
+/** The derivative worker's builds, each followed by recording its set on the revision's replacement item and settling a failed build's item, or owing those to their sinks. */
 function workerBuilds() {
-    return { build: settlingAfterBuild(buildDerivativeSet, { owed }) };
+    return { build: recordingFailuresAfterBuild(settlingAfterBuild(buildDerivativeSet, { owed }), { owed: owedSources }) };
 }
 
 /** A file the identity scan reads, or any folder, since a moved folder moves the photos in it. */

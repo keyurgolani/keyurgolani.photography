@@ -16,9 +16,9 @@ import { approveEvent, deferEvent, reopenEvent } from '../actions';
 import { eventIdOf, eventKey, type CurationEvent, type CurationEventType } from '../events';
 import { runCurationCli } from '../commands';
 import { loadInbox } from '../inbox';
-import { runInboxAction, WEB_ACTOR } from '../inbox-form';
+import { pageWording, runInboxAction, WEB_ACTOR } from '../inbox-form';
 import { defaultDescription, defaultPlacement, defaultSeries, formSeries, parsePlacementValue, placementValue, summaryText, type InboxActionState, type InboxView } from '../inbox-view';
-import { eventDir, readEvent, withCurationLock } from '../repository';
+import { eventDir, readEvent, withCurationLock, writeEvent } from '../repository';
 import { createCurationSink } from '../sink';
 import { createCurationFixture, DRAFT, GPS, PUBLISHED, SERIAL, writeRules, type CurationFixture } from './curationFixtures';
 
@@ -217,6 +217,65 @@ describe('loadInbox', () => {
         expect(view).toMatchObject({ needsJudgment: 0, selected: null, missingSelection: null });
         // Asked for by ID, it still opens.
         expect(ready(await loadInbox(ids[0])).selected?.id).toBe(ids[0]);
+    });
+
+    it("shows a missing item #17 resolved without the unavailable recovery action, whose Decide later it doesn't offer", async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('missing', fx.catalog.photos[0].id)], { published: true });
+        const stored = (await readEvent(f.root, ids[0]))!;
+        expect(ready(await loadInbox(ids[0])).selected).toMatchObject({ type: 'missing', group: 'judgment', primaryUnavailable: expect.stringContaining('Decide later') });
+        await withCurationLock(f.root, {}, (hold) => writeEvent(f.root, { ...stored, status: 'resolved' }, stored.version, hold));
+        // Its source is back, so the page offers no Reopen either: reopened, it would say the source is missing (#17).
+        expect(ready(await loadInbox(ids[0])).selected).toMatchObject({ type: 'missing', group: 'settled', primaryUnavailable: null, can: { defer: false, reopen: false } });
+    });
+
+    it("doesn't reopen a resolved missing item from the page, even from an old form, while `curation reopen` still does", async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('missing', fx.catalog.photos[0].id)], { published: true });
+        const stored = (await readEvent(f.root, ids[0]))!;
+        await withCurationLock(f.root, {}, (hold) => writeEvent(f.root, { ...stored, status: 'resolved' }, stored.version, hold));
+        const resolved = (await readEvent(f.root, ids[0]))!;
+        const before = layers(f.root);
+        expect(await runInboxAction('reopen', itemForm(resolved, f.catalog.revisionId))).toMatchObject({
+            status: 'refused',
+            message: "Its source is back, so this item stays resolved, and the inbox doesn't reopen it. Nothing was written.",
+        });
+        expect(await readEvent(f.root, ids[0])).toMatchObject({ status: 'resolved', version: resolved.version });
+        expect(layers(f.root)).toEqual(before);
+        // The CLI keeps its own behaviour.
+        const run = await runCurationCli(['reopen', ids[0], '--version', String(resolved.version), '--base', f.catalog.revisionId], { dataRoot: f.root });
+        expect(run.exitCode).toBe(0);
+        expect(await readEvent(f.root, ids[0])).toMatchObject({ status: 'open' });
+    });
+
+    it('drops the Decide later hint from a confirmed replacement, which offers no Decide later', async () => {
+        const { f } = await inbox(() => [], { published: true });
+        const registry = await readRegistry(f.root);
+        const photo = registry.photos[f.catalog.photos[3].id];
+        const next = `sha256-${'d'.repeat(64)}`;
+        photo.revisions[next] = { ...Object.values(photo.revisions)[0], assetRevision: next };
+        await writeRegistry(f.root, registry, registry.version);
+        const replaced = f.fact('replaced', f.catalog.photos[3].id, { assetRevision: next });
+        await createCurationSink({ root: f.root, logger: quiet })([replaced]);
+        const id = eventIdOf(eventKey('replacement', replaced));
+        expect(ready(await loadInbox(id)).selected).toMatchObject({ type: 'replacement', status: 'open', can: { defer: true }, primaryUnavailable: expect.stringContaining('Decide later') });
+        const stored = (await readEvent(f.root, id))!;
+        await withCurationLock(f.root, {}, (hold) => writeEvent(f.root, { ...stored, status: 'approved' }, stored.version, hold));
+        expect(ready(await loadInbox(id)).selected).toMatchObject({ type: 'replacement', status: 'approved', group: 'settled', can: { defer: false }, primaryUnavailable: null });
+    });
+
+    it('lists an item #17 resolved as settled, with nothing to judge but Reopen, and reopens it from the page', async () => {
+        const { f, ids } = await inbox((fx) => [fx.fact('new', fx.fresh[0])]);
+        const stored = (await readEvent(f.root, ids[0]))!;
+        await withCurationLock(f.root, {}, (hold) => writeEvent(f.root, { ...stored, status: 'resolved' }, stored.version, hold));
+        const view = ready(await loadInbox(ids[0]));
+        expect(view.selected).toMatchObject({ status: 'resolved', group: 'settled', can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true } });
+        expect(view).toMatchObject({ needsJudgment: 0, placed: 0, unplaced: 0 });
+        // The page's Reopen takes it back, as `curation reopen` does.
+        const event = (await readEvent(f.root, ids[0]))!;
+        done(await runInboxAction('reopen', itemForm(event, null)));
+        expect(await readEvent(f.root, ids[0])).toMatchObject({ status: 'open', version: event.version + 1 });
+        expect(ready(await loadInbox(ids[0])).selected).toMatchObject({ group: 'judgment', can: { approve: true, reopen: false } });
+        // A form sent for it after it was resolved hears so in page words.
+        expect(pageWording(`The event ${ids[0]} is resolved, so it can't be approved. Reopen it first.`)).toBe("This item is resolved, so it can't be approved. Refresh the inbox.");
     });
 
     it('says so when the URL names an item the inbox lacks, and never echoes a malformed one', async () => {
