@@ -20,7 +20,8 @@ const content: RevisionContent = {
 };
 const layer = {
     site: { kind: 'site', featuredSeriesIds: [SERIES], seriesOrder: [SERIES], version: 1 },
-    series: [{ kind: 'series', id: SERIES, title: 'View test', version: 3, photoIds: [PHOTO], statement: 'S' }],
+    // A real record always has `cover` (the schema's default is null), which the review reads.
+    series: [{ kind: 'series', id: SERIES, title: 'View test', version: 3, photoIds: [PHOTO], statement: 'S', cover: null }],
     photos: [{ kind: 'photo', id: PHOTO, title: 'Pier lamps', version: 2, alt: { kind: 'described', text: 'Words', reviewed: false } }],
 } as unknown as WorkingLayer;
 const review: ReviewContext = { bases: new Map(), inbox: new Map(), unreadable: new Set() };

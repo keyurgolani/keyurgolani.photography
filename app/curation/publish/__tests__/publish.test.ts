@@ -382,6 +382,15 @@ describe('the fixes keep the Inbox in charge of what it settled', () => {
         expect(await readAuthoredRecord(fixture.root, 'series', SALT_ROADS)).toEqual(before);
     });
 
+    it('offers Decide it in the Inbox from the start when a reopened item hides behind a stale base', async () => {
+        await orderSettledByTheInbox();
+        await reopenBreakwater(fixture);
+        const screen = await view();
+        const moved = rowAbout(screen, 'Pier lamps moves from position 7 to 2 in Salt Roads');
+        expect(moved).toMatchObject({ blocks: true, detail: 'Its Inbox item needs a decision again.', fix: { type: 'inbox', eventId: fixture.breakwaterEvent } });
+        expect(screen.blockers.find((blocker) => blocker.rowId === moved.id)?.link).toMatchObject({ type: 'inbox', eventId: fixture.breakwaterEvent });
+    });
+
     it('refuses a fix once the live revision moved since the page loaded, so a stamp never names a revision nobody compared against', async () => {
         const screen = await view();
         const moved = rowAbout(screen, 'Pier lamps moves from position 7 to 2 in Salt Roads');

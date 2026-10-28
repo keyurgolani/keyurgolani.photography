@@ -361,7 +361,12 @@
   gap: 0;
 }
 
-/* The refusal spans the row, not the button's width. */
+/* The refusal spans the row, not the button's width: the restamp takes the
+   row's width in its flex row, and the button stays at the right. */
+.rowFix > .restamp {
+  flex: 1 1 100%;
+}
+
 .restamp .refusal {
   justify-self: stretch;
 }
@@ -822,10 +827,18 @@
   .inboxFix {
     display: grid;
     gap: 0.5rem;
+    justify-content: stretch;
   }
 
   .fixActions > a {
     justify-content: center;
+  }
+
+  /* A label that wraps stays centred, as the bar's and Still right's do. */
+  .rowFix > a,
+  .errorActions > a,
+  .inboxFix > a {
+    text-align: center;
   }
 
   /* The bar's two buttons sit side by side; below about 330 px they wrap.

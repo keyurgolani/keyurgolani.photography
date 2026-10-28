@@ -184,7 +184,12 @@ async function stamp(previous: PublishState, form: FormData, intent: Intent, row
     return next(previous, intent, { kind: 'fixed', rowId });
 }
 
-const reviewInputs = (base: string | null, extra: { reviewedValues?: Record<string, string> } = {}) => ({ baseRevisionId: base, origin: 'curator' as const, actor: WEB_ACTOR, reviewedAt: new Date().toISOString(), ...extra });
+/**
+ * `reviewedAt` is taken before the fresh read that checks the fields, so an
+ * inbox replacement observed after that read is newer than the stamp and
+ * still reads as `newer-item` (high review N2).
+ */
+const reviewInputs = (base: string | null, reviewedAt: string, extra: { reviewedValues?: Record<string, string> } = {}) => ({ baseRevisionId: base, origin: 'curator' as const, actor: WEB_ACTOR, reviewedAt, ...extra });
 
 const INBOX_FIRST = 'Its Inbox item needs a decision again, so nothing was written. Decide it in the Inbox first.';
 
@@ -212,10 +217,11 @@ async function markDescriptionReady(previous: PublishState, form: FormData): Pro
         if (record === null || record.version !== version || record.alt?.kind !== 'described' || hashValue(record.alt) !== valueHash) {
             throw new AuthoredWriteError('VERSION_CONFLICT', { kind: 'photo', id: photoId }, 'The description moved.');
         }
+        const reviewedAt = new Date().toISOString();
         await checkFields(root, { kind: 'photo', id: photoId }, ['alt'], (state) => state.reason === 'generated', 'The description');
         // The description came from an inbox item, so its new stamp still names that item, and reopening it makes the description stale again.
         const event = record.review?.fields.alt?.event;
-        await writeAuthoredRecord({ ...record, alt: { ...record.alt, reviewed: true } }, { expectedVersion: version, root, review: { ...reviewInputs(base), ...(event ? { event } : {}) } });
+        await writeAuthoredRecord({ ...record, alt: { ...record.alt, reviewed: true } }, { expectedVersion: version, root, review: { ...reviewInputs(base, reviewedAt), ...(event ? { event } : {}) } });
     });
 }
 
@@ -240,8 +246,9 @@ async function markReviewed(previous: PublishState, form: FormData): Promise<Pub
         const moved = record === null || record.version !== version || Object.entries(shown).some(([field, hash]) => hashValue((record as unknown as Record<string, unknown>)[field]) !== hash);
         if (moved) throw new AuthoredWriteError('VERSION_CONFLICT', { kind, id }, 'The value moved.');
         // The fields are the client's to name, so each must wait for a reason a review here may clear (restampReason()).
+        const reviewedAt = new Date().toISOString();
         await checkFields(root, { kind, id }, Object.keys(shown), restampReason, what);
-        await writeAuthoredRecord(record as never, { expectedVersion: version, root, review: reviewInputs(base, { reviewedValues: shown }) });
+        await writeAuthoredRecord(record as never, { expectedVersion: version, root, review: reviewInputs(base, reviewedAt, { reviewedValues: shown }) });
     });
 }
 
