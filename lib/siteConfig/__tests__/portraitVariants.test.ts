@@ -7,7 +7,7 @@ import sharp from 'sharp';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { KEPT_VALUES, leakyJpeg, PRIVATE_VALUES } from '../../../test/fixtures/exif';
 import { assertOutsideRepository } from '../../../test/helpers/tempDataRoot';
-import { encodeVariant } from '../../identity/profile';
+import { encodeLqip, encodeVariant } from '../../identity/profile';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../../identity/variants';
 import { readAboutPortrait, resetAboutPortraitReader } from '../aboutPortrait';
 import { SITE_CONFIG_ENV } from '../dir';
@@ -16,7 +16,7 @@ import { aboutPortraitView, createPortraitHandler, ENCODE_RETRY, portraitUrl, po
 // The real encoder, wrapped, so a test can make one encode fail or return something else.
 vi.mock('../../identity/profile', async (importOriginal) => {
     const actual = await importOriginal<typeof import('../../identity/profile')>();
-    return { ...actual, encodeVariant: vi.fn(actual.encodeVariant) };
+    return { ...actual, encodeVariant: vi.fn(actual.encodeVariant), encodeLqip: vi.fn(actual.encodeLqip) };
 });
 const encode = vi.mocked(encodeVariant);
 
@@ -39,6 +39,19 @@ async function swapTo(color: { r: number; g: number; b: number }, seconds: numbe
     const time = new Date(Date.now() + seconds * 1000);
     fs.utimesSync(about('portrait.jpg'), time, time);
     return currentToken();
+}
+
+/** The LQIP About renders once the current portrait's set has encoded it. */
+async function encodedLqip(): Promise<string> {
+    let lqip: string | undefined;
+    await vi.waitFor(
+        async () => {
+            lqip = (await aboutPortraitView('Pat Artist', { logger: quiet }))?.asset.lqip;
+            expect(lqip).toBeDefined();
+        },
+        { timeout: 20_000, interval: 50 },
+    );
+    return lqip as string;
 }
 
 async function currentToken(): Promise<string> {
@@ -67,6 +80,7 @@ afterEach(async () => {
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
     encode.mockReset();
+    vi.mocked(encodeLqip).mockReset();
     fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -138,6 +152,63 @@ describe('the portrait derivatives', () => {
         expect(view.asset.variants.w1200.webp).toEqual({ url: `/about/portrait/${token}/w1200.webp`, width: 900 });
         expect(view.alt).toBe('Portrait of Pat Artist');
         expect(view.focalPoint).toEqual({ x: 50, y: 50 });
+    });
+
+    it('carry profile 1\'s LQIP once the set has encoded it, with no metadata, and never wait for it', async () => {
+        const { jpeg: leaky } = await leakyJpeg();
+        put('portrait.jpg', leaky);
+        // The first render starts the set and waits for none of it, so the page goes out as it did before.
+        const first = await aboutPortraitView('Pat Artist', { logger: quiet });
+        expect(first).not.toBeNull();
+        expect(first?.asset.lqip).toBeUndefined();
+        const lqip = await encodedLqip();
+        expect(lqip).toMatch(/^data:image\/webp;base64,[A-Za-z0-9+/]+={0,2}$/);
+        const bytes = Buffer.from(lqip.slice('data:image/webp;base64,'.length), 'base64');
+        const metadata = await sharp(bytes).metadata();
+        expect(metadata.format).toBe('webp');
+        expect({ exif: metadata.exif, xmp: metadata.xmp, iptc: metadata.iptc, icc: metadata.icc }).toEqual({ exif: undefined, xmp: undefined, iptc: undefined, icc: undefined });
+        const text = bytes.toString('latin1');
+        for (const value of [...Object.values(PRIVATE_VALUES), ...Object.values(KEPT_VALUES), 'GPS', 'Exif']) expect(text, `the LQIP holds ${value}`).not.toContain(value);
+    });
+
+    it('make the LQIP upright and inside 20 px, as profile 1 does for a photo', async () => {
+        put('portrait.jpg', await sharp(await jpeg(1600, 1000)).withMetadata({ orientation: 6 }).jpeg().toBuffer());
+        const lqip = await encodedLqip();
+        const { width, height } = await sharp(Buffer.from(lqip.slice('data:image/webp;base64,'.length), 'base64')).metadata();
+        expect([width, height]).toEqual([13, 20]);
+    });
+
+    it('drop the LQIP with its set on a swap, so the page never shows the photo before', async () => {
+        put('portrait.jpg', await jpeg());
+        const before = await encodedLqip();
+        await swapTo({ r: 30, g: 90, b: 150 }, 10);
+        expect((await aboutPortraitView('Pat Artist', { logger: quiet }))?.asset.lqip, 'the new set has not encoded its own yet').toBeUndefined();
+        const after = await encodedLqip();
+        expect(after).not.toBe(before);
+    });
+
+    it('encode the LQIP after every variant, so no image the page asks for waits on it', async () => {
+        put('portrait.jpg', await jpeg());
+        const token = await currentToken();
+        const lqip = vi.mocked(encodeLqip);
+        // w400.webp is the last variant in the queue: once it's out, every variant is, and the LQIP hasn't started.
+        expect(await portraitVariant(token, 'w400', 'webp', { logger: quiet })).not.toBeNull();
+        expect(encode).toHaveBeenCalledTimes(VARIANT_WIDTHS.length * VARIANT_FORMATS.length);
+        await vi.waitFor(() => expect(lqip).toHaveBeenCalledTimes(1), { timeout: 20_000 });
+        expect(lqip.mock.invocationCallOrder[0]).toBeGreaterThan(Math.max(...encode.mock.invocationCallOrder));
+    });
+
+    it('keep the variants and the page when the LQIP fails to encode, with no LQIP', async () => {
+        put('portrait.jpg', await jpeg());
+        vi.mocked(encodeLqip).mockRejectedValueOnce(new Error('fixture failure'));
+        const token = await currentToken();
+        expect(await portraitVariant(token, 'w400', 'webp', { logger: quiet })).not.toBeNull();
+        await vi.waitFor(() => expect(encodeLqip).toHaveBeenCalledTimes(1));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const view = await aboutPortraitView('Pat Artist', { logger: quiet });
+        expect(view).not.toBeNull();
+        expect(view?.asset.lqip).toBeUndefined();
+        expect(await portraitVariant(token, 'w800', 'avif', { logger: quiet })).not.toBeNull();
     });
 
     it('take the alt and focal point from portrait.json', async () => {

@@ -99,8 +99,9 @@ export default function ResponsivePhoto({
     preload(asset.variants.w1200.avif.url, { as: 'image', type: 'image/avif', imageSrcSet: avif, imageSizes: sizes, fetchPriority: fetchPriority ?? 'high' });
   }
 
+  // A cropped photo sets --photo-lqip-position to its object-position, so the LQIP crops where the image will.
   const placeholder: React.CSSProperties | undefined = asset.lqip
-    ? { backgroundImage: `url("${asset.lqip}")`, backgroundSize: 'cover', backgroundPosition: 'center' }
+    ? { backgroundImage: `url("${asset.lqip}")`, backgroundSize: 'cover', backgroundPosition: 'var(--photo-lqip-position, center)' }
     : undefined;
   return (
     <picture>

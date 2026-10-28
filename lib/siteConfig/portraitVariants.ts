@@ -1,5 +1,6 @@
 import sharp from 'sharp';
-import { encodeVariant, variantWidthFor } from '../identity/profile';
+import { LQIP_RE } from '../catalog/schema';
+import { encodeLqip, encodeVariant, lqipDataUri, variantWidthFor } from '../identity/profile';
 import { VARIANT_FILE_RE, VARIANT_FORMATS, VARIANT_PIXELS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth } from '../identity/variants';
 import { PORTRAIT_LIMITS, PORTRAIT_TOKEN_RE, readAboutPortrait, readPortraitSource, type AboutPortraitState, type FocalPoint } from './aboutPortrait';
 
@@ -18,6 +19,10 @@ import { PORTRAIT_LIMITS, PORTRAIT_TOKEN_RE, readAboutPortrait, readPortraitSour
  *
  * The set is encoded in the background the first time its token is seen,
  * one variant at a time, most-requested first, from one read of the source.
+ * Profile 1's 20 px LQIP comes last, so no variant a page asks for waits on
+ * it. Once it's out, About and Home paint it behind the portrait until the
+ * image arrives. A page rendered before then goes out without it, as it
+ * would have: nothing waits for it.
  * A request for a variant waits for its own. A variant that fails to encode
  * is a 404 and is tried again by a later request, after a wait that doubles
  * from ENCODE_RETRY.firstMs up to ENCODE_RETRY.maxMs, so a file that always
@@ -29,12 +34,17 @@ type Logger = Pick<Console, 'warn'>;
 /** The order a set encodes in: the widths a 1x to 3x screen asks for most, AVIF before WebP. */
 const ENCODE_ORDER: VariantWidth[] = ['w1200', 'w800', 'w1920', 'w400'];
 
+/** The LQIP's place in a set, after every variant. No request names it: only the page reads it. */
+const LQIP = 'lqip';
+
 /** How long a variant that failed to encode waits before a request tries it again: doubling from `firstMs`, never over `maxMs`. */
 export const ENCODE_RETRY = { firstMs: 10_000, maxMs: 10 * 60_000 } as const;
 
 interface PortraitSet {
     token: string;
     variants: Map<string, Promise<Buffer | null>>;
+    /** The LQIP's data URI, once it's encoded. */
+    lqip?: string;
     /** Variants whose last encode failed, waiting for `retryAt`. */
     failed: Set<string>;
     /** Retries so far, for the wait before the next one. */
@@ -97,6 +107,7 @@ function encodeInto(set: PortraitSet, names: string[], logger: Logger): void {
     let previous: Promise<unknown> = kept().queue.then(() => source);
     for (const name of names) {
         const [width, format] = name.split('.') as [VariantWidth, VariantFormat];
+        const options = { limitInputPixels: PORTRAIT_LIMITS.maxPixels };
         const encoded = previous.then(async () => {
             const bytes = await source;
             // A set dropped since, by a swap or a removal, encodes nothing more.
@@ -107,8 +118,13 @@ function encodeInto(set: PortraitSet, names: string[], logger: Logger): void {
                 return null;
             }
             try {
-                const data = await encodeVariant(bytes, width, format, { limitInputPixels: PORTRAIT_LIMITS.maxPixels });
+                const data = name === LQIP ? await encodeLqip(bytes, options) : await encodeVariant(bytes, width, format, options);
                 if (await carriesMetadata(data)) return failed(set, name, 'kept metadata', logger);
+                if (name === LQIP) {
+                    const uri = lqipDataUri(data);
+                    if (!LQIP_RE.test(uri)) return failed(set, name, "isn't a WebP data URI", logger);
+                    set.lqip = uri;
+                }
                 return data;
             } catch (error) {
                 return failed(set, name, `couldn't be encoded (${(error as Error).message})`, logger);
@@ -125,7 +141,7 @@ function startSet(token: string, logger: Logger): PortraitSet {
     const set: PortraitSet = { token, variants: new Map(), failed: new Set(), retries: 0, retryAt: 0 };
     encodeInto(
         set,
-        ENCODE_ORDER.flatMap((width) => VARIANT_FORMATS.map((format) => `${width}.${format}`)),
+        [...ENCODE_ORDER.flatMap((width) => VARIANT_FORMATS.map((format) => `${width}.${format}`)), LQIP],
         logger,
     );
     return set;
@@ -178,20 +194,21 @@ export function portraitUrl(token: string, variant: VariantWidth, format: Varian
     return `/about/portrait/${token}/${variant}.${format}`;
 }
 
-/** What ResponsivePhoto reads: the upright size and every variant's URL and pixel width. */
+/** What ResponsivePhoto reads: the upright size, every variant's URL and pixel width, and the LQIP once it's encoded. */
 export interface PortraitAsset {
     width: number;
     height: number;
     variants: Record<VariantWidth, Record<VariantFormat, { url: string; width: number }>>;
+    lqip?: string;
 }
 
-export function portraitAsset(portrait: Extract<AboutPortraitState, { state: 'ready' }>): PortraitAsset {
+export function portraitAsset(portrait: Extract<AboutPortraitState, { state: 'ready' }>, lqip?: string): PortraitAsset {
     const variants = {} as PortraitAsset['variants'];
     for (const width of VARIANT_WIDTHS) {
         const pixels = variantWidthFor(portrait.width, portrait.height, VARIANT_PIXELS[width]);
         variants[width] = { avif: { url: portraitUrl(portrait.token, width, 'avif'), width: pixels }, webp: { url: portraitUrl(portrait.token, width, 'webp'), width: pixels } };
     }
-    return { width: portrait.width, height: portrait.height, variants };
+    return lqip === undefined ? { width: portrait.width, height: portrait.height, variants } : { width: portrait.width, height: portrait.height, variants, lqip };
 }
 
 /** What About renders for its portrait. */
@@ -207,14 +224,15 @@ export const defaultPortraitAlt = (name: string) => `Portrait of ${name}`;
 /**
  * About's portrait as the page renders it, or null for the no-photo layout:
  * portrait.json's alt, or one from the artist's name, and its focal point, or
- * the center. Starts the set's encoding, so its variants are ready sooner.
+ * the center, and the set's LQIP when it's already encoded. Starts the
+ * set's encoding, so its variants are ready sooner, and never waits for it.
  */
 export async function aboutPortraitView(name: string, { logger = console }: { logger?: Pick<Console, 'log' | 'warn'> } = {}): Promise<AboutPortraitView | null> {
     const portrait = await readAboutPortrait({ logger });
     // Also drops a set that's no longer current, so a removed photo's bytes don't wait for the next variant request.
-    setFor(portrait.state === 'ready' ? portrait.token : null, portrait, logger);
+    const set = setFor(portrait.state === 'ready' ? portrait.token : null, portrait, logger);
     if (portrait.state !== 'ready') return null;
-    return { asset: portraitAsset(portrait), alt: portrait.alt ?? defaultPortraitAlt(name), focalPoint: portrait.focalPoint ?? { x: 50, y: 50 } };
+    return { asset: portraitAsset(portrait, set?.lqip), alt: portrait.alt ?? defaultPortraitAlt(name), focalPoint: portrait.focalPoint ?? { x: 50, y: 50 } };
 }
 
 const IMMUTABLE = 'public, max-age=31536000, immutable';

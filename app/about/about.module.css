@@ -84,8 +84,10 @@
 
 /* The focal point from the host's portrait.json is the object-position,
    set inline on .photo as --portrait-focus. The <picture> ResponsivePhoto
-   renders is inline, so the image is placed against .photo directly. */
+   renders is inline, so the image is placed against .photo directly. The
+   LQIP behind it, once the portrait's set has one, crops at the same point. */
 .image {
+  --photo-lqip-position: var(--portrait-focus, 50% 50%);
   position: absolute;
   inset: 0;
   width: 100%;
