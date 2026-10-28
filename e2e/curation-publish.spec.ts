@@ -392,10 +392,14 @@ test.describe('the #1 checks', () => {
             await page.keyboard.press('Enter');
             await expect(result(page)).toHaveText('Publication blocked');
             // The whole answer comes into view clear of the bar, its last blocker link included.
-            const last = await blockerLinks(page).last().boundingBox();
-            const top = await bar(page).boundingBox();
-            expect(last && top && last.y + last.height <= top.y).toBe(true);
-            expect(last && last.y >= 0).toBe(true);
+            // The screen scrolls it there in the frame after focus moves, so wait for it rather than read once.
+            await expect
+                .poll(async () => {
+                    const last = await blockerLinks(page).last().boundingBox();
+                    const top = await bar(page).boundingBox();
+                    return Boolean(last && top && last.y >= 0 && last.y + last.height <= top.y);
+                })
+                .toBe(true);
             await checkSurface(page, {
                 controls: [
                     page.getByRole('link', { name: /Open full preview/ }),
