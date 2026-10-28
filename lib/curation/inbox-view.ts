@@ -666,6 +666,13 @@ export function systemResponse(item: StateFacts, labelOf: (seriesId: string) => 
     }
     // #17: the watcher, not the curator, dismisses a missing item whose same bytes came back at its own path.
     if (item.status === 'dismissed' && item.type === 'missing' && item.resolvedBy?.kind === 'same-file') return 'The same file came back at its path, so nothing a visitor sees changed.';
+    // A dismissal writes nothing, so a replacement whose draft a confirm left on the new version keeps it there, and
+    // the blocked hint sends the owner here to keep it. Saying only that nothing changed would leave out the next publish.
+    if (item.status === 'dismissed' && item.type === 'replacement' && item.replacement?.draft === 'new') {
+        return item.replacement.live
+            ? 'Dismissed, so it needs no judgment. The draft keeps the new version, and so does the live revision.'
+            : 'Dismissed, so it needs no judgment. The draft keeps the new version, and the next publish uses it. Nothing is published until you publish.';
+    }
     if (item.status === 'dismissed') return 'Dismissed, so it needs no judgment. Nothing a visitor sees changed.';
     if (item.status === 'resolved') return resolvedResponse(item.resolvedBy ?? null, item.type, item.sourcePath ?? null);
     return SYSTEM_RESPONSE[item.type];
