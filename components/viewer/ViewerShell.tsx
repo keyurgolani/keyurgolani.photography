@@ -80,8 +80,9 @@ async function fetchPeek(catalogApiHref: (path: string) => string, slug: string,
  *   focus back on the opener.
  *
  * In both, Left and Right move (see stepForKey), and so does a horizontal
- * swipe on the photograph (see useSwipe). A double-tap on the photograph
- * toggles Zoom, as the Zoom button does (see useDoubleTap). Previous and
+ * swipe on the photograph's stage (see useSwipe), which on a phone takes the
+ * ground above and below the photograph too. A double-tap there toggles
+ * Zoom, as the Zoom button does (see useDoubleTap). Previous and
  * Next replace the history entry without scrolling, an end announces itself
  * and doesn't move, and each move is announced in a polite live region
  * that's empty at mount.

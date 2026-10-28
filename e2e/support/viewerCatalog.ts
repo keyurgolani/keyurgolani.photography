@@ -39,6 +39,8 @@ export const HARBOR = [P[0], P[1], P[2]];
  * alone, and a 3:2 with a title and a caption several lines long, so both the shapes and the reading areas differ.
  */
 export const SHAPES = [id(7), id(8), id(9)];
+/** An untitled, decorative photograph with technical facts alone, in a series of its own: its reading area is the toggle. */
+export const FACTS_ONLY = id(10);
 /** The shapes series' title, too long for one line between Close and Zoom on a phone. */
 export const SHAPES_TITLE = 'Fixture shapes along the northern shoreline at the turn of the tide';
 /** The 3:2's caption: three or more lines at any width. */
@@ -84,6 +86,7 @@ export function useViewerCatalog(): () => string {
                 { id: SHAPES[0], width: 1200, height: 400, accent: '#3f7a8c' },
                 { id: SHAPES[1], width: 600, height: 900, title: 'Fixture tower', accent: '#a0583a' },
                 { id: SHAPES[2], width: 900, height: 600, title: 'Fixture dunes', caption: LONG_CAPTION, accent: '#6b6fd0' },
+                { id: FACTS_ONLY, width: 900, height: 600, alt: { kind: 'decorative' }, technical: { Make: 'Fixture Make', ISO: '100' } },
             ],
             series: [
                 {
@@ -98,6 +101,7 @@ export function useViewerCatalog(): () => string {
                 },
                 { id: 'ser_e2e-ridge', slug: 'ridge', title: 'Fixture ridge', photoIds: [P[3]] },
                 { id: 'ser_e2e-shapes', slug: 'shapes', title: SHAPES_TITLE, photoIds: SHAPES },
+                { id: 'ser_e2e-facts', slug: 'facts', title: 'Fixture facts', photoIds: [FACTS_ONLY] },
                 { id: 'ser_e2e-draft', slug: 'draft', title: 'SENTINEL draft title', photoIds: [P[4]], visibility: 'draft' },
                 { id: 'ser_e2e-hidden', slug: 'sentinel-hidden', title: 'SENTINEL hidden title', photoIds: [P[5]], visibility: 'hidden' },
             ],

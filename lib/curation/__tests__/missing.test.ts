@@ -14,7 +14,7 @@ import { createDecision, writeDecision } from '../../identity/decisions';
 import { identityPaths } from '../../identity/registry';
 import { buildDerivativeSet } from '../../identity/derivatives';
 import type { DerivativeJob, IdentityFact, Registry } from '../../identity/types';
-import { approveEvent, retryEvent } from '../actions';
+import { approveEvent, reopenEvent, retryEvent } from '../actions';
 import { pendingMergeOf } from '../binds';
 import { withCurationLock } from '../repository';
 import { inboxAlertLines, inboxAlerts } from '../alerts';
@@ -27,7 +27,7 @@ import type { CurationEvent } from '../events';
 import { listEvents } from '../repository';
 import { archiveMissing, bindReplacement, holdRefusal, MANAGED_PHOTO_FIELDS, OWNER_FIELDS } from '../resolutions';
 import { authoredPhotoSchema } from '../../catalog/schema';
-import { publish } from '../../catalog/publish';
+import { publish, validateWorkingLayer } from '../../catalog/publish';
 import { createSourcesSink, failureEventId, recordingFailuresAfterBuild, settleSources } from '../sources';
 import { clock, createMissingWorld, missingEventId, removeMissingTemplate, type MissingWorld } from './missingWorld';
 import { makeImages, P_PATH, Q_PATH, quiet, replacementEventId, SERIES, served, treeBytes, type Images } from './replacementWorld';
@@ -838,6 +838,21 @@ describe('a missing source and the public site', { timeout: 60_000 }, () => {
 });
 
 describe('archive, then publish', { timeout: 60_000 }, () => {
+    it('names a reopened archive\'s curation show with what settles it again, archiving or leaving it in draft', async () => {
+        const w = await world();
+        removeP(w);
+        await w.pass();
+        const item = await w.event(w.missingId);
+        const archived = await archiveMissing({ root: w.root, eventId: item.id, expectedVersion: item.version, expectedBase: w.revisionId, actor: ACTOR });
+        expect(archived).toMatchObject({ ok: true });
+        const reopened = await reopenEvent({ root: w.root, eventId: item.id, expectedVersion: (await w.event(item.id)).version, expectedBase: w.revisionId, actor: ACTOR });
+        expect(reopened).toMatchObject({ ok: true, event: { status: 'open' } });
+
+        const issues = (await validateWorkingLayer({ dataRoot: w.root })).issues.filter((issue) => issue.code === 'review.authored-change');
+        expect(issues).toEqual([expect.objectContaining({ record: { kind: 'series', id: SERIES }, field: 'photoIds', message: expect.stringContaining(`It settled the inbox item ${item.id}, which is open again.`) })]);
+        expect(issues[0].hint).toBe(`Run curation show ${item.id}, then archive it again or leave it in draft.`);
+    });
+
     it('takes the photo out of every series in the draft, writes the archive decision, and changes nothing public until a publish', async () => {
         const w = await world();
         const visible = await served(w);

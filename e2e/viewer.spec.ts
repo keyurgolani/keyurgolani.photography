@@ -5,7 +5,7 @@ import { expectReflow } from './support/reflow';
 import { checkSurface } from './support/surface';
 import { expect, test } from './support/test';
 import { expectSingleTapActivates } from './support/touch';
-import { HARBOR, P, SENTINELS, SITE_URL, href, id, useViewerCatalog } from './support/viewerCatalog';
+import { FACTS_ONLY, HARBOR, P, SENTINELS, SITE_URL, href, id, useViewerCatalog } from './support/viewerCatalog';
 
 // The Viewer (#7) on a published catalog, on both #1 projects: a direct load,
 // the series and position, Previous and Next inside the series that stop at
@@ -208,16 +208,19 @@ async function titleLine(page: Page) {
 /**
  * The reading area's pieces as the first screen cuts them: the title (when shown), the caption, the Description label
  * and its text, and the technical toggle. Only running text (the caption and the description) may run across the fold.
- * `lead` marks the pieces in the title line's block (the title and the caption), which comes first.
+ * `lead` marks the pieces in the title line's block (the title and the caption), which comes first. `block` is the
+ * reading area's child each piece sits in, so a test can tell the first block shown from the ones after it.
  */
 async function foldPieces(page: Page) {
     return page.locator('[data-surface="viewer"] section[aria-labelledby]').evaluate((reading) => {
         const lead = reading.firstElementChild;
+        const blocks = [...reading.children];
         const pieces = [...reading.querySelectorAll('h2:not(.sr-only), :scope > p, :scope > div > p, :scope > div > button')];
         return pieces.map((element) => {
             const { top, bottom } = element.getBoundingClientRect();
             const running = element.tagName === 'P' && (element.parentElement === reading || element.previousElementSibling !== null);
-            return { text: element.textContent?.trim().slice(0, 40) ?? '', top, bottom, running, lead: element.parentElement === lead };
+            const block = blocks.findIndex((child) => child === element || child.contains(element));
+            return { text: element.textContent?.trim().slice(0, 40) ?? '', top, bottom, running, lead: element.parentElement === lead, block };
         });
     });
 }
@@ -230,13 +233,18 @@ test('on a wide screen, the first screen ends on whole elements for every mix of
         { name: 'title only', photoId: P[2], slug: 'harbor', series: 'Fixture harbor', title: true },
         { name: 'caption only', photoId: P[3], slug: 'ridge', series: 'Fixture ridge', title: false },
         { name: 'neither', photoId: P[1], slug: 'harbor', series: 'Fixture harbor', title: false },
+        // Neither, and no description either: the technical toggle is the first block, and keeps its 44 px.
+        { name: 'facts only', photoId: FACTS_ONLY, slug: 'facts', series: 'Fixture facts', title: false },
     ];
     for (const size of [
         { width: 1440, height: 900 },
         { width: 1366, height: 768 },
         { width: 1280, height: 800 },
+        // A small tablet held upright, where the stage padding and the reading area's top padding both scale with the width.
+        { width: 800, height: 1024, narrow: true },
+        { width: 820, height: 1180, narrow: true },
     ]) {
-        await page.setViewportSize(size);
+        await page.setViewportSize({ width: size.width, height: size.height });
         const stages: unknown[] = [];
         for (const mix of mixes) {
             const at = `${size.width} by ${size.height}, ${mix.name}`;
@@ -245,7 +253,8 @@ test('on a wide screen, the first screen ends on whole elements for every mix of
             await expect(header(page).getByRole('heading', { level: 1 })).toHaveText(mix.series);
             const line = await titleLine(page);
             const pieces = await foldPieces(page);
-            expect(pieces.length, `${at}: the reading area has pieces`).toBeGreaterThan(1);
+            // The facts-only photograph's reading area is its toggle alone.
+            expect(pieces.length, `${at}: the reading area has pieces`).toBeGreaterThan(mix.photoId === FACTS_ONLY ? 0 : 1);
             expect(line.frame && line.reading && line.frame.bottom <= line.reading.top, `${at}: the photograph sits above the reading area`).toBe(true);
             // Nothing but running text is cut by the fold: no title, label, or control straddles the bottom edge.
             for (const piece of pieces) {
@@ -264,16 +273,27 @@ test('on a wide screen, the first screen ends on whole elements for every mix of
                 const after = pieces[mix.photoId === P[0] ? 2 : 1];
                 expect(after.top, `${at}: "${after.text}", after the title line, starts under the fold`).toBeGreaterThanOrEqual(line.innerHeight);
             } else {
-                // No title (9a's fixed stage): the title line's block keeps its height, so the stage doesn't grow into it.
-                // A caption shows in it, and everything after it starts under the fold.
+                // No title (9a's fixed stage): the stage doesn't grow into the title line's room. The first block the
+                // reading area shows takes that room instead, a caption or, with neither, the Description, and shows in
+                // the first screen. Everything after it starts under the fold.
                 expect(line.reading && line.reading.top, `${at}: the reading area starts on screen`).toBeLessThan(line.innerHeight);
-                for (const piece of pieces.filter((candidate) => candidate.lead)) expect(piece.top, `${at}: "${piece.text}" shows`).toBeLessThan(line.innerHeight);
-                const rest = pieces.filter((candidate) => !candidate.lead);
-                expect(rest.length, `${at}: the reading area has pieces after the title line`).toBeGreaterThan(0);
-                for (const piece of rest) expect(piece.top, `${at}: "${piece.text}" starts under the fold`).toBeGreaterThanOrEqual(line.innerHeight);
+                const first = Math.min(...pieces.map((piece) => piece.block));
+                const shown = pieces.filter((piece) => piece.block === first);
+                expect(shown.length, `${at}: the first block has pieces`).toBeGreaterThan(0);
+                expect(shown[0].top, `${at}: "${shown[0].text}" shows`).toBeLessThan(line.innerHeight);
+                for (const piece of shown) if (!piece.running) expect(piece.bottom, `${at}: "${piece.text}" shows whole`).toBeLessThanOrEqual(line.innerHeight);
+                if (mix.photoId === FACTS_ONLY) {
+                    expect(shown.map((piece) => piece.text), at).toEqual(['Show technical details']);
+                    // The block takes the title line's height, and the button in it doesn't stretch to it.
+                    expect(shown[0].bottom - shown[0].top, `${at}: the toggle keeps its height`).toBeCloseTo(44, 0);
+                } else {
+                    const rest = pieces.filter((piece) => piece.block !== first);
+                    expect(rest.length, `${at}: the reading area has pieces after its first block`).toBeGreaterThan(0);
+                    for (const piece of rest) expect(piece.top, `${at}: "${piece.text}" starts under the fold`).toBeGreaterThanOrEqual(line.innerHeight);
+                }
             }
-            // The photograph still holds the screen.
-            expect(line.frame && line.frame.bottom - line.frame.top).toBeGreaterThan(line.innerHeight * 0.6);
+            // The photograph still holds the screen, where the screen is wider than it is tall.
+            if (!size.narrow) expect(line.frame && line.frame.bottom - line.frame.top).toBeGreaterThan(line.innerHeight * 0.6);
             stages.push(line.stage);
         }
         // One stage for every mix, whatever the reading area holds.
@@ -342,6 +362,35 @@ test('on a phone, the stage takes the screen less a fixed reading allowance, wit
     }
     expect(layouts[1].stage, 'the same stage for a long and a short reading area').toEqual(layouts[0].stage);
     expect(layouts[1].reading?.top).toBeCloseTo(layouts[0].reading?.top ?? NaN, 1);
+});
+
+test('the header\'s Close icon and Zoom label sit on the gutter Previous and Next line up on, with room for the focus ring', async ({ page }, testInfo) => {
+    // As in the approved header, whose buttons have no inline padding: the icon and the label carry the edge, not the box.
+    const size = testInfo.project.name === 'mobile' ? { width: 390, height: 844 } : { width: 1440, height: 900 };
+    await page.setViewportSize(size);
+    await openViewer(page, P[1]);
+    const edges = await page.locator('[data-surface="viewer"]').evaluate((root) => {
+        const [close, zoom] = root.querySelectorAll('header > a, header > button');
+        const text = document.createRange();
+        const label = [...zoom.childNodes].find((node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim());
+        if (label) text.selectNodeContents(label);
+        const ring = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--focus-ring-width')) + parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--focus-ring-offset'));
+        return {
+            innerWidth: document.documentElement.clientWidth,
+            ring,
+            closeBox: close.getBoundingClientRect().left,
+            closeIcon: close.querySelector('svg')!.getBoundingClientRect().left,
+            zoomBox: zoom.getBoundingClientRect().right,
+            zoomLabel: label ? text.getBoundingClientRect().right : NaN,
+            previous: root.querySelector('[data-viewer-step="previous"]')!.getBoundingClientRect().left,
+            next: root.querySelector('[data-viewer-step="next"]')!.getBoundingClientRect().right,
+        };
+    });
+    expect(edges.closeIcon, 'Close\'s icon starts on the gutter').toBeCloseTo(edges.previous, 0);
+    expect(edges.zoomLabel, 'Zoom\'s label ends on the gutter').toBeCloseTo(edges.next, 0);
+    // The box keeps its padding inward, and the ring drawn outside it stays on screen.
+    expect(edges.closeBox, 'Close\'s ring stays on screen').toBeGreaterThanOrEqual(edges.ring);
+    expect(edges.innerWidth - edges.zoomBox, 'Zoom\'s ring stays on screen').toBeGreaterThanOrEqual(edges.ring);
 });
 
 test('the Viewer passes the #1 checks, and its controls reflow', async ({ page }) => {

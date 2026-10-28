@@ -42,6 +42,18 @@ export async function encodeVariant(source: Buffer, width: VariantWidth, format:
     return (format === 'avif' ? resized.avif(recipe.avif) : resized.webp(recipe.webp)).toBuffer();
 }
 
+/**
+ * Encode profile 1's LQIP: upright, inside 20 px, a WebP at quality 20, with
+ * no metadata, as encodeVariant. The watcher's sets and About's portrait both use it.
+ */
+export async function encodeLqip(source: Buffer, options: { limitInputPixels?: number } = {}): Promise<Buffer> {
+    const { size, fit, webp } = PROFILE_1.lqip;
+    return sharp(source, options).autoOrient().resize(size, size, { fit }).webp(webp).toBuffer();
+}
+
+/** An encoded LQIP as the data URI the pages paint behind a photo. */
+export const lqipDataUri = (data: Buffer) => `data:image/webp;base64,${data.toString('base64')}`;
+
 /** The width a variant comes out at from an upright `width` x `height` source: inside its target width and the height cap, never enlarged. */
 export function variantWidthFor(width: number, height: number, target: number): number {
     return Math.max(1, Math.round(width * Math.min(target / width, PROFILE_1.maxHeight / height, 1)));

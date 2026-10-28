@@ -8,7 +8,7 @@ import { hasErrorCode, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, withoutAbsolutePaths
 import { LockTimeoutError, withLock } from '../storage/lock';
 import { IntegrityError, MANIFEST_FILE, manifestFiles, publishDirectory, readDirectoryManifest, verifyDirectory, type DirectoryManifest } from '../storage/publish';
 import { assetRevisionOf, sha256, type Hasher } from './ids';
-import { encodeVariant, PROFILE_1, variantWidthFor } from './profile';
+import { encodeLqip, encodeVariant, lqipDataUri, PROFILE_1, variantWidthFor } from './profile';
 import { readRegistry, writeRegistry } from './registry';
 import type { AssetManifest, DerivativeJob, ProfileEntry, Registry, VariantFile } from './types';
 import { VARIANT_FORMATS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth } from './variants';
@@ -131,9 +131,7 @@ function variantDifferences(manifest: DirectoryManifest | null): string[] {
 }
 
 async function lqipOf(source: Buffer): Promise<string> {
-    const { size, fit, webp } = PROFILE_1.lqip;
-    const data = await sharp(source).autoOrient().resize(size, size, { fit }).webp(webp).toBuffer();
-    return `data:image/webp;base64,${data.toString('base64')}`;
+    return lqipDataUri(await encodeLqip(source));
 }
 
 /** Decode an encoded file and check it is what the profile promised. Returns its dimensions. */

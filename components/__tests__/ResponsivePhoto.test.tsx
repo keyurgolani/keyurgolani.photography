@@ -50,6 +50,8 @@ describe('ResponsivePhoto', () => {
     expect(img.getAttribute('fetchpriority')).toBe('high');
     expect(img.style.backgroundImage).toBe(`url("${LQIP}")`);
     expect(img.style.backgroundSize).toBe('cover');
+    // Centered, unless the page crops the photo elsewhere and says so in --photo-lqip-position.
+    expect(img.style.backgroundPosition).toBe('var(--photo-lqip-position, center)');
   });
 
   it('lists each width once when a small photo makes several variants the same size', () => {

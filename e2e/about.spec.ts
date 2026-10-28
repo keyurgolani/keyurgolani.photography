@@ -247,6 +247,24 @@ test.describe('the statement and portrait', () => {
         expect(await page.content()).not.toMatch(/_next\/static\/media\/front|assets\/profile|_next\/image\?url=%2F_next%2Fstatic%2Fmedia%2Ffront/);
     });
 
+    test("the portrait paints profile 1's LQIP behind it once its set has one, cropped at the focal point, and the image still loads", async ({ page }) => {
+        // The server starts the set as it starts, and the LQIP comes after every variant, so a later render carries it.
+        await expect
+            .poll(
+                async () => {
+                    await openAbout(page);
+                    return portrait(page).getByRole('img', { name: STAND_IN_PORTRAIT.alt, exact: true }).evaluate((el: HTMLImageElement) => el.style.backgroundImage);
+                },
+                { timeout: 30_000, intervals: [250, 500, 1000] },
+            )
+            .toMatch(/^url\("data:image\/webp;base64,[A-Za-z0-9+/]+={0,2}"\)$/);
+        const image = portrait(page).getByRole('img', { name: STAND_IN_PORTRAIT.alt, exact: true });
+        const { x, y } = STAND_IN_PORTRAIT.focalPoint;
+        await expect(image).toHaveCSS('background-position', `${x}% ${y}%`);
+        await expect(image).toHaveCSS('background-size', 'cover');
+        await expect.poll(() => image.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth > 0)).toBe(true);
+    });
+
     test('a token that is not the current portrait is a no-store 404', async ({ page }) => {
         const response = await page.request.get(`/about/portrait/${'0'.repeat(32)}/w800.webp`);
         expect(response.status()).toBe(404);

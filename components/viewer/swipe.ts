@@ -204,7 +204,7 @@ export function settleOf(kind: SettleKind, distance: number, speed: number, minS
 
 export type SwipeInput =
     /**
-     * A pointer went down. `eligible` when it's on the photograph, unzoomed, with no move on its way. `primary` when no other pointer of its kind
+     * A pointer went down. `eligible` when it's on the photograph's stage, unzoomed, with no move on its way. `primary` when no other pointer of its kind
      * is down. `t` is the event's time in ms; without one, a gesture's speed is unknown and only its distance counts.
      */
     | { type: 'down'; pointerId: number; x: number; y: number; t?: number; primary: boolean; eligible: boolean }
@@ -270,7 +270,7 @@ export function followTravel(gesture: SwipeGesture | null, x: number): number | 
 
 /**
  * One step of the recognizer. A gesture starts with the only pointer down,
- * on the photograph, unzoomed, and moves the Viewer only when that pointer
+ * on the photograph's stage, unzoomed, and moves the Viewer only when that pointer
  * lifts past the rule (swipeStep). A second pointer anywhere (a pinch, or a
  * tap on a control) ends it with a release and no move, so the photograph
  * slides back, and nothing starts until every pointer is up. A cancel or
