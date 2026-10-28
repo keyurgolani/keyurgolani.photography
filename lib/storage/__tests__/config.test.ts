@@ -172,8 +172,19 @@ describe('dataRootState', () => {
     });
 
     describe('the probe files a killed process left', () => {
-        // A process that has exited, so its ID names nothing running (and a reused one only keeps a leftover).
-        const deadPid = () => spawnSync(process.execPath, ['-e', '']).pid as number;
+        // A process that has exited, so its ID names nothing running. The OS can hand that ID to a new process before the
+        // sweep reads it, so this takes one only once signal 0 says no process has it (ESRCH), and tries again otherwise.
+        const deadPid = () => {
+            for (let attempt = 0; attempt < 20; attempt += 1) {
+                const pid = spawnSync(process.execPath, ['-e', '']).pid as number;
+                try {
+                    process.kill(pid, 0);
+                } catch (error) {
+                    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return pid;
+                }
+            }
+            throw new Error('Every exited process ID was taken again before it could be used');
+        };
         const probeName = (host: string, pid: number) => `.link-probe-${host}-${pid}-${randomUUID()}`;
         const place = (root: string, name: string, ageMs: number) => {
             const file = path.join(root, name);

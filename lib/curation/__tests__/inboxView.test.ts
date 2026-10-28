@@ -160,6 +160,11 @@ describe('the status and the system response', () => {
         expect(statusLabel(item({ type: 'processing-failure', status: 'failed' }))).toEqual({ text: 'Not processed', tone: null });
         expect(statusLabel(item())).toEqual({ text: 'Draft only', tone: null });
         expect(systemResponse(item({ status: 'dismissed', group: 'settled' }), labelOf)).toBe('Dismissed, so it needs no judgment. Nothing a visitor sees changed.');
+        // A dismissed replacement whose draft still uses the new version says the draft keeps it, and what publishing then does (#106).
+        const dismissed = (replacement: ReplacementDraft) => systemResponse(item({ type: 'replacement', status: 'dismissed', group: 'settled', replacement }), labelOf);
+        expect(dismissed({ draft: 'new', live: false, decideLater: 'blocked' })).toBe('Dismissed, so it needs no judgment. The draft keeps the new version, and the next publish uses it. Nothing is published until you publish.');
+        expect(dismissed({ draft: 'new', live: true, decideLater: 'keeps' })).toBe('Dismissed, so it needs no judgment. The draft keeps the new version, and so does the live revision.');
+        expect(dismissed({ draft: 'other', live: false, decideLater: 'keeps' })).toBe('Dismissed, so it needs no judgment. Nothing a visitor sees changed.');
         // #17's resolved never claims nothing a visitor sees changed: an archive's publish takes the photo down.
         expect(statusLabel(item({ status: 'resolved', group: 'settled' }))).toEqual({ text: 'Resolved', tone: null });
         // With no close the page knows, it points at History, never at a bare "needs no judgment".

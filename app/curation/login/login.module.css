@@ -176,21 +176,22 @@
   transition: background-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard);
 }
 
-/* Before the page hydrates, and while a sign-in is on its way. */
-.button:disabled {
+/* Before the page hydrates, and while a sign-in is on its way: aria-disabled then, so the button keeps focus. */
+.button:disabled,
+.button[aria-disabled='true'] {
   border-color: var(--gah-rule-strong);
   background: transparent;
   color: var(--gah-ink-muted);
   cursor: not-allowed;
 }
 
-.form[aria-busy='true'] .button:disabled {
+.form[aria-busy='true'] .button[aria-disabled='true'] {
   cursor: progress;
 }
 
 @media (hover: hover) and (pointer: fine) {
   /* The action's near-white is too close to the ink to step up to, so hover steps down toward the ground. */
-  .button:enabled:hover {
+  .button:enabled:not([aria-disabled='true']):hover {
     border-color: color-mix(in srgb, var(--gah-action) 82%, var(--gah-ground));
     background: color-mix(in srgb, var(--gah-action) 82%, var(--gah-ground));
   }

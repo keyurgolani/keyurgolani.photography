@@ -14,12 +14,14 @@ import { setDataDir } from '@/test/helpers/tempDataRoot';
 // lib/curation/__tests__/inbox.test.ts's.
 
 // `urls` is the page's URL as each action was called, so a test can tell what the URL said when the action went.
-const sent = vi.hoisted(() => ({ forms: [] as { action: string; fields: Record<string, string> }[], urls: [] as string[], answer: null as InboxActionState | null }));
+// `hold`, when set, keeps every action pending until the test lets it go.
+const sent = vi.hoisted(() => ({ forms: [] as { action: string; fields: Record<string, string> }[], urls: [] as string[], answer: null as InboxActionState | null, hold: null as Promise<void> | null }));
 
 vi.mock('../actions', () => {
     const make = (action: string) => async (_previous: InboxActionState, form: FormData): Promise<InboxActionState> => {
         sent.forms.push({ action, fields: Object.fromEntries([...form.entries()].map(([name, value]) => [name, String(value)])) });
         sent.urls.push(window.location.pathname + window.location.search + window.location.hash);
+        if (sent.hold) await sent.hold;
         return sent.answer ?? { status: 'done', action: action as 'approve', eventId: String(form.get('eventId')), message: 'Done.', serial: sent.forms.length };
     };
     return { approveItem: make('approve'), editItem: make('edit'), deferItem: make('defer'), dismissItem: make('dismiss'), retryItem: make('retry'), reopenItem: make('reopen') };
@@ -33,6 +35,7 @@ beforeEach(() => {
     sent.forms = [];
     sent.urls = [];
     sent.answer = null;
+    sent.hold = null;
     window.sessionStorage.clear();
     // A submit names its item in the URL (#item and all) when the URL doesn't, so each test starts from a plain one.
     window.history.replaceState(null, '', '/');
@@ -648,6 +651,32 @@ describe('the forms', () => {
         expect(await screen.findByText(/changed since the page loaded/)).toBeInTheDocument();
         expect(screen.getByRole('link', { name: 'Refresh and review again' })).toHaveAttribute('href', `/curation/inbox?item=${EVT(1)}#item`);
         expect(screen.getByRole('textbox', { name: 'Draft description' })).toHaveValue('Still here.');
+    });
+
+    it('keep every button focusable while an action is out, say each is unavailable, and send nothing more', async () => {
+        let release = () => undefined as void;
+        sent.hold = new Promise<void>((resolve) => (release = resolve));
+        try {
+            renderInbox();
+            const approve = screen.getByRole('button', { name: 'Approve into draft' });
+            approve.focus();
+            await press(approve);
+            // aria-disabled, not disabled: a focused button that turns disabled drops focus to the page's body.
+            for (const name of ['Save edits', 'Decide later', 'Approve into draft', 'Dismiss']) {
+                const button = screen.getByRole('button', { name });
+                expect(button).toBeEnabled();
+                expect(button).toHaveAttribute('aria-disabled', 'true');
+            }
+            expect(approve).toHaveFocus();
+            await press(screen.getByRole('button', { name: 'Decide later' }));
+            await press(approve);
+            expect(sent.forms.map((form) => form.action)).toEqual(['approve']);
+        } finally {
+            // Let it go even when a check failed, so no later test inherits a pending action.
+            await act(async () => release());
+        }
+        expect(await screen.findByText('Done.')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Save edits' })).not.toHaveAttribute('aria-disabled');
     });
 
     it('dismiss with a reason, and offer reopen and retry only where they can work', async () => {

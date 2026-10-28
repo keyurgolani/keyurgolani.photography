@@ -3,6 +3,7 @@ import { createTestCatalog, type TestCatalog } from '../lib/catalog/testing';
 import { READY_TIMEOUT } from './support/catalogServer';
 import { signIn, startCuratorServer, type CuratorServer } from './support/curatorServer';
 import { expectNoA11yViolations } from './support/a11y';
+import { holdNextPost } from './support/holdPost';
 import { waitForHydration } from './support/hydration';
 import { checkSurface } from './support/surface';
 import { expect, test } from './support/test';
@@ -178,7 +179,15 @@ test('passes the automated and keyboard checks, at rest and with a refusal', asy
     await waitForHydration(page);
     await passphrase(page).fill('not it either');
     await page.getByRole('button', { name: 'Sign in' }).focus();
+    // While the sign-in is on its way, the button says so and keeps the focus Enter sent it with (#1's contract).
+    const held = await holdNextPost(page, '/api/curation/login');
     await page.keyboard.press('Enter');
+    await held.sent;
+    const button = page.getByRole('main').getByRole('button');
+    await expect(button).toHaveText('Signing in…');
+    await expect(button).toHaveAttribute('aria-disabled', 'true');
+    await expect(button).toBeFocused();
+    await held.release();
     await expect(page).toHaveURL(`${origin}/curation/login?failed=1`);
 
     // Enter on the wordmark leads to the site, as the Inbox's does.

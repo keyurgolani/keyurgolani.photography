@@ -30,6 +30,28 @@ describe('SameOriginPostForm', () => {
     expect(container.querySelector('form')).toHaveAttribute('data-settled', 'true');
   });
 
+  it('keeps the button focusable while the post is on its way, says it is unavailable, and posts once', async () => {
+    let answer: (response: Response) => void = () => undefined;
+    const fetch = vi.fn(() => new Promise<Response>((resolve) => (answer = resolve)));
+    vi.stubGlobal('fetch', fetch);
+    const { container } = render(<SameOriginPostForm action="/api/curation/login" submitLabel="Sign in" pendingLabel="Signing in…" />);
+    const button = screen.getByRole('button', { name: 'Sign in' });
+    await vi.waitFor(() => expect(button).toBeEnabled());
+    button.focus();
+    const form = container.querySelector('form')!;
+    fireEvent.submit(form);
+    // aria-disabled, not disabled: a focused button that turns disabled drops focus to the page's body.
+    await vi.waitFor(() => expect(button).toHaveAttribute('aria-disabled', 'true'));
+    expect(button).toBeEnabled();
+    expect(button).toHaveFocus();
+    expect(button).toHaveTextContent('Signing in…');
+    expect(form).toHaveAttribute('aria-busy', 'true');
+    fireEvent.submit(form);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    answer(new Response(null, { status: 500 }));
+    await vi.waitFor(() => expect(button).not.toHaveAttribute('aria-disabled'));
+  });
+
   it("puts the line that says a post didn't go through under the fields, ahead of the button, when asked", async () => {
     const { alert, button, refusal } = await failOnce(true);
     // After the server's refusal and the field, before the button: one home for every refusal.
