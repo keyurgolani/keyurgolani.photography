@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { request as httpRequest, type APIRequestContext, type Page } from '@playwright/test';
+import { request as httpRequest, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import { folderBytes } from '../test/helpers/folderBytes';
 import { validateWorkingLayer } from '../lib/catalog/publish';
 import { readActivePointer, readAuthoredRecord } from '../lib/catalog/working-layer';
@@ -26,6 +26,7 @@ import {
     undisclosed,
     type InboxFixture,
 } from './support/curation-inbox';
+import { holdNextPost } from './support/holdPost';
 import { waitForHydration } from './support/hydration';
 import { expect, test } from './support/test';
 
@@ -100,6 +101,22 @@ const itemHeading = (page: Page, photoId: string) => page.getByRole('heading', {
 /** About 320 characters: four lines or more at 1440, six or so on a phone. */
 const LONG_DESCRIPTION =
     'Harbor wall at first light, the tide out and the stones still wet, two gulls on the iron rail, the ferry just leaving the far pier with its lights on, a man in a yellow coat walking his dog along the seawall, and the hills behind the town still grey with fog that the sun has not yet burned off the water.';
+
+/**
+ * Presses the button by keyboard and holds its action on the way, checking
+ * that the button keeps focus while it's pending and says it can't act, as
+ * #1's contract asks. A focused button that turned `disabled` dropped focus
+ * to the page's body. Then the action goes on.
+ */
+async function pressWhileHeld(page: Page, button: Locator) {
+    await button.focus();
+    const held = await holdNextPost(page, '/curation/inbox');
+    await page.keyboard.press('Enter');
+    await held.sent;
+    await expect(button).toHaveAttribute('aria-disabled', 'true');
+    await expect(button).toBeFocused();
+    await held.release();
+}
 
 /** `landed` opens the item on `#item`, as its row link does, so a link back to the same URL only scrolls unless the page reloads it. */
 async function openInbox(page: Page, item?: string, { landed = false }: { landed?: boolean } = {}) {
@@ -238,7 +255,7 @@ test('approves a new photograph into the draft with the typed description, and p
     await page.getByRole('combobox', { name: 'Suggested series' }).selectOption(INBOX_SERIES.draft.id);
     await page.getByRole('combobox', { name: 'Proposed sequence position' }).selectOption('start');
     await page.getByRole('textbox', { name: 'Draft description' }).fill('A harbor wall at first light, typed in the e2e.');
-    await page.getByRole('button', { name: 'Approve into draft' }).click();
+    await pressWhileHeld(page, page.getByRole('button', { name: 'Approve into draft' }));
     // The next item that needs a decision opens, in list order, with its heading focused, and says what was done.
     await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox?item=${eventOf(FRESH.stale)}#item`);
     await waitForHydration(page);
@@ -507,7 +524,7 @@ test('Decide later moves on to the next item too, and the last decision, from th
     await openInbox(page, missing.id, { landed: true });
     // The active revision holds it, so its published statement is kept, and the page says so.
     await expect(page.getByText('Published statement remains unchanged.')).toBeVisible();
-    await page.getByRole('button', { name: 'Decide later' }).click();
+    await pressWhileHeld(page, page.getByRole('button', { name: 'Decide later' }));
     await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox?item=${failed.id}#item`);
     await waitForHydration(page);
     await expect(page.getByRole('heading', { level: 2, name: path.posix.basename(FAILED_SOURCE) })).toBeFocused();

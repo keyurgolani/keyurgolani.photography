@@ -342,6 +342,9 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
     // each select back to its page-load option while the curator's choice is still what the form sends.
     const submit = (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
+        // While an action is out, its buttons say they're unavailable with aria-disabled, not `disabled`: a focused
+        // button that turns disabled drops keyboard focus to the page's body (#1's focus contract). So this is the guard.
+        if (pending) return;
         const submitter = (event.nativeEvent as SubmitEvent).submitter;
         const form = new FormData(event.currentTarget);
         if (submitter instanceof HTMLButtonElement && submitter.name) form.set(submitter.name, submitter.value);
@@ -406,7 +409,7 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
                             </span>
                         ) : null}
                         {detail.type === 'new' && can.edit ? (
-                            <button type="submit" name="intent" value="edit" className={styles.button} disabled={pending}>
+                            <button type="submit" name="intent" value="edit" className={styles.button} aria-disabled={pending || undefined} data-off={pending ? 'true' : undefined}>
                                 Save edits
                             </button>
                         ) : null}
@@ -416,12 +419,12 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
                             </button>
                         ) : can.defer ? (
                             // On a replacement the hint says what Decide later does to the draft, so it describes the button.
-                            <button type="submit" name="intent" value="defer" className={styles.button} disabled={pending} aria-describedby={detail.type === 'replacement' && detail.primaryUnavailable ? 'primary-unavailable' : undefined}>
+                            <button type="submit" name="intent" value="defer" className={styles.button} aria-disabled={pending || undefined} data-off={pending ? 'true' : undefined} aria-describedby={detail.type === 'replacement' && detail.primaryUnavailable ? 'primary-unavailable' : undefined}>
                                 {DEFER_LABEL}
                             </button>
                         ) : null}
                         {primary && detail.type === 'new' && can.approve ? (
-                            <button type="submit" name="intent" value="approve" className={`${styles.button} ${styles.primary}`} disabled={pending}>
+                            <button type="submit" name="intent" value="approve" className={`${styles.button} ${styles.primary}`} aria-disabled={pending || undefined} data-off={pending ? 'true' : undefined}>
                                 <Save size={16} aria-hidden="true" />
                                 {primary}
                             </button>
@@ -439,7 +442,7 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
             {can.retry ? (
                 <form method="post" onSubmit={submit} className={styles.actions}>
                     <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
-                    <button type="submit" name="intent" value="retry" className={styles.button} disabled={pending}>
+                    <button type="submit" name="intent" value="retry" className={styles.button} aria-disabled={pending || undefined} data-off={pending ? 'true' : undefined}>
                         Retry processing
                     </button>
                 </form>
@@ -448,7 +451,7 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
             {can.reopen ? (
                 <form method="post" onSubmit={submit} className={styles.actions}>
                     <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
-                    <button type="submit" name="intent" value="reopen" className={styles.button} disabled={pending}>
+                    <button type="submit" name="intent" value="reopen" className={styles.button} aria-disabled={pending || undefined} data-off={pending ? 'true' : undefined}>
                         Reopen
                     </button>
                 </form>
@@ -467,7 +470,7 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
                             <input className={styles.control} name="reason" required maxLength={500} autoComplete="off" />
                         </label>
                         <div className={styles.actions}>
-                            <button type="submit" name="intent" value="dismiss" className={styles.button} disabled={pending}>
+                            <button type="submit" name="intent" value="dismiss" className={styles.button} aria-disabled={pending || undefined} data-off={pending ? 'true' : undefined}>
                                 Dismiss
                             </button>
                         </div>

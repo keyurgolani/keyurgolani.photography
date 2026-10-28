@@ -28,7 +28,10 @@ interface SameOriginPostFormProps {
  * the same origin always sends the real `Origin`. The button stays disabled
  * until this has hydrated, so the form never posts the plain way. The cookie
  * a response sets is kept as for any same-origin fetch. While the post is
- * on its way the form is `aria-busy` and the button says `pendingLabel`.
+ * on its way the form is `aria-busy` and the button says `pendingLabel`. It
+ * is `aria-disabled` then, not `disabled`, so the focus a keyboard sent it
+ * with stays on it (a focused button that turns disabled drops focus to the
+ * page's body), and `submit` refuses a second post.
  *
  * The form takes `data-settled` once the button's first enable has been
  * styled, so a button that fades between its states (the login's) fades only
@@ -90,7 +93,7 @@ export default function SameOriginPostForm({
     <form className={className} method="post" action={action} onSubmit={submit} aria-busy={sending || undefined} data-settled={settled || undefined}>
       {children}
       {alertBeforeButton ? alert : null}
-      <button ref={button} className={buttonClassName} type="submit" disabled={!ready || sending}>
+      <button ref={button} className={buttonClassName} type="submit" disabled={!ready} aria-disabled={sending || undefined}>
         {sending && pendingLabel ? pendingLabel : submitLabel}
       </button>
       {alertBeforeButton ? null : alert}
