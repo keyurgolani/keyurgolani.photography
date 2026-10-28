@@ -3,6 +3,7 @@ import { READY_TIMEOUT } from './support/catalogServer';
 import { signIn, startCuratorServer, type CuratorServer } from './support/curatorServer';
 import { waitForHydration } from './support/hydration';
 import { expect, test } from './support/test';
+import type { Page } from '@playwright/test';
 
 // #16's Publish screen (16-3): the panel's frame opens the most affected
 // series page inside the preview and scrolls its own window to the changed
@@ -30,9 +31,32 @@ test.afterAll(async () => {
     await fixture?.cleanup();
 });
 
-test('the frame opens on the new photograph and leaves the Publish page where it was', async ({ page }) => {
+/**
+ * Signs `page` in. Chromium uses the login form, as the owner does. Playwright's
+ * Linux WebKit drops the session cookie, which is `Secure`, over plain http
+ * (curator-login.spec.ts marks that as expected), so on WebKit the test posts
+ * the login form itself and stores the cookie without the flag. The flag only
+ * tells the browser when to send the cookie; the server never sees it, only
+ * the value, so the page holds the same session the form would give it.
+ * E2E_COOKIE_SIGN_IN=1 takes this path on any browser, to check it where
+ * WebKit keeps the cookie.
+ */
+async function signInPage(page: Page, browserName: string, origin: string, passphrase: string): Promise<void> {
+    if (browserName !== 'webkit' && process.env.E2E_COOKIE_SIGN_IN !== '1') return signIn(page, origin, passphrase);
+    const response = await page.request.post(`${origin}/api/curation/login`, { form: { passphrase }, headers: { origin }, maxRedirects: 0 });
+    expect(response.status()).toBe(303);
+    expect(response.headers().location).toBe('/curation');
+    const set = response.headersArray().find((header) => header.name.toLowerCase() === 'set-cookie' && header.value.startsWith('curator_session='));
+    if (!set) throw new Error('The login answered without a session cookie');
+    const value = set.value.slice('curator_session='.length).split(';')[0];
+    await page.context().addCookies([{ name: 'curator_session', value, domain: new URL(origin).hostname, path: '/', httpOnly: true, secure: false, sameSite: 'Strict' }]);
+    await page.goto(`${origin}/curation`);
+    await expect(page).toHaveURL(`${origin}/curation`);
+}
+
+test('the frame opens on the new photograph and leaves the Publish page where it was', async ({ page, browserName }) => {
     if (!curator) throw new Error('The curator server did not start');
-    await signIn(page, curator.origin, curator.passphrase);
+    await signInPage(page, browserName, curator.origin, curator.passphrase);
     await page.goto(`${curator.origin}/curation/publish`);
     await waitForHydration(page);
     // The series page, not the Viewer, which would bring its own Close and Zoom that the inert frame can't use.
