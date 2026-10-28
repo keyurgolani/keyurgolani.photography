@@ -213,6 +213,16 @@ describe('dataRootState', () => {
             expect(fs.statSync(path.join(data.root, folder)).isDirectory()).toBe(true);
         });
 
+        it('sweeps a probe with its own process ID from before this process started, as a container restarted in place leaves', () => {
+            const data = tempDataRoot();
+            const host = probeHostTag();
+            // Every writer in a container is process 1, so the ID alone can't tell a restart from this process.
+            const before = probeName(host, process.pid);
+            place(data.root, before, process.uptime() * 1000 + PROBE_SWEEP_AGE_MS + 5_000);
+            expect(dataRootStatus({ versioned: true })).toMatchObject({ state: 'ready' });
+            expect(data.files()).toEqual([DATA_ROOT_FILE]);
+        });
+
         it('names its own probe with this host and its process, and leaves none behind', () => {
             const data = tempDataRoot();
             const write = vi.spyOn(fs, 'writeFileSync');

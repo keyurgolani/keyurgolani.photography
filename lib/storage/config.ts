@@ -140,15 +140,18 @@ function sweepProbes(root: string, now = Date.now()): void {
         return;
     }
     const host = probeHostTag();
+    // In a container every writer is PID 1 under its container's host name, so a probe with this
+    // process's own ID is a leftover when it's older than this process: no process writes before it starts.
+    const started = now - process.uptime() * 1000;
     for (const name of names) {
         const match = PROBE_NAME_RE.exec(name);
         if (!match || match[1] !== host) continue;
         const pid = Number(match[2]);
-        if (pid === process.pid || isRunning(pid)) continue;
         const file = path.join(/*turbopackIgnore: true*/ root, name);
         try {
             const stat = fs.lstatSync(file);
             if (!stat.isFile() || now - stat.mtimeMs < PROBE_SWEEP_AGE_MS) continue;
+            if (pid === process.pid ? stat.mtimeMs >= started : isRunning(pid)) continue;
             fs.rmSync(file, { force: true });
         } catch {
             // Gone already, or can't be read or removed: leave it.

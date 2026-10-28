@@ -50,8 +50,10 @@ async function isFolder(root: string): Promise<boolean> {
  */
 async function servesLegacy(): Promise<boolean> {
     const root = dataRoot();
-    if (root === null || !(await isFolder(root))) return false;
-    return (await catalogMode(root)) === 'legacy';
+    if (root === null) return false;
+    // The mode first: a launched root swapped for a file or for nothing between the two reads is then
+    // caught either way, by the folder check after a legacy answer, or by the mode latching catalog.
+    return (await catalogMode(root)) === 'legacy' && (await isFolder(root));
 }
 
 /**
