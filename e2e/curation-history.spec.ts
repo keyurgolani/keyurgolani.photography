@@ -185,6 +185,8 @@ test("refuses a revision today's checks refuse, with the reason in view and the 
         await expect(dialog(page).getByText(`1 of its photographs no longer has its image files: ${SALT_ROADS_TITLES[3]}.`)).toBeVisible();
         await expectAnswerInView(page);
         await expect(dialog(page).getByRole('link', { name: 'Load the updated page' })).toBeVisible();
+        // Nothing is left to confirm, so the line about confirming goes.
+        await expect(dialog(page).getByText('If another revision goes live before you confirm', { exact: false })).toHaveCount(0);
     } finally {
         undo();
     }

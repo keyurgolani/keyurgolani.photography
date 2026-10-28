@@ -319,6 +319,10 @@
 .moreNames summary {
   display: inline-flex;
   min-height: 44px;
+  /* Room for the focus token outside the box, so its ring never crosses the names above and below. */
+  margin-block: calc(var(--focus-ring-width) + var(--focus-ring-offset));
+  margin-inline-start: -0.375rem;
+  padding-inline: 0.375rem;
   align-items: center;
   color: var(--gah-ink);
   text-decoration: underline;
@@ -327,7 +331,7 @@
 }
 
 .moreNames p {
-  margin: 0 0 0.25rem;
+  margin: 0.25rem 0 0.25rem;
   color: var(--gah-ink-soft);
 }
 

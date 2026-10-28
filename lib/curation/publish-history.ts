@@ -120,7 +120,7 @@ export interface HistoryView {
     done?: DoneView;
 }
 
-export type ResultAction = 'cancel' | 'close' | 'close-reload' | 'retry' | 'reload' | 'finish';
+export type ResultAction = 'cancel' | 'close' | 'retry' | 'reload' | 'finish';
 
 export interface RestoreResult {
     tone: 'done' | 'alert' | 'change';
@@ -548,7 +548,7 @@ export function restoreResult(outcome: RollbackOutcome, facts: OutcomeFacts): Re
         case 'NO_CHANGES': {
             const body = [`${liveByLine(facts.liveBy)} Nothing more to do.`];
             if (facts.settled) body.push('History now records the restore that was interrupted.');
-            return { tone: 'done', heading: `Revision ${n} is already live`, body, actions: ['close-reload'], moved: { impact: 'hide' } };
+            return { tone: 'done', heading: `Revision ${n} is already live`, body, actions: ['reload'], moved: { impact: 'hide' } };
         }
         case 'DATA_ROOT_NOT_READY':
             return { tone: 'alert', heading: "The catalog folder isn't ready", body: ['Nothing was restored. The server log names what failed.'], actions: ['close'] };
@@ -562,7 +562,7 @@ export function restoreResult(outcome: RollbackOutcome, facts: OutcomeFacts): Re
         default: {
             // Interrupted: the facts say whether the target went live before the stop.
             if (facts.pointer?.revisionId === facts.targetRevisionId) {
-                return { tone: 'alert', heading: `Revision ${n} is live, but the restore didn't finish`, body: [`Visitors see revision ${n}. Finish restoring it so History records it.`], actions: ['close-reload', 'finish'], moved: { impact: 'hide' } };
+                return { tone: 'alert', heading: `Revision ${n} is live, but the restore didn't finish`, body: [`Visitors see revision ${n}. Finish restoring it so History records it.`], actions: ['reload', 'finish'], moved: { impact: 'hide' } };
             }
             const still = facts.pointer?.number ? `Revision ${facts.pointer.number} is still live, and visitors see no change. ` : '';
             return { tone: 'alert', heading: `The restore stopped before revision ${n} went live`, body: [`${still}The server log names what failed. Restore again to retry.`], actions: ['cancel', 'retry'] };

@@ -324,15 +324,15 @@ describe("the dialog's answers", () => {
         expect(local(restoreResult('DATA_ROOT_NOT_READY', facts())).heading).toBe("The catalog folder isn't ready");
     });
 
-    it('already live: moved facts, nothing more to do, and Close and reload', () => {
+    it('already live: moved facts, nothing more to do, and Load the updated page', () => {
         const result = local(restoreResult('NO_CHANGES', facts({ pointer: { revisionId: rev(5), number: 5 }, liveBy: { actor: 'curator:web', kind: 'rollback', at: '2026-10-27T09:11:00.000Z' }, settled: true })));
-        expect(result).toEqual({ tone: 'done', heading: 'Revision 5 is already live', body: ['It was restored from this screen at 09:11. Nothing more to do.', 'History now records the restore that was interrupted.'], actions: ['close-reload'], moved: { impact: 'hide' } });
+        expect(result).toEqual({ tone: 'done', heading: 'Revision 5 is already live', body: ['It was restored from this screen at 09:11. Nothing more to do.', 'History now records the restore that was interrupted.'], actions: ['reload'], moved: { impact: 'hide' } });
     });
 
     it('interrupted: before the switch, the retry; after it, Finish restoring', () => {
         expect(local(restoreResult('STORAGE_ERROR', facts()))).toEqual({ tone: 'alert', heading: 'The restore stopped before revision 5 went live', body: ['Revision 6 is still live, and visitors see no change. The server log names what failed. Restore again to retry.'], actions: ['cancel', 'retry'] });
         for (const outcome of ['STORAGE_ERROR', 'INTEGRITY_MISMATCH', 'LOCK_LOST'] as const) {
-            expect(local(restoreResult(outcome, facts({ pointer: { revisionId: rev(5), number: 5 } })))).toEqual({ tone: 'alert', heading: "Revision 5 is live, but the restore didn't finish", body: ['Visitors see revision 5. Finish restoring it so History records it.'], actions: ['close-reload', 'finish'], moved: { impact: 'hide' } });
+            expect(local(restoreResult(outcome, facts({ pointer: { revisionId: rev(5), number: 5 } })))).toEqual({ tone: 'alert', heading: "Revision 5 is live, but the restore didn't finish", body: ['Visitors see revision 5. Finish restoring it so History records it.'], actions: ['reload', 'finish'], moved: { impact: 'hide' } });
         }
     });
 });

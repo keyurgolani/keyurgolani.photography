@@ -233,7 +233,7 @@ describe('the answers', () => {
         const { history } = await page();
         expect((await restore(history, 2)).answer?.kind).toBe('restored');
         const result = resultOf(await restore(history, 2));
-        expect(result).toMatchObject({ tone: 'done', heading: 'Revision 2 is already live', actions: ['close-reload'], moved: { impact: 'hide' } });
+        expect(result).toMatchObject({ tone: 'done', heading: 'Revision 2 is already live', actions: ['reload'], moved: { impact: 'hide' } });
     });
 });
 
@@ -359,7 +359,7 @@ describe('an interrupted restore, through the action (high review M5)', () => {
         crashAfter(11);
         const stopped = resultOf(await restore(history, 2));
         quiet.mockRestore();
-        expect(stopped).toMatchObject({ heading: "Revision 2 is live, but the restore didn't finish", actions: ['close-reload', 'finish'], moved: { impact: 'hide' } });
+        expect(stopped).toMatchObject({ heading: "Revision 2 is live, but the restore didn't finish", actions: ['reload', 'finish'], moved: { impact: 'hide' } });
         expect((await readActivePointer(fixture.root))?.revisionId).toBe(r2);
         // Finish restoring posts the same form: the restore settles under the lock and reads as already live.
         const finished = resultOf(await restore(history, 2));

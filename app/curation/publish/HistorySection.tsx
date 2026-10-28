@@ -214,13 +214,6 @@ function RestoreDialog({ plan, zone, staticOpen, action, onClose }: DialogProps)
     const actions: ResultAction[] = result ? result.actions : ['cancel', 'retry'];
     const settledReason = Boolean(result) && !actions.includes('retry') && !actions.includes('finish');
     const button = (action: ResultAction) => {
-        if (action === 'close-reload') {
-            return (
-                <a key={action} className={curator.linkButton} href={PUBLISH_PAGE}>
-                    Close and reload
-                </a>
-            );
-        }
         if (action === 'cancel' || action === 'close') {
             return (
                 <button key={action} type="button" className={curator.button} aria-disabled={pending || undefined} data-off={pending ? 'true' : undefined} onClick={() => (pending ? undefined : onClose())}>
@@ -229,8 +222,9 @@ function RestoreDialog({ plan, zone, staticOpen, action, onClose }: DialogProps)
             );
         }
         if (action === 'reload') {
+            // One way on (spec revision 3). Beside Finish restoring, that's the primary, so this one is an outline.
             return (
-                <a key={action} className={`${curator.linkButton} ${publish.primaryLink}`} href={PUBLISH_PAGE}>
+                <a key={action} className={actions.includes('finish') ? curator.linkButton : `${curator.linkButton} ${publish.primaryLink}`} href={PUBLISH_PAGE}>
                     <RefreshCw size={16} aria-hidden="true" />
                     Load the updated page
                 </a>
@@ -255,7 +249,7 @@ function RestoreDialog({ plan, zone, staticOpen, action, onClose }: DialogProps)
             aria-describedby="restore-stakes"
             onCancel={(event) => {
                 // Escape: closes, except while a restore is in flight. After an answer that found the pointer moved, the
-                // page behind is out of date, so Escape loads it again, as Close and reload would (spec: never a plain close).
+                // page behind is out of date, so Escape loads it again, as Load the updated page does (spec revision 3: never a plain close).
                 event.preventDefault();
                 if (pending) return;
                 if (moved) window.location.assign(PUBLISH_PAGE);
@@ -292,7 +286,7 @@ function RestoreDialog({ plan, zone, staticOpen, action, onClose }: DialogProps)
                             </dd>
                         </div>
                     </dl>
-                    {moved ? null : <p className={styles.casNote}>If another revision goes live before you confirm, nothing is restored.</p>}
+                    {moved || settledReason ? null : <p className={styles.casNote}>If another revision goes live before you confirm, nothing is restored.</p>}
                     {moved?.impact === 'hide' ? null : (
                         <>
                             <h3 className={styles.impactHeading}>{moved ? `What it would have changed, against revision ${plan.active}` : 'What changes for visitors'}</h3>
