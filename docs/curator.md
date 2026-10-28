@@ -97,7 +97,7 @@ docker compose -f docker-compose.prod.yml up -d curator
 docker compose -f docker-compose.prod.yml stop curator
 ```
 
-Its restart policy is `no`, so a reboot or a Docker restart leaves it off. It reads the library (`:ro`), writes the data root, and runs as uid 1001, the watcher's, so the data root setup in [data-root.md](data-root.md) covers it too.
+Its restart policy is `no`, so a reboot or a Docker restart leaves it off. It reads the library (`:ro`), writes the data root, and runs as uid 1001, the watcher's, so the data root setup in [data-root.md](data-root.md) covers it too. Its Inbox, Publish and Restore write `authored/`, `catalog/`, `locks/` and `curation/events/` there, so stop it with the watcher whenever the data root has to hold still: [Backing up](data-root.md#backing-up), [Restoring](data-root.md#restoring) and [Editing a document by hand](data-root.md#editing-a-document-by-hand) say how.
 
 ## What keeps it private
 

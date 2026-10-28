@@ -291,7 +291,7 @@ With an override, use this block instead. It also checks the merged file, the ne
 
 The block leaves the old `web` serving and the watcher stopped. The first release with slice C of #10 is also the first with slice C of [#13](https://github.com/keyurgolani/keyurgolani.photography/issues/13), whose `web` lists photos only from the registry the migration writes, so apply the migration now, before `up -d`. Started first, the new `web` shows no photos on Home and Gallery until it applies. The old image can't run the migration, since it has no `dist/scripts/photos.mjs`, so these steps run the new image through the new compose file, as the block's dry run did, with the old watcher still stopped. With an override, add `-f <override>` after `-f docker-compose.prod.yml` in each command:
 
-1. Back up both folders. This is the [Backing up](data-root.md#backing-up) block without its `stop` and `start`, since the watcher is already stopped and its `start` would bring the old watcher back while step 3 applies the plan:
+1. Back up both folders. This is the [Backing up](data-root.md#backing-up) block without its `stop` and `start` lines, the watcher's and the curator's, since the watcher is already stopped and its `start` would bring the old watcher back while step 3 applies the plan:
 
    ```bash
    (
@@ -431,7 +431,7 @@ Once an activation is committed, the site stays in catalog mode. `web` switches 
 
 Only two things bring them back:
 
-- Restoring the data root from a backup made before the launch publish, as [Restoring](data-root.md#restoring) describes. Its blocks stop and start `web`, so it comes back reading the restored data root, which has no pointer and no committed activation, and `/api/ready` reports `"mode":"legacy"`, with `/assets/photos` serving the legacy derivatives again. That costs every authored change, publish, and rollback made after the backup, though the blocks keep the current data root aside. Photos added since the backup also get new IDs at the watcher's next pass, so their shared Viewer URLs stop resolving. So make the backup, as [Backing up](data-root.md#backing-up) describes, after authoring, `validate`, and the dry run, just before `--confirm-launch`. Restoring that one keeps the authored records, since a candidate and its diagnostics alone don't count as a cutover.
+- Restoring the data root from a backup made before the launch publish, as [Restoring](data-root.md#restoring) describes. Its blocks stop and start `web`, and stop the curator, so it comes back reading the restored data root, which has no pointer and no committed activation, and `/api/ready` reports `"mode":"legacy"`, with `/assets/photos` serving the legacy derivatives again. That costs every authored change, publish, and rollback made after the backup, though the blocks keep the current data root aside. Photos added since the backup also get new IDs at the watcher's next pass, so their shared Viewer URLs stop resolving. So make the backup, as [Backing up](data-root.md#backing-up) describes, after authoring, `validate`, and the dry run, just before `--confirm-launch`. Restoring that one keeps the authored records, since a candidate and its diagnostics alone don't count as a cutover.
 - Rolling the image back past the first release with slice C of #13, as above. Rolling forward serves the active revision again. An image older than the first release with slice A of #10 also goes without that release's privacy protections, as above, so roll back that far only as a last resort.
 
 ## What's running
