@@ -10,20 +10,20 @@ The registry in it names every photo by its path in the library and by the SHA-2
 |---|---|---|
 | `data-root.json` | The marker that says the folder is an initialized data root | `migrate --apply`, once |
 | `identity/registry/v<N>.json` | Every photo ID, the photo's path, and its revisions, with the state of each revision's `/media` set. A [version folder](#version-folders): the highest `v<N>.json` is the registry. | The watcher, `migrate --apply`, and `identity` decisions |
-| `authored/site/v<N>.json`, `authored/<kind>/<id>/v<N>.json` | The authored catalog records: the site record, and one version folder per series (`authored/series/<seriesId>/`) and per photo (`authored/photos/<photoId>/`) | `photos.mjs` `draft:init`, `describe`, `sequence`, `series`, and `edit`, a hand-made copy at the next version as [Editing a document by hand](#editing-a-document-by-hand) describes, and `photos.mjs publish` and `rollback` when they rebase them |
+| `authored/site/v<N>.json`, `authored/<kind>/<id>/v<N>.json` | The authored catalog records: the site record, and one version folder per series (`authored/series/<seriesId>/`) and per photo (`authored/photos/<photoId>/`) | `photos.mjs` `draft:init`, `describe`, `sequence`, `series`, and `edit`, a hand-made copy at the next version as [Editing a document by hand](#editing-a-document-by-hand) describes, `photos.mjs publish` and `rollback` when they rebase them, and the curator's Inbox, its Publish screen's review stamps, and its Publish and Restore, which rebase them the same way |
 | `identity/stat-cache.json` | File sizes and times, so a pass doesn't hash files that haven't changed. Safe to delete, though the next pass then reads every photo again, as [Health](#health) says. | The watcher |
-| `identity/decisions/` | `identity` decisions waiting for a pass, then filed under `applied/` or `rejected/` | `photos.mjs identity` |
+| `identity/decisions/` | `identity` decisions waiting for a pass, then filed under `applied/` or `rejected/` | `photos.mjs identity`, and `photos.mjs curation bind` and `archive` |
 | `identity/migration/` | Dry-run plans and reports, and the mapping each apply wrote from paths and legacy URLs to photo IDs | `photos.mjs migrate` |
 | `assets/<photoId>/<assetRevision>/<profileId>/` | One `/media` set: its WebP and AVIF files and `manifest.json`. A set never changes once it's written. | The watcher |
 | `staging/` | Sets still being built | The watcher |
 | `status/watcher.json` | The watcher's heartbeat, which its healthcheck reads | The watcher, every 30 s |
-| `catalog/revisions/` | Every published revision, which never changes once it's written | `photos.mjs publish` |
-| `catalog/activations/` | Each activation: every publish and rollback adds one | `photos.mjs publish` and `rollback` |
-| `catalog/active/v<N>.json` | The pointer to the active revision. A [version folder](#version-folders), so a publish or a rollback moves it by adding the next version. | `photos.mjs publish` and `rollback` |
-| `catalog/candidates/`, `catalog/diagnostics/` | The last compile of each candidate, its issues, and how the last publish ended | `photos.mjs publish` |
-| `locks/` | The locks writers take on the registry, the authored records, the catalog, and the curation inbox | The watcher and `photos.mjs` |
+| `catalog/revisions/` | Every published revision, which never changes once it's written | `photos.mjs publish`, and the curator's Publish |
+| `catalog/activations/` | Each activation: every publish and rollback adds one | `photos.mjs publish` and `rollback`, and the curator's Publish and Restore |
+| `catalog/active/v<N>.json` | The pointer to the active revision. A [version folder](#version-folders), so a publish or a rollback moves it by adding the next version. | `photos.mjs publish` and `rollback`, and the curator's Publish and Restore |
+| `catalog/candidates/`, `catalog/diagnostics/` | The last compile of each candidate, its issues, and how the last publish ended | `photos.mjs publish`, and the curator's Validate and Publish |
+| `locks/` | The locks writers take on the registry, the authored records, the catalog, and the curation inbox | The watcher, `photos.mjs`, and the curator |
 | `edits/` | `photos.mjs edit`'s working copies, and edits it kept because they couldn't be saved, which `edit <id> --file <path> --expect-version <N>` saves once fixed. Private, like the rest (0700, files 0600). Nothing reads them as records, and `references()` doesn't list them, so the cleanup #15 adds has to leave the folder alone. Delete a kept edit once it's saved or no longer wanted. | `photos.mjs edit` |
-| `curation/events/<eventId>/v<N>.json` | One [curation inbox](#curation-inbox) item. A [version folder](#version-folders). | The watcher, and `photos.mjs curation` |
+| `curation/events/<eventId>/v<N>.json` | One [curation inbox](#curation-inbox) item. A [version folder](#version-folders). | The watcher, `photos.mjs curation`, and the curator's Inbox |
 | `curation/rules.json` | Your series suggestion rules for the inbox, if you want any | You |
 
 Everything in it belongs to uid 1001, the user both containers run as, and only that user can read it, since the registry keeps curator-only details such as GPS. To read a file, go through the container instead of `sudo`:
@@ -36,7 +36,7 @@ docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher cat /
 
 Every document that two writers could change at once is a folder with one file per version: `identity/registry/`, `authored/site/`, `authored/series/<seriesId>/`, `authored/photos/<photoId>/`, each curation inbox item's `curation/events/<eventId>/`, and the active catalog pointer, `catalog/active/`. Inside each folder the versions are `v1.json`, `v2.json`, and so on. The highest number is the document. A write never changes an existing file. It adds the next number with `link()`, which fails if that number already exists, so two writers can't both store the same version. That's why the data root needs a filesystem with hard links. Each writer checks first: it links a probe file in the data root, `.link-probe-<host>-<pid>-<id>`, and removes both names. A process killed between those steps leaves the probe behind. The next check on the same machine removes any probe over a minute old that its own host left, when the process that wrote it isn't running, or when it carries this process's ID but is older than this process (a container's writer is always process 1, so that's a restart in place). A recreated container, or a `docker compose run` command, gets a new host name, so its leftovers stay. Any `.link-probe-*` file over a minute old is safe to delete by hand.
 
-Never edit the active pointer by hand: only `photos.mjs publish` and `photos.mjs rollback` move it. A version copied there by hand makes a revision live without the checks a publish runs, so the next command refuses to record it if the rules block that revision.
+Never edit the active pointer by hand: only `photos.mjs publish` and `photos.mjs rollback` move it, and the curator's Publish and Restore, which run the same two. A version copied there by hand makes a revision live without the checks a publish runs, so the next command refuses to record it if the rules block that revision.
 
 Each write keeps the two newest versions and removes older ones. Files that start with `.v` and end in `.tmp` are writes in progress, or left by a write that crashed. The next write in that folder removes them. Leave them alone.
 
@@ -63,12 +63,12 @@ On macOS, use `stat -f %u` and `stat -f %g` in place of `stat -c %u` and `stat -
 
 This is for the registry and the authored records, never the active pointer.
 
-Only while no command runs: stop the watcher, and don't run `photos.mjs` commands until you're done. The folders are 0700 and the files 0600, owned by the user the app runs as (uid 1001 in the containers), so the new version has to keep that owner and mode. A copy root owns can't be read by the app: the registry then reads as unreadable, and a record as `unreadable`. With the containers, edit as uid 1001 from a shell in the watcher's image:
+Only while no command runs: stop the watcher and the curator, and don't run `photos.mjs` commands until you're done. The curator's Inbox and Publish screen write these records too. The folders are 0700 and the files 0600, owned by the user the app runs as (uid 1001 in the containers), so the new version has to keep that owner and mode. A copy root owns can't be read by the app: the registry then reads as unreadable, and a record as `unreadable`. With the containers, edit as uid 1001 from a shell in the watcher's image:
 
-1. Stop the watcher and open a shell:
+1. Stop the watcher and the curator, and open a shell. Stopping the curator does nothing when it's off already:
 
    ```bash
-   docker compose -f docker-compose.prod.yml stop image-watcher
+   docker compose -f docker-compose.prod.yml stop image-watcher curator
    docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher sh
    ```
 
@@ -81,10 +81,11 @@ Only while no command runs: stop the watcher, and don't run `photos.mjs` command
    ```
 
 3. While you edit, leave the `stamp` as it is. A stamp that names another number marks the file as made by hand, and the next write stamps the version after it again. Leave `baseRevisionId` alone too, and in the site record `baseSeriesOrder`: publishing manages them, and they're how it tells your edits from the published ones. Leave an authored record's `review` alone as well. Once the upgrade's one-time review backfill has run, a field you change by hand no longer matches its review stamp, and a version without `review` is checked field by field against the values the backfill recorded, so a publish refuses a field you changed by hand as not reviewed ([Review state](#review-state)). Make a change you mean to publish with `photos.mjs edit` instead.
-4. Leave the shell with `exit`, and start the watcher again:
+4. Leave the shell with `exit`, and start the watcher again, and the curator if you had it on:
 
    ```bash
    docker compose -f docker-compose.prod.yml start image-watcher
+   docker compose -f docker-compose.prod.yml up -d curator   # only if it was on
    ```
 
 Without the containers, as with the npm scripts' data root, do steps 2 and 3 on the host as root, keeping the owner and mode. `cp -p` keeps the owner and mode of the file it copies, and `sudoedit` writes back into the same file, so the copy keeps both. On the production host, set `PHOTOGRAPHY_DATA_DIR="$PWD/portfolio-data"` first, from the folder with `docker-compose.prod.yml`:
@@ -99,7 +100,7 @@ The `test` and `cp -n` refuse to touch a `v5.json` that already exists, so a typ
 
 Never edit a version in place. A command that reads an edited newest version refuses it: `photos.mjs identity status` reports the registry as unreadable and exits 1, the catalog lists the record as edited in place, and nothing writes on top of it. The message names the copy that recovers it (`cp -n v4.json v5.json`). Make that copy as in step 2, in the watcher's shell or with `sudo cp -n -p` on the host, to keep the edit as a new version, or restore the file from a backup.
 
-An edit that also changes or removes the stamp isn't caught. It reads as a version made by hand. An in-place edit of a hand-made copy isn't caught either, since its stamp already names another number. So finish the edit before the watcher starts again. Once the next write stamps a new version, that one is checked again.
+An edit that also changes or removes the stamp isn't caught. It reads as a version made by hand. An in-place edit of a hand-made copy isn't caught either, since its stamp already names another number. So finish the edit before the watcher or the curator starts again. Once the next write stamps a new version, that one is checked again.
 
 ## Where it can live
 
@@ -165,7 +166,7 @@ If `./portfolio-data` is lost or comes up empty on a host whose library had IDs,
 
 ## Backing up
 
-While the stack runs, the watcher is the only process that writes the data root, and it writes the legacy derivatives in the library too. Stop it, archive both folders together, and start it again.
+While the stack runs, the watcher writes the data root, and so does the curator when it's on: its Inbox, its Publish screen's review stamps, Publish and Restore all write `authored/`, `catalog/`, `locks/` or `curation/events/`. The watcher writes the legacy derivatives in the library too. Stop both, archive both folders together, and start them again. The block starts the curator again only if it was running.
 
 Both have to be real folders next to `docker-compose.prod.yml`, not symlinks. `tar` stores a symlink named on its command line as the link itself, not the files behind it, so the archive would hold no registry, and a restore's `mv` would move only the link. This block and the ones in [Restoring](#restoring) check that first, and stop before anything else runs. The `exit` leaves only the block's subshell, not your shell:
 
@@ -175,29 +176,33 @@ Both have to be real folders next to `docker-compose.prod.yml`, not symlinks. `t
     [ -d "$d" ] && [ ! -L "$d" ] || { echo "$d must be a real folder, not a symlink. Nothing was archived." >&2; exit 1; }
   done
   mkdir -m 700 -p ~/photography-backups
-  docker compose -f docker-compose.prod.yml stop image-watcher
+  curator="$(docker compose -f docker-compose.prod.yml --profile curator ps -q --status running curator)"
+  docker compose -f docker-compose.prod.yml stop image-watcher curator
   (umask 077 && sudo tar -czf - public/assets/photos portfolio-data >~/photography-backups/photography-$(date -u +%Y%m%dT%H%M%SZ).tar.gz)
   docker compose -f docker-compose.prod.yml start image-watcher
+  [ -z "$curator" ] || docker compose -f docker-compose.prod.yml start curator
 )
 ```
 
-`sudo` lets `tar` read the uid 1001 files. Your own shell writes the archive, so it belongs to you, and `umask 077` and the 0700 folder keep it readable by you only, since it holds the registry and its curator-only details. Copy it off the host the same way, into a folder only you can read. If `tar` reports an error, delete that archive and run the block again, since the redirect leaves a partial file behind. `web` keeps serving meanwhile, since it only reads, but don't run `photos.mjs` commands while `tar` runs. `./.next-images-cache` needs no backup.
+`sudo` lets `tar` read the uid 1001 files. Your own shell writes the archive, so it belongs to you, and `umask 077` and the 0700 folder keep it readable by you only, since it holds the registry and its curator-only details. Copy it off the host the same way, into a folder only you can read. If `tar` reports an error, delete that archive and run the block again, since the redirect leaves a partial file behind. `web` keeps serving meanwhile, since it only reads, but don't run `photos.mjs` commands or start the curator while `tar` runs. `./.next-images-cache` needs no backup.
 
 ## Restoring
 
-Restore both folders from the same archive, so the registry describes the library beside it. Move the current folders aside instead of deleting them until the restored stack checks out. The timestamp keeps a second restore from moving them inside an earlier one's. Extracting as root with `-p` keeps the files' owners and modes. The blocks stop and start only `web` and `image-watcher`, so a service an override adds keeps running:
+Restore both folders from the same archive, so the registry describes the library beside it. Move the current folders aside instead of deleting them until the restored stack checks out. The timestamp keeps a second restore from moving them inside an earlier one's. Extracting as root with `-p` keeps the files' owners and modes. The blocks stop `web`, `image-watcher` and `curator`, and start the curator again only if it was running, so a service an override adds keeps running. Stop the curator first, even though it's often off: one left running would keep writing into the folder the restore moves aside, so a publish or restore from it would never reach the restored data root:
 
 ```bash
 (
   for d in public/assets/photos portfolio-data; do
     [ ! -L "$d" ] || { echo "$d is a symlink. Nothing was moved or restored." >&2; exit 1; }
   done
-  docker compose -f docker-compose.prod.yml stop web image-watcher
+  curator="$(docker compose -f docker-compose.prod.yml --profile curator ps -q --status running curator)"
+  docker compose -f docker-compose.prod.yml stop web image-watcher curator
   aside=before-restore-$(date -u +%Y%m%dT%H%M%SZ)
   sudo mv public/assets/photos "photos.$aside"
   sudo mv portfolio-data "portfolio-data.$aside"
   sudo tar -xzpf ~/photography-backups/photography-<timestamp>.tar.gz
   docker compose -f docker-compose.prod.yml up -d web image-watcher
+  [ -z "$curator" ] || docker compose -f docker-compose.prod.yml up -d curator
 )
 ```
 
@@ -208,10 +213,12 @@ If only the data root was lost and the library is fine, restore just `portfolio-
 ```bash
 (
   [ ! -L portfolio-data ] || { echo "portfolio-data is a symlink. Nothing was moved or restored." >&2; exit 1; }
-  docker compose -f docker-compose.prod.yml stop web image-watcher
+  curator="$(docker compose -f docker-compose.prod.yml --profile curator ps -q --status running curator)"
+  docker compose -f docker-compose.prod.yml stop web image-watcher curator
   sudo mv portfolio-data "portfolio-data.before-restore-$(date -u +%Y%m%dT%H%M%SZ)"
   sudo tar -xzpf ~/photography-backups/photography-<timestamp>.tar.gz portfolio-data
   docker compose -f docker-compose.prod.yml up -d web image-watcher
+  [ -z "$curator" ] || docker compose -f docker-compose.prod.yml up -d curator
 )
 ```
 
@@ -239,7 +246,7 @@ Run this once, on a library that never had a data root, to give every photo its 
    docker compose -f docker-compose.prod.yml stop image-watcher
    ```
 
-2. Back up both folders, as [Backing up](#backing-up) describes. The watcher is already stopped, so skip its `stop` and `start`.
+2. Back up both folders, as [Backing up](#backing-up) describes. The watcher is already stopped, so skip its `stop` and `start`, and keep the curator off.
 
 3. Dry-run the migration in `image-watcher`. It proposes an ID for every photo, writes only a plan and a report to `identity/migration/`, and prints both paths. Then read the report:
 
