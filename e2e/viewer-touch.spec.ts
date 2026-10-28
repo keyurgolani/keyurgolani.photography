@@ -1057,10 +1057,12 @@ test.describe('presentation', () => {
 
     test('at 200% browser zoom, both modes show Previous and Next whole in the first screen, under the photograph', async ({ page }, testInfo) => {
         runsOn(testInfo, 'desktop');
-        // 1280 by 800 and 1440 by 900 at 200%: the narrow layout, on a screen shorter than the square the stage keeps on a phone.
+        // 1280 by 800 and 1440 by 900 at 200%: the narrow layout, on a screen shorter than the square the stage keeps on a
+        // phone. A phone held sideways under 48rem wide gets the same layout and the same cap.
         for (const size of [
             { width: 640, height: 400 },
             { width: 720, height: 450 },
+            { width: 667, height: 375 },
         ]) {
             await page.setViewportSize(size);
             for (const mode of ['page', 'modal'] as const) {

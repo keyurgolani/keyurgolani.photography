@@ -5,7 +5,7 @@ import { expectReflow } from './support/reflow';
 import { checkSurface } from './support/surface';
 import { expect, test } from './support/test';
 import { expectSingleTapActivates } from './support/touch';
-import { HARBOR, P, SENTINELS, SITE_URL, href, id, useViewerCatalog } from './support/viewerCatalog';
+import { FACTS_ONLY, HARBOR, P, SENTINELS, SITE_URL, href, id, useViewerCatalog } from './support/viewerCatalog';
 
 // The Viewer (#7) on a published catalog, on both #1 projects: a direct load,
 // the series and position, Previous and Next inside the series that stop at
@@ -233,6 +233,8 @@ test('on a wide screen, the first screen ends on whole elements for every mix of
         { name: 'title only', photoId: P[2], slug: 'harbor', series: 'Fixture harbor', title: true },
         { name: 'caption only', photoId: P[3], slug: 'ridge', series: 'Fixture ridge', title: false },
         { name: 'neither', photoId: P[1], slug: 'harbor', series: 'Fixture harbor', title: false },
+        // Neither, and no description either: the technical toggle is the first block, and keeps its 44 px.
+        { name: 'facts only', photoId: FACTS_ONLY, slug: 'facts', series: 'Fixture facts', title: false },
     ];
     for (const size of [
         { width: 1440, height: 900 },
@@ -251,7 +253,8 @@ test('on a wide screen, the first screen ends on whole elements for every mix of
             await expect(header(page).getByRole('heading', { level: 1 })).toHaveText(mix.series);
             const line = await titleLine(page);
             const pieces = await foldPieces(page);
-            expect(pieces.length, `${at}: the reading area has pieces`).toBeGreaterThan(1);
+            // The facts-only photograph's reading area is its toggle alone.
+            expect(pieces.length, `${at}: the reading area has pieces`).toBeGreaterThan(mix.photoId === FACTS_ONLY ? 0 : 1);
             expect(line.frame && line.reading && line.frame.bottom <= line.reading.top, `${at}: the photograph sits above the reading area`).toBe(true);
             // Nothing but running text is cut by the fold: no title, label, or control straddles the bottom edge.
             for (const piece of pieces) {
@@ -279,9 +282,15 @@ test('on a wide screen, the first screen ends on whole elements for every mix of
                 expect(shown.length, `${at}: the first block has pieces`).toBeGreaterThan(0);
                 expect(shown[0].top, `${at}: "${shown[0].text}" shows`).toBeLessThan(line.innerHeight);
                 for (const piece of shown) if (!piece.running) expect(piece.bottom, `${at}: "${piece.text}" shows whole`).toBeLessThanOrEqual(line.innerHeight);
-                const rest = pieces.filter((piece) => piece.block !== first);
-                expect(rest.length, `${at}: the reading area has pieces after its first block`).toBeGreaterThan(0);
-                for (const piece of rest) expect(piece.top, `${at}: "${piece.text}" starts under the fold`).toBeGreaterThanOrEqual(line.innerHeight);
+                if (mix.photoId === FACTS_ONLY) {
+                    expect(shown.map((piece) => piece.text), at).toEqual(['Show technical details']);
+                    // The block takes the title line's height, and the button in it doesn't stretch to it.
+                    expect(shown[0].bottom - shown[0].top, `${at}: the toggle keeps its height`).toBeCloseTo(44, 0);
+                } else {
+                    const rest = pieces.filter((piece) => piece.block !== first);
+                    expect(rest.length, `${at}: the reading area has pieces after its first block`).toBeGreaterThan(0);
+                    for (const piece of rest) expect(piece.top, `${at}: "${piece.text}" starts under the fold`).toBeGreaterThanOrEqual(line.innerHeight);
+                }
             }
             // The photograph still holds the screen, where the screen is wider than it is tall.
             if (!size.narrow) expect(line.frame && line.frame.bottom - line.frame.top).toBeGreaterThan(line.innerHeight * 0.6);
