@@ -175,19 +175,14 @@
   line-height: 1.35;
 }
 
-/* The checked choice: a check mark in the accent, and the name in full ink. */
+/* The checked choice: a check mark in the accent, and the preview ringed in it. */
 .check {
-  width: 0.875rem;
-  height: 0.5rem;
-  margin-right: 0.25rem;
-  border-bottom: 2px solid transparent;
-  border-left: 2px solid transparent;
-  rotate: -45deg;
-  translate: 0 -2px;
+  margin-right: 0.125rem;
+  color: transparent;
 }
 
 .option:has(.radio:checked) .check {
-  border-color: var(--gah-accent);
+  color: var(--gah-accent);
 }
 
 .option:has(.radio:checked) .preview {

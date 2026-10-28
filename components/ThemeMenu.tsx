@@ -1,5 +1,6 @@
 'use client';
 
+import { Check } from 'lucide-react';
 import { useId } from 'react';
 import { THEME_CHOICES, type ThemeChoice, useThemeChoice } from './ThemeContext';
 import styles from './ThemeMenu.module.css';
@@ -71,7 +72,7 @@ export default function ThemeMenu({ placement = 'nav' }: { placement?: 'nav' | '
                 <span className={styles.name}>{THEME_LABELS[value].name}</span>
                 <span className={styles.note}>{THEME_LABELS[value].note}</span>
               </span>
-              <span className={styles.check} aria-hidden="true" />
+              <Check size={16} strokeWidth={2} className={styles.check} aria-hidden="true" />
             </label>
           ))}
         </fieldset>
