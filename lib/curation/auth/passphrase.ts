@@ -23,6 +23,8 @@ const OPTIONS: ScryptOptions = { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P, maxmem: 
 
 /** The longest passphrase the command and login accept, in UTF-8 bytes. */
 export const MAX_PASSPHRASE_BYTES = 1024;
+/** The fewest characters `curation hash-passphrase` takes for a new passphrase. Login checks none, so a hash made before still works. */
+export const MIN_PASSPHRASE_CHARS = 12;
 
 const B64URL = /^[A-Za-z0-9_-]+$/;
 const PREFIX = `scrypt$${SCRYPT_N}$${SCRYPT_R}$${SCRYPT_P}$`;
@@ -38,6 +40,20 @@ export function passphraseProblem(passphrase: string): string | null {
     if (passphrase.length === 0) return 'The passphrase is empty.';
     if (/[\r\n]/.test(passphrase)) return 'The passphrase has a line break in it.';
     if (Buffer.byteLength(passphrase.normalize('NFC'), 'utf8') > MAX_PASSPHRASE_BYTES) return `The passphrase is longer than ${MAX_PASSPHRASE_BYTES} bytes.`;
+    return null;
+}
+
+/**
+ * Why a new passphrase can't be hashed, or null: passphraseProblem()'s
+ * reasons, and fewer than MIN_PASSPHRASE_CHARS characters (code points,
+ * after NFC). Only the command that makes a hash asks this; login uses
+ * passphraseProblem() alone, so an existing shorter passphrase still signs in.
+ */
+export function newPassphraseProblem(passphrase: string): string | null {
+    const problem = passphraseProblem(passphrase);
+    if (problem) return problem;
+    const chars = [...passphrase.normalize('NFC')].length;
+    if (chars < MIN_PASSPHRASE_CHARS) return `The passphrase is ${chars === 1 ? '1 character' : `${chars} characters`} long. Use at least ${MIN_PASSPHRASE_CHARS}.`;
     return null;
 }
 
