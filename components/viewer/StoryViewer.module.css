@@ -179,13 +179,11 @@
   border-color: transparent;
 }
 
-/* The rest of the gutter, less the button's 1px border, which is transparent at rest but still takes its width. */
-.header > .control:first-child {
-  padding-left: calc(var(--site-gutter) - var(--viewer-header-inset) - 1px);
-}
-
+/* The rest of the gutter, less the button's 1px border, which is transparent at rest but still takes its width. Both
+   sides take it, so pressed Zoom's fill and the hover border sit even around the icon and the label. */
+.header > .control:first-child,
 .header > .zoom {
-  padding-right: calc(var(--site-gutter) - var(--viewer-header-inset) - 1px);
+  padding-inline: calc(var(--site-gutter) - var(--viewer-header-inset) - 1px);
 }
 
 .zoom[aria-pressed='true'] {
@@ -496,7 +494,8 @@
     /* The arrows' row under the stage: the arrow, and its margins (below). */
     --viewer-step-gap: clamp(0.5rem, 2vw, 1.5rem);
     --viewer-step-row: calc(44px + var(--viewer-step-gap) + var(--viewer-stage-pad));
-    /* The header's one row as it renders: the 44 px controls, its padding, and the accent rule. */
+    /* The header's one row as it renders: the 44 px controls, its padding, and the accent rule. --viewer-header (3.5rem)
+       is the same row as the wide stage counts it, 4 px short. Change the header's padding, and change both. */
     --viewer-header-row: calc(44px + 0.75rem + 4px);
     /* The phone's fixed stage (9a): the small viewport (so the browser's bars coming and going never resize it) less
        the header, the arrows, and the reading area's allowance, the same for every photograph whatever its copy, and
