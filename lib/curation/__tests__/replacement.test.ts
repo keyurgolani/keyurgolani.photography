@@ -341,6 +341,33 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
     });
 
+    it("after a crash between confirm's two writes, promises no put back while what it replaced has no ready set, in show, the defer and the confirm again", async () => {
+        const w = await world();
+        await approveP(w);
+        await w.build(w.job(w.b));
+        const open = await w.event();
+        await expect(confirm(w, open, { faults: { afterWrite: () => { throw new Error('killed'); } } })).rejects.toThrow('killed');
+        // A's set fails after the crash, so a put back of A would be refused (`blocked`).
+        const registry = await readRegistry(w.root);
+        registry.photos[w.p].revisions[w.a].profiles[w.profileId] = { state: 'failed', attempts: 1, error: 'fixture' };
+        await writeRegistry(w.root, registry, registry.version);
+        const notYet = `Run curation confirm again to record what it replaced. Leaving it in draft can't put ${w.a} back until it has a ready derivative set.`;
+
+        const shownText = (await runCurationCli(['show', open.id], { dataRoot: w.root }, { PHOTOS_ACTOR: ACTOR })).output;
+        expect(shownText).toContain(notYet);
+        expect(shownText).not.toContain('reopen and defer put that back');
+        const left = await leave(w, open);
+        expect(left.ok && left.notes.join(' ')).toContain(notYet);
+        expect(left.ok && left.notes.join(' ')).not.toContain(`defer put ${w.a} back`);
+
+        // The confirm again records what it replaced, and says leaving it in draft can't put that back yet, as the plan then reads.
+        const reopenedOpen = await reopen(w, (left as { event: CurationEvent }).event);
+        const again = await confirm(w, reopenedOpen);
+        expect(again.ok && again.notes.join(' ')).toContain(`It is recorded as confirmed in place of ${w.a}, which leaving it in draft can't put back until it has a ready derivative set.`);
+        const reopened = await reopenEvent({ root: w.root, eventId: w.eventId, expectedVersion: (again as { event: CurationEvent }).event.version, expectedBase: w.revisionId, actor: ACTOR });
+        expect(reopened.ok && reopened.notes.join(' ')).toContain('refuses for now');
+    });
+
     it('leaves a record moved onto the item\'s bytes by hand where it is, with no write', async () => {
         const w = await world();
         await approveP(w);
@@ -689,9 +716,11 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         const before = await shown(w);
         expect(before.replacement).toEqual({ draft: 'new', live: false, decideLater: 'blocked' });
         expect(before.primaryUnavailable).toBe(REPLACEMENT_HINT.blocked);
+        // Each way out names its own goal: dismissing keeps the new version, waiting puts the earlier one back.
+        expect(REPLACEMENT_HINT.blocked).toBe("The earlier version of this photograph isn't ready to show on the site, so Decide later can't put it back. The draft keeps the new version. Dismiss this item to keep the new version, or leave it open until the earlier version is ready, then choose Decide later to put that one back.");
         expect(before.primaryUnavailable).not.toMatch(/puts the earlier version back/);
         const notReady = await deferItem({ status: 'idle' }, pageForm(w, await w.event()));
-        expect(notReady).toMatchObject({ status: 'refused', action: 'defer', message: "The earlier version of this photograph isn't ready to show on the site, so Decide later can't put it back. The draft keeps the new version. Nothing was written. To keep it, dismiss this item, or leave it open until the earlier version is ready again." });
+        expect(notReady).toMatchObject({ status: 'refused', action: 'defer', message: "The earlier version of this photograph isn't ready to show on the site, so Decide later can't put it back. The draft keeps the new version. Nothing was written. Dismiss this item to keep the new version, or leave it open until the earlier version is ready, then choose Decide later to put that one back." });
         expect(layers(w).authored).toEqual(written.authored);
         expect(layers(w).curation).toEqual(written.curation);
         expect((await photoRecord(w)).assetRevision).toBe(w.b);
