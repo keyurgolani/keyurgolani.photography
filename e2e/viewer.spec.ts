@@ -235,8 +235,11 @@ test('on a wide screen, the first screen ends on whole elements for every mix of
         { width: 1440, height: 900 },
         { width: 1366, height: 768 },
         { width: 1280, height: 800 },
+        // A small tablet held upright, where the stage padding and the reading area's top padding both scale with the width.
+        { width: 800, height: 1024, narrow: true },
+        { width: 820, height: 1180, narrow: true },
     ]) {
-        await page.setViewportSize(size);
+        await page.setViewportSize({ width: size.width, height: size.height });
         const stages: unknown[] = [];
         for (const mix of mixes) {
             const at = `${size.width} by ${size.height}, ${mix.name}`;
@@ -272,8 +275,8 @@ test('on a wide screen, the first screen ends on whole elements for every mix of
                 expect(rest.length, `${at}: the reading area has pieces after the title line`).toBeGreaterThan(0);
                 for (const piece of rest) expect(piece.top, `${at}: "${piece.text}" starts under the fold`).toBeGreaterThanOrEqual(line.innerHeight);
             }
-            // The photograph still holds the screen.
-            expect(line.frame && line.frame.bottom - line.frame.top).toBeGreaterThan(line.innerHeight * 0.6);
+            // The photograph still holds the screen, where the screen is wider than it is tall.
+            if (!size.narrow) expect(line.frame && line.frame.bottom - line.frame.top).toBeGreaterThan(line.innerHeight * 0.6);
             stages.push(line.stage);
         }
         // One stage for every mix, whatever the reading area holds.

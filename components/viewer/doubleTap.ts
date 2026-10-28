@@ -18,7 +18,7 @@ export const DOUBLE_TAP_DISTANCE = 24;
 export const SETTLE = 300;
 
 export type DoubleTapInput =
-    /** `eligible` when it's a touch on the photograph and the page isn't pinch-zoomed. `primary` when no other touch is down. */
+    /** `eligible` when it's a touch on the photograph's stage and the page isn't pinch-zoomed. `primary` when no other touch is down. */
     | { type: 'down'; pointerId: number; x: number; y: number; t: number; primary: boolean; eligible: boolean }
     | { type: 'move'; pointerId: number; x: number; y: number }
     | { type: 'up'; pointerId: number; x: number; y: number; t: number }
@@ -48,9 +48,9 @@ export const DOUBLE_TAP_IDLE: DoubleTapState = { down: [], touch: null, first: n
 const apart = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.hypot(a.x - b.x, a.y - b.y);
 
 /**
- * One step of the recognizer. It fires at the second tap's lift, when two taps on the photograph land within
+ * One step of the recognizer. It fires at the second tap's lift, when two taps on the stage land within
  * DOUBLE_TAP_INTERVAL and DOUBLE_TAP_DISTANCE of each other. Anything else between them drops the first tap: a drag or
- * a swipe, a second finger, a cancel, a scroll, a touch off the photograph. A drag can't be a tap and a tap can't be a
+ * a swipe, a second finger, a cancel, a scroll, a touch off the stage. A drag can't be a tap and a tap can't be a
  * swipe (TAP_SLOP is under the swipe's 48 px), so the two recognizers never both act on one touch.
  */
 export function reduceDoubleTap(state: DoubleTapState, input: DoubleTapInput): { state: DoubleTapState; fire: boolean } {
