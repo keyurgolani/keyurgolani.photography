@@ -1,3 +1,4 @@
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { hasErrorCode } from '../storage/fsx';
 import { listActivations } from './repository';
@@ -67,6 +68,20 @@ function pointerEvidence(read: PointerRead): Evidence {
     return { unreadable: errorName(error) };
 }
 
+/**
+ * True when something other than a folder sits at the root's path. No
+ * catalog can live under a file, so that root is as missing as no path at
+ * all, and reading under it throws ENOTDIR, which would otherwise read as
+ * "can't tell, so catalog". Any other stat error, and a folder, say nothing.
+ */
+async function isNotAFolder(root: string): Promise<boolean> {
+    try {
+        return !(await fs.stat(root)).isDirectory();
+    } catch {
+        return false;
+    }
+}
+
 async function hasCommittedActivation(root: string): Promise<Evidence> {
     try {
         return { found: (await listActivations(root)).some((activation) => activation.status === 'committed') };
@@ -83,6 +98,11 @@ async function hasCommittedActivation(root: string): Promise<Evidence> {
  * as the process runs, even if both go away, so a public read never falls
  * back to the legacy library after the cutover.
  *
+ * A file where the root's folder should be holds no catalog, so it is
+ * `legacy`, as a missing root is (unless this process saw a cutover there).
+ * The proxy refuses the legacy derivatives for both, since neither is a
+ * folder, and the legacy pages find no photo list.
+ *
  * When either can't be read, nobody can tell it isn't there, so this call
  * answers `catalog` too, with `unreadable` saying what failed. That answer
  * isn't remembered, so a transient error or a permission fixed later
@@ -97,6 +117,7 @@ export async function checkCatalogMode(root: string | null, read?: PointerRead):
     if (root === null) return { mode: 'legacy' };
     const resolved = path.resolve(/*turbopackIgnore: true*/ root);
     if (cutOver().has(resolved)) return { mode: 'catalog' };
+    if (await isNotAFolder(resolved)) return { mode: 'legacy' };
     const pointer = pointerEvidence(read ?? await readPointer(resolved));
     const committed = 'found' in pointer && pointer.found ? pointer : await hasCommittedActivation(resolved);
     if (('found' in pointer && pointer.found) || ('found' in committed && committed.found)) {
