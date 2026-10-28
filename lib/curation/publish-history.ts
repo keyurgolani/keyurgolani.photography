@@ -1,7 +1,7 @@
 import type { ChangeSet, RevisionChanges } from '@/lib/catalog/history';
 import type { RollbackOutcome } from '@/lib/catalog/rollback';
 import type { Activation, Issue } from '@/lib/catalog/types';
-import { dayOf, timeOf } from './publish-facts';
+import { actorPhrase, dayOf, timeOf } from './publish-facts';
 
 // Times. The server words History, and the browser names its times, in the owner's zone, as 16-3's answers do: a
 // time or a day goes into the text as a token, and localize() fills it in where it's rendered.
@@ -39,7 +39,6 @@ export function localize(text: string, timeZone = 'UTC'): string {
  * ./actions.ts runs the restore. Spec: photography-15-4-spec.md revision 2.
  */
 
-export const WEB_ACTOR_ID = 'curator:web';
 /** 16-3's fixed reason for a publish from the screen, never shown as if the owner wrote it. */
 export const SCREEN_REASON = 'Publish screen';
 
@@ -150,9 +149,13 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 const capitalised = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 const hashOf = (revisionId: string) => revisionId.slice(4, 12);
 
-/** ", from this screen" for the web actor; " by keyur, with photos publish" otherwise. */
-export function byPhrase(actor: string, command: string): string {
-    return actor === WEB_ACTOR_ID ? ', from this screen' : ` by ${actor}, with ${command}`;
+/**
+ * " by you, from this screen" for the web actor, " by you, from the command
+ * line" otherwise. The owner is the only one who publishes or restores, so
+ * History never names the command's actor (v1.2.1).
+ */
+export function byPhrase(actor: string): string {
+    return ` by you, ${actorPhrase(actor)}`;
 }
 
 function counts(set: ChangeSet, noun: string, nouns: string, verbs: { added: string; removed: string; changed: string }, order: ('removed' | 'added' | 'changed')[]): string[] {
@@ -294,7 +297,6 @@ export interface HistoryViewInput {
 function entryOf(row: EntryInput, index: Map<string, EntryInput>, liveRow: EntryInput | undefined, input: HistoryViewInput): EntryView {
     const { activation, state, live, summary } = row;
     const restore = activation.kind === 'rollback';
-    const command = restore ? 'photos rollback' : 'photos publish';
     const at = activation.committedAt ?? activation.startedAt;
     const numberOf = (revisionId: string | null) => (revisionId === null ? null : index.get(revisionId)?.activation.revisionNumber ?? null);
     const replacedNumber = numberOf(activation.previousRevisionId);
@@ -306,7 +308,7 @@ function entryOf(row: EntryInput, index: Map<string, EntryInput>, liveRow: Entry
             title: restore ? "A restore that didn't finish" : "A publish that didn't finish",
             badge: { text: "Didn't finish", tone: 'quiet' },
             kind: restore ? 'Restore' : 'Publish',
-            when: `Started ${dayToken(at)} at ${timeToken(at)}${byPhrase(activation.actor, command)}.`,
+            when: `Started ${dayToken(at)} at ${timeToken(at)}${byPhrase(activation.actor)}.`,
             ...(activation.reason !== SCREEN_REASON ? { reason: { text: activation.reason, quoted: restore } } : {}),
             from: 'It never went live, so visitors never saw it.',
             facts: `Entry ${activation.sequence}`,
@@ -356,7 +358,7 @@ function entryOf(row: EntryInput, index: Map<string, EntryInput>, liveRow: Entry
         title: `Revision ${activation.revisionNumber}`,
         ...(live ? { badge: { text: 'Live now', tone: 'done' as const } } : {}),
         kind: restore ? 'Restore' : 'Publish',
-        when: `${restore ? 'Restored' : 'Published'} ${dayToken(at)} at ${timeToken(at)}${byPhrase(activation.actor, command)}.`,
+        when: `${restore ? 'Restored' : 'Published'} ${dayToken(at)} at ${timeToken(at)}${byPhrase(activation.actor)}.`,
         ...(restore || activation.reason !== SCREEN_REASON ? { reason: { text: activation.reason, quoted: restore } } : {}),
         from,
         ...(summary ? { held: `${plural(summary.seriesCount, 'series', 'series')}, ${plural(summary.photoCount, 'photograph')} in all.` } : {}),
@@ -503,8 +505,7 @@ export interface OutcomeFacts {
 export function liveByLine(by: OutcomeFacts['liveBy']): string {
     if (by === null) return 'It is live now.';
     const at = timeToken(by.at);
-    if (by.kind === 'rollback') return by.actor === WEB_ACTOR_ID ? `It was restored from this screen at ${at}.` : `${by.actor} restored it at ${at}, with photos rollback.`;
-    return by.actor === WEB_ACTOR_ID ? `It went live from this screen at ${at}.` : `You published it from the command line at ${at}.`;
+    return `You ${by.kind === 'rollback' ? 'restored' : 'published'} it ${actorPhrase(by.actor)} at ${at}.`;
 }
 
 /** The answer for a pointer that moved off the revision the dialog was opened against. */

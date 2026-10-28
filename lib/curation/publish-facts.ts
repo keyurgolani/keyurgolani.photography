@@ -252,9 +252,10 @@ export function publisherLine(by: Publisher | null, timeZone: string, elsewhere:
     if (by === null) return elsewhere ? 'It went live from the command line.' : 'It is live now.';
     const at = timeOf(by.at, timeZone);
     // 15-4: the screen's word for a rollback is Restore (spec, Decided 3); the command keeps its name.
-    if (by.kind === 'rollback') return by.actor === WEB_ACTOR ? `It was restored from this screen at ${at}.` : `${by.actor} restored it at ${at}, with photos rollback.`;
-    if (by.actor === WEB_ACTOR) return elsewhere ? `It went live from this screen at ${at}, in another tab or window.` : `It went live from this screen at ${at}.`;
-    return `You published it ${actorPhrase(by.actor)} at ${at}.`;
+    // The owner is the only one who publishes or restores, so every line is his, in the second person (v1.2.1).
+    const where = actorPhrase(by.actor);
+    if (by.kind === 'rollback') return `You restored it ${where} at ${at}.`;
+    return by.actor === WEB_ACTOR && elsewhere ? `You published it ${where} at ${at}, in another tab or window.` : `You published it ${where} at ${at}.`;
 }
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];

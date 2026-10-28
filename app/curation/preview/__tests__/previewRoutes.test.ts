@@ -48,7 +48,14 @@ vi.mock('@/lib/catalog/public-reader', async (importOriginal) => {
     return { ...actual, getActiveCatalog: refuse('getActiveCatalog'), loadActiveCatalog: refuse('loadActiveCatalog'), isAssetPublic: refuse('isAssetPublic') };
 });
 
+// The portrait's reader, wrapped, so a sweep can check an anonymous request never reads the site config folder.
+vi.mock('@/lib/siteConfig/aboutPortrait', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/lib/siteConfig/aboutPortrait')>();
+    return { ...actual, readAboutPortrait: vi.fn(actual.readAboutPortrait) };
+});
+
 const { loadPreviewCatalog } = await import('@/lib/catalog/preview-reader');
+const { readAboutPortrait } = await import('@/lib/siteConfig/aboutPortrait');
 
 const HOST = '127.0.0.1:3001';
 const UNKNOWN = `rev_${'0'.repeat(64)}`;
@@ -88,6 +95,7 @@ beforeEach(async () => {
     resetPreviewReaderForTests();
     draftId = (await currentDraftId())!;
     vi.mocked(loadPreviewCatalog).mockClear();
+    vi.mocked(readAboutPortrait).mockClear();
     publicReads.calls = [];
 });
 
@@ -205,6 +213,8 @@ describe('without a session', () => {
             }
         }
         expect(loadPreviewCatalog).not.toHaveBeenCalled();
+        // The portrait route and About read nothing from the site config folder before the session check either.
+        expect(readAboutPortrait).not.toHaveBeenCalled();
     });
 
     it('checks the session before any kept compile is read, so logout denies the subresources at once', async () => {
@@ -392,7 +402,18 @@ describe('proxy.ts on the preview paths', () => {
 
     it('answers an anonymous request byte for byte the same for an existing, an unknown and a malformed draft, RSC and unmatched paths included', async () => {
         const photo = firstPhoto();
+        // The portrait's real token and a made-up one, so nothing in the answer says which is the current portrait.
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preview-site-config-'));
+        fs.mkdirSync(path.join(dir, 'about'));
+        fs.writeFileSync(path.join(dir, 'about', 'portrait.jpg'), await sharp({ create: { width: 900, height: 1200, channels: 3, background: { r: 180, g: 120, b: 60 } } }).jpeg().toBuffer());
+        vi.stubEnv(SITE_CONFIG_ENV, dir);
+        resetAboutPortraitReader();
+        const current = await readAboutPortrait();
+        if (current.state !== 'ready') throw new Error('The test portrait was not read');
+        const portrait = (id: string, token: string) => `/curation/preview/${id}/site/about/portrait/${token}/w800.webp`;
         const paths = (id: string) => [
+            portrait(id, current.token),
+            portrait(id, '0'.repeat(32)),
             `/curation/preview/${id}`,
             `/curation/preview/${id}/site`,
             `/curation/preview/${id}/site/work/${LONG}`,
@@ -422,6 +443,9 @@ describe('proxy.ts on the preview paths', () => {
             }
         }
         expect(loadPreviewCatalog).not.toHaveBeenCalled();
+        expect(await answer(await send(portrait(draftId, current.token)))).toEqual(await answer(await send(portrait(draftId, '0'.repeat(32)))));
+        resetAboutPortraitReader();
+        fs.rmSync(dir, { recursive: true, force: true });
     });
 
     it('lets a signed-in request through to the routes, which check again', async () => {

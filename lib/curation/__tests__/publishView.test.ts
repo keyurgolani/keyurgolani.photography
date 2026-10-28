@@ -198,15 +198,15 @@ describe('facts by state', () => {
         expect(resultCopy({ kind: 'someone-published', live: live19, previous: was18, by: { actor: 'curator:web', kind: 'publish', at } }, view())).toEqual({
             tone: 'change',
             heading: 'Revision 19 went live from another page',
-            body: ['It went live from this screen at 14:05, in another tab or window. Nothing was published from here.'],
+            body: ['You published it from this screen at 14:05, in another tab or window. Nothing was published from here.'],
         });
         const back = { number: 17, revisionId: REV(7), hash: '77777777' };
         expect(resultCopy({ kind: 'someone-published', live: back, previous: was18, by: { actor: 'keyur', kind: 'rollback', at } }, view())).toEqual({
             tone: 'change',
             heading: 'Revision 17 is live again',
-            body: ['keyur restored it at 14:05, with photos rollback. Nothing was published from here.'],
+            body: ['You restored it from the command line at 14:05. Nothing was published from here.'],
         });
-        expect(resultCopy({ kind: 'already-live', live: live19, previous: was18, by: { actor: 'curator:web', kind: 'publish', at } }, view())?.body).toEqual(['It went live from this screen at 14:05. Nothing more to publish, and nothing new was written.']);
+        expect(resultCopy({ kind: 'already-live', live: live19, previous: was18, by: { actor: 'curator:web', kind: 'publish', at } }, view())?.body).toEqual(['You published it from this screen at 14:05. Nothing more to publish, and nothing new was written.']);
     });
 
     it('names the lock that is held, and says the times in the zone it is given', () => {

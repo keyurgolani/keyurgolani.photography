@@ -318,7 +318,7 @@ test.describe('without JavaScript', () => {
         await page.goto(`${origin()}/curation/publish`);
         await expect(page.locator('#history h3').first()).toHaveText('Revision 3');
         // Without JavaScript the times stay the server's, and say they're UTC.
-        await expect(page.locator('#history li').first().getByText(/ at \d\d:\d\d UTC by keyur, with photos publish\.$/)).toBeVisible();
+        await expect(page.locator('#history li').first().getByText(/ at \d\d:\d\d UTC by you, from the command line\.$/)).toBeVisible();
         await restoreLink(page, 2).click();
         await expect(page).toHaveURL(/\?restore=2#restore-heading$/);
         await expect(page.locator('#restore-heading')).toHaveText('Restore revision 2?');

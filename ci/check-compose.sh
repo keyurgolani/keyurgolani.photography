@@ -181,6 +181,10 @@ for service in web curator; do
     fail "$service must set PHOTOGRAPHY_SITE_CONFIG_DIR=/config/site, the read-only mount."
   fi
 done
+# The same create-when-missing behaviour on both, however this Compose writes it, so a missing folder starts both alike.
+if ! jq -e "[.services.web.volumes[]? | select($SITE_CONFIG_MOUNT) | .bind.create_host_path] == [.services.curator.volumes[]? | select($SITE_CONFIG_MOUNT) | .bind.create_host_path]" <<<"$resolved" >/dev/null; then
+  fail "curator's ./site-config bind must be created when missing exactly as web's is."
+fi
 if ! jq -e "[.services | to_entries[] | select(.key | IN(\"web\", \"curator\") | not) | .value.volumes[]? | select($SITE_CONFIG_MOUNT)] | length == 0" <<<"$resolved" >/dev/null; then
   fail "Only web and curator may mount the site config folder."
 fi
