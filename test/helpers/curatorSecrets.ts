@@ -28,10 +28,10 @@ export interface TestCuratorSecrets {
     cleanup(): void;
 }
 
-export async function makeCuratorSecrets(): Promise<TestCuratorSecrets> {
+/** `passphrase` sets the test passphrase, for a test about one, such as a short one an older hash command allowed. */
+export async function makeCuratorSecrets({ passphrase = `test-${randomBytes(12).toString('base64url')}` }: { passphrase?: string } = {}): Promise<TestCuratorSecrets> {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'curator-secrets-'));
     assertOutsideRepository(dir);
-    const passphrase = `test-${randomBytes(12).toString('base64url')}`;
     const sessionKey = randomBytes(32);
     const hashFile = path.join(dir, 'curator-passphrase.hash');
     const keyFile = path.join(dir, 'curator-session.key');

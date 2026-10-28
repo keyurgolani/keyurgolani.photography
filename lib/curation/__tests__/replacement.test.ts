@@ -736,6 +736,14 @@ describe('leave in draft after a confirm', { timeout: 60_000 }, () => {
         expect(treeBytes(path.join(w.root, 'authored'))).toEqual(before);
     });
 
+    it("promises a lost confirm's put back only from a plan that checked the earlier set is ready", () => {
+        const plan = { kind: 'unexplained', photoId: 'ph_00000000-0000-4000-8000-000000000001', revision: `sha256-${'b'.repeat(64)}`, pin: null, stampedFrom: `sha256-${'a'.repeat(64)}` } as const;
+        // A plain draftPlan() never asks canPutBack(), so its text must not promise what defer could refuse.
+        expect(draftPlanText(plan)).toMatch(/Leaving it in draft can't put sha256-a+ back until it has a ready derivative set\.$/);
+        expect(draftPlanText({ ...plan, stampedReady: false })).toBe(draftPlanText(plan));
+        expect(draftPlanText({ ...plan, stampedReady: true })).toMatch(/and then reopen and defer put that back\.$/);
+    });
+
     it("doesn't promise a confirmed item's Reopen will let Decide later put back an earlier version with no ready set", async () => {
         const w = await world();
         await w.build(w.job(w.b));

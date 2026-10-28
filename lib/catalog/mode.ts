@@ -69,7 +69,8 @@ function pointerEvidence(read: PointerRead): Evidence {
 }
 
 /**
- * True when something other than a folder sits at the root's path. No
+ * True when something other than a folder sits at the root's path, or a
+ * file sits where one of its parent folders should be (stat's ENOTDIR). No
  * catalog can live under a file, so that root is as missing as no path at
  * all, and reading under it throws ENOTDIR, which would otherwise read as
  * "can't tell, so catalog". Any other stat error, and a folder, say nothing.
@@ -77,8 +78,8 @@ function pointerEvidence(read: PointerRead): Evidence {
 async function isNotAFolder(root: string): Promise<boolean> {
     try {
         return !(await fs.stat(root)).isDirectory();
-    } catch {
-        return false;
+    } catch (error) {
+        return hasErrorCode(error, 'ENOTDIR');
     }
 }
 
