@@ -75,6 +75,11 @@
 }
 
 .header {
+  /* Close's icon and Zoom's label sit on the gutter Previous, Next and the reading area line up on, as the approved
+     header's unpadded buttons have them, while each button keeps its padding inside its box. So the bar gives the
+     buttons' outer padding back, down to the focus ring's width, and the buttons take the rest of it on their outer
+     side, so the ring never runs off the screen. No margin, so Zoom's margin-left: auto is the only one in the row. */
+  --viewer-header-inset: max(calc(var(--focus-ring-width) + var(--focus-ring-offset)), calc(var(--site-gutter) - 0.75rem));
   grid-area: header;
   align-self: stretch;
   display: flex;
@@ -82,7 +87,7 @@
   align-items: center;
   gap: 0.5rem 1rem;
   min-height: var(--viewer-header);
-  padding: 0.375rem var(--site-gutter);
+  padding: 0.375rem var(--viewer-header-inset);
   border-bottom: 4px solid var(--cc-accent, var(--cc-rule));
   background: var(--cc-chrome);
 }
@@ -172,6 +177,15 @@
    at about 17.9:1 on the bar. Hover still brings in a border, and focus the shared ring. Pressed Zoom fills, below. */
 .header .control {
   border-color: transparent;
+}
+
+/* The rest of the gutter, less the button's 1px border, which is transparent at rest but still takes its width. */
+.header > .control:first-child {
+  padding-left: calc(var(--site-gutter) - var(--viewer-header-inset) - 1px);
+}
+
+.header > .zoom {
+  padding-right: calc(var(--site-gutter) - var(--viewer-header-inset) - 1px);
 }
 
 .zoom[aria-pressed='true'] {

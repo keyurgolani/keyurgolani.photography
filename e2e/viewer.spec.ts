@@ -344,6 +344,35 @@ test('on a phone, the stage takes the screen less a fixed reading allowance, wit
     expect(layouts[1].reading?.top).toBeCloseTo(layouts[0].reading?.top ?? NaN, 1);
 });
 
+test('the header\'s Close icon and Zoom label sit on the gutter Previous and Next line up on, with room for the focus ring', async ({ page }, testInfo) => {
+    // As in the approved header, whose buttons have no inline padding: the icon and the label carry the edge, not the box.
+    const size = testInfo.project.name === 'mobile' ? { width: 390, height: 844 } : { width: 1440, height: 900 };
+    await page.setViewportSize(size);
+    await openViewer(page, P[1]);
+    const edges = await page.locator('[data-surface="viewer"]').evaluate((root) => {
+        const [close, zoom] = root.querySelectorAll('header > a, header > button');
+        const text = document.createRange();
+        const label = [...zoom.childNodes].find((node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim());
+        if (label) text.selectNodeContents(label);
+        const ring = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--focus-ring-width')) + parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--focus-ring-offset'));
+        return {
+            innerWidth: document.documentElement.clientWidth,
+            ring,
+            closeBox: close.getBoundingClientRect().left,
+            closeIcon: close.querySelector('svg')!.getBoundingClientRect().left,
+            zoomBox: zoom.getBoundingClientRect().right,
+            zoomLabel: label ? text.getBoundingClientRect().right : NaN,
+            previous: root.querySelector('[data-viewer-step="previous"]')!.getBoundingClientRect().left,
+            next: root.querySelector('[data-viewer-step="next"]')!.getBoundingClientRect().right,
+        };
+    });
+    expect(edges.closeIcon, 'Close\'s icon starts on the gutter').toBeCloseTo(edges.previous, 0);
+    expect(edges.zoomLabel, 'Zoom\'s label ends on the gutter').toBeCloseTo(edges.next, 0);
+    // The box keeps its padding inward, and the ring drawn outside it stays on screen.
+    expect(edges.closeBox, 'Close\'s ring stays on screen').toBeGreaterThanOrEqual(edges.ring);
+    expect(edges.innerWidth - edges.zoomBox, 'Zoom\'s ring stays on screen').toBeGreaterThanOrEqual(edges.ring);
+});
+
 test('the Viewer passes the #1 checks, and its controls reflow', async ({ page }) => {
     await openViewer(page, P[1]);
     const controls = [close(page), zoom(page), previous(page), next(page), technical(page)];
