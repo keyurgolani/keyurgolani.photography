@@ -4,7 +4,7 @@
   width: 100%;
   height: 100dvh;
   overflow: hidden;
-  background: #000;
+  background: var(--gah-ground);
 }
 
 /* The chrome layer sits above the intro's grain (40), ripples (41), and
@@ -42,12 +42,12 @@
   position: fixed;
   inset: 0;
   z-index: 49;
-  background: linear-gradient(90deg, rgb(8 10 9 / 0.9) 0%, rgb(8 10 9 / 0.46) 38%, rgb(8 10 9 / 0.08) 70%);
+  background: linear-gradient(90deg, rgb(var(--gah-scrim-rgb) / 0.9) 0%, rgb(var(--gah-scrim-rgb) / 0.46) 38%, rgb(var(--gah-scrim-rgb) / 0.08) 70%);
 }
 
 @media (max-width: 39.99rem) {
   .vignette {
-    background: linear-gradient(0deg, rgb(8 10 9 / 0.92) 0%, rgb(8 10 9 / 0.28) 66%, rgb(8 10 9 / 0.12) 100%);
+    background: linear-gradient(0deg, rgb(var(--gah-scrim-rgb) / 0.92) 0%, rgb(var(--gah-scrim-rgb) / 0.28) 66%, rgb(var(--gah-scrim-rgb) / 0.12) 100%);
   }
 }
 

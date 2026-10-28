@@ -22,7 +22,7 @@
   flex-direction: column;
   background: var(--gah-ground);
   color: var(--gah-ink);
-  color-scheme: dark;
+  color-scheme: var(--gah-color-scheme, dark);
   font-family: var(--gah-font-sans);
 }
 
@@ -200,4 +200,43 @@
     text-decoration: underline;
     text-underline-offset: 0.25em;
   }
+}
+
+/* The themes mockup: the login's surfaces and notices per theme, as the Inbox's (curator.module.css). */
+:global(html[data-theme='dark']) .page {
+  --login-header: #262b29;
+  --login-rule: #3f4643;
+  --login-field: #181c1a;
+}
+
+:global(html[data-theme='light']) .page {
+  --login-header: #e2dbcd;
+  --login-rule: #c9bfae;
+  --login-field: #f8f5ee;
+  --login-alert-ink: #8c2618;
+  --login-alert-bg: #f2d6cd;
+  --login-done-rule: #8db3a0;
+  --login-done-bg: #dcebe2;
+}
+
+:global(html[data-theme='bright']) .page {
+  --login-header: #ffffff;
+  --login-rule: #d4d4d4;
+  --login-field: #ffffff;
+  --login-alert-ink: #a1121e;
+  --login-alert-bg: #fde0e0;
+  --login-done-rule: #8cc0a6;
+  --login-done-bg: #e5f3eb;
+}
+
+:global(html[data-theme='black']) .page {
+  --login-header: #000000;
+  --login-rule: #2e2e2e;
+  --login-field: #000000;
+  --login-alert-bg: #2b0f0b;
+  --login-done-bg: #08150f;
+}
+
+.header > button:first-of-type {
+  margin-left: auto;
 }

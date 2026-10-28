@@ -10,7 +10,7 @@
 /* No SiteNav above it, so the ground fills the window. The curator's ground is dark in both themes, and so are its native controls. */
 .standalone {
   min-height: 100svh;
-  color-scheme: dark;
+  color-scheme: var(--gah-color-scheme, dark);
 }
 
 .body {

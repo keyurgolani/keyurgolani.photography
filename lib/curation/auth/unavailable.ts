@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { THEME_INIT_SCRIPT } from '../../../components/site/themeScript';
 import { CURATOR_RESPONSE_HEADERS } from './policy';
 
 /**
@@ -18,27 +19,32 @@ import { CURATOR_RESPONSE_HEADERS } from './policy';
  */
 
 const STYLE = [
-    ':root{color-scheme:dark}',
+    // The themes mockup: the four themes as custom properties, keyed on what the theme script below resolves.
+    ':root,html[data-theme=dark]{color-scheme:dark;--g:#1b1f1d;--i:#eef2f0;--s:#c9d0cc;--h:#262b29;--r:#3f4643;--m:rgba(255,255,255,0.42)}',
+    'html[data-theme=light]{color-scheme:light;--g:#ebe5d9;--i:#29231d;--s:#4d443a;--h:#e2dbcd;--r:#c9bfae;--m:#8c7f6f}',
+    'html[data-theme=bright]{color-scheme:light;--g:#fff;--i:#0b0b0b;--s:#333;--h:#fff;--r:#d4d4d4;--m:#767676}',
+    'html[data-theme=black]{color-scheme:dark;--g:#000;--i:#f5f5f5;--s:#bdbdbd;--h:#000;--r:#2e2e2e;--m:rgba(255,255,255,0.4)}',
     '*{box-sizing:border-box}',
     'html,body{margin:0}',
-    'body{display:flex;min-height:100svh;flex-direction:column;background:#080a09;color:#f4f6f5;font:0.875rem/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;-webkit-font-smoothing:antialiased}',
-    'header{display:flex;min-height:3.5rem;align-items:center;gap:0.625rem;padding:0.375rem clamp(1rem,3.3vw,3rem);border-bottom:1px solid #343936;background:#171a18;font-size:0.75rem;font-weight:500;letter-spacing:0.045em}',
-    '.mark{display:inline-grid;width:2rem;height:2rem;place-items:center;border:1px solid rgba(255,255,255,0.38);border-radius:50%;font-family:Georgia,"Times New Roman",serif}',
+    'body{display:flex;min-height:100svh;flex-direction:column;background:var(--g);color:var(--i);font:0.875rem/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;-webkit-font-smoothing:antialiased}',
+    'header{display:flex;min-height:3.5rem;align-items:center;gap:0.625rem;padding:0.375rem clamp(1rem,3.3vw,3rem);border-bottom:1px solid var(--r);background:var(--h);font-size:0.75rem;font-weight:500;letter-spacing:0.045em}',
+    '.mark{display:inline-grid;width:2rem;height:2rem;place-items:center;border:1px solid var(--m);border-radius:50%;font-family:Georgia,"Times New Roman",serif}',
     'main{display:flex;flex:1;align-items:center;justify-content:center;padding:3rem clamp(1rem,3.3vw,3rem) max(4rem,12svh)}',
     '.body{width:100%;max-width:34rem}',
     'h1{margin:0;font-family:Georgia,"Times New Roman",serif;font-size:clamp(2rem,1.6rem + 1.6vw,2.75rem);font-weight:400;line-height:1.05;letter-spacing:-0.02em;text-wrap:balance}',
-    'p{margin:1.25rem 0 0;color:rgba(244,246,245,0.76);font-size:clamp(1rem,0.9rem + 0.4vw,1.1875rem);line-height:1.5;text-wrap:pretty}',
-    'code{color:#f4f6f5;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:0.9em}',
+    'p{margin:1.25rem 0 0;color:var(--s);font-size:clamp(1rem,0.9rem + 0.4vw,1.1875rem);line-height:1.5;text-wrap:pretty}',
+    'code{color:var(--i);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:0.9em}',
 ].join('');
 
 /** The page itself. */
 export const UNAVAILABLE_HTML = `<!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark" data-theme-choice="system">
 <head>
+<script>${THEME_INIT_SCRIPT}</script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<meta name="color-scheme" content="dark">
+<meta name="color-scheme" content="light dark">
 <title>Curator unavailable · Keyur Golani Photography</title>
 <style>${STYLE}</style>
 </head>
@@ -56,9 +62,11 @@ export const UNAVAILABLE_HTML = `<!doctype html>
 `;
 
 const STYLE_HASH = `'sha256-${createHash('sha256').update(STYLE).digest('base64')}'`;
+/** The theme script, allowed by its hash too, so the 503 paints in the visitor's stored theme like every other page. */
+const SCRIPT_HASH = `'sha256-${createHash('sha256').update(THEME_INIT_SCRIPT).digest('base64')}'`;
 
 /** Allows the one inline stylesheet and nothing else, and no framing, like every curator response. */
-export const UNAVAILABLE_CSP = `default-src 'none'; style-src ${STYLE_HASH}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
+export const UNAVAILABLE_CSP = `default-src 'none'; script-src ${SCRIPT_HASH}; style-src ${STYLE_HASH}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
 
 /** The page's headers: every curator response header, and its own type and policy. */
 export const UNAVAILABLE_HEADERS: Readonly<Record<string, string>> = {

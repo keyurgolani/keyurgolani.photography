@@ -10,7 +10,7 @@
   flex-direction: column;
   justify-content: flex-end;
   padding: 1.5rem var(--site-gutter) 1rem;
-  color: var(--gah-ink);
+  color: var(--gah-scrim-ink, var(--gah-ink));
 }
 
 /* The title and statement, as wide as their longest line. --panel-fade is
@@ -53,7 +53,7 @@
     position: absolute;
     z-index: -1;
     inset: -3rem calc(-1 * var(--panel-fade)) -1.5rem calc(-1 * var(--site-gutter));
-    background: linear-gradient(90deg, rgb(8 10 9 / 0.6) calc(100% - var(--panel-fade)), rgb(8 10 9 / 0) 100%);
+    background: linear-gradient(90deg, rgb(var(--gah-scrim-rgb) / 0.6) calc(100% - var(--panel-fade)), rgb(var(--gah-scrim-rgb) / 0) 100%);
     mask-image: linear-gradient(0deg, transparent 0, #000 1.5rem, #000 calc(100% - 3rem), transparent 100%);
     pointer-events: none;
   }
@@ -73,7 +73,7 @@
 .statement {
   max-width: 39ch;
   margin: 0.75rem 0 0;
-  color: var(--gah-ink-soft);
+  color: var(--gah-scrim-ink-soft, var(--gah-ink-soft));
   font-family: var(--gah-font-serif);
   font-size: var(--gah-type-statement);
   line-height: 1.25;
@@ -99,7 +99,7 @@
 
 @media (hover: hover) and (pointer: fine) {
   .enter:hover {
-    background: #fff;
+    background: var(--gah-action-hover);
   }
 }
 
@@ -116,8 +116,8 @@
 .failure:not(:empty) {
   padding: 0.5rem 0.875rem;
   border-radius: var(--gah-radius);
-  background: rgba(0, 0, 0, 0.65);
-  color: #fff;
+  background: var(--gah-control-scrim);
+  color: var(--gah-control-ink);
   font-size: var(--gah-type-ui);
 }
 
@@ -138,8 +138,8 @@
   padding: 0 1rem;
   border: 1px solid var(--gah-rule-strong);
   border-radius: var(--gah-radius);
-  background: rgba(0, 0, 0, 0.65);
-  color: #fff;
+  background: var(--gah-control-scrim);
+  color: var(--gah-control-ink);
   font: inherit;
   font-size: var(--gah-type-ui);
   cursor: pointer;
@@ -147,6 +147,6 @@
 
 @media (hover: hover) and (pointer: fine) {
   .action:hover {
-    border-color: #fff;
+    border-color: var(--gah-control-ink);
   }
 }

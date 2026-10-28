@@ -124,6 +124,11 @@ export interface TestCatalogOptions {
     root?: string;
     /** Write decodable WebP and AVIF files at each variant's size, and mark the profile ready. */
     withAssets?: boolean;
+    /**
+     * With `withAssets`, a source image file per photo index to encode each variant from, cropped to the
+     * variant's size, instead of a solid color. For local mockups on real-looking pictures; null keeps the color.
+     */
+    imageSource?: (index: number) => string | null;
     /** Write each variant as a sparse file of this size instead, and mark the profile ready. */
     variantBytes?: VariantByteTable;
     /** Defaults to #10's current profile. */
@@ -219,6 +224,16 @@ async function solidImage(width: number, height: number, color: (typeof COLORS)[
     return buffer;
 }
 
+async function sourcedImage(source: string, width: number, height: number, format: VariantFormat | 'lqip'): Promise<Buffer> {
+    const key = `${format}:${width}x${height}:${source}`;
+    const cached = encoded.get(key);
+    if (cached) return cached;
+    const image = sharp(source).rotate().resize(width, height, { fit: 'cover', position: 'attention' }).removeAlpha();
+    const buffer = await (format === 'avif' ? image.avif({ quality: 55, effort: 0 }) : image.webp({ quality: format === 'lqip' ? 20 : 82 })).toBuffer();
+    encoded.set(key, buffer);
+    return buffer;
+}
+
 async function writeFileIn(file: string, data: string | Buffer): Promise<void> {
     await fs.promises.mkdir(path.dirname(file), { recursive: true, mode: PRIVATE_DIR_MODE });
     await fs.promises.writeFile(file, data, { mode: PRIVATE_FILE_MODE });
@@ -290,6 +305,7 @@ async function compose(options: TestCatalogOptions): Promise<Composed> {
         const sourcePath = spec.sourcePath ?? `fixture-${pad(index)}.jpg`;
         const health = spec.sourceHealth ?? 'present';
         const color = COLORS[index % COLORS.length];
+        const source = options.imageSource?.(index) ?? null;
 
         const variants = {} as CandidatePhotoRecord['variants'];
         const manifestVariants = {} as AssetManifest['variants'];
@@ -303,7 +319,7 @@ async function compose(options: TestCatalogOptions): Promise<Composed> {
                 let bytes: number;
                 let digest: string;
                 if (assets === 'files') {
-                    data = await solidImage(size.width, size.height, color, format);
+                    data = source ? await sourcedImage(source, size.width, size.height, format) : await solidImage(size.width, size.height, color, format);
                     bytes = data.length;
                     digest = createHash('sha256').update(data).digest('hex');
                 } else {
@@ -318,7 +334,8 @@ async function compose(options: TestCatalogOptions): Promise<Composed> {
         let lqip = PLACEHOLDER_LQIP;
         if (assets === 'files') {
             const scale = 20 / Math.max(width, height);
-            const small = await solidImage(Math.max(1, Math.round(width * scale)), Math.max(1, Math.round(height * scale)), color, 'lqip');
+            const [w, h] = [Math.max(1, Math.round(width * scale)), Math.max(1, Math.round(height * scale))];
+            const small = source ? await sourcedImage(source, w, h, 'lqip') : await solidImage(w, h, color, 'lqip');
             lqip = `data:image/webp;base64,${small.toString('base64')}`;
         }
 

@@ -18,13 +18,8 @@
   position: absolute;
   inset: 0;
   filter: url(#grain-filter);
-  /* Light mode: subtle grain */
-  opacity: 0.12;
-}
-
-/* Dark mode: softer grain to avoid noisy speckles */
-[data-theme="dark"] .grainTexture {
-  opacity: 0.06;
+  /* Each theme's grain (styles/themes.css): stronger on paper, none on true black. */
+  opacity: var(--gah-grain-opacity, 0.06);
 }
 
 /* The portrait, at the center while Home loads (.portrait), then in its

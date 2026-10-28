@@ -103,8 +103,9 @@
   display: block;
   overflow: hidden;
   width: min(100%, calc(82svh * var(--ratio)));
-  border-radius: var(--gah-radius);
+  border-radius: var(--gah-photo-radius, var(--gah-radius));
   background: var(--gah-surface);
+  box-shadow: var(--gah-surround-md, none);
 }
 
 /* The cover's link to its Viewer takes the same width cap, from the page's
@@ -112,6 +113,7 @@
    empty column beside a tall one. The frame inside fills it. */
 .coverLink {
   --ratio: 3 / 2;
+  --focus-ring-offset: calc(3px + var(--gah-surround-room, 0px));
   display: block;
   width: min(100%, calc(82svh * var(--ratio)));
   border-radius: var(--gah-radius);
@@ -143,7 +145,7 @@
 }
 
 .stageNote {
-  margin-top: 0.75rem;
+  margin-top: calc(0.75rem + var(--gah-surround-room, 0px));
   color: var(--gah-ink-muted);
   font-family: var(--gah-font-sans);
   font-size: var(--gah-type-label);
@@ -218,6 +220,7 @@
 
 /* One link per entry: the thumbnail and its number. */
 .entry {
+  --focus-ring-offset: calc(3px + var(--gah-surround-room, 0px) / 2);
   position: relative;
   display: block;
   border-radius: var(--gah-radius);
@@ -231,8 +234,9 @@
   display: block;
   overflow: hidden;
   aspect-ratio: 4 / 3;
-  border-radius: var(--gah-radius);
+  border-radius: var(--gah-photo-radius, var(--gah-radius));
   background: var(--gah-surface);
+  box-shadow: var(--gah-surround-sm, none);
 }
 
 .thumbFrame[data-photo='contain'] .image {
@@ -247,7 +251,7 @@
 
 .position {
   display: block;
-  margin-top: 0.5rem;
+  margin-top: calc(0.5rem + var(--gah-surround-room, 0px) / 2);
   color: var(--gah-label);
   font-family: var(--gah-font-sans);
   font-size: var(--gah-type-label);
@@ -270,18 +274,18 @@
 
 .description {
   display: block;
-  color: var(--gah-ink-soft);
+  color: var(--gah-caption-ink, var(--gah-ink-soft));
 }
 
 /* Hover parity: focus marks the entry the same way a pointer does. No scaling either way. */
 .entry:focus-visible .thumbFrame,
 .coverLink:focus-visible .coverFrame {
-  box-shadow: 0 0 0 1px var(--gah-rule-strong);
+  outline: 1px solid var(--gah-rule-strong);
 }
 
 @media (hover: hover) and (pointer: fine) {
   .entry:hover .thumbFrame {
-    box-shadow: 0 0 0 1px var(--gah-rule-strong);
+    outline: 1px solid var(--gah-rule-strong);
   }
 }
 
@@ -337,7 +341,7 @@
 
 @media (hover: hover) and (pointer: fine) {
   .coverLink:hover .coverFrame {
-    box-shadow: 0 0 0 1px var(--gah-rule-strong);
+    outline: 1px solid var(--gah-rule-strong);
   }
 }
 

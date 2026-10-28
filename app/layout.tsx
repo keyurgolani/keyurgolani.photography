@@ -3,6 +3,7 @@ import { connection } from 'next/server';
 import '../styles/tokens.css';
 import '../styles/surfaces/light-takes-shape.css';
 import '../styles/surfaces/chromatic-chapters.css';
+import '../styles/themes.css';
 import './globals.css';
 import { sans, serif } from './fonts';
 import { ThemeProvider } from '../components/ThemeContext';
@@ -22,7 +23,13 @@ export async function generateMetadata(): Promise<Metadata> {
   };
 }
 
-export const viewport: Viewport = { themeColor: '#080a09' };
+// The browser's own bar follows System's two themes; an explicit Bright or Black choice keeps the nearest one.
+export const viewport: Viewport = {
+  themeColor: [
+    { media: '(prefers-color-scheme: light)', color: '#ebe5d9' },
+    { media: '(prefers-color-scheme: dark)', color: '#1b1f1d' },
+  ],
+};
 
 export default function RootLayout({
   children,
@@ -32,7 +39,7 @@ export default function RootLayout({
   // The server always sends the dark theme. The inline script swaps in a stored light one before first paint,
   // which is why <html> suppresses the hydration warning for its own attributes.
   return (
-    <html lang="en" data-theme="dark" suppressHydrationWarning className={`${serif.variable} ${sans.variable}`}>
+    <html lang="en" data-theme="dark" data-theme-choice="system" suppressHydrationWarning className={`${serif.variable} ${sans.variable}`}>
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>

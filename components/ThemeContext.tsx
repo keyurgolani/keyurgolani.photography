@@ -2,47 +2,61 @@
 
 import {createContext, ReactNode, useContext, useEffect, useSyncExternalStore} from 'react';
 
-type Theme = 'dark' | 'light';
+/** What the visitor chose. System follows the device. */
+export type ThemeChoice = 'system' | 'light' | 'bright' | 'dark' | 'black';
+/** What paints. System resolves to light or dark. */
+export type Theme = 'light' | 'bright' | 'dark' | 'black';
 
-interface ThemeContextType {
-    theme: Theme;
-    toggleTheme: () => void;
-}
+export const THEME_CHOICES: readonly ThemeChoice[] = ['system', 'light', 'bright', 'dark', 'black'];
 
-// <html data-theme> is the store: the server sends dark, the inline script in app/layout.tsx may already have put a
-// stored light theme there, and the toggle writes it. Each reader subscribes to it on its own, so the provider's
-// value never changes. A provider value that changed on mount (it used to, for a stored light theme) is a context
-// change above every Suspense boundary still streaming in, and React then renders such a boundary again on the
-// client instead of hydrating it. The curator's inbox, behind its loading state, did, so a phone opening an item in
-// the light theme didn't land on it, and in the dark theme it did.
-const listeners = new Set<() => void>();
-
+// <html data-theme-choice> and <html data-theme> are the store: the server sends system and dark, the inline script
+// in app/layout.tsx puts the stored choice and its resolved theme there before first paint (and keeps System
+// following the device), and setThemeChoice writes them. Each reader subscribes on its own through a
+// MutationObserver on <html>, so the provider's value never changes (see the Suspense note in git history: a
+// provider value that changed on mount re-rendered streamed boundaries instead of hydrating them).
 const subscribe = (listener: () => void) => {
-    listeners.add(listener);
-    return () => {
-        listeners.delete(listener);
-    };
+    const observer = new MutationObserver(listener);
+    observer.observe(document.documentElement, {attributes: true, attributeFilter: ['data-theme', 'data-theme-choice']});
+    return () => observer.disconnect();
 };
 
-const readTheme = (): Theme => (document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark');
+const isChoice = (value: string | null): value is ThemeChoice => value !== null && (THEME_CHOICES as readonly string[]).includes(value);
 
-/** Dark, as the server HTML is, so the first client render matches it. */
-const serverTheme = (): Theme => 'dark';
+const readChoice = (): ThemeChoice => {
+    const value = document.documentElement.getAttribute('data-theme-choice');
+    return isChoice(value) ? value : 'system';
+};
 
-// The page's own attribute decides the next theme, and storage that throws (site data blocked) only loses the
-// choice on reload, so the toggle still flips both ways.
-const toggleTheme = () => {
-    const newTheme = readTheme() === 'light' ? 'dark' : 'light';
-    document.documentElement.setAttribute('data-theme', newTheme);
+const readTheme = (): Theme => {
+    const value = document.documentElement.getAttribute('data-theme');
+    return value === 'light' || value === 'bright' || value === 'black' ? value : 'dark';
+};
+
+const prefersLight = () => typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: light)').matches;
+
+/**
+ * Applies a choice at once and stores it. Where motion is allowed and the browser has view transitions, the page's
+ * colors crossfade over 180 ms (styles/themes.css); under reduced motion, or without them, they swap in one frame.
+ * Storage that throws (site data blocked) only loses the choice on reload.
+ */
+export const setThemeChoice = (choice: ThemeChoice) => {
+    const apply = () => {
+        const root = document.documentElement;
+        root.setAttribute('data-theme-choice', choice);
+        root.setAttribute('data-theme', choice === 'system' ? (prefersLight() ? 'light' : 'dark') : choice);
+    };
+    const reduced = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const start = (document as Document & {startViewTransition?: (callback: () => void) => unknown}).startViewTransition;
+    if (!reduced && typeof start === 'function') start.call(document, apply);
+    else apply();
     try {
-        localStorage.setItem('theme', newTheme);
+        localStorage.setItem('theme', choice);
     } catch {
         // Nothing to keep it in.
     }
-    for (const listener of listeners) listener();
 };
 
-const VALUE = {toggleTheme};
+const VALUE = {setThemeChoice};
 
 const ThemeContext = createContext<typeof VALUE | null>(null);
 
@@ -60,25 +74,22 @@ export const ThemeProvider = ({children}: { children: ReactNode }) => {
     );
 };
 
-/**
- * The toggle alone, from the context, with no subscription: a caller that never reads the theme never re-renders
- * when it changes, or after hydration.
- */
-export const useThemeToggle = (): (() => void) => {
+/** The choice, what it resolves to, and the setter. Keep it to leaves, as before: it re-renders after hydration. */
+export const useThemeChoice = (): { choice: ThemeChoice; theme: Theme; setChoice: (choice: ThemeChoice) => void } => {
     const context = useContext(ThemeContext);
     if (!context) {
-        throw new Error('useThemeToggle must be used within a ThemeProvider');
+        throw new Error('useThemeChoice must be used within a ThemeProvider');
     }
-    return context.toggleTheme;
+    const choice = useSyncExternalStore(subscribe, readChoice, () => 'system' as const);
+    const theme = useSyncExternalStore(subscribe, readTheme, () => 'dark' as const);
+    return {choice, theme, setChoice: context.setThemeChoice};
 };
 
-/**
- * The theme and the toggle. The caller subscribes to the theme, so in the light theme it renders again right after
- * hydration. Keep it to leaves: a caller must not wrap streamed content (a Suspense boundary or children that stream
- * in), since that re-render would make React render the boundary again on the client instead of hydrating it.
- */
-export const useTheme = (): ThemeContextType => {
-    const toggle = useThemeToggle();
-    const theme = useSyncExternalStore(subscribe, readTheme, serverTheme);
-    return {theme, toggleTheme: toggle};
+/** The legacy two-way flip, for callers that still read light or dark. */
+export const useTheme = (): { theme: 'light' | 'dark'; toggleTheme: () => void } => {
+    const {theme, setChoice} = useThemeChoice();
+    const flat = theme === 'light' || theme === 'bright' ? 'light' : 'dark';
+    return {theme: flat, toggleTheme: () => setChoice(flat === 'light' ? 'dark' : 'light')};
 };
+
+export const useThemeToggle = (): (() => void) => useTheme().toggleTheme;

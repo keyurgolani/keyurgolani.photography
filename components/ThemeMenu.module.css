@@ -1,0 +1,213 @@
+/* The theme control. The button shows a swatch of the theme that's painting: the ground and the ink, split on the
+   diagonal, inside the strong rule. It reads the page's own tokens, so it's right from first paint. */
+.button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--gah-ink-muted);
+  cursor: pointer;
+}
+
+.swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--gah-ground) 0 50%, var(--gah-ink) 50% 100%);
+  box-shadow: 0 0 0 1px var(--gah-rule-strong);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .button:hover .swatch {
+    box-shadow: 0 0 0 1px var(--gah-ink), 0 0 0 4px var(--gah-rule);
+  }
+}
+
+/* Visually hidden; display: none below takes the names that don't apply out of the button's name too. */
+.hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+:global(html:not([data-theme-choice='system'])) [data-name-for='system'],
+:global(html:not([data-theme-choice='light'])) [data-name-for='light'],
+:global(html:not([data-theme-choice='bright'])) [data-name-for='bright'],
+:global(html:not([data-theme-choice='dark'])) [data-name-for='dark'],
+:global(html:not([data-theme-choice='black'])) [data-name-for='black'],
+:global(html:not([data-theme-choice='system'])) [data-now],
+:global(html:not([data-theme='light'])) [data-now='light'],
+:global(html:not([data-theme='dark'])) [data-now='dark'] {
+  display: none;
+}
+
+/* The popover, in the top layer, under the nav's end. Anchor positioning would tie it to the button; until then it
+   takes the nav's corner, which is where the button always is. */
+.popover {
+  position: fixed;
+  inset: calc(var(--site-nav-height) + 0.25rem) var(--site-gutter) auto auto;
+  width: min(19rem, calc(100vw - 2 * var(--site-gutter)));
+  margin: 0;
+  padding: 0.375rem;
+  border: 1px solid var(--gah-rule);
+  border-radius: 6px;
+  background: var(--gah-raised);
+  color: var(--gah-ink);
+  box-shadow: 0 18px 40px -16px rgb(0 0 0 / 0.45);
+  font-family: var(--gah-font-sans);
+}
+
+:global(html[data-theme='black']) .popover {
+  border-color: var(--gah-rule-strong);
+  box-shadow: none;
+}
+
+:global(html[data-theme='bright']) .popover {
+  border-color: #111111;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.group {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.legend {
+  padding: 0.5rem 0.625rem 0.375rem;
+  color: var(--gah-label);
+  font-size: var(--gah-type-label);
+  font-weight: 500;
+  letter-spacing: var(--gah-label-tracking);
+}
+
+.option {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 52px;
+  padding: 0.375rem 0.625rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .option:hover {
+    background: var(--gah-surface);
+  }
+}
+
+:global(html[data-theme='black']) .option:hover {
+  background: #141414;
+}
+
+/* The radio stays native, for its keyboard and its announcement, and draws nothing: the row shows its state. */
+.radio {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.option:has(.radio:focus-visible) {
+  outline: var(--focus-ring-width) solid var(--focus-ring-light);
+  outline-offset: calc(-1 * var(--focus-ring-width));
+  box-shadow: inset 0 0 0 calc(var(--focus-ring-width) + 2px) var(--focus-ring-dark);
+}
+
+/* A thumbnail of each theme: its ground, and a photograph in that theme's surround. Fixed colors, since each shows a
+   theme other than the one painting. */
+.preview {
+  position: relative;
+  display: grid;
+  width: 44px;
+  height: 32px;
+  place-items: center;
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px var(--gah-rule);
+}
+
+.previewPhoto {
+  width: 26px;
+  height: 17px;
+  background: linear-gradient(180deg, #49678f 0%, #c99a7a 62%, #2d2a35 63%, #1b1a22 100%);
+}
+
+.preview[data-preview='light'] { background: #ebe5d9; }
+.preview[data-preview='light'] .previewPhoto { box-shadow: 0 0 0 3px #f8f5ee, 0 3px 5px -2px rgb(60 42 20 / 0.45); }
+.preview[data-preview='bright'] { background: #ffffff; }
+.preview[data-preview='bright'] .previewPhoto { width: 22px; height: 14px; box-shadow: 0 0 0 3px #ffffff, 0 0 0 4px #111111; }
+.preview[data-preview='dark'] { background: #1b1f1d; }
+.preview[data-preview='dark'] .previewPhoto { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.18), 0 0 0 3px #2a2f2d; }
+.preview[data-preview='black'] { background: #000000; }
+.preview[data-preview='black'] .previewPhoto { width: 44px; height: 24px; }
+.preview[data-preview='system'] { background: linear-gradient(135deg, #ebe5d9 0 50%, #1b1f1d 50% 100%); }
+.preview[data-preview='system'] .previewPhoto { box-shadow: 0 0 0 3px rgb(128 128 128 / 0.35); }
+
+.text {
+  display: grid;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+.name {
+  font-size: var(--gah-type-ui);
+  font-weight: 500;
+}
+
+.note {
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+  line-height: 1.35;
+}
+
+/* The checked choice: a check mark in the accent, and the name in full ink. */
+.check {
+  width: 0.875rem;
+  height: 0.5rem;
+  margin-right: 0.25rem;
+  border-bottom: 2px solid transparent;
+  border-left: 2px solid transparent;
+  rotate: -45deg;
+  translate: 0 -2px;
+}
+
+.option:has(.radio:checked) .check {
+  border-color: var(--gah-accent);
+}
+
+.option:has(.radio:checked) .preview {
+  box-shadow: 0 0 0 2px var(--gah-accent);
+}
+
+/* SiteNav's paper variant on About keeps the paper's ink. */
+:global([data-surface='about']) .button {
+  color: var(--lts-ink-soft);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .popover:popover-open {
+    animation: theme-menu-in 140ms ease-out;
+  }
+}
+
+@keyframes theme-menu-in {
+  from {
+    opacity: 0;
+    translate: 0 -4px;
+  }
+}

@@ -31,19 +31,19 @@
   --curator-primary-ink: #101511;
 
   min-height: 100svh;
-  background: var(--gah-surface);
+  background: var(--curator-page, var(--gah-surface));
   color: var(--gah-ink);
   font-family: var(--gah-font-sans);
   font-size: var(--gah-type-ui);
   line-height: 1.45;
   /* The curator is dark in both site themes, so the browser's own controls, scrollbars and selection are too (16-3). */
-  color-scheme: dark;
+  color-scheme: var(--gah-color-scheme, dark);
 }
 
 /* The canvas under the curator, which overscroll and a phone's retracting URL bar show, is the curator's ground, not the light site theme's. */
 :global(html):has(.page),
 :global(body):has(.page) {
-  background: var(--gah-surface);
+  background: var(--curator-page, var(--gah-surface));
 }
 
 /* Header */
@@ -1051,4 +1051,94 @@ main.state {
   .actions .button {
     flex: 1 1 auto;
   }
+}
+
+/* The themes mockup: the curator's surfaces and states per theme. Dark is the block at the top, lifted with the
+   site's charcoal; Light and Bright turn every tone into a light badge of the same hue; Black keeps the tones as
+   dark tints and draws its boxes with rules instead of fills. */
+:global(html[data-theme='dark']) .page {
+  --curator-page: #1f2422;
+  --curator-header: #262b29;
+  --curator-list: #222725;
+  --curator-active: #343c38;
+  --curator-field: #181c1a;
+  --curator-box: #262b29;
+  --curator-rule: #3f4643;
+}
+
+:global(html[data-theme='light']) .page {
+  --curator-page: #ebe5d9;
+  --curator-header: #e2dbcd;
+  --curator-list: #e6dfd2;
+  --curator-active: #d6cdbc;
+  --curator-field: #f8f5ee;
+  --curator-box: #f2ede3;
+  --curator-rule: #c9bfae;
+  --curator-tone-new-ink: #1d5a42;
+  --curator-tone-new-bg: #d3e6da;
+  --curator-tone-change-ink: #634e0c;
+  --curator-tone-change-bg: #eee1b8;
+  --curator-tone-alert-ink: #8c2618;
+  --curator-tone-alert-bg: #f2d6cd;
+  --curator-tone-settled-ink: #4d443a;
+  --curator-tone-settled-bg: #dfd7c8;
+  --curator-lock-rule: #8db3a0;
+  --curator-lock-bg: #dcebe2;
+  --curator-lock-icon: #2b6a50;
+  --curator-approved-rule: #5c9077;
+  --curator-approved-ink: #1b523b;
+  --curator-approved-bg: #d0e5d8;
+  --curator-suggestion: #2f6352;
+  --curator-primary: #2a4a72;
+  --curator-primary-ink: #fbf8f2;
+}
+
+:global(html[data-theme='bright']) .page {
+  --curator-page: #ffffff;
+  --curator-header: #ffffff;
+  --curator-list: #fafafa;
+  --curator-active: #ebebeb;
+  --curator-field: #ffffff;
+  --curator-box: #f6f6f6;
+  --curator-rule: #d4d4d4;
+  --curator-tone-new-ink: #0a5a3c;
+  --curator-tone-new-bg: #dcf1e6;
+  --curator-tone-change-ink: #664f00;
+  --curator-tone-change-bg: #faeec2;
+  --curator-tone-alert-ink: #a1121e;
+  --curator-tone-alert-bg: #fde0e0;
+  --curator-tone-settled-ink: #404040;
+  --curator-tone-settled-bg: #ececec;
+  --curator-lock-rule: #8cc0a6;
+  --curator-lock-bg: #e5f3eb;
+  --curator-lock-icon: #1d6a4a;
+  --curator-approved-rule: #4a9872;
+  --curator-approved-ink: #0c5838;
+  --curator-approved-bg: #d9efe2;
+  --curator-suggestion: #1d6a4a;
+  --curator-primary: #0b0b0b;
+  --curator-primary-ink: #ffffff;
+}
+
+:global(html[data-theme='black']) .page {
+  --curator-page: #000000;
+  --curator-header: #000000;
+  --curator-list: #000000;
+  --curator-active: #171717;
+  --curator-field: #000000;
+  --curator-box: #000000;
+  --curator-rule: #2e2e2e;
+  --curator-tone-new-bg: #0e2219;
+  --curator-tone-change-bg: #242006;
+  --curator-tone-alert-bg: #2b0f0b;
+  --curator-tone-settled-bg: #141414;
+  --curator-lock-bg: #08150f;
+  --curator-approved-bg: #0e2219;
+  --curator-primary: #f5f5f5;
+  --curator-primary-ink: #000000;
+}
+
+/* The theme control's place in the curator header, before Sign out. */
+.headerEnd > button:first-child {
+  margin-right: -0.25rem;
 }

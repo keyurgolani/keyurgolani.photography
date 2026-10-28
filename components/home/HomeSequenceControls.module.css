@@ -8,8 +8,8 @@
   max-width: 100%;
   padding: 0.25rem;
   border-radius: 26px;
-  background: rgba(0, 0, 0, 0.65);
-  color: #fff;
+  background: var(--gah-control-scrim);
+  color: var(--gah-control-ink);
 }
 
 /* Wraps at narrow widths and large text, so every control stays in view. */

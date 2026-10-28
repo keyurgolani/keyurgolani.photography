@@ -6,6 +6,16 @@
   background-color: #000;
 }
 
+/* The themes mockup: the photograph hangs inside the theme's margin (Black has none), with the theme's surround. */
+:global(html[data-theme]) .carousel {
+  position: absolute;
+  inset: var(--gah-stage-inset, 0px);
+  width: auto;
+  height: auto;
+  box-shadow: var(--gah-stage-surround, none);
+  background-color: var(--gah-mat-fill, #000);
+}
+
 .slide {
   position: absolute;
   top: 0;

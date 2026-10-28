@@ -47,6 +47,8 @@
 
 /* One link per entry, the whole entry its target. */
 .entry {
+  /* The themes mockup: the ring clears the photograph's surround. */
+  --focus-ring-offset: calc(3px + var(--gah-surround-room, 0px));
   display: block;
   border-radius: var(--gah-radius);
   color: inherit;
@@ -58,8 +60,10 @@
   position: relative;
   overflow: hidden;
   aspect-ratio: 4 / 3;
-  border-radius: var(--gah-radius);
+  border-radius: var(--gah-photo-radius, var(--gah-radius));
   background: var(--gah-surface);
+  /* The theme's surround: the mat, the frame or keyline, and the shadow, painted outside the photograph's box. */
+  box-shadow: var(--gah-surround-md, none);
 }
 
 .cover {
@@ -91,7 +95,7 @@
 }
 
 .copy {
-  padding-top: 1rem;
+  padding-top: calc(1rem + var(--gah-surround-room, 0px));
 }
 
 /* Authored: the title and the short statement. */

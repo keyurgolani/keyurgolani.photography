@@ -1,0 +1,335 @@
+/* The four themes, as prototype tokens for the themes mockup (wip/lead/themes-mockup).
+   The theme script puts the resolved theme on <html data-theme>: light, bright,
+   dark or black (System resolves to light or dark). Each block maps the theme
+   onto the --gah-* tokens the shell already reads, plus the photo surround
+   (mat, frame, keyline, shadow), caption ink, the Home stage, the Viewer's
+   Chromatic Chapters tokens (--cc-*) and About's Light Takes Shape tokens
+   (--lts-*). Dark is also the default, for a page with no attribute.
+
+   What differs beyond lightness:
+     light   paper: a toned warm sheet; photos sit in a lighter mat with a
+             bevel line and a soft low shadow; blue-black ink accent.
+     bright  white wall: pure white; photos framed in a thin black line around
+             a white mat, no shadow, square corners; gallery-red accent.
+     dark    charcoal room: a lit charcoal with layered surfaces; photos on a
+             charcoal mat with a light keyline; sage accent.
+     black   void: true black, no surfaces, no mats, no rules behind photos;
+             the photograph's own edge; white is the only accent. */
+
+:root,
+html[data-theme='dark'] {
+  color-scheme: dark;
+  --gah-color-scheme: dark;
+  --gah-ground: #1b1f1d;
+  --gah-surface: #232826;
+  --gah-raised: #2c3230;
+  --gah-ink: #eef2f0;
+  --gah-ink-soft: #c9d0cc;
+  --gah-ink-muted: #a3aca8;
+  --gah-label: #aebbb6;
+  --gah-caption-ink: #dfe5e2;
+  --gah-rule: rgba(255, 255, 255, 0.12);
+  --gah-rule-strong: rgba(255, 255, 255, 0.42);
+  --gah-accent: #9fcfba;
+  --gah-glass: rgba(27, 31, 29, 0.86);
+  --gah-glass-blur: 12px;
+  --gah-nav-rule: rgba(255, 255, 255, 0.12);
+  --gah-action: #9fcfba;
+  --gah-action-ink: #101511;
+  --gah-action-hover: #c3e3d5;
+  --gah-radius: 3px;
+  --focus-ring-light: #ffffff;
+  --focus-ring-dark: #000000;
+
+  /* The surround: a charcoal mat a step above the ground, a light keyline on the photo's edge, and a shadow the
+     charcoal is light enough to show. sm for thumbnails, md for covers, lg for the Viewer. */
+  --gah-photo-radius: 2px;
+  --gah-surround-sm: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 0 0 6px #2a2f2d, 0 10px 18px -10px rgba(0, 0, 0, 0.7);
+  --gah-surround-md: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 0 0 10px #2a2f2d, 0 18px 32px -16px rgba(0, 0, 0, 0.75);
+  --gah-surround-lg: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 0 0 14px #2a2f2d, 0 24px 44px -18px rgba(0, 0, 0, 0.8);
+  --gah-surround-room: 14px;
+  --gah-mat-fill: #2a2f2d;
+
+  /* Home: the photograph hangs in the room with a charcoal margin and its keyline. */
+  --gah-stage-inset: clamp(8px, 1.1vw, 16px);
+  --gah-stage-surround: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 24px 60px -20px rgba(0, 0, 0, 0.8);
+  --gah-scrim-rgb: 27 31 29;
+  --gah-scrim-ink: #eef2f0;
+  --gah-scrim-ink-soft: #d3d9d6;
+  --gah-control-scrim: rgba(20, 23, 22, 0.8);
+  --gah-control-ink: #eef2f0;
+  --gah-grain-opacity: 0.06;
+  --gah-badge-ring: 0 0 0 4px rgba(255, 255, 255, 0.19);
+  --gah-badge-rim: rgba(255, 255, 255, 0.5);
+
+  /* The legacy variables Home's intro and the legacy Gallery paint with. */
+  --background-color: #1b1f1d;
+  --background-color-rgb: 27, 31, 29;
+  --primary-color: #eef2f0;
+  --primary-color-rgb: 238, 242, 240;
+}
+
+html[data-theme='light'] {
+  color-scheme: light;
+  --gah-color-scheme: light;
+  --gah-ground: #ebe5d9;
+  --gah-surface: #e2dbcd;
+  --gah-raised: #f5f1e8;
+  --gah-ink: #29231d;
+  --gah-ink-soft: #4d443a;
+  --gah-ink-muted: #645a4e;
+  --gah-label: #645a4e;
+  --gah-caption-ink: #3a3229;
+  --gah-rule: rgba(41, 35, 29, 0.14);
+  --gah-rule-strong: #8c7f6f;
+  --gah-accent: #2a4a72;
+  --gah-glass: rgba(235, 229, 217, 0.9);
+  --gah-glass-blur: 12px;
+  --gah-nav-rule: rgba(41, 35, 29, 0.14);
+  --gah-action: #2a4a72;
+  --gah-action-ink: #fbf8f2;
+  --gah-action-hover: #1d3757;
+  --gah-radius: 2px;
+  --focus-ring-light: #1d2f48;
+  --focus-ring-dark: #fbf8f2;
+
+  /* A passe-partout lighter than the sheet, its bevel as a hairline, and a soft low shadow: a print on paper. */
+  --gah-photo-radius: 1px;
+  --gah-surround-sm: 0 0 0 6px #f8f5ee, 0 0 0 7px rgba(41, 35, 29, 0.1), 0 8px 14px -8px rgba(60, 42, 20, 0.35);
+  --gah-surround-md: 0 0 0 1px rgba(41, 35, 29, 0.12), 0 0 0 11px #f8f5ee, 0 0 0 12px rgba(41, 35, 29, 0.08), 0 16px 28px -14px rgba(60, 42, 20, 0.42);
+  --gah-surround-lg: 0 0 0 1px rgba(41, 35, 29, 0.12), 0 0 0 15px #f8f5ee, 0 0 0 16px rgba(41, 35, 29, 0.08), 0 22px 40px -18px rgba(60, 42, 20, 0.45);
+  --gah-surround-room: 16px;
+  --gah-mat-fill: #f8f5ee;
+
+  --gah-stage-inset: clamp(10px, 1.6vw, 24px);
+  --gah-stage-surround: 0 0 0 1px rgba(41, 35, 29, 0.12), 0 0 0 7px #f8f5ee, 0 22px 50px -18px rgba(60, 42, 20, 0.5);
+  --gah-scrim-rgb: 235 229 217;
+  --gah-scrim-ink: #29231d;
+  --gah-scrim-ink-soft: #3f372e;
+  --gah-control-scrim: rgba(245, 241, 232, 0.92);
+  --gah-control-ink: #29231d;
+  --gah-grain-opacity: 0.12;
+  --gah-badge-ring: 0 0 0 5px #f8f5ee, 0 0 0 6px rgba(41, 35, 29, 0.12);
+  --gah-badge-rim: transparent;
+
+  --background-color: #ebe5d9;
+  --background-color-rgb: 235, 229, 217;
+  --primary-color: #29231d;
+  --primary-color-rgb: 41, 35, 29;
+}
+
+html[data-theme='bright'] {
+  color-scheme: light;
+  --gah-color-scheme: light;
+  --gah-ground: #ffffff;
+  --gah-surface: #f4f4f4;
+  --gah-raised: #ffffff;
+  --gah-ink: #0b0b0b;
+  --gah-ink-soft: #333333;
+  --gah-ink-muted: #5c5c5c;
+  --gah-label: #5c5c5c;
+  --gah-caption-ink: #1a1a1a;
+  --gah-rule: rgba(0, 0, 0, 0.12);
+  --gah-rule-strong: #767676;
+  --gah-accent: #c4122f;
+  --gah-glass: #ffffff;
+  --gah-glass-blur: 0px;
+  --gah-nav-rule: rgba(0, 0, 0, 0.12);
+  --gah-action: #0b0b0b;
+  --gah-action-ink: #ffffff;
+  --gah-action-hover: #333333;
+  --gah-radius: 0px;
+  --focus-ring-light: #000000;
+  --focus-ring-dark: #ffffff;
+
+  /* A framed print on a white wall: white mat inside a thin black frame, square corners, no shadow. */
+  --gah-photo-radius: 0px;
+  --gah-surround-sm: 0 0 0 5px #ffffff, 0 0 0 6px #111111;
+  --gah-surround-md: 0 0 0 10px #ffffff, 0 0 0 12px #111111;
+  --gah-surround-lg: 0 0 0 14px #ffffff, 0 0 0 17px #111111;
+  --gah-surround-room: 17px;
+  --gah-mat-fill: #ffffff;
+
+  --gah-stage-inset: clamp(16px, 3vw, 44px);
+  --gah-stage-surround: 0 0 0 2px #111111;
+  --gah-scrim-rgb: 255 255 255;
+  --gah-scrim-ink: #0b0b0b;
+  --gah-scrim-ink-soft: #262626;
+  --gah-control-scrim: rgba(255, 255, 255, 0.94);
+  --gah-control-ink: #0b0b0b;
+  --gah-grain-opacity: 0.05;
+  --gah-badge-ring: 0 0 0 6px #ffffff, 0 0 0 8px #111111;
+  --gah-badge-rim: transparent;
+
+  --background-color: #ffffff;
+  --background-color-rgb: 255, 255, 255;
+  --primary-color: #0b0b0b;
+  --primary-color-rgb: 11, 11, 11;
+}
+
+html[data-theme='black'] {
+  color-scheme: dark;
+  --gah-color-scheme: dark;
+  --gah-ground: #000000;
+  --gah-surface: #000000;
+  --gah-raised: #0b0b0b;
+  --gah-ink: #f5f5f5;
+  --gah-ink-soft: #bdbdbd;
+  --gah-ink-muted: #949494;
+  --gah-label: #8f8f8f;
+  --gah-caption-ink: #c4c4c4;
+  --gah-rule: rgba(255, 255, 255, 0.1);
+  --gah-rule-strong: rgba(255, 255, 255, 0.4);
+  --gah-accent: #ffffff;
+  --gah-glass: #000000;
+  --gah-glass-blur: 0px;
+  --gah-nav-rule: transparent;
+  --gah-action: #f5f5f5;
+  --gah-action-ink: #000000;
+  --gah-action-hover: #ffffff;
+  --gah-radius: 0px;
+  --focus-ring-light: #ffffff;
+  --focus-ring-dark: #000000;
+
+  /* Nothing behind or around a photograph. */
+  --gah-photo-radius: 0px;
+  --gah-surround-sm: none;
+  --gah-surround-md: none;
+  --gah-surround-lg: none;
+  --gah-surround-room: 0px;
+  --gah-mat-fill: transparent;
+
+  --gah-stage-inset: 0px;
+  --gah-stage-surround: none;
+  --gah-scrim-rgb: 0 0 0;
+  --gah-scrim-ink: #f5f5f5;
+  --gah-scrim-ink-soft: #c9c9c9;
+  --gah-control-scrim: rgba(0, 0, 0, 0.62);
+  --gah-control-ink: #f5f5f5;
+  --gah-grain-opacity: 0;
+  --gah-badge-ring: none;
+  --gah-badge-rim: rgba(255, 255, 255, 0.28);
+
+  --background-color: #000000;
+  --background-color-rgb: 0, 0, 0;
+  --primary-color: #f5f5f5;
+  --primary-color-rgb: 245, 245, 245;
+}
+
+/* The Viewer's Chromatic Chapters tokens, per theme. Dark keeps today's bands on the lifted charcoal. */
+html [data-surface='viewer'],
+html[data-theme='dark'] [data-surface='viewer'] {
+  --cc-ground: #1b1f1d;
+  --cc-band-edge: #181c1a;
+  --cc-band-mid: #202523;
+  --cc-ink: #f3f2ec;
+  --cc-ink-soft: #d0d5d1;
+  --cc-label: #aab4af;
+  --cc-chrome: rgba(24, 28, 26, 0.94);
+  --cc-rule: rgba(255, 255, 255, 0.14);
+  --cc-rule-strong: rgba(255, 255, 255, 0.42);
+}
+
+html[data-theme='light'] [data-surface='viewer'] {
+  --cc-ground: #ebe5d9;
+  --cc-band-edge: #e6dfd2;
+  --cc-band-mid: #ebe5d9;
+  --cc-ink: #29231d;
+  --cc-ink-soft: #3a3229;
+  --cc-label: #645a4e;
+  --cc-chrome: #f2ede3;
+  --cc-rule: rgba(41, 35, 29, 0.16);
+  --cc-rule-strong: #8c7f6f;
+}
+
+html[data-theme='bright'] [data-surface='viewer'] {
+  --cc-ground: #ffffff;
+  --cc-bands: none;
+  --cc-ink: #0b0b0b;
+  --cc-ink-soft: #1a1a1a;
+  --cc-label: #5c5c5c;
+  --cc-chrome: #ffffff;
+  --cc-rule: rgba(0, 0, 0, 0.1);
+  --cc-rule-strong: #767676;
+}
+
+html[data-theme='black'] [data-surface='viewer'] {
+  --cc-ground: #000000;
+  --cc-bands: none;
+  --cc-ink: #f5f5f5;
+  --cc-ink-soft: #c4c4c4;
+  --cc-label: #8f8f8f;
+  --cc-chrome: transparent;
+  --cc-rule: transparent;
+  --cc-rule-strong: rgba(255, 255, 255, 0.4);
+}
+
+/* The Viewer's ground for the body and the modal backdrop, which sit outside the surface. */
+:root,
+html[data-theme='dark'] { --gah-viewer-ground: #1b1f1d; }
+html[data-theme='light'] { --gah-viewer-ground: #ebe5d9; }
+html[data-theme='bright'] { --gah-viewer-ground: #ffffff; }
+html[data-theme='black'] { --gah-viewer-ground: #000000; }
+
+/* About's Light Takes Shape, per theme. Light keeps the approved paper exactly; Bright is the shade lit white;
+   Dark is the lamp at night, its frame glowing warm; Black drops the ribs and the frame. */
+html[data-theme='bright'] [data-surface='about'] {
+  --lts-paper: #ffffff;
+  --lts-ink: #0b0b0b;
+  --lts-ink-soft: #3d3d3d;
+  --lts-rib: rgba(0, 0, 0, 0.035);
+  --lts-rule: rgba(0, 0, 0, 0.16);
+  --lts-rule-strong: #767676;
+  --lts-glass: #ffffff;
+  --lts-frame: #ffffff;
+  --lts-shadow: 0 0 0 2px #111111;
+  --lts-link-rule: #767676;
+  --lts-caption-bg: rgba(255, 255, 255, 0.92);
+  --lts-caption-ink: #0b0b0b;
+}
+
+html[data-theme='dark'] [data-surface='about'] {
+  --lts-paper: #1e1c19;
+  --lts-ink: #f3ecdf;
+  --lts-ink-soft: #d2c9b9;
+  --lts-rib: rgba(255, 226, 170, 0.035);
+  --lts-rule: rgba(255, 236, 200, 0.18);
+  --lts-rule-strong: rgba(255, 236, 200, 0.46);
+  --lts-glass: rgba(30, 28, 25, 0.92);
+  --lts-frame: #efe4c8;
+  --lts-shadow: 0 0 0 1px rgba(255, 230, 180, 0.3), 0 20px 70px -14px rgba(255, 196, 110, 0.22);
+  --lts-link-rule: #a39579;
+  --lts-caption-bg: rgba(30, 28, 25, 0.88);
+  --lts-caption-ink: #f3ecdf;
+}
+
+html[data-theme='black'] [data-surface='about'] {
+  --lts-paper: #000000;
+  --lts-ink: #f0f0f0;
+  --lts-ink-soft: #ababab;
+  --lts-rib: transparent;
+  --lts-rule: rgba(255, 255, 255, 0.12);
+  --lts-rule-strong: rgba(255, 255, 255, 0.4);
+  --lts-glass: #000000;
+  --lts-frame: #000000;
+  --lts-shadow: none;
+  --lts-link-rule: #8a8a8a;
+  --lts-caption-bg: rgba(0, 0, 0, 0.7);
+  --lts-caption-ink: #e6e6e6;
+}
+
+/* About's ground for the body, which sits outside the surface. */
+:root,
+html[data-theme='dark'] { --gah-about-ground: #1e1c19; }
+html[data-theme='light'] { --gah-about-ground: #f4ecd7; }
+html[data-theme='bright'] { --gah-about-ground: #ffffff; }
+html[data-theme='black'] { --gah-about-ground: #000000; }
+
+/* A theme change: one short crossfade of the page's colors where motion is allowed, none where it isn't. */
+@media (prefers-reduced-motion: no-preference) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: 180ms;
+    animation-timing-function: ease-out;
+  }
+}

@@ -6,6 +6,8 @@ import { sans, serif } from '@/app/fonts';
 import StatusPage from '@/components/site/StatusPage';
 import { ERROR_HEADING, errorCopy, useOnline } from '@/components/site/onlineStatus';
 import '@/styles/tokens.css';
+import '@/styles/themes.css';
+import { THEME_INIT_SCRIPT } from '@/components/site/themeScript';
 import './globals.css';
 import styles from './global-error.module.css';
 
@@ -28,7 +30,10 @@ export default function GlobalError({ reset }: GlobalErrorProps) {
       reset();
     });
   return (
-    <html lang="en" data-theme="dark" className={`${serif.variable} ${sans.variable}`}>
+    <html lang="en" data-theme="dark" data-theme-choice="system" suppressHydrationWarning className={`${serif.variable} ${sans.variable}`}>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
       <body className="font-sans">
         <header className={styles.header}>
           <p className={styles.wordmark}>

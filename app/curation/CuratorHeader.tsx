@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { FileCheck2, Inbox } from 'lucide-react';
 import SameOriginPostForm from '@/components/site/SameOriginPostForm';
+import ThemeMenu from '@/components/ThemeMenu';
 import styles from './curator.module.css';
 
 export type CuratorScreen = 'inbox' | 'publish';
@@ -45,6 +46,7 @@ export default function CuratorHeader({ active, publishHref }: CuratorHeaderProp
                 )}
             </nav>
             <div className={styles.headerEnd}>
+                <ThemeMenu placement="curator" />
                 <span className={styles.volume}>Local self-hosted volume</span>
                 <SameOriginPostForm action="/api/curation/logout" submitLabel="Sign out" buttonClassName={styles.signOut} />
             </div>
