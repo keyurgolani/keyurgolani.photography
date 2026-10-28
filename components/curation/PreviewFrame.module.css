@@ -34,3 +34,15 @@
   border: 0;
   background: var(--gah-ground);
 }
+
+/* The inert frame's named wrapper takes the frame's place in the column. */
+.picture {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Embedded in a panel (the Publish screen), the marker takes the panel's inset. */
+.frame[data-embedded='true'] .toolbar {
+  padding: 0 0.875rem;
+}

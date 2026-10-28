@@ -87,7 +87,8 @@ export default defineConfig({
       // The curator's Secure cookie over http on loopback runs on both too, since browsers differ there.
       name: 'mobile-webkit',
       use: { ...devices['iPhone 13'] },
-      testMatch: /(?:home-immersive|viewer-touch|curator-login)\.spec\.ts/,
+      // #16's Publish screen frame checks that loading the preview never scrolls the page, which browsers differ on too.
+      testMatch: /(?:home-immersive|viewer-touch|curator-login|curation-publish-frame)\.spec\.ts/,
     },
   ],
   webServer: [

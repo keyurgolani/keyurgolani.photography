@@ -24,4 +24,21 @@ describe('PreviewFrame', () => {
         render(<PreviewFrame src={SRC} height="32rem" />);
         expect(screen.getByRole('region', { name: 'Visitor preview' })).toHaveStyle({ height: '32rem' });
     });
+
+    // 16-3: the Publish screen's panel names the region itself, keeps the frame out of the Tab order, and says "Live" once live.
+    it('drops its own region label when embedded, leaves the Tab order when asked, and takes the marker and title it is given', () => {
+        render(<PreviewFrame src={SRC} embedded focusable={false} marker="Live, revision 19" title="The live site, revision 19" />);
+        expect(screen.queryByRole('region', { name: 'Visitor preview' })).toBeNull();
+        const frame = screen.getByTitle('The live site, revision 19');
+        expect(frame).toHaveAttribute('inert');
+        // The inert iframe's title isn't read, so the picture carries it.
+        expect(screen.getByRole('img', { name: 'The live site, revision 19' })).toContainElement(frame);
+        expect(screen.getByText('Live, revision 19')).toBeInTheDocument();
+        expect(screen.queryByText('Preview · not public')).toBeNull();
+    });
+
+    it('stays in the Tab order by default', () => {
+        render(<PreviewFrame src={SRC} />);
+        expect(screen.getByTitle('Visitor preview of the draft catalog')).not.toHaveAttribute('inert');
+    });
 });

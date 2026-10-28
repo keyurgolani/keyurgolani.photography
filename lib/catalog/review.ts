@@ -207,6 +207,16 @@ export interface StampInputs {
     asset?: { from: string; to: string; profileId: string };
     /** Fields the write leaves as they are but reviews again, as restampable() picks them. */
     restamp?: readonly string[];
+    /**
+     * #16's Publish screen: fields the curator looked at and marked reviewed,
+     * each with the hashValue() of the value the screen showed. Each is stamped
+     * as the curator's review when the record still holds that value, whatever
+     * its stamp said (a hand edit, a suggestion in a field other than the
+     * description, or a review the active revision or new bytes made stale).
+     * A field holding anything else keeps its stamp. The new stamp keeps the
+     * inbox item and the confirm's `asset` the old one named.
+     */
+    reviewedValues?: Readonly<Record<string, string>>;
     actor: string;
     reviewedAt: string;
 }
@@ -233,6 +243,18 @@ export function restampable(record: AuthoredRecord, fields: readonly string[], b
 }
 
 /**
+ * The inbox item a new stamp names: the write's own, or, for a field the
+ * Publish screen marks reviewed, the one its stamp already named. That
+ * review vouches for the value against the live revision, not for the inbox
+ * item, so the item stays linked, and reopening it still makes the field
+ * stale (16-3).
+ */
+function eventFor(inputs: StampInputs, kept: FieldReview | undefined): { event?: { id: string; version: number } } {
+    const event = inputs.event ?? kept?.event;
+    return event ? { event: { id: event.id, version: event.version } } : {};
+}
+
+/**
  * The stamps a written record carries. A field the write changed is stamped
  * with `inputs`, a described alt with `reviewed: false` as generated, and so
  * is one whose #13 `conflicts` entry the write removed, since settling a
@@ -241,6 +263,9 @@ export function restampable(record: AuthoredRecord, fields: readonly string[], b
  * never reviews what it didn't touch, except a field `inputs.restamp` names
  * whose stamp reviewed the value it still holds (restampable()). `covers`
  * holds the pinned revisions of the cover photos `next` and `existing` name.
+ * A field `inputs.reviewedValues` names with the hash of the value it holds
+ * gets a fresh stamp too: the Publish screen's review of exactly that value,
+ * still naming the inbox item and confirm its old stamp named.
  */
 export function stampWrite(
     existing: AuthoredRecord | null,
@@ -256,7 +281,8 @@ export function stampWrite(
         const value = valueOf(next, field);
         const hash = hashValue(value);
         const before = existing ? valueOf(existing, field) : undefined;
-        if (hashValue(before) === hash && !settled.has(field) && !(inputs.restamp?.includes(field) && refreshable(prior[field], value))) {
+        const reviewedHere = inputs.reviewedValues !== undefined && Object.hasOwn(inputs.reviewedValues, field) && inputs.reviewedValues[field] === hash;
+        if (hashValue(before) === hash && !settled.has(field) && !reviewedHere && !(inputs.restamp?.includes(field) && refreshable(prior[field], value))) {
             if (prior[field]) fields[field] = prior[field];
             continue;
         }
@@ -265,8 +291,8 @@ export function stampWrite(
             origin: inputs.origin === 'generated' || generatedAlt(field, value) ? 'generated' : 'curator',
             baseRevisionId: inputs.baseRevisionId,
             ...assetFor(next, field, covers.next),
-            ...(inputs.event ? { event: { id: inputs.event.id, version: inputs.event.version } } : {}),
-            ...(field === 'assetRevision' && inputs.asset ? { asset: { ...inputs.asset } } : {}),
+            ...eventFor(inputs, reviewedHere ? prior[field] : undefined),
+            ...(field === 'assetRevision' && inputs.asset ? { asset: { ...inputs.asset } } : reviewedHere && prior[field]?.asset ? { asset: { ...prior[field].asset } } : {}),
             actor: inputs.actor,
             reviewedAt: inputs.reviewedAt,
         };
@@ -416,6 +442,42 @@ function waitingFor(review: ReviewContext, photoId: string): InboxItem[] {
 
 const short = (id: string | null) => (id === null ? 'none' : id.slice(0, 12));
 
+/**
+ * What the inbox item a stamp settled says about it now, or null when the
+ * stamp settled none or that item is still settled. fieldReview() asks this
+ * after the base and the bytes, and the Publish screen asks it on its own
+ * before "Still right, mark reviewed", since a stale base reads first and
+ * would hide an item that needs a decision again (16-3).
+ */
+export function inboxReview(ref: FieldRef, stamp: FieldReview, env: ReviewEnv): FieldReviewState | null {
+    if (!stamp.event) return null;
+    const seen = { origin: stamp.origin, by: stamp.actor, at: stamp.reviewedAt };
+    const { id } = stamp.event;
+    if (!env.review) return { ...ref, ...seen, state: 'stale', reason: 'inbox-unread', detail: `It settled the inbox item ${id}, and the inbox wasn't read, so nothing shows whether that item changed since.` };
+    if (env.review.unreadable.has(id)) return { ...ref, ...seen, state: 'stale', reason: 'item-unreadable', eventId: id, detail: `It settled the inbox item ${id}, which can't be read now.` };
+    const item = env.review.inbox.get(id);
+    if (!item) return { ...ref, ...seen, state: 'stale', reason: 'item-unreadable', eventId: id, detail: `It settled the inbox item ${id}, which is gone.` };
+    if (NEEDS_JUDGMENT.has(item.status)) return { ...ref, ...seen, state: 'stale', reason: 'item-reopened', eventId: id, detail: `It settled the inbox item ${id}, which is ${item.status} again.` };
+    if (item.photoId !== null) {
+        const newer = waitingFor(env.review, item.photoId)
+            .filter((other) => other.id !== id && other.lastObservedAt > stamp.reviewedAt)
+            .sort((a, b) => (a.lastObservedAt < b.lastObservedAt ? -1 : a.lastObservedAt > b.lastObservedAt ? 1 : a.id < b.id ? -1 : 1));
+        if (newer.length > 0) {
+            const latest = newer[newer.length - 1];
+            return { ...ref, ...seen, state: 'stale', reason: 'newer-item', eventId: latest.id, detail: `It settled ${id}, and ${item.photoId}'s source changed again after that review: the replacement item ${latest.id} still waits for the curator.` };
+        }
+    }
+    return null;
+}
+
+/** inboxReview() for a field of the working layer, read from its record's stamp. Null with no record or stamp. */
+export function inboxReviewOf(ref: FieldRef, env: ReviewEnv): FieldReviewState | null {
+    const record = recordOf(env.layer, ref.record);
+    if (record === null) return null;
+    const stamp = stampsOf(record, coverAssetOf(env.layer, record), undefined, env.review?.backfill)[ref.field];
+    return stamp ? inboxReview(ref, stamp, env) : null;
+}
+
 /** Whether a reviewed field is still reviewed, and why not. Pure. */
 export function fieldReview(ref: FieldRef, env: ReviewEnv): FieldReviewState {
     const record = recordOf(env.layer, ref.record);
@@ -458,22 +520,7 @@ export function fieldReview(ref: FieldRef, env: ReviewEnv): FieldReviewState {
     }
 
     // The inbox item it settled.
-    if (stamp.event) {
-        const { id } = stamp.event;
-        if (!env.review) return { ...ref, ...seen, state: 'stale', reason: 'inbox-unread', detail: `It settled the inbox item ${id}, and the inbox wasn't read, so nothing shows whether that item changed since.` };
-        if (env.review.unreadable.has(id)) return { ...ref, ...seen, state: 'stale', reason: 'item-unreadable', eventId: id, detail: `It settled the inbox item ${id}, which can't be read now.` };
-        const item = env.review.inbox.get(id);
-        if (!item) return { ...ref, ...seen, state: 'stale', reason: 'item-unreadable', eventId: id, detail: `It settled the inbox item ${id}, which is gone.` };
-        if (NEEDS_JUDGMENT.has(item.status)) return { ...ref, ...seen, state: 'stale', reason: 'item-reopened', eventId: id, detail: `It settled the inbox item ${id}, which is ${item.status} again.` };
-        if (item.photoId !== null) {
-            const newer = waitingFor(env.review, item.photoId)
-                .filter((other) => other.id !== id && other.lastObservedAt > stamp.reviewedAt)
-                .sort((a, b) => (a.lastObservedAt < b.lastObservedAt ? -1 : a.lastObservedAt > b.lastObservedAt ? 1 : a.id < b.id ? -1 : 1));
-            if (newer.length > 0) {
-                const latest = newer[newer.length - 1];
-                return { ...ref, ...seen, state: 'stale', reason: 'newer-item', eventId: latest.id, detail: `It settled ${id}, and ${item.photoId}'s source changed again after that review: the replacement item ${latest.id} still waits for the curator.` };
-            }
-        }
-    }
+    const inbox = inboxReview(ref, stamp, env);
+    if (inbox) return inbox;
     return { ...ref, ...seen, state: 'reviewed' };
 }

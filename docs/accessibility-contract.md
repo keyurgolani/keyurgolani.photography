@@ -38,7 +38,7 @@ Every visitor and curator surface follows these rules. #1 added them with the br
 | Site navigation, `SiteNav` | `e2e/shell/nav.spec.ts` from #21, with `server-html`, `theme`, and `confinement` in `e2e/shell/` | #21, then #18 for its reveal on Home |
 | Curator login, `/curation/login` | `e2e/curator-login.spec.ts` from #14's 14-2, at rest, with a refusal, and during the lock | #14 |
 | Curation inbox, `/curation/inbox` | `e2e/curation-inbox.spec.ts` from #14, on a fixture its own curator server serves. The #1 surface checks there are on #14's backlog | #14 |
-| Publish preview | Added by #16 | #16 |
+| Curator publish, `/curation/publish` | `e2e/curation-publish.spec.ts` from #16, on a fixture data root its own curator server serves: axe, 44 px targets, the focus ring and unique names at 1440 and 390, the Tab order through the blocker list, one live region, and focus after each answer. `e2e/curation-publish-frame.spec.ts` checks on WebKit too that the preview frame never scrolls the page | #16 |
 | Revision history | Added by #15 | #15 |
 
 On `/about`, #1 checks the navigation links and theme control in full, and Tab reach, the ring style, ring clipping, reflow, and labels at rest for the external links, plus axe. `e2e/about-links.spec.ts` runs `checkSurface()` there with those links as the entries. On `/`, #18 owns the first tap on idle Home.

@@ -4,6 +4,16 @@ The curator is the private side of the site, where you review new photographs be
 
 After **Approve into draft** or **Decide later**, the inbox opens the next item that needs a decision, in list order, starting again from the top after the last one, and says at the top of it what it just did, naming the file. That answer links back to the item you decided, where **Reopen** is. Once nothing needs a decision, it shows the empty state. On a phone it shows one thing at a time: the list, or the item you opened, with **Back to inbox** (or the browser's Back) returning to the list where you left it.
 
+## Preview and publish
+
+`/curation/publish` (#16) shows what the next publish changes for visitors, and publishes it. The change ledger lists every change in visitor terms, in two groups: Authored, which needs your judgment, and Derived, which the catalog works out. Before and after show where they help. A change that blocks the publish says **Blocks publishing** and carries its fix:
+
+- A suggested description opens under its row, beside the photograph: **Mark description ready** marks those exact words reviewed. To change them, edit the item in the Inbox, or run the `photos edit` command the fix names.
+- A review that went stale (the live revision changed, or the photograph got new bytes) or a change made by hand shows its before and after, and **Still right, mark reviewed** stamps exactly the value shown. Neither writes a value, and both refuse with nothing written when the value moved since the page loaded.
+- A change whose Inbox item needs a decision again links to that item, with its `curation show` command beside it.
+
+**Validate revision** runs every publish rule on the draft the page shows, as `photos publish --dry-run` does. **Publish revision N** unlocks once that passes, and runs the same publish as `photos publish`, for exactly the draft you previewed: if the working catalog changed after the page loaded, or someone published from the command line, nothing is published and the screen says so, with **Load the updated ledger**. While another publish or rollback holds the catalog, or a publish stops, Publish stays on as the retry. The panel shows the draft as visitors would see it, opened on the first changed photograph, and **Open full preview** opens it in a new tab. Rollback isn't on this screen yet: use `photos rollback`, which the screen's rollback line names.
+
 ## Who can reach it
 
 Whoever can open port 3001 on the host's loopback and knows the curator's passphrase. Nobody else.
