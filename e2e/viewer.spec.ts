@@ -208,16 +208,19 @@ async function titleLine(page: Page) {
 /**
  * The reading area's pieces as the first screen cuts them: the title (when shown), the caption, the Description label
  * and its text, and the technical toggle. Only running text (the caption and the description) may run across the fold.
- * `lead` marks the pieces in the title line's block (the title and the caption), which comes first.
+ * `lead` marks the pieces in the title line's block (the title and the caption), which comes first. `block` is the
+ * reading area's child each piece sits in, so a test can tell the first block shown from the ones after it.
  */
 async function foldPieces(page: Page) {
     return page.locator('[data-surface="viewer"] section[aria-labelledby]').evaluate((reading) => {
         const lead = reading.firstElementChild;
+        const blocks = [...reading.children];
         const pieces = [...reading.querySelectorAll('h2:not(.sr-only), :scope > p, :scope > div > p, :scope > div > button')];
         return pieces.map((element) => {
             const { top, bottom } = element.getBoundingClientRect();
             const running = element.tagName === 'P' && (element.parentElement === reading || element.previousElementSibling !== null);
-            return { text: element.textContent?.trim().slice(0, 40) ?? '', top, bottom, running, lead: element.parentElement === lead };
+            const block = blocks.findIndex((child) => child === element || child.contains(element));
+            return { text: element.textContent?.trim().slice(0, 40) ?? '', top, bottom, running, lead: element.parentElement === lead, block };
         });
     });
 }
@@ -267,12 +270,17 @@ test('on a wide screen, the first screen ends on whole elements for every mix of
                 const after = pieces[mix.photoId === P[0] ? 2 : 1];
                 expect(after.top, `${at}: "${after.text}", after the title line, starts under the fold`).toBeGreaterThanOrEqual(line.innerHeight);
             } else {
-                // No title (9a's fixed stage): the title line's block keeps its height, so the stage doesn't grow into it.
-                // A caption shows in it, and everything after it starts under the fold.
+                // No title (9a's fixed stage): the stage doesn't grow into the title line's room. The first block the
+                // reading area shows takes that room instead, a caption or, with neither, the Description, and shows in
+                // the first screen. Everything after it starts under the fold.
                 expect(line.reading && line.reading.top, `${at}: the reading area starts on screen`).toBeLessThan(line.innerHeight);
-                for (const piece of pieces.filter((candidate) => candidate.lead)) expect(piece.top, `${at}: "${piece.text}" shows`).toBeLessThan(line.innerHeight);
-                const rest = pieces.filter((candidate) => !candidate.lead);
-                expect(rest.length, `${at}: the reading area has pieces after the title line`).toBeGreaterThan(0);
+                const first = Math.min(...pieces.map((piece) => piece.block));
+                const shown = pieces.filter((piece) => piece.block === first);
+                expect(shown.length, `${at}: the first block has pieces`).toBeGreaterThan(0);
+                expect(shown[0].top, `${at}: "${shown[0].text}" shows`).toBeLessThan(line.innerHeight);
+                for (const piece of shown) if (!piece.running) expect(piece.bottom, `${at}: "${piece.text}" shows whole`).toBeLessThanOrEqual(line.innerHeight);
+                const rest = pieces.filter((piece) => piece.block !== first);
+                expect(rest.length, `${at}: the reading area has pieces after its first block`).toBeGreaterThan(0);
                 for (const piece of rest) expect(piece.top, `${at}: "${piece.text}" starts under the fold`).toBeGreaterThanOrEqual(line.innerHeight);
             }
             // The photograph still holds the screen, where the screen is wider than it is tall.

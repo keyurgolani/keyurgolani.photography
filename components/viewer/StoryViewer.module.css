@@ -296,6 +296,18 @@
   .lead {
     min-height: calc(1.2 * var(--viewer-title-size) + 0.75rem + 1.5 * var(--gah-type-statement));
   }
+
+  /* With no title or caption the title line's block has nothing to show, so the first block after it takes its room,
+     the Description or the technical toggle, and shows in the first screen. It keeps the same height, so the fold still
+     falls in the gap after it, and the stage doesn't move. */
+  .lead:not(:has(> .title, > .caption)) {
+    display: contents;
+  }
+
+  .lead:not(:has(> .title, > .caption)) + * {
+    align-content: start;
+    min-height: calc(1.2 * var(--viewer-title-size) + 0.75rem + 1.5 * var(--gah-type-statement));
+  }
 }
 
 .frame {
