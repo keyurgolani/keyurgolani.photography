@@ -11,6 +11,10 @@
    portrait (42). It scrolls when large text needs more room, with room for a
    phone's home indicator. */
 .chrome {
+  /* Round 2 of the themes mockup (P2-2): the chrome's controls and copy sit inside the print, never across its frame
+     or mat. Today's 1.5rem and gutter stay the floor, so Black (no inset) doesn't move. */
+  --home-print-corner: max(1.5rem, calc(var(--gah-stage-inset, 0px) + 0.75rem));
+  --home-print-inline: max(var(--site-gutter), calc(var(--gah-stage-inset, 0px) + 0.75rem));
   position: fixed;
   inset: 0;
   z-index: 50;
@@ -33,21 +37,39 @@
   display: flex;
   flex: none;
   justify-content: flex-end;
-  padding: 0 1.5rem 1.5rem;
+  padding: 0 var(--home-print-corner) var(--home-print-corner);
 }
 
 /* The prototype's left-weighted scrim, in Gallery After Hours' ground, and
    bottom-weighted on a narrow screen. */
 .vignette {
   position: fixed;
-  inset: 0;
+  /* Round 2 of the themes mockup (P1-1): clipped to the print, so it never paints the theme's margin or Bright's
+     frame line. */
+  inset: var(--gah-stage-inset, 0px);
   z-index: 49;
   background: linear-gradient(90deg, rgb(var(--gah-scrim-rgb) / 0.9) 0%, rgb(var(--gah-scrim-rgb) / 0.46) 38%, rgb(var(--gah-scrim-rgb) / 0.08) 70%);
+}
+
+/* A paper or white wash reads as fog, not as dimming, so in Light and Bright it's lighter and ends at 0 by 60% of the
+   width, with no hold across the photograph. The title panel's own scrim (CatalogHome.module.css .panel, at
+   --gah-panel-alpha) carries the text's contrast on its own. */
+:global(html[data-theme='light']) .vignette,
+:global(html[data-theme='bright']) .vignette {
+  background: linear-gradient(90deg, rgb(var(--gah-scrim-rgb) / 0.72) 0%, rgb(var(--gah-scrim-rgb) / 0.3) 36%, rgb(var(--gah-scrim-rgb) / 0) 60%);
 }
 
 @media (max-width: 39.99rem) {
   .vignette {
     background: linear-gradient(0deg, rgb(var(--gah-scrim-rgb) / 0.92) 0%, rgb(var(--gah-scrim-rgb) / 0.28) 66%, rgb(var(--gah-scrim-rgb) / 0.12) 100%);
+  }
+
+  /* On a phone the panel doesn't show, so the wash holds under the story and the controls (the bottom third), then
+     ends at 0 by half the height. --home-wash-hold is what contrast.mjs reads for the title over the worst photo. */
+  :global(html[data-theme='light']) .vignette,
+  :global(html[data-theme='bright']) .vignette {
+    --home-wash-hold: 0.86;
+    background: linear-gradient(0deg, rgb(var(--gah-scrim-rgb) / 0.92) 0%, rgb(var(--gah-scrim-rgb) / var(--home-wash-hold)) 34%, rgb(var(--gah-scrim-rgb) / 0) 50%);
   }
 }
 

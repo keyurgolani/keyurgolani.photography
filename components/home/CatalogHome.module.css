@@ -9,7 +9,8 @@
   min-height: 100%;
   flex-direction: column;
   justify-content: flex-end;
-  padding: 1.5rem var(--site-gutter) 1rem;
+  /* --home-print-inline (HomeChrome.module.css) keeps the copy inside the print in every theme (round 2, P2-2). */
+  padding: 1.5rem var(--home-print-inline, var(--site-gutter)) 1rem;
   color: var(--gah-scrim-ink, var(--gah-ink));
 }
 
@@ -32,7 +33,7 @@
    reaches the lane. */
 @media (min-width: 85rem) {
   .copy[data-badge-lane] {
-    max-width: calc(50vw - var(--badge-lane) - var(--panel-fade) - var(--site-gutter));
+    max-width: calc(50vw - var(--badge-lane) - var(--panel-fade) - var(--home-print-inline, var(--site-gutter)));
   }
 }
 
@@ -52,8 +53,10 @@
     display: block;
     position: absolute;
     z-index: -1;
-    inset: -3rem calc(-1 * var(--panel-fade)) -1.5rem calc(-1 * var(--site-gutter));
-    background: linear-gradient(90deg, rgb(var(--gah-scrim-rgb) / 0.6) calc(100% - var(--panel-fade)), rgb(var(--gah-scrim-rgb) / 0) 100%);
+    /* Round 2 (P1-1): the panel starts at the print's edge, not the screen's, so it never washes the margin or the
+       frame; and its strength is the theme's (--gah-panel-alpha), since Light and Bright lean on it alone. */
+    inset: -3rem calc(-1 * var(--panel-fade)) -1.5rem calc(var(--gah-stage-inset, 0px) - var(--home-print-inline, var(--site-gutter)));
+    background: linear-gradient(90deg, rgb(var(--gah-scrim-rgb) / var(--gah-panel-alpha, 0.6)) calc(100% - var(--panel-fade)), rgb(var(--gah-scrim-rgb) / 0) 100%);
     mask-image: linear-gradient(0deg, transparent 0, #000 1.5rem, #000 calc(100% - 3rem), transparent 100%);
     pointer-events: none;
   }

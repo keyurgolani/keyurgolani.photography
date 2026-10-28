@@ -54,6 +54,13 @@
   transition: opacity 1s ease-in-out;
 }
 
+/* Round 2 of the themes mockup (P1-1): once it's the badge, the portrait sits above Home's scrim (49), so no theme's
+   wash ever fogs it. It shares the chrome's layer (50) and comes before it in the DOM, so the chrome still paints over
+   it; badgePlace() keeps it 16 px clear of the chrome's text and its panel, so their contrast doesn't depend on it. */
+.badge {
+  z-index: 50;
+}
+
 .badge[data-lingering],
 [data-interface-state='interactive'] .badge[data-landed],
 main:has([data-home-chrome] :focus-visible) .badge[data-landed] {

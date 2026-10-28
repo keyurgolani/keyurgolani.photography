@@ -105,7 +105,21 @@
   width: min(100%, calc(82svh * var(--ratio)));
   border-radius: var(--gah-photo-radius, var(--gah-radius));
   background: var(--gah-surface);
-  box-shadow: var(--gah-surround-md, none);
+  box-shadow: var(--series-cover-surround);
+}
+
+/* Round 2 of the themes mockup (P1-3): the cover's surround size and its real thickness, which the layout and the
+   focus ring reserve. Below 40rem it steps down a size, so it never crowds the phone's 16 px gutter. */
+.stage {
+  --series-cover-surround: var(--gah-surround-md, none);
+  --series-cover-room: var(--gah-room-md, 0px);
+}
+
+@media (max-width: 39.99rem) {
+  .stage {
+    --series-cover-surround: var(--gah-surround-sm, none);
+    --series-cover-room: var(--gah-room-sm, 0px);
+  }
 }
 
 /* The cover's link to its Viewer takes the same width cap, from the page's
@@ -113,7 +127,8 @@
    empty column beside a tall one. The frame inside fills it. */
 .coverLink {
   --ratio: 3 / 2;
-  --focus-ring-offset: calc(3px + var(--gah-surround-room, 0px));
+  /* The ring clears the surround's real thickness by 2 px, and never runs past the gutter (round 2, P1-3). */
+  --focus-ring-offset: min(calc(var(--series-cover-room) + 2px), calc(var(--site-gutter) - var(--focus-ring-width) - 1px));
   display: block;
   width: min(100%, calc(82svh * var(--ratio)));
   border-radius: var(--gah-radius);
@@ -145,7 +160,7 @@
 }
 
 .stageNote {
-  margin-top: calc(0.75rem + var(--gah-surround-room, 0px));
+  margin-top: calc(0.75rem + var(--series-cover-room, 0px));
   color: var(--gah-ink-muted);
   font-family: var(--gah-font-sans);
   font-size: var(--gah-type-label);
@@ -201,7 +216,8 @@
 .entries {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 9.5rem), 1fr));
-  gap: clamp(1.25rem, 3vw, 2rem) clamp(0.75rem, 2vw, 1.25rem);
+  /* Round 2 (P1-3): the column gap reserves both neighbours' surrounds, so two mats never read as one double line. */
+  gap: clamp(1.25rem, 3vw, 2rem) calc(clamp(0.75rem, 2vw, 1.25rem) + 2 * var(--gah-room-sm, 0px));
   align-items: start;
   margin: 0;
   padding: 0;
@@ -220,7 +236,7 @@
 
 /* One link per entry: the thumbnail and its number. */
 .entry {
-  --focus-ring-offset: calc(3px + var(--gah-surround-room, 0px) / 2);
+  --focus-ring-offset: min(calc(var(--gah-room-sm, 0px) + 2px), calc(var(--site-gutter) - var(--focus-ring-width) - 1px));
   position: relative;
   display: block;
   border-radius: var(--gah-radius);
@@ -239,8 +255,31 @@
   box-shadow: var(--gah-surround-sm, none);
 }
 
+/* Round 2 of the themes mockup (P1-2): one frame size, a window cut to each print. The slot is the mat: it takes the
+   mat's fill and the outer layers (Bright's frame, Light's hairline and shadow, Dark's shadow). The print, centred and
+   sized to its own ratio (--photo-ratio, from SeriesPhoto), carries the inner layer on its own edge (Light's bevel,
+   Dark's keyline), so a portrait or a square has an edge of its own and never floats in a band of the slot. */
+.thumbFrame[data-photo='contain'] {
+  display: grid;
+  grid-template: 100% / 100%;
+  place-items: center;
+  overflow: visible;
+  background: var(--gah-mat-fill, var(--gah-surface));
+  box-shadow: var(--gah-slot-surround-sm, var(--gah-surround-sm, none));
+}
+
+.thumbFrame[data-photo='contain'] > picture {
+  display: contents;
+}
+
 .thumbFrame[data-photo='contain'] .image {
+  position: static;
+  width: min(100%, 75% * var(--photo-ratio, 1.3333));
+  height: auto;
+  aspect-ratio: var(--photo-ratio, 4 / 3);
   object-fit: contain;
+  border-radius: var(--gah-photo-radius, 0px);
+  box-shadow: var(--gah-print-edge, none);
 }
 
 /* The missing-image mark: a hairline across the empty box, so it never reads as a photograph still loading. */
@@ -251,7 +290,7 @@
 
 .position {
   display: block;
-  margin-top: calc(0.5rem + var(--gah-surround-room, 0px) / 2);
+  margin-top: calc(0.5rem + var(--gah-room-sm, 0px));
   color: var(--gah-label);
   font-family: var(--gah-font-sans);
   font-size: var(--gah-type-label);

@@ -47,8 +47,11 @@
 
 /* One link per entry, the whole entry its target. */
 .entry {
-  /* The themes mockup: the ring clears the photograph's surround. */
-  --focus-ring-offset: calc(3px + var(--gah-surround-room, 0px));
+  /* The themes mockup, round 2 (P1-3): the cover's surround size and its real thickness, which the grid, the copy and
+     the focus ring reserve. The ring clears the surround by 2 px and never runs past the gutter. */
+  --work-surround: var(--gah-surround-md, none);
+  --work-room: var(--gah-room-md, 0px);
+  --focus-ring-offset: min(calc(var(--work-room) + 2px), calc(var(--site-gutter) - var(--focus-ring-width) - 1px));
   display: block;
   border-radius: var(--gah-radius);
   color: inherit;
@@ -63,7 +66,7 @@
   border-radius: var(--gah-photo-radius, var(--gah-radius));
   background: var(--gah-surface);
   /* The theme's surround: the mat, the frame or keyline, and the shadow, painted outside the photograph's box. */
-  box-shadow: var(--gah-surround-md, none);
+  box-shadow: var(--work-surround);
 }
 
 .cover {
@@ -95,7 +98,15 @@
 }
 
 .copy {
-  padding-top: calc(1rem + var(--gah-surround-room, 0px));
+  padding-top: calc(1rem + var(--work-room, 0px));
+}
+
+/* Below 40rem every surround steps down a size, so a cover never crowds the phone's 16 px gutter. */
+@media (max-width: 39.99rem) {
+  .entry {
+    --work-surround: var(--gah-surround-sm, none);
+    --work-room: var(--gah-room-sm, 0px);
+  }
 }
 
 /* Authored: the title and the short statement. */
@@ -145,8 +156,10 @@
 /* Above 768 px the entries pair up, wide and narrow, alternating by row, so
    they read as separate bodies of work rather than a uniform grid. */
 @media (min-width: 768px) {
+  /* The column gap reserves both neighbours' surrounds (round 2, P1-3), so two frames never read as one double line. */
   .list {
     grid-template-columns: repeat(12, minmax(0, 1fr));
+    column-gap: calc(clamp(1rem, 2.5vw, 2rem) + 2 * var(--gah-room-md, 0px));
   }
 
   .item {

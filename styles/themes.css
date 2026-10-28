@@ -49,6 +49,15 @@ html[data-theme='dark'] {
   --gah-surround-lg: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 0 0 14px #2a2f2d, 0 24px 44px -18px rgba(0, 0, 0, 0.8);
   --gah-surround-room: 14px;
   --gah-mat-fill: #2a2f2d;
+  /* Round 2: each size's real thickness, which the layout reserves (grid gaps, the Viewer's box, focus rings), and the
+     ground left between a surround and the screen's edge. A sequence slot is one frame size with a window cut to each
+     print: the slot carries the mat and the outer layers, and the print carries its own edge (--gah-print-edge). */
+  --gah-room-sm: 6px;
+  --gah-room-md: 10px;
+  --gah-room-lg: 14px;
+  --gah-surround-clear: 8px;
+  --gah-slot-surround-sm: 0 0 0 6px #2a2f2d, 0 10px 18px -10px rgba(0, 0, 0, 0.7);
+  --gah-print-edge: 0 0 0 1px rgba(255, 255, 255, 0.14);
 
   /* Home: the photograph hangs in the room with a charcoal margin and its keyline. */
   --gah-stage-inset: clamp(8px, 1.1vw, 16px);
@@ -61,6 +70,9 @@ html[data-theme='dark'] {
   --gah-grain-opacity: 0.06;
   --gah-badge-ring: 0 0 0 4px rgba(255, 255, 255, 0.19);
   --gah-badge-rim: rgba(255, 255, 255, 0.5);
+  /* Round 2: the title panel's scrim. Light and Bright lean on it alone for the title's contrast (their wash ends at
+     0 by 60%), so theirs is stronger. */
+  --gah-panel-alpha: 0.6;
 
   /* The legacy variables Home's intro and the legacy Gallery paint with. */
   --background-color: #1b1f1d;
@@ -95,11 +107,18 @@ html[data-theme='light'] {
 
   /* A passe-partout lighter than the sheet, its bevel as a hairline, and a soft low shadow: a print on paper. */
   --gah-photo-radius: 1px;
-  --gah-surround-sm: 0 0 0 6px #f8f5ee, 0 0 0 7px rgba(41, 35, 29, 0.1), 0 8px 14px -8px rgba(60, 42, 20, 0.35);
+  /* Round 2: sm takes md's bevel line too (P3-8), since a phone's covers step down to sm. */
+  --gah-surround-sm: 0 0 0 1px rgba(41, 35, 29, 0.12), 0 0 0 6px #f8f5ee, 0 0 0 7px rgba(41, 35, 29, 0.1), 0 8px 14px -8px rgba(60, 42, 20, 0.35);
   --gah-surround-md: 0 0 0 1px rgba(41, 35, 29, 0.12), 0 0 0 11px #f8f5ee, 0 0 0 12px rgba(41, 35, 29, 0.08), 0 16px 28px -14px rgba(60, 42, 20, 0.42);
   --gah-surround-lg: 0 0 0 1px rgba(41, 35, 29, 0.12), 0 0 0 15px #f8f5ee, 0 0 0 16px rgba(41, 35, 29, 0.08), 0 22px 40px -18px rgba(60, 42, 20, 0.45);
   --gah-surround-room: 16px;
   --gah-mat-fill: #f8f5ee;
+  --gah-room-sm: 7px;
+  --gah-room-md: 12px;
+  --gah-room-lg: 16px;
+  --gah-surround-clear: 8px;
+  --gah-slot-surround-sm: 0 0 0 6px #f8f5ee, 0 0 0 7px rgba(41, 35, 29, 0.1), 0 8px 14px -8px rgba(60, 42, 20, 0.35);
+  --gah-print-edge: 0 0 0 1px rgba(41, 35, 29, 0.12);
 
   --gah-stage-inset: clamp(10px, 1.6vw, 24px);
   --gah-stage-surround: 0 0 0 1px rgba(41, 35, 29, 0.12), 0 0 0 7px #f8f5ee, 0 22px 50px -18px rgba(60, 42, 20, 0.5);
@@ -111,6 +130,7 @@ html[data-theme='light'] {
   --gah-grain-opacity: 0.12;
   --gah-badge-ring: 0 0 0 5px #f8f5ee, 0 0 0 6px rgba(41, 35, 29, 0.12);
   --gah-badge-rim: transparent;
+  --gah-panel-alpha: 0.78;
 
   --background-color: #ebe5d9;
   --background-color-rgb: 235, 229, 217;
@@ -149,6 +169,12 @@ html[data-theme='bright'] {
   --gah-surround-lg: 0 0 0 14px #ffffff, 0 0 0 17px #111111;
   --gah-surround-room: 17px;
   --gah-mat-fill: #ffffff;
+  --gah-room-sm: 6px;
+  --gah-room-md: 12px;
+  --gah-room-lg: 17px;
+  --gah-surround-clear: 8px;
+  --gah-slot-surround-sm: 0 0 0 5px #ffffff, 0 0 0 6px #111111;
+  --gah-print-edge: none;
 
   --gah-stage-inset: clamp(16px, 3vw, 44px);
   --gah-stage-surround: 0 0 0 2px #111111;
@@ -160,6 +186,7 @@ html[data-theme='bright'] {
   --gah-grain-opacity: 0.05;
   --gah-badge-ring: 0 0 0 6px #ffffff, 0 0 0 8px #111111;
   --gah-badge-rim: transparent;
+  --gah-panel-alpha: 0.78;
 
   --background-color: #ffffff;
   --background-color-rgb: 255, 255, 255;
@@ -198,6 +225,12 @@ html[data-theme='black'] {
   --gah-surround-lg: none;
   --gah-surround-room: 0px;
   --gah-mat-fill: transparent;
+  --gah-room-sm: 0px;
+  --gah-room-md: 0px;
+  --gah-room-lg: 0px;
+  --gah-surround-clear: 0px;
+  --gah-slot-surround-sm: none;
+  --gah-print-edge: none;
 
   --gah-stage-inset: 0px;
   --gah-stage-surround: none;
@@ -209,6 +242,7 @@ html[data-theme='black'] {
   --gah-grain-opacity: 0;
   --gah-badge-ring: none;
   --gah-badge-rim: rgba(255, 255, 255, 0.28);
+  --gah-panel-alpha: 0.6;
 
   --background-color: #000000;
   --background-color-rgb: 0, 0, 0;
@@ -230,10 +264,21 @@ html[data-theme='dark'] [data-surface='viewer'] {
   --cc-rule-strong: rgba(255, 255, 255, 0.42);
 }
 
+/* Round 2 (P2-1): Dark keeps the approved bands and drops the Viewer's mat, which the lit middle band already does the
+   job of; the keyline and the shadow stay. Its own selector, so no other theme inherits it. */
+html:not([data-theme]) [data-surface='viewer'],
+html[data-theme='dark'] [data-surface='viewer'] {
+  --gah-surround-lg: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 24px 44px -18px rgba(0, 0, 0, 0.8);
+  --gah-surround-md: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 18px 32px -16px rgba(0, 0, 0, 0.75);
+  --gah-surround-room: 1px;
+  --gah-room-lg: 1px;
+  --gah-room-md: 1px;
+}
+
+/* Round 2 (P2-1): paper has no bands, as Bright's wall has none, so nothing shows above and below the mat. */
 html[data-theme='light'] [data-surface='viewer'] {
   --cc-ground: #ebe5d9;
-  --cc-band-edge: #e6dfd2;
-  --cc-band-mid: #ebe5d9;
+  --cc-bands: none;
   --cc-ink: #29231d;
   --cc-ink-soft: #3a3229;
   --cc-label: #645a4e;
@@ -296,8 +341,10 @@ html[data-theme='dark'] [data-surface='about'] {
   --lts-rule: rgba(255, 236, 200, 0.18);
   --lts-rule-strong: rgba(255, 236, 200, 0.46);
   --lts-glass: rgba(30, 28, 25, 0.92);
-  --lts-frame: #efe4c8;
-  --lts-shadow: 0 0 0 1px rgba(255, 230, 180, 0.3), 0 20px 70px -14px rgba(255, 196, 110, 0.22);
+  /* Round 2 (P2-3): a warm charcoal mat, not a cream one, so the portrait is the brightest thing on the page; the
+     warmth is in the keyline and the glow. */
+  --lts-frame: #2b2824;
+  --lts-shadow: 0 0 0 1px rgba(255, 230, 180, 0.32), 0 20px 70px -14px rgba(255, 196, 110, 0.22);
   --lts-link-rule: #a39579;
   --lts-caption-bg: rgba(30, 28, 25, 0.88);
   --lts-caption-ink: #f3ecdf;

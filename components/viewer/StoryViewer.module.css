@@ -265,9 +265,22 @@
 .frame,
 .missing {
   --fit-vw: 100vw;
-  /* The themes mockup: the box leaves room for the theme's surround on every side, so nothing clips it. */
-  width: min(100% - 2 * var(--gah-surround-room, 0px), var(--fit-vw) - 2 * var(--gah-surround-room, 0px), calc((var(--viewer-stage-height) - 2 * var(--gah-surround-room, 0px)) * var(--ratio, 3 / 2)));
+  /* The themes mockup: the box leaves room for the theme's surround on every side, so nothing clips it. Round 2
+     (P1-3): it reserves the surround's real thickness plus the theme's clear ground (--gah-surround-clear, 0 in Black),
+     so the frame never meets the screen's edge. */
+  --viewer-surround: var(--gah-surround-lg, none);
+  --viewer-room: calc(var(--gah-room-lg, 0px) + var(--gah-surround-clear, 0px));
+  width: min(100% - 2 * var(--viewer-room), var(--fit-vw) - 2 * var(--viewer-room), calc((var(--viewer-stage-height) - 2 * var(--viewer-room)) * var(--ratio, 3 / 2)));
   aspect-ratio: var(--ratio, 3 / 2);
+}
+
+/* Below 40rem the surround steps down a size (round 2, P1-3). */
+@media (max-width: 39.99rem) {
+  .frame,
+  .missing {
+    --viewer-surround: var(--gah-surround-md, none);
+    --viewer-room: calc(var(--gah-room-md, 0px) + var(--gah-surround-clear, 0px));
+  }
 }
 
 @media (min-width: 48rem) {
@@ -311,7 +324,7 @@
 
 .frame {
   margin: 0;
-  box-shadow: var(--gah-surround-lg, none);
+  box-shadow: var(--viewer-surround);
 }
 
 .image {
@@ -548,6 +561,6 @@
   /* The box, not the image, takes the height cap, so it stays reserved from the record's shape (#6). */
   .frame,
   .missing {
-    width: min(100% - 2 * var(--gah-surround-room, 0px), (100cqh - 2 * var(--gah-surround-room, 0px)) * var(--ratio, 3 / 2));
+    width: min(100% - 2 * var(--viewer-room), (100cqh - 2 * var(--viewer-room)) * var(--ratio, 3 / 2));
   }
 }
