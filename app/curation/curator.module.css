@@ -680,7 +680,9 @@ p.fieldError {
   cursor: pointer;
 }
 
-.button:disabled {
+/* `data-off` is the aria-disabled form: a button that stays focusable while it can't act, as the Inbox's do while an action is out. */
+.button:disabled,
+.button[data-off='true'] {
   color: var(--gah-ink-muted);
   cursor: not-allowed;
 }
@@ -691,7 +693,8 @@ p.fieldError {
   background: var(--curator-primary);
 }
 
-.primary:disabled {
+.primary:disabled,
+.primary[data-off='true'] {
   border-color: var(--gah-rule-strong);
   color: var(--gah-ink-muted);
   background: transparent;
@@ -897,7 +900,7 @@ main.state {
 
 @media (hover: hover) and (pointer: fine) {
   .screen:hover,
-  .signOut:hover,
+  .signOut:hover:not([aria-disabled='true']),
   .item:hover,
   .refresh:hover,
   /* An unavailable control (aria-disabled, so it stays focusable) takes no hover, so its muted label never lands on a hover fill (16-3). */
