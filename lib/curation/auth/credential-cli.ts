@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { hashPassphrase, passphraseProblem } from './passphrase';
+import { hashPassphrase, newPassphraseProblem } from './passphrase';
 import { MIN_SESSION_SECRET_BYTES } from './secrets';
 
 /**
@@ -13,7 +13,7 @@ import { MIN_SESSION_SECRET_BYTES } from './secrets';
  *
  * hash-passphrase reads the passphrase from stdin. On a terminal it turns
  * echo off and asks twice; piped, it takes the input with one trailing line
- * break dropped.
+ * break dropped. It refuses a passphrase under 12 characters.
  */
 
 export const CREDENTIAL_COMMANDS = ['hash-passphrase', 'session-secret'] as const;
@@ -124,7 +124,7 @@ export async function runCredentialCommand(command: (typeof CREDENTIAL_COMMANDS)
         }
         const read = await readPassphrase(io);
         if ('problem' in read) return { exitCode: 1, output: `${read.problem} Nothing was written.\n` };
-        const problem = passphraseProblem(read.passphrase);
+        const problem = newPassphraseProblem(read.passphrase);
         if (problem) return { exitCode: 1, output: `${problem} Nothing was written.\n` };
         writeOwnerOnly(flags.out, await hashPassphrase(read.passphrase));
         return { exitCode: 0, output: 'Wrote the passphrase hash (scrypt, mode 0400). Restart curator to use it.\n' };

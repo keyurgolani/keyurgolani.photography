@@ -115,14 +115,32 @@ describe('curation hash-passphrase', () => {
         expect(fs.readdirSync(dir)).toEqual([]);
     });
 
+    it.each([
+        ['11 characters', 'elevenchars', 'The passphrase is 11 characters long. Use at least 12. Nothing was written.\n'],
+        ['one character', 'p', 'The passphrase is 1 character long. Use at least 12. Nothing was written.\n'],
+        // Characters, not bytes: eleven accented letters are 22 bytes and still too short.
+        ['11 accented characters', 'é'.repeat(11), 'The passphrase is 11 characters long. Use at least 12. Nothing was written.\n'],
+    ])('refuses a passphrase of %s and writes nothing', async (_, passphrase, output) => {
+        const out = path.join(dir, 'h');
+        const result = await runCredentialCommand('hash-passphrase', ['--out', out], piped(`${passphrase}\n`));
+        expect(result).toEqual({ exitCode: 1, output });
+        expect(fs.readdirSync(dir)).toEqual([]);
+    });
+
+    it('takes a passphrase of exactly 12 characters', async () => {
+        const out = path.join(dir, 'h');
+        expect((await runCredentialCommand('hash-passphrase', ['--out', out], piped('twelve chars\n'))).exitCode).toBe(0);
+        expect(await verifyPassphrase('twelve chars', parsePassphraseHash(fs.readFileSync(out, 'utf8'))!)).toBe(true);
+    });
+
     it('replaces an existing hash file in one rename, owner read-only still', async () => {
         const out = path.join(dir, 'h');
-        await runCredentialCommand('hash-passphrase', ['--out', out], piped('first'));
-        expect((await runCredentialCommand('hash-passphrase', ['--out', out], piped('second'))).exitCode).toBe(0);
+        await runCredentialCommand('hash-passphrase', ['--out', out], piped('the first passphrase'));
+        expect((await runCredentialCommand('hash-passphrase', ['--out', out], piped('the second passphrase'))).exitCode).toBe(0);
         expect(mode(out)).toBe(0o400);
         const hash = parsePassphraseHash(fs.readFileSync(out, 'utf8'))!;
-        expect(await verifyPassphrase('second', hash)).toBe(true);
-        expect(await verifyPassphrase('first', hash)).toBe(false);
+        expect(await verifyPassphrase('the second passphrase', hash)).toBe(true);
+        expect(await verifyPassphrase('the first passphrase', hash)).toBe(false);
         expect(fs.readdirSync(dir)).toEqual(['h']);
     });
 
@@ -131,8 +149,9 @@ describe('curation hash-passphrase', () => {
     });
 
     it("says so, and names no path, when the folder can't be written", async () => {
-        const result = await runCredentialCommand('hash-passphrase', ['--out', path.join(dir, 'missing', 'h')], piped('p'));
+        const result = await runCredentialCommand('hash-passphrase', ['--out', path.join(dir, 'missing', 'h')], piped(PASSPHRASE));
         expect(result.exitCode).toBe(1);
+        expect(result.output).toContain("Couldn't write the file");
         expect(result.output).not.toContain(dir);
     });
 });

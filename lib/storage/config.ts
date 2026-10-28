@@ -1,5 +1,6 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { hasErrorCode, isInside, PRIVATE_FILE_MODE, realpathLoose } from './fsx';
 
@@ -98,6 +99,66 @@ function canAccess(target: string, mode: number): boolean {
     }
 }
 
+/** A probe file's name: this host's tag, the process ID, a UUID, and `.link` for the hard link's name. */
+const PROBE_NAME_RE = /^\.link-probe-([0-9a-f]{8})-([1-9]\d{0,9})-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:\.link)?$/;
+
+/** How old a leftover probe file has to be before a sweep takes it. A live probe lasts a few milliseconds. */
+export const PROBE_SWEEP_AGE_MS = 60_000;
+
+/**
+ * Eight hex digits of this host's name, in every probe file's name, so a
+ * sweep takes only probes this machine left. Another container sharing the
+ * data root has a host name of its own, and its process IDs mean nothing here.
+ */
+export function probeHostTag(): string {
+    return createHash('sha256').update(os.hostname()).digest('hex').slice(0, 8);
+}
+
+/** Whether `pid` names a running process here. One this user can't signal (EPERM) is running too. */
+function isRunning(pid: number): boolean {
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (error) {
+        return !hasErrorCode(error, 'ESRCH');
+    }
+}
+
+/**
+ * Removes the probe files a killed process on this machine left in `root`:
+ * names that match the probe pattern with this host's tag, of a process
+ * that isn't running, regular files, and older than PROBE_SWEEP_AGE_MS.
+ * Another live process's probe stays, and so does anything else in the
+ * root. Every failure is ignored: a leftover costs nothing, and the probe
+ * that follows says whether the root is writable.
+ */
+function sweepProbes(root: string, now = Date.now()): void {
+    let names: string[];
+    try {
+        names = fs.readdirSync(/*turbopackIgnore: true*/ root);
+    } catch {
+        return;
+    }
+    const host = probeHostTag();
+    // In a container every writer is PID 1 under its container's host name, so a probe with this
+    // process's own ID is a leftover when it's older than this process: no process writes before it starts.
+    const started = now - process.uptime() * 1000;
+    for (const name of names) {
+        const match = PROBE_NAME_RE.exec(name);
+        if (!match || match[1] !== host) continue;
+        const pid = Number(match[2]);
+        const file = path.join(/*turbopackIgnore: true*/ root, name);
+        try {
+            const stat = fs.lstatSync(file);
+            if (!stat.isFile() || now - stat.mtimeMs < PROBE_SWEEP_AGE_MS) continue;
+            if (pid === process.pid ? stat.mtimeMs >= started : isRunning(pid)) continue;
+            fs.rmSync(file, { force: true });
+        } catch {
+            // Gone already, or can't be read or removed: leave it.
+        }
+    }
+}
+
 /**
  * Why `root` can't take a versioned write, or null when it can. Each one
  * commits its version with link(), so this links a probe file there and
@@ -105,9 +166,11 @@ function canAccess(target: string, mode: number): boolean {
  * removed and made again from the one probed before (Linux hands the inode back
  * quickly, and stamps birth times from a clock that ticks every few
  * milliseconds), and the callers are write paths, where four calls cost nothing.
+ * First it sweeps the probe files a killed process on this machine left.
  */
 function linkProblem(root: string): string | null {
-    const probe = path.join(/*turbopackIgnore: true*/ root, `.link-probe-${process.pid}-${randomUUID()}`);
+    sweepProbes(root);
+    const probe = path.join(/*turbopackIgnore: true*/ root, `.link-probe-${probeHostTag()}-${process.pid}-${randomUUID()}`);
     try {
         fs.writeFileSync(probe, '', { flag: 'wx', mode: PRIVATE_FILE_MODE });
     } catch (error) {

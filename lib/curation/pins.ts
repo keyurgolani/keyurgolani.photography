@@ -79,7 +79,7 @@ export type DraftPlan =
      * The record pins the item's bytes, and no pin of the inbox's says so: a hand edit, a #15 rollback, or a confirm
      * whose event a crash lost. `stampedFrom` is what that lost confirm replaced, when #16's stamp shows it.
      */
-    | { kind: 'unexplained'; photoId: string; revision: string; pin: Pin | null; stampedFrom?: string }
+    | { kind: 'unexplained'; photoId: string; revision: string; pin: Pin | null; stampedFrom?: string; stampedReady?: boolean }
     /** The record pins the item's bytes as the latest pin set them, and that pin records nothing to put back. `own` when it is this item's confirm. */
     | { kind: 'keeps'; photoId: string; revision: string; pin: Pin; own: boolean }
     | { kind: 'put-back'; photoId: string; revision: string; putBack: string }
@@ -125,6 +125,15 @@ export function draftPlan(event: CurationEvent, pinned: string | null, pin: Pin 
 }
 
 /**
+ * Whether `revision` of `photoId` has a ready derivative set, so leaving an
+ * item in draft could put it back: the check that makes a put back
+ * `blocked`. Every text that promises a put back asks it first.
+ */
+export function canPutBack(registry: Registry, photoId: string, revision: string): boolean {
+    return candidateOf(registry, photoId, revision).state === 'ready';
+}
+
+/**
  * draftPlan() read from the data root: the photo record through `readRecord`, the latest pin through the registry.
  * A put back is `blocked` when its revision has no ready set, as leaveInDraft() checks after the plan. A set that's
  * ready but doesn't check out against its manifest needs every file hashed, so only the defer itself finds that.
@@ -135,7 +144,9 @@ export async function readDraftPlan(root: string, event: CurationEvent, readReco
     if (record === null) return draftPlan(event, null, null);
     const read = registry ?? (await readRegistry(root));
     const plan = draftPlan(event, record.assetRevision, await latestPin(root, read, event.photoId), confirmStampOf(record, event.id, event.assetRevision));
-    if (plan.kind === 'put-back' && candidateOf(read, plan.photoId, plan.putBack).state !== 'ready') return { ...plan, kind: 'blocked' };
+    if (plan.kind === 'put-back' && !canPutBack(read, plan.photoId, plan.putBack)) return { ...plan, kind: 'blocked' };
+    // The lost confirm's way back: confirm again records it, and its put back is `blocked` too while that set isn't ready.
+    if (plan.kind === 'unexplained' && plan.stampedFrom) return { ...plan, stampedReady: canPutBack(read, plan.photoId, plan.stampedFrom) };
     return plan;
 }
 
@@ -158,7 +169,7 @@ export function draftPlanText(plan: DraftPlan, replaced?: string): string | null
             return `Leaving it in draft (defer) keeps ${plan.pinned}, the revision ${plan.photoId}'s photo record pins.`;
         case 'unexplained':
             return plan.stampedFrom
-                ? `Leaving it in draft (defer) keeps ${plan.revision}: the inbox records no confirm of this item, though its review stamp shows one put ${plan.photoId}'s photo record there in place of ${plan.stampedFrom}. Run curation confirm again to record what it replaced, and then reopen and defer put that back.`
+                ? `Leaving it in draft (defer) keeps ${plan.revision}: the inbox records no confirm of this item, though its review stamp shows one put ${plan.photoId}'s photo record there in place of ${plan.stampedFrom}. ${stampedWayBack(plan.stampedFrom, plan.stampedReady !== false, 'that')}`
                 : `Leaving it in draft (defer) keeps ${plan.revision}: neither the inbox nor its review stamp shows a confirm of this item put ${plan.photoId}'s photo record there, so it puts nothing back.`;
         case 'keeps': {
             if (plan.own) return 'Its last confirm found the record on these bytes already and recorded nothing to put back, so leaving it in draft (defer) keeps them too.';
@@ -170,6 +181,16 @@ export function draftPlanText(plan: DraftPlan, replaced?: string): string | null
         case 'blocked':
             return `Leaving it in draft (defer) refuses for now: ${plan.putBack}, the revision this item's confirm replaced, has no ready derivative set, so it can't be put back. The draft keeps ${plan.revision}.`;
     }
+}
+
+/**
+ * The way back after a confirm whose event a crash lost: confirm again
+ * records what it replaced, and then a reopen and Leave in draft put that
+ * back, but only once it has a ready derivative set. `ready` is canPutBack().
+ */
+export function stampedWayBack(stampedFrom: string, ready: boolean, name: string = stampedFrom): string {
+    if (ready) return `Run curation confirm again to record what it replaced, and then reopen and defer put ${name} back.`;
+    return `Run curation confirm again to record what it replaced. Leaving it in draft can't put ${stampedFrom} back until it has a ready derivative set.`;
 }
 
 /** What this item's last confirm replaced, if it recorded one. */

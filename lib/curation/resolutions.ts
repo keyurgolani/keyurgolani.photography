@@ -18,7 +18,7 @@ import { candidateOf } from './candidates';
 import type { CandidateFailure, CurationEvent } from './events';
 import { pendingBindOf, pendingMergeOf } from './binds';
 import { mergeBlockers, type MergeBlockers } from './holders';
-import { confirmStampOf, draftPlan, latestPin } from './pins';
+import { canPutBack, confirmStampOf, draftPlan, latestPin, stampedWayBack } from './pins';
 
 export { confirmStampOf } from './pins';
 import { listEvents } from './repository';
@@ -215,6 +215,8 @@ export function confirmReplacement(input: ActionInput & { faults?: ConfirmFaults
             await input.faults?.afterWrite?.();
         });
 
+        // What confirm records as replaced is what leaving it in draft would put back, which needs that revision's set ready, as the page's plan says.
+        const putsBack = (revision: string) => (canPutBack(registry, photoId, revision) ? 'which leaving it in draft puts back' : `which leaving it in draft can't put back until it has a ready derivative set`);
         const notes = writes.length > 0
             ? [`Confirmed ${assetRevision} for ${photoId} in the draft, in place of ${fromRevision}. Its series, position, title, description, and story stay as they were. Visitors keep the current image until photos publish runs.`]
             : unexplained !== null
@@ -223,9 +225,9 @@ export function confirmReplacement(input: ActionInput & { faults?: ConfirmFaults
                     `So it is recorded as confirmed with nothing to put back, and leaving it in draft later keeps ${assetRevision}. To use ${unexplained} again, set assetRevision back with photos edit ${photoId}.`,
                 ]
                 : again
-                    ? [`${photoId}'s photo record already pins ${assetRevision}, as the last confirm left it, so nothing in the working layer changed. It is recorded as confirmed in place of ${fromRevision}, which that confirm replaced and leaving it in draft puts back.`]
+                    ? [`${photoId}'s photo record already pins ${assetRevision}, as the last confirm left it, so nothing in the working layer changed. It is recorded as confirmed in place of ${fromRevision}, which that confirm replaced and ${putsBack(fromRevision).replace(/^which /, '')}.`]
                     : recovered
-                        ? [`${photoId}'s photo record already pins ${assetRevision}: its review stamp shows a confirm of this item wrote it, in place of ${fromRevision}, and the item was never marked confirmed. So nothing in the working layer changed. It is recorded as confirmed in place of ${fromRevision}, which leaving it in draft puts back.`]
+                        ? [`${photoId}'s photo record already pins ${assetRevision}: its review stamp shows a confirm of this item wrote it, in place of ${fromRevision}, and the item was never marked confirmed. So nothing in the working layer changed. It is recorded as confirmed in place of ${fromRevision}, ${putsBack(fromRevision)}.`]
                         : [`${photoId}'s photo record already pins ${assetRevision}, so nothing in the working layer changed, and leaving it in draft later puts nothing back.`];
         const next = decided(step, input, { action: 'confirm', writes, ...(fromRevision !== assetRevision ? { fromRevision } : {}) }, 'approved');
         return { event: next, notes };
@@ -277,7 +279,7 @@ export function leaveInDraft(input: ActionInput & { reason?: string; faults?: Co
                 // The inbox's pins don't tell those apart, so nothing is written. #16's stamp shows a lost confirm, and confirm again records it.
                 return defer([
                     plan.stampedFrom
-                        ? `Left in draft. ${photoId}'s photo record already pins ${revision}: its review stamp shows a confirm of this item wrote it, in place of ${plan.stampedFrom}, though the inbox never recorded that confirm, so nothing was put back. Run curation confirm again to record what it replaced, and then reopen and defer put ${plan.stampedFrom} back. The draft keeps ${revision} until then.`
+                        ? `Left in draft. ${photoId}'s photo record already pins ${revision}: its review stamp shows a confirm of this item wrote it, in place of ${plan.stampedFrom}, though the inbox never recorded that confirm, so nothing was put back. ${stampedWayBack(plan.stampedFrom, canPutBack(registry, photoId, plan.stampedFrom))} The draft keeps ${revision} until then.`
                         : `Left in draft. ${photoId}'s photo record already pins ${revision}, by an edit or rollback this item didn't make, so nothing was put back.${plan.pin ? ` The inbox last pinned ${plan.pin.revision}.` : ''} The draft keeps ${revision}, and the next photos publish ships it.`,
                 ]);
             case 'keeps': {

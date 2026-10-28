@@ -43,15 +43,17 @@ async function isFolder(root: string): Promise<boolean> {
  * made per request, so the launch publish closes them with no restart. That
  * check remembers a cutover for as long as the process runs, in every bundle
  * of it, and answers `catalog` while the data root can't be read, so this
- * fails closed. With no data root configured, or none at its path, they
- * don't serve either: the legacy pages answer 503 there already, so nothing
+ * fails closed. With no data root configured, or no folder at its path, they
+ * don't serve either: the photo list answers 503 there already, so nothing
  * a visitor sees loads them. An existing root that isn't initialized yet,
  * empty included, is legacy mode and serves them.
  */
 async function servesLegacy(): Promise<boolean> {
     const root = dataRoot();
-    if (root === null || !(await isFolder(root))) return false;
-    return (await catalogMode(root)) === 'legacy';
+    if (root === null) return false;
+    // The mode first: a launched root swapped for a file or for nothing between the two reads is then
+    // caught either way, by the folder check after a legacy answer, or by the mode latching catalog.
+    return (await catalogMode(root)) === 'legacy' && (await isFolder(root));
 }
 
 /**

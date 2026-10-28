@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { makeCuratorSecrets, type TestCuratorSecrets } from '../../../../test/helpers/curatorSecrets';
 import { attemptLogin, FAILURE_WINDOW_MS, LOCK_MS, loginLocked, MAX_FAILURES, resetLoginForTests } from '../login';
-import { hashPassphrase, MAX_PASSPHRASE_BYTES, parsePassphraseHash, passphraseProblem, verifyPassphrase, type PassphraseHash } from '../passphrase';
+import { hashPassphrase, MAX_PASSPHRASE_BYTES, MIN_PASSPHRASE_CHARS, newPassphraseProblem, parsePassphraseHash, passphraseProblem, verifyPassphrase, type PassphraseHash } from '../passphrase';
 import { evaluateCuratorRequest, type CuratorEnv, type CuratorRequest } from '../policy';
 import { readCuratorSecrets } from '../secrets';
 import {
@@ -95,6 +95,12 @@ describe('the passphrase hash', () => {
         expect(passphraseProblem('a\rb')).toMatch(/line break/);
         expect(passphraseProblem('é'.repeat(MAX_PASSPHRASE_BYTES / 2 + 1))).toMatch(/longer/);
         expect(passphraseProblem('ok')).toBeNull();
+    });
+
+    it('signs in with a short passphrase hashed before the minimum, which only the hash command enforces', async () => {
+        expect(newPassphraseProblem('short')).toBe('The passphrase is 5 characters long. Use at least 12.');
+        expect(newPassphraseProblem('a'.repeat(MIN_PASSPHRASE_CHARS))).toBeNull();
+        expect(await verifyPassphrase('short', parsePassphraseHash(await hashPassphrase('short'))!)).toBe(true);
     });
 
     it.each([

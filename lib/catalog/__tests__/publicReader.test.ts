@@ -1,5 +1,6 @@
 // @vitest-environment node
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { importGraph } from '../../../test/helpers/importGraph';
@@ -313,6 +314,30 @@ describe('the public reader', { timeout: 60_000 }, () => {
         expect(await activationReads(5)).toBe(0);
         now += UNSETTLED_ACTIVATION_TTL_MS;
         expect(await activationReads(1)).toBe(burst);
+    });
+
+    it('is legacy with a file where the data root should be, as a missing root is, and catalog with a file where its catalog should be', async () => {
+        const { loadActiveCatalog, checkCatalogMode } = await freshProcess();
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'catalog-mode-file-root-'));
+        cleanups.push(async () => fs.rmSync(dir, { recursive: true, force: true }));
+        const file = path.join(dir, 'portfolio-data');
+        fs.writeFileSync(file, 'not a folder');
+        expect(await checkCatalogMode(file)).toEqual({ mode: 'legacy' });
+        expect(await loadActiveCatalog(file)).toEqual({ mode: 'legacy' });
+        // Under a real root, a file where `catalog/` should be still can't be told apart from a damaged cutover.
+        const { root } = await fixture(41);
+        fs.writeFileSync(catalogPaths(root).dir, '');
+        expect(await checkCatalogMode(root)).toEqual({ mode: 'catalog', unreadable: 'ENOTDIR' });
+    });
+
+    it('stays catalog for a root this process saw cut over, once a file is at its path', async () => {
+        const { checkCatalogMode } = await freshProcess();
+        const { root, published } = await fixture(42);
+        await published();
+        expect((await checkCatalogMode(root)).mode).toBe('catalog');
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.writeFileSync(root, 'not a folder');
+        expect(await checkCatalogMode(root)).toEqual({ mode: 'catalog' });
     });
 
     it('is legacy without a data root', async () => {

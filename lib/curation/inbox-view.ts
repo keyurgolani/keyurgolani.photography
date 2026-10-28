@@ -335,7 +335,8 @@ export interface ReplacementDraft {
 
 /** Why Decide later can't put back an earlier version that isn't ready, and the way out, for the hint and the refusal. */
 export const BLOCKED_WHY = "The earlier version of this photograph isn't ready to show on the site, so Decide later can't put it back. The draft keeps the new version.";
-export const BLOCKED_NEXT = 'To keep it, dismiss this item, or leave it open until the earlier version is ready again.';
+/** The two ways out, each with its own goal: dismissing keeps the new version, waiting puts the earlier one back. */
+export const BLOCKED_NEXT = 'Dismiss this item to keep the new version, or leave it open until the earlier version is ready, then choose Decide later to put that one back.';
 
 /** The hint under a replacement's actions, by what Decide later does with its draft now. */
 export const REPLACEMENT_HINT = {
