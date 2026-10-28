@@ -211,6 +211,26 @@ describe('the portrait derivatives', () => {
         expect(await portraitVariant(token, 'w800', 'avif', { logger: quiet })).not.toBeNull();
     });
 
+    it('encode a failed LQIP again from a render once its wait is up, as a failed variant is from its request', async () => {
+        put('portrait.jpg', await jpeg());
+        const now = Date.now();
+        vi.spyOn(Date, 'now').mockReturnValue(now);
+        vi.mocked(encodeLqip).mockRejectedValueOnce(new Error('fixture failure'));
+        const token = await currentToken();
+        expect(await portraitVariant(token, 'w400', 'webp', { logger: quiet })).not.toBeNull();
+        await vi.waitFor(() => expect(encodeLqip).toHaveBeenCalledTimes(1));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        // Before its wait is up, a render tries nothing.
+        expect((await aboutPortraitView('Pat Artist', { logger: quiet }))?.asset.lqip).toBeUndefined();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(encodeLqip).toHaveBeenCalledTimes(1);
+        // Every variant is fine, so no request would ask again. The page does, since it's the LQIP's only reader.
+        vi.mocked(Date.now).mockReturnValue(now + ENCODE_RETRY.firstMs);
+        expect((await aboutPortraitView('Pat Artist', { logger: quiet }))?.asset.lqip, 'the retry is never waited for').toBeUndefined();
+        expect(await encodedLqip()).toMatch(/^data:image\/webp;base64,/);
+        expect(encodeLqip).toHaveBeenCalledTimes(2);
+    });
+
     it('take the alt and focal point from portrait.json', async () => {
         put('portrait.jpg', await jpeg());
         put('portrait.json', JSON.stringify({ alt: 'Pat on a ridge', focalPoint: { x: 30, y: 20 } }));

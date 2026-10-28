@@ -22,7 +22,8 @@ import { PORTRAIT_LIMITS, PORTRAIT_TOKEN_RE, readAboutPortrait, readPortraitSour
  * Profile 1's 20 px LQIP comes last, so no variant a page asks for waits on
  * it. Once it's out, About and Home paint it behind the portrait until the
  * image arrives. A page rendered before then goes out without it, as it
- * would have: nothing waits for it.
+ * would have: nothing waits for it. One that failed is tried again by a
+ * later render, after the same wait.
  * A request for a variant waits for its own. A variant that fails to encode
  * is a 404 and is tried again by a later request, after a wait that doubles
  * from ENCODE_RETRY.firstMs up to ENCODE_RETRY.maxMs, so a file that always
@@ -232,6 +233,13 @@ export async function aboutPortraitView(name: string, { logger = console }: { lo
     // Also drops a set that's no longer current, so a removed photo's bytes don't wait for the next variant request.
     const set = setFor(portrait.state === 'ready' ? portrait.token : null, portrait, logger);
     if (portrait.state !== 'ready') return null;
+    // A page is the LQIP's only reader, so a failed one is tried again here, after the same wait a variant's request
+    // keeps, and in the background. The variants' own requests retry the rest.
+    if (set !== null && set.failed.has(LQIP) && Date.now() >= set.retryAt) {
+        set.failed.delete(LQIP);
+        set.retries += 1;
+        encodeInto(set, [LQIP], logger);
+    }
     return { asset: portraitAsset(portrait, set?.lqip), alt: portrait.alt ?? defaultPortraitAlt(name), focalPoint: portrait.focalPoint ?? { x: 50, y: 50 } };
 }
 
