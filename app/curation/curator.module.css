@@ -1,0 +1,1054 @@
+/* The curator's screens: Gallery After Hours, as the approved mockup's
+   Inbox draws it, on #21's tokens. The curator is always on the dark ground.
+   The event tones are the mockup's and live here only, since no visitor
+   surface uses them. Every standalone control is at least 44 px (contract
+   rule 5), and hover styles apply only under a fine pointer (rule 3). */
+
+.page {
+  --curator-header: #171a18;
+  --curator-list: #151816;
+  --curator-active: #28302c;
+  --curator-field: #0f1210;
+  --curator-box: #171b19;
+  --curator-rule: #343936;
+  --curator-tone-new-ink: #bde0d0;
+  --curator-tone-new-bg: #1f3a2e;
+  --curator-tone-change-ink: #d9d1a7;
+  --curator-tone-change-bg: #37331e;
+  --curator-tone-alert-ink: #e3b2aa;
+  --curator-tone-alert-bg: #452923;
+  /* A settled item's alert badge: the type stays named, with no alarm left in it. */
+  --curator-tone-settled-ink: #c4c9c6;
+  --curator-tone-settled-bg: #2a2f2c;
+  --curator-lock-rule: #385146;
+  --curator-lock-bg: #14221c;
+  --curator-lock-icon: #9cccb5;
+  --curator-approved-rule: #47705e;
+  --curator-approved-ink: #b8dec9;
+  --curator-approved-bg: #20372d;
+  --curator-suggestion: #a8c8bc;
+  --curator-primary: #b8d4ca;
+  --curator-primary-ink: #101511;
+
+  min-height: 100svh;
+  background: var(--gah-surface);
+  color: var(--gah-ink);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-ui);
+  line-height: 1.45;
+  /* The curator is dark in both site themes, so the browser's own controls, scrollbars and selection are too (16-3). */
+  color-scheme: dark;
+}
+
+/* The canvas under the curator, which overscroll and a phone's retracting URL bar show, is the curator's ground, not the light site theme's. */
+:global(html):has(.page),
+:global(body):has(.page) {
+  background: var(--gah-surface);
+}
+
+/* Header */
+
+.header {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  min-height: var(--site-nav-height);
+  padding: 0.375rem var(--site-gutter);
+  border-bottom: 1px solid var(--curator-rule);
+  background: var(--curator-header);
+}
+
+.wordmark {
+  display: inline-flex;
+  width: max-content;
+  min-height: 44px;
+  align-items: center;
+  gap: 0.625rem;
+  color: var(--gah-ink);
+  font-size: var(--gah-type-label);
+  font-weight: 500;
+  letter-spacing: var(--gah-label-tracking);
+  text-decoration: none;
+}
+
+.monogram {
+  display: inline-grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  border: 1px solid var(--gah-rule-strong);
+  border-radius: 50%;
+  font-family: var(--gah-font-serif);
+  font-size: var(--gah-type-label);
+}
+
+.screens {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.screen {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0 0.75rem;
+  border-radius: var(--gah-radius);
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
+  text-decoration: none;
+}
+
+.screen[aria-current='page'] {
+  color: var(--gah-ink);
+  background: var(--curator-active);
+}
+
+.screenPending {
+  color: var(--gah-ink-muted);
+  cursor: default;
+}
+
+.headerEnd {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+}
+
+.volume {
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}
+
+.signOut {
+  min-height: 44px;
+  padding: 0 0.75rem;
+  border: 1px solid var(--gah-rule-strong);
+  border-radius: var(--gah-radius);
+  color: var(--gah-ink-soft);
+  background: transparent;
+  font: inherit;
+  font-size: var(--gah-type-label);
+  cursor: pointer;
+}
+
+/* Body: the list, then the detail */
+
+.body {
+  display: grid;
+  grid-template-columns: minmax(16rem, 30%) 1fr;
+  min-height: calc(100svh - var(--site-nav-height));
+}
+
+.list {
+  border-right: 1px solid var(--curator-rule);
+  background: var(--curator-list);
+}
+
+.listHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 1rem;
+  border-bottom: 1px solid var(--curator-rule);
+}
+
+.listHeader h1 {
+  margin: 0;
+  font-family: var(--gah-font-sans);
+  font-size: 1.0625rem;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.listHeader p {
+  margin: 0.125rem 0 0;
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}
+
+.refresh {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  flex: none;
+  place-items: center;
+  border: 1px solid var(--gah-rule-strong);
+  border-radius: 4px;
+  color: var(--gah-ink-soft);
+  background: transparent;
+  cursor: pointer;
+}
+
+.groupHeading {
+  margin: 0;
+  padding: 0.75rem 1rem 0.25rem;
+  color: var(--gah-label);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-label);
+  font-weight: 500;
+  letter-spacing: var(--gah-label-tracking);
+  text-transform: uppercase;
+}
+
+.items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: grid;
+  min-height: 72px;
+  grid-template-columns: 56px minmax(0, 1fr);
+  align-items: start;
+  column-gap: 0.75rem;
+  padding: 0.8rem 1rem;
+  border-bottom: 1px solid var(--curator-rule);
+  color: var(--gah-ink);
+  text-decoration: none;
+}
+
+/* A fixed square, so a row never shifts as its thumbnail loads, and is the same with none. */
+.thumb {
+  display: block;
+  width: 56px;
+  height: 56px;
+  border-radius: var(--gah-radius);
+  background: var(--gah-ground);
+  object-fit: cover;
+}
+
+.thumb[data-thumb='none'] {
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--curator-rule);
+  color: var(--gah-ink-muted);
+}
+
+.itemText {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.3rem;
+}
+
+.item[aria-current='true'] {
+  background: var(--curator-active);
+}
+
+/* The list column ends at the row's edges, so the focus token sits inside the row instead of outside it. */
+.items .item:focus-visible {
+  outline-offset: calc(-1 * var(--focus-ring-width));
+  box-shadow: inset 0 0 0 calc(var(--focus-ring-width) + var(--focus-ring-offset)) var(--focus-ring-dark) !important;
+}
+
+.itemMeta {
+  display: flex;
+  max-width: 100%;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.125rem 0.625rem;
+}
+
+.itemFile {
+  min-width: 0;
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
+  overflow-wrap: anywhere;
+}
+
+.item strong {
+  font-weight: 500;
+}
+
+/* The file name leads the row, so it wraps rather than overflow. */
+.itemName {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.itemTitle {
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
+}
+
+.item small,
+.mono {
+  color: var(--gah-ink-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--gah-type-label);
+}
+
+.waitingNote {
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}
+
+.empty {
+  padding: 1.25rem 1rem;
+  color: var(--gah-ink-soft);
+}
+
+.empty h2 {
+  margin: 0 0 0.375rem;
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-ui);
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.empty p {
+  margin: 0;
+}
+
+/* Badges: icon and text, never color alone */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.45rem;
+  border-radius: var(--gah-radius);
+  font-size: var(--gah-type-label);
+}
+
+.badge[data-tone='new'] {
+  color: var(--curator-tone-new-ink);
+  background: var(--curator-tone-new-bg);
+}
+
+.badge[data-tone='change'] {
+  color: var(--curator-tone-change-ink);
+  background: var(--curator-tone-change-bg);
+}
+
+.badge[data-tone='alert'] {
+  color: var(--curator-tone-alert-ink);
+  background: var(--curator-tone-alert-bg);
+}
+
+.badge[data-tone='settled'] {
+  color: var(--curator-tone-settled-ink);
+  background: var(--curator-tone-settled-bg);
+}
+
+/* Detail */
+
+.detail {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 41%) minmax(0, 59%);
+  /* The arrival strip, then the photograph and the form, which take the rest, so the photograph's ground reaches the list's end. */
+  grid-template-rows: auto 1fr;
+}
+
+.photo {
+  min-height: 22rem;
+  background: var(--gah-ground);
+}
+
+/* The column runs the detail's full height; the frame inside it stays on
+   screen, a screen tall, so the photograph is in view while the curator works
+   the form beside it. Only on the wide layout, where it has its own column
+   and covers nothing. The photograph takes the column's width inside one
+   small mat, the phone's inset, keeping its own proportions, and sits in the
+   middle of the frame. At 41/59 a landscape photograph can't be wider than
+   the column. */
+.photoFrame {
+  position: sticky;
+  top: 0;
+  display: grid;
+  min-height: 100svh;
+  padding: 3.5rem 1.125rem 1.125rem;
+  align-content: center;
+  justify-items: center;
+}
+
+.photoFrame img {
+  width: 100%;
+  height: auto;
+  max-height: calc(100svh - 6rem);
+  object-fit: contain;
+}
+
+.photoFrame > .badge {
+  position: absolute;
+  top: 1rem;
+  /* One left edge with the photograph, at both widths. */
+  left: 1.125rem;
+}
+
+.backToList {
+  display: none;
+}
+
+/* The item's heading takes focus when a row or the next item opens. It isn't a control, so it shows no ring. */
+.fieldsHeader h2:focus,
+.fieldsHeader h2:focus-visible,
+.list .empty:focus,
+.list .empty h2:focus,
+.list .empty h2:focus-visible,
+.list .empty:focus-visible {
+  outline: none;
+  box-shadow: none !important;
+}
+
+.noPreview {
+  max-width: 18rem;
+  color: var(--gah-ink-muted);
+  text-align: center;
+}
+
+.fields {
+  min-width: 0;
+  padding: 1.5rem clamp(1rem, 4%, 2.5rem) 2.5rem;
+}
+
+.fieldsHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.fieldsHeader h2 {
+  margin: 0;
+  font-family: var(--gah-font-sans);
+  font-size: 1.125rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.identityLine {
+  margin: 0.25rem 0 0;
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
+}
+
+.status {
+  flex: none;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--gah-rule-strong);
+  border-radius: var(--gah-radius);
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
+}
+
+.status[data-tone='approved'] {
+  border-color: var(--curator-approved-rule);
+  color: var(--curator-approved-ink);
+  background: var(--curator-approved-bg);
+}
+
+.status[data-tone='change'] {
+  border-color: var(--curator-tone-change-ink);
+  color: var(--curator-tone-change-ink);
+  background: var(--curator-tone-change-bg);
+}
+
+.facts {
+  margin: 1rem 0;
+}
+
+.facts > div {
+  display: grid;
+  grid-template-columns: 9.5rem minmax(0, 1fr);
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--curator-rule);
+  font-size: var(--gah-type-label);
+}
+
+.facts dt {
+  color: var(--gah-ink-muted);
+}
+
+.facts dd {
+  margin: 0;
+  color: var(--gah-ink-soft);
+  overflow-wrap: anywhere;
+}
+
+/* An ID or a hash is one run of text that fills each line and wraps anywhere, so `sha256-` never sits alone and a copy takes it whole. */
+.facts dd.mono {
+  word-break: break-all;
+}
+
+.box {
+  margin-top: 1rem;
+  padding: 0.875rem;
+  border: 1px solid var(--curator-rule);
+  background: var(--curator-box);
+}
+
+.boxTitle {
+  display: block;
+  margin: 0 0 0.625rem;
+  color: var(--curator-suggestion);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-label);
+  font-weight: 400;
+  letter-spacing: var(--gah-label-tracking);
+  text-transform: uppercase;
+}
+
+.box p {
+  margin: 0 0 0.625rem;
+  color: var(--gah-ink-soft);
+}
+
+.box .facts {
+  margin: 0;
+}
+
+.box .facts > div:first-child {
+  border-top: 0;
+}
+
+.label {
+  display: block;
+  margin-top: 0.75rem;
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
+}
+
+.control {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  margin-top: 0.3rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--gah-rule-strong);
+  border-radius: var(--gah-radius);
+  color: var(--gah-ink);
+  background: var(--curator-field);
+  font: inherit;
+}
+
+textarea.control {
+  min-height: 5rem;
+  resize: vertical;
+}
+
+/* Three lines at least, growing with what's typed (ItemActions sizes it where field-sizing doesn't). */
+textarea.description {
+  min-height: calc(3lh + 1rem + 2px);
+  field-sizing: content;
+  resize: none;
+  overflow-y: auto;
+}
+
+.check {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
+}
+
+.check input {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.hint {
+  margin: 0.3rem 0 0;
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}
+
+/* Clear of the focus ring of the field above it. */
+.label + .hint,
+.label + input[type='hidden'] + .hint {
+  margin-top: calc(var(--focus-ring-width) + var(--focus-ring-offset) + 0.25rem);
+}
+
+/* A refusal about one field, under that field. Marked by its border and the field's aria-invalid, not by color alone.
+   `p.` so it outranks `.box p`, which would take its margin and color. */
+p.fieldError {
+  /* Clear of the focused field's ring (offset plus width, 6px), which the field holds while this shows. */
+  margin: calc(var(--focus-ring-offset) + var(--focus-ring-width) + 0.375rem) 0 0.625rem;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--curator-tone-alert-ink);
+  border-radius: var(--gah-radius);
+  color: var(--gah-ink);
+  background: var(--curator-tone-alert-bg);
+  font-size: var(--gah-type-label);
+}
+
+.control[aria-invalid='true'] {
+  border-color: var(--curator-tone-alert-ink);
+}
+
+.evidence {
+  margin: 0.375rem 0 0;
+  padding-left: 1.1rem;
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}
+
+.sequence {
+  margin: 0.5rem 0 0;
+  padding: 0;
+  border: 1px solid var(--curator-rule);
+  list-style: none;
+}
+
+.sequence legend {
+  padding: 0 0.375rem;
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
+}
+
+.slot {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.625rem;
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
+}
+
+.member {
+  padding: 0.375rem 0.625rem 0.375rem 2.25rem;
+  border-block: 1px solid var(--curator-rule);
+  color: var(--gah-ink-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--gah-type-label);
+}
+
+.lock {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  margin-top: 1rem;
+  padding: 0.75rem;
+  border: 1px solid var(--curator-lock-rule);
+  color: var(--gah-ink-soft);
+  background: var(--curator-lock-bg);
+}
+
+.lock svg {
+  flex: none;
+  margin-top: 0.15rem;
+  color: var(--curator-lock-icon);
+}
+
+.lock p {
+  margin: 0;
+  font-size: var(--gah-type-label);
+}
+
+.lock strong {
+  display: block;
+  margin-bottom: 0.125rem;
+  color: var(--gah-ink);
+  font-weight: 500;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.button {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  padding: 0 0.875rem;
+  border: 1px solid var(--gah-rule-strong);
+  border-radius: var(--gah-radius);
+  color: var(--gah-ink);
+  background: transparent;
+  font: inherit;
+  font-size: var(--gah-type-ui);
+  cursor: pointer;
+}
+
+/* `data-off` is the aria-disabled form: a button that stays focusable while it can't act, as the Inbox's do while an action is out. */
+.button:disabled,
+.button[data-off='true'] {
+  color: var(--gah-ink-muted);
+  cursor: not-allowed;
+}
+
+.primary {
+  border-color: var(--curator-primary);
+  color: var(--curator-primary-ink);
+  background: var(--curator-primary);
+}
+
+.primary:disabled,
+.primary[data-off='true'] {
+  border-color: var(--gah-rule-strong);
+  color: var(--gah-ink-muted);
+  background: transparent;
+}
+
+/* An action the inbox can't take yet: there, with its reason, but quieter than the live one. */
+.unavailable {
+  border-style: dashed;
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}
+
+.more {
+  margin-top: 1rem;
+  border-top: 1px solid var(--curator-rule);
+}
+
+.more summary {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  color: var(--gah-ink-soft);
+  cursor: pointer;
+}
+
+.notice {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  border: 1px solid var(--gah-rule-strong);
+  border-radius: var(--gah-radius);
+  color: var(--gah-ink);
+}
+
+.notice[data-tone='done'] {
+  border-color: var(--curator-lock-rule);
+  background: var(--curator-lock-bg);
+}
+
+.notice[data-tone='alert'] {
+  border-color: var(--curator-tone-alert-ink);
+  background: var(--curator-tone-alert-bg);
+}
+
+.notice[data-tone='change'] {
+  border-color: var(--curator-tone-change-ink);
+  background: var(--curator-tone-change-bg);
+}
+
+.notice p {
+  margin: 0;
+}
+
+.notice p + p {
+  margin-top: 0.375rem;
+}
+
+.failure {
+  font-size: var(--gah-type-label);
+}
+
+.failure strong {
+  font-size: var(--gah-type-ui);
+  font-weight: 500;
+}
+
+/* The answer an approval or Decide later brought to the page it opened: the
+   done tone, its check, one sentence and the way back, in one row when it
+   fits. In the list it needs the list's own inset. */
+.arrival {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 0.5rem 0.6rem;
+}
+
+.arrival svg {
+  margin-top: 0.15rem;
+  color: var(--curator-lock-icon);
+}
+
+/* Under the sentence, beside the check, where the strip is narrow. */
+.notice.arrival a {
+  grid-column: 2;
+  justify-self: start;
+  margin-top: 0;
+}
+
+/* On the wide layout the item's strip has room for one row: the check, the sentence, the way back. */
+@media (min-width: 768px) {
+  .arrivalStrip .arrival {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    padding: 0.375rem 0.375rem 0.375rem 0.75rem;
+  }
+
+  .arrivalStrip .arrival svg {
+    margin-top: 0;
+  }
+
+  .arrivalStrip .notice.arrival a {
+    grid-column: auto;
+  }
+}
+
+.list .arrival {
+  margin: 1rem 1rem 0;
+}
+
+/* At the top of the item, across the photograph and the form, so it's on the first screen. Empty, it takes no room. */
+.arrivalStrip {
+  grid-column: 1 / -1;
+}
+
+.arrivalStrip:not(:empty) {
+  padding: 1rem clamp(1rem, 2.5%, 2.5rem);
+  border-bottom: 1px solid var(--curator-rule);
+}
+
+.arrivalStrip .notice {
+  margin-top: 0;
+}
+
+.notice a,
+.notice button {
+  margin-top: 0.5rem;
+}
+
+.history {
+  margin: 0.5rem 0 0;
+  padding-left: 1.1rem;
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}
+
+.state {
+  max-width: 38rem;
+  padding: 3rem var(--site-gutter);
+}
+
+.state h1 {
+  margin: 0 0 0.75rem;
+  font-family: var(--gah-font-sans);
+  font-size: 1.25rem;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.state p {
+  margin: 0 0 1rem;
+  color: var(--gah-ink-soft);
+}
+
+/* A whole-page state (the Inbox's and Publish's: can't be read, not
+   available, nothing live yet) is composed, not parked: its block is centred
+   on both axes, a little above optical centre, with the text left-aligned
+   inside a 38rem column. The in-pane .state sections (the Inbox's detail
+   side) aren't a main, so they keep their place (16-3, #87 delta). */
+.page:has(> main.state) {
+  display: flex;
+  flex-direction: column;
+}
+
+main.state {
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  max-width: none;
+  padding: 3rem max(var(--site-gutter), calc((100% - 38rem) / 2)) max(4rem, 12svh);
+}
+
+/* The detail side of an empty inbox: one muted line, wide screens only, since the list already says the inbox is empty. */
+.emptyPane p {
+  margin: 0;
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}
+
+.linkButton {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  /* 15-4 review P3-2: an icon beside the label gets room. A visually hidden span is absolute, so it takes none. */
+  gap: 0.5rem;
+  /* Room above and below, so a long file name wraps clear of the border. */
+  padding: 0.5rem 0.875rem;
+  text-align: start;
+  border: 1px solid var(--gah-rule-strong);
+  border-radius: var(--gah-radius);
+  color: var(--gah-ink);
+  text-decoration: none;
+}
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .screen:hover,
+  .signOut:hover:not([aria-disabled='true']),
+  .item:hover,
+  .refresh:hover,
+  /* An unavailable control (aria-disabled, so it stays focusable) takes no hover, so its muted label never lands on a hover fill (16-3). */
+  .button:hover:not(:disabled):not([aria-disabled='true']),
+  .linkButton:hover:not([aria-disabled='true']) {
+    background: var(--curator-active);
+  }
+
+  .primary:hover:not(:disabled):not([aria-disabled='true']) {
+    background: var(--gah-ink);
+  }
+}
+
+/* The mockup's mobile frame: the header stacks, the list sits above the detail. */
+@media (max-width: 767px) {
+  /* Sign out shares the wordmark's row, so the header takes two rows, not three. */
+  .header {
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      'mark end'
+      'screens screens';
+  }
+
+  .wordmark {
+    grid-area: mark;
+  }
+
+  .headerEnd {
+    grid-area: end;
+  }
+
+  .volume {
+    display: none;
+  }
+
+  .screens {
+    grid-area: screens;
+    justify-content: stretch;
+  }
+
+  .screen {
+    flex: 1;
+    justify-content: center;
+  }
+
+  .body {
+    display: block;
+  }
+
+  .list {
+    border-right: 0;
+    border-bottom: 1px solid var(--curator-rule);
+  }
+
+  .emptyPane {
+    display: none;
+  }
+
+  /* On a phone the whole-page block is top-weighted. */
+  main.state {
+    justify-content: flex-start;
+    padding-top: 12svh;
+  }
+
+  /* One side at a time (owner, 2026-10-25): the list until the curator opens an item, then that item alone, with Back to inbox. */
+  .body[data-view='item'] > .list,
+  .body[data-view='list'] > :not(.list) {
+    display: none;
+  }
+
+  .detail {
+    display: block;
+    /* A row's #item link lands here. The page keeps 6rem of scroll padding for focus; the item, alone on the page, starts at the top instead. */
+    scroll-margin-top: -6rem;
+  }
+
+  /* The phone's main way out of an item, so it reads as navigation at the controls' size, and stays at the top while the form scrolls. */
+  .backToList {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    min-height: 44px;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0 1.125rem;
+    border-bottom: 1px solid var(--curator-rule);
+    color: var(--gah-ink);
+    background: var(--gah-surface);
+    font-size: var(--gah-type-ui);
+    text-decoration: none;
+  }
+
+  /* No rule under it here: Back to inbox's rule is just above, the notice has its own box, and the photo's ground below already separates it. */
+  .arrivalStrip:not(:empty) {
+    padding: 0.75rem 1.125rem;
+    border-bottom: 0;
+  }
+
+  /* The list view opens no item, so the row the server selected for a wide screen isn't marked here (ReturnToRow drops its aria-current too). */
+  .body[data-view='list'] .item[aria-current='true'] {
+    background: transparent;
+  }
+
+  .photo {
+    min-height: 12rem;
+  }
+
+  /* Nothing to show, so the file's name and why it failed come up the screen. */
+  .photo:has(.noPreview) {
+    min-height: 0;
+  }
+
+  .photoFrame {
+    position: relative;
+    min-height: 0;
+    padding: 3.25rem 1.125rem 0.75rem;
+    align-content: start;
+  }
+
+  /* Short enough that the file name shows under it on a phone and at 200% zoom. */
+  .photoFrame img {
+    max-height: 55svh;
+  }
+
+  .fields {
+    padding: 0.875rem 1.125rem 1.75rem;
+  }
+
+  .fieldsHeader {
+    display: block;
+  }
+
+  .status {
+    display: inline-flex;
+    margin-top: 0.7rem;
+  }
+
+  .facts > div {
+    grid-template-columns: 1fr;
+    gap: 0.125rem;
+  }
+
+  .actions {
+    justify-content: stretch;
+  }
+
+  .actions .button {
+    flex: 1 1 auto;
+  }
+}

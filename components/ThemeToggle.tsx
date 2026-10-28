@@ -1,114 +1,42 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { usePathname } from 'next/navigation';
-import { Sun, Moon } from 'lucide-react';
-import { useTheme } from './ThemeContext';
-import { DISMISSED_LABEL_STYLE, useDismissibleLabel } from './useDismissibleLabel';
+import { Moon, Sun } from 'lucide-react';
+import { useId } from 'react';
+import { useThemeToggle } from './ThemeContext';
+import styles from './ThemeToggle.module.css';
 
-// Get auto-hide timeout from env, default to 3000ms (3 seconds)
-const AUTO_HIDE_TIMEOUT = parseInt(
-  process.env.NEXT_PUBLIC_UI_AUTO_HIDE_TIMEOUT || '3000',
-  10
-);
+/**
+ * What the theme reaches while the shell looks the same in both themes (#21):
+ * the legacy variables, which paint Home's opening and the legacy Gallery.
+ * The shell, Work, the series pages, the Viewer, About, and the 404 don't
+ * change. It names the Gallery archive, not its photo grid, so it stays true
+ * after the catalog cutover sends /gallery to Work, which the theme doesn't
+ * reach. Rewrite it when #13 removes the legacy Gallery, or when the owner
+ * answers #21's light-theme question.
+ */
+export const THEME_TOGGLE_DESCRIPTION = "Changes only Home's opening screen and the Gallery archive; other pages keep their colors.";
 
+/**
+ * A plain 44 by 44 button in `SiteNav` that flips the theme. It renders both
+ * icons and both names, and CSS on `html[data-theme]` hides the pair that
+ * doesn't fit, so the icon and the accessible name are right from first
+ * paint, before React runs. The description says what the theme changes, from
+ * a `hidden` node, so it's read with the button and never shows.
+ */
 export default function ThemeToggle() {
-  const { theme, toggleTheme } = useTheme();
-  const { dismissed, handlers } = useDismissibleLabel();
-  const pathname = usePathname();
-  const isHomePage = pathname === '/';
-  
-  // On home page: hidden by default with auto-hide behavior
-  // On other pages: always visible
-  const [isVisible, setIsVisible] = useState(!isHomePage);
-  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const lastMousePos = useRef<{ x: number, y: number } | null>(null);
-
-  const resetTimer = useCallback(() => {
-    if (!isHomePage) return; // No auto-hide on non-home pages
-    setIsVisible(true);
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-    }
-    timeoutRef.current = setTimeout(() => setIsVisible(false), AUTO_HIDE_TIMEOUT);
-  }, [isHomePage]);
-
-  useEffect(() => {
-    // Only set up activity listeners on home page
-    if (!isHomePage) {
-      setIsVisible(true);
-      return;
-    }
-
-    const handleActivity = () => {
-      resetTimer();
-    };
-
-    const handleMouseMove = (e: MouseEvent) => {
-      // On first move, just set the reference point and don't wake
-      if (!lastMousePos.current) {
-        lastMousePos.current = { x: e.clientX, y: e.clientY };
-        return;
-      }
-
-      // Ignore minor movements (threshold: 100px)
-      const dx = e.clientX - lastMousePos.current.x;
-      const dy = e.clientY - lastMousePos.current.y;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-      
-      if (distance < 100) return; // Ignore small moves
-      
-      lastMousePos.current = { x: e.clientX, y: e.clientY };
-      handleActivity();
-    };
-
-    // Activity events to show the button (hidden by default, shows on interaction)
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('touchstart', handleActivity);
-    window.addEventListener('click', handleActivity);
-    window.addEventListener('keydown', handleActivity);
-    window.addEventListener('scroll', handleActivity);
-
-    return () => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('touchstart', handleActivity);
-      window.removeEventListener('click', handleActivity);
-      window.removeEventListener('keydown', handleActivity);
-      window.removeEventListener('scroll', handleActivity);
-    };
-  }, [isHomePage, resetTimer]);
-
-  const handleToggle = () => {
-    toggleTheme();
-    resetTimer(); // Reset timer on interaction with the button
-  };
-  
+  const toggleTheme = useThemeToggle();
+  const descriptionId = useId();
   return (
-    <button
-      type="button"
-      onClick={handleToggle}
-      {...handlers}
-      aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
-      className={`fixed top-6 left-6 z-[2000] p-3 rounded-full bg-white/80 dark:bg-black/60 backdrop-blur-xl border border-black/10 dark:border-white/20 shadow-[0_4px_20px_rgba(0,0,0,0.1)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.5)] transition-[opacity,transform] duration-500 hover:scale-110 hover:shadow-[0_6px_25px_rgba(0,0,0,0.15)] dark:hover:shadow-[0_6px_25px_rgba(0,0,0,0.6)] group ${
-        isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4 pointer-events-none'
-      }`}
-    >
-      {theme === 'light' ? (
-        <Moon size={20} strokeWidth={1.5} className="text-black/70 group-hover:text-black transition-colors" />
-      ) : (
-        <Sun size={20} strokeWidth={1.5} className="text-white/70 group-hover:text-white transition-colors" />
-      )}
-      {/* Takes the pointer only while shown, so hidden it never catches a tap meant for the page under it. Escape hides it.
-          Its ::before bridges the gap up to the button, so the pointer can cross onto it without the button losing :hover. */}
-      <span
-        className="absolute -bottom-10 left-1/2 -translate-x-1/2 px-2 py-1 bg-white dark:bg-black/80 text-black dark:text-white text-xs font-medium rounded-full opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-visible:opacity-100 group-focus-visible:pointer-events-auto transition-opacity whitespace-nowrap border border-black/10 dark:border-white/10 backdrop-blur-md shadow-lg before:absolute before:inset-x-0 before:bottom-full before:h-4"
-        style={dismissed ? DISMISSED_LABEL_STYLE : undefined}
-      >
-        {theme === 'light' ? 'Dark' : 'Light'}
+    <>
+      <button type="button" onClick={toggleTheme} className={styles.toggle} aria-describedby={descriptionId}>
+        <Sun size={20} strokeWidth={1.5} className={styles.sun} aria-hidden="true" />
+        <Moon size={20} strokeWidth={1.5} className={styles.moon} aria-hidden="true" />
+        <span className={`${styles.name} ${styles.toLight}`}>Switch to light mode</span>
+        <span className={`${styles.name} ${styles.toDark}`}>Switch to dark mode</span>
+      </button>
+      <span id={descriptionId} hidden>
+        {THEME_TOGGLE_DESCRIPTION}
       </span>
-    </button>
+    </>
   );
 }

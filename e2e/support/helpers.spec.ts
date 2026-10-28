@@ -6,6 +6,7 @@ import { expectHoverRulesGated } from './hover';
 import { expectReachableWithin, expectTabOrderMatchesVisualOrder } from './keyboard';
 import { expectReflow } from './reflow';
 import { checkSurface, expectUniqueNames } from './surface';
+import { parkPointer, recordDispatchedEvents } from './synthetic';
 import { expectMinTargetSize } from './targets';
 import { expectSingleTapActivates } from './touch';
 
@@ -53,6 +54,12 @@ test.describe('expectNoA11yViolations', () => {
     test('fails a button with no name', async ({ page }) => {
         await load(page, '<button type="button"></button>');
         await expect(expectNoA11yViolations(page)).rejects.toThrow(/button-name \(critical\)/);
+    });
+
+    test('with include, checks only that part of the page', async ({ page }) => {
+        await load(page, '<nav aria-label="Primary"><a href="/">Home</a></nav><button type="button"></button>');
+        await expectNoA11yViolations(page, { include: 'nav[aria-label="Primary"]' });
+        await expect(expectNoA11yViolations(page, { include: 'button' })).rejects.toThrow(/button-name \(critical\)/);
     });
 });
 
@@ -158,11 +165,13 @@ test.describe('expectRingNotClipped', () => {
 });
 
 test.describe('expectNotObscured', () => {
-    const bottomBar = '<div id="bar" style="position: fixed; left: 0; right: 0; bottom: 0; height: 80px; background: #222"></div>';
+    // Each bar's z-index puts it over the buttons, which come later in the tree and would paint over a bar without one.
+    const bottomBar = '<div id="bar" style="position: fixed; left: 0; right: 0; bottom: 0; height: 80px; z-index: 1; background: #222"></div>';
+    const bottomBarNoPointer = '<div id="bar" style="position: fixed; left: 0; right: 0; bottom: 0; height: 80px; z-index: 1; pointer-events: none; background: #222"></div>';
     // 800 px viewport minus 300 px paddings leaves 200 px, so a 300 px element is tall.
     const tallPage = 'html { scroll-padding: 300px 0; }';
     const tall = '<button type="button" style="position: absolute; top: 60px; left: 100px; width: 200px; height: 300px">Tall</button>';
-    const topBar = (height: number) => `<div id="bar" style="position: fixed; left: 0; right: 0; top: 0; height: ${height}px; background: #222"></div>`;
+    const topBar = (height: number) => `<div id="bar" style="position: fixed; left: 0; right: 0; top: 0; height: ${height}px; z-index: 1; background: #222"></div>`;
 
     test('passes a short element clear of a fixed bar', async ({ page }) => {
         await load(page, `${bottomBar}<button type="button" style="position: absolute; top: 100px; left: 100px">Clear</button>`);
@@ -172,6 +181,41 @@ test.describe('expectNotObscured', () => {
     test('fails a short element whose ring a fixed bar partly covers', async ({ page }) => {
         await load(page, `${bottomBar}<button type="button" style="position: absolute; top: 740px; left: 100px">Covered</button>`);
         await expect(expectNotObscured(page.getByRole('button'), page.locator('#bar'))).rejects.toThrow(/fits between the scroll paddings, so its focus ring must be fully clear/);
+    });
+
+    test('passes a short element that paints over the fixed bar where they meet', async ({ page }) => {
+        await load(page, `${bottomBar}<button type="button" style="position: absolute; top: 740px; left: 100px; z-index: 2">Over</button>`);
+        await expectNotObscured(page.getByRole('button'), page.locator('#bar'));
+    });
+
+    test('fails a short element under a fixed bar that takes no pointer', async ({ page }) => {
+        await load(page, `${bottomBarNoPointer}<button type="button" style="position: absolute; top: 740px; left: 100px">Covered</button>`);
+        await expect(expectNotObscured(page.getByRole('button'), page.locator('#bar'))).rejects.toThrow(/fits between the scroll paddings, so its focus ring must be fully clear/);
+    });
+
+    test('passes a short element that paints over a fixed bar that takes no pointer, and puts the styles back', async ({ page }) => {
+        // Without pointer events the hit test can't place the bar, so it would count as a cover.
+        await load(page, `${bottomBarNoPointer}<button type="button" style="position: absolute; top: 740px; left: 100px; z-index: 2">Over</button>`);
+        const styles = () => page.locator('#bar, button').evaluateAll((elements) => elements.map((el) => el.getAttribute('style')));
+        const before = await styles();
+        await expectNotObscured(page.getByRole('button'), page.locator('#bar'));
+        expect(await styles()).toEqual(before);
+        await expect(page.locator('#bar')).toHaveCSS('pointer-events', 'none');
+    });
+
+    test('fails chrome that paints beneath the element at one point and over it at another', async ({ page }) => {
+        // The chrome has no stacking context of its own, so its children stack with the button: #under (z-index 0)
+        // beneath all of it, #over (z-index 2) on its bottom right grid cell. The first grid point sees only #under.
+        await load(page, `
+            <div id="chrome" style="position: absolute; top: 0; left: 0; width: 400px; height: 400px">
+                <div id="under" style="position: absolute; inset: 0; z-index: 0; background: #ccc"></div>
+                <div id="over" style="position: absolute; top: 140px; left: 180px; width: 20px; height: 10px; z-index: 2; background: #222"></div>
+            </div>
+            <button type="button" style="position: absolute; top: 100px; left: 100px; width: 100px; height: 50px; z-index: 1">Mixed</button>`);
+        await expect(expectNotObscured(page.getByRole('button'), page.locator('#chrome'))).rejects.toThrow(/fits between the scroll paddings, so its focus ring must be fully clear/);
+        // With #over gone, the chrome paints beneath the button everywhere they meet.
+        await page.locator('#over').evaluate((el) => el.remove());
+        await expectNotObscured(page.getByRole('button'), page.locator('#chrome'));
     });
 
     test('fails a short element when a fixed bar covers only the outer 2 px of its ring', async ({ page }) => {
@@ -196,6 +240,62 @@ test.describe('expectNotObscured', () => {
                 <a href="#home" style="display: inline-flex; align-items: center; min-width: 44px; min-height: 44px; color: #fff">Home</a>
             </nav>`);
         await expectNotObscured(page.getByRole('link'), page.locator('#bar'));
+    });
+
+    // A 200 px circle at the top left, scaled from 400 px the way the portrait is, over a button near its box's bottom right corner.
+    const circle = '<div id="round" style="position: fixed; top: 0; left: 0; width: 400px; height: 400px; border-radius: 9999px; background: #222; transform: scale(0.5); transform-origin: 0 0; z-index: 1"></div>';
+    const nearCorner = (at: number) => `<button type="button" style="position: absolute; top: ${at}px; left: ${at}px">Near</button>`;
+
+    test("passes a short element whose ring meets a round cover's box but not its curve", async ({ page }) => {
+        // The ring's top left corner at 178 px sits 110 px from the circle's centre at 100 px, past its 100 px radius.
+        await load(page, `${circle}${nearCorner(184)}`);
+        await expectNotObscured(page.getByRole('button'), page.locator('#round'));
+    });
+
+    test("fails a short element whose ring a round cover's curve reaches", async ({ page }) => {
+        // The ring's top left corner at 158 px sits 82 px from the circle's centre.
+        await load(page, `${circle}${nearCorner(164)}`);
+        await expect(expectNotObscured(page.getByRole('button'), page.locator('#round'))).rejects.toThrow(/ring samples under div/);
+    });
+
+    test('takes rounded-full on a tall box as a capsule, which reaches wider than an ellipse in the same box', async ({ page }) => {
+        // 200 by 300: half circles of 100 px radius centred 100 and 200 px down, joined by straight sides.
+        const capsule = '<div id="round" style="position: fixed; top: 0; left: 0; width: 200px; height: 300px; border-radius: 9999px; background: #222; z-index: 1"></div>';
+        const beside = (left: number) => `<button type="button" style="position: absolute; top: 28px; left: ${left}px">Beside</button>`;
+        // A ring from 190 px across reaches 78 px down, 93 px from the top centre: inside the capsule, outside the ellipse.
+        await load(page, `${capsule}${beside(196)}`);
+        await expect(expectNotObscured(page.getByRole('button'), page.locator('#round'))).rejects.toThrow(/ring samples under div/);
+        // From 200 px across it clears the curve.
+        await load(page, `${capsule}${beside(206)}`);
+        await expectNotObscured(page.getByRole('button'), page.locator('#round'));
+    });
+
+    // A 100 px square at the top left. Its shadows decide how far past the box it paints.
+    const square = (shadow: string) =>
+        `<div id="square" style="position: fixed; top: 0; left: 0; width: 100px; height: 100px; background: #222; box-shadow: ${shadow}; z-index: 1"></div>`;
+    const rightOf = (left: number) => `<button type="button" style="position: absolute; top: 40px; left: ${left}px">Beside</button>`;
+
+    test('counts a solid shadow band as cover, as a ring-4 paints one', async ({ page }) => {
+        // The band paints to 108 px across. A ring from 106 px reaches into it, and one from 110 px clears it.
+        await load(page, `${square('0 0 0 8px #222')}${rightOf(112)}`);
+        await expect(expectNotObscured(page.getByRole('button'), page.locator('#square'))).rejects.toThrow(/ring samples under div/);
+        await load(page, `${square('0 0 0 8px #222')}${rightOf(116)}`);
+        await expectNotObscured(page.getByRole('button'), page.locator('#square'));
+    });
+
+    test('ignores an inset, blurred, or transparent shadow', async ({ page }) => {
+        await load(page, `${square('inset 0 0 0 20px #000, 0 0 12px 20px rgba(0, 0, 0, 0.5), 0 0 0 20px transparent')}${rightOf(112)}`);
+        await expectNotObscured(page.getByRole('button'), page.locator('#square'));
+    });
+
+    test('grows a round cover by its band, scaled as the cover is', async ({ page }) => {
+        // The 20 px band on the half-scale circle is 10 px on screen, so its radius reaches 110 px from the centre at
+        // 100 px. A ring corner at 174 px sits 104.7 px from it: clear of the circle, under the band.
+        const banded = circle.replace('background: #222;', 'background: #222; box-shadow: 0 0 0 20px #222;');
+        await load(page, `${banded}${nearCorner(180)}`);
+        await expect(expectNotObscured(page.getByRole('button'), page.locator('#round'))).rejects.toThrow(/ring samples under div/);
+        await load(page, `${circle}${nearCorner(180)}`);
+        await expectNotObscured(page.getByRole('button'), page.locator('#round'));
     });
 });
 
@@ -414,4 +514,123 @@ test.describe('checkSurface', () => {
             await expect(checkSurface(page, await loadSurface(page, { names, style }))).rejects.toThrow(error);
         });
     }
+});
+
+test.describe('recordDispatchedEvents', () => {
+    // A stand-in for React DOM's queue. While `queueing`, it keeps the latest native hover of each type and stops it, as
+    // queueIfContinuousEvent does, and replays it as attemptReplayContinuousQueuedEvent does: `new event.constructor(type,
+    // event)` on the event's own target. With `queueing` off it still keeps the hover but lets it through, as hydrated React does.
+    const PAGE = `<!doctype html>
+<html lang="en" data-hydrated="true">
+<head><meta charset="utf-8"><title>Helper self-test</title></head>
+<body style="margin: 0">
+<div id="a" style="position: fixed; left: 0; top: 0; width: 200px; height: 200px"></div>
+<div id="b" style="position: fixed; left: 300px; top: 0; width: 200px; height: 200px"></div>
+<script>
+    window.held = {};
+    window.queueing = true;
+    for (const type of ['mouseover', 'pointerover']) {
+        document.addEventListener(type, (e) => {
+            if (!e.isTrusted) return;
+            held[type] = e;
+            if (queueing) e.stopPropagation();
+        }, true);
+    }
+    window.replay = (event, target = event.target) => target.dispatchEvent(new event.constructor(event.type, event));
+</script>
+</body>
+</html>`;
+
+    type StandIn = { held: Record<string, MouseEvent>; replay: (event: Event, target?: EventTarget) => boolean; first: Event; queueing: boolean };
+
+    /** Opens the stand-in with a native hover on #a held. The route answers in the browser, so no server sees it. */
+    async function open(page: Page) {
+        const dispatched = await recordDispatchedEvents(page);
+        await page.route('**/dispatch-self-test', (route) => route.fulfill({ contentType: 'text/html', body: PAGE }));
+        await page.goto('/dispatch-self-test');
+        await page.mouse.move(100, 100);
+        await expect.poll(() => page.evaluate(() => Object.keys((window as unknown as StandIn).held).sort())).toEqual(['mouseover', 'pointerover']);
+        return dispatched;
+    }
+
+    test("leaves out React's copy of a native hover on its own target, once", async ({ page }) => {
+        const dispatched = await open(page);
+        await page.evaluate(() => {
+            const { held, replay } = window as unknown as StandIn;
+            replay(held.mouseover);
+            replay(held.pointerover);
+        });
+        expect(await dispatched()).toEqual({ synthetic: [], replayed: ['mouseover', 'pointerover'] });
+
+        await page.evaluate(() => {
+            const { held, replay } = window as unknown as StandIn;
+            replay(held.mouseover);
+        });
+        expect(await dispatched()).toEqual({ synthetic: ['mouseover'], replayed: ['mouseover', 'pointerover'] });
+    });
+
+    test('counts a fresh hover, a copy on another target or at another point, a click, a copy after the pointer left, and a copy of a hover React let through', async ({ page }) => {
+        const dispatched = await open(page);
+        await page.evaluate(() => {
+            const { held, replay } = window as unknown as StandIn;
+            const a = document.getElementById('a')!;
+            a.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+            replay(held.mouseover, document.getElementById('b')!);
+            // Every field the copy takes from the native hover, with only the point moved.
+            const native = held.mouseover;
+            a.dispatchEvent(new MouseEvent('mouseover', {
+                bubbles: native.bubbles, cancelable: native.cancelable, view: window, relatedTarget: native.relatedTarget,
+                screenX: native.screenX, screenY: native.screenY, clientX: native.clientX + 5, clientY: native.clientY,
+            }));
+            a.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+            (window as unknown as StandIn).first = held.pointerover;
+        });
+        expect(await dispatched()).toEqual({ synthetic: ['mouseover', 'mouseover', 'mouseover', 'click'], replayed: [] });
+
+        // Parked, the pointer leaves #a for nothing, so #a's native pointerout drops its pointerover and no new hover takes its place.
+        await parkPointer(page);
+        await page.evaluate(() => {
+            const { first, replay } = window as unknown as StandIn;
+            replay(first);
+        });
+        expect(await dispatched()).toEqual({ synthetic: ['mouseover', 'mouseover', 'mouseover', 'click', 'pointerover'], replayed: [] });
+
+        // A hover React didn't stop reaches window, so it was never queued, and a copy of it is synthetic.
+        await page.evaluate(() => ((window as unknown as StandIn).queueing = false));
+        await page.mouse.move(100, 100);
+        await page.evaluate(() => {
+            const { held, replay } = window as unknown as StandIn;
+            replay(held.mouseover);
+        });
+        expect(await dispatched()).toEqual({ synthetic: ['mouseover', 'mouseover', 'mouseover', 'click', 'pointerover', 'mouseover'], replayed: [] });
+    });
+});
+
+test.describe('parkPointer', () => {
+    test('leaves no element under the pointer, so content changing where it rests sends no native hover', async ({ page }) => {
+        await load(page, `<div id="frame" style="position: fixed; inset: 0"><div id="a" style="height: 100%"></div></div>
+<script>
+    window.overs = [];
+    window.addEventListener('pointerover', (e) => { if (e.isTrusted) overs.push(e.target.id); }, true);
+    window.swap = (id) => { document.getElementById('frame').innerHTML = '<div id="' + id + '" style="height: 100%"></div>'; };
+</script>`);
+        type Probe = { overs: string[]; swap: (id: string) => void };
+        const hovered = () => page.evaluate(() => Array.from(document.querySelectorAll(':hover'), (el) => el.id || el.localName));
+        const overs = () => page.evaluate(() => (window as unknown as Probe).overs.splice(0));
+        const swap = (id: string) => page.evaluate((next) => (window as unknown as Probe).swap(next), id);
+
+        // Resting on the page, the pointer gets a native hover when new content arrives under it.
+        await page.mouse.move(500, 300);
+        expect(await overs()).toEqual(['a']);
+        await swap('b');
+        await expect.poll(overs).toEqual(['b']);
+
+        await parkPointer(page);
+        expect(await hovered()).toEqual([]);
+        await swap('c');
+        // Two frames and then some, for the hover update Chromium runs after layout.
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 300)))));
+        expect(await overs()).toEqual([]);
+        expect(await hovered()).toEqual([]);
+    });
 });

@@ -48,7 +48,7 @@ Clicking any photo opens a full-featured lightbox with zoom, slideshow, keyboard
 
 ## 👤 About — Identity & Social Profiles
 
-The About page presents the photographer's identity with an animated profile composition and glassmorphism cards linking out to Instagram, 500px, and Flickr — each styled to match the platform's brand.
+The About page presents the photographer's portrait and name, then links to their photography profiles and the site's source. Each link lights up in its brand's own color on hover or keyboard focus.
 
 ![About page](docs/screenshots/about.png)
 
@@ -64,7 +64,7 @@ The About page presents the photographer's identity with an animated profile com
 | **Gallery** | Masonry layout, lazy loading, LQIP blur-up placeholders |
 | **Lightbox** | Zoom, slideshow, thumbnails, keyboard navigation |
 | **Images** | Sharp pipeline (400/800/1920px), AVIF/WebP, EXIF captions |
-| **Performance** | ISR caching, pre-generated derivatives, Next.js image optimization |
+| **Performance** | Registry-backed photo list, pre-generated derivatives, Next.js image optimization |
 | **Deployment** | Docker-ready, background image watcher |
 
 ---

@@ -1,0 +1,152 @@
+/* The catalog Home's story and failure notice, in Gallery After Hours: a
+   restrained serif over the chrome's scrim, no card around it, and nothing
+   that competes with the photograph. HomeChrome alone decides whether any of
+   it shows. */
+
+/* Fills the chrome's story region and sits the copy at its bottom left, above the sequence controls. */
+.story {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 1.5rem var(--site-gutter) 1rem;
+  color: var(--gah-ink);
+}
+
+/* The title and statement, as wide as their longest line. --panel-fade is
+   how far the panel's fade reaches past them. */
+.copy {
+  --panel-fade: 6rem;
+  position: relative;
+  isolation: isolate;
+  align-self: flex-start;
+  max-width: 100%;
+}
+
+/* From 85rem the story yields the badge's lane: the copy ends where the
+   panel, fade included, stops 16 px short of v1.1.0's badge, so the badge
+   lands in v1.1.0's exact place beside a two-line title. --badge-lane comes
+   from components/badgePlace.ts (V110_LANE), set only where Home has the
+   badge. Below 85rem the title would need a third line, so the badge lifts
+   above the story instead (badgePlace()), as it does for a title that still
+   reaches the lane. */
+@media (min-width: 85rem) {
+  .copy[data-badge-lane] {
+    max-width: calc(50vw - var(--badge-lane) - var(--panel-fade) - var(--site-gutter));
+  }
+}
+
+/* On a wide screen #18's vignette weighs left and fades to 0.46 at 38% of the
+   width, too little behind this text over a white photograph (rule 8). This
+   scrim sits behind the title and statement alone and fades out past their
+   edges, so the vignette stays as tuned. It's in the chrome, so it shows and
+   hides with it. A narrow screen's vignette is bottom-weighted and enough.
+   It's an element of its own, not a pseudo-element, so the badge can measure
+   its box and keep clear of it (components/badgePlace.ts). */
+.panel {
+  display: none;
+}
+
+@media (min-width: 40rem) {
+  .panel {
+    display: block;
+    position: absolute;
+    z-index: -1;
+    inset: -3rem calc(-1 * var(--panel-fade)) -1.5rem calc(-1 * var(--site-gutter));
+    background: linear-gradient(90deg, rgb(8 10 9 / 0.6) calc(100% - var(--panel-fade)), rgb(8 10 9 / 0) 100%);
+    mask-image: linear-gradient(0deg, transparent 0, #000 1.5rem, #000 calc(100% - 3rem), transparent 100%);
+    pointer-events: none;
+  }
+}
+
+.title {
+  max-width: 12ch;
+  margin: 0;
+  font-family: var(--gah-font-serif);
+  font-size: var(--gah-type-display);
+  font-weight: 400;
+  line-height: var(--gah-display-leading);
+  letter-spacing: var(--gah-display-tracking);
+  overflow-wrap: anywhere;
+}
+
+.statement {
+  max-width: 39ch;
+  margin: 0.75rem 0 0;
+  color: var(--gah-ink-soft);
+  font-family: var(--gah-font-serif);
+  font-size: var(--gah-type-statement);
+  line-height: 1.25;
+}
+
+/* "Enter the series", the one primary action. */
+.enter {
+  display: inline-flex;
+  align-self: flex-start;
+  min-height: 44px;
+  align-items: center;
+  margin-top: 1.25rem;
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--gah-rule-strong);
+  border-radius: var(--gah-radius);
+  background: var(--gah-action);
+  color: var(--gah-action-ink);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-ui);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .enter:hover {
+    background: #fff;
+  }
+}
+
+/* The sequence region: a failure notice, its actions, then #2's controls, at the bottom right. */
+.sequence {
+  display: flex;
+  max-width: 100%;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+
+/* Over the same scrim as the controls, so the text holds 4.5:1 over a white photograph. */
+.failure:not(:empty) {
+  padding: 0.5rem 0.875rem;
+  border-radius: var(--gah-radius);
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font-size: var(--gah-type-ui);
+}
+
+.failure p {
+  margin: 0;
+}
+
+.failureActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.action {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 1rem;
+  border: 1px solid var(--gah-rule-strong);
+  border-radius: var(--gah-radius);
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font: inherit;
+  font-size: var(--gah-type-ui);
+  cursor: pointer;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .action:hover {
+    border-color: #fff;
+  }
+}

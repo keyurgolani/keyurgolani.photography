@@ -1,0 +1,85 @@
+.page {
+  display: flex;
+  min-height: calc(100svh - var(--site-nav-height));
+  align-items: center;
+  padding: 3rem var(--site-gutter);
+  background: var(--gah-ground);
+  color: var(--gah-ink);
+}
+
+/* No SiteNav above it, so the ground fills the window. The curator's ground is dark in both themes, and so are its native controls. */
+.standalone {
+  min-height: 100svh;
+  color-scheme: dark;
+}
+
+.body {
+  max-width: 34rem;
+}
+
+/* The serif and its weight come from the global heading rule. */
+.heading {
+  margin: 0;
+  font-size: var(--gah-type-display);
+  line-height: var(--gah-display-leading);
+  letter-spacing: var(--gah-display-tracking);
+}
+
+.text {
+  margin: 1.25rem 0 0;
+  color: var(--gah-ink-soft);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-statement);
+  line-height: 1.5;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 2rem;
+}
+
+/* Every action, link or button, gets the same plain treatment. A button in a form of its own counts too. */
+.actions > a,
+.actions > button,
+.actions > form > button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 1.125rem;
+  border: 1px solid var(--gah-rule-strong);
+  border-radius: var(--gah-radius);
+  background: none;
+  color: var(--gah-ink);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-ui);
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
+}
+
+.actions > a:first-child,
+.actions > button:first-child,
+.actions > form:first-child > button {
+  border-color: var(--gah-action);
+  background: var(--gah-action);
+  color: var(--gah-action-ink);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .actions > a:hover,
+  .actions > button:hover,
+  .actions > form > button:hover {
+    background: var(--gah-surface);
+    color: var(--gah-ink);
+  }
+
+  .actions > a:first-child:hover,
+  .actions > button:first-child:hover,
+  .actions > form:first-child > button:hover {
+    background: var(--gah-ink);
+    color: var(--gah-action-ink);
+  }
+}

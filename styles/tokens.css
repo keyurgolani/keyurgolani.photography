@@ -1,0 +1,42 @@
+/* Gallery After Hours, on every route. The Light Takes Shape and Chromatic
+   Chapters layers live in styles/surfaces/ and apply only under their
+   [data-surface]. Shell code takes its colors from here and hard-codes none. */
+:root {
+  --gah-font-serif: var(--font-serif), serif;
+  --gah-font-sans: var(--font-sans), sans-serif;
+  --gah-type-display: clamp(2.375rem, 1.5rem + 3.5vw, 4.75rem);
+  --gah-display-leading: 0.9;
+  --gah-display-tracking: -0.04em;
+  --gah-type-statement: clamp(1rem, 0.9rem + 0.4vw, 1.1875rem);
+  --gah-type-ui: 0.875rem;
+  --gah-type-label: 0.75rem;
+  --gah-label-tracking: 0.045em;
+
+  --gah-ground: #080a09;
+  --gah-surface: #111412;
+  --gah-ink: #f4f6f5;
+  --gah-ink-soft: rgba(244, 246, 245, 0.76);
+  --gah-ink-muted: rgba(244, 246, 245, 0.62);
+  --gah-label: #b7c5c1;
+  --gah-rule: rgba(255, 255, 255, 0.17);
+  --gah-rule-strong: rgba(255, 255, 255, 0.38);
+  --gah-glass: rgba(5, 7, 6, 0.88);
+  --gah-glass-blur: 12px;
+  --gah-action: #eff4f1;
+  --gah-action-ink: #101412;
+  --gah-radius: 3px;
+
+  --site-nav-height: 3.5rem;
+  --site-gutter: clamp(1rem, 3.3vw, 3rem);
+  --motion-fast: 160ms;
+  --motion-base: 220ms;
+  --ease-standard: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --motion-fast: 0ms; --motion-base: 0ms; }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  :root { --gah-glass: var(--gah-ground); --gah-glass-blur: 0px; }
+}

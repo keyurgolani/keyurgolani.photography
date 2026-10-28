@@ -2,40 +2,43 @@ import { createHash, randomBytes } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import sharp from 'sharp';
+import { CACHE_FOLDER, DERIVATIVE_FOLDERS } from '../lib/derivativeFolders.mjs';
+import { foldName } from '../lib/foldName';
+import { atomicWriteFile } from '../lib/storage/atomicWrite';
+import { libraryRoot } from '../lib/storage/config';
+import { hasErrorCode } from '../lib/storage/fsx';
+import { baseNameOf, sameFile, setGroups, setKeyOf, sharesSet } from './derivativeSets';
 
-export interface LibraryPaths {
-    root: string;
-    thumbnails: string;
-    medium: string;
-    optimized: string;
-    thumbnailsAvif: string;
-    mediumAvif: string;
-    optimizedAvif: string;
-    lqip: string;
+/** A derivative folder's name under the library root, such as `thumbnails-avif`. */
+type DerivativeFolder = keyof typeof DERIVATIVE_FOLDERS;
+
+/** `thumbnails-avif` as `thumbnailsAvif`: a folder's key in LibraryPaths. */
+type KeyOf<Folder extends string> = Folder extends `${infer Head}-${infer Tail}` ? `${Head}${Capitalize<KeyOf<Tail>>}` : Folder;
+
+type DerivativeDir = KeyOf<DerivativeFolder>;
+
+/** The derivative folders in the order the pipeline writes them. */
+const FOLDERS = Object.keys(DERIVATIVE_FOLDERS) as DerivativeFolder[];
+
+const keyOfFolder = (folder: DerivativeFolder) => folder.replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase()) as DerivativeDir;
+
+/** Each derivative folder's name, by its key. */
+const FOLDER_OF = Object.fromEntries(FOLDERS.map((folder) => [keyOfFolder(folder), folder])) as Record<DerivativeDir, DerivativeFolder>;
+
+export type LibraryPaths = { root: string } & Record<DerivativeDir, string> & {
     /** Written only by the removed `/api/image` route. Nothing reads it now. */
     dynamicCache: string;
-}
+};
 
 /**
- * Resolve the library root and its derivative folders. Reads
+ * Resolve the library root and its derivative folders. libraryRoot() reads
  * PHOTOGRAPHY_LIBRARY_DIR on every call, so tests and tools can point the
  * pipeline at another root without reloading this module.
  */
 export function libraryPaths(): LibraryPaths {
-    const root = path.resolve(
-        process.env.PHOTOGRAPHY_LIBRARY_DIR || path.join(process.cwd(), 'public/assets/photos'),
-    );
-    return {
-        root,
-        thumbnails: path.join(root, 'thumbnails'),
-        medium: path.join(root, 'medium'),
-        optimized: path.join(root, 'optimized'),
-        thumbnailsAvif: path.join(root, 'thumbnails-avif'),
-        mediumAvif: path.join(root, 'medium-avif'),
-        optimizedAvif: path.join(root, 'optimized-avif'),
-        lqip: path.join(root, 'lqip'),
-        dynamicCache: path.join(root, 'cache', 'dynamic'),
-    };
+    const root = libraryRoot();
+    const folders = Object.fromEntries(FOLDERS.map((folder) => [keyOfFolder(folder), path.join(root, folder)])) as Record<DerivativeDir, string>;
+    return { root, ...folders, dynamicCache: path.join(root, CACHE_FOLDER, 'dynamic') };
 }
 
 const THUMBNAIL_WIDTH = 400;
@@ -50,17 +53,7 @@ const LQIP_SIZE = 20;
  */
 const MAX_SIDE = 16383;
 
-/** `images:cleanup` deletes a leftover temp file only once it is this old, so it never races a running job. */
-export const STALE_TEMP_FILE_MS = 10 * 60 * 1000;
-
 const SOURCE_FILE = /\.(jpg|jpeg|png|webp)$/i;
-
-/**
- * Matches the `.<base hash>.<pid>.<random>.tmp` files writeVariants() stages
- * beside each output. Hashing the base name keeps the length fixed, so a long
- * but valid photo name never makes the temp name too long.
- */
-const TEMP_FILE = /^\.[0-9a-f]{16}\.\d+\.[0-9a-f]{8}\.tmp$/;
 
 /** `/api/image` cached files as `<base>-<width>-<quality>.<format>`. */
 const DYNAMIC_CACHE_FILE = /^(.+)-\d+-\d+\.(avif|webp|jpeg)$/;
@@ -86,43 +79,59 @@ export interface ProcessedImagePaths {
     hasLqip: boolean;
 }
 
-type DerivativeDir = Exclude<keyof LibraryPaths, 'root' | 'dynamicCache'>;
+type Encoder = (input: Buffer) => Promise<Buffer | string>;
 
 interface Variant {
     dir: DerivativeDir;
-    ext: '.webp' | '.avif' | '.txt';
-    encode(input: Buffer): Promise<Buffer | string>;
+    ext: (typeof DERIVATIVE_FOLDERS)[DerivativeFolder];
+    encode: Encoder;
 }
 
+/**
+ * autoOrient() is rotate() without an angle. It turns the pixels upright by
+ * the EXIF Orientation, since the outputs carry no EXIF for a browser to
+ * apply. Without it, a photo stored sideways shows sideways. `width` is the
+ * upright width, and both upright sides stay within MAX_SIDE.
+ */
 function resized(input: Buffer, width: number) {
-    return sharp(input).resize(Math.min(width, MAX_SIDE), MAX_SIDE, {
+    return sharp(input).autoOrient().resize(Math.min(width, MAX_SIDE), MAX_SIDE, {
         fit: 'inside',
         withoutEnlargement: true,
     });
 }
 
-/** The Low Quality Image Placeholder, a tiny WebP as a data URL. Takes the image bytes or a file path. */
+/**
+ * The Low Quality Image Placeholder, a tiny WebP as a data URL, upright like
+ * the other outputs. Takes the image bytes or a file path.
+ */
 export async function encodeLqip(input: Buffer | string): Promise<string> {
     const lqipBuffer = await sharp(input)
+        .autoOrient()
         .resize(LQIP_SIZE, LQIP_SIZE, { fit: 'inside' })
         .webp({ quality: 20 })
         .toBuffer();
     return `data:image/webp;base64,${lqipBuffer.toString('base64')}`;
 }
 
-// The seven outputs and their encoder settings, in the order they are written.
-const VARIANTS: readonly Variant[] = [
-    { dir: 'thumbnails', ext: '.webp', encode: (input) => resized(input, THUMBNAIL_WIDTH).webp({ quality: 80 }).toBuffer() },
-    { dir: 'medium', ext: '.webp', encode: (input) => resized(input, MEDIUM_WIDTH).webp({ quality: 85 }).toBuffer() },
-    { dir: 'optimized', ext: '.webp', encode: (input) => resized(input, OPTIMIZED_WIDTH).webp({ quality: 85 }).toBuffer() },
-    { dir: 'thumbnailsAvif', ext: '.avif', encode: (input) => resized(input, THUMBNAIL_WIDTH).avif({ quality: 60, effort: 4 }).toBuffer() },
-    { dir: 'mediumAvif', ext: '.avif', encode: (input) => resized(input, MEDIUM_WIDTH).avif({ quality: 60, effort: 4 }).toBuffer() },
-    { dir: 'optimizedAvif', ext: '.avif', encode: (input) => resized(input, OPTIMIZED_WIDTH).avif({ quality: 60, effort: 4 }).toBuffer() },
-    { dir: 'lqip', ext: '.txt', encode: encodeLqip },
-];
+/** Each derivative folder's encoder settings. Typed by the shared list, so a folder can't be missing or extra. */
+const ENCODERS: Record<DerivativeFolder, Encoder> = {
+    thumbnails: (input) => resized(input, THUMBNAIL_WIDTH).webp({ quality: 80 }).toBuffer(),
+    medium: (input) => resized(input, MEDIUM_WIDTH).webp({ quality: 85 }).toBuffer(),
+    optimized: (input) => resized(input, OPTIMIZED_WIDTH).webp({ quality: 85 }).toBuffer(),
+    'thumbnails-avif': (input) => resized(input, THUMBNAIL_WIDTH).avif({ quality: 60, effort: 4 }).toBuffer(),
+    'medium-avif': (input) => resized(input, MEDIUM_WIDTH).avif({ quality: 60, effort: 4 }).toBuffer(),
+    'optimized-avif': (input) => resized(input, OPTIMIZED_WIDTH).avif({ quality: 60, effort: 4 }).toBuffer(),
+    lqip: encodeLqip,
+};
 
-/** The seven derivative folders, taken from VARIANTS so the two never drift apart. */
+// The seven outputs and their encoder settings, in the order they are written.
+const VARIANTS: readonly Variant[] = FOLDERS.map((folder) => ({ dir: keyOfFolder(folder), ext: DERIVATIVE_FOLDERS[folder], encode: ENCODERS[folder] }));
+
+/** The seven derivative folders' keys. */
 const DERIVATIVE_DIRS: readonly DerivativeDir[] = VARIANTS.map((variant) => variant.dir);
+
+/** A derivative's file name for a base name, such as `IMG_1.webp` in thumbnails. */
+const outputName = (dir: DerivativeDir, baseName: string) => `${baseName}${DERIVATIVE_FOLDERS[FOLDER_OF[dir]]}`;
 
 /** Folder names directly under the library root that hold generated files, never sources. */
 export function generatedFolderNames(): string[] {
@@ -147,14 +156,11 @@ export function isSourceFile(filename: string): boolean {
     return !name.startsWith('.') && SOURCE_FILE.test(name);
 }
 
-/** A source's name without its extension. Its derivatives share it, so `a.jpg` and `a.png` share one set. */
-export function baseNameOf(filename: string): string {
-    return path.basename(filename, path.extname(filename));
-}
+/** The shared errno check, re-exported for callers of the image pipeline. */
+export { hasErrorCode };
 
-export function hasErrorCode(error: unknown, code: string): boolean {
-    return typeof error === 'object' && error !== null && (error as NodeJS.ErrnoException).code === code;
-}
+/** The set grouping, which lives in derivativeSets.ts so the web process can use it without Sharp. */
+export { baseNameOf, setGroups, setKeyOf, sharesSet };
 
 /**
  * Create the derivative folders inside an existing library root. Never creates
@@ -175,11 +181,17 @@ export function ensureDirectories(paths: LibraryPaths = libraryPaths()): void {
     }
 }
 
+/**
+ * The names in `dir`, or none when it doesn't exist. Any other error throws:
+ * read as empty, a folder that can't be listed would make every photo's set
+ * look incomplete, and the Gallery would cache an empty list.
+ */
 function listNames(dir: string): string[] {
     try {
         return fs.readdirSync(dir);
-    } catch {
-        return [];
+    } catch (error) {
+        if (hasErrorCode(error, 'ENOENT')) return [];
+        throw error;
     }
 }
 
@@ -203,26 +215,26 @@ export function getImagePaths(
     index: DerivativeIndex = readDerivativeIndex(paths),
 ): ProcessedImagePaths {
     const baseName = baseNameOf(filename);
-    const webpExt = '.webp';
-    const avifExt = '.avif';
-    const has = (dir: DerivativeDir, ext: string) => index.get(dir)?.has(`${baseName}${ext}`) ?? false;
-    
+    const has = (dir: DerivativeDir) => index.get(dir)?.has(outputName(dir, baseName)) ?? false;
+    // The file name is one encoded path segment, so a % or # in it reaches the file instead of breaking the URL.
+    const url = (dir: DerivativeDir) => `/assets/photos/${FOLDER_OF[dir]}/${encodeURIComponent(outputName(dir, baseName))}`;
+
     return {
-        original: `/assets/photos/${filename}`,
-        thumbnail: `/assets/photos/thumbnails/${baseName}${webpExt}`,
-        medium: `/assets/photos/medium/${baseName}${webpExt}`,
-        optimized: `/assets/photos/optimized/${baseName}${webpExt}`,
-        thumbnailAvif: `/assets/photos/thumbnails-avif/${baseName}${avifExt}`,
-        mediumAvif: `/assets/photos/medium-avif/${baseName}${avifExt}`,
-        optimizedAvif: `/assets/photos/optimized-avif/${baseName}${avifExt}`,
-        lqip: `/assets/photos/lqip/${baseName}.txt`,
-        hasThumbnail: has('thumbnails', webpExt),
-        hasMedium: has('medium', webpExt),
-        hasOptimized: has('optimized', webpExt),
-        hasThumbnailAvif: has('thumbnailsAvif', avifExt),
-        hasMediumAvif: has('mediumAvif', avifExt),
-        hasOptimizedAvif: has('optimizedAvif', avifExt),
-        hasLqip: has('lqip', '.txt'),
+        original: `/assets/photos/${encodeURIComponent(filename)}`,
+        thumbnail: url('thumbnails'),
+        medium: url('medium'),
+        optimized: url('optimized'),
+        thumbnailAvif: url('thumbnailsAvif'),
+        mediumAvif: url('mediumAvif'),
+        optimizedAvif: url('optimizedAvif'),
+        lqip: url('lqip'),
+        hasThumbnail: has('thumbnails'),
+        hasMedium: has('medium'),
+        hasOptimized: has('optimized'),
+        hasThumbnailAvif: has('thumbnailsAvif'),
+        hasMediumAvif: has('mediumAvif'),
+        hasOptimizedAvif: has('optimizedAvif'),
+        hasLqip: has('lqip'),
     };
 }
 
@@ -237,6 +249,11 @@ export function tempFilePrefix(baseName: string): string {
     return `.${createHash('sha256').update(baseName).digest('hex').slice(0, 16)}.`;
 }
 
+/**
+ * `.<base hash>.<pid>.<random>.tmp` beside `target`. Hashing the base name
+ * keeps the length fixed, so a long but valid photo name never makes the temp
+ * name too long.
+ */
 function tempPathFor(target: string, baseName: string): string {
     const name = `${tempFilePrefix(baseName)}${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
     return path.join(path.dirname(target), name);
@@ -259,26 +276,6 @@ function sourceChanged(filename: string): Error {
         new Error(`${filename} changed or was removed while it was processed, so its new outputs were discarded.`),
         { code: SOURCE_CHANGED },
     );
-}
-
-/** Folds case and Unicode form, the way a case-insensitive disk compares names. */
-function foldName(name: string): string {
-    return name.normalize('NFC').toLowerCase();
-}
-
-/**
- * Whether two paths are one file, as when a case-insensitive disk resolves two
- * spellings of a name to one entry. Null when lstat fails for a reason other
- * than a missing entry, since then it can't tell.
- */
-function sameFile(a: string, b: string): boolean | null {
-    try {
-        const first = fs.lstatSync(a, { throwIfNoEntry: false });
-        const second = fs.lstatSync(b, { throwIfNoEntry: false });
-        return first !== undefined && second !== undefined && first.dev === second.dev && first.ino === second.ino;
-    } catch {
-        return null;
-    }
 }
 
 /**
@@ -308,6 +305,11 @@ async function matchSpelling(target: string, names: ReadonlySet<string> | undefi
  * as in a takedown, it discards the attempt the same way and throws an error
  * with `code` SOURCE_CHANGED. After a full regeneration it also deletes the
  * photo's `/api/image` cache files, which would still serve the old version.
+ * Before the first rename it records in `cache/set-sources` that a build
+ * from this source started, and after the last one that it finished, so a
+ * build killed partway is rebuilt at the next start. When that first record
+ * can't be written and the set was last built whole from another source
+ * that's still in the library, it renames nothing.
  *
  * Returns the paths it replaced or created.
  */
@@ -367,6 +369,25 @@ export async function writeVariants(
         ...staged.filter(({ dir }) => dir === 'thumbnails'),
     ];
 
+    // Recorded before the first rename, so a build killed or failed partway leaves a record that says so, not
+    // the source the set showed before, and the next start rebuilds the set even if the source it took over from
+    // is gone by then.
+    try {
+        await recordSetSource(filename, paths, { finished: false });
+    } catch (error) {
+        // Without the record, a build stopped partway over a set last built whole from another source that's
+        // still here would leave it part each, while the old record still says the other built it, and once that
+        // source is removed nothing says the set needs rebuilding. So that set keeps the other source's outputs.
+        // Any other set goes ahead: its old outputs show this source, or one that's gone or replaced, so keeping
+        // them protects nothing.
+        const built = lastBuiltFrom(filename, paths);
+        if (built !== null && built !== filename && setMembers(filename, paths).includes(built)) {
+            await removeQuietly(order.map(({ temp }) => temp));
+            console.error(`[imageOptimizer] Couldn't record that ${filename}'s set is being rebuilt, so it keeps the outputs of ${built}, which built it last: ${error instanceof Error ? error.message : String(error)}`);
+            throw error;
+        }
+    }
+
     let renamed = 0;
     try {
         for (const { temp, target, dir } of order) {
@@ -375,6 +396,7 @@ export async function writeVariants(
             renamed++;
         }
     } catch (error) {
+        // The record still says the build didn't finish, so the next start rebuilds the set.
         await removeQuietly(order.slice(renamed).map(({ temp }) => temp));
         console.error(
             `[imageOptimizer] Renaming ${filename}'s new outputs failed after replacing ${renamed} of ${order.length}.` +
@@ -384,7 +406,29 @@ export async function writeVariants(
     }
 
     if (overwrite) purgeDynamicCache(baseName, paths);
+    // A fill of only the missing outputs leaves a set some other source may have built the rest of.
+    if (order.length === VARIANTS.length) {
+        try {
+            await recordSetSource(filename, paths, { finished: true });
+        } catch (error) {
+            // The record still says the build didn't finish, so the next start rebuilds the set.
+            console.error(`[imageOptimizer] Couldn't record that ${filename}'s set was built from it: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    } else {
+        forgetSetSource(filename, paths);
+    }
     return order.map(({ target }) => target);
+}
+
+/** Whether each folder is a real directory. lstat, so a symlink never counts and nothing follows one out of the library. */
+function realFolders(dirs: string[]): boolean {
+    return dirs.every((dir) => {
+        try {
+            return fs.lstatSync(dir).isDirectory();
+        } catch {
+            return false;
+        }
+    });
 }
 
 /**
@@ -394,13 +438,19 @@ export async function writeVariants(
  * cache folder out of the library.
  */
 function purgeDynamicCache(baseName: string, paths: LibraryPaths): void {
-    if (guardState([path.dirname(paths.dynamicCache), paths.dynamicCache]).state !== 'ok') return;
-    for (const name of listNames(paths.dynamicCache)) {
+    if (!realFolders([path.dirname(paths.dynamicCache), paths.dynamicCache])) return;
+    let names: string[];
+    try {
+        names = listNames(paths.dynamicCache);
+    } catch {
+        return; // Best effort, after the new set is in place.
+    }
+    for (const name of names) {
         if (DYNAMIC_CACHE_FILE.exec(name)?.[1] !== baseName) continue;
         try {
             fs.unlinkSync(path.join(paths.dynamicCache, name));
         } catch {
-            // Gone already, or not removable. images:cleanup lists what's left.
+            // Gone already, or not removable.
         }
     }
 }
@@ -470,405 +520,395 @@ export function getUnprocessedFiles(): string[] {
     return getPhotoFiles(paths.root).filter((file) => needsRefresh(file, paths, index));
 }
 
+/** The library's sources that write `filename`'s set, in path order, `filename` among them while it exists. */
+export function setMembers(filename: string, paths: LibraryPaths = libraryPaths()): string[] {
+    return getPhotoFiles(paths.root).filter((file) => sharesSet(filename, file, paths.root)).sort();
+}
+
+/** What decodes() found for each path, kept while the file keeps its inode, size, and times. */
+const decoded = new Map<string, { version: string; ok: boolean }>();
+
+/**
+ * The source that last wrote `owner`'s set whole, from its record in
+ * `cache/set-sources`, or null when that's unknown, as after a partial fill,
+ * a build that failed or was killed partway, or a set written before the
+ * record. A builder that only shares the set's key, as two spellings do on a
+ * case-sensitive disk, doesn't count.
+ */
+export function lastBuiltFrom(owner: string, paths: LibraryPaths = libraryPaths()): string | null {
+    const record = readSetSource(owner, paths);
+    return record !== null && record.finished && sharesSet(record.source, owner, paths.root) ? record.source : null;
+}
+
+/**
+ * Whether a source decodes whole. The header alone isn't enough: a truncated
+ * file can keep an intact one, and then every encode fails. Reads the bytes
+ * itself, since libvips caches what it loads by file name.
+ */
+async function decodes(file: string, paths: LibraryPaths): Promise<boolean> {
+    const filePath = path.join(paths.root, file);
+    let version: string;
+    try {
+        const { dev, ino, size, mtimeMs, ctimeMs } = await fs.promises.stat(filePath);
+        version = `${dev}:${ino}:${size}:${mtimeMs}:${ctimeMs}`;
+    } catch {
+        return false;
+    }
+    const cached = decoded.get(filePath);
+    if (cached?.version === version) return cached.ok;
+    let ok: boolean;
+    try {
+        await sharp(await fs.promises.readFile(filePath)).resize(8).toBuffer();
+        ok = true;
+    } catch {
+        ok = false;
+    }
+    decoded.set(filePath, { version, ok });
+    return ok;
+}
+
+/**
+ * Which source of a group owns its set: the first by path that decodes, or
+ * the first when none does. The Gallery lists only the owner and the watcher
+ * builds only from it, so the set always shows the photo the Gallery names.
+ * Also returns the sources before the owner, which didn't decode.
+ */
+export async function pickOwner(group: string[], paths: LibraryPaths = libraryPaths()): Promise<{ owner: string; undecodable: string[] }> {
+    if (group.length > 1) {
+        for (const [index, file] of group.entries()) {
+            if (await decodes(file, paths)) return { owner: file, undecodable: group.slice(0, index) };
+        }
+    }
+    return { owner: group[0], undecodable: [] };
+}
+
+/**
+ * The source that owns a removed source's set now, when the set may have been
+ * the removed one's and so shows its pixels: when another source shares the
+ * set and the removed one came before it by path. Null otherwise.
+ */
+export async function ownerAfterRemoval(removed: string, paths: LibraryPaths = libraryPaths()): Promise<string | null> {
+    const group = setMembers(removed, paths).filter((file) => file !== removed);
+    if (group.length === 0) return null;
+    const { owner } = await pickOwner(group, paths);
+    return removed < owner ? owner : null;
+}
+
+/**
+ * The source that owns `filename`'s set among the library's sources now, or
+ * `filename` when it is the only one. Pass the setMembers() a caller already
+ * has as `members` to skip listing the library again.
+ */
+export async function ownerOf(filename: string, paths: LibraryPaths = libraryPaths(), members: string[] = setMembers(filename, paths)): Promise<string> {
+    return members.includes(filename) ? (await pickOwner(members, paths)).owner : filename;
+}
+
 /**
  * Regenerate all seven outputs from the current source bytes. The old outputs
- * keep serving until every new one is written.
+ * keep serving until every new one is written. A source whose set another
+ * source owns writes nothing.
  */
 export async function reprocessImage(filename: string): Promise<ProcessedImagePaths> {
     const paths = libraryPaths();
-    await writeVariants(filename, { overwrite: true, paths });
+    if (await ownerOf(filename, paths) === filename) await writeVariants(filename, { overwrite: true, paths });
     return getImagePaths(filename, paths);
 }
 
 /**
- * The sources the watcher's startup batch works on: every source with `force`,
- * else the unprocessed ones. Both throw on a missing root.
+ * Where the watcher records, once per library, that it rebuilt the sets of
+ * the orientation-tagged photos: in the cache folder, which nothing serves
+ * and the scans skip.
  */
-export function filesToProcess({ force = false }: { force?: boolean } = {}): string[] {
-    if (!force) return getUnprocessedFiles();
+export function uprightMarkerPath(paths: LibraryPaths = libraryPaths()): string {
+    return path.join(path.dirname(paths.dynamicCache), 'upright-rebuild.json');
+}
+
+/** Create each folder in turn, one level at a time, so a missing library root is never created. */
+function makeFolders(...dirs: string[]): void {
+    for (const dir of dirs) {
+        try {
+            fs.mkdirSync(dir);
+        } catch (error) {
+            if (!hasErrorCode(error, 'EEXIST')) throw error;
+        }
+    }
+}
+
+/**
+ * Record that the one-time rebuild is done, apart from `retry`, the photos
+ * whose rebuild failed, which later starts rebuild until it works. Creates
+ * the cache folder, never the library root.
+ */
+export function writeUprightMarker(photos: number, paths: LibraryPaths = libraryPaths(), now: Date = new Date(), retry: readonly string[] = []): void {
+    const file = uprightMarkerPath(paths);
+    makeFolders(path.dirname(file));
+    const record = { rebuiltAt: now.toISOString(), photos, ...(retry.length > 0 ? { retry: [...retry].sort() } : {}) };
+    fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`);
+}
+
+/**
+ * The photos the one-time rebuild still has to turn upright: null when it
+ * never ran, so every orientation-tagged photo needs it, else the ones its
+ * record lists to retry. A record that can't be parsed counts as done with
+ * nothing to retry, as a record written before the list was.
+ */
+export function readUprightRetry(paths: LibraryPaths = libraryPaths()): string[] | null {
+    const file = uprightMarkerPath(paths);
+    let text: string;
+    try {
+        text = fs.readFileSync(file, 'utf8');
+    } catch (error) {
+        if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return null;
+        return [];
+    }
+    try {
+        const { retry } = JSON.parse(text) as { retry?: unknown };
+        return Array.isArray(retry) ? retry.filter((file): file is string => typeof file === 'string') : [];
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * Whether the watcher can write the library's cache folder, where it records
+ * the one-time rebuild and the source each shared set was built from: the
+ * folder is writable, or it doesn't exist yet and the library root is.
+ */
+export function cacheFolderWritable(paths: LibraryPaths = libraryPaths()): boolean {
+    const dir = path.dirname(paths.dynamicCache);
+    try {
+        if (!fs.statSync(dir).isDirectory()) return false;
+        fs.accessSync(dir, fs.constants.W_OK);
+        return true;
+    } catch (error) {
+        if (!hasErrorCode(error, 'ENOENT')) return false;
+    }
+    try {
+        fs.accessSync(paths.root, fs.constants.W_OK);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/** `cache/set-sources`, where each set records the source it was last built from. */
+function setSourcesDir(paths: LibraryPaths): string {
+    return path.join(path.dirname(paths.dynamicCache), 'set-sources');
+}
+
+/**
+ * Where a set records the source it was last built from:
+ * `cache/set-sources/<base name>.json`, which nothing serves and the scans
+ * skip. Named like the set's files, so sources that share a set share it.
+ */
+function setSourceFile(filename: string, paths: LibraryPaths): string {
+    return path.join(setSourcesDir(paths), `${baseNameOf(filename)}.json`);
+}
+
+/**
+ * What `cache/set-sources` records for the set `filename` writes: the source
+ * a build of it started from, and whether that build finished. Null when
+ * nothing records it. An unfinished one may have left the set partly that
+ * source's and partly what it showed before.
+ */
+export interface SetSourceRecord {
+    source: string;
+    finished: boolean;
+}
+
+/** The record of the set `filename` writes, or null when nothing records it. */
+export function readSetSource(filename: string, paths: LibraryPaths = libraryPaths()): SetSourceRecord | null {
+    try {
+        const value = JSON.parse(fs.readFileSync(setSourceFile(filename, paths), 'utf8')) as { source?: unknown; complete?: unknown } | null;
+        return typeof value?.source === 'string' ? { source: value.source, finished: value.complete !== false } : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Record that a build of `filename`'s set from it starts, or with `finished`
+ * that it just wrote the whole set. Creates the folders under the library
+ * root, never the root. Replaces the record atomically and fsyncs it and its
+ * folder, so once it returns the record is on disk ahead of any rename that
+ * follows, and a write torn by a crash leaves the old record, not an empty one.
+ * Readable like the set's outputs, not only by its owner, and staged under
+ * the outputs' fixed-length temp name.
+ */
+async function recordSetSource(filename: string, paths: LibraryPaths, { finished }: { finished: boolean }): Promise<void> {
+    const file = setSourceFile(filename, paths);
+    makeFolders(path.dirname(path.dirname(file)), path.dirname(file));
+    const record = finished ? { source: filename } : { source: filename, complete: false };
+    await atomicWriteFile(file, `${JSON.stringify(record)}\n`, { mode: 0o666, tempPath: tempPathFor(file, baseNameOf(filename)) });
+}
+
+/** Drop `filename`'s set's record, when the set may no longer be all its own. */
+function forgetSetSource(filename: string, paths: LibraryPaths): void {
+    try {
+        fs.rmSync(setSourceFile(filename, paths), { force: true });
+    } catch (error) {
+        console.error(`[imageOptimizer] Couldn't remove the record of which source ${filename}'s set was built from: ${error instanceof Error ? error.message : String(error)}`);
+    }
+}
+
+/**
+ * Whether `filename`'s set may show another source: when it was last built
+ * from one, such as the owner before it, or a build of it didn't finish.
+ * False when nothing records it.
+ */
+function builtFromAnother(filename: string, paths: LibraryPaths): boolean {
+    const record = readSetSource(filename, paths);
+    return record !== null && (!record.finished || record.source !== filename);
+}
+
+/** Whether a source's file carries an EXIF orientation other than 1, which its set turns upright. Null when it can't be read, so nobody knows. */
+export async function isOrientationTagged(filename: string, paths: LibraryPaths = libraryPaths()): Promise<boolean | null> {
+    try {
+        const { orientation } = await sharp(path.join(paths.root, filename)).metadata();
+        return orientation !== undefined && orientation !== 1;
+    } catch {
+        return null;
+    }
+}
+
+export interface SourcePlan {
+    /** The owners whose sets need building: all of them with `force`, else those needsRefresh() names and those in `upright` and `reowned`. */
+    files: string[];
+    /**
+     * The owners whose set shows another source, rebuilt whatever their state:
+     * one last built from `from`, such as an owner removed while the watcher
+     * was down, one whose build from `from` didn't finish, marked
+     * `unfinished`, and a shared set nothing records the source of, with
+     * `from` null, since sets written before the record could show either
+     * source.
+     */
+    reowned: { file: string; from: string | null; unfinished?: true }[];
+    /**
+     * The owners whose files carry an orientation tag, or can't be read to
+     * tell, rebuilt once whatever their state: a set written before
+     * derivatives were turned upright shows its photo turned or mirrored, and
+     * still looks current. Once the marker records the rebuild done, only the
+     * ones it lists to retry, and null when it lists none.
+     */
+    upright: string[] | null;
+    /** The ones in `upright` whose file can't be read to tell, so the watcher names them as unreadable, not as tagged. */
+    unreadable: string[];
+    /** The sources left out because another one owns their set, and whether each was passed over for not decoding. */
+    shared: { file: string; owner: string; undecodable: boolean }[];
+}
+
+/** What the watcher's startup batch builds, and which sources it leaves out. Throws on a missing root. */
+export async function planSources({ force = false }: { force?: boolean } = {}): Promise<SourcePlan> {
     const paths = libraryPaths();
     ensureDirectories(paths);
-    return getPhotoFiles(paths.root);
+    // Null: the rebuild never ran, so every owner is a candidate.
+    const retry = readUprightRetry(paths);
+    const upright: string[] | null = retry === null || retry.length > 0 ? [] : null;
+    const candidate = (owner: string) => retry === null || retry.includes(owner);
+    const plan: SourcePlan = { files: [], reowned: [], upright, unreadable: [], shared: [] };
+    const index = force ? null : readDerivativeIndex(paths);
+    for (const group of setGroups(getPhotoFiles(paths.root), paths.root)) {
+        const { owner, undecodable } = await pickOwner(group, paths);
+        for (const file of group) if (file !== owner) plan.shared.push({ file, owner, undecodable: undecodable.includes(file) });
+        let tagged = false;
+        if (upright !== null && candidate(owner)) {
+            const orientation = await isOrientationTagged(owner, paths);
+            tagged = orientation !== false;
+            if (tagged) upright.push(owner);
+            if (orientation === null) plan.unreadable.push(owner);
+        }
+        // A removal or an addition while the watcher was down can change a set's owner without touching its files.
+        // So can a build that didn't finish, even of a set that has one source now.
+        const recorded = readSetSource(owner, paths);
+        const unfinished = recorded !== null && !recorded.finished;
+        const reowned = recorded === null ? group.length > 1 : unfinished || recorded.source !== owner;
+        if (reowned) plan.reowned.push({ file: owner, from: recorded?.source ?? null, ...(unfinished ? { unfinished: true as const } : {}) });
+        if (index === null || tagged || reowned || needsRefresh(owner, paths, index)) plan.files.push(owner);
+    }
+    return plan;
+}
+
+/**
+ * The sources the watcher's startup batch works on: the owner of each set,
+ * every one with `force`, else the unprocessed ones, those whose set shows
+ * another source, and, until the one-time upright rebuild is recorded, the
+ * orientation-tagged ones. Both throw on a missing root.
+ */
+export async function filesToProcess({ force = false }: { force?: boolean } = {}): Promise<string[]> {
+    return (await planSources({ force })).files;
 }
 
 /**
  * The overwrite rule the startup batch and a live `add` use: regenerate all
- * seven outputs when forced or when needsRefresh() says so, and otherwise do
- * nothing. A missing one next to existing ones may come from a different
- * version, so filling in only the gap could leave a mixed set.
+ * seven outputs when forced, when needsRefresh() says so, or when the set was
+ * last built from another source, and otherwise do nothing. A source that
+ * sorts ahead of a set's owner takes it over even with an older modification
+ * time. A missing one next to existing ones may come from a different
+ * version, so filling in only the gap could leave a mixed set. A source whose
+ * set another source owns writes nothing. `owns` skips that check, for a
+ * caller that just made it.
  *
  * Returns the paths it replaced, none when the set was already current.
  */
-export async function refreshImage(filename: string, { force = false }: { force?: boolean } = {}): Promise<string[]> {
+export async function refreshImage(filename: string, { force = false, owns = false }: { force?: boolean; owns?: boolean } = {}): Promise<string[]> {
     const paths = libraryPaths();
-    if (!force && !needsRefresh(filename, paths)) return [];
+    if (!owns && await ownerOf(filename, paths) !== filename) return [];
+    if (!force && !needsRefresh(filename, paths) && !builtFromAnother(filename, paths)) return [];
     return writeVariants(filename, { overwrite: true, paths });
 }
 
-export type OrphanReason =
-    | `no source named ${string}.*`
-    | `rebuilt from ${string} when the watcher starts`
-    | 'stale temp file'
-    | 'unused since /api/image was removed';
-
-export interface OrphanEntry {
-    path: string;
-    /** POSIX path relative to the library root, for display */
-    relativePath: string;
-    reason: OrphanReason;
-    bytes: number;
-}
-
-export interface OrphanCleanupOptions {
-    /** Plan a library with no sources, where every derivative counts as an orphan. */
-    allowEmptyLibrary?: boolean;
-    /**
-     * Limit the plan to one photo's set, for a takedown. An exact base name wins.
-     * Otherwise a source extension is stripped, so `landscape.jpg` means `landscape`.
-     */
-    only?: string | null;
-}
-
-export interface UnreadableSource {
-    name: string;
-    code: string;
-}
-
-export interface OrphanCleanupPlan {
-    root: string;
-    allowEmptyLibrary: boolean;
-    /** The base name `only` resolved to */
-    only: string | null;
-    entries: OrphanEntry[];
-    /** Temp files kept because a running job may still own them */
-    youngTempFiles: string[];
-    /** Folders cleanup didn't enter because they are symlinks or not folders */
-    skippedFolders: string[];
-    /** Sources lstat can see but stat can't read. Their sets are kept. */
-    unreadableSources: UnreadableSource[];
-    /** With `only` and no file under that exact name, the names that differ from it only in case or Unicode form */
-    onlyVariants: string[];
-    /** With `only`, the other sets with no source, which may be earlier names of the same photo */
-    otherOrphans: string[];
-    /** Short hash of what the plan deletes. `images:cleanup --apply` needs it, so only a reviewed plan runs. */
-    hash: string;
-}
-
-export interface OrphanCleanupResult {
-    deleted: OrphanEntry[];
-    /** Entries that no longer qualified when re-checked right before deletion */
-    skipped: OrphanEntry[];
-    failed: { entry: OrphanEntry; error: Error }[];
-}
-
-export class CleanupRefusedError extends Error {
-    constructor(message: string) {
-        super(message);
-        this.name = 'CleanupRefusedError';
-    }
-}
-
-type Verdict =
-    | { kind: 'delete'; reason: OrphanReason; bytes: number }
-    | { kind: 'young-temp' }
-    | { kind: 'keep' };
-
-const KEEP: Verdict = { kind: 'keep' };
+/** A WebP header's first 30 bytes hold its size, in any of the three formats. */
+const WEBP_HEADER_BYTES = 30;
 
 /**
- * The sources cleanup protects. An entry lstat can see but stat can't, such as
- * a dangling symlink or one that fails with EACCES, ELOOP, or EIO, still
- * counts, so its set is kept.
+ * The width and height a WebP file's first 30 bytes declare, or null when
+ * they aren't a WebP header.
  */
-function cleanupSources(root: string): { files: string[]; unreadable: UnreadableSource[] } {
-    const files: string[] = [];
-    const unreadable: UnreadableSource[] = [];
-    for (const name of fs.readdirSync(root)) {
-        if (!isSourceFile(name)) continue;
-        const file = path.join(root, name);
-        try {
-            if (!fs.statSync(file).isDirectory()) files.push(name);
-        } catch (error) {
-            let present = true;
-            try {
-                present = fs.lstatSync(file, { throwIfNoEntry: false }) !== undefined;
-            } catch {
-                // Can't tell, so it counts
-            }
-            if (!present) continue; // Removed since readdir
-            files.push(name);
-            unreadable.push({ name, code: (error as NodeJS.ErrnoException).code ?? 'unknown error' });
+export function webpSize(header: Buffer): { width: number; height: number } | null {
+    if (header.length < WEBP_HEADER_BYTES) return null;
+    if (header.toString('latin1', 0, 4) !== 'RIFF' || header.toString('latin1', 8, 12) !== 'WEBP') return null;
+    switch (header.toString('latin1', 12, 16)) {
+        case 'VP8X': // Extended: the canvas size, each side less one, in 24 bits
+            return { width: header.readUIntLE(24, 3) + 1, height: header.readUIntLE(27, 3) + 1 };
+        case 'VP8 ': // Lossy: 14-bit sides after the key frame's start code
+            if (header.readUIntBE(23, 3) !== 0x9d012a) return null;
+            return { width: header.readUInt16LE(26) & 0x3fff, height: header.readUInt16LE(28) & 0x3fff };
+        case 'VP8L': { // Lossless: 14-bit sides, each less one, after the signature byte
+            if (header[20] !== 0x2f) return null;
+            const bits = header.readUInt32LE(21);
+            return { width: (bits & 0x3fff) + 1, height: ((bits >>> 14) & 0x3fff) + 1 };
         }
+        default:
+            return null;
     }
-    return { files, unreadable };
-}
-
-interface SourceSet {
-    any: boolean;
-    /** The sources a derivative named `base` belongs to. */
-    of(base: string): string[];
 }
 
 /**
- * Sources by base name. A derivative belongs to a source with exactly its base
- * name. On a case-sensitive disk `Beach.jpg` and `beach.jpg` are different
- * photos, so a name that differs in case or Unicode form counts only when the
- * disk resolves both names to the same file, or when lstat can't tell.
+ * The size of a source's optimized WebP, which the Lightbox loads. It is
+ * smaller than the photo once the photo is wider than 1920 px. Read from the
+ * file's header, not through Sharp: libvips caches what it loads by file name,
+ * so in a long-running server a file the watcher replaced would keep its old
+ * size. Throws when the file is missing or isn't a WebP.
  */
-function sourceSet(root: string, sourceFiles: string[]): SourceSet {
-    const exact = new Map<string, string[]>();
-    const folded = new Map<string, string[]>();
-    for (const file of sourceFiles) {
-        const base = baseNameOf(file);
-        exact.set(base, [...(exact.get(base) ?? []), file]);
-        folded.set(foldName(base), [...(folded.get(foldName(base)) ?? []), file]);
-    }
-    return {
-        any: sourceFiles.length > 0,
-        of: (base) => {
-            const matches = exact.get(base);
-            if (matches) return matches;
-            return (folded.get(foldName(base)) ?? []).filter((file) =>
-                sameFile(path.join(root, file), path.join(root, `${base}${path.extname(file)}`)) !== false);
-        },
-    };
-}
-
-/** The folders cleanup reads, each with the folders that must be real directories before it enters. */
-function scannedFolders(paths: LibraryPaths): { dir: string; guards: string[] }[] {
-    return [
-        ...DERIVATIVE_DIRS.map((key) => ({ dir: paths[key], guards: [paths[key]] })),
-        { dir: paths.dynamicCache, guards: [path.dirname(paths.dynamicCache), paths.dynamicCache] },
-    ];
-}
-    
-/** lstat, so a symlink never counts as a folder and cleanup never follows one out of the library. */
-function folderState(dir: string): 'ok' | 'missing' | 'unsafe' {
+export async function optimizedSize(filename: string, paths: LibraryPaths = libraryPaths()): Promise<{ width: number; height: number }> {
+    const file = path.join(paths.optimized, outputName('optimized', baseNameOf(filename)));
+    const handle = await fs.promises.open(file, 'r');
     try {
-        return fs.lstatSync(dir).isDirectory() ? 'ok' : 'unsafe';
-    } catch (error) {
-        return hasErrorCode(error, 'ENOENT') ? 'missing' : 'unsafe';
+        const header = Buffer.alloc(WEBP_HEADER_BYTES);
+        const { bytesRead } = await handle.read(header, 0, WEBP_HEADER_BYTES, 0);
+        const size = webpSize(header.subarray(0, bytesRead));
+        if (!size) throw new Error(`${file} is not a WebP file.`);
+        return size;
+    } finally {
+        await handle.close();
     }
-}
-
-function guardState(guards: string[]): { state: 'ok' | 'missing' | 'unsafe'; at: string } {
-    for (const guard of guards) {
-        const state = folderState(guard);
-        if (state !== 'ok') return { state, at: guard };
-    }
-    return { state: 'ok', at: '' };
-}
-
-/** The base name a derivative or `/api/image` cache file belongs to. Null for a temp file or an unrecognized cache file. */
-function ownerBase(file: string, paths: LibraryPaths): string | null {
-    const name = path.basename(file);
-    if (path.dirname(file) === paths.dynamicCache) return DYNAMIC_CACHE_FILE.exec(name)?.[1] ?? null;
-    return TEMP_FILE.test(name) ? null : baseNameOf(name);
-}
-
-/** Whether a derivative, temp, or cache file belongs to the base name `only`, matched exactly. */
-function matchesOnly(file: string, paths: LibraryPaths, only: string): boolean {
-    const name = path.basename(file);
-    if (path.dirname(file) !== paths.dynamicCache && TEMP_FILE.test(name)) return name.startsWith(tempFilePrefix(only));
-    return ownerBase(file, paths) === only;
-}
-
-function classify(
-    file: string,
-    paths: LibraryPaths,
-    sources: SourceSet,
-    { allowEmptyLibrary, only, now }: { allowEmptyLibrary: boolean; only: string | null; now: number },
-): Verdict {
-    let stat: fs.Stats;
-    try {
-        stat = fs.lstatSync(file);
-    } catch {
-        return KEEP; // Already gone, or the library is
-    }
-    if (!stat.isFile()) return KEEP;
-    if (only !== null && !matchesOnly(file, paths, only)) return KEEP;
-
-    const name = path.basename(file);
-    // The route that wrote these is gone, so all of them go
-    if (path.dirname(file) === paths.dynamicCache) {
-        return { kind: 'delete', reason: 'unused since /api/image was removed', bytes: stat.size };
-    }
-    if (TEMP_FILE.test(name)) {
-        return now - stat.mtimeMs >= STALE_TEMP_FILE_MS
-            ? { kind: 'delete', reason: 'stale temp file', bytes: stat.size }
-            : { kind: 'young-temp' };
-    }
-
-    const base = baseNameOf(name);
-    const owners = sources.of(base);
-    // A takedown removes the set even when a sibling shares it, such as a.png
-    // next to a deleted a.jpg. The watcher rebuilds it from the sibling.
-    if (only !== null && owners.length > 0) {
-        return { kind: 'delete', reason: `rebuilt from ${[...owners].sort().join(', ')} when the watcher starts`, bytes: stat.size };
-    }
-    if (owners.length > 0) return KEEP;
-    // A library that lost every source is more likely unmounted or mid-sync than retired.
-    if (!sources.any && !allowEmptyLibrary) return KEEP;
-    return { kind: 'delete', reason: `no source named ${base}.*`, bytes: stat.size };
-}
-
-function listFiles(dir: string): string[] {
-    return listNames(dir).sort();
-}
-
-function relativeTo(root: string, file: string): string {
-    return path.relative(root, file).split(path.sep).join('/');
-}
-
-function planHash(root: string, allowEmptyLibrary: boolean, only: string | null, entries: OrphanEntry[]): string {
-    const canonical = JSON.stringify({
-        root,
-        allowEmptyLibrary,
-        only,
-        entries: entries.map(({ relativePath, reason, bytes }) => [relativePath, reason, bytes]),
-    });
-    return createHash('sha256').update(canonical).digest('hex').slice(0, 12);
-}
-
-/** `only` as given when a file matches it exactly, else with a source extension stripped. */
-function resolveOnly(requested: string, scanned: string[], paths: LibraryPaths): string {
-    if (!isSourceFile(requested) || scanned.some((file) => matchesOnly(file, paths, requested))) return requested;
-    return baseNameOf(requested);
-}
-
-/** With nothing under `only` exactly, the sets whose names differ from it only in case or Unicode form. */
-function caseVariants(only: string, scanned: string[], paths: LibraryPaths): string[] {
-    if (scanned.some((file) => matchesOnly(file, paths, only))) return [];
-    const variants = new Set<string>();
-    for (const file of scanned) {
-        const owner = ownerBase(file, paths);
-        if (owner !== null && owner !== only && foldName(owner) === foldName(only)) variants.add(owner);
-    }
-    return [...variants].sort();
-}
-
-/** The other sets no source needs, which a takedown may also want gone as earlier names of the photo. */
-function orphanedSets(only: string, scanned: string[], paths: LibraryPaths, sources: SourceSet): string[] {
-    const bases = new Set<string>();
-    for (const file of scanned) {
-        if (path.dirname(file) === paths.dynamicCache) continue;
-        const owner = ownerBase(file, paths);
-        if (owner !== null && owner !== only && sources.of(owner).length === 0) bases.add(owner);
-    }
-    return [...bases].sort();
-}
-
-/**
- * Plan which derivatives no source needs anymore, without touching anything.
- * Refuses a missing root, and a root with no sources unless
- * `allowEmptyLibrary`, because either would make every derivative look orphaned.
- */
-export function planOrphanCleanup(
-    { allowEmptyLibrary = false, only: requested = null }: OrphanCleanupOptions = {},
-): OrphanCleanupPlan {
-    const paths = libraryPaths();
-    if (!libraryRootExists(paths.root)) {
-        throw new CleanupRefusedError(
-            `library root not found: ${paths.root}. Check the mount or PHOTOGRAPHY_LIBRARY_DIR.`,
-        );
-    }
-    const { files: sourceFiles, unreadable } = cleanupSources(paths.root);
-    if (sourceFiles.length === 0 && !allowEmptyLibrary) {
-        throw new CleanupRefusedError(
-            `${paths.root} has no source photos, so every derivative would count as an orphan. ` +
-            'Pass --allow-empty-library if the library is meant to be empty.',
-        );
-    }
-
-    const sources = sourceSet(paths.root, sourceFiles);
-    const skippedFolders: string[] = [];
-    const scanned: string[] = [];
-    for (const { dir, guards } of scannedFolders(paths)) {
-        const guard = guardState(guards);
-        if (guard.state === 'unsafe') skippedFolders.push(relativeTo(paths.root, guard.at));
-        if (guard.state !== 'ok') continue;
-        scanned.push(...listFiles(dir).map((name) => path.join(dir, name)));
-    }
-
-    const only = requested === null ? null : resolveOnly(requested, scanned, paths);
-    const options = { allowEmptyLibrary, only, now: Date.now() };
-    const entries: OrphanEntry[] = [];
-    const youngTempFiles: string[] = [];
-    for (const file of scanned) {
-        const relativePath = relativeTo(paths.root, file);
-        const verdict = classify(file, paths, sources, options);
-        if (verdict.kind === 'delete') {
-            entries.push({ path: file, relativePath, reason: verdict.reason, bytes: verdict.bytes });
-        } else if (verdict.kind === 'young-temp') {
-            youngTempFiles.push(relativePath);
-        }
-    }
-    
-    return {
-        root: paths.root,
-        allowEmptyLibrary,
-        only,
-        entries,
-        youngTempFiles,
-        skippedFolders,
-        unreadableSources: unreadable,
-        onlyVariants: only === null ? [] : caseVariants(only, scanned, paths),
-        otherOrphans: only === null ? [] : orphanedSets(only, scanned, paths, sources),
-        hash: planHash(paths.root, allowEmptyLibrary, only, entries),
-    };
-}
-
-/**
- * Delete a plan's entries, re-checking each one right before deleting it.
- * Lists the sources once, fresh, and keeps everything if it can't. An entry
- * that no longer qualifies for the same reason (its source came back, its
- * folder became a symlink, a temp file was touched) is skipped.
- */
-export function applyOrphanCleanup(plan: OrphanCleanupPlan): OrphanCleanupResult {
-    const paths = libraryPaths();
-    if (paths.root !== plan.root) {
-        throw new CleanupRefusedError(`the plan is for ${plan.root}, but the library root is now ${paths.root}.`);
-    }
-    
-    const result: OrphanCleanupResult = { deleted: [], skipped: [], failed: [] };
-    let sources: SourceSet;
-    try {
-        sources = sourceSet(paths.root, cleanupSources(paths.root).files);
-    } catch {
-        result.skipped.push(...plan.entries);
-        return result;
-    }
-
-    const options = { allowEmptyLibrary: plan.allowEmptyLibrary, only: plan.only, now: Date.now() };
-    const folders = scannedFolders(paths);
-    for (const entry of plan.entries) {
-        const folder = folders.find(({ dir }) => dir === path.dirname(entry.path));
-        const verdict = folder && guardState(folder.guards).state === 'ok'
-            ? classify(entry.path, paths, sources, options)
-            : KEEP;
-        if (verdict.kind !== 'delete' || verdict.reason !== entry.reason) {
-            result.skipped.push(entry);
-            continue;
-        }
-        try {
-            fs.unlinkSync(entry.path);
-            result.deleted.push({ ...entry, bytes: verdict.bytes });
-        } catch (error) {
-            if (hasErrorCode(error, 'ENOENT')) {
-                result.skipped.push(entry);
-            } else {
-                result.failed.push({ entry, error: error as Error });
-            }
-        }
-    }
-    return result;
 }
 
 /**
  * Get LQIP base64 string for an image
  */
 export function getLqipBase64(filename: string, paths: LibraryPaths = libraryPaths()): string | null {
-    const lqipPath = path.join(paths.lqip, `${baseNameOf(filename)}.txt`);
+    const lqipPath = path.join(paths.lqip, outputName('lqip', baseNameOf(filename)));
     
     if (fs.existsSync(lqipPath)) {
         return fs.readFileSync(lqipPath, 'utf-8');

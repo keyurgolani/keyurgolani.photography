@@ -5,43 +5,41 @@ This directory is where gallery photos should be placed.
 ## Usage
 
 1. Add your photos (JPG, JPEG, PNG, WEBP) to this directory
-2. The gallery will automatically load them via the `/api/photos` endpoint
+2. The gallery loads them through `/api/photos` once the watcher has recorded them in the data root and written all seven of their derivatives. Until `photos:migrate --apply` has initialized the data root, `/api/photos` answers 503 and the gallery is empty. The original files are never served.
 3. Photos are sorted by date taken (newest first), extracted from EXIF metadata
 
 ## Replacing and Removing Photos
 
-- Saving over a photo under the same name regenerates its derivatives. The old ones keep serving until all seven new ones are written. `/_next/image` can serve the old version for up to a day, and a browser that cached it under the old `immutable` header may keep it for up to a year.
-- Accepted risk: a different photo saved under a removed photo's name, with an older modification time, shows the old images until you `touch` it or run `--force`. Copy tools that keep modification times, such as `cp -p` and `rsync -a`, do this. With the watcher stopped, run `images:cleanup` before reusing a name.
-- Deleting a photo hides it from the gallery, but its derivative files stay reachable at their URLs until `images:cleanup` deletes them. Restoring the file brings it back in the gallery after `web` restarts, since Next serves only the `public/` files that existed when it started.
-- `npm run images:cleanup` lists derivatives no photo needs anymore, with the reason for each, and prints a plan hash. It deletes them only when re-run with `-- --apply --plan <hash>`. In production:
-
-```bash
-docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts
-```
-
+- Saving over a photo under the same name regenerates its derivatives. The old ones keep serving until all seven new ones are written. `/_next/image` can serve the old version for up to a day, and a browser that cached it under the old `immutable` header may keep it for up to a year. Once a catalog revision is live, the site serves none of these files: `/assets/photos` answers 404 and `/_next/image` refuses it.
+- Accepted risk: a different photo saved under a removed photo's name, with an older modification time, shows the old images until you `touch` it or run `--force`. Copy tools that keep modification times, such as `cp -p` and `rsync -a`, do this.
+- Before the launch, deleting a photo hides it from the gallery once the watcher's next pass records it missing. Nothing deletes its derivative files, which stay reachable at their URLs, so restoring the file brings it back with nothing to rebuild. After the launch, deleting the file hides nothing: the active catalog revision keeps listing the photo, and `/media` keeps serving it.
 - To take a photo down:
   1. Stop `image-watcher`, so a job already running can't write its derivatives back, then delete the photo.
-  2. Run the full dry run, which also lists sets left under the photo's earlier names.
-  3. Run it with `--only <name>`, where `<name>` is the photo's exact name such as `landscape`, then apply that plan. Do the same for each earlier name.
-  4. Purge Next's image cache inside the `web` image, since its files belong to uid 1001, then start the stack.
-  5. Wait about two minutes and check that `/api/photos` no longer lists the photo, since its cached list survives a restart.
+  2. Delete its seven derivatives and `cache/set-sources/<name>.json`, where `<name>` is the photo's file name without its extension, such as `landscape`. Do the same for each earlier name the photo had, which the listing below finds.
+  3. Purge Next's image cache inside the `web` image, since its files belong to the containers' user, then start the stack.
+  4. Check that `/api/photos` no longer lists the photo. Once a catalog revision is active, `/media` keeps serving it until a publish leaves it out, as below.
 
 ```bash
 docker compose -f docker-compose.prod.yml stop image-watcher
-# Delete the photo, then:
-docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts
-docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts --only <name>
-docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageCleanup.ts --only <name> --apply --plan <hash>
+# Delete the photo, then, with its name for <name>:
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher sh -c 'cd /app/public/assets/photos && rm -f -- thumbnails/"$1".webp medium/"$1".webp optimized/"$1".webp thumbnails-avif/"$1".avif medium-avif/"$1".avif optimized-avif/"$1".avif lqip/"$1".txt cache/set-sources/"$1".json' sh '<name>'
 docker compose -f docker-compose.prod.yml stop web
 docker compose -f docker-compose.prod.yml run --rm --no-deps web sh -c 'rm -rf /app/.next/cache/images/*'
 docker compose -f docker-compose.prod.yml start web image-watcher
+```
+
+- After the launch, once a catalog revision is active, a takedown is archive, then publish, run as `node dist/scripts/photos.mjs <command>` in `image-watcher` the same way. Deleting, moving, or renaming a file here takes nothing down: the active revision keeps listing the photo, `/media` keeps serving it, and the watcher opens a `missing` item in the curation inbox, which closes if the same file comes back. To take the photo down, move its file out of this folder and run `curation archive` on its `missing` item, which takes it out of every series in the draft. A publish then needs a new cover where it was the cover (`sequence cover`), and a chapter it alone made up removed first (`sequence chapter remove`), or archive refuses. The remove clears it as the opening photograph, so the series has none until `sequence opening` picks another. Where it was a series' only photograph, hide the series (set `visibility` to `"hidden"` on a host copy and save it with `edit <seriesId> --file <path> --expect-version <N>`, as the root README's "Curating the catalog" shows), and take a hidden series out of the featured list with `series featured <seriesId>...`, keeping at least one published. Run `validate`, check that `publish --dry-run --actor <name>` lists the photo under `Removed`, then publish. Check that `GET /api/ready` answers `"state":"ok"` with the new `revisionId`: `degraded` means `web` still serves the revision before. Purge the photo's `/media` URLs from any CDN, since `/media` sends `max-age=31536000, immutable` and a browser can keep the photo for up to a year. Archive deletes nothing. If the publish stops on errors in other records, the photo stays public. As a last resort, delete `assets/<photoId>/` in the data root inside `image-watcher`, so `/media` 404s it until a publish leaves it out. The project README's "Take a photo down after the launch" has the steps.
+- To list legacy derivatives whose photo is gone, such as a renamed photo's earlier names, print each base name in `optimized/` that no photo in this folder has. Only `.jpg`, `.jpeg`, `.png`, and `.webp` count, in any case, so a sidecar such as `IMG_1.xmp` doesn't hide a deleted photo's old images:
+
+```bash
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher sh -c 'cd /app/public/assets/photos && for f in optimized/*.webp; do n=${f#optimized/}; n=${n%.webp}; found=; for s in "$n".*; do case "$s" in *.[jJ][pP][gG]|*.[jJ][pP][eE][gG]|*.[pP][nN][gG]|*.[wW][eE][bB][pP]) found=1;; esac; done; [ -n "$found" ] || echo "$n"; done'
 ```
 
 - To regenerate everything in production, stop `image-watcher`, run the regeneration, and start it again:
 
 ```bash
 docker compose -f docker-compose.prod.yml stop image-watcher
-docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher npx tsx scripts/imageWatcher.ts --once --force
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/imageWatcher.mjs --once --force
 docker compose -f docker-compose.prod.yml start image-watcher
 ```
 
@@ -61,6 +59,10 @@ volumes:
 ```
 
 This allows photos to be added/updated without rebuilding the container.
+
+Both containers also mount `./portfolio-data`, the private data root, which holds each photo's stable ID and its `/media` sets. Its registry names every photo by its path in this folder, so back the two up together and restore them together. [docs/data-root.md](../../../docs/data-root.md) covers setting it up, the ownership both folders need (including a library that another process, such as a file sync tool, writes), backups, restores, and the one-time migration.
+
+The build leaves this folder's photos out of the image. Only this README and `.gitkeep` go in.
 
 ## Git Tracking
 

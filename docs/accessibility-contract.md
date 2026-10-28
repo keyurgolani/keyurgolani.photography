@@ -5,7 +5,7 @@ Every visitor and curator surface follows these rules. #1 added them with the br
 ## Rules
 
 1. Semantics. URL changes use a Next `Link` or `<a href>`. In-page state changes use `<button type="button">`, with `aria-pressed`, `aria-current="true"`, or `aria-expanded` when it toggles, selects, or discloses. The focusable element owns the handler and the name, with no handlers on non-interactive elements, no nested interactive elements, and `alt=""` on an `img` inside a named control.
-2. Names. Names come from `photoEntryName()` and `photoImageAlt()`, never a filename, extension, raw index, EXIF or camera string, or unreviewed suggestion. They exist before the image loads, are unique, and start with any visible label (WCAG 2.5.3). `aria-describedby` text is a description. `ThemeToggle`'s name doesn't start with its label, an exception until #21 drops the label. Catalog surfaces always have a reviewed description or `decorative` (the #13 gate), so position-only names are for legacy surfaces and decorative photos.
+2. Names. Names come from `photoEntryName()` and `photoImageAlt()`, never a filename, extension, raw index, EXIF or camera string, or unreviewed suggestion. They exist before the image loads, are unique, and start with any visible label (WCAG 2.5.3). `aria-describedby` text is a description. Catalog surfaces always have a reviewed description or `decorative` (the #13 gate), so position-only names are for legacy surfaces and decorative photos.
 3. Hover parity. Whatever hover reveals, `:focus-visible` reveals too. Nothing required is hover-only. A tap never leaves hover styles behind, so app hover styles apply only under `(hover: hover) and (pointer: fine)`. That's the target: `hoverOnlyWhenSupported` in `tailwind.config.ts` gates every `hover:` and `group-hover:` utility, and #1's slices 3 and 4 gate the raw `:hover` rules in `app/globals.css` and the CSS modules.
 4. Focus. Use the focus token. No ancestor's overflow clips the ring, so pad clip and scroll containers by ring width plus offset or use an inset ring. Fixed chrome never entirely hides the ring, and leaves it fully clear when the element fits between the scroll paddings. Focus-revealed controls appear at full opacity with no fade.
 5. Targets. Every standalone link, button, toggle, or thumbnail is at least 44 by 44 CSS px on its bounding box. Inline links in running text are exempt. This overrides the mockup's 42 px primary, 43 px Home rail, and 38 px sequence buttons.
@@ -27,20 +27,21 @@ Every visitor and curator surface follows these rules. #1 added them with the br
 
 | Surface | Spec | Owner |
 |---|---|---|
-| Home, `/` | `e2e/home.spec.ts` from #1 slice 4, and `e2e/home-immersive.spec.ts` from #18 | #1, then #18 for immersive mode and #4 for the authored sequence |
-| Gallery, `/gallery` | `e2e/gallery.spec.ts` from #1 slice 3 | #1, until #3 retires the page |
-| Lightbox on `/gallery` | `e2e/lightbox.spec.ts` from #1 slice 3 | #1, until #3 retires the page |
-| About, `/about` | `e2e/about.spec.ts` from #1 slice 4 | #1 for the subset below, then #11 for the links and #12 for the artist statement |
-| The focus token on the site chrome and in the lightbox | `e2e/focus-ring.spec.ts` from #1 slice 2 | #1, until #21 replaces the chrome |
-| Work catalog | Added by #3 | #3 |
-| Series pages | Added by #5 | #5 |
-| Viewer | Added by #7 | #7, then #9 |
-| Site navigation | Added by #21 | #21 |
-| Curation inbox | Added by #14 | #14 |
-| Publish preview | Added by #16 | #16 |
+| Home, `/` | `e2e/home.spec.ts` from #1 slice 4, `e2e/home-playback.spec.ts` from #2, and `e2e/home-immersive.spec.ts` from #18 | #1, #2 for playback and reduced motion, then #18 for immersive mode and #4 for the authored sequence |
+| Gallery, `/gallery` | `e2e/gallery.spec.ts` from #1 slice 3 | #1, until #13 removes the legacy page |
+| Lightbox on `/gallery` | `e2e/lightbox.spec.ts` from #1 slice 3 | #1, until #13 removes the legacy page |
+| About, `/about` | `e2e/about.spec.ts` from #1 slice 4, and `e2e/about-links.spec.ts` from #11 | #1 for the subset below, #11 for the links, then #12 for the artist statement |
+| The focus token on `SiteNav`, its theme toggle, and in the lightbox | `e2e/focus-ring.spec.ts` from #1 slice 2, moved onto `SiteNav` by #21 | #1, with #21 for `SiteNav` |
+| Work catalog, `/work` | `e2e/work.spec.ts` from #3, on a published fixture catalog its own server serves | #3 |
+| Series pages, `/work/<slug>` | `e2e/series.spec.ts` and `e2e/series-return.spec.ts` from #5, the second for Viewer entry from the cover and the sequence and the return to it | #5 |
+| Viewer, `/work/<slug>/photo/<photoId>` | `e2e/viewer.spec.ts` from #7, `e2e/viewer-modal.spec.ts` and `e2e/viewer-touch.spec.ts` from #9 | #7, then #9 |
+| Site navigation, `SiteNav` | `e2e/shell/nav.spec.ts` from #21, with `server-html`, `theme`, and `confinement` in `e2e/shell/` | #21, then #18 for its reveal on Home |
+| Curator login, `/curation/login` | `e2e/curator-login.spec.ts` from #14's 14-2, at rest, with a refusal, and during the lock | #14 |
+| Curation inbox, `/curation/inbox` | `e2e/curation-inbox.spec.ts` from #14, on a fixture its own curator server serves. The #1 surface checks there are on #14's backlog | #14 |
+| Curator publish, `/curation/publish` | `e2e/curation-publish.spec.ts` from #16, on a fixture data root its own curator server serves: axe, 44 px targets, the focus ring and unique names at 1440 and 390, the Tab order through the blocker list, one live region, and focus after each answer. `e2e/curation-publish-frame.spec.ts` checks on WebKit too that the preview frame never scrolls the page. #15's History on it, in `e2e/curation-history.spec.ts`: axe, 44 px targets, the focus ring and unique names on History and its restore dialog at 1440 and 390, the dialog's modal Tab order, Escape and focus return, the dialog's own live region while it's open, and focus after each answer | #16, with #15 for History |
 | Revision history | Added by #15 | #15 |
 
-On `/about`, #1 checks the navigation links and theme control in full, Tab reach for the social cards and source link, the ring style on all of them, and axe. Ring clipping, reflow, and the hover-only labels there belong to #11. On `/`, #18 owns pointer and tap reach for the arrows, the first tap on idle Home, and keeping the controls visible while focus is inside them.
+On `/about`, #1 checks the navigation links and theme control in full, and Tab reach, the ring style, ring clipping, reflow, and labels at rest for the external links, plus axe. `e2e/about-links.spec.ts` runs `checkSurface()` there with those links as the entries. On `/`, #18 owns the first tap on idle Home.
 
 ## Focus token
 
@@ -48,7 +49,7 @@ On `/about`, #1 checks the navigation links and theme control in full, Tab reach
 
 The token's outline beats YARL's `outline: none`. The app's own `!important` lightbox rules beat the token's `transition: none`, and some of their `box-shadow` rules tie the token and come later. So the end of `app/globals.css` restates the band and `transition: none` for `.yarl__button` and `.yarl__thumbnails_thumbnail`, and lifts inactive thumbnails from `opacity: 0.5`. YARL also focuses its container to take arrow keys, and the thumbnail track when a focused thumbnail leaves it. Neither is a control, so neither draws the token. In a focused track, the active thumbnail draws it instead.
 
-`html` has `scroll-padding-top: 6rem` and `scroll-padding-bottom: 8rem`, so a focused element that fits between them scrolls clear of `ThemeToggle` and `BottomBar`. Taller elements fall back to WCAG 2.4.11, which only asks that chrome doesn't hide them entirely.
+`html` has `scroll-padding-top: 6rem` and `scroll-padding-bottom: 8rem`, so a focused element that fits between them scrolls into view with room around it. Outside Home, `SiteNav` sits in normal flow, so no chrome covers a focused element. On Home it's part of the chrome, which keyboard focus reveals at full opacity with no fade and holds open, and settled Home's portrait badge sits under it and takes no pointer.
 
 ## Names
 
@@ -66,7 +67,7 @@ The token's outline beats YARL's `outline: none`. The app's own `!important` lig
 ## Running the checks
 
 ```bash
-npx playwright install chromium   # once per machine
+npx playwright install chromium webkit   # once per machine, webkit for mobile-webkit
 npm run test:e2e
 ```
 

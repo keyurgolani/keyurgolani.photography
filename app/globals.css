@@ -15,7 +15,7 @@
     transition: none;
 }
 
-/* A focused element that fits between these scrolls clear of ThemeToggle and BottomBar. */
+/* A focused element that fits between these scrolls into view with room around it. */
 html {
     scroll-padding-top: 6rem;
     scroll-padding-bottom: 8rem;
@@ -29,9 +29,9 @@ html {
     --focus-ring-width: 3px;
     --focus-ring-offset: 3px;
 
-    /* Fonts */
-    --font-primary: var(--font-montserrat), sans-serif;
-    --font-secondary: var(--font-inter), sans-serif;
+    /* Fonts, from app/fonts.ts */
+    --font-primary: var(--font-serif), serif;
+    --font-secondary: var(--font-sans), sans-serif;
 
     /* Light theme (Premium Clean) */
     --background-color: #FAFAFA; /* Off-white for less harshness */
@@ -76,9 +76,17 @@ html {
     --caption-bg-color: rgba(5, 5, 5, 0.85);
 }
 
+/* The shell owns its ground and its ink, in both themes (#21: the light theme
+   drives only the legacy variables and dark: variants). body paints
+   --gah-ground, so a translucent SiteNav reads the same over either theme.
+   html stays unpainted, so body's ground is the canvas: no light strip below a
+   short page or on overscroll, and About's paper (about.module.css) and the
+   Viewer's ground (StoryViewer.module.css), which override body, reach the
+   window's edge too. The legacy Gallery paints its own themed ground and ink
+   on its main. */
 body {
-    background-color: var(--background-color);
-    color: var(--primary-color);
+    background-color: var(--gah-ground);
+    color: var(--gah-ink);
     font-family: var(--font-secondary); /* Body font */
     transition: background-color var(--transition-duration) ease, color var(--transition-duration) ease;
     -webkit-font-smoothing: antialiased;
@@ -86,9 +94,10 @@ body {
     line-height: 1.6;
 }
 
+/* The serif at its one weight. The legacy font-bold h1 on /gallery keeps 700 until #13 removes the legacy page. */
 h1, h2, h3, h4, h5, h6 {
     font-family: var(--font-primary);
-    font-weight: 600;
+    font-weight: 400;
     letter-spacing: -0.02em;
 }
 
@@ -223,11 +232,6 @@ h1, h2, h3, h4, h5, h6 {
     transform: translateY(0);
 }
 
-body {
-    background-color: var(--background-color);
-    color: var(--primary-color);
-    transition: background-color var(--transition-duration) ease, color var(--transition-duration) ease;
-}
 
 /* ============================================
    Lightbox - Clean Minimal Design with Glass Effect
@@ -580,3 +584,26 @@ body {
     transition: none !important;
 }
 
+
+/* Reduced-motion baseline for every route: animations and transitions end at
+   once, so fades, cross-fades, shimmer, and pulses still reach their end
+   state without moving. It sets no transform, which would break centering. */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        transition-delay: 0s !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* The lightbox's own !important transitions above outrank the baseline. */
+@media (prefers-reduced-motion: reduce) {
+    :root .yarl__button,
+    :root .yarl__thumbnails_thumbnail {
+        transition: none !important;
+    }
+}

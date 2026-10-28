@@ -1,0 +1,48 @@
+.frame {
+  display: flex;
+  flex-direction: column;
+  height: 100svh;
+  background: var(--gah-ground);
+  color: var(--gah-ink);
+}
+
+.toolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  min-height: 44px;
+  margin: 0;
+  padding: 0 var(--site-gutter);
+  border-bottom: 1px solid var(--gah-rule-strong);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-ui);
+}
+
+.marker {
+  font-size: var(--gah-type-label);
+  font-weight: 600;
+  letter-spacing: var(--gah-label-tracking);
+  text-transform: uppercase;
+  color: var(--gah-ink);
+}
+
+.site {
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  background: var(--gah-ground);
+}
+
+/* The inert frame's named wrapper takes the frame's place in the column. */
+.picture {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Embedded in a panel (the Publish screen), the marker takes the panel's inset. */
+.frame[data-embedded='true'] .toolbar {
+  padding: 0 0.875rem;
+}

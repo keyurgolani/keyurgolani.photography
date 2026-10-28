@@ -12,8 +12,14 @@ dist
 dist-ssr
 *.local
 
-# Host settings for docker-compose.prod.yml, such as PHOTOGRAPHY_IMAGE_TAG
-.env
+# Host settings for docker-compose.prod.yml, such as PHOTOGRAPHY_IMAGE_TAG,
+# and every other env file Next might load
+.env*
+*.env
+!.env.example
+
+# Secret files for docker-compose.prod.yml, never committed
+secrets/
 
 # Next.js
 .next*/
@@ -55,9 +61,18 @@ public/assets/photos/optimized/
 
 # Temporary SDLC / planning artifacts
 .superpowers/
+# The Impeccable design hook's session cache: session IDs and local paths
+.impeccable/
 docs/plans/
 docs/specs/
 OPTIMIZATION_PLAN*
 task_plan.md
 findings.md
 progress.md
+
+# Private identity state, the default data root outside production
+/portfolio-data/
+
+# The site config folder: About's portrait and its portrait.json live on the
+# host, beside docker-compose.prod.yml, never in the repository
+/site-config/

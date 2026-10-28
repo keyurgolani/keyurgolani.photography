@@ -1,0 +1,212 @@
+/* About on Light Takes Shape: warm paper ground, faint vertical ribs, and
+   dark ink, after Isamu Noguchi's Akari light sculptures, as the approved
+   mockup translates them. Only the paper, the ribs, and the ink come from the
+   reference. The --lts-* tokens live under [data-surface='about'] in
+   styles/surfaces/light-takes-shape.css, which main and the Primary nav carry
+   here, so nothing below reaches another route, even after a client-side move.
+   Paper and ink are the same in both themes: no theme variable or dark:
+   variant paints inside main. */
+
+/* The body under About is paper too, so overscroll and the strip below a short
+   page don't flash the theme's ground, and it doesn't fade in from it. The
+   body sits outside the surface, so this is --lts-paper's value. */
+:global(body):has(.root) {
+  background-color: #f4ecd7;
+  transition: none;
+}
+
+/* The About tokens, which #11's ExternalLinks.module.css reads for its ink,
+   ground, rule, and focus ring. The rule is about 4.2:1 on paper. */
+.root {
+  --about-ground: var(--lts-paper);
+  --about-ink: var(--lts-ink);
+  --about-rule: #7d6e57;
+  min-height: calc(100svh - var(--site-nav-height, 0px));
+  padding-block-end: env(safe-area-inset-bottom, 0px);
+  background: var(--lts-ribs), var(--lts-paper);
+  color: var(--lts-ink);
+}
+
+/* One column in DOM order below 64rem: portrait, statement, links. The
+   mockup's 41% portrait column from 64rem, the article centered against it. */
+.layout {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  max-width: 90rem;
+  margin-inline: auto;
+  padding: 1.5rem 1.25rem 2rem;
+}
+
+@media (min-width: 40rem) {
+  .layout {
+    padding: 2.5rem 6% 3rem;
+  }
+}
+
+@media (min-width: 64rem) {
+  .layout {
+    display: grid;
+    grid-template-columns: 41% minmax(0, 1fr);
+    gap: 0;
+    padding: 6rem 6% 4rem;
+  }
+}
+
+/* The portrait sits on the mockup's near-black ground inside a 9 px paper
+   frame. Its caption is a band below the photo, in flow, so enlarged text
+   grows the frame instead of covering the face. The frame, the ground under
+   it, and the photo and caption boxes are shared with the name panel below,
+   so both states are the same box in the same tone. */
+.portrait {
+  --about-frame: 9px;
+  --about-frame-ground: #101311;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  border: var(--about-frame) solid var(--lts-frame);
+  background: var(--about-frame-ground);
+  box-shadow: var(--lts-shadow);
+}
+
+.photo {
+  position: relative;
+  flex: 1 1 auto;
+  height: clamp(250px, 42svh, 380px);
+}
+
+@media (min-width: 64rem) {
+  .photo {
+    height: auto;
+    min-height: 420px;
+  }
+}
+
+/* The focal point from the host's portrait.json is the object-position,
+   set inline on .photo as --portrait-focus. The <picture> ResponsivePhoto
+   renders is inline, so the image is placed against .photo directly. The
+   LQIP behind it, once the portrait's set has one, crops at the same point. */
+.image {
+  --photo-lqip-position: var(--portrait-focus, 50% 50%);
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: var(--portrait-focus, 50% 50%);
+}
+
+.caption {
+  padding: 0.5rem 0.75rem;
+  background: rgba(41, 42, 40, 0.86);
+  color: var(--lts-paper);
+  font-family: var(--font-sans), sans-serif;
+  font-size: 0.875rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* No portrait, or one that failed to load: the same frame, tone, and outer
+   box as the photo with its caption band, lit from inside like a paper
+   shade, so nothing on the page moves either way. A soft pool of light sits
+   high in the panel over the shade's horizontal ribs, and the name is set in
+   the statement's serif at the foot, where the photo's caption band would
+   be. It reads as a deliberate name plate, never as a missing image. The
+   paper stops at the frame, which lies over the photo's dark ground, so the
+   frame reads as the same taupe mat. Its height comes from an unseen copy
+   of the photo's box and caption band in the same grid cell, so a caption
+   that wraps, with enlarged text on a phone, grows both states alike. */
+.fallback {
+  display: grid;
+  background:
+    radial-gradient(ellipse 78% 58% at 50% 36%, rgba(255, 252, 240, 0.96) 0%, rgba(253, 246, 226, 0.7) 42%, rgba(244, 236, 215, 0) 78%) padding-box,
+    repeating-linear-gradient(180deg, rgba(93, 73, 42, 0.07) 0 1px, transparent 1px 2.125rem) padding-box,
+    linear-gradient(#ecdfbf, #ecdfbf) padding-box,
+    var(--about-frame-ground) border-box;
+}
+
+.fallbackSizer {
+  display: flex;
+  grid-area: 1 / 1;
+  flex-direction: column;
+  visibility: hidden;
+}
+
+.fallbackSizer > [data-caption]::after {
+  content: attr(data-caption);
+}
+
+/* A long name or alias breaks between words. Only a word wider than the
+   panel breaks inside itself. */
+.fallbackName {
+  display: flex;
+  grid-area: 1 / 1;
+  align-self: end;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+  padding: clamp(1.25rem, 1rem + 1.5vw, 2.25rem);
+  color: var(--lts-ink);
+  overflow-wrap: break-word;
+}
+
+.fallbackFullName {
+  max-width: 100%;
+  font-family: var(--font-serif), serif;
+  font-size: var(--lts-type-plate);
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+}
+
+.fallbackAlias {
+  color: var(--lts-ink-soft);
+  font-family: var(--font-sans), sans-serif;
+  font-size: 0.9375rem;
+  line-height: 1.4;
+}
+
+.article {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+}
+
+@media (min-width: 64rem) {
+  .article {
+    padding: 2rem 0 2rem 9%;
+  }
+}
+
+.heading {
+  max-width: 16ch;
+  margin: 0 0 1.125rem;
+  font-family: var(--font-serif), serif;
+  font-size: var(--lts-type-heading);
+  font-weight: 400;
+  line-height: 1.02;
+  letter-spacing: -0.04em;
+  overflow-wrap: anywhere;
+}
+
+.paragraph {
+  max-width: 61ch;
+  margin: 0 0 0.75rem;
+  color: var(--lts-ink-soft);
+  font-family: var(--font-serif), serif;
+  font-size: clamp(1rem, 0.95rem + 0.2vw, 1.0625rem);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* The biography reads as a note under the statement. */
+.biography {
+  margin-block-start: 0.5rem;
+  font-size: 1rem;
+}
+
+.links {
+  margin-block-start: 1rem;
+}

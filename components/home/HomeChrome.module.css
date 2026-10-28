@@ -1,0 +1,82 @@
+/* Home's stage. 100dvh, since a phone's toolbars cover part of 100vh. */
+.root {
+  position: relative;
+  width: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  background: #000;
+}
+
+/* The chrome layer sits above the intro's grain (40), ripples (41), and
+   portrait (42). It scrolls when large text needs more room, with room for a
+   phone's home indicator. */
+.chrome {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.nav {
+  flex: none;
+}
+
+/* #4's series identity and entry actions fill the middle. */
+.story {
+  flex: 1 0 auto;
+}
+
+.sequence {
+  display: flex;
+  flex: none;
+  justify-content: flex-end;
+  padding: 0 1.5rem 1.5rem;
+}
+
+/* The prototype's left-weighted scrim, in Gallery After Hours' ground, and
+   bottom-weighted on a narrow screen. */
+.vignette {
+  position: fixed;
+  inset: 0;
+  z-index: 49;
+  background: linear-gradient(90deg, rgb(8 10 9 / 0.9) 0%, rgb(8 10 9 / 0.46) 38%, rgb(8 10 9 / 0.08) 70%);
+}
+
+@media (max-width: 39.99rem) {
+  .vignette {
+    background: linear-gradient(0deg, rgb(8 10 9 / 0.92) 0%, rgb(8 10 9 / 0.28) 66%, rgb(8 10 9 / 0.12) 100%);
+  }
+}
+
+/* Only these rules decide whether the chrome shows. Immersive, it's
+   invisible and takes no pointer, yet stays in the document for focus and
+   screen readers. Keyboard focus shows it at once, before hydration too. */
+.chrome,
+.vignette {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-base) var(--ease-standard);
+}
+
+.root[data-interface-state='interactive'] :is(.chrome, .vignette) {
+  opacity: 1;
+}
+
+.root:has(.chrome :focus-visible) :is(.chrome, .vignette) {
+  opacity: 1;
+  transition: none;
+}
+
+/* Receding, the chrome still takes the pointer, so a tap during the fade lands. */
+.root:is([data-interface-state='interactive'], [data-interface-state='receding']) .chrome,
+.root:has(.chrome :focus-visible) .chrome {
+  pointer-events: auto;
+}
+
+/* The reveal tap's own release and click can't land on a control that just appeared under it. */
+.root[data-reveal-gesture] .chrome {
+  pointer-events: none !important;
+}

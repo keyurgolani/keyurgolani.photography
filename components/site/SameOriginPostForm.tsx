@@ -1,0 +1,102 @@
+'use client';
+
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+
+interface SameOriginPostFormProps {
+  /** The same-origin URL the form posts to. */
+  action: string;
+  /** The submit button's text. */
+  submitLabel: string;
+  /** The button's text while the post is on its way, such as "Signing in…". The button keeps `submitLabel` if this is left out. */
+  pendingLabel?: string;
+  className?: string;
+  buttonClassName?: string;
+  /** For the line that says a post didn't go through. */
+  alertClassName?: string;
+  /** Puts that line after the fields, ahead of the button, where a form shows its refusals under the field. It follows the button otherwise. */
+  alertBeforeButton?: boolean;
+  /** The fields before the button, if any. */
+  children?: ReactNode;
+}
+
+/**
+ * A form that posts with fetch, then goes where the answer led.
+ *
+ * The curator's pages send `Referrer-Policy: no-referrer`, and under that
+ * policy a browser sends `Origin: null` on a plain form post, which the
+ * curator's `Origin` check refuses (lib/curation/auth/policy.ts). A fetch to
+ * the same origin always sends the real `Origin`. The button stays disabled
+ * until this has hydrated, so the form never posts the plain way. The cookie
+ * a response sets is kept as for any same-origin fetch. While the post is
+ * on its way the form is `aria-busy` and the button says `pendingLabel`. It
+ * is `aria-disabled` then, not `disabled`, so the focus a keyboard sent it
+ * with stays on it (a focused button that turns disabled drops focus to the
+ * page's body), and `submit` refuses a second post.
+ *
+ * The form takes `data-settled` once the button's first enable has been
+ * styled, so a button that fades between its states (the login's) fades only
+ * on real changes, never from disabled at hydration: for its first 160 ms
+ * that fade showed the label at too little contrast.
+ */
+export default function SameOriginPostForm({
+  action,
+  submitLabel,
+  pendingLabel,
+  className,
+  buttonClassName,
+  alertClassName,
+  alertBeforeButton = false,
+  children,
+}: SameOriginPostFormProps) {
+  const [ready, setReady] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [settled, setSettled] = useState(false);
+  const button = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => setReady(true), []);
+  useLayoutEffect(() => {
+    if (!ready || !button.current) return;
+    // Reading a computed value makes the browser style the enabled button now, while no transition applies, so it
+    // takes its enabled look at once. data-settled then lands before the browser paints.
+    void getComputedStyle(button.current).backgroundColor;
+    setSettled(true);
+  }, [ready]);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (sending) return;
+    setSending(true);
+    setFailed(false);
+    try {
+      const body = new URLSearchParams();
+      for (const [name, value] of new FormData(event.currentTarget)) if (typeof value === 'string') body.append(name, value);
+      const response = await fetch(action, { method: 'POST', body, credentials: 'same-origin', cache: 'no-store' });
+      if (response.redirected && new URL(response.url).origin === window.location.origin) {
+        window.location.assign(response.url);
+        return;
+      }
+      setFailed(true);
+    } catch {
+      setFailed(true);
+    }
+    setSending(false);
+  }
+
+  const alert = failed ? (
+    <p className={alertClassName} role="alert">
+      That didn&apos;t go through. Reload the page and try again.
+    </p>
+  ) : null;
+
+  return (
+    <form className={className} method="post" action={action} onSubmit={submit} aria-busy={sending || undefined} data-settled={settled || undefined}>
+      {children}
+      {alertBeforeButton ? alert : null}
+      <button ref={button} className={buttonClassName} type="submit" disabled={!ready} aria-disabled={sending || undefined}>
+        {sending && pendingLabel ? pendingLabel : submitLabel}
+      </button>
+      {alertBeforeButton ? null : alert}
+    </form>
+  );
+}

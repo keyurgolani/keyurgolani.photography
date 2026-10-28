@@ -1,95 +1,182 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { motion, useMotionValue, useTransform, animate, useAnimationControls } from 'framer-motion';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
+import { motion, useMotionValue, useTransform, animate, type AnimationPlaybackControls } from 'framer-motion';
+import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
+import { badgePlace, boxOf, type BadgePlace, type Box } from './badgePlace';
 import ProfilePicture from './ProfilePicture';
-import profileBack from '../public/assets/profile/back.png';
-import profileFront from '../public/assets/profile/front.png';
+import { HOME_LOADING_TIMEOUT_MS } from './home/homeChromeConfig';
+import { usePrefersReducedMotion } from './motion/usePrefersReducedMotion';
 import styles from './HeroReveal.module.css';
 
-type Phase = 'loading' | 'revealing' | 'settled';
+export type HeroRevealPhase = 'loading' | 'revealing' | 'settled';
 
 interface HeroRevealProps {
   isLoading: boolean;
   onSettled: () => void;
+  /** Called with each phase, the first included. */
+  onPhaseChange?: (phase: HeroRevealPhase) => void;
+  /** About's portrait from the site config folder, or null when there's no usable one. */
+  portrait?: AboutPortraitView | null;
 }
 
-// Project's standard easing
-const EASE_OUT: [number, number, number, number] = [0.22, 1, 0.36, 1];
+/** At least two ripple cycles play before the reveal. */
+const MIN_RIPPLE_MS = 2400;
+/** The ripples fade this long before the mask starts to open. */
+const RIPPLE_FADE_LEAD_MS = 300;
+/** How long the mask takes to open from the portrait to the whole viewport. */
+const REVEAL_S = 1.2;
+/** v1.1.0's handoff: the portrait leaves the center this long after the mask starts opening, */
+const LAND_DELAY_MS = 300;
+/** takes this long to reach its place above the bottom, */
+const LAND_S = 0.8;
+/** on the project's standard easing, */
+const LAND_EASE: [number, number, number, number] = [0.22, 1, 0.36, 1];
+/** and the intro settles this long after it lands. */
+const SETTLE_AFTER_LANDING_MS = 50;
+/** The exit, from the ripples' fade to the settle: the mask's 1.2 s, or the landing, whichever ends later. */
+const EXIT_MS = RIPPLE_FADE_LEAD_MS + Math.max(REVEAL_S * 1000, LAND_DELAY_MS + LAND_S * 1000 + SETTLE_AFTER_LANDING_MS);
+/**
+ * The intro ends within Home's 6 s loading bound, exit included, so its exit
+ * starts by this long after mount whether or not the photograph has arrived.
+ */
+const HERO_EXIT_DEADLINE_MS = HOME_LOADING_TIMEOUT_MS - EXIT_MS;
+/** v1.1.0: the badge stays this long once it's in place, then shows and hides with Home's chrome. */
+export const BADGE_LINGER_MS = 3000;
 
-// Match RevealingContents auto-hide timeout
-const AUTO_HIDE_TIMEOUT = parseInt(
-  process.env.NEXT_PUBLIC_UI_AUTO_HIDE_TIMEOUT || '3000',
-  10
-);
+/**
+ * The portrait's transform for landing progress `p`: from the viewport's
+ * center at full size to the badge's place, `--badge-dx` and `--badge-dy`
+ * from the center at `--badge-scale`. HeroReveal.module.css gives v1.1.0's,
+ * and badgePlace() (badgePlace.ts) moves it where that doesn't clear the chrome.
+ */
+const landingTransform = (p: number) =>
+  `translate(-50%, -50%) translate(calc(${p} * var(--badge-dx)), calc(${p} * var(--badge-dy))) scale(calc(1 - ${p} * (1 - var(--badge-scale))))`;
 
-export default function HeroReveal({ isLoading, onSettled }: HeroRevealProps) {
-  const [phase, setPhase] = useState<Phase>(() => (isLoading ? 'loading' : 'settled'));
+/**
+ * Home's loading state on a first visit with motion: a grain overlay with
+ * ripples around About's portrait at the center. Once loading ends, or at
+ * the exit deadline if it hasn't, a hole opens from the center onto the
+ * photograph, and the portrait glides and shrinks into its place as the
+ * badge, v1.1.0's handoff. There it stays as Home's badge:
+ * for 3 s, then whenever Home's chrome shows. A return visit starts with the
+ * badge in place, and reduced motion fades it in there once loading ends.
+ * With no usable portrait the intro plays without one and there's no badge.
+ */
+export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portrait = null }: HeroRevealProps) {
+  const reducedMotion = usePrefersReducedMotion();
+  // Settled is terminal: once there, no preference change replays the intro.
+  const [phase, setPhase] = useState<HeroRevealPhase>(() => (isLoading && !reducedMotion ? 'loading' : 'settled'));
+  const settledRef = useRef(phase === 'settled');
   const [ripples, setRipples] = useState<number[]>([]);
   const [ripplesExiting, setRipplesExiting] = useState(false);
   const [profileRadius, setProfileRadius] = useState(160);
   const [maxRadius, setMaxRadius] = useState(2000);
-  const [reducedMotion, setReducedMotion] = useState(false);
-  const [profileVisible, setProfileVisible] = useState(true);
+  const [portraitFailed, setPortraitFailed] = useState(false);
+  // The badge is in place: it landed, or a return visit or reduced motion put it there.
+  const [landed, setLanded] = useState(phase === 'settled' && !isLoading);
+  // Already in place at mount, as on a return visit, it shows at once, as v1.1.0's did, with no fade in.
+  const [lingering, setLingering] = useState(phase === 'settled' && !isLoading);
   const rippleIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const rippleIdRef = useRef(0);
   const rippleWaitRef = useRef<NodeJS.Timeout | null>(null);
-  const revealTimeout1Ref = useRef<NodeJS.Timeout | null>(null);
-  const revealTimeout2Ref = useRef<NodeJS.Timeout | null>(null);
+  const exitDeadlineRef = useRef<NodeJS.Timeout | null>(null);
+  const revealTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const landTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const landedTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const revealEndRef = useRef<NodeJS.Timeout | null>(null);
+  const revealAnimationRef = useRef<AnimationPlaybackControls | null>(null);
+  const landAnimationRef = useRef<AnimationPlaybackControls | null>(null);
   const revealInitiatedRef = useRef(!isLoading);
+  const mountedRef = useRef(false);
+  const notifiedRef = useRef(false);
   const mountTimeRef = useRef(Date.now());
-  const wasLoadingRef = useRef(isLoading);
-  const profileControls = useAnimationControls();
+
+  const showPortrait = portrait !== null && !portraitFailed;
 
   // Motion value for reveal progress: 0 = fully covered, 1 = fully revealed
   const revealProgress = useMotionValue(0);
+  // The portrait's way from the center (0) to its place as the badge (1).
+  const landing = useMotionValue(phase === 'settled' ? 1 : 0);
+  const portraitTransform = useTransform(landing, landingTransform);
 
-  // Generate mask-image from revealProgress — expands a transparent hole from center
+  // Generate mask-image from revealProgress — expands a transparent hole from center.
+  // With no portrait over the center, the hole starts closed.
+  const startRadius = showPortrait ? profileRadius : 0;
   const maskImage = useTransform(revealProgress, (v: number) => {
-    const radius = profileRadius + v * (maxRadius - profileRadius);
+    const radius = startRadius + v * (maxRadius - startRadius);
     // Use a small feather (3% spread) for a soft edge on the reveal circle
     return `radial-gradient(circle ${radius}px at 50% 50%, transparent 0%, transparent 97%, black 100%)`;
   });
 
-  // Measure viewport and profile size on mount (SSR-safe)
-  // Also convert profile position to pixel values so Framer Motion can interpolate
+  const clearIntroTimers = useCallback(() => {
+    for (const timer of [rippleWaitRef, exitDeadlineRef, revealTimeoutRef, landTimeoutRef, landedTimeoutRef, revealEndRef]) {
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = null;
+    }
+    if (rippleIntervalRef.current) clearInterval(rippleIntervalRef.current);
+    rippleIntervalRef.current = null;
+  }, []);
+
+  // The intro's end, however it comes: the portrait is in its place, and the grain and ripples go.
+  const settle = useCallback(() => {
+    if (settledRef.current) return;
+    settledRef.current = true;
+    clearIntroTimers();
+    revealAnimationRef.current?.stop();
+    landAnimationRef.current?.stop();
+    landing.set(1);
+    setPhase('settled');
+    // Reduced motion before the exit puts the badge in place only once loading ends.
+    if (revealInitiatedRef.current) setLanded(true);
+  }, [clearIntroTimers, landing]);
+
+  // No intro timer or animation outlives the component.
   useEffect(() => {
-    const isMd = window.innerWidth >= 768;
-    setProfileRadius(isMd ? 160 : 128);
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      clearIntroTimers();
+      revealAnimationRef.current?.stop();
+      landAnimationRef.current?.stop();
+    };
+  }, [clearIntroTimers]);
+
+  // Under reduced motion the intro never paints, and one in progress ends where it is.
+  useLayoutEffect(() => {
+    if (!reducedMotion) return;
+    settle();
+  }, [reducedMotion, settle]);
+
+  // Settled without the handoff, the badge takes its place once loading is over.
+  useEffect(() => {
+    if (phase === 'settled' && !isLoading) setLanded(true);
+  }, [phase, isLoading]);
+
+  // In place, the badge stays a while before it follows the chrome.
+  useEffect(() => {
+    if (!landed) return;
+    setLingering(true);
+    const timer = setTimeout(() => setLingering(false), BADGE_LINGER_MS);
+    return () => clearTimeout(timer);
+  }, [landed]);
+
+  useEffect(() => {
+    onPhaseChange?.(phase);
+  }, [phase, onPhaseChange]);
+
+  // Tell Home once, when the intro ends or turns out not to be needed.
+  useEffect(() => {
+    if (phase !== 'settled' || notifiedRef.current) return;
+    notifiedRef.current = true;
+    onSettled();
+  }, [phase, onSettled]);
+
+  // The reveal opens from the portrait's size to the viewport's diagonal.
+  useEffect(() => {
+    setProfileRadius(window.innerWidth >= 768 ? 160 : 128);
     setMaxRadius(Math.ceil(Math.sqrt(window.innerWidth ** 2 + window.innerHeight ** 2)));
-    setReducedMotion(window.matchMedia('(prefers-reduced-motion: reduce)').matches);
-
-    if (isLoading) {
-      // Convert initial centering position from percentages to pixels
-      // so profileControls.start() can interpolate to pixel targets later
-      profileControls.set({
-        top: window.innerHeight / 2,
-        left: window.innerWidth / 2,
-        scale: 1,
-      });
-      wasLoadingRef.current = true;
-      return;
-    }
-
-    // Only set bottom position if we were never in loading state
-    // (i.e., returning visitor with completed intro). If we transitioned
-    // from loading to not loading, the reveal animation handles the position.
-    if (!wasLoadingRef.current) {
-      profileControls.set({
-        top: window.innerHeight - 280,
-        left: window.innerWidth / 2,
-        scale: 0.85,
-      });
-    }
-  }, [isLoading, profileControls]);
-
-  // If reduced motion, skip to settled immediately
-  useEffect(() => {
-    if (reducedMotion) {
-      setPhase('settled');
-      onSettled();
-    }
-  }, [reducedMotion, onSettled]);
+  }, []);
 
   // Spawn ripple rings during loading phase
   useEffect(() => {
@@ -117,108 +204,103 @@ export default function HeroReveal({ isLoading, onSettled }: HeroRevealProps) {
     setRipples(prev => prev.filter(r => r !== id));
   }, []);
 
-  // Trigger reveal when isLoading becomes false
-  // Uses a ref to track initiation so `phase` isn't in the dependency array —
-  // otherwise setPhase('revealing') would trigger cleanup that cancels our timeouts
+  // The exit, once: the ripples stop and fade, then the mask opens, and the portrait glides to its place.
+  const beginExit = useCallback(() => {
+    if (revealInitiatedRef.current || settledRef.current) return;
+    revealInitiatedRef.current = true;
+    clearIntroTimers();
+    setRipplesExiting(true);
+    revealTimeoutRef.current = setTimeout(() => {
+      revealTimeoutRef.current = null;
+      setPhase('revealing');
+      revealAnimationRef.current = animate(revealProgress, 1, { duration: REVEAL_S, ease: 'easeInOut' });
+      landTimeoutRef.current = setTimeout(() => {
+        landTimeoutRef.current = null;
+        landAnimationRef.current = animate(landing, 1, {
+          duration: LAND_S,
+          ease: LAND_EASE,
+          onComplete: () => {
+            // Reduced motion may have settled the intro mid-landing, or Home may be gone.
+            if (!mountedRef.current || settledRef.current) return;
+            landedTimeoutRef.current = setTimeout(settle, SETTLE_AFTER_LANDING_MS);
+          },
+        });
+      }, LAND_DELAY_MS);
+    }, RIPPLE_FADE_LEAD_MS);
+    // The exit's end on the clock, too, in case an animation's last frame comes late or not at all, as in a hidden tab.
+    revealEndRef.current = setTimeout(settle, EXIT_MS);
+  }, [clearIntroTimers, revealProgress, landing, settle]);
+
+  // Loading ending starts the exit once at least two ripple cycles have played.
   useEffect(() => {
-    if (!isLoading && !revealInitiatedRef.current && !reducedMotion) {
-      revealInitiatedRef.current = true;
-
-      // Ensure at least 2 ripple cycles (2400ms) have played before revealing
-      const elapsed = Date.now() - mountTimeRef.current;
-      const minDisplayTime = 2400;
-      const waitForRipples = Math.max(0, minDisplayTime - elapsed);
-
-      // Delay the reveal if images loaded too quickly
-      rippleWaitRef.current = setTimeout(() => {
-        // Stop spawning new ripples and fade existing ones out
-        if (rippleIntervalRef.current) clearInterval(rippleIntervalRef.current);
-        setRipplesExiting(true);
-
-        // Start reveal shortly after fade begins — they overlap slightly
-        revealTimeout1Ref.current = setTimeout(() => {
-          setPhase('revealing');
-
-          // Animate the mask-image reveal (expanding hole from center outward)
-          animate(revealProgress, 1, { duration: 1.2, ease: 'easeInOut' });
-
-          // Animate profile photo from center to bottom position (starts 0.3s after reveal)
-          // Use pixel values — Framer Motion can't interpolate between '%' and 'calc()'
-          revealTimeout2Ref.current = setTimeout(() => {
-            profileControls.start({
-              top: window.innerHeight - 280,
-              left: window.innerWidth / 2,
-              scale: 0.85,
-              transition: { duration: 0.8, ease: EASE_OUT },
-            }).then(() => {
-              setTimeout(() => {
-                setPhase('settled');
-                onSettled();
-              }, 50);
-            });
-          }, 300);
-        }, 300);
-      }, waitForRipples);
-    }
-
+    if (isLoading || reducedMotion || revealInitiatedRef.current || settledRef.current) return;
+    const waitForRipples = Math.max(0, MIN_RIPPLE_MS - (Date.now() - mountTimeRef.current));
+    rippleWaitRef.current = setTimeout(beginExit, waitForRipples);
     return () => {
       if (rippleWaitRef.current) clearTimeout(rippleWaitRef.current);
-      if (revealTimeout1Ref.current) clearTimeout(revealTimeout1Ref.current);
-      if (revealTimeout2Ref.current) clearTimeout(revealTimeout2Ref.current);
+      rippleWaitRef.current = null;
     };
-  }, [isLoading, reducedMotion, revealProgress, profileControls, onSettled]);
+  }, [isLoading, reducedMotion, beginExit]);
 
-  // Auto-hide profile photo after settling (mirrors RevealingContents behavior)
+  // Loaded or not, the exit starts by the deadline, so nothing of the intro paints after 6 s.
   useEffect(() => {
-    if (phase !== 'settled') return;
-
-    let hideTimeout: NodeJS.Timeout;
-    const lastMousePos = { x: 0, y: 0 };
-    let hasInitialPos = false;
-
-    const handleActivity = () => {
-      setProfileVisible(true);
-      clearTimeout(hideTimeout);
-      hideTimeout = setTimeout(() => setProfileVisible(false), AUTO_HIDE_TIMEOUT);
-    };
-
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!hasInitialPos) {
-        lastMousePos.x = e.clientX;
-        lastMousePos.y = e.clientY;
-        hasInitialPos = true;
-        return;
-      }
-      const dx = e.clientX - lastMousePos.x;
-      const dy = e.clientY - lastMousePos.y;
-      if (Math.sqrt(dx * dx + dy * dy) < 100) return;
-      lastMousePos.x = e.clientX;
-      lastMousePos.y = e.clientY;
-      handleActivity();
-    };
-
-    // Start the initial auto-hide timer
-    hideTimeout = setTimeout(() => setProfileVisible(false), AUTO_HIDE_TIMEOUT);
-
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('touchstart', handleActivity);
-    window.addEventListener('click', handleActivity);
-    window.addEventListener('keydown', handleActivity);
-    window.addEventListener('scroll', handleActivity);
-
+    if (reducedMotion || revealInitiatedRef.current || settledRef.current) return;
+    exitDeadlineRef.current = setTimeout(beginExit, Math.max(0, mountTimeRef.current + HERO_EXIT_DEADLINE_MS - Date.now()));
     return () => {
-      clearTimeout(hideTimeout);
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('touchstart', handleActivity);
-      window.removeEventListener('click', handleActivity);
-      window.removeEventListener('keydown', handleActivity);
-      window.removeEventListener('scroll', handleActivity);
+      if (exitDeadlineRef.current) clearTimeout(exitDeadlineRef.current);
+      exitDeadlineRef.current = null;
     };
-  }, [phase]);
+  }, [reducedMotion, beginExit]);
+
+  // Home's loading bound, whatever becomes of the exit's own timers. They're one-shot and armed once, so anything
+  // that clears them without unmounting would leave the grain up for good. React does that if Home is ever kept in a
+  // hidden Activity (Next wraps routes in one only with `cacheComponents`, which this app doesn't set). From any state short of settled, this settles the intro HOME_LOADING_TIMEOUT_MS after
+  // mount, and it arms again whenever its effect runs again. The clamp keeps a wall clock set back from stretching it.
+  useEffect(() => {
+    if (phase === 'settled') return;
+    const left = Math.min(HOME_LOADING_TIMEOUT_MS, Math.max(0, mountTimeRef.current + HOME_LOADING_TIMEOUT_MS - Date.now()));
+    const timer = setTimeout(settle, left);
+    return () => clearTimeout(timer);
+  }, [phase, settle]);
+
+  const handleUnusable = useCallback(() => setPortraitFailed(true), []);
+
+  // The badge's place, from the chrome's own boxes, measured before the first paint and again whenever Home, the
+  // nav or the story changes size. The chrome is in the document while it's hidden, so its boxes are there to measure.
+  const portraitRef = useRef<HTMLDivElement>(null);
+  const [placeKind, setPlaceKind] = useState<BadgePlace['kind'] | null>(null);
+  useLayoutEffect(() => {
+    const element = portraitRef.current;
+    if (!element || !showPortrait) return;
+    const root = element.closest('main') ?? document.body;
+    const measure = () => {
+      const place = badgePlace(
+        { width: window.innerWidth, height: window.innerHeight },
+        element.offsetWidth,
+        boxOf(root.querySelector('[data-chrome-region="nav"]')),
+        [...root.querySelectorAll('[data-chrome-region="story"] :is(h1, h2, p, a, [data-chrome-panel])')].map(boxOf).filter((box): box is Box => box !== null),
+      );
+      if (place === null) {
+        for (const name of ['--badge-dx', '--badge-dy', '--badge-scale']) element.style.removeProperty(name);
+      } else {
+        element.style.setProperty('--badge-dx', `${place.dx}px`);
+        element.style.setProperty('--badge-dy', `${place.dy}px`);
+        element.style.setProperty('--badge-scale', String(place.scale));
+      }
+      setPlaceKind(place?.kind ?? null);
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(root);
+    for (const region of root.querySelectorAll('[data-chrome-region="nav"], [data-chrome-region="story"]')) observer.observe(region);
+    return () => observer.disconnect();
+  }, [showPortrait]);
+
+  if (phase === 'settled' && !showPortrait) return null;
 
   return (
     <>
-      {/* Grain overlay and ripples only render before settled */}
       {phase !== 'settled' && (
         <>
           {/* SVG Filter Definition (hidden, referenced by CSS) */}
@@ -252,10 +334,13 @@ export default function HeroReveal({ isLoading, onSettled }: HeroRevealProps) {
           </motion.div>
 
           {/* Ripple Glows — soft radial pulses, faded out as a group on exit */}
-          <div style={{
-            opacity: ripplesExiting ? 0 : 1,
-            transition: 'opacity 0.5s ease-out',
-          }}>
+          <div
+            className={styles.ripples}
+            style={{
+              opacity: ripplesExiting ? 0 : 1,
+              transition: 'opacity 0.5s ease-out',
+            }}
+          >
             {ripples.map(id => (
               <motion.div
                 key={id}
@@ -283,30 +368,20 @@ export default function HeroReveal({ isLoading, onSettled }: HeroRevealProps) {
         </>
       )}
 
-      {/* Profile Photo — same element across all phases to preserve animation state */}
-      <motion.div
-        animate={profileControls}
-        initial={{
-          position: 'fixed',
-          top: '50%',
-          left: '50%',
-          x: '-50%',
-          y: '-50%',
-          zIndex: 42,
-        }}
-        style={{
-          position: 'fixed',
-          zIndex: 42,
-          opacity: phase === 'settled' ? (profileVisible ? 1 : 0) : 1,
-          transition: phase === 'settled' ? 'opacity 1s ease-in-out' : undefined,
-          pointerEvents: phase === 'settled' && !profileVisible ? 'none' : 'auto',
-        }}
-      >
-        <ProfilePicture
-          profileBack={profileBack}
-          profileFront={profileFront}
-        />
-      </motion.div>
+      {/* The portrait: one element from the center to its place, so the handoff never restarts it. */}
+      {showPortrait && (
+        <motion.div
+          ref={portraitRef}
+          className={phase === 'settled' ? styles.badge : styles.portrait}
+          style={{ transform: portraitTransform }}
+          data-badge-place={placeKind ?? 'v1.1.0'}
+          data-home-badge={phase === 'settled' ? '' : undefined}
+          data-landed={phase === 'settled' && landed ? '' : undefined}
+          data-lingering={phase === 'settled' && landed && lingering ? '' : undefined}
+        >
+          <ProfilePicture portrait={portrait} still={reducedMotion} onUnusable={handleUnusable} />
+        </motion.div>
+      )}
     </>
   );
 }

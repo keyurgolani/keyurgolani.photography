@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Checks that docker-compose.prod.yml runs every service on the one release
-# tag in PHOTOGRAPHY_IMAGE_TAG, and that ci/smoke-image.sh starts every
-# service Compose starts by default. Compose runs from an empty project
-# directory so a local .env can't leak in.
+# tag in PHOTOGRAPHY_IMAGE_TAG, that ci/smoke-image.sh starts every service
+# Compose starts by default, that every published port is on the host's
+# loopback, that the data root, the library, web's image cache, and the
+# site config folder mounts keep their guarantees, and that the curator (#14)
+# is the only service with CURATION_ENABLED, starts only by name, publishes
+# on 127.0.0.1:3001 alone, and is the only service that mounts ./secrets.
+# Compose runs from an empty project directory so a local .env can't leak in.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -87,3 +91,164 @@ if [ "$services" != "$smoke" ]; then
   fail "$FILE starts '$services' by default, but $SERVICES_FILE lists '$smoke'. A PR that adds a service lists it in $SERVICES_FILE and extends ci/smoke-image.sh to check it."
 fi
 echo "ci/smoke-image.sh starts every default service: $services."
+
+# The resolved file the last checks read, with every profile.
+if ! resolved=$(PHOTOGRAPHY_IMAGE_TAG=v9.9.9 compose config --format json); then
+  fail "docker compose config failed."
+fi
+
+# 6. Every published port is on the host's 127.0.0.1, whatever
+#    PHOTOGRAPHY_PORT says. A reverse proxy or tunnel on the host serves it.
+for port in '' 3456; do
+  if ! ports=$(PHOTOGRAPHY_IMAGE_TAG=v9.9.9 PHOTOGRAPHY_PORT=$port compose config --format json); then
+    fail "docker compose config failed with PHOTOGRAPHY_PORT='$port'."
+  fi
+  if ! jq -e '[.services[] | (.ports // [])[]] | all(type == "object" and .host_ip == "127.0.0.1")' <<<"$ports" >/dev/null; then
+    fail "Every ports: entry must publish on 127.0.0.1, as \"127.0.0.1:\${PHOTOGRAPHY_PORT:-3000}:3000\"."
+  fi
+done
+if ! jq -e '.services.web.ports | length > 0' <<<"$resolved" >/dev/null; then
+  fail "web must publish its port on 127.0.0.1."
+fi
+# A service on the host's network has no ports: to check, and web listens on
+# every interface inside its container.
+if ! jq -e 'all(.services[]; (.network_mode // "") != "host")' <<<"$resolved" >/dev/null; then
+  fail "No service may use network_mode: host, since it would bypass the 127.0.0.1 publish."
+fi
+echo "Every published port is on 127.0.0.1, and no service shares the host's network."
+
+# 7. web mounts the data root read-only, and no bind of the data root, the
+#    library, or web's image cache is ever created when its source is missing.
+#    Docker would create the image cache owned by root, which uid 1001 can't
+#    write. How Compose writes create_host_path: false in its output differs
+#    between versions, so compare against a probe file holding one
+#    long-syntax bind with it and one short-syntax bind, which Compose creates
+#    when missing.
+PROBE="$PROJECT_DIR/probe.yml"
+cat >"$PROBE" <<'YAML'
+services:
+  probe:
+    image: probe
+    volumes:
+      - type: bind
+        source: ./kept
+        target: /kept
+        bind:
+          create_host_path: false
+      - ./created:/created
+YAML
+if ! probe=$(docker compose -f "$PROBE" --project-directory "$PROJECT_DIR" config --format json); then
+  fail "docker compose config failed on the create_host_path probe."
+fi
+never_created=$(jq -c '.services.probe.volumes[] | select(.target == "/kept") | .bind.create_host_path' <<<"$probe")
+short_syntax=$(jq -c '.services.probe.volumes[] | select(.target == "/created") | .bind.create_host_path' <<<"$probe")
+if [ "$never_created" = "$short_syntax" ]; then
+  fail "This Compose writes create_host_path the same way for a long-syntax bind with false and a short-syntax bind ($never_created), so the check can't tell them apart."
+fi
+echo "create_host_path probe: long syntax with false=$never_created, short syntax=$short_syntax"
+# A data root mount is one at /data/portfolio, however its target is spelled,
+# or one of ./portfolio-data or a folder inside it wherever it lands, so a
+# second read-write bind of the same folder can't slip past.
+DATA_ROOT_MOUNT='((.target // "") | rtrimstr("/")) == "/data/portfolio" or ((.source // "") | test("/portfolio-data(/|$)"))'
+if ! jq -e "[.services.web.volumes[]? | select($DATA_ROOT_MOUNT)]
+    | length == 1 and all(.type == \"bind\" and .target == \"/data/portfolio\" and .read_only == true)" <<<"$resolved" >/dev/null; then
+  fail "web must mount the data root once, at /data/portfolio, as a bind with read_only: true."
+fi
+if ! jq -e '.services.web.environment.PHOTOGRAPHY_DATA_DIR == "/data/portfolio"' <<<"$resolved" >/dev/null; then
+  fail "web must set PHOTOGRAPHY_DATA_DIR=/data/portfolio, the read-only mount."
+fi
+if ! jq -e --argjson never "$never_created" "
+    [.services[] | (.volumes // [])[] | select(($DATA_ROOT_MOUNT) or (((.target // \"\") | rtrimstr(\"/\")) | IN(\"/app/public/assets/photos\", \"/app/.next/cache/images\")))]
+    | length > 0 and all(.type == \"bind\" and .bind.create_host_path == \$never)" <<<"$resolved" >/dev/null; then
+  fail "Every mount of the data root, /app/public/assets/photos, or /app/.next/cache/images must be a long-syntax bind with bind.create_host_path: false."
+fi
+echo "web mounts the data root read-only, and no data root, library, or image cache bind is created when missing."
+
+# 8. web mounts the site config folder, which holds About's portrait, once,
+#    read-only, at /config/site, and points PHOTOGRAPHY_SITE_CONFIG_DIR at it.
+#    No other service mounts it, so nothing in the stack can write the
+#    portrait, and nothing mounts it under /app/public, where Next would
+#    serve the original file, metadata and all.
+SITE_CONFIG_MOUNT='((.target // "") | rtrimstr("/")) == "/config/site" or ((.source // "") | test("/site-config(/|$)"))'
+if ! jq -e "[.services.web.volumes[]? | select($SITE_CONFIG_MOUNT)]
+    | length == 1 and all(.type == \"bind\" and .target == \"/config/site\" and .read_only == true)" <<<"$resolved" >/dev/null; then
+  fail "web must mount ./site-config once, at /config/site, as a bind with read_only: true."
+fi
+if ! jq -e '.services.web.environment.PHOTOGRAPHY_SITE_CONFIG_DIR == "/config/site"' <<<"$resolved" >/dev/null; then
+  fail "web must set PHOTOGRAPHY_SITE_CONFIG_DIR=/config/site, the read-only mount."
+fi
+if ! jq -e "[.services | to_entries[] | select(.key != \"web\") | .value.volumes[]? | select($SITE_CONFIG_MOUNT)] | length == 0" <<<"$resolved" >/dev/null; then
+  fail "Only web may mount the site config folder."
+fi
+if ! jq -e '[.services[] | (.volumes // [])[] | select(((.target // "") | startswith("/app/public")) and (((.source // "") | test("/site-config(/|$)"))))] | length == 0' <<<"$resolved" >/dev/null; then
+  fail "The site config folder must never be mounted under /app/public."
+fi
+echo "web mounts the site config folder once, read-only, at /config/site, and no other service mounts it."
+
+# 9. web can't write the library or the data root: it mounts both read-only.
+LIBRARY_MOUNT='((.target // "") | rtrimstr("/")) == "/app/public/assets/photos"'
+if ! jq -e "[.services.web.volumes[]? | select($LIBRARY_MOUNT)]
+    | length == 1 and all(.type == \"bind\" and .read_only == true)" <<<"$resolved" >/dev/null; then
+  fail "web must mount the library once, at /app/public/assets/photos, as a bind with read_only: true."
+fi
+echo "web mounts the library and the data root read-only."
+
+# 10. CURATION_ENABLED and CURATION_BIND_SCOPE are set on curator alone, and
+#     no service but curator sets either, through environment or env_file,
+#     which Compose resolves into environment.
+if ! jq -e '.services.curator' <<<"$resolved" >/dev/null; then
+  fail "docker-compose.prod.yml must define the curator service."
+fi
+if ! jq -e '[.services | to_entries[] | select(.key != "curator") | .value.environment // {} | has("CURATION_ENABLED", "CURATION_BIND_SCOPE")] | any | not' <<<"$resolved" >/dev/null; then
+  fail "Only curator may set CURATION_ENABLED or CURATION_BIND_SCOPE."
+fi
+if ! jq -e '.services.curator.environment | .CURATION_ENABLED == "true" and .CURATION_BIND_SCOPE == "container" and .PHOTOGRAPHY_DATA_DIR == "/data/portfolio"' <<<"$resolved" >/dev/null; then
+  fail "curator must set CURATION_ENABLED=true, CURATION_BIND_SCOPE=container, and PHOTOGRAPHY_DATA_DIR=/data/portfolio."
+fi
+echo "Only curator sets CURATION_ENABLED and CURATION_BIND_SCOPE."
+
+# 11. curator is off by default, publishes one port on the host's
+#     127.0.0.1:3001 alone, shares no network with another service, runs as
+#     the watcher's uid, mounts the library read-only and the data root
+#     read-write.
+if ! jq -e '.services.curator.profiles == ["curator"]' <<<"$resolved" >/dev/null; then
+  fail "curator must sit behind the curator profile, so it starts only by name."
+fi
+if ! jq -e '.services.curator.ports | length == 1 and all(.host_ip == "127.0.0.1" and (.published | tostring) == "3001" and .target == 3000)' <<<"$resolved" >/dev/null; then
+  fail "curator must publish exactly \"127.0.0.1:3001:3000\"."
+fi
+if ! jq -e '(.services.curator.network_mode // "") == "" and (.services.curator.networks // {} | keys) == ["curator"]
+    and ([.services | to_entries[] | select(.key != "curator") | (.value.networks // {"default": null}) | keys[]] | index("curator") == null)' <<<"$resolved" >/dev/null; then
+  fail "curator must be on the curator network alone, and no other service may join it."
+fi
+if ! jq -e '.services.curator.healthcheck.test | index("Host: localhost:3001") != null' <<<"$resolved" >/dev/null; then
+  fail "curator's healthcheck must send Host: localhost:3001, since the curator answers no other Host."
+fi
+if ! jq -e '.services.curator.user == "1001:1001"' <<<"$resolved" >/dev/null; then
+  fail "curator must run as user 1001:1001, the watcher's uid."
+fi
+if ! jq -e "[.services.curator.volumes[]? | select($LIBRARY_MOUNT)] | length == 1 and all(.type == \"bind\" and .read_only == true)" <<<"$resolved" >/dev/null; then
+  fail "curator must mount the library once, at /app/public/assets/photos, read-only."
+fi
+if ! jq -e "[.services.curator.volumes[]? | select($DATA_ROOT_MOUNT)] | length == 1 and all(.type == \"bind\" and .target == \"/data/portfolio\" and (.read_only // false) == false)" <<<"$resolved" >/dev/null; then
+  fail "curator must mount the data root once, at /data/portfolio, read-write."
+fi
+echo "curator starts only by name, publishes 127.0.0.1:3001 alone on a network of its own, and runs as uid 1001."
+
+# 12. The curator's secret files (docs/curator.md): ./secrets is mounted into
+#     curator alone, once, read-only, at /run/secrets/curator, and never
+#     created when missing. No service carries a secret or names another
+#     place for one in its environment, so the files are the only source.
+SECRETS_MOUNT='((.source // "") | test("/secrets/?$")) or ((.target // "") | startswith("/run/secrets"))'
+if ! jq -e "[.services.curator.volumes[]? | select($SECRETS_MOUNT)]
+    | length == 1 and all(.type == \"bind\" and .target == \"/run/secrets/curator\" and .read_only == true and .bind.create_host_path == false)" <<<"$resolved" >/dev/null; then
+  fail "curator must mount ./secrets once, at /run/secrets/curator, as a read-only bind with bind.create_host_path: false."
+fi
+if ! jq -e "([.services | to_entries[] | select(.key != \"curator\") | .value.volumes[]? | select($SECRETS_MOUNT)] | length == 0)
+    and ([.services[] | .secrets // [] | length] | add // 0) == 0 and ((.secrets // {}) | length) == 0" <<<"$resolved" >/dev/null; then
+  fail "No service but curator may mount ./secrets or use Compose secrets."
+fi
+if ! jq -e '[.services[] | .environment // {} | keys[] | select(test("PASSPHRASE|SESSION_SECRET|SECRET_FILE"))] | length == 0' <<<"$resolved" >/dev/null; then
+  fail "No service may set a passphrase, a session secret, or a secret file path in its environment. curator reads the files from its mount."
+fi
+echo "Only curator mounts ./secrets, read-only, and no environment carries a secret."

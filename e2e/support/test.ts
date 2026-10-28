@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { test as base, expect, type Page, type Route } from '@playwright/test';
-import type { ImageItem } from '../../utils/getImageData';
+import type { ImageItem } from '../../lib/catalog/photos-api';
 import { DEFAULT_PHOTO_NAMES, fixtureDir, isPhotoFixture, photoFixture } from './fixtures';
 
 const photoLists = new WeakMap<Page, readonly string[]>();
@@ -22,7 +22,11 @@ function photoRecords(names: readonly string[]): ImageItem[] {
     return names.map((name, index) => {
         const { width, height, caption } = photoFixture(name);
         const url = `/assets/photos/${name}.jpg`;
-        return { id: index, src: url, thumbnail: url, medium: url, optimized: url, width, height, caption, date: NEWEST - index * DAY, lqip: '' };
+        // The fixture itself stands in for every derivative, so the optimized size is its own
+        return {
+            id: index, src: url, thumbnail: url, medium: url, optimized: url, width, height,
+            optimizedWidth: width, optimizedHeight: height, caption, date: NEWEST - index * DAY, lqip: '',
+        };
     });
 }
 
@@ -42,7 +46,7 @@ export const test = base.extend<{ photoRoutes: void }>({
         async ({ page }, use) => {
             await page.route('**/api/photos', (route) => route.fulfill({ json: photoRecords(photoLists.get(page) ?? DEFAULT_PHOTO_NAMES) }));
             await page.route('**/assets/photos/**', (route) => servePhoto(route, new URL(route.request().url()).pathname));
-            // Photo URLs through the image optimizer get the fixture too. Anything else, like the About portrait, passes through.
+            // Photo URLs through the image optimizer get the fixture too. Anything else passes through.
             await page.route('**/_next/image**', (route) => {
                 const request = new URL(route.request().url());
                 const source = new URL(request.searchParams.get('url') ?? '', request);

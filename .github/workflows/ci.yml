@@ -49,12 +49,20 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm test -- --run
-      - run: npm run build
+      # Builds, then publishes to and rolls back the standalone server on a
+      # temp data root. The steps after it check that same build.
+      - run: npm run test:prod
+      - name: Check the build traced no project files into .next/standalone
+        run: bash ci/check-standalone.sh
+      - run: npm run check:prerender
+      - run: npm run smoke:media
 
   e2e:
     name: Browser tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The suite alone takes about 19 minutes on next, and the Playwright install
+    # is bounded at three 6-minute tries.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
 
@@ -65,7 +73,27 @@ jobs:
 
       - run: npm ci
 
-      - run: npx playwright install --with-deps --only-shell chromium
+      # WebKit runs Home's first-tap cases on the mobile-webkit project. --only-shell applies to Chromium alone.
+      # The apt half of --with-deps has hung for the whole job on a slow mirror
+      # (#84, #87, #88). Bound each try and retry a hung one.
+      - name: Install Playwright browsers
+        timeout-minutes: 20
+        run: |
+          # A stalled package download should fail and retry in seconds, not
+          # sit until the try's 6 minutes are up (#87's run stalled on fonts
+          # from the Azure mirror all three tries).
+          printf '%s\n' 'Acquire::http::Timeout "20";' 'Acquire::https::Timeout "20";' 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/99ci-timeouts >/dev/null
+          for try in 1 2 3; do
+            timeout 360 npx playwright install --with-deps --only-shell chromium webkit && exit 0
+            echo "Playwright install try $try failed or took over 6 minutes."
+            # timeout stops npx, not the apt-get it started under sudo, which
+            # would hold the dpkg lock. The runner is throwaway.
+            sudo pkill -9 -f 'apt-get|dpkg' || true
+            sudo dpkg --configure -a || true
+            # Try the main Ubuntu archive instead of the runner's mirror next time.
+            sudo sed -i 's#http://azure.archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+          done
+          exit 1
 
       - run: npm run test:e2e
 
@@ -122,6 +150,18 @@ jobs:
         env:
           IMAGE: ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke
         run: bash ci/smoke-watcher-once.sh
+
+      # ci/smoke-catalog.sh publishes its test catalog on the runner with
+      # ci/publish-fixture.ts, so it needs Node and the dev dependencies.
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Smoke test the catalog in the image
+        run: ci/smoke-catalog.sh ci-smoke
 
   # Fails on a high or critical advisory in a production dependency unless
   # .github/audit-allowlist.json lists it. npm audit reads only the lockfile,

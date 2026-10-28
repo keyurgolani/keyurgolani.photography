@@ -4,31 +4,74 @@ services:
   web:
     image: ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?Set PHOTOGRAPHY_IMAGE_TAG to a release tag, for example v1.1.0}
     ports:
-      - "3000:3000"
+      # Loopback only. A reverse proxy or tunnel on the host serves it to the
+      # internet. PHOTOGRAPHY_PORT changes the host port.
+      - "127.0.0.1:${PHOTOGRAPHY_PORT:-3000}:3000"
     volumes:
       # Never created when missing, so a lost photos folder keeps the container
-      # from starting instead of serving an empty library
+      # from starting instead of serving an empty library. Read-only: web
+      # serves the library and never writes it.
       - type: bind
         source: ./public/assets/photos
         target: /app/public/assets/photos
+        read_only: true
         bind:
           create_host_path: false
-      - ./.next-images-cache:/app/.next/cache/images
+      # The private data root: photo identity state and the /media sets. Only
+      # the watcher writes it. Never created when missing either, since an
+      # empty one beside a library that had photo IDs would mint new ones.
+      # docs/data-root.md covers backing it up with the library.
+      - type: bind
+        source: ./portfolio-data
+        target: /data/portfolio
+        read_only: true
+        bind:
+          create_host_path: false
+      # /_next/image's cache, which web writes as uid 1001. Never created when
+      # missing either: the Docker daemon would create it, owned by root under
+      # a root daemon, and web couldn't write it. Create it first, owned by
+      # uid 1001 (docs/data-root.md, Setting it up).
+      - type: bind
+        source: ./.next-images-cache
+        target: /app/.next/cache/images
+        bind:
+          create_host_path: false
+      # The site config folder: About's portrait, about/portrait.jpg (or .jpeg,
+      # .png, .webp), and its optional about/portrait.json. Read-only, and
+      # read per request, so swapping the file there changes About with no
+      # rebuild or restart. Created empty when missing, so a host without one
+      # still starts and About shows the name instead (docs/releasing.md,
+      # About's portrait).
+      - type: bind
+        source: ./site-config
+        target: /config/site
+        read_only: true
+        bind:
+          create_host_path: true
     restart: always
     environment:
       - NODE_ENV=production
-      - NEXT_PUBLIC_CAROUSEL_INTERVAL=12000  # Carousel slide interval in ms (default: 12000)
-      - NEXT_PUBLIC_UI_AUTO_HIDE_TIMEOUT=3000  # UI elements auto-hide timeout in ms (default: 3000)
+      - PHOTOGRAPHY_DATA_DIR=/data/portfolio
+      - PHOTOGRAPHY_SITE_CONFIG_DIR=/config/site
+      - SITE_URL=https://keyurgolani.photography  # Public origin for share links, read at runtime
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/photos"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
 
   # Image optimization watcher - processes new photos automatically
-  # Note: Ensure photos directory is writable by uid 1001 (nextjs user)
-  # Run on host: chown -R 1001:1001 ./public/assets/photos
+  # Both containers run as uid 1001 (nextjs user). web reads the photos and
+  # their derivatives and writes only ./.next-images-cache. The watcher reads
+  # the photos, writes the derivative folders and cache/ in the photos folder,
+  # and writes the data root. When nothing else writes the photos, run on host:
+  #   mkdir -p ./portfolio-data ./.next-images-cache
+  #   chown -R 1001:1001 ./public/assets/photos ./portfolio-data ./.next-images-cache
+  #   chmod 700 ./portfolio-data
+  # When another process, such as a file sync tool, writes the photos, hand
+  # uid 1001 only the derivative folders and cache/ instead, and keep the
+  # photos readable to it (docs/data-root.md, Who owns the photos).
   image-watcher:
     image: ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?Set PHOTOGRAPHY_IMAGE_TAG to a release tag, for example v1.1.0}
     user: "1001:1001"
@@ -38,10 +81,96 @@ services:
         target: /app/public/assets/photos
         bind:
           create_host_path: false
+      - type: bind
+        source: ./portfolio-data
+        target: /data/portfolio
+        bind:
+          create_host_path: false
     restart: always
     environment:
       - NODE_ENV=production
-    command: ["npx", "tsx", "scripts/imageWatcher.ts", "--watch"]
+      - PHOTOGRAPHY_DATA_DIR=/data/portfolio
+    command: ["node", "dist/scripts/imageWatcher.mjs", "--watch"]
+    # Healthy while status/watcher.json in the data root is at most 120 s old
+    # and no identity pass has run longer than 30 minutes. The watcher rewrites
+    # it every 30 s, so a stopped event loop, a data root it can't write, or a
+    # pass that never ends turns unhealthy. A stuck legacy derivative job
+    # doesn't (docs/data-root.md, Health).
+    healthcheck:
+      test: ["CMD", "node", "dist/scripts/watcherHealth.mjs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    # The watcher doesn't need web to serve anything, so it starts alongside it.
     depends_on:
       web:
-        condition: service_healthy
+        condition: service_started
+
+  # The curator (#14), off unless started by name. docs/curator.md has the
+  # rest: who can reach it, and turning it on and off.
+  #   docker compose -f docker-compose.prod.yml up -d curator
+  #   docker compose -f docker-compose.prod.yml stop curator
+  # The same image as web, with the curator flag on, which no other service
+  # sets. It publishes only on the host's 127.0.0.1:3001, and from another
+  # machine the way in is an SSH tunnel to that port, and then the curator's
+  # passphrase login. It reads the library and writes the data root, as the
+  # watcher's uid, on a network of its own, so no other container can reach it.
+  curator:
+    image: ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?Set PHOTOGRAPHY_IMAGE_TAG to a release tag, for example v1.1.0}
+    profiles: ["curator"]
+    user: "1001:1001"
+    ports:
+      # Loopback only, and never configurable: the Host allowlist answers to 3001.
+      - "127.0.0.1:3001:3000"
+    networks:
+      - curator
+    volumes:
+      - type: bind
+        source: ./public/assets/photos
+        target: /app/public/assets/photos
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./portfolio-data
+        target: /data/portfolio
+        bind:
+          create_host_path: false
+      # The passphrase hash and the session secret, made at deploy time
+      # (docs/curator.md), owned by uid 1001 and readable by it alone. Read-only,
+      # mounted into curator and no other service. Never created when missing,
+      # and a missing or unusable file is a 503 on every path.
+      - type: bind
+        source: ./secrets
+        target: /run/secrets/curator
+        read_only: true
+        bind:
+          create_host_path: false
+    # On only while the owner runs it, so a reboot never brings it back.
+    restart: "no"
+    environment:
+      - NODE_ENV=production
+      - PHOTOGRAPHY_DATA_DIR=/data/portfolio
+      - CURATION_ENABLED=true
+      # Docker's port forward reaches the container on its own interface, so
+      # the server listens on every interface inside it, and the publish to
+      # 127.0.0.1 above is the boundary. CURATION_BIND_SCOPE=container is what
+      # lets a curator listen on 0.0.0.0, and only inside a container.
+      - HOSTNAME=0.0.0.0
+      - CURATION_BIND_SCOPE=container
+      # Optional, from .env: one more local tunnel port the Host allowlist
+      # answers to, when 3001 is taken on the owner's machine.
+      - CURATOR_TUNNEL_PORT=${CURATOR_TUNNEL_PORT:-}
+    healthcheck:
+      # With the flag on, every path answers only the curator's Host.
+      test: ["CMD", "wget", "-q", "--spider", "--header", "Host: localhost:3001", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  # The curator's alone. Its port publish still works, and web and the
+  # watcher, on the default network, can't reach it.
+  curator: {}

@@ -6,18 +6,24 @@ services:
       context: .
       dockerfile: Dockerfile
       target: deps
-    command: npm run dev
+    # No --hostname: inside the container, next dev listens on every interface,
+    # and the loopback-only port below is the boundary.
+    command: npx next dev
     ports:
-      - "3000:3000"
+      # Loopback only. From another machine, use an SSH tunnel to 127.0.0.1:3000.
+      - "127.0.0.1:3000:3000"
     volumes:
       - .:/app
       - /app/node_modules
       - ./public/assets/photos:/app/public/assets/photos # Bind mount for photos
+      # The private data root, which only the watcher writes. Read-only here by
+      # convention only: .:/app shows the same folder read-write at /app/portfolio-data.
+      - ./portfolio-data:/data/portfolio:ro
     environment:
       - NODE_ENV=development
-      - NEXT_PUBLIC_CAROUSEL_INTERVAL=12000  # Carousel slide interval in ms (default: 12000)
+      - PHOTOGRAPHY_DATA_DIR=/data/portfolio
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/photos"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -33,10 +39,12 @@ services:
       - .:/app
       - /app/node_modules
       - ./public/assets/photos:/app/public/assets/photos # Same volume mount as web
+      - ./portfolio-data:/data/portfolio
     environment:
       - NODE_ENV=development
-      - NEXT_PUBLIC_CAROUSEL_INTERVAL=12000  # Carousel slide interval in ms (default: 12000)
+      - PHOTOGRAPHY_DATA_DIR=/data/portfolio
     command: npx tsx scripts/imageWatcher.ts --watch
+    # The watcher doesn't need web to serve anything, so it starts alongside it.
     depends_on:
       web:
-        condition: service_healthy
+        condition: service_started

@@ -1,0 +1,550 @@
+/* The Viewer in Chromatic Chapters, after the approved mockup: a header with
+   Close, the series title and position, and Zoom; the photograph on the dark
+   bands with Previous and Next beside it; and the reading area under it. Every
+   color is a --cc-* token, which resolve only under [data-surface='viewer'],
+   so the Viewer is dark under both site themes. The accent, when the revision
+   stores one, arrives as --cc-accent on the root and paints the two rules the
+   mockup paints. Nothing sits on the photograph, so no text needs a scrim. */
+/* The body under the Viewer is its ground too, so a touch overscroll or the
+   strip past the root never shows the light site theme, and it doesn't fade in
+   from it. The body sits outside the surface, so this is --cc-ground's value. */
+:global(body):has(.viewer) {
+  background-color: #111513;
+  transition: none;
+}
+
+/* One grid for the whole Viewer (#9). The shell's controls and the
+   photograph's pieces are all its items, whichever of the two renders the
+   controls, so the layout doesn't change when the shell takes them over. */
+.viewer {
+  --viewer-header: 3.5rem;
+  /* Room the fitted photograph leaves for the stage's padding, so it fits the first screen with the header. */
+  --viewer-stage-chrome: 4rem;
+  --viewer-stage-pad: clamp(0.75rem, 2vw, 1.5rem);
+  /* The reading area's own sizes, shared with the lead it keeps in the first screen below. */
+  --viewer-reading-pad: clamp(1rem, 2.5vw, 1.75rem);
+  --viewer-title-size: clamp(1.25rem, 1.05rem + 0.8vw, 1.75rem);
+  /* The reading area's share of the first screen, the same for every photograph whatever it holds (9a's fixed stage):
+     its accent rule and top padding, a title's line, the gap, the first line of a caption, and half a rem under it. */
+  --viewer-reading-allowance: calc(4px + var(--viewer-reading-pad) + 1.2 * var(--viewer-title-size) + 0.75rem + 1.5 * var(--gah-type-statement) + 0.5rem);
+  /* Room the first screen keeps under the photograph on a wide, tall enough screen (#9b), set below. Zero elsewhere. */
+  --viewer-reading-lead: 0px;
+  /* The fixed stage (9a) on a wide screen: the tallest box a photograph takes, whatever its shape, so the stage never
+     resizes from one photograph to the next. A wide or a tall one is fitted and centered in it, and the reading area
+     under it stays put. The zoomed box keeps the same cap on a phone too. */
+  --viewer-stage-height: calc(100dvh - var(--viewer-header) - var(--viewer-stage-chrome) - var(--viewer-reading-lead));
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  /* The reading area takes what the stage leaves, so its ground reaches the foot of the screen under a short one. */
+  grid-template-rows: auto auto minmax(auto, 1fr);
+  grid-template-areas:
+    'header header header'
+    'previous viewport next'
+    'reading reading reading';
+  align-items: center;
+  column-gap: clamp(0.5rem, 2vw, 1.5rem);
+  min-height: 100dvh;
+  background: var(--cc-bands), var(--cc-ground);
+  color: var(--cc-ink);
+  color-scheme: dark;
+  font-family: var(--gah-font-sans);
+}
+
+/* The photograph's own pieces join the Viewer's grid. The accent still inherits through it. */
+.content {
+  display: contents;
+}
+
+/* The modal fills the viewport and scrolls itself, with nothing of the series showing through. */
+.viewer:modal {
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  /* A control focused at an edge scrolls in with room for its ring, as the page's html scroll-padding gives it there. */
+  scroll-padding-block: 1rem;
+}
+
+.viewer::backdrop {
+  background: #111513;
+}
+
+.header {
+  /* Close's icon and Zoom's label sit on the gutter Previous, Next and the reading area line up on, as the approved
+     header's unpadded buttons have them, while each button keeps its padding inside its box. So the bar gives the
+     buttons' outer padding back, down to the focus ring's width, and the buttons take the rest of it on their outer
+     side, so the ring never runs off the screen. No margin, so Zoom's margin-left: auto is the only one in the row. */
+  --viewer-header-inset: max(calc(var(--focus-ring-width) + var(--focus-ring-offset)), calc(var(--site-gutter) - 0.75rem));
+  grid-area: header;
+  align-self: stretch;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  min-height: var(--viewer-header);
+  padding: 0.375rem var(--viewer-header-inset);
+  border-bottom: 4px solid var(--cc-accent, var(--cc-rule));
+  background: var(--cc-chrome);
+}
+
+/* The accent rules take a move's color at the lift (9a), over about a settle. Reduced motion changes them at once. */
+@media (prefers-reduced-motion: no-preference) {
+  .header,
+  .reading {
+    transition: border-color 240ms ease-out;
+  }
+}
+
+/* A small basis, so at 360 the heading shares the row with Close and Zoom and its title takes the ellipsis. */
+.heading {
+  display: flex;
+  flex: 1 1 4rem;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.125rem 0.75rem;
+  min-width: 0;
+  text-align: center;
+}
+
+/* The serif and its weight come from the global heading rule. */
+/* One line, between Close and Zoom, so the header keeps its height and the stage under it never moves. A title too long
+   for it ends in an ellipsis on screen only: the heading's text is whole, for screen readers and find in page. */
+.series {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  overflow: hidden;
+  font-size: clamp(1rem, 0.9rem + 0.5vw, 1.25rem);
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.position {
+  margin: 0;
+  color: var(--cc-label);
+  font-size: var(--gah-type-label);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--gah-label-tracking);
+  white-space: nowrap;
+}
+
+/* At 200% text a label can be wider than a phone, so it wraps inside the control instead of pushing past the edge. */
+.control {
+  display: inline-flex;
+  max-width: 100%;
+  min-width: 44px;
+  min-height: 44px;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.75rem;
+  /* #1's rule 8: an outlined control's boundary keeps 3:1 on the ground, above the mockup's fainter rule (styles/__tests__/surfaces.test.ts). */
+  border: 1px solid var(--cc-rule-strong);
+  border-radius: var(--gah-radius);
+  background: transparent;
+  color: var(--cc-ink);
+  font: inherit;
+  font-size: var(--gah-type-ui);
+  text-align: start;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.control > svg {
+  flex: none;
+}
+
+.zoom {
+  margin-left: auto;
+}
+
+/* With no usable set there's nothing to enlarge, so Zoom stays in place, unavailable but focusable, like Previous and Next at the ends. */
+.control[aria-disabled='true'] {
+  border-color: var(--cc-rule);
+  color: var(--cc-label);
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* The header's Close and Zoom are borderless text buttons, as in the approved header. Their icon and label carry rule 8
+   at about 17.9:1 on the bar. Hover still brings in a border, and focus the shared ring. Pressed Zoom fills, below. */
+.header .control {
+  border-color: transparent;
+}
+
+/* The rest of the gutter, less the button's 1px border, which is transparent at rest but still takes its width. Both
+   sides take it, so pressed Zoom's fill and the hover border sit even around the icon and the label. */
+.header > .control:first-child,
+.header > .zoom {
+  padding-inline: calc(var(--site-gutter) - var(--viewer-header-inset) - 1px);
+}
+
+.zoom[aria-pressed='true'] {
+  border-color: var(--cc-ink);
+  background: var(--cc-ink);
+  color: var(--cc-ground);
+}
+
+.viewport {
+  grid-area: viewport;
+  align-self: stretch;
+  display: grid;
+  min-width: 0;
+  /* The fixed stage on a wide screen: the box and its padding, never the photograph's own height. A phone's is below. */
+  height: calc(var(--viewer-stage-height) + 2 * var(--viewer-stage-pad));
+  padding-block: var(--viewer-stage-pad);
+  /* The neighbors wait beside the photograph (9a), outside the stage, so the page never scrolls sideways to them. */
+  overflow: clip;
+  /* #9's swipe: the browser keeps vertical scroll and pinch zoom, and leaves a sideways drag to the Viewer. */
+  touch-action: pan-y pinch-zoom;
+}
+
+/* The strip the swipe moves (StageMotion): the photograph centered in the stage, and the neighbors one stage and the
+   16 px gap away each side (swipe.ts's PEEK_GAP), each fitted and centered in a slot of its own the stage's size. */
+.track {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 0;
+}
+
+.track[data-moving] {
+  will-change: transform;
+}
+
+.peek {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.peek[data-viewer-peek='previous'] {
+  right: calc(100% + 16px);
+  left: calc(-100% - 16px);
+}
+
+.peek[data-viewer-peek='next'] {
+  left: calc(100% + 16px);
+  right: calc(-100% - 16px);
+}
+
+/* Zoomed, the photograph is the stage's scroll content, as before 9a, and no neighbor shows. */
+.viewport[data-zoomed] .track {
+  display: contents;
+}
+
+/* While the page is pinch-zoomed (useSwipe sets data-pinched on the root), a sideways drag pans the page, and swipe is off. */
+.viewer[data-pinched] .viewport {
+  touch-action: auto;
+}
+
+/* Zoomed, the photograph keeps the largest variant's width and the box scrolls, so a drag pans it both ways and never moves the Viewer. Pinch zoom is never turned off. */
+.viewport[data-zoomed] {
+  height: auto;
+  max-height: var(--viewer-stage-height);
+  overflow: auto;
+  place-items: safe center;
+  /* Pans both ways and pinches, as auto does, but no browser double-tap zoom: a double-tap here is the Viewer's Zoom (useDoubleTap). */
+  touch-action: manipulation;
+}
+
+/* The fitted box, from the record's shape (--ratio, set inline) before a byte
+   arrives: the stage's width, at most 80vw on a wide screen (fitSizes() in
+   viewerSizes.ts), and no taller than the first screen leaves. The image fills it, so a slow or
+   failed file never moves Previous, Next, or the reading area (#6). */
+.frame,
+.missing {
+  --fit-vw: 100vw;
+  width: min(100%, var(--fit-vw), calc(var(--viewer-stage-height) * var(--ratio, 3 / 2)));
+  aspect-ratio: var(--ratio, 3 / 2);
+}
+
+@media (min-width: 48rem) {
+  .frame,
+  .missing {
+    --fit-vw: 80vw;
+  }
+}
+
+/* The title line in the first screen (#9b), on a wide screen at least 40rem tall: the reading area's allowance, as the
+   approved design keeps the title and the caption's first line in view. The stage chrome above allows 4rem for the
+   stage's padding, more than it takes here, so the lead gives the difference back. A shorter wide screen (a phone held
+   sideways, a laptop at 150%) keeps the whole first screen for the photograph, as it would have before, and fitSizes()
+   in viewerSizes.ts asks for that box's rung there.
+   The lead is the same for every photograph (9a's fixed stage), though the title and the caption are both optional, so
+   the stage never changes height from one photograph to the next. The title and the caption sit in a block at least
+   the title line's height (.lead), so whatever it holds, the next element starts under the first screen, which ends
+   half a rem under the block's caption line, in the gap after it, never through an element. With no title or caption
+   the block is empty ground, under the stage. */
+@media (min-width: 48rem) and (min-height: 40rem) {
+  .viewer {
+    --viewer-reading-lead: calc(var(--viewer-reading-allowance) - (var(--viewer-stage-chrome) - 2 * var(--viewer-stage-pad)));
+  }
+
+  .lead {
+    min-height: calc(1.2 * var(--viewer-title-size) + 0.75rem + 1.5 * var(--gah-type-statement));
+  }
+
+  /* With no title or caption the title line's block has nothing to show, so the first block after it takes its room,
+     the Description or the technical toggle, and shows in the first screen. It keeps the same height, so the fold still
+     falls in the gap after it, and the stage doesn't move. */
+  .lead:not(:has(> .title, > .caption)) {
+    display: contents;
+  }
+
+  .lead:not(:has(> .title, > .caption)) + * {
+    align-content: start;
+    min-height: calc(1.2 * var(--viewer-title-size) + 0.75rem + 1.5 * var(--gah-type-statement));
+  }
+}
+
+.frame {
+  margin: 0;
+}
+
+.image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  outline: 1px solid var(--cc-rule);
+}
+
+/* No usable set, or its file failed: a reserved box on the dark ground with the
+   series page's missing-image copy and its hairline, in the photograph's shape
+   when the record has one, so it never reads as a photograph still loading,
+   and Previous, Next, and the reading area stay where they are. */
+.missing {
+  display: flex;
+  align-items: flex-end;
+  padding: 0.75rem 0.875rem;
+  box-shadow: inset 0 0 0 1px var(--cc-rule);
+  background: linear-gradient(to top right, transparent calc(50% - 0.5px), var(--cc-rule) calc(50% - 0.5px), var(--cc-rule) calc(50% + 0.5px), transparent calc(50% + 0.5px));
+}
+
+.missingLabel {
+  color: var(--cc-label);
+  font-size: var(--gah-type-label);
+  letter-spacing: var(--gah-label-tracking);
+  text-transform: uppercase;
+}
+
+.viewport[data-zoomed] .frame {
+  width: var(--zoom-width);
+}
+
+.step {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--cc-rule-strong);
+  border-radius: 50%;
+  background: var(--cc-chrome);
+  color: var(--cc-ink);
+  cursor: pointer;
+}
+
+/* The ends: the Viewer stops, and the control stays in place and focusable, so nothing shifts and focus stays on it. */
+.step[aria-disabled='true'] {
+  border-color: var(--cc-rule);
+  color: var(--cc-label);
+  opacity: 0.45;
+  cursor: default;
+}
+
+.previous {
+  grid-area: previous;
+  margin-left: var(--site-gutter);
+}
+
+.next {
+  grid-area: next;
+  margin-right: var(--site-gutter);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .control:not([aria-disabled='true']):hover,
+  .step:not([aria-disabled='true']):hover {
+    border-color: var(--cc-ink);
+  }
+}
+
+/* The reading area: authored copy first, in the serif, then the derived facts behind their toggle. It never covers the photograph. */
+.reading {
+  grid-area: reading;
+  align-self: stretch;
+  display: grid;
+  gap: 0.75rem;
+  padding: var(--viewer-reading-pad) var(--site-gutter) clamp(1.25rem, 3vw, 2.25rem);
+  border-top: 4px solid var(--cc-accent, var(--cc-rule));
+  background: var(--cc-chrome);
+}
+
+.reading > * {
+  max-width: 68ch;
+}
+
+/* The title and the caption, which the first screen keeps in view on a wide screen (above). */
+.lead {
+  display: grid;
+  align-content: start;
+  gap: 0.75rem;
+}
+
+/* The leaving photograph's words, over the new ones in the reading area's place while they fade (9a's StageMotion):
+   no size of its own, so it never moves the page, and clipped to the reading area. Empty the rest of the time. */
+.leaving {
+  grid-area: reading;
+  align-self: stretch;
+  position: relative;
+  z-index: 1;
+  overflow: clip;
+  contain: size;
+  pointer-events: none;
+}
+
+.title {
+  margin: 0;
+  font-size: var(--viewer-title-size);
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.caption {
+  margin: 0;
+  font-family: var(--gah-font-serif);
+  font-size: var(--gah-type-statement);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.label {
+  margin: 0;
+  color: var(--cc-label);
+  font-size: var(--gah-type-label);
+  font-weight: 500;
+  letter-spacing: var(--gah-label-tracking);
+  text-transform: uppercase;
+}
+
+.descriptionText,
+.pending {
+  margin: 0.25rem 0 0;
+  color: var(--cc-ink-soft);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.pending {
+  color: var(--cc-label);
+  font-style: italic;
+}
+
+.technical {
+  display: grid;
+  justify-items: start;
+  gap: 0.75rem;
+}
+
+.panel {
+  width: 100%;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--cc-rule);
+}
+
+.panel[hidden] {
+  display: none;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(10rem, 100%), 1fr));
+  gap: 0.75rem 1.5rem;
+  margin: 0.5rem 0 0;
+}
+
+.fact dt {
+  color: var(--cc-label);
+  font-size: var(--gah-type-label);
+}
+
+.fact dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* Narrow screens: the photograph takes the width, and Previous and Next sit in a row under it, at the edges.
+   As in the approved mockup, the stage takes the height the screen has left and centers the photograph in it, so the
+   arrows and the start of the reading area sit at the foot of the first screen, under the thumb (#9b). The reading area
+   runs on from there to the foot of the page, and a long one scrolls. */
+@media (max-width: 47.99rem) {
+  .viewer {
+    /* The arrows' row under the stage: the arrow, and its margins (below). */
+    --viewer-step-gap: clamp(0.5rem, 2vw, 1.5rem);
+    --viewer-step-row: calc(44px + var(--viewer-step-gap) + var(--viewer-stage-pad));
+    /* The header's one row as it renders: the 44 px controls, its padding, and the accent rule. --viewer-header (3.5rem)
+       is the same row as the wide stage counts it, 4 px short. Change the header's padding, and change both. */
+    --viewer-header-row: calc(44px + 0.75rem + 4px);
+    /* The phone's fixed stage (9a): the small viewport (so the browser's bars coming and going never resize it) less
+       the header, the arrows, and the reading area's allowance, the same for every photograph whatever its copy, and
+       never less than a square or 72svh, whichever is less. On a screen too short for that, as a laptop at 200% zoom,
+       the square gives way to what the header and the arrows leave, so Previous and Next stay in the first screen. */
+    --viewer-phone-stage: max(
+      calc(min(100vw, 72svh, 100svh - var(--viewer-header-row) - var(--viewer-step-row) - var(--viewer-stage-pad)) + var(--viewer-stage-pad)),
+      calc(100svh - var(--viewer-header) - var(--viewer-step-row) - var(--viewer-reading-allowance))
+    );
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: auto auto auto minmax(auto, 1fr);
+    grid-template-areas:
+      'header header'
+      'viewport viewport'
+      'previous next'
+      'reading reading';
+    column-gap: 0;
+  }
+
+  .viewport {
+    height: var(--viewer-phone-stage);
+    padding-block: var(--viewer-stage-pad) 0;
+    /* The photograph fits the stage (cqh), rather than the stage fitting the photograph. */
+    container-type: size;
+  }
+
+  /* Zoomed, the stage grows to the zoomed photograph up to its cap, as before 9a: the zoomed box sizes itself. It never
+     shrinks below the fixed stage, so Zoom never pulls the arrows and the reading area up under a finger. */
+  .viewport[data-zoomed] {
+    min-height: var(--viewer-phone-stage);
+    container-type: normal;
+  }
+
+  .previous,
+  .next {
+    margin-block: var(--viewer-step-gap) var(--viewer-stage-pad);
+  }
+
+  .previous {
+    justify-self: start;
+  }
+
+  .next {
+    justify-self: end;
+  }
+
+  /* The box, not the image, takes the height cap, so it stays reserved from the record's shape (#6). */
+  .frame,
+  .missing {
+    width: min(100%, 100cqh * var(--ratio, 3 / 2));
+  }
+}
