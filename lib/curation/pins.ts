@@ -78,6 +78,8 @@ export type DraftPlan =
     /**
      * The record pins the item's bytes, and no pin of the inbox's says so: a hand edit, a #15 rollback, or a confirm
      * whose event a crash lost. `stampedFrom` is what that lost confirm replaced, when #16's stamp shows it.
+     * `stampedReady` is canPutBack() of it, which readDraftPlan() asks. A plan that never asked, such as a plain
+     * draftPlan()'s, never promises the put back.
      */
     | { kind: 'unexplained'; photoId: string; revision: string; pin: Pin | null; stampedFrom?: string; stampedReady?: boolean }
     /** The record pins the item's bytes as the latest pin set them, and that pin records nothing to put back. `own` when it is this item's confirm. */
@@ -169,7 +171,7 @@ export function draftPlanText(plan: DraftPlan, replaced?: string): string | null
             return `Leaving it in draft (defer) keeps ${plan.pinned}, the revision ${plan.photoId}'s photo record pins.`;
         case 'unexplained':
             return plan.stampedFrom
-                ? `Leaving it in draft (defer) keeps ${plan.revision}: the inbox records no confirm of this item, though its review stamp shows one put ${plan.photoId}'s photo record there in place of ${plan.stampedFrom}. ${stampedWayBack(plan.stampedFrom, plan.stampedReady !== false, 'that')}`
+                ? `Leaving it in draft (defer) keeps ${plan.revision}: the inbox records no confirm of this item, though its review stamp shows one put ${plan.photoId}'s photo record there in place of ${plan.stampedFrom}. ${stampedWayBack(plan.stampedFrom, plan.stampedReady === true, 'that')}`
                 : `Leaving it in draft (defer) keeps ${plan.revision}: neither the inbox nor its review stamp shows a confirm of this item put ${plan.photoId}'s photo record there, so it puts nothing back.`;
         case 'keeps': {
             if (plan.own) return 'Its last confirm found the record on these bytes already and recorded nothing to put back, so leaving it in draft (defer) keeps them too.';

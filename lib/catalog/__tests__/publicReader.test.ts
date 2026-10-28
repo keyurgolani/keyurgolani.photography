@@ -324,6 +324,9 @@ describe('the public reader', { timeout: 60_000 }, () => {
         fs.writeFileSync(file, 'not a folder');
         expect(await checkCatalogMode(file)).toEqual({ mode: 'legacy' });
         expect(await loadActiveCatalog(file)).toEqual({ mode: 'legacy' });
+        // A file where a parent folder should be is the same: stat says ENOTDIR, and no catalog can be under it.
+        expect(await checkCatalogMode(path.join(file, 'portfolio'))).toEqual({ mode: 'legacy' });
+        expect(await loadActiveCatalog(path.join(file, 'portfolio'))).toEqual({ mode: 'legacy' });
         // Under a real root, a file where `catalog/` should be still can't be told apart from a damaged cutover.
         const { root } = await fixture(41);
         fs.writeFileSync(catalogPaths(root).dir, '');

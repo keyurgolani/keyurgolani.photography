@@ -100,7 +100,15 @@ describe('the passphrase hash', () => {
     it('signs in with a short passphrase hashed before the minimum, which only the hash command enforces', async () => {
         expect(newPassphraseProblem('short')).toBe('The passphrase is 5 characters long. Use at least 12.');
         expect(newPassphraseProblem('a'.repeat(MIN_PASSPHRASE_CHARS))).toBeNull();
-        expect(await verifyPassphrase('short', parsePassphraseHash(await hashPassphrase('short'))!)).toBe(true);
+        // The secret files as a hash made before the minimum left them, read and tried as the login route does.
+        const short = await makeCuratorSecrets({ passphrase: 'short' });
+        try {
+            const read = readCuratorSecrets(short.env);
+            if (!('secrets' in read)) throw new Error(read.problem);
+            expect(await attemptLogin('short', read.secrets.passphrase)).toMatchObject({ ok: true, sessionId: expect.any(String) });
+        } finally {
+            short.cleanup();
+        }
     });
 
     it.each([
