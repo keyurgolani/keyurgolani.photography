@@ -1,3 +1,5 @@
+import type { HistoryView } from './publish-history';
+
 /**
  * #16's Publish screen (16-3): the view the page renders and the facts that
  * follow its state. Client-safe: types and pure functions only, no Node
@@ -7,7 +9,7 @@
  * renders what displayFacts() says for the page and its latest answer.
  */
 
-export type ReviewLabel = 'reviewed' | 'not-reviewed' | 'stale' | 'generated' | 'automatic' | 'confirmed' | 'published';
+export type ReviewLabel = 'reviewed' | 'not-reviewed' | 'stale' | 'generated' | 'automatic' | 'confirmed' | 'published' | 'conflict';
 
 export type KindLabel = 'New' | 'Removed' | 'Changed' | 'Moved' | 'Hidden' | 'Route' | 'New image' | 'Recalculated' | 'Source health';
 
@@ -61,7 +63,8 @@ export type Fix =
       }
     | { type: 'restamp'; record: string; label: string; target: ReviewTarget; field: string }
     | { type: 'inbox'; record: string; eventId: string }
-    | { type: 'hint'; text: string };
+    /** `command`: the photos command with the record's full ID, which a rebase conflict's fix carries (15-4). */
+    | { type: 'hint'; text: string; command?: string };
 
 export interface LedgerRow {
     id: string;
@@ -132,13 +135,14 @@ export type Answer =
     | { kind: 'blocked'; lead: string; blockers: Blocker[]; ledger: Ledger }
     | { kind: 'blocked-at-publish'; lead: string; blockers: Blocker[]; ledger: Ledger }
     | { kind: 'valid'; stakes: string }
-    | { kind: 'published'; live: RevisionFacts; previous: RevisionFacts | null }
-    | { kind: 'already-live'; live: RevisionFacts; previous: RevisionFacts | null; by: Publisher | null }
+    /** 15-4: `history` is History read again, on every answer that moved the pointer or found it moved. */
+    | { kind: 'published'; live: RevisionFacts; previous: RevisionFacts | null; history?: HistoryView }
+    | { kind: 'already-live'; live: RevisionFacts; previous: RevisionFacts | null; by: Publisher | null; history?: HistoryView }
     | { kind: 'changed'; body: string }
-    | { kind: 'someone-published'; live: RevisionFacts; previous: RevisionFacts | null; by: Publisher | null }
+    | { kind: 'someone-published'; live: RevisionFacts; previous: RevisionFacts | null; by: Publisher | null; history?: HistoryView }
     /** `lock`: the catalog lock (a publish or rollback) or the authored lock (any working-catalog write). `since`: when its holder took it. */
     | { kind: 'busy'; lock: 'catalog' | 'authored'; since: string | null; retry: 'validate' | 'publish' }
-    | { kind: 'failed'; heading: string; body: string; live: RevisionFacts | null; previous: RevisionFacts | null; retry: 'validate' | 'publish' }
+    | { kind: 'failed'; heading: string; body: string; live: RevisionFacts | null; previous: RevisionFacts | null; retry: 'validate' | 'publish'; history?: HistoryView }
     | { kind: 'not-validated' }
     | { kind: 'fixed'; rowId: string }
     | { kind: 'fix-refused'; rowId: string; text: string };
@@ -244,7 +248,8 @@ export function actorPhrase(actor: string, command = 'photos publish'): string {
 export function publisherLine(by: Publisher | null, timeZone: string, elsewhere: boolean): string {
     if (by === null) return elsewhere ? 'It went live from the command line.' : 'It is live now.';
     const at = timeOf(by.at, timeZone);
-    if (by.kind === 'rollback') return by.actor === WEB_ACTOR ? `It was rolled back from this screen at ${at}.` : `${by.actor} rolled it back at ${at}, with photos rollback.`;
+    // 15-4: the screen's word for a rollback is Restore (spec, Decided 3); the command keeps its name.
+    if (by.kind === 'rollback') return by.actor === WEB_ACTOR ? `It was restored from this screen at ${at}.` : `${by.actor} restored it at ${at}, with photos rollback.`;
     if (by.actor === WEB_ACTOR) return elsewhere ? `It went live from this screen at ${at}, in another tab or window.` : `It went live from this screen at ${at}.`;
     return `${by.actor} published it at ${at}, with photos publish.`;
 }
@@ -291,10 +296,16 @@ export function orderRuns({ before, after, from, to }: Pick<OrderCompare, 'befor
     return runs;
 }
 
-/** The rollback line: while a draft is pending, the active revision (approved line); otherwise the activation before the active one. */
-function rollbackLine(pending: boolean, active: RevisionFacts, previous: RevisionFacts | null): string | null {
-    if (pending) return `Last-known-good revision ${active.number} remains rollback-ready.`;
-    return previous ? `Revision ${previous.number} is kept. \`photos rollback\` returns to it.` : null;
+/**
+ * The rollback line: while a draft is pending, the active revision (approved
+ * line); otherwise the activation before the active one, restored from
+ * History below (15-4). `ready` is AC 14's seam: the deferred lastKnownGood()
+ * gate sets it false when photos:verify fails for the active revision, and
+ * nothing sets it yet, so the line always shows.
+ */
+function rollbackLine(pending: boolean, active: RevisionFacts, previous: RevisionFacts | null, ready = true): string | null {
+    if (pending) return ready ? `Last-known-good revision ${active.number} remains rollback-ready.` : null;
+    return previous ? `Revision ${previous.number} is kept. Restore it from History, below.` : null;
 }
 
 const PREVIEW_PANEL_TITLE = 'Visitor preview';
@@ -476,7 +487,7 @@ export function resultCopy(answer: Answer, view: ScreenView, timeZone = 'UTC'): 
         case 'busy': {
             const since = answer.since ? `It started at ${timeOf(answer.since, timeZone)}. ` : '';
             const again = answer.retry === 'validate' ? 'Validate again when it finishes.' : 'Publish again when it finishes.';
-            const heading = answer.lock === 'catalog' ? 'Another publish or rollback is running' : 'Another change to the working catalog is being saved';
+            const heading = answer.lock === 'catalog' ? 'Another publish or restore is running' : 'Another change to the working catalog is being saved';
             return { tone: 'change', heading, body: [`${since}Nothing changed here. ${again}`] };
         }
         case 'failed':

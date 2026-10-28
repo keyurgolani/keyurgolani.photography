@@ -3,7 +3,9 @@
 import { revalidatePath } from 'next/cache';
 import { publish, type PublishResult } from '@/lib/catalog/publish';
 import { previewDraftId } from '@/lib/catalog/preview-reader';
-import { listActivations, revisionNumberFor } from '@/lib/catalog/repository';
+import { listActivations, readRevisionFile, revisionNumberFor } from '@/lib/catalog/repository';
+import { rollback } from '@/lib/catalog/rollback';
+import { REVISION_ID_RE } from '@/lib/catalog/schema';
 import { hashValue } from '@/lib/catalog/review';
 import type { AuthoredKind } from '@/lib/catalog/schema';
 import type { FieldReviewState } from '@/lib/catalog/review';
@@ -13,8 +15,10 @@ import { AuthoredWriteError, writeAuthoredRecord } from '@/lib/catalog/working-l
 import { requireCurator } from '@/lib/curation/auth';
 import { WEB_ACTOR } from '@/lib/curation/inbox-form';
 import { countLine, type Answer, type Intent, type Publisher, type PublishState } from '@/lib/curation/publish-facts';
+import { blockingReasons, restoreResult, type RestoreAnswer, type RestoreState } from '@/lib/curation/publish-history';
 import { INBOX_REASONS, restampReason } from '@/lib/curation/publish-view';
 import { dataRootStatus } from '@/lib/storage/config';
+import { loadHistoryView, numberFrom } from './history-load';
 import { ledgerOf, pointerFacts, readSnapshot, reviewNow, type Snapshot } from './load';
 
 /**
@@ -144,12 +148,33 @@ async function validateOrPublish(previous: PublishState, form: FormData, intent:
     // No revalidatePath here: the site reads the active pointer per request, as after a CLI publish, and revalidating
     // would render this page again from the new pointer, as Nothing to publish, in place of the answer.
     try {
-        return next(previous, intent, await answerFor(result, intent, draftId, pageActive));
+        return next(previous, intent, await withHistory(await answerFor(result, intent, draftId, pageActive), status.root, form));
     } catch (error) {
         // An answer's own read failed. The pointer is read again in the answer, so this says nothing about it either way.
         console.error('[curation] The Publish screen could not word an answer:', error);
         const live = result.outcome === 'PUBLISHED' || result.outcome === 'NO_CHANGES' ? 'It may have gone live. ' : '';
         return next(previous, intent, { kind: 'failed', heading: "The screen couldn't read the result", body: `${live}The server log names what failed. Load the page again to see what is live.`, live: null, previous: null, retry: intent });
+    }
+}
+
+/**
+ * 15-4: an answer that moved the pointer, or found it moved, carries History
+ * read again, so the section below marks the new live revision and drops
+ * Restore from it (spec, History by 16-3 state). Changed meanwhile moved only
+ * the candidate, so its History still holds.
+ */
+async function withHistory(answer: Answer, root: string, form: FormData): Promise<Answer> {
+    const moved = answer.kind === 'published' || answer.kind === 'already-live' || answer.kind === 'someone-published' || (answer.kind === 'failed' && answer.live !== null);
+    if (!moved) return answer;
+    try {
+        // Someone else's publish leaves this page's draft pending; this page's own leaves nothing. The bar's form
+        // posts how many entries the page shows and the revision it checked, so the answer keeps History as it was.
+        const history = await loadHistoryView(root, { draftPending: answer.kind === 'someone-published', shown: numberFrom(text(form, 'historyShown')), check: numberFrom(text(form, 'historyCheck')) });
+        return { ...answer, history };
+    } catch (error) {
+        // The answer stands without it, and History stays as loaded; Restore's precondition still refuses a stale one.
+        console.error('[curation] History could not be read again for the answer:', error);
+        return answer;
     }
 }
 
@@ -261,4 +286,64 @@ export async function publishAction(previous: PublishState, form: FormData): Pro
     if (intent === 'mark-description') return markDescriptionReady(previous, form);
     if (intent === 'mark-reviewed') return markReviewed(previous, form);
     return previous;
+}
+
+// 15-4's restore.
+
+const RESTORE_REASON_MAX = 500;
+
+const restoreState = (previous: RestoreState, answer: RestoreAnswer): RestoreState => ({ serial: previous.serial + 1, answer });
+
+/**
+ * History's restore: 15-2's rollback(), as `photos rollback --to <id>
+ * --expect-active <id> --yes` runs it, with the actor `curator:web` and the
+ * owner's reason. requireCurator() first, before any field is read: a server
+ * action is always a mutation, so the boundary checks the session and the
+ * Origin. The active revision the dialog showed is the compare-and-swap
+ * precondition, and the catalog lock isn't waited for (`waitMs: 0`, as
+ * publish() takes it), so a held lock answers at once. A done restore
+ * returns the new activation's sequence, and the screen loads
+ * `?restored=<sequence>`; every other outcome is an answer in the dialog.
+ */
+export async function restoreAction(previous: RestoreState, form: FormData): Promise<RestoreState> {
+    await requireCurator();
+    const revisionId = text(form, 'revisionId') ?? '';
+    const expected = text(form, 'expectedActive') ?? '';
+    const reason = (text(form, 'reason') ?? '').trim();
+    const status = dataRootStatus({ write: true });
+    const root = status.root;
+    const activations = root ? await listActivations(root).catch(() => []) : [];
+    const numberOf = (id: string) => (REVISION_ID_RE.test(id) ? revisionNumberFor(activations, id) : 0);
+    const facts = { target: numberOf(revisionId), active: numberOf(expected), activeRevisionId: expected, targetRevisionId: revisionId, pointer: null, liveBy: null, holderSince: null, reasons: [], settled: false };
+    if (!REVISION_ID_RE.test(revisionId) || !REVISION_ID_RE.test(expected)) return restoreState(previous, { kind: 'result', result: restoreResult('NOT_ELIGIBLE', facts) });
+    if (!/\S/.test(reason) || reason.length > RESTORE_REASON_MAX) return restoreState(previous, { kind: 'reason-missing' });
+    if (status.state !== 'ready' || root === null) return restoreState(previous, { kind: 'result', result: restoreResult('DATA_ROOT_NOT_READY', facts) });
+
+    const result = await rollback({ dataRoot: root, revisionId, expectedActiveRevisionId: expected, actor: WEB_ACTOR, reason, waitMs: 0 });
+    if (result.outcome === 'ROLLED_BACK' && result.activation) return restoreState(previous, { kind: 'restored', sequence: result.activation.sequence, rebased: result.rebased !== false });
+
+    // Every other answer reads the pointer again, as Publish's do, so the dialog says what's live now.
+    const pointer = await pointerFacts(root).catch(() => null);
+    const live = pointer?.activation ?? null;
+    let reasons: string[] = [];
+    if (result.outcome === 'VALIDATION_FAILED') {
+        const target = await readRevisionFile(root, revisionId).catch(() => null);
+        const titles = new Map((target?.content.photos ?? []).map((photo) => [photo.id, photo.title ?? '']));
+        const blocking = result.plan?.blocking ?? result.issues.filter((issue) => issue.severity === 'error');
+        reasons = blockingReasons(blocking, (photoId) => titles.get(photoId) || `Photograph ${photoId.slice(3, 11)}`);
+    }
+    if (result.outcome !== 'NO_CHANGES' && result.outcome !== 'ACTIVE_CHANGED' && result.outcome !== 'CATALOG_LOCKED' && result.outcome !== 'VALIDATION_FAILED') {
+        console.error(`[curation] A restore from the Publish screen stopped: ${result.outcome}: ${result.message}`);
+    }
+    return restoreState(previous, {
+        kind: 'result',
+        result: restoreResult(result.outcome, {
+            ...facts,
+            pointer: pointer ? { revisionId: pointer.live.revisionId, number: pointer.live.number || null } : null,
+            liveBy: live ? { actor: live.actor, kind: live.kind, at: live.committedAt ?? live.startedAt } : null,
+            holderSince: result.holder?.acquiredAt ?? null,
+            reasons,
+            settled: Boolean(result.recovery?.committed),
+        }),
+    });
 }

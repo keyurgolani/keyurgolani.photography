@@ -875,6 +875,8 @@ main.state {
   display: inline-flex;
   min-height: 44px;
   align-items: center;
+  /* 15-4 review P3-2: an icon beside the label gets room. A visually hidden span is absolute, so it takes none. */
+  gap: 0.5rem;
   /* Room above and below, so a long file name wraps clear of the border. */
   padding: 0.5rem 0.875rem;
   text-align: start;

@@ -2,8 +2,9 @@ import type { CatalogChange, CatalogDiff } from '../catalog/diff';
 import { hashValue, inboxReviewOf, type FieldReviewState, type InboxItem, type ReviewContext } from '../catalog/review';
 import type { Activation, AuthoredRecord, CandidateContent, CandidatePhotoRecord, Issue, IssueRecord, PublicPhotoRecord, RevisionContent, WorkingLayer } from '../catalog/types';
 import type { Registry } from '../identity/types';
-import { dayOf, type Blocker, type BlockerLink, type Compare, type Fix, type KindLabel, type Ledger, type LedgerRow, type Picture, type ReviewLabel, type ReviewTarget } from './publish-facts';
+import { type Blocker, type BlockerLink, type Compare, type Fix, type KindLabel, type Ledger, type LedgerRow, type Picture, type ReviewLabel, type ReviewTarget } from './publish-facts';
 import { fileParts, shortIdOf } from './inbox-view';
+import { dayToken } from './publish-history';
 
 /**
  * #16's Publish screen (16-3): the ledger rows and the blocker list, from one
@@ -405,8 +406,8 @@ function detailOf(change: CatalogChange, input: LedgerInput, names: Names): { de
     const latest = [...change.review.fields].filter((entry) => entry.at !== undefined && entry.at !== '1970-01-01T00:00:00.000Z').sort((a, b) => ((a.at ?? '') < (b.at ?? '') ? 1 : -1))[0];
     if (!latest?.at) return {};
     const settled = recordStamp(input.layer, latest)?.event;
-    if (settled) return { detail: `${change.category === 'asset' ? 'Confirmed' : 'Approved'} in the Inbox on ${dayOf(latest.at)}.` };
-    return { detail: `Reviewed ${stampPhrase(latest.by)} on ${dayOf(latest.at)}.` };
+    if (settled) return { detail: `${change.category === 'asset' ? 'Confirmed' : 'Approved'} in the Inbox on ${dayToken(latest.at)}.` };
+    return { detail: `Reviewed ${stampPhrase(latest.by)} on ${dayToken(latest.at)}.` };
 }
 
 function activeNumber(input: Pick<LedgerInput, 'diff' | 'activations'>): number | null {
@@ -453,7 +454,7 @@ function fixOf(change: CatalogChange, input: LedgerInput, names: Names): Fix | u
             inboxItem: inboxItemFor(input.review, record.id),
             picture: pictureOf(now, input.media.draft, 'Image, no description yet'),
             text: alt.text,
-            suggested: first.at && first.at !== '1970-01-01T00:00:00.000Z' ? `Suggested by the Inbox on ${dayOf(first.at)}. Nobody has reviewed it.` : 'Suggested by the Inbox. Nobody has reviewed it.',
+            suggested: first.at && first.at !== '1970-01-01T00:00:00.000Z' ? `Suggested by the Inbox on ${dayToken(first.at)}. Nobody has reviewed it.` : 'Suggested by the Inbox. Nobody has reviewed it.',
             version: record.version,
             valueHash: hashValue(alt),
         };
@@ -474,6 +475,21 @@ function fixOf(change: CatalogChange, input: LedgerInput, names: Names): Fix | u
         return { type: 'restamp', record: actionName(change, first, names), label, target, field: fieldName(first) };
     }
     return { type: 'hint', text: HINT_ONLY[first.reason ?? 'no-record'] ?? 'Review the change with the photos command, then validate again.' };
+}
+
+/** The fields #13's rebase left in conflict, by record (the `working.conflicts` rule's input). */
+function conflictFields(layer: WorkingLayer): { kind: IssueRecord['kind']; id: string; field: string }[] {
+    const of = (kind: IssueRecord['kind'], id: string, conflicts: { field: string }[] | undefined) => (conflicts ?? []).map((conflict) => ({ kind, id, field: conflict.field }));
+    return [
+        ...(layer.site ? of('site', 'site', layer.site.conflicts) : []),
+        ...layer.series.flatMap((series) => of('series', series.id, series.conflicts)),
+        ...layer.photos.flatMap((photo) => of('photo', photo.id, photo.conflicts)),
+    ];
+}
+
+/** A conflict's fix: the edit that settles the field, with the record's full ID. Marking it reviewed would leave the conflicts entry. */
+function conflictFix(change: CatalogChange): Fix {
+    return { type: 'hint', text: 'Keep one value with photos edit, which clears the conflict, then validate again.', command: `photos edit ${change.record.kind === 'site' ? 'site' : change.record.id}` };
 }
 
 /** The owner's name for a field. */
@@ -529,6 +545,8 @@ export function buildLedger(input: LedgerInput): { ledger: Ledger; blockers: Blo
     const built = rowsOf(input, names);
     const blockers: Blocker[] = [];
     const marked = new Set<string>();
+    const conflicts = conflictFields(input.layer);
+    const conflictOf = (change: CatalogChange) => conflicts.some((key) => key.kind === change.record.kind && key.id === change.record.id && (change.field === key.field || change.field.startsWith(`${key.field}[`)));
 
     const mark = (rowId: string, entry: FieldReviewState | undefined, issue: Issue | null) => {
         const row = built.rows.get(rowId);
@@ -536,9 +554,16 @@ export function buildLedger(input: LedgerInput): { ledger: Ledger; blockers: Blo
         if (!row || !change) return;
         if (!marked.has(rowId)) {
             marked.add(rowId);
-            const fix = fixOf(change, input, names);
+            const conflict = conflictOf(change);
+            const fix = conflict ? conflictFix(change) : fixOf(change, input, names);
             row.blocks = true;
             if (fix) row.fix = fix;
+            if (conflict) {
+                // 15-4: a field a restore's rebase left in conflict. Its own label, not "Stale review", and the edit that settles it.
+                const live = activeNumber(input);
+                row.review = 'conflict';
+                row.detail = `Your draft and revision ${live ?? 'live now'} both changed it.`;
+            }
             // Every blocker names its row's record, so the list and the row say the same thing.
             const record = names.record(change.record);
             blockers.push({
@@ -546,7 +571,7 @@ export function buildLedger(input: LedgerInput): { ledger: Ledger; blockers: Blo
                 rowId,
                 record,
                 field: entry ? blockerField(change, entry, names) : blockerField(change, { record: change.record, field: change.field }, names),
-                message: blockerMessage(change, entry, issue, input),
+                message: conflict ? 'This field changed both here and in the live revision, in different ways.' : blockerMessage(change, entry, issue, input),
                 link: linkOf(fix, record),
             });
         }
@@ -557,7 +582,8 @@ export function buildLedger(input: LedgerInput): { ledger: Ledger; blockers: Blo
         for (const [rowId, change] of built.change) {
             if (!change.visible) continue;
             const entry = change.review.fields.find((field) => field.state !== 'reviewed');
-            if (entry) mark(rowId, entry, null);
+            // A rebase conflict blocks too (working.conflicts), and the load predicts it from the layer, not the rules.
+            if (entry || conflictOf(change)) mark(rowId, entry, null);
         }
     } else {
         for (const issue of input.issues) {

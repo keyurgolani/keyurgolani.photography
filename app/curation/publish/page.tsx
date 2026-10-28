@@ -2,7 +2,9 @@ import type { Metadata } from 'next';
 import CuratorHeader from '../CuratorHeader';
 import styles from '../curator.module.css';
 import { requireCurator } from '@/lib/curation/auth';
-import { publishAction } from './actions';
+import { publishAction, restoreAction } from './actions';
+import { numberFrom } from './history-load';
+import HistorySection from './HistorySection';
 import { loadPublishPage } from './load';
 import PublishScreen from './PublishScreen';
 import publish from './publish.module.css';
@@ -28,17 +30,28 @@ export default async function PublishPage({ searchParams }: PublishPageProps) {
     await requireCurator({ read: true });
     const params = await searchParams;
     const fix = typeof params.fix === 'string' && ROW_ID_RE.test(params.fix) ? params.fix : null;
-    const page = await loadPublishPage();
+    // 15-4's History: how many entries, one revision to check past the planning budget, a done restore, and a dialog opened by URL.
+    const one = (name: string) => (typeof params[name] === 'string' ? (params[name] as string) : null);
+    const restore = numberFrom(one('restore'));
+    const history = { shown: numberFrom(one('history')), check: numberFrom(one('check')) };
+    const page = await loadPublishPage({ ...history, restored: numberFrom(one('restored')), rebased: one('rebased') !== '0' });
     return (
         <div className={styles.page}>
             <CuratorHeader active="publish" publishHref="/curation/publish" />
             {page.state === 'ready' ? (
-                <PublishScreen view={page.view} previewHref={page.previewHref} openFix={fix} action={publishAction} />
+                <PublishScreen
+                    view={page.view}
+                    previewHref={page.previewHref}
+                    openFix={fix}
+                    action={publishAction}
+                    historyParams={history}
+                    history={<HistorySection view={page.history} action={restoreAction} openRestore={restore} />}
+                />
             ) : page.state === 'not-launched' ? (
                 <main className={styles.state}>
                     <p role="status" className={styles.visuallyHidden} />
                     <h1>Nothing is live yet</h1>
-                    <p>The first publish replaces the legacy Home and Gallery, and it runs from the command line, where it prints what changes and asks you to confirm the launch.</p>
+                    <p>The first publish replaces the legacy Home and Gallery, and it runs from the command line, where it prints what changes and asks you to confirm the launch. History starts with that first publish.</p>
                     <p>
                         <code className={publish.command}>photos publish --confirm-launch</code>
                     </p>

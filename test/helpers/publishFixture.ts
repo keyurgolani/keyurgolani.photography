@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { publish } from '../../lib/catalog/publish';
-import { CATALOG_LOCK, revisionFilePath } from '../../lib/catalog/repository';
+import { CATALOG_LOCK, readRevisionFile, revisionFilePath } from '../../lib/catalog/repository';
 import { hashValue } from '../../lib/catalog/review';
 import { createTestCatalog, type TestCatalog } from '../../lib/catalog/testing';
 import type { AuthoredPhoto } from '../../lib/catalog/types';
@@ -13,6 +13,7 @@ import { approveEvent, reopenEvent } from '../../lib/curation/actions';
 import { eventIdOf, eventKey } from '../../lib/curation/events';
 import { readEvent } from '../../lib/curation/repository';
 import { createCurationSink } from '../../lib/curation/sink';
+import { assetDir } from '../../lib/media/path';
 import { withLock } from '../../lib/storage/lock';
 
 /**
@@ -199,4 +200,51 @@ export async function reopenBreakwater(fixture: PublishFixture): Promise<void> {
     const pointer = await readActivePointer(fixture.root);
     const reopened = await reopenEvent({ root: fixture.root, eventId: event.id, expectedVersion: event.version, expectedBase: pointer?.revisionId ?? null, actor: 'curator:web' });
     if (!reopened.ok) throw new Error(`The reopen didn't go through: ${reopened.code}: ${reopened.message}`);
+}
+
+// 15-4's History.
+
+/**
+ * The publish fixture with its draft fixed and published from the command
+ * line: revisions 1 to 3 committed, revision 3 live, nothing pending, so a
+ * restore rebases a working layer with no edits of its own.
+ */
+export async function createHistoryFixture({ dir }: { dir?: string } = {}): Promise<PublishFixture & { live: string }> {
+    const fixture = await createPublishFixture({ dir });
+    await fixBoth(fixture);
+    const live = await publishFromCli(fixture);
+    return { ...fixture, live };
+}
+
+/**
+ * Set a photograph's derivative set aside, as a lost disk would leave it, so
+ * a stored revision that publishes it fails the asset rules. Returns the undo.
+ */
+export async function setAssetsAside(fixture: PublishFixture, revisionId: string, photoId: string): Promise<() => void> {
+    const revision = await readRevisionFile(fixture.root, revisionId);
+    const photo = revision?.content.photos.find((entry) => entry.id === photoId);
+    if (!photo) throw new Error(`${revisionId} doesn't publish ${photoId}`);
+    const dir = assetDir({ photoId, assetRevision: photo.assetRevision, profileId: photo.profileId }, fixture.root);
+    fs.renameSync(dir, `${dir}.aside`);
+    return () => fs.renameSync(`${dir}.aside`, dir);
+}
+
+/**
+ * History with a restore that takes many photographs away: Salt Roads (8
+ * photographs) is hidden and dropped from Home as revision 4, then shown
+ * again as the live revision, so restoring revision 4 removes it and its 8
+ * photographs. The dialog names 5 and puts the rest behind "and 3 more".
+ */
+export async function createRemovalsFixture({ dir }: { dir?: string } = {}): Promise<PublishFixture & { live: string; hidden: string }> {
+    const fixture = await createHistoryFixture({ dir });
+    const stamp = async () => ({ baseRevisionId: (await readActivePointer(fixture.root))?.revisionId ?? null, origin: 'curator' as const, actor: 'curator:web', reviewedAt: new Date().toISOString() });
+    const site = await readAuthoredRecord(fixture.root, 'site', 'site');
+    const featured = site?.kind === 'site' ? site.featuredSeriesIds : [];
+    await rewrite(fixture.root, 'site', 'site', (record: object) => ({ ...record, featuredSeriesIds: featured.filter((id) => id !== SALT_ROADS) }), await stamp());
+    await rewrite(fixture.root, 'series', SALT_ROADS, (record: object) => ({ ...record, visibility: 'hidden' }), await stamp());
+    const hidden = await publishFromCli(fixture);
+    await rewrite(fixture.root, 'series', SALT_ROADS, (record: object) => ({ ...record, visibility: 'published' }), await stamp());
+    await rewrite(fixture.root, 'site', 'site', (record: object) => ({ ...record, featuredSeriesIds: featured }), await stamp());
+    const live = await publishFromCli(fixture);
+    return { ...fixture, live, hidden };
 }

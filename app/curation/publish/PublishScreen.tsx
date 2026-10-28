@@ -5,6 +5,9 @@ import { Check, CircleAlert, Clock, ExternalLink, FileCheck2, Link2, RefreshCw, 
 import curator from '../curator.module.css';
 import { itemUrl } from '../inbox/journey';
 import PreviewFrame from '@/components/curation/PreviewFrame';
+import { PublishAnswerContext } from './HistoryContext';
+import { localize } from '@/lib/curation/publish-history';
+import { jumpTo } from './jump';
 import {
     displayFacts,
     IDLE_STATE,
@@ -49,6 +52,8 @@ const REVIEW: Record<ReviewLabel, { text: string; icon: LucideIcon; tone: 'done'
     'not-reviewed': { text: 'Not reviewed', icon: CircleAlert, tone: 'alert' },
     stale: { text: 'Stale review', icon: Clock, tone: 'alert' },
     generated: { text: 'Generated · not reviewed', icon: Sparkles, tone: 'alert' },
+    // 15-4: a field a restore's rebase left in conflict (the working.conflicts rule).
+    conflict: { text: 'Conflicts with the live revision', icon: CircleAlert, tone: 'alert' },
     automatic: { text: 'Automatic', icon: RefreshCw, tone: 'quiet' },
     confirmed: { text: 'Confirmed in Inbox', icon: Link2, tone: 'quiet' },
     published: { text: 'Published', icon: Check, tone: 'done' },
@@ -64,6 +69,22 @@ function withCode(text: string): ReactNode {
         ) : (
             part
         ),
+    );
+}
+
+/** 15-4: "Restore it from History, below." as an in-page link that moves focus there. */
+function withHistoryLink(text: string): ReactNode {
+    const phrase = 'History, below';
+    const at = text.indexOf(phrase);
+    if (at < 0) return withCode(text);
+    return (
+        <>
+            {withCode(text.slice(0, at))}
+            <a className={styles.inlineLink} href="#history-heading" onClick={(event) => jumpTo(event, 'history-heading')}>
+                {phrase}
+            </a>
+            {text.slice(at + phrase.length)}
+        </>
     );
 }
 
@@ -181,6 +202,8 @@ function Comparison({ compare, labels }: { compare: Compare; labels: Labels }) {
 
 interface FixContext {
     view: ScreenView;
+    /** The browser's time zone once the page runs, UTC before: the ledger's days read in it, as History's do. */
+    zone: string;
     open: string | null;
     busy: boolean;
     refusal: { rowId: string; text: string } | null;
@@ -221,7 +244,7 @@ function FixAction({ row, fix, ctx }: { row: LedgerRow; fix: Fix; ctx: FixContex
                         <div>
                             <p className={styles.fixLabel}>Generated description</p>
                             <p className={styles.fixText}>{fix.text}</p>
-                            <p className={styles.fixNote}>{fix.suggested}</p>
+                            <p className={styles.fixNote}>{localize(fix.suggested, ctx.zone)}</p>
                             <p className={styles.fixNote}>
                                 Mark it ready only if it says what the photograph shows. To change the words,{' '}
                                 {fix.inboxItem ? (
@@ -328,7 +351,17 @@ function FixAction({ row, fix, ctx }: { row: LedgerRow; fix: Fix; ctx: FixContex
             </span>
         );
     }
-    return <p className={styles.fixHint}>{fix.text}</p>;
+    return (
+        <p className={styles.fixHint}>
+            {fix.text}
+            {fix.command ? (
+                <>
+                    {' '}
+                    <code className={styles.code}>{fix.command}</code>
+                </>
+            ) : null}
+        </p>
+    );
 }
 
 function Row({ row, facts, ctx }: { row: LedgerRow; facts: DisplayFacts; ctx: FixContext }) {
@@ -355,7 +388,7 @@ function Row({ row, facts, ctx }: { row: LedgerRow; facts: DisplayFacts; ctx: Fi
             <p className={styles.summary} id={`${row.id}-summary`} tabIndex={-1} aria-describedby={`${row.id}-state`}>
                 {row.summary}
             </p>
-            {row.detail && facts.mode !== 'live' ? <p className={styles.detail}>{row.detail}</p> : null}
+            {row.detail && facts.mode !== 'live' ? <p className={styles.detail}>{localize(row.detail, ctx.zone)}</p> : null}
             {/* While its fix is open, the fix shows the same values beside the photograph. */}
             {row.compare && !fixOpen ? <Comparison compare={row.compare} labels={facts.compareLabels} /> : null}
             {row.fix && facts.showFixes && blocks ? (
@@ -438,15 +471,6 @@ function bringClearOfBar(box: HTMLElement) {
     else if (top < gap) window.scrollBy({ top: top - gap, behavior: 'instant' });
 }
 
-/** An instant jump that moves focus with it, so the next Tab starts from the row. */
-function jumpTo(event: MouseEvent<HTMLAnchorElement>, id: string) {
-    const target = document.getElementById(id);
-    if (!target) return;
-    event.preventDefault();
-    target.focus({ preventScroll: true });
-    target.scrollIntoView({ block: 'start', behavior: 'instant' });
-}
-
 const ICON: Record<'done' | 'change' | 'alert', LucideIcon> = { done: Check, change: RefreshCw, alert: CircleAlert };
 
 /** The one result slot, above the bar: every answer to Validate or Publish, its heading the focus target. */
@@ -500,7 +524,7 @@ function ResultSlot({ answer, view, facts, ctx, zone }: { answer: Answer | null;
 }
 
 /** The sticky bar: one form whose submits are Validate and Publish, or, out of date, Load the updated ledger alone. */
-function ActionBar({ view, facts, pending, sent, ctx }: { view: ScreenView; facts: DisplayFacts; pending: boolean; sent: Intent | null; ctx: FixContext }) {
+function ActionBar({ view, facts, pending, sent, ctx, historyParams }: { view: ScreenView; facts: DisplayFacts; pending: boolean; sent: Intent | null; ctx: FixContext; historyParams?: PublishScreenProps['historyParams'] }) {
     const bar = facts.bar;
     if (!bar) return null;
     if (bar.loadUpdated) {
@@ -542,6 +566,8 @@ function ActionBar({ view, facts, pending, sent, ctx }: { view: ScreenView; fact
             <input type="hidden" name="draftId" value={view.draftId} />
             <input type="hidden" name="active" value={view.active.revisionId} />
             {facts.validated ? <input type="hidden" name="validated" value={view.draftId} /> : null}
+            {historyParams?.shown ? <input type="hidden" name="historyShown" value={historyParams.shown} /> : null}
+            {historyParams?.check ? <input type="hidden" name="historyCheck" value={historyParams.check} /> : null}
             <div className={styles.buttons}>
                 {button('validate', bar.validate, 'Validate revision', 'Validating…', FileCheck2, false, validating)}
                 {button('publish', bar.publish, `Publish revision ${n}`, `Publishing revision ${n}…`, UploadCloud, true, publishing)}
@@ -586,7 +612,7 @@ function PreviewPanel({ facts }: { facts: DisplayFacts }) {
             {panel.rollback ? (
                 <footer className={styles.panelFooter}>
                     <Undo2 size={15} aria-hidden="true" />
-                    <span>{withCode(panel.rollback)}</span>
+                    <span>{withHistoryLink(panel.rollback)}</span>
                 </footer>
             ) : null}
         </section>
@@ -604,9 +630,13 @@ interface PublishScreenProps {
      * so this client module never imports server code, not even the action's.
      */
     action: (previous: PublishState, form: FormData) => Promise<PublishState>;
+    /** 15-4's History section: the layout's last area, under the ledger (or under the panel when nothing is pending). */
+    history?: ReactNode;
+    /** How many History entries the page shows and the revision it checked (`?history=`, `?check=`), which an answer keeps. */
+    historyParams?: { shown: number | null; check: number | null };
 }
 
-export default function PublishScreen({ view, previewHref, openFix, action }: PublishScreenProps) {
+export default function PublishScreen({ view, previewHref, openFix, action, history, historyParams }: PublishScreenProps) {
     const [state, dispatch, pending] = useActionState(action, IDLE_STATE);
     // The press that's waiting, for the live region and the pending label. Set on the click, before the post.
     const [sent, setSent] = useState<Intent | null>(null);
@@ -626,6 +656,7 @@ export default function PublishScreen({ view, previewHref, openFix, action }: Pu
 
     const ctx: FixContext = {
         view,
+        zone,
         open,
         busy,
         refusal,
@@ -740,9 +771,10 @@ export default function PublishScreen({ view, previewHref, openFix, action }: Pu
                         <Group heading={facts.groups.derived} rows={ledger.derived} tone="derived" facts={facts} ctx={ctx} />
                         <Group heading="Source health" rows={ledger.health} tone="health" facts={facts} ctx={ctx} />
                         <ResultSlot answer={state.result} view={view} facts={facts} ctx={ctx} zone={zone} />
-                        <ActionBar view={view} facts={facts} pending={pending} sent={sent} ctx={ctx} />
+                        <ActionBar view={view} facts={facts} pending={pending} sent={sent} ctx={ctx} historyParams={historyParams} />
                     </section>
                 )}
+                <PublishAnswerContext.Provider value={{ result: state.result, pending, sent, zone }}>{history}</PublishAnswerContext.Provider>
             </div>
         </main>
     );

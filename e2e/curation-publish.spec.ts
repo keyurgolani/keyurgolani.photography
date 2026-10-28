@@ -83,6 +83,8 @@ const bar = (page: Page) => page.locator('main form[data-sticky-bar]');
 const validate = (page: Page) => bar(page).locator('button[value="validate"]');
 const publishButton = (page: Page) => bar(page).locator('button[value="publish"]');
 const result = (page: Page) => page.locator('#result-heading');
+// The blocker list's links, in the result slot. #15's History below the ledger is an ordered list of links too.
+const blockerLinks = (page: Page) => page.locator('main section[aria-labelledby="result-heading"] ol li a');
 
 /** The element focus is on, by its text, or its id when it has none. */
 async function focused(page: Page): Promise<string> {
@@ -326,7 +328,7 @@ test('answers busy while another process holds the catalog, and Publish stays th
     await press(page, validate(page), 'Catalog revision is valid');
     const release = await holdCatalogLock(fixture);
     try {
-        await press(page, publishButton(page), 'Another publish or rollback is running');
+        await press(page, publishButton(page), 'Another publish or restore is running');
         await expect(page.getByText(/Nothing changed here\. Publish again when it finishes\.$/)).toBeVisible();
         await expect(publishButton(page)).not.toHaveAttribute('aria-disabled', 'true');
         await expect(page.getByRole('link', { name: 'Try again' })).toHaveCount(0);
@@ -390,16 +392,20 @@ test.describe('the #1 checks', () => {
             await page.keyboard.press('Enter');
             await expect(result(page)).toHaveText('Publication blocked');
             // The whole answer comes into view clear of the bar, its last blocker link included.
-            const last = await page.locator('ol li a').last().boundingBox();
-            const top = await bar(page).boundingBox();
-            expect(last && top && last.y + last.height <= top.y).toBe(true);
-            expect(last && last.y >= 0).toBe(true);
+            // The screen scrolls it there in the frame after focus moves, so wait for it rather than read once.
+            await expect
+                .poll(async () => {
+                    const last = await blockerLinks(page).last().boundingBox();
+                    const top = await bar(page).boundingBox();
+                    return Boolean(last && top && last.y >= 0 && last.y + last.height <= top.y);
+                })
+                .toBe(true);
             await checkSurface(page, {
                 controls: [
                     page.getByRole('link', { name: /Open full preview/ }),
                     page.locator('main [id$="-open"]'),
                     page.getByRole('button', { name: /mark reviewed/ }),
-                    page.locator('ol li a'),
+                    blockerLinks(page),
                     validate(page),
                     publishButton(page),
                 ],
