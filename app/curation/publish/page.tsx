@@ -33,7 +33,8 @@ export default async function PublishPage({ searchParams }: PublishPageProps) {
     // 15-4's History: how many entries, one revision to check past the planning budget, a done restore, and a dialog opened by URL.
     const one = (name: string) => (typeof params[name] === 'string' ? (params[name] as string) : null);
     const restore = numberFrom(one('restore'));
-    const page = await loadPublishPage({ shown: numberFrom(one('history')), check: numberFrom(one('check')), restored: numberFrom(one('restored')) });
+    const history = { shown: numberFrom(one('history')), check: numberFrom(one('check')) };
+    const page = await loadPublishPage({ ...history, restored: numberFrom(one('restored')), rebased: one('rebased') !== '0' });
     return (
         <div className={styles.page}>
             <CuratorHeader active="publish" publishHref="/curation/publish" />
@@ -43,6 +44,7 @@ export default async function PublishPage({ searchParams }: PublishPageProps) {
                     previewHref={page.previewHref}
                     openFix={fix}
                     action={publishAction}
+                    historyParams={history}
                     history={<HistorySection view={page.history} action={restoreAction} openRestore={restore} />}
                 />
             ) : page.state === 'not-launched' ? (

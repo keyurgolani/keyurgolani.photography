@@ -6,6 +6,7 @@ import curator from '../curator.module.css';
 import { itemUrl } from '../inbox/journey';
 import PreviewFrame from '@/components/curation/PreviewFrame';
 import { PublishAnswerContext } from './HistoryContext';
+import { localize } from '@/lib/curation/publish-history';
 import { jumpTo } from './jump';
 import {
     displayFacts,
@@ -201,6 +202,8 @@ function Comparison({ compare, labels }: { compare: Compare; labels: Labels }) {
 
 interface FixContext {
     view: ScreenView;
+    /** The browser's time zone once the page runs, UTC before: the ledger's days read in it, as History's do. */
+    zone: string;
     open: string | null;
     busy: boolean;
     refusal: { rowId: string; text: string } | null;
@@ -241,7 +244,7 @@ function FixAction({ row, fix, ctx }: { row: LedgerRow; fix: Fix; ctx: FixContex
                         <div>
                             <p className={styles.fixLabel}>Generated description</p>
                             <p className={styles.fixText}>{fix.text}</p>
-                            <p className={styles.fixNote}>{fix.suggested}</p>
+                            <p className={styles.fixNote}>{localize(fix.suggested, ctx.zone)}</p>
                             <p className={styles.fixNote}>
                                 Mark it ready only if it says what the photograph shows. To change the words,{' '}
                                 {fix.inboxItem ? (
@@ -385,7 +388,7 @@ function Row({ row, facts, ctx }: { row: LedgerRow; facts: DisplayFacts; ctx: Fi
             <p className={styles.summary} id={`${row.id}-summary`} tabIndex={-1} aria-describedby={`${row.id}-state`}>
                 {row.summary}
             </p>
-            {row.detail && facts.mode !== 'live' ? <p className={styles.detail}>{row.detail}</p> : null}
+            {row.detail && facts.mode !== 'live' ? <p className={styles.detail}>{localize(row.detail, ctx.zone)}</p> : null}
             {/* While its fix is open, the fix shows the same values beside the photograph. */}
             {row.compare && !fixOpen ? <Comparison compare={row.compare} labels={facts.compareLabels} /> : null}
             {row.fix && facts.showFixes && blocks ? (
@@ -521,7 +524,7 @@ function ResultSlot({ answer, view, facts, ctx, zone }: { answer: Answer | null;
 }
 
 /** The sticky bar: one form whose submits are Validate and Publish, or, out of date, Load the updated ledger alone. */
-function ActionBar({ view, facts, pending, sent, ctx }: { view: ScreenView; facts: DisplayFacts; pending: boolean; sent: Intent | null; ctx: FixContext }) {
+function ActionBar({ view, facts, pending, sent, ctx, historyParams }: { view: ScreenView; facts: DisplayFacts; pending: boolean; sent: Intent | null; ctx: FixContext; historyParams?: PublishScreenProps['historyParams'] }) {
     const bar = facts.bar;
     if (!bar) return null;
     if (bar.loadUpdated) {
@@ -563,6 +566,8 @@ function ActionBar({ view, facts, pending, sent, ctx }: { view: ScreenView; fact
             <input type="hidden" name="draftId" value={view.draftId} />
             <input type="hidden" name="active" value={view.active.revisionId} />
             {facts.validated ? <input type="hidden" name="validated" value={view.draftId} /> : null}
+            {historyParams?.shown ? <input type="hidden" name="historyShown" value={historyParams.shown} /> : null}
+            {historyParams?.check ? <input type="hidden" name="historyCheck" value={historyParams.check} /> : null}
             <div className={styles.buttons}>
                 {button('validate', bar.validate, 'Validate revision', 'Validating…', FileCheck2, false, validating)}
                 {button('publish', bar.publish, `Publish revision ${n}`, `Publishing revision ${n}…`, UploadCloud, true, publishing)}
@@ -627,9 +632,11 @@ interface PublishScreenProps {
     action: (previous: PublishState, form: FormData) => Promise<PublishState>;
     /** 15-4's History section: the layout's last area, under the ledger (or under the panel when nothing is pending). */
     history?: ReactNode;
+    /** How many History entries the page shows and the revision it checked (`?history=`, `?check=`), which an answer keeps. */
+    historyParams?: { shown: number | null; check: number | null };
 }
 
-export default function PublishScreen({ view, previewHref, openFix, action, history }: PublishScreenProps) {
+export default function PublishScreen({ view, previewHref, openFix, action, history, historyParams }: PublishScreenProps) {
     const [state, dispatch, pending] = useActionState(action, IDLE_STATE);
     // The press that's waiting, for the live region and the pending label. Set on the click, before the post.
     const [sent, setSent] = useState<Intent | null>(null);
@@ -649,6 +656,7 @@ export default function PublishScreen({ view, previewHref, openFix, action, hist
 
     const ctx: FixContext = {
         view,
+        zone,
         open,
         busy,
         refusal,
@@ -763,7 +771,7 @@ export default function PublishScreen({ view, previewHref, openFix, action, hist
                         <Group heading={facts.groups.derived} rows={ledger.derived} tone="derived" facts={facts} ctx={ctx} />
                         <Group heading="Source health" rows={ledger.health} tone="health" facts={facts} ctx={ctx} />
                         <ResultSlot answer={state.result} view={view} facts={facts} ctx={ctx} zone={zone} />
-                        <ActionBar view={view} facts={facts} pending={pending} sent={sent} ctx={ctx} />
+                        <ActionBar view={view} facts={facts} pending={pending} sent={sent} ctx={ctx} historyParams={historyParams} />
                     </section>
                 )}
                 <PublishAnswerContext.Provider value={{ result: state.result, pending, sent, zone }}>{history}</PublishAnswerContext.Provider>

@@ -6,6 +6,11 @@
 
 .history {
   grid-area: history;
+  /* The entries stack by History's own width, not the window's (build design review P2-3). A size container
+     doesn't size itself by its content, so it takes the full width of its place in either layout. */
+  container-type: inline-size;
+  box-sizing: border-box;
+  width: 100%;
   min-width: 0;
   margin-top: 1.25rem;
   padding: 1.25rem 1.25rem 0.75rem;
@@ -123,7 +128,9 @@
   font-size: var(--gah-type-label);
 }
 
-.action button[data-off='true'] {
+/* Restore is a link with role="button", so the rules name both. Paused, it reads as 16-3's unavailable buttons do. */
+.action [data-off='true'] {
+  border-color: var(--gah-rule-strong);
   color: var(--gah-ink-muted);
   cursor: not-allowed;
 }
@@ -425,9 +432,11 @@
     margin-top: 0.75rem;
   }
 
-  .action > button,
+  .action > :is(a, button),
   .more > a {
     flex: 1 1 100%;
+    justify-content: center;
+    text-align: center;
   }
 
   .dialog {
@@ -456,6 +465,26 @@
   .dialog .dialogActions > button {
     flex: 1 1 9rem;
     min-width: 0;
+    justify-content: center;
+    text-align: center;
+  }
+}
+
+/* A narrow History column (768 to about 1023 px, where the ledger takes two
+   columns): the entry stacks, its action under the text at full width, as on
+   a phone, so the text never squeezes beside the button. */
+@container (max-width: 34rem) {
+  .entry {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .action {
+    display: flex;
+    margin-top: 0.75rem;
+  }
+
+  .action > :is(a, button) {
+    flex: 1 1 100%;
     justify-content: center;
     text-align: center;
   }

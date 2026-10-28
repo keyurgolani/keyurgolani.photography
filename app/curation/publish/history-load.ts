@@ -19,6 +19,7 @@ import {
     type HistoryView,
     type PlanStatus,
     type PlanView,
+    type SiteChange,
 } from '@/lib/curation/publish-history';
 
 /**
@@ -38,6 +39,8 @@ export interface HistoryLoadOptions {
     check?: number | null;
     /** `?restored=`: the sequence of the restore the page shows as done. */
     restored?: number | null;
+    /** `?rebased=0`: that restore's rebase waited for the next publish. Only its done notice reads it. */
+    rebased?: boolean;
     /** A draft is pending, so the dialog says what happens to it. */
     draftPending: boolean;
     /** The conflicted ledger rows a restore left, for the done notice. */
@@ -56,6 +59,7 @@ export function numberFrom(value: string | null | undefined): number | null {
 }
 
 const same = (a: unknown, b: unknown) => canonicalJson(a) === canonicalJson(b);
+const seriesOrder = (content: RevisionContent) => content.series.map((series) => series.id);
 const shortId = (id: string) => id.replace(/^(?:ph|ser)_/, '').slice(0, 8);
 
 export async function loadHistoryView(root: string, options: HistoryLoadOptions): Promise<HistoryView> {
@@ -74,16 +78,29 @@ export async function loadHistoryView(root: string, options: HistoryLoadOptions)
     };
 
     const newestShown = new Set(history.rows.slice(-shown).map((row) => row.activation.activationId));
+    // Which of the site's two lists changed between two revisions, as the dialog reads them; undefined when one can't be read.
+    const siteBetween = async (fromId: string, toId: string): Promise<SiteChange | undefined> => {
+        const [before, after] = await Promise.all([contentOf(fromId), contentOf(toId)]);
+        if (!before || !after) return undefined;
+        return { featured: !same(before.site.featuredSeriesIds, after.site.featuredSeriesIds), order: !same(seriesOrder(before), seriesOrder(after)) };
+    };
     const rows: EntryInput[] = await Promise.all(
         history.rows.map(async (row): Promise<EntryInput> => {
             const base: EntryInput = { activation: row.activation, state: row.state, live: row.live, summary: row.summary };
+            if (row.state !== 'committed' || !newestShown.has(row.activation.activationId)) return base;
+            if (row.activation.kind !== 'rollback') {
+                const parent = row.summary?.parentRevisionId ?? null;
+                if (!row.summary?.changes?.site || parent === null) return base;
+                const site = await siteBetween(parent, row.activation.revisionId);
+                return site ? { ...base, site } : base;
+            }
             // A shown restore reads as what it changed against the revision it replaced, the impact the owner confirmed.
-            if (row.activation.kind !== 'rollback' || row.state !== 'committed' || !newestShown.has(row.activation.activationId)) return base;
             const previous = row.activation.previousRevisionId;
             if (previous === null) return { ...base, replaced: null };
             const [before, after] = await Promise.all([contentOf(previous), contentOf(row.activation.revisionId)]);
             const replaced: RevisionChanges | null = before && after ? changesBetween(before, after) : null;
-            return { ...base, replaced };
+            const site = replaced?.site ? await siteBetween(previous, row.activation.revisionId) : undefined;
+            return { ...base, replaced, ...(site ? { site } : {}) };
         }),
     );
 
@@ -115,7 +132,7 @@ export async function loadHistoryView(root: string, options: HistoryLoadOptions)
     const restoredRow = options.restored ? rows.find((row) => row.activation.sequence === options.restored) : undefined;
     const replacedNumber = restoredRow?.activation.previousRevisionId ? (rows.find((row) => row.state === 'committed' && row.activation.revisionId === restoredRow.activation.previousRevisionId)?.activation.revisionNumber ?? null) : null;
     const conflicts = options.conflicts ?? [];
-    const done = doneView(restoredRow, replacedNumber, conflicts[0] ?? null, conflicts.length);
+    const done = doneView(restoredRow, replacedNumber, conflicts[0] ?? null, conflicts.length, options.rebased !== false);
 
     return historyView({
         rows,
@@ -150,7 +167,7 @@ async function planView(plan: RollbackPlan, names: Names, contentOf: (revisionId
     const target = plan.target as NonNullable<RollbackPlan['target']>;
     const active = plan.active as NonNullable<RollbackPlan['active']>;
     const [targetContent, activeContent] = await Promise.all([contentOf(target.revisionId), contentOf(active.revisionId)]);
-    const order = (content: RevisionContent | null) => content?.series.map((series) => series.id) ?? [];
+    const order = (content: RevisionContent | null) => (content ? seriesOrder(content) : []);
     const impact = impactLines({
         impact: plan.impact ?? { series: { added: [], removed: [], changed: [] }, photos: { added: [], removed: [], changed: [] }, site: false },
         activeProblem: plan.activeProblem !== undefined,

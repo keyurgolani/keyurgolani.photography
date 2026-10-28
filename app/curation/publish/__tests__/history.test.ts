@@ -9,7 +9,7 @@ import { resetSessionsForTests } from '@/lib/curation/auth/sessions';
 import { makeCuratorSecrets, type TestCuratorSecrets } from '@/test/helpers/curatorSecrets';
 import { folderBytes } from '@/test/helpers/folderBytes';
 import { setDataDir } from '@/test/helpers/tempDataRoot';
-import { createHistoryFixture, createPublishFixture, fixBoth, holdCatalogLock, SALT_ROADS, SALT_ROADS_IDS, SALT_ROADS_TITLES, setAssetsAside, type PublishFixture } from '@/test/helpers/publishFixture';
+import { createHistoryFixture, createPublishFixture, createRemovalsFixture, fixBoth, holdCatalogLock, SALT_ROADS, SALT_ROADS_IDS, SALT_ROADS_TITLES, setAssetsAside, type PublishFixture } from '@/test/helpers/publishFixture';
 
 // #15's 15-4 on real data roots, through the real curator boundary: the
 // page's History read, the restore action's guards (anonymous, a wrong
@@ -48,7 +48,7 @@ function signedIn(extra: Record<string, string> = {}) {
     requestHeaders = new Headers({ ...ACTION, cookie: secrets.cookie(), ...extra });
 }
 
-async function use(build: () => Promise<PublishFixture>) {
+async function onRoot(build: () => Promise<PublishFixture>) {
     fixture = await build();
     restoreDir = setDataDir(fixture.root);
     vi.stubEnv('PHOTOGRAPHY_LIBRARY_DIR', fixture.library);
@@ -101,13 +101,13 @@ const isNotFound = (error: unknown) => typeof error === 'object' && error !== nu
 
 describe('the page read', () => {
     it('lists every activation newest first, the live one marked with no Restore, and plans the one it can restore, with the draft line', async () => {
-        await use(() => createPublishFixture());
+        await onRoot(() => createPublishFixture());
         const { history } = await page();
         expect(history.entries.map((entry) => [entry.title, entry.kind, entry.badge?.text ?? null, entry.eligibility.type])).toEqual([
             ['Revision 2', 'Publish', 'Live now', 'text'],
             ['Revision 1', 'Publish', null, 'restore'],
         ]);
-        expect(localize(history.entries[0].when)).toMatch(/^Published \d+ \w+ at \d\d:\d\d by keyur, with photos publish\.$/);
+        expect(localize(history.entries[0].when)).toMatch(/^Published \d+ \w+ at \d\d:\d\d UTC by keyur, with photos publish\.$/);
         expect(history.entries[0].reason).toEqual({ text: 'fixture revision 2', quoted: false });
         expect(history.entries[0].from).toBe('Replaced revision 1: 1 series changed.');
         const plan = history.plans[1];
@@ -117,7 +117,7 @@ describe('the page read', () => {
 });
 
 describe('the restore action guards', () => {
-    beforeEach(async () => use(() => createHistoryFixture()));
+    beforeEach(async () => onRoot(() => createHistoryFixture()));
 
     it.each([
         ['an anonymous post', () => (requestHeaders = new Headers({ ...ACTION }))],
@@ -161,17 +161,17 @@ describe('the restore action guards', () => {
 
 describe('the answers', () => {
     it('restores, then the page shows it done at the top of History, the new entry live, and the replaced one restorable', async () => {
-        await use(() => createHistoryFixture());
+        await onRoot(() => createHistoryFixture());
         const { history } = await page();
         const state = await restore(history, 2, 'The new order reads wrong.');
-        expect(state.answer).toEqual({ kind: 'restored', sequence: 4 });
+        expect(state.answer).toEqual({ kind: 'restored', sequence: 4, rebased: true });
         const [, r2] = fixture.revisions;
         expect((await readActivePointer(fixture.root))?.revisionId).toBe(r2);
         const after = await page({ restored: 4 });
         expect(after.history.done).toEqual({ heading: 'Revision 2 is live again', body: ['Visitors see it on their next page load. Revision 3 is kept in History.'] });
         const [top, three, two] = after.history.entries;
         expect(top).toMatchObject({ title: 'Revision 2', kind: 'Restore', badge: { text: 'Live now' }, reason: { text: 'The new order reads wrong.', quoted: true }, eligibility: { type: 'text' } });
-        expect(localize(top.when)).toMatch(/^Restored \d+ \w+ at \d\d:\d\d, from this screen\.$/);
+        expect(localize(top.when)).toMatch(/^Restored \d+ \w+ at \d\d:\d\d UTC, from this screen\.$/);
         expect(top.from).toMatch(/^Replaced revision 3: /);
         expect(three.eligibility).toEqual({ type: 'restore', revision: 3 });
         expect(two.eligibility.type === 'text' && localize(two.eligibility.text)).toMatch(/^Live now: restored on \d+ \w+, above\.$/);
@@ -180,7 +180,7 @@ describe('the answers', () => {
     });
 
     it('restores with a draft pending: the draft stays, the clashing order is a conflict in the ledger, and the done notice links to it', async () => {
-        await use(() => createPublishFixture());
+        await onRoot(() => createPublishFixture());
         const { history } = await page();
         const state = await restore(history, 1);
         expect(state.answer?.kind).toBe('restored');
@@ -191,19 +191,20 @@ describe('the answers', () => {
         const conflicted = [...after.view.ledger.authored, ...after.view.ledger.derived].filter((row) => row.review === 'conflict');
         expect(conflicted.length).toBeGreaterThan(0);
         expect(conflicted[0]).toMatchObject({ blocks: true, detail: 'Your draft and revision 1 both changed it.', fix: { type: 'hint', command: `photos edit ${SALT_ROADS}` } });
-        expect(after.history.done?.body[1]).toMatch(/^\d+ changes? in your draft clash(es)? with revision 1\.$/);
-        expect(after.history.done?.jump).toEqual({ label: 'Go to the change: Salt Roads', target: `${conflicted[0].id}-summary` });
+        expect(after.history.done?.body[1]).toBe(`${conflicted.length === 1 ? '1 change in your draft clashes' : `${conflicted.length} changes in your draft clash`} with revision 1.`);
+        // More than one clash: the link says it goes to the first.
+        expect(after.history.done?.jump).toEqual({ label: `${conflicted.length > 1 ? 'Go to the first change' : 'Go to the change'}: Salt Roads`, target: `${conflicted[0].id}-summary` });
     });
 
     it('answers lock held at once, with what stays live, and writes nothing', async () => {
-        await use(() => createHistoryFixture());
+        await onRoot(() => createHistoryFixture());
         const { history } = await page();
         const release = await holdCatalogLock(fixture);
         try {
             const before = (await listActivations(fixture.root)).length;
             const result = resultOf(await restore(history, 2));
             expect(result).toMatchObject({ tone: 'change', clock: true, heading: 'Another publish or restore is running', actions: ['cancel', 'retry'] });
-            expect(localize(result.body[0])).toMatch(/^It started at \d\d:\d\d\. Nothing changed, and revision 3 stays live\./);
+            expect(localize(result.body[0])).toMatch(/^It started at \d\d:\d\d UTC\. Nothing changed, and revision 3 stays live\./);
             expect((await listActivations(fixture.root)).length).toBe(before);
         } finally {
             await release();
@@ -211,7 +212,7 @@ describe('the answers', () => {
     });
 
     it("refuses a revision today's checks refuse, after the page loaded, and names the photograph", async () => {
-        await use(() => createHistoryFixture());
+        await onRoot(() => createHistoryFixture());
         const { history } = await page();
         const [, r2] = fixture.revisions;
         const undo = await setAssetsAside(fixture, r2, SALT_ROADS_IDS[3]);
@@ -228,7 +229,7 @@ describe('the answers', () => {
     });
 
     it('says already live when the target went live meanwhile, with the moved facts', async () => {
-        await use(() => createHistoryFixture());
+        await onRoot(() => createHistoryFixture());
         const { history } = await page();
         expect((await restore(history, 2)).answer?.kind).toBe('restored');
         const result = resultOf(await restore(history, 2));
@@ -238,7 +239,7 @@ describe('the answers', () => {
 
 describe("16-3's answer carries History", () => {
     it('after Publish from this screen: the new revision live with no Restore, and Restore on the one it replaced', async () => {
-        await use(() => createPublishFixture());
+        await onRoot(() => createPublishFixture());
         await fixBoth(fixture);
         const { view } = await page();
         const fields = { draftId: view.draftId, active: view.active.revisionId };
@@ -257,7 +258,7 @@ describe("16-3's answer carries History", () => {
     });
 
     it('not after Changed meanwhile, which moved only the candidate', async () => {
-        await use(() => createPublishFixture());
+        await onRoot(() => createPublishFixture());
         await fixBoth(fixture);
         const { view } = await page();
         const fields = { draftId: view.draftId, active: view.active.revisionId };
@@ -267,5 +268,129 @@ describe("16-3's answer carries History", () => {
         const answer = (await publishAction(validated, form({ intent: 'publish', ...fields, validated: view.draftId }))).answer as Answer;
         expect(answer.kind).toBe('changed');
         expect('history' in answer).toBe(false);
+    });
+});
+
+describe('History follows every 16-3 answer that moved the pointer, and only those (spec, History by 16-3 state)', () => {
+    async function validated(): Promise<{ view: ScreenView; fields: Record<string, string>; valid: Awaited<ReturnType<typeof publishAction>> }> {
+        await onRoot(() => createPublishFixture());
+        await fixBoth(fixture);
+        const { view } = await page();
+        const fields = { draftId: view.draftId, active: view.active.revisionId };
+        return { view, fields, valid: await publishAction(IDLE_STATE, form({ intent: 'validate', ...fields })) };
+    }
+    const historyOf = (answer: Answer) => ('history' in answer ? answer.history : undefined);
+
+    it('someone published from the command line: the new live entry, and plans that still say a draft is pending', async () => {
+        const { view, fields, valid } = await validated();
+        const { editBehindThePage, publishFromCli } = await import('@/test/helpers/publishFixture');
+        await editBehindThePage(fixture);
+        await publishFromCli(fixture, 'keyur');
+        const answer = (await publishAction(valid, form({ intent: 'publish', ...fields, validated: view.draftId }))).answer as Answer;
+        expect(answer.kind).toBe('someone-published');
+        const history = historyOf(answer);
+        expect(history?.entries[0]).toMatchObject({ title: 'Revision 3', badge: { text: 'Live now' } });
+        expect(history?.plans[2]?.draftNote).toMatch(/^Your draft stays/);
+    });
+
+    it('already live: History read again, the candidate live', async () => {
+        const { view, fields, valid } = await validated();
+        const { publishFromCli } = await import('@/test/helpers/publishFixture');
+        await publishFromCli(fixture, 'keyur');
+        const answer = (await publishAction(valid, form({ intent: 'publish', ...fields, validated: view.draftId }))).answer as Answer;
+        expect(answer.kind).toBe('already-live');
+        expect(historyOf(answer)?.entries[0]).toMatchObject({ title: 'Revision 3', badge: { text: 'Live now' } });
+    });
+
+    it('busy and not validated leave History as loaded: no History comes with them', async () => {
+        const { view, fields, valid } = await validated();
+        const release = await holdCatalogLock(fixture);
+        try {
+            const busy = (await publishAction(valid, form({ intent: 'publish', ...fields, validated: view.draftId }))).answer as Answer;
+            expect(busy.kind).toBe('busy');
+            expect(historyOf(busy)).toBeUndefined();
+        } finally {
+            await release();
+        }
+        const unvalidated = (await publishAction(IDLE_STATE, form({ intent: 'publish', ...fields }))).answer as Answer;
+        expect(unvalidated.kind).toBe('not-validated');
+        expect(historyOf(unvalidated)).toBeUndefined();
+    });
+
+    it('keeps the entries the page showed and the revision it checked', async () => {
+        const { view, fields, valid } = await validated();
+        const answer = (await publishAction(valid, form({ intent: 'publish', ...fields, validated: view.draftId, historyShown: '20', historyCheck: '1' }))).answer as Answer;
+        expect(answer.kind).toBe('published');
+        expect(historyOf(answer)?.entries).toHaveLength(3);
+        expect(historyOf(answer)?.plans[1]).toBeDefined();
+    });
+});
+
+const actualRollback = (await vi.importActual<typeof import('@/lib/catalog/rollback')>('@/lib/catalog/rollback')).rollback;
+
+describe('an interrupted restore, through the action (high review M5)', () => {
+    const actual = actualRollback;
+    /** The next rollback() stops right after `step`, as a crash there would, through its own test hook. */
+    const crashAfter = (step: number) =>
+        vi.mocked(rollback).mockImplementationOnce((options) =>
+            actual({ ...options, hooks: { afterStep: (at) => { if (at === step) throw new Error(`Test: the restore stops after step ${step}.`); } } }),
+        );
+    const errors = () => vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    it('stopped before the switch: the retry, nothing committed, and revision 3 still live', async () => {
+        await onRoot(() => createHistoryFixture());
+        const { history } = await page();
+        const quiet = errors();
+        crashAfter(10);
+        const before = (await listActivations(fixture.root)).filter((entry) => entry.status === 'committed').length;
+        const result = resultOf(await restore(history, 2));
+        quiet.mockRestore();
+        expect(localize(result.heading)).toBe('The restore stopped before revision 2 went live');
+        expect(result.actions).toEqual(['cancel', 'retry']);
+        expect((await listActivations(fixture.root)).filter((entry) => entry.status === 'committed').length).toBe(before);
+        expect((await readActivePointer(fixture.root))?.revisionId).toBe((fixture as PublishFixture & { live: string }).live);
+    });
+
+    it('stopped after the switch: Finish restoring, and running the same form again settles it as already live', async () => {
+        await onRoot(() => createHistoryFixture());
+        const { history } = await page();
+        const [, r2] = fixture.revisions;
+        const quiet = errors();
+        crashAfter(11);
+        const stopped = resultOf(await restore(history, 2));
+        quiet.mockRestore();
+        expect(stopped).toMatchObject({ heading: "Revision 2 is live, but the restore didn't finish", actions: ['close-reload', 'finish'], moved: { impact: 'hide' } });
+        expect((await readActivePointer(fixture.root))?.revisionId).toBe(r2);
+        // Finish restoring posts the same form: the restore settles under the lock and reads as already live.
+        const finished = resultOf(await restore(history, 2));
+        expect(finished).toMatchObject({ tone: 'done', heading: 'Revision 2 is already live' });
+        expect(finished.body).toContain('History now records the restore that was interrupted.');
+        const restores = (await listActivations(fixture.root)).filter((entry) => entry.kind === 'rollback' && entry.status === 'committed');
+        expect(restores).toHaveLength(1);
+    });
+});
+
+describe('a forged target', () => {
+    it('refuses a well-formed ID that never went live, the draft candidate, with nothing written', async () => {
+        await onRoot(() => createPublishFixture());
+        const { view, history } = await page();
+        const before = folderBytes(fixture.root);
+        const result = resultOf(await restore(history, 1, 'test', { revisionId: view.draftId }));
+        expect(result.heading).toBe("Revision 3 never went live, so it can't come back");
+        expect(folderBytes(fixture.root)).toEqual(before);
+    });
+});
+
+describe('a restore that removes many photographs', () => {
+    it('names the first 5 in the impact list and puts the rest behind "and 3 more"', async () => {
+        await onRoot(() => createRemovalsFixture());
+        const { history } = await page();
+        const plan = Object.values(history.plans).find((entry) => entry.impact.some((line) => line.more));
+        expect(plan?.impact).toEqual(
+            expect.arrayContaining([
+                { text: 'Removes 1 series: Salt Roads' },
+                { text: `Removes 8 photographs: ${SALT_ROADS_TITLES.slice(0, 5).join(', ')}`, more: SALT_ROADS_TITLES.slice(5) },
+            ]),
+        );
     });
 });

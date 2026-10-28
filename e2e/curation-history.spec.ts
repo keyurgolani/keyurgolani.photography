@@ -7,6 +7,7 @@ import { readActivePointer } from '../lib/catalog/working-layer';
 import {
     createHistoryFixture,
     createPublishFixture,
+    createRemovalsFixture,
     editBehindThePage,
     fixBoth,
     holdCatalogLock,
@@ -73,7 +74,8 @@ async function open(page: Page, query = ''): Promise<void> {
 }
 
 const dialog = (page: Page) => page.locator('dialog#restore-dialog');
-const restoreLink = (page: Page, revision: number) => page.locator('#history').getByRole('link', { name: `Restore revision ${revision}`, exact: true });
+// A link with role="button": it opens the dialog, and without JavaScript its URL does (build design review P2-1).
+const restoreLink = (page: Page, revision: number) => page.locator('#history').getByRole('button', { name: `Restore revision ${revision}`, exact: true });
 const submit = (page: Page) => page.locator('#restore-submit');
 const answer = (page: Page) => page.locator('#restore-result-heading');
 
@@ -101,8 +103,10 @@ async function expectAnswerInView(page: Page): Promise<void> {
 }
 
 test('anonymous requests get the boundary, the restore action itself included, and nothing is written', async ({ page, request }) => {
+    // The boundary's own answers, exactly: a 404 would also be what an unknown action ID or a disabled curator gives.
     const anonymous = await request.get(`${origin()}/curation/publish`, { maxRedirects: 0 });
-    expect([302, 303, 307, 404]).toContain(anonymous.status());
+    expect(anonymous.status()).toBe(307);
+    expect(anonymous.headers().location).toMatch(/\/curation\/login$/);
     expect(await anonymous.text()).not.toContain('Restore revision');
     // Capture the post the dialog sends, with its action ID, from a signed-in page, and stop it there.
     await open(page);
@@ -124,14 +128,28 @@ test('anonymous requests get the boundary, the restore action itself included, a
         data: sent.body,
         maxRedirects: 0,
     });
-    expect([401, 403, 404]).toContain(replay.status());
+    expect(replay.status()).toBe(401);
     // And with the session, from another site.
     const foreign = await page.request.post(`${origin()}/curation/publish`, {
         headers: { 'next-action': sent.headers['next-action'], 'content-type': sent.headers['content-type'], origin: 'https://attacker.example', accept: 'text/x-component' },
         data: sent.body,
         maxRedirects: 0,
     });
-    expect([403, 404]).toContain(foreign.status());
+    expect(foreign.status()).toBe(403);
+    // With the session and the right Origin, but a stale precondition, so it writes nothing: the action's answer isn't stored.
+    const live = (fixture as PublishFixture & { live: string }).live;
+    const [r1] = fixture.revisions;
+    const stale = Buffer.from(sent.body.toString('utf8').split(live).join(r1), 'utf8');
+    const answered = await page.request.post(`${origin()}/curation/publish`, {
+        headers: { 'next-action': sent.headers['next-action'], 'content-type': sent.headers['content-type'], origin: origin(), accept: 'text/x-component' },
+        data: stale,
+        maxRedirects: 0,
+    });
+    expect(answered.status()).toBe(200);
+    expect(answered.headers()['cache-control']).toContain('no-store');
+    const read = await page.request.get(`${origin()}/curation/publish`, { maxRedirects: 0 });
+    expect(read.status()).toBe(200);
+    expect(read.headers()['cache-control']).toContain('no-store');
     expect((await listActivations(fixture.root)).length).toBe(before);
     expect((await readActivePointer(fixture.root))?.revisionId).toBe((fixture as PublishFixture & { live: string }).live);
 });
@@ -219,7 +237,7 @@ test('restores with a draft pending: the dialog warns, the draft stays, and the 
     await page.waitForURL(/\?restored=\d+/);
     await expect(page.locator('#history-result-heading')).toHaveText('Revision 1 is live again');
     await expect(page.getByText(/in your draft clash(es)? with revision 1\./)).toBeVisible();
-    await page.getByRole('link', { name: 'Go to the change: Salt Roads' }).click();
+    await page.getByRole('link', { name: /^Go to the (first )?change: Salt Roads$/ }).click();
     const row = page.locator('li', { has: page.locator('p[id$="-summary"]:focus') });
     await expect(row.getByText('Conflicts with the live revision')).toBeVisible();
     await expect(row.getByText('Blocks publishing')).toBeVisible();
@@ -241,7 +259,19 @@ test('follows a publish from this screen: Restore waits while it runs, then the 
     await bar.locator('button[value="publish"]').click();
     await expect(restoreLink(page, 1)).toHaveAttribute('aria-disabled', 'true');
     await expect(restoreLink(page, 1)).toHaveAttribute('aria-describedby', 'history-paused');
-    await expect(page.locator('#history-paused')).toHaveText('Restore waits until this publish answers.');
+    await expect(page.locator('#history-paused')).toHaveText('You can restore again once this publish finishes.');
+    // Paused, it looks it: the muted ink of 16-3's unavailable buttons.
+    const muted = await page.locator('#history').evaluate((element) => getComputedStyle(element).getPropertyValue('--gah-ink-muted').trim());
+    const probe = await page.evaluate((value) => {
+        const span = document.createElement('span');
+        span.style.color = value;
+        document.querySelector('#history')?.append(span);
+        const color = getComputedStyle(span).color;
+        span.remove();
+        return color;
+    }, muted);
+    // Polled, since a colour can still be easing in when the press lands.
+    await expect.poll(() => restoreLink(page, 1).evaluate((element) => getComputedStyle(element).color)).toBe(probe);
     await expect(page.locator('#result-heading')).toHaveText('Revision 3 published atomically');
     await expect(page.locator('#history-paused')).toHaveCount(0);
     await expect(page.locator('#history h3').first()).toHaveText('Revision 3');
@@ -253,8 +283,9 @@ test('follows a publish from this screen: Restore waits while it runs, then the 
 
 test('the dialog by keyboard: focus on its heading, Tab stays out of the page, an empty reason, Escape returns focus', async ({ page }) => {
     await open(page);
+    // Space presses it, as a button's would.
     await restoreLink(page, 2).focus();
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Space');
     await expect(page.locator('#restore-heading')).toBeFocused();
     for (let i = 0; i < 10; i++) {
         await page.keyboard.press('Tab');
@@ -284,6 +315,8 @@ test.describe('without JavaScript', () => {
         const page = await context.newPage();
         await page.goto(`${origin()}/curation/publish`);
         await expect(page.locator('#history h3').first()).toHaveText('Revision 3');
+        // Without JavaScript the times stay the server's, and say they're UTC.
+        await expect(page.locator('#history li').first().getByText(/ at \d\d:\d\d UTC by keyur, with photos publish\.$/)).toBeVisible();
         await restoreLink(page, 2).click();
         await expect(page).toHaveURL(/\?restore=2#restore-heading$/);
         await expect(page.locator('#restore-heading')).toHaveText('Restore revision 2?');
@@ -306,10 +339,36 @@ test.describe('the #1 checks', () => {
             await page.setViewportSize({ width, height });
             await open(page);
             await checkSurface(page, { controls: [page.locator('#history a[id^="restore-"]')] });
+            if (width === 390) {
+                // On a phone Restore spans the entry, as the mockup has it.
+                const button = await restoreLink(page, 1).boundingBox();
+                const list = await page.locator('#history ol').boundingBox();
+                expect(button && list && Math.abs(button.width - list.width) <= 1).toBe(true);
+            }
             await restoreLink(page, 1).focus();
             await page.keyboard.press('Enter');
             await expect(page.locator('#restore-heading')).toBeFocused();
             await checkSurface(page, { controls: [dialog(page).getByRole('button', { name: 'Cancel' }), submit(page)] });
         });
     }
+});
+
+test('a restore that removes many photographs names 5 and opens the rest by keyboard', async ({ page }) => {
+    fixture = await createRemovalsFixture({ dir: DIR });
+    await open(page);
+    const restorable = page.locator('#history [id^="restore-"]');
+    await restorable.first().click();
+    await expect(page.locator('#restore-heading')).toBeFocused();
+    const more = dialog(page).locator('summary', { hasText: 'and 3 more' });
+    await expect(more).toBeVisible();
+    expect((await more.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+    await more.focus();
+    await page.keyboard.press('Enter');
+    await expect(dialog(page).getByText(SALT_ROADS_TITLES.slice(5).join(', '))).toBeVisible();
+});
+
+test("a Check revision link's address plans that revision and lands on its entry", async ({ page }) => {
+    await open(page, '?check=1#entry-1-title');
+    await expect(page.locator('#entry-1-title')).toBeFocused();
+    await expect(restoreLink(page, 1)).toBeVisible();
 });

@@ -159,7 +159,7 @@ export function conflictRows(view: ScreenView): { rowId: string; record: string 
 }
 
 /** The page's query: 15-4's `?history=`, `?check=` and `?restored=`. */
-export type PageQuery = Pick<HistoryLoadOptions, 'shown' | 'check' | 'restored'>;
+export type PageQuery = Pick<HistoryLoadOptions, 'shown' | 'check' | 'restored' | 'rebased'>;
 
 /** The page's read. A read error is logged without its details on the page, which can name a host path. */
 export async function loadPublishPage(query: PageQuery = {}): Promise<PublishPage> {

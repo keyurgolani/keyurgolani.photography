@@ -76,7 +76,8 @@ function row(input: Row): EntryInput {
 }
 
 /** Every day and time token named in UTC, as the screen names them before hydration. */
-const local = <T,>(value: T): T => JSON.parse(JSON.stringify(value), (_, entry: unknown) => (typeof entry === 'string' ? localize(entry) : entry)) as T;
+// 'Etc/UTC' is UTC without the label the server's own render adds ('UTC'), so these read as plain times.
+const local = <T,>(value: T): T => JSON.parse(JSON.stringify(value), (_, entry: unknown) => (typeof entry === 'string' ? localize(entry, 'Etc/UTC') : entry)) as T;
 
 const view = (rows: EntryInput[], planned: Record<number, PlanStatus> = {}, shown = 10, extra: Partial<HistoryViewInput> = {}) =>
     local(historyView({
@@ -91,8 +92,20 @@ const view = (rows: EntryInput[], planned: Record<number, PlanStatus> = {}, show
 describe('times', () => {
     it("name a day and a time in the owner's zone, UTC before the browser says which", () => {
         const text = localize('Published {{day:2026-10-27T03:30:00.000Z}} at {{time:2026-10-27T03:30:00.000Z}}.');
-        expect(text).toBe('Published 27 October at 03:30.');
+        // The server's render, and a page without JavaScript, say the time is UTC (build design review P3-5).
+        expect(text).toBe('Published 27 October at 03:30 UTC.');
         expect(localize('Published {{day:2026-10-27T03:30:00.000Z}} at {{time:2026-10-27T03:30:00.000Z}}.', 'America/Los_Angeles')).toBe('Published 26 October at 20:30.');
+    });
+});
+
+describe('one convention for dates', () => {
+    // Build design review P2-2: one evening reads as one day on the whole screen, in the owner's zone.
+    it("names History's day in the owner's zone, as the ledger's, so a late evening isn't the next day", () => {
+        const at = '2026-10-28T00:27:00.000Z';
+        const rows = [row({ sequence: 1, revision: 1, at, live: true, previous: null, parent: null })];
+        const entry = historyView({ rows, shown: 10, planned: new Map(), plans: {}, hrefs: { check: () => '', more: () => '' } }).entries[0];
+        expect(localize(entry.when, 'America/Los_Angeles')).toBe('Published 27 October at 17:27, from this screen.');
+        expect(localize(entry.when)).toBe('Published 28 October at 00:27 UTC, from this screen.');
     });
 });
 
@@ -100,7 +113,11 @@ describe('the change lines', () => {
     it('lead with the change and put the noun on the first count only', () => {
         expect(publishWords(changes({ photos: { added: ['a', 'b'], removed: ['c'], changed: [] }, series: { added: [], removed: [], changed: ['s'] } }))).toBe('2 photographs added, 1 removed, 1 series changed');
         expect(restoreWords(changes({ photos: { added: ['a'], removed: ['b', 'c'], changed: [] }, series: { added: [], removed: [], changed: ['s'] } }))).toBe('removed 2 photographs, brought back 1, changed 1 series');
-        expect(publishWords(changes({ site: true }))).toBe("Home's featured series or the Work order changed");
+        expect(publishWords(changes({ site: true }))).toBe("Home's featured series or the order of series on Work changed");
+        // Read apart, as the dialog reads them (build design review P3-1).
+        expect(publishWords(changes({ site: true }), { featured: true, order: false })).toBe("Home's featured series changed");
+        expect(publishWords(changes({ site: true }), { featured: false, order: true })).toBe('the order of series on Work changed');
+        expect(restoreWords(changes({ site: true }), { featured: true, order: true })).toBe("changed Home's featured series, changed the order of series on Work");
         expect(publishWords(changes())).toBeNull();
     });
 });
@@ -200,6 +217,16 @@ describe('the list', () => {
     });
 });
 
+describe('accepted rules', () => {
+    it('says what a restore accepted in words, never a rule ID', () => {
+        const restored = row({ sequence: 4, revision: 2, kind: 'rollback', previous: 3, live: true, replaced: null });
+        restored.activation.acceptedRules = ['accent.contrast'];
+        const [entry] = view([row({ sequence: 3, revision: 3, previous: 2 }), restored]).entries;
+        expect(entry.extra).toBe("Accepted at restore: an accent color that's hard to read on the Viewer's dark bands.");
+        expect(entry.extra).not.toMatch(/accent\./);
+    });
+});
+
 describe('the refusal reasons', () => {
     it('says each rule family once in owner words, with the photographs named', () => {
         const reasons = blockingReasons(
@@ -256,11 +283,11 @@ describe('the impact list', () => {
 });
 
 describe("the dialog's answers", () => {
-    const facts = (patch: Partial<OutcomeFacts> = {}): OutcomeFacts => ({ target: 5, active: 6, pointer: { revisionId: rev(6), number: 6 }, targetRevisionId: rev(5), liveBy: null, holderSince: null, reasons: [], settled: false, ...patch });
+    const facts = (patch: Partial<OutcomeFacts> = {}): OutcomeFacts => ({ target: 5, active: 6, activeRevisionId: rev(6), pointer: { revisionId: rev(6), number: 6 }, targetRevisionId: rev(5), liveBy: null, holderSince: null, reasons: [], settled: false, ...patch });
 
     it('changed under you: says who made the new one live, keeps the impact as what it would have changed, and offers one way on', () => {
         const result = local(restoreResult('ACTIVE_CHANGED', facts({ pointer: { revisionId: rev(7), number: 7 }, liveBy: { actor: 'keyur', kind: 'publish', at: '2026-10-27T09:10:00.000Z' } })));
-        expect(result).toEqual({ tone: 'change', heading: 'Revision 7 went live while this was open', body: ['keyur published it at 09:10, with photos publish. The list above is out of date, so nothing was restored.'], actions: ['reload'], moved: { impact: 'past' } });
+        expect(result).toEqual({ tone: 'change', heading: 'Revision 7 went live while this was open', body: ['keyur published it at 09:10, with photos publish. This page is out of date, so nothing was restored.'], actions: ['reload'], moved: { impact: 'past' } });
     });
 
     it('lock held: when it started, what stays live, and the retry', () => {
@@ -270,6 +297,17 @@ describe("the dialog's answers", () => {
             heading: 'Another publish or restore is running',
             body: ['It started at 09:10. Nothing changed, and revision 6 stays live. Restore again once it finishes, usually within a minute.'],
             actions: ['cancel', 'retry'],
+        });
+    });
+
+    it("lock held by a command that already moved the pointer: says what's live now and offers the reload, not the retry", () => {
+        const result = local(restoreResult('CATALOG_LOCKED', facts({ pointer: { revisionId: rev(7), number: 7 }, liveBy: { actor: 'keyur', kind: 'publish', at: '2026-10-27T09:10:00.000Z' }, holderSince: '2026-10-27T09:10:00.000Z' })));
+        expect(result).toEqual({
+            tone: 'change',
+            heading: 'Revision 7 went live while this was open',
+            body: ['keyur published it at 09:10, with photos publish. Another command is still finishing, and nothing was restored. Load the updated page once it does.'],
+            actions: ['reload'],
+            moved: { impact: 'past' },
         });
     });
 
@@ -283,12 +321,12 @@ describe("the dialog's answers", () => {
         });
         expect(local(restoreResult('NOT_ELIGIBLE', facts())).heading).toBe("Revision 5 never went live, so it can't come back");
         expect(local(restoreResult('NOTHING_ACTIVE', facts())).actions).toEqual(['reload']);
-        expect(local(restoreResult('DATA_ROOT_NOT_READY', facts())).heading).toBe("The data root isn't ready");
+        expect(local(restoreResult('DATA_ROOT_NOT_READY', facts())).heading).toBe("The catalog folder isn't ready");
     });
 
     it('already live: moved facts, nothing more to do, and Close and reload', () => {
         const result = local(restoreResult('NO_CHANGES', facts({ pointer: { revisionId: rev(5), number: 5 }, liveBy: { actor: 'curator:web', kind: 'rollback', at: '2026-10-27T09:11:00.000Z' }, settled: true })));
-        expect(result).toEqual({ tone: 'done', heading: 'Revision 5 is already live', body: ['It went live at 09:11, from this screen. Nothing more to do.', 'History now records the restore that was interrupted.'], actions: ['close-reload'], moved: { impact: 'hide' } });
+        expect(result).toEqual({ tone: 'done', heading: 'Revision 5 is already live', body: ['It was restored from this screen at 09:11. Nothing more to do.', 'History now records the restore that was interrupted.'], actions: ['close-reload'], moved: { impact: 'hide' } });
     });
 
     it('interrupted: before the switch, the retry; after it, Finish restoring', () => {
@@ -308,6 +346,12 @@ describe('the done notice', () => {
             heading: 'Revision 5 is live again',
             body: ['Visitors see it on their next page load. Revision 6 is kept in History.', '1 change in your draft clashes with revision 5.'],
             jump: { label: 'Go to the change: Salt Roads', target: 'chg-1-summary' },
+        });
+        // Two clashes: the link goes to the first; a rebase that waited says when the draft moves.
+        expect(doneView(restore, 6, { rowId: 'chg-1', record: 'Salt Roads' }, 2, false)).toEqual({
+            heading: 'Revision 5 is live again',
+            body: ['Visitors see it on their next page load. Revision 6 is kept in History.', 'Your draft moves onto revision 5 at the next publish.', '2 changes in your draft clash with revision 5.'],
+            jump: { label: 'Go to the first change: Salt Roads', target: 'chg-1-summary' },
         });
         expect(doneView({ ...restore, live: false }, 6, null, 0)).toBeUndefined();
         expect(doneView(row({ sequence: 8, revision: 5, live: true }), 4, null, 0)).toBeUndefined();

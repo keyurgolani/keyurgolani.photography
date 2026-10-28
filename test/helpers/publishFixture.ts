@@ -228,3 +228,23 @@ export async function setAssetsAside(fixture: PublishFixture, revisionId: string
     fs.renameSync(dir, `${dir}.aside`);
     return () => fs.renameSync(`${dir}.aside`, dir);
 }
+
+/**
+ * History with a restore that takes many photographs away: Salt Roads (8
+ * photographs) is hidden and dropped from Home as revision 4, then shown
+ * again as the live revision, so restoring revision 4 removes it and its 8
+ * photographs. The dialog names 5 and puts the rest behind "and 3 more".
+ */
+export async function createRemovalsFixture({ dir }: { dir?: string } = {}): Promise<PublishFixture & { live: string; hidden: string }> {
+    const fixture = await createHistoryFixture({ dir });
+    const stamp = async () => ({ baseRevisionId: (await readActivePointer(fixture.root))?.revisionId ?? null, origin: 'curator' as const, actor: 'curator:web', reviewedAt: new Date().toISOString() });
+    const site = await readAuthoredRecord(fixture.root, 'site', 'site');
+    const featured = site?.kind === 'site' ? site.featuredSeriesIds : [];
+    await rewrite(fixture.root, 'site', 'site', (record: object) => ({ ...record, featuredSeriesIds: featured.filter((id) => id !== SALT_ROADS) }), await stamp());
+    await rewrite(fixture.root, 'series', SALT_ROADS, (record: object) => ({ ...record, visibility: 'hidden' }), await stamp());
+    const hidden = await publishFromCli(fixture);
+    await rewrite(fixture.root, 'series', SALT_ROADS, (record: object) => ({ ...record, visibility: 'published' }), await stamp());
+    await rewrite(fixture.root, 'site', 'site', (record: object) => ({ ...record, featuredSeriesIds: featured }), await stamp());
+    const live = await publishFromCli(fixture);
+    return { ...fixture, live, hidden };
+}

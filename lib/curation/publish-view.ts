@@ -2,8 +2,9 @@ import type { CatalogChange, CatalogDiff } from '../catalog/diff';
 import { hashValue, inboxReviewOf, type FieldReviewState, type InboxItem, type ReviewContext } from '../catalog/review';
 import type { Activation, AuthoredRecord, CandidateContent, CandidatePhotoRecord, Issue, IssueRecord, PublicPhotoRecord, RevisionContent, WorkingLayer } from '../catalog/types';
 import type { Registry } from '../identity/types';
-import { dayOf, type Blocker, type BlockerLink, type Compare, type Fix, type KindLabel, type Ledger, type LedgerRow, type Picture, type ReviewLabel, type ReviewTarget } from './publish-facts';
+import { type Blocker, type BlockerLink, type Compare, type Fix, type KindLabel, type Ledger, type LedgerRow, type Picture, type ReviewLabel, type ReviewTarget } from './publish-facts';
 import { fileParts, shortIdOf } from './inbox-view';
+import { dayToken } from './publish-history';
 
 /**
  * #16's Publish screen (16-3): the ledger rows and the blocker list, from one
@@ -405,8 +406,8 @@ function detailOf(change: CatalogChange, input: LedgerInput, names: Names): { de
     const latest = [...change.review.fields].filter((entry) => entry.at !== undefined && entry.at !== '1970-01-01T00:00:00.000Z').sort((a, b) => ((a.at ?? '') < (b.at ?? '') ? 1 : -1))[0];
     if (!latest?.at) return {};
     const settled = recordStamp(input.layer, latest)?.event;
-    if (settled) return { detail: `${change.category === 'asset' ? 'Confirmed' : 'Approved'} in the Inbox on ${dayOf(latest.at)}.` };
-    return { detail: `Reviewed ${stampPhrase(latest.by)} on ${dayOf(latest.at)}.` };
+    if (settled) return { detail: `${change.category === 'asset' ? 'Confirmed' : 'Approved'} in the Inbox on ${dayToken(latest.at)}.` };
+    return { detail: `Reviewed ${stampPhrase(latest.by)} on ${dayToken(latest.at)}.` };
 }
 
 function activeNumber(input: Pick<LedgerInput, 'diff' | 'activations'>): number | null {
@@ -453,7 +454,7 @@ function fixOf(change: CatalogChange, input: LedgerInput, names: Names): Fix | u
             inboxItem: inboxItemFor(input.review, record.id),
             picture: pictureOf(now, input.media.draft, 'Image, no description yet'),
             text: alt.text,
-            suggested: first.at && first.at !== '1970-01-01T00:00:00.000Z' ? `Suggested by the Inbox on ${dayOf(first.at)}. Nobody has reviewed it.` : 'Suggested by the Inbox. Nobody has reviewed it.',
+            suggested: first.at && first.at !== '1970-01-01T00:00:00.000Z' ? `Suggested by the Inbox on ${dayToken(first.at)}. Nobody has reviewed it.` : 'Suggested by the Inbox. Nobody has reviewed it.',
             version: record.version,
             valueHash: hashValue(alt),
         };

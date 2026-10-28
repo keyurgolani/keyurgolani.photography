@@ -86,8 +86,10 @@ function EntryItem({ entry, paused, zone, onRestore }: { entry: EntryView; pause
             {eligibility.type === 'restore' ? (
                 <div className={styles.action}>
                     {/* A link, so the dialog opens from its URL without JavaScript; with it, the press opens the modal in place. */}
+                    {/* role="button", and Space presses it as a button's would: it opens a dialog, which is what a button does. */}
                     <a
                         id={`restore-${sequence}`}
+                        role="button"
                         className={curator.linkButton}
                         href={`${PUBLISH_PAGE}?restore=${eligibility.revision}#restore-heading`}
                         aria-haspopup="dialog"
@@ -97,6 +99,11 @@ function EntryItem({ entry, paused, zone, onRestore }: { entry: EntryView; pause
                         onClick={(event) => {
                             event.preventDefault();
                             if (!paused) onRestore(sequence, eligibility.revision);
+                        }}
+                        onKeyDown={(event) => {
+                            if (event.key !== ' ') return;
+                            event.preventDefault();
+                            event.currentTarget.click();
                         }}
                     >
                         <Undo2 size={16} aria-hidden="true" />
@@ -176,7 +183,7 @@ function RestoreDialog({ plan, zone, staticOpen, action, onClose }: DialogProps)
 
     // A done restore loads the page that shows it.
     useEffect(() => {
-        if (answer?.kind === 'restored') window.location.assign(`${PUBLISH_PAGE}?restored=${answer.sequence}#history-result-heading`);
+        if (answer?.kind === 'restored') window.location.assign(`${PUBLISH_PAGE}?restored=${answer.sequence}${answer.rebased ? '' : '&rebased=0'}#history-result-heading`);
     }, [answer]);
 
     // Focus by phase: the empty reason, the pending button, or the answer's heading with its whole box in view.
@@ -203,9 +210,9 @@ function RestoreDialog({ plan, zone, staticOpen, action, onClose }: DialogProps)
         }
     };
 
-    // An answer that found the pointer moved leaves nothing to submit, unless it's Finish restoring.
+    // An answer that leaves nothing to submit (no Restore again, no Finish restoring) keeps the reason read-only, unsaved.
     const actions: ResultAction[] = result ? result.actions : ['cancel', 'retry'];
-    const settledReason = Boolean(moved) && !actions.includes('finish');
+    const settledReason = Boolean(result) && !actions.includes('retry') && !actions.includes('finish');
     const button = (action: ResultAction) => {
         if (action === 'close-reload') {
             return (
@@ -247,9 +254,12 @@ function RestoreDialog({ plan, zone, staticOpen, action, onClose }: DialogProps)
             aria-labelledby="restore-heading"
             aria-describedby="restore-stakes"
             onCancel={(event) => {
-                // Escape: closes, except while a restore is in flight.
+                // Escape: closes, except while a restore is in flight. After an answer that found the pointer moved, the
+                // page behind is out of date, so Escape loads it again, as Close and reload would (spec: never a plain close).
                 event.preventDefault();
-                if (!pending) onClose();
+                if (pending) return;
+                if (moved) window.location.assign(PUBLISH_PAGE);
+                else onClose();
             }}
         >
             {/* The dialog's own live region: the page's is inert while this is open. */}
@@ -359,7 +369,11 @@ interface HistorySectionProps {
 export default function HistorySection({ view: loaded, action, openRestore }: HistorySectionProps) {
     // 16-3's answer: one that moved the pointer carries History read again; a pending press pauses Restore.
     const { result: answer, pending: publishing, sent, zone } = usePublishAnswer();
-    const view = answeredHistory(answer) ?? loaded;
+    // A later answer that carries no History (busy, say) keeps the last one read, not the page load's (high review M1).
+    const fresh = answeredHistory(answer);
+    const [carried, setCarried] = useState<HistoryView | null>(null);
+    if (fresh && fresh !== carried) setCarried(fresh);
+    const view = fresh ?? carried ?? loaded;
     const fromUrl = openRestore !== null && view.plans[openRestore] ? openRestore : null;
     const [open, setOpen] = useState<{ revision: number; opener: number | null; staticOpen: boolean } | null>(fromUrl === null ? null : { revision: fromUrl, opener: null, staticOpen: true });
 
@@ -376,6 +390,8 @@ export default function HistorySection({ view: loaded, action, openRestore }: Hi
 
     const close = () => {
         const opener = open?.opener ?? null;
+        // Opened from `?restore=N`: closing drops it from the address, so a reload doesn't open it again.
+        if (open?.staticOpen) window.history.replaceState(null, '', `${PUBLISH_PAGE}#history-heading`);
         setOpen(null);
         requestAnimationFrame(() => (document.getElementById(`restore-${opener}`) ?? document.getElementById('history-heading'))?.focus());
     };
@@ -389,7 +405,7 @@ export default function HistorySection({ view: loaded, action, openRestore }: Hi
             <p className={styles.lead}>{view.lead}</p>
             {publishing ? (
                 <p id="history-paused" className={styles.paused}>
-                    {sent === 'publish' ? 'Restore waits until this publish answers.' : 'Restore waits until this check answers.'}
+                    {sent === 'publish' ? 'You can restore again once this publish finishes.' : sent === 'validate' ? 'You can restore again once this check finishes.' : 'You can restore again once this review is saved.'}
                 </p>
             ) : null}
             {view.done ? (

@@ -487,7 +487,7 @@ export function resultCopy(answer: Answer, view: ScreenView, timeZone = 'UTC'): 
         case 'busy': {
             const since = answer.since ? `It started at ${timeOf(answer.since, timeZone)}. ` : '';
             const again = answer.retry === 'validate' ? 'Validate again when it finishes.' : 'Publish again when it finishes.';
-            const heading = answer.lock === 'catalog' ? 'Another publish or rollback is running' : 'Another change to the working catalog is being saved';
+            const heading = answer.lock === 'catalog' ? 'Another publish or restore is running' : 'Another change to the working catalog is being saved';
             return { tone: 'change', heading, body: [`${since}Nothing changed here. ${again}`] };
         }
         case 'failed':

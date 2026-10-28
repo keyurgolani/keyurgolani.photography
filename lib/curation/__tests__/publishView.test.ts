@@ -3,6 +3,7 @@ import type { CatalogChange, CatalogDiff } from '../../catalog/diff';
 import type { FieldReviewReason, FieldReviewState, ReviewContext } from '../../catalog/review';
 import type { CandidateContent, RevisionContent, WorkingLayer } from '../../catalog/types';
 import { actorPhrase, countLine, displayFacts, orderRuns, resultCopy, timeOf, type Ledger, type ScreenView } from '../publish-facts';
+import { localize } from '../publish-history';
 import { buildLedger } from '../publish-view';
 
 // #16's Publish screen (16-3): the join over 16-1's reason list, and the
@@ -97,7 +98,13 @@ describe('the join, over 16-1 reasons', () => {
         const missing = change('edited', { id: 'aaaaaaaaaaaaaaaa', category: 'missing', field: 'source', record: { kind: 'photo', id: PHOTO }, visible: false, provenance: 'derived', review: { state: 'not-required', fields: [] } });
         const { ledger, blockers } = ledgerFor([reviewed, missing]);
         expect(blockers).toEqual([]);
-        expect(ledger.authored[0]).toMatchObject({ review: 'reviewed', blocks: false, detail: 'Reviewed from this screen on 26 October.' });
+        expect(localize(ledger.authored[0].detail ?? '')).toBe('Reviewed from this screen on 26 October.');
+        // The day is named where it's rendered, in the owner's zone, as History's are (15-4 build design review P2-2).
+        const late = change('edited', { review: { state: 'reviewed', fields: [{ record: { kind: 'series', id: SERIES }, field: 'statement', state: 'reviewed', by: 'curator:web', at: '2026-10-28T00:27:00.000Z' }] } });
+        const lateRow = ledgerFor([late]).ledger.authored[0];
+        expect(localize(lateRow.detail ?? '', 'America/Los_Angeles')).toBe('Reviewed from this screen on 27 October.');
+        expect(localize(lateRow.detail ?? '')).toBe('Reviewed from this screen on 28 October.');
+        expect(ledger.authored[0]).toMatchObject({ review: 'reviewed', blocks: false });
         expect(ledger.health[0]).toMatchObject({ kind: 'Source health', summary: 'Pier lamps: source missing; last published image kept' });
     });
 });
@@ -204,7 +211,7 @@ describe('facts by state', () => {
 
     it('names the lock that is held, and says the times in the zone it is given', () => {
         const at = '2026-10-27T14:05:00.000Z';
-        expect(resultCopy({ kind: 'busy', lock: 'catalog', since: at, retry: 'publish' }, view())).toEqual({ tone: 'change', heading: 'Another publish or rollback is running', body: ['It started at 14:05. Nothing changed here. Publish again when it finishes.'] });
+        expect(resultCopy({ kind: 'busy', lock: 'catalog', since: at, retry: 'publish' }, view())).toEqual({ tone: 'change', heading: 'Another publish or restore is running', body: ['It started at 14:05. Nothing changed here. Publish again when it finishes.'] });
         expect(resultCopy({ kind: 'busy', lock: 'authored', since: null, retry: 'validate' }, view())).toEqual({ tone: 'change', heading: 'Another change to the working catalog is being saved', body: ['Nothing changed here. Validate again when it finishes.'] });
         expect(timeOf(at, 'America/Los_Angeles')).toBe('07:05');
         expect(resultCopy({ kind: 'busy', lock: 'catalog', since: at, retry: 'publish' }, view(), 'Asia/Kolkata')?.body).toEqual(['It started at 19:35. Nothing changed here. Publish again when it finishes.']);

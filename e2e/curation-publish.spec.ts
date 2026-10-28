@@ -328,7 +328,7 @@ test('answers busy while another process holds the catalog, and Publish stays th
     await press(page, validate(page), 'Catalog revision is valid');
     const release = await holdCatalogLock(fixture);
     try {
-        await press(page, publishButton(page), 'Another publish or rollback is running');
+        await press(page, publishButton(page), 'Another publish or restore is running');
         await expect(page.getByText(/Nothing changed here\. Publish again when it finishes\.$/)).toBeVisible();
         await expect(publishButton(page)).not.toHaveAttribute('aria-disabled', 'true');
         await expect(page.getByRole('link', { name: 'Try again' })).toHaveCount(0);

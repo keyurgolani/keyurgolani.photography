@@ -18,7 +18,7 @@ import { countLine, type Answer, type Intent, type Publisher, type PublishState 
 import { blockingReasons, restoreResult, type RestoreAnswer, type RestoreState } from '@/lib/curation/publish-history';
 import { INBOX_REASONS, restampReason } from '@/lib/curation/publish-view';
 import { dataRootStatus } from '@/lib/storage/config';
-import { loadHistoryView } from './history-load';
+import { loadHistoryView, numberFrom } from './history-load';
 import { ledgerOf, pointerFacts, readSnapshot, reviewNow, type Snapshot } from './load';
 
 /**
@@ -148,7 +148,7 @@ async function validateOrPublish(previous: PublishState, form: FormData, intent:
     // No revalidatePath here: the site reads the active pointer per request, as after a CLI publish, and revalidating
     // would render this page again from the new pointer, as Nothing to publish, in place of the answer.
     try {
-        return next(previous, intent, await withHistory(await answerFor(result, intent, draftId, pageActive), status.root));
+        return next(previous, intent, await withHistory(await answerFor(result, intent, draftId, pageActive), status.root, form));
     } catch (error) {
         // An answer's own read failed. The pointer is read again in the answer, so this says nothing about it either way.
         console.error('[curation] The Publish screen could not word an answer:', error);
@@ -163,12 +163,13 @@ async function validateOrPublish(previous: PublishState, form: FormData, intent:
  * Restore from it (spec, History by 16-3 state). Changed meanwhile moved only
  * the candidate, so its History still holds.
  */
-async function withHistory(answer: Answer, root: string): Promise<Answer> {
+async function withHistory(answer: Answer, root: string, form: FormData): Promise<Answer> {
     const moved = answer.kind === 'published' || answer.kind === 'already-live' || answer.kind === 'someone-published' || (answer.kind === 'failed' && answer.live !== null);
     if (!moved) return answer;
     try {
-        // Someone else's publish leaves this page's draft pending; this page's own leaves nothing.
-        const history = await loadHistoryView(root, { draftPending: answer.kind === 'someone-published' });
+        // Someone else's publish leaves this page's draft pending; this page's own leaves nothing. The bar's form
+        // posts how many entries the page shows and the revision it checked, so the answer keeps History as it was.
+        const history = await loadHistoryView(root, { draftPending: answer.kind === 'someone-published', shown: numberFrom(text(form, 'historyShown')), check: numberFrom(text(form, 'historyCheck')) });
         return { ...answer, history };
     } catch (error) {
         // The answer stands without it, and History stays as loaded; Restore's precondition still refuses a stale one.
@@ -313,13 +314,13 @@ export async function restoreAction(previous: RestoreState, form: FormData): Pro
     const root = status.root;
     const activations = root ? await listActivations(root).catch(() => []) : [];
     const numberOf = (id: string) => (REVISION_ID_RE.test(id) ? revisionNumberFor(activations, id) : 0);
-    const facts = { target: numberOf(revisionId), active: numberOf(expected), targetRevisionId: revisionId, pointer: null, liveBy: null, holderSince: null, reasons: [], settled: false };
+    const facts = { target: numberOf(revisionId), active: numberOf(expected), activeRevisionId: expected, targetRevisionId: revisionId, pointer: null, liveBy: null, holderSince: null, reasons: [], settled: false };
     if (!REVISION_ID_RE.test(revisionId) || !REVISION_ID_RE.test(expected)) return restoreState(previous, { kind: 'result', result: restoreResult('NOT_ELIGIBLE', facts) });
     if (!/\S/.test(reason) || reason.length > RESTORE_REASON_MAX) return restoreState(previous, { kind: 'reason-missing' });
     if (status.state !== 'ready' || root === null) return restoreState(previous, { kind: 'result', result: restoreResult('DATA_ROOT_NOT_READY', facts) });
 
     const result = await rollback({ dataRoot: root, revisionId, expectedActiveRevisionId: expected, actor: WEB_ACTOR, reason, waitMs: 0 });
-    if (result.outcome === 'ROLLED_BACK' && result.activation) return restoreState(previous, { kind: 'restored', sequence: result.activation.sequence });
+    if (result.outcome === 'ROLLED_BACK' && result.activation) return restoreState(previous, { kind: 'restored', sequence: result.activation.sequence, rebased: result.rebased !== false });
 
     // Every other answer reads the pointer again, as Publish's do, so the dialog says what's live now.
     const pointer = await pointerFacts(root).catch(() => null);
