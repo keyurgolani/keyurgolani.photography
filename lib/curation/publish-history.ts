@@ -487,7 +487,7 @@ export interface OutcomeFacts {
     /** The pointer read again after the answer, or null when it couldn't be read. */
     pointer: { revisionId: string; number: number | null } | null;
     targetRevisionId: string;
-    /** Who made the revision that's live now, and when, for "keyur published it at 09:10, with photos publish." */
+    /** Who made the revision that's live now, and when, for "You published it from the command line at 09:10." */
     liveBy: { actor: string; kind: 'publish' | 'rollback'; at: string } | null;
     holderSince: string | null;
     reasons: string[];
@@ -504,7 +504,7 @@ export function liveByLine(by: OutcomeFacts['liveBy']): string {
     if (by === null) return 'It is live now.';
     const at = timeToken(by.at);
     if (by.kind === 'rollback') return by.actor === WEB_ACTOR_ID ? `It was restored from this screen at ${at}.` : `${by.actor} restored it at ${at}, with photos rollback.`;
-    return by.actor === WEB_ACTOR_ID ? `It went live from this screen at ${at}.` : `${by.actor} published it at ${at}, with photos publish.`;
+    return by.actor === WEB_ACTOR_ID ? `It went live from this screen at ${at}.` : `You published it from the command line at ${at}.`;
 }
 
 /** The answer for a pointer that moved off the revision the dialog was opened against. */

@@ -257,7 +257,8 @@ test('fixes from the rows, validates, and publishes, with the live region speaki
     await expect(publishButton(page)).toHaveText('Publishing revision 3…');
     // A second press while it waits is ignored.
     await publishButton(page).click({ force: true });
-    await expect(result(page)).toHaveText('Revision 3 published atomically');
+    await expect(result(page)).toHaveText('Revision 3 is live');
+    await expect(page.getByText('Visitors get it on their next page load.', { exact: true })).toBeVisible();
     await expect(result(page)).toBeFocused();
     await expect(page.locator('main > [role="status"]')).toHaveText('');
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('Revision 3 is live');
@@ -307,7 +308,7 @@ test('says who published from the command line meanwhile, with the new pointer o
     await editBehindThePage(fixture);
     await publishFromCli(fixture, 'keyur');
     await press(page, publishButton(page), 'Revision 3 went live from the command line');
-    await expect(page.getByText(/^keyur published it at \d\d:\d\d, with photos publish\. Nothing was published from here\.$/)).toBeVisible();
+    await expect(page.getByText(/^You published it from the command line at \d\d:\d\d\. Nothing was published from here\.$/)).toBeVisible();
     await expect(page.getByText('Current public revision 3')).toBeVisible();
     await expect(page.getByText('Revision 2 is kept.')).toBeVisible();
 });
@@ -335,7 +336,7 @@ test('answers busy while another process holds the catalog, and Publish stays th
     } finally {
         await release();
     }
-    await press(page, publishButton(page), 'Revision 3 published atomically');
+    await press(page, publishButton(page), 'Revision 3 is live');
 });
 
 test('answers failed when the publish stops before the switch, and Publish stays the retry', async ({ page }) => {
@@ -351,7 +352,7 @@ test('answers failed when the publish stops before the switch, and Publish stays
     } finally {
         undo();
     }
-    await press(page, publishButton(page), 'Revision 3 published atomically');
+    await press(page, publishButton(page), 'Revision 3 is live');
 });
 
 test.describe('without JavaScript', () => {

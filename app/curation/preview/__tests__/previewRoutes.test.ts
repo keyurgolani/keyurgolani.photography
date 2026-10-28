@@ -1,5 +1,8 @@
 // @vitest-environment node
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import sharp from 'sharp';
 import { NextRequest } from 'next/server';
 import { isValidElement, type ReactElement } from 'react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -14,6 +17,9 @@ import { resetLoginForTests } from '@/lib/curation/auth/login';
 import { deleteSession, resetSessionsForTests, SESSION_COOKIE, sessionFromCookies } from '@/lib/curation/auth/sessions';
 import { makeCuratorSecrets, type TestCuratorSecrets } from '@/test/helpers/curatorSecrets';
 import { proxy } from '@/proxy';
+import { resetAboutPortraitReader } from '@/lib/siteConfig/aboutPortrait';
+import { SITE_CONFIG_ENV } from '@/lib/siteConfig/dir';
+import { resetPortraitVariants } from '@/lib/siteConfig/portraitVariants';
 
 // #16's preview routes, called the way Next calls them, with next/headers
 // giving the request's headers: every page, layout, generateMetadata and
@@ -94,6 +100,8 @@ afterEach(() => {
     expect(publicReads.calls).toEqual([]);
 });
 
+const { default: AboutPage } = await import('@/app/about/AboutPage');
+
 const pages = {
     frame: await import('../[draftId]/page'),
     home: await import('../[draftId]/site/page'),
@@ -113,6 +121,7 @@ const handlers = {
     records: (await import('../[draftId]/site/api/catalog/home/photos/[photoId]/route')).GET,
     peek: (await import('../[draftId]/site/api/catalog/series/[slug]/photos/[photoId]/route')).GET,
     media: (await import('../[draftId]/site/media/[photoId]/[assetRevision]/[profileId]/[variant]/route')).GET,
+    portrait: (await import('../[draftId]/site/about/portrait/[token]/[variant]/route')).GET,
 };
 
 const firstPhoto = () => catalog.content.photos.find((photo) => photo.id === catalog.content.series.find((series) => series.slug === LONG)!.photoIds[0])!;
@@ -171,6 +180,8 @@ function surfaces(id: string): Record<string, () => unknown> {
         'load-more': () => handlers.pages(url(`${previewBase(id)}/api/catalog/series/${LONG}/pages/${cursor}`), params({ draftId: id, slug: LONG, cursor })),
         'home records': () => handlers.records(url(`${previewBase(id)}/api/catalog/home/photos/${photo.id}?revision=${id}`), params({ draftId: id, photoId: photo.id })),
         image: () => handlers.media(url(`${previewBase(id)}/media/${photo.id}/${photo.assetRevision}/${photo.profileId}/w400.avif`), params(media)),
+        // About's portrait, through the preview's own copy of its route. A made-up token: the session check comes first.
+        portrait: () => handlers.portrait(url(`${previewBase(id)}/about/portrait/${'0'.repeat(32)}/w800.webp`), params({ draftId: id, token: '0'.repeat(32), variant: 'w800.webp' })),
         // 9a's Viewer peek, which the Viewer asks for once a finger goes down on the photograph.
         peek: () => handlers.peek(url(`${previewBase(id)}/api/catalog/series/${LONG}/photos/${photo.id}?revision=${id}`), params({ draftId: id, slug: LONG, photoId: photo.id })),
     };
@@ -331,6 +342,34 @@ describe('signed in', () => {
         const stale = encodeSeriesCursor({ revisionId: activeId, seriesId: 'ser_fixture-long', offset: 100 });
         const answer = await handlers.pages(url('/x'), params({ draftId, slug: LONG, cursor: stale }));
         expect(answer.status).toBe(409);
+    });
+
+    it("shows About's portrait from the site config folder under the preview, and serves it private and no-store", async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preview-site-config-'));
+        try {
+            fs.mkdirSync(path.join(dir, 'about'));
+            fs.writeFileSync(path.join(dir, 'about', 'portrait.jpg'), await sharp({ create: { width: 900, height: 1200, channels: 3, background: { r: 180, g: 120, b: 60 } } }).jpeg().toBuffer());
+            vi.stubEnv(SITE_CONFIG_ENV, dir);
+            resetAboutPortraitReader();
+            const base = previewBasePath(draftId);
+            const about = await element(surfaces(draftId).about);
+            expect(about.props).toEqual({ portraitBasePath: base });
+            // AboutPage as Next renders it: About's view, with every variant under the preview.
+            const page = (await AboutPage(about.props as { portraitBasePath: string })) as ReactElement<{ children: ReactElement<Record<string, unknown>>[] }>;
+            const portrait = page.props.children[1].props.portrait as { asset: { variants: Record<string, Record<string, { url: string }>> } };
+            const urls = Object.values(portrait.asset.variants).flatMap((formats) => Object.values(formats).map((variant) => variant.url));
+            expect(urls).toHaveLength(8);
+            for (const variantUrl of urls) expect(variantUrl).toMatch(new RegExp(`^${base}/about/portrait/[0-9a-f]{32}/w\\d+\\.(avif|webp)$`));
+            const [token, variant] = urls[0].slice(`${base}/about/portrait/`.length).split('/');
+            const answer = await handlers.portrait(url(urls[0]), params({ draftId, token, variant }));
+            expect(answer.status).toBe(200);
+            expect(answer.headers.get('cache-control')).toBe('private, no-store');
+            expect(answer.headers.get('content-type')).toMatch(/^image\/(avif|webp)$/);
+        } finally {
+            await resetPortraitVariants();
+            resetAboutPortraitReader();
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
     });
 
     it("serves a draft's image private and no-store, and nothing the draft doesn't hold", async () => {

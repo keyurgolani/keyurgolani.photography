@@ -287,7 +287,7 @@ describe("the dialog's answers", () => {
 
     it('changed under you: says who made the new one live, keeps the impact as what it would have changed, and offers one way on', () => {
         const result = local(restoreResult('ACTIVE_CHANGED', facts({ pointer: { revisionId: rev(7), number: 7 }, liveBy: { actor: 'keyur', kind: 'publish', at: '2026-10-27T09:10:00.000Z' } })));
-        expect(result).toEqual({ tone: 'change', heading: 'Revision 7 went live while this was open', body: ['keyur published it at 09:10, with photos publish. This page is out of date, so nothing was restored.'], actions: ['reload'], moved: { impact: 'past' } });
+        expect(result).toEqual({ tone: 'change', heading: 'Revision 7 went live while this was open', body: ['You published it from the command line at 09:10. This page is out of date, so nothing was restored.'], actions: ['reload'], moved: { impact: 'past' } });
     });
 
     it('lock held: when it started, what stays live, and the retry', () => {
@@ -305,7 +305,7 @@ describe("the dialog's answers", () => {
         expect(result).toEqual({
             tone: 'change',
             heading: 'Revision 7 went live while this was open',
-            body: ['keyur published it at 09:10, with photos publish. Another command is still finishing, and nothing was restored. Load the updated page once it does.'],
+            body: ['You published it from the command line at 09:10. Another command is still finishing, and nothing was restored. Load the updated page once it does.'],
             actions: ['reload'],
             moved: { impact: 'past' },
         });

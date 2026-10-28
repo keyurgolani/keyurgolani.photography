@@ -147,11 +147,21 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      # The site config folder, as web mounts it: read-only, and created empty
+      # when missing, so the draft preview's About shows the same portrait as
+      # the site's, or the name when there's none.
+      - type: bind
+        source: ./site-config
+        target: /config/site
+        read_only: true
+        bind:
+          create_host_path: true
     # On only while the owner runs it, so a reboot never brings it back.
     restart: "no"
     environment:
       - NODE_ENV=production
       - PHOTOGRAPHY_DATA_DIR=/data/portfolio
+      - PHOTOGRAPHY_SITE_CONFIG_DIR=/config/site
       - CURATION_ENABLED=true
       # Docker's port forward reaches the container on its own interface, so
       # the server listens on every interface inside it, and the publish to

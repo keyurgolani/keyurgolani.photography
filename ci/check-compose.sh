@@ -164,26 +164,30 @@ if ! jq -e --argjson never "$never_created" "
 fi
 echo "web mounts the data root read-only, and no data root, library, or image cache bind is created when missing."
 
-# 8. web mounts the site config folder, which holds About's portrait, once,
-#    read-only, at /config/site, and points PHOTOGRAPHY_SITE_CONFIG_DIR at it.
-#    No other service mounts it, so nothing in the stack can write the
-#    portrait, and nothing mounts it under /app/public, where Next would
-#    serve the original file, metadata and all.
+# 8. web and curator each mount the site config folder, which holds About's
+#    portrait, once, read-only, at /config/site, and point
+#    PHOTOGRAPHY_SITE_CONFIG_DIR at it: web for About, curator for the draft
+#    preview's About (v1.2.1). No other service mounts it, and none writes
+#    it, so nothing in the stack can change the portrait, and nothing mounts
+#    it under /app/public, where Next would serve the original file,
+#    metadata and all.
 SITE_CONFIG_MOUNT='((.target // "") | rtrimstr("/")) == "/config/site" or ((.source // "") | test("/site-config(/|$)"))'
-if ! jq -e "[.services.web.volumes[]? | select($SITE_CONFIG_MOUNT)]
-    | length == 1 and all(.type == \"bind\" and .target == \"/config/site\" and .read_only == true)" <<<"$resolved" >/dev/null; then
-  fail "web must mount ./site-config once, at /config/site, as a bind with read_only: true."
-fi
-if ! jq -e '.services.web.environment.PHOTOGRAPHY_SITE_CONFIG_DIR == "/config/site"' <<<"$resolved" >/dev/null; then
-  fail "web must set PHOTOGRAPHY_SITE_CONFIG_DIR=/config/site, the read-only mount."
-fi
-if ! jq -e "[.services | to_entries[] | select(.key != \"web\") | .value.volumes[]? | select($SITE_CONFIG_MOUNT)] | length == 0" <<<"$resolved" >/dev/null; then
-  fail "Only web may mount the site config folder."
+for service in web curator; do
+  if ! jq -e --arg service "$service" "[.services[\$service].volumes[]? | select($SITE_CONFIG_MOUNT)]
+      | length == 1 and all(.type == \"bind\" and .target == \"/config/site\" and .read_only == true)" <<<"$resolved" >/dev/null; then
+    fail "$service must mount ./site-config once, at /config/site, as a bind with read_only: true."
+  fi
+  if ! jq -e --arg service "$service" '.services[$service].environment.PHOTOGRAPHY_SITE_CONFIG_DIR == "/config/site"' <<<"$resolved" >/dev/null; then
+    fail "$service must set PHOTOGRAPHY_SITE_CONFIG_DIR=/config/site, the read-only mount."
+  fi
+done
+if ! jq -e "[.services | to_entries[] | select(.key | IN(\"web\", \"curator\") | not) | .value.volumes[]? | select($SITE_CONFIG_MOUNT)] | length == 0" <<<"$resolved" >/dev/null; then
+  fail "Only web and curator may mount the site config folder."
 fi
 if ! jq -e '[.services[] | (.volumes // [])[] | select(((.target // "") | startswith("/app/public")) and (((.source // "") | test("/site-config(/|$)"))))] | length == 0' <<<"$resolved" >/dev/null; then
   fail "The site config folder must never be mounted under /app/public."
 fi
-echo "web mounts the site config folder once, read-only, at /config/site, and no other service mounts it."
+echo "web and curator mount the site config folder once each, read-only, at /config/site, and no other service mounts it."
 
 # 9. web can't write the library or the data root: it mounts both read-only.
 LIBRARY_MOUNT='((.target // "") | rtrimstr("/")) == "/app/public/assets/photos"'
