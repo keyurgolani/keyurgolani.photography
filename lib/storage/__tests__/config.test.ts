@@ -6,7 +6,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createTempDataRoot, writeDataRootMarker, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempLibrary';
 import { libraryPaths } from '../../../utils/imageOptimizer';
-import { DATA_ROOT_FILE, dataRoot, dataRootState, dataRootStatus, libraryRoot } from '../config';
+import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { DATA_ROOT_FILE, dataRoot, dataRootState, dataRootStatus, libraryRoot, PROBE_SWEEP_AGE_MS, probeHostTag } from '../config';
 
 const isRoot = process.getuid?.() === 0;
 // macOS volumes are usually case-insensitive, where another spelling of a path is the same folder.
@@ -167,6 +169,58 @@ describe('dataRootState', () => {
         vi.restoreAllMocks();
         expect(dataRootState({ versioned: true })).toBe('ready');
         expect(data.files()).toEqual([DATA_ROOT_FILE]);
+    });
+
+    describe('the probe files a killed process left', () => {
+        // A process that has exited, so its ID names nothing running (and a reused one only keeps a leftover).
+        const deadPid = () => spawnSync(process.execPath, ['-e', '']).pid as number;
+        const probeName = (host: string, pid: number) => `.link-probe-${host}-${pid}-${randomUUID()}`;
+        const place = (root: string, name: string, ageMs: number) => {
+            const file = path.join(root, name);
+            fs.writeFileSync(file, '');
+            const at = new Date(Date.now() - ageMs);
+            fs.utimesSync(file, at, at);
+            return name;
+        };
+
+        it("sweeps only this machine's, of a process that isn't running, older than a minute, and leaves everything else", () => {
+            const data = tempDataRoot();
+            const host = probeHostTag();
+            const old = PROBE_SWEEP_AGE_MS + 5_000;
+            const dead = deadPid();
+            const stale = probeName(host, dead);
+            place(data.root, stale, old);
+            place(data.root, `${stale}.link`, old);
+            const kept = [
+                // A probe a live process may still be using: this test's parent is running.
+                place(data.root, probeName(host, process.ppid), old),
+                // Too young to be a leftover.
+                place(data.root, probeName(host, dead), 1_000),
+                // Another machine's, whose process IDs mean nothing here.
+                place(data.root, probeName(host === '00000000' ? '11111111' : '00000000', dead), old),
+                // The old name, without a host, and anything else that looks close.
+                place(data.root, `.link-probe-${dead}-${randomUUID()}`, old),
+                place(data.root, '.link-probe-notes', old),
+            ];
+            // A folder with a probe's name stays too: the sweep removes regular files only.
+            const folder = probeName(host, dead);
+            fs.mkdirSync(path.join(data.root, folder));
+            const at = new Date(Date.now() - old);
+            fs.utimesSync(path.join(data.root, folder), at, at);
+
+            expect(dataRootStatus({ versioned: true })).toMatchObject({ state: 'ready' });
+            expect(data.files().sort()).toEqual([DATA_ROOT_FILE, ...kept].sort());
+            expect(fs.statSync(path.join(data.root, folder)).isDirectory()).toBe(true);
+        });
+
+        it('names its own probe with this host and its process, and leaves none behind', () => {
+            const data = tempDataRoot();
+            const write = vi.spyOn(fs, 'writeFileSync');
+            expect(dataRootStatus({ versioned: true })).toMatchObject({ state: 'ready' });
+            const probe = path.basename(String(write.mock.calls.find(([target]) => String(target).includes('.link-probe-'))?.[0]));
+            expect(probe).toMatch(new RegExp(`^\\.link-probe-${probeHostTag()}-${process.pid}-[0-9a-f-]{36}$`));
+            expect(data.files()).toEqual([DATA_ROOT_FILE]);
+        });
     });
 
     describe('a root it already probed for hard links', () => {
