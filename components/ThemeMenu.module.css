@@ -40,14 +40,14 @@
   white-space: nowrap;
 }
 
-:global(html:not([data-theme-choice='system'])) [data-name-for='system'],
-:global(html:not([data-theme-choice='light'])) [data-name-for='light'],
-:global(html:not([data-theme-choice='bright'])) [data-name-for='bright'],
-:global(html:not([data-theme-choice='dark'])) [data-name-for='dark'],
-:global(html:not([data-theme-choice='black'])) [data-name-for='black'],
-:global(html:not([data-theme-choice='system'])) [data-now],
-:global(html:not([data-theme='light'])) [data-now='light'],
-:global(html:not([data-theme='dark'])) [data-now='dark'] {
+:global(html:not([data-theme-choice='system'])) .button [data-name-for='system'],
+:global(html:not([data-theme-choice='light'])) .button [data-name-for='light'],
+:global(html:not([data-theme-choice='bright'])) .button [data-name-for='bright'],
+:global(html:not([data-theme-choice='dark'])) .button [data-name-for='dark'],
+:global(html:not([data-theme-choice='black'])) .button [data-name-for='black'],
+:global(html:not([data-theme-choice='system'])) .button [data-now],
+:global(html:not([data-theme='light'])) .button [data-now='light'],
+:global(html:not([data-theme='dark'])) .button [data-now='dark'] {
   display: none;
 }
 
