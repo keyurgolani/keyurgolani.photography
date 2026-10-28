@@ -83,6 +83,8 @@ const bar = (page: Page) => page.locator('main form[data-sticky-bar]');
 const validate = (page: Page) => bar(page).locator('button[value="validate"]');
 const publishButton = (page: Page) => bar(page).locator('button[value="publish"]');
 const result = (page: Page) => page.locator('#result-heading');
+// The blocker list's links, in the result slot. #15's History below the ledger is an ordered list of links too.
+const blockerLinks = (page: Page) => page.locator('main section[aria-labelledby="result-heading"] ol li a');
 
 /** The element focus is on, by its text, or its id when it has none. */
 async function focused(page: Page): Promise<string> {
@@ -390,7 +392,7 @@ test.describe('the #1 checks', () => {
             await page.keyboard.press('Enter');
             await expect(result(page)).toHaveText('Publication blocked');
             // The whole answer comes into view clear of the bar, its last blocker link included.
-            const last = await page.locator('ol li a').last().boundingBox();
+            const last = await blockerLinks(page).last().boundingBox();
             const top = await bar(page).boundingBox();
             expect(last && top && last.y + last.height <= top.y).toBe(true);
             expect(last && last.y >= 0).toBe(true);
@@ -399,7 +401,7 @@ test.describe('the #1 checks', () => {
                     page.getByRole('link', { name: /Open full preview/ }),
                     page.locator('main [id$="-open"]'),
                     page.getByRole('button', { name: /mark reviewed/ }),
-                    page.locator('ol li a'),
+                    blockerLinks(page),
                     validate(page),
                     publishButton(page),
                 ],
