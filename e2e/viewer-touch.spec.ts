@@ -1055,6 +1055,43 @@ test.describe('presentation', () => {
         }
     });
 
+    test('at 200% browser zoom, both modes show Previous and Next whole in the first screen, under the photograph', async ({ page }, testInfo) => {
+        runsOn(testInfo, 'desktop');
+        // 1280 by 800 and 1440 by 900 at 200%: the narrow layout, on a screen shorter than the square the stage keeps on a phone.
+        for (const size of [
+            { width: 640, height: 400 },
+            { width: 720, height: 450 },
+        ]) {
+            await page.setViewportSize(size);
+            for (const mode of ['page', 'modal'] as const) {
+                if (mode === 'page') await openPage(page, P[1]);
+                else await openFromSeries(page, P[1], testInfo, 'keyboard');
+                await expect(viewer(page)).toHaveAttribute('data-viewer-mode', mode);
+                const at = `${size.width} by ${size.height}, ${mode}`;
+                const layout = await viewer(page).evaluate((root) => {
+                    const box = (selector: string) => {
+                        const rect = root.querySelector(selector)?.getBoundingClientRect();
+                        return rect ? { top: rect.top, bottom: rect.bottom } : null;
+                    };
+                    return {
+                        innerHeight,
+                        scrolled: root instanceof HTMLDialogElement ? root.scrollTop : scrollY,
+                        frame: box('[data-viewer-stage] figure'),
+                        previous: box('[data-viewer-step="previous"]'),
+                        next: box('[data-viewer-step="next"]'),
+                    };
+                });
+                expect(layout.scrolled, `${at}: the first screen`).toBe(0);
+                for (const arrow of [layout.previous, layout.next]) {
+                    expect(arrow, at).not.toBeNull();
+                    expect(arrow!.bottom, `${at}: the arrow ends inside the first screen`).toBeLessThanOrEqual(layout.innerHeight);
+                    expect(layout.frame && layout.frame.bottom <= arrow!.top, `${at}: the arrow sits under the photograph`).toBe(true);
+                }
+                if (mode === 'modal') await page.keyboard.press('Escape');
+            }
+        }
+    });
+
     test('in the modal, Enter and Space work on every button, and focus stays on the one pressed', async ({ page }, testInfo) => {
         await openFromSeries(page, P[1], testInfo, 'keyboard');
         const zoom = button(page, 'Zoom');

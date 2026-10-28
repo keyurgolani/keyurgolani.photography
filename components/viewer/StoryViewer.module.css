@@ -470,11 +470,14 @@
     /* The arrows' row under the stage: the arrow, and its margins (below). */
     --viewer-step-gap: clamp(0.5rem, 2vw, 1.5rem);
     --viewer-step-row: calc(44px + var(--viewer-step-gap) + var(--viewer-stage-pad));
+    /* The header's one row as it renders: the 44 px controls, its padding, and the accent rule. */
+    --viewer-header-row: calc(44px + 0.75rem + 4px);
     /* The phone's fixed stage (9a): the small viewport (so the browser's bars coming and going never resize it) less
        the header, the arrows, and the reading area's allowance, the same for every photograph whatever its copy, and
-       never less than a square or 72svh, whichever is less. */
+       never less than a square or 72svh, whichever is less. On a screen too short for that, as a laptop at 200% zoom,
+       the square gives way to what the header and the arrows leave, so Previous and Next stay in the first screen. */
     --viewer-phone-stage: max(
-      calc(min(100vw, 72svh) + var(--viewer-stage-pad)),
+      calc(min(100vw, 72svh, 100svh - var(--viewer-header-row) - var(--viewer-step-row) - var(--viewer-stage-pad)) + var(--viewer-stage-pad)),
       calc(100svh - var(--viewer-header) - var(--viewer-step-row) - var(--viewer-reading-allowance))
     );
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
