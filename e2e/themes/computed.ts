@@ -8,7 +8,7 @@ import type { Page } from '@playwright/test';
  * passes in dark-parity.spec.ts report those, as an artefact, not a gate.
  */
 
-/** Compared exactly on every element and on its ::before, ::after, ::placeholder (inputs) and ::marker (list items). */
+/** Compared exactly on every element and on its ::before, ::after, ::placeholder (inputs), ::marker (list items) and ::backdrop (a modal dialog). */
 export const PROPERTIES = [
     'color', 'background-color', 'background-image',
     'background-size', 'background-position', 'background-repeat', 'background-clip', 'background-blend-mode',
@@ -121,6 +121,8 @@ export function walk(page: Page, selectors: string[] = []): Promise<Walk> {
             }
             if (el.matches('input, textarea')) pseudos['::placeholder'] = read(view.getComputedStyle(el, '::placeholder'));
             if (view.getComputedStyle(el).display === 'list-item') pseudos['::marker'] = read(view.getComputedStyle(el, '::marker'));
+            // A modal dialog's backdrop, which the modal Viewer paints (#126's review, L2).
+            if (el.matches('dialog:modal')) pseudos['::backdrop'] = read(view.getComputedStyle(el, '::backdrop'));
             const box = el.getBoundingClientRect();
             const slot = isSlot(el);
             elements.push({ path, styles: read(view.getComputedStyle(el)), pseudos, rect: [box.x + dx, box.y + dy, box.width, box.height], slot });
