@@ -10,8 +10,8 @@ import { FACTS_ONLY, HARBOR, P, SENTINELS, SITE_URL, href, id, useViewerCatalog 
 // The Viewer (#7) on a published catalog, on both #1 projects: a direct load,
 // the series and position, Previous and Next inside the series that stop at
 // the ends and replace the history entry, the collapsed technical details,
-// the #1 checks, keyboard and touch, share metadata on SITE_URL, the same
-// dark ground under both site themes, and nothing outside the allowlist in
+// the #1 checks, keyboard and touch, share metadata on SITE_URL, each
+// theme's own Viewer, and nothing outside the allowlist in
 // the HTML or the RSC payload. Each project's worker publishes its own
 // fixture and serves it from a second `next start`, so the harness server
 // stays in legacy mode for every other spec. Close points at #5's series
@@ -488,19 +488,80 @@ test('share metadata names the photo and its series, on SITE_URL, with a /media 
     expect(await meta('og:image:alt')).toBe('Fixture description of the harbor.');
 });
 
-for (const theme of ['black', 'light'] as const) {
-    test(`the Viewer keeps its own dark ground under the ${theme} site theme`, async ({ page }) => {
-        if (theme === 'light') await page.addInitScript(() => localStorage.setItem('theme', 'light'));
+/** Each theme's Viewer (spec §3 and §5, R2-P1-1): its ground and ink, and whether it keeps today's bands. */
+const VIEWER_THEMES = {
+    black: { paints: 'black', ground: 'rgb(17, 21, 19)', ink: 'rgb(246, 244, 238)', bands: true },
+    light: { paints: 'light', ground: 'rgb(235, 229, 217)', ink: 'rgb(41, 35, 29)', bands: false },
+    bright: { paints: 'bright', ground: 'rgb(255, 255, 255)', ink: 'rgb(11, 11, 11)', bands: false },
+    charcoal: { paints: 'dark', ground: 'rgb(27, 31, 29)', ink: 'rgb(243, 242, 236)', bands: false },
+} as const;
+
+/** The rung Black's Viewer asks for, which every theme's must match: the box only shrinks, by the room (spec §8). */
+let blackRung: string | undefined;
+
+for (const [choice, want] of Object.entries(VIEWER_THEMES)) {
+    test(`the Viewer in ${choice}: its own ground under the body too, and ${want.bands ? "today's bands and a bare print with its hairline" : 'a matted print with room for its mat, bare when zoomed'}`, async ({ page }) => {
+        await page.addInitScript((value) => localStorage.setItem('theme', value), choice);
         await openViewer(page, P[0]);
-        await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+        await expect(page.locator('html')).toHaveAttribute('data-theme', want.paints);
         const colors = await page.locator('[data-surface="viewer"]').evaluate((root) => {
             const style = getComputedStyle(root);
             return { ground: style.backgroundColor, ink: style.color, accent: style.getPropertyValue('--cc-accent').trim() };
         });
-        expect(colors).toEqual({ ground: 'rgb(17, 21, 19)', ink: 'rgb(246, 244, 238)', accent: '#c08040' });
-        // The body behind the root is the same ground, so an overscroll never shows the site theme.
-        expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgb(17, 21, 19)');
-        // No theme toggle: the Viewer renders no SiteNav.
+        expect(colors).toEqual({ ground: want.ground, ink: want.ink, accent: '#c08040' });
+        const bands = await page.locator('[data-surface="viewer"]').evaluate((root) => getComputedStyle(root).backgroundImage);
+        if (want.bands) expect(bands, "today's bands").toMatch(/^linear-gradient\(/);
+        // The root's background is the bands' layer over the ground's, so every layer is none.
+        else expect(bands.split(',').map((layer) => layer.trim()), 'no bands').toEqual(bands.split(',').map(() => 'none'));
+        // The body behind the root is the same ground, so an overscroll never shows the site's.
+        expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe(want.ground);
+        // No theme control: the Viewer renders no SiteNav.
         await expect(page.getByRole('button', { name: /^Theme:/ })).toHaveCount(0);
+
+        const look = await page.locator('[data-viewer-current]').first().evaluate((frame) => {
+            const image = frame.querySelector('img')!;
+            const viewport = frame.closest('[data-zoomed], [class*="viewport"]')!;
+            // What the theme's surround resolves to at this width: lg, or md on a phone.
+            const probe = document.createElement('div');
+            probe.style.boxShadow = `var(${innerWidth < 640 ? '--gah-surround-md' : '--gah-surround-lg'}, none)`;
+            // And the room the box keeps for it, resolved to px (a custom property computes to its unresolved calc()).
+            probe.style.width = 'var(--viewer-room)';
+            probe.style.position = 'absolute';
+            frame.append(probe);
+            const surround = getComputedStyle(probe).boxShadow;
+            const room = parseFloat(getComputedStyle(probe).width);
+            probe.remove();
+            const [f, v] = [frame.getBoundingClientRect(), viewport.getBoundingClientRect()];
+            return {
+                rung: /\/w(\d+)\./.exec(image.currentSrc)?.[1],
+                shadow: getComputedStyle(frame).boxShadow,
+                surround,
+                outline: getComputedStyle(image).outlineStyle,
+                fit: getComputedStyle(image).objectFit,
+                room,
+                clear: Math.min(f.left - v.left, v.right - f.right, f.top - v.top, v.bottom - f.bottom),
+            };
+        });
+        // The first-viewport check (spec §8): the box gives up at most 50 px for its room, so the same rung serves it.
+        expect(2 * look.room, 'the box shrinks by at most 50 px').toBeLessThanOrEqual(50);
+        expect(look.rung, 'a rung was chosen').toBeDefined();
+        if (choice === 'black') blackRung = look.rung;
+        else if (blackRung !== undefined) expect(look.rung, "the same rung as Black's").toBe(blackRung);
+        if (want.bands) {
+            expect(look.shadow, "Black's print has no surround").toBe('none');
+            expect(look.outline, "today's hairline").toBe('solid');
+            expect(look.fit, "today's fit").toBe('fill');
+        } else {
+            expect(look.shadow, "the theme's surround").toBe(look.surround);
+            expect(look.outline, 'no hairline under the mat').toBe('none');
+            expect(look.fit, 'a stale ratio letterboxes, never crops or stretches (P3-6)').toBe('contain');
+            // The box leaves its surround's thickness and the clear ground on every side of the stage.
+            expect(look.room, 'the room is reserved').toBeGreaterThan(0);
+            expect(look.clear, 'the mat fits inside the stage').toBeGreaterThanOrEqual(look.room - 0.5);
+            // Zoomed, the scroller would clip the surround, so the print goes bare (P3-7).
+            await zoom(page).click();
+            await expect(page.locator('[data-zoomed]')).toHaveCount(1);
+            expect(await page.locator('[data-zoomed] figure').first().evaluate((frame) => getComputedStyle(frame).boxShadow)).toBe('none');
+        }
     });
 }
