@@ -4,7 +4,7 @@ import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
 import { setPrefersReducedMotion } from '@/test/matchMedia';
-import { badgePlace, homeCopyTop, textEnlarged, V110_LANE, type Box } from '../badgePlace';
+import { badgePlace, chromeOverflows, copyTone, coverSource, homeCopyTop, meanLuminance, positionOf, textEnlarged, TONE_PIVOT, toneFor, unionOf, V110_LANE, type Box } from '../badgePlace';
 import HeroReveal, { BADGE_LINGER_MS, type HeroRevealPhase } from '../HeroReveal';
 import { HOME_LOADING_TIMEOUT_MS } from '../home/homeChromeConfig';
 
@@ -635,5 +635,98 @@ describe('textEnlarged', () => {
 
   it("isn't enlarged when the size can't be read", () => {
     expect(textEnlarged(Number.NaN)).toBe(false);
+  });
+});
+
+describe('chromeOverflows', () => {
+  it('is a chrome taller than its box, past a pixel of rounding', () => {
+    expect(chromeOverflows(900, 844)).toBe(true);
+    expect(chromeOverflows(845, 844)).toBe(false);
+    expect(chromeOverflows(844, 844)).toBe(false);
+  });
+});
+
+describe('copyTone', () => {
+  const pixels = (r: number, g: number, b: number, count = 32 * 18) => Array.from({ length: count * 4 }, (_, i) => [r, g, b, 255][i % 4]);
+  const image = (overrides: Partial<HTMLImageElement> = {}) =>
+    ({
+      complete: true,
+      naturalWidth: 1600,
+      naturalHeight: 900,
+      decode: () => Promise.resolve(),
+      getBoundingClientRect: () => ({ left: 0, top: 0, right: 1440, bottom: 810, width: 1440, height: 810 }),
+      ...overrides,
+    }) as unknown as HTMLImageElement;
+  const copy: Box = { left: 40, top: 480, right: 600, bottom: 720 };
+
+  it('is dark over a dark region and light over a light one', async () => {
+    expect(await copyTone(image(), copy, { sample: async () => pixels(12, 16, 28) })).toBe('dark');
+    expect(await copyTone(image(), copy, { sample: async () => pixels(240, 236, 228) })).toBe('light');
+  });
+
+  it("stays light at the tie, where both inks read the same, and turns dark just under it", () => {
+    expect(toneFor(TONE_PIVOT)).toBe('light');
+    expect(toneFor(TONE_PIVOT - 0.01)).toBe('dark');
+    expect(toneFor(TONE_PIVOT + 0.01)).toBe('light');
+  });
+
+  it("is light when it can't measure: a tainted canvas, no canvas, an image not in, or no overlap", async () => {
+    const tainted = async () => {
+      throw new DOMException('The canvas has been tainted by cross-origin data.', 'SecurityError');
+    };
+    expect(await copyTone(image(), copy, { sample: tainted })).toBe('light');
+    expect(await copyTone(image(), copy, { sample: async () => null })).toBe('light');
+    expect(await copyTone(image({ complete: false }), copy, { sample: async () => pixels(0, 0, 0) })).toBe('light');
+    expect(await copyTone(image({ naturalWidth: 0 }), copy, { sample: async () => pixels(0, 0, 0) })).toBe('light');
+    expect(await copyTone(image(), { left: 2000, top: 0, right: 2100, bottom: 10 }, { sample: async () => pixels(0, 0, 0) })).toBe('light');
+  });
+
+  it('samples the part of the photograph that paints under the copy, as cover crops it', async () => {
+    const sample = vi.fn(async () => pixels(0, 0, 0));
+    await copyTone(image(), copy, { sample });
+    // 1600 x 900 in 1440 x 810 is a scale of 0.9 with no crop.
+    const [, source] = sample.mock.calls[0] as unknown as [HTMLImageElement, { x: number; y: number; width: number; height: number }];
+    expect(source.x).toBeCloseTo(44.44, 2);
+    expect(source.y).toBeCloseTo(533.33, 2);
+    expect(source.width).toBeCloseTo(622.22, 2);
+    expect(source.height).toBeCloseTo(266.67, 2);
+  });
+});
+
+describe('coverSource', () => {
+  const shown: Box = { left: 0, top: 0, right: 390, bottom: 844 };
+
+  it("maps a region through cover's crop and object-position", () => {
+    // A 1600 x 900 photograph in a 390 x 844 phone: scaled by 844/900, 1500 px wide, cropped 555 px a side at 50%.
+    const centre = coverSource({ width: 1600, height: 900 }, shown, { left: 0, top: 422, right: 390, bottom: 844 })!;
+    expect(centre.x).toBeCloseTo(592.06, 2);
+    expect(centre.y).toBeCloseTo(450, 5);
+    expect(centre.width).toBeCloseTo(415.88, 2);
+    const left = coverSource({ width: 1600, height: 900 }, shown, { left: 0, top: 0, right: 390, bottom: 844 }, { x: 0, y: 0.5 })!;
+    expect(left.x).toBeCloseTo(0, 5);
+  });
+
+  it('clips the region to the photograph, and is null where nothing of it paints', () => {
+    expect(coverSource({ width: 100, height: 100 }, shown, { left: -50, top: -50, right: 10, bottom: 10 })).not.toBeNull();
+    expect(coverSource({ width: 100, height: 100 }, shown, { left: 400, top: 0, right: 500, bottom: 10 })).toBeNull();
+    expect(coverSource({ width: 0, height: 100 }, shown, shown)).toBeNull();
+  });
+});
+
+describe('the tone helpers', () => {
+  it('averages luminance over RGBA pixels, and gives none for no pixels', () => {
+    expect(meanLuminance([255, 255, 255, 255, 0, 0, 0, 255])).toBeCloseTo(0.5, 5);
+    expect(meanLuminance([])).toBeNull();
+  });
+
+  it("reads object-position's percentages, and the centre for anything else", () => {
+    expect(positionOf('30% 80%')).toEqual({ x: 0.3, y: 0.8 });
+    expect(positionOf('center')).toEqual({ x: 0.5, y: 0.5 });
+    expect(positionOf('10px 20px')).toEqual({ x: 0.5, y: 0.5 });
+  });
+
+  it('unions boxes, and gives none for none', () => {
+    expect(unionOf([{ left: 10, top: 20, right: 30, bottom: 40 }, { left: 0, top: 30, right: 20, bottom: 60 }])).toEqual({ left: 0, top: 20, right: 30, bottom: 60 });
+    expect(unionOf([])).toBeNull();
   });
 });

@@ -172,6 +172,8 @@ interface Pair {
     session?: boolean;
     /** The legacy Gallery, on the e2e suite's photo fixtures. */
     photos?: boolean;
+    /** Home with its opening photograph failing to load, so the failure notice shows with Retry and Skip. */
+    failOpening?: boolean;
     /** A page the head adds the control to, where the base had no toggle (the curator's header): the head's shot
      * takes the control out of the layout, as no JavaScript does, so the rest must match. */
     addsControl?: boolean;
@@ -248,6 +250,7 @@ async function open(origin: string, stored: string, pair: Pair, viewport: { widt
     }, { value: stored, sheet: css });
     const page = await context.newPage();
     if (pair.photos) await routePhotoFixtures(page);
+    if (pair.failOpening) await page.route(`**/media/${HOME_OPENING}/**`, (route) => route.abort());
     // Every wait polls from here, so it works without JavaScript too (the page then runs none of our timers or
     // handlers), and every one that times out is named in `timedOut`: the gate fails a row on any, never passes it.
     const timedOut: string[] = [];
@@ -286,11 +289,16 @@ async function open(origin: string, stored: string, pair: Pair, viewport: { widt
         // Everything in before the clock moves, so the intro's loading ends at the same time on it in both builds.
         await settleImages();
         if (motion.at > 0) await context.clock.runFor(motion.at);
-        if (motion.hold) await until("Home's intro in its loading phase", () => page.locator('[class*="grainOverlay"]').count().then((n) => n === 1), 5000);
+        // The grain up and Home's root in its loading phase, not revealing, in both builds.
+        if (motion.hold) {
+            await until("Home's intro in its loading phase", async () => (await page.locator('[class*="grainOverlay"]').count()) === 1 && (await page.locator('main[data-home-intro="loading"]').count()) === 1, 5000);
+        }
     }
     if (js && pair.url === '/' && !motion?.hold) await until("Home's badge", () => page.locator('[data-home-badge][data-landed]:not([data-lingering])').count().then((n) => n > 0), 20_000);
+    // Without JavaScript a state act is left out: its row then compares the page at rest, as another pair does, and no
+    // act abandoned at 3 s can still be pressing keys during the walk.
     if (js) await pair.act?.(page);
-    else await Promise.race([pair.act?.(page).catch(() => undefined), page.waitForTimeout(3000)]);
+    else if (!pair.gateOnly) await Promise.race([pair.act?.(page).catch(() => undefined), page.waitForTimeout(3000)]);
     await settleImages();
     if (motion && js) {
         await page.evaluate(() => {
@@ -490,6 +498,8 @@ const keyboardFocus = async (page: Page, target: Locator) => {
     expect(state.ring, `the focused element shows its ring (focused ${state.focused}, focus on ${state.active})`).toBe(true);
 };
 const homeNext = (page: Page) => page.getByRole('button', { name: 'Next photograph' });
+const homeEnter = (page: Page) => page.getByRole('link', { name: /^Enter the series/ });
+const homeRetry = (page: Page) => page.getByRole('button', { name: 'Retry', exact: true });
 const aboutLink = (page: Page) => page.locator('main article a').first();
 /**
  * The Inbox streams in after hydration, behind its loading state: an act before the list is in would focus a row that
@@ -555,6 +565,45 @@ const VISITOR: Pair[] = [
             await revealChrome(page);
             await keyboardFocus(page, homeNext(page));
         },
+    },
+    // "Enter the series" and the failure notice: the states this PR's tokens reach (the code review's M3).
+    {
+        name: 'home-enter-hover',
+        url: '/',
+        gateOnly: true,
+        glass: true,
+        act: async (page) => {
+            await revealChrome(page);
+            await hoverOn(homeEnter(page));
+        },
+    },
+    {
+        name: 'home-enter-focus',
+        url: '/',
+        gateOnly: true,
+        glass: true,
+        act: async (page) => {
+            await revealChrome(page);
+            await keyboardFocus(page, homeEnter(page));
+        },
+    },
+    {
+        name: 'home-failure',
+        url: '/',
+        gateOnly: true,
+        glass: true,
+        failOpening: true,
+        act: async (page) => {
+            await expect(homeRetry(page), 'the failure notice is up').toBeVisible();
+        },
+    },
+    {
+        name: 'home-failure-hover',
+        url: '/',
+        gateOnly: true,
+        glass: true,
+        failOpening: true,
+        act: (page) => hoverOn(homeRetry(page)),
     },
     // The controls' hover is only with motion allowed and a fine pointer.
     {

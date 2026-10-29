@@ -222,3 +222,77 @@ for (const width of [1440, 1024]) {
         }
     });
 }
+
+const solidPhoto = (colour: string) => (format: 'avif' | 'webp') => sharp({ create: { width: 1920, height: 1280, channels: 3, background: colour } })[format]().toBuffer();
+
+/** Serves the opening photograph as one flat colour. */
+async function openingAs(page: Page, colour: string) {
+    await page.route(`**/media/${HOME_OPENING}/**`, async (route) => {
+        const format = new URL(route.request().url()).pathname.endsWith('.avif') ? 'avif' : 'webp';
+        await route.fulfill({ status: 200, contentType: `image/${format}`, body: await solidPhoto(colour)(format) });
+    });
+}
+
+/** Reveals the chrome by keyboard and waits for it to show. */
+async function revealByKeyboard(page: Page) {
+    await page.keyboard.press('Tab');
+    await expect(page.locator('main')).toHaveAttribute('data-chrome-holds', /keyboard-focus/);
+    await expect(page.locator('[data-home-chrome]')).toHaveCSS('opacity', '1');
+}
+
+for (const theme of ['light', 'bright'] as const) {
+    test(`in ${theme}, the copy takes a dark scrim over a dark opening photograph and keeps 4.5:1`, async ({ page }) => {
+        await page.addInitScript((stored) => localStorage.setItem('theme', stored), theme);
+        await openingAs(page, '#0a1018');
+        await openHome(page);
+        await expectShown(page, HOME_OPENING);
+        await expect(page.locator('main')).toHaveAttribute('data-copy-tone', 'dark');
+        await revealByKeyboard(page);
+        const title = page.getByRole('heading', { level: 1 });
+        const statement = page.locator('[data-chrome-region="story"] p');
+        for (const [name, target] of [['title', title], ['statement', statement]] as const) {
+            expect(await worstTextContrast(page, target), `the ${name}'s worst contrast over the dark photograph in ${theme}`).toBeGreaterThanOrEqual(4.5);
+        }
+    });
+}
+
+test('in Light, the copy keeps its paper scrim over a light opening photograph', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('theme', 'light'));
+    await openingAs(page, '#f4f1ea');
+    await openHome(page);
+    await expectShown(page, HOME_OPENING);
+    await expect(page.locator('main')).toHaveAttribute('data-copy-tone', 'light');
+});
+
+test('at 200% text on a small phone, the title keeps 4.5:1 with the chrome scrolled to its end (M1)', async ({ page }, testInfo) => {
+    runsOn(testInfo, 'mobile');
+    await page.setViewportSize({ width: 375, height: 667 });
+    // Dark, over white: the theme whose ink the hold exists for. Light's and Bright's copy follows the photograph's tone.
+    await page.addInitScript(() => localStorage.setItem('theme', 'charcoal'));
+    await openingAs(page, '#ffffff');
+    await openHome(page);
+    await expectShown(page, HOME_OPENING);
+    await page.addStyleTag({ content: 'html { font-size: 200% !important; }' });
+    await revealByKeyboard(page);
+    const chrome = page.locator('[data-home-chrome]');
+    await expect.poll(() => chrome.evaluate((el) => el.scrollHeight > el.clientHeight + 1), 'the chrome scrolls at 200% text').toBe(true);
+    await expect(page.locator('[data-home-vignette]')).toHaveCSS('--home-copy-top', '0%');
+    await chrome.evaluate((el) => el.scrollTo(0, el.scrollHeight));
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const title = page.getByRole('heading', { level: 1 });
+    expect(await worstTextContrast(page, title), "the title's worst contrast with the chrome scrolled").toBeGreaterThanOrEqual(4.5);
+});
+
+test("Black on a phone is today's at default text, and follows the copy only when the text is enlarged", async ({ page }, testInfo) => {
+    runsOn(testInfo, 'mobile');
+    await page.addInitScript(() => localStorage.setItem('theme', 'black'));
+    await openHome(page);
+    await expectShown(page, HOME_OPENING);
+    const root = page.locator('main');
+    const scrim = page.locator('[data-home-vignette]');
+    await expect(root).not.toHaveAttribute('data-text-enlarged');
+    await expect(scrim).toHaveCSS('background-image', 'linear-gradient(0deg, rgba(8, 10, 9, 0.92) 0%, rgba(8, 10, 9, 0.28) 66%, rgba(8, 10, 9, 0.12) 100%)');
+    await page.addStyleTag({ content: 'html { font-size: 200% !important; }' });
+    await expect(root).toHaveAttribute('data-text-enlarged', '');
+    await expect(scrim).not.toHaveCSS('background-image', /0\.28\) 66%/);
+});
