@@ -211,9 +211,12 @@ async function open(origin: string, stored: string, pair: Pair, viewport: { widt
     }, { value: stored, sheet: css });
     const page = await context.newPage();
     if (pair.photos) await routePhotoFixtures(page);
-    await page.goto(`${origin}${pair.url}`, { waitUntil: pair.intro ? 'domcontentloaded' : 'load' });
+    // Without JavaScript the page runs no timer or handler of ours, so it's taken at load, and the in-page waits below
+    // are bounded from here.
+    await page.goto(`${origin}${pair.url}`, { waitUntil: pair.intro && js ? 'domcontentloaded' : 'load' });
+    const bounded = (wait: Promise<unknown>, ms: number) => Promise.race([wait, new Promise((resolve) => setTimeout(resolve, ms))]);
     if (js && !pair.bare) await page.waitForSelector('html[data-hydrated]', { timeout: 30_000 }).catch(() => undefined);
-    await page.evaluate(() => document.fonts.ready);
+    await bounded(page.evaluate(() => document.fonts.ready), 10_000);
     if (js && pair.url === '/') {
         await page.waitForSelector('[data-home-badge][data-landed]:not([data-lingering])', { timeout: 20_000 }).catch(() => undefined);
     }
@@ -221,7 +224,7 @@ async function open(origin: string, stored: string, pair: Pair, viewport: { widt
     else await Promise.race([pair.act?.(page).catch(() => undefined), new Promise((resolve) => setTimeout(resolve, 3000))]);
     // The page and the curator's preview frame: every image loaded and decoded (loaded isn't painted: a photo still
     // decoding can draw a row short), and every font in.
-    await page.evaluate(async () => {
+    await bounded(page.evaluate(async () => {
         const docs = [document, ...[...document.querySelectorAll('iframe')].flatMap((frame) => (frame.contentDocument ? [frame.contentDocument] : []))];
         for (const doc of docs) {
             const images = [...doc.images];
@@ -232,12 +235,9 @@ async function open(origin: string, stored: string, pair: Pair, viewport: { widt
             await Promise.all(images.map((image) => image.decode().catch(() => undefined)));
             await doc.fonts.ready;
         }
-    });
+    }), 20_000);
     // Every finite animation and transition done (reduced motion fades Home's badge in once loading ends).
-    await page.evaluate(() => Promise.race([
-        Promise.all(document.getAnimations().filter((animation) => animation.effect?.getComputedTiming().iterations !== Number.POSITIVE_INFINITY).map((animation) => animation.finished.catch(() => undefined))),
-        new Promise((resolve) => setTimeout(resolve, 5000)),
-    ]));
+    await bounded(page.evaluate(() => Promise.all(document.getAnimations().filter((animation) => animation.effect?.getComputedTiming().iterations !== Number.POSITIVE_INFINITY).map((animation) => animation.finished.catch(() => undefined)))), 5000);
     await page.waitForTimeout(600);
     return { context, page };
 }
