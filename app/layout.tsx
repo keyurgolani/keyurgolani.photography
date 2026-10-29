@@ -5,6 +5,10 @@ import '../styles/surfaces/light-takes-shape.css';
 import '../styles/surfaces/chromatic-chapters.css';
 import '../styles/themes.css';
 import './globals.css';
+// The theme menu's styles load with the layout, which every visitor and curator page shares (themes mockup, round 2).
+// Imported only by the menu, they'd be one module shared by the visitor and curator routes, and the CSS chunking then
+// merged the curator's and the login's styles into a chunk every visitor page loads (+10 KB gzipped on Home).
+import '../components/ThemeMenu.module.css';
 import { sans, serif } from './fonts';
 import { ThemeProvider } from '../components/ThemeContext';
 import { THEME_INIT_SCRIPT } from '../components/site/themeScript';

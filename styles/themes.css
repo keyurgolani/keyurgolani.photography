@@ -1,10 +1,11 @@
 /* The four themes, as prototype tokens for the themes mockup (wip/lead/themes-mockup).
    The theme script puts the resolved theme on <html data-theme>: light, bright,
-   dark or black (System resolves to light or dark). Each block maps the theme
+   dark or black (System resolves to light or black). Each block maps the theme
    onto the --gah-* tokens the shell already reads, plus the photo surround
    (mat, frame, keyline, shadow), caption ink, the Home stage, the Viewer's
    Chromatic Chapters tokens (--cc-*) and About's Light Takes Shape tokens
-   (--lts-*). Black is also the default, for a page with no attribute.
+   (--lts-*). A page with no attribute paints styles/tokens.css's :root, today's
+   values, as Black does.
 
    What differs beyond lightness:
      light   paper: a toned warm sheet; photos sit in a lighter mat with a
@@ -18,61 +19,22 @@
              full-bleed Home and its Viewer and About. System on a dark device
              and no-JS visitors get it. */
 
-/* Black: today's site, exactly. Every value is v1.2.0's (styles/tokens.css, and the literals the modules had before
-   the themes), so the page paints as it does today. It is the default for a page with no attribute too. The new
-   tokens the other themes need take today's look: no surround, no stage inset, today's scrims. The legacy variables
-   (--background-color and the rest) come from globals.css's [data-theme="dark"], [data-theme="black"] block. */
-:root,
+/* Black: today's site, exactly (owner ruling, 2026-10-28). It paints with v1.2.0's own values: styles/tokens.css's
+   :root (which every theme starts from), the literals the modules had before the themes (now each token's var()
+   fallback in the module), Chromatic Chapters' and Light Takes Shape's own tokens, and globals.css's legacy dark
+   variables. So it declares only what has no fallback or a different one, and nothing on :root, which every theme
+   would inherit. The server sends data-theme="black", so a page without JavaScript is today's site. */
 html[data-theme='black'] {
-  color-scheme: dark;
-  --gah-color-scheme: dark;
-  --gah-ground: #080a09;
-  --gah-surface: #111412;
   --gah-raised: #151917;
-  --gah-ink: #f4f6f5;
-  --gah-ink-soft: rgba(244, 246, 245, 0.76);
-  --gah-ink-muted: rgba(244, 246, 245, 0.62);
-  --gah-label: #b7c5c1;
-  --gah-caption-ink: rgba(244, 246, 245, 0.76);
-  --gah-rule: rgba(255, 255, 255, 0.17);
-  --gah-rule-strong: rgba(255, 255, 255, 0.38);
   --gah-accent: #eff4f1;
-  --gah-glass: rgba(5, 7, 6, 0.88);
-  --gah-glass-blur: 12px;
-  --gah-nav-rule: rgba(255, 255, 255, 0.17);
-  --gah-action: #eff4f1;
-  --gah-action-ink: #101412;
   --gah-action-hover: #ffffff;
-  --gah-radius: 3px;
-  --focus-ring-light: #ffffff;
-  --focus-ring-dark: #000000;
-
-  --gah-photo-radius: 3px;
-  --gah-surround-sm: none;
-  --gah-surround-md: none;
-  --gah-surround-lg: none;
-  --gah-surround-room: 0px;
-  --gah-mat-fill: #000000;
-  --gah-room-sm: 0px;
-  --gah-room-md: 0px;
-  --gah-room-lg: 0px;
-  --gah-surround-clear: 0px;
-  --gah-slot-surround-sm: none;
-  --gah-print-edge: none;
-
-  --gah-stage-inset: 0px;
-  --gah-stage-surround: none;
   --gah-scrim-rgb: 8 10 9;
-  --gah-scrim-ink: #f4f6f5;
-  --gah-scrim-ink-soft: rgba(244, 246, 245, 0.76);
   --gah-control-scrim: rgba(0, 0, 0, 0.65);
   --gah-control-ink: #ffffff;
-  --gah-grain-opacity: 0.06;
-  --gah-badge-ring: 0 0 0 4px rgba(255, 255, 255, 0.19);
-  --gah-badge-rim: rgba(255, 255, 255, 0.5);
-  --gah-panel-alpha: 0.6;
   /* Today the badge sits under Home's scrim (49); the other themes raise it above (round 2, P1-1). */
   --gah-badge-layer: 42;
+  /* Home's own ground under the stage, today's #000. */
+  --gah-home-ground: #000000;
 }
 
 /* Dark: the charcoal room, for anyone who picks it. */
@@ -106,7 +68,6 @@ html[data-theme='dark'] {
   --gah-surround-sm: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 0 0 6px #2a2f2d, 0 10px 18px -10px rgba(0, 0, 0, 0.7);
   --gah-surround-md: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 0 0 10px #2a2f2d, 0 18px 32px -16px rgba(0, 0, 0, 0.75);
   --gah-surround-lg: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 0 0 14px #2a2f2d, 0 24px 44px -18px rgba(0, 0, 0, 0.8);
-  --gah-surround-room: 14px;
   --gah-mat-fill: #2a2f2d;
   /* Round 2: each size's real thickness, which the layout reserves (grid gaps, the Viewer's box, focus rings), and the
      ground left between a surround and the screen's edge. A sequence slot is one frame size with a window cut to each
@@ -127,11 +88,6 @@ html[data-theme='dark'] {
   --gah-control-scrim: rgba(20, 23, 22, 0.8);
   --gah-control-ink: #eef2f0;
   --gah-grain-opacity: 0.06;
-  --gah-badge-ring: 0 0 0 4px rgba(255, 255, 255, 0.19);
-  --gah-badge-rim: rgba(255, 255, 255, 0.5);
-  /* Round 2: the title panel's scrim. Light and Bright lean on it alone for the title's contrast (their wash ends at
-     0 by 60%), so theirs is stronger. */
-  --gah-panel-alpha: 0.6;
 
   /* The legacy variables Home's intro and the legacy Gallery paint with. */
   --background-color: #1b1f1d;
@@ -143,7 +99,6 @@ html[data-theme='dark'] {
   --gah-viewer-ground: #1b1f1d;
   --gah-about-ground: #1e1c19;
   --gah-viewer-image-outline: none;
-  --gah-badge-layer: 50;
 }
 
 html[data-theme='light'] {
@@ -176,7 +131,6 @@ html[data-theme='light'] {
   --gah-surround-sm: 0 0 0 1px rgba(41, 35, 29, 0.12), 0 0 0 6px #f8f5ee, 0 0 0 7px rgba(41, 35, 29, 0.1), 0 8px 14px -8px rgba(60, 42, 20, 0.35);
   --gah-surround-md: 0 0 0 1px rgba(41, 35, 29, 0.12), 0 0 0 11px #f8f5ee, 0 0 0 12px rgba(41, 35, 29, 0.08), 0 16px 28px -14px rgba(60, 42, 20, 0.42);
   --gah-surround-lg: 0 0 0 1px rgba(41, 35, 29, 0.12), 0 0 0 15px #f8f5ee, 0 0 0 16px rgba(41, 35, 29, 0.08), 0 22px 40px -18px rgba(60, 42, 20, 0.45);
-  --gah-surround-room: 16px;
   --gah-mat-fill: #f8f5ee;
   --gah-room-sm: 7px;
   --gah-room-md: 12px;
@@ -193,8 +147,6 @@ html[data-theme='light'] {
   --gah-control-scrim: rgba(245, 241, 232, 0.92);
   --gah-control-ink: #29231d;
   --gah-grain-opacity: 0.12;
-  --gah-badge-ring: 0 0 0 5px #f8f5ee, 0 0 0 6px rgba(41, 35, 29, 0.12);
-  --gah-badge-rim: transparent;
   --gah-panel-alpha: 0.78;
 
   --background-color: #ebe5d9;
@@ -206,7 +158,6 @@ html[data-theme='light'] {
   --gah-viewer-ground: #ebe5d9;
   --gah-about-ground: #f4ecd7;
   --gah-viewer-image-outline: none;
-  --gah-badge-layer: 50;
 }
 
 html[data-theme='bright'] {
@@ -238,7 +189,6 @@ html[data-theme='bright'] {
   --gah-surround-sm: 0 0 0 5px #ffffff, 0 0 0 6px #111111;
   --gah-surround-md: 0 0 0 10px #ffffff, 0 0 0 12px #111111;
   --gah-surround-lg: 0 0 0 14px #ffffff, 0 0 0 17px #111111;
-  --gah-surround-room: 17px;
   --gah-mat-fill: #ffffff;
   --gah-room-sm: 6px;
   --gah-room-md: 12px;
@@ -255,8 +205,6 @@ html[data-theme='bright'] {
   --gah-control-scrim: rgba(255, 255, 255, 0.94);
   --gah-control-ink: #0b0b0b;
   --gah-grain-opacity: 0.05;
-  --gah-badge-ring: 0 0 0 6px #ffffff, 0 0 0 8px #111111;
-  --gah-badge-rim: transparent;
   --gah-panel-alpha: 0.78;
 
   --background-color: #ffffff;
@@ -268,7 +216,6 @@ html[data-theme='bright'] {
   --gah-viewer-ground: #ffffff;
   --gah-about-ground: #ffffff;
   --gah-viewer-image-outline: none;
-  --gah-badge-layer: 50;
 }
 
 /* The Viewer's Chromatic Chapters tokens, per theme. Black keeps today's exactly (styles/surfaces/chromatic-chapters.css,

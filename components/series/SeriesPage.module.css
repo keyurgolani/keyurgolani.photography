@@ -255,6 +255,10 @@
   box-shadow: var(--gah-surround-sm, none);
 }
 
+.thumbFrame[data-photo='contain'] .image {
+  object-fit: contain;
+}
+
 /* Round 2 of the themes mockup (P1-2): one frame size, a window cut to each print. The slot is the mat: it takes the
    mat's fill and the outer layers (Bright's frame, Light's hairline and shadow, Dark's shadow). The print, centred and
    sized to its own ratio (--photo-ratio, from SeriesPhoto), carries the inner layer on its own edge (Light's bevel,
@@ -273,8 +277,15 @@
   display: contents;
 }
 
+/* <picture>'s <source>s would be grid items of their own once it's display: contents, and push the print into a row
+   below the slot. */
+:global(html:not([data-theme='black'])) .thumbFrame[data-photo='contain'] source {
+  display: none;
+}
+
 :global(html:not([data-theme='black'])) .thumbFrame[data-photo='contain'] .image {
   position: static;
+  grid-area: 1 / 1;
   width: min(100%, 75% * var(--photo-ratio, 1.3333));
   height: auto;
   aspect-ratio: var(--photo-ratio, 4 / 3);
