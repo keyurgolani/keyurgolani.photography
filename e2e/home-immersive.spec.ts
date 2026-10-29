@@ -32,7 +32,7 @@ const chrome = (page: Page) => page.locator('[data-home-chrome]');
 const primary = (page: Page) => page.getByRole('navigation', { name: 'Primary' });
 const navLink = (page: Page, name: string) => primary(page).getByRole('link', { name, exact: true });
 const wordmark = (page: Page) => primary(page).getByRole('link', { name: 'KG, Keyur Golani' });
-const themeToggle = (page: Page) => page.getByRole('button', { name: /^Switch to (dark|light) mode$/ });
+const themeToggle = (page: Page) => page.getByRole('button', { name: /^Theme:/ });
 const group = (page: Page) => page.getByRole('group', { name: 'Slideshow' });
 const previous = (page: Page) => page.getByRole('button', { name: 'Previous photograph', exact: true });
 const next = (page: Page) => page.getByRole('button', { name: 'Next photograph', exact: true });
@@ -658,7 +658,7 @@ test.describe('assistive technology', () => {
                 - link "Work"
               - listitem:
                 - link "About"
-            - button /Switch to (dark|light) mode/
+            - button /^Theme:/
           - group "Slideshow":
             - button "Previous photograph"
             - text: 01 / 03

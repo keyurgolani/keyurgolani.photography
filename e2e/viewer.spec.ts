@@ -488,7 +488,7 @@ test('share metadata names the photo and its series, on SITE_URL, with a /media 
     expect(await meta('og:image:alt')).toBe('Fixture description of the harbor.');
 });
 
-for (const theme of ['dark', 'light'] as const) {
+for (const theme of ['black', 'light'] as const) {
     test(`the Viewer keeps its own dark ground under the ${theme} site theme`, async ({ page }) => {
         if (theme === 'light') await page.addInitScript(() => localStorage.setItem('theme', 'light'));
         await openViewer(page, P[0]);
@@ -501,6 +501,6 @@ for (const theme of ['dark', 'light'] as const) {
         // The body behind the root is the same ground, so an overscroll never shows the site theme.
         expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgb(17, 21, 19)');
         // No theme toggle: the Viewer renders no SiteNav.
-        await expect(page.getByRole('button', { name: /^Switch to (dark|light) mode$/ })).toHaveCount(0);
+        await expect(page.getByRole('button', { name: /^Theme:/ })).toHaveCount(0);
     });
 }

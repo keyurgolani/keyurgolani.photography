@@ -15,7 +15,7 @@ import { expect, test } from './support/test';
 test.use({ baseURL: CATALOG_ORIGIN });
 
 const primary = (page: Page) => page.getByRole('navigation', { name: 'Primary' });
-const themeToggle = (page: Page) => page.getByRole('button', { name: /^Switch to (dark|light) mode$/ });
+const themeToggle = (page: Page) => page.getByRole('button', { name: /^Theme:/ });
 const previous = (page: Page) => page.getByRole('button', { name: 'Previous photograph', exact: true });
 const next = (page: Page) => page.getByRole('button', { name: 'Next photograph', exact: true });
 const pause = (page: Page) => page.getByRole('button', { name: 'Pause slideshow', exact: true });

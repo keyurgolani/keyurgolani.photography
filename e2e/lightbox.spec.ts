@@ -23,7 +23,7 @@ const zoomLevel = (page: Page) =>
 /** The aria-label of whatever has focus. */
 const focusedLabel = (page: Page) => page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.tagName);
 
-async function openGallery(page: Page, theme: 'dark' | 'light') {
+async function openGallery(page: Page, theme: 'black' | 'light') {
     if (theme === 'light') await page.addInitScript(() => localStorage.setItem('theme', 'light'));
     await page.goto('/gallery');
     await waitForHydration(page);
@@ -39,7 +39,7 @@ async function settle(page: Page) {
 }
 
 /** Opens photo `position` with Enter on its tile. */
-async function openLightbox(page: Page, { position = 1, theme = 'dark' }: { position?: number; theme?: 'dark' | 'light' } = {}) {
+async function openLightbox(page: Page, { position = 1, theme = 'black' }: { position?: number; theme?: 'black' | 'light' } = {}) {
     await openGallery(page, theme);
     await entries(page).nth(position - 1).focus();
     await page.keyboard.press('Enter');
@@ -50,7 +50,7 @@ for (const viewport of [undefined, { width: 640, height: 400 }]) {
     test.describe(viewport ? 'at 640 by 400, which is 200% zoom' : 'at the project viewport', () => {
         if (viewport) test.use({ viewport });
 
-        for (const theme of ['dark', 'light'] as const) {
+        for (const theme of ['black', 'light'] as const) {
             test(`passes the surface checks on every enabled control in the ${theme} theme`, async ({ page }) => {
                 await openLightbox(page, { theme });
                 await checkSurface(page, { controls: [enabledControls(page)], chrome: chrome(page) });
@@ -131,7 +131,7 @@ const looks = (target: Locator) =>
 /** The alpha of a computed rgb() or rgba() color. */
 const alphaOf = (color: string) => Number(/rgba?\(([^)]*)\)/.exec(color)?.[1].split(',')[3] ?? 1);
 
-for (const theme of ['dark', 'light'] as const) {
+for (const theme of ['black', 'light'] as const) {
     test(`a disabled button stays dimmed and takes no hover styles in the ${theme} theme`, async ({ page, isMobile }) => {
         await openLightbox(page, { theme });
         const zoomOut = control(page, 'Zoom out');
@@ -183,7 +183,7 @@ test('Escape returns focus to the photo that opened the lightbox, after a slide 
 
 test('Close returns focus to the photo a mouse click opened', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name === 'mobile', 'Mouse clicks run on the desktop project.');
-    await openGallery(page, 'dark');
+    await openGallery(page, 'black');
     await entries(page).nth(4).click();
     await settle(page);
     await control(page, 'Close').click();
@@ -193,7 +193,7 @@ test('Close returns focus to the photo a mouse click opened', async ({ page }, t
 
 test('Close returns focus to the photo a tap opened', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'mobile', 'Taps run on the touch project.');
-    await openGallery(page, 'dark');
+    await openGallery(page, 'black');
     await entries(page).nth(3).tap();
     await settle(page);
     await control(page, 'Close').tap();
@@ -204,7 +204,7 @@ test('Close returns focus to the photo a tap opened', async ({ page }, testInfo)
 for (const edge of ['top', 'bottom'] as const) {
     test(`closing leaves the page where it was when a click or tap opened a photo with its ${edge} edge out of view`, async ({ page }, testInfo) => {
         const touch = testInfo.project.name === 'mobile';
-        await openGallery(page, 'dark');
+        await openGallery(page, 'black');
         const tile = entries(page).nth(7);
         // Chrome's plain focus() leaves a photo taller than the room between the scroll paddings where it is.
         const room = await page.evaluate(() => {
@@ -239,7 +239,7 @@ for (const edge of ['top', 'bottom'] as const) {
 
 test('closing after a rotation brings the photo that opened the lightbox back into view', async ({ page }, testInfo) => {
     const touch = testInfo.project.name === 'mobile';
-    await openGallery(page, 'dark');
+    await openGallery(page, 'black');
     const tile = entries(page).nth(9);
     if (touch) await tile.tap();
     else await tile.click();
@@ -257,7 +257,7 @@ test('closing after a rotation brings the photo that opened the lightbox back in
 });
 
 test('Escape returns focus to a photo whose click never focused it', async ({ page }) => {
-    await openGallery(page, 'dark');
+    await openGallery(page, 'black');
     // The click handler runs but focus stays put, as in Safari, which doesn't focus a button on click.
     await entries(page).nth(2).dispatchEvent('click');
     await settle(page);
@@ -278,7 +278,7 @@ test('closing leaves focus where the reader moved it while the lightbox fades ou
 
 test('one tap on a toolbar button activates it and leaves it untransformed', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'mobile', 'Taps run on the touch project.');
-    await openGallery(page, 'dark');
+    await openGallery(page, 'black');
     await entries(page).first().tap();
     await settle(page);
     await expectSingleTapActivates(control(page, 'Play'), () => expect(control(page, 'Pause')).toBeVisible());
@@ -290,7 +290,7 @@ test('one tap on a toolbar button activates it and leaves it untransformed', asy
 
 test('Previous and Next stay centered on their spot on hover, while pressed, and after a tap', async ({ page }, testInfo) => {
     const touch = testInfo.project.name === 'mobile';
-    await openGallery(page, 'dark');
+    await openGallery(page, 'black');
     if (touch) await entries(page).first().tap();
     else await entries(page).first().click();
     await settle(page);
@@ -394,7 +394,7 @@ async function iconContrast(target: Locator): Promise<number> {
     return (lightest + 0.05) / (darkest + 0.05);
 }
 
-for (const theme of ['dark', 'light'] as const) {
+for (const theme of ['black', 'light'] as const) {
     for (const [fixture, color] of [['white', '#fff'], ['black', '#000']] as const) {
         test(`the lightbox icons keep 3:1 over the ${fixture} photo in the ${theme} theme`, async ({ page }) => {
             await openLightbox(page, { theme });
@@ -413,7 +413,7 @@ for (const theme of ['dark', 'light'] as const) {
 }
 
 // Each theme has its own hover rules, and only the active theme's match markup.
-for (const theme of ['dark', 'light'] as const) {
+for (const theme of ['black', 'light'] as const) {
     test(`every app hover rule in the lightbox waits for a fine pointer in the ${theme} theme`, async ({ page }) => {
         await openLightbox(page, { theme });
         await expectHoverRulesGated(page);

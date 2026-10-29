@@ -29,11 +29,12 @@ async function expectConfined(page: Page) {
     expect({ body, nav }).toEqual({ body: { paper: '', ground: '' }, nav: { paper: '', ground: '' } });
 }
 
-async function expectAboutSurface(page: Page) {
+/** About's paper: Black's is today's approved paper (the project's dark device paints System as Black); Light's is its own (R2-P1-2). */
+async function expectAboutSurface(page: Page, paper = '#f4ecd7') {
     await expect(page.locator('[data-surface]')).toHaveCount(2);
     await expect(page.locator('main[data-surface="about"]')).toHaveCount(1);
     await expect(page.locator('nav[aria-label="Primary"][data-surface="about"]')).toHaveCount(1);
-    expect(await tokensOf(page)).toEqual({ body: { paper: '', ground: '' }, nav: { paper: '#f4ecd7', ground: '' }, main: { paper: '#f4ecd7', ground: '' } });
+    expect(await tokensOf(page)).toEqual({ body: { paper: '', ground: '' }, nav: { paper, ground: '' }, main: { paper, ground: '' } });
 }
 
 for (const path of ['/', '/gallery', '/does-not-exist']) {
@@ -48,6 +49,14 @@ test('on /about only main and the Primary nav carry the about surface, and neith
     await page.goto('/about');
     await waitForHydration(page);
     await expectAboutSurface(page);
+});
+
+test('on /about in Light the same two carry the about surface, on Light\'s own paper', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'light' });
+    await page.goto('/about');
+    await waitForHydration(page);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+    await expectAboutSurface(page, '#ebe5d9');
 });
 
 test('it holds after a client-side move from /about through /work to the legacy /gallery', async ({ page }) => {

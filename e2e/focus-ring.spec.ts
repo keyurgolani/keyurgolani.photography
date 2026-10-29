@@ -3,12 +3,12 @@ import { expectFocusRingVisible } from './support/focus';
 import { measure } from './support/measure';
 import { expect, test } from './support/test';
 
-// The focus token on ThemeToggle, each SiteNav link, and the About source
+// The focus token on the theme control, each SiteNav link, and the About source
 // link, in both themes and under hover, since Tailwind's dark: and hover:
 // shadow variants land after the token. Then the lightbox elements YARL
 // focuses on its own, which must not draw it.
 
-const toggle = (page: Page) => page.getByRole('button', { name: /^Switch to (dark|light) mode$/ });
+const toggle = (page: Page) => page.getByRole('button', { name: /^Theme:/ });
 const source = (page: Page) => page.getByRole('navigation', { name: 'External profiles' }).getByRole('link', { name: 'Site source', exact: true });
 const firstPhoto = (page: Page) => page.getByRole('button', { name: 'Photograph 1 of 12', exact: true });
 
@@ -24,7 +24,7 @@ async function ringOf(target: Locator) {
     return { focused, focusVisible, outline: outline.style, boxShadow };
 }
 
-for (const theme of ['dark', 'light'] as const) {
+for (const theme of ['black', 'light'] as const) {
     test.describe(`${theme} theme`, () => {
         async function open(page: Page, path: string) {
             if (theme === 'light') await page.addInitScript(() => localStorage.setItem('theme', 'light'));
@@ -32,7 +32,7 @@ for (const theme of ['dark', 'light'] as const) {
             await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
         }
 
-        test('ThemeToggle shows the focus ring', async ({ page }) => {
+        test('the theme control shows the focus ring', async ({ page }) => {
             await open(page, '/gallery');
             await expectFocusRingVisible(toggle(page));
         });
@@ -50,7 +50,7 @@ for (const theme of ['dark', 'light'] as const) {
         });
 
         for (const [label, path, target] of [
-            ['ThemeToggle', '/gallery', toggle],
+            ['the theme control', '/gallery', toggle],
             ['the About source link', '/about', source],
         ] as const) {
             test(`${label} keeps the band under hover`, async ({ page }, testInfo) => {
