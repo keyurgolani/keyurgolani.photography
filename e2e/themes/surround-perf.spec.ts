@@ -20,12 +20,18 @@ import { expect, test } from '../support/test';
 // order alternating by round, with the machine's load on every row. Each sweep is traced, and the gate is the median
 // ratio of the compositor's total raster time and of its dropped frames (#124's review, M1); the main thread's rAF p95
 // is reported beside them, since it snaps to whole frames. A desktop at 1440, DPR 1, and a phone at 390, DPR 3 with
-// the CPU throttled 4x, where a blur's raster cost is highest.
+// the CPU throttled 4x, where a blur's raster cost is highest. The throttle slows the main thread only, not the raster
+// workers, so the phone's raster cost grows with its DPR, not with the throttle.
 //
-//   PARITY_BASE_DIR=<built base> PERF_PORTS=3375,3376 npx playwright test -c e2e/themes/perf.config.ts
+// The gate tests itself on each device (#124's review, D2): the head in Black with a deliberately heavy shadow on every
+// slot must cost more than the surround bound against the base beside it, and every sweep must have raster time to
+// compare. A trace that carries no raster would otherwise give a ratio near 1 and pass.
+//
+//   PARITY_BASE_DIR=<built base> PERF_PORTS=3375,3376 [PERF_ROUNDS=3] npx playwright test -c e2e/themes/perf.config.ts
 
 const PHOTOS = 5_000;
-const ROUNDS = 3;
+/** PERF_ROUNDS=0 runs the self-test alone, on a head whose change can't move the sweep. */
+const ROUNDS = Number(process.env.PERF_ROUNDS ?? 3);
 const THEMES = { black: 'black', light: 'light', charcoal: 'dark', bright: 'bright' } as const;
 type Choice = keyof typeof THEMES;
 const DEVICES = {
@@ -34,6 +40,8 @@ const DEVICES = {
 } as const;
 /** The head may cost this much more than the base beside it: Black about nothing, a surround a little. */
 const BOUND = { black: 1.25, surround: 1.5 };
+/** The self-test's head: a mat and a wide blur on every slot, well past any theme's surround. */
+const HEAVY = '[data-photo] { box-shadow: 0 0 0 6px #888, 0 30px 60px -10px #000 !important; }';
 const TRACE_CATEGORIES = ['cc', 'viz', 'gpu', 'disabled-by-default-devtools.timeline.frame'];
 const BASE = process.env.PARITY_BASE_DIR;
 const ports = (process.env.PERF_PORTS ?? '').split(',').map(Number).filter(Boolean);
@@ -193,7 +201,11 @@ test.afterAll(async () => {
     await Promise.all(servers.map((server) => server.stop()));
     // Nothing is deleted: the run's folder (its 5,000-photo catalog) goes to the Trash, or stays where it is.
     const trash = path.join(os.homedir(), '.Trash');
-    if (temp && fs.existsSync(trash)) fs.renameSync(temp, path.join(trash, `${path.basename(temp)}-${Date.now()}`));
+    try {
+        if (temp && fs.existsSync(trash)) fs.renameSync(temp, path.join(trash, `${path.basename(temp)}-${Date.now()}`));
+    } catch {
+        // On another volume than the Trash (EXDEV): it stays where it is.
+    }
 });
 
 test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every theme, against the base beside it`, async ({ browser }) => {
@@ -203,6 +215,8 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
     const rows: string[] = [];
     const notes: string[] = [];
     const ratios: Record<string, { raster: number[]; dropped: number[] }> = {};
+    const selfRows: string[] = [];
+    const calibration: { device: string; ratio: number }[] = [];
 
     for (const [device, spec] of Object.entries(DEVICES)) {
         const open = async (origin: string) => {
@@ -229,21 +243,38 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
                 document.documentElement.setAttribute('data-theme', painted);
             }, [theme, THEMES[theme]] as const);
 
+        /** A base sweep and a head sweep, the order alternating by round, each checked for raster time to compare. */
+        const pairOf = async (round: number, label: string) => {
+            const pair = round % 2 === 1 ? [basePage, headPage] : [headPage, basePage];
+            const [first, second] = [await sweep(browser, pair[0].page, spec.steps), await sweep(browser, pair[1].page, spec.steps)];
+            const [b, h] = round % 2 === 1 ? [first, second] : [second, first];
+            expect(b.raster, `${label}: the base's trace carries raster time`).toBeGreaterThan(0);
+            expect(h.raster, `${label}: the head's trace carries raster time`).toBeGreaterThan(0);
+            return { b, h };
+        };
+
         await throttle(true);
         for (let round = 1; round <= ROUNDS; round++) {
             for (const theme of Object.keys(THEMES) as Choice[]) {
                 await paint(theme);
                 const load = os.loadavg()[0].toFixed(1);
-                // The order alternates by round, so neither build always sweeps first.
-                const pair = round % 2 === 1 ? [basePage, headPage] : [headPage, basePage];
-                const [first, second] = [await sweep(browser, pair[0].page, spec.steps), await sweep(browser, pair[1].page, spec.steps)];
-                const [b, h] = round % 2 === 1 ? [first, second] : [second, first];
                 const key = `${device} ${theme}`;
+                // The order alternates by round, so neither build always sweeps first.
+                const { b, h } = await pairOf(round, `${key}, round ${round}`);
                 ratios[key] ??= { raster: [], dropped: [] };
                 ratios[key].raster.push(h.raster / b.raster);
                 ratios[key].dropped.push(ratio(h.dropped, b.dropped));
                 rows.push(`| ${device} | ${round} | ${theme === 'charcoal' ? 'dark' : theme} | ${load} | ${b.raster} | ${h.raster} | ${(h.raster / b.raster).toFixed(2)} | ${b.dropped} / ${h.dropped} | ${b.rafP95} / ${h.rafP95} |`);
             }
+        }
+        // The self-test: the heavy head, in Black, against the base, once in each order. Both must fail the bound.
+        await paint('black');
+        await headPage.page.addStyleTag({ content: HEAVY });
+        for (const round of [1, 2]) {
+            const load = os.loadavg()[0].toFixed(1);
+            const { b, h } = await pairOf(round, `${device} self-test, round ${round}`);
+            calibration.push({ device, ratio: +(h.raster / b.raster).toFixed(2) });
+            selfRows.push(`| ${device} | ${round} | ${load} | ${b.raster} | ${h.raster} | ${(h.raster / b.raster).toFixed(2)} | ${b.dropped} / ${h.dropped} |`);
         }
         await throttle(false);
         await basePage.page.context().close();
@@ -263,10 +294,17 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
         ...verdict.map((v) => `| ${v.key.replace('charcoal', 'dark')} | ${v.raster} | ${v.dropped} |`),
         '',
         `Bounds: Black ${BOUND.black}, a theme with a surround ${BOUND.surround}, on both medians.`,
+        '',
+        `The self-test: the head in Black with \`${HEAVY}\`, which must cost more than ${BOUND.surround} in raster against the base.`,
+        '',
+        '| Device | Round | Load (1 min) | Base raster ms | Head raster ms | Raster ratio | Dropped frames, base / head |',
+        '|---|---|---|---|---|---|---|',
+        ...selfRows,
     ].join('\n');
     fs.mkdirSync(path.join(process.cwd(), 'test-results', 'perf'), { recursive: true });
     fs.writeFileSync(path.join(process.cwd(), 'test-results', 'perf', 'surround-perf.md'), `${table}\n`);
     console.log(table);
+    for (const c of calibration) expect.soft(c.ratio, `${c.device}: the self-test's heavy head fails the gate`).toBeGreaterThan(BOUND.surround);
     for (const v of verdict) {
         const bound = v.key.endsWith('black') ? BOUND.black : BOUND.surround;
         expect.soft(v.raster, `${v.key}: the head's raster time against the base's`).toBeLessThanOrEqual(bound);

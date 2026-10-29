@@ -348,14 +348,16 @@
   }
 }
 
-/* A missing thumbnail wears no surround, so its mark is today's 1 px ring in every theme. */
-.entry:focus-visible .thumbFrame.fallback {
+/* A missing thumbnail or cover wears no surround, so its mark is today's 1 px ring in every theme. */
+.entry:focus-visible .thumbFrame.fallback,
+.coverLink:focus-visible .coverFrame.fallback {
   box-shadow: 0 0 0 1px var(--gah-rule-strong);
   outline: none;
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .entry:hover .thumbFrame.fallback {
+  .entry:hover .thumbFrame.fallback,
+  .coverLink:hover .coverFrame.fallback {
     box-shadow: 0 0 0 1px var(--gah-rule-strong);
     outline: none;
   }

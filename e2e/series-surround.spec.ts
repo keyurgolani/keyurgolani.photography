@@ -173,6 +173,34 @@ for (const theme of THEMES) {
         expect(await slot.evaluate((el) => getComputedStyle(el).outlineStyle), 'hover adds no outline round a box with no surround').toBe('none');
     });
 
+    test(`in ${theme}, a missing cover keeps its edge, and hover and focus mark it with today's 1 px ring`, async ({ page }) => {
+        await page.setViewportSize({ width: 1440, height: 900 });
+        // The cover's image answers 404, so the cover shows the missing-image box (#124's review, D1).
+        await page.route(`**/media/${PHOTOS[0].id}/**`, (route) => route.fulfill({ status: 404, body: '' }));
+        await page.addInitScript((value) => localStorage.setItem('theme', value), theme);
+        await page.goto(`${origin()}/work/mixed`);
+        await waitForHydration(page);
+        const link = page.locator('main figure a').first();
+        const frame = link.locator('[data-photo]');
+        await expect(frame).toHaveAttribute('data-photo', 'unavailable');
+        expect(await frame.evaluate((el) => getComputedStyle(el).boxShadow), 'the missing cover draws only its edge').toMatch(/^rgba?\([^)]*\) 0px 0px 0px 1px inset$/);
+        for (const act of ['hover', 'focus'] as const) {
+            if (act === 'hover') await link.hover();
+            else {
+                await page.mouse.move(0, 0);
+                await page.keyboard.press('Tab');
+                await link.focus();
+                expect(await link.evaluate((el) => el.matches(':focus-visible'))).toBe(true);
+            }
+            const marked = await frame.evaluate((el) => {
+                const style = getComputedStyle(el);
+                return { shadow: style.boxShadow, outline: style.outlineStyle };
+            });
+            expect(marked.shadow, `${act} is today's ring, with no mat`).toMatch(/^rgba?\([^)]*\) 0px 0px 0px 1px$/);
+            expect(marked.outline, `${act} adds no outline round a box with no surround`).toBe('none');
+        }
+    });
+
     test(`in ${theme}, at 390 the focus ring clears each surround and stays inside the gutter`, async ({ page }) => {
         await page.setViewportSize({ width: 390, height: 844 });
         for (const [path, target, room] of [
