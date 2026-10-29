@@ -189,10 +189,10 @@ export async function portraitVariant(token: string, variant: VariantWidth, form
     return setFor(token, await readAboutPortrait(), logger) === set ? data : null;
 }
 
-/** The URL of one variant. */
-export function portraitUrl(token: string, variant: VariantWidth, format: VariantFormat): string {
+/** The URL of one variant, under `basePath`: '' on the site, the draft preview's own path in the curator (#16). */
+export function portraitUrl(token: string, variant: VariantWidth, format: VariantFormat, basePath = ''): string {
     if (!PORTRAIT_TOKEN_RE.test(token)) throw new Error(`Invalid portrait token: ${token}`);
-    return `/about/portrait/${token}/${variant}.${format}`;
+    return `${basePath}/about/portrait/${token}/${variant}.${format}`;
 }
 
 /** What ResponsivePhoto reads: the upright size, every variant's URL and pixel width, and the LQIP once it's encoded. */
@@ -203,11 +203,11 @@ export interface PortraitAsset {
     lqip?: string;
 }
 
-export function portraitAsset(portrait: Extract<AboutPortraitState, { state: 'ready' }>, lqip?: string): PortraitAsset {
+export function portraitAsset(portrait: Extract<AboutPortraitState, { state: 'ready' }>, lqip?: string, basePath = ''): PortraitAsset {
     const variants = {} as PortraitAsset['variants'];
     for (const width of VARIANT_WIDTHS) {
         const pixels = variantWidthFor(portrait.width, portrait.height, VARIANT_PIXELS[width]);
-        variants[width] = { avif: { url: portraitUrl(portrait.token, width, 'avif'), width: pixels }, webp: { url: portraitUrl(portrait.token, width, 'webp'), width: pixels } };
+        variants[width] = { avif: { url: portraitUrl(portrait.token, width, 'avif', basePath), width: pixels }, webp: { url: portraitUrl(portrait.token, width, 'webp', basePath), width: pixels } };
     }
     return lqip === undefined ? { width: portrait.width, height: portrait.height, variants } : { width: portrait.width, height: portrait.height, variants, lqip };
 }
@@ -227,8 +227,10 @@ export const defaultPortraitAlt = (name: string) => `Portrait of ${name}`;
  * portrait.json's alt, or one from the artist's name, and its focal point, or
  * the center, and the set's LQIP when it's already encoded. Starts the
  * set's encoding, so its variants are ready sooner, and never waits for it.
+ * `basePath` puts the variants' URLs under the draft preview's path, where
+ * the curator serves them to a session only.
  */
-export async function aboutPortraitView(name: string, { logger = console }: { logger?: Pick<Console, 'log' | 'warn'> } = {}): Promise<AboutPortraitView | null> {
+export async function aboutPortraitView(name: string, { logger = console, basePath = '' }: { logger?: Pick<Console, 'log' | 'warn'>; basePath?: string } = {}): Promise<AboutPortraitView | null> {
     const portrait = await readAboutPortrait({ logger });
     // Also drops a set that's no longer current, so a removed photo's bytes don't wait for the next variant request.
     const set = setFor(portrait.state === 'ready' ? portrait.token : null, portrait, logger);
@@ -240,7 +242,7 @@ export async function aboutPortraitView(name: string, { logger = console }: { lo
         set.retries += 1;
         encodeInto(set, [LQIP], logger);
     }
-    return { asset: portraitAsset(portrait, set?.lqip), alt: portrait.alt ?? defaultPortraitAlt(name), focalPoint: portrait.focalPoint ?? { x: 50, y: 50 } };
+    return { asset: portraitAsset(portrait, set?.lqip, basePath), alt: portrait.alt ?? defaultPortraitAlt(name), focalPoint: portrait.focalPoint ?? { x: 50, y: 50 } };
 }
 
 const IMMUTABLE = 'public, max-age=31536000, immutable';
@@ -253,13 +255,17 @@ export interface PortraitRouteContext {
     params: Promise<{ token: string; variant: string }>;
 }
 
+/** What the draft preview's copy of the route sends on a hit: the curator's answers are never cached (#16). */
+export const PRIVATE_NO_STORE = 'private, no-store';
+
 /**
  * `GET /about/portrait/<token>/<variant>.<format>`. Anything but the current
  * portrait's token, or a variant file name other than the ten `/media`
  * uses, is a `no-store` 404. A hit is `immutable`, since its URL changes with
- * the source.
+ * the source, unless `cacheControl` says otherwise, as the draft preview's
+ * copy does with PRIVATE_NO_STORE.
  */
-export function createPortraitHandler({ logger = console }: { logger?: Logger } = {}): (request: Request, context: PortraitRouteContext) => Promise<Response> {
+export function createPortraitHandler({ logger = console, cacheControl = IMMUTABLE }: { logger?: Logger; cacheControl?: string } = {}): (request: Request, context: PortraitRouteContext) => Promise<Response> {
     return async (request, { params }) => {
         const { token, variant } = await params;
         const match = VARIANT_FILE_RE.exec(variant);
@@ -267,7 +273,7 @@ export function createPortraitHandler({ logger = console }: { logger?: Logger } 
         const width = `w${match[1]}` as VariantWidth;
         const format = match[2] as VariantFormat;
         const etag = `"${token}-${width}-${format}"`;
-        const headers = { 'Cache-Control': IMMUTABLE, ETag: etag, 'X-Content-Type-Options': 'nosniff' };
+        const headers = { 'Cache-Control': cacheControl, ETag: etag, 'X-Content-Type-Options': 'nosniff' };
         const data = await portraitVariant(token, width, format, { logger });
         if (data === null) return notFound();
         const ifNoneMatch = request.headers.get('if-none-match');

@@ -16,7 +16,7 @@ const entry = (sequence: number, revision: number, live: boolean): EntryView => 
     title: `Revision ${revision}`,
     ...(live ? { badge: { text: 'Live now', tone: 'done' as const } } : {}),
     kind: 'Publish',
-    when: 'Published 27 October at 17:27, from this screen.',
+    when: 'Published 27 October at 17:27 by you, from this screen.',
     from: 'The first revision.',
     facts: `Entry ${sequence}`,
     eligibility: live ? { type: 'text', text: 'Live', tone: 'quiet' } : { type: 'restore', revision },

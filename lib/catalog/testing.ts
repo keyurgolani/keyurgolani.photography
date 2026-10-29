@@ -244,8 +244,8 @@ function validated<K extends AuthoredKind>(kind: K, record: Record<string, unkno
     return parsed.value as AuthoredOf<K>;
 }
 
-function publicAlt(alt: AuthoredAlt): CandidateAlt {
-    if (alt === null) return { kind: 'pending' };
+function publicAlt(alt: AuthoredAlt, carriedOver = false): CandidateAlt {
+    if (alt === null) return carriedOver ? { kind: 'position' } : { kind: 'pending' };
     return alt.kind === 'decorative' ? { kind: 'decorative' } : { kind: 'described', text: alt.text };
 }
 
@@ -447,7 +447,7 @@ async function compose(options: TestCatalogOptions): Promise<Composed> {
             if (publicPhotos.has(photoId)) continue;
             const { capturedDate, ...asset } = assetHalves.get(photoId) as NonNullable<ReturnType<typeof assetHalves.get>>;
             const authoredPhoto = authoredById.get(photoId) as AuthoredPhoto;
-            const record: CandidatePhotoRecord = { ...asset, alt: publicAlt(authoredPhoto.alt) };
+            const record: CandidatePhotoRecord = { ...asset, alt: publicAlt(authoredPhoto.alt, authoredPhoto.carryOver !== undefined) };
             for (const key of ['title', 'caption', 'credit', 'location'] as const) {
                 const value = present(authoredPhoto[key]);
                 if (value !== undefined) record[key] = value;

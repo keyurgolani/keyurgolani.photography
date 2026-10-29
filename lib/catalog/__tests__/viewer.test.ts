@@ -161,6 +161,7 @@ describe('viewerPhotoOf on a revision', () => {
                     caption: null,
                     alt: 'Fixture description of photograph 0002.',
                     descriptionPending: false,
+                    namedByPlace: false,
                     image: {
                         width: 1600,
                         height: 2400,
@@ -329,7 +330,7 @@ describe('the Viewer projection', () => {
         expect(Object.keys(result).sort()).toEqual(['catalogRevision', 'nextPhotoId', 'photo', 'position', 'previousPhotoId', 'series', 'total']);
         expect(Object.keys(result.series).sort()).toEqual(['accent', 'id', 'slug', 'title']);
         expect(Object.keys(result.photo).sort()).toEqual([
-            'accent', 'alt', 'caption', 'description', 'descriptionPending', 'id', 'image', 'shareImage', 'technical', 'title',
+            'accent', 'alt', 'caption', 'description', 'descriptionPending', 'id', 'image', 'namedByPlace', 'shareImage', 'technical', 'title',
         ]);
         expect(Object.keys(image(result.photo)).sort()).toEqual(['assetRevision', 'height', 'lqip', 'variants', 'width']);
         expect(Object.keys(result.photo.shareImage ?? {}).sort()).toEqual(['height', 'url', 'width']);

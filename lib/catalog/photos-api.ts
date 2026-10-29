@@ -108,33 +108,58 @@ function technicalValues(revision: AssetRevisionRecord): Partial<Record<Technica
     return Object.fromEntries(Object.entries(revision.derived.technical).map(([key, entry]) => [key, entry?.value])) as Partial<Record<TechnicalKey, string>>;
 }
 
-/**
- * Legacy mode's list from the registry. Nothing runs Sharp or lists the
- * library: it checks that each listed photo's seven derivative files exist,
- * and reads its LQIP. It takes present photos at the library's top level with a
- * decodable observed revision, one per legacy set, the first by path, as the
- * watcher builds the set from it, and shows each only once all seven of its
- * derivatives exist. Newest capture first, undated last, ties by photo ID.
- */
-export async function legacyList(registry: Registry, library: string): Promise<ImageItem[]> {
-    const candidates = new Map<string, Candidate>();
-    for (const photo of Object.values(registry.photos)) {
-        if (!onLegacySite(photo)) continue;
-        const revision = photo.revisions[photo.source.observedRevision];
-        candidates.set(photo.source.path, { photo, revision: revision as Candidate['revision'] });
-    }
+/** A photo the legacy site can list by the registry (onLegacySite()) that legacyEntries() leaves out, and why. */
+export interface UnlistedLegacyPhoto {
+    photoId: string;
+    sourcePath: string;
+    reason: string;
+}
 
+/**
+ * The photos the legacy site counts as on it, by the registry and paths
+ * alone: every photo onLegacySite() takes, less the ones hidden behind
+ * another's shared legacy set, since the Gallery shows only the first by path
+ * of each set. A photo whose legacy derivatives aren't all built still counts,
+ * so a missing or empty library folder can't make photos look already gone.
+ * `hidden` names the ones left out, with why. publish's launch count and
+ * `photos carry-over` both read this.
+ */
+export function legacySitePhotos(registry: Registry, library: string): { onSite: PhotoRecord[]; hidden: UnlistedLegacyPhoto[] } {
+    const byPath = new Map<string, PhotoRecord>();
+    for (const photo of Object.values(registry.photos)) if (onLegacySite(photo)) byPath.set(photo.source.path, photo);
+    const onSite: PhotoRecord[] = [];
+    const hidden: UnlistedLegacyPhoto[] = [];
     // Grouped in path order by the watcher's own rule, so a shared set lists the source the watcher built it from.
-    const owners = setGroups([...candidates.keys()], library).map(([owner]) => candidates.get(owner) as Candidate);
+    for (const [owner, ...others] of setGroups([...byPath.keys()], library)) {
+        onSite.push(byPath.get(owner) as PhotoRecord);
+        for (const other of others) {
+            const photo = byPath.get(other) as PhotoRecord;
+            hidden.push({ photoId: photo.photoId, sourcePath: photo.source.path, reason: `it shares its legacy derivative set with ${owner}, so the Gallery shows that one instead` });
+        }
+    }
+    return { onSite, hidden };
+}
+
+/**
+ * Legacy mode's list from the registry, each entry with its photo and source
+ * path, in the order the legacy Gallery shows it: legacyList()'s, which is
+ * this. `unlisted` names the photos the registry would put on the legacy
+ * site that the list leaves out, so `photos carry-over` can say why.
+ */
+export async function legacyEntries(registry: Registry, library: string): Promise<{ entries: { photoId: string; sourcePath: string; item: ImageItem }[]; unlisted: UnlistedLegacyPhoto[] }> {
+    const { onSite, hidden } = legacySitePhotos(registry, library);
+    const unlisted: UnlistedLegacyPhoto[] = [...hidden];
+    const owners = onSite.map((photo) => ({ photo, revision: photo.revisions[photo.source.observedRevision] as Candidate['revision'] }));
     const listed = await Promise.all(owners.map(async ({ photo, revision }) => {
         const base = baseNameOf(photo.source.path);
         const files = Object.entries(DERIVATIVE_FOLDERS).map(([folder, extension]) => path.join(/*turbopackIgnore: true*/ library, folder, `${base}${extension}`));
-        if (!files.every(exists)) return null;
+        const missing = { photoId: photo.photoId, sourcePath: photo.source.path };
+        if (!files.every(exists)) return { ...missing, reason: "its seven legacy derivatives aren't all built, so the Gallery doesn't show it" };
         let lqip: string;
         try {
             lqip = await fs.promises.readFile(path.join(/*turbopackIgnore: true*/ library, 'lqip', `${base}.txt`), 'utf8');
         } catch {
-            return null;
+            return { ...missing, reason: "its legacy LQIP can't be read, so the Gallery doesn't show it" };
         }
         // The original, then the derivatives in DERIVATIVE_FOLDERS order.
         const [, thumbnail, medium, optimized, thumbnailAvif, mediumAvif, optimizedAvif] = legacyUrls(photo.source.path);
@@ -155,15 +180,29 @@ export async function legacyList(registry: Registry, library: string): Promise<I
             date: dateOf(revision.derived.capturedDate?.value),
             lqip,
         };
-        return { photoId: photo.photoId, item };
+        return { photoId: photo.photoId, sourcePath: photo.source.path, item };
     }));
-    return listed
-        .filter((entry) => entry !== null)
+    for (const entry of listed) if ('reason' in entry) unlisted.push(entry);
+    const entries = listed
+        .filter((entry): entry is { photoId: string; sourcePath: string; item: Omit<ImageItem, 'id'> } => 'item' in entry)
         .sort((a, b) => {
             if (a.item.date !== b.item.date) return a.item.date === 0 ? 1 : b.item.date === 0 ? -1 : b.item.date - a.item.date;
             return a.photoId < b.photoId ? -1 : a.photoId > b.photoId ? 1 : 0;
         })
-        .map(({ item }, id) => ({ id, ...item }));
+        .map(({ photoId, sourcePath, item }, id) => ({ photoId, sourcePath, item: { id, ...item } }));
+    return { entries, unlisted: unlisted.sort((a, b) => (a.sourcePath < b.sourcePath ? -1 : a.sourcePath > b.sourcePath ? 1 : 0)) };
+}
+
+/**
+ * Legacy mode's list from the registry. Nothing runs Sharp or lists the
+ * library: it checks that each listed photo's seven derivative files exist,
+ * and reads its LQIP. It takes present photos at the library's top level with a
+ * decodable observed revision, one per legacy set, the first by path, as the
+ * watcher builds the set from it, and shows each only once all seven of its
+ * derivatives exist. Newest capture first, undated last, ties by photo ID.
+ */
+export async function legacyList(registry: Registry, library: string): Promise<ImageItem[]> {
+    return (await legacyEntries(registry, library)).entries.map(({ item }) => item);
 }
 
 /** A file's identity, size and times, as a cache key. */

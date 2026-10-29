@@ -104,8 +104,8 @@ describe('one convention for dates', () => {
         const at = '2026-10-28T00:27:00.000Z';
         const rows = [row({ sequence: 1, revision: 1, at, live: true, previous: null, parent: null })];
         const entry = historyView({ rows, shown: 10, planned: new Map(), plans: {}, hrefs: { check: () => '', more: () => '' } }).entries[0];
-        expect(localize(entry.when, 'America/Los_Angeles')).toBe('Published 27 October at 17:27, from this screen.');
-        expect(localize(entry.when)).toBe('Published 28 October at 00:27 UTC, from this screen.');
+        expect(localize(entry.when, 'America/Los_Angeles')).toBe('Published 27 October at 17:27 by you, from this screen.');
+        expect(localize(entry.when)).toBe('Published 28 October at 00:27 UTC by you, from this screen.');
     });
 });
 
@@ -138,16 +138,16 @@ describe('the list', () => {
         expect(history.lead).toBe(HISTORY_LEAD);
         expect(history.entries.map((entry) => entry.sequence)).toEqual([7, 6, 5, 4, 3, 2, 1]);
         const [live, five, four, three, interrupted, two, one] = history.entries;
-        expect(live).toMatchObject({ title: 'Revision 6', badge: { text: 'Live now', tone: 'done' }, kind: 'Publish', when: 'Published 26 October at 14:05, from this screen.', facts: `Entry 7 · ${rev(6).slice(4, 12)}`, eligibility: { type: 'text', text: LIVE_TEXT, tone: 'quiet' } });
+        expect(live).toMatchObject({ title: 'Revision 6', badge: { text: 'Live now', tone: 'done' }, kind: 'Publish', when: 'Published 26 October at 14:05 by you, from this screen.', facts: `Entry 7 · ${rev(6).slice(4, 12)}`, eligibility: { type: 'text', text: LIVE_TEXT, tone: 'quiet' } });
         expect(live.reason).toBeUndefined();
         expect(live.from).toBe('Replaced revision 5: 2 photographs added, 1 removed, 1 series changed.');
         expect(live.held).toBe('3 series, 26 photographs in all.');
         expect(five.eligibility).toEqual({ type: 'restore', revision: 5 });
-        expect(four).toMatchObject({ when: 'Published 26 October at 14:05 by keyur, with photos publish.', reason: { text: 'Salt Roads order', quoted: false } });
+        expect(four).toMatchObject({ when: 'Published 26 October at 14:05 by you, from the command line.', reason: { text: 'Salt Roads order', quoted: false } });
         expect(four.eligibility).toEqual({ type: 'text', text: "It can't come back as it was: a description in it names a file on this computer.", tone: 'alert' });
         expect(three.eligibility).toEqual({ type: 'text', text: UNREADABLE_TEXT, tone: 'alert' });
         expect(three.held).toBeUndefined();
-        expect(interrupted).toMatchObject({ title: "A publish that didn't finish", badge: { text: "Didn't finish", tone: 'quiet' }, kind: 'Publish', when: 'Started 2 October at 13:58 by keyur, with photos publish.', from: 'It never went live, so visitors never saw it.', facts: 'Entry 3', eligibility: { type: 'none' } });
+        expect(interrupted).toMatchObject({ title: "A publish that didn't finish", badge: { text: "Didn't finish", tone: 'quiet' }, kind: 'Publish', when: 'Started 2 October at 13:58 by you, from the command line.', from: 'It never went live, so visitors never saw it.', facts: 'Entry 3', eligibility: { type: 'none' } });
         expect(two.eligibility).toEqual({ type: 'restore', revision: 2 });
         expect(one).toMatchObject({ from: 'The first revision.', reason: { text: 'Launch', quoted: false }, eligibility: { type: 'restore', revision: 1 } });
         expect(history.count).toBeNull();
@@ -176,7 +176,7 @@ describe('the list', () => {
         ];
         const history = view(after, { 6: { outcome: 'READY' } });
         const [restore, six, five] = history.entries;
-        expect(restore).toMatchObject({ title: 'Revision 5', kind: 'Restore', when: 'Restored 27 October at 09:12, from this screen.', reason: { text: 'The new cover is cropped wrong.', quoted: true }, from: 'Replaced revision 6: removed 2 photographs, brought back 1, changed 1 series.', eligibility: { type: 'text', text: LIVE_TEXT, tone: 'quiet' } });
+        expect(restore).toMatchObject({ title: 'Revision 5', kind: 'Restore', when: 'Restored 27 October at 09:12 by you, from this screen.', reason: { text: 'The new cover is cropped wrong.', quoted: true }, from: 'Replaced revision 6: removed 2 photographs, brought back 1, changed 1 series.', eligibility: { type: 'text', text: LIVE_TEXT, tone: 'quiet' } });
         expect(six.eligibility).toEqual({ type: 'restore', revision: 6 });
         expect(five.eligibility).toEqual({ type: 'text', text: 'Live now: restored on 27 October, above.', tone: 'quiet' });
     });
@@ -287,7 +287,16 @@ describe("the dialog's answers", () => {
 
     it('changed under you: says who made the new one live, keeps the impact as what it would have changed, and offers one way on', () => {
         const result = local(restoreResult('ACTIVE_CHANGED', facts({ pointer: { revisionId: rev(7), number: 7 }, liveBy: { actor: 'keyur', kind: 'publish', at: '2026-10-27T09:10:00.000Z' } })));
-        expect(result).toEqual({ tone: 'change', heading: 'Revision 7 went live while this was open', body: ['keyur published it at 09:10, with photos publish. This page is out of date, so nothing was restored.'], actions: ['reload'], moved: { impact: 'past' } });
+        expect(result).toEqual({ tone: 'change', heading: 'Revision 7 went live while this was open', body: ['You published it from the command line at 09:10. This page is out of date, so nothing was restored.'], actions: ['reload'], moved: { impact: 'past' } });
+    });
+
+    it('says who made the new one live in the owner\'s words, for a publish or a restore, from the command line or this screen', () => {
+        const moved = (liveBy: OutcomeFacts['liveBy']) => local(restoreResult('ACTIVE_CHANGED', facts({ pointer: { revisionId: rev(7), number: 7 }, liveBy })))?.body[0];
+        const at = '2026-10-27T09:10:00.000Z';
+        expect(moved({ actor: 'keyur', kind: 'rollback', at })).toBe('You restored it from the command line at 09:10. This page is out of date, so nothing was restored.');
+        expect(moved({ actor: 'curator:web', kind: 'rollback', at })).toBe('You restored it from this screen at 09:10. This page is out of date, so nothing was restored.');
+        expect(moved({ actor: 'curator:web', kind: 'publish', at })).toBe('You published it from this screen at 09:10. This page is out of date, so nothing was restored.');
+        expect(moved(null)).toBe('This page is out of date, so nothing was restored.');
     });
 
     it('lock held: when it started, what stays live, and the retry', () => {
@@ -305,7 +314,7 @@ describe("the dialog's answers", () => {
         expect(result).toEqual({
             tone: 'change',
             heading: 'Revision 7 went live while this was open',
-            body: ['keyur published it at 09:10, with photos publish. Another command is still finishing, and nothing was restored. Load the updated page once it does.'],
+            body: ['You published it from the command line at 09:10. Another command is still finishing, and nothing was restored. Load the updated page once it does.'],
             actions: ['reload'],
             moved: { impact: 'past' },
         });
@@ -326,7 +335,7 @@ describe("the dialog's answers", () => {
 
     it('already live: moved facts, nothing more to do, and Load the updated page', () => {
         const result = local(restoreResult('NO_CHANGES', facts({ pointer: { revisionId: rev(5), number: 5 }, liveBy: { actor: 'curator:web', kind: 'rollback', at: '2026-10-27T09:11:00.000Z' }, settled: true })));
-        expect(result).toEqual({ tone: 'done', heading: 'Revision 5 is already live', body: ['It was restored from this screen at 09:11. Nothing more to do.', 'History now records the restore that was interrupted.'], actions: ['reload'], moved: { impact: 'hide' } });
+        expect(result).toEqual({ tone: 'done', heading: 'Revision 5 is already live', body: ['You restored it from this screen at 09:11. Nothing more to do.', 'History now records the restore that was interrupted.'], actions: ['reload'], moved: { impact: 'hide' } });
     });
 
     it('interrupted: before the switch, the retry; after it, Finish restoring', () => {

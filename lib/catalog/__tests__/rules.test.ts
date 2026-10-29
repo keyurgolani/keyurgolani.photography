@@ -382,6 +382,48 @@ describe('a stored revision, with no working layer', () => {
     });
 });
 
+describe("photos carry-over's marker", () => {
+    const MARKER = { reason: 'Carried over at the launch.', at: '2026-10-28T12:00:00.000Z' };
+    const codes = (ctx: RuleContext) => runRules(ctx).map((issue) => `${issue.code} ${issue.record.id} ${issue.field}`);
+
+    it('lets a carried-over photo with no description publish, named by its place, and no other photo', () => {
+        const ctx = context();
+        photoAt(ctx, 0).alt = { kind: 'position' };
+        photoAt(ctx, 1).alt = { kind: 'pending' };
+        expect(codes(ctx)).toEqual([`description.required ${photoAt(ctx, 1).id} alt`]);
+        expect(codes({ ...ctx, authored: null })).toEqual([`description.required ${photoAt(ctx, 1).id} alt`]);
+    });
+
+    it('lets the marked series go without a statement while both are empty, and asks for both once one is written', () => {
+        const ctx = context();
+        const authored = ctx.authored!.series[0];
+        const stored = ctx.candidate.series.find((series) => series.id === authored.id)!;
+        for (const series of [authored, stored]) Object.assign(series, { statement: '', shortStatement: '' });
+        // Unmarked, the empty statements block.
+        expect(codes(ctx)).toEqual([`description.series-copy ${authored.id} shortStatement`, `description.series-copy ${authored.id} statement`]);
+        // A marker on any series but the carried-over Gallery counts for nothing.
+        authored.carryOver = MARKER;
+        stored.carryOver = true;
+        expect(codes(ctx)).toEqual([`description.series-copy ${authored.id} shortStatement`, `description.series-copy ${authored.id} statement`]);
+        // The carried-over Gallery: the same series under its ID, everywhere the fixture names it.
+        const old = authored.id;
+        const rename = (ids: string[]) => ids.map((id) => (id === old ? 'ser_gallery' : id));
+        for (const series of [authored, stored]) series.id = 'ser_gallery';
+        ctx.authored!.site!.seriesOrder = rename(ctx.authored!.site!.seriesOrder);
+        ctx.authored!.site!.featuredSeriesIds = rename(ctx.authored!.site!.featuredSeriesIds);
+        ctx.candidate.site.featuredSeriesIds = rename(ctx.candidate.site.featuredSeriesIds);
+        expect(codes(ctx)).toEqual([]);
+        // A stored revision reads the flag compile wrote, so a restore of it passes too.
+        expect(codes({ ...ctx, authored: null })).toEqual([]);
+        // Once he writes one, the normal rule applies to both.
+        authored.statement = 'Mornings on the estuary.';
+        expect(codes(ctx)).toEqual([`description.series-copy ${authored.id} shortStatement`]);
+        // The title is never optional.
+        Object.assign(authored, { statement: '', title: ' ' });
+        expect(codes(ctx)).toEqual([`description.series-copy ${authored.id} title`]);
+    });
+});
+
 describe('the rule registry', () => {
     it('throws on a duplicate rule ID, including one of its own', () => {
         expect(() => registerRule({ ...registeredRules()[0] })).toThrow(/already registered/);

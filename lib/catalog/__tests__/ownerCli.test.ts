@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { REPO_ROOT, runTsx, type TsxRun } from '../../../test/helpers/runTsx';
+import { createTempLibrary } from '../../../test/helpers/tempLibrary';
 import { readRegistry, writeRegistry } from '../../identity/registry';
 import { parseFlags, publishReport, sequenceArgs, seriesArgs, UsageError } from '../owner-cli';
 import { publish, type PublishResult } from '../publish';
@@ -122,8 +123,10 @@ describe('the publish report', () => {
     const quiet = { log: () => undefined };
     const report = (result: PublishResult, root: string) => publishReport(result, root).join('\n');
 
-    it('counts only photos the legacy site lists as leaving it', async () => {
+    it('counts only photos the legacy site lists as leaving it, by the registry, so an empty library lowers nothing', async () => {
         const catalog = await launchFixture();
+        const library = await createTempLibrary();
+        cleanups.push(() => library.cleanup());
         const result = await publish({ dataRoot: catalog.root, actor: 'test', logger: quiet });
         expect(result).toMatchObject({ outcome: 'LAUNCH_CONFIRMATION_REQUIRED', launch: { published: 4, gone: 0 } });
         const registry = await readRegistry(catalog.root);

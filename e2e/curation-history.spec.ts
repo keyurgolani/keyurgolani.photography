@@ -202,7 +202,7 @@ test('says what went live while the dialog was open, with the facts it was opene
     await expect(answer(page)).toHaveText('Revision 4 went live while this was open');
     await expect(answer(page)).toBeFocused();
     await expectAnswerInView(page);
-    await expect(dialog(page).getByText('keyur published it at', { exact: false })).toBeVisible();
+    await expect(dialog(page).getByText('You published it from the command line at', { exact: false })).toBeVisible();
     await expect(dialog(page).getByText('This page loaded while revision 3 was live.')).toBeVisible();
     await expect(dialog(page).locator('dt', { hasText: 'Live when you opened this' })).toBeVisible();
     await expect(dialog(page).getByText('What it would have changed, against revision 3')).toBeVisible();
@@ -274,7 +274,7 @@ test('follows a publish from this screen: Restore waits while it runs, then the 
     }, muted);
     // Polled, since a colour can still be easing in when the press lands.
     await expect.poll(() => restoreLink(page, 1).evaluate((element) => getComputedStyle(element).color)).toBe(probe);
-    await expect(page.locator('#result-heading')).toHaveText('Revision 3 published atomically');
+    await expect(page.locator('#result-heading')).toHaveText('Revision 3 is live');
     await expect(page.locator('#history-paused')).toHaveCount(0);
     await expect(page.locator('#history h3').first()).toHaveText('Revision 3');
     await expect(page.locator('#history li').first().getByText('Live now')).toBeVisible();
@@ -318,7 +318,7 @@ test.describe('without JavaScript', () => {
         await page.goto(`${origin()}/curation/publish`);
         await expect(page.locator('#history h3').first()).toHaveText('Revision 3');
         // Without JavaScript the times stay the server's, and say they're UTC.
-        await expect(page.locator('#history li').first().getByText(/ at \d\d:\d\d UTC by keyur, with photos publish\.$/)).toBeVisible();
+        await expect(page.locator('#history li').first().getByText(/ at \d\d:\d\d UTC by you, from the command line\.$/)).toBeVisible();
         await restoreLink(page, 2).click();
         await expect(page).toHaveURL(/\?restore=2#restore-heading$/);
         await expect(page.locator('#restore-heading')).toHaveText('Restore revision 2?');

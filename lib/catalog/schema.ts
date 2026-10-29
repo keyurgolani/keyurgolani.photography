@@ -46,7 +46,15 @@ const variantFileSchema = z.strictObject({ url: z.string().min(1), width: positi
 const variantsSchema = z.record(z.enum(VARIANT_WIDTHS), z.record(z.enum(VARIANT_FORMATS), variantFileSchema));
 
 const decorativeAlt = z.strictObject({ kind: z.literal('decorative') });
-export const publicAltSchema = z.discriminatedUnion('kind', [z.strictObject({ kind: z.literal('described'), text: copy }), decorativeAlt]);
+/**
+ * A photo `photos carry-over` brought over from the legacy site at the
+ * launch, still with no description: the screens name it by its place, as
+ * the legacy Gallery did, "Photograph N of T", never with text passed off
+ * as a description, and never with an empty alt, since it isn't decorative.
+ * Only a photo record with the carry-over marker and no alt compiles to it.
+ */
+const positionAlt = z.strictObject({ kind: z.literal('position') });
+export const publicAltSchema = z.discriminatedUnion('kind', [z.strictObject({ kind: z.literal('described'), text: copy }), decorativeAlt, positionAlt]);
 /**
  * A candidate mirrors the working layer before the description rules have
  * judged it: `pending` stands for an authored `alt: null`, and described text
@@ -55,6 +63,7 @@ export const publicAltSchema = z.discriminatedUnion('kind', [z.strictObject({ ki
 export const candidateAltSchema = z.discriminatedUnion('kind', [
     z.strictObject({ kind: z.literal('described'), text: z.string() }),
     decorativeAlt,
+    positionAlt,
     z.strictObject({ kind: z.literal('pending') }),
 ]);
 
@@ -100,6 +109,8 @@ export const seriesRecordSchema = z.strictObject({
     openingPhotoId: photoId.optional(),
     cover: coverSchema,
     accent: z.string().optional(),
+    /** The series `photos carry-over` made at the launch, which may go without a statement until the owner writes one. */
+    carryOver: z.literal(true).optional(),
     /** Computed by compile over resolved members. The dates are absent when no member is dated. */
     derived: z.strictObject({ photoCount: count, capturedFrom: date.optional(), capturedTo: date.optional() }),
 });
@@ -185,6 +196,16 @@ export const fieldReviewSchema = z.strictObject({
 });
 export const reviewStampSchema = z.strictObject({ fields: z.record(z.string().min(1), fieldReviewSchema) });
 
+/**
+ * `photos carry-over`'s marker on the records it wrote at the launch: when,
+ * and the owner's direction it followed, quoted. A marked photo with no alt
+ * is named by its place (`position`), and the marked series may go without
+ * a statement, until the owner writes them.
+ */
+export const carryOverSchema = z.strictObject({ reason: copy, at: timestamp });
+/** The one series `photos carry-over` makes, the only one its marker counts on. */
+export const CARRY_OVER_SERIES_ID = 'ser_gallery';
+
 const authoredFields = {
     schemaVersion: z.literal(CATALOG_SCHEMA_VERSION),
     /** Bumped on every tool write. The compare-and-swap key. */
@@ -229,6 +250,7 @@ export const authoredSeriesSchema = z.strictObject({
     visibility: z.enum(['draft', 'published', 'hidden']),
     /** Only #14 acts on it. */
     publicationPolicy: z.enum(['review-required', 'auto-include-as-draft']).default('review-required'),
+    carryOver: carryOverSchema.optional(),
 });
 
 /** Owner-written or imported alt is reviewed. A #14 suggestion isn't until the owner accepts it. */
@@ -252,6 +274,7 @@ export const authoredPhotoSchema = z.strictObject({
     credit: z.string().optional(),
     location: z.string().optional(),
     capturedAt: date.optional(),
+    carryOver: carryOverSchema.optional(),
 });
 
 export interface SchemaIssue {

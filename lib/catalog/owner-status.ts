@@ -21,7 +21,8 @@ import { readActivePointer, readWorkingLayer } from './working-layer';
  */
 
 /** A photo's description, as the description rules see it. */
-export type AltState = 'described' | 'unreviewed' | 'decorative' | 'none' | 'no record';
+/** `no description yet`: carried over at the launch with no alt, so it is named by its place and doesn't block a publish. */
+export type AltState = 'described' | 'unreviewed' | 'decorative' | 'none' | 'no description yet' | 'no record';
 
 export interface PhotoListing {
     photoId: string;
@@ -81,8 +82,10 @@ export interface OwnerStatus {
         unassigned: string[];
         /** Photos in the library or in a series with no reviewed description or decorative flag. */
         undescribed: string[];
-        /** The undescribed photos a published series lists, which block a publish. */
+        /** The undescribed photos a published series lists, which block a publish. Carried-over ones don't. */
         undescribedPublished: string[];
+        /** Undescribed photos `photos carry-over` brought over, named by their place until described. They don't block. */
+        carriedOver: string[];
     } | null;
     /**
      * #17's alerting: the curation inbox's open missing sources and failures,
@@ -97,7 +100,7 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 
 export function altState(record: AuthoredPhoto | undefined): AltState {
     if (!record) return 'no record';
-    if (record.alt === null) return 'none';
+    if (record.alt === null) return record.carryOver !== undefined ? 'no description yet' : 'none';
     if (record.alt.kind === 'decorative') return 'decorative';
     return record.alt.reviewed ? 'described' : 'unreviewed';
 }
@@ -132,7 +135,8 @@ function workingSummary(layer: WorkingLayer, registry: Registry): NonNullable<Ow
         problems: layer.problems.map((problem) => `${problem.kind} ${problem.id}`),
         unassigned: library.filter((photoId) => !members.has(photoId)).sort(compare),
         undescribed,
-        undescribedPublished: undescribed.filter((photoId) => published.has(photoId)),
+        undescribedPublished: undescribed.filter((photoId) => published.has(photoId) && altState(records.get(photoId)) !== 'no description yet'),
+        carriedOver: undescribed.filter((photoId) => altState(records.get(photoId)) === 'no description yet'),
     };
 }
 
@@ -252,6 +256,7 @@ function formatStatus(status: OwnerStatus): string {
         if (working.problems.length > 0) lines.push(`Unusable record files: ${working.problems.join(', ')}. photos validate says why.`);
         lines.push(`Unassigned: ${count(working.unassigned.length, 'photo')} in the library that no series lists`);
         lines.push(`Undescribed: ${count(working.undescribed.length, 'photo')} without a reviewed description or a decorative flag, ${working.undescribedPublished.length} of them in a published series`);
+        if (working.carriedOver.length > 0) lines.push(`  ${count(working.carriedOver.length, 'photo')} carried over at the launch ${working.carriedOver.length === 1 ? 'has' : 'have'} no description yet. ${working.carriedOver.length === 1 ? 'It keeps' : 'They keep'} the name the legacy Gallery gave, "Photograph N of T", and never ${working.carriedOver.length === 1 ? 'blocks' : 'block'} a publish. Describe ${working.carriedOver.length === 1 ? 'it' : 'them'} any time.`);
         if (working.unassigned.length > 0 || working.undescribed.length > 0) lines.push('  photos list shows each photo with its series and description state.');
     }
     if (status.inbox) lines.push(...('error' in status.inbox ? [`Inbox: can't be read (${status.inbox.error})`] : inboxAlertLines(status.inbox)));

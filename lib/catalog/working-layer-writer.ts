@@ -81,6 +81,12 @@ export interface WriteAuthoredOptions {
      * active revision at the write, the actor `cli`, and the time of the write.
      */
     review?: ReviewInputs;
+    /**
+     * Only `photos carry-over` passes it: the write may add or change the
+     * carry-over marker. Every other write keeps the stored marker, and one
+     * that adds a marker the stored version lacks is refused.
+     */
+    carryOver?: boolean;
 }
 
 /** The inputs a reviewed write passes for #16: what was reviewed, against which active revision, and by whom. */
@@ -112,6 +118,28 @@ export interface ReviewInputs {
 
 /** The fields the writer owns, as ManagedField names them. */
 export const MANAGED_FIELDS = ['schemaVersion', 'version', 'baseRevisionId', 'baseSeriesOrder', 'review'] as const;
+
+/**
+ * `photos carry-over`'s marker, which only that command writes. Any other
+ * write keeps the stored marker as it was, so a caller that builds a record
+ * afresh can't drop it by leaving it out, and one that adds or changes it is
+ * refused. The marker goes for good once the owner writes what it stood in
+ * for: a photo's alt, or either of a series' statements.
+ */
+function carryOverMarker(next: Record<string, unknown>, existing: AuthoredRecord | null, ref: { kind: AuthoredKind; id: string }, allowed: boolean): void {
+    if (ref.kind === 'site') return;
+    const stored = existing && 'carryOver' in existing ? existing.carryOver : undefined;
+    const given = next.carryOver;
+    if (!allowed && given !== undefined && JSON.stringify(given) !== JSON.stringify(stored)) {
+        throw new AuthoredWriteError('INVALID_RECORD', ref, `Only photos carry-over writes the carry-over marker, and the ${ref.kind} record ${ref.id} ${stored === undefined ? "doesn't have one" : 'has another one'}. Nothing was written.`, {
+            issues: [{ path: 'carryOver', message: 'is written only by photos carry-over' }],
+        });
+    }
+    const marker = allowed ? given : stored;
+    const written = ref.kind === 'photo' ? next.alt !== null && next.alt !== undefined : [next.statement, next.shortStatement].some((value) => typeof value === 'string' && /\S/.test(value));
+    if (marker === undefined || written) delete next.carryOver;
+    else next.carryOver = marker;
+}
 
 /** The actor a stamp names when the caller passes no review inputs: one of #13 slice D's commands. */
 export const DEFAULT_REVIEW_ACTOR = 'cli';
@@ -166,6 +194,7 @@ async function commit(
     rebaseTo?: string,
     review?: ReviewInputs,
     published?: boolean,
+    carryOver = false,
 ): Promise<AuthoredRecord> {
     const dir = authoredRecordDir(root, ref.kind, ref.id);
     const folder = await recordFolderProblem(root, ref.kind, ref.id);
@@ -209,6 +238,7 @@ async function commit(
         ? { baseSeriesOrder: rebaseTo !== undefined ? rebasedSeriesOrder(record) : (existing as AuthoredSite | null)?.baseSeriesOrder ?? null }
         : {};
     const next = { ...withoutManaged(record), schemaVersion: CATALOG_SCHEMA_VERSION, version: expectedVersion + 1, baseRevisionId, ...site };
+    carryOverMarker(next as Record<string, unknown>, existing, ref, carryOver);
     const unstamped = parseAuthoredRecord(ref.kind, next);
     if (!unstamped.ok) throw new AuthoredWriteError('INVALID_RECORD', ref, `The ${ref.kind} record ${ref.id} is not valid.`, { issues: unstamped.error.issues });
     // #16's stamps, under the same hold: a rebase keeps those of the fields it left alone, and any other write stamps
@@ -297,12 +327,12 @@ export async function writeAuthoredRecord(record: AuthoredRecordInput, options: 
         if (lock.name !== AUTHORED_LOCK || realpathLoose(lock.root) !== realpathLoose(root) || lock.signal.aborted) {
             throw new AuthoredWriteError('LOCK_NOT_HELD', ref, 'The lock passed in is not a live hold on this data root\'s authored lock.');
         }
-        return commit(root, record, ref, expectedVersion, hooks, undefined, options.review);
+        return commit(root, record, ref, expectedVersion, hooks, undefined, options.review, undefined, options.carryOver);
     }
     try {
         return await withLock(AUTHORED_LOCK, { root, leaseMs: AUTHORED_LEASE_MS, waitMs }, async ({ signal }) => {
             signal.throwIfAborted();
-            return commit(root, record, ref, expectedVersion, hooks, undefined, options.review);
+            return commit(root, record, ref, expectedVersion, hooks, undefined, options.review, undefined, options.carryOver);
         });
     } catch (error) {
         if (error instanceof LockTimeoutError) throw new AuthoredWriteError('AUTHORED_LOCKED', ref, error.message, { holder: error.holder });

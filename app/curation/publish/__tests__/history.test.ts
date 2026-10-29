@@ -107,7 +107,7 @@ describe('the page read', () => {
             ['Revision 2', 'Publish', 'Live now', 'text'],
             ['Revision 1', 'Publish', null, 'restore'],
         ]);
-        expect(localize(history.entries[0].when)).toMatch(/^Published \d+ \w+ at \d\d:\d\d UTC by keyur, with photos publish\.$/);
+        expect(localize(history.entries[0].when)).toMatch(/^Published \d+ \w+ at \d\d:\d\d UTC by you, from the command line\.$/);
         expect(history.entries[0].reason).toEqual({ text: 'fixture revision 2', quoted: false });
         expect(history.entries[0].from).toBe('Replaced revision 1: 1 series changed.');
         const plan = history.plans[1];
@@ -171,7 +171,7 @@ describe('the answers', () => {
         expect(after.history.done).toEqual({ heading: 'Revision 2 is live again', body: ['Visitors see it on their next page load. Revision 3 is kept in History.'] });
         const [top, three, two] = after.history.entries;
         expect(top).toMatchObject({ title: 'Revision 2', kind: 'Restore', badge: { text: 'Live now' }, reason: { text: 'The new order reads wrong.', quoted: true }, eligibility: { type: 'text' } });
-        expect(localize(top.when)).toMatch(/^Restored \d+ \w+ at \d\d:\d\d UTC, from this screen\.$/);
+        expect(localize(top.when)).toMatch(/^Restored \d+ \w+ at \d\d:\d\d UTC by you, from this screen\.$/);
         expect(top.from).toMatch(/^Replaced revision 3: /);
         expect(three.eligibility).toEqual({ type: 'restore', revision: 3 });
         expect(two.eligibility.type === 'text' && localize(two.eligibility.text)).toMatch(/^Live now: restored on \d+ \w+, above\.$/);
@@ -253,7 +253,7 @@ describe("16-3's answer carries History", () => {
             ['Revision 2', null, 'restore'],
             ['Revision 1', null, 'restore'],
         ]);
-        expect(localize(history?.entries[0].when ?? '')).toMatch(/, from this screen\.$/);
+        expect(localize(history?.entries[0].when ?? '')).toMatch(/ by you, from this screen\.$/);
         expect(history?.plans[2]?.draftNote).toBeUndefined();
     });
 
