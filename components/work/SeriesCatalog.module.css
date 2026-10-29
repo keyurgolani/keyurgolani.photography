@@ -45,8 +45,13 @@
   min-width: 0;
 }
 
-/* One link per entry, the whole entry its target. */
+/* One link per entry, the whole entry its target. The cover wears the theme's md surround (sm on a phone), and its
+   real thickness is the room the grid, the copy and the focus ring reserve (styles/themes.css). Black has none, so all
+   three are today's. The ring clears the room by 2 px and never passes the gutter ([data-ring-room], globals.css). */
 .entry {
+  --work-surround: var(--gah-surround-md, none);
+  --work-room: var(--gah-room-md, 0px);
+  --ring-room: var(--work-room);
   display: block;
   border-radius: var(--gah-radius);
   color: inherit;
@@ -58,8 +63,9 @@
   position: relative;
   overflow: hidden;
   aspect-ratio: 4 / 3;
-  border-radius: var(--gah-radius);
+  border-radius: var(--gah-photo-radius, var(--gah-radius));
   background: var(--gah-surface);
+  box-shadow: var(--work-surround);
 }
 
 .cover {
@@ -91,7 +97,15 @@
 }
 
 .copy {
-  padding-top: 1rem;
+  padding-top: calc(1rem + var(--work-room));
+}
+
+/* Below 40rem every surround steps down a size, so a cover never crowds the phone's 16 px gutter. */
+@media (max-width: 39.99rem) {
+  .entry {
+    --work-surround: var(--gah-surround-sm, none);
+    --work-room: var(--gah-room-sm, 0px);
+  }
 }
 
 /* Authored: the title and the short statement. */
@@ -141,8 +155,10 @@
 /* Above 768 px the entries pair up, wide and narrow, alternating by row, so
    they read as separate bodies of work rather than a uniform grid. */
 @media (min-width: 768px) {
+  /* The column gap reserves both neighbours' surrounds, so two frames never read as one double line. */
   .list {
     grid-template-columns: repeat(12, minmax(0, 1fr));
+    column-gap: calc(clamp(1rem, 2.5vw, 2rem) + 2 * var(--gah-room-md, 0px));
   }
 
   .item {
