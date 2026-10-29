@@ -18,7 +18,8 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: 0,
-  timeout: 10 * 60_000,
+  // Per page: four sizes and scales, each up to ten fresh loads.
+  timeout: 20 * 60_000,
   reporter: [['list'], ['html', { open: 'never', outputFolder: '../../playwright-report/parity' }]],
   outputDir: '../../test-results/parity',
   use: { trace: 'off' },

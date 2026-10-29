@@ -109,8 +109,9 @@ jobs:
   themes:
     name: Themes, CSS budget and Black parity
     runs-on: ubuntu-latest
-    # Two builds and about 120 page pairs.
-    timeout-minutes: 35
+    # Two builds, and about 90 page and size pairs, each loaded fresh for each of two passes, from the base twice (its
+    # check against itself), the head, and the head on a stored dark.
+    timeout-minutes: 75
     env:
       # next before the five themes: v1.2.0 plus #119's curator copy and #120's carry-over. Black must paint as it does
       # there. Move it only for a change that isn't a theme's and moves Black on purpose, and say so in that PR.

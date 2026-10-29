@@ -23,7 +23,7 @@ import { routePhotoFixtures } from '../support/test';
 //    not one pixel may differ, on any page, at either size or scale. Home's nav, title, scrim, panel, badge and
 //    controls, captions over a photo and letterboxing all composite over the same ground, so they're all held exact.
 //    That's the claim: Black is today's tokens, type and layout.
-// 2. Photographs, a tolerance. Both builds hide every layer but the photographs, and inside the photographs' boxes no
+// 2. Photographs, a tolerance. Both builds paint nothing but the photographs, and inside the photographs' boxes no
 //    channel may step more than 12/255 (PHOTO_STEP), with no limit on how many pixels do. A photo is the same bytes in
 //    both builds, so its raster isn't under test, and it doesn't repeat from one load to the next even in the base:
 //    the Inbox's thumbnails step up to 9/255 against themselves. 12/255 is still invisible in a photograph.
@@ -124,12 +124,14 @@ type Box = { x: number; y: number; w: number; h: number };
 interface Shot {
     /** Pass 1: the page with every photograph taken out (opacity 0, so the layout stays), and slides without their images. */
     chrome: string;
-    /** Pass 2: the photographs alone, every other layer hidden. */
+    /** Pass 2: the photographs alone, every other layer painting nothing. */
     photo: string;
     /** Every theme control or toggle on the page, the curator's preview frame's included, in page pixels. */
     controls: Box[];
     /** Every photograph's box, the same way. */
     photos: Box[];
+    /** Each photograph's compositing, from pass 2's load (D2). */
+    styles: string[];
 }
 interface Pair {
     /** The page, as `name` in the table. */
@@ -150,6 +152,8 @@ interface Pair {
     bare?: boolean;
     /** Sanctioned departures (spec §10): boxes, in CSS pixels, masked at one width and scale only. */
     sanctioned?: { width: number; scale: number; box: Box }[];
+    /** Glass over the photographs (Home's SiteNav, the lightbox's chrome): pass 1 paints each photo as a checkerboard (D1). */
+    glass?: boolean;
     /** CSS for the head's shots only: the self-test's deliberate change. */
     headStyle?: string;
     /** Selectors whose boxes go in the report's second table, unrounded, from every shot (the code review's H2.3). */
@@ -160,72 +164,114 @@ let browser: Browser;
 
 /** Pass 1's style: no photograph's pixels, and a slide's image off, so whatever is drawn over or around a photograph composites over the same ground in both builds. */
 const NO_PHOTOS = 'img,picture,canvas,video{opacity:0!important}[class$="_slide"],[class*="_slide "]{background-image:none!important}';
-/** Pass 2's style: nothing but the photographs. */
-const ONLY_PHOTOS = 'body *{visibility:hidden!important}img,picture,picture *,canvas,video{visibility:visible!important}';
+/**
+ * Pass 1 on a page with glass over its photographs (D1): each photo's box is the same fixed checkerboard in both
+ * builds instead, so a blur or a saturate over it shows. The image keeps its box and draws only its background.
+ */
+const CHECKER = 'repeating-conic-gradient(#000 0 25%,#fff 0 50%) 0 0/8px 8px';
+const CHECKERED_PHOTOS = `img,video{object-position:-100000px -100000px!important;background:${CHECKER}!important;opacity:1!important}picture,canvas{opacity:0!important}[class$="_slide"],[class*="_slide "]{background:${CHECKER}!important}`;
+/**
+ * Pass 2's style: nothing paints but the photographs. Every other layer stays in place, visible and focusable, so the
+ * page's acts (a hover, a focus, the lightbox's Enter) work the same in both passes; it only paints nothing: no ink,
+ * ground, rule, shadow, ring or glass. Filters stay, since a photo's own compositing is under test (D2).
+ */
+const ONLY_PHOTOS =
+    'body *:not(img):not(video):not(canvas),body *::before,body *::after{color:transparent!important;-webkit-text-fill-color:transparent!important;' +
+    'background:transparent!important;border-color:transparent!important;box-shadow:none!important;outline-color:transparent!important;' +
+    'text-shadow:none!important;text-decoration-color:transparent!important;caret-color:transparent!important;' +
+    'backdrop-filter:none!important;-webkit-backdrop-filter:none!important}';
 
-async function shoot(origin: string, stored: string, pair: Pair, viewport: { width: number; height: number }, scale: number, tag: string, session?: string): Promise<Shot> {
+type PassName = 'chrome' | 'photo';
+interface PassShot {
+    file: string;
+    controls: Box[];
+    photos: Box[];
+    /** Each photograph's own opacity, filter and blend, and every ancestor's opacity and filter, in DOM order (D2). */
+    styles: string[];
+}
+
+/**
+ * One fresh load of `pair` for one pass (D3): the pass's style, and the head's own, are in from before first paint,
+ * through an init script in every frame, never toggled on a live page. Then hydration, fonts, every image loaded and
+ * decoded, every finite animation done, and two frames, before the shot.
+ */
+async function load(origin: string, stored: string, pair: Pair, viewport: { width: number; height: number }, scale: number, tag: string, pass: PassName, session?: string): Promise<PassShot> {
     const context = await browser.newContext({ viewport, deviceScaleFactor: scale, colorScheme: 'dark', reducedMotion: 'reduce' });
     if (session) await context.addCookies(JSON.parse(session).map((cookie: { name: string; value: string }) => ({ ...cookie, url: origin })));
-    await context.addInitScript((value) => {
+    const head = !tag.startsWith('base');
+    const css = [
+        pass === 'chrome' ? (pair.glass ? CHECKERED_PHOTOS : NO_PHOTOS) : ONLY_PHOTOS,
+        pair.addsControl && head ? '[data-theme-control]{display:none!important}' : '',
+        pair.headStyle && head ? pair.headStyle : '',
+    ].join('');
+    await context.addInitScript(({ value, sheet }) => {
         try {
             localStorage.setItem('theme', value);
         } catch {
             // No storage.
         }
-    }, stored);
+        // An adopted sheet needs no <head>, so it's in before the parser writes one, and nothing the page does removes it.
+        const style = new CSSStyleSheet();
+        style.replaceSync(sheet);
+        document.adoptedStyleSheets = [...document.adoptedStyleSheets, style];
+    }, { value: stored, sheet: css });
     const page = await context.newPage();
     if (pair.photos) await routePhotoFixtures(page);
     await page.goto(`${origin}${pair.url}`, { waitUntil: pair.intro ? 'domcontentloaded' : 'load' });
-    {
-        if (!pair.bare) await page.waitForSelector('html[data-hydrated]', { timeout: 30_000 }).catch(() => undefined);
-        await page.evaluate(() => document.fonts.ready);
-        if (pair.url === '/') {
-            await page.waitForSelector('[data-home-badge][data-landed]:not([data-lingering])', { timeout: 20_000 }).catch(() => undefined);
-        }
-        await pair.act?.(page);
-        // The page and the curator's preview frame: every image loaded and decoded (loaded isn't painted: a photo
-        // still decoding can draw a row short), and every font in.
-        await page.evaluate(async () => {
-            const docs = [document, ...[...document.querySelectorAll('iframe')].flatMap((frame) => (frame.contentDocument ? [frame.contentDocument] : []))];
-            for (const doc of docs) {
-                const images = [...doc.images];
-                await Promise.all(images.filter((image) => !image.complete).map((image) => new Promise((resolve) => {
-                    image.onload = image.onerror = resolve;
-                    setTimeout(resolve, 4000);
-                })));
-                await Promise.all(images.map((image) => image.decode().catch(() => undefined)));
-                await doc.fonts.ready;
-            }
-        });
-        // Every finite animation and transition done (reduced motion fades Home's badge in once loading ends).
-        await page.evaluate(() => Promise.race([
-            Promise.all(document.getAnimations().filter((animation) => animation.effect?.getComputedTiming().iterations !== Number.POSITIVE_INFINITY).map((animation) => animation.finished.catch(() => undefined))),
-            new Promise((resolve) => setTimeout(resolve, 5000)),
-        ]));
-        await page.waitForTimeout(600);
+    if (!pair.bare) await page.waitForSelector('html[data-hydrated]', { timeout: 30_000 }).catch(() => undefined);
+    await page.evaluate(() => document.fonts.ready);
+    if (pair.url === '/') {
+        await page.waitForSelector('[data-home-badge][data-landed]:not([data-lingering])', { timeout: 20_000 }).catch(() => undefined);
     }
-    if (pair.addsControl && !tag.startsWith('base')) await page.addStyleTag({ content: '[data-theme-control]{display:none!important}' });
+    await pair.act?.(page);
+    // The page and the curator's preview frame: every image loaded and decoded (loaded isn't painted: a photo still
+    // decoding can draw a row short), and every font in.
+    await page.evaluate(async () => {
+        const docs = [document, ...[...document.querySelectorAll('iframe')].flatMap((frame) => (frame.contentDocument ? [frame.contentDocument] : []))];
+        for (const doc of docs) {
+            const images = [...doc.images];
+            await Promise.all(images.filter((image) => !image.complete).map((image) => new Promise((resolve) => {
+                image.onload = image.onerror = resolve;
+                setTimeout(resolve, 4000);
+            })));
+            await Promise.all(images.map((image) => image.decode().catch(() => undefined)));
+            await doc.fonts.ready;
+        }
+    });
+    // Every finite animation and transition done (reduced motion fades Home's badge in once loading ends).
+    await page.evaluate(() => Promise.race([
+        Promise.all(document.getAnimations().filter((animation) => animation.effect?.getComputedTiming().iterations !== Number.POSITIVE_INFINITY).map((animation) => animation.finished.catch(() => undefined))),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+    ]));
+    await page.waitForTimeout(600);
     // The control in the page and in any same-origin frame: today's toggle in the base, the theme control in the head.
-    // And every photograph's box: an image, a picture, a canvas, and Home's slides (the stage's photo layer).
-    const { controls, photos } = await page.evaluate(() => {
+    // Every photograph's box, unrounded. And each photograph's own compositing, with its ancestors'.
+    const { controls, photos, styles } = await page.evaluate(() => {
         const boxes: { x: number; y: number; w: number; h: number }[] = [];
         const photoBoxes: typeof boxes = [];
+        const compositing: string[] = [];
         const visit = (doc: Document, dx: number, dy: number) => {
-            const at = (el: Element) => {
-                // Out to the whole pixels it touches: a box at x 16.5 also paints part of pixel 16 and of pixel 72.
-                const box = el.getBoundingClientRect();
-                const [left, top] = [Math.floor(box.left + dx), Math.floor(box.top + dy)];
-                return { x: left, y: top, w: Math.ceil(box.right + dx) - left, h: Math.ceil(box.bottom + dy) - top };
-            };
+            const view = doc.defaultView!;
             for (const el of doc.querySelectorAll('[data-theme-control], nav button, header button')) {
                 if (!el.matches('[data-theme-control]') && !/^Switch to/.test((el.textContent ?? '').trim())) continue;
-                if (el.getBoundingClientRect().width === 0) continue;
-                boxes.push(at(el));
+                const box = el.getBoundingClientRect();
+                if (box.width === 0) continue;
+                // Out to the whole pixels it touches: a box at x 16.5 also paints part of pixel 16 and of pixel 72.
+                const [left, top] = [Math.floor(box.left + dx), Math.floor(box.top + dy)];
+                boxes.push({ x: left, y: top, w: Math.ceil(box.right + dx) - left, h: Math.ceil(box.bottom + dy) - top });
             }
-            for (const el of doc.querySelectorAll('img, picture, canvas, [class$="_slide"]:not([class*="yarl"]), [class*="_slide "]:not([class*="yarl"])')) {
-                // Unrounded: pass 2 keeps only the pixels a photograph covers whole (Diff).
+            for (const el of doc.querySelectorAll('img, picture, canvas, video, [class$="_slide"]:not([class*="yarl"]), [class*="_slide "]:not([class*="yarl"])')) {
                 const box = el.getBoundingClientRect();
                 if (box.width > 0) photoBoxes.push({ x: box.left + dx, y: box.top + dy, w: box.width, h: box.height });
+            }
+            for (const el of doc.querySelectorAll('img, picture, canvas, video')) {
+                const own = view.getComputedStyle(el);
+                const chain: string[] = [];
+                for (let node = el.parentElement; node; node = node.parentElement) {
+                    const style = view.getComputedStyle(node);
+                    if (style.opacity !== '1' || style.filter !== 'none') chain.push(`${node.tagName.toLowerCase()} opacity ${style.opacity} filter ${style.filter}`);
+                }
+                compositing.push(`${el.tagName.toLowerCase()} ${(el as HTMLImageElement).alt ?? ''}: opacity ${own.opacity}, filter ${own.filter}, blend ${own.mixBlendMode}${chain.length ? `; ${chain.join('; ')}` : ''}`);
             }
             for (const frame of doc.querySelectorAll('iframe')) {
                 const inner = frame.contentDocument;
@@ -234,40 +280,30 @@ async function shoot(origin: string, stored: string, pair: Pair, viewport: { wid
             }
         };
         visit(document, window.scrollX, window.scrollY);
-        return { controls: boxes, photos: photoBoxes };
+        return { controls: boxes, photos: photoBoxes, styles: compositing };
     });
-    if (pair.headStyle && !tag.startsWith('base')) await page.addStyleTag({ content: pair.headStyle });
-    for (const selector of pair.measure ?? []) {
-        const box = await page.locator(selector).first().evaluate((el) => {
-            const r = el.getBoundingClientRect();
-            return `${r.x} ${r.y} ${r.width} ${r.height}`;
-        }).catch(() => 'absent');
-        fs.appendFileSync(RECTS, `| ${pair.name} | ${viewport.width} ${scale}x | ${tag} | \`${selector}\` | ${box} |\n`);
+    if (pass === 'chrome') {
+        for (const selector of pair.measure ?? []) {
+            const box = await page.locator(selector).first().evaluate((el) => {
+                const r = el.getBoundingClientRect();
+                return `${r.x} ${r.y} ${r.width} ${r.height}`;
+            }).catch(() => 'absent');
+            fs.appendFileSync(RECTS, `| ${pair.name} | ${viewport.width} ${scale}x | ${tag} | \`${selector}\` | ${box} |\n`);
+        }
     }
-    const fullPage = pair.session === true && pair.url.includes('publish');
-    const capture = async (pass: 'chrome' | 'photo', content: string) => {
-        const file = path.join(OUT, `${pair.name}-${viewport.width}-${scale}x-${tag}-${pass}.png`);
-        // In the page and in the curator's preview frame.
-        await page.evaluate((css) => {
-            for (const doc of [document, ...[...document.querySelectorAll('iframe')].flatMap((frame) => (frame.contentDocument ? [frame.contentDocument] : []))]) {
-                const style = doc.createElement('style');
-                style.dataset.parityPass = '';
-                style.textContent = css;
-                doc.head.append(style);
-            }
-        }, content);
-        await page.screenshot({ path: file, fullPage });
-        await page.evaluate(() => {
-            for (const doc of [document, ...[...document.querySelectorAll('iframe')].flatMap((frame) => (frame.contentDocument ? [frame.contentDocument] : []))]) {
-                for (const style of doc.querySelectorAll('style[data-parity-pass]')) style.remove();
-            }
-        });
-        return file;
-    };
-    const chrome = await capture('chrome', NO_PHOTOS);
-    const photo = await capture('photo', ONLY_PHOTOS);
+    // Two frames, so what the last wait changed is painted.
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const file = path.join(OUT, `${pair.name}-${viewport.width}-${scale}x-${tag}-${pass}.png`);
+    await page.screenshot({ path: file, fullPage: pair.session === true && pair.url.includes('publish') });
     await context.close();
-    return { chrome, photo, controls, photos };
+    return { file, controls, photos, styles };
+}
+
+async function shoot(origin: string, stored: string, pair: Pair, viewport: { width: number; height: number }, scale: number, tag: string, session?: string): Promise<Shot> {
+    const chrome = await load(origin, stored, pair, viewport, scale, tag, 'chrome', session);
+    const photo = await load(origin, stored, pair, viewport, scale, tag, 'photo', session);
+    // The controls from both loads: pass 2 hides them, but a mask from either covers both captures.
+    return { chrome: chrome.file, photo: photo.file, controls: [...chrome.controls, ...photo.controls], photos: photo.photos, styles: photo.styles };
 }
 
 interface Diff {
@@ -279,6 +315,11 @@ interface Diff {
     photoStep: number;
     /** Where the chrome differs. */
     box: string;
+    /** Pass 1 inside the sanctioned boxes (D4): how many pixels differ, and by how much at most. */
+    sanctionedCount: number;
+    sanctionedStep: number;
+    /** Photographs whose compositing differs between the two builds (D2): must be none. */
+    styles: string[];
 }
 
 type Region = { x0: number; y0: number; x1: number; y1: number };
@@ -292,7 +333,8 @@ async function pixels(left: string, right: string) {
 /** Pass 1 compares the whole frame exactly, but the controls' boxes (±2 CSS px); pass 2 only the photographs' boxes, by their largest step. */
 async function diff(a: Shot, b: Shot, scale: number, name: string, sanctioned: Box[] = []): Promise<Diff> {
     const device = (pad: number) => (box: Box): Region => ({ x0: (box.x - pad) * scale, y0: (box.y - pad) * scale, x1: (box.x + box.w + pad) * scale, y1: (box.y + box.h + pad) * scale });
-    const masks = [...a.controls, ...b.controls].map(device(2)).concat(sanctioned.map(device(0)));
+    const masks = [...a.controls, ...b.controls].map(device(2));
+    const allowed = sanctioned.map(device(0));
     // A photograph's edge row or column, where it covers a pixel only in part, blends with whatever is under it, and
     // the resampler lands it up to 99/255 apart from one load to the next. Pass 1 holds that pixel's chrome exact;
     // pass 2 counts only the pixels a photograph covers whole, in to the whole pixels inside its box.
@@ -302,10 +344,13 @@ async function diff(a: Shot, b: Shot, scale: number, name: string, sanctioned: B
 
     const chrome = await pixels(a.chrome, b.chrome);
     const photo = await pixels(a.photo, b.photo);
-    if (!chrome || !photo) return { count: Number.POSITIVE_INFINITY, maxStep: 255, photoStep: 255, box: 'the two captures differ in size' };
+    const styles = a.styles.length === b.styles.length ? a.styles.flatMap((line, index) => (line === b.styles[index] ? [] : [`${line} against ${b.styles[index]}`])) : [`${a.styles.length} photographs against ${b.styles.length}`];
+    if (!chrome || !photo) return { count: Number.POSITIVE_INFINITY, maxStep: 255, photoStep: 255, box: 'the two captures differ in size', sanctionedCount: 0, sanctionedStep: 0, styles };
 
     let count = 0;
     let maxStep = 0;
+    let sanctionedCount = 0;
+    let sanctionedStep = 0;
     let x0 = chrome.width, y0 = chrome.height, x1 = -1, y1 = -1;
     const mark = new Uint8Array(chrome.width * chrome.height * 3);
     for (let y = 0; y < chrome.height; y++) {
@@ -314,6 +359,11 @@ async function diff(a: Shot, b: Shot, scale: number, name: string, sanctioned: B
             mark[i] = mark[i + 1] = mark[i + 2] = Math.round((chrome.a.data[i] + chrome.a.data[i + 1] + chrome.a.data[i + 2]) / 9);
             const d = step(chrome.a.data, chrome.b.data, i);
             if (d === 0 || inside(masks, x, y)) continue;
+            if (inside(allowed, x, y)) {
+                sanctionedCount++;
+                sanctionedStep = Math.max(sanctionedStep, d);
+                continue;
+            }
             count++;
             maxStep = Math.max(maxStep, d);
             mark[i] = 255;
@@ -331,7 +381,7 @@ async function diff(a: Shot, b: Shot, scale: number, name: string, sanctioned: B
         }
     }
     const css = (v: number) => Math.round(v / scale);
-    return { count, maxStep, photoStep, box: count ? `x ${css(x0)} to ${css(x1)}, y ${css(y0)} to ${css(y1)}` : '' };
+    return { count, maxStep, photoStep, box: count ? `x ${css(x0)} to ${css(x1)}, y ${css(y0)} to ${css(y1)}` : '', sanctionedCount, sanctionedStep, styles };
 }
 
 // --- Pages -------------------------------------------------------------------------------------------------------
@@ -354,9 +404,9 @@ const focusInPlace = async (target: Locator) => {
 const toSequence = (page: Page) => scrollToWhole(page.getByRole('heading', { name: 'Sequence' }));
 
 const VISITOR: Pair[] = [
-    { name: 'home-intro', url: '/', intro: true },
-    { name: 'home-rest', url: '/' },
-    { name: 'home-chrome', url: '/', act: revealChrome },
+    { name: 'home-intro', url: '/', intro: true, glass: true },
+    { name: 'home-rest', url: '/', glass: true },
+    { name: 'home-chrome', url: '/', act: revealChrome, glass: true },
     { name: 'work', url: '/work' },
     { name: 'series', url: series },
     { name: 'series-sequence', url: series, act: toSequence },
@@ -398,6 +448,7 @@ const LEGACY: Pair[] = [
         name: 'lightbox',
         url: '/gallery',
         photos: true,
+        glass: true,
         act: async (page) => {
             // Enter, as a keyboard visitor opens it.
             await page.getByRole('button', { name: 'Photograph 1 of 12', exact: true }).focus();
@@ -425,14 +476,24 @@ const CURATOR: Pair[] = [
 
 /** Shoots `pair` from both, at every size and scale, and pins the diff; and, with `legacy`, the head on a stored `dark`. */
 const row = (label: string, size: string, width: number, scale: number, d: Diff) =>
-    record(`| ${label} | ${size} ${width} | ${scale}x | ${d.count} | ${d.maxStep} | ${d.photoStep} | ${d.box} |`);
+    record(`| ${label} | ${size} ${width} | ${scale}x | ${d.count} | ${d.maxStep} | ${d.photoStep} | ${d.styles.length} | ${d.sanctionedCount ? `${d.sanctionedCount} at ${d.sanctionedStep}` : ''} | ${d.box} |`);
+
+/** The sanctioned departure's own bound (D4): spec §10's 18 px at 1/255, no more. */
+const SANCTIONED = { count: 18, step: 1 };
 
 function expectWithin(name: string, d: Diff) {
-    expect.soft(d.count, `${name}: chrome pixels differing outside the controls and the photographs (${d.box})`).toBe(0);
+    expect.soft(d.count, `${name}: chrome pixels differing (${d.box})`).toBe(0);
     expect.soft(d.photoStep, `${name}: the largest step inside a photograph`).toBeLessThanOrEqual(PHOTO_STEP);
+    expect.soft(d.styles, `${name}: each photograph's opacity, filter and blend, and its ancestors'`).toEqual([]);
+    expect.soft(d.sanctionedCount, `${name}: pixels differing inside the sanctioned box`).toBeLessThanOrEqual(SANCTIONED.count);
+    expect.soft(d.sanctionedStep, `${name}: the largest step inside the sanctioned box`).toBeLessThanOrEqual(SANCTIONED.step);
 }
 
-/** Shoots `pair` from both, at every size and scale, and pins the diff; and, with `legacy`, the head on a stored `dark`. */
+/**
+ * Shoots `pair` from both, at every size and scale, and pins the diff; and, with `legacy`, the head on a stored `dark`.
+ * The base is shot twice, and must match itself first (D3): 0 in pass 1, within PHOTO_STEP in pass 2. A gate whose base
+ * can't repeat itself proves nothing about the head.
+ */
 function parity(group: string, pairs: Pair[], origins: () => { base: string; head: string }, options: { legacy?: boolean; session?: () => { base: string; head: string } } = {}) {
     for (const pair of pairs) {
         test(`${group}: ${pair.name}`, async () => {
@@ -443,6 +504,9 @@ function parity(group: string, pairs: Pair[], origins: () => { base: string; hea
                     const name = `${pair.name}-${viewport.width}-${scale}x`;
                     const sanctioned = (pair.sanctioned ?? []).filter((entry) => entry.width === viewport.width && entry.scale === scale).map((entry) => entry.box);
                     const before = await shoot(base, 'dark', pair, viewport, scale, 'base', cookies?.base);
+                    const self = await diff(before, await shoot(base, 'dark', pair, viewport, scale, 'base-again', cookies?.base), scale, `${name}-base-against-itself`);
+                    row(`${pair.name}, the base against itself`, size, viewport.width, scale, self);
+                    expectWithin(`${name}, the base against itself`, self);
                     const result = await diff(before, await shoot(head, 'black', pair, viewport, scale, 'head', cookies?.head), scale, name, sanctioned);
                     row(pair.name, size, viewport.width, scale, result);
                     expectWithin(name, result);
@@ -494,7 +558,7 @@ test.afterAll(async () => {
     if (temp) fs.rmSync(temp, { recursive: true, force: true });
     fs.writeFileSync(
         path.join(OUT, 'black-parity.md'),
-        `# Black against the base, pixel for pixel\n\nBase: \`${baseCommit()}\`. Chrome: pixels differing in any channel outside the theme controls' boxes and the photographs' boxes, which must be 0. Photo: the largest channel step inside the photographs' boxes, at most ${PHOTO_STEP}. The curator's header gains the control, so its head shots take it out of the layout first.\n\n| Page | Viewport | Scale | Chrome pixels | Chrome max step | Photo max step | Where (chrome) |\n|---|---|---|---|---|---|---|\n${fs.existsSync(ROWS) ? fs.readFileSync(ROWS, 'utf8') : ''}${fs.existsSync(RECTS) ? `\n## Boxes, unrounded (x y width height, CSS px)\n\n| Page | Viewport | Shot | Selector | Box |\n|---|---|---|---|---|\n${fs.readFileSync(RECTS, 'utf8')}` : ''}`,
+        `# Black against the base, pixel for pixel\n\nBase: \`${baseCommit()}\`. Chrome (pass 1, every photograph taken out, or a checkerboard on a page with glass): pixels differing anywhere outside the theme controls' boxes, which must be 0. Photo (pass 2, only the photographs): the largest channel step inside their boxes, at most ${PHOTO_STEP}. Compositing: photographs whose opacity, filter or blend (or an ancestor's opacity or filter) differ, which must be none. Every page's base is checked against itself first. The curator's header gains the control, so its head shots take it out of the layout first.\n\n| Page | Viewport | Scale | Chrome pixels | Chrome max step | Photo max step | Compositing diffs | Sanctioned box | Where (chrome) |\n|---|---|---|---|---|---|---|---|---|\n${fs.existsSync(ROWS) ? fs.readFileSync(ROWS, 'utf8') : ''}${fs.existsSync(RECTS) ? `\n## Boxes, unrounded (x y width height, CSS px)\n\n| Page | Viewport | Shot | Selector | Box |\n|---|---|---|---|---|\n${fs.readFileSync(RECTS, 'utf8')}` : ''}`,
     );
 });
 
@@ -550,6 +614,23 @@ test.describe('the visitor site and the legacy Gallery', () => {
         const result = await diff(await shoot(visitor.base, 'dark', pair, viewport, 1, 'base'), await shoot(visitor.head, 'black', pair, viewport, 1, 'head'), 1, 'self-test-scrim');
         row("self-test: Home's scrim 1/255 off in the head (must differ)", 'desktop', 1440, 1, result);
         expect(result.count, 'the chrome pass sees a 1/255 change under the chrome, over the photograph').toBeGreaterThan(0);
+    });
+
+    // And it sees the glass over a photograph (D1): Home's nav is the one SiteNav over a photograph (the series pages'
+    // nav scrolls away with the page), so with its chrome up, a 1 px change to the glass's blur over the checkerboard
+    // must fail it.
+    test('self-test: a 1 px change to the glass blur fails the chrome pass', async () => {
+        const pair: Pair = {
+            name: 'self-test-glass',
+            url: '/',
+            glass: true,
+            act: revealChrome,
+            headStyle: ':root{--gah-glass-blur:13px!important}',
+        };
+        const viewport = VIEWPORTS.desktop;
+        const result = await diff(await shoot(visitor.base, 'dark', pair, viewport, 1, 'base'), await shoot(visitor.head, 'black', pair, viewport, 1, 'head'), 1, 'self-test-glass');
+        row('self-test: the glass blur 13px in the head (must differ)', 'desktop', 1440, 1, result);
+        expect(result.count, "the chrome pass sees the glass's blur over a photograph").toBeGreaterThan(0);
     });
 });
 

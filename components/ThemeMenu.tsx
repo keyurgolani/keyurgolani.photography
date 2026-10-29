@@ -23,11 +23,15 @@ const ThemeMenuPopoverStyles = dynamic(() => import('./ThemeMenuPopoverStyles'),
  * A failed load of the styles' chunk (a page left open across a redeploy, a dropped request) renders nothing, so the
  * button stays inert, as without JavaScript, instead of the route's error page taking over.
  */
-class StylesBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+class StylesBoundary extends Component<{ children: ReactNode; onFailed: () => void }, { failed: boolean }> {
   state = { failed: false };
 
   static getDerivedStateFromError() {
     return { failed: true };
+  }
+
+  componentDidCatch() {
+    this.props.onFailed();
   }
 
   render() {
@@ -67,6 +71,8 @@ export default function ThemeMenu({ placement = 'nav' }: { placement?: 'nav' | '
   const byPointer = useRef(false);
   const want = useCallback(() => setWanted(true), []);
   const onReady = useCallback(() => setReady(true), []);
+  // A press waiting on styles that will never come stops waiting, so the button isn't left busy (D5).
+  const onFailed = useCallback(() => setPending(false), []);
 
   useEffect(() => {
     if (typeof window.requestIdleCallback === 'function') {
@@ -87,7 +93,7 @@ export default function ThemeMenu({ placement = 'nav' }: { placement?: 'nav' | '
   return (
     <>
       {wanted && (
-        <StylesBoundary>
+        <StylesBoundary onFailed={onFailed}>
           <ThemeMenuPopoverStyles onReady={onReady} />
         </StylesBoundary>
       )}
@@ -133,9 +139,14 @@ export default function ThemeMenu({ placement = 'nav' }: { placement?: 'nav' | '
             // Cleared just after the press ends, wherever it ends: the change a click causes runs inside the click,
             // which follows pointerup in the same task, so a press that changes nothing (the checked row, the legend,
             // a drag off) can't leave the next arrow key crossfading.
-            const clear = () => window.setTimeout(() => (byPointer.current = false), 0);
-            window.addEventListener('pointerup', clear, { once: true });
-            window.addEventListener('pointercancel', clear, { once: true });
+            // One controller per press, so the listener that doesn't fire goes with the one that does (D6).
+            const press = new AbortController();
+            const clear = () => {
+              press.abort();
+              window.setTimeout(() => (byPointer.current = false), 0);
+            };
+            window.addEventListener('pointerup', clear, { signal: press.signal });
+            window.addEventListener('pointercancel', clear, { signal: press.signal });
           }}
         >
           <legend className="theme-menu-legend">Theme</legend>

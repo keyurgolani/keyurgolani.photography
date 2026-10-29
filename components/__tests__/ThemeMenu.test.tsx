@@ -88,6 +88,18 @@ describe('ThemeMenu', () => {
     expect(setChoice).toHaveBeenLastCalledWith('bright', { animate: false });
   });
 
+  it('leaves no listener behind once a press is over (D6)', async () => {
+    const add = vi.spyOn(window, 'addEventListener');
+    render(<ThemeMenu />);
+    const group = screen.getByRole('group', { name: 'Theme', hidden: true });
+    fireEvent.pointerDown(group);
+    const signals = add.mock.calls.filter(([type]) => type === 'pointerup' || type === 'pointercancel').map(([, , options]) => (options as AddEventListenerOptions).signal);
+    expect(signals).toHaveLength(2);
+    fireEvent.pointerUp(window);
+    expect(signals.every((signal) => signal?.aborted)).toBe(true);
+    add.mockRestore();
+  });
+
   it('forgets a press that chose nothing, so the next arrow key does not crossfade (L1)', async () => {
     render(<ThemeMenu />);
     const group = screen.getByRole('group', { name: 'Theme', hidden: true });
@@ -112,6 +124,8 @@ describe('ThemeMenu', () => {
     render(<Menu />);
     fireEvent.click(button());
     expect(button()).not.toHaveAttribute('popovertarget');
+    // The press stops waiting once the load has failed, so the button isn't left busy (D5).
+    expect(button()).not.toHaveAttribute('aria-busy');
     expect(showPopover).not.toHaveBeenCalled();
     quiet.mockRestore();
     vi.doUnmock('next/dynamic');
