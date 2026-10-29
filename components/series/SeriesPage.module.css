@@ -357,7 +357,13 @@
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .entry:hover .thumbFrame.fallback,
+  .entry:hover .thumbFrame.fallback {
+    box-shadow: 0 0 0 1px var(--gah-rule-strong);
+    outline: none;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
   .coverLink:hover .coverFrame.fallback {
     box-shadow: 0 0 0 1px var(--gah-rule-strong);
     outline: none;
