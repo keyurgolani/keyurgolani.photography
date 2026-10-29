@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { canonicalJson } from '../identity/ids';
@@ -7,6 +8,7 @@ import { dataRootStatus, libraryRoot } from '../storage/config';
 import { LockTimeoutError, withLock, type LockContext, type LockHooks, type LockRecord } from '../storage/lock';
 import { candidateFile, compileCandidate, type CompileResult } from './compile';
 import { onLegacySite } from './legacy-photos';
+import { legacyEntries } from './photos-api';
 import { LAUNCH_ORDER_RULE_IDS } from './order-rules';
 import { rebaseWorkingLayer, type RebaseReport } from './rebase';
 import type { ReviewContext } from './review';
@@ -147,7 +149,12 @@ export interface PublishOptions {
 export interface LaunchImpact {
     /** Photographs the candidate publishes. */
     published: number;
-    /** Photographs the legacy site can list, by onLegacySite(), that the candidate leaves out. They leave the site at launch. */
+    /**
+     * Photographs the legacy Gallery shows today that the candidate leaves out. They leave the site at launch. What it
+     * shows is legacyEntries()'s list, the one legacy /api/photos serves, so a photo hidden behind another's legacy
+     * set, or one whose legacy derivatives aren't all built, isn't on the site and isn't counted. With no library to
+     * read, every photo the registry would put on the legacy site (onLegacySite()) counts instead.
+     */
     gone: number;
 }
 
@@ -521,7 +528,7 @@ export async function checkLayer(dataRoot: string, layer: WorkingLayer): Promise
     const compiled = await compileCandidate({ layer, registry, root, active });
     const review = await readReviewContext(root, layer, pointer?.revisionId ?? null);
     const issues = runRules(ruleContext(root, { layer, registry, pointer, active, compiled, review }));
-    const launch = pointer ? null : launchImpact(registry, compiled.content.photos.length, new Set(compiled.content.photos.map((photo) => photo.id)));
+    const launch = pointer ? null : await launchImpact(registry, compiled.content.photos.length, new Set(compiled.content.photos.map((photo) => photo.id)));
     return { compiled, issues, launch };
 }
 
@@ -638,9 +645,11 @@ export async function activateRevision(options: ActivateOptions): Promise<Activa
 }
 
 /** What a first activation takes away: photographs the legacy site can list that the candidate doesn't publish. */
-function launchImpact(registry: Registry, published: number, publishedIds: ReadonlySet<string>): LaunchImpact {
-    const gone = Object.values(registry.photos).filter((photo) => onLegacySite(photo) && !publishedIds.has(photo.photoId)).length;
-    return { published, gone };
+async function launchImpact(registry: Registry, published: number, publishedIds: ReadonlySet<string>): Promise<LaunchImpact> {
+    const library = libraryRoot();
+    const shown = fs.existsSync(library) ? (await legacyEntries(registry, library)).entries.map((entry) => entry.photoId) : null;
+    const onSite = shown ?? Object.values(registry.photos).filter(onLegacySite).map((photo) => photo.photoId);
+    return { published, gone: onSite.filter((photoId) => !publishedIds.has(photoId)).length };
 }
 
 /** Who and why, which every activation records. Blank ones are a caller's bug. */
@@ -796,7 +805,7 @@ export async function publish(options: PublishOptions): Promise<PublishResult> {
             const registered = new Set(registeredRules().map((rule) => rule.id));
             const missingRules = (options.launchRuleIds ?? LAUNCH_ORDER_RULE_IDS).filter((id) => !registered.has(id));
             if (missingRules.length > 0) throw new Stop('LAUNCH_RULES_MISSING', `The first publish needs these rules registered: ${missingRules.join(', ')}.`, { missingRules });
-            result.launch = launchImpact(registry, compiled.content.photos.length, new Set(compiled.content.photos.map((photo) => photo.id)));
+            result.launch = await launchImpact(registry, compiled.content.photos.length, new Set(compiled.content.photos.map((photo) => photo.id)));
             if (!confirmLaunch && !dryRun) {
                 const { published, gone } = result.launch;
                 const leaving = gone > 0 ? `, and ${photographs(gone)} the legacy site lists ${gone === 1 ? 'leaves' : 'leave'} it` : '';

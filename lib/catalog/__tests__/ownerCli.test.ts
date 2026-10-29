@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { REPO_ROOT, runTsx, type TsxRun } from '../../../test/helpers/runTsx';
+import { createTempLibrary, derivativePaths } from '../../../test/helpers/tempLibrary';
+import { baseNameOf } from '../../../utils/derivativeSets';
 import { readRegistry, writeRegistry } from '../../identity/registry';
 import { parseFlags, publishReport, sequenceArgs, seriesArgs, UsageError } from '../owner-cli';
 import { publish, type PublishResult } from '../publish';
@@ -122,8 +124,10 @@ describe('the publish report', () => {
     const quiet = { log: () => undefined };
     const report = (result: PublishResult, root: string) => publishReport(result, root).join('\n');
 
-    it('counts only photos the legacy site lists as leaving it', async () => {
+    it('counts only photos the legacy Gallery shows as leaving it', async () => {
         const catalog = await launchFixture();
+        const library = await createTempLibrary();
+        cleanups.push(() => library.cleanup());
         const result = await publish({ dataRoot: catalog.root, actor: 'test', logger: quiet });
         expect(result).toMatchObject({ outcome: 'LAUNCH_CONFIRMATION_REQUIRED', launch: { published: 4, gone: 0 } });
         const registry = await readRegistry(catalog.root);
@@ -131,6 +135,12 @@ describe('the publish report', () => {
         if (!nested) throw new Error('no nested photo');
         nested.source.path = nested.source.path.slice('nested/'.length);
         await writeRegistry(catalog.root, registry, registry.version);
+        // At the top level, but without its legacy derivatives the Gallery doesn't show it, so it isn't on the site.
+        expect((await publish({ dataRoot: catalog.root, actor: 'test', logger: quiet })).launch).toEqual({ published: 4, gone: 0 });
+        for (const file of derivativePaths(baseNameOf(nested.source.path))) {
+            fs.mkdirSync(path.dirname(library.file(file)), { recursive: true });
+            fs.writeFileSync(library.file(file), 'stand-in derivative');
+        }
         expect((await publish({ dataRoot: catalog.root, actor: 'test', logger: quiet })).launch).toEqual({ published: 4, gone: 1 });
     });
 

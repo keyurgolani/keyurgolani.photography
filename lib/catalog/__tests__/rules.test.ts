@@ -401,8 +401,17 @@ describe("photos carry-over's marker", () => {
         for (const series of [authored, stored]) Object.assign(series, { statement: '', shortStatement: '' });
         // Unmarked, the empty statements block.
         expect(codes(ctx)).toEqual([`description.series-copy ${authored.id} shortStatement`, `description.series-copy ${authored.id} statement`]);
+        // A marker on any series but the carried-over Gallery counts for nothing.
         authored.carryOver = MARKER;
         stored.carryOver = true;
+        expect(codes(ctx)).toEqual([`description.series-copy ${authored.id} shortStatement`, `description.series-copy ${authored.id} statement`]);
+        // The carried-over Gallery: the same series under its ID, everywhere the fixture names it.
+        const old = authored.id;
+        const rename = (ids: string[]) => ids.map((id) => (id === old ? 'ser_gallery' : id));
+        for (const series of [authored, stored]) series.id = 'ser_gallery';
+        ctx.authored!.site!.seriesOrder = rename(ctx.authored!.site!.seriesOrder);
+        ctx.authored!.site!.featuredSeriesIds = rename(ctx.authored!.site!.featuredSeriesIds);
+        ctx.candidate.site.featuredSeriesIds = rename(ctx.candidate.site.featuredSeriesIds);
         expect(codes(ctx)).toEqual([]);
         // A stored revision reads the flag compile wrote, so a restore of it passes too.
         expect(codes({ ...ctx, authored: null })).toEqual([]);

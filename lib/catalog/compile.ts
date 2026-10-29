@@ -2,7 +2,7 @@ import { toPublicAsset } from '../identity/metadata';
 import { currentProfileId } from '../identity/profile';
 import type { AssetRevisionRecord, PhotoRecord, Registry } from '../identity/types';
 import { readAssetManifest } from '../media/manifest';
-import { CATALOG_SCHEMA_VERSION, parseCandidateFile, revisionIdOf } from './schema';
+import { CARRY_OVER_SERIES_ID, CATALOG_SCHEMA_VERSION, parseCandidateFile, revisionIdOf } from './schema';
 import type {
     AuthoredAlt,
     AuthoredPhoto,
@@ -99,9 +99,9 @@ export function usualProfile(revision: AssetRevisionRecord, current: string, act
     return activeProfile ?? (revision.profiles[current]?.state === 'ready' ? current : newestReady(revision) ?? current);
 }
 
-/** The authored half of a public photo record. */
-function authoredFields(photo: AuthoredPhoto): Partial<CandidatePhotoRecord> {
-    const fields: Partial<CandidatePhotoRecord> = { alt: candidateAlt(photo.alt, photo.carryOver !== undefined) };
+/** The authored half of a public photo record. `placeNamed`: a carried-over photo only the carried-over Gallery publishes. */
+function authoredFields(photo: AuthoredPhoto, placeNamed: boolean): Partial<CandidatePhotoRecord> {
+    const fields: Partial<CandidatePhotoRecord> = { alt: candidateAlt(photo.alt, placeNamed) };
     for (const key of ['title', 'caption', 'credit', 'location'] as const) {
         const value = present(photo[key]);
         if (value !== undefined) fields[key] = value;
@@ -122,6 +122,16 @@ export async function compileCandidate(input: CompileInput): Promise<CompileResu
     const activePhotos = new Map((active?.content.photos ?? []).map((photo) => [photo.id, photo]));
     const moved = new Set<string>();
     const kept = new Set<string>();
+    // A carried-over photo with no description is named by its place only while the carried-over Gallery is the one
+    // published series that lists it. In a series of the owner's it needs a description like any photo there.
+    const listedBy = new Map<string, string[]>();
+    for (const seriesId of new Set(layer.site?.seriesOrder ?? [])) {
+        const series = seriesRecords.get(seriesId);
+        if (series?.visibility !== 'published') continue;
+        for (const photoId of series.photoIds) listedBy.set(photoId, [...(listedBy.get(photoId) ?? []), seriesId]);
+    }
+    const placeNamed = (photo: AuthoredPhoto) => photo.carryOver !== undefined
+        && (listedBy.get(photo.id) ?? []).every((seriesId) => seriesId === CARRY_OVER_SERIES_ID && seriesRecords.get(seriesId)?.carryOver !== undefined);
 
     /** The profile a photo publishes on. Active pairs keep theirs, others take the current profile if ready, else their newest ready one. */
     function chooseProfile(photo: PhotoRecord, assetRevision: string, revision: AssetRevisionRecord): string {
@@ -153,7 +163,7 @@ export async function compileCandidate(input: CompileInput): Promise<CompileResu
         if (manifest === null) return { ok: false, member: { ...ref, reason: 'no-manifest' } };
         const { photoId: id, capturedDate, ...asset } = toPublicAsset(photo, assetRevision, ref.profileId, manifest);
         const capturedAt = record.capturedAt ?? capturedDate ?? undefined;
-        const built = { id, ...asset, aspectRatio: aspectRatioOf(asset.width, asset.height), ...authoredFields(record), ...(capturedAt ? { capturedAt } : {}) };
+        const built = { id, ...asset, aspectRatio: aspectRatioOf(asset.width, asset.height), ...authoredFields(record, placeNamed(record)), ...(capturedAt ? { capturedAt } : {}) };
         return { ok: true, record: built as CandidatePhotoRecord };
     }
 

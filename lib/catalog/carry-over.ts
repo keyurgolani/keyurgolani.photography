@@ -11,7 +11,7 @@ import { LockLostError, LockTimeoutError, withLock, type LockContext } from '../
 import { legacyEntries } from './photos-api';
 import { checkLayer } from './publish';
 import { hashValue, stampWrite } from './review';
-import { parseAuthoredRecord } from './schema';
+import { CARRY_OVER_SERIES_ID, parseAuthoredRecord } from './schema';
 import type { CommandResult, LayerHandle } from './sequence-commands';
 import type { AuthoredPhoto, AuthoredRecord, AuthoredSeries, AuthoredSite, ExcludedMember, Issue, WorkingLayer } from './types';
 import { readActivePointer, readWorkingLayer } from './working-layer';
@@ -45,7 +45,7 @@ import { AUTHORED_LEASE_MS, AUTHORED_LOCK, AUTHORED_WAIT_MS, AuthoredWriteError,
  * exits 1 unless `--allow-missing` names every one of them.
  */
 
-export const CARRY_OVER_SERIES = { id: 'ser_gallery', slug: 'gallery', title: 'Gallery' } as const;
+export const CARRY_OVER_SERIES = { id: CARRY_OVER_SERIES_ID, slug: 'gallery', title: 'Gallery' } as const;
 /** The owner's direction, quoted exactly, which the marker and every dismissal record as the reason. */
 export const OWNER_DIRECTION = 'Whatever photos the current photography site uses, should remain as they are. I will curate new photos that I add.';
 export const CARRY_OVER_REASON = `Carried over from the legacy Gallery at the launch. The owner: "${OWNER_DIRECTION}"`;
@@ -88,6 +88,10 @@ export interface CarryOverPlan {
     closes: ClosedItem[];
     /** Inbox items about carried photos that stay open, such as a replacement, with why. */
     stays: { eventId: string; sourcePath: string; reason: string }[];
+    /** Photos in the library the legacy Gallery doesn't show today, left as they are, with why. They aren't on the site, so none leaves it. */
+    notOnSite: { photoId: string; sourcePath: string; reason: string }[];
+    /** Names `--allow-missing` gave that match no photo the plan can't carry. */
+    unmatchedAllow: string[];
     /** What `photos publish --dry-run` would find once it's applied. */
     predicted: { gone: number | null; published: number; errors: Issue[] } | null;
     /** The records apply writes, with the version each was read at (0 for a new one). */
@@ -170,8 +174,9 @@ function photoPlans(entries: { photoId: string; sourcePath: string }[], records:
             uncarried.push({ photoId, sourcePath, reason: 'its photo record has a suggested description nobody has reviewed. Review it in the Inbox, or clear it, first' });
             continue;
         }
+        // Only a photo with no alt carries the marker: one he already described or marked decorative keeps that as it is.
         const record: AuthoredPhoto = existing
-            ? { ...existing, carryOver: existing.carryOver ?? marker }
+            ? existing.alt === null ? { ...existing, carryOver: existing.carryOver ?? marker } : existing
             : ({ kind: 'photo', id: photoId, assetRevision: observed, alt: null, carryOver: marker } as AuthoredPhoto);
         planned.push({ photoId, sourcePath, record, expectedVersion: existing?.version ?? 0, existing });
     }
@@ -184,13 +189,13 @@ function photoPlans(entries: { photoId: string; sourcePath: string }[], records:
  */
 export async function planCarryOver(dataRoot: string, { allow = [], clock = Date.now, actor = 'cli' }: { allow?: readonly string[]; clock?: () => number; actor?: string } = {}): Promise<CarryOverPlan> {
     const root = path.resolve(dataRoot);
-    const empty: CarryOverPlan = { state: 'refused', refusals: [], photos: [], uncarried: [], closes: [], stays: [], predicted: null, writes: [] };
+    const empty: CarryOverPlan = { state: 'refused', refusals: [], photos: [], uncarried: [], closes: [], stays: [], notOnSite: [], unmatchedAllow: [], predicted: null, writes: [] };
     const layer = await readWorkingLayer(root);
     const registry = await readRegistry(root);
     const pointer = await readActivePointer(root);
     const carried = layer.series.find((series) => series.id === CARRY_OVER_SERIES.id && series.carryOver !== undefined);
     const refusals = refusalsOf(layer, carried);
-    if (pointer !== null && carried === undefined) refusals.push(`Revision ${pointer.revisionId} is live already, so the launch has run. The carry-over is for before it.`);
+    if (pointer !== null && carried === undefined) refusals.push(`Revision ${pointer.revisionId} is live already, so the launch has run. The carry-over only runs before it.`);
     if (refusals.length > 0) return { ...empty, refusals };
 
     const marker = carried?.carryOver ?? { reason: CARRY_OVER_REASON, at: new Date(clock()).toISOString() };
@@ -206,7 +211,8 @@ export async function planCarryOver(dataRoot: string, { allow = [], clock = Date
         const series = {
             ...(carried ?? { kind: 'series', id: CARRY_OVER_SERIES.id, slug: CARRY_OVER_SERIES.slug, slugAliases: [], title: CARRY_OVER_SERIES.title, statement: '', shortStatement: '', chapters: [], visibility: 'published', publicationPolicy: 'review-required' }),
             photoIds,
-            cover: photoIds.length === 0 ? null : carried?.cover && photoIds.includes(carried.cover.photoId) ? carried.cover : { photoId: photoIds[0] },
+            // The Gallery's first photo, as the carry-over sets it, so a cover the owner chose reads as his change.
+            cover: photoIds.length === 0 ? null : { photoId: photoIds[0] },
             carryOver: marker,
         } as AuthoredSeries;
         const site = { ...(layer.site ?? { kind: 'site', baseSeriesOrder: null }), featuredSeriesIds: [CARRY_OVER_SERIES.id], seriesOrder: [CARRY_OVER_SERIES.id] } as AuthoredSite;
@@ -236,9 +242,14 @@ export async function planCarryOver(dataRoot: string, { allow = [], clock = Date
         built = build(planned);
         checked = await checkLayer(root, built.next);
     }
-    for (const photo of unlisted) uncarried.push({ ...photo, reason: `${photo.reason}, so it isn't on the site today` });
+    // Before the launch, a Gallery the carry-over made is the plan, or a crash left it out. Anything else is his now.
+    if (carried && pointer === null && comparable(carried) !== comparable(built.series)) {
+        return { ...empty, refusals: [`${CARRY_OVER_SERIES.id} has changed since the carry-over made it: ${changesOf(carried, built.series).join('; ')}. It's yours now, so the carry-over doesn't put it back. Nothing was written.`] };
+    }
     const allowed = new Set(allow);
     const named = uncarried.map((photo) => ({ ...photo, allowed: allowed.has(photo.photoId) || allowed.has(photo.sourcePath) })).sort((a, b) => compare(a.sourcePath, b.sourcePath));
+    const unmatchedAllow = [...allowed].filter((name) => !uncarried.some((photo) => photo.photoId === name || photo.sourcePath === name));
+    const notOnSite = [...unlisted, ...offSite(registry, new Set(entries.map((entry) => entry.photoId)), new Set(unlisted.map((photo) => photo.photoId)))].sort((a, b) => compare(a.sourcePath, b.sourcePath));
 
     const total = planned.length;
     const photos: CarriedPhoto[] = planned.map((entry, index) => {
@@ -279,8 +290,48 @@ export async function planCarryOver(dataRoot: string, { allow = [], clock = Date
     }
 
     const errors = checked.issues.filter((issue) => issue.severity === 'error');
-    const state = writes.length === 0 && closes.every((item) => item.how === 'placement') ? 'done' : 'ready';
-    return { state, refusals: [], photos, uncarried: named, closes, stays, predicted: { gone: checked.launch?.gone ?? null, published: checked.compiled.content.photos.length, errors }, writes };
+    const idle = writes.length === 0 && closes.every((item) => item.how === 'placement');
+    // After the launch it never writes: Gallery and the new photos are his to curate.
+    if (pointer !== null && !idle) {
+        return { ...empty, refusals: [`Revision ${pointer.revisionId} is live, so the launch has run. The carry-over only runs before it, and Gallery is yours now. Nothing was written.`] };
+    }
+    const predicted = { gone: checked.launch?.gone ?? null, published: checked.compiled.content.photos.length, errors };
+    return { state: idle ? 'done' : 'ready', refusals: [], photos, uncarried: named, closes, stays, notOnSite, unmatchedAllow, predicted, writes };
+}
+
+/** What an owner's change to the carried-over Gallery did, against the plan, for the refusal. */
+function changesOf(carried: AuthoredSeries, planned: AuthoredSeries): string[] {
+    const changes: string[] = [];
+    const now = new Set(carried.photoIds);
+    const plan = new Set(planned.photoIds);
+    const added = carried.photoIds.filter((photoId) => !plan.has(photoId)).length;
+    const removed = planned.photoIds.filter((photoId) => !now.has(photoId)).length;
+    if (added > 0) changes.push(`${plural(added, 'photo')} added that the legacy Gallery doesn't show`);
+    if (removed > 0) changes.push(`${plural(removed, 'photo')} the legacy Gallery shows ${removed === 1 ? 'is' : 'are'} out of it`);
+    const kept = carried.photoIds.filter((photoId) => plan.has(photoId));
+    if (kept.join() !== planned.photoIds.filter((photoId) => now.has(photoId)).join()) changes.push('the photos are in another order');
+    for (const field of ['title', 'slug', 'visibility', 'statement', 'shortStatement'] as const) if (carried[field] !== planned[field]) changes.push(`its ${field === 'shortStatement' ? 'short statement' : field} changed`);
+    if (canonicalJson(carried.cover) !== canonicalJson(planned.cover)) changes.push('its cover changed');
+    if (canonicalJson(carried.chapters) !== canonicalJson(planned.chapters) || carried.openingPhotoId !== planned.openingPhotoId) changes.push('its chapters or opening photo changed');
+    return changes.length > 0 ? changes : ['a field the carry-over sets changed'];
+}
+
+/** Photos in the registry the legacy Gallery doesn't show and legacyEntries() didn't already explain, with why. */
+function offSite(registry: Registry, shown: ReadonlySet<string>, explained: ReadonlySet<string>): CarryOverPlan['notOnSite'] {
+    const out: CarryOverPlan['notOnSite'] = [];
+    for (const photo of Object.values(registry.photos)) {
+        if (shown.has(photo.photoId) || explained.has(photo.photoId) || photo.mergedInto !== undefined || photo.sourceHealth === 'archived') continue;
+        const revision = photo.revisions[photo.source.observedRevision];
+        const reason = !photo.source.present || photo.sourceHealth !== 'present'
+            ? "its file isn't in the library now"
+            : photo.source.path.includes('/')
+                ? 'it is in a folder, and the legacy Gallery shows only the top level of the library'
+                : revision === undefined || revision.width === null || revision.height === null
+                    ? "the watcher can't read it"
+                    : "the legacy Gallery doesn't list it";
+        out.push({ photoId: photo.photoId, sourcePath: photo.source.path, reason });
+    }
+    return out;
 }
 
 function itemKind(event: CurationEvent): string {
@@ -306,7 +357,13 @@ export interface ApplyResult {
 function blockers(plan: CarryOverPlan): string[] {
     const lines: string[] = [];
     const unnamed = plan.uncarried.filter((photo) => !photo.allowed);
-    if (unnamed.length > 0) lines.push(`${plural(unnamed.length, 'photo')} the legacy site has can't carry over, and --allow-missing doesn't name ${unnamed.length === 1 ? 'it' : 'them'}.`);
+    if (unnamed.length > 0) lines.push(`${plural(unnamed.length, 'photo')} the legacy Gallery shows can't carry over, and --allow-missing doesn't name ${unnamed.length === 1 ? 'it' : 'them'}.`);
+    if (plan.unmatchedAllow.length > 0) lines.push(`--allow-missing names ${plan.unmatchedAllow.join(', ')}, which the plan doesn't list as a photo it can't carry.`);
+    // Only what he accepted by name may leave the site: anything else leaving is a photo the plan lost.
+    const accepted = plan.uncarried.filter((photo) => photo.allowed).length;
+    if (plan.predicted && plan.predicted.gone !== null && plan.predicted.gone !== accepted && unnamed.length === 0) {
+        lines.push(`photos publish would take ${plural(plan.predicted.gone, 'photo')} off the site, and --allow-missing accepts ${accepted} by name. Nothing leaves the site that you didn't name.`);
+    }
     if (plan.predicted && plan.predicted.errors.length > 0) lines.push(`photos publish --dry-run would still find ${plural(plan.predicted.errors.length, 'error')}.`);
     if (plan.photos.length === 0) lines.push('No photo would carry over.');
     return lines;
@@ -344,7 +401,7 @@ export async function applyCarryOver(layer: LayerHandle, { actor, allow = [], cl
             const done: string[] = [];
             for (const { record, expectedVersion } of current.writes) {
                 lock.signal.throwIfAborted();
-                await writeAuthoredRecord(record as never, { expectedVersion, lock, root, hooks, review: { baseRevisionId: base, origin: 'curator', actor, reviewedAt, ...reviewedValuesOf(record) } });
+                await writeAuthoredRecord(record as never, { expectedVersion, lock, root, hooks, review: { baseRevisionId: base, origin: 'curator', actor, reviewedAt, ...reviewedValuesOf(record) }, carryOver: true });
                 done.push(record.kind === 'site' ? 'site' : record.id);
             }
             return { plan: current, written: done };
@@ -378,12 +435,20 @@ function planLines(plan: CarryOverPlan): string[] {
     lines.push(...listed(plan.closes.map((item) => `  ${item.eventId} ${item.sourcePath}: ${item.how === 'placement' ? 'settled by the series, with nothing written to it' : 'dismissed, with your direction as the reason, since its photo moved to other bytes after it opened'}`)));
     if (plan.stays.length > 0) lines.push(`Inbox items that stay open (${plan.stays.length}):`, ...listed(plan.stays.map((item) => `  ${item.eventId} ${item.sourcePath}: ${item.reason}`)));
     if (plan.uncarried.length > 0) {
-        lines.push('', `Photos the legacy site has that can't carry over (${plan.uncarried.length}):`);
+        lines.push('', `Photos the legacy Gallery shows that can't carry over (${plan.uncarried.length}):`);
         lines.push(...listed(plan.uncarried.map((photo) => `  ${photo.sourcePath} (${photo.photoId}): ${photo.reason}.${photo.allowed ? ' Accepted with --allow-missing.' : ''}`)));
+        const accepted = plan.uncarried.filter((photo) => photo.allowed);
+        if (accepted.length > 0) lines.push(`Accepted by name with --allow-missing, so ${accepted.length === 1 ? 'it leaves' : 'they leave'} the site at the launch: ${accepted.map((photo) => photo.sourcePath).join(', ')}.`);
+    }
+    if (plan.notOnSite.length > 0) {
+        lines.push('', `In the library but not on the site today, left as they are (${plan.notOnSite.length}):`);
+        lines.push(...listed(plan.notOnSite.map((photo) => `  ${photo.sourcePath} (${photo.photoId}): ${photo.reason}.`)));
     }
     if (plan.predicted) {
         const { gone, published, errors } = plan.predicted;
-        lines.push('', `Then photos publish --dry-run: ${plural(published, 'photo')} published, ${gone === null ? 'not a launch' : `${gone} leaving the site (GONE_COUNT ${gone})`}, ${plural(errors.length, 'error')}.`);
+        const accepted = plan.uncarried.filter((photo) => photo.allowed).length;
+        const leaving = gone === null ? 'not a launch' : gone > 0 && gone === accepted ? `${gone} leaving the site (GONE_COUNT ${gone}, all accepted by name)` : `${gone} leaving the site (GONE_COUNT ${gone})`;
+        lines.push('', `Then photos publish --dry-run: ${plural(published, 'photo')} published, ${leaving}, ${plural(errors.length, 'error')}.`);
         lines.push(...listed(errors.map((issue) => `  ${issue.code} ${issue.record ? `${issue.record.kind} ${issue.record.id}` : ''}: ${issue.message}`)));
     }
     return lines;
@@ -422,6 +487,6 @@ export async function runCarryOver(layer: LayerHandle, { apply = false, actor = 
         const rest = 'Records written before it stay, and running photos carry-over --apply again finishes the rest.';
         if (error instanceof LockLostError) return { exitCode: 3, output: `Error (LOCK_LOST): ${error.message} ${rest}\n` };
         if (error instanceof AuthoredWriteError) return { exitCode: ['VERSION_CONFLICT', 'AUTHORED_LOCKED', 'LOCK_NOT_HELD'].includes(error.code) ? 3 : 1, output: `Error (${error.code}): ${error.message} ${rest}\n` };
-        return { exitCode: 4, output: `Error: ${(error as Error).message}\n` };
+        return { exitCode: 4, output: `Error: ${(error as Error).message}${apply ? ` ${rest}` : ''}\n` };
     }
 }

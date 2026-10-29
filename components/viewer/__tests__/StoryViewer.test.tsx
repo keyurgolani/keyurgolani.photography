@@ -44,6 +44,7 @@ function model(photo: Partial<PublishedViewerPhoto['photo']> = {}, rest: Partial
             caption: 'An authored fixture caption.',
             alt: 'A fixture description of the visible scene.',
             descriptionPending: false,
+            namedByPlace: false,
             image: { width: 2400, height: 1600, assetRevision: REF.assetRevision, variants: variants() },
             shareImage: { url: mediaUrl(REF, 'w1200', 'webp'), width: 1200, height: 800 },
             accent: '#c08040',
@@ -186,6 +187,26 @@ describe('StoryViewer', () => {
         expect(within(reading).queryByRole('button')).toBeNull();
         // A decorative photo's image has an empty alt.
         expect(document.querySelector('img')).toHaveAttribute('alt', '');
+    });
+
+    it('names a carried-over photograph by its place once, on the image: no sr-only heading, region name, or header position', () => {
+        const { container } = renderViewer({ viewer: model({ title: null, caption: null, description: null, alt: 'Photograph 3 of 12', namedByPlace: true, technical: {} }) });
+        expect(screen.queryAllByText('Photograph 3 of 12')).toEqual([]);
+        expect(screen.getByRole('img', { name: 'Photograph 3 of 12' })).toBeInTheDocument();
+        expect(screen.queryByRole('heading', { level: 2 })).toBeNull();
+        expect(screen.queryByRole('region', { name: 'Photograph 3 of 12' })).toBeNull();
+        const header = container.querySelector('header')!;
+        // The visible position stays, hidden from a screen reader, which hears the place on the image.
+        expect(within(header).getByText('03 / 12')).toHaveAttribute('aria-hidden', 'true');
+        expect(header.querySelector('.sr-only')).toBeNull();
+        // The reading area keeps its title line, so the layout keeps its height.
+        expect(container.querySelector('[data-viewer-reading] > div')).not.toBeNull();
+    });
+
+    it('keeps the heading and the header position for a titled photograph named by its place', () => {
+        const { container } = renderViewer({ viewer: model({ title: 'Harbor at dawn', description: null, alt: 'Photograph 3 of 12', namedByPlace: true }) });
+        expect(screen.getByRole('heading', { level: 2, name: 'Harbor at dawn' })).toBeInTheDocument();
+        expect(within(container.querySelector('header')!).getByText('Photograph 3 of 12')).toHaveClass('sr-only');
     });
 
     it('shows the pending copy only when the page passes it, in place of the description', () => {

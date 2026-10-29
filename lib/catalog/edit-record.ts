@@ -76,7 +76,8 @@ export const shellEditor: Editor = (file) => new Promise((resolve, reject) => {
 /** Where kept edits go: a private folder of the data root, outside `authored/` and `catalog/`. */
 export const editsDir = (root: string) => path.join(/*turbopackIgnore: true*/ root, 'edits');
 
-const HIDDEN = new Set<string>([...MANAGED_FIELDS, 'stamp']);
+// `photos carry-over`'s marker is the tools' too: the writer keeps it, and refuses one added by hand.
+const HIDDEN = new Set<string>([...MANAGED_FIELDS, 'stamp', 'carryOver']);
 
 /** What the owner edits: the record without its managed fields and stamp. */
 function editable(record: object): Record<string, unknown> {
@@ -220,6 +221,11 @@ export async function runEditRecord(layer: LayerHandle, ref: RecordRef, options:
         return { exitCode: 1, output: `Error: The edit is not valid JSON: ${(error as Error).message}. Nothing was written.${kept()}\n` };
     }
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return { exitCode: 1, output: `Error: The edit must be one JSON object. Nothing was written.${kept()}\n` };
+    // The carry-over marker isn't the owner's to write: a copy that adds or changes it is refused, not quietly kept.
+    const stored = current && 'carryOver' in current ? current.carryOver : undefined;
+    if ('carryOver' in value && canonicalJson((value as { carryOver?: unknown }).carryOver ?? null) !== canonicalJson(stored ?? null)) {
+        return { exitCode: 1, output: `Error: Only photos carry-over writes the carry-over marker, and the edit adds or changes it. Take carryOver out of the edit. Nothing was written.${kept()}\n` };
+    }
     const record = editable(value);
     // The kind and the ID say which record the commit writes, so an edit can't move it to another.
     if (record.kind !== ref.kind || (ref.kind !== 'site' && record.id !== ref.id)) {

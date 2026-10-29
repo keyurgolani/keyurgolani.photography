@@ -6,18 +6,23 @@ import { runCarryOver } from '../../lib/catalog/carry-over';
 import { publish } from '../../lib/catalog/publish';
 import { readWorkingLayer } from '../../lib/catalog/working-layer';
 import { createCurationSink } from '../../lib/curation/sink';
-import { readRegistry } from '../../lib/identity/registry';
+import { readRegistry, writeRegistry } from '../../lib/identity/registry';
 import { runIdentityOnce } from '../../lib/identity/watcherStep';
 import { writeDataRootMarker } from '../../test/helpers/tempDataRoot';
 import { processImage } from '../../utils/imageOptimizer';
 
 /**
  * A site at the launch, through the real pipeline: a library of twelve
- * photographs the legacy Gallery lists, so its names run past one digit, with their legacy derivatives, the
- * watcher's IDs, catalog sets and inbox items, then `photos carry-over
- * --apply` and the launch publish. A fourth photograph arrives after it, as
- * one the owner adds later. Test files and test values only, in a temp
- * folder outside the repository.
+ * photographs the legacy Gallery lists, so its names run past one digit,
+ * with their legacy derivatives, the watcher's IDs, catalog sets and inbox
+ * items. Three more test the edges: unready.jpg is on the Gallery but its
+ * catalog set failed, so the carry-over can't take it until --allow-missing
+ * names it, broken.jpg is a file the watcher can't read, and thumbless.jpg
+ * lost a legacy thumbnail, so the Gallery doesn't show it today. Then
+ * `photos carry-over --apply --allow-missing unready.jpg` and the launch
+ * publish. A sixteenth photograph arrives after it, as one the owner adds
+ * later. Test files and test values only, in a temp folder outside the
+ * repository.
  */
 
 export interface CarryOverFixture {
@@ -27,8 +32,8 @@ export interface CarryOverFixture {
     ids: Record<string, string>;
     /** The Gallery's order, as legacy /api/photos listed it, which the carried series keeps: newest capture first, undated last. */
     order: string[];
-    /** What the dry run and the apply printed. */
-    output: { dryRun: string; apply: string };
+    /** What the dry run printed and exited with, then the apply. */
+    output: { dryRun: string; dryRunExit: number; apply: string };
     gone: number;
     cleanup(): Promise<void>;
 }
@@ -78,11 +83,27 @@ export async function createCarryOverFixture(): Promise<CarryOverFixture> {
     ]));
     return withRoots(library, root, async () => {
         for (const [name, bytes] of photos) fs.writeFileSync(path.join(library, name), bytes);
-        for (const [name] of photos) await processImage(name);
+        const edges: [string, Buffer][] = [
+            ['unready.jpg', await photograph('#502020', '#d0a0a0', '2022-05-05')],
+            ['thumbless.jpg', await photograph('#205020', '#a0d0a0', '2022-06-06')],
+        ];
+        for (const [name, bytes] of edges) fs.writeFileSync(path.join(library, name), bytes);
+        fs.writeFileSync(path.join(library, 'broken.jpg'), 'not a photograph');
+        for (const [name] of [...photos, ...edges]) await processImage(name);
+        // thumbless.jpg's legacy thumbnail goes aside, so today's Gallery doesn't list it.
+        const thumbnail = fs.readdirSync(path.join(library, 'thumbnails')).find((name) => name.startsWith('thumbless'));
+        if (!thumbnail) throw new Error('thumbless.jpg has no legacy thumbnail to set aside');
+        fs.renameSync(path.join(library, 'thumbnails', thumbnail), path.join(temp, thumbnail));
         if ((await pass()) !== 0) throw new Error('The watcher pass for the carry-over fixture failed');
+        // unready.jpg's catalog set failed, so no revision can publish it, though the Gallery shows it.
+        const built = await readRegistry(root);
+        const unready = Object.values(built.photos).find((photo) => photo.source.path === 'unready.jpg');
+        if (!unready) throw new Error('unready.jpg has no photo ID');
+        const revision = unready.revisions[unready.source.observedRevision];
+        for (const profile of Object.keys(revision.profiles)) revision.profiles[profile] = { state: 'failed', attempts: 3, error: 'fixture' };
+        await writeRegistry(root, built, built.version);
         const dryRun = await runCarryOver({ dataRoot: root });
-        if (dryRun.exitCode !== 0) throw new Error(`The carry-over dry run exited ${dryRun.exitCode}:\n${dryRun.output}`);
-        const apply = await runCarryOver({ dataRoot: root }, { apply: true, actor: 'e2e' });
+        const apply = await runCarryOver({ dataRoot: root }, { apply: true, actor: 'e2e', allow: ['unready.jpg'] });
         if (apply.exitCode !== 0) throw new Error(`The carry-over exited ${apply.exitCode}:\n${apply.output}`);
         const dry = await publish({ dataRoot: root, actor: 'e2e', dryRun: true, logger: quiet });
         const gone = dry.launch?.gone ?? -1;
@@ -100,7 +121,7 @@ export async function createCarryOverFixture(): Promise<CarryOverFixture> {
             library,
             ids,
             order,
-            output: { dryRun: dryRun.output, apply: apply.output },
+            output: { dryRun: dryRun.output, dryRunExit: dryRun.exitCode, apply: apply.output },
             gone,
             cleanup: async () => fs.rmSync(temp, { recursive: true, force: true }),
         };

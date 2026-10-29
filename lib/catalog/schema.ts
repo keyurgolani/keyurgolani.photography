@@ -203,6 +203,8 @@ export const reviewStampSchema = z.strictObject({ fields: z.record(z.string().mi
  * a statement, until the owner writes them.
  */
 export const carryOverSchema = z.strictObject({ reason: copy, at: timestamp });
+/** The one series `photos carry-over` makes, the only one its marker counts on. */
+export const CARRY_OVER_SERIES_ID = 'ser_gallery';
 
 const authoredFields = {
     schemaVersion: z.literal(CATALOG_SCHEMA_VERSION),

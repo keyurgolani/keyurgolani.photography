@@ -2,14 +2,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempLibrary';
 import { processImage } from '../../../utils/imageOptimizer';
 import { placedItems } from '../../curation/placement';
 import { listEvents } from '../../curation/repository';
 import { createCurationSink } from '../../curation/sink';
-import { readRegistry } from '../../identity/registry';
+import { readRegistry, writeRegistry } from '../../identity/registry';
+import { eventIdOf, eventKey } from '../../curation/events';
+import { readEvent, withCurationLock, writeEvent } from '../../curation/repository';
+import { withLock } from '../../storage/lock';
+import { runTsx } from '../../../test/helpers/runTsx';
+import { runEditRecord } from '../edit-record';
+import { AUTHORED_LEASE_MS, AUTHORED_LOCK } from '../working-layer-writer';
 import { runIdentityOnce } from '../../identity/watcherStep';
 import { CARRY_OVER_REASON, CARRY_OVER_SERIES, OWNER_DIRECTION, planCarryOver, runCarryOver } from '../carry-over';
 import { legacyList } from '../photos-api';
@@ -28,6 +34,16 @@ import { createRouteBuilder } from '../routes';
 // `photos carry-over` on a real library and data root: the watcher's legacy
 // derivatives and its catalog sets, the registry, and the inbox items its
 // curation sink opens. Test files only.
+
+// dismissEvent(), wrapped, so a test can make one dismissal fail and the next run retry it.
+const dismissal = vi.hoisted(() => ({ fail: false }));
+vi.mock('../../curation/actions', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../../curation/actions')>();
+    return {
+        ...actual,
+        dismissEvent: async (input: Parameters<typeof actual.dismissEvent>[0]) => (dismissal.fail ? { ok: false as const, code: 'stale' as const, message: 'The event changed meanwhile. Nothing was written.' } : actual.dismissEvent(input)),
+    };
+});
 
 const quiet = { log: () => undefined, warn: () => undefined, error: () => undefined, info: () => undefined };
 const ACTOR = 'keyur';
@@ -179,10 +195,11 @@ describe('photos carry-over', { timeout: 120_000 }, () => {
 
     it('keeps the order and the names past single digits, at the size of a real Gallery, in one run', { timeout: 300_000 }, async () => {
         const TOTAL = 115;
-        // 115 photographs, as many as the live Gallery has: dated across three years, two sharing a day, and six undated, which the Gallery puts last.
+        // 115 photographs, as many as the live Gallery has: dated across three years, where photo n shares its day with n + 84,
+        // so those ties fall back to the photo-ID order, and six undated, which the Gallery puts last, by photo ID too.
         const many: Record<string, Buffer> = {};
         for (let n = 0; n < TOTAL; n++) {
-            const day = n >= TOTAL - 6 ? null : n === 7 ? '2024-01-08' : `20${22 + (n % 3)}-${String(1 + (n % 12)).padStart(2, '0')}-${String(1 + (n % 28)).padStart(2, '0')}`;
+            const day = n >= TOTAL - 6 ? null : `20${22 + (n % 3)}-${String(1 + (n % 12)).padStart(2, '0')}-${String(1 + (n % 28)).padStart(2, '0')}`;
             many[`photo-${String(n).padStart(3, '0')}.jpg`] = await jpeg(day, { r: (7 * n) % 256, g: 120, b: (250 - 3 * n + 256) % 256 });
         }
         const w = await world({ photos: many });
@@ -247,22 +264,193 @@ describe('photos carry-over', { timeout: 120_000 }, () => {
         expect(w.tree()).toEqual(before);
     });
 
-    it('names a photo it cannot carry, exits 1 until --allow-missing names it, and never drops it silently', async () => {
+    it('lists photos the Gallery does not show today as left alone, and never counts them as gone', async () => {
         const w = await world({ unreadable: true });
-        // older.jpg's legacy thumbnail is gone, so the Gallery doesn't list it today.
+        // older.jpg's legacy thumbnail is gone, so the Gallery doesn't list it today: it isn't on the site.
         const thumbnail = fs.readdirSync(w.lib.file('thumbnails')).find((name) => name.startsWith('older'))!;
         fs.renameSync(w.lib.file('thumbnails', thumbnail), w.lib.file(`moved-${thumbnail}`));
         const dry = await runCarryOver({ dataRoot: w.root });
+        expect(dry.exitCode).toBe(0);
+        expect(dry.output).toContain('In the library but not on the site today, left as they are (2):');
+        expect(dry.output).toContain(`older.jpg (${w.ids['older.jpg']}): its seven legacy derivatives aren't all built, so the Gallery doesn't show it.`);
+        expect(dry.output).toMatch(/broken\.jpg \(ph_[^)]+\): the watcher can't read it\./);
+        expect(dry.output).toContain('GONE_COUNT 0');
+        expect((await planCarryOver(w.root)).photos.map((photo) => photo.sourcePath)).toEqual(['newer.jpg', 'undated.jpg']);
+    });
+
+    it("leaves the hidden half of a shared legacy set off the site, as today's Gallery does, and doesn't count it as gone", async () => {
+        // newer.jpg and newer.png share the legacy set named newer: the Gallery lists the first by path, newer.jpg, alone.
+        const w = await world({ photos: { ...images, 'newer.png': await sharp({ create: { width: 60, height: 40, channels: 3, background: { r: 1, g: 2, b: 3 } } }).png().toBuffer() } });
+        const gallery = await legacyList(await readRegistry(w.root), w.lib.root);
+        expect(gallery).toHaveLength(3);
+        const dry = await runCarryOver({ dataRoot: w.root });
+        expect(dry.exitCode).toBe(0);
+        expect(dry.output).toContain(`newer.png (${w.ids['newer.png']}): it shares its legacy derivative set with newer.jpg, so the Gallery shows that one instead.`);
+        expect(dry.output).toContain('GONE_COUNT 0');
+        expect((await planCarryOver(w.root)).photos.map((photo) => photo.sourcePath)).toEqual(['newer.jpg', 'older.jpg', 'undated.jpg']);
+    });
+
+    it('names a photo the Gallery shows that it cannot carry, exits 1 until --allow-missing names it, and ties GONE_COUNT to the names', async () => {
+        const w = await world();
+        // older.jpg is on the Gallery, but its catalog set failed to build, so no revision can publish it.
+        const registry = await readRegistry(w.root);
+        const photo = registry.photos[w.ids['older.jpg']];
+        const revision = photo.revisions[photo.source.observedRevision];
+        for (const profile of Object.keys(revision.profiles)) revision.profiles[profile] = { state: 'failed', attempts: 3, error: 'fixture' };
+        await writeRegistry(w.root, registry, registry.version);
+        const dry = await runCarryOver({ dataRoot: w.root });
         expect(dry.exitCode).toBe(1);
-        expect(dry.output).toContain(`older.jpg (${w.ids['older.jpg']}): its seven legacy derivatives aren't all built, so the Gallery doesn't show it, so it isn't on the site today.`);
+        expect(dry.output).toContain(`older.jpg (${w.ids['older.jpg']}): its catalog derivative set isn't ready yet.`);
         expect(dry.output).toContain('--apply refuses until then.');
         const refused = await runCarryOver({ dataRoot: w.root }, { apply: true, actor: ACTOR });
         expect(refused.exitCode).toBe(1);
         expect((await readWorkingLayer(w.root)).series).toEqual([]);
+        // A name that matches nothing is refused, so his list and what's accepted never drift apart.
+        const stale = await runCarryOver({ dataRoot: w.root }, { allow: ['older.jpg', 'no-such.jpg'] });
+        expect(stale.exitCode).toBe(1);
+        expect(stale.output).toContain("--allow-missing names no-such.jpg, which the plan doesn't list as a photo it can't carry.");
         const accepted = await runCarryOver({ dataRoot: w.root }, { apply: true, actor: ACTOR, allow: ['older.jpg'] });
         expect(accepted.exitCode).toBe(0);
-        expect(accepted.output).toContain('Accepted with --allow-missing.');
-        const layer = await readWorkingLayer(w.root);
-        expect(layer.series[0].photoIds).toEqual([w.ids['newer.jpg'], w.ids['undated.jpg']]);
+        expect(accepted.output).toContain('Accepted by name with --allow-missing, so it leaves the site at the launch: older.jpg.');
+        expect(accepted.output).toContain('GONE_COUNT 1, all accepted by name');
+        expect((await readWorkingLayer(w.root)).series[0].photoIds).toEqual([w.ids['newer.jpg'], w.ids['undated.jpg']]);
+        expect((await publish({ dataRoot: w.root, actor: ACTOR, dryRun: true, logger: { log: () => undefined } })).launch).toEqual({ published: 2, gone: 1 });
+    });
+
+    it("refuses once the owner has changed the carried-over Gallery, saying what changed, and writes nothing", async () => {
+        const w = await world();
+        expect((await runCarryOver({ dataRoot: w.root }, { apply: true, actor: ACTOR })).exitCode).toBe(0);
+        const gallery = (await readAuthoredRecord(w.root, 'series', CARRY_OVER_SERIES.id))!;
+        await writeAuthoredRecord({ ...gallery, photoIds: [...gallery.photoIds].reverse().slice(0, 2), cover: { photoId: gallery.photoIds[2] } }, { expectedVersion: gallery.version, root: w.root });
+        const before = w.tree();
+        for (const apply of [false, true]) {
+            const run = await runCarryOver({ dataRoot: w.root }, { apply, actor: ACTOR });
+            expect(run.exitCode).toBe(1);
+            expect(run.output).toContain('ser_gallery has changed since the carry-over made it: 1 photo the legacy Gallery shows is out of it; the photos are in another order; its cover changed.');
+        }
+        expect(w.tree()).toEqual(before);
+    });
+
+    it('never writes after the launch: a photo added later stays his, and the plan says the launch has run', async () => {
+        const w = await world();
+        expect((await runCarryOver({ dataRoot: w.root }, { apply: true, actor: ACTOR })).exitCode).toBe(0);
+        expect((await publish({ dataRoot: w.root, actor: ACTOR, confirmLaunch: true, logger: { log: () => undefined } })).outcome).toBe('PUBLISHED');
+        expect((await runCarryOver({ dataRoot: w.root })).output).toContain('already done');
+        fs.writeFileSync(w.lib.file('later.jpg'), await jpeg('2025-02-02', { r: 90, g: 90, b: 90 }));
+        await processImage('later.jpg');
+        expect(await runIdentityOnce({ sinks: [createCurationSink({ logger: quiet })], logger: quiet, pass: { clock: () => Date.now() + 60_000 } })).toBe(0);
+        const before = w.tree();
+        for (const apply of [false, true]) {
+            const run = await runCarryOver({ dataRoot: w.root }, { apply, actor: ACTOR });
+            expect(run.exitCode).toBe(1);
+            expect(run.output).toMatch(/Revision rev_[0-9a-f]{64} is live, so the launch has run\. The carry-over only runs before it, and Gallery is yours now\./);
+        }
+        expect(w.tree()).toEqual(before);
+    });
+
+    it('dismisses a new item whose photo moved to other bytes, with the reason, retries a dismissal that failed, and lists the items it leaves open', async () => {
+        const w = await world();
+        const { events } = await listEvents(w.root);
+        const moved = events.find((event) => event.type === 'new' && event.photoId === w.ids['older.jpg'])!;
+        const other = `sha256-${'7'.repeat(64)}`;
+        const replacementKey = `replaced:${w.ids['newer.jpg']}:${other}`;
+        await withCurationLock(w.root, {}, async (hold) => {
+            // As the sink folds new bytes into an open new item: its key keeps the revision it opened at.
+            await writeEvent(w.root, { ...moved, assetRevision: `sha256-${'6'.repeat(64)}` }, moved.version, hold);
+            const template = events.find((event) => event.type === 'new' && event.photoId === w.ids['newer.jpg'])!;
+            await writeEvent(w.root, { ...template, id: eventIdOf(eventKey('replacement', { photoId: w.ids['newer.jpg'], assetRevision: other, key: replacementKey })), key: replacementKey, type: 'replacement', assetRevision: other, decisions: [] }, 0, hold);
+        });
+        const plan = await planCarryOver(w.root);
+        expect(plan.closes.find((item) => item.eventId === moved.id)).toMatchObject({ how: 'dismiss' });
+        expect(plan.stays).toEqual([expect.objectContaining({ sourcePath: 'newer.jpg', reason: "Its replacement item stays open: the carry-over doesn't decide it" })]);
+        dismissal.fail = true;
+        const first = await runCarryOver({ dataRoot: w.root }, { apply: true, actor: ACTOR });
+        expect(first.exitCode).toBe(1);
+        expect(first.output).toContain('These inbox items could not be dismissed, and stay open. The records are written.');
+        expect((await readWorkingLayer(w.root)).series).toHaveLength(1);
+        dismissal.fail = false;
+        const second = await runCarryOver({ dataRoot: w.root }, { apply: true, actor: ACTOR });
+        expect(second.exitCode).toBe(0);
+        expect(second.output).toContain('Carried over: wrote 0 records, and dismissed 1 inbox item.');
+        expect(await readEvent(w.root, moved.id)).toMatchObject({ status: 'dismissed', decisions: expect.arrayContaining([expect.objectContaining({ action: 'dismiss', reason: CARRY_OVER_REASON })]) });
+        const third = await runCarryOver({ dataRoot: w.root }, { apply: true, actor: ACTOR });
+        expect(third.output).toContain('The carry-over is already done: nothing changed.');
+    });
+
+    it('answers 3 while the authored lock stays busy, and writes nothing', async () => {
+        const w = await world();
+        const before = w.tree();
+        let run: Awaited<ReturnType<typeof runCarryOver>> | undefined;
+        await withLock(AUTHORED_LOCK, { root: w.root, leaseMs: AUTHORED_LEASE_MS, waitMs: 1_000 }, async () => {
+            run = await runCarryOver({ dataRoot: w.root, waitMs: 200 }, { apply: true, actor: ACTOR });
+        });
+        expect(run).toMatchObject({ exitCode: 3, output: expect.stringMatching(/^Error \(locked\): .* Nothing was written\.\n$/) });
+        expect(w.tree()).toEqual(before);
+    });
+
+    it('takes --apply or --dry-run, not both, and needs an actor to apply', async () => {
+        const w = await world();
+        const cli = (args: string[]) => runTsx('scripts/photos.ts', ['carry-over', ...args], { env: { PHOTOGRAPHY_DATA_DIR: w.root, PHOTOGRAPHY_LIBRARY_DIR: w.lib.root, PHOTOS_ACTOR: undefined } });
+        const both = await cli(['--apply', '--dry-run', '--actor', ACTOR]);
+        expect(both.code).toBe(2);
+        expect(both.stderr).toContain('photos carry-over takes --apply or --dry-run, not both.');
+        const nobody = await cli(['--apply']);
+        expect(nobody.code).toBe(2);
+        expect(nobody.stderr).toContain('photos carry-over --apply needs --actor <name> or PHOTOS_ACTOR.');
+        const empty = await cli(['--allow-missing', ' , ']);
+        expect(empty.code).toBe(2);
+        expect((await readWorkingLayer(w.root)).series).toEqual([]);
+    });
+});
+
+describe("the carry-over marker", { timeout: 120_000 }, () => {
+    it('is written only by the carry-over: photos edit and every other write refuse one added by hand', async () => {
+        const w = await world();
+        expect((await runCarryOver({ dataRoot: w.root }, { apply: true, actor: ACTOR })).exitCode).toBe(0);
+        const marker = (await readAuthoredRecord(w.root, 'photo', w.ids['newer.jpg']))!.carryOver;
+        await writeAuthoredRecord({ kind: 'series', id: 'ser_mine', slug: 'mine', title: 'Mine', visibility: 'draft' }, { expectedVersion: 0, root: w.root });
+        await expect(writeAuthoredRecord({ kind: 'series', id: 'ser_mine', slug: 'mine', title: 'Mine', visibility: 'draft', carryOver: marker }, { expectedVersion: 1, root: w.root })).rejects.toMatchObject({ code: 'INVALID_RECORD', message: expect.stringContaining('Only photos carry-over writes the carry-over marker') });
+        const file = path.join(w.data.root, '..', 'edit.json');
+        fs.writeFileSync(file, JSON.stringify({ kind: 'series', id: 'ser_mine', slug: 'mine', title: 'Mine', visibility: 'draft', carryOver: marker }));
+        const edited = await runEditRecord({ dataRoot: w.root }, { kind: 'series', id: 'ser_mine' }, { file, expectVersion: 1 });
+        expect(edited.exitCode).toBe(1);
+        expect(edited.output).toContain('Only photos carry-over writes the carry-over marker');
+        expect((await readAuthoredRecord(w.root, 'series', 'ser_mine'))!.carryOver).toBeUndefined();
+        // Any other write of a marked record keeps the marker, even one that leaves it out.
+        const record = (await readAuthoredRecord(w.root, 'photo', w.ids['newer.jpg']))!;
+        const rest: Partial<typeof record> = { ...record };
+        delete rest.carryOver;
+        await writeAuthoredRecord({ ...(rest as typeof record), title: 'Harbor' }, { expectedVersion: record.version, root: w.root });
+        expect((await readAuthoredRecord(w.root, 'photo', w.ids['newer.jpg']))!.carryOver).toEqual(marker);
+    });
+
+    it('goes once a description is written, so clearing it later blocks the publish like any photo', async () => {
+        const w = await world();
+        expect((await runCarryOver({ dataRoot: w.root }, { apply: true, actor: ACTOR })).exitCode).toBe(0);
+        const id = w.ids['older.jpg'];
+        let record = (await readAuthoredRecord(w.root, 'photo', id))!;
+        await writeAuthoredRecord({ ...record, alt: { kind: 'described', text: 'A red field under a flat sky.', reviewed: true } }, { expectedVersion: record.version, root: w.root });
+        record = (await readAuthoredRecord(w.root, 'photo', id))!;
+        expect(record.carryOver).toBeUndefined();
+        await writeAuthoredRecord({ ...record, alt: null }, { expectedVersion: record.version, root: w.root });
+        const dry = await publish({ dataRoot: w.root, actor: ACTOR, dryRun: true, logger: { log: () => undefined } });
+        expect(dry.issues).toContainEqual(expect.objectContaining({ code: 'description.required', record: { kind: 'photo', id } }));
+    });
+
+    it('names a photo by its place only while Gallery alone publishes it, and drops the series marker once a statement is written', async () => {
+        const w = await world();
+        expect((await runCarryOver({ dataRoot: w.root }, { apply: true, actor: ACTOR })).exitCode).toBe(0);
+        const id = w.ids['undated.jpg'];
+        await writeAuthoredRecord({ kind: 'series', id: 'ser_mine', slug: 'mine', title: 'Mine', statement: 'Mine.', shortStatement: 'Mine.', visibility: 'published', photoIds: [id], cover: { photoId: id } }, { expectedVersion: 0, root: w.root });
+        const site = (await readAuthoredRecord(w.root, 'site', 'site'))!;
+        await writeAuthoredRecord({ ...site, seriesOrder: [CARRY_OVER_SERIES.id, 'ser_mine'] }, { expectedVersion: site.version, root: w.root });
+        const dry = await publish({ dataRoot: w.root, actor: ACTOR, dryRun: true, logger: { log: () => undefined } });
+        expect(dry.issues).toContainEqual(expect.objectContaining({ code: 'description.required', record: { kind: 'photo', id } }));
+        // A statement written for Gallery drops its marker, so the normal rule asks for both.
+        const gallery = (await readAuthoredRecord(w.root, 'series', CARRY_OVER_SERIES.id))!;
+        await writeAuthoredRecord({ ...gallery, statement: 'Photographs from before.' }, { expectedVersion: gallery.version, root: w.root });
+        expect((await readAuthoredRecord(w.root, 'series', CARRY_OVER_SERIES.id))!.carryOver).toBeUndefined();
+        const again = await publish({ dataRoot: w.root, actor: ACTOR, dryRun: true, logger: { log: () => undefined } });
+        expect(again.issues).toContainEqual(expect.objectContaining({ code: 'description.series-copy', record: { kind: 'series', id: CARRY_OVER_SERIES.id }, field: 'shortStatement' }));
     });
 });

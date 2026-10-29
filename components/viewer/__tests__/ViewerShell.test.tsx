@@ -75,6 +75,7 @@ function model(n: number, technical = true, withImage = false): PublishedViewerP
             caption: null,
             alt: '',
             descriptionPending: false,
+            namedByPlace: false,
             image: withImage ? imageOf(n) : null,
             shareImage: null,
             accent: null,

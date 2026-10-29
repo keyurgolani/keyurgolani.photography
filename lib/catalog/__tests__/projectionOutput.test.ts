@@ -167,7 +167,7 @@ describe('every screen projection serializes byte for byte as pinned', () => {
             work: 'e87f9f9531d894505ef0d31df859b27a0bc38e95d7aa86a7d3b711199b637be3',
             series: 'f4d331e31151bd9c2fe789acea02a746c5fcb026309e762287396071c0627123',
             continuation: '85b8afb6bc10a95477fff9b2cbb7c938de4b1a1ab793d2dc402754f4ddb237b0',
-            viewer: '1136163489bec2b4359e954545cbf835bb912d34314de30d0a8bba15239be96b',
+            viewer: 'f389deb2f6e1e737e7248a9f2a98eb8569cd3c0004ac6798e5eda944cadb1acf',
         });
     });
 
@@ -180,7 +180,7 @@ describe('every screen projection serializes byte for byte as pinned', () => {
             // 16-2: a series page's continuation path comes from the route builder, so a preview's points at its own mirror.
             series: '1e5733d2c9fd8d57a584d21e0eb63cb8fd73f8733a39380e4915b02ce3a88dde',
             continuation: '6abcadfe8b9f3d40f2e35a6aa155a069cee65838c5447d499904cbc68bf09b6f',
-            viewer: '1136163489bec2b4359e954545cbf835bb912d34314de30d0a8bba15239be96b',
+            viewer: 'f389deb2f6e1e737e7248a9f2a98eb8569cd3c0004ac6798e5eda944cadb1acf',
         });
     });
 

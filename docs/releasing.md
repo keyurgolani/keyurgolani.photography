@@ -410,16 +410,19 @@ docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node 
 docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs publish --dry-run --actor <name>
 ```
 
-- **A photo it can't carry** is listed by name with why: its catalog set isn't built yet, its legacy derivatives aren't all there, its record pins another version, or its record holds a suggested description nobody reviewed. Both the dry run and `--apply` exit 1 while one is listed. Fix it and run again, or accept it with `--allow-missing <photoId or path>,...`, which repeats the list in the output.
+- **A photo it can't carry** is one today's Gallery shows that can't publish: its catalog set isn't built yet, its record pins another version, or its record holds a suggested description nobody reviewed. It's listed by name with why. Both the dry run and `--apply` exit 1 while one is listed. Fix it and run again, or accept it with `--allow-missing <photoId or path>,...`, which repeats the list in the output. A name there that matches nothing is refused. Only the photos accepted by name may leave the site: `GONE_COUNT` must equal their count, or it refuses.
+- **Photos the Gallery doesn't show today** aren't on the site, so they aren't carried or counted as leaving. The dry run lists them as left alone, with why: a file the watcher can't read, one in a folder, one whose legacy derivatives aren't all built, or the second of two files that share a legacy set, where the Gallery shows only the first by path.
 - **It refuses** a working layer that already holds your curation: any series, or a Work order or featured series it would replace. Nothing is written, and it says what's there.
 - **The Inbox**: the items for these photos' arrival close the way any placement closes them, so the Inbox shows only photos you add later. An item whose photo changed since it opened is dismissed, with the owner's direction as the reason. Other items stay open.
-- **Running it again** changes nothing, and says so.
+- **Running it again** changes nothing, and says so. It refuses instead once Gallery has changed from what it made, saying what changed, and once the launch has run and anything would change. Gallery and the photos you add later are yours then.
 
 It takes the curation lock and then the authored lock, so stop the curator first (`docker compose -f docker-compose.prod.yml stop curator`). Then publish with `--confirm-launch`, as the launch publish always needs.
 
 A revision with carried-over photos names them by their place, which no release before `v1.2.1` can read. Once one is live, don't roll the image back past `v1.2.1`. An older `web` can't read the active revision, and after a restart it serves nothing until you roll forward again.
 
 ## Rollback
+
+After the launch, an image older than v1.2.1 can't read the catalog. Take the site back to legacy mode first (Rollback C), then change the tag. Legacy mode comes back only from a data-root backup made before the launch publish, as [After the catalog launch](#after-the-catalog-launch) says.
 
 Before changing `.env`, note the tag the host runs now. To roll back, set `PHOTOGRAPHY_IMAGE_TAG` back to that tag and run the same two commands. That swaps the code, not the photo library. A release before `v1.2.0` ignores `./site-config` and shows the portrait built into its image. Rolling back to a release before Phase 0 of #17 brings back the watcher's startup cleanup, which deletes the derivative sets this release keeps for removed photos. That older release also refills `./.next-images-cache` under its year-long headers and writes new `cache/dynamic` files, so roll forward again the way Deploying describes for `v1.1.0`.
 
