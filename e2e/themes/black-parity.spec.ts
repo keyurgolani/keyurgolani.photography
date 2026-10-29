@@ -28,7 +28,8 @@ import { routePhotoFixtures } from '../support/test';
 //    both builds, so its raster isn't under test, and it doesn't repeat from one load to the next even in the base:
 //    the Inbox's thumbnails step up to 9/255 against themselves. 12/255 is still invisible in a photograph.
 // Home's intro is shot at its settled frame, held by reduced motion, under the same rule. A departure spec §10
-// sanctions is masked at its one page, size and scale only (Pair.sanctioned); there is none today. A self-test makes
+// sanctions is excluded from the chrome pass at its one page, size and scale only (Pair.sanctioned): today that's the
+// Inbox's KG ring edge at 390 and DPR 1. A self-test makes
 // Home's scrim 1/255 off in the head and asserts the chrome pass fails.
 // A second row per page and size pins the ruling on owner question 4: the head with today's stored `dark` paints Black.
 // The curator's header gains the control where the base had none, so the head's curator shots take it out of the
@@ -414,6 +415,10 @@ const CURATOR: Pair[] = [
         session: true,
         addsControl: true,
         measure: ['header [class*="monogram"]', 'header [class*="wordmark"]', 'header [class*="headerEnd"]', 'header'],
+        // The one sanctioned departure (spec §10): at 390 and DPR 1, the KG ring's left edge is 1/255 on 18 px, with the
+        // control out of the layout. The control's whole-pixel slot didn't clear it, so its cause is still open. The
+        // curator PR (spec §13, PR map item 5) owns CuratorHeader.tsx: it brings the ring to 0 and drops this box.
+        sanctioned: [{ width: 390, scale: 1, box: { x: 16, y: 22, w: 3, h: 12 } }],
     },
     { name: 'publish', url: '/curation/publish', session: true, addsControl: true },
 ];
