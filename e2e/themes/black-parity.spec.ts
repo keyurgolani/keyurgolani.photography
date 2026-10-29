@@ -148,6 +148,8 @@ interface Pair {
     session?: boolean;
     /** The legacy Gallery, on the e2e suite's photo fixtures. */
     photos?: boolean;
+    /** Every /media image answers 404, so each photograph shows its missing-image box. */
+    failMedia?: boolean;
     /** A page the head adds the control to, where the base had no toggle (the curator's header): the head's shot
      * takes the control out of the layout, as no JavaScript does, so the rest must match. */
     addsControl?: boolean;
@@ -214,6 +216,7 @@ async function open(origin: string, stored: string, pair: Pair, viewport: { widt
     }, { value: stored, sheet: css });
     const page = await context.newPage();
     if (pair.photos) await routePhotoFixtures(page);
+    if (pair.failMedia) await page.route('**/media/**', (route) => route.fulfill({ status: 404, body: '' }));
     // Every wait polls from here, so it works without JavaScript too (the page then runs none of our timers or
     // handlers), and every one that times out is named in `timedOut`: the gate fails a row on any, never passes it.
     const timedOut: string[] = [];
@@ -419,6 +422,8 @@ const VISITOR: Pair[] = [
     { name: 'work', url: '/work' },
     { name: 'series', url: series },
     { name: 'series-sequence', url: series, act: toSequence },
+    // The cover and every thumbnail with no image to show: each holds its box and its missing-image edge.
+    { name: 'series-missing', url: series, act: toSequence, failMedia: true },
     {
         name: 'thumbnail-hover',
         url: series,

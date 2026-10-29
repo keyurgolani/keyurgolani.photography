@@ -145,6 +145,24 @@ for (const theme of THEMES) {
         }
     });
 
+    test(`in ${theme}, a missing thumbnail keeps its edge and wears no surround`, async ({ page }) => {
+        await page.setViewportSize({ width: 1440, height: 900 });
+        // The portrait's image answers 404, so its entry shows the missing-image box.
+        await page.route(`**/media/${PHOTOS[1].id}/**`, (route) => route.fulfill({ status: 404, body: '' }));
+        await page.addInitScript((value) => localStorage.setItem('theme', value), theme);
+        await page.goto(`${origin()}/work/mixed`);
+        await waitForHydration(page);
+        const slot = entry(page, 1).locator('[data-photo]');
+        await expect(slot).toHaveAttribute('data-photo', 'unavailable');
+        const rule = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--gah-rule').trim());
+        const shadow = await slot.evaluate((el) => getComputedStyle(el).boxShadow);
+        // One inset 1 px line in the theme's rule, and nothing else: today's edge, in every theme.
+        expect(shadow, 'the missing box draws only its edge').toMatch(/^rgba?\([^)]*\) 0px 0px 0px 1px inset$/);
+        expect(rule).not.toBe('');
+        await entry(page, 1).hover();
+        expect(await slot.evaluate((el) => getComputedStyle(el).outlineStyle), 'hover adds no outline round a box with no surround').toBe('none');
+    });
+
     test(`in ${theme}, at 390 the focus ring clears each surround and stays inside the gutter`, async ({ page }) => {
         await page.setViewportSize({ width: 390, height: 844 });
         for (const [path, target, room] of [
