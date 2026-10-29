@@ -900,10 +900,10 @@ test.describe('contrast and reflow', () => {
         for (const control of [previous(page), next(page), playback(page)]) {
             await expectContrastOverImage(control.locator('svg').first(), { min: 3 });
         }
-        // The theme control's icon is its swatch, the theme's ground and ink split on the diagonal, with no svg. Over a
-        // white photo its ground half is what shows it, so that half's colour is measured against the photo behind
-        // the swatch, the swatch's own paint taken off for the read.
-        const swatch = await page.addStyleTag({ content: '.theme-menu-swatch { color: var(--gah-ground) !important; background: none !important; box-shadow: none !important; }' });
+        // The theme control's icon is its swatch, the theme's ground and ink split on the diagonal, with no svg. It sits
+        // on the nav's glass, which stays dark over a white photo, so its ink half is what shows it: that half's colour
+        // is measured against what's behind the swatch, the swatch's own paint taken off for the read.
+        const swatch = await page.addStyleTag({ content: '.theme-menu-swatch { color: var(--gah-ink) !important; background: none !important; box-shadow: none !important; }' });
         await expectContrastOverImage(themeToggle(page).locator('.theme-menu-swatch'), { min: 3 });
         await swatch.evaluate((style) => style.parentNode?.removeChild(style));
     });
