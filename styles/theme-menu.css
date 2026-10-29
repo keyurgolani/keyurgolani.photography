@@ -1,7 +1,8 @@
-/* The theme control (themes mockup). Global, not a CSS module, and imported once by the root layout (round 2): as a
-   module shared by the visitor and the curator routes, it made the production CSS chunking merge the curator's,
-   Publish's and the login's styles into a chunk every visitor page loads (+10 KB gzipped on Home). Every class is
-   prefixed theme-menu-. */
+/* The theme control's button (themes mockup). Global, not a CSS module, and imported once by the root layout (round 2):
+   as a module shared by the visitor and the curator routes, it made the production CSS chunking merge the curator's,
+   Publish's and the login's styles into a chunk every visitor page loads (+10 KB gzipped on Home). Only what paints
+   before the menu opens is here; the popover's styles (theme-menu-popover.css) load after hydration, off the first
+   load's critical path (ThemeMenu.tsx). Every class is prefixed theme-menu-. */
 /* The theme control. The button shows a swatch of the theme that's painting: the ground and the ink, split on the
    diagonal, inside the strong rule. It reads the page's own tokens, so it's right from first paint. */
 .theme-menu-button {
@@ -33,171 +34,19 @@
   }
 }
 
-/* Visually hidden; display: none below takes the names that don't apply out of the button's name too. */
-.theme-menu-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-
-html:not([data-theme-choice='system']) .theme-menu-button [data-name-for='system'],
-html:not([data-theme-choice='light']) .theme-menu-button [data-name-for='light'],
-html:not([data-theme-choice='bright']) .theme-menu-button [data-name-for='bright'],
-html:not([data-theme-choice='dark']) .theme-menu-button [data-name-for='dark'],
-html:not([data-theme-choice='black']) .theme-menu-button [data-name-for='black'],
-html:not([data-theme-choice='system']) .theme-menu-button [data-now],
-html:not([data-theme='light']) .theme-menu-button [data-now='light'],
-html:not([data-theme='black']) .theme-menu-button [data-now='black'] {
+/* The names render as Tailwind's sr-only; display: none here takes the ones that don't apply out of the button's name. */
+html:not([data-theme-choice='system']) [data-name-for='system'],
+html:not([data-theme-choice='light']) [data-name-for='light'],
+html:not([data-theme-choice='bright']) [data-name-for='bright'],
+html:not([data-theme-choice='dark']) [data-name-for='dark'],
+html:not([data-theme-choice='black']) [data-name-for='black'],
+html:not([data-theme-choice='system']) [data-now],
+html:not([data-theme='light']) [data-now='light'],
+html:not([data-theme='black']) [data-now='black'] {
   display: none;
-}
-
-/* The popover, in the top layer, under the nav's end. Anchor positioning would tie it to the button; until then it
-   takes the nav's corner, which is where the button always is. */
-.theme-menu-popover {
-  position: fixed;
-  inset: calc(var(--site-nav-height) + 0.25rem) var(--site-gutter) auto auto;
-  width: min(19rem, calc(100vw - 2 * var(--site-gutter)));
-  margin: 0;
-  padding: 0.375rem;
-  border: 1px solid var(--gah-rule);
-  border-radius: 6px;
-  background: var(--gah-raised);
-  color: var(--gah-ink);
-  box-shadow: 0 18px 40px -16px rgb(0 0 0 / 0.45);
-  font-family: var(--gah-font-sans);
-}
-
-html[data-theme='bright'] .theme-menu-popover {
-  border-color: #111111;
-  border-radius: 0;
-  box-shadow: none;
-}
-
-.theme-menu-group {
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-
-.theme-menu-legend {
-  padding: 0.5rem 0.625rem 0.375rem;
-  color: var(--gah-label);
-  font-size: var(--gah-type-label);
-  font-weight: 500;
-  letter-spacing: var(--gah-label-tracking);
-}
-
-.theme-menu-option {
-  position: relative;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 0.75rem;
-  min-height: 52px;
-  padding: 0.375rem 0.625rem;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .theme-menu-option:hover {
-    background: var(--gah-surface);
-  }
-}
-
-/* The radio stays native, for its keyboard and its announcement, and draws nothing: the row shows its state. */
-.theme-menu-radio {
-  position: absolute;
-  inset: 0;
-  margin: 0;
-  opacity: 0;
-  cursor: pointer;
-}
-
-.theme-menu-option:has(.theme-menu-radio:focus-visible) {
-  outline: var(--focus-ring-width) solid var(--focus-ring-light);
-  outline-offset: calc(-1 * var(--focus-ring-width));
-  box-shadow: inset 0 0 0 calc(var(--focus-ring-width) + 2px) var(--focus-ring-dark);
-}
-
-/* A thumbnail of each theme: its ground, and a photograph in that theme's surround. Fixed colors, since each shows a
-   theme other than the one painting. */
-.theme-menu-preview {
-  position: relative;
-  display: grid;
-  width: 44px;
-  height: 32px;
-  place-items: center;
-  border-radius: 3px;
-  box-shadow: 0 0 0 1px var(--gah-rule);
-}
-
-.theme-menu-preview-photo {
-  width: 26px;
-  height: 17px;
-  background: linear-gradient(180deg, #49678f 0%, #c99a7a 62%, #2d2a35 63%, #1b1a22 100%);
-}
-
-.theme-menu-preview[data-preview='light'] { background: #ebe5d9; }
-.theme-menu-preview[data-preview='light'] .theme-menu-preview-photo { box-shadow: 0 0 0 3px #f8f5ee, 0 3px 5px -2px rgb(60 42 20 / 0.45); }
-.theme-menu-preview[data-preview='bright'] { background: #ffffff; }
-.theme-menu-preview[data-preview='bright'] .theme-menu-preview-photo { width: 22px; height: 14px; box-shadow: 0 0 0 3px #ffffff, 0 0 0 4px #111111; }
-.theme-menu-preview[data-preview='dark'] { background: #1b1f1d; }
-.theme-menu-preview[data-preview='dark'] .theme-menu-preview-photo { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.18), 0 0 0 3px #2a2f2d; }
-.theme-menu-preview[data-preview='black'] { background: #080a09; }
-.theme-menu-preview[data-preview='black'] .theme-menu-preview-photo { border-radius: 1px; }
-.theme-menu-preview[data-preview='system'] { background: linear-gradient(135deg, #ebe5d9 0 50%, #080a09 50% 100%); }
-.theme-menu-preview[data-preview='system'] .theme-menu-preview-photo { box-shadow: 0 0 0 3px rgb(128 128 128 / 0.35); }
-
-.theme-menu-text {
-  display: grid;
-  gap: 0.125rem;
-  min-width: 0;
-}
-
-.theme-menu-name {
-  font-size: var(--gah-type-ui);
-  font-weight: 500;
-}
-
-.theme-menu-note {
-  color: var(--gah-ink-muted);
-  font-size: var(--gah-type-label);
-  line-height: 1.35;
-}
-
-/* The checked choice: a check mark in the accent, and the preview ringed in it. */
-.theme-menu-check {
-  margin-right: 0.125rem;
-  color: transparent;
-}
-
-.theme-menu-option:has(.theme-menu-radio:checked) .theme-menu-check {
-  color: var(--gah-accent);
-}
-
-.theme-menu-option:has(.theme-menu-radio:checked) .theme-menu-preview {
-  box-shadow: 0 0 0 2px var(--gah-accent);
 }
 
 /* SiteNav's paper variant on About keeps the paper's ink. */
 [data-surface='about'] .theme-menu-button {
   color: var(--lts-ink-soft);
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .theme-menu-popover:popover-open {
-    animation: theme-menu-in 140ms ease-out;
-  }
-}
-
-@keyframes theme-menu-in {
-  from {
-    opacity: 0;
-    translate: 0 -4px;
-  }
 }
