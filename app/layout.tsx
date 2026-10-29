@@ -23,11 +23,12 @@ export async function generateMetadata(): Promise<Metadata> {
   };
 }
 
-// The browser's own bar follows System's two themes; an explicit Bright or Black choice keeps the nearest one.
+// The browser's own bar follows System's two themes, Light and Black (today's #080a09); an explicit Bright or Dark
+// choice keeps the nearest one.
 export const viewport: Viewport = {
   themeColor: [
     { media: '(prefers-color-scheme: light)', color: '#ebe5d9' },
-    { media: '(prefers-color-scheme: dark)', color: '#1b1f1d' },
+    { media: '(prefers-color-scheme: dark)', color: '#080a09' },
   ],
 };
 
@@ -36,10 +37,11 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
-  // The server always sends the dark theme. The inline script swaps in a stored light one before first paint,
-  // which is why <html> suppresses the hydration warning for its own attributes.
+  // The server always sends System painting Black, today's site, which is what a visitor without JavaScript gets. The
+  // inline script puts the stored choice and its theme there before first paint, which is why <html> suppresses the
+  // hydration warning for its own attributes.
   return (
-    <html lang="en" data-theme="dark" data-theme-choice="system" suppressHydrationWarning className={`${serif.variable} ${sans.variable}`}>
+    <html lang="en" data-theme="black" data-theme-choice="system" suppressHydrationWarning className={`${serif.variable} ${sans.variable}`}>
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>

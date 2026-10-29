@@ -47,7 +47,7 @@ async function tabTo(page: Page, target: Locator, limit = 10) {
  * it, and the pointer cases reveal it first, since #18 takes the first click
  * or tap on immersive Home as intent.
  */
-async function openHome(page: Page, { photos = ['white', 'gray', 'black'], theme = 'dark' }: { photos?: readonly string[]; theme?: 'dark' | 'light' } = {}) {
+async function openHome(page: Page, { photos = ['white', 'gray', 'black'], theme = 'black' }: { photos?: readonly string[]; theme?: 'black' | 'light' } = {}) {
     setPhotoFixtures(page, photos);
     if (theme === 'light') await page.addInitScript(() => localStorage.setItem('theme', 'light'));
     await page.goto('/');
@@ -59,7 +59,7 @@ for (const viewport of [undefined, { width: 640, height: 400 }]) {
     test.describe(viewport ? 'at 640 by 400, which is 200% zoom' : 'at the project viewport', () => {
         if (viewport) test.use({ viewport });
 
-        for (const theme of ['dark', 'light'] as const) {
+        for (const theme of ['black', 'light'] as const) {
             test(`passes the surface checks on the slideshow controls, with 44 px targets and unique names on every control, in the ${theme} theme`, async ({ page }) => {
                 await openHome(page, { theme });
                 await checkSurface(page, { controls: [sequenceControls(page)], chrome: [primary(page), themeToggle(page)] });

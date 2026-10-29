@@ -357,7 +357,7 @@ test.describe('on the desktop project', () => {
         test.describe(`at ${width} by ${height}`, () => {
             test.use({ viewport: { width, height } });
 
-            for (const theme of ['dark', 'light'] as const) {
+            for (const theme of ['black', 'light'] as const) {
                 test(`in the ${theme} theme the labels are underlined and keep 4.5:1 over the light at rest and lit by hover, focus, and a press, and the ring keeps 3:1 on the About ground`, async ({ page }) => {
                     await page.addInitScript((value) => localStorage.setItem('theme', value), theme);
                     await openAbout(page);

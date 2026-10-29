@@ -30,7 +30,7 @@ export default function GlobalError({ reset }: GlobalErrorProps) {
       reset();
     });
   return (
-    <html lang="en" data-theme="dark" data-theme-choice="system" suppressHydrationWarning className={`${serif.variable} ${sans.variable}`}>
+    <html lang="en" data-theme="black" data-theme-choice="system" suppressHydrationWarning className={`${serif.variable} ${sans.variable}`}>
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>

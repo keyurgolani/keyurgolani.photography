@@ -24,7 +24,7 @@ async function ringOf(target: Locator) {
     return { focused, focusVisible, outline: outline.style, boxShadow };
 }
 
-for (const theme of ['dark', 'light'] as const) {
+for (const theme of ['black', 'light'] as const) {
     test.describe(`${theme} theme`, () => {
         async function open(page: Page, path: string) {
             if (theme === 'light') await page.addInitScript(() => localStorage.setItem('theme', 'light'));

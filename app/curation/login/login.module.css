@@ -229,14 +229,6 @@
   --login-done-bg: #e5f3eb;
 }
 
-:global(html[data-theme='black']) .page {
-  --login-header: #000000;
-  --login-rule: #2e2e2e;
-  --login-field: #000000;
-  --login-alert-bg: #2b0f0b;
-  --login-done-bg: #08150f;
-}
-
 .header > button:first-of-type {
   margin-left: auto;
 }

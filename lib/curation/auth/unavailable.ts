@@ -20,10 +20,11 @@ import { CURATOR_RESPONSE_HEADERS } from './policy';
 
 const STYLE = [
     // The themes mockup: the four themes as custom properties, keyed on what the theme script below resolves.
-    ':root,html[data-theme=dark]{color-scheme:dark;--g:#1b1f1d;--i:#eef2f0;--s:#c9d0cc;--h:#262b29;--r:#3f4643;--m:rgba(255,255,255,0.42)}',
+    // Black (the default, and System on a dark device) is today's 503, exactly.
+    ':root,html[data-theme=black]{color-scheme:dark;--g:#080a09;--i:#f4f6f5;--s:rgba(244,246,245,0.76);--h:#171a18;--r:#343936;--m:rgba(255,255,255,0.38)}',
+    'html[data-theme=dark]{color-scheme:dark;--g:#1b1f1d;--i:#eef2f0;--s:#c9d0cc;--h:#262b29;--r:#3f4643;--m:rgba(255,255,255,0.42)}',
     'html[data-theme=light]{color-scheme:light;--g:#ebe5d9;--i:#29231d;--s:#4d443a;--h:#e2dbcd;--r:#c9bfae;--m:#8c7f6f}',
     'html[data-theme=bright]{color-scheme:light;--g:#fff;--i:#0b0b0b;--s:#333;--h:#fff;--r:#d4d4d4;--m:#767676}',
-    'html[data-theme=black]{color-scheme:dark;--g:#000;--i:#f5f5f5;--s:#bdbdbd;--h:#000;--r:#2e2e2e;--m:rgba(255,255,255,0.4)}',
     '*{box-sizing:border-box}',
     'html,body{margin:0}',
     'body{display:flex;min-height:100svh;flex-direction:column;background:var(--g);color:var(--i);font:0.875rem/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;-webkit-font-smoothing:antialiased}',
@@ -38,7 +39,7 @@ const STYLE = [
 
 /** The page itself. */
 export const UNAVAILABLE_HTML = `<!doctype html>
-<html lang="en" data-theme="dark" data-theme-choice="system">
+<html lang="en" data-theme="black" data-theme-choice="system">
 <head>
 <script>${THEME_INIT_SCRIPT}</script>
 <meta charset="utf-8">

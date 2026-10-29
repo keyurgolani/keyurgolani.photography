@@ -56,9 +56,10 @@
 
 /* Round 2 of the themes mockup (P1-1): once it's the badge, the portrait sits above Home's scrim (49), so no theme's
    wash ever fogs it. It shares the chrome's layer (50) and comes before it in the DOM, so the chrome still paints over
-   it; badgePlace() keeps it 16 px clear of the chrome's text and its panel, so their contrast doesn't depend on it. */
+   it; badgePlace() keeps it 16 px clear of the chrome's text and its panel, so their contrast doesn't depend on it.
+   Black is today's site, where the badge sits under the scrim (--gah-badge-layer: 42). */
 .badge {
-  z-index: 50;
+  z-index: var(--gah-badge-layer, 50);
 }
 
 .badge[data-lingering],

@@ -48,10 +48,11 @@
 /* One link per entry, the whole entry its target. */
 .entry {
   /* The themes mockup, round 2 (P1-3): the cover's surround size and its real thickness, which the grid, the copy and
-     the focus ring reserve. The ring clears the surround by 2 px and never runs past the gutter. */
+     the focus ring reserve. The ring clears the surround by 2 px (today's 3 px where there's none) and never runs past
+     the gutter. */
   --work-surround: var(--gah-surround-md, none);
   --work-room: var(--gah-room-md, 0px);
-  --focus-ring-offset: min(calc(var(--work-room) + 2px), calc(var(--site-gutter) - var(--focus-ring-width) - 1px));
+  --focus-ring-offset: min(max(3px, var(--work-room) + 2px), calc(var(--site-gutter) - var(--focus-ring-width) - 1px));
   display: block;
   border-radius: var(--gah-radius);
   color: inherit;

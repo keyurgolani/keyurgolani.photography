@@ -51,10 +51,11 @@ describe('app/global-error', () => {
   const markup = renderToStaticMarkup(<GlobalError error={failure} reset={vi.fn()} />);
   const page = new DOMParser().parseFromString(markup, 'text/html');
 
-  it('brings its own html and body, in the dark theme', () => {
+  it('brings its own html and body, in System painting Black, as the root layout sends', () => {
     expect(markup.startsWith('<html')).toBe(true);
     expect(page.documentElement.getAttribute('lang')).toBe('en');
-    expect(page.documentElement.getAttribute('data-theme')).toBe('dark');
+    expect(page.documentElement.getAttribute('data-theme')).toBe('black');
+    expect(page.documentElement.getAttribute('data-theme-choice')).toBe('system');
     expect(page.body).not.toBeNull();
   });
 

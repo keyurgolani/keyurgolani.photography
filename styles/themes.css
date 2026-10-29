@@ -4,7 +4,7 @@
    onto the --gah-* tokens the shell already reads, plus the photo surround
    (mat, frame, keyline, shadow), caption ink, the Home stage, the Viewer's
    Chromatic Chapters tokens (--cc-*) and About's Light Takes Shape tokens
-   (--lts-*). Dark is also the default, for a page with no attribute.
+   (--lts-*). Black is also the default, for a page with no attribute.
 
    What differs beyond lightness:
      light   paper: a toned warm sheet; photos sit in a lighter mat with a
@@ -13,10 +13,69 @@
              a white mat, no shadow, square corners; gallery-red accent.
      dark    charcoal room: a lit charcoal with layered surfaces; photos on a
              charcoal mat with a light keyline; sage accent.
-     black   void: true black, no surfaces, no mats, no rules behind photos;
-             the photograph's own edge; white is the only accent. */
+     black   today's site, exactly (owner ruling, 2026-10-28, "Today's look"):
+             v1.2.0's near black #080a09, its surfaces, its radius, its
+             full-bleed Home and its Viewer and About. System on a dark device
+             and no-JS visitors get it. */
 
+/* Black: today's site, exactly. Every value is v1.2.0's (styles/tokens.css, and the literals the modules had before
+   the themes), so the page paints as it does today. It is the default for a page with no attribute too. The new
+   tokens the other themes need take today's look: no surround, no stage inset, today's scrims. The legacy variables
+   (--background-color and the rest) come from globals.css's [data-theme="dark"], [data-theme="black"] block. */
 :root,
+html[data-theme='black'] {
+  color-scheme: dark;
+  --gah-color-scheme: dark;
+  --gah-ground: #080a09;
+  --gah-surface: #111412;
+  --gah-raised: #151917;
+  --gah-ink: #f4f6f5;
+  --gah-ink-soft: rgba(244, 246, 245, 0.76);
+  --gah-ink-muted: rgba(244, 246, 245, 0.62);
+  --gah-label: #b7c5c1;
+  --gah-caption-ink: rgba(244, 246, 245, 0.76);
+  --gah-rule: rgba(255, 255, 255, 0.17);
+  --gah-rule-strong: rgba(255, 255, 255, 0.38);
+  --gah-accent: #eff4f1;
+  --gah-glass: rgba(5, 7, 6, 0.88);
+  --gah-glass-blur: 12px;
+  --gah-nav-rule: rgba(255, 255, 255, 0.17);
+  --gah-action: #eff4f1;
+  --gah-action-ink: #101412;
+  --gah-action-hover: #ffffff;
+  --gah-radius: 3px;
+  --focus-ring-light: #ffffff;
+  --focus-ring-dark: #000000;
+
+  --gah-photo-radius: 3px;
+  --gah-surround-sm: none;
+  --gah-surround-md: none;
+  --gah-surround-lg: none;
+  --gah-surround-room: 0px;
+  --gah-mat-fill: #000000;
+  --gah-room-sm: 0px;
+  --gah-room-md: 0px;
+  --gah-room-lg: 0px;
+  --gah-surround-clear: 0px;
+  --gah-slot-surround-sm: none;
+  --gah-print-edge: none;
+
+  --gah-stage-inset: 0px;
+  --gah-stage-surround: none;
+  --gah-scrim-rgb: 8 10 9;
+  --gah-scrim-ink: #f4f6f5;
+  --gah-scrim-ink-soft: rgba(244, 246, 245, 0.76);
+  --gah-control-scrim: rgba(0, 0, 0, 0.65);
+  --gah-control-ink: #ffffff;
+  --gah-grain-opacity: 0.06;
+  --gah-badge-ring: 0 0 0 4px rgba(255, 255, 255, 0.19);
+  --gah-badge-rim: rgba(255, 255, 255, 0.5);
+  --gah-panel-alpha: 0.6;
+  /* Today the badge sits under Home's scrim (49); the other themes raise it above (round 2, P1-1). */
+  --gah-badge-layer: 42;
+}
+
+/* Dark: the charcoal room, for anyone who picks it. */
 html[data-theme='dark'] {
   color-scheme: dark;
   --gah-color-scheme: dark;
@@ -79,6 +138,12 @@ html[data-theme='dark'] {
   --background-color-rgb: 27, 31, 29;
   --primary-color: #eef2f0;
   --primary-color-rgb: 238, 242, 240;
+  /* The Viewer's and About's grounds for the body and the modal backdrop, which sit outside their surfaces; and no
+     outline on the Viewer's photograph, which the surround replaces. Black takes the modules' fallbacks, today's. */
+  --gah-viewer-ground: #1b1f1d;
+  --gah-about-ground: #1e1c19;
+  --gah-viewer-image-outline: none;
+  --gah-badge-layer: 50;
 }
 
 html[data-theme='light'] {
@@ -136,6 +201,12 @@ html[data-theme='light'] {
   --background-color-rgb: 235, 229, 217;
   --primary-color: #29231d;
   --primary-color-rgb: 41, 35, 29;
+  /* The Viewer's and About's grounds for the body and the modal backdrop, which sit outside their surfaces; and no
+     outline on the Viewer's photograph, which the surround replaces. Black takes the modules' fallbacks, today's. */
+  --gah-viewer-ground: #ebe5d9;
+  --gah-about-ground: #f4ecd7;
+  --gah-viewer-image-outline: none;
+  --gah-badge-layer: 50;
 }
 
 html[data-theme='bright'] {
@@ -192,85 +263,31 @@ html[data-theme='bright'] {
   --background-color-rgb: 255, 255, 255;
   --primary-color: #0b0b0b;
   --primary-color-rgb: 11, 11, 11;
+  /* The Viewer's and About's grounds for the body and the modal backdrop, which sit outside their surfaces; and no
+     outline on the Viewer's photograph, which the surround replaces. Black takes the modules' fallbacks, today's. */
+  --gah-viewer-ground: #ffffff;
+  --gah-about-ground: #ffffff;
+  --gah-viewer-image-outline: none;
+  --gah-badge-layer: 50;
 }
 
-html[data-theme='black'] {
-  color-scheme: dark;
-  --gah-color-scheme: dark;
-  --gah-ground: #000000;
-  --gah-surface: #000000;
-  --gah-raised: #0b0b0b;
-  --gah-ink: #f5f5f5;
-  --gah-ink-soft: #bdbdbd;
-  --gah-ink-muted: #949494;
-  --gah-label: #8f8f8f;
-  --gah-caption-ink: #c4c4c4;
-  --gah-rule: rgba(255, 255, 255, 0.1);
-  --gah-rule-strong: rgba(255, 255, 255, 0.4);
-  --gah-accent: #ffffff;
-  --gah-glass: #000000;
-  --gah-glass-blur: 0px;
-  --gah-nav-rule: transparent;
-  --gah-action: #f5f5f5;
-  --gah-action-ink: #000000;
-  --gah-action-hover: #ffffff;
-  --gah-radius: 0px;
-  --focus-ring-light: #ffffff;
-  --focus-ring-dark: #000000;
-
-  /* Nothing behind or around a photograph. */
-  --gah-photo-radius: 0px;
-  --gah-surround-sm: none;
-  --gah-surround-md: none;
-  --gah-surround-lg: none;
-  --gah-surround-room: 0px;
-  --gah-mat-fill: transparent;
-  --gah-room-sm: 0px;
-  --gah-room-md: 0px;
-  --gah-room-lg: 0px;
-  --gah-surround-clear: 0px;
-  --gah-slot-surround-sm: none;
-  --gah-print-edge: none;
-
-  --gah-stage-inset: 0px;
-  --gah-stage-surround: none;
-  --gah-scrim-rgb: 0 0 0;
-  --gah-scrim-ink: #f5f5f5;
-  --gah-scrim-ink-soft: #c9c9c9;
-  --gah-control-scrim: rgba(0, 0, 0, 0.62);
-  --gah-control-ink: #f5f5f5;
-  --gah-grain-opacity: 0;
-  --gah-badge-ring: none;
-  --gah-badge-rim: rgba(255, 255, 255, 0.28);
-  --gah-panel-alpha: 0.6;
-
-  --background-color: #000000;
-  --background-color-rgb: 0, 0, 0;
-  --primary-color: #f5f5f5;
-  --primary-color-rgb: 245, 245, 245;
-}
-
-/* The Viewer's Chromatic Chapters tokens, per theme. Dark keeps today's bands on the lifted charcoal. */
-html [data-surface='viewer'],
+/* The Viewer's Chromatic Chapters tokens, per theme. Black keeps today's exactly (styles/surfaces/chromatic-chapters.css,
+   so it sets nothing here); Dark keeps today's bands, on the lifted charcoal. */
 html[data-theme='dark'] [data-surface='viewer'] {
   --cc-ground: #1b1f1d;
   --cc-band-edge: #181c1a;
   --cc-band-mid: #202523;
   --cc-ink: #f3f2ec;
   --cc-ink-soft: #d0d5d1;
+  --cc-caption-ink: #d0d5d1;
   --cc-label: #aab4af;
   --cc-chrome: rgba(24, 28, 26, 0.94);
   --cc-rule: rgba(255, 255, 255, 0.14);
   --cc-rule-strong: rgba(255, 255, 255, 0.42);
-}
-
-/* Round 2 (P2-1): Dark keeps the approved bands and drops the Viewer's mat, which the lit middle band already does the
-   job of; the keyline and the shadow stay. Its own selector, so no other theme inherits it. */
-html:not([data-theme]) [data-surface='viewer'],
-html[data-theme='dark'] [data-surface='viewer'] {
+  /* Round 2 (P2-1): Dark keeps the approved bands and drops the Viewer's mat, which the lit middle band already does
+     the job of; the keyline and the shadow stay. */
   --gah-surround-lg: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 24px 44px -18px rgba(0, 0, 0, 0.8);
   --gah-surround-md: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 18px 32px -16px rgba(0, 0, 0, 0.75);
-  --gah-surround-room: 1px;
   --gah-room-lg: 1px;
   --gah-room-md: 1px;
 }
@@ -281,6 +298,7 @@ html[data-theme='light'] [data-surface='viewer'] {
   --cc-bands: none;
   --cc-ink: #29231d;
   --cc-ink-soft: #3a3229;
+  --cc-caption-ink: #3a3229;
   --cc-label: #645a4e;
   --cc-chrome: #f2ede3;
   --cc-rule: rgba(41, 35, 29, 0.16);
@@ -292,32 +310,15 @@ html[data-theme='bright'] [data-surface='viewer'] {
   --cc-bands: none;
   --cc-ink: #0b0b0b;
   --cc-ink-soft: #1a1a1a;
+  --cc-caption-ink: #1a1a1a;
   --cc-label: #5c5c5c;
   --cc-chrome: #ffffff;
   --cc-rule: rgba(0, 0, 0, 0.1);
   --cc-rule-strong: #767676;
 }
 
-html[data-theme='black'] [data-surface='viewer'] {
-  --cc-ground: #000000;
-  --cc-bands: none;
-  --cc-ink: #f5f5f5;
-  --cc-ink-soft: #c4c4c4;
-  --cc-label: #8f8f8f;
-  --cc-chrome: transparent;
-  --cc-rule: transparent;
-  --cc-rule-strong: rgba(255, 255, 255, 0.4);
-}
-
-/* The Viewer's ground for the body and the modal backdrop, which sit outside the surface. */
-:root,
-html[data-theme='dark'] { --gah-viewer-ground: #1b1f1d; }
-html[data-theme='light'] { --gah-viewer-ground: #ebe5d9; }
-html[data-theme='bright'] { --gah-viewer-ground: #ffffff; }
-html[data-theme='black'] { --gah-viewer-ground: #000000; }
-
-/* About's Light Takes Shape, per theme. Light keeps the approved paper exactly; Bright is the shade lit white;
-   Dark is the lamp at night, its frame glowing warm; Black drops the ribs and the frame. */
+/* About's Light Takes Shape, per theme. Light and Black keep the approved paper exactly (Black is today's site, and
+   today's About is the paper), so they set nothing here; Bright is the shade lit white; Dark is the lamp at night. */
 html[data-theme='bright'] [data-surface='about'] {
   --lts-paper: #ffffff;
   --lts-ink: #0b0b0b;
@@ -350,27 +351,13 @@ html[data-theme='dark'] [data-surface='about'] {
   --lts-caption-ink: #f3ecdf;
 }
 
-html[data-theme='black'] [data-surface='about'] {
-  --lts-paper: #000000;
-  --lts-ink: #f0f0f0;
-  --lts-ink-soft: #ababab;
-  --lts-rib: transparent;
-  --lts-rule: rgba(255, 255, 255, 0.12);
-  --lts-rule-strong: rgba(255, 255, 255, 0.4);
-  --lts-glass: #000000;
-  --lts-frame: #000000;
-  --lts-shadow: none;
-  --lts-link-rule: #8a8a8a;
-  --lts-caption-bg: rgba(0, 0, 0, 0.7);
-  --lts-caption-ink: #e6e6e6;
+/* Today's reduced-transparency rule (styles/tokens.css), which the theme blocks would otherwise outrank. */
+@media (prefers-reduced-transparency: reduce) {
+  html[data-theme] {
+    --gah-glass: var(--gah-ground);
+    --gah-glass-blur: 0px;
+  }
 }
-
-/* About's ground for the body, which sits outside the surface. */
-:root,
-html[data-theme='dark'] { --gah-about-ground: #1e1c19; }
-html[data-theme='light'] { --gah-about-ground: #f4ecd7; }
-html[data-theme='bright'] { --gah-about-ground: #ffffff; }
-html[data-theme='black'] { --gah-about-ground: #000000; }
 
 /* A theme change: one short crossfade of the page's colors where motion is allowed, none where it isn't. */
 @media (prefers-reduced-motion: no-preference) {

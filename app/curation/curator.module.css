@@ -1054,8 +1054,8 @@ main.state {
 }
 
 /* The themes mockup: the curator's surfaces and states per theme. Dark is the block at the top, lifted with the
-   site's charcoal; Light and Bright turn every tone into a light badge of the same hue; Black keeps the tones as
-   dark tints and draws its boxes with rules instead of fills. */
+   site's charcoal; Light and Bright turn every tone into a light badge of the same hue. Black is today's curator, the
+   block at the top, so it sets nothing here. */
 :global(html[data-theme='dark']) .page {
   --curator-page: #1f2422;
   --curator-header: #262b29;
@@ -1118,24 +1118,6 @@ main.state {
   --curator-suggestion: #1d6a4a;
   --curator-primary: #0b0b0b;
   --curator-primary-ink: #ffffff;
-}
-
-:global(html[data-theme='black']) .page {
-  --curator-page: #000000;
-  --curator-header: #000000;
-  --curator-list: #000000;
-  --curator-active: #171717;
-  --curator-field: #000000;
-  --curator-box: #000000;
-  --curator-rule: #2e2e2e;
-  --curator-tone-new-bg: #0e2219;
-  --curator-tone-change-bg: #242006;
-  --curator-tone-alert-bg: #2b0f0b;
-  --curator-tone-settled-bg: #141414;
-  --curator-lock-bg: #08150f;
-  --curator-approved-bg: #0e2219;
-  --curator-primary: #f5f5f5;
-  --curator-primary-ink: #000000;
 }
 
 /* The theme control's place in the curator header, before Sign out. */

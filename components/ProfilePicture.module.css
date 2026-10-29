@@ -41,12 +41,13 @@
   transition: box-shadow 0.1s ease;
 }
 
-[data-theme='dark'] .face {
+[data-theme='dark'] .face,
+[data-theme='black'] .face {
   box-shadow: 0 0 0 4px rgb(255 255 255 / 0.19);
 }
 
 /* The themes mockup: Light lays the portrait in a paper mat with its lift shadows; Bright frames it like the prints,
-   white mat and black line, no shadow; Black takes the ring away and keeps only the light on its edge. */
+   white mat and black line, no shadow. Black is today's site, so it keeps today's dark ring and rim, as Dark does. */
 [data-theme='light'] .face {
   box-shadow:
     0 0 0 5px #f8f5ee,
@@ -58,10 +59,6 @@
 
 [data-theme='bright'] .face {
   box-shadow: 0 0 0 6px #ffffff, 0 0 0 8px #111111;
-}
-
-[data-theme='black'] .face {
-  box-shadow: none;
 }
 
 [data-theme='dark'] .face::after,

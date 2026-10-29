@@ -18,16 +18,16 @@ const html = document.documentElement;
 
 describe('ThemeProvider', () => {
   beforeEach(() => {
-    html.setAttribute('data-theme', 'dark');
+    html.setAttribute('data-theme', 'black');
     delete html.dataset.hydrated;
     localStorage.clear();
   });
 
   afterEach(() => {
-    html.setAttribute('data-theme', 'dark');
+    html.setAttribute('data-theme', 'black');
   });
 
-  it('renders its children on the first pass, in the dark theme the server sends', () => {
+  it('renders its children on the first pass, in the theme the server sends (Black, which the legacy flip reads as dark)', () => {
     // The server render runs no effects, so a gate that waits for a mount effect would send no child.
     let firstPass = '';
     function First() {
@@ -174,23 +174,24 @@ describe('ThemeProvider', () => {
     expect(html.dataset.hydrated).toBe('true');
   });
 
-  it('writes the attribute and localStorage.theme on each toggle', () => {
+  it('writes the attribute and localStorage.theme on each toggle', async () => {
     render(
       <ThemeProvider>
         <Probe />
       </ThemeProvider>,
     );
-    act(() => fireEvent.click(screen.getByRole('button')));
+    await act(async () => fireEvent.click(screen.getByRole('button')));
     expect(html.getAttribute('data-theme')).toBe('light');
     expect(localStorage.getItem('theme')).toBe('light');
     expect(screen.getByRole('button')).toHaveTextContent('light');
 
-    act(() => fireEvent.click(screen.getByRole('button')));
-    expect(html.getAttribute('data-theme')).toBe('dark');
-    expect(localStorage.getItem('theme')).toBe('dark');
+    // The legacy flip's dark is today's site, which is Black now (owner ruling, 2026-10-28).
+    await act(async () => fireEvent.click(screen.getByRole('button')));
+    expect(html.getAttribute('data-theme')).toBe('black');
+    expect(localStorage.getItem('theme')).toBe('black');
   });
 
-  it('still flips both ways when localStorage throws on write', () => {
+  it('still flips both ways when localStorage throws on write', async () => {
     const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new DOMException('The operation is insecure.', 'SecurityError');
     });
@@ -200,11 +201,11 @@ describe('ThemeProvider', () => {
           <Probe />
         </ThemeProvider>,
       );
-      act(() => fireEvent.click(screen.getByRole('button')));
+      await act(async () => fireEvent.click(screen.getByRole('button')));
       expect(html.getAttribute('data-theme')).toBe('light');
       expect(screen.getByRole('button')).toHaveTextContent('light');
-      act(() => fireEvent.click(screen.getByRole('button')));
-      expect(html.getAttribute('data-theme')).toBe('dark');
+      await act(async () => fireEvent.click(screen.getByRole('button')));
+      expect(html.getAttribute('data-theme')).toBe('black');
       expect(screen.getByRole('button')).toHaveTextContent('dark');
     } finally {
       setItem.mockRestore();

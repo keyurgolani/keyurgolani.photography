@@ -128,7 +128,7 @@
 .coverLink {
   --ratio: 3 / 2;
   /* The ring clears the surround's real thickness by 2 px, and never runs past the gutter (round 2, P1-3). */
-  --focus-ring-offset: min(calc(var(--series-cover-room) + 2px), calc(var(--site-gutter) - var(--focus-ring-width) - 1px));
+  --focus-ring-offset: min(max(3px, var(--series-cover-room) + 2px), calc(var(--site-gutter) - var(--focus-ring-width) - 1px));
   display: block;
   width: min(100%, calc(82svh * var(--ratio)));
   border-radius: var(--gah-radius);
@@ -236,7 +236,7 @@
 
 /* One link per entry: the thumbnail and its number. */
 .entry {
-  --focus-ring-offset: min(calc(var(--gah-room-sm, 0px) + 2px), calc(var(--site-gutter) - var(--focus-ring-width) - 1px));
+  --focus-ring-offset: min(max(3px, var(--gah-room-sm, 0px) + 2px), calc(var(--site-gutter) - var(--focus-ring-width) - 1px));
   position: relative;
   display: block;
   border-radius: var(--gah-radius);
@@ -258,8 +258,9 @@
 /* Round 2 of the themes mockup (P1-2): one frame size, a window cut to each print. The slot is the mat: it takes the
    mat's fill and the outer layers (Bright's frame, Light's hairline and shadow, Dark's shadow). The print, centred and
    sized to its own ratio (--photo-ratio, from SeriesPhoto), carries the inner layer on its own edge (Light's bevel,
-   Dark's keyline), so a portrait or a square has an edge of its own and never floats in a band of the slot. */
-.thumbFrame[data-photo='contain'] {
+   Dark's keyline), so a portrait or a square has an edge of its own and never floats in a band of the slot. Black is
+   today's site, so it keeps today's letterbox on the surface. */
+:global(html:not([data-theme='black'])) .thumbFrame[data-photo='contain'] {
   display: grid;
   grid-template: 100% / 100%;
   place-items: center;
@@ -268,11 +269,11 @@
   box-shadow: var(--gah-slot-surround-sm, var(--gah-surround-sm, none));
 }
 
-.thumbFrame[data-photo='contain'] > picture {
+:global(html:not([data-theme='black'])) .thumbFrame[data-photo='contain'] > picture {
   display: contents;
 }
 
-.thumbFrame[data-photo='contain'] .image {
+:global(html:not([data-theme='black'])) .thumbFrame[data-photo='contain'] .image {
   position: static;
   width: min(100%, 75% * var(--photo-ratio, 1.3333));
   height: auto;

@@ -47,7 +47,7 @@
 :global(html:not([data-theme-choice='black'])) .button [data-name-for='black'],
 :global(html:not([data-theme-choice='system'])) .button [data-now],
 :global(html:not([data-theme='light'])) .button [data-now='light'],
-:global(html:not([data-theme='dark'])) .button [data-now='dark'] {
+:global(html:not([data-theme='black'])) .button [data-now='black'] {
   display: none;
 }
 
@@ -65,11 +65,6 @@
   color: var(--gah-ink);
   box-shadow: 0 18px 40px -16px rgb(0 0 0 / 0.45);
   font-family: var(--gah-font-sans);
-}
-
-:global(html[data-theme='black']) .popover {
-  border-color: var(--gah-rule-strong);
-  box-shadow: none;
 }
 
 :global(html[data-theme='bright']) .popover {
@@ -108,10 +103,6 @@
   .option:hover {
     background: var(--gah-surface);
   }
-}
-
-:global(html[data-theme='black']) .option:hover {
-  background: #141414;
 }
 
 /* The radio stays native, for its keyboard and its announcement, and draws nothing: the row shows its state. */
@@ -153,9 +144,9 @@
 .preview[data-preview='bright'] .previewPhoto { width: 22px; height: 14px; box-shadow: 0 0 0 3px #ffffff, 0 0 0 4px #111111; }
 .preview[data-preview='dark'] { background: #1b1f1d; }
 .preview[data-preview='dark'] .previewPhoto { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.18), 0 0 0 3px #2a2f2d; }
-.preview[data-preview='black'] { background: #000000; }
-.preview[data-preview='black'] .previewPhoto { width: 44px; height: 24px; }
-.preview[data-preview='system'] { background: linear-gradient(135deg, #ebe5d9 0 50%, #1b1f1d 50% 100%); }
+.preview[data-preview='black'] { background: #080a09; }
+.preview[data-preview='black'] .previewPhoto { border-radius: 1px; }
+.preview[data-preview='system'] { background: linear-gradient(135deg, #ebe5d9 0 50%, #080a09 50% 100%); }
 .preview[data-preview='system'] .previewPhoto { box-shadow: 0 0 0 3px rgb(128 128 128 / 0.35); }
 
 .text {

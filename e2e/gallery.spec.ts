@@ -20,7 +20,7 @@ const navLinks = (page: Page) => primary(page).getByRole('link');
 const themeToggle = (page: Page) => page.getByRole('button', { name: /^Switch to (dark|light) mode$/ });
 const lightbox = (page: Page) => page.getByRole('dialog', { name: 'Lightbox' });
 
-async function openGallery(page: Page, theme: 'dark' | 'light' = 'dark') {
+async function openGallery(page: Page, theme: 'black' | 'light' = 'black') {
     if (theme === 'light') await page.addInitScript(() => localStorage.setItem('theme', 'light'));
     await page.goto('/gallery');
     await waitForHydration(page);
@@ -35,7 +35,7 @@ for (const viewport of [undefined, { width: 640, height: 400 }]) {
     test.describe(viewport ? 'at 640 by 400, which is 200% zoom' : 'at the project viewport', () => {
         if (viewport) test.use({ viewport });
 
-        for (const theme of ['dark', 'light'] as const) {
+        for (const theme of ['black', 'light'] as const) {
             test(`passes the surface checks in the ${theme} theme`, async ({ page }) => {
                 await openGallery(page, theme);
                 await checkSurface(page, {
@@ -123,7 +123,7 @@ test('the photo grid fills in DOM order, without dense packing', async ({ page }
 });
 
 // Each theme has its own hover rules, and only the active theme's match markup.
-for (const theme of ['dark', 'light'] as const) {
+for (const theme of ['black', 'light'] as const) {
     test(`every app hover rule on the page waits for a fine pointer in the ${theme} theme`, async ({ page }) => {
         await openGallery(page, theme);
         await expectHoverRulesGated(page);

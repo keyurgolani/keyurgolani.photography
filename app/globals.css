@@ -61,8 +61,9 @@ html {
     --secondary-color-rgb: 45, 45, 45;
 }
 
-[data-theme="dark"] {
-    /* Dark theme (Premium Dark) */
+[data-theme="dark"],
+[data-theme="black"] {
+    /* Dark theme (Premium Dark). Black is today's site, so it keeps these too. */
     --background-color: #050505; /* Deep off-black */
     --background-color-rgb: 5, 5, 5;
     --primary-color: #F0F0F0; /* Off-white for text */

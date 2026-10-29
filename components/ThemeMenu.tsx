@@ -7,18 +7,18 @@ import styles from './ThemeMenu.module.css';
 
 /** Each choice's name and the one line that says what it looks like. Provisional copy. */
 export const THEME_LABELS: Record<ThemeChoice, { name: string; note: string }> = {
-  system: { name: 'System', note: 'Light or Dark, as your device is set' },
+  system: { name: 'System', note: 'Light or Black, as your device is set' },
   light: { name: 'Light', note: 'Soft paper, matted prints' },
   bright: { name: 'Bright', note: 'White wall, framed prints' },
   dark: { name: 'Dark', note: 'Charcoal room' },
-  black: { name: 'Black', note: 'True black, nothing but the photo' },
+  black: { name: 'Black', note: 'Near black, the site as it was' },
 };
 
 /**
  * The theme control: a 44 by 44 button in `SiteNav` (and the curator's header)
  * that opens a small popover holding a native radio group of the five choices.
  *
- * The button's name is "Theme: <choice>", with "(Light now)" or "(Dark now)"
+ * The button's name is "Theme: <choice>", with "(Light now)" or "(Black now)"
  * after System. The names are all rendered, and CSS on `html[data-theme-choice]`
  * and `html[data-theme]` hides the ones that don't apply, so the name is right
  * from first paint, before React runs, as the old toggle's was.
@@ -47,9 +47,9 @@ export default function ThemeMenu({ placement = 'nav' }: { placement?: 'nav' | '
           {' '}
           (Light now)
         </span>
-        <span className={styles.hidden} data-now="dark">
+        <span className={styles.hidden} data-now="black">
           {' '}
-          (Dark now)
+          (Black now)
         </span>
       </button>
       <div id={popoverId} popover="auto" className={styles.popover} data-placement={placement}>

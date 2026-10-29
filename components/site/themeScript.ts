@@ -5,8 +5,9 @@
  * The choice is `localStorage.theme`: `system`, `light`, `bright`, `dark` or
  * `black`. Today's stored `light` and `dark` are already valid choices, so they
  * carry over as they are; anything else, nothing stored, or a `localStorage`
- * that throws is System. System resolves to Light or Dark from
- * `prefers-color-scheme`, and the listener this script adds keeps it following
+ * that throws is System. System resolves to Light or Black from
+ * `prefers-color-scheme` (owner ruling, 2026-10-28: a dark device gets Black,
+ * today's site), and the listener this script adds keeps it following
  * the device live, before and after React runs.
  *
  * It writes two attributes on `<html>`: `data-theme-choice` (what the visitor
@@ -24,5 +25,5 @@ export const THEME_INIT_SCRIPT =
   "m=window.matchMedia&&matchMedia('(prefers-color-scheme: light)'),c=null,q=/[?&]theme=([a-z]+)/.exec(location.search);" +
   "if(q&&v.indexOf(q[1])>-1)c=q[1];else try{c=localStorage.getItem('theme')}catch(e){}" +
   "if(v.indexOf(c)<0)c='system';" +
-  "var a=function(){var k=d.getAttribute('data-theme-choice');d.setAttribute('data-theme',k==='system'?(m&&m.matches?'light':'dark'):k)};" +
+  "var a=function(){var k=d.getAttribute('data-theme-choice');d.setAttribute('data-theme',k==='system'?(m&&m.matches?'light':'black'):k)};" +
   "d.setAttribute('data-theme-choice',c);a();if(m&&m.addEventListener)m.addEventListener('change',a)}catch(e){}})()";

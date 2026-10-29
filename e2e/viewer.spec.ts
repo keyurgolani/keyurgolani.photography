@@ -488,7 +488,7 @@ test('share metadata names the photo and its series, on SITE_URL, with a /media 
     expect(await meta('og:image:alt')).toBe('Fixture description of the harbor.');
 });
 
-for (const theme of ['dark', 'light'] as const) {
+for (const theme of ['black', 'light'] as const) {
     test(`the Viewer keeps its own dark ground under the ${theme} site theme`, async ({ page }) => {
         if (theme === 'light') await page.addInitScript(() => localStorage.setItem('theme', 'light'));
         await openViewer(page, P[0]);
