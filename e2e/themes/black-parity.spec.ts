@@ -17,7 +17,8 @@ import { publishHomeFixture } from '../support/homeFixture';
 // raster step, at most 1 in any channel and on average at most 0.5 per channel in every 120 px band: the scrim blends
 // in a different raster path once the chrome shows, with the same values (the round 2 design review). A second table
 // pins the ruling on owner question 4: the head with today's stored `dark` paints Black too.
-// At 1440x900 and 390x844, each at 1x and 2x.
+// At 1440x900 and 390x844, each at 1x and 2x. The visitor pages, the 404 and the error page; the legacy Gallery and its
+// lightbox; the curator signed out and in, and its 503.
 
 const BASE = process.env.PARITY_BASE_DIR;
 const HEAD = process.cwd();
@@ -428,4 +429,28 @@ test.describe('the curator and its 503', () => {
 
     parity('curator', CURATOR, () => curator, { legacy: true, session: () => cookies });
     parity('curator', [{ name: '503', url: '/curation/login' }], () => broken, { legacy: true });
+});
+
+test.describe('the error page', () => {
+    const servers: Server[] = [];
+    let failing = { base: '', head: '' };
+
+    test.beforeAll(async () => {
+        // A catalog whose active pointer is damaged: the site has cut over and can't read it, so a page throws and the
+        // visitor gets app/error.tsx.
+        const root = path.join(temp, 'damaged');
+        fs.mkdirSync(path.join(root, 'catalog', 'active'), { recursive: true });
+        fs.writeFileSync(path.join(root, 'catalog', 'active', 'v1.json'), 'not a pointer');
+        const env = { PHOTOGRAPHY_LIBRARY_DIR: library, PHOTOGRAPHY_SITE_CONFIG_DIR: siteConfig, PHOTOGRAPHY_DATA_DIR: root };
+        const [a, b] = [await port(0), await port(1)];
+        const started = await Promise.all([serve(BASE!, a, env, '/work', 500), serve(HEAD, b, env, '/work', 500)]);
+        servers.push(...started);
+        failing = { base: started[0].origin, head: started[1].origin };
+    });
+
+    test.afterAll(async () => {
+        await Promise.all(servers.map((server) => server.stop()));
+    });
+
+    parity('visitor', [{ name: 'error', url: '/work' }], () => failing, { legacy: true });
 });
