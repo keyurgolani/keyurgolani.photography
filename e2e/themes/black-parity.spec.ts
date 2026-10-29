@@ -13,22 +13,22 @@ import { routePhotoFixtures } from '../support/test';
 
 // Black is today's site, exactly (the owner's ruling, 2026-10-28). This renders the same pages from two builds, the
 // base (PARITY_BASE_DIR: next before the themes) with today's toggle's stored `dark` and the head with `black` stored,
-// on the same fixtures, a dark device and reduced motion, and diffs every pixel. A pixel may differ only inside the
-// theme control's box (the control replaced the toggle, both builds' boxes ±2 px). Home with its chrome may differ by a
-// raster step, at most 1 in any channel and on average at most 0.5 per channel in every 120 px band: the scrim blends
-// in a different raster path once the chrome shows, with the same values (the round 2 design review). A second table
-// pins the ruling on owner question 4: the head with today's stored `dark` paints Black too. The curator's header gains
-// the control where the base had none, so the head's curator shots take it out of the layout and get the raster bound.
-// Home's intro can't be repeated by the base itself, so it gets the base's own spread (Pair.noisy). Inside a photograph's
-// box a pixel may differ by up to PHOTO_STEP, the image's resampling from one load to the next.
+// on the same fixtures, a dark device and reduced motion, and diffs every pixel outside the theme controls' boxes (the
+// base's toggle, the head's control, ±2 px, in the page and in the curator's preview frame).
+//
+// The pass rule (the lead, 2026-10-28): the base is shot twice, and on each page, at each size and scale, the head may
+// differ from the closer base shot by no more pixels and no larger a step than the two base shots differ from each
+// other. A page the base repeats exactly must match exactly. Home with its chrome keeps the accepted raster bound on
+// top: at most 1 in any channel, and on average at most 0.5 per channel in every 120 px band (the round 2 review).
+// A second row per page and size pins the ruling on owner question 4: the head with today's stored `dark` paints Black.
+// The curator's header gains the control where the base had none, so the head's curator shots take it out of the
+// layout first, as no JavaScript does.
 // At 1440x900 and 390x844, each at 1x and 2x. The visitor pages, the 404 and the error page; the legacy Gallery and its
 // lightbox; the curator signed out and in, and its 503.
 
 const BASE = process.env.PARITY_BASE_DIR;
 const HEAD = process.cwd();
 const OUT = path.join(HEAD, 'test-results', 'parity');
-/** How far a photograph's own pixels may differ, per channel: a resampling step. */
-const PHOTO_STEP = 4;
 const VIEWPORTS = { desktop: { width: 1440, height: 900 }, phone: { width: 390, height: 844 } } as const;
 const SCALES = [1, 2] as const;
 // Rows go to a file as they're measured: a failed test restarts the worker, which would drop rows held in memory.
@@ -108,8 +108,6 @@ interface Shot {
     file: string;
     /** Every theme control or toggle on the page, the curator's preview frame's included, in page pixels. */
     controls: Box[];
-    /** Every photograph's box, the same way. */
-    images: Box[];
 }
 interface Pair {
     /** The page, as `name` in the table. */
@@ -130,10 +128,6 @@ interface Pair {
     addsControl?: boolean;
     /** A page that never hydrates (the 503). */
     bare?: boolean;
-    /** A page the base can't repeat pixel for pixel (Home's intro: its blurred ripples rasterize differently from one
-     * load to the next at 1x). The base is shot twice, and the head may differ from the closer shot by as much as the
-     * two differ from each other, or the raster bound, whichever is larger. */
-    noisy?: boolean;
 }
 
 let browser: Browser;
@@ -184,12 +178,10 @@ async function shoot(origin: string, stored: string, pair: Pair, viewport: { wid
         });
         await page.waitForTimeout(600);
     }
-    if (pair.addsControl && tag !== 'base') await page.addStyleTag({ content: '[data-theme-control]{display:none!important}' });
+    if (pair.addsControl && !tag.startsWith('base')) await page.addStyleTag({ content: '[data-theme-control]{display:none!important}' });
     // The control in the page and in any same-origin frame: today's toggle in the base, the theme control in the head.
-    // And every photograph's box, whose own pixels may differ by a resampling step (Diff).
-    const { controls, images } = await page.evaluate(() => {
+    const controls = await page.evaluate(() => {
         const boxes: { x: number; y: number; w: number; h: number }[] = [];
-        const photos: typeof boxes = [];
         const visit = (doc: Document, dx: number, dy: number) => {
             const at = (el: Element) => {
                 const box = el.getBoundingClientRect();
@@ -200,7 +192,6 @@ async function shoot(origin: string, stored: string, pair: Pair, viewport: { wid
                 if (el.getBoundingClientRect().width === 0) continue;
                 boxes.push(at(el));
             }
-            for (const image of doc.images) if (image.getBoundingClientRect().width > 0) photos.push(at(image));
             for (const frame of doc.querySelectorAll('iframe')) {
                 const inner = frame.contentDocument;
                 const at = frame.getBoundingClientRect();
@@ -208,13 +199,13 @@ async function shoot(origin: string, stored: string, pair: Pair, viewport: { wid
             }
         };
         visit(document, window.scrollX, window.scrollY);
-        return { controls: boxes, images: photos };
+        return boxes;
     });
     const file = path.join(OUT, `${pair.name}-${viewport.width}-${scale}x-${tag}.png`);
     // The intro's CSS transitions (the portrait's rim light) run on the real clock, so they're settled for its frame.
     await page.screenshot({ path: file, fullPage: pair.session === true && pair.url.includes('publish'), animations: pair.intro ? 'disabled' : 'allow' });
     await context.close();
-    return { file, controls, images };
+    return { file, controls };
 }
 
 interface Diff {
@@ -233,9 +224,6 @@ async function diff(a: Shot, b: Shot, scale: number, name: string): Promise<Diff
     const { width, height } = left.info;
     const device = (pad: number) => (box: Box) => ({ x0: (box.x - pad) * scale, y0: (box.y - pad) * scale, x1: (box.x + box.w + pad) * scale, y1: (box.y + box.h + pad) * scale });
     const masks = [...a.controls, ...b.controls].map(device(2));
-    // Inside a photograph only, the image's resampling may land a step or few apart from one load to the next, in the
-    // base against itself too. A theme that touched a photo (a filter, an opacity) moves it far more.
-    const photos = [...a.images, ...b.images].map(device(0));
     const band = 120 * scale;
     const bands = new Map<string, { sum: [number, number, number]; n: number }>();
     let count = 0;
@@ -246,9 +234,7 @@ async function diff(a: Shot, b: Shot, scale: number, name: string): Promise<Diff
         for (let x = 0; x < width; x++) {
             const i = (y * width + x) * 3;
             const masked = masks.some((m) => x >= m.x0 && x < m.x1 && y >= m.y0 && y < m.y1);
-            const raw = [0, 1, 2].map((c) => Math.abs(left.data[i + c] - right.data[i + c]));
-            const inPhoto = Math.max(...raw) <= PHOTO_STEP && photos.some((m) => x >= m.x0 && x < m.x1 && y >= m.y0 && y < m.y1);
-            const steps = inPhoto ? [0, 0, 0] : raw;
+            const steps = [0, 1, 2].map((c) => Math.abs(left.data[i + c] - right.data[i + c]));
             for (const key of [`x${Math.floor(x / band)}`, `y${Math.floor(y / band)}`]) {
                 const entry = bands.get(key) ?? { sum: [0, 0, 0], n: 0 };
                 if (!masked) for (const c of [0, 1, 2]) entry.sum[c as 0 | 1 | 2] += steps[c];
@@ -285,7 +271,7 @@ const toSequence = async (page: Page) => {
 };
 
 const VISITOR: Pair[] = [
-    { name: 'home-intro', url: '/', intro: true, noisy: true },
+    { name: 'home-intro', url: '/', intro: true },
     { name: 'home-rest', url: '/' },
     { name: 'home-chrome', url: '/', act: revealChrome, raster: true },
     { name: 'work', url: '/work' },
@@ -346,19 +332,20 @@ const CURATOR: Pair[] = [
 const row = (label: string, size: string, width: number, scale: number, d: Diff) =>
     record(`| ${label} | ${size} ${width} | ${scale}x | ${d.count} | ${d.maxStep} | ${d.worstBandMean.toFixed(3)} | ${d.box} |`);
 
-/** What a pair may differ by: nothing; the raster bound; or, on a page the base can't repeat, the base's own spread. */
-function bound(pair: Pair, noise: Diff | null): { maxStep: number; bandMean: number } | null {
-    if (noise) return { maxStep: Math.max(1, noise.maxStep), bandMean: Math.max(0.5, noise.worstBandMean) };
-    return pair.raster || pair.addsControl ? { maxStep: 1, bandMean: 0.5 } : null;
+/**
+ * What the head may differ from the base by, on one page at one size and scale: no more pixels and no larger a step
+ * than the base differs from itself there (its noise floor, 0 on a page it repeats exactly). Home with its chrome keeps
+ * the accepted raster bound on top (at most 1 in any channel, 0.5 on average per channel in any 120 px band).
+ */
+function bound(pair: Pair, noise: Diff): { count: number; maxStep: number; bandMean: number } {
+    if (pair.raster) return { count: Number.POSITIVE_INFINITY, maxStep: Math.max(1, noise.maxStep), bandMean: Math.max(0.5, noise.worstBandMean) };
+    return { count: noise.count, maxStep: noise.maxStep, bandMean: Number.POSITIVE_INFINITY };
 }
 
 function expectWithin(name: string, d: Diff, limit: ReturnType<typeof bound>) {
-    if (!limit) {
-        expect.soft(d.count, `${name}: pixels differing outside the control (${d.box})`).toBe(0);
-        return;
-    }
-    expect.soft(d.maxStep, `${name}: no channel steps more than ${limit.maxStep}`).toBeLessThanOrEqual(limit.maxStep);
-    expect.soft(d.worstBandMean, `${name}: mean |Δ| per channel per 120 px band`).toBeLessThanOrEqual(limit.bandMean);
+    expect.soft(d.count, `${name}: pixels differing outside the control (${d.box}), against the base's own ${limit.count}`).toBeLessThanOrEqual(limit.count);
+    expect.soft(d.maxStep, `${name}: the largest step, against the base's own ${limit.maxStep}`).toBeLessThanOrEqual(limit.maxStep);
+    if (Number.isFinite(limit.bandMean)) expect.soft(d.worstBandMean, `${name}: mean |Δ| per channel per 120 px band`).toBeLessThanOrEqual(limit.bandMean);
 }
 
 /** The closer of the head's diffs against the base's shots: with two base shots, the base's own spread can't count against the head. */
@@ -376,13 +363,10 @@ function parity(group: string, pairs: Pair[], origins: () => { base: string; hea
             for (const [size, viewport] of Object.entries(VIEWPORTS)) {
                 for (const scale of SCALES) {
                     const name = `${pair.name}-${viewport.width}-${scale}x`;
-                    const bases = [await shoot(base, 'dark', pair, viewport, scale, 'base', cookies?.base)];
-                    let noise: Diff | null = null;
-                    if (pair.noisy) {
-                        bases.push(await shoot(base, 'dark', pair, viewport, scale, 'base-again', cookies?.base));
-                        noise = await diff(bases[0], bases[1], scale, `${name}-base-against-itself`);
-                        row(`${pair.name}, the base against itself`, size, viewport.width, scale, noise);
-                    }
+                    // The base twice: its own noise floor here, and two shots for the head to land near.
+                    const bases = [await shoot(base, 'dark', pair, viewport, scale, 'base', cookies?.base), await shoot(base, 'dark', pair, viewport, scale, 'base-again', cookies?.base)];
+                    const noise = await diff(bases[0], bases[1], scale, `${name}-base-against-itself`);
+                    row(`${pair.name}, the base against itself`, size, viewport.width, scale, noise);
                     const limit = bound(pair, noise);
                     const result = await closest(bases, await shoot(head, 'black', pair, viewport, scale, 'head', cookies?.head), scale, name);
                     row(pair.name, size, viewport.width, scale, result);
