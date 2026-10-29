@@ -17,7 +17,7 @@ export default defineConfig({
   workers: 1,
   retries: 0,
   timeout: 10 * 60_000,
-  reporter: [['list'], ['html', { open: 'never', outputFolder: '../../playwright-report-parity' }]],
+  reporter: [['list'], ['html', { open: 'never', outputFolder: '../../playwright-report/parity' }]],
   outputDir: '../../test-results/parity',
   use: { trace: 'off' },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],

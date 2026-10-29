@@ -141,6 +141,8 @@ jobs:
 
       # Each visitor route's first-load CSS, from the two builds' manifests: at most +2,500 B gzipped (R2-P2-1).
       - name: Check the CSS budget
+        # A run step without a shell has no pipefail, so the budget's exit would be tee's.
+        shell: bash
         run: node ci/themes-budget.mjs ../parity-base . | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Install Chromium
