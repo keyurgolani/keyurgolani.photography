@@ -511,7 +511,8 @@ for (const [choice, want] of Object.entries(VIEWER_THEMES)) {
         expect(colors).toEqual({ ground: want.ground, ink: want.ink, accent: '#c08040' });
         const bands = await page.locator('[data-surface="viewer"]').evaluate((root) => getComputedStyle(root).backgroundImage);
         if (want.bands) expect(bands, "today's bands").toMatch(/^linear-gradient\(/);
-        else expect(bands, 'no bands').toBe('none');
+        // The root's background is the bands' layer over the ground's, so every layer is none.
+        else expect(bands.split(',').map((layer) => layer.trim()), 'no bands').toEqual(bands.split(',').map(() => 'none'));
         // The body behind the root is the same ground, so an overscroll never shows the site's.
         expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe(want.ground);
         // No theme control: the Viewer renders no SiteNav.
