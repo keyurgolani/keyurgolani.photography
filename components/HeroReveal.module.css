@@ -71,6 +71,13 @@
   transition: opacity 1s ease-in-out;
 }
 
+/* Beside the story is badgePlace()'s last resort, when large text leaves no room to clear the copy, and there it can
+   sit under the title. Above the scrim the title's ink would then lie on the portrait, so it goes back under the
+   scrim, as Black's always is, and the scrim carries the copy over it. */
+.badge[data-badge-place='side'] {
+  z-index: 42;
+}
+
 .badge[data-lingering],
 [data-interface-state='interactive'] .badge[data-landed],
 main:has([data-home-chrome] :focus-visible) .badge[data-landed] {
