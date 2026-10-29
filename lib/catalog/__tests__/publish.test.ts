@@ -4,9 +4,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { folderBytes } from '../../../test/helpers/folderBytes';
-import { createTempLibrary, derivativePaths } from '../../../test/helpers/tempLibrary';
-import { baseNameOf } from '../../../utils/derivativeSets';
-import { readRegistry } from '../../identity/registry';
 import { withLock, type LockContext, type LockRecord } from '../../storage/lock';
 import { activateRevision, blockingIssues, publish, PUBLISH_EXIT_CODES, rebaseWorkingLayer, recover, type ActivateOptions, type PublishOptions, type PublishResult } from '../publish';
 import { references } from '../references';
@@ -149,16 +146,7 @@ describe('the first publish', { timeout: 30_000 }, () => {
     });
 
     it('passes a dry run that reports what the launch takes away, and writes no more', async () => {
-        const { root, run, catalogFiles } = await setup({ seed: 62, photos: 6, series: [{ photos: 4 }] });
-        // The legacy Gallery shows a photo only once its seven legacy derivatives exist, so every photo gets stand-ins.
-        const library = await createTempLibrary();
-        cleanups.push(() => library.cleanup());
-        for (const photo of Object.values((await readRegistry(root)).photos)) {
-            for (const file of derivativePaths(baseNameOf(photo.source.path))) {
-                fs.mkdirSync(path.dirname(library.file(file)), { recursive: true });
-                fs.writeFileSync(library.file(file), 'stand-in derivative');
-            }
-        }
+        const { run, catalogFiles } = await setup({ seed: 62, photos: 6, series: [{ photos: 4 }] });
         const result = await run({ dryRun: true, confirmLaunch: false });
         expect(result).toMatchObject({ outcome: 'DRY_RUN_OK', launch: { published: 4, gone: 2 } });
         expect(PUBLISH_EXIT_CODES[result.outcome]).toBe(0);

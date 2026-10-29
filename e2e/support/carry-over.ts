@@ -18,9 +18,10 @@ import { processImage } from '../../utils/imageOptimizer';
  * items. Three more test the edges: unready.jpg is on the Gallery but its
  * catalog set failed, so the carry-over can't take it until --allow-missing
  * names it, broken.jpg is a file the watcher can't read, and thumbless.jpg
- * lost a legacy thumbnail, so the Gallery doesn't show it today. Then
- * `photos carry-over --apply --allow-missing unready.jpg` and the launch
- * publish. A sixteenth photograph arrives after it, as one the owner adds
+ * lost a legacy thumbnail, so the Gallery doesn't show it today, though the
+ * site still counts it as on it, so it needs naming too. Then
+ * `photos carry-over --apply --allow-missing unready.jpg,thumbless.jpg` and
+ * the launch publish. A sixteenth photograph arrives after it, as one the owner adds
  * later. Test files and test values only, in a temp folder outside the
  * repository.
  */
@@ -90,7 +91,7 @@ export async function createCarryOverFixture(): Promise<CarryOverFixture> {
         for (const [name, bytes] of edges) fs.writeFileSync(path.join(library, name), bytes);
         fs.writeFileSync(path.join(library, 'broken.jpg'), 'not a photograph');
         for (const [name] of [...photos, ...edges]) await processImage(name);
-        // thumbless.jpg's legacy thumbnail goes aside, so today's Gallery doesn't list it.
+        // thumbless.jpg's legacy thumbnail goes aside, so today's Gallery doesn't list it, though the registry still does.
         const thumbnail = fs.readdirSync(path.join(library, 'thumbnails')).find((name) => name.startsWith('thumbless'));
         if (!thumbnail) throw new Error('thumbless.jpg has no legacy thumbnail to set aside');
         fs.renameSync(path.join(library, 'thumbnails', thumbnail), path.join(temp, thumbnail));
@@ -103,7 +104,7 @@ export async function createCarryOverFixture(): Promise<CarryOverFixture> {
         for (const profile of Object.keys(revision.profiles)) revision.profiles[profile] = { state: 'failed', attempts: 3, error: 'fixture' };
         await writeRegistry(root, built, built.version);
         const dryRun = await runCarryOver({ dataRoot: root });
-        const apply = await runCarryOver({ dataRoot: root }, { apply: true, actor: 'e2e', allow: ['unready.jpg'] });
+        const apply = await runCarryOver({ dataRoot: root }, { apply: true, actor: 'e2e', allow: ['unready.jpg', 'thumbless.jpg'] });
         if (apply.exitCode !== 0) throw new Error(`The carry-over exited ${apply.exitCode}:\n${apply.output}`);
         const dry = await publish({ dataRoot: root, actor: 'e2e', dryRun: true, logger: quiet });
         const gone = dry.launch?.gone ?? -1;

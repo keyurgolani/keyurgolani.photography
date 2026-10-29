@@ -8,7 +8,7 @@ import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
 import { dataRootStatus, libraryRoot } from '../storage/config';
 import { LockLostError, LockTimeoutError, withLock, type LockContext } from '../storage/lock';
-import { legacyEntries } from './photos-api';
+import { legacyEntries, legacySitePhotos } from './photos-api';
 import { checkLayer } from './publish';
 import { hashValue, stampWrite } from './review';
 import { CARRY_OVER_SERIES_ID, parseAuthoredRecord } from './schema';
@@ -24,7 +24,10 @@ import { AUTHORED_LEASE_MS, AUTHORED_LOCK, AUTHORED_WAIT_MS, AuthoredWriteError,
  * alone in Work's order, so no photo leaves the site at the launch.
  *
  * The source of truth is legacyEntries() (photos-api.ts), the list legacy
- * /api/photos serves and the legacy Gallery shows in that order. Each photo
+ * /api/photos serves and the legacy Gallery shows in that order. What counts
+ * as on the site is legacySitePhotos(), as publish's launch count has it, so
+ * a photo the Gallery can't show for want of its legacy files can't carry,
+ * and has to be accepted by name like any photo that leaves at the launch. Each photo
  * keeps the name the Gallery gives it today, "Photograph N of T": its record
  * gets no description, only the carry-over marker with the owner's direction,
  * and a marked photo with no alt compiles to the `position` alt, which the
@@ -199,10 +202,15 @@ export async function planCarryOver(dataRoot: string, { allow = [], clock = Date
     if (refusals.length > 0) return { ...empty, refusals };
 
     const marker = carried?.carryOver ?? { reason: CARRY_OVER_REASON, at: new Date(clock()).toISOString() };
-    const { entries, unlisted } = await legacyEntries(registry, libraryRoot());
+    const library = libraryRoot();
+    const { entries, unlisted } = await legacyEntries(registry, library);
+    // A photo hidden behind another's shared set isn't on the site. One the Gallery can't show for want of its legacy
+    // files still counts as on it, as publish's launch count has it, so it can't carry and needs --allow-missing.
+    const hidden = new Set(legacySitePhotos(registry, library).hidden.map((photo) => photo.photoId));
     const records = new Map(layer.photos.map((photo) => [photo.id, photo]));
     const plans = photoPlans(entries, records, registry, marker);
     const { uncarried } = plans;
+    for (const photo of unlisted) if (!hidden.has(photo.photoId)) uncarried.push({ ...photo, reason: `${photo.reason} today, though the site still counts it as on it` });
     let { planned } = plans;
 
     // Compile the layer as it would be, so a photo that can't publish is named now, not dropped at the launch.
@@ -244,12 +252,25 @@ export async function planCarryOver(dataRoot: string, { allow = [], clock = Date
     }
     // Before the launch, a Gallery the carry-over made is the plan, or a crash left it out. Anything else is his now.
     if (carried && pointer === null && comparable(carried) !== comparable(built.series)) {
-        return { ...empty, refusals: [`${CARRY_OVER_SERIES.id} has changed since the carry-over made it: ${changesOf(carried, built.series).join('; ')}. It's yours now, so the carry-over doesn't put it back. Nothing was written.`] };
+        return { ...empty, refusals: [changedRefusal(carried, built.series, records)] };
+    }
+    // A crash leaves the site absent or as it was before the carry-over. One he changed since is his, even emptied.
+    if (carried?.carryOver && pointer === null && layer.site && comparable(layer.site) !== comparable(built.site)) {
+        const since = Date.parse(carried.carryOver.at);
+        const site = layer.site;
+        const changed = (['seriesOrder', 'featuredSeriesIds'] as const).filter((field) => {
+            const stamp = site.review?.fields[field];
+            return stamp !== undefined && Date.parse(stamp.reviewedAt) > since;
+        });
+        if (changed.length > 0) {
+            const what = changed.length === 2 ? "Work's order and the featured series" : changed[0] === 'seriesOrder' ? "Work's order" : 'The featured series';
+            return { ...empty, refusals: [`${what} changed since the carry-over. ${changed.length === 2 ? "They're" : "It's"} yours now, so the carry-over doesn't put ${changed.length === 2 ? 'them' : 'it'} back. Nothing was written.`] };
+        }
     }
     const allowed = new Set(allow);
     const named = uncarried.map((photo) => ({ ...photo, allowed: allowed.has(photo.photoId) || allowed.has(photo.sourcePath) })).sort((a, b) => compare(a.sourcePath, b.sourcePath));
     const unmatchedAllow = [...allowed].filter((name) => !uncarried.some((photo) => photo.photoId === name || photo.sourcePath === name));
-    const notOnSite = [...unlisted, ...offSite(registry, new Set(entries.map((entry) => entry.photoId)), new Set(unlisted.map((photo) => photo.photoId)))].sort((a, b) => compare(a.sourcePath, b.sourcePath));
+    const notOnSite = [...unlisted.filter((photo) => hidden.has(photo.photoId)), ...offSite(registry, new Set(entries.map((entry) => entry.photoId)), new Set(unlisted.map((photo) => photo.photoId)))].sort((a, b) => compare(a.sourcePath, b.sourcePath));
 
     const total = planned.length;
     const photos: CarriedPhoto[] = planned.map((entry, index) => {
@@ -299,21 +320,45 @@ export async function planCarryOver(dataRoot: string, { allow = [], clock = Date
     return { state: idle ? 'done' : 'ready', refusals: [], photos, uncarried: named, closes, stays, notOnSite, unmatchedAllow, predicted, writes };
 }
 
-/** What an owner's change to the carried-over Gallery did, against the plan, for the refusal. */
-function changesOf(carried: AuthoredSeries, planned: AuthoredSeries): string[] {
-    const changes: string[] = [];
+/**
+ * How the carried-over Gallery differs from the plan, for the refusal: what
+ * the owner changed, and what changed in the legacy Gallery itself, such as a
+ * photo that arrived after the carry-over. Only the carry-over writes a
+ * photo's marker, so a photo with one was carried.
+ */
+function changesOf(carried: AuthoredSeries, planned: AuthoredSeries, records: ReadonlyMap<string, AuthoredPhoto>): { owner: string[]; legacy: string[] } {
+    const owner: string[] = [];
+    const legacy: string[] = [];
+    const marked = (photoId: string) => records.get(photoId)?.carryOver !== undefined;
     const now = new Set(carried.photoIds);
     const plan = new Set(planned.photoIds);
-    const added = carried.photoIds.filter((photoId) => !plan.has(photoId)).length;
-    const removed = planned.photoIds.filter((photoId) => !now.has(photoId)).length;
-    if (added > 0) changes.push(`${plural(added, 'photo')} added that the legacy Gallery doesn't show`);
-    if (removed > 0) changes.push(`${plural(removed, 'photo')} the legacy Gallery shows ${removed === 1 ? 'is' : 'are'} out of it`);
+    const extra = carried.photoIds.filter((photoId) => !plan.has(photoId));
+    const missing = planned.photoIds.filter((photoId) => !now.has(photoId));
+    const added = extra.filter((photoId) => !marked(photoId)).length;
+    const departed = extra.length - added;
+    const removed = missing.filter(marked).length;
+    const arrived = missing.length - removed;
+    if (added > 0) owner.push(`${plural(added, 'photo')} added that the legacy Gallery doesn't show`);
+    if (removed > 0) owner.push(`${plural(removed, 'photo')} the legacy Gallery shows ${removed === 1 ? 'is' : 'are'} out of it`);
     const kept = carried.photoIds.filter((photoId) => plan.has(photoId));
-    if (kept.join() !== planned.photoIds.filter((photoId) => now.has(photoId)).join()) changes.push('the photos are in another order');
-    for (const field of ['title', 'slug', 'visibility', 'statement', 'shortStatement'] as const) if (carried[field] !== planned[field]) changes.push(`its ${field === 'shortStatement' ? 'short statement' : field} changed`);
-    if (canonicalJson(carried.cover) !== canonicalJson(planned.cover)) changes.push('its cover changed');
-    if (canonicalJson(carried.chapters) !== canonicalJson(planned.chapters) || carried.openingPhotoId !== planned.openingPhotoId) changes.push('its chapters or opening photo changed');
-    return changes.length > 0 ? changes : ['a field the carry-over sets changed'];
+    if (kept.join() !== planned.photoIds.filter((photoId) => now.has(photoId)).join()) owner.push('the photos are in another order');
+    for (const field of ['title', 'slug', 'visibility', 'statement', 'shortStatement'] as const) if (carried[field] !== planned[field]) owner.push(`its ${field === 'shortStatement' ? 'short statement' : field} changed`);
+    if (canonicalJson(carried.chapters) !== canonicalJson(planned.chapters) || carried.openingPhotoId !== planned.openingPhotoId) owner.push('its chapters or opening photo changed');
+    if (arrived > 0) legacy.push(`it shows ${plural(arrived, 'photo')} ${CARRY_OVER_SERIES.id} doesn't have`);
+    if (departed > 0) legacy.push(`${plural(departed, 'photo')} carried into ${CARRY_OVER_SERIES.id} ${departed === 1 ? "isn't" : "aren't"} on it now`);
+    // The carry-over's cover is the first photo, so one that follows the first photo moved with the list, not by hand.
+    const coverMoved = canonicalJson(carried.cover) !== canonicalJson(planned.cover);
+    if (coverMoved && (owner.length > 0 || legacy.length === 0 || carried.cover?.photoId !== carried.photoIds[0])) owner.push('its cover changed');
+    if (owner.length === 0 && legacy.length === 0) owner.push('a field the carry-over sets changed');
+    return { owner, legacy };
+}
+
+/** The refusal when the carried-over Gallery no longer matches the plan, blaming the owner only for what he changed. */
+function changedRefusal(carried: AuthoredSeries, planned: AuthoredSeries, records: ReadonlyMap<string, AuthoredPhoto>): string {
+    const { owner, legacy } = changesOf(carried, planned, records);
+    const since = legacy.length > 0 ? `The legacy Gallery changed since the carry-over: ${legacy.join('; ')}.` : '';
+    if (owner.length === 0) return `${since} The carry-over doesn't change a Gallery it already made, so place those photos yourself. photos publish --dry-run counts any that would leave the site. Nothing was written.`;
+    return `${CARRY_OVER_SERIES.id} has changed since the carry-over made it: ${owner.join('; ')}.${since ? ` ${since}` : ''} It's yours now, so the carry-over doesn't put it back. Nothing was written.`;
 }
 
 /** Photos in the registry the legacy Gallery doesn't show and legacyEntries() didn't already explain, with why. */
@@ -357,7 +402,7 @@ export interface ApplyResult {
 function blockers(plan: CarryOverPlan): string[] {
     const lines: string[] = [];
     const unnamed = plan.uncarried.filter((photo) => !photo.allowed);
-    if (unnamed.length > 0) lines.push(`${plural(unnamed.length, 'photo')} the legacy Gallery shows can't carry over, and --allow-missing doesn't name ${unnamed.length === 1 ? 'it' : 'them'}.`);
+    if (unnamed.length > 0) lines.push(`${plural(unnamed.length, 'photo')} on the site today can't carry over, and --allow-missing doesn't name ${unnamed.length === 1 ? 'it' : 'them'}.`);
     if (plan.unmatchedAllow.length > 0) lines.push(`--allow-missing names ${plan.unmatchedAllow.join(', ')}, which the plan doesn't list as a photo it can't carry.`);
     // Only what he accepted by name may leave the site: anything else leaving is a photo the plan lost.
     const accepted = plan.uncarried.filter((photo) => photo.allowed).length;
@@ -435,7 +480,7 @@ function planLines(plan: CarryOverPlan): string[] {
     lines.push(...listed(plan.closes.map((item) => `  ${item.eventId} ${item.sourcePath}: ${item.how === 'placement' ? 'settled by the series, with nothing written to it' : 'dismissed, with your direction as the reason, since its photo moved to other bytes after it opened'}`)));
     if (plan.stays.length > 0) lines.push(`Inbox items that stay open (${plan.stays.length}):`, ...listed(plan.stays.map((item) => `  ${item.eventId} ${item.sourcePath}: ${item.reason}`)));
     if (plan.uncarried.length > 0) {
-        lines.push('', `Photos the legacy Gallery shows that can't carry over (${plan.uncarried.length}):`);
+        lines.push('', `Photos on the site today that can't carry over (${plan.uncarried.length}):`);
         lines.push(...listed(plan.uncarried.map((photo) => `  ${photo.sourcePath} (${photo.photoId}): ${photo.reason}.${photo.allowed ? ' Accepted with --allow-missing.' : ''}`)));
         const accepted = plan.uncarried.filter((photo) => photo.allowed);
         if (accepted.length > 0) lines.push(`Accepted by name with --allow-missing, so ${accepted.length === 1 ? 'it leaves' : 'they leave'} the site at the launch: ${accepted.map((photo) => photo.sourcePath).join(', ')}.`);

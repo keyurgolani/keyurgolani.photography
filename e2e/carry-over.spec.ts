@@ -44,21 +44,21 @@ const origin = () => {
     return web.origin;
 };
 
-test('the carry-over named what it could not carry, carried the rest, and only the photo accepted by name left the site', () => {
+test('the carry-over named what it could not carry, carried the rest, and only the photos accepted by name left the site', () => {
     expect(data().output.dryRunExit).toBe(1);
     expect(data().output.dryRun).toContain('Dry run: nothing was written.');
-    expect(data().output.dryRun).toContain("Photos the legacy Gallery shows that can't carry over (1):");
+    expect(data().output.dryRun).toContain("Photos on the site today that can't carry over (2):");
     expect(data().output.dryRun).toMatch(/\n {2}unready\.jpg \(ph_[^)]+\): its catalog derivative set isn't ready yet\./);
-    expect(data().output.dryRun).toContain('In the library but not on the site today, left as they are (2):');
+    expect(data().output.dryRun).toContain('In the library but not on the site today, left as they are (1):');
     expect(data().output.dryRun).toMatch(/\n {2}broken\.jpg \(ph_[^)]+\): the watcher can't read it\./);
-    expect(data().output.dryRun).toMatch(/\n {2}thumbless\.jpg \(ph_[^)]+\): its seven legacy derivatives aren't all built, so the Gallery doesn't show it\./);
+    expect(data().output.dryRun).toMatch(/\n {2}thumbless\.jpg \(ph_[^)]+\): its seven legacy derivatives aren't all built, so the Gallery doesn't show it today, though the site still counts it as on it\./);
     expect(data().output.dryRun).toContain('--apply refuses until then.');
-    expect(data().output.apply).toContain('Accepted by name with --allow-missing, so it leaves the site at the launch: unready.jpg.');
-    expect(data().output.apply).toContain('GONE_COUNT 1, all accepted by name');
+    expect(data().output.apply).toContain('Accepted by name with --allow-missing, so they leave the site at the launch: thumbless.jpg, unready.jpg.');
+    expect(data().output.apply).toContain('GONE_COUNT 2, all accepted by name');
     expect(data().output.dryRun).toContain('"Photograph N of 12", and get no description');
     expect(data().output.dryRun).toMatch(/\n {2}10\. place-\d\d\.jpg \(ph_[^)]+\): "Photograph 10 of 12", no description yet/);
     expect(data().output.apply).toContain('Carried over: wrote 14 records.');
-    expect(data().gone).toBe(1);
+    expect(data().gone).toBe(2);
 });
 
 test('Home opens on Gallery, its photograph named by its place', async ({ page }) => {
@@ -109,7 +109,7 @@ test('the Inbox asks about the photograph added after the launch and the ones no
     await page.goto(`${curator.origin}/curation/inbox`);
     await waitForHydration(page);
     const list = page.getByRole('list', { name: 'Requires judgment' });
-    // later.jpg came after the launch. unready.jpg was accepted by name, and thumbless.jpg and broken.jpg weren't on the
+    // later.jpg came after the launch. unready.jpg and thumbless.jpg were accepted by name, and broken.jpg wasn't on the
     // site, so the carry-over left their items as they were.
     await expect(list.getByRole('link').filter({ hasText: 'later.jpg' })).toHaveCount(1);
     for (const name of ['unready.jpg', 'thumbless.jpg', 'broken.jpg']) await expect(list.getByRole('link').filter({ hasText: name })).not.toHaveCount(0);

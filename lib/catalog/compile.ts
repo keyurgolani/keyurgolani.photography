@@ -122,8 +122,9 @@ export async function compileCandidate(input: CompileInput): Promise<CompileResu
     const activePhotos = new Map((active?.content.photos ?? []).map((photo) => [photo.id, photo]));
     const moved = new Set<string>();
     const kept = new Set<string>();
-    // A carried-over photo with no description is named by its place only while the carried-over Gallery is the one
-    // published series that lists it. In a series of the owner's it needs a description like any photo there.
+    // A carried-over photo with no description is named by its place only while Gallery is the one published series
+    // that lists it. In a series of the owner's it needs a description like any photo there. Gallery's own marker
+    // doesn't matter here: it only relaxes Gallery's statements, and writing them drops it.
     const listedBy = new Map<string, string[]>();
     for (const seriesId of new Set(layer.site?.seriesOrder ?? [])) {
         const series = seriesRecords.get(seriesId);
@@ -131,7 +132,7 @@ export async function compileCandidate(input: CompileInput): Promise<CompileResu
         for (const photoId of series.photoIds) listedBy.set(photoId, [...(listedBy.get(photoId) ?? []), seriesId]);
     }
     const placeNamed = (photo: AuthoredPhoto) => photo.carryOver !== undefined
-        && (listedBy.get(photo.id) ?? []).every((seriesId) => seriesId === CARRY_OVER_SERIES_ID && seriesRecords.get(seriesId)?.carryOver !== undefined);
+        && (listedBy.get(photo.id) ?? []).every((seriesId) => seriesId === CARRY_OVER_SERIES_ID);
 
     /** The profile a photo publishes on. Active pairs keep theirs, others take the current profile if ready, else their newest ready one. */
     function chooseProfile(photo: PhotoRecord, assetRevision: string, revision: AssetRevisionRecord): string {

@@ -19,7 +19,7 @@ import { AUTHORED_LEASE_MS, AUTHORED_LOCK } from '../working-layer-writer';
 import { runIdentityOnce } from '../../identity/watcherStep';
 import { CARRY_OVER_REASON, CARRY_OVER_SERIES, OWNER_DIRECTION, planCarryOver, runCarryOver } from '../carry-over';
 import { legacyList } from '../photos-api';
-import { publish } from '../publish';
+import { checkLayer, publish } from '../publish';
 import { createCatalogReader } from '../reader';
 import { readRevisionFile } from '../repository';
 import { readActivePointer, readAuthoredRecord, readWorkingLayer } from '../working-layer';
@@ -264,18 +264,49 @@ describe('photos carry-over', { timeout: 120_000 }, () => {
         expect(w.tree()).toEqual(before);
     });
 
-    it('lists photos the Gallery does not show today as left alone, and never counts them as gone', async () => {
+    it('lists photos that are not on the site today as left alone, and never counts them as gone', async () => {
         const w = await world({ unreadable: true });
-        // older.jpg's legacy thumbnail is gone, so the Gallery doesn't list it today: it isn't on the site.
+        const dry = await runCarryOver({ dataRoot: w.root });
+        expect(dry.exitCode).toBe(0);
+        expect(dry.output).toContain('In the library but not on the site today, left as they are (1):');
+        expect(dry.output).toMatch(/broken\.jpg \(ph_[^)]+\): the watcher can't read it\./);
+        expect(dry.output).toContain('GONE_COUNT 0');
+        expect((await planCarryOver(w.root)).photos.map((photo) => photo.sourcePath)).toEqual(['newer.jpg', 'older.jpg', 'undated.jpg']);
+    });
+
+    it("counts a photo the Gallery can't show for want of its legacy files as on the site, so it needs --allow-missing", async () => {
+        const w = await world();
+        // older.jpg's legacy thumbnail is gone, so the Gallery can't list it today. The registry still puts it on the site.
         const thumbnail = fs.readdirSync(w.lib.file('thumbnails')).find((name) => name.startsWith('older'))!;
         fs.renameSync(w.lib.file('thumbnails', thumbnail), w.lib.file(`moved-${thumbnail}`));
         const dry = await runCarryOver({ dataRoot: w.root });
-        expect(dry.exitCode).toBe(0);
-        expect(dry.output).toContain('In the library but not on the site today, left as they are (2):');
-        expect(dry.output).toContain(`older.jpg (${w.ids['older.jpg']}): its seven legacy derivatives aren't all built, so the Gallery doesn't show it.`);
-        expect(dry.output).toMatch(/broken\.jpg \(ph_[^)]+\): the watcher can't read it\./);
-        expect(dry.output).toContain('GONE_COUNT 0');
-        expect((await planCarryOver(w.root)).photos.map((photo) => photo.sourcePath)).toEqual(['newer.jpg', 'undated.jpg']);
+        expect(dry.exitCode).toBe(1);
+        expect(dry.output).toContain("Photos on the site today that can't carry over (1):");
+        expect(dry.output).toContain(`older.jpg (${w.ids['older.jpg']}): its seven legacy derivatives aren't all built, so the Gallery doesn't show it today, though the site still counts it as on it.`);
+        expect(dry.output).toContain("1 photo on the site today can't carry over, and --allow-missing doesn't name it.");
+        expect(dry.output).toContain('GONE_COUNT 1');
+        const accepted = await runCarryOver({ dataRoot: w.root }, { apply: true, actor: ACTOR, allow: ['older.jpg'] });
+        expect(accepted.exitCode).toBe(0);
+        expect(accepted.output).toContain('GONE_COUNT 1, all accepted by name');
+        expect((await readWorkingLayer(w.root)).series[0].photoIds).toEqual([w.ids['newer.jpg'], w.ids['undated.jpg']]);
+        expect((await publish({ dataRoot: w.root, actor: ACTOR, dryRun: true, logger: { log: () => undefined } })).launch).toEqual({ published: 2, gone: 1 });
+    });
+
+    it('counts by the registry, so an empty library folder still gives every photo on the site as gone', async () => {
+        const w = await world();
+        // The image ships an assets folder with no photographs in it, which a publish without the library mount sees.
+        const empty = await createTempLibrary();
+        try {
+            expect((await checkLayer(w.root, await readWorkingLayer(w.root))).launch).toEqual({ published: 0, gone: 3 });
+            const plan = await planCarryOver(w.root);
+            expect(plan.predicted?.gone).toBe(3);
+            expect(plan.uncarried.map((photo) => photo.sourcePath)).toEqual(['newer.jpg', 'older.jpg', 'undated.jpg']);
+            const dry = await runCarryOver({ dataRoot: w.root });
+            expect(dry.exitCode).toBe(1);
+            expect(dry.output).toContain('GONE_COUNT 3');
+        } finally {
+            await empty.cleanup();
+        }
     });
 
     it("leaves the hidden half of a shared legacy set off the site, as today's Gallery does, and doesn't count it as gone", async () => {
@@ -329,6 +360,39 @@ describe('photos carry-over', { timeout: 120_000 }, () => {
             expect(run.output).toContain('ser_gallery has changed since the carry-over made it: 1 photo the legacy Gallery shows is out of it; the photos are in another order; its cover changed.');
         }
         expect(w.tree()).toEqual(before);
+    });
+
+    it("says the legacy Gallery changed, not the owner, when a photo arrives after the carry-over, and writes nothing", async () => {
+        const w = await world();
+        expect((await runCarryOver({ dataRoot: w.root }, { apply: true, actor: ACTOR })).exitCode).toBe(0);
+        fs.writeFileSync(w.lib.file('later.jpg'), await jpeg('2025-02-02', { r: 90, g: 90, b: 90 }));
+        await processImage('later.jpg');
+        expect(await runIdentityOnce({ sinks: [createCurationSink({ logger: quiet })], logger: quiet, pass: { clock: () => Date.now() + 60_000 } })).toBe(0);
+        const before = w.tree();
+        for (const apply of [false, true]) {
+            const run = await runCarryOver({ dataRoot: w.root }, { apply, actor: ACTOR });
+            expect(run.exitCode).toBe(1);
+            expect(run.output).toContain("The legacy Gallery changed since the carry-over: it shows 1 photo ser_gallery doesn't have. The carry-over doesn't change a Gallery it already made, so place those photos yourself.");
+            expect(run.output).not.toContain('has changed since the carry-over made it');
+        }
+        expect(w.tree()).toEqual(before);
+    });
+
+    it("refuses to put back a Work order and featured series the owner cleared after the carry-over", async () => {
+        const w = await world();
+        // The carry-over ran a minute ago, so the owner's writes are stamped after it.
+        expect((await runCarryOver({ dataRoot: w.root }, { apply: true, actor: ACTOR, clock: () => Date.now() - 60_000 })).exitCode).toBe(0);
+        const site = (await readAuthoredRecord(w.root, 'site', 'site'))!;
+        await writeAuthoredRecord({ ...site, seriesOrder: [], featuredSeriesIds: [] }, { expectedVersion: site.version, root: w.root });
+        const before = w.tree();
+        for (const apply of [false, true]) {
+            const run = await runCarryOver({ dataRoot: w.root }, { apply, actor: ACTOR });
+            expect(run.exitCode).toBe(1);
+            expect(run.output).toContain("Work's order and the featured series changed since the carry-over. They're yours now, so the carry-over doesn't put them back. Nothing was written.");
+        }
+        expect(w.tree()).toEqual(before);
+        const cleared = (await readAuthoredRecord(w.root, 'site', 'site'))!;
+        expect([cleared.seriesOrder, cleared.featuredSeriesIds]).toEqual([[], []]);
     });
 
     it('never writes after the launch: a photo added later stays his, and the plan says the launch has run', async () => {
@@ -452,5 +516,15 @@ describe("the carry-over marker", { timeout: 120_000 }, () => {
         expect((await readAuthoredRecord(w.root, 'series', CARRY_OVER_SERIES.id))!.carryOver).toBeUndefined();
         const again = await publish({ dataRoot: w.root, actor: ACTOR, dryRun: true, logger: { log: () => undefined } });
         expect(again.issues).toContainEqual(expect.objectContaining({ code: 'description.series-copy', record: { kind: 'series', id: CARRY_OVER_SERIES.id }, field: 'shortStatement' }));
+        // With both written and his series back in draft, Gallery alone lists them: they keep their names by place.
+        const written = (await readAuthoredRecord(w.root, 'series', CARRY_OVER_SERIES.id))!;
+        await writeAuthoredRecord({ ...written, shortStatement: 'Before.' }, { expectedVersion: written.version, root: w.root });
+        const mine = (await readAuthoredRecord(w.root, 'series', 'ser_mine'))!;
+        await writeAuthoredRecord({ ...mine, visibility: 'draft' }, { expectedVersion: mine.version, root: w.root });
+        const last = await publish({ dataRoot: w.root, actor: ACTOR, dryRun: true, logger: { log: () => undefined } });
+        expect(last.outcome).toBe('DRY_RUN_OK');
+        expect(last.issues.filter((issue) => issue.code === 'description.required' || issue.code === 'description.series-copy')).toEqual([]);
+        const { compiled } = await checkLayer(w.root, await readWorkingLayer(w.root));
+        expect(compiled.content.photos.map((photo) => photo.alt)).toEqual([{ kind: 'position' }, { kind: 'position' }, { kind: 'position' }]);
     });
 });

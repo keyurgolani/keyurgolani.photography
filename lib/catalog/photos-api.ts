@@ -116,29 +116,40 @@ export interface UnlistedLegacyPhoto {
 }
 
 /**
+ * The photos the legacy site counts as on it, by the registry and paths
+ * alone: every photo onLegacySite() takes, less the ones hidden behind
+ * another's shared legacy set, since the Gallery shows only the first by path
+ * of each set. A photo whose legacy derivatives aren't all built still counts,
+ * so a missing or empty library folder can't make photos look already gone.
+ * `hidden` names the ones left out, with why. publish's launch count and
+ * `photos carry-over` both read this.
+ */
+export function legacySitePhotos(registry: Registry, library: string): { onSite: PhotoRecord[]; hidden: UnlistedLegacyPhoto[] } {
+    const byPath = new Map<string, PhotoRecord>();
+    for (const photo of Object.values(registry.photos)) if (onLegacySite(photo)) byPath.set(photo.source.path, photo);
+    const onSite: PhotoRecord[] = [];
+    const hidden: UnlistedLegacyPhoto[] = [];
+    // Grouped in path order by the watcher's own rule, so a shared set lists the source the watcher built it from.
+    for (const [owner, ...others] of setGroups([...byPath.keys()], library)) {
+        onSite.push(byPath.get(owner) as PhotoRecord);
+        for (const other of others) {
+            const photo = byPath.get(other) as PhotoRecord;
+            hidden.push({ photoId: photo.photoId, sourcePath: photo.source.path, reason: `it shares its legacy derivative set with ${owner}, so the Gallery shows that one instead` });
+        }
+    }
+    return { onSite, hidden };
+}
+
+/**
  * Legacy mode's list from the registry, each entry with its photo and source
  * path, in the order the legacy Gallery shows it: legacyList()'s, which is
  * this. `unlisted` names the photos the registry would put on the legacy
  * site that the list leaves out, so `photos carry-over` can say why.
  */
 export async function legacyEntries(registry: Registry, library: string): Promise<{ entries: { photoId: string; sourcePath: string; item: ImageItem }[]; unlisted: UnlistedLegacyPhoto[] }> {
-    const candidates = new Map<string, Candidate>();
-    for (const photo of Object.values(registry.photos)) {
-        if (!onLegacySite(photo)) continue;
-        const revision = photo.revisions[photo.source.observedRevision];
-        candidates.set(photo.source.path, { photo, revision: revision as Candidate['revision'] });
-    }
-
-    // Grouped in path order by the watcher's own rule, so a shared set lists the source the watcher built it from.
-    const groups = setGroups([...candidates.keys()], library);
-    const unlisted: UnlistedLegacyPhoto[] = [];
-    for (const [owner, ...others] of groups) {
-        for (const other of others) {
-            const { photo } = candidates.get(other) as Candidate;
-            unlisted.push({ photoId: photo.photoId, sourcePath: photo.source.path, reason: `it shares its legacy derivative set with ${owner}, so the Gallery shows that one instead` });
-        }
-    }
-    const owners = groups.map(([owner]) => candidates.get(owner) as Candidate);
+    const { onSite, hidden } = legacySitePhotos(registry, library);
+    const unlisted: UnlistedLegacyPhoto[] = [...hidden];
+    const owners = onSite.map((photo) => ({ photo, revision: photo.revisions[photo.source.observedRevision] as Candidate['revision'] }));
     const listed = await Promise.all(owners.map(async ({ photo, revision }) => {
         const base = baseNameOf(photo.source.path);
         const files = Object.entries(DERIVATIVE_FOLDERS).map(([folder, extension]) => path.join(/*turbopackIgnore: true*/ library, folder, `${base}${extension}`));
