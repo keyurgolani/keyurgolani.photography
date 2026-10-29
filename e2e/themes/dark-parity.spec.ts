@@ -35,8 +35,9 @@ import { compare, failures, walk, type Allowance, type Comparison, type Walk } f
 // The gate also walks hover and focus on the nav links, Home's controls (their hover only with motion allowed), About's
 // links, and the Inbox's rows and buttons.
 // Self-tests inject a change into the head that must fail the gate: Home's scrim and --gah-ink 1/255 off, the glass
-// blur at 13px, a photograph's opacity at .96 and its corners square, About's underlines red, a hovered nav link white,
-// the intro's grain at .12 and a hovered Home control, both with motion allowed.
+// blur at 13px, a photograph's opacity at .96 and its corners square, About's link labels underlined red, a hovered
+// nav link white, the intro's grain at .12 and a hovered Home control, both with motion allowed, and the Viewer's bands
+// gone.
 //
 // What the gate can't see is raster only: how the browser draws a blur, a resample or an antialiased edge. The pixel
 // report covers that, as an artefact, not a gate: two passes over every shot at 1x and 2x, each in its own fresh load
@@ -978,21 +979,25 @@ test.describe('the visitor site and the legacy Gallery', () => {
 
     // The gate sees what it claims to: each of these, injected into the head, must fail it. Recorded, and asserted.
     const hoverNavLink = (page: Page) => page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Work', exact: true }).hover();
-    for (const [name, url, headStyle, act, motion] of [
+    for (const [name, url, headStyle, act, motion, ...rest] of [
         ["Home's scrim, +1 on one channel", '/', '[class*="vignette"]{background:linear-gradient(90deg,rgb(9 10 9/.9) 0%,rgb(9 10 9/.46) 38%,rgb(9 10 9/.08) 70%)!important}', revealChrome, undefined],
         ['the glass blur at 13px', '/work', ':root{--gah-glass-blur:13px!important}', undefined, undefined],
         ["a photograph's opacity at .96", '/work', 'main img{opacity:.96!important}', undefined, undefined],
         ['--gah-ink, +1 on one channel', '/work', ':root{--gah-ink:#f4f6f6!important}', undefined, undefined],
         // The radius is the frame's, the photo's material (spec §2), so the cover's frame on a series page.
         ["a photograph's corners square", series, '[class*="coverFrame"]{border-radius:0!important}', undefined, undefined],
-        ["About's link underlines red", '/about', 'a{text-decoration-color:red!important}', undefined, undefined],
+        // About's own link labels, under main, and not the nav's (#122's Delta 3 nit): only the labels may differ.
+        ["About's link underlines red", '/about', 'main a [class*="label"]{text-decoration-color:red!important}', undefined, undefined, { within: '>main:nth-of-type(', property: 'text-decoration-color' }],
         ['a hovered nav link white', '/work', 'nav a:hover{color:#fff!important}', hoverNavLink, undefined],
         ["the intro's grain at .12, with motion allowed", '/', '[class*="grainTexture"]{opacity:.12!important}', undefined, LOADING],
         ["Home's control hover, with motion allowed", '/', '[class*="_button"]:hover{color:#fff!important;background:rgb(255 0 0/.5)!important}', async (page: Page) => {
             await revealChrome(page);
             await hoverOn(homeNext(page));
         }, SETTLED],
+        // The Viewer's own theme tokens ride its module (themes PR 4): one leaking into Dark must fail it.
+        ["the Viewer's bands gone", `${series}/photo/${HOME_OPENING}`, '[data-surface="viewer"]{--cc-bands:none!important}', undefined, undefined],
     ] as const) {
+        const only = (rest[0] ?? null) as { within: string; property: string } | null;
         test(`self-test: ${name} in the head fails the gate`, async () => {
             const pair: Pair = { name: `self-test, ${name}`, url, headStyle, act, motion };
             const viewport = VIEWPORTS.desktop;
@@ -1001,6 +1006,11 @@ test.describe('the visitor site and the legacy Gallery', () => {
             judge(pair.name, viewport.width, comparison, [...base.timedOut, ...head.timedOut]);
             // Seen as the change itself, in a style or a token, on loads that settled.
             expect(comparison.styles.length + comparison.tokens.length, `${name}: the computed-style gate sees it`).toBeGreaterThan(0);
+            if (only) {
+                // Seen where it was put, and nowhere else.
+                expect(comparison.styles.filter((line) => line.includes(only.property)).length, `${name}: seen as ${only.property}`).toBeGreaterThan(0);
+                expect(comparison.styles.filter((line) => !line.includes(only.within)), `${name}: seen only under ${only.within}`).toEqual([]);
+            }
             expect([...base.timedOut, ...head.timedOut], `${name}: both loads settled`).toEqual([]);
         });
     }
