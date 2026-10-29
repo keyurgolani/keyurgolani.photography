@@ -11,7 +11,7 @@ import type { ImageItem } from '../lib/catalog/photos-api';
 
 const primary = (page: Page) => page.getByRole('navigation', { name: 'Primary' });
 const navLinks = (page: Page) => primary(page).getByRole('link');
-const themeToggle = (page: Page) => page.getByRole('button', { name: /^Switch to (dark|light) mode$/ });
+const themeControl = (page: Page) => page.getByRole('button', { name: /^Theme:/ });
 const previous = (page: Page) => page.getByRole('button', { name: 'Previous photograph', exact: true });
 const next = (page: Page) => page.getByRole('button', { name: 'Next photograph', exact: true });
 const arrows = (page: Page) => previous(page).or(next(page));
@@ -28,9 +28,9 @@ const effectiveOpacity = (target: Locator) =>
         return opacity;
     });
 
-/** The name of whatever has focus: its aria-label, or its rendered text, which skips the toggle's hidden other name. */
+/** The name of whatever has focus: its aria-label, or its rendered text, which skips the theme control's hidden names. */
 const focusedLabel = (page: Page) =>
-    page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? (document.activeElement as HTMLElement | null)?.innerText.trim());
+    page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? (document.activeElement as HTMLElement | null)?.innerText.replace(/\s+/g, ' ').trim());
 
 /** Presses Tab until `target` has focus, so the focus is keyboard focus. */
 async function tabTo(page: Page, target: Locator, limit = 10) {
@@ -47,7 +47,7 @@ async function tabTo(page: Page, target: Locator, limit = 10) {
  * it, and the pointer cases reveal it first, since #18 takes the first click
  * or tap on immersive Home as intent.
  */
-async function openHome(page: Page, { photos = ['white', 'gray', 'black'], theme = 'dark' }: { photos?: readonly string[]; theme?: 'dark' | 'light' } = {}) {
+async function openHome(page: Page, { photos = ['white', 'gray', 'black'], theme = 'black' }: { photos?: readonly string[]; theme?: 'black' | 'light' } = {}) {
     setPhotoFixtures(page, photos);
     if (theme === 'light') await page.addInitScript(() => localStorage.setItem('theme', 'light'));
     await page.goto('/');
@@ -59,17 +59,17 @@ for (const viewport of [undefined, { width: 640, height: 400 }]) {
     test.describe(viewport ? 'at 640 by 400, which is 200% zoom' : 'at the project viewport', () => {
         if (viewport) test.use({ viewport });
 
-        for (const theme of ['dark', 'light'] as const) {
+        for (const theme of ['black', 'light'] as const) {
             test(`passes the surface checks on the slideshow controls, with 44 px targets and unique names on every control, in the ${theme} theme`, async ({ page }) => {
                 await openHome(page, { theme });
-                await checkSurface(page, { controls: [sequenceControls(page)], chrome: [primary(page), themeToggle(page)] });
-                await expectMinTargetSize(themeToggle(page).or(navLinks(page)));
-                await expectUniqueNames([themeToggle(page), sequenceControls(page), navLinks(page)]);
+                await checkSurface(page, { controls: [sequenceControls(page)], chrome: [primary(page), themeControl(page)] });
+                await expectMinTargetSize(themeControl(page).or(navLinks(page)));
+                await expectUniqueNames([themeControl(page), sequenceControls(page), navLinks(page)]);
             });
 
-            test(`Tab reaches the theme toggle in SiteNav with its focus ring in the ${theme} theme`, async ({ page }) => {
+            test(`Tab reaches the theme control in SiteNav with its focus ring in the ${theme} theme`, async ({ page }) => {
                 await openHome(page, { theme });
-                const toggle = themeToggle(page);
+                const toggle = themeControl(page);
                 await tabTo(page, toggle);
                 await expect(toggle).toHaveCSS('opacity', '1');
                 await expectFocusRingVisible(toggle);
@@ -80,9 +80,9 @@ for (const viewport of [undefined, { width: 640, height: 400 }]) {
     });
 }
 
-test('Tab goes through SiteNav, its toggle last, then both arrows and Pause, and Shift+Tab walks back', async ({ page }) => {
+test('Tab goes through SiteNav, its theme control last, then both arrows and Pause, and Shift+Tab walks back', async ({ page }) => {
     await openHome(page);
-    const stops = ['KG, Keyur Golani', 'Home', 'Work', 'About', 'Switch to light mode', 'Previous photograph', 'Next photograph', 'Pause slideshow'];
+    const stops = ['KG, Keyur Golani', 'Home', 'Work', 'About', 'Theme: System (Black now)', 'Previous photograph', 'Next photograph', 'Pause slideshow'];
     const forward: (string | undefined)[] = [];
     for (let press = 0; press < stops.length; press++) {
         await page.keyboard.press('Tab');
@@ -125,14 +125,21 @@ test('Enter and Space on the arrows change the photo', async ({ page }) => {
     }
 });
 
-test('Enter and Space on the theme toggle flip the theme', async ({ page }) => {
+test('Enter on the theme control opens its menu on the checked choice, an arrow chooses, and Escape closes it', async ({ page }) => {
     await openHome(page);
     const html = page.locator('html');
-    await tabTo(page, themeToggle(page));
+    await tabTo(page, themeControl(page));
+    // Focus loads the menu's styles; it opens once they're in.
+    await expect(themeControl(page)).toHaveAttribute('popovertarget', /.+/);
     await page.keyboard.press('Enter');
+    await expect(page.getByRole('radio', { name: /^System/ })).toBeChecked();
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('radio', { name: /^System/ })).toBeFocused();
+    await page.keyboard.press('ArrowDown');
+    await expect(html).toHaveAttribute('data-theme-choice', 'light');
     await expect(html).toHaveAttribute('data-theme', 'light');
-    await page.keyboard.press('Space');
-    await expect(html).toHaveAttribute('data-theme', 'dark');
+    await page.keyboard.press('Escape');
+    await expect(themeControl(page)).toBeFocused();
 });
 
 // Work links to /work, which before the cutover sends this legacy-mode server on to /gallery.

@@ -1,0 +1,173 @@
+/* The five theme choices (System, Light, Bright, Dark, Black) and the theme control's button.
+   The inline theme script (components/site/themeScript.ts) puts the choice on <html data-theme-choice> and what paints
+   on <html data-theme>: light, bright, dark (stored as `charcoal`) or black. System paints light on a light device and
+   black on a dark one, and a page without JavaScript paints black, the server's attribute.
+
+   The four differ in material, not lightness (docs: the themes spec):
+     light   paper: a toned warm sheet, blue-black ink.
+     bright  a white wall: pure white, flat greys, black ink.
+     dark    a charcoal room: lit charcoal with layered surfaces, sage.
+     black   today's site, exactly: v1.2.0's Gallery After Hours.
+
+   Black declares almost nothing. It paints with v1.2.0's own values, which are styles/tokens.css's :root (where every
+   theme starts) and each module's var() fallback. Nothing theme-specific goes on :root, since every theme would
+   inherit it. Each other theme declares its whole palette.
+
+   Only tokens a shipped stylesheet reads live here: each page's PR adds the ones its surfaces need (the photo
+   surround, Home's stage, the Viewer's backdrop). About's per-theme paper is About's alone, in
+   app/about/aboutThemes.ts. */
+
+html[data-theme='black'] {
+  --gah-raised: #151917;
+  --gah-accent: #eff4f1;
+}
+
+html[data-theme='dark'] {
+  color-scheme: dark;
+  --gah-color-scheme: dark;
+  --gah-ground: #1b1f1d;
+  --gah-surface: #232826;
+  --gah-raised: #2c3230;
+  --gah-ink: #eef2f0;
+  --gah-ink-soft: #c9d0cc;
+  --gah-ink-muted: #a3aca8;
+  --gah-label: #aebbb6;
+  --gah-rule: rgba(255, 255, 255, 0.12);
+  --gah-rule-strong: rgba(255, 255, 255, 0.42);
+  --gah-accent: #9fcfba;
+  --gah-glass: rgba(27, 31, 29, 0.86);
+  --gah-action: #9fcfba;
+  --gah-action-ink: #101511;
+  /* The legacy variables Home's intro and the legacy Gallery paint with. */
+  --background-color: #1b1f1d;
+  --primary-color: #eef2f0;
+}
+
+html[data-theme='light'] {
+  color-scheme: light;
+  --gah-color-scheme: light;
+  --gah-ground: #ebe5d9;
+  --gah-surface: #e2dbcd;
+  --gah-raised: #f5f1e8;
+  --gah-ink: #29231d;
+  --gah-ink-soft: #4d443a;
+  --gah-ink-muted: #645a4e;
+  --gah-label: #645a4e;
+  --gah-rule: rgba(41, 35, 29, 0.14);
+  --gah-rule-strong: #8c7f6f;
+  --gah-accent: #2a4a72;
+  --gah-glass: rgba(235, 229, 217, 0.9);
+  --gah-action: #2a4a72;
+  --gah-action-ink: #fbf8f2;
+  --gah-radius: 2px;
+  --focus-ring-light: #1d2f48;
+  --focus-ring-dark: #fbf8f2;
+  --background-color: #ebe5d9;
+  --primary-color: #29231d;
+}
+
+html[data-theme='bright'] {
+  color-scheme: light;
+  --gah-color-scheme: light;
+  --gah-ground: #ffffff;
+  --gah-surface: #f4f4f4;
+  --gah-raised: #ffffff;
+  --gah-ink: #0b0b0b;
+  --gah-ink-soft: #333333;
+  --gah-ink-muted: #5c5c5c;
+  --gah-label: #5c5c5c;
+  --gah-rule: rgba(0, 0, 0, 0.12);
+  --gah-rule-strong: #767676;
+  /* The ink, not a hue: the menu's check and ring are the accent's only job (P3-2). */
+  --gah-accent: #0b0b0b;
+  --gah-glass: #ffffff;
+  --gah-glass-blur: 0px;
+  --gah-action: #0b0b0b;
+  --gah-action-ink: #ffffff;
+  --gah-radius: 0px;
+  --focus-ring-light: #000000;
+  --focus-ring-dark: #ffffff;
+  --gah-popover-rule: #111111;
+  --gah-popover-radius: 0px;
+  --gah-popover-shadow: none;
+  --background-color: #ffffff;
+  --primary-color: #0b0b0b;
+}
+
+/* styles/tokens.css's reduced-transparency rule, which the theme blocks would otherwise outrank. */
+@media (prefers-reduced-transparency: reduce) {
+  html[data-theme] {
+    --gah-glass: var(--gah-ground);
+    --gah-glass-blur: 0px;
+  }
+}
+
+/* A theme change: one short crossfade of the page's colours where motion is allowed, none where it isn't. */
+@media (prefers-reduced-motion: no-preference) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: 180ms;
+    animation-timing-function: ease-out;
+  }
+}
+
+/* The theme control's button (components/ThemeMenu.tsx). Global and in this one stylesheet, which the root layout
+   imports: a CSS module shared by the visitor and the curator routes makes the production CSS chunking merge the
+   curator's styles into a chunk every visitor page loads. Only what paints before the menu opens is here; the
+   popover's styles (theme-menu-popover.css) load after hydration. The swatch is the painting theme's ground and ink,
+   split on the diagonal, inside the strong rule. */
+/* A whole-pixel slot that lays out on its own (contain: layout), so nothing beside it moves by a fraction of a pixel
+   when it replaces today's toggle: Black parity found the KG ring's edge 1/255 off on the error page and the Inbox. */
+.theme-menu-button {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 44px;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  contain: layout style;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--gah-ink-muted);
+  cursor: pointer;
+}
+
+.theme-menu-button[aria-busy='true'] {
+  cursor: progress;
+}
+
+.theme-menu-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--gah-ground) 0 50%, var(--gah-ink) 50% 100%);
+  box-shadow: 0 0 0 1px var(--gah-rule-strong);
+}
+
+/* Forced colours drop the gradient and the ring, which would leave an empty circle (P2-5). */
+@media (forced-colors: active) {
+  .theme-menu-swatch {
+    forced-color-adjust: none;
+    outline: 1px solid ButtonText;
+  }
+}
+
+/* The names render as sr-only; display: none takes the ones that don't apply out of the button's name. */
+html:not([data-theme-choice='system']) [data-name-for='system'],
+html:not([data-theme-choice='light']) [data-name-for='light'],
+html:not([data-theme-choice='bright']) [data-name-for='bright'],
+html:not([data-theme-choice='charcoal']) [data-name-for='charcoal'],
+html:not([data-theme-choice='black']) [data-name-for='black'],
+html:not([data-theme-choice='system']) [data-now],
+html:not([data-theme='light']) [data-now='light'],
+html:not([data-theme='black']) [data-now='black'] {
+  display: none;
+}
+
+/* SiteNav's paper variant on About keeps the paper's ink. */
+[data-surface='about'] .theme-menu-button {
+  color: var(--lts-ink-soft);
+}

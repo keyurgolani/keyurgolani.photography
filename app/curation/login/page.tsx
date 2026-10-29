@@ -5,6 +5,7 @@ import SameOriginPostForm from '@/components/site/SameOriginPostForm';
 import { hasCuratorSession, requireCuratorLogin } from '@/lib/curation/auth';
 import { loginLockedUntil } from '@/lib/curation/auth/login';
 import styles from './login.module.css';
+import ThemeMenu from '@/components/ThemeMenu';
 
 /**
  * The curator's login (#14's 14-2): the one curator page that asks for no
@@ -76,6 +77,7 @@ export default async function CuratorLoginPage({ searchParams }: { searchParams:
           </span>
           Portfolio curation
         </Link>
+        <ThemeMenu placement="curator" />
       </header>
       <main className={styles.main}>
         <div className={styles.body}>

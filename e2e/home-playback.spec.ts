@@ -27,7 +27,7 @@ const playbackLabel = (page: Page) => playback(page).getByText(/^(Pause|Play)$/)
 const sequenceControls = (page: Page) => previous(page).or(next(page)).or(playback(page));
 const position = (page: Page) => group(page).getByText(/^\d{2,} \/ \d{2,}$/);
 const hint = (page: Page) => group(page).getByText('Off with reduced motion', { exact: true });
-const themeToggle = (page: Page) => page.getByRole('button', { name: /^Switch to (dark|light) mode$/ });
+const themeToggle = (page: Page) => page.getByRole('button', { name: /^Theme:/ });
 const primary = (page: Page) => page.getByRole('navigation', { name: 'Primary' });
 const navLinks = (page: Page) => primary(page).getByRole('link');
 const portrait = (page: Page) => page.locator('[class*="portrait"]');

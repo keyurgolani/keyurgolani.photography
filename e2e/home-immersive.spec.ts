@@ -32,7 +32,7 @@ const chrome = (page: Page) => page.locator('[data-home-chrome]');
 const primary = (page: Page) => page.getByRole('navigation', { name: 'Primary' });
 const navLink = (page: Page, name: string) => primary(page).getByRole('link', { name, exact: true });
 const wordmark = (page: Page) => primary(page).getByRole('link', { name: 'KG, Keyur Golani' });
-const themeToggle = (page: Page) => page.getByRole('button', { name: /^Switch to (dark|light) mode$/ });
+const themeToggle = (page: Page) => page.getByRole('button', { name: /^Theme:/ });
 const group = (page: Page) => page.getByRole('group', { name: 'Slideshow' });
 const previous = (page: Page) => page.getByRole('button', { name: 'Previous photograph', exact: true });
 const next = (page: Page) => page.getByRole('button', { name: 'Next photograph', exact: true });
@@ -658,7 +658,7 @@ test.describe('assistive technology', () => {
                 - link "Work"
               - listitem:
                 - link "About"
-            - button /Switch to (dark|light) mode/
+            - button /^Theme:/
           - group "Slideshow":
             - button "Previous photograph"
             - text: 01 / 03
@@ -897,9 +897,15 @@ test.describe('contrast and reflow', () => {
         await expectContrastOverImage(wordmark(page).getByText('KG', { exact: true }), { min: 4.5 });
         await circle.evaluate((style) => style.parentNode?.removeChild(style));
         for (const text of [position(page), playbackLabel(page)]) await expectContrastOverImage(text, { min: 4.5 });
-        for (const control of [previous(page), next(page), playback(page), themeToggle(page)]) {
+        for (const control of [previous(page), next(page), playback(page)]) {
             await expectContrastOverImage(control.locator('svg').first(), { min: 3 });
         }
+        // The theme control's icon is its swatch, the theme's ground and ink split on the diagonal, with no svg. It sits
+        // on the nav's glass, which stays dark over a white photo, so its ink half is what shows it: that half's colour
+        // is measured against what's behind the swatch, the swatch's own paint taken off for the read.
+        const swatch = await page.addStyleTag({ content: '.theme-menu-swatch { color: var(--gah-ink) !important; background: none !important; box-shadow: none !important; }' });
+        await expectContrastOverImage(themeToggle(page).locator('.theme-menu-swatch'), { min: 3 });
+        await swatch.evaluate((style) => style.parentNode?.removeChild(style));
     });
 
     test('at 320 px with 200% text, every revealed control is reachable in the scrolling chrome, clear of the others', async ({ page }) => {

@@ -17,15 +17,15 @@ const ENABLED = artist.destinations.filter((destination) => destination.enabled)
 
 const primary = (page: Page) => page.getByRole('navigation', { name: 'Primary' });
 const navLinks = (page: Page) => primary(page).getByRole('link');
-const themeToggle = (page: Page) => page.getByRole('button', { name: /^Switch to (dark|light) mode$/ });
+const themeControl = (page: Page) => page.getByRole('button', { name: /^Theme:/ });
 const links = (page: Page) => page.getByRole('navigation', { name: /^External profiles( and contact)?$/ }).getByRole('link');
 const source = (page: Page) => links(page).filter({ hasText: /^Site source$/ });
 
-/** Stops with an aria-label report it, links without one their href, and the toggle its rendered name. */
+/** Stops with an aria-label report it, links without one their href, and the theme control its rendered name. */
 const focusedStop = (page: Page) =>
     page.evaluate(() => {
         const el = document.activeElement as HTMLElement | null;
-        return el?.getAttribute('aria-label') ?? el?.getAttribute('href') ?? el?.innerText.trim();
+        return el?.getAttribute('aria-label') ?? el?.getAttribute('href') ?? el?.innerText.replace(/\s+/g, ' ').trim();
     });
 
 async function openAbout(page: Page) {
@@ -39,9 +39,9 @@ test('passes axe', async ({ page }) => {
     await expectNoA11yViolations(page);
 });
 
-test('Tab goes through SiteNav, its toggle last, then the external links, and Shift+Tab walks back', async ({ page }) => {
+test('Tab goes through SiteNav, its theme control last, then the external links, and Shift+Tab walks back', async ({ page }) => {
     await openAbout(page);
-    const stops = ['KG, Keyur Golani', '/', '/work', '/about', 'Switch to light mode', ...ENABLED.map((destination) => destination.href)];
+    const stops = ['KG, Keyur Golani', '/', '/work', '/about', 'Theme: System (Black now)', ...ENABLED.map((destination) => destination.href)];
     const forward: (string | undefined)[] = [];
     for (let press = 0; press < stops.length; press++) {
         await page.keyboard.press('Tab');
@@ -56,14 +56,21 @@ test('Tab goes through SiteNav, its toggle last, then the external links, and Sh
     expect(back).toEqual(stops.slice(0, -1).reverse());
 });
 
-test('Enter and Space on the theme toggle flip the theme', async ({ page }) => {
+test('Enter on the theme control opens its menu on the checked choice, an arrow chooses, and Escape closes it', async ({ page }) => {
     await openAbout(page);
     const html = page.locator('html');
-    await themeToggle(page).focus();
+    await themeControl(page).focus();
+    // Focus loads the menu's styles; it opens once they're in.
+    await expect(themeControl(page)).toHaveAttribute('popovertarget', /.+/);
     await page.keyboard.press('Enter');
+    await expect(page.getByRole('radio', { name: /^System/ })).toBeChecked();
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('radio', { name: /^System/ })).toBeFocused();
+    await page.keyboard.press('ArrowDown');
+    await expect(html).toHaveAttribute('data-theme-choice', 'light');
     await expect(html).toHaveAttribute('data-theme', 'light');
-    await page.keyboard.press('Space');
-    await expect(html).toHaveAttribute('data-theme', 'dark');
+    await page.keyboard.press('Escape');
+    await expect(themeControl(page)).toBeFocused();
 });
 
 // Work links to /work, which before the cutover sends this legacy-mode server on to /gallery.
@@ -77,9 +84,9 @@ for (const [name, href, path] of [['Work', '/work', '/gallery'], ['Home', '/', '
     });
 }
 
-test('the theme toggle, the Primary links, and the external links show the focus ring', async ({ page }) => {
+test('the theme control, the Primary links, and the external links show the focus ring', async ({ page }) => {
     await openAbout(page);
-    for (const group of [themeToggle(page), navLinks(page), links(page)]) {
+    for (const group of [themeControl(page), navLinks(page), links(page)]) {
         for (const target of await group.all()) await expectFocusRingVisible(target);
     }
 });

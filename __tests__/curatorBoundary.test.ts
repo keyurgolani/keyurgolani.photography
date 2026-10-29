@@ -10,6 +10,7 @@ import { makeCuratorSecrets, type TestCuratorSecrets } from '../test/helpers/cur
 import { resetLoginForTests } from '../lib/curation/auth/login';
 import { CURATOR_FRAME_POLICY, CURATOR_RESPONSE_HEADERS } from '../lib/curation/auth/policy';
 import { deleteSession, resetSessionsForTests, SESSION_COOKIE, signSessionId, createSession } from '../lib/curation/auth/sessions';
+import { THEME_INIT_SCRIPT } from '../components/site/themeScript';
 import { UNAVAILABLE_CSP, UNAVAILABLE_HTML } from '../lib/curation/auth/unavailable';
 import { config, proxy } from '../proxy';
 
@@ -297,17 +298,25 @@ describe('proxy.ts and the curator session', () => {
         expect(body).toContain("The curator's log names the setting");
         expect(body).toContain('docs/curator.md');
         expect(body).toContain('restart curator on the server');
-        expect(body).not.toMatch(/CURATOR_|_FILE|\.key|secrets\/|missing\.key/);
-        // It loads nothing and runs nothing.
-        expect(body).not.toMatch(/<script|<link|<img|src=|href=|url\(|@import/i);
+        // (The theme script, pinned byte for byte below, reads a storage event's `e.key`.)
+        expect(body.replace(/<script>[\s\S]*?<\/script>/, '')).not.toMatch(/CURATOR_|_FILE|\.key|secrets\/|missing\.key/);
+        // It loads nothing, and runs only the theme script, inline, which the policy allows by its hash, byte for byte, so
+        // the page paints in the visitor's theme (P3-9). It sits after the charset and before the style.
+        const scripts = [...body.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+        expect(scripts).toEqual([THEME_INIT_SCRIPT]);
+        expect(body.replace(/<script>[\s\S]*?<\/script>/, '')).not.toMatch(/<script|<link|<img|src=|href=|url\(|@import/i);
+        expect(body.indexOf('<meta charset')).toBeLessThan(body.indexOf('<script>'));
+        expect(body.indexOf('<script>')).toBeLessThan(body.indexOf('<style>'));
         // Its one style element is the one the policy allows by hash, and the policy allows nothing else.
         const style = /<style>([\s\S]*?)<\/style>/.exec(body)![1];
         const { createHash } = await import('node:crypto');
+        const sha = (text: string) => `'sha256-${createHash('sha256').update(text).digest('base64')}'`;
         expect(UNAVAILABLE_CSP).toBe(
-            `default-src 'none'; style-src 'sha256-${createHash('sha256').update(style).digest('base64')}'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+            `default-src 'none'; script-src ${sha(THEME_INIT_SCRIPT)}; style-src ${sha(style)}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
         );
-        // Pinned, so a change to the page's style shows up here and in review as a new hash.
-        expect(UNAVAILABLE_CSP).toContain("style-src 'sha256-fj0ebWXHwvVv1kgLyhVoWoE/rLskEH0aMg+FPaFVIUs=';");
+        // Pinned, so a change to the page's style or the theme script shows up here and in review as a new hash.
+        expect(UNAVAILABLE_CSP).toContain("script-src 'sha256-PCL3hTOGo4fCAuD2yfVntnLyO+NR+ax6Z3b5O7gc++k=';");
+        expect(UNAVAILABLE_CSP).toContain("style-src 'sha256-fF4CeUAxJvdAIKk74Pj88tzAqLcYtags+otlANwHnIc=';");
         expect(body.match(/<style>/g)).toHaveLength(1);
         vi.stubEnv('CURATION_ENABLED', 'false');
         expect((await send('/curation')).status).toBe(404);
@@ -383,6 +392,20 @@ describe("next.config.mjs's curator headers", () => {
         }
         expect(framing.filter((entry) => entry.headers[0].value === "frame-ancestors 'self'").map((entry) => entry.source))
             .toEqual(['/curation/preview/:draftId/site', '/curation/preview/:draftId/site/:path*']);
+    });
+
+    // Today no visitor or curator policy sends script-src, so the inline theme script runs unhashed (spec §7). The day
+    // one does, it has to allow the script by its hash, or every page paints Black before a stored Light choice.
+    it("allows the theme script by its hash in any policy that sends script-src", async () => {
+        const { createHash } = await import('node:crypto');
+        const hash = `'sha256-${createHash('sha256').update(THEME_INIT_SCRIPT).digest('base64')}'`;
+        const entries = await nextConfig.headers!();
+        const policies = [
+            ...entries.flatMap((entry) => entry.headers.filter((header) => header.key.toLowerCase() === 'content-security-policy').map((header) => header.value)),
+            ...Object.entries(CURATOR_RESPONSE_HEADERS).filter(([key]) => key.toLowerCase() === 'content-security-policy').map(([, value]) => value),
+        ];
+        expect(policies.length).toBeGreaterThan(0);
+        for (const policy of policies) if (/(^|;)\s*script-src\b/.test(policy)) expect(policy).toContain(hash);
     });
 
     it('holds the same values as lib/curation/auth/policy.ts', async () => {

@@ -14,15 +14,15 @@ import { expect, test } from '../support/test';
 
 const primary = (page: Page) => page.getByRole('navigation', { name: 'Primary' });
 const navControls = (page: Page) => primary(page).locator('a, button');
-const toggles = (page: Page) => page.getByRole('button', { name: /^Switch to (dark|light) mode$/ });
+const toggles = (page: Page) => page.getByRole('button', { name: /^Theme:/ });
 const slideshow = (page: Page) => page.getByRole('group', { name: 'Slideshow' });
-const TOGGLE = /^Switch to (dark|light) mode$/;
+const TOGGLE = /^Theme: /;
 
 /** The aria-label of whatever has focus, or its rendered text, which skips the toggle's hidden other name. */
 const focusedName = (page: Page) =>
     page.evaluate(() => {
         const el = document.activeElement as HTMLElement | null;
-        return el?.getAttribute('aria-label') ?? el?.innerText.trim() ?? '';
+        return el?.getAttribute('aria-label') ?? el?.innerText.replace(/\s+/g, ' ').trim() ?? '';
     });
 
 async function open(page: Page, path: string, theme: 'dark' | 'light' = 'dark') {
