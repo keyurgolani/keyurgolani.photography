@@ -10,7 +10,7 @@ export const THEME_LABELS: Record<ThemeChoice, { name: string; note: string }> =
   system: { name: 'System', note: 'Light or Black, as your device is set' },
   light: { name: 'Light', note: 'Soft paper, matted prints' },
   bright: { name: 'Bright', note: 'White wall, framed prints' },
-  dark: { name: 'Dark', note: 'Charcoal room' },
+  charcoal: { name: 'Dark', note: 'Charcoal room' },
   black: { name: 'Black', note: 'Near black, the site as it was' },
 };
 

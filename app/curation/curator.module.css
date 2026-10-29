@@ -1055,15 +1055,23 @@ main.state {
 
 /* The themes mockup: the curator's surfaces and states per theme. Dark is the block at the top, lifted with the
    site's charcoal; Light and Bright turn every tone into a light badge of the same hue. Black is today's curator, the
-   block at the top, so it sets nothing here. */
+   block at the top, so it sets nothing here.
+   Round 3 (R2-P1-3): Dark is the Dark material, not today's curator a step lighter: the room's ground, its surface
+   for the header, raised panels with a lift, and the visitor Dark's own sage for the primary. */
 :global(html[data-theme='dark']) .page {
-  --curator-page: #1f2422;
-  --curator-header: #262b29;
-  --curator-list: #222725;
-  --curator-active: #343c38;
+  --curator-page: #1b1f1d;
+  --curator-header: #232826;
+  --curator-list: #1b1f1d;
+  --curator-box: #2c3230;
   --curator-field: #181c1a;
-  --curator-box: #262b29;
+  --curator-active: #343c38;
   --curator-rule: #3f4643;
+  --curator-primary: #9fcfba;
+  --curator-primary-ink: #101511;
+}
+
+:global(html[data-theme='dark']) .box {
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 12px 24px -16px rgba(0, 0, 0, 0.7);
 }
 
 :global(html[data-theme='light']) .page {

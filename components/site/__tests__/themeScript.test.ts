@@ -46,11 +46,34 @@ describe('THEME_INIT_SCRIPT', () => {
     for (const name of root.getAttributeNames()) root.removeAttribute(name);
   });
 
-  it.each(['light', 'bright', 'dark', 'black'])('applies a stored %s choice', (choice) => {
+  it.each(['light', 'bright', 'black'])('applies a stored %s choice', (choice) => {
     device('dark');
     localStorage.setItem('theme', choice);
     run();
     expect(painted()).toEqual([choice, choice]);
+  });
+
+  // The lead's ruling on owner question 4 (round 3): Dark is stored as `charcoal` and paints `dark`, so the CSS keys
+  // on `dark` as before; a stored `dark` is today's toggle, today's look, so it reads as Black.
+  it('paints a stored charcoal as Dark', () => {
+    device('light');
+    localStorage.setItem('theme', 'charcoal');
+    run();
+    expect(painted()).toEqual(['charcoal', 'dark']);
+  });
+
+  it("reads today's stored dark as Black, on a light device too", () => {
+    device('light');
+    localStorage.setItem('theme', 'dark');
+    run();
+    expect(painted()).toEqual(['black', 'black']);
+  });
+
+  it("keeps today's stored light as Light", () => {
+    device('dark');
+    localStorage.setItem('theme', 'light');
+    run();
+    expect(painted()).toEqual(['light', 'light']);
   });
 
   it('resolves System to Light on a light device and to Black on a dark one', () => {
@@ -75,10 +98,10 @@ describe('THEME_INIT_SCRIPT', () => {
 
   it('keeps an explicit choice when the device switches', () => {
     const media = device('dark');
-    localStorage.setItem('theme', 'dark');
+    localStorage.setItem('theme', 'charcoal');
     run();
     media.switchTo('light');
-    expect(painted()).toEqual(['dark', 'dark']);
+    expect(painted()).toEqual(['charcoal', 'dark']);
   });
 
   it.each([['blue'], [''], ['Dark']])('treats the stored value %j as System', (value) => {

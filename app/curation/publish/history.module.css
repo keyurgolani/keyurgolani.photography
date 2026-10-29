@@ -493,3 +493,8 @@
     text-align: center;
   }
 }
+
+/* The themes mockup, round 3 (R2-P1-3): in Dark, History's box is a raised panel with a lift, as the Inbox's boxes. */
+:global(html[data-theme='dark']) .history {
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 12px 24px -16px rgba(0, 0, 0, 0.7);
+}

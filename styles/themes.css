@@ -156,7 +156,7 @@ html[data-theme='light'] {
   /* The Viewer's and About's grounds for the body and the modal backdrop, which sit outside their surfaces; and no
      outline on the Viewer's photograph, which the surround replaces. Black takes the modules' fallbacks, today's. */
   --gah-viewer-ground: #ebe5d9;
-  --gah-about-ground: #f4ecd7;
+  --gah-about-ground: #ebe5d9;
   --gah-viewer-image-outline: none;
 }
 
@@ -219,24 +219,20 @@ html[data-theme='bright'] {
 }
 
 /* The Viewer's Chromatic Chapters tokens, per theme. Black keeps today's exactly (styles/surfaces/chromatic-chapters.css,
-   so it sets nothing here); Dark keeps today's bands, on the lifted charcoal. */
+   so it sets nothing here), bands included; no other theme has bands (round 3). */
 html[data-theme='dark'] [data-surface='viewer'] {
+  /* Round 3 (R2-P1-1): the bands are today's signature, so they're Black's alone. Dark's Viewer is the room with a
+     matted print, as on Work and the series: no bands, a solid panel for the bars, and the theme's own lg surround
+     (keyline, 14px mat, shadow; md on a phone) back from the theme block. */
   --cc-ground: #1b1f1d;
-  --cc-band-edge: #181c1a;
-  --cc-band-mid: #202523;
+  --cc-bands: none;
   --cc-ink: #f3f2ec;
   --cc-ink-soft: #d0d5d1;
   --cc-caption-ink: #d0d5d1;
   --cc-label: #aab4af;
-  --cc-chrome: rgba(24, 28, 26, 0.94);
+  --cc-chrome: #232826;
   --cc-rule: rgba(255, 255, 255, 0.14);
   --cc-rule-strong: rgba(255, 255, 255, 0.42);
-  /* Round 2 (P2-1): Dark keeps the approved bands and drops the Viewer's mat, which the lit middle band already does
-     the job of; the keyline and the shadow stay. */
-  --gah-surround-lg: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 24px 44px -18px rgba(0, 0, 0, 0.8);
-  --gah-surround-md: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 18px 32px -16px rgba(0, 0, 0, 0.75);
-  --gah-room-lg: 1px;
-  --gah-room-md: 1px;
 }
 
 /* Round 2 (P2-1): paper has no bands, as Bright's wall has none, so nothing shows above and below the mat. */
@@ -264,8 +260,26 @@ html[data-theme='bright'] [data-surface='viewer'] {
   --cc-rule-strong: #767676;
 }
 
-/* About's Light Takes Shape, per theme. Light and Black keep the approved paper exactly (Black is today's site, and
-   today's About is the paper), so they set nothing here; Bright is the shade lit white; Dark is the lamp at night. */
+/* About's Light Takes Shape, per theme. Black keeps the approved paper exactly (Black is today's site, and today's
+   About is the paper), so it sets nothing here; Light is its own paper and mat (round 3); Bright is the shade lit
+   white; Dark is the lamp at night. */
+/* Round 3 (R2-P1-2): Light's About is Light's own material (toned paper, a matted print, blue-black links, no
+   ribs), so it isn't Black's page: Black keeps the approved paper, today's About, exactly. */
+html[data-theme='light'] [data-surface='about'] {
+  --lts-paper: #ebe5d9;
+  --lts-glass: rgba(235, 229, 217, 0.9);
+  --lts-ink: #29231d;
+  --lts-ink-soft: #4d443a;
+  --lts-ribs: none;
+  --lts-rule: rgba(41, 35, 29, 0.14);
+  --lts-rule-strong: #8c7f6f;
+  --lts-frame: #f8f5ee;
+  --lts-shadow: 0 0 0 1px rgba(41, 35, 29, 0.08), 0 16px 28px -14px rgba(60, 42, 20, 0.42);
+  --lts-link-rule: #2a4a72;
+  --lts-caption-bg: rgba(248, 245, 238, 0.92);
+  --lts-caption-ink: #3a3229;
+}
+
 html[data-theme='bright'] [data-surface='about'] {
   --lts-paper: #ffffff;
   --lts-ink: #0b0b0b;

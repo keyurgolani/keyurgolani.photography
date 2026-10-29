@@ -38,7 +38,7 @@
 html:not([data-theme-choice='system']) [data-name-for='system'],
 html:not([data-theme-choice='light']) [data-name-for='light'],
 html:not([data-theme-choice='bright']) [data-name-for='bright'],
-html:not([data-theme-choice='dark']) [data-name-for='dark'],
+html:not([data-theme-choice='charcoal']) [data-name-for='charcoal'],
 html:not([data-theme-choice='black']) [data-name-for='black'],
 html:not([data-theme-choice='system']) [data-now],
 html:not([data-theme='light']) [data-now='light'],
