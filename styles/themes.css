@@ -142,7 +142,8 @@ html[data-theme='bright'] {
   --gah-slot-surround-sm: 0 0 0 5px #ffffff, 0 0 0 6px #111111;
   --gah-slot-print: 1;
   --gah-slot-overflow: visible;
-  --gah-mark-outline: 1px solid var(--gah-rule-strong);
+  /* The ink, not the strong rule, beside the black frame: a hover doubles it to md's 2 px black line. */
+  --gah-mark-outline: 1px solid var(--gah-ink);
 }
 
 /* styles/tokens.css's reduced-transparency rule, which the theme blocks would otherwise outrank. */

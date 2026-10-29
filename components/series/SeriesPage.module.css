@@ -216,8 +216,9 @@
 .entries {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 9.5rem), 1fr));
-  /* The column gap reserves both neighbours' surrounds, so two mats never read as one double line. */
-  gap: clamp(1.25rem, 3vw, 2rem) calc(clamp(0.75rem, 2vw, 1.25rem) + 2 * var(--gah-room-sm, 0px));
+  /* Each gap reserves the surrounds it meets: the next row's above, both neighbours' beside, so a caption stays its own
+     print's and two mats never read as one double line. */
+  gap: calc(clamp(1.25rem, 3vw, 2rem) + var(--gah-room-sm, 0px)) calc(clamp(0.75rem, 2vw, 1.25rem) + 2 * var(--gah-room-sm, 0px));
   align-items: start;
   margin: 0;
   padding: 0;
@@ -287,6 +288,9 @@
 .thumbFrame.fallback,
 .coverFrame.fallback {
   background: linear-gradient(to top right, transparent calc(50% - 0.5px), var(--gah-rule) calc(50% - 0.5px), var(--gah-rule) calc(50% + 0.5px), transparent calc(50% + 0.5px)), var(--gah-surface);
+  /* Its edge, in every theme, as today: no photograph, so no surround, though its room stays reserved. Above the
+     frames' own box-shadow, which a missing box would otherwise take. */
+  box-shadow: inset 0 0 0 1px var(--gah-rule);
 }
 
 .position {
@@ -299,8 +303,9 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Below the thumbnail's room too, so the focus ring, which clears the surround, never crosses the title (0 in Black). */
 .caption {
-  margin: 0.25rem 0 0;
+  margin: calc(0.25rem + var(--gah-room-sm, 0px)) 0 0;
   font-family: var(--gah-font-sans);
   font-size: var(--gah-type-ui);
   line-height: 1.45;
@@ -337,6 +342,19 @@
     box-shadow: var(--thumb-mark);
     outline: var(--gah-mark-outline, none);
     outline-offset: var(--gah-room-sm, 0px);
+  }
+}
+
+/* A missing thumbnail wears no surround, so its mark is today's 1 px ring in every theme. */
+.entry:focus-visible .thumbFrame.fallback {
+  box-shadow: 0 0 0 1px var(--gah-rule-strong);
+  outline: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .entry:hover .thumbFrame.fallback {
+    box-shadow: 0 0 0 1px var(--gah-rule-strong);
+    outline: none;
   }
 }
 
