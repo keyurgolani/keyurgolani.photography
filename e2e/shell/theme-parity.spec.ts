@@ -10,9 +10,8 @@ import { expect, test } from '../support/test';
 // the page's, and the bottom row of a page scrolled to its end shows that
 // ground, never a strip of another. Black is today's site, so its grounds are
 // v1.2.0's: the Gallery After Hours ground, About's approved paper, the
-// Viewer's Chromatic Chapters ground. Light paints its paper on the shell and
-// About (R2-P1-2); the Viewer keeps today's ground in every theme until its own
-// PR themes it. (Before the five themes, #21 pinned one look for both; Black
+// Viewer's Chromatic Chapters ground. Light paints its paper on the shell,
+// About (R2-P1-2) and the Viewer (R2-P1-1). (Before the five themes, #21 pinned one look for both; Black
 // against v1.2.0 pixel for pixel is e2e/themes/black-parity.spec.ts.)
 // The catalog-mode server serves the published Home fixture, so Work, the
 // series, and the Viewer are real pages. The legacy Gallery is on the harness
@@ -43,7 +42,7 @@ interface Route {
     /** The same in Light. */
     light: Rgb;
     /**
-     * What the bottom row's edges show: the page's own ground, within `tolerance`; the same pixels in both themes, where
+     * What the bottom row's edges show: the page's own ground, within `tolerance`; a row that is read but not pinned, where
      * the Viewer's chrome bar sits at the bottom; or nothing to check, since Home's stage is a photograph to the edge and
      * the legacy Gallery repaints with the theme.
      */
@@ -55,8 +54,8 @@ const ROUTES: readonly Route[] = [
     { name: 'Home', path: '/', nav: true, ground: GAH_GROUND, light: LIGHT_PAPER, bottom: 'none' },
     { name: 'Work', path: '/work', nav: true, ground: GAH_GROUND, light: LIGHT_PAPER, bottom: 'ground' },
     { name: 'a series', path: `/work/${HOME_SERIES.slug}`, nav: true, ground: GAH_GROUND, light: LIGHT_PAPER, bottom: 'ground' },
-    // The Viewer paints its Chromatic Chapters ground on the body too, the same in both themes (#7).
-    { name: 'the Viewer', path: `/work/${HOME_SERIES.slug}/photo/${HOME_OPENING}`, nav: false, ground: CC_GROUND, light: CC_GROUND, bottom: 'same' },
+    // The Viewer paints its own ground on the body too (#7): today's Chromatic Chapters in Black, Light's paper in Light.
+    { name: 'the Viewer', path: `/work/${HOME_SERIES.slug}/photo/${HOME_OPENING}`, nav: false, ground: CC_GROUND, light: LIGHT_PAPER, bottom: 'same' },
     // The paper's ribs darken it by under 5% at the edges.
     // Light's About paper has no ribs, so it holds its ground exactly.
     { name: 'About', path: '/about', nav: true, ground: PAPER, light: LIGHT_PAPER, bottom: 'ground', tolerance: 10 },
