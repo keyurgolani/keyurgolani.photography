@@ -123,7 +123,7 @@ interface Pair {
     url: string;
     /** After the load: reveal Home's chrome, scroll to the sequence, open the lightbox, hover or focus a photograph. */
     act?: (page: Page) => Promise<void>;
-    /** Home's intro, at its settled frame: shot once its portrait is in, without waiting for the badge to land. */
+    /** Home's intro, at its settled frame: under reduced motion the intro never plays, and the badge fades in where it lands. */
     intro?: boolean;
     /** A signed-in curator page. */
     session?: boolean;
@@ -152,9 +152,9 @@ async function shoot(origin: string, stored: string, pair: Pair, viewport: { wid
     if (pair.photos) await routePhotoFixtures(page);
     await page.goto(`${origin}${pair.url}`, { waitUntil: pair.intro ? 'domcontentloaded' : 'load' });
     {
-        if (!pair.bare && !pair.intro) await page.waitForSelector('html[data-hydrated]', { timeout: 30_000 }).catch(() => undefined);
+        if (!pair.bare) await page.waitForSelector('html[data-hydrated]', { timeout: 30_000 }).catch(() => undefined);
         await page.evaluate(() => document.fonts.ready);
-        if (pair.url === '/' && !pair.intro) {
+        if (pair.url === '/') {
             await page.waitForSelector('[data-home-badge][data-landed]:not([data-lingering])', { timeout: 20_000 }).catch(() => undefined);
         }
         await pair.act?.(page);
@@ -172,6 +172,11 @@ async function shoot(origin: string, stored: string, pair: Pair, viewport: { wid
                 await doc.fonts.ready;
             }
         });
+        // Every finite animation and transition done (reduced motion fades Home's badge in once loading ends).
+        await page.evaluate(() => Promise.race([
+            Promise.all(document.getAnimations().filter((animation) => animation.effect?.getComputedTiming().iterations !== Number.POSITIVE_INFINITY).map((animation) => animation.finished.catch(() => undefined))),
+            new Promise((resolve) => setTimeout(resolve, 5000)),
+        ]));
         await page.waitForTimeout(600);
     }
     if (pair.addsControl && !tag.startsWith('base')) await page.addStyleTag({ content: '[data-theme-control]{display:none!important}' });
@@ -182,8 +187,10 @@ async function shoot(origin: string, stored: string, pair: Pair, viewport: { wid
         const photoBoxes: typeof boxes = [];
         const visit = (doc: Document, dx: number, dy: number) => {
             const at = (el: Element) => {
+                // Out to the whole pixels it touches: a box at x 16.5 also paints part of pixel 16 and of pixel 72.
                 const box = el.getBoundingClientRect();
-                return { x: Math.floor(box.x + dx), y: Math.floor(box.y + dy), w: Math.ceil(box.width), h: Math.ceil(box.height) };
+                const [left, top] = [Math.floor(box.left + dx), Math.floor(box.top + dy)];
+                return { x: left, y: top, w: Math.ceil(box.right + dx) - left, h: Math.ceil(box.bottom + dy) - top };
             };
             for (const el of doc.querySelectorAll('[data-theme-control], nav button, header button')) {
                 if (!el.matches('[data-theme-control]') && !/^Switch to/.test((el.textContent ?? '').trim())) continue;
