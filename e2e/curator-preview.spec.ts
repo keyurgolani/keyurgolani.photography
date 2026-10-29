@@ -348,6 +348,34 @@ test.describe('signed in', () => {
         }
     });
 
+    test("shows About's portrait in the preview, from the preview's own path, never stored, and refused without a session", async ({ browser, request }) => {
+        const { context, page } = await signedIn(browser);
+        try {
+            const log = requestLog(page);
+            await page.goto(`${origin()}${base()}/about`);
+            const image = page.locator('figure[data-testid="about-portrait"] img');
+            await expect(image).toBeVisible();
+            await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.complete && element.naturalWidth > 0)).toBe(true);
+            const src = await image.evaluate((element: HTMLImageElement) => element.currentSrc);
+            expect(new URL(src).pathname).toMatch(new RegExp(`^${base()}/about/portrait/[0-9a-f]{32}/w\\d+\\.(avif|webp)$`));
+            // Every request stays inside the preview: none goes to the public /about/portrait.
+            expectInsidePreview(log);
+            const answer = await page.request.get(src, { maxRedirects: 0 });
+            expect(answer.status()).toBe(200);
+            const cacheControl = headerCopies(answer)['cache-control'];
+            expect(cacheControl).toHaveLength(1);
+            expect(cacheControl[0]).toContain('no-store');
+            expect(cacheControl[0]).not.toMatch(/public|max-age|s-maxage|immutable/);
+            expect(answer.headers()['content-type']).toMatch(/^image\/(avif|webp)$/);
+            // Without a session it's the login redirect, as every preview path is.
+            const anonymous = await request.get(src, { maxRedirects: 0 });
+            expect(anonymous.status()).toBe(307);
+            expect(anonymous.headers().location).toMatch(/\/curation\/login$/);
+        } finally {
+            await context.close();
+        }
+    });
+
     test("frames only the site subtree, one CSP per response, and gives every page the preview's metadata", async ({ browser }) => {
         const { context, page } = await signedIn(browser);
         try {

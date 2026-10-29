@@ -234,10 +234,13 @@ export function blockingRows(ledger: Ledger): number {
 /** The Publish screen's and the Inbox's actor (lib/curation/inbox-form.ts's WEB_ACTOR), repeated here so this module stays client-safe. */
 const WEB_ACTOR = 'curator:web';
 
-/** Who did a thing, in the owner's words: "from this screen" for the web actor, the CLI's actor and command otherwise. */
-export function actorPhrase(actor: string, command = 'photos publish'): string {
-    if (actor === WEB_ACTOR) return 'from this screen';
-    return `${actor}, with ${command}`;
+/**
+ * Where a thing was done from, in the owner's words: "from this screen" for
+ * the web actor, "from the command line" otherwise. The owner is the only
+ * one who publishes, so the screen never names the CLI's actor (v1.2.1).
+ */
+export function actorPhrase(actor: string): string {
+    return actor === WEB_ACTOR ? 'from this screen' : 'from the command line';
 }
 
 /**
@@ -249,9 +252,10 @@ export function publisherLine(by: Publisher | null, timeZone: string, elsewhere:
     if (by === null) return elsewhere ? 'It went live from the command line.' : 'It is live now.';
     const at = timeOf(by.at, timeZone);
     // 15-4: the screen's word for a rollback is Restore (spec, Decided 3); the command keeps its name.
-    if (by.kind === 'rollback') return by.actor === WEB_ACTOR ? `It was restored from this screen at ${at}.` : `${by.actor} restored it at ${at}, with photos rollback.`;
-    if (by.actor === WEB_ACTOR) return elsewhere ? `It went live from this screen at ${at}, in another tab or window.` : `It went live from this screen at ${at}.`;
-    return `${by.actor} published it at ${at}, with photos publish.`;
+    // The owner is the only one who publishes or restores, so every line is his, in the second person (v1.2.1).
+    const where = actorPhrase(by.actor);
+    if (by.kind === 'rollback') return `You restored it ${where} at ${at}.`;
+    return by.actor === WEB_ACTOR && elsewhere ? `You published it ${where} at ${at}, in another tab or window.` : `You published it ${where} at ${at}.`;
 }
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -477,7 +481,8 @@ export function resultCopy(answer: Answer, view: ScreenView, timeZone = 'UTC'): 
         case 'valid':
             return { tone: 'done', heading: 'Catalog revision is valid', body: ['All references resolve. The previous public revision remains live.', answer.stakes] };
         case 'published':
-            return { tone: 'done', heading: `Revision ${answer.live.number} published atomically`, body: ['Visitor APIs now revalidate against the new catalog ETag.'] };
+            // The owner's words (v1.2.1), in place of the mockup's "published atomically" and its ETag line.
+            return { tone: 'done', heading: `Revision ${answer.live.number} is live`, body: ['Visitors get it on their next page load.'] };
         case 'already-live':
             return { tone: 'done', heading: `Revision ${answer.live.number} is already live`, body: [`${publisherLine(answer.by, timeZone, false)} Nothing more to publish, and nothing new was written.`] };
         case 'changed':

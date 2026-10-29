@@ -11,7 +11,7 @@ import { encodeLqip, encodeVariant } from '../../identity/profile';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../../identity/variants';
 import { readAboutPortrait, resetAboutPortraitReader } from '../aboutPortrait';
 import { SITE_CONFIG_ENV } from '../dir';
-import { aboutPortraitView, createPortraitHandler, ENCODE_RETRY, portraitUrl, portraitVariant, resetPortraitVariants } from '../portraitVariants';
+import { aboutPortraitView, createPortraitHandler, ENCODE_RETRY, portraitUrl, portraitVariant, PRIVATE_NO_STORE, resetPortraitVariants } from '../portraitVariants';
 
 // The real encoder, wrapped, so a test can make one encode fail or return something else.
 vi.mock('../../identity/profile', async (importOriginal) => {
@@ -275,6 +275,31 @@ describe('the portrait derivatives', () => {
 });
 
 describe('GET /about/portrait/<token>/<variant>', () => {
+    it("put the variants' URLs under a base path when asked, for the draft preview's About", async () => {
+        put('portrait.jpg', await jpeg(900, 1200));
+        const base = `/curation/preview/rev_${'a'.repeat(64)}/site`;
+        const view = await aboutPortraitView('Pat Artist', { logger: quiet, basePath: base });
+        const token = await currentToken();
+        expect(view?.asset.variants.w400.avif).toEqual({ url: `${base}/about/portrait/${token}/w400.avif`, width: 400 });
+        for (const width of VARIANT_WIDTHS) for (const format of VARIANT_FORMATS) expect(view?.asset.variants[width][format].url.startsWith(`${base}/about/portrait/${token}/`)).toBe(true);
+        expect(portraitUrl(token, 'w800', 'webp', base)).toBe(`${base}/about/portrait/${token}/w800.webp`);
+    });
+
+    it('serves it private and no-store from a handler made for the curator, a 304 too, and the same bytes', async () => {
+        put('portrait.jpg', await jpeg());
+        const token = await currentToken();
+        const curator = createPortraitHandler({ logger: quiet, cacheControl: PRIVATE_NO_STORE });
+        const request = (headers: Record<string, string> = {}) => curator(new Request('http://test/x', { headers }), { params: Promise.resolve({ token, variant: 'w800.webp' }) });
+        const response = await request();
+        expect(response.status).toBe(200);
+        expect(response.headers.get('cache-control')).toBe('private, no-store');
+        const publicBytes = Buffer.from(await (await get(portraitUrl(token, 'w800', 'webp'))).arrayBuffer());
+        expect(Buffer.from(await response.arrayBuffer()).equals(publicBytes)).toBe(true);
+        const again = await request({ 'If-None-Match': response.headers.get('etag') as string });
+        expect(again.status).toBe(304);
+        expect(again.headers.get('cache-control')).toBe('private, no-store');
+    });
+
     it('serves the current portrait as immutable, typed, and sniff-proof, with a 304 for its ETag', async () => {
         put('portrait.jpg', await jpeg());
         const token = await currentToken();

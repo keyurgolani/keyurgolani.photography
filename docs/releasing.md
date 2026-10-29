@@ -339,7 +339,7 @@ It should report `"mode":"legacy"` and `"state":"ok"`. Until a catalog revision 
 
 ## About's portrait
 
-About reads its portrait from the host. It's one file in `./site-config`, next to `docker-compose.prod.yml`, which `web` mounts read-only at `/config/site` (`PHOTOGRAPHY_SITE_CONFIG_DIR`):
+About reads its portrait from the host. It's one file in `./site-config`, next to `docker-compose.prod.yml`, which `web` mounts read-only at `/config/site` (`PHOTOGRAPHY_SITE_CONFIG_DIR`). From `v1.2.1`, `curator` mounts it the same way, so the draft preview's About shows the same portrait ([curator.md](curator.md#preview-and-publish)):
 
 ```
 site-config/
@@ -393,6 +393,8 @@ chmod -R a+rX site-config
 ```
 
 Back up `./site-config` with the rest of the host's folders. It isn't in the repository, so the backup is the only other copy.
+
+`v1.2.1` changes the host's compose file: `curator` gains the read-only `./site-config` mount and `PHOTOGRAPHY_SITE_CONFIG_DIR`. Install the new `docker-compose.prod.yml` the way [Deploying](#deploying) does, keeping this host's own changes out of it, then run the usual `pull` and `up -d`. `curator` starts only by name, so if it's running, recreate it on the new file with `docker compose -f docker-compose.prod.yml up -d curator`. With the old file, `curator` has no mount, and the preview's About shows the name instead of the portrait. Nothing else changes, and `web` is the same.
 
 ## Rollback
 

@@ -443,7 +443,7 @@ describe('answers about what really happened', () => {
         expect((await act(other, 'publish', await act(other, 'validate'))).answer?.kind).toBe('published');
         const answer = answerOf(await act(first, 'publish', valid));
         expect(answer).toMatchObject({ kind: 'someone-published', by: { actor: 'curator:web', kind: 'publish' } });
-        expect(resultCopy(answer, first)).toMatchObject({ heading: 'Revision 3 went live from another page', body: [expect.stringMatching(/^It went live from this screen at \d\d:\d\d, in another tab or window\. /)] });
+        expect(resultCopy(answer, first)).toMatchObject({ heading: 'Revision 3 went live from another page', body: [expect.stringMatching(/^You published it from this screen at \d\d:\d\d, in another tab or window\. /)] });
     });
 });
 
