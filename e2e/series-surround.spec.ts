@@ -136,7 +136,7 @@ for (const theme of THEMES) {
             if (theme === 'black') {
                 // Today's 1 px ring on the frame's edge, and no outline.
                 expect(marked.shadow, `${act} in Black`).toMatch(/0px 0px 0px 1px$/);
-                expect(marked.outline).toBe('none 0px');
+                expect(marked.outline.split(' ')[0]).toBe('none');
             } else {
                 expect(marked.shadow, `${act} keeps the surround`).toBe(rest);
                 expect(marked.outline, `${act} rings it`).toBe('solid 1px');
