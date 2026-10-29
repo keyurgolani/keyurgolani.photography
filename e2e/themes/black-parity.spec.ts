@@ -222,7 +222,9 @@ async function shoot(origin: string, stored: string, pair: Pair, viewport: { wid
                 boxes.push(at(el));
             }
             for (const el of doc.querySelectorAll('img, picture, canvas, [class$="_slide"]:not([class*="yarl"]), [class*="_slide "]:not([class*="yarl"])')) {
-                if (el.getBoundingClientRect().width > 0) photoBoxes.push(at(el));
+                // Unrounded: pass 2 keeps only the pixels a photograph covers whole (Diff).
+                const box = el.getBoundingClientRect();
+                if (box.width > 0) photoBoxes.push({ x: box.left + dx, y: box.top + dy, w: box.width, h: box.height });
             }
             for (const frame of doc.querySelectorAll('iframe')) {
                 const inner = frame.contentDocument;
@@ -290,7 +292,10 @@ async function pixels(left: string, right: string) {
 async function diff(a: Shot, b: Shot, scale: number, name: string, sanctioned: Box[] = []): Promise<Diff> {
     const device = (pad: number) => (box: Box): Region => ({ x0: (box.x - pad) * scale, y0: (box.y - pad) * scale, x1: (box.x + box.w + pad) * scale, y1: (box.y + box.h + pad) * scale });
     const masks = [...a.controls, ...b.controls].map(device(2)).concat(sanctioned.map(device(0)));
-    const photos = [...a.photos, ...b.photos].map(device(0));
+    // A photograph's edge row or column, where it covers a pixel only in part, blends with whatever is under it, and
+    // the resampler lands it up to 99/255 apart from one load to the next. Pass 1 holds that pixel's chrome exact;
+    // pass 2 counts only the pixels a photograph covers whole, in to the whole pixels inside its box.
+    const photos = [...a.photos, ...b.photos].map((box): Region => ({ x0: Math.ceil(box.x * scale), y0: Math.ceil(box.y * scale), x1: Math.floor((box.x + box.w) * scale), y1: Math.floor((box.y + box.h) * scale) }));
     const inside = (boxes: Region[], x: number, y: number) => boxes.some((m) => x >= m.x0 && x < m.x1 && y >= m.y0 && y < m.y1);
     const step = (left: Buffer, right: Buffer, i: number) => Math.max(Math.abs(left[i] - right[i]), Math.abs(left[i + 1] - right[i + 1]), Math.abs(left[i + 2] - right[i + 2]));
 
@@ -408,6 +413,7 @@ const CURATOR: Pair[] = [
         url: '/curation/inbox',
         session: true,
         addsControl: true,
+        measure: ['header [class*="monogram"]', 'header [class*="wordmark"]', 'header [class*="headerEnd"]', 'header'],
     },
     { name: 'publish', url: '/curation/publish', session: true, addsControl: true },
 ];
