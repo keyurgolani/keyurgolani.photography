@@ -277,9 +277,17 @@ test('at 200% text on a small phone, the title keeps 4.5:1 with the chrome scrol
     const chrome = page.locator('[data-home-chrome]');
     await expect.poll(() => chrome.evaluate((el) => el.scrollHeight > el.clientHeight + 1), 'the chrome scrolls at 200% text').toBe(true);
     await expect(page.locator('[data-home-vignette]')).toHaveCSS('--home-copy-top', '0%');
-    await chrome.evaluate((el) => el.scrollTo(0, el.scrollHeight));
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    // As far as the chrome scrolls while the title is still in view below the nav: past 24 px the old hold left the
+    // title's top lines in the fade.
     const title = page.getByRole('heading', { level: 1 });
+    const scrolled = await chrome.evaluate((el, heading) => {
+        const nav = document.querySelector('nav[aria-label="Primary"]')?.getBoundingClientRect().bottom ?? 0;
+        const by = Math.min(el.scrollHeight - el.clientHeight, Math.floor(heading!.getBoundingClientRect().top - nav - 8));
+        el.scrollTo(0, by);
+        return el.scrollTop;
+    }, await title.elementHandle());
+    expect(scrolled, 'the chrome scrolled further than the old hold allowed').toBeGreaterThan(24);
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     expect(await worstTextContrast(page, title), "the title's worst contrast with the chrome scrolled").toBeGreaterThanOrEqual(4.5);
 });
 
@@ -291,8 +299,9 @@ test("Black on a phone is today's at default text, and follows the copy only whe
     const root = page.locator('main');
     const scrim = page.locator('[data-home-vignette]');
     await expect(root).not.toHaveAttribute('data-text-enlarged');
-    await expect(scrim).toHaveCSS('background-image', 'linear-gradient(0deg, rgba(8, 10, 9, 0.92) 0%, rgba(8, 10, 9, 0.28) 66%, rgba(8, 10, 9, 0.12) 100%)');
+    // v1.2.0's phone wash, `linear-gradient(0deg, … .92 0%, … .28 66%, … .12 100%)`, as Chrome serializes it.
+    await expect(scrim).toHaveCSS('background-image', 'linear-gradient(rgba(8, 10, 9, 0.12) 0%, rgba(8, 10, 9, 0.28) 34%, rgba(8, 10, 9, 0.92) 100%)');
     await page.addStyleTag({ content: 'html { font-size: 200% !important; }' });
     await expect(root).toHaveAttribute('data-text-enlarged', '');
-    await expect(scrim).not.toHaveCSS('background-image', /0\.28\) 66%/);
+    await expect(scrim).not.toHaveCSS('background-image', /0\.28\) 34%/);
 });
