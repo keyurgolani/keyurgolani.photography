@@ -35,6 +35,8 @@ const CUT: Record<Exclude<Choice, 'black'>, { mat: string; edge: string; room: n
     charcoal: { mat: 'rgb(42, 47, 45)', edge: 'rgba(255, 255, 255, 0.14) 0px 0px 0px 1px', room: 6 },
 };
 /** Each theme's sm and md room, for the focus ring's offset: the room plus 2 px, at least 3 px. */
+/** The phone's gutter, --site-gutter at 390. */
+const GUTTER = 16;
 const ROOM: Record<Choice, { sm: number; md: number }> = { black: { sm: 0, md: 0 }, light: { sm: 7, md: 12 }, bright: { sm: 6, md: 12 }, charcoal: { sm: 6, md: 10 } };
 
 let catalog: TestCatalog | undefined;
@@ -89,33 +91,40 @@ function cut(target: Locator) {
 }
 
 for (const theme of THEMES) {
-    test(`in ${theme}, a landscape, a portrait and a square in one row each get the window the theme cuts`, async ({ page }) => {
-        await page.setViewportSize({ width: 1440, height: 900 });
-        await open(page, '/work/mixed', theme);
-        const tops = new Set<number>();
-        for (const [n, shape] of SHAPES.entries()) {
-            const seen = await cut(entry(page, n));
-            tops.add(Math.round(seen.slot.y));
-            // The slot is the 4:3 frame in every theme.
-            expect(seen.slot.w / seen.slot.h, `entry ${n}'s slot`).toBeCloseTo(4 / 3, 2);
-            if (theme === 'black') {
-                // Today's letterbox: the image fills the slot and draws its own ratio inside it.
-                expect(seen.print, `entry ${n}'s image fills its slot in Black`).toEqual(seen.slot);
-                expect(seen.edge).toBe('none');
-                continue;
+    for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+        test(`in ${theme} at ${viewport.width}, a landscape, a portrait and a square each get the window the theme cuts`, async ({ page }) => {
+            await page.setViewportSize(viewport);
+            await open(page, '/work/mixed', theme);
+            const seen = [];
+            for (const n of SHAPES.keys()) seen.push(await cut(entry(page, n)));
+            for (const [n, shape] of SHAPES.entries()) {
+                const { slot, print, fill, edge, ratio } = seen[n];
+                // The slot is the 4:3 frame in every theme, and the image is the photograph's own shape, pixels and all.
+                expect(slot.w / slot.h, `entry ${n}'s slot`).toBeCloseTo(4 / 3, 2);
+                expect(ratio, `entry ${n}'s image is ${shape.width}:${shape.height}`).toBeCloseTo(shape.width / shape.height, 2);
+                if (theme === 'black') {
+                    // Today's letterbox: the image fills the slot and draws its own ratio inside it.
+                    expect(print, `entry ${n}'s image fills its slot in Black`).toEqual(slot);
+                    expect(edge).toBe('none');
+                    continue;
+                }
+                expect(fill, `entry ${n}'s slot is the mat`).toBe(CUT[theme].mat);
+                expect(edge, `entry ${n}'s print carries the theme's edge`).toBe(CUT[theme].edge);
+                // The print is the image's shape, as large as the slot allows, and centred.
+                expect(print.w / print.h, `entry ${n}'s print`).toBeCloseTo(ratio, 2);
+                expect(Math.min(slot.w - print.w, slot.h - print.h), `entry ${n}'s print meets two sides of its slot`).toBeLessThan(0.5);
+                expect(Math.abs(slot.x + slot.w / 2 - (print.x + print.w / 2))).toBeLessThan(0.5);
+                expect(Math.abs(slot.y + slot.h / 2 - (print.y + print.h / 2))).toBeLessThan(0.5);
             }
-            const ratio = shape.width / shape.height;
-            const { mat, edge } = CUT[theme];
-            expect(seen.fill, `entry ${n}'s slot is the mat`).toBe(mat);
-            expect(seen.edge, `entry ${n}'s print carries the theme's edge`).toBe(edge);
-            // The print is its own shape, as large as the slot allows, and centred.
-            expect(seen.print.w / seen.print.h, `entry ${n}'s print is ${shape.width}:${shape.height}`).toBeCloseTo(ratio, 1);
-            expect(Math.max(seen.slot.w - seen.print.w, seen.slot.h - seen.print.h) < 0.5 || Math.min(seen.slot.w - seen.print.w, seen.slot.h - seen.print.h) < 0.5, `entry ${n}'s print meets two sides of its slot`).toBe(true);
-            expect(Math.abs(seen.slot.x + seen.slot.w / 2 - (seen.print.x + seen.print.w / 2))).toBeLessThan(0.5);
-            expect(Math.abs(seen.slot.y + seen.slot.h / 2 - (seen.print.y + seen.print.h / 2))).toBeLessThan(0.5);
-        }
-        expect(tops.size, 'the four entries share one row at 1440').toBe(1);
-    });
+            // Neighbours in a row keep today's gap plus both their surrounds between their slots.
+            const [first, second] = seen;
+            if (Math.round(first.slot.y) === Math.round(second.slot.y)) {
+                // Today's column gap, clamp(0.75rem, 2vw, 1.25rem).
+                const today = Math.min(20, Math.max(12, viewport.width * 0.02));
+                expect(second.slot.x - (first.slot.x + first.slot.w), 'the gap between two slots in a row').toBeGreaterThanOrEqual(2 * (theme === 'black' ? 0 : CUT[theme].room) + today - 0.01);
+            }
+        });
+    }
 
     test(`in ${theme}, hover and focus keep the thumbnail's surround and ring it from outside its room`, async ({ page }) => {
         await page.setViewportSize({ width: 1440, height: 900 });
@@ -181,10 +190,27 @@ for (const theme of THEMES) {
                 const r = el.getBoundingClientRect();
                 return { offset: parseFloat(style.outlineOffset), width: parseFloat(style.outlineWidth), left: r.left, right: r.right, viewport: document.documentElement.clientWidth };
             });
-            // Phones step every surround down to sm: the ring clears it by 2 px, at least today's 3 px.
-            expect(ring.offset, `${path}: the ring's offset`).toBe(Math.max(3, room + 2));
-            expect(ring.left - ring.offset - ring.width, `${path}: the ring's left edge on screen`).toBeGreaterThanOrEqual(0);
-            expect(ring.right + ring.offset + ring.width, `${path}: the ring's right edge on screen`).toBeLessThanOrEqual(ring.viewport);
+            // Phones step every surround down to sm: the ring clears it by 2 px, at least today's 3 px, and never comes
+            // closer than 1 px to the screen's edge, so offset and width stay within the 16 px gutter less 1.
+            expect(ring.offset, `${path}: the ring's offset`).toBe(Math.min(Math.max(3, room + 2), GUTTER - 3 - 1));
+            expect(ring.left - ring.offset - ring.width, `${path}: the ring's left edge inside the gutter`).toBeGreaterThanOrEqual(1);
+            expect(ring.viewport - (ring.right + ring.offset + ring.width), `${path}: the ring's right edge inside the gutter`).toBeGreaterThanOrEqual(1);
         }
+    });
+
+    test(`in ${theme}, at 390 a surround thicker than the gutter allows clamps the ring to it`, async ({ page }) => {
+        await page.setViewportSize({ width: 390, height: 844 });
+        await open(page, '/work', theme);
+        // A room no theme has: the clamp, gutter less ring less 1, has to take over.
+        await page.addStyleTag({ content: '[data-ring-room]{--ring-room:20px}' });
+        const link = page.getByRole('main').locator('ul > li > a').first();
+        await page.keyboard.press('Tab');
+        await link.focus();
+        const ring = await link.evaluate((el) => {
+            const style = getComputedStyle(el);
+            return { offset: parseFloat(style.outlineOffset), width: parseFloat(style.outlineWidth), left: el.getBoundingClientRect().left };
+        });
+        expect(ring.offset, 'the clamped offset').toBe(GUTTER - 3 - 1);
+        expect(ring.left - ring.offset - ring.width, "the ring's left edge inside the gutter").toBeGreaterThanOrEqual(1);
     });
 }

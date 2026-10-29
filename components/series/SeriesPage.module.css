@@ -249,12 +249,14 @@
 /* A fixed box, so rows line up while images load, fail, or are missing. The whole photograph shows, uncropped. It wears
    the theme's sm surround, and its hover and focus mark (below) keeps it. */
 .thumbFrame {
+  /* The slot's shape, which the window cut below sizes each print against. */
+  --slot-ratio: 4 / 3;
   --thumb-surround: var(--gah-surround-sm, none);
   --thumb-mark: var(--gah-surround-sm, 0 0 0 1px var(--gah-rule-strong));
   position: relative;
   display: block;
   overflow: hidden;
-  aspect-ratio: 4 / 3;
+  aspect-ratio: var(--slot-ratio);
   border-radius: var(--gah-photo-radius, var(--gah-radius));
   background: var(--gah-surface);
   box-shadow: var(--thumb-surround);
@@ -262,7 +264,7 @@
 
 /* One frame size, a window cut to each print (spec §3). The slot is the mat: its fill and the outer layers (Bright's
    frame, Light's hairline and shadow, Dark's shadow). The print is centred and, where the theme sets
-   --gah-slot-print to 1, sized to its own ratio (--photo-ratio, from SeriesPhoto) in the 4:3 slot, and carries the
+   --gah-slot-print to 1, sized to its own ratio (--photo-ratio, from SeriesPhoto) in the slot's, and carries the
    inner layer on its own edge (Light's bevel, Dark's keyline), so a portrait, a landscape and a square in one row each
    have an edge of their own. The slot lets that edge show past a full-width print. Black sets none of it, so it's
    today's letterbox on the surface. */
@@ -276,8 +278,8 @@
 .thumbFrame[data-photo='contain'] .image {
   /* 0 or 1: the print's width and height in the slot, each as a share of it, are 100% at 0 and the print's own at 1. */
   --print: var(--gah-slot-print, 0);
-  width: calc(100% - var(--print) * (100% - min(100%, 75% * var(--photo-ratio, 1.3333))));
-  height: calc(100% - var(--print) * (100% - min(100%, 133.333% / var(--photo-ratio, 1.3333))));
+  width: calc(100% - var(--print) * (100% - min(100%, 100% * (var(--photo-ratio, 4 / 3)) / (var(--slot-ratio)))));
+  height: calc(100% - var(--print) * (100% - min(100%, 100% * (var(--slot-ratio)) / (var(--photo-ratio, 4 / 3)))));
   margin: auto;
   border-radius: var(--gah-photo-radius, 0px);
   box-shadow: var(--gah-print-edge, none);
@@ -306,7 +308,8 @@
 /* Below the thumbnail's room too, so the focus ring, which clears the surround, never crosses the title (0 in Black). */
 .caption {
   margin: calc(0.25rem + var(--gah-room-sm, 0px)) 0 0;
-  font-family: var(--gah-font-sans);
+  /* Light's captions are in the serif (spec §3); the others, Black included, keep the sans. */
+  font-family: var(--gah-caption-font, var(--gah-font-sans));
   font-size: var(--gah-type-ui);
   line-height: 1.45;
   overflow-wrap: anywhere;
