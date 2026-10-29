@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { motion, useMotionValue, useTransform, animate, type AnimationPlaybackControls } from 'framer-motion';
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
-import { badgePlace, boxOf, type BadgePlace, type Box } from './badgePlace';
+import { badgePlace, boxOf, chromeOverflows, homeCopyTop, textEnlarged, type BadgePlace, type Box } from './badgePlace';
 import ProfilePicture from './ProfilePicture';
 import { HOME_LOADING_TIMEOUT_MS } from './home/homeChromeConfig';
 import { usePrefersReducedMotion } from './motion/usePrefersReducedMotion';
@@ -296,6 +296,46 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
     for (const region of root.querySelectorAll('[data-chrome-region="nav"], [data-chrome-region="story"]')) observer.observe(region);
     return () => observer.disconnect();
   }, [showPortrait]);
+
+  // The copy's top, for the phone wash (HomeChrome.module.css), with or without a portrait. It's measured against the
+  // scrim that paints it ([data-home-vignette], inside the stage's inset) and written there, again whenever Home, the
+  // story or any of its copy changes size, and once the fonts are in, since a title that re-wraps in its own face
+  // changes no box the observer watches (M2). When the chrome scrolls, as large text can make it, the copy moves
+  // under a fixed scrim, so the hold covers the whole print instead (M1). With the text enlarged Home's root says so
+  // too, and Black's wash then follows the copy as the other themes' does (spec §10); at default text it doesn't.
+  useLayoutEffect(() => {
+    const story = document.querySelector('[data-chrome-region="story"]');
+    const root = story?.closest('main');
+    if (!story || !(root instanceof HTMLElement)) return;
+    const scrim = root.querySelector<HTMLElement>('[data-home-vignette]') ?? root;
+    const chrome = story.closest('[data-home-chrome]');
+    const copy = () => [...story.querySelectorAll(':is(h1, h2, p, a)')];
+    let written: string | null = null;
+    let current = true;
+    const measure = () => {
+      if (!current) return;
+      const stage = boxOf(scrim);
+      const overflows = chrome instanceof HTMLElement && chromeOverflows(chrome.scrollHeight, chrome.clientHeight);
+      const top = overflows ? 0 : stage && homeCopyTop(stage, copy().map(boxOf).filter((box): box is Box => box !== null));
+      const value = top === null || top === undefined ? null : `${top}%`;
+      if (value !== written) {
+        if (value === null) scrim.style.removeProperty('--home-copy-top');
+        else scrim.style.setProperty('--home-copy-top', value);
+        written = value;
+      }
+      root.toggleAttribute('data-text-enlarged', textEnlarged(parseFloat(getComputedStyle(document.documentElement).fontSize)));
+    };
+    measure();
+    void document.fonts?.ready.then(measure);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    for (const element of [root, story, ...copy()]) observer?.observe(element);
+    return () => {
+      current = false;
+      observer?.disconnect();
+      scrim.style.removeProperty('--home-copy-top');
+      root.removeAttribute('data-text-enlarged');
+    };
+  }, []);
 
   if (phase === 'settled' && !showPortrait) return null;
 

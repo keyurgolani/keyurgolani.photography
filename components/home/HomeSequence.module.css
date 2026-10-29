@@ -1,9 +1,14 @@
+/* In Light, Bright and Dark the photograph hangs inside the theme's margin with its surround (HomeChrome.module.css
+   sets the tokens on Home's root). Black sets none, so it keeps today's full-bleed box exactly: an absolute box at
+   inset 0 would composite the scrim over it a step differently. */
 .carousel {
-  position: relative;
-  width: 100%;
-  height: 100vh; /* Full screen */
+  position: var(--gah-stage-position, relative);
+  inset: var(--gah-stage-inset, auto);
+  width: var(--gah-stage-size, 100%);
+  height: var(--gah-stage-size, 100vh); /* Full screen */
   overflow: hidden;
-  background-color: #000;
+  box-shadow: var(--gah-stage-surround, none);
+  background-color: var(--gah-mat-fill, #000);
 }
 
 .slide {

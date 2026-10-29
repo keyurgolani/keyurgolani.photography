@@ -28,10 +28,14 @@ import { compare, failures, walk, type Allowance, type Comparison, type Walk } f
 //    and the slot that holds only them is compared by style alone; the curator's head takes its control out of the
 //    layout, as no JavaScript does, since the base's header had none. A wait that times out fails the row, so a head
 //    that doesn't hydrate fails.
-// At 1440 and 390, in all three of Black's routes: System on a dark device and today's stored `dark`, each against the
-// base on its stored `dark`, and no JavaScript against the base without it.
+// At 1440, 1024 and 390, in all three of Black's routes: System on a dark device and today's stored `dark`, each
+// against the base on its stored `dark`, and no JavaScript against the base without it. Home's intro has a fourth:
+// motion allowed, on a paused clock run to a fixed point in its loading phase, where the grain and the ripples are.
+// The gate also walks hover and focus on the nav links, Home's controls (their hover only with motion allowed), About's
+// links, and the Inbox's rows and buttons.
 // Self-tests inject a change into the head that must fail the gate: Home's scrim and --gah-ink 1/255 off, the glass
-// blur at 13px, a photograph's opacity at .96 and its corners square, About's underlines red, a hovered nav link white.
+// blur at 13px, a photograph's opacity at .96 and its corners square, About's underlines red, a hovered nav link white,
+// the intro's grain at .12 and a hovered Home control, both with motion allowed.
 //
 // What the gate can't see is raster only: how the browser draws a blur, a resample or an antialiased edge. The pixel
 // report covers that, as an artefact, not a gate: two passes over every shot at 1x and 2x, each in its own fresh load
@@ -47,6 +51,26 @@ const OUT = path.join(HEAD, 'test-results', 'parity');
  * 9/255 against themselves in the base. */
 const PHOTO_STEP = 12;
 const VIEWPORTS = { desktop: { width: 1440, height: 900 }, phone: { width: 390, height: 844 } } as const;
+/** The gate walks a third width too (spec §13 P3-14): the 40rem to 64rem bands that 1440 and 390 never show. The pixel report stays at two. */
+const GATE_VIEWPORTS = { desktop: VIEWPORTS.desktop, tablet: { width: 1024, height: 768 }, phone: VIEWPORTS.phone } as const;
+/**
+ * Motion allowed runs on a fake clock, paused from before the load, so both builds see the same time: the page loads
+ * and decodes with no time passing, then the clock runs `at` ms in one go. After the act, every CSS animation and
+ * transition is put at a fixed point, a finite one at its end and an endless one at its start, since they run on the
+ * real clock (Home's slow zoom would otherwise be caught mid-way). `hold` walks the intro inside its loading phase.
+ */
+interface Motion {
+    at: number;
+    hold?: boolean;
+}
+const CLOCK_START = Date.UTC(2026, 0, 1);
+/**
+ * Home's intro at its first frame, the grain up and the first ripple at its start. A later point isn't the same in
+ * both builds: React commits a ripple on the real clock, so a ripple's animation starts a few fake ms apart.
+ */
+const LOADING: Motion = { at: 0, hold: true };
+/** Home past its intro, its badge landed and done lingering: the exit's 6 s bound, then the badge's 3 s. */
+const SETTLED: Motion = { at: 12_000 };
 const SCALES = [1, 2] as const;
 // Rows go to a file as they're measured: a failed test restarts the worker, which would drop rows held in memory.
 // build.ts, the global setup, starts it empty.
@@ -148,6 +172,8 @@ interface Pair {
     session?: boolean;
     /** The legacy Gallery, on the e2e suite's photo fixtures. */
     photos?: boolean;
+    /** Home with its opening photograph failing to load, so the failure notice shows with Retry and Skip. */
+    failOpening?: boolean;
     /** A page the head adds the control to, where the base had no toggle (the curator's header): the head's shot
      * takes the control out of the layout, as no JavaScript does, so the rest must match. */
     addsControl?: boolean;
@@ -159,6 +185,12 @@ interface Pair {
     headStyle?: string;
     /** Selectors whose boxes go in the report's second table, unrounded, from every shot (the code review's H2.3). */
     measure?: string[];
+    /** Motion allowed, on the fake clock, in every route of this page. */
+    motion?: Motion;
+    /** A hover or focus state: the gate walks it, and the pixel report leaves it out. */
+    gateOnly?: boolean;
+    /** The page this is a state of, whose allowances it takes. */
+    stateOf?: string;
 }
 
 let browser: Browser;
@@ -197,8 +229,12 @@ interface PassShot {
  * decoded, and every finite animation done. `stored` is the theme in localStorage, or '' for none (System). Without
  * JavaScript nothing waits on the page's scripts, and an act that needs them does nothing, in both builds alike.
  */
-async function open(origin: string, stored: string, pair: Pair, viewport: { width: number; height: number }, scale: number, css: string, { js = true, session }: { js?: boolean; session?: string } = {}) {
-    const context = await browser.newContext({ viewport, deviceScaleFactor: scale, colorScheme: 'dark', reducedMotion: 'reduce', javaScriptEnabled: js });
+async function open(origin: string, stored: string, pair: Pair, viewport: { width: number; height: number }, scale: number, css: string, { js = true, session, motion = pair.motion }: { js?: boolean; session?: string; motion?: Motion } = {}) {
+    const context = await browser.newContext({ viewport, deviceScaleFactor: scale, colorScheme: 'dark', reducedMotion: motion ? 'no-preference' : 'reduce', javaScriptEnabled: js });
+    if (motion) {
+        await context.clock.install({ time: CLOCK_START });
+        await context.clock.pauseAt(CLOCK_START + 1);
+    }
     if (session) await context.addCookies(JSON.parse(session).map((cookie: { name: string; value: string }) => ({ ...cookie, url: origin })));
     await context.addInitScript(({ value, sheet }) => {
         try {
@@ -214,6 +250,7 @@ async function open(origin: string, stored: string, pair: Pair, viewport: { widt
     }, { value: stored, sheet: css });
     const page = await context.newPage();
     if (pair.photos) await routePhotoFixtures(page);
+    if (pair.failOpening) await page.route(`**/media/${HOME_OPENING}/**`, (route) => route.abort());
     // Every wait polls from here, so it works without JavaScript too (the page then runs none of our timers or
     // handlers), and every one that times out is named in `timedOut`: the gate fails a row on any, never passes it.
     const timedOut: string[] = [];
@@ -225,31 +262,56 @@ async function open(origin: string, stored: string, pair: Pair, viewport: { widt
         }
         timedOut.push(name);
     };
-    await page.goto(`${origin}${pair.url}`, { waitUntil: pair.intro && js ? 'domcontentloaded' : 'load' });
-    if (js && !pair.bare) await until('hydration', () => page.locator('html[data-hydrated]').count().then((n) => n > 0), 30_000);
-    await until('fonts', () => page.evaluate(() => document.fonts.status === 'loaded'), 10_000);
-    if (js && pair.url === '/') await until("Home's badge", () => page.locator('[data-home-badge][data-landed]:not([data-lingering])').count().then((n) => n > 0), 20_000);
-    if (js) await pair.act?.(page);
-    else await Promise.race([pair.act?.(page).catch(() => undefined), page.waitForTimeout(3000)]);
     // The page and the curator's preview frame: every image that's going to load has (a lazy one far out of view won't),
     // and its fonts are in. With JavaScript, every image is decoded too: loaded isn't painted, and a photo still
     // decoding can draw a row short.
-    await until('images and fonts', () => page.evaluate(() => {
-        const docs = [document, ...[...document.querySelectorAll('iframe')].flatMap((frame) => (frame.contentDocument ? [frame.contentDocument] : []))];
-        return docs.every((doc) => doc.fonts.status === 'loaded' && [...doc.images].every((image) => {
-            if (image.complete) return true;
-            const box = image.getBoundingClientRect();
-            const view = doc.defaultView!;
-            // Chrome loads a lazy image within 1,250 px of the viewport; one further out never loads, in either build.
-            return image.loading === 'lazy' && (box.bottom < -1000 || box.top > view.innerHeight + 1000);
-        }));
-    }), 20_000);
-    if (js) await until('image decode', () => page.evaluate(async () => {
-        const docs = [document, ...[...document.querySelectorAll('iframe')].flatMap((frame) => (frame.contentDocument ? [frame.contentDocument] : []))];
-        await Promise.all(docs.flatMap((doc) => [...doc.images].filter((image) => image.complete).map((image) => image.decode().catch(() => undefined))));
-        return true;
-    }), 10_000);
-    // Every finite animation and transition done (reduced motion fades Home's badge in once loading ends).
+    const settleImages = async () => {
+        await until('images and fonts', () => page.evaluate(() => {
+            const docs = [document, ...[...document.querySelectorAll('iframe')].flatMap((frame) => (frame.contentDocument ? [frame.contentDocument] : []))];
+            return docs.every((doc) => doc.fonts.status === 'loaded' && [...doc.images].every((image) => {
+                if (image.complete) return true;
+                const box = image.getBoundingClientRect();
+                const view = doc.defaultView!;
+                // Chrome loads a lazy image within 1,250 px of the viewport; one further out never loads, in either build.
+                return image.loading === 'lazy' && (box.bottom < -1000 || box.top > view.innerHeight + 1000);
+            }));
+        }), 20_000);
+        if (js) await until('image decode', () => page.evaluate(async () => {
+            const docs = [document, ...[...document.querySelectorAll('iframe')].flatMap((frame) => (frame.contentDocument ? [frame.contentDocument] : []))];
+            await Promise.all(docs.flatMap((doc) => [...doc.images].filter((image) => image.complete).map((image) => image.decode().catch(() => undefined))));
+            return true;
+        }), 10_000);
+    };
+    await page.goto(`${origin}${pair.url}`, { waitUntil: pair.intro && js && !motion ? 'domcontentloaded' : 'load' });
+    if (js && !pair.bare) await until('hydration', () => page.locator('html[data-hydrated]').count().then((n) => n > 0), 30_000);
+    await until('fonts', () => page.evaluate(() => document.fonts.status === 'loaded'), 10_000);
+    if (motion && js) {
+        // Everything in before the clock moves, so the intro's loading ends at the same time on it in both builds.
+        await settleImages();
+        if (motion.at > 0) await context.clock.runFor(motion.at);
+        // The grain up and Home's root in its loading phase, not revealing, in both builds.
+        if (motion.hold) {
+            await until("Home's intro in its loading phase", async () => (await page.locator('[class*="grainOverlay"]').count()) === 1 && (await page.locator('main[data-home-intro="loading"]').count()) === 1, 5000);
+        }
+    }
+    if (js && pair.url === '/' && !motion?.hold) await until("Home's badge", () => page.locator('[data-home-badge][data-landed]:not([data-lingering])').count().then((n) => n > 0), 20_000);
+    // Without JavaScript a state act is left out: its row then compares the page at rest, as another pair does, and no
+    // act abandoned at 3 s can still be pressing keys during the walk.
+    if (js) await pair.act?.(page);
+    else if (!pair.gateOnly) await Promise.race([pair.act?.(page).catch(() => undefined), page.waitForTimeout(3000)]);
+    await settleImages();
+    if (motion && js) {
+        await page.evaluate(() => {
+            for (const animation of document.getAnimations()) {
+                if (animation.effect?.getComputedTiming().iterations === Number.POSITIVE_INFINITY) {
+                    animation.pause();
+                    animation.currentTime = 0;
+                } else animation.finish();
+            }
+        });
+    }
+    // Every finite animation and transition done (reduced motion fades Home's badge in once loading ends). With motion
+    // allowed they're at their fixed points already.
     await until('animations', () => page.evaluate(() => document.getAnimations().every((animation) => animation.effect?.getComputedTiming().iterations === Number.POSITIVE_INFINITY || animation.playState !== 'running')), 5000);
     await page.waitForTimeout(600);
     return { context, page, timedOut };
@@ -411,6 +473,44 @@ const focusInPlace = async (target: Locator) => {
     expect(await target.evaluate((element) => element.matches(':focus-visible')), 'the focused element shows its ring').toBe(true);
 };
 const toSequence = (page: Page) => scrollToWhole(page.getByRole('heading', { name: 'Sequence' }));
+/** A primary nav link other than the current page's. */
+const navLink = (page: Page) => page.locator('nav[aria-label="Primary"] ul a:not([aria-current])').first();
+/** Hovers `target`, which must be there: a state act on nothing would compare nothing. */
+const hoverOn = async (target: Locator) => {
+    await expect(target, 'the hovered element is there').toBeVisible();
+    await target.hover();
+};
+/**
+ * A key press first, so the focus that follows is :focus-visible, as a keyboard visitor's is. Where focusing it then
+ * doesn't show the ring (the Inbox), it's reached by Tab, as a keyboard visitor does.
+ */
+const keyboardFocus = async (page: Page, target: Locator) => {
+    await page.keyboard.press('Tab');
+    await target.evaluate((element) => (element as HTMLElement).focus({ preventScroll: true }));
+    for (let presses = 0; presses < 80 && !(await target.evaluate((element) => element === document.activeElement && element.matches(':focus-visible'))); presses++) {
+        await page.keyboard.press('Tab');
+    }
+    const state = await target.evaluate((element) => ({
+        ring: element.matches(':focus-visible'),
+        focused: element === document.activeElement,
+        active: `${document.activeElement?.tagName.toLowerCase()} ${document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.textContent?.trim().slice(0, 40) ?? ''}`,
+    }));
+    expect(state.ring, `the focused element shows its ring (focused ${state.focused}, focus on ${state.active})`).toBe(true);
+};
+const homeNext = (page: Page) => page.getByRole('button', { name: 'Next photograph' });
+const homeEnter = (page: Page) => page.getByRole('link', { name: /^Enter the series/ });
+const homeRetry = (page: Page) => page.getByRole('button', { name: 'Retry', exact: true });
+const aboutLink = (page: Page) => page.locator('main article a').first();
+/**
+ * The Inbox streams in after hydration, behind its loading state: an act before the list is in would focus a row that
+ * the list then replaces, leaving focus on the body.
+ */
+const inboxIn = async (page: Page) => {
+    await expect(page.locator('main ul a[data-row]').first(), 'the Inbox list is in').toBeVisible();
+    await expect(page.getByText('Loading the inbox'), "the Inbox's loading state is gone").toBeHidden();
+};
+const inboxRow = (page: Page) => page.locator('main ul a[data-row]').first();
+const inboxRefresh = (page: Page) => page.getByRole('button', { name: 'Refresh inbox' });
 
 const VISITOR: Pair[] = [
     { name: 'home-intro', url: '/', intro: true, glass: true },
@@ -450,6 +550,73 @@ const VISITOR: Pair[] = [
     { name: 'viewer', url: `${series}/photo/${HOME_OPENING}` },
     { name: 'about', url: '/about' },
     { name: '404', url: '/no-such-page', measure: ['nav [class*="monogram"]', 'nav [class*="_end"]', '[data-theme-control], nav button'] },
+    // Hover and focus (the review's Delta 2, item 3), walked by the gate only.
+    { name: 'nav-link-hover', url: '/work', gateOnly: true, act: (page) => hoverOn(navLink(page)) },
+    { name: 'nav-link-focus', url: '/work', gateOnly: true, act: (page) => keyboardFocus(page, navLink(page)) },
+    { name: 'about-nav-link-hover', url: '/about', gateOnly: true, act: (page) => hoverOn(navLink(page)) },
+    { name: 'about-link-hover', url: '/about', gateOnly: true, act: (page) => hoverOn(aboutLink(page)) },
+    { name: 'about-link-focus', url: '/about', gateOnly: true, act: (page) => keyboardFocus(page, aboutLink(page)) },
+    {
+        name: 'home-control-focus',
+        url: '/',
+        gateOnly: true,
+        glass: true,
+        act: async (page) => {
+            await revealChrome(page);
+            await keyboardFocus(page, homeNext(page));
+        },
+    },
+    // "Enter the series" and the failure notice: the states this PR's tokens reach (the code review's M3).
+    {
+        name: 'home-enter-hover',
+        url: '/',
+        gateOnly: true,
+        glass: true,
+        act: async (page) => {
+            await revealChrome(page);
+            await hoverOn(homeEnter(page));
+        },
+    },
+    {
+        name: 'home-enter-focus',
+        url: '/',
+        gateOnly: true,
+        glass: true,
+        act: async (page) => {
+            await revealChrome(page);
+            await keyboardFocus(page, homeEnter(page));
+        },
+    },
+    {
+        name: 'home-failure',
+        url: '/',
+        gateOnly: true,
+        glass: true,
+        failOpening: true,
+        act: async (page) => {
+            await expect(homeRetry(page), 'the failure notice is up').toBeVisible();
+        },
+    },
+    {
+        name: 'home-failure-hover',
+        url: '/',
+        gateOnly: true,
+        glass: true,
+        failOpening: true,
+        act: (page) => hoverOn(homeRetry(page)),
+    },
+    // The controls' hover is only with motion allowed and a fine pointer.
+    {
+        name: 'home-control-hover',
+        url: '/',
+        gateOnly: true,
+        glass: true,
+        motion: SETTLED,
+        act: async (page) => {
+            await revealChrome(page);
+            await hoverOn(homeNext(page));
+        },
+    },
 ];
 const LEGACY: Pair[] = [
     { name: 'gallery', url: '/gallery', photos: true },
@@ -477,6 +644,22 @@ const CURATOR: Pair[] = [
         measure: ['header [class*="monogram"]', 'header [class*="wordmark"]', 'header [class*="headerEnd"]', 'header'],
     },
     { name: 'publish', url: '/curation/publish', session: true, addsControl: true },
+    { name: 'inbox-row-hover', url: '/curation/inbox', session: true, addsControl: true, gateOnly: true, stateOf: 'inbox', act: async (page) => {
+        await inboxIn(page);
+        await hoverOn(inboxRow(page));
+    } },
+    { name: 'inbox-row-focus', url: '/curation/inbox', session: true, addsControl: true, gateOnly: true, stateOf: 'inbox', act: async (page) => {
+        await inboxIn(page);
+        await keyboardFocus(page, inboxRow(page));
+    } },
+    { name: 'inbox-button-hover', url: '/curation/inbox', session: true, addsControl: true, gateOnly: true, stateOf: 'inbox', act: async (page) => {
+        await inboxIn(page);
+        await hoverOn(inboxRefresh(page));
+    } },
+    { name: 'inbox-button-focus', url: '/curation/inbox', session: true, addsControl: true, gateOnly: true, stateOf: 'inbox', act: async (page) => {
+        await inboxIn(page);
+        await keyboardFocus(page, inboxRefresh(page));
+    } },
 ];
 
 /** Shoots `pair` from both, at every size and scale, and pins the diff; and, with `legacy`, the head on a stored `dark`. */
@@ -504,13 +687,13 @@ interface Walked2 {
 }
 
 /** A walk of `pair` in one build: every element's computed style and box, and the tokens, from a fresh settled load. */
-async function styles(origin: string, stored: string, pair: Pair, viewport: { width: number; height: number }, tag: string, { js = true, session }: { js?: boolean; session?: string } = {}): Promise<Walked2> {
+async function styles(origin: string, stored: string, pair: Pair, viewport: { width: number; height: number }, tag: string, { js = true, session, motion }: { js?: boolean; session?: string; motion?: Motion } = {}): Promise<Walked2> {
     const head = !tag.startsWith('base');
     // The curator's head takes the control out of the layout, as no JavaScript does, since the base's header had none.
     const css = [pair.addsControl && head ? '[data-theme-control]{display:none!important}' : '', pair.headStyle && head ? pair.headStyle : ''].join('');
-    const { context, page, timedOut } = await open(origin, stored, pair, viewport, 1, css, { js, session });
+    const { context, page, timedOut } = await open(origin, stored, pair, viewport, 1, css, { js, session, motion });
     try {
-        const selectors = ALLOWANCES.filter((entry) => entry.page === pair.name && entry.width === viewport.width).map((entry) => entry.selector);
+        const selectors = ALLOWANCES.filter((entry) => entry.page === (pair.stateOf ?? pair.name) && entry.width === viewport.width).map((entry) => entry.selector);
         return { walk: await walk(page, selectors), timedOut };
     } finally {
         await context.close();
@@ -538,7 +721,8 @@ function judge(label: string, width: number, c: Comparison, timedOut: string[] =
  * The gate, at each size: Black in the head against the base, element by element, in all three of Black's routes.
  * System on a dark device and today's stored `dark` against the base on its stored `dark`; no JavaScript against the
  * base without it. A wait that times out in either build fails the row, and a head with JavaScript that doesn't
- * hydrate fails it too (its hydration wait is one of them).
+ * hydrate fails it too (its hydration wait is one of them). Home's intro has a fourth route: motion allowed, held in
+ * its loading phase, System against the base's stored `dark`, where the grain and the ripples are.
  */
 async function gate(pair: Pair, origins: { base: string; head: string }, cookies?: { base: string; head: string }) {
     // One throwaway load in each build first: a server derives some things on first ask (About's portrait LQIP), so
@@ -546,7 +730,7 @@ async function gate(pair: Pair, origins: { base: string; head: string }, cookies
     for (const [origin, session] of [[origins.base, cookies?.base], [origins.head, cookies?.head]] as const) {
         await styles(origin, 'dark', pair, VIEWPORTS.desktop, 'warm-up', { session });
     }
-    for (const [size, viewport] of Object.entries(VIEWPORTS)) {
+    for (const [size, viewport] of Object.entries(GATE_VIEWPORTS)) {
         const base = await styles(origins.base, 'dark', pair, viewport, 'base', { session: cookies?.base });
         const baseNoJs = await styles(origins.base, '', pair, viewport, 'base', { js: false, session: cookies?.base });
         for (const [route, stored, js, against] of [
@@ -556,10 +740,18 @@ async function gate(pair: Pair, origins: { base: string; head: string }, cookies
         ] as const) {
             const head = await styles(origins.head, stored, pair, viewport, 'head', { js, session: cookies?.head });
             const allowances = Object.fromEntries(
-                ALLOWANCES.filter((entry) => entry.page === pair.name && entry.width === viewport.width && against.walk.resolved[entry.selector]).map((entry) => [against.walk.resolved[entry.selector], entry.maxDelta]),
+                ALLOWANCES.filter((entry) => entry.page === (pair.stateOf ?? pair.name) && entry.width === viewport.width && against.walk.resolved[entry.selector]).map((entry) => [against.walk.resolved[entry.selector], entry.maxDelta]),
             );
             const timedOut = [...against.timedOut.map((wait) => `${wait} (base)`), ...head.timedOut.map((wait) => `${wait} (head)`)];
             const failing = judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk, allowances), timedOut);
+            expect.soft(failing, `${pair.name} at ${size} ${viewport.width}, ${route}: computed style against the base`).toEqual([]);
+        }
+        if (pair.intro) {
+            const route = 'motion allowed, in the loading phase';
+            const against = await styles(origins.base, 'dark', pair, viewport, 'base', { motion: LOADING });
+            const head = await styles(origins.head, '', pair, viewport, 'head', { motion: LOADING });
+            const timedOut = [...against.timedOut.map((wait) => `${wait} (base)`), ...head.timedOut.map((wait) => `${wait} (head)`)];
+            const failing = judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk), timedOut);
             expect.soft(failing, `${pair.name} at ${size} ${viewport.width}, ${route}: computed style against the base`).toEqual([]);
         }
     }
@@ -575,6 +767,7 @@ function parity(group: string, pairs: Pair[], origins: () => { base: string; hea
             const { base, head } = origins();
             const cookies = pair.session ? options.session!() : undefined;
             await gate(pair, { base, head }, cookies);
+            if (pair.gateOnly) return;
             for (const [size, viewport] of Object.entries(VIEWPORTS)) {
                 for (const scale of SCALES) {
                     const name = `${pair.name}-${viewport.width}-${scale}x`;
@@ -635,7 +828,7 @@ test.afterAll(async () => {
             '',
             '## The gate: computed style',
             '',
-            "Every element under body (and in the curator's preview frame), matched by tag and nth-of-type, its ::before and ::after, and the custom properties on :root and body, in the head's Black against the base, at 1440 and 390, in Black's three routes. The theme control and today's toggle are left out with their subtrees; the curator's head takes its control out of the layout, as no JavaScript does. Structure, styles, base tokens, any box that moved (beyond the one named allowance) and any wait that timed out fail; every box delta and the tokens new in the head are listed below.",
+            "Every element under body (and in the curator's preview frame), matched by tag and nth-of-type, its ::before and ::after, and the custom properties on :root and body, in the head's Black against the base, at 1440, 1024 and 390, in Black's three routes, with Home's intro also in its loading phase with motion allowed, and hover and focus on the nav links, Home's controls, About's links and the Inbox's rows and buttons. The theme control and today's toggle are left out with their subtrees; the curator's head takes its control out of the layout, as no JavaScript does. Structure, styles, base tokens, any box that moved (beyond the one named allowance) and any wait that timed out fail; every box delta and the tokens new in the head are listed below.",
             '',
             '| Page, route | Width | Structure | Styles | Tokens | Boxes over allowance | Box deltas | Largest delta (px) | Waits timed out | New tokens |',
             '|---|---|---|---|---|---|---|---|---|---|',
@@ -696,18 +889,23 @@ test.describe('the visitor site and the legacy Gallery', () => {
 
     // The gate sees what it claims to: each of these, injected into the head, must fail it. Recorded, and asserted.
     const hoverNavLink = (page: Page) => page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Work', exact: true }).hover();
-    for (const [name, url, headStyle, act] of [
-        ["Home's scrim, +1 on one channel", '/', '[class*="vignette"]{background:linear-gradient(90deg,rgb(9 10 9/.9) 0%,rgb(9 10 9/.46) 38%,rgb(9 10 9/.08) 70%)!important}', revealChrome],
-        ['the glass blur at 13px', '/work', ':root{--gah-glass-blur:13px!important}', undefined],
-        ["a photograph's opacity at .96", '/work', 'main img{opacity:.96!important}', undefined],
-        ['--gah-ink, +1 on one channel', '/work', ':root{--gah-ink:#f4f6f6!important}', undefined],
+    for (const [name, url, headStyle, act, motion] of [
+        ["Home's scrim, +1 on one channel", '/', '[class*="vignette"]{background:linear-gradient(90deg,rgb(9 10 9/.9) 0%,rgb(9 10 9/.46) 38%,rgb(9 10 9/.08) 70%)!important}', revealChrome, undefined],
+        ['the glass blur at 13px', '/work', ':root{--gah-glass-blur:13px!important}', undefined, undefined],
+        ["a photograph's opacity at .96", '/work', 'main img{opacity:.96!important}', undefined, undefined],
+        ['--gah-ink, +1 on one channel', '/work', ':root{--gah-ink:#f4f6f6!important}', undefined, undefined],
         // The radius is the frame's, the photo's material (spec §2), so the cover's frame on a series page.
-        ["a photograph's corners square", series, '[class*="coverFrame"]{border-radius:0!important}', undefined],
-        ["About's link underlines red", '/about', 'a{text-decoration-color:red!important}', undefined],
-        ['a hovered nav link white', '/work', 'nav a:hover{color:#fff!important}', hoverNavLink],
+        ["a photograph's corners square", series, '[class*="coverFrame"]{border-radius:0!important}', undefined, undefined],
+        ["About's link underlines red", '/about', 'a{text-decoration-color:red!important}', undefined, undefined],
+        ['a hovered nav link white', '/work', 'nav a:hover{color:#fff!important}', hoverNavLink, undefined],
+        ["the intro's grain at .12, with motion allowed", '/', '[class*="grainTexture"]{opacity:.12!important}', undefined, LOADING],
+        ["Home's control hover, with motion allowed", '/', '[class*="_button"]:hover{color:#fff!important;background:rgb(255 0 0/.5)!important}', async (page: Page) => {
+            await revealChrome(page);
+            await hoverOn(homeNext(page));
+        }, SETTLED],
     ] as const) {
         test(`self-test: ${name} in the head fails the gate`, async () => {
-            const pair: Pair = { name: `self-test, ${name}`, url, headStyle, act };
+            const pair: Pair = { name: `self-test, ${name}`, url, headStyle, act, motion };
             const viewport = VIEWPORTS.desktop;
             const [base, head] = [await styles(visitor.base, 'dark', pair, viewport, 'base'), await styles(visitor.head, 'black', pair, viewport, 'head')];
             const comparison = compare(base.walk, head.walk);
