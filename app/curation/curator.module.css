@@ -1074,6 +1074,9 @@ main.state {
   --curator-field: #f8f5ee;
   --curator-box: #f2ede3;
   --curator-rule: #c9bfae;
+  /* Round 2, for the build's P2-8 outline on the selected row and tab: Light's strong rule is 2.48:1 on the active
+     fill, under 3:1, so the outline takes the muted ink there. */
+  --curator-selected-rule: #645a4e;
   --curator-tone-new-ink: #1d5a42;
   --curator-tone-new-bg: #d3e6da;
   --curator-tone-change-ink: #634e0c;
