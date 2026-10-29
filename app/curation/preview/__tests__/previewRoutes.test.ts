@@ -366,7 +366,7 @@ describe('signed in', () => {
             expect(about.props).toEqual({ portraitBasePath: base });
             // AboutPage as Next renders it: About's view, with every variant under the preview.
             const page = (await AboutPage(about.props as { portraitBasePath: string })) as ReactElement<{ children: ReactElement<Record<string, unknown>>[] }>;
-            const portrait = page.props.children[1].props.portrait as { asset: { variants: Record<string, Record<string, { url: string }>> } };
+            const portrait = (page.props.children as { props?: { portrait?: unknown } }[]).find((child) => child?.props?.portrait !== undefined)!.props!.portrait as { asset: { variants: Record<string, Record<string, { url: string }>> } };
             const urls = Object.values(portrait.asset.variants).flatMap((formats) => Object.values(formats).map((variant) => variant.url));
             expect(urls).toHaveLength(8);
             for (const variantUrl of urls) expect(variantUrl).toMatch(new RegExp(`^${base}/about/portrait/[0-9a-f]{32}/w\\d+\\.(avif|webp)$`));

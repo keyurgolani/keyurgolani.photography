@@ -41,11 +41,13 @@
   transition: box-shadow 0.1s ease;
 }
 
-[data-theme='dark'] .face {
+[data-theme='dark'] .face,
+[data-theme='black'] .face {
   box-shadow: 0 0 0 4px rgb(255 255 255 / 0.19);
 }
 
-[data-theme='dark'] .face::after {
+[data-theme='dark'] .face::after,
+[data-theme='black'] .face::after {
   box-shadow: inset calc(2px * (1 + 3 * var(--lift-x))) calc(2px * (1 + 3 * var(--lift-y))) calc(3px * (1 + 2 * var(--lift)))
     rgb(255 255 255 / clamp(0, calc(0.22 + 0.6 * (var(--lift-x) + var(--lift-y))), 0.5));
 }

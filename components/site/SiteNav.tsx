@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import ThemeToggle from '@/components/ThemeToggle';
+import ThemeMenu from '@/components/ThemeMenu';
 import { currentSection, navItems } from './nav';
 import { useSiteRoutes } from './siteRoutesContext';
 import styles from './SiteNav.module.css';
@@ -43,7 +43,7 @@ export default function SiteNav({ surface = 'gallery' }: SiteNavProps) {
         ))}
       </ul>
       <div className={styles.end}>
-        <ThemeToggle />
+        <ThemeMenu />
       </div>
     </nav>
   );

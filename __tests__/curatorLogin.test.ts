@@ -218,7 +218,8 @@ describe('the login page', () => {
         expect(field(html)).toContain('aria-describedby="curator-login-notice"');
         // Under the field, before the button.
         expect(html.indexOf('id="curator-passphrase"')).toBeLessThan(html.indexOf('id="curator-login-notice"'));
-        expect(html.indexOf('id="curator-login-notice"')).toBeLessThan(html.indexOf('<button'));
+        // The form's button: the header's theme control comes before the form.
+        expect(html.indexOf('id="curator-login-notice"')).toBeLessThan(html.indexOf('<button', html.indexOf('id="curator-passphrase"')));
         expect(html).not.toMatch(/paused/);
     });
 

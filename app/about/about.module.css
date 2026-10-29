@@ -11,7 +11,7 @@
    page don't flash the theme's ground, and it doesn't fade in from it. The
    body sits outside the surface, so this is --lts-paper's value. */
 :global(body):has(.root) {
-  background-color: #f4ecd7;
+  background-color: var(--gah-about-ground, #f4ecd7);
   transition: none;
 }
 
@@ -20,7 +20,7 @@
 .root {
   --about-ground: var(--lts-paper);
   --about-ink: var(--lts-ink);
-  --about-rule: #7d6e57;
+  --about-rule: var(--lts-link-rule, #7d6e57);
   min-height: calc(100svh - var(--site-nav-height, 0px));
   padding-block-end: env(safe-area-inset-bottom, 0px);
   background: var(--lts-ribs), var(--lts-paper);
@@ -98,8 +98,8 @@
 
 .caption {
   padding: 0.5rem 0.75rem;
-  background: rgba(41, 42, 40, 0.86);
-  color: var(--lts-paper);
+  background: var(--lts-caption-bg, rgba(41, 42, 40, 0.86));
+  color: var(--lts-caption-ink, var(--lts-paper));
   font-family: var(--font-sans), sans-serif;
   font-size: 0.875rem;
   line-height: 1.4;

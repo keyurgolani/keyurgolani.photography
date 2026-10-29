@@ -23,7 +23,8 @@
 }
 
 /* Dark mode: softer grain to avoid noisy speckles */
-[data-theme="dark"] .grainTexture {
+[data-theme="dark"] .grainTexture,
+[data-theme="black"] .grainTexture {
   opacity: 0.06;
 }
 

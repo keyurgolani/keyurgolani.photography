@@ -9,8 +9,8 @@ vi.mock('next/navigation', () => ({
   usePathname: () => navigation.pathname,
 }));
 
-vi.mock('@/components/ThemeToggle', () => ({
-  default: () => <button type="button">Switch to light mode</button>,
+vi.mock('@/components/ThemeMenu', () => ({
+  default: () => <button type="button">Theme: System (Black now)</button>,
 }));
 
 const primary = () => screen.getByRole('navigation', { name: 'Primary' });
@@ -20,12 +20,12 @@ describe('SiteNav', () => {
     navigation.pathname = '/';
   });
 
-  it('holds the wordmark, Home, Work, About, and the toggle, in that order', () => {
+  it('holds the wordmark, Home, Work, About, and the theme control, in that order', () => {
     render(<SiteNav />);
     const names = Array.from(primary().querySelectorAll('a, button')).map(
       (element) => element.getAttribute('aria-label') ?? element.textContent,
     );
-    expect(names).toEqual(['KG, Keyur Golani', 'Home', 'Work', 'About', 'Switch to light mode']);
+    expect(names).toEqual(['KG, Keyur Golani', 'Home', 'Work', 'About', 'Theme: System (Black now)']);
     expect(within(primary()).getByRole('link', { name: 'KG, Keyur Golani' })).toHaveTextContent(/^KG/);
   });
 

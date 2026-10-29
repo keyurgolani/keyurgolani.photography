@@ -15,6 +15,13 @@
     transition: none;
 }
 
+/* A photograph's surround takes room outside its box, so a focused entry that wears one sets --ring-room (the
+   surround's thickness) and the ring clears it by 2 px, never closer than today's 3 px, and never past the gutter on a
+   phone. Written once here for the surround PRs' entries. */
+[data-ring-room] {
+    --focus-ring-offset: min(max(3px, var(--ring-room, 0px) + 2px), calc(var(--site-gutter) - var(--focus-ring-width) - 1px));
+}
+
 /* A focused element that fits between these scrolls into view with room around it. */
 html {
     scroll-padding-top: 6rem;
@@ -61,7 +68,9 @@ html {
     --secondary-color-rgb: 45, 45, 45;
 }
 
-[data-theme="dark"] {
+/* Today's dark legacy variables, which Black (today's site) and Dark both keep. */
+[data-theme="dark"],
+[data-theme="black"] {
     /* Dark theme (Premium Dark) */
     --background-color: #050505; /* Deep off-black */
     --background-color-rgb: 5, 5, 5;
@@ -76,9 +85,9 @@ html {
     --caption-bg-color: rgba(5, 5, 5, 0.85);
 }
 
-/* The shell owns its ground and its ink, in both themes (#21: the light theme
-   drives only the legacy variables and dark: variants). body paints
-   --gah-ground, so a translucent SiteNav reads the same over either theme.
+/* The shell owns its ground and its ink, from the painting theme's tokens
+   (styles/themes.css). body paints --gah-ground, so a translucent SiteNav
+   reads its own theme over any page.
    html stays unpainted, so body's ground is the canvas: no light strip below a
    short page or on overscroll, and About's paper (about.module.css) and the
    Viewer's ground (StoryViewer.module.css), which override body, reach the
@@ -88,7 +97,7 @@ body {
     background-color: var(--gah-ground);
     color: var(--gah-ink);
     font-family: var(--font-secondary); /* Body font */
-    transition: background-color var(--transition-duration) ease, color var(--transition-duration) ease;
+    /* No transition: a theme change crossfades through the view transition (180 ms), or swaps in one frame (P2-7). */
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     line-height: 1.6;
