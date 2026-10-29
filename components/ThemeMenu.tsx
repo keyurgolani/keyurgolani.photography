@@ -3,10 +3,11 @@
 import { Check } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { THEME_CHOICES, type ThemeChoice, useThemeChoice } from './ThemeContext';
+import { useThemeChoice } from './ThemeContext';
+import { THEME_CHOICES, type ThemeChoice } from './themeChoices';
 
 /** Each choice's name and the one line that says what it looks like. */
-export const THEME_LABELS: Record<ThemeChoice, { name: string; note: string }> = {
+const THEME_LABELS: Record<ThemeChoice, { name: string; note: string }> = {
   system: { name: 'System', note: 'Light or Black, as your device is set' },
   light: { name: 'Light', note: 'Soft paper, matted prints' },
   bright: { name: 'Bright', note: 'White wall, framed prints' },

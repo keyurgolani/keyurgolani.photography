@@ -3,12 +3,9 @@
 import {createContext, ReactNode, useContext, useEffect, useSyncExternalStore} from 'react';
 import {prefersReducedMotion} from '@/components/motion/usePrefersReducedMotion';
 
-/** What the visitor chose, as stored. Dark is stored as `charcoal`; a legacy stored `dark` reads as Black. */
-export type ThemeChoice = 'system' | 'light' | 'bright' | 'charcoal' | 'black';
-/** What paints. System resolves to light or black; `charcoal` paints `dark`. */
-export type Theme = 'light' | 'bright' | 'dark' | 'black';
+import {THEME_CHOICES, type Theme, type ThemeChoice} from '@/components/themeChoices';
 
-export const THEME_CHOICES: readonly ThemeChoice[] = ['system', 'light', 'bright', 'charcoal', 'black'];
+export type {Theme, ThemeChoice};
 
 // <html data-theme-choice> and <html data-theme> are the store. The server sends system and black; the inline script
 // in app/layout.tsx puts the stored choice and its theme there before first paint, keeps System following the device
@@ -53,7 +50,7 @@ const readTheme = (): Theme => {
 const prefersLight = () => typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: light)').matches;
 
 /** What a choice paints, on this device now. */
-export const resolveTheme = (choice: ThemeChoice): Theme =>
+const resolveTheme = (choice: ThemeChoice): Theme =>
     choice === 'system' ? (prefersLight() ? 'light' : 'black') : choice === 'charcoal' ? 'dark' : choice;
 
 /**
@@ -62,7 +59,7 @@ export const resolveTheme = (choice: ThemeChoice): Theme =>
  * arrowing from System to Black passes Light and Bright, two full-page flashes in a dark room (P3-12). Storage that
  * throws (site data blocked) only loses the choice on reload.
  */
-export const setThemeChoice = (choice: ThemeChoice, {animate = false}: {animate?: boolean} = {}) => {
+const setThemeChoice = (choice: ThemeChoice, {animate = false}: {animate?: boolean} = {}) => {
     const apply = () => {
         const root = document.documentElement;
         root.setAttribute('data-theme-choice', choice);
