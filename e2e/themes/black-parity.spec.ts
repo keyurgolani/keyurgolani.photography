@@ -509,6 +509,33 @@ const VISITOR: Pair[] = [
     { name: 'work', url: '/work' },
     { name: 'series', url: series },
     { name: 'series-sequence', url: series, act: toSequence },
+    // A thumbnail and the cover whose image fails: each holds its box and its missing-image edge (#124's review, M2).
+    {
+        name: 'thumbnail-fallback',
+        url: series,
+        act: async (page) => {
+            await toSequence(page);
+            await page.locator('section[aria-labelledby="series-sequence"] ol li a img').first().dispatchEvent('error');
+            await expect(page.locator('[data-photo="unavailable"]')).toHaveCount(1);
+        },
+    },
+    {
+        name: 'cover-fallback',
+        url: series,
+        act: async (page) => {
+            await page.locator('main figure a img').first().dispatchEvent('error');
+            await expect(page.locator('main figure [data-photo="unavailable"]')).toHaveCount(1);
+        },
+    },
+    // A focused Work entry: its ring's offset comes from [data-ring-room], 3 px in Black as today.
+    {
+        name: 'work-focus',
+        url: '/work',
+        act: async (page) => {
+            await page.keyboard.press('Shift');
+            await focusInPlace(page.getByRole('main').locator('ul > li > a').first());
+        },
+    },
     {
         name: 'thumbnail-hover',
         url: series,
@@ -768,7 +795,10 @@ test.afterAll(async () => {
     await browser?.close();
     await inbox?.cleanup();
     secrets?.cleanup();
-    if (temp) fs.rmSync(temp, { recursive: true, force: true });
+    // Nothing is deleted on a machine with a Trash: the run's fixtures go there. CI's runner is thrown away whole.
+    const trash = path.join(os.homedir(), '.Trash');
+    if (temp && fs.existsSync(trash)) fs.renameSync(temp, path.join(trash, `${path.basename(temp)}-${Date.now()}`));
+    else if (temp && process.env.CI) fs.rmSync(temp, { recursive: true, force: true });
     const read = (file: string) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '');
     fs.writeFileSync(
         path.join(OUT, 'black-parity.md'),

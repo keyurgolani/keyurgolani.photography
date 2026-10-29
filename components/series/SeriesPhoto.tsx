@@ -58,6 +58,9 @@ export default function SeriesPhoto({ image, alt, sizes, priority = false, focal
         // --ratio lets the class cap the width too, so a height cap never crops the box away from the photograph's shape.
         ...(intrinsic ? { aspectRatio: `${image.width} / ${image.height}`, '--ratio': `${image.width} / ${image.height}` } : {}),
         ...(focalPoint ? { '--focal-x': `${focalPoint.x * 100}%`, '--focal-y': `${focalPoint.y * 100}%` } : {}),
+        // A whole photograph in a slot of another shape: the theme can size the print to its own ratio, so its edge
+        // (Light's bevel, Dark's keyline) is the print's and not the slot's (the sequence's window cut).
+        ...(crop === 'contain' && image.width > 0 && image.height > 0 ? { '--photo-ratio': `${image.width} / ${image.height}` } : {}),
     } as CSSProperties;
     return (
         <span className={frameClassName} style={style} data-photo={crop}>
