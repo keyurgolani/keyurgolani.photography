@@ -99,9 +99,10 @@ for (const theme of THEMES) {
             for (const n of SHAPES.keys()) seen.push(await cut(entry(page, n)));
             for (const [n, shape] of SHAPES.entries()) {
                 const { slot, print, fill, edge, ratio } = seen[n];
-                // The slot is the 4:3 frame in every theme, and the image is the photograph's own shape, pixels and all.
+                // The slot is the 4:3 frame in every theme, and the image is the photograph's own shape, pixels and all
+                // (to a tenth: a small variant rounds its height to whole pixels, 1200:675 at 400 wide is 400:224).
                 expect(slot.w / slot.h, `entry ${n}'s slot`).toBeCloseTo(4 / 3, 2);
-                expect(ratio, `entry ${n}'s image is ${shape.width}:${shape.height}`).toBeCloseTo(shape.width / shape.height, 2);
+                expect(ratio, `entry ${n}'s image is ${shape.width}:${shape.height}`).toBeCloseTo(shape.width / shape.height, 1);
                 if (theme === 'black') {
                     // Today's letterbox: the image fills the slot and draws its own ratio inside it.
                     expect(print, `entry ${n}'s image fills its slot in Black`).toEqual(slot);
@@ -111,7 +112,7 @@ for (const theme of THEMES) {
                 expect(fill, `entry ${n}'s slot is the mat`).toBe(CUT[theme].mat);
                 expect(edge, `entry ${n}'s print carries the theme's edge`).toBe(CUT[theme].edge);
                 // The print is the image's shape, as large as the slot allows, and centred.
-                expect(print.w / print.h, `entry ${n}'s print`).toBeCloseTo(ratio, 2);
+                expect(print.w / print.h, `entry ${n}'s print`).toBeCloseTo(ratio, 1);
                 expect(Math.min(slot.w - print.w, slot.h - print.h), `entry ${n}'s print meets two sides of its slot`).toBeLessThan(0.5);
                 expect(Math.abs(slot.x + slot.w / 2 - (print.x + print.w / 2))).toBeLessThan(0.5);
                 expect(Math.abs(slot.y + slot.h / 2 - (print.y + print.h / 2))).toBeLessThan(0.5);

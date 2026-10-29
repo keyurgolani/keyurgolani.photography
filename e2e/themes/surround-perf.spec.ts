@@ -191,7 +191,9 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
     test.setTimeout(5 * 60_000);
     await Promise.all(servers.map((server) => server.stop()));
-    if (temp) fs.rmSync(temp, { recursive: true, force: true });
+    // Nothing is deleted: the run's folder (its 5,000-photo catalog) goes to the Trash, or stays where it is.
+    const trash = path.join(os.homedir(), '.Trash');
+    if (temp && fs.existsSync(trash)) fs.renameSync(temp, path.join(trash, `${path.basename(temp)}-${Date.now()}`));
 });
 
 test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every theme, against the base beside it`, async ({ browser }) => {
