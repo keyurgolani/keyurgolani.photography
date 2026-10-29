@@ -68,7 +68,7 @@ async function descriptionMark(root: string, photoId: string): Promise<string | 
         return 'photo record can\'t be read';
     }
     if (!photo) return 'no photo record';
-    if (photo.alt === null) return 'no description';
+    if (photo.alt === null) return photo.carryOver !== undefined ? 'no description yet' : 'no description';
     if (photo.alt.kind === 'described' && !photo.alt.reviewed) return 'description not reviewed';
     return null;
 }

@@ -121,7 +121,7 @@ function registryDate(registry: Registry | null, photoId: string, assetRevision:
 
 /** A photo record as compile would publish its authored half. */
 function authoredPhotoView(photo: AuthoredPhoto, registry: Registry | null): PhotoView {
-    const view: PhotoView = { assetRevision: photo.assetRevision, alt: candidateAlt(photo.alt) };
+    const view: PhotoView = { assetRevision: photo.assetRevision, alt: candidateAlt(photo.alt, photo.carryOver !== undefined) };
     for (const key of PHOTO_TEXT) view[key] = presentText(photo[key]);
     view.focalPoint = photo.focalPoint;
     view.crop = photo.crop;
@@ -161,7 +161,8 @@ function mergePhoto(photo: AuthoredPhoto, base: PhotoView | null | typeof UNREAD
     });
     take('alt', (value) => {
         const alt = value as PublicPhotoRecord['alt'];
-        next.alt = alt.kind === 'described' ? { kind: 'described', text: alt.text, reviewed: true } : { kind: 'decorative' };
+        // `position` is a carried-over photo with no description: no alt, named by its place while its marker stays.
+        next.alt = alt.kind === 'described' ? { kind: 'described', text: alt.text, reviewed: true } : alt.kind === 'decorative' ? { kind: 'decorative' } : null;
     });
     for (const key of [...PHOTO_TEXT, ...PHOTO_PLAIN]) {
         take(key, (value) => {

@@ -396,6 +396,29 @@ Back up `./site-config` with the rest of the host's folders. It isn't in the rep
 
 `v1.2.1` changes the host's compose file: `curator` gains the read-only `./site-config` mount and `PHOTOGRAPHY_SITE_CONFIG_DIR`. Install the new `docker-compose.prod.yml` the way [Deploying](#deploying) does, keeping this host's own changes out of it, then run the usual `pull` and `up -d`. `curator` starts only by name, so if it's running, recreate it on the new file with `docker compose -f docker-compose.prod.yml up -d curator`. With the old file, `curator` has no mount, and the preview's About shows the name instead of the portrait. Nothing else changes, and `web` is the same.
 
+## Carrying today's photos over
+
+Before the launch publish, `photos carry-over` keeps every photo the site shows today. It puts each photo the legacy Gallery lists into one published series, `ser_gallery`, titled "Gallery", in the Gallery's order. That series is Home's featured series and the only entry in Work's order. Without it, the launch publish shows only the series you made, and every other photo leaves the site.
+
+The photos keep the names the Gallery gives them today, "Photograph N of T", and they have no descriptions. Their records say they were carried over, with the owner's direction as the reason, so a publish doesn't wait for their descriptions. Describe any of them any time with `photos describe --import` or `photos edit`. A description then replaces the name, under the usual rules. Photos you add later get the usual rules from the start, in Gallery too. The series has no statement until you write one. Once you write the statement or the short statement, a publish asks for both, as for any series.
+
+Run the dry run first. It writes nothing and prints the plan: the series, every photo with its position and name, the featured series and Work order, the Inbox items it closes, any photo it can't carry and why, and what `photos publish --dry-run` would then find, including `GONE_COUNT`, the number of photos that would leave the site:
+
+```bash
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs carry-over
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs carry-over --apply --actor <name>
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs publish --dry-run --actor <name>
+```
+
+- **A photo it can't carry** is listed by name with why: its catalog set isn't built yet, its legacy derivatives aren't all there, its record pins another version, or its record holds a suggested description nobody reviewed. Both the dry run and `--apply` exit 1 while one is listed. Fix it and run again, or accept it with `--allow-missing <photoId or path>,...`, which repeats the list in the output.
+- **It refuses** a working layer that already holds your curation: any series, or a Work order or featured series it would replace. Nothing is written, and it says what's there.
+- **The Inbox**: the items for these photos' arrival close the way any placement closes them, so the Inbox shows only photos you add later. An item whose photo changed since it opened is dismissed, with the owner's direction as the reason. Other items stay open.
+- **Running it again** changes nothing, and says so.
+
+It takes the curation lock and then the authored lock, so stop the curator first (`docker compose -f docker-compose.prod.yml stop curator`). Then publish with `--confirm-launch`, as the launch publish always needs.
+
+A revision with carried-over photos names them by their place, which no release before `v1.2.1` can read. Once one is live, don't roll the image back past `v1.2.1`. An older `web` can't read the active revision, and after a restart it serves nothing until you roll forward again.
+
 ## Rollback
 
 Before changing `.env`, note the tag the host runs now. To roll back, set `PHOTOGRAPHY_IMAGE_TAG` back to that tag and run the same two commands. That swaps the code, not the photo library. A release before `v1.2.0` ignores `./site-config` and shows the portrait built into its image. Rolling back to a release before Phase 0 of #17 brings back the watcher's startup cleanup, which deletes the derivative sets this release keeps for removed photos. That older release also refills `./.next-images-cache` under its year-long headers and writes new `cache/dynamic` files, so roll forward again the way Deploying describes for `v1.1.0`.

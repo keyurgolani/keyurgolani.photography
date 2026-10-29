@@ -60,8 +60,9 @@ function present(value: string | undefined): string | undefined {
     return value !== undefined && /\S/.test(value) ? value : undefined;
 }
 
-export function candidateAlt(alt: AuthoredAlt): CandidateAlt {
-    if (alt === null) return { kind: 'pending' };
+/** `carriedOver`: the record has `photos carry-over`'s marker, so with no alt it is named by its place, not pending. */
+export function candidateAlt(alt: AuthoredAlt, carriedOver = false): CandidateAlt {
+    if (alt === null) return carriedOver ? { kind: 'position' } : { kind: 'pending' };
     return alt.kind === 'decorative' ? { kind: 'decorative' } : { kind: 'described', text: alt.text };
 }
 
@@ -100,7 +101,7 @@ export function usualProfile(revision: AssetRevisionRecord, current: string, act
 
 /** The authored half of a public photo record. */
 function authoredFields(photo: AuthoredPhoto): Partial<CandidatePhotoRecord> {
-    const fields: Partial<CandidatePhotoRecord> = { alt: candidateAlt(photo.alt) };
+    const fields: Partial<CandidatePhotoRecord> = { alt: candidateAlt(photo.alt, photo.carryOver !== undefined) };
     for (const key of ['title', 'caption', 'credit', 'location'] as const) {
         const value = present(photo[key]);
         if (value !== undefined) fields[key] = value;
@@ -200,6 +201,7 @@ export async function compileCandidate(input: CompileInput): Promise<CompileResu
             ...(authored.openingPhotoId ? { openingPhotoId: authored.openingPhotoId } : {}),
             cover: authored.cover,
             ...(authored.accent !== undefined ? { accent: authored.accent } : {}),
+            ...(authored.carryOver !== undefined ? { carryOver: true as const } : {}),
             derived: { photoCount: members.length, ...(dates.length ? { capturedFrom: dates[0], capturedTo: dates[dates.length - 1] } : {}) },
         });
     }

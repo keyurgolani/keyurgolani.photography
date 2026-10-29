@@ -105,6 +105,8 @@ interface SeriesLike {
     shortStatement: string;
     photoIds: string[];
     chapters: { id: string }[];
+    /** `photos carry-over`'s marker: the authored record's, or a stored revision's flag. */
+    carryOver?: unknown;
 }
 
 /** Every series: the working layer's, or a stored revision's. */
@@ -616,7 +618,10 @@ const SLICE_A_RULES: RuleDefinition[] = [
         id: 'description.series-copy',
         severity: 'error',
         gate: 'publish',
-        check: (ctx) => publishedSeries(ctx).flatMap((series) => (['title', 'statement', 'shortStatement'] as const)
+        // The series `photos carry-over` made at the launch goes without a statement and a short statement while
+        // both are empty: the legacy Gallery it carries over had none, and no tool writes prose in the owner's name.
+        // Once he writes either, the rule asks for both, as for any series. It still needs its title.
+        check: (ctx) => publishedSeries(ctx).flatMap((series) => (series.carryOver !== undefined && !/\S/.test(series.statement) && !/\S/.test(series.shortStatement) ? (['title'] as const) : (['title', 'statement', 'shortStatement'] as const))
             .filter((field) => !/\S/.test(series[field]))
             .map((field) => ({
                 record: seriesRecord(series.id),

@@ -1,4 +1,5 @@
 import 'server-only';
+import { photoImageAlt } from '../../a11y/photoName';
 import { PHOTO_ID_RE } from '../../identity/ids';
 import type { CatalogContent, CatalogReader, RouteBuilder } from '../reader';
 import { REVISION_ID_RE } from '../schema';
@@ -108,8 +109,14 @@ export interface HomeSource {
     photosOf(seriesId: string): readonly Photo[];
 }
 
-/** The alt, from the alt union alone. A draft's `pending` or blank text gives empty, never a made-up name. */
-function altOf(alt: Photo['alt'] | undefined): string {
+/**
+ * The alt, from the alt union and the photo's place in the featured series.
+ * A draft's `pending` or blank text gives empty, never a made-up name. A
+ * carried-over photo with no description yet (`position`) is named by its
+ * place, "Photograph N of T", as the legacy site named it.
+ */
+function altOf(alt: Photo['alt'] | undefined, position: number, total: number): string {
+    if (alt?.kind === 'position') return photoImageAlt({ position, total });
     return alt?.kind === 'described' ? text(alt.text) ?? '' : '';
 }
 
@@ -139,7 +146,7 @@ export function publishedHomeOf(source: HomeSource, routes: Pick<RouteBuilder, '
             title: series.title,
             shortStatement: text(series.shortStatement),
             photoIds: members.map((photo) => photo.id),
-            records: windowOf(members, openingIndex).map((photo) => recordOf(photo, photo === opening)),
+            records: windowOf(members, openingIndex).map((photo) => recordOf(photo, photo === opening, members)),
             openingPhotoId: opening.id,
         },
     };
@@ -165,10 +172,11 @@ function windowOf(members: readonly Photo[], index: number): Photo[] {
     return picked.filter((photo, at) => picked.indexOf(photo) === at);
 }
 
-function recordOf(photo: Photo, withLqip: boolean): HomePhoto {
+/** `members`: the featured series' photos, in order, for the place a carried-over photo is named by. */
+function recordOf(photo: Photo, withLqip: boolean, members: readonly Photo[]): HomePhoto {
     return {
         id: photo.id,
-        alt: altOf(photo.alt),
+        alt: altOf(photo.alt, members.indexOf(photo) + 1, members.length),
         focalPoint: { ...(focal(photo.focalPoint) ?? CENTER) },
         image: imageOf(photo, withLqip),
     };
@@ -186,7 +194,7 @@ export function homePhotosOf(source: HomeSource, photoId: unknown): HomePhotosRe
     if (featured === null) return { kind: 'not-found' };
     const index = featured.members.findIndex((photo) => photo.id === photoId);
     if (index === -1) return { kind: 'not-found' };
-    return { kind: 'ok', window: { revisionId: source.revisionId, photos: windowOf(featured.members, index).map((photo) => recordOf(photo, false)) } };
+    return { kind: 'ok', window: { revisionId: source.revisionId, photos: windowOf(featured.members, index).map((photo) => recordOf(photo, false, featured.members)) } };
 }
 
 /** The parts of #13's ActiveCatalog that homeRouteOf() and homePhotosFrom() read. */

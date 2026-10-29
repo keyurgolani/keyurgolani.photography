@@ -162,6 +162,8 @@ function altValue(value: Json): string | null {
     const kind = (value as { kind?: unknown }).kind;
     if (kind === 'described') return String((value as { text?: unknown }).text ?? '');
     if (kind === 'decorative') return 'Decorative, no description';
+    // Carried over at the launch: no description yet, and named by its place until there is one.
+    if (kind === 'position') return 'No description yet, named by its place';
     return null;
 }
 

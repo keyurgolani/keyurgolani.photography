@@ -505,6 +505,26 @@ export async function validateWorkingLayer(options: { dataRoot: string; reprofil
     }
 }
 
+/**
+ * What `photos publish --dry-run` would find for `layer`, a working layer
+ * held in memory, such as `photos carry-over`'s plan before it writes: the
+ * compiled candidate, every rule's issues, and before the first activation,
+ * what the launch takes away. Reads the registry, the pointer, the active
+ * revision and the review context from the data root, and writes nothing.
+ */
+export async function checkLayer(dataRoot: string, layer: WorkingLayer): Promise<{ compiled: CompileResult; issues: Issue[]; launch: LaunchImpact | null }> {
+    const root = path.resolve(dataRoot);
+    const registry = await readRegistry(root);
+    const pointer = await readActivePointer(root);
+    const active = pointer ? await readRevisionFile(root, pointer.revisionId) : null;
+    if (pointer && active === null) throw new CatalogIntegrityError(ACTIVE_POINTER_NAME, `${ACTIVE_POINTER_NAME} names ${pointer.revisionId}, which has no revision file.`);
+    const compiled = await compileCandidate({ layer, registry, root, active });
+    const review = await readReviewContext(root, layer, pointer?.revisionId ?? null);
+    const issues = runRules(ruleContext(root, { layer, registry, pointer, active, compiled, review }));
+    const launch = pointer ? null : launchImpact(registry, compiled.content.photos.length, new Set(compiled.content.photos.map((photo) => photo.id)));
+    return { compiled, issues, launch };
+}
+
 export interface ActivateOptions {
     /** The catalog lock the caller holds. */
     lock: LockContext;
