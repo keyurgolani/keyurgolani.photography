@@ -194,6 +194,9 @@ async function expand(page: Page, url: string) {
     return renders;
 }
 
+/** A timestamped line per phase, so a run that runs out of time says where (perf4 hit its cap with no clue). */
+const phase = (what: string) => console.log(`[perf ${new Date().toISOString().slice(11, 19)}, load ${os.loadavg()[0].toFixed(1)}] ${what}`);
+
 const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
 const ratio = (head: number, base: number) => (head + 1) / (base + 1);
 
@@ -203,16 +206,20 @@ let temp = '';
 let prints: Record<string, Buffer> = {};
 
 test.beforeAll(async () => {
-    test.setTimeout(30 * 60_000);
+    // Setup's own cap: the catalog, its publish and the two servers.
+    test.setTimeout(20 * 60_000);
     temp = fs.mkdtempSync(path.join(os.tmpdir(), 'surround-perf-'));
     const library = path.join(temp, 'library');
     const siteConfig = path.join(temp, 'site-config');
     fs.mkdirSync(library);
     fs.mkdirSync(siteConfig);
     prints = await tinyPrints();
+    phase(`the ${PHOTOS}-photo catalog`);
     catalog = await createTestCatalog({ photos: PHOTOS, series: [{ photos: PHOTOS }], seed: 6, root: path.join(temp, 'catalog'), variantBytes: BUDGET_VARIANT_BYTES });
+    phase('publish');
     const outcome = await publish({ dataRoot: catalog.root, actor: 'e2e', confirmLaunch: true, logger: { log: () => undefined } });
     expect(outcome.outcome, outcome.message).toBe('PUBLISHED');
+    phase('the base and head servers');
     servers.push(await serve(BASE!, ports[0] ?? 3375, catalog.root, library, siteConfig), await serve(process.cwd(), ports[1] ?? 3376, catalog.root, library, siteConfig));
 });
 
@@ -251,7 +258,9 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
             const cdp = await context.newCDPSession(page);
             return { page, renders, cdp };
         };
+        phase(`${device}: the base's Show more to all ${PHOTOS}`);
         const basePage = await open(base.origin);
+        phase(`${device}: the head's Show more to all ${PHOTOS}`);
         const headPage = await open(head.origin);
         notes.push(`${device}: Show more to all ${PHOTOS}, median ${median(basePage.renders)} ms in the base, ${median(headPage.renders)} ms in the head`);
         const throttle = async (on: boolean) => {
@@ -275,6 +284,7 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
 
         await throttle(true);
         for (let round = 1; round <= ROUNDS; round++) {
+            phase(`${device}: round ${round} of ${ROUNDS}`);
             for (const theme of Object.keys(THEMES) as Choice[]) {
                 await paint(theme);
                 const load = os.loadavg()[0].toFixed(1);
@@ -287,6 +297,7 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
                 rows.push(`| ${device} | ${round} | ${theme} | ${load} | ${b.raster} | ${h.raster} | ${(h.raster / b.raster).toFixed(2)} | ${b.dropped} / ${h.dropped} | ${b.rafP95} / ${h.rafP95} |`);
             }
         }
+        phase(`${device}: the self-tests`);
         // The self-tests, each in Dark against the base, once in each order. Each must fail its half of the gate.
         // Raster: a heavy shadow on every slot.
         await paint('dark');
