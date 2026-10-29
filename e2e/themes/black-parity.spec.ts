@@ -505,6 +505,11 @@ function judge(label: string, width: number, c: Comparison): string[] {
  * base without it.
  */
 async function gate(pair: Pair, origins: { base: string; head: string }, cookies?: { base: string; head: string }) {
+    // One throwaway load in each build first: a server derives some things on first ask (About's portrait LQIP), so
+    // the first walk of a page could catch one build before it has them.
+    for (const [origin, session] of [[origins.base, cookies?.base], [origins.head, cookies?.head]] as const) {
+        await styles(origin, 'dark', pair, VIEWPORTS.desktop, 'warm-up', { session });
+    }
     for (const [size, viewport] of Object.entries(VIEWPORTS)) {
         const base = await styles(origins.base, 'dark', pair, viewport, 'base', { session: cookies?.base });
         const baseNoJs = await styles(origins.base, '', pair, viewport, 'base', { js: false, session: cookies?.base });

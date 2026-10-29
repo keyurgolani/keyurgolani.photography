@@ -41,14 +41,19 @@ export interface Walk {
 
 /**
  * Every element under body, in the page and in any same-origin frame, by a path of tag and nth-of-type (no class
- * names, which differ between builds). The theme control and its popover, and today's toggle, are left out with their
- * subtrees, and don't count toward their siblings' positions.
+ * names, which differ between builds). The theme control, its popover and its slot, and today's toggle with its
+ * description, are left out with their subtrees, and don't count toward their siblings' positions.
  */
 export function walk(page: Page): Promise<Walk> {
     return page.evaluate((properties) => {
         const skip = new Set(['SCRIPT', 'STYLE', 'LINK', 'NOSCRIPT', 'TEMPLATE', 'META']);
-        const isControl = (el: Element) =>
-            el.matches('[data-theme-control], .theme-menu-popover') || (el.tagName === 'BUTTON' && /^Switch to/.test((el.textContent ?? '').trim()));
+        const isToggle = (el: Element) => el.tagName === 'BUTTON' && /^Switch to/.test((el.textContent ?? '').trim());
+        // Today's toggle comes with a hidden description beside it; the control with its popover.
+        const isPart = (el: Element) => el.matches('[data-theme-control], .theme-menu-popover') || isToggle(el) || (el.matches('span[hidden]') && [...(el.parentElement?.children ?? [])].some(isToggle));
+        // The control's slot: an element holding the control and nothing else (SiteNav's end), which collapses with it
+        // where it's hidden (no JavaScript). In the curator's header, which holds more, only the control goes.
+        const isSlot = (el: Element) => el.children.length > 0 && [...el.children].every(isPart);
+        const isControl = (el: Element) => isPart(el) || isSlot(el);
         const read = (style: CSSStyleDeclaration) => properties.map((name) => `${name}: ${style.getPropertyValue(name)}`);
         // Every custom property any stylesheet declares, and any the computed style lists, read resolved.
         const names = new Set<string>();
