@@ -10,7 +10,7 @@ import { HOME_OPENING, HOME_SERIES } from '../support/catalog-home';
 import { createInboxFixture, openInboxItems, type InboxFixture } from '../support/curation-inbox';
 import { publishHomeFixture } from '../support/homeFixture';
 import { routePhotoFixtures } from '../support/test';
-import { compare, failures, walk, type Comparison, type Walk } from './computed';
+import { compare, failures, walk, type Allowance, type Comparison, type Walk } from './computed';
 
 // Black is today's site, exactly (the owner's ruling, 2026-10-28). This loads the same page states from two builds, the
 // base (PARITY_BASE_DIR: next before the themes) and the head, on the same fixtures, a dark device and reduced motion.
@@ -21,14 +21,17 @@ import { compare, failures, walk, type Comparison, type Walk } from './computed'
 // 1. Tokens: every custom property the base resolves on :root and body must resolve the same in the head's Black. New
 //    tokens are allowed, and listed.
 // 2. Elements: every element under body (and in the curator's preview frame), matched by a path of tag and
-//    nth-of-type, with its ::before and ::after: paint, type, compositing, visibility and display, all exact, and its
-//    box within 0.5 CSS px, every non-zero delta logged. A missing or extra element fails, by path. The theme control
-//    and today's toggle are left out with their subtrees; the curator's head takes its control out of the layout, as no
-//    JavaScript does, since the base's header had none.
+//    nth-of-type, with its ::before, ::after, ::placeholder and ::marker: paint, backgrounds, borders and radii, type and
+//    its decoration, crop, clipping and stacking, compositing, SVG paint, visibility and display, all exact (computed.ts
+//    lists them), and its box exact, every delta logged, with one named allowance (the Inbox's KG ring at 390). A
+//    missing or extra element fails, by path. The theme control and today's toggle are left out with their subtrees,
+//    and the slot that holds only them is compared by style alone; the curator's head takes its control out of the
+//    layout, as no JavaScript does, since the base's header had none. A wait that times out fails the row, so a head
+//    that doesn't hydrate fails.
 // At 1440 and 390, in all three of Black's routes: System on a dark device and today's stored `dark`, each against the
 // base on its stored `dark`, and no JavaScript against the base without it.
 // Self-tests inject a change into the head that must fail the gate: Home's scrim and --gah-ink 1/255 off, the glass
-// blur at 13px, a photograph's opacity at .96.
+// blur at 13px, a photograph's opacity at .96 and its corners square, About's underlines red, a hovered nav link white.
 //
 // What the gate can't see is raster only: how the browser draws a blur, a resample or an antialiased edge. The pixel
 // report covers that, as an artefact, not a gate: two passes over every shot at 1x and 2x, each in its own fresh load
@@ -211,35 +214,45 @@ async function open(origin: string, stored: string, pair: Pair, viewport: { widt
     }, { value: stored, sheet: css });
     const page = await context.newPage();
     if (pair.photos) await routePhotoFixtures(page);
-    // Without JavaScript the page runs no timer or handler of ours, so it's taken at load, and the in-page waits below
-    // are bounded from here.
-    await page.goto(`${origin}${pair.url}`, { waitUntil: pair.intro && js ? 'domcontentloaded' : 'load' });
-    const bounded = (wait: Promise<unknown>, ms: number) => Promise.race([wait, new Promise((resolve) => setTimeout(resolve, ms))]);
-    if (js && !pair.bare) await page.waitForSelector('html[data-hydrated]', { timeout: 30_000 }).catch(() => undefined);
-    await bounded(page.evaluate(() => document.fonts.ready), 10_000);
-    if (js && pair.url === '/') {
-        await page.waitForSelector('[data-home-badge][data-landed]:not([data-lingering])', { timeout: 20_000 }).catch(() => undefined);
-    }
-    if (js) await pair.act?.(page);
-    else await Promise.race([pair.act?.(page).catch(() => undefined), new Promise((resolve) => setTimeout(resolve, 3000))]);
-    // The page and the curator's preview frame: every image loaded and decoded (loaded isn't painted: a photo still
-    // decoding can draw a row short), and every font in.
-    await bounded(page.evaluate(async () => {
-        const docs = [document, ...[...document.querySelectorAll('iframe')].flatMap((frame) => (frame.contentDocument ? [frame.contentDocument] : []))];
-        for (const doc of docs) {
-            const images = [...doc.images];
-            await Promise.all(images.filter((image) => !image.complete).map((image) => new Promise((resolve) => {
-                image.onload = image.onerror = resolve;
-                setTimeout(resolve, 4000);
-            })));
-            await Promise.all(images.map((image) => image.decode().catch(() => undefined)));
-            await doc.fonts.ready;
+    // Every wait polls from here, so it works without JavaScript too (the page then runs none of our timers or
+    // handlers), and every one that times out is named in `timedOut`: the gate fails a row on any, never passes it.
+    const timedOut: string[] = [];
+    const until = async (name: string, check: () => Promise<boolean>, ms: number) => {
+        const deadline = Date.now() + ms;
+        while (Date.now() < deadline) {
+            if (await check().catch(() => false)) return;
+            await page.waitForTimeout(100);
         }
+        timedOut.push(name);
+    };
+    await page.goto(`${origin}${pair.url}`, { waitUntil: pair.intro && js ? 'domcontentloaded' : 'load' });
+    if (js && !pair.bare) await until('hydration', () => page.locator('html[data-hydrated]').count().then((n) => n > 0), 30_000);
+    await until('fonts', () => page.evaluate(() => document.fonts.status === 'loaded'), 10_000);
+    if (js && pair.url === '/') await until("Home's badge", () => page.locator('[data-home-badge][data-landed]:not([data-lingering])').count().then((n) => n > 0), 20_000);
+    if (js) await pair.act?.(page);
+    else await Promise.race([pair.act?.(page).catch(() => undefined), page.waitForTimeout(3000)]);
+    // The page and the curator's preview frame: every image that's going to load has (a lazy one far out of view won't),
+    // and its fonts are in. With JavaScript, every image is decoded too: loaded isn't painted, and a photo still
+    // decoding can draw a row short.
+    await until('images and fonts', () => page.evaluate(() => {
+        const docs = [document, ...[...document.querySelectorAll('iframe')].flatMap((frame) => (frame.contentDocument ? [frame.contentDocument] : []))];
+        return docs.every((doc) => doc.fonts.status === 'loaded' && [...doc.images].every((image) => {
+            if (image.complete) return true;
+            const box = image.getBoundingClientRect();
+            const view = doc.defaultView!;
+            // Chrome loads a lazy image within 1,250 px of the viewport; one further out never loads, in either build.
+            return image.loading === 'lazy' && (box.bottom < -1000 || box.top > view.innerHeight + 1000);
+        }));
     }), 20_000);
+    if (js) await until('image decode', () => page.evaluate(async () => {
+        const docs = [document, ...[...document.querySelectorAll('iframe')].flatMap((frame) => (frame.contentDocument ? [frame.contentDocument] : []))];
+        await Promise.all(docs.flatMap((doc) => [...doc.images].filter((image) => image.complete).map((image) => image.decode().catch(() => undefined))));
+        return true;
+    }), 10_000);
     // Every finite animation and transition done (reduced motion fades Home's badge in once loading ends).
-    await bounded(page.evaluate(() => Promise.all(document.getAnimations().filter((animation) => animation.effect?.getComputedTiming().iterations !== Number.POSITIVE_INFINITY).map((animation) => animation.finished.catch(() => undefined)))), 5000);
+    await until('animations', () => page.evaluate(() => document.getAnimations().every((animation) => animation.effect?.getComputedTiming().iterations === Number.POSITIVE_INFINITY || animation.playState !== 'running')), 5000);
     await page.waitForTimeout(600);
-    return { context, page };
+    return { context, page, timedOut };
 }
 
 /** One pass's capture, from its own fresh load: the shot, the controls' and photographs' boxes, and the photos' compositing. */
@@ -476,25 +489,47 @@ const STYLE_ROWS = path.join(OUT, 'black-styles.rows');
 const STYLE_DETAILS = path.join(OUT, 'black-styles.details');
 
 /** A walk of `pair` in one build: every element's computed style and box, and the tokens, from a fresh settled load. */
-async function styles(origin: string, stored: string, pair: Pair, viewport: { width: number; height: number }, tag: string, { js = true, session }: { js?: boolean; session?: string } = {}): Promise<Walk> {
+/**
+ * The gate's one named allowance over exact geometry (spec §10): the Inbox's KG ring at 390, whose sub-pixel cause is
+ * still open. The curator PR (PR map item 5) owns CuratorHeader.tsx and brings it to 0; then this goes.
+ */
+const ALLOWANCES: Allowance[] = [
+    { page: 'inbox', width: 390, selector: 'header [class*="monogram"]', maxDelta: 0.5, why: "the Inbox's KG ring at 390, its cause still open" },
+];
+
+interface Walked2 {
+    walk: Walk;
+    /** The waits that timed out on this load: any fails the row. */
+    timedOut: string[];
+}
+
+/** A walk of `pair` in one build: every element's computed style and box, and the tokens, from a fresh settled load. */
+async function styles(origin: string, stored: string, pair: Pair, viewport: { width: number; height: number }, tag: string, { js = true, session }: { js?: boolean; session?: string } = {}): Promise<Walked2> {
     const head = !tag.startsWith('base');
     // The curator's head takes the control out of the layout, as no JavaScript does, since the base's header had none.
     const css = [pair.addsControl && head ? '[data-theme-control]{display:none!important}' : '', pair.headStyle && head ? pair.headStyle : ''].join('');
-    const { context, page } = await open(origin, stored, pair, viewport, 1, css, { js, session });
+    const { context, page, timedOut } = await open(origin, stored, pair, viewport, 1, css, { js, session });
     try {
-        return await walk(page);
+        const selectors = ALLOWANCES.filter((entry) => entry.page === pair.name && entry.width === viewport.width).map((entry) => entry.selector);
+        return { walk: await walk(page, selectors), timedOut };
     } finally {
         await context.close();
     }
 }
 
 /** Records one comparison, its failing lines and every box delta, and returns the failing lines. */
-function judge(label: string, width: number, c: Comparison): string[] {
-    const failing = failures(c);
-    fs.appendFileSync(STYLE_ROWS, `| ${label} | ${width} | ${c.structural.length} | ${c.styles.length} | ${c.tokens.length} | ${c.geometry.length} | ${c.deltas.length} | ${c.added.length} |\n`);
+function judge(label: string, width: number, c: Comparison, timedOut: string[] = []): string[] {
+    const failing = [...failures(c), ...timedOut.map((wait) => `a wait timed out: ${wait}`)];
+    fs.appendFileSync(STYLE_ROWS, `| ${label} | ${width} | ${c.structural.length} | ${c.styles.length} | ${c.tokens.length} | ${c.geometry.length} | ${c.deltas.length} | ${+c.largest.toFixed(3)} | ${timedOut.length ? timedOut.join(', ') : ''} | ${c.added.length} |\n`);
     const section = (title: string, lines: string[]) => (lines.length ? `\n#### ${title}\n\n${lines.map((line) => `- \`${line}\``).join('\n')}\n` : '');
     const details =
-        section('Structure', c.structural) + section('Styles', c.styles) + section('Tokens', c.tokens) + section('Boxes over 0.5 px', c.geometry) + section('Every box delta', c.deltas) + section('Tokens new in the head', c.added);
+        section('Structure', c.structural) +
+        section('Styles', c.styles) +
+        section('Tokens', c.tokens) +
+        section('Boxes over their allowance', c.geometry) +
+        section('Every box delta', c.deltas) +
+        section('Waits that timed out', timedOut) +
+        section('Tokens new in the head', c.added);
     if (details) fs.appendFileSync(STYLE_DETAILS, `\n### ${label}, ${width}\n${details}`);
     return failing;
 }
@@ -502,7 +537,8 @@ function judge(label: string, width: number, c: Comparison): string[] {
 /**
  * The gate, at each size: Black in the head against the base, element by element, in all three of Black's routes.
  * System on a dark device and today's stored `dark` against the base on its stored `dark`; no JavaScript against the
- * base without it.
+ * base without it. A wait that times out in either build fails the row, and a head with JavaScript that doesn't
+ * hydrate fails it too (its hydration wait is one of them).
  */
 async function gate(pair: Pair, origins: { base: string; head: string }, cookies?: { base: string; head: string }) {
     // One throwaway load in each build first: a server derives some things on first ask (About's portrait LQIP), so
@@ -519,7 +555,11 @@ async function gate(pair: Pair, origins: { base: string; head: string }, cookies
             ['no JavaScript', '', false, baseNoJs],
         ] as const) {
             const head = await styles(origins.head, stored, pair, viewport, 'head', { js, session: cookies?.head });
-            const failing = judge(`${pair.name}, ${route}`, viewport.width, compare(against, head));
+            const allowances = Object.fromEntries(
+                ALLOWANCES.filter((entry) => entry.page === pair.name && entry.width === viewport.width && against.walk.resolved[entry.selector]).map((entry) => [against.walk.resolved[entry.selector], entry.maxDelta]),
+            );
+            const timedOut = [...against.timedOut.map((wait) => `${wait} (base)`), ...head.timedOut.map((wait) => `${wait} (head)`)];
+            const failing = judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk, allowances), timedOut);
             expect.soft(failing, `${pair.name} at ${size} ${viewport.width}, ${route}: computed style against the base`).toEqual([]);
         }
     }
@@ -595,10 +635,10 @@ test.afterAll(async () => {
             '',
             '## The gate: computed style',
             '',
-            "Every element under body (and in the curator's preview frame), matched by tag and nth-of-type, its ::before and ::after, and the custom properties on :root and body, in the head's Black against the base, at 1440 and 390, in Black's three routes. The theme control and today's toggle are left out with their subtrees; the curator's head takes its control out of the layout, as no JavaScript does. Structure, styles, base tokens and boxes over 0.5 px fail; box deltas under it and tokens new in the head are listed below.",
+            "Every element under body (and in the curator's preview frame), matched by tag and nth-of-type, its ::before and ::after, and the custom properties on :root and body, in the head's Black against the base, at 1440 and 390, in Black's three routes. The theme control and today's toggle are left out with their subtrees; the curator's head takes its control out of the layout, as no JavaScript does. Structure, styles, base tokens, any box that moved (beyond the one named allowance) and any wait that timed out fail; every box delta and the tokens new in the head are listed below.",
             '',
-            '| Page, route | Width | Structure | Styles | Tokens | Boxes over 0.5 px | Box deltas | New tokens |',
-            '|---|---|---|---|---|---|---|---|',
+            '| Page, route | Width | Structure | Styles | Tokens | Boxes over allowance | Box deltas | Largest delta (px) | Waits timed out | New tokens |',
+            '|---|---|---|---|---|---|---|---|---|---|',
             read(STYLE_ROWS).trimEnd(),
             '',
             read(STYLE_DETAILS) ? `## The gate's details\n${read(STYLE_DETAILS)}` : '',
@@ -655,17 +695,25 @@ test.describe('the visitor site and the legacy Gallery', () => {
     });
 
     // The gate sees what it claims to: each of these, injected into the head, must fail it. Recorded, and asserted.
+    const hoverNavLink = (page: Page) => page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Work', exact: true }).hover();
     for (const [name, url, headStyle, act] of [
         ["Home's scrim, +1 on one channel", '/', '[class*="vignette"]{background:linear-gradient(90deg,rgb(9 10 9/.9) 0%,rgb(9 10 9/.46) 38%,rgb(9 10 9/.08) 70%)!important}', revealChrome],
         ['the glass blur at 13px', '/work', ':root{--gah-glass-blur:13px!important}', undefined],
         ["a photograph's opacity at .96", '/work', 'main img{opacity:.96!important}', undefined],
         ['--gah-ink, +1 on one channel', '/work', ':root{--gah-ink:#f4f6f6!important}', undefined],
+        ["a photograph's corners square", '/work', 'main img{border-radius:0!important}', undefined],
+        ["About's link underlines red", '/about', 'a{text-decoration-color:red!important}', undefined],
+        ['a hovered nav link white', '/work', 'nav a:hover{color:#fff!important}', hoverNavLink],
     ] as const) {
         test(`self-test: ${name} in the head fails the gate`, async () => {
             const pair: Pair = { name: `self-test, ${name}`, url, headStyle, act };
             const viewport = VIEWPORTS.desktop;
-            const failing = judge(pair.name, viewport.width, compare(await styles(visitor.base, 'dark', pair, viewport, 'base'), await styles(visitor.head, 'black', pair, viewport, 'head')));
-            expect(failing.length, `${name}: the computed-style gate sees it`).toBeGreaterThan(0);
+            const [base, head] = [await styles(visitor.base, 'dark', pair, viewport, 'base'), await styles(visitor.head, 'black', pair, viewport, 'head')];
+            const comparison = compare(base.walk, head.walk);
+            judge(pair.name, viewport.width, comparison, [...base.timedOut, ...head.timedOut]);
+            // Seen as the change itself, in a style or a token, on loads that settled.
+            expect(comparison.styles.length + comparison.tokens.length, `${name}: the computed-style gate sees it`).toBeGreaterThan(0);
+            expect([...base.timedOut, ...head.timedOut], `${name}: both loads settled`).toEqual([]);
         });
     }
 });
