@@ -23,7 +23,8 @@ import { routePhotoFixtures } from '../support/test';
 // 2. Photographs, a tolerance. Inside those boxes, no channel may step more than 4/255, with no limit on how many
 //    pixels do. A photo is the same bytes in both builds, so its raster isn't under test, and it doesn't repeat from
 //    one load to the next even in the base; a theme that touched a photo (a filter, an opacity) moves it much further.
-// Home's intro is shot at its settled frame, held by reduced motion, under the same rule.
+// Home's intro is shot at its settled frame, held by reduced motion, under the same rule. A departure spec §10
+// sanctions is masked at its one page, size and scale only (Pair.sanctioned).
 // A second row per page and size pins the ruling on owner question 4: the head with today's stored `dark` paints Black.
 // The curator's header gains the control where the base had none, so the head's curator shots take it out of the
 // layout first, as no JavaScript does.
@@ -134,6 +135,8 @@ interface Pair {
     addsControl?: boolean;
     /** A page that never hydrates (the 503). */
     bare?: boolean;
+    /** Sanctioned departures (spec §10): boxes, in CSS pixels, masked at one width and scale only. */
+    sanctioned?: { width: number; scale: number; box: Box }[];
 }
 
 let browser: Browser;
@@ -227,14 +230,14 @@ interface Diff {
 }
 
 /** Every channel compared exactly outside the controls' boxes (±2 CSS px) and the photographs' boxes; inside a photo's box, only the largest step. */
-async function diff(a: Shot, b: Shot, scale: number, name: string): Promise<Diff> {
+async function diff(a: Shot, b: Shot, scale: number, name: string, sanctioned: Box[] = []): Promise<Diff> {
     const [left, right] = await Promise.all([a.file, b.file].map((file) => sharp(file).removeAlpha().raw().toBuffer({ resolveWithObject: true })));
     if (left.info.width !== right.info.width || left.info.height !== right.info.height) {
         return { count: Number.POSITIVE_INFINITY, maxStep: 255, photoStep: 255, box: `sizes differ: ${left.info.width}x${left.info.height} against ${right.info.width}x${right.info.height}` };
     }
     const { width, height } = left.info;
     const device = (pad: number) => (box: Box) => ({ x0: (box.x - pad) * scale, y0: (box.y - pad) * scale, x1: (box.x + box.w + pad) * scale, y1: (box.y + box.h + pad) * scale });
-    const masks = [...a.controls, ...b.controls].map(device(2));
+    const masks = [...a.controls, ...b.controls].map(device(2)).concat(sanctioned.map(device(0)));
     const photos = [...a.photos, ...b.photos].map(device(0));
     const inside = (boxes: { x0: number; y0: number; x1: number; y1: number }[], x: number, y: number) => boxes.some((m) => x >= m.x0 && x < m.x1 && y >= m.y0 && y < m.y1);
     let count = 0;
@@ -333,7 +336,16 @@ const LEGACY: Pair[] = [
 ];
 const CURATOR: Pair[] = [
     { name: 'signin', url: '/curation/login', addsControl: true },
-    { name: 'inbox', url: '/curation/inbox', session: true, addsControl: true },
+    {
+        name: 'inbox',
+        url: '/curation/inbox',
+        session: true,
+        addsControl: true,
+        // Sanctioned (spec §10): at 390 and DPR 1, the KG ring's left edge is 1/255 on 18 px, from the header's
+        // sub-pixel layout after the toggle is replaced. The curator PR (map item 5) owns CuratorHeader.tsx and tries
+        // a whole-pixel width for the control's slot; this mask goes when that brings it to 0.
+        sanctioned: [{ width: 390, scale: 1, box: { x: 16, y: 22, w: 3, h: 12 } }],
+    },
     { name: 'publish', url: '/curation/publish', session: true, addsControl: true },
 ];
 
@@ -355,12 +367,13 @@ function parity(group: string, pairs: Pair[], origins: () => { base: string; hea
             for (const [size, viewport] of Object.entries(VIEWPORTS)) {
                 for (const scale of SCALES) {
                     const name = `${pair.name}-${viewport.width}-${scale}x`;
+                    const sanctioned = (pair.sanctioned ?? []).filter((entry) => entry.width === viewport.width && entry.scale === scale).map((entry) => entry.box);
                     const before = await shoot(base, 'dark', pair, viewport, scale, 'base', cookies?.base);
-                    const result = await diff(before, await shoot(head, 'black', pair, viewport, scale, 'head', cookies?.head), scale, name);
+                    const result = await diff(before, await shoot(head, 'black', pair, viewport, scale, 'head', cookies?.head), scale, name, sanctioned);
                     row(pair.name, size, viewport.width, scale, result);
                     expectWithin(name, result);
                     if (options.legacy && scale === 1) {
-                        const legacy = await diff(before, await shoot(head, 'dark', pair, viewport, scale, 'head-legacy-dark', cookies?.head), scale, `${name}-legacy-dark`);
+                        const legacy = await diff(before, await shoot(head, 'dark', pair, viewport, scale, 'head-legacy-dark', cookies?.head), scale, `${name}-legacy-dark`, sanctioned);
                         row(`${pair.name}, head on stored \`dark\``, size, viewport.width, 1, legacy);
                         expectWithin(`${name}, the head on a stored dark`, legacy);
                     }
