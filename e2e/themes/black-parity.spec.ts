@@ -26,7 +26,7 @@ const VIEWPORTS = { desktop: { width: 1440, height: 900 }, phone: { width: 390, 
 const SCALES = [1, 2] as const;
 const report: string[] = [];
 
-test.describe.configure({ mode: 'serial' });
+// One worker, in order, and soft checks, so one page's difference never skips the others.
 test.skip(!BASE, 'Set PARITY_BASE_DIR to a built checkout of the base; CI\'s Themes job does.');
 
 // --- Servers -----------------------------------------------------------------------------------------------------
@@ -150,7 +150,8 @@ async function shoot(origin: string, stored: string, pair: Pair, viewport: { wid
         return box ? { x: Math.floor(box.x), y: Math.floor(box.y), w: Math.ceil(box.width), h: Math.ceil(box.height) } : null;
     });
     const file = path.join(OUT, `${pair.name}-${viewport.width}-${scale}x-${tag}.png`);
-    await page.screenshot({ path: file, fullPage: pair.session === true && pair.url.includes('publish') });
+    // The intro's CSS transitions (the portrait's rim light) run on the real clock, so they're settled for its frame.
+    await page.screenshot({ path: file, fullPage: pair.session === true && pair.url.includes('publish'), animations: pair.intro ? 'disabled' : 'allow' });
     await context.close();
     return { file, control };
 }
@@ -275,32 +276,32 @@ const CURATOR: Pair[] = [
 /** Shoots `pair` from both, at every size and scale, and pins the diff; and, with `legacy`, the head on a stored `dark`. */
 function parity(group: string, pairs: Pair[], origins: () => { base: string; head: string }, options: { legacy?: boolean; session?: () => { base: string; head: string } } = {}) {
     for (const pair of pairs) {
-        for (const [size, viewport] of Object.entries(VIEWPORTS)) {
-            for (const scale of SCALES) {
-                test(`${group}: ${pair.name} at ${viewport.width}, ${scale}x`, async () => {
-                    const { base, head } = origins();
-                    const cookies = pair.session ? options.session!() : undefined;
+        test(`${group}: ${pair.name}`, async () => {
+            const { base, head } = origins();
+            const cookies = pair.session ? options.session!() : undefined;
+            for (const [size, viewport] of Object.entries(VIEWPORTS)) {
+                for (const scale of SCALES) {
                     const before = await shoot(base, 'dark', pair, viewport, scale, 'base', cookies?.base);
                     const after = await shoot(head, 'black', pair, viewport, scale, 'head', cookies?.head);
                     const name = `${pair.name}-${viewport.width}-${scale}x`;
                     const result = await diff(before, after, scale, name);
                     report.push(`| ${pair.name} | ${size} ${viewport.width} | ${scale}x | ${result.count} | ${result.maxStep} | ${result.worstBandMean.toFixed(3)} | ${result.box} |`);
                     if (pair.raster) {
-                        expect(result.maxStep, `${name}: no channel steps more than 1`).toBeLessThanOrEqual(1);
-                        expect(result.worstBandMean, `${name}: mean |Δ| per channel per 120 px band`).toBeLessThanOrEqual(0.5);
+                        expect.soft(result.maxStep, `${name}: no channel steps more than 1`).toBeLessThanOrEqual(1);
+                        expect.soft(result.worstBandMean, `${name}: mean |Δ| per channel per 120 px band`).toBeLessThanOrEqual(0.5);
                     } else {
-                        expect(result.count, `${name}: pixels differing outside the control (${result.box})`).toBe(0);
+                        expect.soft(result.count, `${name}: pixels differing outside the control (${result.box})`).toBe(0);
                     }
                     if (options.legacy && scale === 1) {
                         const legacy = await shoot(head, 'dark', pair, viewport, scale, 'head-legacy-dark', cookies?.head);
                         const legacyResult = await diff(before, legacy, scale, `${name}-legacy-dark`);
                         report.push(`| ${pair.name}, head on stored \`dark\` | ${size} ${viewport.width} | 1x | ${legacyResult.count} | ${legacyResult.maxStep} | ${legacyResult.worstBandMean.toFixed(3)} | ${legacyResult.box} |`);
-                        if (pair.raster) expect(legacyResult.maxStep).toBeLessThanOrEqual(1);
-                        else expect(legacyResult.count, `${name}: the head on a stored dark`).toBe(0);
+                        if (pair.raster) expect.soft(legacyResult.maxStep, `${name}: the head on a stored dark`).toBeLessThanOrEqual(1);
+                        else expect.soft(legacyResult.count, `${name}: the head on a stored dark`).toBe(0);
                     }
-                });
+                }
             }
-        }
+        });
     }
 }
 

@@ -80,7 +80,9 @@ for (const theme of ['black', 'light'] as const) {
             expect(await ringOf(track)).toEqual({ focused: true, focusVisible: true, outline: 'none', boxShadow: 'none' });
             const active = await measure(page.locator('.yarl__thumbnails_thumbnail_active'));
             expect(active.outline).toEqual({ style: 'solid', width: 3, offset: 3, alpha: 1 });
-            expect(active.boxShadow).toMatch(/^rgb\(0, 0, 0\) 0px 0px 0px 3px/);
+            // The band is the theme's --focus-ring-dark: black on Black, the paper's near-white on Light.
+            const band = theme === 'light' ? 'rgb\\(251, 248, 242\\)' : 'rgb\\(0, 0, 0\\)';
+            expect(active.boxShadow).toMatch(new RegExp(`^${band} 0px 0px 0px 3px`));
         });
     });
 }

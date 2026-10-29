@@ -123,7 +123,9 @@ test("today's stored dark reads as Black, and Dark is stored as charcoal", async
     await expect(control(page)).toHaveAccessibleName('Theme: Black');
 
     await control(page).click();
-    await page.getByRole('radio', { name: /^Dark/ }).check();
+    // A pointer's choice applies in the view transition's callback, a frame later.
+    await page.getByRole('radio', { name: /^Dark/ }).click();
+    await expect(page.getByRole('radio', { name: /^Dark/ })).toBeChecked();
     await expect(html).toHaveAttribute('data-theme', 'dark');
     await expect(html).toHaveAttribute('data-theme-choice', 'charcoal');
     expect(await page.evaluate(() => localStorage.getItem('theme'))).toBe('charcoal');
@@ -165,7 +167,9 @@ test('a choice in the control applies at once, is stored, and a reload keeps it 
     await expect(control(page)).toHaveAccessibleName('Theme: System (Black now)');
 
     await control(page).click();
-    await page.getByRole('radio', { name: /^Light/ }).check();
+    // A pointer's choice applies in the view transition's callback, a frame later.
+    await page.getByRole('radio', { name: /^Light/ }).click();
+    await expect(page.getByRole('radio', { name: /^Light/ })).toBeChecked();
     await expect(html).toHaveAttribute('data-theme', 'light');
     expect(await page.evaluate(() => localStorage.getItem('theme'))).toBe('light');
     await page.keyboard.press('Escape');
