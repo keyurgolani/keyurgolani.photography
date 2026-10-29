@@ -305,9 +305,10 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Below the thumbnail's room too, so the focus ring, which clears the surround, never crosses the title (0 in Black). */
+/* Below the thumbnail's room too, so the focus ring, which clears the surround, never crosses the title's line box:
+   the ring reaches room + 2 + 3 px under the link, 1 px more than room + 0.25rem where there's a room (0 in Black). */
 .caption {
-  margin: calc(0.25rem + var(--gah-room-sm, 0px)) 0 0;
+  margin: calc(0.25rem + var(--gah-room-sm, 0px) + min(var(--gah-room-sm, 0px), 1px)) 0 0;
   /* Light's captions are in the serif (spec §3); the others, Black included, keep the sans. */
   font-family: var(--gah-caption-font, var(--gah-font-sans));
   font-size: var(--gah-type-ui);
@@ -348,14 +349,22 @@
   }
 }
 
-/* A missing thumbnail wears no surround, so its mark is today's 1 px ring in every theme. */
-.entry:focus-visible .thumbFrame.fallback {
+/* A missing thumbnail or cover wears no surround, so its mark is today's 1 px ring in every theme. */
+.entry:focus-visible .thumbFrame.fallback,
+.coverLink:focus-visible .coverFrame.fallback {
   box-shadow: 0 0 0 1px var(--gah-rule-strong);
   outline: none;
 }
 
 @media (hover: hover) and (pointer: fine) {
   .entry:hover .thumbFrame.fallback {
+    box-shadow: 0 0 0 1px var(--gah-rule-strong);
+    outline: none;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .coverLink:hover .coverFrame.fallback {
     box-shadow: 0 0 0 1px var(--gah-rule-strong);
     outline: none;
   }
