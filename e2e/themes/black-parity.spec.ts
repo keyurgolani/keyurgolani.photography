@@ -19,13 +19,16 @@ import { routePhotoFixtures } from '../support/test';
 // in a different raster path once the chrome shows, with the same values (the round 2 design review). A second table
 // pins the ruling on owner question 4: the head with today's stored `dark` paints Black too. The curator's header gains
 // the control where the base had none, so the head's curator shots take it out of the layout and get the raster bound.
-// Home's intro can't be repeated by the base itself, so it gets the base's own spread (Pair.noisy).
+// Home's intro can't be repeated by the base itself, so it gets the base's own spread (Pair.noisy). Inside a photograph's
+// box a pixel may differ by up to PHOTO_STEP, the image's resampling from one load to the next.
 // At 1440x900 and 390x844, each at 1x and 2x. The visitor pages, the 404 and the error page; the legacy Gallery and its
 // lightbox; the curator signed out and in, and its 503.
 
 const BASE = process.env.PARITY_BASE_DIR;
 const HEAD = process.cwd();
 const OUT = path.join(HEAD, 'test-results', 'parity');
+/** How far a photograph's own pixels may differ, per channel: a resampling step. */
+const PHOTO_STEP = 4;
 const VIEWPORTS = { desktop: { width: 1440, height: 900 }, phone: { width: 390, height: 844 } } as const;
 const SCALES = [1, 2] as const;
 // Rows go to a file as they're measured: a failed test restarts the worker, which would drop rows held in memory.
@@ -105,6 +108,8 @@ interface Shot {
     file: string;
     /** Every theme control or toggle on the page, the curator's preview frame's included, in page pixels. */
     controls: Box[];
+    /** Every photograph's box, the same way. */
+    images: Box[];
 }
 interface Pair {
     /** The page, as `name` in the table. */
@@ -163,27 +168,39 @@ async function shoot(origin: string, stored: string, pair: Pair, viewport: { wid
             await page.waitForSelector('[data-home-badge][data-landed]:not([data-lingering])', { timeout: 20_000 }).catch(() => undefined);
         }
         await pair.act?.(page);
+        // The page and the curator's preview frame: every image loaded and decoded (loaded isn't painted: a photo
+        // still decoding can draw a row short), and every font in.
         await page.evaluate(async () => {
-            await Promise.all([...document.images].filter((image) => !image.complete).map((image) => new Promise((resolve) => {
-                image.onload = image.onerror = resolve;
-                setTimeout(resolve, 4000);
-            })));
-            // Loaded isn't painted: a photo still decoding can draw a row short.
-            await Promise.all([...document.images].map((image) => image.decode().catch(() => undefined)));
+            const docs = [document, ...[...document.querySelectorAll('iframe')].flatMap((frame) => (frame.contentDocument ? [frame.contentDocument] : []))];
+            for (const doc of docs) {
+                const images = [...doc.images];
+                await Promise.all(images.filter((image) => !image.complete).map((image) => new Promise((resolve) => {
+                    image.onload = image.onerror = resolve;
+                    setTimeout(resolve, 4000);
+                })));
+                await Promise.all(images.map((image) => image.decode().catch(() => undefined)));
+                await doc.fonts.ready;
+            }
         });
         await page.waitForTimeout(600);
     }
     if (pair.addsControl && tag !== 'base') await page.addStyleTag({ content: '[data-theme-control]{display:none!important}' });
     // The control in the page and in any same-origin frame: today's toggle in the base, the theme control in the head.
-    const controls = await page.evaluate(() => {
+    // And every photograph's box, whose own pixels may differ by a resampling step (Diff).
+    const { controls, images } = await page.evaluate(() => {
         const boxes: { x: number; y: number; w: number; h: number }[] = [];
+        const photos: typeof boxes = [];
         const visit = (doc: Document, dx: number, dy: number) => {
+            const at = (el: Element) => {
+                const box = el.getBoundingClientRect();
+                return { x: Math.floor(box.x + dx), y: Math.floor(box.y + dy), w: Math.ceil(box.width), h: Math.ceil(box.height) };
+            };
             for (const el of doc.querySelectorAll('[data-theme-control], nav button, header button')) {
                 if (!el.matches('[data-theme-control]') && !/^Switch to/.test((el.textContent ?? '').trim())) continue;
-                const box = el.getBoundingClientRect();
-                if (box.width === 0) continue;
-                boxes.push({ x: Math.floor(box.x + dx), y: Math.floor(box.y + dy), w: Math.ceil(box.width), h: Math.ceil(box.height) });
+                if (el.getBoundingClientRect().width === 0) continue;
+                boxes.push(at(el));
             }
+            for (const image of doc.images) if (image.getBoundingClientRect().width > 0) photos.push(at(image));
             for (const frame of doc.querySelectorAll('iframe')) {
                 const inner = frame.contentDocument;
                 const at = frame.getBoundingClientRect();
@@ -191,13 +208,13 @@ async function shoot(origin: string, stored: string, pair: Pair, viewport: { wid
             }
         };
         visit(document, window.scrollX, window.scrollY);
-        return boxes;
+        return { controls: boxes, images: photos };
     });
     const file = path.join(OUT, `${pair.name}-${viewport.width}-${scale}x-${tag}.png`);
     // The intro's CSS transitions (the portrait's rim light) run on the real clock, so they're settled for its frame.
     await page.screenshot({ path: file, fullPage: pair.session === true && pair.url.includes('publish'), animations: pair.intro ? 'disabled' : 'allow' });
     await context.close();
-    return { file, controls };
+    return { file, controls, images };
 }
 
 interface Diff {
@@ -214,7 +231,11 @@ async function diff(a: Shot, b: Shot, scale: number, name: string): Promise<Diff
         return { count: Number.POSITIVE_INFINITY, maxStep: 255, worstBandMean: 255, box: `sizes differ: ${left.info.width}x${left.info.height} against ${right.info.width}x${right.info.height}` };
     }
     const { width, height } = left.info;
-    const masks = [...a.controls, ...b.controls].map((box) => ({ x0: (box.x - 2) * scale, y0: (box.y - 2) * scale, x1: (box.x + box.w + 2) * scale, y1: (box.y + box.h + 2) * scale }));
+    const device = (pad: number) => (box: Box) => ({ x0: (box.x - pad) * scale, y0: (box.y - pad) * scale, x1: (box.x + box.w + pad) * scale, y1: (box.y + box.h + pad) * scale });
+    const masks = [...a.controls, ...b.controls].map(device(2));
+    // Inside a photograph only, the image's resampling may land a step or few apart from one load to the next, in the
+    // base against itself too. A theme that touched a photo (a filter, an opacity) moves it far more.
+    const photos = [...a.images, ...b.images].map(device(0));
     const band = 120 * scale;
     const bands = new Map<string, { sum: [number, number, number]; n: number }>();
     let count = 0;
@@ -225,7 +246,9 @@ async function diff(a: Shot, b: Shot, scale: number, name: string): Promise<Diff
         for (let x = 0; x < width; x++) {
             const i = (y * width + x) * 3;
             const masked = masks.some((m) => x >= m.x0 && x < m.x1 && y >= m.y0 && y < m.y1);
-            const steps = [0, 1, 2].map((c) => Math.abs(left.data[i + c] - right.data[i + c]));
+            const raw = [0, 1, 2].map((c) => Math.abs(left.data[i + c] - right.data[i + c]));
+            const inPhoto = Math.max(...raw) <= PHOTO_STEP && photos.some((m) => x >= m.x0 && x < m.x1 && y >= m.y0 && y < m.y1);
+            const steps = inPhoto ? [0, 0, 0] : raw;
             for (const key of [`x${Math.floor(x / band)}`, `y${Math.floor(y / band)}`]) {
                 const entry = bands.get(key) ?? { sum: [0, 0, 0], n: 0 };
                 if (!masked) for (const c of [0, 1, 2]) entry.sum[c as 0 | 1 | 2] += steps[c];
