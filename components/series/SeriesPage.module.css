@@ -305,9 +305,10 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Below the thumbnail's room too, so the focus ring, which clears the surround, never crosses the title (0 in Black). */
+/* Below the thumbnail's room too, so the focus ring, which clears the surround, never crosses the title's line box:
+   the ring reaches room + 2 + 3 px under the link, 1 px more than room + 0.25rem where there's a room (0 in Black). */
 .caption {
-  margin: calc(0.25rem + var(--gah-room-sm, 0px)) 0 0;
+  margin: calc(0.25rem + var(--gah-room-sm, 0px) + min(var(--gah-room-sm, 0px), 1px)) 0 0;
   /* Light's captions are in the serif (spec §3); the others, Black included, keep the sans. */
   font-family: var(--gah-caption-font, var(--gah-font-sans));
   font-size: var(--gah-type-ui);
