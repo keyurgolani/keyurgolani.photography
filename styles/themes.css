@@ -36,7 +36,6 @@ html[data-theme='dark'] {
   --gah-rule-strong: rgba(255, 255, 255, 0.42);
   --gah-accent: #9fcfba;
   --gah-glass: rgba(27, 31, 29, 0.86);
-  --gah-nav-rule: rgba(255, 255, 255, 0.12);
   --gah-action: #9fcfba;
   --gah-action-ink: #101511;
   /* The legacy variables Home's intro and the legacy Gallery paint with. */
@@ -58,7 +57,6 @@ html[data-theme='light'] {
   --gah-rule-strong: #8c7f6f;
   --gah-accent: #2a4a72;
   --gah-glass: rgba(235, 229, 217, 0.9);
-  --gah-nav-rule: rgba(41, 35, 29, 0.14);
   --gah-action: #2a4a72;
   --gah-action-ink: #fbf8f2;
   --gah-radius: 2px;
@@ -84,7 +82,6 @@ html[data-theme='bright'] {
   --gah-accent: #0b0b0b;
   --gah-glass: #ffffff;
   --gah-glass-blur: 0px;
-  --gah-nav-rule: rgba(0, 0, 0, 0.12);
   --gah-action: #0b0b0b;
   --gah-action-ink: #ffffff;
   --gah-radius: 0px;

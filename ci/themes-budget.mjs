@@ -4,7 +4,8 @@
  * the base build's (next before the themes). First-load CSS is every stylesheet a cold load of the route links, read
  * from the production build's client reference manifests, so it needs no server: each file gzipped at level 9, and
  * summed. A route's own inline stylesheet (About's theme blocks, which ride in its HTML so they stay off every other
- * route) counts too, gzipped on its own. CI's Themes job builds both trees and runs it; it exits 1 past the budget.
+ * route) counts too, gzipped on its own. INLINE lists them by hand: a new route-scoped inline stylesheet has to be
+ * added there, or it goes uncounted. CI's Themes job builds both trees and runs it; it exits 1 past the budget.
  *
  *   node ci/themes-budget.mjs <base tree> <head tree>
  */

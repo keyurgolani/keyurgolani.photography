@@ -62,6 +62,25 @@ describe.each(SHELL_CSS)('%s', (file) => {
   });
 });
 
+describe("styles/themes.css's theme control rules", () => {
+  // The button's rules live in the global themes.css (the chunking trap), beside the theme blocks themselves.
+  const declarations: string[] = [];
+  parse('styles/themes.css').walkRules((rule) => {
+    if (!rule.selector.includes('theme-menu')) return;
+    rule.walkDecls((decl) => {
+      declarations.push(`${rule.selector} { ${decl.prop}: ${decl.value} }`);
+    });
+  });
+
+  it('are found', () => {
+    expect(declarations.length).toBeGreaterThan(10);
+  });
+
+  it('read no legacy theme variable', () => {
+    expect(declarations.filter((line) => LEGACY_VARIABLES.some((name) => new RegExp(`var\\(\\s*${name}\\b`).test(line)))).toEqual([]);
+  });
+});
+
 describe.each(SHELL_TSX)('%s', (file) => {
   it('has no dark: variant', () => {
     expect(source(file)).not.toMatch(/\bdark:/);

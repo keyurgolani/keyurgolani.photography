@@ -181,6 +181,40 @@ test('a choice in the control applies at once, is stored, and a reload keeps it 
     await expect(control(page)).toHaveAccessibleName('Theme: Light');
 });
 
+test("a press before the menu's styles land waits, marked busy, and opens the menu once they're in (R2-P3-3)", async ({ page, request }) => {
+    // The page's own stylesheets are the ones its HTML links; the popover's come later, with its chunk. Hold only those.
+    const html = await (await request.get('/work')).text();
+    const firstLoad = new Set(
+        [...html.matchAll(/<link\b[^>]*>/g)]
+            .map((match) => match[0])
+            .filter((tag) => /\brel="stylesheet"/.test(tag))
+            .map((tag) => new URL(/\bhref="([^"]+)"/.exec(tag)![1], 'http://x').pathname),
+    );
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let asked = 0;
+    await page.route('**/*.css', async (route) => {
+        if (!firstLoad.has(new URL(route.request().url()).pathname)) {
+            asked++;
+            await held;
+        }
+        await route.continue();
+    });
+    await page.goto('/work');
+    await waitForHydration(page);
+    // The button has no popovertarget until the styles are in, so this press can only wait.
+    await expect(control(page)).not.toHaveAttribute('popovertarget');
+    await control(page).click();
+    await expect(control(page)).toHaveAttribute('aria-busy', 'true');
+    await expect.poll(() => asked).toBeGreaterThan(0);
+    const open = () => page.locator('[popover]').evaluate((el) => el.matches(':popover-open'));
+    expect(await open()).toBe(false);
+    release();
+    await expect.poll(open).toBe(true);
+    await expect(control(page)).not.toHaveAttribute('aria-busy');
+    await expect(control(page)).toHaveAttribute('popovertarget');
+});
+
 test.describe('with JavaScript disabled', () => {
     test.use({ javaScriptEnabled: false });
 

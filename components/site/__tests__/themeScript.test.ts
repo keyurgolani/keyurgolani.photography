@@ -6,12 +6,13 @@ const root = document.documentElement;
 const attributeNames = () => root.getAttributeNames().sort();
 
 /** A `prefers-color-scheme: light` query that answers for a light or dark device, and can switch with the page open. */
-function device(scheme: 'light' | 'dark') {
+function device(scheme: 'light' | 'dark', { legacy = false }: { legacy?: boolean } = {}) {
   const listeners: Array<() => void> = [];
-  const query = {
-    matches: scheme === 'light',
-    addEventListener: (_type: string, listener: () => void) => listeners.push(listener),
-  };
+  const add = (listener: () => void) => listeners.push(listener);
+  // Safari 13's MediaQueryList has only the old addListener.
+  const query = legacy
+    ? { matches: scheme === 'light', addListener: add }
+    : { matches: scheme === 'light', addEventListener: (_type: string, listener: () => void) => add(listener) };
   vi.stubGlobal('matchMedia', vi.fn(() => query));
   return {
     switchTo(next: 'light' | 'dark') {
@@ -94,6 +95,13 @@ describe('THEME_INIT_SCRIPT', () => {
     expect(painted()).toEqual(['system', 'light']);
     media.switchTo('dark');
     expect(painted()).toEqual(['system', 'black']);
+  });
+
+  it("follows the device live through Safari 13's addListener", () => {
+    const media = device('dark', { legacy: true });
+    run();
+    media.switchTo('light');
+    expect(painted()).toEqual(['system', 'light']);
   });
 
   it('keeps an explicit choice when the device switches', () => {

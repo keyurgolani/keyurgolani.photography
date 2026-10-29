@@ -2,7 +2,7 @@
 
 import { Check } from 'lucide-react';
 import dynamic from 'next/dynamic';
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { Component, type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useThemeChoice } from './ThemeContext';
 import { THEME_CHOICES, type ThemeChoice } from './themeChoices';
 
@@ -18,6 +18,22 @@ const THEME_LABELS: Record<ThemeChoice, { name: string; note: string }> = {
 // The popover's styles, off every page's first-load CSS (the CSS budget): they load once the page is idle after
 // hydration, or as soon as the pointer or focus reaches the button.
 const ThemeMenuPopoverStyles = dynamic(() => import('./ThemeMenuPopoverStyles'), { ssr: false });
+
+/**
+ * A failed load of the styles' chunk (a page left open across a redeploy, a dropped request) renders nothing, so the
+ * button stays inert, as without JavaScript, instead of the route's error page taking over.
+ */
+class StylesBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
 
 /**
  * The theme control: a 44 by 44 button in `SiteNav` (and the curator's header)
@@ -47,6 +63,7 @@ export default function ThemeMenu({ placement = 'nav' }: { placement?: 'nav' | '
   // A press before the styles land waits for them, marked busy (R2-P3-3).
   const [pending, setPending] = useState(false);
   const popover = useRef<HTMLDivElement>(null);
+  // Set by a press in the menu, read by the change it causes, and cleared once the press is over.
   const byPointer = useRef(false);
   const want = useCallback(() => setWanted(true), []);
   const onReady = useCallback(() => setReady(true), []);
@@ -69,13 +86,18 @@ export default function ThemeMenu({ placement = 'nav' }: { placement?: 'nav' | '
 
   return (
     <>
-      {wanted && <ThemeMenuPopoverStyles onReady={onReady} />}
+      {wanted && (
+        <StylesBoundary>
+          <ThemeMenuPopoverStyles onReady={onReady} />
+        </StylesBoundary>
+      )}
       <button
         type="button"
         className="theme-menu-button"
         data-theme-control=""
         aria-busy={pending || undefined}
         popoverTarget={ready ? popoverId : undefined}
+        // No CSS reads it yet; the curator PR's anchor rule will (P2-4).
         data-placement={placement}
         onPointerEnter={want}
         onFocus={want}
@@ -108,6 +130,12 @@ export default function ThemeMenu({ placement = 'nav' }: { placement?: 'nav' | '
           className="theme-menu-group"
           onPointerDown={() => {
             byPointer.current = true;
+            // Cleared just after the press ends, wherever it ends: the change a click causes runs inside the click,
+            // which follows pointerup in the same task, so a press that changes nothing (the checked row, the legend,
+            // a drag off) can't leave the next arrow key crossfading.
+            const clear = () => window.setTimeout(() => (byPointer.current = false), 0);
+            window.addEventListener('pointerup', clear, { once: true });
+            window.addEventListener('pointercancel', clear, { once: true });
           }}
         >
           <legend className="theme-menu-legend">Theme</legend>
@@ -118,10 +146,7 @@ export default function ThemeMenu({ placement = 'nav' }: { placement?: 'nav' | '
                 name={`${id}-theme`}
                 value={value}
                 checked={choice === value}
-                onChange={() => {
-                  setChoice(value, { animate: byPointer.current });
-                  byPointer.current = false;
-                }}
+                onChange={() => setChoice(value, { animate: byPointer.current })}
                 className="theme-menu-radio"
               />
               <span className="theme-menu-preview" data-preview={value} aria-hidden="true">

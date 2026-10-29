@@ -11,7 +11,7 @@ import writePhotoFixtures from '../support/global-setup';
  * rows, which the spec appends to as it measures, and writes the e2e suite's photo fixtures for the legacy Gallery.
  */
 export default async function build(): Promise<() => Promise<void>> {
-    fs.rmSync(path.join(process.cwd(), 'test-results', 'parity', 'black-parity.rows'), { force: true });
+    for (const file of ['black-parity.rows', 'black-parity.rects']) fs.rmSync(path.join(process.cwd(), 'test-results', 'parity', file), { force: true });
     const removeFixtures = await writePhotoFixtures();
     if (process.env.PARITY_BUILD !== '1') return removeFixtures;
     const base = process.env.PARITY_BASE_DIR;

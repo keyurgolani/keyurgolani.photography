@@ -109,6 +109,15 @@ for (const viewport of VIEWPORTS) {
                 expect(seen.roots.html, `html's ground in ${theme}`).toBe(UNPAINTED);
                 expect(seen.roots.body, `body's ground in ${theme}`).toBe(css(ground));
                 expect(near(seen.window, ground), `the window's ground in ${theme}: ${seen.window}, not ${ground}`).toBe(true);
+                // SiteNav's own paint on the gallery surface: Light's glass and rule (Black's is black-parity's to pin).
+                if (theme === 'light' && route.nav && route.path !== '/' && route.name !== 'About') {
+                    const nav = await primary(page).evaluate((el) => {
+                        const style = getComputedStyle(el);
+                        return { background: style.backgroundColor, rule: style.boxShadow };
+                    });
+                    expect(nav.background, "SiteNav's glass in Light").toBe('rgba(235, 229, 217, 0.9)');
+                    expect(nav.rule, "SiteNav's rule in Light").toBe('rgba(41, 35, 29, 0.14) 0px -1px 0px 0px inset');
+                }
                 if (route.bottom === 'ground') {
                     const off = seen.bottom!.filter((pixel) => !near(pixel, ground, route.tolerance));
                     expect(off, `bottom-row edge pixels off the ground ${ground} in ${theme}`).toEqual([]);

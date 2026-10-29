@@ -1,6 +1,6 @@
 'use client';
 
-import {createContext, ReactNode, useContext, useEffect, useSyncExternalStore} from 'react';
+import {ReactNode, useEffect, useSyncExternalStore} from 'react';
 import {prefersReducedMotion} from '@/components/motion/usePrefersReducedMotion';
 
 import {THEME_CHOICES, type Theme, type ThemeChoice} from '@/components/themeChoices';
@@ -92,10 +92,11 @@ const syncThemeColor = () => {
     }
 };
 
-const VALUE = {setThemeChoice};
-
-const ThemeContext = createContext<typeof VALUE | null>(null);
-
+/**
+ * The store is the DOM (above), so there's no context to provide: the provider only marks hydration and keeps the
+ * browser's bar on the painting theme, and the hooks work with or without it (the curator's login tests render the
+ * menu bare).
+ */
 export const ThemeProvider = ({children}: { children: ReactNode }) => {
     // A parent's effect runs after its children's, so this lands once the page has committed.
     // Browser tests wait on html[data-hydrated].
@@ -105,15 +106,11 @@ export const ThemeProvider = ({children}: { children: ReactNode }) => {
         return subscribe(syncThemeColor);
     }, []);
 
-    return (
-        <ThemeContext.Provider value={VALUE}>
-            {children}
-        </ThemeContext.Provider>
-    );
+    return children;
 };
 
 /** The setter alone, with no subscription: a caller that never reads the theme never re-renders when it changes. */
-export const useSetThemeChoice = (): typeof setThemeChoice => useContext(ThemeContext)?.setThemeChoice ?? setThemeChoice;
+export const useSetThemeChoice = (): typeof setThemeChoice => setThemeChoice;
 
 /**
  * The choice and what it paints. The caller subscribes, so it renders again right after hydration when the stored

@@ -23,5 +23,5 @@ export const THEME_INIT_SCRIPT =
   "m=window.matchMedia&&matchMedia('(prefers-color-scheme: light)')," +
   "a=function(){var k=d.getAttribute('data-theme-choice');d.setAttribute('data-theme',k==='system'?(m&&m.matches?'light':'black'):k==='charcoal'?'dark':k)}," +
   "r=function(){var c=null;try{c=localStorage.getItem('theme')}catch(e){}if(c==='dark')c='black';if(v.indexOf(c)<0)c='system';d.setAttribute('data-theme-choice',c);a()};" +
-  "r();if(m&&m.addEventListener)m.addEventListener('change',a);" +
+  "r();if(m&&m.addEventListener)m.addEventListener('change',a);else if(m&&m.addListener)m.addListener(a);" +
   "window.addEventListener('storage',function(e){if(e.key==='theme'||e.key===null)r()})}catch(e){}})()";

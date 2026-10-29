@@ -16,15 +16,20 @@ import { routePhotoFixtures } from '../support/test';
 // on the same fixtures, a dark device and reduced motion, and diffs every pixel. The theme controls' boxes are masked
 // (the base's toggle, the head's control, ±2 px, in the page and in the curator's preview frame).
 //
-// The rule, in two parts (the lead's ruling, 2026-10-28; spec §10):
-// 1. Chrome and tokens, exact. Outside every photograph's box (`img`, `picture`, `canvas`, and Home's slides), not
-//    one pixel may differ, on any page, at either size or scale. That's the claim: Black is today's tokens, type
-//    and layout.
-// 2. Photographs, a tolerance. Inside those boxes, no channel may step more than 12/255 (PHOTO_STEP), with no limit
-//    on how many pixels do. The Inbox's thumbnails step up to 9/255 against themselves in the base, so 4 flaked. A photo is the same bytes in both builds, so its raster isn't under test, and it doesn't repeat from
-//    one load to the next even in the base; a theme that touched a photo (a filter, an opacity) moves it much further.
+// The rule, in two passes over every shot (the lead's ruling after the code review's H4, 2026-10-29; spec §10). A mask
+// must never hide chrome, so neither pass masks anything but the controls:
+// 1. Chrome, exact. Both builds take every photograph out before the capture (`img`, `picture`, `canvas`, `video` at
+//    opacity 0, which keeps the layout, and Home's slides without their images), then the whole frame is compared:
+//    not one pixel may differ, on any page, at either size or scale. Home's nav, title, scrim, panel, badge and
+//    controls, captions over a photo and letterboxing all composite over the same ground, so they're all held exact.
+//    That's the claim: Black is today's tokens, type and layout.
+// 2. Photographs, a tolerance. Both builds hide every layer but the photographs, and inside the photographs' boxes no
+//    channel may step more than 12/255 (PHOTO_STEP), with no limit on how many pixels do. A photo is the same bytes in
+//    both builds, so its raster isn't under test, and it doesn't repeat from one load to the next even in the base:
+//    the Inbox's thumbnails step up to 9/255 against themselves. 12/255 is still invisible in a photograph.
 // Home's intro is shot at its settled frame, held by reduced motion, under the same rule. A departure spec §10
-// sanctions is masked at its one page, size and scale only (Pair.sanctioned).
+// sanctions is masked at its one page, size and scale only (Pair.sanctioned); there is none today. A self-test makes
+// Home's scrim 1/255 off in the head and asserts the chrome pass fails.
 // A second row per page and size pins the ruling on owner question 4: the head with today's stored `dark` paints Black.
 // The curator's header gains the control where the base had none, so the head's curator shots take it out of the
 // layout first, as no JavaScript does.
@@ -43,8 +48,11 @@ const SCALES = [1, 2] as const;
 // build.ts, the global setup, starts it empty.
 const ROWS = path.join(OUT, 'black-parity.rows');
 const record = (row: string) => fs.appendFileSync(ROWS, `${row}\n`);
+const RECTS = path.join(OUT, 'black-parity.rects');
 
 // One worker, in order, and soft checks, so one page's difference never skips the others.
+// In CI a missing base is a broken job, not a skip: a skipped spec would leave the Themes job green.
+if (!BASE && process.env.CI) throw new Error('PARITY_BASE_DIR is required in CI (the Themes job sets it).');
 test.skip(!BASE, 'Set PARITY_BASE_DIR to a built checkout of the base; CI\'s Themes job does.');
 
 // --- Servers -----------------------------------------------------------------------------------------------------
@@ -113,7 +121,10 @@ async function serve(tree: string, port: number, env: Record<string, string>, re
 
 type Box = { x: number; y: number; w: number; h: number };
 interface Shot {
-    file: string;
+    /** Pass 1: the page with every photograph taken out (opacity 0, so the layout stays), and slides without their images. */
+    chrome: string;
+    /** Pass 2: the photographs alone, every other layer hidden. */
+    photo: string;
     /** Every theme control or toggle on the page, the curator's preview frame's included, in page pixels. */
     controls: Box[];
     /** Every photograph's box, the same way. */
@@ -138,9 +149,18 @@ interface Pair {
     bare?: boolean;
     /** Sanctioned departures (spec §10): boxes, in CSS pixels, masked at one width and scale only. */
     sanctioned?: { width: number; scale: number; box: Box }[];
+    /** CSS for the head's shots only: the self-test's deliberate change. */
+    headStyle?: string;
+    /** Selectors whose boxes go in the report's second table, unrounded, from every shot (the code review's H2.3). */
+    measure?: string[];
 }
 
 let browser: Browser;
+
+/** Pass 1's style: no photograph's pixels, and a slide's image off, so whatever is drawn over or around a photograph composites over the same ground in both builds. */
+const NO_PHOTOS = 'img,picture,canvas,video{opacity:0!important}[class$="_slide"],[class*="_slide "]{background-image:none!important}';
+/** Pass 2's style: nothing but the photographs. */
+const ONLY_PHOTOS = 'body *{visibility:hidden!important}img,picture,picture *,canvas,video{visibility:visible!important}';
 
 async function shoot(origin: string, stored: string, pair: Pair, viewport: { width: number; height: number }, scale: number, tag: string, session?: string): Promise<Shot> {
     const context = await browser.newContext({ viewport, deviceScaleFactor: scale, colorScheme: 'dark', reducedMotion: 'reduce' });
@@ -213,59 +233,97 @@ async function shoot(origin: string, stored: string, pair: Pair, viewport: { wid
         visit(document, window.scrollX, window.scrollY);
         return { controls: boxes, photos: photoBoxes };
     });
-    const file = path.join(OUT, `${pair.name}-${viewport.width}-${scale}x-${tag}.png`);
-    await page.screenshot({ path: file, fullPage: pair.session === true && pair.url.includes('publish') });
+    if (pair.headStyle && !tag.startsWith('base')) await page.addStyleTag({ content: pair.headStyle });
+    for (const selector of pair.measure ?? []) {
+        const box = await page.locator(selector).first().evaluate((el) => {
+            const r = el.getBoundingClientRect();
+            return `${r.x} ${r.y} ${r.width} ${r.height}`;
+        }).catch(() => 'absent');
+        fs.appendFileSync(RECTS, `| ${pair.name} | ${viewport.width} ${scale}x | ${tag} | \`${selector}\` | ${box} |\n`);
+    }
+    const fullPage = pair.session === true && pair.url.includes('publish');
+    const capture = async (pass: 'chrome' | 'photo', content: string) => {
+        const file = path.join(OUT, `${pair.name}-${viewport.width}-${scale}x-${tag}-${pass}.png`);
+        // In the page and in the curator's preview frame.
+        await page.evaluate((css) => {
+            for (const doc of [document, ...[...document.querySelectorAll('iframe')].flatMap((frame) => (frame.contentDocument ? [frame.contentDocument] : []))]) {
+                const style = doc.createElement('style');
+                style.dataset.parityPass = '';
+                style.textContent = css;
+                doc.head.append(style);
+            }
+        }, content);
+        await page.screenshot({ path: file, fullPage });
+        await page.evaluate(() => {
+            for (const doc of [document, ...[...document.querySelectorAll('iframe')].flatMap((frame) => (frame.contentDocument ? [frame.contentDocument] : []))]) {
+                for (const style of doc.querySelectorAll('style[data-parity-pass]')) style.remove();
+            }
+        });
+        return file;
+    };
+    const chrome = await capture('chrome', NO_PHOTOS);
+    const photo = await capture('photo', ONLY_PHOTOS);
     await context.close();
-    return { file, controls, photos };
+    return { chrome, photo, controls, photos };
 }
 
 interface Diff {
-    /** Pixels differing outside the controls and the photographs: must be 0. */
+    /** Pass 1: pixels differing anywhere outside the controls' boxes. Must be 0. */
     count: number;
     /** The largest channel step among them. */
     maxStep: number;
-    /** The largest channel step inside the photographs' boxes: at most PHOTO_STEP. */
+    /** Pass 2: the largest channel step inside the photographs' boxes. At most PHOTO_STEP. */
     photoStep: number;
     /** Where the chrome differs. */
     box: string;
 }
 
-/** Every channel compared exactly outside the controls' boxes (±2 CSS px) and the photographs' boxes; inside a photo's box, only the largest step. */
+type Region = { x0: number; y0: number; x1: number; y1: number };
+
+/** Two same-sized captures, raw. */
+async function pixels(left: string, right: string) {
+    const [a, b] = await Promise.all([left, right].map((file) => sharp(file).removeAlpha().raw().toBuffer({ resolveWithObject: true })));
+    return a.info.width === b.info.width && a.info.height === b.info.height ? { a, b, width: a.info.width, height: a.info.height } : null;
+}
+
+/** Pass 1 compares the whole frame exactly, but the controls' boxes (±2 CSS px); pass 2 only the photographs' boxes, by their largest step. */
 async function diff(a: Shot, b: Shot, scale: number, name: string, sanctioned: Box[] = []): Promise<Diff> {
-    const [left, right] = await Promise.all([a.file, b.file].map((file) => sharp(file).removeAlpha().raw().toBuffer({ resolveWithObject: true })));
-    if (left.info.width !== right.info.width || left.info.height !== right.info.height) {
-        return { count: Number.POSITIVE_INFINITY, maxStep: 255, photoStep: 255, box: `sizes differ: ${left.info.width}x${left.info.height} against ${right.info.width}x${right.info.height}` };
-    }
-    const { width, height } = left.info;
-    const device = (pad: number) => (box: Box) => ({ x0: (box.x - pad) * scale, y0: (box.y - pad) * scale, x1: (box.x + box.w + pad) * scale, y1: (box.y + box.h + pad) * scale });
+    const device = (pad: number) => (box: Box): Region => ({ x0: (box.x - pad) * scale, y0: (box.y - pad) * scale, x1: (box.x + box.w + pad) * scale, y1: (box.y + box.h + pad) * scale });
     const masks = [...a.controls, ...b.controls].map(device(2)).concat(sanctioned.map(device(0)));
     const photos = [...a.photos, ...b.photos].map(device(0));
-    const inside = (boxes: { x0: number; y0: number; x1: number; y1: number }[], x: number, y: number) => boxes.some((m) => x >= m.x0 && x < m.x1 && y >= m.y0 && y < m.y1);
+    const inside = (boxes: Region[], x: number, y: number) => boxes.some((m) => x >= m.x0 && x < m.x1 && y >= m.y0 && y < m.y1);
+    const step = (left: Buffer, right: Buffer, i: number) => Math.max(Math.abs(left[i] - right[i]), Math.abs(left[i + 1] - right[i + 1]), Math.abs(left[i + 2] - right[i + 2]));
+
+    const chrome = await pixels(a.chrome, b.chrome);
+    const photo = await pixels(a.photo, b.photo);
+    if (!chrome || !photo) return { count: Number.POSITIVE_INFINITY, maxStep: 255, photoStep: 255, box: 'the two captures differ in size' };
+
     let count = 0;
     let maxStep = 0;
-    let photoStep = 0;
-    let x0 = width, y0 = height, x1 = -1, y1 = -1;
-    const mark = new Uint8Array(width * height * 3);
-    for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-            const i = (y * width + x) * 3;
-            const gray = Math.round((left.data[i] + left.data[i + 1] + left.data[i + 2]) / 9);
-            mark[i] = mark[i + 1] = mark[i + 2] = gray;
-            const step = Math.max(Math.abs(left.data[i] - right.data[i]), Math.abs(left.data[i + 1] - right.data[i + 1]), Math.abs(left.data[i + 2] - right.data[i + 2]));
-            if (step === 0 || inside(masks, x, y)) continue;
-            if (inside(photos, x, y)) {
-                photoStep = Math.max(photoStep, step);
-                if (step > PHOTO_STEP) mark[i] = mark[i + 2] = 255;
-                continue;
-            }
+    let x0 = chrome.width, y0 = chrome.height, x1 = -1, y1 = -1;
+    const mark = new Uint8Array(chrome.width * chrome.height * 3);
+    for (let y = 0; y < chrome.height; y++) {
+        for (let x = 0; x < chrome.width; x++) {
+            const i = (y * chrome.width + x) * 3;
+            mark[i] = mark[i + 1] = mark[i + 2] = Math.round((chrome.a.data[i] + chrome.a.data[i + 1] + chrome.a.data[i + 2]) / 9);
+            const d = step(chrome.a.data, chrome.b.data, i);
+            if (d === 0 || inside(masks, x, y)) continue;
             count++;
-            maxStep = Math.max(maxStep, step);
+            maxStep = Math.max(maxStep, d);
             mark[i] = 255;
             mark[i + 1] = mark[i + 2] = 0;
             x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
         }
     }
-    if (count > 0 || photoStep > PHOTO_STEP) await sharp(Buffer.from(mark), { raw: { width, height, channels: 3 } }).png().toFile(path.join(OUT, `${name}-diff.png`));
+    if (count > 0) await sharp(Buffer.from(mark), { raw: { width: chrome.width, height: chrome.height, channels: 3 } }).png().toFile(path.join(OUT, `${name}-chrome-diff.png`));
+
+    let photoStep = 0;
+    for (let y = 0; y < photo.height; y++) {
+        for (let x = 0; x < photo.width; x++) {
+            if (!inside(photos, x, y) || inside(masks, x, y)) continue;
+            photoStep = Math.max(photoStep, step(photo.a.data, photo.b.data, (y * photo.width + x) * 3));
+        }
+    }
     const css = (v: number) => Math.round(v / scale);
     return { count, maxStep, photoStep, box: count ? `x ${css(x0)} to ${css(x1)}, y ${css(y0)} to ${css(y1)}` : '' };
 }
@@ -282,7 +340,11 @@ const revealChrome = async (page: Page) => {
 const scrollToWhole = (target: Locator) =>
     target.evaluate((element) => window.scrollTo(0, Math.max(0, Math.round(element.getBoundingClientRect().top + window.scrollY) - 80)));
 /** Focuses without the browser's own scroll, which picks its offset mid layout and can land a fraction apart. */
-const focusInPlace = (target: Locator) => target.evaluate((element) => (element as HTMLElement).focus({ preventScroll: true }));
+const focusInPlace = async (target: Locator) => {
+    await target.evaluate((element) => (element as HTMLElement).focus({ preventScroll: true }));
+    // The ring draws only on :focus-visible: a shot without it would compare nothing.
+    expect(await target.evaluate((element) => element.matches(':focus-visible')), 'the focused element shows its ring').toBe(true);
+};
 const toSequence = (page: Page) => scrollToWhole(page.getByRole('heading', { name: 'Sequence' }));
 
 const VISITOR: Pair[] = [
@@ -322,7 +384,7 @@ const VISITOR: Pair[] = [
     },
     { name: 'viewer', url: `${series}/photo/${HOME_OPENING}` },
     { name: 'about', url: '/about' },
-    { name: '404', url: '/no-such-page' },
+    { name: '404', url: '/no-such-page', measure: ['nav [class*="monogram"]', 'nav [class*="_end"]', '[data-theme-control], nav button'] },
 ];
 const LEGACY: Pair[] = [
     { name: 'gallery', url: '/gallery', photos: true },
@@ -421,7 +483,7 @@ test.afterAll(async () => {
     if (temp) fs.rmSync(temp, { recursive: true, force: true });
     fs.writeFileSync(
         path.join(OUT, 'black-parity.md'),
-        `# Black against the base, pixel for pixel\n\nBase: \`${baseCommit()}\`. Chrome: pixels differing in any channel outside the theme controls' boxes and the photographs' boxes, which must be 0. Photo: the largest channel step inside the photographs' boxes, at most ${PHOTO_STEP}. The curator's header gains the control, so its head shots take it out of the layout first.\n\n| Page | Viewport | Scale | Chrome pixels | Chrome max step | Photo max step | Where (chrome) |\n|---|---|---|---|---|---|---|\n${fs.existsSync(ROWS) ? fs.readFileSync(ROWS, 'utf8') : ''}`,
+        `# Black against the base, pixel for pixel\n\nBase: \`${baseCommit()}\`. Chrome: pixels differing in any channel outside the theme controls' boxes and the photographs' boxes, which must be 0. Photo: the largest channel step inside the photographs' boxes, at most ${PHOTO_STEP}. The curator's header gains the control, so its head shots take it out of the layout first.\n\n| Page | Viewport | Scale | Chrome pixels | Chrome max step | Photo max step | Where (chrome) |\n|---|---|---|---|---|---|---|\n${fs.existsSync(ROWS) ? fs.readFileSync(ROWS, 'utf8') : ''}${fs.existsSync(RECTS) ? `\n## Boxes, unrounded (x y width height, CSS px)\n\n| Page | Viewport | Shot | Selector | Box |\n|---|---|---|---|---|\n${fs.readFileSync(RECTS, 'utf8')}` : ''}`,
     );
 });
 
@@ -462,6 +524,21 @@ test.describe('the visitor site and the legacy Gallery', () => {
         const result = await diff(await shoot(visitor.base, 'dark', pair, viewport, 1, 'base'), await shoot(visitor.head, 'black', pair, viewport, 1, 'head'), 1, 'home-chrome-will-change');
         row('home-chrome, the scrim on its own layer (diagnosis)', 'desktop', 1440, 1, result);
         test.info().annotations.push({ type: 'diagnosis', description: `${result.count} pixels differ, max step ${result.maxStep}` });
+    });
+
+    // The chrome pass can see what it claims to (the code review's H4): a 1/255 change to Home's scrim, drawn over the
+    // photograph, must fail it. Recorded, and asserted.
+    test("self-test: a 1/255 change to Home's scrim fails the chrome pass", async () => {
+        const pair: Pair = {
+            name: 'self-test-scrim',
+            url: '/',
+            act: revealChrome,
+            headStyle: '[class*="vignette"]{background:linear-gradient(90deg,rgb(9 11 10/.9) 0%,rgb(9 11 10/.46) 38%,rgb(9 11 10/.08) 70%)!important}',
+        };
+        const viewport = VIEWPORTS.desktop;
+        const result = await diff(await shoot(visitor.base, 'dark', pair, viewport, 1, 'base'), await shoot(visitor.head, 'black', pair, viewport, 1, 'head'), 1, 'self-test-scrim');
+        row("self-test: Home's scrim 1/255 off in the head (must differ)", 'desktop', 1440, 1, result);
+        expect(result.count, 'the chrome pass sees a 1/255 change under the chrome, over the photograph').toBeGreaterThan(0);
     });
 });
 
@@ -537,5 +614,5 @@ test.describe('the error page', () => {
         await Promise.all(servers.map((server) => server.stop()));
     });
 
-    parity('visitor', [{ name: 'error', url: '/work' }], () => failing, { legacy: true });
+    parity('visitor', [{ name: 'error', url: '/work', measure: ['nav [class*="monogram"]', 'nav [class*="_end"]', '[data-theme-control], nav button'] }], () => failing, { legacy: true });
 });
