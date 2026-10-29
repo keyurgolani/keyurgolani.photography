@@ -511,6 +511,11 @@ const inboxIn = async (page: Page) => {
 };
 const inboxRow = (page: Page) => page.locator('main ul a[data-row]').first();
 const inboxRefresh = (page: Page) => page.getByRole('button', { name: 'Refresh inbox' });
+/** The cover's image fails, as a broken file would, and the cover keeps its box with the missing-image edge. */
+const failCover = async (page: Page) => {
+    await page.locator('main figure a img').first().dispatchEvent('error');
+    await expect(page.locator('main figure [data-photo="unavailable"]')).toHaveCount(1);
+};
 
 const VISITOR: Pair[] = [
     { name: 'home-intro', url: '/', intro: true, glass: true },
@@ -529,14 +534,7 @@ const VISITOR: Pair[] = [
             await expect(page.locator('[data-photo="unavailable"]')).toHaveCount(1);
         },
     },
-    {
-        name: 'cover-fallback',
-        url: series,
-        act: async (page) => {
-            await page.locator('main figure a img').first().dispatchEvent('error');
-            await expect(page.locator('main figure [data-photo="unavailable"]')).toHaveCount(1);
-        },
-    },
+    { name: 'cover-fallback', url: series, act: (page) => failCover(page) },
     // A focused Work entry: its ring's offset comes from [data-ring-room], 3 px in Black as today.
     {
         name: 'work-focus',
@@ -569,6 +567,25 @@ const VISITOR: Pair[] = [
         name: 'cover-focus',
         url: series,
         act: async (page) => {
+            await scrollToWhole(page.locator('main figure a').first());
+            await page.keyboard.press('Tab');
+            await focusInPlace(page.locator('main figure a').first());
+        },
+    },
+    // A failed cover under hover and focus: its mark is today's 1 px ring, with no mat (#124's review, D1).
+    {
+        name: 'cover-fallback-hover',
+        url: series,
+        act: async (page) => {
+            await failCover(page);
+            await page.locator('main figure a').first().hover();
+        },
+    },
+    {
+        name: 'cover-fallback-focus',
+        url: series,
+        act: async (page) => {
+            await failCover(page);
             await scrollToWhole(page.locator('main figure a').first());
             await page.keyboard.press('Tab');
             await focusInPlace(page.locator('main figure a').first());
@@ -846,8 +863,12 @@ test.afterAll(async () => {
     secrets?.cleanup();
     // Nothing is deleted on a machine with a Trash: the run's fixtures go there. CI's runner is thrown away whole.
     const trash = path.join(os.homedir(), '.Trash');
-    if (temp && fs.existsSync(trash)) fs.renameSync(temp, path.join(trash, `${path.basename(temp)}-${Date.now()}`));
-    else if (temp && process.env.CI) fs.rmSync(temp, { recursive: true, force: true });
+    try {
+        if (temp && fs.existsSync(trash)) fs.renameSync(temp, path.join(trash, `${path.basename(temp)}-${Date.now()}`));
+        else if (temp && process.env.CI) fs.rmSync(temp, { recursive: true, force: true });
+    } catch {
+        // On another volume than the Trash (EXDEV): it stays where it is.
+    }
     const read = (file: string) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '');
     fs.writeFileSync(
         path.join(OUT, 'black-parity.md'),
