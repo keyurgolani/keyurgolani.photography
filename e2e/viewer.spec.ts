@@ -496,6 +496,9 @@ const VIEWER_THEMES = {
     bright: { paints: 'bright', ground: 'rgb(255, 255, 255)', ink: 'rgb(11, 11, 11)', bands: false },
 } as const;
 
+/** The rung Black's Viewer asks for, which every theme's must match: the box only shrinks, by the room (spec §8). */
+let blackRung: string | undefined;
+
 for (const [choice, want] of Object.entries(VIEWER_THEMES)) {
     test(`the Viewer in ${choice}: its own ground under the body too, and ${want.bands ? "today's bands and a bare print with its hairline" : 'a matted print with room for its mat, bare when zoomed'}`, async ({ page }) => {
         await page.addInitScript((value) => localStorage.setItem('theme', value), choice);
@@ -529,6 +532,7 @@ for (const [choice, want] of Object.entries(VIEWER_THEMES)) {
             probe.remove();
             const [f, v] = [frame.getBoundingClientRect(), viewport.getBoundingClientRect()];
             return {
+                rung: /\/w(\d+)\./.exec(image.currentSrc)?.[1],
                 shadow: getComputedStyle(frame).boxShadow,
                 surround,
                 outline: getComputedStyle(image).outlineStyle,
@@ -537,6 +541,11 @@ for (const [choice, want] of Object.entries(VIEWER_THEMES)) {
                 clear: Math.min(f.left - v.left, v.right - f.right, f.top - v.top, v.bottom - f.bottom),
             };
         });
+        // The first-viewport check (spec §8): the box gives up at most 50 px for its room, so the same rung serves it.
+        expect(2 * look.room, 'the box shrinks by at most 50 px').toBeLessThanOrEqual(50);
+        expect(look.rung, 'a rung was chosen').toBeDefined();
+        if (choice === 'black') blackRung = look.rung;
+        else if (blackRung !== undefined) expect(look.rung, "the same rung as Black's").toBe(blackRung);
         if (want.bands) {
             expect(look.shadow, "Black's print has no surround").toBe('none');
             expect(look.outline, "today's hairline").toBe('solid');
