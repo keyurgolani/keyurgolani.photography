@@ -9,6 +9,7 @@ import { makeCuratorSecrets, type TestCuratorSecrets } from '../../test/helpers/
 import { HOME_OPENING, HOME_SERIES } from '../support/catalog-home';
 import { createInboxFixture, openInboxItems, type InboxFixture } from '../support/curation-inbox';
 import { publishHomeFixture } from '../support/homeFixture';
+import { routePhotoFixtures } from '../support/test';
 
 // Black is today's site, exactly (the owner's ruling, 2026-10-28). This renders the same pages from two builds, the
 // base (PARITY_BASE_DIR: next before the themes) with today's toggle's stored `dark` and the head with `black` stored,
@@ -16,7 +17,9 @@ import { publishHomeFixture } from '../support/homeFixture';
 // theme control's box (the control replaced the toggle, both builds' boxes ±2 px). Home with its chrome may differ by a
 // raster step, at most 1 in any channel and on average at most 0.5 per channel in every 120 px band: the scrim blends
 // in a different raster path once the chrome shows, with the same values (the round 2 design review). A second table
-// pins the ruling on owner question 4: the head with today's stored `dark` paints Black too.
+// pins the ruling on owner question 4: the head with today's stored `dark` paints Black too. The curator's header gains
+// the control where the base had none, so the head's curator shots take it out of the layout and get the raster bound.
+// Home's intro can't be repeated by the base itself, so it gets the base's own spread (Pair.noisy).
 // At 1440x900 and 390x844, each at 1x and 2x. The visitor pages, the 404 and the error page; the legacy Gallery and its
 // lightbox; the curator signed out and in, and its 503.
 
@@ -25,7 +28,10 @@ const HEAD = process.cwd();
 const OUT = path.join(HEAD, 'test-results', 'parity');
 const VIEWPORTS = { desktop: { width: 1440, height: 900 }, phone: { width: 390, height: 844 } } as const;
 const SCALES = [1, 2] as const;
-const report: string[] = [];
+// Rows go to a file as they're measured: a failed test restarts the worker, which would drop rows held in memory.
+// build.ts, the global setup, starts it empty.
+const ROWS = path.join(OUT, 'black-parity.rows');
+const record = (row: string) => fs.appendFileSync(ROWS, `${row}\n`);
 
 // One worker, in order, and soft checks, so one page's difference never skips the others.
 test.skip(!BASE, 'Set PARITY_BASE_DIR to a built checkout of the base; CI\'s Themes job does.');
@@ -97,7 +103,8 @@ async function serve(tree: string, port: number, env: Record<string, string>, re
 type Box = { x: number; y: number; w: number; h: number };
 interface Shot {
     file: string;
-    control: Box | null;
+    /** Every theme control or toggle on the page, the curator's preview frame's included, in page pixels. */
+    controls: Box[];
 }
 interface Pair {
     /** The page, as `name` in the table. */
@@ -111,6 +118,17 @@ interface Pair {
     raster?: boolean;
     /** A signed-in curator page. */
     session?: boolean;
+    /** The legacy Gallery, on the e2e suite's photo fixtures. */
+    photos?: boolean;
+    /** A page the head adds the control to, where the base had no toggle (the curator's header): the head's shot
+     * takes the control out of the layout, as no JavaScript does, so the rest must match. */
+    addsControl?: boolean;
+    /** A page that never hydrates (the 503). */
+    bare?: boolean;
+    /** A page the base can't repeat pixel for pixel (Home's intro: its blurred ripples rasterize differently from one
+     * load to the next at 1x). The base is shot twice, and the head may differ from the closer shot by as much as the
+     * two differ from each other, or the raster bound, whichever is larger. */
+    noisy?: boolean;
 }
 
 let browser: Browser;
@@ -126,12 +144,20 @@ async function shoot(origin: string, stored: string, pair: Pair, viewport: { wid
         }
     }, stored);
     const page = await context.newPage();
-    if (pair.intro) await page.clock.install({ time: new Date('2026-10-28T12:00:00Z') });
+    if (pair.photos) await routePhotoFixtures(page);
+    if (pair.intro) {
+        // Paused until the portrait has loaded, then 900 ms on: the same frame however long the load took.
+        const start = new Date('2026-10-28T12:00:00Z').getTime();
+        await page.clock.install({ time: start });
+        await page.clock.pauseAt(start + 1);
+    }
     await page.goto(`${origin}${pair.url}`, { waitUntil: pair.intro ? 'domcontentloaded' : 'load' });
     if (pair.intro) {
+        await page.waitForFunction(() => [...document.images].every((image) => image.complete), undefined, { timeout: 20_000 }).catch(() => undefined);
+        await page.evaluate(() => document.fonts.ready);
         await page.clock.runFor(900);
     } else {
-        await page.waitForSelector('html[data-hydrated]', { timeout: 30_000 }).catch(() => undefined);
+        if (!pair.bare) await page.waitForSelector('html[data-hydrated]', { timeout: 30_000 }).catch(() => undefined);
         await page.evaluate(() => document.fonts.ready);
         if (pair.url === '/') {
             await page.waitForSelector('[data-home-badge][data-landed]:not([data-lingering])', { timeout: 20_000 }).catch(() => undefined);
@@ -142,19 +168,36 @@ async function shoot(origin: string, stored: string, pair: Pair, viewport: { wid
                 image.onload = image.onerror = resolve;
                 setTimeout(resolve, 4000);
             })));
+            // Loaded isn't painted: a photo still decoding can draw a row short.
+            await Promise.all([...document.images].map((image) => image.decode().catch(() => undefined)));
         });
         await page.waitForTimeout(600);
     }
-    const control = await page.evaluate(() => {
-        const button = [...document.querySelectorAll('nav button, header button')].find((el) => /^(Switch to|Theme)/.test((el.textContent ?? '').trim()));
-        const box = button?.getBoundingClientRect();
-        return box ? { x: Math.floor(box.x), y: Math.floor(box.y), w: Math.ceil(box.width), h: Math.ceil(box.height) } : null;
+    if (pair.addsControl && tag !== 'base') await page.addStyleTag({ content: '[data-theme-control]{display:none!important}' });
+    // The control in the page and in any same-origin frame: today's toggle in the base, the theme control in the head.
+    const controls = await page.evaluate(() => {
+        const boxes: { x: number; y: number; w: number; h: number }[] = [];
+        const visit = (doc: Document, dx: number, dy: number) => {
+            for (const el of doc.querySelectorAll('[data-theme-control], nav button, header button')) {
+                if (!el.matches('[data-theme-control]') && !/^Switch to/.test((el.textContent ?? '').trim())) continue;
+                const box = el.getBoundingClientRect();
+                if (box.width === 0) continue;
+                boxes.push({ x: Math.floor(box.x + dx), y: Math.floor(box.y + dy), w: Math.ceil(box.width), h: Math.ceil(box.height) });
+            }
+            for (const frame of doc.querySelectorAll('iframe')) {
+                const inner = frame.contentDocument;
+                const at = frame.getBoundingClientRect();
+                if (inner) visit(inner, dx + at.x + frame.clientLeft, dy + at.y + frame.clientTop);
+            }
+        };
+        visit(document, window.scrollX, window.scrollY);
+        return boxes;
     });
     const file = path.join(OUT, `${pair.name}-${viewport.width}-${scale}x-${tag}.png`);
     // The intro's CSS transitions (the portrait's rim light) run on the real clock, so they're settled for its frame.
     await page.screenshot({ path: file, fullPage: pair.session === true && pair.url.includes('publish'), animations: pair.intro ? 'disabled' : 'allow' });
     await context.close();
-    return { file, control };
+    return { file, controls };
 }
 
 interface Diff {
@@ -171,7 +214,7 @@ async function diff(a: Shot, b: Shot, scale: number, name: string): Promise<Diff
         return { count: Number.POSITIVE_INFINITY, maxStep: 255, worstBandMean: 255, box: `sizes differ: ${left.info.width}x${left.info.height} against ${right.info.width}x${right.info.height}` };
     }
     const { width, height } = left.info;
-    const masks = [a.control, b.control].filter((box): box is Box => box !== null).map((box) => ({ x0: (box.x - 2) * scale, y0: (box.y - 2) * scale, x1: (box.x + box.w + 2) * scale, y1: (box.y + box.h + 2) * scale }));
+    const masks = [...a.controls, ...b.controls].map((box) => ({ x0: (box.x - 2) * scale, y0: (box.y - 2) * scale, x1: (box.x + box.w + 2) * scale, y1: (box.y + box.h + 2) * scale }));
     const band = 120 * scale;
     const bands = new Map<string, { sum: [number, number, number]; n: number }>();
     let count = 0;
@@ -219,7 +262,7 @@ const toSequence = async (page: Page) => {
 };
 
 const VISITOR: Pair[] = [
-    { name: 'home-intro', url: '/', intro: true },
+    { name: 'home-intro', url: '/', intro: true, noisy: true },
     { name: 'home-rest', url: '/' },
     { name: 'home-chrome', url: '/', act: revealChrome, raster: true },
     { name: 'work', url: '/work' },
@@ -230,7 +273,7 @@ const VISITOR: Pair[] = [
         url: series,
         act: async (page) => {
             await toSequence(page);
-            await page.locator('main ul li a').first().hover();
+            await page.locator('section[aria-labelledby="series-sequence"] ol li a').first().hover();
         },
     },
     {
@@ -239,7 +282,7 @@ const VISITOR: Pair[] = [
         act: async (page) => {
             await toSequence(page);
             await page.keyboard.press('Tab');
-            await page.locator('main ul li a').first().focus();
+            await page.locator('section[aria-labelledby="series-sequence"] ol li a').first().focus();
         },
     },
     { name: 'cover-hover', url: series, act: (page) => page.locator('main figure a').first().hover() },
@@ -256,12 +299,14 @@ const VISITOR: Pair[] = [
     { name: '404', url: '/no-such-page' },
 ];
 const LEGACY: Pair[] = [
-    { name: 'gallery', url: '/gallery' },
+    { name: 'gallery', url: '/gallery', photos: true },
     {
         name: 'lightbox',
         url: '/gallery',
+        photos: true,
         act: async (page) => {
-            await page.locator('main [data-tooltip], main button, main a').first().focus();
+            // Enter, as a keyboard visitor opens it.
+            await page.getByRole('button', { name: 'Photograph 1 of 12', exact: true }).focus();
             await page.keyboard.press('Enter');
             await expect(page.locator('.yarl__portal_open')).toHaveCSS('opacity', '1');
             await expect.poll(() => page.locator('.yarl__portal').evaluate((root) => root.getAnimations({ subtree: true }).filter((a) => a.playState === 'running').length)).toBe(0);
@@ -269,10 +314,35 @@ const LEGACY: Pair[] = [
     },
 ];
 const CURATOR: Pair[] = [
-    { name: 'signin', url: '/curation/login' },
-    { name: 'inbox', url: '/curation/inbox', session: true },
-    { name: 'publish', url: '/curation/publish', session: true },
+    { name: 'signin', url: '/curation/login', addsControl: true },
+    { name: 'inbox', url: '/curation/inbox', session: true, addsControl: true },
+    { name: 'publish', url: '/curation/publish', session: true, addsControl: true },
 ];
+
+/** Shoots `pair` from both, at every size and scale, and pins the diff; and, with `legacy`, the head on a stored `dark`. */
+const row = (label: string, size: string, width: number, scale: number, d: Diff) =>
+    record(`| ${label} | ${size} ${width} | ${scale}x | ${d.count} | ${d.maxStep} | ${d.worstBandMean.toFixed(3)} | ${d.box} |`);
+
+/** What a pair may differ by: nothing; the raster bound; or, on a page the base can't repeat, the base's own spread. */
+function bound(pair: Pair, noise: Diff | null): { maxStep: number; bandMean: number } | null {
+    if (noise) return { maxStep: Math.max(1, noise.maxStep), bandMean: Math.max(0.5, noise.worstBandMean) };
+    return pair.raster || pair.addsControl ? { maxStep: 1, bandMean: 0.5 } : null;
+}
+
+function expectWithin(name: string, d: Diff, limit: ReturnType<typeof bound>) {
+    if (!limit) {
+        expect.soft(d.count, `${name}: pixels differing outside the control (${d.box})`).toBe(0);
+        return;
+    }
+    expect.soft(d.maxStep, `${name}: no channel steps more than ${limit.maxStep}`).toBeLessThanOrEqual(limit.maxStep);
+    expect.soft(d.worstBandMean, `${name}: mean |Δ| per channel per 120 px band`).toBeLessThanOrEqual(limit.bandMean);
+}
+
+/** The closer of the head's diffs against the base's shots: with two base shots, the base's own spread can't count against the head. */
+async function closest(bases: Shot[], head: Shot, scale: number, name: string): Promise<Diff> {
+    const diffs = await Promise.all(bases.map((shot, index) => diff(shot, head, scale, index === 0 ? name : `${name}-against-the-second-base`)));
+    return diffs.reduce((best, d) => (d.maxStep < best.maxStep || (d.maxStep === best.maxStep && d.count < best.count) ? d : best));
+}
 
 /** Shoots `pair` from both, at every size and scale, and pins the diff; and, with `legacy`, the head on a stored `dark`. */
 function parity(group: string, pairs: Pair[], origins: () => { base: string; head: string }, options: { legacy?: boolean; session?: () => { base: string; head: string } } = {}) {
@@ -282,28 +352,33 @@ function parity(group: string, pairs: Pair[], origins: () => { base: string; hea
             const cookies = pair.session ? options.session!() : undefined;
             for (const [size, viewport] of Object.entries(VIEWPORTS)) {
                 for (const scale of SCALES) {
-                    const before = await shoot(base, 'dark', pair, viewport, scale, 'base', cookies?.base);
-                    const after = await shoot(head, 'black', pair, viewport, scale, 'head', cookies?.head);
                     const name = `${pair.name}-${viewport.width}-${scale}x`;
-                    const result = await diff(before, after, scale, name);
-                    report.push(`| ${pair.name} | ${size} ${viewport.width} | ${scale}x | ${result.count} | ${result.maxStep} | ${result.worstBandMean.toFixed(3)} | ${result.box} |`);
-                    if (pair.raster) {
-                        expect.soft(result.maxStep, `${name}: no channel steps more than 1`).toBeLessThanOrEqual(1);
-                        expect.soft(result.worstBandMean, `${name}: mean |Δ| per channel per 120 px band`).toBeLessThanOrEqual(0.5);
-                    } else {
-                        expect.soft(result.count, `${name}: pixels differing outside the control (${result.box})`).toBe(0);
+                    const bases = [await shoot(base, 'dark', pair, viewport, scale, 'base', cookies?.base)];
+                    let noise: Diff | null = null;
+                    if (pair.noisy) {
+                        bases.push(await shoot(base, 'dark', pair, viewport, scale, 'base-again', cookies?.base));
+                        noise = await diff(bases[0], bases[1], scale, `${name}-base-against-itself`);
+                        row(`${pair.name}, the base against itself`, size, viewport.width, scale, noise);
                     }
+                    const limit = bound(pair, noise);
+                    const result = await closest(bases, await shoot(head, 'black', pair, viewport, scale, 'head', cookies?.head), scale, name);
+                    row(pair.name, size, viewport.width, scale, result);
+                    expectWithin(name, result, limit);
                     if (options.legacy && scale === 1) {
-                        const legacy = await shoot(head, 'dark', pair, viewport, scale, 'head-legacy-dark', cookies?.head);
-                        const legacyResult = await diff(before, legacy, scale, `${name}-legacy-dark`);
-                        report.push(`| ${pair.name}, head on stored \`dark\` | ${size} ${viewport.width} | 1x | ${legacyResult.count} | ${legacyResult.maxStep} | ${legacyResult.worstBandMean.toFixed(3)} | ${legacyResult.box} |`);
-                        if (pair.raster) expect.soft(legacyResult.maxStep, `${name}: the head on a stored dark`).toBeLessThanOrEqual(1);
-                        else expect.soft(legacyResult.count, `${name}: the head on a stored dark`).toBe(0);
+                        const legacy = await closest(bases, await shoot(head, 'dark', pair, viewport, scale, 'head-legacy-dark', cookies?.head), scale, `${name}-legacy-dark`);
+                        row(`${pair.name}, head on stored \`dark\``, size, viewport.width, 1, legacy);
+                        expectWithin(`${name}, the head on a stored dark`, legacy, limit);
                     }
                 }
             }
         });
     }
+}
+
+/** The base checkout's commit, for the report. */
+function baseCommit(): string {
+    const head = spawnSync('git', ['rev-parse', '--short=8', 'HEAD'], { cwd: BASE, encoding: 'utf8' });
+    return head.status === 0 ? head.stdout.trim() : String(BASE);
 }
 
 // --- Fixtures and rounds -----------------------------------------------------------------------------------------
@@ -337,7 +412,7 @@ test.afterAll(async () => {
     if (temp) fs.rmSync(temp, { recursive: true, force: true });
     fs.writeFileSync(
         path.join(OUT, 'black-parity.md'),
-        `# Black against the base, pixel for pixel\n\nBase: \`${BASE}\`. Pixels differing in any channel, outside the theme control's box.\n\n| Page | Viewport | Scale | Pixels | Max step | Worst band mean | Where |\n|---|---|---|---|---|---|---|\n${report.join('\n')}\n`,
+        `# Black against the base, pixel for pixel\n\nBase: \`${baseCommit()}\`. Pixels differing in any channel, outside the theme controls' boxes (the base's toggle, the head's control). The curator's header gains the control, so its head shots take it out of the layout first.\n\n| Page | Viewport | Scale | Pixels | Max step | Worst band mean | Where |\n|---|---|---|---|---|---|---|\n${fs.existsSync(ROWS) ? fs.readFileSync(ROWS, 'utf8') : ''}`,
     );
 });
 
@@ -375,7 +450,7 @@ test.describe('the visitor site and the legacy Gallery', () => {
         };
         const viewport = VIEWPORTS.desktop;
         const result = await diff(await shoot(visitor.base, 'dark', pair, viewport, 1, 'base'), await shoot(visitor.head, 'black', pair, viewport, 1, 'head'), 1, 'home-chrome-will-change');
-        report.push(`| home-chrome, the scrim on its own layer (diagnosis) | desktop 1440 | 1x | ${result.count} | ${result.maxStep} | ${result.worstBandMean.toFixed(3)} | ${result.box} |`);
+        record(`| home-chrome, the scrim on its own layer (diagnosis) | desktop 1440 | 1x | ${result.count} | ${result.maxStep} | ${result.worstBandMean.toFixed(3)} | ${result.box} |`);
         test.info().annotations.push({ type: 'diagnosis', description: `${result.count} pixels differ, max step ${result.maxStep}` });
     });
 });
@@ -428,7 +503,7 @@ test.describe('the curator and its 503', () => {
     });
 
     parity('curator', CURATOR, () => curator, { legacy: true, session: () => cookies });
-    parity('curator', [{ name: '503', url: '/curation/login' }], () => broken, { legacy: true });
+    parity('curator', [{ name: '503', url: '/curation/login', bare: true }], () => broken, { legacy: true });
 });
 
 test.describe('the error page', () => {
