@@ -44,14 +44,14 @@ const readChoice = (): ThemeChoice => {
 
 const readTheme = (): Theme => {
     const value = document.documentElement.getAttribute('data-theme');
-    return value === 'light' || value === 'bright' || value === 'dark' ? value : 'black';
+    return value === 'light' || value === 'bright' || value === 'black' ? value : 'dark';
 };
 
 const prefersLight = () => typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: light)').matches;
 
 /** What a choice paints, on this device now. */
 const resolveTheme = (choice: ThemeChoice): Theme =>
-    choice === 'system' ? (prefersLight() ? 'light' : 'black') : choice === 'charcoal' ? 'dark' : choice;
+    choice === 'system' ? (prefersLight() ? 'light' : 'dark') : choice === 'charcoal' ? 'dark' : choice;
 
 /**
  * Applies a choice at once and stores it. With `animate`, motion allowed and view transitions available, the page's

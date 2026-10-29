@@ -8,11 +8,11 @@ import { THEME_CHOICES, type ThemeChoice } from './themeChoices';
 
 /** Each choice's name and the one line that says what it looks like. */
 const THEME_LABELS: Record<ThemeChoice, { name: string; note: string }> = {
-  system: { name: 'System', note: 'Light or Black, as your device is set' },
+  system: { name: 'System', note: 'Light or Dark, as your device is set' },
   light: { name: 'Light', note: 'Soft paper, matted prints' },
   bright: { name: 'Bright', note: 'White wall, framed prints' },
-  charcoal: { name: 'Dark', note: 'Charcoal room' },
-  black: { name: 'Black', note: 'Near black, the site as it was' },
+  charcoal: { name: 'Dark', note: 'The site as it is today' },
+  black: { name: 'Black', note: 'Pure black, nothing but the photograph' },
 };
 
 // The popover's styles, off every page's first-load CSS (the CSS budget): they load once the page is idle after
@@ -43,7 +43,7 @@ class StylesBoundary extends Component<{ children: ReactNode; onFailed: () => vo
  * The theme control: a 44 by 44 button in `SiteNav` (and the curator's header)
  * that opens a small popover holding a native radio group of the five choices.
  *
- * The button's name is "Theme: <choice>", with "(Light now)" or "(Black now)"
+ * The button's name is "Theme: <choice>", with "(Light now)" or "(Dark now)"
  * after System. The names are all rendered, and CSS on `html[data-theme-choice]`
  * and `html[data-theme]` hides the ones that don't apply, so the name is right
  * from first paint, before React runs. Without JavaScript the button is hidden
@@ -125,9 +125,9 @@ export default function ThemeMenu({ placement = 'nav' }: { placement?: 'nav' | '
           {' '}
           (Light now)
         </span>
-        <span className="sr-only" data-now="black">
+        <span className="sr-only" data-now="dark">
           {' '}
-          (Black now)
+          (Dark now)
         </span>
       </button>
       <div ref={popover} id={popoverId} popover="auto" className="theme-menu-popover" data-placement={placement}>

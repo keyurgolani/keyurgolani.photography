@@ -161,7 +161,7 @@
   min-height: 44px;
   margin-top: 0.75rem;
   padding: 0 1.125rem;
-  border: 1px solid var(--gah-action);
+  border: 1px solid var(--gah-action-rule, var(--gah-action));
   border-radius: var(--gah-radius);
   background: var(--gah-action);
   color: var(--gah-action-ink);
@@ -196,17 +196,24 @@
     background: color-mix(in srgb, var(--gah-action) 82%, var(--gah-ground));
   }
 
+  /* Black's drawn action fills on hover. */
+  :global(html[data-theme='black']) .button:enabled:not([aria-disabled='true']):hover {
+    border-color: var(--gah-action-hover);
+    background: var(--gah-action-hover);
+    color: var(--gah-action-hover-ink);
+  }
+
   .wordmark:hover {
     text-decoration: underline;
     text-underline-offset: 0.25em;
   }
 }
 
-/* The login's surfaces and notices per theme, as the Inbox's (curator.module.css). Black is the block at the top. */
-:global(html[data-theme='dark']) .page {
-  --login-header: #232826;
-  --login-rule: #3f4643;
-  --login-field: #181c1a;
+/* The login's surfaces and notices per theme, as the Inbox's (curator.module.css). Dark is the block at the top. */
+:global(html[data-theme='black']) .page {
+  --login-header: #000000;
+  --login-rule: #3a3a3a;
+  --login-field: #000000;
 }
 
 :global(html[data-theme='light']) .page {

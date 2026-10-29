@@ -23,9 +23,13 @@
 }
 
 /* Dark mode: softer grain to avoid noisy speckles */
-[data-theme="dark"] .grainTexture,
-[data-theme="black"] .grainTexture {
+[data-theme="dark"] .grainTexture {
   opacity: 0.06;
+}
+
+/* Black's intro is the screen's own black: no grain, only the ripples and the portrait. */
+[data-theme="black"] .grainTexture {
+  opacity: 0;
 }
 
 /* A white wall shows the least grain. */

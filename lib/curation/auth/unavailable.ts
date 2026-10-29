@@ -20,9 +20,9 @@ import { CURATOR_RESPONSE_HEADERS } from './policy';
 
 const STYLE = [
     // The four themes as custom properties, keyed on what the theme script resolves.
-    // Black (the default, and System on a dark device) is today's 503, exactly.
-    ':root,html[data-theme=black]{color-scheme:dark;--g:#080a09;--i:#f4f6f5;--s:rgba(244,246,245,0.76);--h:#171a18;--r:#343936;--m:rgba(255,255,255,0.38)}',
-    'html[data-theme=dark]{color-scheme:dark;--g:#1b1f1d;--i:#eef2f0;--s:#c9d0cc;--h:#232826;--r:#3f4643;--m:rgba(255,255,255,0.42)}',
+    // Dark (the default, and System on a dark device) is today's 503, exactly. Black is the screen's own black.
+    ':root,html[data-theme=dark]{color-scheme:dark;--g:#080a09;--i:#f4f6f5;--s:rgba(244,246,245,0.76);--h:#171a18;--r:#343936;--m:rgba(255,255,255,0.38)}',
+    'html[data-theme=black]{color-scheme:dark;--g:#000;--i:#f5f5f5;--s:rgba(255,255,255,0.76);--h:#000;--r:#3a3a3a;--m:rgba(255,255,255,0.4)}',
     'html[data-theme=light]{color-scheme:light;--g:#ebe5d9;--i:#29231d;--s:#4d443a;--h:#e2dbcd;--r:#c9bfae;--m:#8c7f6f}',
     'html[data-theme=bright]{color-scheme:light;--g:#fff;--i:#0b0b0b;--s:#333;--h:#fff;--r:#d4d4d4;--m:#767676}',
     '*{box-sizing:border-box}',
@@ -39,7 +39,7 @@ const STYLE = [
 
 /** The page itself. */
 export const UNAVAILABLE_HTML = `<!doctype html>
-<html lang="en" data-theme="black" data-theme-choice="system">
+<html lang="en" data-theme="dark" data-theme-choice="system">
 <head>
 <meta charset="utf-8">
 <script>${THEME_INIT_SCRIPT}</script>

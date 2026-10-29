@@ -13,13 +13,14 @@
   transition: none;
 }
 
-/* The Viewer in each theme (spec §3 and §5, round 3's R2-P1-1). Black sets nothing: it is today's Chromatic Chapters
+/* The Viewer in each theme (spec §3 and §5, round 3's R2-P1-1). Dark sets nothing: it is today's Chromatic Chapters
    (styles/surfaces/chromatic-chapters.css), its bands and translucent bars, and a bare print with today's hairline.
-   The others have no bands, a solid ground and bars, and a matted print: the lg surround, md on a phone (the md
+   Black is the photograph alone on the screen's black: no bands, no hairline, and the header and reading area on the
+   ground, divided by nothing. Light and Bright have no bands, a solid ground and bars, and a matted print: the lg surround, md on a phone (the md
    tokens are styles/themes.css's, the Work and series pages'). These tokens are the Viewer's alone, so they ride
    here and not on every route's first load. Each block outranks the surface's own [data-surface='viewer']. */
-:global(html[data-theme='dark']):has(.viewer) {
-  --gah-viewer-ground: #1b1f1d;
+:global(html[data-theme='black']):has(.viewer) {
+  --gah-viewer-ground: #000000;
 }
 
 :global(html[data-theme='light']):has(.viewer) {
@@ -30,7 +31,6 @@
   --gah-viewer-ground: #ffffff;
 }
 
-:global(html[data-theme='dark']) .viewer,
 :global(html[data-theme='light']) .viewer,
 :global(html[data-theme='bright']) .viewer {
   --cc-bands: none;
@@ -42,18 +42,19 @@
   --gah-viewer-fit: contain;
 }
 
-/* A charcoal room: the print matted and keylined, as on Work and the series, on a solid #232826 panel. */
-:global(html[data-theme='dark']) .viewer {
-  --cc-ground: #1b1f1d;
-  --cc-ink: #f3f2ec;
-  --cc-ink-soft: #d0d5d1;
-  --cc-caption-ink: #d0d5d1;
-  --cc-label: #aab4af;
-  --cc-chrome: #232826;
+/* OLED: the print, square, on black. Every bar is the ground, so nothing frames the photograph; the reading area's ink
+   is the neutral ramp. */
+:global(html[data-theme='black']) .viewer {
+  --cc-bands: none;
+  --cc-ground: #000000;
+  --cc-ink: #f5f5f5;
+  --cc-ink-soft: rgba(255, 255, 255, 0.8);
+  --cc-caption-ink: rgba(255, 255, 255, 0.8);
+  --cc-label: #bdbdbd;
+  --cc-chrome: #000000;
   --cc-rule: rgba(255, 255, 255, 0.14);
-  --cc-rule-strong: rgba(255, 255, 255, 0.42);
-  --gah-surround-lg: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 0 0 14px #2a2f2d, 0 24px 44px -18px rgba(0, 0, 0, 0.8);
-  --gah-room-lg: 14px;
+  --cc-rule-strong: rgba(255, 255, 255, 0.4);
+  --gah-viewer-image-outline: none;
 }
 
 /* Paper: a toned sheet, the header and reading area on a lighter one, the print in Light's mat with a bevel. */
