@@ -651,7 +651,10 @@ test.afterAll(async () => {
     await browser?.close();
     await inbox?.cleanup();
     secrets?.cleanup();
-    if (temp) fs.rmSync(temp, { recursive: true, force: true });
+    // Nothing is deleted on a machine with a Trash: the run's fixtures go there. CI's runner is thrown away whole.
+    const trash = path.join(os.homedir(), '.Trash');
+    if (temp && fs.existsSync(trash)) fs.renameSync(temp, path.join(trash, `${path.basename(temp)}-${Date.now()}`));
+    else if (temp && process.env.CI) fs.rmSync(temp, { recursive: true, force: true });
     const read = (file: string) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '');
     fs.writeFileSync(
         path.join(OUT, 'black-parity.md'),
