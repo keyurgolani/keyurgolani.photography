@@ -4,7 +4,7 @@ import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
 import { setPrefersReducedMotion } from '@/test/matchMedia';
-import { badgePlace, homeCopyTop, V110_LANE, type Box } from '../badgePlace';
+import { badgePlace, homeCopyTop, textEnlarged, V110_LANE, type Box } from '../badgePlace';
 import HeroReveal, { BADGE_LINGER_MS, type HeroRevealPhase } from '../HeroReveal';
 import { HOME_LOADING_TIMEOUT_MS } from '../home/homeChromeConfig';
 
@@ -589,5 +589,51 @@ describe('homeCopyTop', () => {
   it("leaves the stylesheet's default with no copy or no stage", () => {
     expect(homeCopyTop(stage, [])).toBeNull();
     expect(homeCopyTop({ ...stage, bottom: 0 }, [{ left: 0, top: 10, right: 10, bottom: 20 }])).toBeNull();
+  });
+});
+
+describe("Home's root and the text size", () => {
+  const home = () => (
+    <main data-testid="home">
+      <div data-chrome-region="story">
+        <h1>Coastline, early</h1>
+      </div>
+      <HeroReveal isLoading={false} onSettled={() => undefined} />
+    </main>
+  );
+
+  afterEach(() => {
+    document.documentElement.style.removeProperty('font-size');
+  });
+
+  it('says so on Home\'s root while the text is enlarged, and stops saying so when Home goes', () => {
+    document.documentElement.style.fontSize = '32px';
+    const view = render(home());
+    const root = view.getByTestId('home');
+    expect(root.hasAttribute('data-text-enlarged')).toBe(true);
+    view.unmount();
+    expect(root.hasAttribute('data-text-enlarged')).toBe(false);
+  });
+
+  it('says nothing at default text, so Black keeps its wash', () => {
+    document.documentElement.style.fontSize = '16px';
+    const view = render(home());
+    expect(view.getByTestId('home').hasAttribute('data-text-enlarged')).toBe(false);
+  });
+});
+
+describe('textEnlarged', () => {
+  it('is default text at 16px a rem, and at less', () => {
+    expect(textEnlarged(16)).toBe(false);
+    expect(textEnlarged(14)).toBe(false);
+  });
+
+  it('is enlarged text above it, as at 200%', () => {
+    expect(textEnlarged(16.5)).toBe(true);
+    expect(textEnlarged(32)).toBe(true);
+  });
+
+  it("isn't enlarged when the size can't be read", () => {
+    expect(textEnlarged(Number.NaN)).toBe(false);
   });
 });

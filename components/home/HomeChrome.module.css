@@ -121,13 +121,23 @@
      above the copy's top (--home-copy-top, the copy block's top as a percentage of the stage, which HeroReveal
      measures with badgePlace.ts's homeCopyTop()), then ends at 0 16% higher, so it follows a long title or large text
      up the photograph and leaves the rest clear. Dark takes it too: today's fixed wash is 0.28 at a title that large
-     text lifts to a third of the way down. contrast-home.mjs reads the title at the hold. Black keeps today's. */
+     text lifts to a third of the way down. contrast-home.mjs reads the title at the hold. Black keeps today's at
+     default text. */
   :global(html[data-theme='light']) .vignette,
   :global(html[data-theme='bright']) .vignette,
   :global(html[data-theme='dark']) .vignette {
     --home-wash-hold: 0.86;
     --home-hold-at: calc(100% - var(--home-copy-top, 66%) + 1.5rem);
     background: linear-gradient(0deg, rgb(var(--gah-scrim-rgb) / 0.92) 0%, rgb(var(--gah-scrim-rgb) / var(--home-wash-hold)) var(--home-hold-at), rgb(var(--gah-scrim-rgb) / 0) calc(var(--home-hold-at) + 16%));
+  }
+
+  /* Black, at enlarged text only (spec §10, a sanctioned departure): today's fixed wash is 0.28 where large text lifts
+     the title, 1.77:1. Once the visitor enlarges the text (HeroReveal sets data-text-enlarged on Home's root), the wash
+     holds at 0.86 up to the copy's top, as the other themes' does, then eases to today's 0.12 above it. At default text
+     none of this applies, so Black stays today's, rule for rule. */
+  :global(html[data-theme='black']) .root[data-text-enlarged] .vignette {
+    --home-hold-at: calc(100% - var(--home-copy-top, 66%) + 1.5rem);
+    background: linear-gradient(0deg, rgb(8 10 9 / 0.92) 0%, rgb(8 10 9 / 0.86) var(--home-hold-at), rgb(8 10 9 / 0.12) calc(var(--home-hold-at) + 16%), rgb(8 10 9 / 0.12) 100%);
   }
 }
 

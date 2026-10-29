@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { motion, useMotionValue, useTransform, animate, type AnimationPlaybackControls } from 'framer-motion';
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
-import { badgePlace, boxOf, homeCopyTop, type BadgePlace, type Box } from './badgePlace';
+import { badgePlace, boxOf, homeCopyTop, textEnlarged, type BadgePlace, type Box } from './badgePlace';
 import ProfilePicture from './ProfilePicture';
 import { HOME_LOADING_TIMEOUT_MS } from './home/homeChromeConfig';
 import { usePrefersReducedMotion } from './motion/usePrefersReducedMotion';
@@ -297,8 +297,9 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
     return () => observer.disconnect();
   }, [showPortrait]);
 
-  // The copy's top on Home's root, for Light's and Bright's phone wash (HomeChrome.module.css), with or without a
-  // portrait, measured like the badge's place and again whenever Home or the story changes size.
+  // The copy's top on Home's root, for the phone wash (HomeChrome.module.css), with or without a portrait, measured
+  // like the badge's place and again whenever Home or the story changes size. With the text enlarged Home's root says
+  // so too, and Black's wash then follows the copy as the other themes' does (spec §10); at default text it doesn't.
   useLayoutEffect(() => {
     const story = document.querySelector('[data-chrome-region="story"]');
     const root = story?.closest('main');
@@ -308,15 +309,16 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
       const top = stage && homeCopyTop(stage, [...story.querySelectorAll(':is(h1, h2, p, a)')].map(boxOf).filter((box): box is Box => box !== null));
       if (top === null || top === undefined) root.style.removeProperty('--home-copy-top');
       else root.style.setProperty('--home-copy-top', `${top}%`);
+      root.toggleAttribute('data-text-enlarged', textEnlarged(parseFloat(getComputedStyle(document.documentElement).fontSize)));
     };
     measure();
-    if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(root);
-    observer.observe(story);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(root);
+    observer?.observe(story);
     return () => {
-      observer.disconnect();
+      observer?.disconnect();
       root.style.removeProperty('--home-copy-top');
+      root.removeAttribute('data-text-enlarged');
     };
   }, []);
 

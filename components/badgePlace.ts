@@ -115,6 +115,17 @@ export function homeCopyTop(stage: Box, story: Box[]): number | null {
   return Math.round(Math.min(100, Math.max(0, (top / height) * 100)) * 100) / 100;
 }
 
+/** The browser's default text size: 1rem at 16px is default text, and more is text the visitor enlarged. */
+export const DEFAULT_REM_PX = 16;
+
+/**
+ * Whether the visitor enlarged the text, from 1rem in px. Black's phone wash follows the copy only then (spec §10), so
+ * at default text Black is today's exactly.
+ */
+export function textEnlarged(remPx: number): boolean {
+  return Number.isFinite(remPx) && remPx > DEFAULT_REM_PX;
+}
+
 export const boxOf = (element: Element | null): Box | null => {
   if (!element) return null;
   const { left, top, right, bottom } = element.getBoundingClientRect();
