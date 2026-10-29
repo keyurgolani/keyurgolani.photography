@@ -30,7 +30,8 @@ export default function SeriesCatalog({ work }: SeriesCatalogProps) {
                 <ul className={styles.list}>
                     {work.series.map((series, index) => (
                         <li key={series.id} className={styles.item}>
-                            <Link href={series.href} className={styles.entry}>
+                            {/* data-ring-room: the focus ring clears the cover's surround (--ring-room, the module). */}
+                            <Link href={series.href} className={styles.entry} data-ring-room="">
                                 {/* The first cover loads at once, the rest as they near the viewport. Keyed on
                                     the cover's file, so a refresh that brings a new cover clears a failure. */}
                                 <WorkCoverImage key={series.cover?.variants.w1200.webp.url ?? 'none'} cover={series.cover} eager={index === 0} />

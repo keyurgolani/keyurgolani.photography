@@ -62,6 +62,8 @@ function EntryList({ entries, total }: { entries: SeriesEntry[]; total: number }
                         prefetch={false}
                         aria-label={photoEntryName({ alt: altOf(entry.description), position: entry.position, total })}
                         className={styles.entry}
+                        // The focus ring clears the thumbnail's surround (--ring-room, SeriesPage.module.css).
+                        data-ring-room=""
                     >
                         <SeriesPhoto image={entry.image} alt="" sizes={ENTRY_SIZES} frameClassName={styles.thumbFrame} crop="contain" />
                         {/* Unpadded, so the visible number is part of the link's name (WCAG 2.5.3). */}
