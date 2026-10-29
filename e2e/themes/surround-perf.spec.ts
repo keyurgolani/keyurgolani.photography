@@ -23,15 +23,29 @@ import { expect, test } from '../support/test';
 // the CPU throttled 4x, where a blur's raster cost is highest. The throttle slows the main thread only, not the raster
 // workers, so the phone's raster cost grows with its DPR, not with the throttle.
 //
-// The gate tests itself on each device (#124's review, D2): the head in Black with a deliberately heavy shadow on every
-// slot must cost more than the surround bound against the base beside it, and every sweep must have raster time to
-// compare. A trace that carries no raster would otherwise give a ratio near 1 and pass.
+// The gate tests each half on each device (#124's review, D2 and D8), and every sweep must have raster time to compare,
+// since a trace with none would give a ratio near 1 and pass: the head in Black with a deliberately heavy shadow on
+// every slot must cost more than the surround bound in raster, and the head with a 40 ms task on every frame must drop
+// more than the bound's share of frames.
 //
-//   PARITY_BASE_DIR=<built base> PERF_PORTS=3375,3376 [PERF_ROUNDS=3] npx playwright test -c e2e/themes/perf.config.ts
+// PERF_ROUNDS is at least 3, and anything else fails the run (D7), so a run can't pass with no theme gated.
+// PERF_SELFTEST=1 runs the self-tests alone, and its table says so.
+//
+//   PARITY_BASE_DIR=<built base> PERF_PORTS=3375,3376 [PERF_ROUNDS=3] [PERF_SELFTEST=1] npx playwright test -c e2e/themes/perf.config.ts
 
 const PHOTOS = 5_000;
-/** PERF_ROUNDS=0 runs the self-test alone, on a head whose change can't move the sweep. */
-const ROUNDS = Number(process.env.PERF_ROUNDS ?? 3);
+const SELF_TEST_ONLY = (() => {
+    const value = process.env.PERF_SELFTEST;
+    if (value !== undefined && value !== '1') throw new Error(`PERF_SELFTEST is 1 or unset, not ${JSON.stringify(value)}`);
+    return value === '1';
+})();
+/** The rounds the themes are gated on: a whole number, at least 3, outside the self-test (D7). */
+const ROUNDS = (() => {
+    if (SELF_TEST_ONLY) return 0;
+    const value = process.env.PERF_ROUNDS ?? '3';
+    if (!/^\d+$/.test(value) || Number(value) < 3) throw new Error(`PERF_ROUNDS is a whole number of at least 3, not ${JSON.stringify(value)}`);
+    return Number(value);
+})();
 const THEMES = { black: 'black', light: 'light', charcoal: 'dark', bright: 'bright' } as const;
 type Choice = keyof typeof THEMES;
 const DEVICES = {
@@ -42,6 +56,8 @@ const DEVICES = {
 const BOUND = { black: 1.25, surround: 1.5 };
 /** The self-test's head: a mat and a wide blur on every slot, well past any theme's surround. */
 const HEAVY = '[data-photo] { box-shadow: 0 0 0 6px #888, 0 30px 60px -10px #000 !important; }';
+/** The dropped-frame self-test's head: 40 ms of main-thread work on every frame, past a 16.7 ms budget. */
+const LONG_TASK_MS = 40;
 const TRACE_CATEGORIES = ['cc', 'viz', 'gpu', 'disabled-by-default-devtools.timeline.frame'];
 const BASE = process.env.PARITY_BASE_DIR;
 const ports = (process.env.PERF_PORTS ?? '').split(',').map(Number).filter(Boolean);
@@ -173,7 +189,8 @@ async function expand(page: Page, url: string) {
         return (await Promise.all(waits)).filter((url): url is string => url !== null);
     });
     expect(pending, 'every print loads inside 60 s').toEqual([]);
-    expect(await page.locator('[data-photo="unavailable"]').count(), 'every slot is a print, none a missing-image box').toBe(0);
+    // Polled, so a failed print's re-render has committed before it counts.
+    await expect(page.locator('[data-photo="unavailable"]'), 'every slot is a print, none a missing-image box').toHaveCount(0);
     return renders;
 }
 
@@ -219,7 +236,7 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
     const notes: string[] = [];
     const ratios: Record<string, { raster: number[]; dropped: number[] }> = {};
     const selfRows: string[] = [];
-    const calibration: { device: string; ratio: number }[] = [];
+    const calibration: { device: string; half: 'raster' | 'dropped frames'; ratio: number }[] = [];
 
     for (const [device, spec] of Object.entries(DEVICES)) {
         const open = async (origin: string) => {
@@ -270,15 +287,35 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
                 rows.push(`| ${device} | ${round} | ${theme === 'charcoal' ? 'dark' : theme} | ${load} | ${b.raster} | ${h.raster} | ${(h.raster / b.raster).toFixed(2)} | ${b.dropped} / ${h.dropped} | ${b.rafP95} / ${h.rafP95} |`);
             }
         }
-        // The self-test: the heavy head, in Black, against the base, once in each order. Both must fail the bound.
+        // The self-tests, each in Black against the base, once in each order. Each must fail its half of the gate.
+        // Raster: a heavy shadow on every slot.
         await paint('black');
-        await headPage.page.addStyleTag({ content: HEAVY });
+        const heavy = await headPage.page.addStyleTag({ content: HEAVY });
         for (const round of [1, 2]) {
             const load = os.loadavg()[0].toFixed(1);
-            const { b, h } = await pairOf(round, `${device} self-test, round ${round}`);
-            calibration.push({ device, ratio: +(h.raster / b.raster).toFixed(2) });
-            selfRows.push(`| ${device} | ${round} | ${load} | ${b.raster} | ${h.raster} | ${(h.raster / b.raster).toFixed(2)} | ${b.dropped} / ${h.dropped} |`);
+            const { b, h } = await pairOf(round, `${device} raster self-test, round ${round}`);
+            calibration.push({ device, half: 'raster', ratio: +(h.raster / b.raster).toFixed(2) });
+            selfRows.push(`| ${device} | heavy shadow | ${round} | ${load} | ${b.raster} / ${h.raster} | ${(h.raster / b.raster).toFixed(2)} | ${b.dropped} / ${h.dropped} | ${ratio(h.dropped, b.dropped).toFixed(2)} |`);
         }
+        await heavy.evaluate((tag) => (tag as Element).remove());
+        // Dropped frames: a long task on every frame, wall-clock, so the throttle doesn't change it.
+        await headPage.page.evaluate((ms) => {
+            const burn = () => {
+                const until = performance.now() + ms;
+                while (performance.now() < until) {
+                    // Busy, on purpose.
+                }
+                if (!(window as { stopBurn?: boolean }).stopBurn) requestAnimationFrame(burn);
+            };
+            requestAnimationFrame(burn);
+        }, LONG_TASK_MS);
+        for (const round of [1, 2]) {
+            const load = os.loadavg()[0].toFixed(1);
+            const { b, h } = await pairOf(round, `${device} dropped-frame self-test, round ${round}`);
+            calibration.push({ device, half: 'dropped frames', ratio: +ratio(h.dropped, b.dropped).toFixed(2) });
+            selfRows.push(`| ${device} | ${LONG_TASK_MS} ms task per frame | ${round} | ${load} | ${b.raster} / ${h.raster} | ${(h.raster / b.raster).toFixed(2)} | ${b.dropped} / ${h.dropped} | ${ratio(h.dropped, b.dropped).toFixed(2)} |`);
+        }
+        await headPage.page.evaluate(() => void ((window as { stopBurn?: boolean }).stopBurn = true));
         await throttle(false);
         await basePage.page.context().close();
         await headPage.page.context().close();
@@ -286,6 +323,7 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
 
     const verdict = Object.entries(ratios).map(([key, value]) => ({ key, raster: +median(value.raster).toFixed(2), dropped: +median(value.dropped).toFixed(2) }));
     const table = [
+        ...(SELF_TEST_ONLY ? ['Self-test only: no theme is gated.', ''] : []),
         ...notes,
         '',
         '| Device | Round | Head theme | Load (1 min) | Base raster ms | Head raster ms | Raster ratio | Dropped frames, base / head | rAF p95 ms, base / head |',
@@ -298,16 +336,18 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
         '',
         `Bounds: Black ${BOUND.black}, a theme with a surround ${BOUND.surround}, on both medians.`,
         '',
-        `The self-test: the head in Black with \`${HEAVY}\`, which must cost more than ${BOUND.surround} in raster against the base.`,
+        `The self-tests, each in Black: the head with \`${HEAVY}\` must cost more than ${BOUND.surround} in raster, and the head with a ${LONG_TASK_MS} ms task on every frame more than ${BOUND.surround} in dropped frames, against the base.`,
         '',
-        '| Device | Round | Load (1 min) | Base raster ms | Head raster ms | Raster ratio | Dropped frames, base / head |',
-        '|---|---|---|---|---|---|---|',
+        '| Device | Head | Round | Load (1 min) | Raster ms, base / head | Raster ratio | Dropped frames, base / head | Dropped-frame ratio |',
+        '|---|---|---|---|---|---|---|---|',
         ...selfRows,
     ].join('\n');
     fs.mkdirSync(path.join(process.cwd(), 'test-results', 'perf'), { recursive: true });
     fs.writeFileSync(path.join(process.cwd(), 'test-results', 'perf', 'surround-perf.md'), `${table}\n`);
     console.log(table);
-    for (const c of calibration) expect.soft(c.ratio, `${c.device}: the self-test's heavy head fails the gate`).toBeGreaterThan(BOUND.surround);
+    for (const c of calibration) expect.soft(c.ratio, `${c.device}: the ${c.half} self-test fails its half of the gate`).toBeGreaterThan(BOUND.surround);
+    // Every device and theme was gated, unless this was the self-test alone (D7).
+    expect(verdict, 'every device and theme has a verdict').toHaveLength(SELF_TEST_ONLY ? 0 : Object.keys(DEVICES).length * Object.keys(THEMES).length);
     for (const v of verdict) {
         const bound = v.key.endsWith('black') ? BOUND.black : BOUND.surround;
         expect.soft(v.raster, `${v.key}: the head's raster time against the base's`).toBeLessThanOrEqual(bound);
