@@ -15,7 +15,9 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: 0,
-  timeout: 60 * 60_000,
+  timeout: 30 * 60_000,
+  // The whole run's ceiling, so a hang shows in half an hour, not two.
+  globalTimeout: 30 * 60_000,
   reporter: [['list']],
   outputDir: '../../test-results/perf',
   use: { trace: 'off' },

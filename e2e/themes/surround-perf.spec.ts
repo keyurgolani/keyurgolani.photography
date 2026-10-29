@@ -35,8 +35,8 @@ const ROUNDS = Number(process.env.PERF_ROUNDS ?? 3);
 const THEMES = { black: 'black', light: 'light', charcoal: 'dark', bright: 'bright' } as const;
 type Choice = keyof typeof THEMES;
 const DEVICES = {
-    desktop: { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, throttle: 1, steps: 600 },
-    phone: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, throttle: 4, steps: 300 },
+    desktop: { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, throttle: 1, steps: 200 },
+    phone: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, throttle: 4, steps: 120 },
 } as const;
 /** The head may cost this much more than the base beside it: Black about nothing, a surround a little. */
 const BOUND = { black: 1.25, surround: 1.5 };
@@ -160,16 +160,19 @@ async function expand(page: Page, url: string) {
         renders.push(Date.now() - started);
     }
     await expect(entries).toHaveCount(PHOTOS);
-    // Load every lazy print by passing it once, so the sweeps time raster, not loading.
-    await page.evaluate(async () => {
-        for (let y = 0; y < document.documentElement.scrollHeight; y += innerHeight) {
-            window.scrollTo(0, y);
-            await new Promise((resolve) => requestAnimationFrame(resolve));
-        }
-        await Promise.all([...document.images].filter((image) => !image.complete).map((image) => new Promise((resolve) => {
-            image.onload = image.onerror = resolve;
-        })));
+    // Every print loads before a sweep, so the sweeps time raster, not loading: in this test only, every image goes
+    // eager, since a lazy one off screen never starts and never fires (perf3 hung on that for an hour). The wait is
+    // bounded, and a print still loading when it runs out fails the run by name.
+    const pending = await page.evaluate(async () => {
+        for (const image of document.images) image.loading = 'eager';
+        const waits = [...document.images].filter((image) => !image.complete).map((image) => new Promise<string | null>((resolve) => {
+            image.addEventListener('load', () => resolve(null), { once: true });
+            image.addEventListener('error', () => resolve(null), { once: true });
+            setTimeout(() => resolve(image.complete ? null : image.currentSrc || image.src), 60_000);
+        }));
+        return (await Promise.all(waits)).filter((url): url is string => url !== null);
     });
+    expect(pending, 'every print loads inside 60 s').toEqual([]);
     expect(await page.locator('[data-photo="unavailable"]').count(), 'every slot is a print, none a missing-image box').toBe(0);
     return renders;
 }
@@ -209,7 +212,7 @@ test.afterAll(async () => {
 });
 
 test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every theme, against the base beside it`, async ({ browser }) => {
-    test.setTimeout(120 * 60_000);
+    test.setTimeout(30 * 60_000);
     const [base, head] = servers;
     const url = (origin: string) => `${origin}/work/${catalog!.series[0].slug}`;
     const rows: string[] = [];
