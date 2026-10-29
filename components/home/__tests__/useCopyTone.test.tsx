@@ -1,16 +1,17 @@
 import { act, render } from '@testing-library/react';
 import { useRef } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { useCopyTone } from '../useCopyTone';
+import { TONE_SETTLE_MS, useCopyTone } from '../useCopyTone';
 
-const tone = vi.hoisted(() => ({ next: 'dark' as 'dark' | 'light', calls: 0 }));
+const tone = vi.hoisted(() => ({ next: 'dark' as 'dark' | 'light' | null, calls: 0, resolvers: [] as Array<(value: 'dark' | 'light' | null) => void>, held: false }));
 vi.mock('../../badgePlace', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../badgePlace')>();
   return {
     ...actual,
-    copyTone: async () => {
+    copyTone: () => {
       tone.calls += 1;
-      return tone.next;
+      if (tone.held) return new Promise((resolve) => tone.resolvers.push(resolve));
+      return Promise.resolve(tone.next);
     },
   };
 });
@@ -44,6 +45,50 @@ describe('useCopyTone', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     tone.calls = 0;
+    tone.held = false;
+    tone.resolvers = [];
+  });
+
+  const withBoxes = () =>
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({ left: 40, top: 480, right: 600, bottom: 720, width: 560, height: 240, x: 40, y: 480, toJSON: () => ({}) });
+
+  it("keeps its tone when the image can't be read now, and measures again once the image loads its new source (M5)", async () => {
+    withBoxes();
+    tone.next = 'dark';
+    const view = render(home('a', true));
+    const root = view.getByTestId('home');
+    await act(async () => undefined);
+    expect(root.getAttribute('data-copy-tone')).toBe('dark');
+    // A rotation picks a larger candidate: mid-swap the image can't be read, and the tone stays.
+    tone.next = null;
+    await act(async () => {
+      window.dispatchEvent(new Event('resize'));
+      await new Promise((resolve) => setTimeout(resolve, TONE_SETTLE_MS + 50));
+    });
+    expect(root.getAttribute('data-copy-tone')).toBe('dark');
+    // The new source loads, over a light region now.
+    tone.next = 'light';
+    await act(async () => {
+      view.container.querySelector('[data-photo-id="a"] img')!.dispatchEvent(new Event('load'));
+    });
+    expect(root.getAttribute('data-copy-tone')).toBe('light');
+  });
+
+  it('writes only the newest measure, however the samples resolve (L6)', async () => {
+    withBoxes();
+    tone.held = true;
+    const view = render(home('a', true));
+    const root = view.getByTestId('home');
+    const image = view.container.querySelector('[data-photo-id="a"] img')!;
+    await act(async () => {
+      image.dispatchEvent(new Event('load'));
+    });
+    expect(tone.resolvers.length).toBe(2);
+    await act(async () => {
+      tone.resolvers[1]('dark');
+      tone.resolvers[0]('light');
+    });
+    expect(root.getAttribute('data-copy-tone')).toBe('dark');
   });
 
   it("sets the tone on Home's root once the photograph on screen has loaded, again at each slide change, and clears it when Home goes", async () => {

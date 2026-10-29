@@ -305,3 +305,55 @@ test("Black on a phone is today's at default text, and follows the copy only whe
     await expect(root).toHaveAttribute('data-text-enlarged', '');
     await expect(scrim).not.toHaveCSS('background-image', /0\.28\) 34%/);
 });
+
+/**
+ * A photograph in two flat halves, `top` over `bottom`: the copy sits over the bottom half at both sizes. Served at
+ * 960 x 640 for every srcset candidate (400w to 1920w), so the candidate the browser takes has a natural size that
+ * isn't its intrinsic one, as a real derivative's density makes it.
+ */
+const TWO_TONE_WIDTH = 960;
+const twoTone = (top: string, bottom: string) => async (format: 'avif' | 'webp') => {
+    const half = await sharp({ create: { width: TWO_TONE_WIDTH, height: 320, channels: 3, background: bottom } }).png().toBuffer();
+    return sharp({ create: { width: TWO_TONE_WIDTH, height: 640, channels: 3, background: top } }).composite([{ input: half, left: 0, top: 320 }])[format]().toBuffer();
+};
+
+// H1: the browser picks a scaled srcset candidate, so the image's natural size isn't its intrinsic size. The tone must
+// read the bottom half under the copy, not a region shifted by the candidate's density. Each fixture size is its own
+// context, at its own pixel density.
+for (const [size, viewport, scale] of [
+    ['390 at DPR 3', { width: 390, height: 844 }, 3],
+    ['1440 at DPR 2', { width: 1440, height: 900 }, 2],
+] as const) {
+    for (const theme of ['light', 'bright'] as const) {
+        for (const [bottom, expected] of [
+            ['dark', 'dark'],
+            ['light', 'light'],
+        ] as const) {
+            test(`in ${theme} at ${size}, the tone reads the photograph under the copy: a ${bottom} bottom half is ${expected}`, async ({ browser }, testInfo) => {
+                runsOn(testInfo, 'desktop');
+                const context = await browser.newContext({ baseURL: CATALOG_ORIGIN, viewport, deviceScaleFactor: scale, colorScheme: 'dark' });
+                try {
+                    const page = await context.newPage();
+                    await page.addInitScript((stored) => localStorage.setItem('theme', stored), theme);
+                    const [light, dark] = ['#f4f1ea', '#0a1018'];
+                    const photo = bottom === 'dark' ? twoTone(light, dark) : twoTone(dark, light);
+                    await page.route(`**/media/${HOME_OPENING}/**`, async (route) => {
+                        const format = new URL(route.request().url()).pathname.endsWith('.avif') ? 'avif' : 'webp';
+                        await route.fulfill({ status: 200, contentType: `image/${format}`, body: await photo(format) });
+                    });
+                    await openHome(page);
+                    await expectShown(page, HOME_OPENING);
+                    // The candidate the browser took is a scaled one, so this case is the one H1 is about.
+                    expect(await shownImage(page).evaluate((image: HTMLImageElement) => image.naturalWidth), 'a natural size other than the intrinsic one').not.toBe(TWO_TONE_WIDTH);
+                    await expect(page.locator('main')).toHaveAttribute('data-copy-tone', expected);
+                    await revealByKeyboard(page);
+                    for (const target of [page.getByRole('heading', { level: 1 }), page.locator('[data-chrome-region="story"] p')]) {
+                        expect(await worstTextContrast(page, target), `${theme} at ${size} over a ${bottom} bottom half`).toBeGreaterThanOrEqual(4.5);
+                    }
+                } finally {
+                    await context.close();
+                }
+            });
+        }
+    }
+}

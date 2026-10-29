@@ -4,7 +4,7 @@ import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
 import { setPrefersReducedMotion } from '@/test/matchMedia';
-import { badgePlace, chromeOverflows, copyTone, coverSource, homeCopyTop, meanLuminance, positionOf, textEnlarged, TONE_PIVOT, toneFor, unionOf, V110_LANE, type Box } from '../badgePlace';
+import { badgePlace, chromeOverflows, copyTone, coverSource, homeCopyTop, luminance, positionOf, regionLevel, textEnlarged, TONE_LIGHT_FLOOR, toneFor, unionOf, V110_LANE, type Box } from '../badgePlace';
 import HeroReveal, { BADGE_LINGER_MS, type HeroRevealPhase } from '../HeroReveal';
 import { HOME_LOADING_TIMEOUT_MS } from '../home/homeChromeConfig';
 
@@ -664,21 +664,34 @@ describe('copyTone', () => {
     expect(await copyTone(image(), copy, { sample: async () => pixels(240, 236, 228) })).toBe('light');
   });
 
-  it("stays light at the tie, where both inks read the same, and turns dark just under it", () => {
-    expect(toneFor(TONE_PIVOT)).toBe('light');
-    expect(toneFor(TONE_PIVOT - 0.01)).toBe('dark');
-    expect(toneFor(TONE_PIVOT + 0.01)).toBe('light');
+  it('is dark over a mid-tone region, where a light scrim would fog the photograph', async () => {
+    // A dusk sky: relative luminance about 0.3, under the light floor.
+    expect(luminance(150, 150, 150)).toBeLessThan(TONE_LIGHT_FLOOR);
+    expect(await copyTone(image(), copy, { sample: async () => pixels(150, 150, 150) })).toBe('dark');
   });
 
-  it("is light when it can't measure: a tainted canvas, no canvas, an image not in, or no overlap", async () => {
+  it('is light only from the light floor up', () => {
+    expect(TONE_LIGHT_FLOOR).toBe(0.36);
+    expect(toneFor(0.2)).toBe('dark');
+    expect(toneFor(0.35)).toBe('dark');
+    expect(toneFor(0.36)).toBe('light');
+    expect(toneFor(0.5)).toBe('light');
+  });
+
+  it("is light, the theme's own, when it can't measure at all: a tainted canvas or no canvas", async () => {
     const tainted = async () => {
       throw new DOMException('The canvas has been tainted by cross-origin data.', 'SecurityError');
     };
     expect(await copyTone(image(), copy, { sample: tainted })).toBe('light');
     expect(await copyTone(image(), copy, { sample: async () => null })).toBe('light');
-    expect(await copyTone(image({ complete: false }), copy, { sample: async () => pixels(0, 0, 0) })).toBe('light');
-    expect(await copyTone(image({ naturalWidth: 0 }), copy, { sample: async () => pixels(0, 0, 0) })).toBe('light');
-    expect(await copyTone(image(), { left: 2000, top: 0, right: 2100, bottom: 10 }, { sample: async () => pixels(0, 0, 0) })).toBe('light');
+  });
+
+  it("is nothing when it can't measure now, so the caller keeps its tone: an image not in, mid-swap, or not under the copy", async () => {
+    const sample = async () => pixels(0, 0, 0);
+    expect(await copyTone(image({ complete: false }), copy, { sample })).toBeNull();
+    expect(await copyTone(image({ naturalWidth: 0 }), copy, { sample })).toBeNull();
+    expect(await copyTone(image({ decode: () => Promise.reject(new Error('EncodingError')) }), copy, { sample })).toBeNull();
+    expect(await copyTone(image(), { left: 2000, top: 0, right: 2100, bottom: 10 }, { sample })).toBeNull();
   });
 
   it('samples the part of the photograph that paints under the copy, as cover crops it', async () => {
@@ -714,9 +727,15 @@ describe('coverSource', () => {
 });
 
 describe('the tone helpers', () => {
-  it('averages luminance over RGBA pixels, and gives none for no pixels', () => {
-    expect(meanLuminance([255, 255, 255, 255, 0, 0, 0, 255])).toBeCloseTo(0.5, 5);
-    expect(meanLuminance([])).toBeNull();
+  it("reads a region's level as the darker of its mean and its 25th percentile, and none for no pixels", () => {
+    const px = (...levels: number[]) => levels.flatMap((v) => [v, v, v, 255]);
+    // Half white, half black: mean 0.5, 25th percentile black.
+    expect(regionLevel(px(255, 255, 0, 0))).toBe(0);
+    // All white but a dark band of a quarter: the band counts.
+    expect(regionLevel(px(255, 255, 255, 255, 255, 255, 0, 0))).toBe(0);
+    // A light region with a thin dark line: the mean, slightly under white.
+    expect(regionLevel(px(255, 255, 255, 255, 255, 255, 255, 0))).toBeCloseTo(0.875, 5);
+    expect(regionLevel([])).toBeNull();
   });
 
   it("reads object-position's percentages, and the centre for anything else", () => {

@@ -140,12 +140,18 @@ export const boxOf = (element: Element | null): Box | null => {
 /** Which scrim the copy needs over the photograph under it: the theme's own ('light' in Light and Bright) or a dark one. */
 export type CopyTone = 'light' | 'dark';
 
-/** The sample's size: enough to read a region's tone, small enough to cost nothing. */
-export const TONE_SAMPLE = { width: 32, height: 18 } as const;
+/**
+ * The sample's width: the whole photograph is scaled to this, then the copy's region is read from the small copy, so
+ * the crop never meets the image's own pixel density (a srcset candidate's intrinsic size isn't its natural size).
+ */
+export const TONE_SAMPLE_WIDTH = 256;
 
-/** The two inks the tone chooses between, Light's: its paper scrim's ink and its dark scrim's. */
-const DARK_INK = [0x29, 0x23, 0x1d] as const;
-const LIGHT_INK = [0xf5, 0xf1, 0xe8] as const;
+/**
+ * Light only over a clearly light photograph (#125's design delta, P1): a dark scrim over a light-ish photograph
+ * reads as dimming, a light one over a mid-tone photograph reads as fog, so the middle goes dark. The contrast rows
+ * take each tone's worst pixel, so the split costs no contrast.
+ */
+export const TONE_LIGHT_FLOOR = 0.36;
 
 const linear = (channel: number) => {
   const c = channel / 255;
@@ -153,26 +159,31 @@ const linear = (channel: number) => {
 };
 /** WCAG relative luminance of an sRGB colour. */
 export const luminance = (r: number, g: number, b: number) => 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
-const contrast = (a: number, b: number) => (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 
-/** The mean relative luminance of RGBA pixels, as getImageData gives them, or null for none. */
-export function meanLuminance(pixels: ArrayLike<number>): number | null {
+/**
+ * A region's level from its RGBA pixels, as getImageData gives them: the darker of their mean relative luminance and
+ * its 25th percentile, so a dark band under a mostly bright region (the title's first line on a horizon) still counts.
+ * Null for no pixels.
+ */
+export function regionLevel(pixels: ArrayLike<number>): number | null {
   const count = Math.floor(pixels.length / 4);
   if (count === 0) return null;
+  const levels = new Float64Array(count);
   let sum = 0;
-  for (let i = 0; i < count * 4; i += 4) sum += luminance(pixels[i], pixels[i + 1], pixels[i + 2]);
-  return sum / count;
+  for (let i = 0; i < count; i += 1) {
+    levels[i] = luminance(pixels[i * 4], pixels[i * 4 + 1], pixels[i * 4 + 2]);
+    sum += levels[i];
+  }
+  levels.sort();
+  return Math.min(sum / count, levels[Math.floor((count - 1) * 0.25)]);
 }
 
-/** The mean luminance at which both inks read the same: below it light ink reads better. */
-export const TONE_PIVOT = Math.sqrt((luminance(...LIGHT_INK) + 0.05) * (luminance(...DARK_INK) + 0.05)) - 0.05;
-
-/** 'dark' when light ink on the photograph would read better than dark ink at its mean luminance; a tie stays 'light'. */
-export function toneFor(mean: number): CopyTone {
-  return contrast(luminance(...LIGHT_INK), mean) - contrast(luminance(...DARK_INK), mean) > 1e-9 ? 'dark' : 'light';
+/** 'dark' below TONE_LIGHT_FLOOR, 'light' from it up. */
+export function toneFor(level: number): CopyTone {
+  return level < TONE_LIGHT_FLOOR ? 'dark' : 'light';
 }
 
-/** A rectangle in an image's own pixels. */
+/** A rectangle in an image's natural (density-corrected) pixels, as naturalWidth and naturalHeight count them. */
 export interface Source {
   x: number;
   y: number;
@@ -182,7 +193,7 @@ export interface Source {
 
 /**
  * The part of an image that paints under `region`, for an image drawn into `shown` with `object-fit: cover` at
- * `position` (fractions, as `object-position`'s percentages), or null where nothing of it does.
+ * `position` (fractions, as `object-position`'s percentages), in natural pixels, or null where nothing of it does.
  */
 export function coverSource(natural: { width: number; height: number }, shown: Box, region: Box, position = { x: 0.5, y: 0.5 }): Source | null {
   const width = shown.right - shown.left;
@@ -209,27 +220,37 @@ export const unionOf = (boxes: Box[]): Box | null =>
         bottom: Math.max(...boxes.map((box) => box.bottom)),
       };
 
-/** Draws `source` of `image` into a TONE_SAMPLE canvas and returns its pixels; it throws on a tainted canvas. */
+/** Returns the pixels of `source` (natural pixels) of `image`, or null with no canvas; it throws on a tainted canvas. */
 export type ToneSampler = (image: HTMLImageElement, source: Source) => Promise<ArrayLike<number> | null>;
 
 /**
- * The browser's sampler. createImageBitmap crops and scales off the main thread where the browser can, so the slide
- * change gets no long task; drawImage is the fallback.
+ * The browser's sampler (H1). The whole image is scaled to TONE_SAMPLE_WIDTH, with no crop rectangle, so its pixel
+ * density can't enter: createImageBitmap's and drawImage's crop rectangles count the image's intrinsic pixels, and a
+ * srcset candidate's intrinsic size isn't its natural size. The region is then read from the small copy, in natural
+ * pixels scaled by the same factor. createImageBitmap scales off the main thread where the browser can.
  */
 export const canvasSampler: ToneSampler = async (image, source) => {
+  const width = TONE_SAMPLE_WIDTH;
+  const height = Math.max(1, Math.round((width * image.naturalHeight) / image.naturalWidth));
+  const k = width / image.naturalWidth;
   const canvas = document.createElement('canvas');
-  canvas.width = TONE_SAMPLE.width;
-  canvas.height = TONE_SAMPLE.height;
+  canvas.width = width;
+  canvas.height = height;
   const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) return null;
   if (typeof createImageBitmap === 'function') {
-    const bitmap = await createImageBitmap(image, source.x, source.y, source.width, source.height, { resizeWidth: TONE_SAMPLE.width, resizeHeight: TONE_SAMPLE.height, resizeQuality: 'low' });
+    const bitmap = await createImageBitmap(image, { resizeWidth: width, resizeHeight: height, resizeQuality: 'low' });
     context.drawImage(bitmap, 0, 0);
     bitmap.close();
   } else {
-    context.drawImage(image, source.x, source.y, source.width, source.height, 0, 0, TONE_SAMPLE.width, TONE_SAMPLE.height);
+    // The five-argument form draws the whole image.
+    context.drawImage(image, 0, 0, width, height);
   }
-  return context.getImageData(0, 0, TONE_SAMPLE.width, TONE_SAMPLE.height).data;
+  const x = Math.min(width - 1, Math.floor(source.x * k));
+  const y = Math.min(height - 1, Math.floor(source.y * k));
+  const w = Math.max(1, Math.min(width - x, Math.ceil(source.width * k)));
+  const h = Math.max(1, Math.min(height - y, Math.ceil(source.height * k)));
+  return context.getImageData(x, y, w, h).data;
 };
 
 /** `object-position` as fractions; anything but two percentages is the centre. */
@@ -240,19 +261,27 @@ export const positionOf = (value: string) => {
 
 /**
  * The tone of the photograph under Home's copy: `image` (decoded, as it's drawn now, its box and crop) sampled over
- * `copy`, the union of the story's boxes and the title's panel. Anything it can't measure (no image, no overlap, a
- * tainted canvas, no canvas) is 'light', the theme's own scrim.
+ * `copy`, the union of the story's boxes and the title's panel.
+ * - Null when it can't measure now (the image not in, as mid-swap to a larger srcset candidate, or not under the
+ *   copy), so the caller keeps what it has and measures again when the image loads (M5).
+ * - 'light', the theme's own scrim, when it can't measure at all: no canvas, or a tainted one. Home's media is
+ *   same-origin, so it isn't tainted; media moved to another origin would need `crossOrigin` and CORS, or the tone
+ *   would stay 'light'.
  */
-export async function copyTone(image: HTMLImageElement, copy: Box, { sample = canvasSampler, position = { x: 0.5, y: 0.5 } }: { sample?: ToneSampler; position?: { x: number; y: number } } = {}): Promise<CopyTone> {
+export async function copyTone(image: HTMLImageElement, copy: Box, { sample = canvasSampler, position = { x: 0.5, y: 0.5 } }: { sample?: ToneSampler; position?: { x: number; y: number } } = {}): Promise<CopyTone | null> {
+  if (!image.complete || image.naturalWidth === 0 || image.naturalHeight === 0) return null;
   try {
-    if (!image.complete || image.naturalWidth === 0) return 'light';
     await image.decode?.();
-    const shown = boxOf(image);
-    const source = shown && coverSource({ width: image.naturalWidth, height: image.naturalHeight }, shown, copy, position);
-    if (!source) return 'light';
+  } catch {
+    return null;
+  }
+  const shown = boxOf(image);
+  const source = shown && coverSource({ width: image.naturalWidth, height: image.naturalHeight }, shown, copy, position);
+  if (!source) return null;
+  try {
     const pixels = await sample(image, source);
-    const mean = pixels ? meanLuminance(pixels) : null;
-    return mean === null ? 'light' : toneFor(mean);
+    const level = pixels ? regionLevel(pixels) : null;
+    return level === null ? 'light' : toneFor(level);
   } catch {
     return 'light';
   }
