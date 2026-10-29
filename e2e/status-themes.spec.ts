@@ -18,7 +18,7 @@ const THEMES = {
 function paint(page: Page) {
     return page.getByRole('main').evaluate((main) => {
         const rgb = (color: string) => color.match(/[\d.]+/g)!.slice(0, 4).map(Number);
-        // Every colour here is opaque but the rules, which sit on the ground.
+        // Some inks are translucent (Black's ink soft), so each colour is flattened onto what it sits on.
         const flat = (color: string, under: number[]) => {
             const [r, g, b, a = 1] = rgb(color);
             return [r, g, b].map((channel, i) => channel * a + under[i] * (1 - a));
@@ -29,18 +29,18 @@ function paint(page: Page) {
             const [x, y] = [luminance(a), luminance(b)].sort((m, n) => n - m);
             return +((x + 0.05) / (y + 0.05)).toFixed(2);
         };
-        const ground = rgb(getComputedStyle(main).backgroundColor);
+        const ground = rgb(getComputedStyle(main).backgroundColor).slice(0, 3);
         const [primary] = [...main.querySelectorAll('a, button')] as HTMLElement[];
         const heading = main.querySelector('h1')!;
         const text = main.querySelector('p')!;
         const action = getComputedStyle(primary);
-        const actionGround = rgb(action.backgroundColor);
+        const actionGround = flat(action.backgroundColor, ground);
         return {
             ground: getComputedStyle(main).backgroundColor,
             body: getComputedStyle(document.body).backgroundColor,
-            heading: ratio(rgb(getComputedStyle(heading).color), ground),
-            text: ratio(rgb(getComputedStyle(text).color), ground),
-            action: ratio(rgb(action.color), actionGround),
+            heading: ratio(flat(getComputedStyle(heading).color, ground), ground),
+            text: ratio(flat(getComputedStyle(text).color, ground), ground),
+            action: ratio(flat(action.color, actionGround), actionGround),
             actionEdge: ratio(flat(action.borderTopColor, ground), ground),
         };
     });
