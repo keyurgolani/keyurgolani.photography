@@ -164,11 +164,18 @@ for (const theme of THEMES) {
         await waitForHydration(page);
         const slot = entry(page, 1).locator('[data-photo]');
         await expect(slot).toHaveAttribute('data-photo', 'unavailable');
-        const rule = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--gah-rule').trim());
+        // The theme's --gah-rule, resolved to the browser's colour form through a probe, as the shadow reports it.
+        const rule = await page.evaluate(() => {
+            const probe = document.createElement('span');
+            probe.style.color = 'var(--gah-rule)';
+            document.body.append(probe);
+            const color = getComputedStyle(probe).color;
+            probe.remove();
+            return color;
+        });
         const shadow = await slot.evaluate((el) => getComputedStyle(el).boxShadow);
         // One inset 1 px line in the theme's rule, and nothing else: today's edge, in every theme.
-        expect(shadow, 'the missing box draws only its edge').toMatch(/^rgba?\([^)]*\) 0px 0px 0px 1px inset$/);
-        expect(rule).not.toBe('');
+        expect(shadow, 'the missing box draws only its edge, in the theme\'s rule').toBe(`${rule} 0px 0px 0px 1px inset`);
         await entry(page, 1).hover();
         expect(await slot.evaluate((el) => getComputedStyle(el).outlineStyle), 'hover adds no outline round a box with no surround').toBe('none');
     });
