@@ -701,7 +701,8 @@ test.describe('the visitor site and the legacy Gallery', () => {
         ['the glass blur at 13px', '/work', ':root{--gah-glass-blur:13px!important}', undefined],
         ["a photograph's opacity at .96", '/work', 'main img{opacity:.96!important}', undefined],
         ['--gah-ink, +1 on one channel', '/work', ':root{--gah-ink:#f4f6f6!important}', undefined],
-        ["a photograph's corners square", '/work', 'main img{border-radius:0!important}', undefined],
+        // The radius is the frame's, the photo's material (spec §2), so the cover's frame on a series page.
+        ["a photograph's corners square", series, '[class*="coverFrame"]{border-radius:0!important}', undefined],
         ["About's link underlines red", '/about', 'a{text-decoration-color:red!important}', undefined],
         ['a hovered nav link white', '/work', 'nav a:hover{color:#fff!important}', hoverNavLink],
     ] as const) {
