@@ -4,6 +4,7 @@ import { waitForHydration } from './support/hydration';
 import { expectReflow } from './support/reflow';
 import { checkSurface } from './support/surface';
 import { expect, test } from './support/test';
+import { fitSizes } from '../components/viewer/viewerSizes';
 import { expectSingleTapActivates } from './support/touch';
 import { FACTS_ONLY, HARBOR, P, SENTINELS, SITE_URL, href, id, useViewerCatalog } from './support/viewerCatalog';
 
@@ -496,9 +497,6 @@ const VIEWER_THEMES = {
     charcoal: { paints: 'dark', ground: 'rgb(27, 31, 29)', ink: 'rgb(243, 242, 236)', bands: false },
 } as const;
 
-/** The rung Black's Viewer asks for, which every theme's must match: the box only shrinks, by the room (spec §8). */
-let blackRung: string | undefined;
-
 for (const [choice, want] of Object.entries(VIEWER_THEMES)) {
     test(`the Viewer in ${choice}: its own ground under the body too, and ${want.bands ? "today's bands and a bare print with its hairline" : 'a matted print with room for its mat, bare when zoomed'}`, async ({ page }) => {
         await page.addInitScript((value) => localStorage.setItem('theme', value), choice);
@@ -533,31 +531,40 @@ for (const [choice, want] of Object.entries(VIEWER_THEMES)) {
             probe.remove();
             const [f, v] = [frame.getBoundingClientRect(), viewport.getBoundingClientRect()];
             return {
-                rung: /\/w(\d+)\./.exec(image.currentSrc)?.[1],
+                sizes: image.getAttribute('sizes'),
+                ratio: frame instanceof HTMLElement ? frame.style.getPropertyValue('--ratio') : '',
                 shadow: getComputedStyle(frame).boxShadow,
                 surround,
                 outline: getComputedStyle(image).outlineStyle,
+                outlineColor: getComputedStyle(image).outlineColor,
                 fit: getComputedStyle(image).objectFit,
                 room,
                 clear: Math.min(f.left - v.left, v.right - f.right, f.top - v.top, v.bottom - f.bottom),
             };
         });
-        // The first-viewport check (spec §8): the box gives up at most 50 px for its room, so the same rung serves it.
-        expect(2 * look.room, 'the box shrinks by at most 50 px').toBeLessThanOrEqual(50);
-        expect(look.rung, 'a rung was chosen').toBeDefined();
-        if (choice === 'black') blackRung = look.rung;
-        else if (blackRung !== undefined) expect(look.rung, "the same rung as Black's").toBe(blackRung);
+        // The first-viewport check (spec §8): the room the box reserves is at most 50 px, and the image's sizes is
+        // fitSizes() of the record's shape alone, theme-blind, so no theme can ask for a larger rung than Black.
+        expect(2 * look.room, 'the reserved room is at most 50 px').toBeLessThanOrEqual(50);
+        const [w, h] = look.ratio.split('/').map(Number);
+        expect(look.sizes, "the sizes the record's shape implies, in every theme").toBe(fitSizes(w, h));
         if (want.bands) {
             expect(look.shadow, "Black's print has no surround").toBe('none');
             expect(look.outline, "today's hairline").toBe('solid');
             expect(look.fit, "today's fit").toBe('fill');
         } else {
             expect(look.shadow, "the theme's surround").toBe(look.surround);
-            expect(look.outline, 'no hairline under the mat').toBe('none');
+            // Not by accident: md comes from styles/themes.css (#124), and without it both would read none.
+            expect(look.shadow, 'a themed print always wears a surround').not.toBe('none');
+            expect(look.outlineColor, 'no hairline under the mat').toBe('rgba(0, 0, 0, 0)');
             expect(look.fit, 'a stale ratio letterboxes, never crops or stretches (P3-6)').toBe('contain');
             // The box leaves its surround's thickness and the clear ground on every side of the stage.
             expect(look.room, 'the room is reserved').toBeGreaterThan(0);
             expect(look.clear, 'the mat fits inside the stage').toBeGreaterThanOrEqual(look.room - 0.5);
+            // Forced colours drop the surround, so the transparent hairline takes a system colour and the print keeps
+            // an edge.
+            await page.emulateMedia({ forcedColors: 'active' });
+            expect(await page.locator('[data-viewer-current] img').first().evaluate((image) => getComputedStyle(image).outlineColor), 'an edge in forced colours').not.toBe('rgba(0, 0, 0, 0)');
+            await page.emulateMedia({ forcedColors: 'none' });
             // Zoomed, the scroller would clip the surround, so the print goes bare (P3-7).
             await zoom(page).click();
             await expect(page.locator('[data-zoomed]')).toHaveCount(1);

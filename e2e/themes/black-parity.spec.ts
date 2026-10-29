@@ -6,7 +6,7 @@ import path from 'node:path';
 import { chromium, expect, test, type Browser, type Locator, type Page } from '@playwright/test';
 import sharp from 'sharp';
 import { makeCuratorSecrets, type TestCuratorSecrets } from '../../test/helpers/curatorSecrets';
-import { HOME_OPENING, HOME_SERIES } from '../support/catalog-home';
+import { HOME_OPENING, HOME_PHOTO_IDS, HOME_SERIES } from '../support/catalog-home';
 import { createInboxFixture, openInboxItems, type InboxFixture } from '../support/curation-inbox';
 import { publishHomeFixture } from '../support/homeFixture';
 import { routePhotoFixtures } from '../support/test';
@@ -449,6 +449,34 @@ const VISITOR: Pair[] = [
         },
     },
     { name: 'viewer', url: `${series}/photo/${HOME_OPENING}` },
+    // The Viewer's other states (#126's review, L2): another photograph, zoomed, a print that fails, and the modal
+    // opened from a series, with its ::backdrop.
+    { name: 'viewer-second', url: `${series}/photo/${HOME_PHOTO_IDS[1]}` },
+    {
+        name: 'viewer-zoomed',
+        url: `${series}/photo/${HOME_OPENING}`,
+        act: async (page) => {
+            await page.locator('[data-surface="viewer"] > header').getByRole('button', { name: 'Zoom' }).click();
+            await expect(page.locator('[data-zoomed]')).toHaveCount(1);
+        },
+    },
+    {
+        name: 'viewer-missing',
+        url: `${series}/photo/${HOME_OPENING}`,
+        act: async (page) => {
+            await page.locator('[data-viewer-current] img').first().dispatchEvent('error');
+            await expect(page.locator('[data-surface="viewer"] [data-photo="unavailable"]')).toHaveCount(1);
+        },
+    },
+    {
+        name: 'viewer-modal',
+        url: series,
+        act: async (page) => {
+            await toSequence(page);
+            await page.locator('section[aria-labelledby="series-sequence"] ol li a').first().click();
+            await expect(page.locator('dialog[data-surface="viewer"]')).toHaveJSProperty('open', true);
+        },
+    },
     { name: 'about', url: '/about' },
     { name: '404', url: '/no-such-page', measure: ['nav [class*="monogram"]', 'nav [class*="_end"]', '[data-theme-control], nav button'] },
 ];

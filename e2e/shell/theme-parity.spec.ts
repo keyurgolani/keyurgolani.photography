@@ -42,11 +42,13 @@ interface Route {
     /** The same in Light. */
     light: Rgb;
     /**
-     * What the bottom row's edges show: the page's own ground, within `tolerance`; a row that is read but not pinned, where
-     * the Viewer's chrome bar sits at the bottom; or nothing to check, since Home's stage is a photograph to the edge and
+     * What the bottom row's edges show: the page's own ground, within `tolerance`; the Viewer's reading area, its
+     * `chrome` per theme; or nothing to check, since Home's stage is a photograph to the edge and
      * the legacy Gallery repaints with the theme.
      */
-    bottom: 'ground' | 'same' | 'none';
+    bottom: 'ground' | 'chrome' | 'none';
+    /** The Viewer's reading area at the foot of the page, per theme: --cc-chrome over the Viewer's ground. */
+    chrome?: Record<'black' | 'light', Rgb>;
     tolerance?: number;
 }
 
@@ -55,7 +57,9 @@ const ROUTES: readonly Route[] = [
     { name: 'Work', path: '/work', nav: true, ground: GAH_GROUND, light: LIGHT_PAPER, bottom: 'ground' },
     { name: 'a series', path: `/work/${HOME_SERIES.slug}`, nav: true, ground: GAH_GROUND, light: LIGHT_PAPER, bottom: 'ground' },
     // The Viewer paints its own ground on the body too (#7): today's Chromatic Chapters in Black, Light's paper in Light.
-    { name: 'the Viewer', path: `/work/${HOME_SERIES.slug}/photo/${HOME_OPENING}`, nav: false, ground: CC_GROUND, light: LIGHT_PAPER, bottom: 'same' },
+    { name: 'the Viewer', path: `/work/${HOME_SERIES.slug}/photo/${HOME_OPENING}`, nav: false, ground: CC_GROUND, light: LIGHT_PAPER, bottom: 'chrome',
+        // Black's rgba(8, 11, 10, 0.9) over the bands' edge, and Light's solid sheet.
+        chrome: { black: [9, 12, 11], light: [242, 237, 227] } },
     // The paper's ribs darken it by under 5% at the edges.
     // Light's About paper has no ribs, so it holds its ground exactly.
     { name: 'About', path: '/about', nav: true, ground: PAPER, light: LIGHT_PAPER, bottom: 'ground', tolerance: 10 },
@@ -120,8 +124,9 @@ for (const viewport of VIEWPORTS) {
                 if (route.bottom === 'ground') {
                     const off = seen.bottom!.filter((pixel) => !near(pixel, ground, route.tolerance));
                     expect(off, `bottom-row edge pixels off the ground ${ground} in ${theme}`).toEqual([]);
-                } else if (route.bottom === 'same') {
-                    expect(seen.bottom, `the bottom row in ${theme}`).not.toBeNull();
+                } else if (route.bottom === 'chrome') {
+                    const off = seen.bottom!.filter((pixel) => !near(pixel, route.chrome![theme]));
+                    expect(off, `bottom-row edge pixels off the reading area's ${route.chrome![theme]} in ${theme}`).toEqual([]);
                 } else if (route.path === '/') {
                     // Home's stage is the window, so nothing sits below it for a strip to show through.
                     expect(seen.scroll.height).toBeLessThanOrEqual(seen.scroll.viewport);
