@@ -112,9 +112,9 @@ jobs:
     # Two builds and about 120 page pairs.
     timeout-minutes: 35
     env:
-      # next before the five themes: v1.2.0 plus #119's curator copy. Black must paint as it does there. Move it only
-      # for a change that isn't a theme's and moves Black on purpose, and say so in that PR.
-      PARITY_BASE: c2054aa44e94f17373ec19d93fec6dcd7e3552f4
+      # next before the five themes: v1.2.0 plus #119's curator copy and #120's carry-over. Black must paint as it does
+      # there. Move it only for a change that isn't a theme's and moves Black on purpose, and say so in that PR.
+      PARITY_BASE: be35250a83ec076b28c713851aca9c7dd4801b77
       # About's placeholder copy fails any other production build (utils/artistProfile.ts); both builds here serve tests only.
       ALLOW_PROVISIONAL_COPY: '1'
       NEXT_TELEMETRY_DISABLED: '1'
