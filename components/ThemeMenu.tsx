@@ -3,7 +3,6 @@
 import { Check } from 'lucide-react';
 import { useId } from 'react';
 import { THEME_CHOICES, type ThemeChoice, useThemeChoice } from './ThemeContext';
-import styles from './ThemeMenu.module.css';
 
 /** Each choice's name and the one line that says what it looks like. Provisional copy. */
 export const THEME_LABELS: Record<ThemeChoice, { name: string; note: string }> = {
@@ -35,44 +34,44 @@ export default function ThemeMenu({ placement = 'nav' }: { placement?: 'nav' | '
   const popoverId = `${id}-themes`;
   return (
     <>
-      <button type="button" className={styles.button} popoverTarget={popoverId} data-placement={placement}>
-        <span className={styles.swatch} aria-hidden="true" />
-        <span className={styles.hidden}>Theme: </span>
+      <button type="button" className="theme-menu-button" popoverTarget={popoverId} data-placement={placement}>
+        <span className="theme-menu-swatch" aria-hidden="true" />
+        <span className="theme-menu-hidden">Theme: </span>
         {THEME_CHOICES.map((value) => (
-          <span key={value} className={styles.hidden} data-name-for={value}>
+          <span key={value} className="theme-menu-hidden" data-name-for={value}>
             {THEME_LABELS[value].name}
           </span>
         ))}
-        <span className={styles.hidden} data-now="light">
+        <span className="theme-menu-hidden" data-now="light">
           {' '}
           (Light now)
         </span>
-        <span className={styles.hidden} data-now="black">
+        <span className="theme-menu-hidden" data-now="black">
           {' '}
           (Black now)
         </span>
       </button>
-      <div id={popoverId} popover="auto" className={styles.popover} data-placement={placement}>
-        <fieldset className={styles.group}>
-          <legend className={styles.legend}>Theme</legend>
+      <div id={popoverId} popover="auto" className="theme-menu-popover" data-placement={placement}>
+        <fieldset className="theme-menu-group">
+          <legend className="theme-menu-legend">Theme</legend>
           {THEME_CHOICES.map((value) => (
-            <label key={value} className={styles.option}>
+            <label key={value} className="theme-menu-option">
               <input
                 type="radio"
                 name={`${id}-theme`}
                 value={value}
                 checked={choice === value}
                 onChange={() => setChoice(value)}
-                className={styles.radio}
+                className="theme-menu-radio"
               />
-              <span className={styles.preview} data-preview={value} aria-hidden="true">
-                <span className={styles.previewPhoto} />
+              <span className="theme-menu-preview" data-preview={value} aria-hidden="true">
+                <span className="theme-menu-preview-photo" />
               </span>
-              <span className={styles.text}>
-                <span className={styles.name}>{THEME_LABELS[value].name}</span>
-                <span className={styles.note}>{THEME_LABELS[value].note}</span>
+              <span className="theme-menu-text">
+                <span className="theme-menu-name">{THEME_LABELS[value].name}</span>
+                <span className="theme-menu-note">{THEME_LABELS[value].note}</span>
               </span>
-              <Check size={16} strokeWidth={2} className={styles.check} aria-hidden="true" />
+              <Check size={16} strokeWidth={2} className="theme-menu-check" aria-hidden="true" />
             </label>
           ))}
         </fieldset>

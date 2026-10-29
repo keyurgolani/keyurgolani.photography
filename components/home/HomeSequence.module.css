@@ -6,8 +6,9 @@
   background-color: #000;
 }
 
-/* The themes mockup: the photograph hangs inside the theme's margin (Black has none), with the theme's surround. */
-:global(html[data-theme]) .carousel {
+/* The themes mockup: the photograph hangs inside the theme's margin, with the theme's surround. Black is today's site,
+   so it keeps today's box exactly (an absolute box at inset 0 composites the scrim over it a step differently). */
+:global(html[data-theme]:not([data-theme='black'])) .carousel {
   position: absolute;
   inset: var(--gah-stage-inset, 0px);
   width: auto;

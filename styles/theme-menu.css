@@ -1,6 +1,10 @@
+/* The theme control (themes mockup). Global, not a CSS module, and imported once by the root layout (round 2): as a
+   module shared by the visitor and the curator routes, it made the production CSS chunking merge the curator's,
+   Publish's and the login's styles into a chunk every visitor page loads (+10 KB gzipped on Home). Every class is
+   prefixed theme-menu-. */
 /* The theme control. The button shows a swatch of the theme that's painting: the ground and the ink, split on the
    diagonal, inside the strong rule. It reads the page's own tokens, so it's right from first paint. */
-.button {
+.theme-menu-button {
   position: relative;
   display: inline-flex;
   align-items: center;
@@ -15,7 +19,7 @@
   cursor: pointer;
 }
 
-.swatch {
+.theme-menu-swatch {
   width: 20px;
   height: 20px;
   border-radius: 50%;
@@ -24,13 +28,13 @@
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .button:hover .swatch {
+  .theme-menu-button:hover .theme-menu-swatch {
     box-shadow: 0 0 0 1px var(--gah-ink), 0 0 0 4px var(--gah-rule);
   }
 }
 
 /* Visually hidden; display: none below takes the names that don't apply out of the button's name too. */
-.hidden {
+.theme-menu-hidden {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -40,20 +44,20 @@
   white-space: nowrap;
 }
 
-:global(html:not([data-theme-choice='system'])) .button [data-name-for='system'],
-:global(html:not([data-theme-choice='light'])) .button [data-name-for='light'],
-:global(html:not([data-theme-choice='bright'])) .button [data-name-for='bright'],
-:global(html:not([data-theme-choice='dark'])) .button [data-name-for='dark'],
-:global(html:not([data-theme-choice='black'])) .button [data-name-for='black'],
-:global(html:not([data-theme-choice='system'])) .button [data-now],
-:global(html:not([data-theme='light'])) .button [data-now='light'],
-:global(html:not([data-theme='black'])) .button [data-now='black'] {
+html:not([data-theme-choice='system']) .theme-menu-button [data-name-for='system'],
+html:not([data-theme-choice='light']) .theme-menu-button [data-name-for='light'],
+html:not([data-theme-choice='bright']) .theme-menu-button [data-name-for='bright'],
+html:not([data-theme-choice='dark']) .theme-menu-button [data-name-for='dark'],
+html:not([data-theme-choice='black']) .theme-menu-button [data-name-for='black'],
+html:not([data-theme-choice='system']) .theme-menu-button [data-now],
+html:not([data-theme='light']) .theme-menu-button [data-now='light'],
+html:not([data-theme='black']) .theme-menu-button [data-now='black'] {
   display: none;
 }
 
 /* The popover, in the top layer, under the nav's end. Anchor positioning would tie it to the button; until then it
    takes the nav's corner, which is where the button always is. */
-.popover {
+.theme-menu-popover {
   position: fixed;
   inset: calc(var(--site-nav-height) + 0.25rem) var(--site-gutter) auto auto;
   width: min(19rem, calc(100vw - 2 * var(--site-gutter)));
@@ -67,19 +71,19 @@
   font-family: var(--gah-font-sans);
 }
 
-:global(html[data-theme='bright']) .popover {
+html[data-theme='bright'] .theme-menu-popover {
   border-color: #111111;
   border-radius: 0;
   box-shadow: none;
 }
 
-.group {
+.theme-menu-group {
   margin: 0;
   padding: 0;
   border: 0;
 }
 
-.legend {
+.theme-menu-legend {
   padding: 0.5rem 0.625rem 0.375rem;
   color: var(--gah-label);
   font-size: var(--gah-type-label);
@@ -87,7 +91,7 @@
   letter-spacing: var(--gah-label-tracking);
 }
 
-.option {
+.theme-menu-option {
   position: relative;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -100,13 +104,13 @@
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .option:hover {
+  .theme-menu-option:hover {
     background: var(--gah-surface);
   }
 }
 
 /* The radio stays native, for its keyboard and its announcement, and draws nothing: the row shows its state. */
-.radio {
+.theme-menu-radio {
   position: absolute;
   inset: 0;
   margin: 0;
@@ -114,7 +118,7 @@
   cursor: pointer;
 }
 
-.option:has(.radio:focus-visible) {
+.theme-menu-option:has(.theme-menu-radio:focus-visible) {
   outline: var(--focus-ring-width) solid var(--focus-ring-light);
   outline-offset: calc(-1 * var(--focus-ring-width));
   box-shadow: inset 0 0 0 calc(var(--focus-ring-width) + 2px) var(--focus-ring-dark);
@@ -122,7 +126,7 @@
 
 /* A thumbnail of each theme: its ground, and a photograph in that theme's surround. Fixed colors, since each shows a
    theme other than the one painting. */
-.preview {
+.theme-menu-preview {
   position: relative;
   display: grid;
   width: 44px;
@@ -132,61 +136,61 @@
   box-shadow: 0 0 0 1px var(--gah-rule);
 }
 
-.previewPhoto {
+.theme-menu-preview-photo {
   width: 26px;
   height: 17px;
   background: linear-gradient(180deg, #49678f 0%, #c99a7a 62%, #2d2a35 63%, #1b1a22 100%);
 }
 
-.preview[data-preview='light'] { background: #ebe5d9; }
-.preview[data-preview='light'] .previewPhoto { box-shadow: 0 0 0 3px #f8f5ee, 0 3px 5px -2px rgb(60 42 20 / 0.45); }
-.preview[data-preview='bright'] { background: #ffffff; }
-.preview[data-preview='bright'] .previewPhoto { width: 22px; height: 14px; box-shadow: 0 0 0 3px #ffffff, 0 0 0 4px #111111; }
-.preview[data-preview='dark'] { background: #1b1f1d; }
-.preview[data-preview='dark'] .previewPhoto { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.18), 0 0 0 3px #2a2f2d; }
-.preview[data-preview='black'] { background: #080a09; }
-.preview[data-preview='black'] .previewPhoto { border-radius: 1px; }
-.preview[data-preview='system'] { background: linear-gradient(135deg, #ebe5d9 0 50%, #080a09 50% 100%); }
-.preview[data-preview='system'] .previewPhoto { box-shadow: 0 0 0 3px rgb(128 128 128 / 0.35); }
+.theme-menu-preview[data-preview='light'] { background: #ebe5d9; }
+.theme-menu-preview[data-preview='light'] .theme-menu-preview-photo { box-shadow: 0 0 0 3px #f8f5ee, 0 3px 5px -2px rgb(60 42 20 / 0.45); }
+.theme-menu-preview[data-preview='bright'] { background: #ffffff; }
+.theme-menu-preview[data-preview='bright'] .theme-menu-preview-photo { width: 22px; height: 14px; box-shadow: 0 0 0 3px #ffffff, 0 0 0 4px #111111; }
+.theme-menu-preview[data-preview='dark'] { background: #1b1f1d; }
+.theme-menu-preview[data-preview='dark'] .theme-menu-preview-photo { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.18), 0 0 0 3px #2a2f2d; }
+.theme-menu-preview[data-preview='black'] { background: #080a09; }
+.theme-menu-preview[data-preview='black'] .theme-menu-preview-photo { border-radius: 1px; }
+.theme-menu-preview[data-preview='system'] { background: linear-gradient(135deg, #ebe5d9 0 50%, #080a09 50% 100%); }
+.theme-menu-preview[data-preview='system'] .theme-menu-preview-photo { box-shadow: 0 0 0 3px rgb(128 128 128 / 0.35); }
 
-.text {
+.theme-menu-text {
   display: grid;
   gap: 0.125rem;
   min-width: 0;
 }
 
-.name {
+.theme-menu-name {
   font-size: var(--gah-type-ui);
   font-weight: 500;
 }
 
-.note {
+.theme-menu-note {
   color: var(--gah-ink-muted);
   font-size: var(--gah-type-label);
   line-height: 1.35;
 }
 
 /* The checked choice: a check mark in the accent, and the preview ringed in it. */
-.check {
+.theme-menu-check {
   margin-right: 0.125rem;
   color: transparent;
 }
 
-.option:has(.radio:checked) .check {
+.theme-menu-option:has(.theme-menu-radio:checked) .theme-menu-check {
   color: var(--gah-accent);
 }
 
-.option:has(.radio:checked) .preview {
+.theme-menu-option:has(.theme-menu-radio:checked) .theme-menu-preview {
   box-shadow: 0 0 0 2px var(--gah-accent);
 }
 
 /* SiteNav's paper variant on About keeps the paper's ink. */
-:global([data-surface='about']) .button {
+[data-surface='about'] .theme-menu-button {
   color: var(--lts-ink-soft);
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .popover:popover-open {
+  .theme-menu-popover:popover-open {
     animation: theme-menu-in 140ms ease-out;
   }
 }
