@@ -15,6 +15,8 @@
   color: var(--gah-ink);
   box-shadow: var(--gah-popover-shadow, 0 18px 40px -16px rgb(0 0 0 / 0.45));
   font-family: var(--gah-font-sans);
+  /* Body's line height, so the curator's .page (1.45) doesn't tighten the rows (P3-3). */
+  line-height: 1.6;
 }
 
 .theme-menu-group {
@@ -44,8 +46,9 @@
 }
 
 @media (hover: hover) and (pointer: fine) {
+  /* A lift on every sheet: --gah-surface sits under the dark sheets, so hover vanished in Black (design check P3-2). */
   .theme-menu-option:hover {
-    background: var(--gah-surface);
+    background: color-mix(in srgb, var(--gah-ink) 6%, var(--gah-raised));
   }
 }
 
@@ -108,6 +111,8 @@
   color: var(--gah-ink-muted);
   font-size: var(--gah-type-label);
   line-height: 1.35;
+  /* System's note otherwise leaves "set" alone on its second line (P3-1). */
+  text-wrap: balance;
 }
 
 /* The checked choice: a check mark in the accent, and the preview ringed in it. */

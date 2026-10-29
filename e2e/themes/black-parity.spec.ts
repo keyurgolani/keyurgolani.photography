@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { chromium, expect, test, type Browser, type Page } from '@playwright/test';
+import { chromium, expect, test, type Browser, type Locator, type Page } from '@playwright/test';
 import sharp from 'sharp';
 import { makeCuratorSecrets, type TestCuratorSecrets } from '../../test/helpers/curatorSecrets';
 import { HOME_OPENING, HOME_SERIES } from '../support/catalog-home';
@@ -20,8 +20,8 @@ import { routePhotoFixtures } from '../support/test';
 // 1. Chrome and tokens, exact. Outside every photograph's box (`img`, `picture`, `canvas`, and Home's slides), not
 //    one pixel may differ, on any page, at either size or scale. That's the claim: Black is today's tokens, type
 //    and layout.
-// 2. Photographs, a tolerance. Inside those boxes, no channel may step more than 4/255, with no limit on how many
-//    pixels do. A photo is the same bytes in both builds, so its raster isn't under test, and it doesn't repeat from
+// 2. Photographs, a tolerance. Inside those boxes, no channel may step more than 12/255 (PHOTO_STEP), with no limit
+//    on how many pixels do. The Inbox's thumbnails step up to 9/255 against themselves in the base, so 4 flaked. A photo is the same bytes in both builds, so its raster isn't under test, and it doesn't repeat from
 //    one load to the next even in the base; a theme that touched a photo (a filter, an opacity) moves it much further.
 // Home's intro is shot at its settled frame, held by reduced motion, under the same rule. A departure spec §10
 // sanctions is masked at its one page, size and scale only (Pair.sanctioned).
@@ -34,8 +34,9 @@ import { routePhotoFixtures } from '../support/test';
 const BASE = process.env.PARITY_BASE_DIR;
 const HEAD = process.cwd();
 const OUT = path.join(HEAD, 'test-results', 'parity');
-/** The largest step a photograph's own pixels may take, per channel: 4/255, invisible. */
-const PHOTO_STEP = 4;
+/** The largest step a photograph's own pixels may take, per channel: 12/255, still invisible in a photograph. The
+ * Inbox's 56 px thumbnails step up to 9/255 against themselves in the base (the design check's P1), so 4 would flake. */
+const PHOTO_STEP = 12;
 const VIEWPORTS = { desktop: { width: 1440, height: 900 }, phone: { width: 390, height: 844 } } as const;
 const SCALES = [1, 2] as const;
 // Rows go to a file as they're measured: a failed test restarts the worker, which would drop rows held in memory.
@@ -277,10 +278,12 @@ const revealChrome = async (page: Page) => {
     await page.mouse.move(width / 2, height / 2);
     await page.mouse.move(width / 2 + 40, height / 2 + 10);
 };
-const toSequence = async (page: Page) => {
-    await page.getByRole('heading', { name: 'Sequence' }).evaluate((heading) => heading.scrollIntoView({ block: 'start' }));
-    await page.evaluate(() => window.scrollBy(0, -80));
-};
+/** Scrolls `target`'s top to 80 px under the viewport's, to a whole pixel, so both builds land on the same offset. */
+const scrollToWhole = (target: Locator) =>
+    target.evaluate((element) => window.scrollTo(0, Math.max(0, Math.round(element.getBoundingClientRect().top + window.scrollY) - 80)));
+/** Focuses without the browser's own scroll, which picks its offset mid layout and can land a fraction apart. */
+const focusInPlace = (target: Locator) => target.evaluate((element) => (element as HTMLElement).focus({ preventScroll: true }));
+const toSequence = (page: Page) => scrollToWhole(page.getByRole('heading', { name: 'Sequence' }));
 
 const VISITOR: Pair[] = [
     { name: 'home-intro', url: '/', intro: true },
@@ -302,8 +305,9 @@ const VISITOR: Pair[] = [
         url: series,
         act: async (page) => {
             await toSequence(page);
+            // A key press first, so the focus that follows is :focus-visible, as a keyboard visitor's is.
             await page.keyboard.press('Tab');
-            await page.locator('section[aria-labelledby="series-sequence"] ol li a').first().focus();
+            await focusInPlace(page.locator('section[aria-labelledby="series-sequence"] ol li a').first());
         },
     },
     { name: 'cover-hover', url: series, act: (page) => page.locator('main figure a').first().hover() },
@@ -311,8 +315,9 @@ const VISITOR: Pair[] = [
         name: 'cover-focus',
         url: series,
         act: async (page) => {
+            await scrollToWhole(page.locator('main figure a').first());
             await page.keyboard.press('Tab');
-            await page.locator('main figure a').first().focus();
+            await focusInPlace(page.locator('main figure a').first());
         },
     },
     { name: 'viewer', url: `${series}/photo/${HOME_OPENING}` },
@@ -341,10 +346,6 @@ const CURATOR: Pair[] = [
         url: '/curation/inbox',
         session: true,
         addsControl: true,
-        // Sanctioned (spec §10): at 390 and DPR 1, the KG ring's left edge is 1/255 on 18 px, from the header's
-        // sub-pixel layout after the toggle is replaced. The curator PR (map item 5) owns CuratorHeader.tsx and tries
-        // a whole-pixel width for the control's slot; this mask goes when that brings it to 0.
-        sanctioned: [{ width: 390, scale: 1, box: { x: 16, y: 22, w: 3, h: 12 } }],
     },
     { name: 'publish', url: '/curation/publish', session: true, addsControl: true },
 ];

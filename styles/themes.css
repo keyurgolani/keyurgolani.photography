@@ -119,13 +119,17 @@ html[data-theme='bright'] {
    curator's styles into a chunk every visitor page loads. Only what paints before the menu opens is here; the
    popover's styles (theme-menu-popover.css) load after hydration. The swatch is the painting theme's ground and ink,
    split on the diagonal, inside the strong rule. */
+/* A whole-pixel slot that lays out on its own (contain: layout), so nothing beside it moves by a fraction of a pixel
+   when it replaces today's toggle: Black parity found the KG ring's edge 1/255 off on the error page and the Inbox. */
 .theme-menu-button {
   position: relative;
   display: inline-flex;
+  flex: 0 0 44px;
   align-items: center;
   justify-content: center;
   width: 44px;
   height: 44px;
+  contain: layout style;
   padding: 0;
   border: 0;
   border-radius: 50%;
