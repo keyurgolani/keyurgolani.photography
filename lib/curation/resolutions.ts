@@ -374,10 +374,11 @@ export const OWNER_FIELDS = {
 
 /**
  * The photo record fields the tools set: the record's identity, the asset
- * revision draft:init pins, the version and rebase fields, and #16's review
- * stamps, which are the writer's metadata and never the owner's copy.
+ * revision draft:init pins, the version and rebase fields, #16's review
+ * stamps, and `photos carry-over`'s marker, which are the tools' metadata and
+ * never the owner's copy.
  */
-export const MANAGED_PHOTO_FIELDS = ['schemaVersion', 'version', 'baseRevisionId', 'conflicts', 'review', 'kind', 'id', 'assetRevision'] as const satisfies readonly (keyof AuthoredPhoto)[];
+export const MANAGED_PHOTO_FIELDS = ['schemaVersion', 'version', 'baseRevisionId', 'conflicts', 'review', 'kind', 'id', 'assetRevision', 'carryOver'] as const satisfies readonly (keyof AuthoredPhoto)[];
 
 /** What the owner set on a photo record, which a merge would lose. Empty for the bare record draft:init writes. */
 export function ownerCopyOf(record: AuthoredPhoto): string[] {

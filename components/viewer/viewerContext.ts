@@ -21,6 +21,8 @@ export interface ViewerChromeState {
     total: number;
     /** False when the revision holds no usable set, so Zoom has nothing to enlarge. */
     hasImage: boolean;
+    /** An untitled photograph whose image is named by its place, so the header doesn't say the position again. */
+    namedByPlace: boolean;
     /** The photo's accent, else the series', already checked as `#rrggbb`. */
     accent: string | null;
     /** The series' canonical slug and the revision this photograph came from, which the neighbors' peeks are asked for in (9a). */

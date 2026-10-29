@@ -66,7 +66,7 @@ function Step({ step, href, actions }: { step: ViewerStep; href: string | null; 
  * series on a page, and in the modal it's a button the shell closes with.
  */
 export default function ViewerChrome({ state, mode, headingId, zoomed, onZoom, actions }: ViewerChromeProps) {
-    const { seriesTitle, closeHref, previousHref, nextHref, position, total, hasImage } = state;
+    const { seriesTitle, closeHref, previousHref, nextHref, position, total, hasImage, namedByPlace } = state;
     return (
         <>
             <header className={styles.header}>
@@ -85,7 +85,8 @@ export default function ViewerChrome({ state, mode, headingId, zoomed, onZoom, a
                     <h1 className={styles.series}>{seriesTitle}</h1>
                     <p className={styles.position}>
                         <span aria-hidden="true">{positionLabel(position, total)}</span>
-                        <span className="sr-only">{positionText(position, total)}</span>
+                        {/* The image says "Photograph N of T" for a photograph named by its place, so this doesn't. */}
+                        {!namedByPlace && <span className="sr-only">{positionText(position, total)}</span>}
                     </p>
                 </div>
                 {/* With no usable set there's nothing to enlarge. aria-disabled keeps focus on Zoom when a move lands on such a photo. */}

@@ -131,6 +131,7 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
     const readingId = useId();
 
     const accent = accentValue(photo.accent, series.accent);
+    const placeOnly = photo.namedByPlace && photo.title === null;
     const { image } = photo;
     const chrome = useMemo<ViewerChromeState>(
         () => ({
@@ -142,6 +143,7 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
             position,
             total,
             hasImage: image !== null,
+            namedByPlace: photo.namedByPlace && photo.title === null,
             accent,
             seriesSlug: series.slug,
             revisionId: viewer.catalogRevision,
@@ -149,7 +151,7 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
             nextPhotoId: viewer.nextPhotoId,
             image,
         }),
-        [photo.id, series.title, series.slug, closeHref, previousHref, nextHref, position, total, image, accent, viewer.catalogRevision, viewer.previousPhotoId, viewer.nextPhotoId],
+        [photo.id, photo.namedByPlace, photo.title, series.title, series.slug, closeHref, previousHref, nextHref, position, total, image, accent, viewer.catalogRevision, viewer.previousPhotoId, viewer.nextPhotoId],
     );
     const report = shell?.report;
     // Before paint, so the shell's controls replace these in the same frame and show this photograph's state.
@@ -209,12 +211,15 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
                 </div>
             </div>
 
-            <section className={styles.reading} aria-labelledby={readingId} data-viewer-reading="">
+            {/* An untitled photograph named by its place says it on the image alone: no heading, so no region named the same. */}
+            <section className={styles.reading} aria-labelledby={placeOnly ? undefined : readingId} data-viewer-reading="">
                 {/* The title line, which the first screen keeps in view on a wide screen, the same height with or without them. */}
                 <div className={styles.lead}>
-                    <h2 id={readingId} className={photo.title === null ? 'sr-only' : styles.title}>
-                        {photo.title ?? positionText(position, total)}
-                    </h2>
+                    {!placeOnly && (
+                        <h2 id={readingId} className={photo.title === null ? 'sr-only' : styles.title}>
+                            {photo.title ?? positionText(position, total)}
+                        </h2>
+                    )}
                     {photo.caption !== null && <p className={styles.caption}>{photo.caption}</p>}
                 </div>
                 {(photo.description !== null || pendingCopy !== null) && (

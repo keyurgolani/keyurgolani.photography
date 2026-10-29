@@ -62,6 +62,17 @@
  *     5 MiB in UTF-8, and describe-import.ts lists the characters and field
  *     lengths it refuses. --dry-run takes no lock and writes nothing.
  *
+ *   npx tsx scripts/photos.ts carry-over [--apply --actor <name>] [--allow-missing <photoId or path>,...]
+ *     The one-time step before the launch publish: put every photo the legacy
+ *     Gallery lists into one published series, Gallery, in its order, featured
+ *     and alone in Work's order. The photos keep the names the Gallery gives
+ *     them, "Photograph N of T", with no description, and their records say
+ *     they were carried over. Without --apply it writes nothing and prints the
+ *     plan. It refuses a working layer with series, a Work order, or a featured
+ *     series of the owner's, and exits 1 while a photo the legacy site has
+ *     can't carry over, unless --allow-missing names it. Running it again
+ *     changes nothing. Exits 3 when a lock stays busy, and 4 for I/O.
+ *
  *   npx tsx scripts/photos.ts edit (<photoId> | <seriesId> | site) [--file <path>] [--expect-version <N>]
  *     Open a record's newest version in $VISUAL or $EDITOR, check it, and
  *     commit it as the next version. A series without a record opens as a
@@ -206,6 +217,7 @@
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
+import { runCarryOver } from '../lib/catalog/carry-over';
 import { runDescribeImport } from '../lib/catalog/describe-import';
 import { runDraftInit } from '../lib/catalog/draft-init';
 import { recordRef, runEditRecord } from '../lib/catalog/edit-record';
@@ -245,6 +257,7 @@ const USAGE = `Usage:
   ${PROGRAM} list [--unassigned] [--json]
   ${PROGRAM} draft:init
   ${PROGRAM} describe --import <file> [--dry-run]
+  ${PROGRAM} carry-over [--apply --actor <name>] [--allow-missing <photoId or path>,...]
   ${PROGRAM} edit (<photoId> | <seriesId> | site) [--file <path>] [--expect-version <N>]
   ${PROGRAM} sequence show <seriesId>
   ${PROGRAM} sequence set <seriesId> <photoId>... [--expect-version <N>]
@@ -550,6 +563,18 @@ async function describeCommand(args: string[]): Promise<number> {
     return printed(await runDescribeImport({ dataRoot: root }, { file: values.import, dryRun: values['dry-run'] }));
 }
 
+async function carryOverCommand(args: string[]): Promise<number> {
+    const { values } = parseFlags({ args, options: { apply: { type: 'boolean' }, 'dry-run': { type: 'boolean' }, actor: { type: 'string' }, 'allow-missing': { type: 'string' } } });
+    if (values.apply && values['dry-run']) throw new UsageError('photos carry-over takes --apply or --dry-run, not both.');
+    const actor = values.actor ?? process.env.PHOTOS_ACTOR ?? '';
+    if (values.apply && !/\S/.test(actor)) throw new UsageError('photos carry-over --apply needs --actor <name> or PHOTOS_ACTOR.');
+    const allow = (values['allow-missing'] ?? '').split(',').map((entry) => entry.trim()).filter((entry) => entry !== '');
+    if (values['allow-missing'] !== undefined && allow.length === 0) throw new UsageError('--allow-missing needs photo IDs or library paths, separated by commas.');
+    const root = ownerRoot();
+    if (typeof root === 'number') return root;
+    return printed(await runCarryOver({ dataRoot: root }, { apply: values.apply, actor: actor.trim(), allow }));
+}
+
 async function editCommand(args: string[]): Promise<number> {
     const { values, positionals } = parseFlags({ args, options: { file: { type: 'string' }, 'expect-version': { type: 'string' } }, allowPositionals: true });
     if (positionals.length !== 1) throw new UsageError('photos edit needs one record: a photo ID, a series ID, or site.');
@@ -579,6 +604,7 @@ async function main(argv: string[]): Promise<number> {
         if (command === 'list') return await listCommand(args);
         if (command === 'draft:init') return await draftInitCommand(args);
         if (command === 'describe') return await describeCommand(args);
+        if (command === 'carry-over') return await carryOverCommand(args);
         if (command === 'edit') return await editCommand(args);
         if (command === 'sequence') return await orderCommand(() => sequenceArgs(args));
         if (command === 'series') return await orderCommand(() => seriesArgs(args));

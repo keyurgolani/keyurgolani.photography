@@ -1,6 +1,7 @@
 // The web process and the tests import this, never the CLI or a client
 // module. A client bundle that reaches it fails the build (#3).
 import 'server-only';
+import { photoImageAlt } from '../../a11y/photoName';
 import { PHOTO_ID_RE } from '../../identity/ids';
 import { TECHNICAL_KEYS, type TechnicalKey } from '../../identity/metadata';
 import type { VariantFormat, VariantWidth } from '../../identity/variants';
@@ -69,6 +70,12 @@ export interface PublishedViewerPhoto {
          * An unreviewed suggestion isn't pending here (see `description`).
          */
         descriptionPending: boolean;
+        /**
+         * A carried-over photo with no description yet (`position`): its alt
+         * is its place, "Photograph N of T", so the Viewer names it there
+         * alone, and drops the other places that say the position.
+         */
+        namedByPlace: boolean;
         /**
          * Null when the set can't be shown (a hand-written revision: a size
          * that isn't a positive integer, or a file that isn't this photo's own
@@ -145,11 +152,13 @@ function accent(value: unknown): string | null {
  * suggestion reads as the description here; `description.required` stops it
  * at publish.
  */
-function described(alt: Photo['alt']): Pick<PublishedViewerPhoto['photo'], 'description' | 'alt' | 'descriptionPending'> {
-    if (alt.kind === 'decorative') return { description: null, alt: '', descriptionPending: false };
+function described(alt: Photo['alt'], position: number, total: number): Pick<PublishedViewerPhoto['photo'], 'description' | 'alt' | 'descriptionPending' | 'namedByPlace'> {
+    if (alt.kind === 'decorative') return { description: null, alt: '', descriptionPending: false, namedByPlace: false };
+    // Carried over with no description yet: named by its place, once, as the legacy Gallery named it. Nothing is pending.
+    if (alt.kind === 'position') return { description: null, alt: photoImageAlt({ position, total }), descriptionPending: false, namedByPlace: true };
     const description = alt.kind === 'described' ? text(alt.text) : null;
-    if (description === null) return { description: null, alt: '', descriptionPending: true };
-    return { description, alt: description, descriptionPending: false };
+    if (description === null) return { description: null, alt: '', descriptionPending: true, namedByPlace: false };
+    return { description, alt: description, descriptionPending: false, namedByPlace: false };
 }
 
 function technical(facts: Photo['technical']): Partial<Record<TechnicalKey, string>> {
@@ -227,7 +236,7 @@ export function viewerPhotoOf(source: ViewerSource, slug: unknown, photoId: unkn
             photo: {
                 id: record.id,
                 title: text(record.title),
-                ...described(record.alt),
+                ...described(record.alt, position.index + 1, position.total),
                 caption: text(record.caption),
                 // Compile never writes a bad set; a hand-written revision can. The Viewer never points outside the revision's derivatives.
                 image,

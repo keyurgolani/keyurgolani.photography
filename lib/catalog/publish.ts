@@ -6,7 +6,7 @@ import type { Registry } from '../identity/types';
 import { dataRootStatus, libraryRoot } from '../storage/config';
 import { LockTimeoutError, withLock, type LockContext, type LockHooks, type LockRecord } from '../storage/lock';
 import { candidateFile, compileCandidate, type CompileResult } from './compile';
-import { onLegacySite } from './legacy-photos';
+import { legacySitePhotos } from './photos-api';
 import { LAUNCH_ORDER_RULE_IDS } from './order-rules';
 import { rebaseWorkingLayer, type RebaseReport } from './rebase';
 import type { ReviewContext } from './review';
@@ -147,7 +147,11 @@ export interface PublishOptions {
 export interface LaunchImpact {
     /** Photographs the candidate publishes. */
     published: number;
-    /** Photographs the legacy site can list, by onLegacySite(), that the candidate leaves out. They leave the site at launch. */
+    /**
+     * Photographs the legacy site counts as on it (legacySitePhotos()) that the candidate leaves out. They leave the
+     * site at launch. It counts by the registry: a photo hidden behind another's shared legacy set isn't on the site,
+     * but one whose legacy derivatives aren't all built still counts, so a missing or empty library can't lower it.
+     */
     gone: number;
 }
 
@@ -505,6 +509,26 @@ export async function validateWorkingLayer(options: { dataRoot: string; reprofil
     }
 }
 
+/**
+ * What `photos publish --dry-run` would find for `layer`, a working layer
+ * held in memory, such as `photos carry-over`'s plan before it writes: the
+ * compiled candidate, every rule's issues, and before the first activation,
+ * what the launch takes away. Reads the registry, the pointer, the active
+ * revision and the review context from the data root, and writes nothing.
+ */
+export async function checkLayer(dataRoot: string, layer: WorkingLayer): Promise<{ compiled: CompileResult; issues: Issue[]; launch: LaunchImpact | null }> {
+    const root = path.resolve(dataRoot);
+    const registry = await readRegistry(root);
+    const pointer = await readActivePointer(root);
+    const active = pointer ? await readRevisionFile(root, pointer.revisionId) : null;
+    if (pointer && active === null) throw new CatalogIntegrityError(ACTIVE_POINTER_NAME, `${ACTIVE_POINTER_NAME} names ${pointer.revisionId}, which has no revision file.`);
+    const compiled = await compileCandidate({ layer, registry, root, active });
+    const review = await readReviewContext(root, layer, pointer?.revisionId ?? null);
+    const issues = runRules(ruleContext(root, { layer, registry, pointer, active, compiled, review }));
+    const launch = pointer ? null : launchImpact(registry, compiled.content.photos.length, new Set(compiled.content.photos.map((photo) => photo.id)));
+    return { compiled, issues, launch };
+}
+
 export interface ActivateOptions {
     /** The catalog lock the caller holds. */
     lock: LockContext;
@@ -617,10 +641,10 @@ export async function activateRevision(options: ActivateOptions): Promise<Activa
     return { outcome: 'ACTIVATED', message: `Activated ${revision.revisionId} as revision ${result.activation.revisionNumber}.`, activation: result.activation, recovery, issues };
 }
 
-/** What a first activation takes away: photographs the legacy site can list that the candidate doesn't publish. */
+/** What a first activation takes away: photographs the legacy site counts as on it that the candidate doesn't publish. */
 function launchImpact(registry: Registry, published: number, publishedIds: ReadonlySet<string>): LaunchImpact {
-    const gone = Object.values(registry.photos).filter((photo) => onLegacySite(photo) && !publishedIds.has(photo.photoId)).length;
-    return { published, gone };
+    const { onSite } = legacySitePhotos(registry, libraryRoot());
+    return { published, gone: onSite.filter((photo) => !publishedIds.has(photo.photoId)).length };
 }
 
 /** Who and why, which every activation records. Blank ones are a caller's bug. */
