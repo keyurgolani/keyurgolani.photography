@@ -115,8 +115,6 @@ jobs:
       # next before the five themes: v1.2.0 plus #119's curator copy and #120's carry-over. Black must paint as it does
       # there. Move it only for a change that isn't a theme's and moves Black on purpose, and say so in that PR.
       PARITY_BASE: be35250a83ec076b28c713851aca9c7dd4801b77
-      # About's placeholder copy fails any other production build (utils/artistProfile.ts); both builds here serve tests only.
-      ALLOW_PROVISIONAL_COPY: '1'
       NEXT_TELEMETRY_DISABLED: '1'
     steps:
       - uses: actions/checkout@v7
@@ -129,21 +127,12 @@ jobs:
           cache: npm
 
       - run: npm ci
-      - name: Build the head
-        run: npm run build
 
-      - name: Build the base
+      - name: Check out the base
         run: |
           git worktree add --detach ../parity-base "$PARITY_BASE"
           cd ../parity-base
           npm ci
-          npm run build
-
-      # Each visitor route's first-load CSS, from the two builds' manifests: at most +2,500 B gzipped (R2-P2-1).
-      - name: Check the CSS budget
-        # A run step without a shell has no pipefail, so the budget's exit would be tee's.
-        shell: bash
-        run: node ci/themes-budget.mjs ../parity-base . | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Install Chromium
         timeout-minutes: 15
@@ -157,8 +146,18 @@ jobs:
           done
           exit 1
 
+      # The parity config's global setup builds both trees first (e2e/themes/build.ts), under the Playwright servers'
+      # env, which About's placeholder copy needs and no workflow sets.
       - name: Black against the base, pixel for pixel
-        run: PARITY_BASE_DIR="$(cd ../parity-base && pwd)" npx playwright test -c e2e/themes/parity.config.ts
+        run: PARITY_BUILD=1 PARITY_BASE_DIR="$(cd ../parity-base && pwd)" npx playwright test -c e2e/themes/parity.config.ts
+
+      # Each visitor route's first-load CSS, from the two builds' manifests: at most +2,500 B gzipped (R2-P2-1). It
+      # runs whether parity passed or not.
+      - name: Check the CSS budget
+        if: ${{ !cancelled() }}
+        # A run step without a shell has no pipefail, so the budget's exit would be tee's.
+        shell: bash
+        run: node ci/themes-budget.mjs ../parity-base . | tee -a "$GITHUB_STEP_SUMMARY"
 
       - if: always()
         run: cat test-results/parity/black-parity.md >> "$GITHUB_STEP_SUMMARY" || true
