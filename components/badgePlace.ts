@@ -101,6 +101,20 @@ export function badgePlace(view: { width: number; height: number }, card: number
   return { kind: 'side', dx: view.width / 4, dy: -10, scale: MIN_SCALE };
 }
 
+/**
+ * The top of Home's copy as a percentage of the stage's height, from the
+ * story's measured title, statement and link: where Light's and Bright's
+ * phone wash holds up to (HomeChrome.module.css, --home-copy-top), so a long
+ * title or large text keeps the wash under it. Null with no copy, or no
+ * stage, which leaves the stylesheet's 66%.
+ */
+export function homeCopyTop(stage: Box, story: Box[]): number | null {
+  const height = stage.bottom - stage.top;
+  if (height <= 0 || story.length === 0) return null;
+  const top = Math.min(...story.map((box) => box.top)) - stage.top;
+  return Math.round(Math.min(100, Math.max(0, (top / height) * 100)) * 100) / 100;
+}
+
 export const boxOf = (element: Element | null): Box | null => {
   if (!element) return null;
   const { left, top, right, bottom } = element.getBoundingClientRect();

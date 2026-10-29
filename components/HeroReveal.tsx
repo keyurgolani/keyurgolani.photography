@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { motion, useMotionValue, useTransform, animate, type AnimationPlaybackControls } from 'framer-motion';
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
-import { badgePlace, boxOf, type BadgePlace, type Box } from './badgePlace';
+import { badgePlace, boxOf, homeCopyTop, type BadgePlace, type Box } from './badgePlace';
 import ProfilePicture from './ProfilePicture';
 import { HOME_LOADING_TIMEOUT_MS } from './home/homeChromeConfig';
 import { usePrefersReducedMotion } from './motion/usePrefersReducedMotion';
@@ -296,6 +296,29 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
     for (const region of root.querySelectorAll('[data-chrome-region="nav"], [data-chrome-region="story"]')) observer.observe(region);
     return () => observer.disconnect();
   }, [showPortrait]);
+
+  // The copy's top on Home's root, for Light's and Bright's phone wash (HomeChrome.module.css), with or without a
+  // portrait, measured like the badge's place and again whenever Home or the story changes size.
+  useLayoutEffect(() => {
+    const story = document.querySelector('[data-chrome-region="story"]');
+    const root = story?.closest('main');
+    if (!story || !(root instanceof HTMLElement)) return;
+    const measure = () => {
+      const stage = boxOf(root);
+      const top = stage && homeCopyTop(stage, [...story.querySelectorAll(':is(h1, h2, p, a)')].map(boxOf).filter((box): box is Box => box !== null));
+      if (top === null || top === undefined) root.style.removeProperty('--home-copy-top');
+      else root.style.setProperty('--home-copy-top', `${top}%`);
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(root);
+    observer.observe(story);
+    return () => {
+      observer.disconnect();
+      root.style.removeProperty('--home-copy-top');
+    };
+  }, []);
 
   if (phase === 'settled' && !showPortrait) return null;
 

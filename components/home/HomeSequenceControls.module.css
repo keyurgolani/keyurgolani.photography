@@ -8,8 +8,9 @@
   max-width: 100%;
   padding: 0.25rem;
   border-radius: 26px;
-  background: rgba(0, 0, 0, 0.65);
-  color: #fff;
+  /* The theme's control scrim and ink (HomeChrome.module.css); Black's are today's. */
+  background: var(--gah-control-scrim, rgba(0, 0, 0, 0.65));
+  color: var(--gah-control-ink, #fff);
 }
 
 /* Wraps at narrow widths and large text, so every control stays in view. */

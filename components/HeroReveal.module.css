@@ -28,6 +28,11 @@
   opacity: 0.06;
 }
 
+/* A white wall shows the least grain. */
+[data-theme="bright"] .grainTexture {
+  opacity: 0.05;
+}
+
 /* The portrait, at the center while Home loads (.portrait), then in its
    place as the badge (.badge); HeroReveal's transform moves it between the
    two. It sits over the grain and the ripples, and under Home's scrim (49)
@@ -54,8 +59,14 @@
 }
 
 /* The badge shows for 3 s once it's in place (data-lingering), then exactly
-   when Home's chrome does, and fades with v1.1.0's 1 s ease-in-out. */
+   when Home's chrome does, and fades with v1.1.0's 1 s ease-in-out. In
+   Light, Bright and Dark it sits above the scrim (--gah-badge-layer, 50, from
+   HomeChrome.module.css), so no theme's wash fogs it; it comes before the
+   chrome in the DOM, so the chrome still paints over it, and badgePlace()
+   keeps it clear of the chrome's text and panel (P1-1). Black is today's
+   site, where it sits under the scrim. */
 .badge {
+  z-index: var(--gah-badge-layer, 42);
   opacity: 0;
   transition: opacity 1s ease-in-out;
 }

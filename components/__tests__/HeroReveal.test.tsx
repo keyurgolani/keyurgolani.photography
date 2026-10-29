@@ -4,7 +4,7 @@ import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
 import { setPrefersReducedMotion } from '@/test/matchMedia';
-import { badgePlace, V110_LANE, type Box } from '../badgePlace';
+import { badgePlace, homeCopyTop, V110_LANE, type Box } from '../badgePlace';
 import HeroReveal, { BADGE_LINGER_MS, type HeroRevealPhase } from '../HeroReveal';
 import { HOME_LOADING_TIMEOUT_MS } from '../home/homeChromeConfig';
 
@@ -564,5 +564,30 @@ describe('badgePlace', () => {
 
   it('leaves the place alone before there is a card to measure', () => {
     expect(badgePlace({ width: 390, height: 844 }, 0, nav(390), [])).toBeNull();
+  });
+});
+
+describe('homeCopyTop', () => {
+  const stage: Box = { left: 0, top: 0, right: 390, bottom: 844 };
+
+  it("gives the copy's top as a percentage of the stage, from its highest box", () => {
+    const title: Box = { left: 16, top: 520, right: 300, bottom: 600 };
+    const link: Box = { left: 16, top: 700, right: 160, bottom: 744 };
+    expect(homeCopyTop(stage, [link, title])).toBe(61.61);
+  });
+
+  it('follows a title that grows, as with large text, up the stage', () => {
+    const at200: Box = { left: 16, top: 280, right: 374, bottom: 600 };
+    expect(homeCopyTop(stage, [at200])).toBe(33.18);
+  });
+
+  it("measures from the stage's own top, and stays within 0 and 100", () => {
+    expect(homeCopyTop({ ...stage, top: 100, bottom: 944 }, [{ left: 0, top: 620, right: 10, bottom: 640 }])).toBe(61.61);
+    expect(homeCopyTop(stage, [{ left: 0, top: -40, right: 10, bottom: 10 }])).toBe(0);
+  });
+
+  it("leaves the stylesheet's default with no copy or no stage", () => {
+    expect(homeCopyTop(stage, [])).toBeNull();
+    expect(homeCopyTop({ ...stage, bottom: 0 }, [{ left: 0, top: 10, right: 10, bottom: 20 }])).toBeNull();
   });
 });
