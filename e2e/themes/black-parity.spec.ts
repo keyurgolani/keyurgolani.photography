@@ -10,38 +10,38 @@ import { HOME_OPENING, HOME_SERIES } from '../support/catalog-home';
 import { createInboxFixture, openInboxItems, type InboxFixture } from '../support/curation-inbox';
 import { publishHomeFixture } from '../support/homeFixture';
 import { routePhotoFixtures } from '../support/test';
+import { compare, failures, walk, type Comparison, type Walk } from './computed';
 
-// Black is today's site, exactly (the owner's ruling, 2026-10-28). This renders the same pages from two builds, the
-// base (PARITY_BASE_DIR: next before the themes) with today's toggle's stored `dark` and the head with `black` stored,
-// on the same fixtures, a dark device and reduced motion, and diffs every pixel. The theme controls' boxes are masked
-// (the base's toggle, the head's control, ±2 px, in the page and in the curator's preview frame).
+// Black is today's site, exactly (the owner's ruling, 2026-10-28). This loads the same page states from two builds, the
+// base (PARITY_BASE_DIR: next before the themes) and the head, on the same fixtures, a dark device and reduced motion.
 //
-// The rule, in two passes over every shot (the lead's ruling after the code review's H4, 2026-10-29; spec §10). A mask
-// must never hide chrome, so neither pass masks anything but the controls:
-// 1. Chrome, exact. Both builds take every photograph out before the capture (`img`, `picture`, `canvas`, `video` at
-//    opacity 0, which keeps the layout, and Home's slides without their images), then the whole frame is compared:
-//    not one pixel may differ, on any page, at either size or scale. Home's nav, title, scrim, panel, badge and
-//    controls, captions over a photo and letterboxing all composite over the same ground, so they're all held exact.
-//    That's the claim: Black is today's tokens, type and layout.
-// 2. Photographs, a tolerance. Both builds paint nothing but the photographs, and inside the photographs' boxes no
-//    channel may step more than 12/255 (PHOTO_STEP), with no limit on how many pixels do. A photo is the same bytes in
-//    both builds, so its raster isn't under test, and it doesn't repeat from one load to the next even in the base:
-//    the Inbox's thumbnails step up to 9/255 against themselves. 12/255 is still invisible in a photograph.
-// Home's intro is shot at its settled frame, held by reduced motion, under the same rule. A departure spec §10
-// sanctions is excluded from the chrome pass at its one page, size and scale only (Pair.sanctioned): today that's the
-// Inbox's KG ring edge at 390 and DPR 1. A self-test makes
-// Home's scrim 1/255 off in the head and asserts the chrome pass fails.
-// A second row per page and size pins the ruling on owner question 4: the head with today's stored `dark` paints Black.
-// The curator's header gains the control where the base had none, so the head's curator shots take it out of the
-// layout first, as no JavaScript does.
-// At 1440x900 and 390x844, each at 1x and 2x. The visitor pages, the 404 and the error page; the legacy Gallery and its
-// lightbox; the curator signed out and in, and its 503.
+// The gate is computed style (the lead's ruling, 2026-10-29; spec §10; e2e/themes/computed.ts). The base doesn't render
+// the same pixels twice: its own photographs, the intro's ripples and a focus ring's edge differ from one load to the
+// next, so a pixel gate flakes on the base itself. What Black is made of can be compared exactly instead:
+// 1. Tokens: every custom property the base resolves on :root and body must resolve the same in the head's Black. New
+//    tokens are allowed, and listed.
+// 2. Elements: every element under body (and in the curator's preview frame), matched by a path of tag and
+//    nth-of-type, with its ::before and ::after: paint, type, compositing, visibility and display, all exact, and its
+//    box within 0.5 CSS px, every non-zero delta logged. A missing or extra element fails, by path. The theme control
+//    and today's toggle are left out with their subtrees; the curator's head takes its control out of the layout, as no
+//    JavaScript does, since the base's header had none.
+// At 1440 and 390, in all three of Black's routes: System on a dark device and today's stored `dark`, each against the
+// base on its stored `dark`, and no JavaScript against the base without it.
+// Self-tests inject a change into the head that must fail the gate: Home's scrim and --gah-ink 1/255 off, the glass
+// blur at 13px, a photograph's opacity at .96.
+//
+// What the gate can't see is raster only: how the browser draws a blur, a resample or an antialiased edge. The pixel
+// report covers that, as an artefact, not a gate: two passes over every shot at 1x and 2x, each in its own fresh load
+// with its style in before first paint (chrome with every photograph taken out, or a checkerboard under glass; then
+// the photographs alone), the base against itself beside the head against the base.
+// The visitor pages, the 404 and the error page; the legacy Gallery and its lightbox; the curator signed out and in,
+// and its 503.
 
 const BASE = process.env.PARITY_BASE_DIR;
 const HEAD = process.cwd();
 const OUT = path.join(HEAD, 'test-results', 'parity');
-/** The largest step a photograph's own pixels may take, per channel: 12/255, still invisible in a photograph. The
- * Inbox's 56 px thumbnails step up to 9/255 against themselves in the base (the design check's P1), so 4 would flake. */
+/** For the pixel report: a photograph's own step up to 12/255 is invisible. The Inbox's 56 px thumbnails step up to
+ * 9/255 against themselves in the base. */
 const PHOTO_STEP = 12;
 const VIEWPORTS = { desktop: { width: 1440, height: 900 }, phone: { width: 390, height: 844 } } as const;
 const SCALES = [1, 2] as const;
@@ -150,8 +150,6 @@ interface Pair {
     addsControl?: boolean;
     /** A page that never hydrates (the 503). */
     bare?: boolean;
-    /** Sanctioned departures (spec §10): boxes, in CSS pixels, masked at one width and scale only. */
-    sanctioned?: { width: number; scale: number; box: Box }[];
     /** Glass over the photographs (Home's SiteNav, the lightbox's chrome): pass 1 paints each photo as a checkerboard (D1). */
     glass?: boolean;
     /** CSS for the head's shots only: the self-test's deliberate change. */
@@ -191,25 +189,21 @@ interface PassShot {
 }
 
 /**
- * One fresh load of `pair` for one pass (D3): the pass's style, and the head's own, are in from before first paint,
+ * One fresh load of `pair`, settled (D3): `css` (a pass's style, the head's own) is in from before first paint,
  * through an init script in every frame, never toggled on a live page. Then hydration, fonts, every image loaded and
- * decoded, every finite animation done, and two frames, before the shot.
+ * decoded, and every finite animation done. `stored` is the theme in localStorage, or '' for none (System). Without
+ * JavaScript nothing waits on the page's scripts, and an act that needs them does nothing, in both builds alike.
  */
-async function load(origin: string, stored: string, pair: Pair, viewport: { width: number; height: number }, scale: number, tag: string, pass: PassName, session?: string): Promise<PassShot> {
-    const context = await browser.newContext({ viewport, deviceScaleFactor: scale, colorScheme: 'dark', reducedMotion: 'reduce' });
+async function open(origin: string, stored: string, pair: Pair, viewport: { width: number; height: number }, scale: number, css: string, { js = true, session }: { js?: boolean; session?: string } = {}) {
+    const context = await browser.newContext({ viewport, deviceScaleFactor: scale, colorScheme: 'dark', reducedMotion: 'reduce', javaScriptEnabled: js });
     if (session) await context.addCookies(JSON.parse(session).map((cookie: { name: string; value: string }) => ({ ...cookie, url: origin })));
-    const head = !tag.startsWith('base');
-    const css = [
-        pass === 'chrome' ? (pair.glass ? CHECKERED_PHOTOS : NO_PHOTOS) : ONLY_PHOTOS,
-        pair.addsControl && head ? '[data-theme-control]{display:none!important}' : '',
-        pair.headStyle && head ? pair.headStyle : '',
-    ].join('');
     await context.addInitScript(({ value, sheet }) => {
         try {
-            localStorage.setItem('theme', value);
+            if (value) localStorage.setItem('theme', value);
         } catch {
             // No storage.
         }
+        if (!sheet) return;
         // An adopted sheet needs no <head>, so it's in before the parser writes one, and nothing the page does removes it.
         const style = new CSSStyleSheet();
         style.replaceSync(sheet);
@@ -218,12 +212,13 @@ async function load(origin: string, stored: string, pair: Pair, viewport: { widt
     const page = await context.newPage();
     if (pair.photos) await routePhotoFixtures(page);
     await page.goto(`${origin}${pair.url}`, { waitUntil: pair.intro ? 'domcontentloaded' : 'load' });
-    if (!pair.bare) await page.waitForSelector('html[data-hydrated]', { timeout: 30_000 }).catch(() => undefined);
+    if (js && !pair.bare) await page.waitForSelector('html[data-hydrated]', { timeout: 30_000 }).catch(() => undefined);
     await page.evaluate(() => document.fonts.ready);
-    if (pair.url === '/') {
+    if (js && pair.url === '/') {
         await page.waitForSelector('[data-home-badge][data-landed]:not([data-lingering])', { timeout: 20_000 }).catch(() => undefined);
     }
-    await pair.act?.(page);
+    if (js) await pair.act?.(page);
+    else await Promise.race([pair.act?.(page).catch(() => undefined), new Promise((resolve) => setTimeout(resolve, 3000))]);
     // The page and the curator's preview frame: every image loaded and decoded (loaded isn't painted: a photo still
     // decoding can draw a row short), and every font in.
     await page.evaluate(async () => {
@@ -244,6 +239,18 @@ async function load(origin: string, stored: string, pair: Pair, viewport: { widt
         new Promise((resolve) => setTimeout(resolve, 5000)),
     ]));
     await page.waitForTimeout(600);
+    return { context, page };
+}
+
+/** One pass's capture, from its own fresh load: the shot, the controls' and photographs' boxes, and the photos' compositing. */
+async function load(origin: string, stored: string, pair: Pair, viewport: { width: number; height: number }, scale: number, tag: string, pass: PassName, session?: string): Promise<PassShot> {
+    const head = !tag.startsWith('base');
+    const css = [
+        pass === 'chrome' ? (pair.glass ? CHECKERED_PHOTOS : NO_PHOTOS) : ONLY_PHOTOS,
+        pair.addsControl && head ? '[data-theme-control]{display:none!important}' : '',
+        pair.headStyle && head ? pair.headStyle : '',
+    ].join('');
+    const { context, page } = await open(origin, stored, pair, viewport, scale, css, { session });
     // The control in the page and in any same-origin frame: today's toggle in the base, the theme control in the head.
     // Every photograph's box, unrounded. And each photograph's own compositing, with its ancestors'.
     const { controls, photos, styles } = await page.evaluate(() => {
@@ -315,9 +322,6 @@ interface Diff {
     photoStep: number;
     /** Where the chrome differs. */
     box: string;
-    /** Pass 1 inside the sanctioned boxes (D4): how many pixels differ, and by how much at most. */
-    sanctionedCount: number;
-    sanctionedStep: number;
     /** Photographs whose compositing differs between the two builds (D2): must be none. */
     styles: string[];
 }
@@ -331,10 +335,9 @@ async function pixels(left: string, right: string) {
 }
 
 /** Pass 1 compares the whole frame exactly, but the controls' boxes (±2 CSS px); pass 2 only the photographs' boxes, by their largest step. */
-async function diff(a: Shot, b: Shot, scale: number, name: string, sanctioned: Box[] = []): Promise<Diff> {
+async function diff(a: Shot, b: Shot, scale: number, name: string): Promise<Diff> {
     const device = (pad: number) => (box: Box): Region => ({ x0: (box.x - pad) * scale, y0: (box.y - pad) * scale, x1: (box.x + box.w + pad) * scale, y1: (box.y + box.h + pad) * scale });
     const masks = [...a.controls, ...b.controls].map(device(2));
-    const allowed = sanctioned.map(device(0));
     // A photograph's edge row or column, where it covers a pixel only in part, blends with whatever is under it, and
     // the resampler lands it up to 99/255 apart from one load to the next. Pass 1 holds that pixel's chrome exact;
     // pass 2 counts only the pixels a photograph covers whole, in to the whole pixels inside its box.
@@ -345,12 +348,10 @@ async function diff(a: Shot, b: Shot, scale: number, name: string, sanctioned: B
     const chrome = await pixels(a.chrome, b.chrome);
     const photo = await pixels(a.photo, b.photo);
     const styles = a.styles.length === b.styles.length ? a.styles.flatMap((line, index) => (line === b.styles[index] ? [] : [`${line} against ${b.styles[index]}`])) : [`${a.styles.length} photographs against ${b.styles.length}`];
-    if (!chrome || !photo) return { count: Number.POSITIVE_INFINITY, maxStep: 255, photoStep: 255, box: 'the two captures differ in size', sanctionedCount: 0, sanctionedStep: 0, styles };
+    if (!chrome || !photo) return { count: Number.POSITIVE_INFINITY, maxStep: 255, photoStep: 255, box: 'the two captures differ in size', styles };
 
     let count = 0;
     let maxStep = 0;
-    let sanctionedCount = 0;
-    let sanctionedStep = 0;
     let x0 = chrome.width, y0 = chrome.height, x1 = -1, y1 = -1;
     const mark = new Uint8Array(chrome.width * chrome.height * 3);
     for (let y = 0; y < chrome.height; y++) {
@@ -359,11 +360,6 @@ async function diff(a: Shot, b: Shot, scale: number, name: string, sanctioned: B
             mark[i] = mark[i + 1] = mark[i + 2] = Math.round((chrome.a.data[i] + chrome.a.data[i + 1] + chrome.a.data[i + 2]) / 9);
             const d = step(chrome.a.data, chrome.b.data, i);
             if (d === 0 || inside(masks, x, y)) continue;
-            if (inside(allowed, x, y)) {
-                sanctionedCount++;
-                sanctionedStep = Math.max(sanctionedStep, d);
-                continue;
-            }
             count++;
             maxStep = Math.max(maxStep, d);
             mark[i] = 255;
@@ -381,7 +377,7 @@ async function diff(a: Shot, b: Shot, scale: number, name: string, sanctioned: B
         }
     }
     const css = (v: number) => Math.round(v / scale);
-    return { count, maxStep, photoStep, box: count ? `x ${css(x0)} to ${css(x1)}, y ${css(y0)} to ${css(y1)}` : '', sanctionedCount, sanctionedStep, styles };
+    return { count, maxStep, photoStep, box: count ? `x ${css(x0)} to ${css(x1)}, y ${css(y0)} to ${css(y1)}` : '', styles };
 }
 
 // --- Pages -------------------------------------------------------------------------------------------------------
@@ -466,54 +462,82 @@ const CURATOR: Pair[] = [
         session: true,
         addsControl: true,
         measure: ['header [class*="monogram"]', 'header [class*="wordmark"]', 'header [class*="headerEnd"]', 'header'],
-        // The one sanctioned departure (spec §10): at 390 and DPR 1, the KG ring's left edge is 1/255 on 18 px, with the
-        // control out of the layout. The control's whole-pixel slot didn't clear it, so its cause is still open. The
-        // curator PR (spec §13, PR map item 5) owns CuratorHeader.tsx: it brings the ring to 0 and drops this box.
-        sanctioned: [{ width: 390, scale: 1, box: { x: 16, y: 22, w: 3, h: 12 } }],
     },
     { name: 'publish', url: '/curation/publish', session: true, addsControl: true },
 ];
 
 /** Shoots `pair` from both, at every size and scale, and pins the diff; and, with `legacy`, the head on a stored `dark`. */
 const row = (label: string, size: string, width: number, scale: number, d: Diff) =>
-    record(`| ${label} | ${size} ${width} | ${scale}x | ${d.count} | ${d.maxStep} | ${d.photoStep} | ${d.styles.length} | ${d.sanctionedCount ? `${d.sanctionedCount} at ${d.sanctionedStep}` : ''} | ${d.box} |`);
+    record(`| ${label} | ${size} ${width} | ${scale}x | ${d.count} | ${d.maxStep} | ${d.photoStep} | ${d.styles.length} | ${d.box} |`);
 
-/** The sanctioned departure's own bound (D4): spec §10's 18 px at 1/255, no more. */
-const SANCTIONED = { count: 18, step: 1 };
+// --- The gate: computed style ------------------------------------------------------------------------------------
 
-function expectWithin(name: string, d: Diff) {
-    expect.soft(d.count, `${name}: chrome pixels differing (${d.box})`).toBe(0);
-    expect.soft(d.photoStep, `${name}: the largest step inside a photograph`).toBeLessThanOrEqual(PHOTO_STEP);
-    expect.soft(d.styles, `${name}: each photograph's opacity, filter and blend, and its ancestors'`).toEqual([]);
-    expect.soft(d.sanctionedCount, `${name}: pixels differing inside the sanctioned box`).toBeLessThanOrEqual(SANCTIONED.count);
-    expect.soft(d.sanctionedStep, `${name}: the largest step inside the sanctioned box`).toBeLessThanOrEqual(SANCTIONED.step);
+const STYLE_ROWS = path.join(OUT, 'black-styles.rows');
+const STYLE_DETAILS = path.join(OUT, 'black-styles.details');
+
+/** A walk of `pair` in one build: every element's computed style and box, and the tokens, from a fresh settled load. */
+async function styles(origin: string, stored: string, pair: Pair, viewport: { width: number; height: number }, tag: string, { js = true, session }: { js?: boolean; session?: string } = {}): Promise<Walk> {
+    const head = !tag.startsWith('base');
+    // The curator's head takes the control out of the layout, as no JavaScript does, since the base's header had none.
+    const css = [pair.addsControl && head ? '[data-theme-control]{display:none!important}' : '', pair.headStyle && head ? pair.headStyle : ''].join('');
+    const { context, page } = await open(origin, stored, pair, viewport, 1, css, { js, session });
+    try {
+        return await walk(page);
+    } finally {
+        await context.close();
+    }
+}
+
+/** Records one comparison, its failing lines and every box delta, and returns the failing lines. */
+function judge(label: string, width: number, c: Comparison): string[] {
+    const failing = failures(c);
+    fs.appendFileSync(STYLE_ROWS, `| ${label} | ${width} | ${c.structural.length} | ${c.styles.length} | ${c.tokens.length} | ${c.geometry.length} | ${c.deltas.length} | ${c.added.length} |\n`);
+    const section = (title: string, lines: string[]) => (lines.length ? `\n#### ${title}\n\n${lines.map((line) => `- \`${line}\``).join('\n')}\n` : '');
+    const details =
+        section('Structure', c.structural) + section('Styles', c.styles) + section('Tokens', c.tokens) + section('Boxes over 0.5 px', c.geometry) + section('Every box delta', c.deltas) + section('Tokens new in the head', c.added);
+    if (details) fs.appendFileSync(STYLE_DETAILS, `\n### ${label}, ${width}\n${details}`);
+    return failing;
 }
 
 /**
- * Shoots `pair` from both, at every size and scale, and pins the diff; and, with `legacy`, the head on a stored `dark`.
- * The base is shot twice, and must match itself first (D3): 0 in pass 1, within PHOTO_STEP in pass 2. A gate whose base
- * can't repeat itself proves nothing about the head.
+ * The gate, at each size: Black in the head against the base, element by element, in all three of Black's routes.
+ * System on a dark device and today's stored `dark` against the base on its stored `dark`; no JavaScript against the
+ * base without it.
+ */
+async function gate(pair: Pair, origins: { base: string; head: string }, cookies?: { base: string; head: string }) {
+    for (const [size, viewport] of Object.entries(VIEWPORTS)) {
+        const base = await styles(origins.base, 'dark', pair, viewport, 'base', { session: cookies?.base });
+        const baseNoJs = await styles(origins.base, '', pair, viewport, 'base', { js: false, session: cookies?.base });
+        for (const [route, stored, js, against] of [
+            ['System on a dark device', '', true, base],
+            ['a stored `dark`', 'dark', true, base],
+            ['no JavaScript', '', false, baseNoJs],
+        ] as const) {
+            const head = await styles(origins.head, stored, pair, viewport, 'head', { js, session: cookies?.head });
+            const failing = judge(`${pair.name}, ${route}`, viewport.width, compare(against, head));
+            expect.soft(failing, `${pair.name} at ${size} ${viewport.width}, ${route}: computed style against the base`).toEqual([]);
+        }
+    }
+}
+
+/**
+ * The gate (`gate`, computed style), then the pixel report (both passes, at every size and scale): not a gate, since
+ * the base doesn't render the same pixels twice, but recorded, with the base against itself, for what only pixels show.
  */
 function parity(group: string, pairs: Pair[], origins: () => { base: string; head: string }, options: { legacy?: boolean; session?: () => { base: string; head: string } } = {}) {
     for (const pair of pairs) {
         test(`${group}: ${pair.name}`, async () => {
             const { base, head } = origins();
             const cookies = pair.session ? options.session!() : undefined;
+            await gate(pair, { base, head }, cookies);
             for (const [size, viewport] of Object.entries(VIEWPORTS)) {
                 for (const scale of SCALES) {
                     const name = `${pair.name}-${viewport.width}-${scale}x`;
-                    const sanctioned = (pair.sanctioned ?? []).filter((entry) => entry.width === viewport.width && entry.scale === scale).map((entry) => entry.box);
                     const before = await shoot(base, 'dark', pair, viewport, scale, 'base', cookies?.base);
-                    const self = await diff(before, await shoot(base, 'dark', pair, viewport, scale, 'base-again', cookies?.base), scale, `${name}-base-against-itself`);
-                    row(`${pair.name}, the base against itself`, size, viewport.width, scale, self);
-                    expectWithin(`${name}, the base against itself`, self);
-                    const result = await diff(before, await shoot(head, 'black', pair, viewport, scale, 'head', cookies?.head), scale, name, sanctioned);
-                    row(pair.name, size, viewport.width, scale, result);
-                    expectWithin(name, result);
+                    row(`${pair.name}, the base against itself`, size, viewport.width, scale, await diff(before, await shoot(base, 'dark', pair, viewport, scale, 'base-again', cookies?.base), scale, `${name}-base-against-itself`));
+                    row(pair.name, size, viewport.width, scale, await diff(before, await shoot(head, 'black', pair, viewport, scale, 'head', cookies?.head), scale, name));
                     if (options.legacy && scale === 1) {
-                        const legacy = await diff(before, await shoot(head, 'dark', pair, viewport, scale, 'head-legacy-dark', cookies?.head), scale, `${name}-legacy-dark`, sanctioned);
-                        row(`${pair.name}, head on stored \`dark\``, size, viewport.width, 1, legacy);
-                        expectWithin(`${name}, the head on a stored dark`, legacy);
+                        row(`${pair.name}, head on stored \`dark\``, size, viewport.width, 1, await diff(before, await shoot(head, 'dark', pair, viewport, scale, 'head-legacy-dark', cookies?.head), scale, `${name}-legacy-dark`));
                     }
                 }
             }
@@ -556,9 +580,33 @@ test.afterAll(async () => {
     await inbox?.cleanup();
     secrets?.cleanup();
     if (temp) fs.rmSync(temp, { recursive: true, force: true });
+    const read = (file: string) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '');
     fs.writeFileSync(
         path.join(OUT, 'black-parity.md'),
-        `# Black against the base, pixel for pixel\n\nBase: \`${baseCommit()}\`. Chrome (pass 1, every photograph taken out, or a checkerboard on a page with glass): pixels differing anywhere outside the theme controls' boxes, which must be 0. Photo (pass 2, only the photographs): the largest channel step inside their boxes, at most ${PHOTO_STEP}. Compositing: photographs whose opacity, filter or blend (or an ancestor's opacity or filter) differ, which must be none. Every page's base is checked against itself first. The curator's header gains the control, so its head shots take it out of the layout first.\n\n| Page | Viewport | Scale | Chrome pixels | Chrome max step | Photo max step | Compositing diffs | Sanctioned box | Where (chrome) |\n|---|---|---|---|---|---|---|---|---|\n${fs.existsSync(ROWS) ? fs.readFileSync(ROWS, 'utf8') : ''}${fs.existsSync(RECTS) ? `\n## Boxes, unrounded (x y width height, CSS px)\n\n| Page | Viewport | Shot | Selector | Box |\n|---|---|---|---|---|\n${fs.readFileSync(RECTS, 'utf8')}` : ''}`,
+        [
+            '# Black against the base',
+            '',
+            `Base: \`${baseCommit()}\`.`,
+            '',
+            '## The gate: computed style',
+            '',
+            "Every element under body (and in the curator's preview frame), matched by tag and nth-of-type, its ::before and ::after, and the custom properties on :root and body, in the head's Black against the base, at 1440 and 390, in Black's three routes. The theme control and today's toggle are left out with their subtrees; the curator's head takes its control out of the layout, as no JavaScript does. Structure, styles, base tokens and boxes over 0.5 px fail; box deltas under it and tokens new in the head are listed below.",
+            '',
+            '| Page, route | Width | Structure | Styles | Tokens | Boxes over 0.5 px | Box deltas | New tokens |',
+            '|---|---|---|---|---|---|---|---|',
+            read(STYLE_ROWS).trimEnd(),
+            '',
+            read(STYLE_DETAILS) ? `## The gate's details\n${read(STYLE_DETAILS)}` : '',
+            '',
+            '## The pixel report (not a gate)',
+            '',
+            `Chrome (pass 1, every photograph taken out, or a checkerboard on a page with glass): pixels differing outside the theme controls' boxes. Photo (pass 2, only the photographs): the largest channel step inside their boxes; up to ${PHOTO_STEP} is invisible in a photograph. Compositing: photographs whose opacity, filter or blend (or an ancestor's) differ. The base against itself shows what the base doesn't repeat.`,
+            '',
+            '| Page | Viewport | Scale | Chrome pixels | Chrome max step | Photo max step | Compositing diffs | Where (chrome) |',
+            '|---|---|---|---|---|---|---|---|',
+            read(ROWS).trimEnd(),
+            read(RECTS) ? `\n## Boxes, unrounded (x y width height, CSS px)\n\n| Page | Viewport | Shot | Selector | Box |\n|---|---|---|---|---|\n${read(RECTS)}` : '',
+        ].join('\n'),
     );
 });
 
@@ -601,37 +649,20 @@ test.describe('the visitor site and the legacy Gallery', () => {
         test.info().annotations.push({ type: 'diagnosis', description: `${result.count} pixels differ, max step ${result.maxStep}` });
     });
 
-    // The chrome pass can see what it claims to (the code review's H4): a 1/255 change to Home's scrim, drawn over the
-    // photograph, must fail it. Recorded, and asserted.
-    test("self-test: a 1/255 change to Home's scrim fails the chrome pass", async () => {
-        const pair: Pair = {
-            name: 'self-test-scrim',
-            url: '/',
-            act: revealChrome,
-            headStyle: '[class*="vignette"]{background:linear-gradient(90deg,rgb(9 11 10/.9) 0%,rgb(9 11 10/.46) 38%,rgb(9 11 10/.08) 70%)!important}',
-        };
-        const viewport = VIEWPORTS.desktop;
-        const result = await diff(await shoot(visitor.base, 'dark', pair, viewport, 1, 'base'), await shoot(visitor.head, 'black', pair, viewport, 1, 'head'), 1, 'self-test-scrim');
-        row("self-test: Home's scrim 1/255 off in the head (must differ)", 'desktop', 1440, 1, result);
-        expect(result.count, 'the chrome pass sees a 1/255 change under the chrome, over the photograph').toBeGreaterThan(0);
-    });
-
-    // And it sees the glass over a photograph (D1): Home's nav is the one SiteNav over a photograph (the series pages'
-    // nav scrolls away with the page), so with its chrome up, a 1 px change to the glass's blur over the checkerboard
-    // must fail it.
-    test('self-test: a 1 px change to the glass blur fails the chrome pass', async () => {
-        const pair: Pair = {
-            name: 'self-test-glass',
-            url: '/',
-            glass: true,
-            act: revealChrome,
-            headStyle: ':root{--gah-glass-blur:13px!important}',
-        };
-        const viewport = VIEWPORTS.desktop;
-        const result = await diff(await shoot(visitor.base, 'dark', pair, viewport, 1, 'base'), await shoot(visitor.head, 'black', pair, viewport, 1, 'head'), 1, 'self-test-glass');
-        row('self-test: the glass blur 13px in the head (must differ)', 'desktop', 1440, 1, result);
-        expect(result.count, "the chrome pass sees the glass's blur over a photograph").toBeGreaterThan(0);
-    });
+    // The gate sees what it claims to: each of these, injected into the head, must fail it. Recorded, and asserted.
+    for (const [name, url, headStyle, act] of [
+        ["Home's scrim, +1 on one channel", '/', '[class*="vignette"]{background:linear-gradient(90deg,rgb(9 10 9/.9) 0%,rgb(9 10 9/.46) 38%,rgb(9 10 9/.08) 70%)!important}', revealChrome],
+        ['the glass blur at 13px', '/work', ':root{--gah-glass-blur:13px!important}', undefined],
+        ["a photograph's opacity at .96", '/work', 'main img{opacity:.96!important}', undefined],
+        ['--gah-ink, +1 on one channel', '/work', ':root{--gah-ink:#f4f6f6!important}', undefined],
+    ] as const) {
+        test(`self-test: ${name} in the head fails the gate`, async () => {
+            const pair: Pair = { name: `self-test, ${name}`, url, headStyle, act };
+            const viewport = VIEWPORTS.desktop;
+            const failing = judge(pair.name, viewport.width, compare(await styles(visitor.base, 'dark', pair, viewport, 'base'), await styles(visitor.head, 'black', pair, viewport, 'head')));
+            expect(failing.length, `${name}: the computed-style gate sees it`).toBeGreaterThan(0);
+        });
+    }
 });
 
 test.describe('the curator and its 503', () => {
