@@ -18,6 +18,7 @@ import {
     positionText,
 } from './viewerLabels';
 import { fitSizes } from './viewerSizes';
+import { VIEWER_THEMES_CSS } from './viewerThemes';
 import styles from './StoryViewer.module.css';
 
 export interface StoryViewerProps {
@@ -176,6 +177,10 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
 
     const content: ReactNode = (
         <>
+            {/* Each theme's Viewer tokens, hoisted into <head> by React and only where a Viewer renders (viewerThemes.ts). */}
+            <style href="viewer-themes" precedence="default">
+                {VIEWER_THEMES_CSS}
+            </style>
             {!claimed && (
                 <ViewerChrome
                     state={chrome}

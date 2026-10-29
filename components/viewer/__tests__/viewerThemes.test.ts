@@ -3,9 +3,11 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import postcss, { type Declaration, type Rule } from 'postcss';
 import { describe, expect, it } from 'vitest';
+import { VIEWER_THEMES_CSS } from '../viewerThemes';
 
-// The Viewer in each theme (spec §3 and §5, R2-P1-1), from StoryViewer.module.css itself: Black sets nothing and
-// falls back to today's values, the other three each set their whole room, and every text and control pair reads.
+// The Viewer in each theme (spec §3 and §5, R2-P1-1), from the hoisted stylesheet (viewerThemes.ts) and
+// StoryViewer.module.css's fallbacks: Black sets nothing and falls back to today's values, the other three each set
+// their whole room, and every text and control pair reads.
 
 const CSS = fs.readFileSync(fileURLToPath(new URL('../StoryViewer.module.css', import.meta.url)), 'utf8');
 const SURFACE = fs.readFileSync(fileURLToPath(new URL('../../../styles/surfaces/chromatic-chapters.css', import.meta.url)), 'utf8');
@@ -30,11 +32,13 @@ function resolve(value: string, ...scopes: Record<string, string>[]): string {
   });
 }
 
-/** Every custom property a theme's rules declare, the shared rule included. */
-function tokens(theme: string, scope: '.viewer' | ':has') {
+const THEMES_SHEET = postcss.parse(VIEWER_THEMES_CSS);
+
+/** Every custom property a theme's rules declare in the hoisted sheet, the shared rules included, in source order. */
+function tokens(theme: string, scope: 'surface' | ':has') {
   const found: Record<string, string> = {};
-  root.walkRules((rule: Rule) => {
-    const mine = rule.selectors.some((selector) => selector.includes(`[data-theme='${theme}']`) && (scope === ':has' ? selector.includes(':has(') : selector.endsWith(' .viewer')));
+  THEMES_SHEET.walkRules((rule: Rule) => {
+    const mine = rule.selector.includes(`[data-theme=${theme}]`) && (scope === ':has' ? rule.selector.includes(':has(') : rule.selector.endsWith(' [data-surface=viewer]'));
     if (mine) rule.walkDecls((decl: Declaration) => void (found[decl.prop] = decl.value));
   });
   return found;
@@ -73,7 +77,9 @@ const CC = ['--cc-ground', '--cc-ink', '--cc-ink-soft', '--cc-caption-ink', '--c
 
 describe('the Viewer in Black', () => {
   it('has no rule of its own and no branch against it, so it is today\'s Viewer', () => {
-    expect(CSS).not.toMatch(/data-theme='black'|data-theme="black"|:not\(\[data-theme/);
+    for (const sheet of [CSS, VIEWER_THEMES_CSS]) expect(sheet).not.toMatch(/data-theme=['"]?black|:not\(\[data-theme/);
+    // The module sets no theme's tokens: they're all in the hoisted sheet, off a series' first load.
+    expect(CSS).not.toMatch(/data-theme/);
   });
 
   it("falls back to v1.2.0's own values", () => {
@@ -90,7 +96,7 @@ describe('the Viewer in Black', () => {
 });
 
 describe.each(THEMES)('the Viewer in %s', (theme) => {
-  const viewer = tokens(theme, '.viewer');
+  const viewer = tokens(theme, 'surface');
   const html = tokens(theme, ':has');
 
   it('sets its whole room: no bands, its own inks, a solid panel, a matted print and no hairline', () => {

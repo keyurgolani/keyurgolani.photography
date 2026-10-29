@@ -16,7 +16,12 @@ import zlib from 'node:zlib';
 
 const LIMIT = 2500;
 /** Inline stylesheets a route renders, by the module and export that hold them, read from each tree's source. */
-const INLINE = { About: ['app/about/aboutThemes.ts', 'ABOUT_THEMES_CSS'] };
+const INLINE = {
+  About: ['app/about/aboutThemes.ts', 'ABOUT_THEMES_CSS'],
+  // The Viewer's theme tokens (#126), in a directly loaded Viewer's HTML. A series opens the modal Viewer on the client,
+  // which inserts them then, so they aren't on a series' first load.
+  'The Viewer, cold': ['components/viewer/viewerThemes.ts', 'VIEWER_THEMES_CSS'],
+};
 const ROUTES = {
   Home: 'page',
   'A series': 'work/[slug]/page',

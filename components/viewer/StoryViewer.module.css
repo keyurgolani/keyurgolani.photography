@@ -13,68 +13,8 @@
   transition: none;
 }
 
-/* The Viewer in each theme (spec §3 and §5, round 3's R2-P1-1). Black sets nothing: it is today's Chromatic Chapters
-   (styles/surfaces/chromatic-chapters.css), its bands and translucent bars, and a bare print with today's hairline.
-   The others have no bands, a solid ground and bars, and a matted print: the lg surround, md on a phone (the md
-   tokens are styles/themes.css's, the Work and series pages'). These tokens are the Viewer's alone, so they ride
-   here and not on every route's first load. Each block outranks the surface's own [data-surface='viewer']. */
-:global(html[data-theme='dark']):has(.viewer),
-:global(html[data-theme='light']):has(.viewer),
-:global(html[data-theme='bright']):has(.viewer) {
-  --gah-viewer-ground: var(--gah-ground);
-}
-
-/* What the three share: the theme's own ground, ink, label and strong rule (Dark keeps its own ink and label), the
-   caption in the soft ink, and a print matted from
-   #124's primitives (--gah-print-edge, --gah-mat-fill) in styles/themes.css. */
-:global(html[data-theme='dark']) .viewer,
-:global(html[data-theme='light']) .viewer,
-:global(html[data-theme='bright']) .viewer {
-  --cc-ground: var(--gah-ground);
-  --cc-bands: none;
-  --cc-ink: var(--gah-ink);
-  --cc-label: var(--gah-label);
-  --cc-caption-ink: var(--cc-ink-soft);
-  --cc-rule-strong: var(--gah-rule-strong);
-  /* The ground the frame keeps clear around its surround, so the mat never meets the screen's edge. */
-  --gah-surround-clear: 8px;
-  /* The surround replaces today's hairline on the print. A transparent one, not none: forced colours drop the
-     surround (box-shadow) and paint an outline in a system colour, so the print keeps an edge there. */
-  --gah-viewer-image-outline: 1px solid transparent;
-  /* A stale record ratio letterboxes inside the mat instead of stretching the print (P3-6). */
-  --gah-viewer-fit: contain;
-  /* The stage clips sideways only, so a print's shadow fades out below it instead of ending on a line. */
-  --gah-viewer-clip-y: visible;
-}
-
-/* A charcoal room: the print matted and keylined, as on Work and the series, on a solid #232826 panel. */
-:global(html[data-theme='dark']) .viewer {
-  --cc-ink: #f3f2ec;
-  --cc-ink-soft: #d0d5d1;
-  --cc-label: #aab4af;
-  --cc-chrome: #232826;
-  --cc-rule: rgba(255, 255, 255, 0.14);
-  --gah-surround-lg: var(--gah-print-edge), 0 0 0 14px var(--gah-mat-fill), 0 24px 44px -18px rgba(0, 0, 0, 0.8);
-  --gah-room-lg: 14px;
-}
-
-/* Paper: a toned sheet, the header and reading area on a lighter one, the print in Light's mat with a bevel. */
-:global(html[data-theme='light']) .viewer {
-  --cc-ink-soft: #3a3229;
-  --cc-chrome: #f2ede3;
-  --cc-rule: rgba(41, 35, 29, 0.16);
-  --gah-surround-lg: var(--gah-print-edge), 0 0 0 15px var(--gah-mat-fill), 0 0 0 16px rgba(41, 35, 29, 0.08), 0 22px 40px -18px rgba(60, 42, 20, 0.45);
-  --gah-room-lg: 16px;
-}
-
-/* A white wall: a 14 px white mat in a 3 px black frame. */
-:global(html[data-theme='bright']) .viewer {
-  --cc-ink-soft: #1a1a1a;
-  --cc-chrome: #fff;
-  --cc-rule: rgba(0, 0, 0, 0.1);
-  --gah-surround-lg: 0 0 0 14px var(--gah-mat-fill), 0 0 0 17px #111;
-  --gah-room-lg: 17px;
-}
+/* Each theme's Viewer tokens (Dark, Light and Bright; Black sets none) are a hoisted stylesheet, viewerThemes.ts, so a
+   series' first load doesn't carry them. */
 
 /* One grid for the whole Viewer (#9). The shell's controls and the
    photograph's pieces are all its items, whichever of the two renders the
