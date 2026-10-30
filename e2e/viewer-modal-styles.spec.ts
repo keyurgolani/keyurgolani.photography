@@ -10,8 +10,9 @@ import { P, href, useViewerCatalog } from './support/viewerCatalog';
 // The waits: the idle preload is switched off, so only the open's own intent (the click's pointer, the keyboard's
 // focus) starts the load, and every stylesheet asked for after hydration is held until the test lets it go. While
 // it's held the dialog must not be in the document; once it's let go the dialog opens, and the page has recorded its
-// look on the first frame it was open, before that frame painted, which must be the settled modal's. Light and Black,
-// today's look; the parity gate checks the open modal against v1.2.0 (e2e/themes/black-parity.spec.ts, viewer-modal).
+// look on the first frame it was open, before that frame painted, which must be the settled modal's. Light, Dark
+// (today's look) and Black; the parity gate checks the open modal in Dark against v1.2.0
+// (e2e/themes/dark-parity.spec.ts, viewer-modal).
 
 test.describe.configure({ mode: 'serial' });
 
@@ -130,8 +131,9 @@ async function expectHeldThenOpen(page: Page, sheets: Awaited<ReturnType<typeof 
     expect(first.look?.display, 'not the user agent dialog').not.toBe('block');
 }
 
-for (const theme of ['light', 'black'] as const) {
-    test.describe(`in ${theme === 'black' ? 'Black' : 'Light'}`, () => {
+const THEME_NAMES = { light: 'Light', dark: 'Dark', black: 'Black' } as const;
+for (const theme of ['light', 'dark', 'black'] as const) {
+    test.describe(`in ${THEME_NAMES[theme]}`, () => {
         test.beforeEach(async ({ page }) => {
             await page.addInitScript((value) => localStorage.setItem('theme', value), theme);
             await noIdlePreload(page);
