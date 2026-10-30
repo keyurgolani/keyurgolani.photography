@@ -615,7 +615,7 @@ describe("Home's root and the text size", () => {
     expect(root.hasAttribute('data-text-enlarged')).toBe(false);
   });
 
-  it('says nothing at default text, so Black keeps its wash', () => {
+  it('says nothing at default text, so Dark keeps its wash', () => {
     document.documentElement.style.fontSize = '16px';
     const view = render(home());
     expect(view.getByTestId('home').hasAttribute('data-text-enlarged')).toBe(false);

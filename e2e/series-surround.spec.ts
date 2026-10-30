@@ -5,7 +5,7 @@ import { startCatalogServer, READY_TIMEOUT, type CatalogServer } from './support
 import { waitForHydration } from './support/hydration';
 import { expect, test } from './support/test';
 
-// The photo surround on Work and a series (spec §3, themes PR 3), in all four themes:
+// The photo surround on Work and a series (spec §3, themes PR 3), in Dark, Light and Bright (Black with its layer):
 // - the sequence's window cut: one 4:3 slot per entry, the slot the mat, and the print inside it sized to its own
 //   ratio with its own edge, for a landscape, a portrait and a square in one row (Dark keeps today's letterbox);
 // - the hover and focus mark, which keeps the surround and rings it from outside its room (R2-P3-2);

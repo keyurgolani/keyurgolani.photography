@@ -729,7 +729,15 @@ interface Walked2 {
     walk: Walk;
     /** The waits that timed out on this load: any fails the row. */
     timedOut: string[];
+    /** What painted: `<html data-theme>` once the page settled. */
+    theme: string | null;
 }
+
+/**
+ * The gate's own check that the head painted Dark (the remap's review, L1): until Black's layer lands, Black computes
+ * the same styles as Dark, so a route sent to `black` would otherwise pass every comparison. Its failing lines, or none.
+ */
+const paintsDark = (walked: Walked2): string[] => (walked.theme === 'dark' ? [] : [`painted ${walked.theme ?? 'nothing'}, not dark`]);
 
 /** A walk of `pair` in one build: every element's computed style and box, and the tokens, from a fresh settled load. */
 async function styles(origin: string, stored: string, pair: Pair, viewport: { width: number; height: number }, tag: string, { js = true, session, motion }: { js?: boolean; session?: string; motion?: Motion } = {}): Promise<Walked2> {
@@ -739,7 +747,7 @@ async function styles(origin: string, stored: string, pair: Pair, viewport: { wi
     const { context, page, timedOut } = await open(origin, stored, pair, viewport, 1, css, { js, session, motion });
     try {
         const selectors = ALLOWANCES.filter((entry) => entry.page === (pair.stateOf ?? pair.name) && entry.width === viewport.width).map((entry) => entry.selector);
-        return { walk: await walk(page, selectors), timedOut };
+        return { walk: await walk(page, selectors), timedOut, theme: await page.evaluate(() => document.documentElement.getAttribute('data-theme')) };
     } finally {
         await context.close();
     }
@@ -788,7 +796,7 @@ async function gate(pair: Pair, origins: { base: string; head: string }, cookies
                 ALLOWANCES.filter((entry) => entry.page === (pair.stateOf ?? pair.name) && entry.width === viewport.width && against.walk.resolved[entry.selector]).map((entry) => [against.walk.resolved[entry.selector], entry.maxDelta]),
             );
             const timedOut = [...against.timedOut.map((wait) => `${wait} (base)`), ...head.timedOut.map((wait) => `${wait} (head)`)];
-            const failing = judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk, allowances), timedOut);
+            const failing = [...judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk, allowances), timedOut), ...paintsDark(head)];
             expect.soft(failing, `${pair.name} at ${size} ${viewport.width}, ${route}: computed style against the base`).toEqual([]);
         }
         if (pair.intro) {
@@ -796,7 +804,7 @@ async function gate(pair: Pair, origins: { base: string; head: string }, cookies
             const against = await styles(origins.base, 'dark', pair, viewport, 'base', { motion: LOADING });
             const head = await styles(origins.head, '', pair, viewport, 'head', { motion: LOADING });
             const timedOut = [...against.timedOut.map((wait) => `${wait} (base)`), ...head.timedOut.map((wait) => `${wait} (head)`)];
-            const failing = judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk), timedOut);
+            const failing = [...judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk), timedOut), ...paintsDark(head)];
             expect.soft(failing, `${pair.name} at ${size} ${viewport.width}, ${route}: computed style against the base`).toEqual([]);
         }
     }
@@ -967,6 +975,18 @@ test.describe('the visitor site and the legacy Gallery', () => {
             expect([...base.timedOut, ...head.timedOut], `${name}: both loads settled`).toEqual([]);
         });
     }
+
+    // Black's page must never pass as Dark (the remap's review, L1): the head on a stored `black` fails the gate's
+    // paint check, whatever its styles compute to while Black's layer is still to come.
+    test("self-test: Black's page in the head fails the gate as Dark", async () => {
+        const pair: Pair = { name: "self-test, Black's page", url: '/work' };
+        const viewport = VIEWPORTS.desktop;
+        const head = await styles(visitor.head, 'black', pair, viewport, 'head');
+        expect(head.timedOut, 'the load settled').toEqual([]);
+        expect(paintsDark(head), 'the gate sees Black').toEqual(['painted black, not dark']);
+        // And a Dark head passes the same check, so the check isn't failing everything.
+        expect(paintsDark(await styles(visitor.head, 'dark', pair, viewport, 'head')), 'a Dark head passes it').toEqual([]);
+    });
 });
 
 test.describe('the curator and its 503', () => {
