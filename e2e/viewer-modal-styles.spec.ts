@@ -206,12 +206,16 @@ test.describe("when the Viewer's styles can't load, a photo opens as its own pag
         await page.exposeBinding('kgSaw', (_source, what: string) => void seen.push(what));
         await page.addInitScript((heading: string) => {
             const saw = (window as unknown as { kgSaw: (what: string) => void }).kgSaw;
+            // The series is blank only once it has been drawn: while the document still streams in, there's no main yet.
+            let drawn = false;
             new MutationObserver(() => {
                 // A failed open never shows a dialog, at any URL.
                 if (document.querySelector('dialog') !== null) saw('a dialog');
                 if (!/^\/work\/[^/]+\/?$/.test(location.pathname)) return;
                 if (Array.from(document.querySelectorAll('h1, h2')).some((h) => h.textContent?.trim() === heading)) saw('the error page');
-                if (document.querySelector('main') === null) saw('no series');
+                const main = document.querySelector('main') !== null;
+                if (main) drawn = true;
+                else if (drawn) saw('no series');
             }).observe(document, { childList: true, subtree: true });
         }, ERROR_HEADING);
         return seen;
