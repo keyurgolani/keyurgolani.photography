@@ -95,8 +95,8 @@
    fallback box keeps 3:2. */
 .stage {
   /* The cover wears the theme's md surround (sm on a phone), and its real thickness is the room the note and the focus
-     ring reserve (styles/themes.css). Black has none: today's cover. The hover and focus mark keeps the surround and
-     rings it from outside (--gah-mark-outline), or is today's 1 px ring in Black. */
+     ring reserve (styles/themes.css). Dark has none: today's cover. The hover and focus mark keeps the surround and
+     rings it from outside (--gah-mark-outline), or is today's 1 px ring in Dark. */
   --series-cover-surround: var(--gah-surround-md, none);
   --series-cover-mark: var(--gah-surround-md, 0 0 0 1px var(--gah-rule-strong));
   --series-cover-room: var(--gah-room-md, 0px);
@@ -266,7 +266,7 @@
    frame, Light's hairline and shadow, Dark's shadow). The print is centred and, where the theme sets
    --gah-slot-print to 1, sized to its own ratio (--photo-ratio, from SeriesPhoto) in the slot's, and carries the
    inner layer on its own edge (Light's bevel, Dark's keyline), so a portrait, a landscape and a square in one row each
-   have an edge of their own. The slot lets that edge show past a full-width print. Black sets none of it, so it's
+   have an edge of their own. The slot lets that edge show past a full-width print. Dark sets none of it, so it's
    today's letterbox on the surface. */
 .thumbFrame[data-photo='contain'] {
   --thumb-surround: var(--gah-slot-surround-sm, none);
@@ -306,10 +306,10 @@
 }
 
 /* Below the thumbnail's room too, so the focus ring, which clears the surround, never crosses the title's line box:
-   the ring reaches room + 2 + 3 px under the link, 1 px more than room + 0.25rem where there's a room (0 in Black). */
+   the ring reaches room + 2 + 3 px under the link, 1 px more than room + 0.25rem where there's a room (0 in Dark). */
 .caption {
   margin: calc(0.25rem + var(--gah-room-sm, 0px) + min(var(--gah-room-sm, 0px), 1px)) 0 0;
-  /* Light's captions are in the serif (spec §3); the others, Black included, keep the sans. */
+  /* Light's captions are in the serif (spec §3); the others, Dark included, keep the sans. */
   font-family: var(--gah-caption-font, var(--gah-font-sans));
   font-size: var(--gah-type-ui);
   line-height: 1.45;
@@ -326,7 +326,7 @@
   color: var(--gah-caption-ink, var(--gah-ink-soft));
 }
 
-/* Hover parity: focus marks the entry the same way a pointer does. No scaling either way. In Black, today's 1 px ring
+/* Hover parity: focus marks the entry the same way a pointer does. No scaling either way. In Dark, today's 1 px ring
    on the frame's edge; where a theme has a surround, the surround stays and a 1 px outline rings it from outside its
    room, never through its mat (R2-P3-2). */
 .entry:focus-visible .thumbFrame {

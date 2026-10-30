@@ -132,6 +132,14 @@ test("today's stored dark stays Dark, the preview's charcoal reads as Dark, and 
     expect(await page.evaluate(() => localStorage.getItem('theme'))).toBe('black');
     await page.keyboard.press('Escape');
     await expect(control(page)).toHaveAccessibleName('Theme: Black');
+    // The menu, opened again in Black, keeps its sheet and its checked ring (the remap's review, M1).
+    await control(page).click();
+    await expect(page.getByRole('radio', { name: /^Black/ })).toBeChecked();
+    const sheet = await page.locator('.theme-menu-popover').evaluate((el) => getComputedStyle(el).backgroundColor);
+    expect(sheet, "the menu's sheet in Black").not.toBe('rgba(0, 0, 0, 0)');
+    const ring = await page.locator('.theme-menu-option:has(.theme-menu-radio:checked) .theme-menu-preview').evaluate((el) => getComputedStyle(el).boxShadow);
+    expect(ring, "the checked preview's ring in Black").not.toBe('none');
+    await page.keyboard.press('Escape');
     await page.reload();
     await expect(html).toHaveAttribute('data-theme', 'black');
 

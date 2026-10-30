@@ -17,7 +17,10 @@
    surround, Home's stage, the Viewer's backdrop). About's per-theme paper is About's alone, in
    app/about/aboutThemes.ts. */
 
-html[data-theme='dark'] {
+/* Today's two menu tokens, which nothing else defines: the popover's sheet and its checked ring. Black takes them too
+   until its own layer sets its own (the remap's review, M1). */
+html[data-theme='dark'],
+html[data-theme='black'] {
   --gah-raised: #151917;
   --gah-accent: #eff4f1;
 }
@@ -137,7 +140,7 @@ html[data-theme='bright'] {
    popover's styles (theme-menu-popover.css) load after hydration. The swatch is the painting theme's ground and ink,
    split on the diagonal, inside the strong rule. */
 /* A whole-pixel slot that lays out on its own (contain: layout), so nothing beside it moves by a fraction of a pixel
-   when it replaces today's toggle: Black parity found the KG ring's edge 1/255 off on the error page and the Inbox. */
+   when it replaces today's toggle: the parity gate found the KG ring's edge 1/255 off on the error page and the Inbox. */
 .theme-menu-button {
   position: relative;
   display: inline-flex;

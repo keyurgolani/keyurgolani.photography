@@ -10,9 +10,9 @@
  * never Bright or Black.
  *
  * It writes two attributes on `<html>`: `data-theme-choice` (the choice) and
- * `data-theme` (what paints: light, bright, dark or black). Its listeners keep System following the device and
- * apply a choice made in another tab (the `storage` event), before and after
- * React runs.
+ * `data-theme` (what paints: light, bright, dark or black). Its listeners
+ * keep System following the device and apply a choice made in another tab
+ * (the `storage` event), before and after React runs.
  *
  * The 503 allows it by its hash (`lib/curation/auth/unavailable.ts`), so any
  * change here changes that hash too. The function keeps its names off

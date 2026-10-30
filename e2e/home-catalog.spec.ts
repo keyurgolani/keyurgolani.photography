@@ -264,33 +264,35 @@ test('in Light, the copy keeps its paper scrim over a light opening photograph',
     await expect(page.locator('main')).toHaveAttribute('data-copy-tone', 'light');
 });
 
-test('at 200% text on a small phone, the title keeps 4.5:1 with the chrome scrolled to its end (M1)', async ({ page }, testInfo) => {
-    runsOn(testInfo, 'mobile');
-    await page.setViewportSize({ width: 375, height: 667 });
-    // Dark, over white: light ink, so its enlarged-text hold (spec §10) is what keeps the title. Light's and Bright's copy
-    // follows the photograph's tone.
-    await page.addInitScript(() => localStorage.setItem('theme', 'dark'));
-    await openingAs(page, '#ffffff');
-    await openHome(page);
-    await expectShown(page, HOME_OPENING);
-    await page.addStyleTag({ content: 'html { font-size: 200% !important; }' });
-    await revealByKeyboard(page);
-    const chrome = page.locator('[data-home-chrome]');
-    await expect.poll(() => chrome.evaluate((el) => el.scrollHeight > el.clientHeight + 1), 'the chrome scrolls at 200% text').toBe(true);
-    await expect(page.locator('[data-home-vignette]')).toHaveCSS('--home-copy-top', '0%');
-    // As far as the chrome scrolls while the title is still in view below the nav: past 24 px the old hold left the
-    // title's top lines in the fade.
-    const title = page.getByRole('heading', { level: 1 });
-    const scrolled = await chrome.evaluate((el, heading) => {
-        const nav = document.querySelector('nav[aria-label="Primary"]')?.getBoundingClientRect().bottom ?? 0;
-        const by = Math.min(el.scrollHeight - el.clientHeight, Math.floor(heading!.getBoundingClientRect().top - nav - 8));
-        el.scrollTo(0, by);
-        return el.scrollTop;
-    }, await title.elementHandle());
-    expect(scrolled, 'the chrome scrolled further than the old hold allowed').toBeGreaterThan(24);
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    expect(await worstTextContrast(page, title), "the title's worst contrast with the chrome scrolled").toBeGreaterThanOrEqual(4.5);
-});
+for (const theme of ['dark', 'black'] as const) {
+    test(`in ${theme}, at 200% text on a small phone, the title keeps 4.5:1 with the chrome scrolled to its end (M1)`, async ({ page }, testInfo) => {
+        runsOn(testInfo, 'mobile');
+        await page.setViewportSize({ width: 375, height: 667 });
+        // Dark and Black, over white: light ink, so the enlarged-text hold (spec §10) is what keeps the title. Light's and
+        // Bright's copy follows the photograph's tone.
+        await page.addInitScript((value) => localStorage.setItem('theme', value), theme);
+        await openingAs(page, '#ffffff');
+        await openHome(page);
+        await expectShown(page, HOME_OPENING);
+        await page.addStyleTag({ content: 'html { font-size: 200% !important; }' });
+        await revealByKeyboard(page);
+        const chrome = page.locator('[data-home-chrome]');
+        await expect.poll(() => chrome.evaluate((el) => el.scrollHeight > el.clientHeight + 1), 'the chrome scrolls at 200% text').toBe(true);
+        await expect(page.locator('[data-home-vignette]')).toHaveCSS('--home-copy-top', '0%');
+        // As far as the chrome scrolls while the title is still in view below the nav: past 24 px the old hold left the
+        // title's top lines in the fade.
+        const title = page.getByRole('heading', { level: 1 });
+        const scrolled = await chrome.evaluate((el, heading) => {
+            const nav = document.querySelector('nav[aria-label="Primary"]')?.getBoundingClientRect().bottom ?? 0;
+            const by = Math.min(el.scrollHeight - el.clientHeight, Math.floor(heading!.getBoundingClientRect().top - nav - 8));
+            el.scrollTo(0, by);
+            return el.scrollTop;
+        }, await title.elementHandle());
+        expect(scrolled, 'the chrome scrolled further than the old hold allowed').toBeGreaterThan(24);
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        expect(await worstTextContrast(page, title), "the title's worst contrast with the chrome scrolled").toBeGreaterThanOrEqual(4.5);
+    });
+}
 
 test("Dark on a phone is today's at default text, and follows the copy only when the text is enlarged", async ({ page }, testInfo) => {
     runsOn(testInfo, 'mobile');

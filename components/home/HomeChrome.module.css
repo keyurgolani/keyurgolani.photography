@@ -74,7 +74,7 @@
    portrait (42). It scrolls when large text needs more room, with room for a
    phone's home indicator. */
 .chrome {
-  /* Inside the print in every theme (P2-2): today's 1.5rem and gutter are the floor, so Black doesn't move. */
+  /* Inside the print in every theme (P2-2): today's 1.5rem and gutter are the floor, so Dark doesn't move. */
   --home-print-corner: max(1.5rem, calc(var(--gah-stage-inset, 0px) + 0.75rem));
   --home-print-inline: max(var(--site-gutter), calc(var(--gah-stage-inset, 0px) + 0.75rem));
   position: fixed;
@@ -137,11 +137,12 @@
     background: linear-gradient(0deg, rgb(var(--gah-scrim-rgb) / 0.92) 0%, rgb(var(--gah-scrim-rgb) / var(--home-wash-hold)) var(--home-hold-at), rgb(var(--gah-scrim-rgb) / 0) calc(var(--home-hold-at) + 16%));
   }
 
-  /* Dark, at enlarged text only (spec §10, a sanctioned departure): today's fixed wash is 0.28 where large text lifts
-     the title, 1.77:1. Once the visitor enlarges the text (HeroReveal sets data-text-enlarged on Home's root), the wash
-     holds at 0.86 up to the copy's top, as the other themes' does, then eases to today's 0.12 above it. At default text
-     none of this applies, so Dark stays today's, rule for rule. */
-  :global(html[data-theme='dark']) .root[data-text-enlarged] .vignette {
+  /* Dark and Black, at enlarged text only (spec §10, a sanctioned departure): today's fixed wash is 0.28 where large
+     text lifts the title, 1.77:1. Once the visitor enlarges the text (HeroReveal sets data-text-enlarged on Home's
+     root), the wash holds at 0.86 up to the copy's top, as the other themes' does, then eases to today's 0.12 above
+     it. At default text none of this applies, so Dark stays today's, rule for rule. Black's layer may set its own. */
+  :global(html[data-theme='dark']) .root[data-text-enlarged] .vignette,
+  :global(html[data-theme='black']) .root[data-text-enlarged] .vignette {
     --home-hold-at: calc(100% - var(--home-copy-top, 66%) + 1.5rem);
     background: linear-gradient(0deg, rgb(8 10 9 / 0.92) 0%, rgb(8 10 9 / 0.86) var(--home-hold-at), rgb(8 10 9 / 0.12) calc(var(--home-hold-at) + 16%), rgb(8 10 9 / 0.12) 100%);
   }
