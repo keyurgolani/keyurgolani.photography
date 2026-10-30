@@ -105,7 +105,7 @@ describe('the curator in Dark', () => {
 // The design review's P2-1: the selected row's outline lies on the rules around it, so no edge reads as two lines.
 describe("the selected row's outline", () => {
     const rule = [...curator.matchAll(/\n\.item\[aria-current='true'\] \{([^}]*)\}/g)].map((m) => m[1]).find((body) => body.includes('box-shadow')) ?? '';
-    const outline = 'var(--curator-selected-rule, var(--gah-rule-strong))';
+    const outline = 'var(--curator-selected-row-rule, var(--curator-selected-rule, var(--gah-rule-strong)))';
 
     it("takes the row's own separator as its bottom edge", () => {
         expect(rule).toContain(`border-bottom-color: ${outline};`);
@@ -115,8 +115,22 @@ describe("the selected row's outline", () => {
         const shadow = rule.replace(/\s+/g, ' ');
         expect(shadow).toContain(`0 -1px 0 0 ${outline}`);
         expect(shadow).toContain(`1px -1px 0 0 ${outline}`);
+        expect(shadow, 'the right edge down to the bottom corner').toContain(`1px 0 0 0 ${outline}`);
         expect(shadow).toContain(`inset 1px 0 0 0 ${outline}`);
         expect(shadow, 'no full inset ring beside the rules').not.toContain('inset 0 0 0 1px');
+    });
+
+    // Delta 1's D1-1: painted over rules, a translucent colour stacks into a different tone per edge.
+    it.each(Object.entries(THEMES))('is one opaque colour in %s: the tab\'s outline as drawn on the row\'s fill, at 3:1', (_, t) => {
+        const row = parse(t['--curator-selected-row-rule']);
+        expect(row[3], 'opaque').toBe(1);
+        const page = parse(t['--curator-page'] ?? t['--gah-surface']);
+        const list = over(parse(t['--curator-list']), page);
+        const active = over(parse(t['--curator-active']), list);
+        const drawn = over(parse(t['--curator-selected-rule'] ?? t['--gah-rule-strong']), active);
+        row.slice(0, 3).forEach((channel, k) => expect(Math.abs(channel - drawn[k]), `channel ${k}`).toBeLessThanOrEqual(1));
+        expect(ratio(row, active), 'on the fill').toBeGreaterThanOrEqual(3);
+        expect(ratio(row, list), 'against the list').toBeGreaterThanOrEqual(3);
     });
 
     it("gives the phone's list view its plain separator back", () => {

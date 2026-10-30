@@ -8,6 +8,8 @@
   --curator-header: #171a18;
   --curator-list: #151816;
   --curator-active: #28302c;
+  /* The row outline's opaque colour: the strong rule (white .38) over the selected fill, as the tab already draws it. */
+  --curator-selected-row-rule: #797e7c;
   --curator-field: #0f1210;
   --curator-box: #171b19;
   --curator-rule: #343936;
@@ -255,13 +257,16 @@
 
 /* The row's outline is drawn on the rules around it, not beside them, so each edge is one line (the design review's
    P2-1): the bottom takes the row's own separator, the top covers the separator of the row above, the right covers
-   the list column's rule, and only the left, at the screen's edge, sits inside the row. */
+   the list column's rule down to the bottom corner, and only the left, at the screen's edge, sits inside the row.
+   Painted over rules, a translucent strong rule would stack into a different tone per edge (Delta 1's D1-1), so every
+   theme sets --curator-selected-row-rule opaque: in Dark and Black, the strong rule's value over the row's fill. */
 .item[aria-current='true'] {
-  border-bottom-color: var(--curator-selected-rule, var(--gah-rule-strong));
+  border-bottom-color: var(--curator-selected-row-rule, var(--curator-selected-rule, var(--gah-rule-strong)));
   box-shadow:
-    0 -1px 0 0 var(--curator-selected-rule, var(--gah-rule-strong)),
-    1px -1px 0 0 var(--curator-selected-rule, var(--gah-rule-strong)),
-    inset 1px 0 0 0 var(--curator-selected-rule, var(--gah-rule-strong));
+    0 -1px 0 0 var(--curator-selected-row-rule, var(--curator-selected-rule, var(--gah-rule-strong))),
+    1px -1px 0 0 var(--curator-selected-row-rule, var(--curator-selected-rule, var(--gah-rule-strong))),
+    1px 0 0 0 var(--curator-selected-row-rule, var(--curator-selected-rule, var(--gah-rule-strong))),
+    inset 1px 0 0 0 var(--curator-selected-row-rule, var(--curator-selected-rule, var(--gah-rule-strong)));
 }
 
 /* The list column ends at the row's edges, so the focus token sits inside the row instead of outside it. */
@@ -1102,6 +1107,8 @@ main.state {
   /* For P2-8's outline on the selected row and tab: Light's strong rule is under 3:1 on the active fill, so the
      outline takes the muted ink there. */
   --curator-selected-rule: #645a4e;
+  /* Opaque already: the row's outline is the tab's. */
+  --curator-selected-row-rule: #645a4e;
   --curator-tone-new-ink: #1d5a42;
   --curator-tone-new-bg: #d3e6da;
   --curator-tone-change-ink: #634e0c;
@@ -1130,6 +1137,8 @@ main.state {
   --curator-field: #ffffff;
   --curator-box: #f6f6f6;
   --curator-rule: #d4d4d4;
+  /* Bright's strong rule, opaque already: the row's outline is the tab's. */
+  --curator-selected-row-rule: #767676;
   --curator-tone-new-ink: #0a5a3c;
   --curator-tone-new-bg: #dcf1e6;
   --curator-tone-change-ink: #664f00;
@@ -1163,6 +1172,8 @@ main.state {
   --curator-field: #000000;
   --curator-active: #1a1a1a;
   --curator-rule: #3a3a3a;
+  /* The row outline's opaque colour: white .40 over the lift. The drawn tab keeps the strong rule itself, #666 on black. */
+  --curator-selected-row-rule: #757575;
   --curator-primary: #f5f5f5;
   --curator-primary-ink: #000000;
   --curator-primary-hover: #cccccc;
