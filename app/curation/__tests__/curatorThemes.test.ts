@@ -1,6 +1,6 @@
-// The curator in Dark (today's curator), Light and Bright: its contrast rows, read from the stylesheets themselves
-// (styles/tokens.css, styles/themes.css, app/curation/curator.module.css), so a token change that breaks a pair fails
-// here. WCAG 2: text 4.5:1, a control's edge or a state's outline 3:1, translucent colours composited over their ground.
+// The curator in Dark (today's curator), Light, Bright and Black: its contrast rows, read from the stylesheets
+// themselves (styles/tokens.css, styles/themes.css, app/curation/curator.module.css and the sign-in's, the 503's
+// inline style), so a token change that breaks a pair fails here. WCAG 2: text 4.5:1, a control's edge or a state's outline 3:1, translucent colours composited over their ground.
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -20,6 +20,8 @@ function block(css: string, selector: string, needs?: string): Record<string, st
 
 type Rgba = [number, number, number, number];
 function parse(value: string): Rgba {
+    const short = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(value);
+    if (short) return parse(`#${short[1]}${short[1]}${short[2]}${short[2]}${short[3]}${short[3]}`);
     const hex = /^#([0-9a-f]{6})$/i.exec(value);
     if (hex) return [0, 2, 4].map((k) => parseInt(hex[1].slice(k, k + 2), 16)).concat(1) as Rgba;
     const rgb = /^rgba?\(([^)]+)\)$/.exec(value);
@@ -50,7 +52,8 @@ const THEMES: Record<string, Record<string, string>> = {
     // Dark is today's curator: tokens.css's :root and the module's own block, with no override.
     dark: today,
     light: { ...today, ...block(themes, "html[data-theme='light']", '--gah-ink'), ...block(curator, ":global(html[data-theme='light']) .page"), '--curator-page': block(curator, ":global(html[data-theme='light']):has(.page)")['--curator-page'] },
-    bright: { ...today, ...block(themes, "html[data-theme='bright']", '--gah-ink'), ...block(curator, ":global(html[data-theme='bright']) .page"), '--curator-page': block(curator, ":global(html[data-theme='bright']):has(.page)")['--curator-page'] },
+    bright: { ...today, ...block(themes, "html[data-theme='bright']", '--gah-ink'), ...block(curator, ":global(html[data-theme='bright']) .page"), '--curator-page': block(curator, ":global(html[data-theme='bright']):has(.page)")['--curator-page'] },    // Black sets no page ground of its own: the fallback, its --gah-surface, is already #000.
+    black: { ...today, ...block(themes, "html[data-theme='black']", '--gah-ink'), ...block(curator, ":global(html[data-theme='black']) .page") },
 };
 
 describe.each(Object.entries(THEMES))('the curator in %s', (_, t) => {
@@ -97,7 +100,7 @@ const login = read('app/curation/login/login.module.css');
 const LOGIN: Record<string, Record<string, string>> = {
     dark: { ...today, ...block(login, '.page', '--login-header') },
     light: { ...THEMES.light, ...block(login, '.page', '--login-header'), ...block(login, ":global(html[data-theme='light']) .page") },
-    bright: { ...THEMES.bright, ...block(login, '.page', '--login-header'), ...block(login, ":global(html[data-theme='bright']) .page") },
+    bright: { ...THEMES.bright, ...block(login, '.page', '--login-header'), ...block(login, ":global(html[data-theme='bright']) .page") },    black: { ...THEMES.black, ...block(login, '.page', '--login-header'), ...block(login, ":global(html[data-theme='black']) .page") },
 };
 
 describe.each(Object.entries(LOGIN))('the sign-in in %s', (_, t) => {
@@ -113,5 +116,78 @@ describe.each(Object.entries(LOGIN))('the sign-in in %s', (_, t) => {
     it('reads its notices', () => {
         expect(ratio(parse(t['--login-alert-ink']), parse(t['--login-alert-bg'])), 'the alert').toBeGreaterThanOrEqual(4.5);
         expect(on(t['--gah-ink'], parse(t['--login-done-bg'])), 'the done notice').toBeGreaterThanOrEqual(4.5);
+    });
+});
+
+// Black, OLED (photography-themes-oled-spec.md §3, the round 2 review's C2-4 and C2-5): no surfaces, #3a3a3a hairlines,
+// the current tab drawn, the primary filled white, and no plain rule on the sign-in or the 503.
+describe('the curator in Black', () => {
+    const t = THEMES.black;
+    const black = parse('#000000');
+    const on = (fg: string, ground: Rgba) => ratio(over(parse(fg), ground), ground);
+
+    it("has no surfaces: the header, the list, the boxes and the fields are the screen's own black", () => {
+        expect(parse(t['--gah-surface'])).toEqual(black);
+        for (const surface of ['--curator-header', '--curator-list', '--curator-box', '--curator-field']) expect(parse(t[surface]), surface).toEqual(black);
+        expect(t['--curator-page'], 'no page ground of its own').toBeUndefined();
+    });
+
+    it('tells its working structure apart by #3a3a3a hairlines, and the selected row by a faint lift', () => {
+        expect(t['--curator-rule']).toBe('#3a3a3a');
+        expect(t['--curator-active']).toBe('#1a1a1a');
+        // Decoration, not a state on its own: the row's state is aria-current and P2-8's outline, checked above.
+        expect(ratio(parse('#3a3a3a'), black)).toBeLessThan(3);
+    });
+
+    it('draws the current tab: no fill, the white .40 line at 3:1 on the header (C2-4)', () => {
+        expect(curator).toMatch(/:global\(html\[data-theme='black'\]\) \.screen\[aria-current='page'\] \{\s*background: transparent;\s*\}/);
+        expect(t['--curator-selected-rule'], "the outline is the strong rule, as Dark's").toBeUndefined();
+        expect(on(t['--gah-rule-strong'], parse(t['--curator-header']))).toBeGreaterThanOrEqual(3);
+        expect(on(t['--gah-ink'], parse(t['--curator-header'])), "the tab's ink").toBeGreaterThanOrEqual(4.5);
+    });
+
+    it('keeps the primary filled white, black ink, at rest and hovered (owner question 3)', () => {
+        expect([t['--curator-primary'], t['--curator-primary-ink']]).toEqual(['#f5f5f5', '#000000']);
+        expect(ratio(parse(t['--curator-primary-ink']), parse(t['--curator-primary-hover'])), 'hovered').toBeGreaterThanOrEqual(4.5);
+        // The hover steps down, so it shows against the rest state.
+        expect(luminance(parse(t['--curator-primary-hover']))).toBeLessThan(luminance(parse(t['--curator-primary'])));
+    });
+
+    it('fills the KG through the shared mark tokens: a white disc, black letters', () => {
+        expect(curator).toMatch(/\.monogram \{[^}]*background: var\(--gah-mark-fill, none\)/);
+        expect(ratio(parse(t['--gah-mark-ink']), parse(t['--gah-mark-fill']))).toBeGreaterThanOrEqual(4.5);
+    });
+
+    it("keeps the Preview frame's toolbar edge, the strong rule, at 3:1 on the ground", () => {
+        const frame = read('components/curation/PreviewFrame.module.css');
+        expect(frame).toMatch(/\.toolbar \{[^}]*border-bottom: 1px solid var\(--gah-rule-strong\)/);
+        expect(on(t['--gah-rule-strong'], parse(t['--gah-ground']))).toBeGreaterThanOrEqual(3);
+    });
+});
+
+describe('the sign-in in Black', () => {
+    const t = LOGIN.black;
+
+    it("has no header rule and no surfaces (C2-5): the header and the field are the screen's own black", () => {
+        expect(t['--login-rule']).toBe('transparent');
+        expect([t['--login-header'], t['--login-field']]).toEqual(['#000000', '#000000']);
+    });
+});
+
+describe('the 503 in Black', () => {
+    const source = read('lib/curation/auth/unavailable.ts');
+    const rule = /'html\[data-theme=black\]\{([^}]*)\}'/.exec(source);
+    const t = Object.fromEntries([...(rule?.[1] ?? '').matchAll(/(--[a-z]+):([^;]+)/g)].map((m) => [m[1], m[2]]));
+    const on = (fg: string, ground: string) => ratio(over(parse(fg), parse(ground)), parse(ground));
+
+    it("is the screen's own black, with no header rule, and reads", () => {
+        expect([t['--g'], t['--h'], t['--r']]).toEqual(['#000', '#000', 'transparent']);
+        expect(on(t['--i'], t['--g']), 'the ink').toBeGreaterThanOrEqual(4.5);
+        expect(on(t['--s'], t['--g']), 'the soft ink').toBeGreaterThanOrEqual(4.5);
+        expect(on(t['--m'], t['--g']), "the mark's ring").toBeGreaterThanOrEqual(3);
+    });
+
+    it('fills the KG mark', () => {
+        expect(source).toContain("'html[data-theme=black] .mark{border-color:#fff;background:#fff;color:#000}'");
     });
 });
