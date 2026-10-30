@@ -198,8 +198,9 @@
 
 /* One ring round the whole entry, cover and copy (the round 2 review's C2-1), as an overlay above the print so the
    photograph can't paint over it: the light line at the edge, where the screen's black frames it, and the dark band
-   inside it, where a pale print meets it (P1-1). The outline stays, transparent, for forced colours, where it shows
-   in the system's colour and the shadows drop. */
+   inside it, where a pale print meets it (P1-1). The overlay carries a transparent outline as well: forced colours
+   drop the shadows and paint it in the system's colour, above the print, where the entry's own outline sits under
+   it. */
 :global(html[data-theme='black']) .entry:focus-visible {
   outline-color: transparent;
   outline-offset: calc(-1 * var(--focus-ring-width));
@@ -214,6 +215,8 @@
   box-shadow:
     inset 0 0 0 var(--focus-ring-width) var(--focus-ring-light),
     inset 0 0 0 calc(var(--focus-ring-width) + var(--focus-ring-offset)) var(--focus-ring-dark);
+  outline: var(--focus-ring-width) solid transparent;
+  outline-offset: calc(-1 * var(--focus-ring-width));
   pointer-events: none;
 }
 
