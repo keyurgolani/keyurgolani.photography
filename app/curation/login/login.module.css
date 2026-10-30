@@ -207,7 +207,8 @@
   }
 }
 
-/* The login's surfaces and notices per theme, as the Inbox's (curator.module.css). Dark is the block at the top. */
+/* The login's surfaces and notices per theme, as the Inbox's (curator.module.css). Dark is the block at the top.
+   Black (OLED) lands after the Bright block once its design gate approves it (photography-themes-oled-spec.md §3). */
 :global(html[data-theme='light']) .page {
   --login-header: #e2dbcd;
   --login-rule: #c9bfae;

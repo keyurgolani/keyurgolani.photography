@@ -242,6 +242,14 @@
   background: var(--curator-active);
 }
 
+/* The selected tab and row carry a 1 px outline inside their box (P2-8, R2-P2-3), in every theme, Dark included: the
+   fill alone is 1.32:1 against the list in today's curator, so the state reads by its edge. aria-current names it. A
+   theme whose strong rule is under 3:1 on its fill sets --curator-selected-rule (Light). Focus draws over it. */
+.screen[aria-current='page'],
+.item[aria-current='true'] {
+  box-shadow: inset 0 0 0 1px var(--curator-selected-rule, var(--gah-rule-strong));
+}
+
 /* The list column ends at the row's edges, so the focus token sits inside the row instead of outside it. */
 .items .item:focus-visible {
   outline-offset: calc(-1 * var(--focus-ring-width));
@@ -1003,6 +1011,7 @@ main.state {
   /* The list view opens no item, so the row the server selected for a wide screen isn't marked here (ReturnToRow drops its aria-current too). */
   .body[data-view='list'] .item[aria-current='true'] {
     background: transparent;
+    box-shadow: none;
   }
 
   .photo {
@@ -1065,16 +1074,19 @@ main.state {
 }
 
 /* The curator's surfaces and states per theme. Dark is today's curator, the block at the top, so it sets nothing
-   here. Light and Bright turn every tone into a light badge of the same hue. */
+   here. Light and Bright turn every tone into a light badge of the same hue. Black (OLED) lands here once its design
+   gate approves it (photography-themes-oled-spec.md §3): its :has(.page) ground, its .page surfaces, its .box
+   hairline and its filled KG, after the Bright block. */
 :global(html[data-theme='light']) .page {
   --curator-header: #e2dbcd;
   --curator-list: #e6dfd2;
-  --curator-active: #d6cdbc;
+  /* Light enough that the muted meta on a selected row keeps 4.5:1 (4.69); P2-8's outline carries the state. */
+  --curator-active: #ded6c7;
   --curator-field: #f8f5ee;
   --curator-box: #f2ede3;
   --curator-rule: #c9bfae;
-  /* For P2-8's outline on the selected row and tab (the curator PR): Light's strong rule is 2.48:1 on the active
-     fill, under 3:1, so the outline takes the muted ink there. */
+  /* For P2-8's outline on the selected row and tab: Light's strong rule is under 3:1 on the active fill, so the
+     outline takes the muted ink there. */
   --curator-selected-rule: #645a4e;
   --curator-tone-new-ink: #1d5a42;
   --curator-tone-new-bg: #d3e6da;

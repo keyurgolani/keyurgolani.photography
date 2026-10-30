@@ -757,12 +757,16 @@ const STYLE_DETAILS = path.join(OUT, 'dark-styles.details');
 
 /** A walk of `pair` in one build: every element's computed style and box, and the tokens, from a fresh settled load. */
 /**
- * The gate's one named allowance over exact geometry (spec §10): the Inbox's KG ring at 390, whose sub-pixel cause is
- * still open. The curator PR (PR map item 5) owns CuratorHeader.tsx and brings it to 0; then this goes.
+ * The gate's named allowances (spec §10). The Inbox's KG ring at 390 is back to 0 and its allowance is gone (the curator
+ * PR). One sanctioned departure from today's site remains: the curator's selected row and tab take P2-8's 1 px outline
+ * in every theme, Dark included, an accessibility fix, since today's fill alone is 1.32:1 against the list.
  */
 const ALLOWANCES: Allowance[] = [
-    { page: 'inbox', width: 390, selector: 'header [class*="monogram"]', maxDelta: 0.5, why: "the Inbox's KG ring at 390, its cause still open" },
+    { page: 'inbox', selector: 'main ul a[aria-current="true"]', properties: ['box-shadow'], why: "P2-8: the Inbox's selected row's outline" },
+    { page: 'inbox', selector: 'header nav a[aria-current="page"]', properties: ['box-shadow'], why: "P2-8: the Inbox's selected tab's outline" },
+    { page: 'publish', selector: 'header nav a[aria-current="page"]', properties: ['box-shadow'], why: "P2-8: Publish's selected tab's outline" },
 ];
+const allowancesFor = (pair: Pair, width: number) => ALLOWANCES.filter((entry) => entry.page === (pair.stateOf ?? pair.name) && (entry.width === undefined || entry.width === width));
 
 interface Walked2 {
     walk: Walk;
@@ -798,7 +802,7 @@ async function styles(
     const css = [pair.addsControl && head ? '[data-theme-control]{display:none!important}' : '', pair.headStyle && head ? pair.headStyle : ''].join('');
     const { context, page, timedOut } = await open(origin, stored, pair, viewport, 1, css, { js, session, motion });
     try {
-        const selectors = ALLOWANCES.filter((entry) => entry.page === (pair.stateOf ?? pair.name) && entry.width === viewport.width).map((entry) => entry.selector);
+        const selectors = allowancesFor(pair, viewport.width).map((entry) => entry.selector);
         // The self-test's page with its theme taken off, to show a missing theme fails anywhere but the error shell.
         if (stripTheme) await page.evaluate(() => document.documentElement.removeAttribute('data-theme'));
         const painted = await page.evaluate(() => ({
@@ -828,7 +832,8 @@ function judge(label: string, width: number, c: Comparison, timedOut: string[] =
         section('Boxes over their allowance', c.geometry) +
         section('Every box delta', c.deltas) +
         section('Waits that timed out', timedOut) +
-        section('Tokens new in the head', c.added);
+        section('Tokens new in the head', c.added) +
+        section('Sanctioned departures', c.sanctioned);
     if (details) fs.appendFileSync(STYLE_DETAILS, `\n### ${label}, ${width}\n${details}`);
     return failing;
 }
@@ -855,11 +860,11 @@ async function gate(pair: Pair, origins: { base: string; head: string }, cookies
             ['no JavaScript', '', false, baseNoJs],
         ] as const) {
             const head = await styles(origins.head, stored, pair, viewport, 'head', { js, session: cookies?.head });
-            const allowances = Object.fromEntries(
-                ALLOWANCES.filter((entry) => entry.page === (pair.stateOf ?? pair.name) && entry.width === viewport.width && against.walk.resolved[entry.selector]).map((entry) => [against.walk.resolved[entry.selector], entry.maxDelta]),
-            );
+            const named = allowancesFor(pair, viewport.width).filter((entry) => against.walk.resolved[entry.selector]);
+            const allowances = Object.fromEntries(named.filter((entry) => entry.maxDelta !== undefined).map((entry) => [against.walk.resolved[entry.selector], entry.maxDelta!]));
+            const sanctioned = Object.fromEntries(named.filter((entry) => entry.properties).map((entry) => [against.walk.resolved[entry.selector], entry.properties!]));
             const timedOut = [...against.timedOut.map((wait) => `${wait} (base)`), ...head.timedOut.map((wait) => `${wait} (head)`)];
-            const failing = [...judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk, allowances), timedOut), ...paintsDark(head, against)];
+            const failing = [...judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk, allowances, sanctioned), timedOut), ...paintsDark(head, against)];
             expect.soft(failing, `${pair.name} at ${size} ${viewport.width}, ${route}: computed style against the base`).toEqual([]);
         }
         if (pair.intro) {
