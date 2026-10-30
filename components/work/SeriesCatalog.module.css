@@ -197,6 +197,19 @@
   box-shadow: inset 0 0 0 var(--focus-ring-offset) var(--focus-ring-dark) !important;
 }
 
+/* Over the cover itself the ring is an overlay above the print, so the photograph can't paint over it: the light line
+   at the edge, where the screen's black frames it, and the dark band inside it, where a pale print meets it (P1-1). */
+:global(html[data-theme='black']) .entry:focus-visible .frame::after {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  box-shadow:
+    inset 0 0 0 var(--focus-ring-width) var(--focus-ring-light),
+    inset 0 0 0 calc(var(--focus-ring-width) + var(--focus-ring-offset)) var(--focus-ring-dark);
+  pointer-events: none;
+}
+
 :global(html[data-theme='black']) .fallback {
   box-shadow: inset 0 0 0 1px var(--gah-rule-strong);
 }
