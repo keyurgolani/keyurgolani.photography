@@ -592,6 +592,16 @@ const VISITOR: Pair[] = [
         },
     },
     { name: 'viewer', url: `${series}/photo/${HOME_OPENING}` },
+    // The Viewer opened as a modal from the series: its styles now load with its shell, not the series page
+    // (components/viewer/viewerShellLoader.ts), so the open modal is checked against today's too.
+    {
+        name: 'viewer-modal',
+        url: series,
+        act: async (page) => {
+            await page.locator('main figure a').first().click();
+            await expect(page.getByRole('dialog')).toBeVisible();
+        },
+    },
     { name: 'about', url: '/about' },
     { name: '404', url: '/no-such-page', measure: ['nav [class*="monogram"]', 'nav [class*="_end"]', '[data-theme-control], nav button'] },
     // Hover and focus (the review's Delta 2, item 3), walked by the gate only.
