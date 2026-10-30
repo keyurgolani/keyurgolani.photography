@@ -1141,3 +1141,11 @@ main.state {
   --curator-primary: #0b0b0b;
   --curator-primary-ink: #ffffff;
 }
+
+/* Black's KG mark is filled, a white disc with black letters (the OLED review's P2-1): the one lit mark on a page of
+   type on nothing. It's identity, not an action, so it isn't drawn. */
+:global(html[data-theme='black']) .monogram {
+  border-color: #ffffff;
+  background: #ffffff;
+  color: #000000;
+}

@@ -22,9 +22,10 @@ const STYLE = [
     // The four themes as custom properties, keyed on what the theme script resolves.
     // Dark (the default, and System on a dark device) is today's 503, exactly. Black is the screen's own black.
     ':root,html[data-theme=dark]{color-scheme:dark;--g:#080a09;--i:#f4f6f5;--s:rgba(244,246,245,0.76);--h:#171a18;--r:#343936;--m:rgba(255,255,255,0.38)}',
-    'html[data-theme=black]{color-scheme:dark;--g:#000;--i:#fff;--s:rgba(255,255,255,0.76);--h:#000;--r:#3a3a3a;--m:rgba(255,255,255,0.4)}',
+    'html[data-theme=black]{color-scheme:dark;--g:#000;--i:#f5f5f5;--s:rgba(255,255,255,0.76);--h:#000;--r:transparent;--m:rgba(255,255,255,0.4)}',
     'html[data-theme=light]{color-scheme:light;--g:#ebe5d9;--i:#29231d;--s:#4d443a;--h:#e2dbcd;--r:#c9bfae;--m:#8c7f6f}',
     'html[data-theme=bright]{color-scheme:light;--g:#fff;--i:#0b0b0b;--s:#333;--h:#fff;--r:#d4d4d4;--m:#767676}',
+    'html[data-theme=black] .mark{border-color:#fff;background:#fff;color:#000}',
     '*{box-sizing:border-box}',
     'html,body{margin:0}',
     'body{display:flex;min-height:100svh;flex-direction:column;background:var(--g);color:var(--i);font:0.875rem/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;-webkit-font-smoothing:antialiased}',
@@ -33,7 +34,6 @@ const STYLE = [
     'main{display:flex;flex:1;align-items:center;justify-content:center;padding:3rem clamp(1rem,3.3vw,3rem) max(4rem,12svh)}',
     '.body{width:100%;max-width:34rem}',
     'h1{margin:0;font-family:Georgia,"Times New Roman",serif;font-size:clamp(2rem,1.6rem + 1.6vw,2.75rem);font-weight:400;line-height:1.05;letter-spacing:-0.02em;text-wrap:balance}',
-    'html[data-theme=black] h1{font-weight:300}',
     'p{margin:1.25rem 0 0;color:var(--s);font-size:clamp(1rem,0.9rem + 0.4vw,1.1875rem);line-height:1.5;text-wrap:pretty}',
     'code{color:var(--i);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:0.9em}',
 ].join('');

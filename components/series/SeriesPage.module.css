@@ -448,3 +448,20 @@
   text-decoration-thickness: 1px;
   text-underline-offset: 0.2em;
 }
+
+/* Black: the cover meets the screen's edge (the OLED review's P1-2), to the left at 1440 and edge to edge on a phone;
+   the copy keeps its gutter. Its ring and its hover mark draw inside, so the edge never clips them, and a missing
+   photograph's box keeps an edge, since Black's plain rule is dark. */
+:global(html[data-theme='black']) .stage {
+  margin-inline: calc(-1 * var(--site-gutter));
+  --series-cover-mark: inset 0 0 0 1px var(--gah-rule-strong);
+}
+
+:global(html[data-theme='black']) .coverLink:focus-visible {
+  outline-offset: calc(-1 * (var(--focus-ring-width) + var(--focus-ring-offset)));
+  box-shadow: inset 0 0 0 var(--focus-ring-offset) var(--focus-ring-dark) !important;
+}
+
+:global(html[data-theme='black']) .fallback {
+  box-shadow: inset 0 0 0 1px var(--gah-rule-strong);
+}

@@ -48,6 +48,9 @@
 }
 
 :global(html[data-theme='black']) .root {
+  /* Over the scrim, as in Light and Bright, so the hold never dims the portrait (P2-2): the layer-42 ruling was
+     today's, which is now Dark's. */
+  --gah-badge-layer: 50;
   --gah-scrim-rgb: 0 0 0;
   --gah-scrim-ink: #f5f5f5;
   --gah-scrim-ink-soft: rgba(255, 255, 255, 0.8);

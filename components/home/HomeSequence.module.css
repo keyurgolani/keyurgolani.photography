@@ -25,6 +25,19 @@
   opacity: 1;
 }
 
+/* Black's Home is a projector (the OLED review's §2): the photograph on screen fades to the screen's own black, and the
+   next rises out of it, each in half the crossfade, where Dark crossfades directly. The carousel's ground is Black's
+   --gah-mat-fill, #000. Reduced motion keeps today's change. */
+@media (prefers-reduced-motion: no-preference) {
+  :global(html[data-theme='black']) .slide {
+    transition-duration: calc(var(--transition-duration) / 2);
+  }
+
+  :global(html[data-theme='black']) .slide.active {
+    transition-delay: calc(var(--transition-duration) / 2);
+  }
+}
+
 /* Slow zoom on the photograph on screen. The slide that just left keeps it, paused, through its fade. */
 .zoom {
   animation: home-slow-zoom 8s ease forwards;

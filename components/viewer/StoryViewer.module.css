@@ -16,7 +16,7 @@
 /* The Viewer in each theme (spec §3 and §5, round 3's R2-P1-1). Dark sets nothing: it is today's Chromatic Chapters
    (styles/surfaces/chromatic-chapters.css), its bands and translucent bars, and a bare print with today's hairline.
    Black is the photograph alone on the screen's black: no bands, no hairline, and the header and reading area on the
-   ground, divided by nothing. Light and Bright have no bands, a solid ground and bars, and a matted print: the lg surround, md on a phone (the md
+   ground, divided by nothing; a series' stored accent still paints the two rules, Black's one colour, the content's. Light and Bright have no bands, a solid ground and bars, and a matted print: the lg surround, md on a phone (the md
    tokens are styles/themes.css's, the Work and series pages'). These tokens are the Viewer's alone, so they ride
    here and not on every route's first load. Each block outranks the surface's own [data-surface='viewer']. */
 :global(html[data-theme='black']):has(.viewer) {
@@ -52,9 +52,14 @@
   --cc-caption-ink: rgba(255, 255, 255, 0.8);
   --cc-label: #bdbdbd;
   --cc-chrome: #000000;
-  --cc-rule: rgba(255, 255, 255, 0.14);
+  --cc-rule: transparent;
   --cc-rule-strong: rgba(255, 255, 255, 0.4);
   --gah-viewer-image-outline: none;
+}
+
+/* A missing photograph's box keeps an edge, since Black's plain rule is dark. */
+:global(html[data-theme='black']) .missing {
+  box-shadow: inset 0 0 0 1px var(--cc-rule-strong);
 }
 
 /* Paper: a toned sheet, the header and reading area on a lighter one, the print in Light's mat with a bevel. */

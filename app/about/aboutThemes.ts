@@ -5,7 +5,7 @@
  *   Bright  the shade lit white: faint grey ribs, a white mat in a 2px black line, the caption on the mat under the
  *           print (P3-3), not a band over the frame's dark ground.
  *   Black   the screen's own black: no paper, no ribs, no mat or shadow round the portrait, neutral ink, the caption
- *           on a black band over the print.
+ *           on the black under the print, and no boxes round the links.
  *
  * About's alone, so it rides in About's own HTML as a hoisted stylesheet (AboutPage.tsx), not in the global
  * themes.css: the CSS chunking merges route modules into the chunk every visitor route loads, so a module would put
@@ -23,7 +23,7 @@ const BRIGHT =
 const BLACK =
   '--lts-paper:#000;--lts-ink:#f5f5f5;--lts-ink-soft:rgba(255,255,255,.76);--lts-ribs:none;' +
   '--lts-rule:rgba(255,255,255,.16);--lts-rule-strong:rgba(255,255,255,.4);--lts-glass:rgba(0,0,0,.94);' +
-  '--lts-frame:#000;--lts-shadow:none;--lts-link-rule:rgba(255,255,255,.4);--lts-caption-bg:rgba(0,0,0,.78);' +
+  '--lts-frame:#000;--lts-shadow:none;--lts-link-rule:rgba(255,255,255,.4);--lts-caption-bg:transparent;' +
   '--lts-caption-ink:#f5f5f5';
 
 export const ABOUT_THEMES_CSS =

@@ -210,3 +210,9 @@
 .links {
   margin-block-start: 1rem;
 }
+
+/* Black: the portrait and its name panel on the screen's own black, with no frame ground under the print. */
+:global(html[data-theme='black']) .portrait,
+:global(html[data-theme='black']) .fallback {
+  --about-frame-ground: #000000;
+}
