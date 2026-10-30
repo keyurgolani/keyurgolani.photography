@@ -8,7 +8,7 @@
   max-width: 100%;
   padding: 0.25rem;
   border-radius: 26px;
-  /* The theme's control scrim and ink (HomeChrome.module.css); Black's are today's. */
+  /* The theme's control scrim and ink (HomeChrome.module.css); Dark's are today's. */
   background: var(--gah-control-scrim, rgba(0, 0, 0, 0.65));
   color: var(--gah-control-ink, #fff);
 }

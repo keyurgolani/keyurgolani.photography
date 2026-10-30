@@ -55,7 +55,7 @@ const resolveTheme = (choice: ThemeChoice): Theme => (choice === 'system' ? (pre
 /**
  * Applies a choice at once and stores it. With `animate`, motion allowed and view transitions available, the page's
  * colours crossfade over 180 ms (styles/themes.css); otherwise they swap in one frame. Keyboard changes don't animate:
- * arrowing from System to Black passes Light and Bright, two full-page flashes in a dark room (P3-12). Storage that
+ * arrowing from System to Black passes Light, Bright and Dark, two full-page flashes in a dark room (P3-12). Storage that
  * throws (site data blocked) only loses the choice on reload.
  */
 const setThemeChoice = (choice: ThemeChoice, {animate = false}: {animate?: boolean} = {}) => {

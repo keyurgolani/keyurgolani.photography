@@ -112,11 +112,11 @@ jobs:
     name: Themes, CSS budget and Black parity
     runs-on: ubuntu-latest
     # Two builds, and about 90 page and size pairs, each loaded fresh for each of two passes, from the base twice (its
-    # check against itself), the head, and the head on a stored dark.
+    # check against itself), the head, and the head on the preview's stored `charcoal`.
     timeout-minutes: 75
     env:
-      # next before the five themes: v1.2.0 plus #119's curator copy and #120's carry-over. Black must paint as it does
-      # there. Move it only for a change that isn't a theme's and moves Black on purpose, and say so in that PR.
+      # next before the five themes: v1.2.0 plus #119's curator copy and #120's carry-over. Dark must paint as it does
+      # there. Move it only for a change that isn't a theme's and moves Dark on purpose, and say so in that PR.
       PARITY_BASE: be35250a83ec076b28c713851aca9c7dd4801b77
       NEXT_TELEMETRY_DISABLED: '1'
     steps:
@@ -151,7 +151,7 @@ jobs:
 
       # The parity config's global setup builds both trees first (e2e/themes/build.ts), under the Playwright servers'
       # env, which About's placeholder copy needs and no workflow sets.
-      - name: Black against the base, pixel for pixel
+      - name: Dark against the base (computed style)
         run: PARITY_BUILD=1 PARITY_BASE_DIR="$(cd ../parity-base && pwd)" npx playwright test -c e2e/themes/parity.config.ts
 
       # Each visitor route's first-load CSS, from the two builds' manifests: at most +2,500 B gzipped (R2-P2-1). It

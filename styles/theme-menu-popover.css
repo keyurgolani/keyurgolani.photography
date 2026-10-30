@@ -46,7 +46,7 @@
 }
 
 @media (hover: hover) and (pointer: fine) {
-  /* A lift on every sheet: --gah-surface sits under the dark sheets, so hover vanished in Black (design check P3-2). */
+  /* A lift on every sheet: --gah-surface sits under the dark sheets, so hover vanished in the near-black sheet (design check P3-2). */
   .theme-menu-option:hover {
     background: color-mix(in srgb, var(--gah-ink) 6%, var(--gah-raised));
   }
