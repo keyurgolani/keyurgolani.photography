@@ -4,8 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import type { Browser, Page } from '@playwright/test';
 import sharp from 'sharp';
-import { publish } from '../../lib/catalog/publish';
-import { createTestCatalog, type TestCatalog } from '../../lib/catalog/testing';
+import { catalogCodeVersion, DEFAULT_CATALOG_CACHE, perfCatalog } from '../../lib/perf/catalogCache';
+import { DROPPED_FLOOR, selfTestProblems, type SelfTestResult } from '../../lib/perf/selfTest';
 import { BUDGET_VARIANT_BYTES } from '../../lib/perf/fixture';
 import { waitForHydration } from '../support/hydration';
 import { expect, test } from '../support/test';
@@ -26,10 +26,14 @@ import { expect, test } from '../support/test';
 // The gate tests each half on each device (#124's review, D2 and D8), and every sweep must have raster time to compare,
 // since a trace with none would give a ratio near 1 and pass: the head in Dark with a deliberately heavy shadow on
 // every slot must cost more than the surround bound in raster, and the head with a 40 ms task on every frame must drop
-// more than the bound's share of frames.
+// more than the bound's share of frames, and at least 5% of the frames it swept (Delta 3). Every self-test must run,
+// so a run that skipped them fails (lib/perf/selfTest.ts).
 //
 // PERF_ROUNDS is at least 3, and anything else fails the run (D7), so a run can't pass with no theme gated.
-// PERF_SELFTEST=1 runs the self-tests alone, and its table says so.
+// PERF_SELFTEST=1 runs the self-tests alone, and its table says so; it passes only if they ran and failed as they must.
+//
+// The published catalog is built once and copied per run (lib/perf/catalogCache.ts), into PERF_CATALOG_CACHE or
+// ~/.cache/photography-perf, keyed by its photos, seed, variant sizes and the catalog code's git tree.
 //
 //   PARITY_BASE_DIR=<built base> PERF_PORTS=3375,3376 [PERF_ROUNDS=3] [PERF_SELFTEST=1] npx playwright test -c e2e/themes/perf.config.ts
 
@@ -200,7 +204,8 @@ const phase = (what: string) => console.log(`[perf ${new Date().toISOString().sl
 const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
 const ratio = (head: number, base: number) => (head + 1) / (base + 1);
 
-let catalog: TestCatalog | undefined;
+/** The run's copy of the cached published catalog (lib/perf/catalogCache.ts), and its one series. */
+let catalog: { root: string; slug: string } | undefined;
 const servers: Server[] = [];
 let temp = '';
 let prints: Record<string, Buffer> = {};
@@ -214,11 +219,11 @@ test.beforeAll(async () => {
     fs.mkdirSync(library);
     fs.mkdirSync(siteConfig);
     prints = await tinyPrints();
-    phase(`the ${PHOTOS}-photo catalog`);
-    catalog = await createTestCatalog({ photos: PHOTOS, series: [{ photos: PHOTOS }], seed: 6, root: path.join(temp, 'catalog'), variantBytes: BUDGET_VARIANT_BYTES });
-    phase('publish');
-    const outcome = await publish({ dataRoot: catalog.root, actor: 'e2e', confirmLaunch: true, logger: { log: () => undefined } });
-    expect(outcome.outcome, outcome.message).toBe('PUBLISHED');
+    // Built and published once, then copied per run: setup was most of a run, and under load it ran perf4 out of time.
+    phase(`the ${PHOTOS}-photo published catalog`);
+    const cached = await perfCatalog({ photos: PHOTOS, seed: 6, variantBytes: BUDGET_VARIANT_BYTES, code: catalogCodeVersion(process.cwd()) }, path.join(temp, 'catalog'), process.env.PERF_CATALOG_CACHE ?? DEFAULT_CATALOG_CACHE);
+    phase(cached.from === 'cache' ? 'the catalog, copied from the cache' : 'the catalog, built and cached');
+    catalog = { root: cached.root, slug: cached.slug };
     phase('the base and head servers');
     servers.push(await serve(BASE!, ports[0] ?? 3375, catalog.root, library, siteConfig), await serve(process.cwd(), ports[1] ?? 3376, catalog.root, library, siteConfig));
 });
@@ -238,12 +243,12 @@ test.afterAll(async () => {
 test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every theme, against the base beside it`, async ({ browser }) => {
     test.setTimeout(30 * 60_000);
     const [base, head] = servers;
-    const url = (origin: string) => `${origin}/work/${catalog!.series[0].slug}`;
+    const url = (origin: string) => `${origin}/work/${catalog!.slug}`;
     const rows: string[] = [];
     const notes: string[] = [];
     const ratios: Record<string, { raster: number[]; dropped: number[] }> = {};
     const selfRows: string[] = [];
-    const calibration: { device: string; half: 'raster' | 'dropped frames'; ratio: number }[] = [];
+    const calibration: SelfTestResult[] = [];
 
     for (const [device, spec] of Object.entries(DEVICES)) {
         const open = async (origin: string) => {
@@ -323,7 +328,7 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
         for (const round of [1, 2]) {
             const load = os.loadavg()[0].toFixed(1);
             const { b, h } = await pairOf(round, `${device} dropped-frame self-test, round ${round}`);
-            calibration.push({ device, half: 'dropped frames', ratio: +ratio(h.dropped, b.dropped).toFixed(2) });
+            calibration.push({ device, half: 'dropped frames', ratio: +ratio(h.dropped, b.dropped).toFixed(2), dropped: h.dropped, frames: spec.steps });
             selfRows.push(`| ${device} | ${LONG_TASK_MS} ms task per frame | ${round} | ${load} | ${b.raster} / ${h.raster} | ${(h.raster / b.raster).toFixed(2)} | ${b.dropped} / ${h.dropped} | ${ratio(h.dropped, b.dropped).toFixed(2)} |`);
         }
         await headPage.page.evaluate(() => void ((window as { stopBurn?: boolean }).stopBurn = true));
@@ -347,7 +352,7 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
         '',
         `Bounds: Dark ${BOUND.dark}, a theme with a surround ${BOUND.surround}, on both medians.`,
         '',
-        `The self-tests, each in Dark: the head with \`${HEAVY}\` must cost more than ${BOUND.surround} in raster, and the head with a ${LONG_TASK_MS} ms task on every frame more than ${BOUND.surround} in dropped frames, against the base.`,
+        `The self-tests, each in Dark: the head with \`${HEAVY}\` must cost more than ${BOUND.surround} in raster, and the head with a ${LONG_TASK_MS} ms task on every frame more than ${BOUND.surround}, and at least ${DROPPED_FLOOR * 100}% of the frames, in dropped frames, against the base.`,
         '',
         '| Device | Head | Round | Load (1 min) | Raster ms, base / head | Raster ratio | Dropped frames, base / head | Dropped-frame ratio |',
         '|---|---|---|---|---|---|---|---|',
@@ -356,7 +361,9 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
     fs.mkdirSync(path.join(process.cwd(), 'test-results', 'perf'), { recursive: true });
     fs.writeFileSync(path.join(process.cwd(), 'test-results', 'perf', 'surround-perf.md'), `${table}\n`);
     console.log(table);
-    for (const c of calibration) expect.soft(c.ratio, `${c.device}: the ${c.half} self-test fails its half of the gate`).toBeGreaterThan(BOUND.surround);
+    // Every self-test ran, in both orders on each device, and each failed its half of the gate (lib/perf/selfTest.ts), so
+    // a run that skipped them, the self-tests alone included, can't pass.
+    expect.soft(selfTestProblems(calibration, { devices: Object.keys(DEVICES), bound: BOUND.surround }), 'the self-tests fail the gate as they must').toEqual([]);
     // Every device and theme was gated, unless this was the self-test alone (D7).
     expect(verdict, 'every device and theme has a verdict').toHaveLength(SELF_TEST_ONLY ? 0 : Object.keys(DEVICES).length * Object.keys(THEMES).length);
     for (const v of verdict) {
