@@ -1,9 +1,16 @@
 'use client';
 
 import { usePathname, useSelectedLayoutSegments } from 'next/navigation';
-import { useEffect, useRef, type ReactNode } from 'react';
-import ViewerShell from './ViewerShell';
+import { lazy, useEffect, useRef, type ReactNode } from 'react';
+import { loadViewerShell } from './viewerShellLoader';
 import { isViewerPath } from './viewerKeys';
+import { whenIdle } from './whenIdle';
+
+// Lazy, so the Viewer's styles stay out of the series page's first load (viewerShellLoader).
+const ViewerShell = lazy(loadViewerShell);
+
+// A direct load of a photo page asks for the shell as soon as this module runs, ahead of hydration.
+if (typeof window !== 'undefined' && isViewerPath(window.location.pathname)) void loadViewerShell().catch(() => {});
 
 /** The intercepted route's segment in the `@modal` slot. */
 const MODAL_SEGMENT = '(.)photo';
@@ -61,6 +68,24 @@ export default function ViewerHost({ children, modal }: { children: ReactNode; m
         document.addEventListener('click', onClick, true);
         return () => document.removeEventListener('click', onClick, true);
     }, []);
+
+    // On the series page, the shell and its styles load ahead of an open: on a photo link's intent (a pointer over
+    // it, focus on it, a touch on it) and once the browser is idle.
+    useEffect(() => {
+        if (onPhotoPage) return;
+        const onIntent = (event: Event) => {
+            const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[href]') : null;
+            if (link === null || link.closest('[data-surface="viewer"]') !== null) return;
+            if (isViewerPath(new URL(link.href, window.location.href).pathname)) void loadViewerShell().catch(() => {});
+        };
+        const intents = ['pointerover', 'focusin', 'touchstart'] as const;
+        for (const type of intents) document.addEventListener(type, onIntent, { capture: true, passive: true });
+        const cancelIdle = whenIdle(() => void loadViewerShell().catch(() => {}));
+        return () => {
+            for (const type of intents) document.removeEventListener(type, onIntent, { capture: true });
+            cancelIdle();
+        };
+    }, [onPhotoPage]);
 
     useEffect(() => {
         if (wasOpen.current && !modalOpen) {

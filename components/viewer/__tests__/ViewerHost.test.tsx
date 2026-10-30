@@ -9,13 +9,23 @@ vi.mock('next/navigation', () => ({
     usePathname: () => navigation.pathname,
     useSelectedLayoutSegments: (key = 'children') => (key === 'modal' ? navigation.modal : navigation.children),
 }));
-vi.mock('../ViewerShell', () => ({
-    default: ({ mode, children }: { mode: string; children: ReactNode }) => (
+// The host loads the shell lazily (viewerShellLoader). Here it's a thenable that settles as it's asked, so React's lazy
+// renders the stand-in at once, and each ask is counted.
+const loader = vi.hoisted(() => ({ asks: 0 }));
+vi.mock('../viewerShellLoader', () => {
+    const Shell = ({ mode, children }: { mode: string; children: ReactNode }) => (
         <div data-testid="shell" data-mode={mode} data-surface="viewer">
             {children}
         </div>
-    ),
-}));
+    );
+    const settled = { then: (resolve: (value: { default: typeof Shell }) => void) => (resolve({ default: Shell }), settled), catch: () => settled };
+    return {
+        loadViewerShell: () => {
+            loader.asks++;
+            return settled;
+        },
+    };
+});
 
 beforeAll(() => {
     // A click on a link would try to navigate jsdom.
@@ -23,6 +33,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+    loader.asks = 0;
     Object.assign(navigation, { pathname: '/work/fixture', children: [], modal: ['(__SLOT__)', '__DEFAULT__'] });
 });
 
@@ -241,5 +252,33 @@ describe('ViewerHost', () => {
         closeModal();
         view.rerender(host());
         expect(document.activeElement).toBe(document.body);
+    });
+    it("loads the shell and its styles ahead of an open, on a photo link's intent and once the browser is idle", () => {
+        const idle: (() => void)[] = [];
+        vi.stubGlobal('requestIdleCallback', (task: () => void) => idle.push(task));
+        vi.stubGlobal('cancelIdleCallback', () => {});
+        const view = render(host());
+        try {
+            expect(loader.asks, 'nothing at first').toBe(0);
+            fireEvent.pointerOver(screen.getByText('About'));
+            expect(loader.asks, 'not for a link that opens no photo').toBe(0);
+            fireEvent.pointerOver(screen.getByText('Entry a'));
+            fireEvent.focusIn(screen.getByText('Entry b'));
+            fireEvent.touchStart(screen.getByText('Entry a'));
+            expect(loader.asks, 'a pointer over, focus on, and a touch on a photo link').toBe(3);
+            idle.forEach((task) => task());
+            expect(loader.asks, 'and once idle').toBe(4);
+        } finally {
+            view.unmount();
+            vi.unstubAllGlobals();
+        }
+    });
+
+    it('asks for nothing ahead on a photo page, which renders the shell itself', () => {
+        Object.assign(navigation, { pathname: '/work/fixture/photo/a', children: ['photo', 'a'] });
+        render(host(PHOTO));
+        const asked = loader.asks;
+        fireEvent.pointerOver(screen.getByText('Photo content'));
+        expect(loader.asks).toBe(asked);
     });
 });
