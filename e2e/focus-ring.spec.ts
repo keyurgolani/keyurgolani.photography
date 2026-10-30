@@ -24,7 +24,7 @@ async function ringOf(target: Locator) {
     return { focused, focusVisible, outline: outline.style, boxShadow };
 }
 
-for (const theme of ['black', 'light'] as const) {
+for (const theme of ['dark', 'light'] as const) {
     test.describe(`${theme} theme`, () => {
         async function open(page: Page, path: string) {
             if (theme === 'light') await page.addInitScript(() => localStorage.setItem('theme', 'light'));
@@ -80,7 +80,7 @@ for (const theme of ['black', 'light'] as const) {
             expect(await ringOf(track)).toEqual({ focused: true, focusVisible: true, outline: 'none', boxShadow: 'none' });
             const active = await measure(page.locator('.yarl__thumbnails_thumbnail_active'));
             expect(active.outline).toEqual({ style: 'solid', width: 3, offset: 3, alpha: 1 });
-            // The band is the theme's --focus-ring-dark: black on Black, the paper's near-white on Light.
+            // The band is the theme's --focus-ring-dark: black on Dark, the paper's near-white on Light.
             const band = theme === 'light' ? 'rgb\\(251, 248, 242\\)' : 'rgb\\(0, 0, 0\\)';
             expect(active.boxShadow).toMatch(new RegExp(`^${band} 0px 0px 0px 3px`));
         });

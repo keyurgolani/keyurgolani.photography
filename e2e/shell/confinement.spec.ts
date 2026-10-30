@@ -29,7 +29,7 @@ async function expectConfined(page: Page) {
     expect({ body, nav }).toEqual({ body: { paper: '', ground: '' }, nav: { paper: '', ground: '' } });
 }
 
-/** About's paper: Black's is today's approved paper (the project's dark device paints System as Black); Light's is its own (R2-P1-2). */
+/** About's paper: Dark's is today's approved paper (the project's dark device paints System as Dark); Light's is its own (R2-P1-2). */
 async function expectAboutSurface(page: Page, paper = '#f4ecd7') {
     await expect(page.locator('[data-surface]')).toHaveCount(2);
     await expect(page.locator('main[data-surface="about"]')).toHaveCount(1);

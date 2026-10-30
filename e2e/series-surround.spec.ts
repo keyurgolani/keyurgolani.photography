@@ -7,7 +7,7 @@ import { expect, test } from './support/test';
 
 // The photo surround on Work and a series (spec §3, themes PR 3), in all four themes:
 // - the sequence's window cut: one 4:3 slot per entry, the slot the mat, and the print inside it sized to its own
-//   ratio with its own edge, for a landscape, a portrait and a square in one row (Black keeps today's letterbox);
+//   ratio with its own edge, for a landscape, a portrait and a square in one row (Dark keeps today's letterbox);
 // - the hover and focus mark, which keeps the surround and rings it from outside its room (R2-P3-2);
 // - the focus ring, which clears each surround and stays inside the 16 px gutter at 390.
 // Its own catalog, served from a second `next start`, on the desktop project; the phone sizes are set per test.
@@ -26,18 +26,17 @@ const SHAPES = [
 ] as const;
 const PHOTOS = SHAPES.map((shape, n) => ({ id: id(n), ...shape }));
 
-const THEMES = ['black', 'light', 'bright', 'charcoal'] as const;
+const THEMES = ['dark', 'light', 'bright'] as const;
 type Choice = (typeof THEMES)[number];
-/** The window cut's fill and the print's own edge, per theme (styles/themes.css). Black has neither. */
-const CUT: Record<Exclude<Choice, 'black'>, { mat: string; edge: string; room: number }> = {
+/** The window cut's fill and the print's own edge, per theme (styles/themes.css). Dark, today's, has neither. */
+const CUT: Record<Exclude<Choice, 'dark'>, { mat: string; edge: string; room: number }> = {
     light: { mat: 'rgb(248, 245, 238)', edge: 'rgba(41, 35, 29, 0.12) 0px 0px 0px 1px', room: 7 },
     bright: { mat: 'rgb(255, 255, 255)', edge: 'none', room: 6 },
-    charcoal: { mat: 'rgb(42, 47, 45)', edge: 'rgba(255, 255, 255, 0.14) 0px 0px 0px 1px', room: 6 },
 };
 /** Each theme's sm and md room, for the focus ring's offset: the room plus 2 px, at least 3 px. */
 /** The phone's gutter, --site-gutter at 390. */
 const GUTTER = 16;
-const ROOM: Record<Choice, { sm: number; md: number }> = { black: { sm: 0, md: 0 }, light: { sm: 7, md: 12 }, bright: { sm: 6, md: 12 }, charcoal: { sm: 6, md: 10 } };
+const ROOM: Record<Choice, { sm: number; md: number }> = { dark: { sm: 0, md: 0 }, light: { sm: 7, md: 12 }, bright: { sm: 6, md: 12 } };
 
 let catalog: TestCatalog | undefined;
 let server: CatalogServer | undefined;
@@ -103,9 +102,9 @@ for (const theme of THEMES) {
                 // (to a tenth: a small variant rounds its height to whole pixels, 1200:675 at 400 wide is 400:224).
                 expect(slot.w / slot.h, `entry ${n}'s slot`).toBeCloseTo(4 / 3, 2);
                 expect(ratio, `entry ${n}'s image is ${shape.width}:${shape.height}`).toBeCloseTo(shape.width / shape.height, 1);
-                if (theme === 'black') {
+                if (theme === 'dark') {
                     // Today's letterbox: the image fills the slot and draws its own ratio inside it.
-                    expect(print, `entry ${n}'s image fills its slot in Black`).toEqual(slot);
+                    expect(print, `entry ${n}'s image fills its slot in Dark`).toEqual(slot);
                     expect(edge).toBe('none');
                     continue;
                 }
@@ -122,7 +121,7 @@ for (const theme of THEMES) {
             if (Math.round(first.slot.y) === Math.round(second.slot.y)) {
                 // Today's column gap, clamp(0.75rem, 2vw, 1.25rem).
                 const today = Math.min(20, Math.max(12, viewport.width * 0.02));
-                expect(second.slot.x - (first.slot.x + first.slot.w), 'the gap between two slots in a row').toBeGreaterThanOrEqual(2 * (theme === 'black' ? 0 : CUT[theme].room) + today - 0.01);
+                expect(second.slot.x - (first.slot.x + first.slot.w), 'the gap between two slots in a row').toBeGreaterThanOrEqual(2 * (theme === 'dark' ? 0 : CUT[theme].room) + today - 0.01);
             }
         });
     }
@@ -143,9 +142,9 @@ for (const theme of THEMES) {
                 const style = getComputedStyle(el);
                 return { shadow: style.boxShadow, outline: `${style.outlineStyle} ${style.outlineWidth}`, offset: style.outlineOffset };
             });
-            if (theme === 'black') {
+            if (theme === 'dark') {
                 // Today's 1 px ring on the frame's edge, and no outline.
-                expect(marked.shadow, `${act} in Black`).toMatch(/0px 0px 0px 1px$/);
+                expect(marked.shadow, `${act} in Dark`).toMatch(/0px 0px 0px 1px$/);
                 expect(marked.outline.split(' ')[0]).toBe('none');
             } else {
                 expect(marked.shadow, `${act} keeps the surround`).toBe(rest);
