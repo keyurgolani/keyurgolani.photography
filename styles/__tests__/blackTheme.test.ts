@@ -76,7 +76,7 @@ describe("Black's pages", () => {
         const series = blackRules('components/series/SeriesPage.module.css');
         expect(series[":global(html[data-theme='black']) .coverLink:focus-visible"]).toEqual({ 'outline-color': 'transparent', 'outline-offset': 'calc(-1 * var(--focus-ring-width))' });
         expect(series[":global(html[data-theme='black']) .coverLink:focus-visible .coverFrame::after"]).toMatchObject({ position: 'absolute', 'z-index': '1' });
-        expect(series[":global(html[data-theme='black']) .coverLink:hover .coverFrame::after"]).toMatchObject({ 'box-shadow': 'inset 0 0 0 1px var(--gah-rule-strong)' });
+        expect(series[":global(html[data-theme='black']) .coverLink:hover:not(:focus-visible) .coverFrame::after"]).toMatchObject({ 'box-shadow': 'inset 0 0 0 1px var(--gah-rule-strong)' });
         expect(series[":global(html[data-theme='black']) .stageNote"]).toEqual({ 'padding-inline': 'var(--site-gutter)' });
     });
 

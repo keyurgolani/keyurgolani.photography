@@ -480,8 +480,9 @@
   pointer-events: none;
 }
 
+/* Focus wins over hover: a focused cover keeps its ring when the pointer rests on it too. */
 @media (hover: hover) and (pointer: fine) {
-  :global(html[data-theme='black']) .coverLink:hover .coverFrame::after {
+  :global(html[data-theme='black']) .coverLink:hover:not(:focus-visible) .coverFrame::after {
     content: '';
     position: absolute;
     z-index: 1;

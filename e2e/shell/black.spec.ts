@@ -98,6 +98,9 @@ for (const viewport of VIEWPORTS) {
         await page.keyboard.press('Tab');
         await cover.evaluate((el) => (el as HTMLElement).focus({ preventScroll: true }));
         expectRingOnScreenAndAbove(await ringOf(cover), 'the series cover');
+        // Focus wins over hover: with the pointer on the focused cover too, the ring stays (M6).
+        await cover.hover();
+        expectRingOnScreenAndAbove(await ringOf(cover), 'the focused series cover under the pointer');
         // Forced colours drop the shadows, and the inset outline then shows in the system's colour.
         await page.emulateMedia({ forcedColors: 'active' });
         expect((await ringOf(cover)).outline.color, 'the ring in forced colours').not.toBe('rgba(0, 0, 0, 0)');
