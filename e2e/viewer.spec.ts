@@ -491,14 +491,15 @@ test('share metadata names the photo and its series, on SITE_URL, with a /media 
 
 /** Each theme's Viewer (spec §3 and §5, R2-P1-1): its ground and ink, and whether it keeps today's bands. */
 const VIEWER_THEMES = {
-    // Dark is today's Viewer. Black's own Viewer comes with its layer.
-    dark: { paints: 'dark', ground: 'rgb(17, 21, 19)', ink: 'rgb(246, 244, 238)', bands: true },
-    light: { paints: 'light', ground: 'rgb(235, 229, 217)', ink: 'rgb(41, 35, 29)', bands: false },
-    bright: { paints: 'bright', ground: 'rgb(255, 255, 255)', ink: 'rgb(11, 11, 11)', bands: false },
+    // Dark is today's Viewer; Black the print alone on black (the OLED spec), with no bands and no surround.
+    dark: { paints: 'dark', ground: 'rgb(17, 21, 19)', ink: 'rgb(246, 244, 238)', bands: true, surround: false },
+    light: { paints: 'light', ground: 'rgb(235, 229, 217)', ink: 'rgb(41, 35, 29)', bands: false, surround: true },
+    bright: { paints: 'bright', ground: 'rgb(255, 255, 255)', ink: 'rgb(11, 11, 11)', bands: false, surround: true },
+    black: { paints: 'black', ground: 'rgb(0, 0, 0)', ink: 'rgb(245, 245, 245)', bands: false, surround: false },
 } as const;
 
 for (const [choice, want] of Object.entries(VIEWER_THEMES)) {
-    test(`the Viewer in ${choice}: its own ground under the body too, and ${want.bands ? "today's bands and a bare print with its hairline" : 'a matted print with room for its mat, bare when zoomed'}`, async ({ page }) => {
+    test(`the Viewer in ${choice}: its own ground under the body too, and ${want.bands ? "today's bands and a bare print with its hairline" : want.surround ? 'a matted print with room for its mat, bare when zoomed' : 'a bare print on black, with no hairline'}`, async ({ page }) => {
         await page.addInitScript((value) => localStorage.setItem('theme', value), choice);
         await openViewer(page, P[0]);
         await expect(page.locator('html')).toHaveAttribute('data-theme', want.paints);
@@ -551,6 +552,11 @@ for (const [choice, want] of Object.entries(VIEWER_THEMES)) {
             expect(look.shadow, "Dark's print has no surround").toBe('none');
             expect(look.outline, "today's hairline").toBe('solid');
             expect(look.fit, "today's fit").toBe('fill');
+        } else if (!want.surround) {
+            // Black: nothing round the print, and its hairline transparent, so forced colours still give it an edge.
+            expect(look.shadow, "Black's print has no surround").toBe('none');
+            expect(look.outlineColor, 'no hairline').toBe('rgba(0, 0, 0, 0)');
+            expect(look.room, 'no room reserved').toBe(0);
         } else {
             expect(look.shadow, "the theme's surround").toBe(look.surround);
             // Not by accident: md comes from styles/themes.css (#124), and without it both would read none.
