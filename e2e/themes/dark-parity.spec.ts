@@ -618,9 +618,18 @@ const VISITOR: Pair[] = [
         name: 'viewer-modal',
         url: series,
         act: async (page) => {
+            await page.locator('main figure a').first().click();
+            await expect(page.getByRole('dialog')).toBeVisible();
+        },
+    },
+    // The same modal from the sequence's first slot, the other way in (#126's Delta 1, L1').
+    {
+        name: 'viewer-modal-sequence',
+        url: series,
+        act: async (page) => {
             await toSequence(page);
             await page.locator('section[aria-labelledby="series-sequence"] ol li a').first().click();
-            await expect(page.locator('dialog[data-surface="viewer"]')).toHaveJSProperty('open', true);
+            await expect(page.locator('dialog[data-surface="viewer"]')).toBeVisible();
         },
     },
     { name: 'about', url: '/about' },

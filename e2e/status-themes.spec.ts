@@ -12,7 +12,7 @@ import { expect, test } from './support/test';
 // The error page comes from a server whose catalog pointer is damaged, so a page throws into app/error.tsx.
 
 test.describe.configure({ mode: 'serial' });
-test.skip(({ isMobile }) => isMobile, 'Each test sets the 1440 and 390 viewports itself, on the desktop project.');
+test.skip(({ isMobile }) => isMobile, 'Each test sets the 1440, 1024 and 390 viewports itself, on the desktop project.');
 
 const THEMES = {
     dark: { paints: 'dark', ground: 'rgb(8, 10, 9)' },
@@ -23,6 +23,7 @@ const THEMES = {
 } as const;
 const VIEWPORTS = [
     { width: 1440, height: 900 },
+    { width: 1024, height: 768 },
     { width: 390, height: 844 },
 ] as const;
 

@@ -60,7 +60,8 @@
    so both states are the same box in the same tone. */
 .portrait {
   --about-frame: 9px;
-  --about-frame-ground: #101311;
+  /* Black sets its own, the screen's black, in About's inline sheet (aboutThemes.ts). */
+  --about-frame-ground: var(--lts-frame-ground, #101311);
   display: flex;
   flex-direction: column;
   margin: 0;
@@ -209,11 +210,4 @@
 
 .links {
   margin-block-start: 1rem;
-}
-
-/* Black (OLED): the portrait and its name panel on the screen's own black, with no frame ground under the
-   print. */
-:global(html[data-theme='black']) .portrait,
-:global(html[data-theme='black']) .fallback {
-  --about-frame-ground: #000000;
 }

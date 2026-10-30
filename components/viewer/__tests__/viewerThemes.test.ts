@@ -50,10 +50,13 @@ function value(selector: string, prop: string) {
 }
 
 function rgba(color: string): [number, number, number, number] {
-  const short = /^#([0-9a-f]{3})$/i.exec(color);
-  if (short) return [...short[1]].map((digit) => parseInt(digit + digit, 16)).concat(1) as [number, number, number, number];
-  const hex = /^#([0-9a-f]{6})$/i.exec(color);
-  if (hex) return [0, 2, 4].map((at) => parseInt(hex[1].slice(at, at + 2), 16)).concat(1) as [number, number, number, number];
+  // #rgb, #rgba, #rrggbb and #rrggbbaa.
+  const hex = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(color)?.[1];
+  if (hex) {
+    const full = hex.length <= 4 ? [...hex].map((digit) => digit + digit).join('') : hex;
+    const [r, g, b, a = 255] = (full.match(/../g) ?? []).map((pair) => parseInt(pair, 16));
+    return [r, g, b, a / 255];
+  }
   const parts = /^rgba?\(([^)]+)\)$/.exec(color)![1].split(/[\s,/]+/).map(Number);
   return [parts[0], parts[1], parts[2], parts[3] ?? 1];
 }
@@ -90,15 +93,23 @@ describe('the Viewer in Dark', () => {
 });
 
 describe('the Viewer in Black (OLED)', () => {
-  const viewer = tokens('black', '.viewer');
+  const site = siteTokens('black');
+  const viewer = Object.fromEntries(Object.entries(tokens('black', '.viewer')).map(([name, set]) => [name, resolve(set, tokens('black', '.viewer'), site)]));
   const html = tokens('black', ':has');
 
   it("is the print alone on the screen's black: no bands, solid black bars, no rules, no mat, a bare print", () => {
-    expect([viewer['--cc-ground'], viewer['--cc-chrome'], html['--gah-viewer-ground']]).toEqual(['#000000', '#000000', '#000000']);
+    expect([viewer['--cc-ground'], viewer['--cc-chrome'], resolve(html['--gah-viewer-ground'], site)]).toEqual(['#000000', '#000000', '#000000']);
     expect(viewer['--cc-bands']).toBe('none');
     expect(viewer['--cc-rule']).toBe('transparent');
     expect(viewer['--gah-surround-lg'], 'no mat').toBeUndefined();
+    expect(viewer['--gah-room-lg'], 'no room for one').toBeUndefined();
     expect(viewer['--gah-viewer-image-outline'], 'a transparent hairline, for forced colours').toBe('1px solid transparent');
+    // A stale record ratio letterboxes on the black, where the bars are invisible, instead of stretching (L3').
+    expect(viewer['--gah-viewer-fit']).toBe('contain');
+    // Its own ground, ink, label and strong rule are the site's Black, aliased.
+    for (const [name, gah] of [['--cc-ground', '--gah-ground'], ['--cc-ink', '--gah-ink'], ['--cc-label', '--gah-label'], ['--cc-rule-strong', '--gah-rule-strong']]) {
+      expect(viewer[name], name).toBe(site[gah]);
+    }
   });
 
   it("keeps a missing photograph's edge", () => {

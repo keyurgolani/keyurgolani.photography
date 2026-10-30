@@ -5,8 +5,9 @@
  *   Bright  the shade lit white: faint grey ribs, a white mat in a 2px black line, the caption on the mat under the
  *           print (P3-3), not a band over the frame's dark ground.
  *   Black   the screen's own black (OLED, the OLED spec's round 2): no paper, no ribs, no mat or
- *           shadow round the portrait, neutral ink, the caption on the black under the print, and no boxes round the
- *           links at rest (ExternalLinks.module.css).
+ *           shadow round the portrait and no frame ground under it, neutral ink, the caption on the black under the print, no
+ *           hairline under the nav (the OLED review's C2-5), and no box or resting glow round a link: it lights on
+ *           hover and focus (ExternalLinks.module.css reads --about-rule and --about-glow-rest).
  *
  * About's alone, so it rides in About's own HTML as a hoisted stylesheet (AboutPage.tsx), not in the global
  * themes.css: the CSS chunking merges route modules into the chunk every visitor route loads, so a module would put
@@ -22,10 +23,9 @@ const BRIGHT =
   '--lts-rule-strong:#767676;--lts-glass:#fff;--lts-frame:#fff;--lts-shadow:0 0 0 2px #111;--lts-link-rule:#767676;' +
   '--lts-caption-bg:#fff;--lts-caption-ink:#0b0b0b';
 const BLACK =
-  '--lts-paper:#000;--lts-ink:#f5f5f5;--lts-ink-soft:rgba(255,255,255,.76);--lts-ribs:none;' +
-  '--lts-rule:rgba(255,255,255,.16);--lts-rule-strong:rgba(255,255,255,.4);--lts-glass:rgba(0,0,0,.94);' +
-  '--lts-frame:#000;--lts-shadow:none;--lts-link-rule:rgba(255,255,255,.4);--lts-caption-bg:transparent;' +
-  '--lts-caption-ink:#f5f5f5';
+  '--lts-paper:#000;--lts-ink:#f5f5f5;--lts-ink-soft:#ffffffc2;--lts-ribs:none;--lts-rule:transparent;' +
+  '--lts-rule-strong:#fff6;--lts-glass:#000000f0;--lts-frame:#000;--lts-frame-ground:#000;--lts-shadow:none;' +
+  '--lts-link-rule:transparent;--about-glow-rest:0;--lts-caption-bg:transparent;--lts-caption-ink:#f5f5f5';
 export const ABOUT_THEMES_CSS =
   `html[data-theme=light]{--gah-about-ground:#ebe5d9}html[data-theme=light] [data-surface=about]{${LIGHT}}` +
   `html[data-theme=bright]{--gah-about-ground:#fff}html[data-theme=bright] [data-surface=about]{${BRIGHT}}` +
