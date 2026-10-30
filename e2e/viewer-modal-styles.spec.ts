@@ -200,13 +200,15 @@ test("a photo page loaded directly gets the Viewer's styles once, with no second
 });
 
 test.describe("when the Viewer's styles can't load, a photo opens as its own page", () => {
-    /** What the series showed before it went: the error page, or nothing at all, and the 50 ms polls left running. */
+    /** What the series showed before it went: the error page, nothing at all, or a dialog. */
     async function watchSeries(page: Page): Promise<string[]> {
         const seen: string[] = [];
         await page.exposeBinding('kgSaw', (_source, what: string) => void seen.push(what));
         await page.addInitScript((heading: string) => {
             const saw = (window as unknown as { kgSaw: (what: string) => void }).kgSaw;
             new MutationObserver(() => {
+                // A failed open never shows a dialog, at any URL.
+                if (document.querySelector('dialog') !== null) saw('a dialog');
                 if (!/^\/work\/[^/]+\/?$/.test(location.pathname)) return;
                 if (Array.from(document.querySelectorAll('h1, h2')).some((h) => h.textContent?.trim() === heading)) saw('the error page');
                 if (document.querySelector('main') === null) saw('no series');
@@ -239,7 +241,7 @@ test.describe("when the Viewer's styles can't load, a photo opens as its own pag
         await countPolls(page);
     });
 
-    test("a 404 for the Viewer's sheet: the click loads the photo's page, styled, focus sane, and nothing polls after", async ({ page }) => {
+    test("a 404 for the Viewer's sheet: the click loads the photo's page, styled, focus sane, nothing polls after, and one Back returns", async ({ page }) => {
         const seen = await watchSeries(page);
         let failing = false;
         const failed: string[] = [];
@@ -257,6 +259,8 @@ test.describe("when the Viewer's styles can't load, a photo opens as its own pag
         page.on('framenavigated', (frame) => {
             if (frame === page.mainFrame() && frame.url().includes('/photo/')) failing = false;
         });
+        await entry(page, P[1]).scrollIntoViewIfNeeded();
+        const before = await page.evaluate(() => ({ scrollY: Math.round(window.scrollY), entries: history.length }));
         await entry(page, P[1]).click();
         await page.waitForURL(`${origin()}${href(P[1])}`, { timeout: FALLBACK_TIMEOUT });
         const viewer = page.locator('main[data-surface="viewer"]');
@@ -265,7 +269,9 @@ test.describe("when the Viewer's styles can't load, a photo opens as its own pag
         expect(await page.evaluate(() => (performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming).name), 'a full load of the photo URL').toBe(`${origin()}${href(P[1])}`);
         expect(await viewer.evaluate((root, rule) => getComputedStyle(root).getPropertyValue(rule).trim(), VIEWER_RULE), 'styled').toBe('3.5rem');
         await expect(page.locator('dialog')).toHaveCount(0);
-        expect(seen, 'the series never showed the error page, and never went blank').toEqual([]);
+        expect(seen, 'the series never showed the error page or a dialog, and never went blank').toEqual([]);
+        // The photo's page took the open's history entry: one more than the series had, not two (the review's M3).
+        expect(await page.evaluate(() => history.length), 'one history entry for the open').toBe(before.entries + 1);
         // A page moves no focus on load, and Tab goes into the Viewer.
         await waitForHydration(page);
         expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
@@ -273,6 +279,44 @@ test.describe("when the Viewer's styles can't load, a photo opens as its own pag
         expect(await page.evaluate(() => document.activeElement?.closest('[data-surface="viewer"]') !== null)).toBe(true);
         await page.waitForTimeout(1000);
         expect(await page.evaluate(() => (window as unknown as { kgPolls: () => number }).kgPolls()), 'no poll left running').toBe(0);
+        // One Back returns to the series, scrolled where it was.
+        await page.goBack();
+        await expect(page).toHaveURL(`${origin()}/work/harbor`);
+        await expect(entry(page, P[1])).toBeInViewport();
+        expect(Math.abs((await page.evaluate(() => Math.round(window.scrollY))) - before.scrollY), 'scrolled where it was').toBeLessThanOrEqual(4);
+    });
+
+    test("a photo page loaded directly whose shell can't load keeps the server's Viewer: Previous, Next and Close still work", async ({ page }) => {
+        const errors: string[] = [];
+        page.on('console', (message) => {
+            if (message.type() === 'error') errors.push(message.text());
+        });
+        page.on('pageerror', (error) => errors.push(error.message));
+        // The shell's chunk: data-viewer-announcer is ViewerShell's alone.
+        const failed: string[] = [];
+        await page.route('**/_next/static/**/*.js*', async (route) => {
+            const response = await route.fetch();
+            if (!(await response.text()).includes('data-viewer-announcer')) return route.fulfill({ response });
+            failed.push(route.request().url());
+            await route.fulfill({ status: 404, body: '' });
+        });
+        const viewer = page.locator('main[data-surface="viewer"]');
+        const opened = async (photoId: string) => {
+            await expect(page).toHaveURL(`${origin()}${href(photoId)}`);
+            await expect(viewer).toHaveAttribute('data-viewer-mode', 'page');
+            expect(await viewer.evaluate((root, rule) => getComputedStyle(root).getPropertyValue(rule).trim(), VIEWER_RULE), `${photoId} is styled`).toBe('3.5rem');
+        };
+        await page.goto(`${origin()}${href(P[1])}`);
+        await opened(P[1]);
+        expect(failed.length, "the shell's chunk was asked for and failed").toBeGreaterThan(0);
+        await page.waitForTimeout(1000);
+        await viewer.getByRole('link', { name: 'Next photograph' }).click();
+        await opened(P[2]);
+        await viewer.getByRole('link', { name: 'Previous photograph' }).click();
+        await opened(P[1]);
+        await viewer.getByRole('link', { name: 'Close' }).click();
+        await expect(page).toHaveURL(`${origin()}/work/harbor`);
+        expect(errors.filter((text) => /hydrat|did not match|mismatch/i.test(text)), 'no hydration mismatch').toEqual([]);
     });
 
     test("offline: the click goes to the photo's URL, and the series never shows the error page", async ({ page, context }) => {

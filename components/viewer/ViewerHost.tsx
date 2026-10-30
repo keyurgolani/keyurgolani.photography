@@ -9,16 +9,16 @@ import { whenIdle } from './whenIdle';
 
 /**
  * The shell, read from viewerShellLoader, so the Viewer's styles stay out of the series page's first load. The load
- * never rejects (a failure settles on the fallback), and `use` reads whichever load is current, so a failed one is
- * never kept the way React.lazy would keep it.
+ * never rejects (a modal's failure settles on the fallback, a page's waits over the server's HTML), and `use` reads
+ * whichever load is current, so a failed one is never kept the way React.lazy would keep it.
  */
 function ViewerShell(props: { mode: ViewerMode; children: ReactNode }) {
-    const Shell = use(loadViewerShell());
+    const Shell = use(loadViewerShell(props.mode));
     return <Shell {...props} />;
 }
 
 // A direct load of a photo page asks for the shell as soon as this module runs, ahead of hydration.
-if (typeof window !== 'undefined' && isViewerPath(window.location.pathname)) void loadViewerShell();
+if (typeof window !== 'undefined' && isViewerPath(window.location.pathname)) void loadViewerShell('page');
 
 /** Marks a photo link busy while its open waits on the shell (the review's L4), and clears it. */
 function markBusy(link: HTMLElement | null, busy: boolean): void {
@@ -114,6 +114,8 @@ export default function ViewerHost({ children, modal }: { children: ReactNode; m
             stopListening();
             cancelIdle();
             cancelViewerShellLoad();
+            markBusy(busy.current, false);
+            busy.current = null;
         };
     }, [onPhotoPage]);
 
