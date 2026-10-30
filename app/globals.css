@@ -68,7 +68,7 @@ html {
     --secondary-color-rgb: 45, 45, 45;
 }
 
-/* Today's dark legacy variables, which Black (today's site) and Dark both keep. */
+/* Today's dark legacy variables, which Dark (today's site) and Black both keep. */
 [data-theme="dark"],
 [data-theme="black"] {
     /* Dark theme (Premium Dark) */

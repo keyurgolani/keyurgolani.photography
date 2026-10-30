@@ -1,15 +1,15 @@
 /* The five theme choices (System, Light, Bright, Dark, Black) and the theme control's button.
    The inline theme script (components/site/themeScript.ts) puts the choice on <html data-theme-choice> and what paints
-   on <html data-theme>: light, bright, dark (stored as `charcoal`) or black. System paints light on a light device and
-   black on a dark one, and a page without JavaScript paints black, the server's attribute.
+   on <html data-theme>: light, bright, dark or black. System paints light on a light device and dark on a dark one,
+   never bright or black, and a page without JavaScript paints dark, the server's attribute.
 
    The four differ in material, not lightness (docs: the themes spec):
      light   paper: a toned warm sheet, blue-black ink.
      bright  a white wall: pure white, flat greys, black ink.
-     dark    a charcoal room: lit charcoal with layered surfaces, sage.
-     black   today's site, exactly: v1.2.0's Gallery After Hours.
+     dark    today's site, exactly: v1.2.0's Gallery After Hours.
+     black   true black, nothing but the photograph (its layer comes with the remap's design gate).
 
-   Black declares almost nothing. It paints with v1.2.0's own values, which are styles/tokens.css's :root (where every
+   Dark declares almost nothing. It paints with v1.2.0's own values, which are styles/tokens.css's :root (where every
    theme starts) and each module's var() fallback. Nothing theme-specific goes on :root, since every theme would
    inherit it. Each other theme declares its whole palette.
 
@@ -17,30 +17,9 @@
    surround, Home's stage, the Viewer's backdrop). About's per-theme paper is About's alone, in
    app/about/aboutThemes.ts. */
 
-html[data-theme='black'] {
+html[data-theme='dark'] {
   --gah-raised: #151917;
   --gah-accent: #eff4f1;
-}
-
-html[data-theme='dark'] {
-  color-scheme: dark;
-  --gah-color-scheme: dark;
-  --gah-ground: #1b1f1d;
-  --gah-surface: #232826;
-  --gah-raised: #2c3230;
-  --gah-ink: #eef2f0;
-  --gah-ink-soft: #c9d0cc;
-  --gah-ink-muted: #a3aca8;
-  --gah-label: #aebbb6;
-  --gah-rule: rgba(255, 255, 255, 0.12);
-  --gah-rule-strong: rgba(255, 255, 255, 0.42);
-  --gah-accent: #9fcfba;
-  --gah-glass: rgba(27, 31, 29, 0.86);
-  --gah-action: #9fcfba;
-  --gah-action-ink: #101511;
-  /* The legacy variables Home's intro and the legacy Gallery paint with. */
-  --background-color: #1b1f1d;
-  --primary-color: #eef2f0;
 }
 
 html[data-theme='light'] {
@@ -101,24 +80,9 @@ html[data-theme='bright'] {
    (--gah-slot-surround-sm), and the print, sized to its own ratio when --gah-slot-print is 1, carries its own edge
    (--gah-print-edge). A theme sets --gah-slot-print and --gah-slot-overflow together: a print sized to its ratio but
    clipped by its slot would lose its edge where it meets the slot's sides. Light's sequence captions take the serif
-   (--gah-caption-font). Black sets none of these, so every module falls back to today's: no surround, the letterbox on
+   (--gah-caption-font). Dark sets none of these, so every module falls back to today's: no surround, the letterbox on
    the surface, today's radius, caption and hover ring. The Viewer's lg size comes with the Viewer's PR. The mark's
    outline resolves on html, so a subtree that sets its own --gah-rule-strong doesn't move it (none does). */
-html[data-theme='dark'] {
-  --gah-photo-radius: 2px;
-  --gah-caption-ink: #dfe5e2;
-  --gah-print-edge: 0 0 0 1px rgba(255, 255, 255, 0.14);
-  --gah-slot-surround-sm: 0 0 0 6px #2a2f2d, 0 10px 18px -10px rgba(0, 0, 0, 0.7);
-  --gah-surround-sm: var(--gah-print-edge), var(--gah-slot-surround-sm);
-  --gah-surround-md: var(--gah-print-edge), 0 0 0 10px #2a2f2d, 0 18px 32px -16px rgba(0, 0, 0, 0.75);
-  --gah-room-sm: 6px;
-  --gah-room-md: 10px;
-  --gah-mat-fill: #2a2f2d;
-  --gah-slot-print: 1;
-  --gah-slot-overflow: visible;
-  --gah-mark-outline: 1px solid var(--gah-rule-strong);
-}
-
 html[data-theme='light'] {
   --gah-photo-radius: 1px;
   --gah-caption-ink: #3a3229;
@@ -215,11 +179,11 @@ html[data-theme='bright'] {
 html:not([data-theme-choice='system']) [data-name-for='system'],
 html:not([data-theme-choice='light']) [data-name-for='light'],
 html:not([data-theme-choice='bright']) [data-name-for='bright'],
-html:not([data-theme-choice='charcoal']) [data-name-for='charcoal'],
+html:not([data-theme-choice='dark']) [data-name-for='dark'],
 html:not([data-theme-choice='black']) [data-name-for='black'],
 html:not([data-theme-choice='system']) [data-now],
 html:not([data-theme='light']) [data-now='light'],
-html:not([data-theme='black']) [data-now='black'] {
+html:not([data-theme='dark']) [data-now='dark'] {
   display: none;
 }
 

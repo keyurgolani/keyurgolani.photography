@@ -202,13 +202,7 @@
   }
 }
 
-/* The login's surfaces and notices per theme, as the Inbox's (curator.module.css). Black is the block at the top. */
-:global(html[data-theme='dark']) .page {
-  --login-header: #232826;
-  --login-rule: #3f4643;
-  --login-field: #181c1a;
-}
-
+/* The login's surfaces and notices per theme, as the Inbox's (curator.module.css). Dark is the block at the top. */
 :global(html[data-theme='light']) .page {
   --login-header: #e2dbcd;
   --login-rule: #c9bfae;

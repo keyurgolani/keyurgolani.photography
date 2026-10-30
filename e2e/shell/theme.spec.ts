@@ -3,10 +3,11 @@ import { artist } from '../../data/artist';
 import { waitForHydration } from '../support/hydration';
 import { expect, test } from '../support/test';
 
-// The theme control: System is the default, and on a dark device it paints Black, which is today's site exactly; a
-// visitor without JavaScript gets Black too, and no control. These pin what the server sends, what the inline script
-// resolves before any Next.js script, that Black keeps today's grounds, that a legacy stored `dark` reads as Black and
-// Dark is stored as `charcoal`, a choice in another tab, and the control under forced colours.
+// The theme control: System is the default, and on a dark device it paints Dark, which is today's site exactly; a
+// visitor without JavaScript gets Dark too, and no control. These pin what the server sends, what the inline script
+// resolves before any Next.js script, that Dark keeps today's grounds, that today's stored `dark` stays Dark and the
+// preview's `charcoal` reads as Dark, Black as its own choice, a choice in another tab, and the control under forced
+// colours.
 
 test.skip(({ isMobile }) => isMobile, 'The desktop project covers it. SiteNav runs on both in nav.spec.ts.');
 
@@ -19,7 +20,7 @@ const galleryBackground = (page: Page) =>
         const main = document.querySelector('main');
         return main ? getComputedStyle(main).backgroundColor : '';
     });
-/** Today's grounds, which Black keeps: the legacy Gallery's dark main, the shell's Gallery After Hours, About's paper. */
+/** Today's grounds, which Dark keeps: the legacy Gallery's dark main, the shell's Gallery After Hours, About's paper. */
 const DARK_GROUND = 'rgb(5, 5, 5)';
 const SHELL_GROUND = 'rgb(8, 10, 9)';
 const PAPER = 'rgb(244, 236, 215)';
@@ -35,9 +36,9 @@ function watchErrors(page: Page) {
     return problems;
 }
 
-test('the server sends System painting Black', async ({ request }) => {
+test('the server sends System painting Dark', async ({ request }) => {
     const html = await (await request.get('/gallery')).text();
-    expect(html).toMatch(/<html[^>]*data-theme="black"/);
+    expect(html).toMatch(/<html[^>]*data-theme="dark"/);
     expect(html).toMatch(/<html[^>]*data-theme-choice="system"/);
 });
 
@@ -67,7 +68,7 @@ test('a stored Light choice is on <html> and paints, before any Next.js script r
 });
 
 for (const [scheme, theme, name] of [
-    ['dark', 'black', 'Theme: System (Black now)'],
+    ['dark', 'dark', 'Theme: System (Dark now)'],
     ['light', 'light', 'Theme: System (Light now)'],
 ] as const) {
     test(`with nothing stored on a ${scheme} device, System paints ${theme} and the control says so before React runs`, async ({ page }) => {
@@ -87,12 +88,12 @@ test('a stored value that is no choice is System, and on a dark device keeps tod
     await page.addInitScript(() => localStorage.setItem('theme', 'blue'));
     await page.goto('/gallery');
     await waitForHydration(page);
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'black');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
     expect(await galleryBackground(page)).toBe(DARK_GROUND);
     expect(await bodyBackground(page)).toBe(SHELL_GROUND);
 });
 
-for (const theme of ['black', 'light'] as const) {
+for (const theme of ['dark', 'black', 'light'] as const) {
     for (const path of ['/', '/gallery', '/about', '/does-not-exist']) {
         test(`${path} logs no page or hydration error in the ${theme} theme`, async ({ page }) => {
             await page.addInitScript((value) => localStorage.setItem('theme', value), theme);
@@ -106,7 +107,7 @@ for (const theme of ['black', 'light'] as const) {
     }
 }
 
-test("today's stored dark reads as Black, and Dark is stored as charcoal", async ({ page }) => {
+test("today's stored dark stays Dark, the preview's charcoal reads as Dark, and Black is its own choice", async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'light' });
     await page.addInitScript(() => {
         if (!sessionStorage.getItem('seeded')) {
@@ -117,22 +118,29 @@ test("today's stored dark reads as Black, and Dark is stored as charcoal", async
     await page.goto('/gallery');
     await waitForHydration(page);
     const html = page.locator('html');
-    await expect(html).toHaveAttribute('data-theme', 'black');
-    await expect(html).toHaveAttribute('data-theme-choice', 'black');
+    await expect(html).toHaveAttribute('data-theme', 'dark');
+    await expect(html).toHaveAttribute('data-theme-choice', 'dark');
     expect(await bodyBackground(page)).toBe(SHELL_GROUND);
-    await expect(control(page)).toHaveAccessibleName('Theme: Black');
+    await expect(control(page)).toHaveAccessibleName('Theme: Dark');
 
     await control(page).click();
     // A pointer's choice applies in the view transition's callback, a frame later.
-    await page.getByRole('radio', { name: /^Dark/ }).click();
-    await expect(page.getByRole('radio', { name: /^Dark/ })).toBeChecked();
-    await expect(html).toHaveAttribute('data-theme', 'dark');
-    await expect(html).toHaveAttribute('data-theme-choice', 'charcoal');
-    expect(await page.evaluate(() => localStorage.getItem('theme'))).toBe('charcoal');
+    await page.getByRole('radio', { name: /^Black/ }).click();
+    await expect(page.getByRole('radio', { name: /^Black/ })).toBeChecked();
+    await expect(html).toHaveAttribute('data-theme', 'black');
+    await expect(html).toHaveAttribute('data-theme-choice', 'black');
+    expect(await page.evaluate(() => localStorage.getItem('theme'))).toBe('black');
     await page.keyboard.press('Escape');
-    await expect(control(page)).toHaveAccessibleName('Theme: Dark');
+    await expect(control(page)).toHaveAccessibleName('Theme: Black');
+    await page.reload();
+    await expect(html).toHaveAttribute('data-theme', 'black');
+
+    // The preview's stored Dark, `charcoal`, reads as Dark with no write.
+    await page.evaluate(() => localStorage.setItem('theme', 'charcoal'));
     await page.reload();
     await expect(html).toHaveAttribute('data-theme', 'dark');
+    await expect(html).toHaveAttribute('data-theme-choice', 'dark');
+    expect(await page.evaluate(() => localStorage.getItem('theme'))).toBe('charcoal');
 });
 
 test('a choice made in another tab applies here too', async ({ context, page }) => {
@@ -164,7 +172,7 @@ test('a choice in the control applies at once, is stored, and a reload keeps it 
     await page.goto('/gallery');
     await waitForHydration(page);
     const html = page.locator('html');
-    await expect(control(page)).toHaveAccessibleName('Theme: System (Black now)');
+    await expect(control(page)).toHaveAccessibleName('Theme: System (Dark now)');
 
     await control(page).click();
     // A pointer's choice applies in the view transition's callback, a frame later.
@@ -222,10 +230,10 @@ test.describe('with JavaScript disabled', () => {
         ['/gallery', 'Gallery', SHELL_GROUND, "today's dark ground"],
         ['/about', artist.profile.statementHeading, PAPER, "About's paper"],
     ] as const) {
-        test(`${path} shows its heading and SiteNav on ${groundName}, in Black, with no theme control`, async ({ page }) => {
+        test(`${path} shows its heading and SiteNav on ${groundName}, in Dark, with no theme control`, async ({ page }) => {
             await page.emulateMedia({ colorScheme: 'light' });
             await page.goto(path);
-            await expect(page.locator('html')).toHaveAttribute('data-theme', 'black');
+            await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
             await expect(page.getByRole('heading', { level: 1, name: heading })).toBeVisible();
             await expect(page.getByRole('navigation', { name: 'Primary' })).toBeVisible();
             // Nothing in the menu could work without JavaScript, so it isn't offered (R2-P2-6).

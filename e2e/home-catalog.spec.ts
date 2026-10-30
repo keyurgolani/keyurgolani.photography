@@ -267,8 +267,9 @@ test('in Light, the copy keeps its paper scrim over a light opening photograph',
 test('at 200% text on a small phone, the title keeps 4.5:1 with the chrome scrolled to its end (M1)', async ({ page }, testInfo) => {
     runsOn(testInfo, 'mobile');
     await page.setViewportSize({ width: 375, height: 667 });
-    // Dark, over white: the theme whose ink the hold exists for. Light's and Bright's copy follows the photograph's tone.
-    await page.addInitScript(() => localStorage.setItem('theme', 'charcoal'));
+    // Dark, over white: light ink, so its enlarged-text hold (spec §10) is what keeps the title. Light's and Bright's copy
+    // follows the photograph's tone.
+    await page.addInitScript(() => localStorage.setItem('theme', 'dark'));
     await openingAs(page, '#ffffff');
     await openHome(page);
     await expectShown(page, HOME_OPENING);
@@ -291,9 +292,9 @@ test('at 200% text on a small phone, the title keeps 4.5:1 with the chrome scrol
     expect(await worstTextContrast(page, title), "the title's worst contrast with the chrome scrolled").toBeGreaterThanOrEqual(4.5);
 });
 
-test("Black on a phone is today's at default text, and follows the copy only when the text is enlarged", async ({ page }, testInfo) => {
+test("Dark on a phone is today's at default text, and follows the copy only when the text is enlarged", async ({ page }, testInfo) => {
     runsOn(testInfo, 'mobile');
-    await page.addInitScript(() => localStorage.setItem('theme', 'black'));
+    await page.addInitScript(() => localStorage.setItem('theme', 'dark'));
     await openHome(page);
     await expectShown(page, HOME_OPENING);
     const root = page.locator('main');

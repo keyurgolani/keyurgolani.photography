@@ -35,8 +35,8 @@ const painted = () => [root.getAttribute('data-theme-choice'), root.getAttribute
 
 describe('THEME_INIT_SCRIPT', () => {
   beforeEach(() => {
-    // What the server sends: System, painting Black (the owner's ruling, 2026-10-28: today's site).
-    root.setAttribute('data-theme', 'black');
+    // What the server sends: System, painting Dark (the remap, 2026-10-29: Dark is today's site).
+    root.setAttribute('data-theme', 'dark');
     root.setAttribute('data-theme-choice', 'system');
   });
 
@@ -47,27 +47,27 @@ describe('THEME_INIT_SCRIPT', () => {
     for (const name of root.getAttributeNames()) root.removeAttribute(name);
   });
 
-  it.each(['light', 'bright', 'black'])('applies a stored %s choice', (choice) => {
+  it.each(['light', 'bright', 'dark', 'black'])('applies a stored %s choice', (choice) => {
     device('dark');
     localStorage.setItem('theme', choice);
     run();
     expect(painted()).toEqual([choice, choice]);
   });
 
-  // The lead's ruling on owner question 4 : Dark is stored as `charcoal` and paints `dark`, so the CSS keys
-  // on `dark` as before; a stored `dark` is today's toggle, today's look, so it reads as Black.
-  it('paints a stored charcoal as Dark', () => {
-    device('light');
-    localStorage.setItem('theme', 'charcoal');
-    run();
-    expect(painted()).toEqual(['charcoal', 'dark']);
-  });
-
-  it("reads today's stored dark as Black, on a light device too", () => {
+  // The remap (2026-10-29): Dark is today's look, so today's stored `dark` keeps its meaning, and the preview's
+  // `charcoal` (the removed charcoal Dark) reads as Dark.
+  it("keeps today's stored dark as Dark, on a light device too", () => {
     device('light');
     localStorage.setItem('theme', 'dark');
     run();
-    expect(painted()).toEqual(['black', 'black']);
+    expect(painted()).toEqual(['dark', 'dark']);
+  });
+
+  it("reads the preview's stored charcoal as Dark", () => {
+    device('light');
+    localStorage.setItem('theme', 'charcoal');
+    run();
+    expect(painted()).toEqual(['dark', 'dark']);
   });
 
   it("keeps today's stored light as Light", () => {
@@ -77,24 +77,24 @@ describe('THEME_INIT_SCRIPT', () => {
     expect(painted()).toEqual(['light', 'light']);
   });
 
-  it('resolves System to Light on a light device and to Black on a dark one', () => {
+  it('resolves System to Light on a light device and to Dark on a dark one, never Bright or Black', () => {
     device('light');
     localStorage.setItem('theme', 'system');
     run();
     expect(painted()).toEqual(['system', 'light']);
     device('dark');
     run();
-    expect(painted()).toEqual(['system', 'black']);
+    expect(painted()).toEqual(['system', 'dark']);
   });
 
   it('follows the device live while System is chosen', () => {
     const media = device('dark');
     run();
-    expect(painted()).toEqual(['system', 'black']);
+    expect(painted()).toEqual(['system', 'dark']);
     media.switchTo('light');
     expect(painted()).toEqual(['system', 'light']);
     media.switchTo('dark');
-    expect(painted()).toEqual(['system', 'black']);
+    expect(painted()).toEqual(['system', 'dark']);
   });
 
   it("follows the device live through Safari 13's addListener", () => {
@@ -106,34 +106,34 @@ describe('THEME_INIT_SCRIPT', () => {
 
   it('keeps an explicit choice when the device switches', () => {
     const media = device('dark');
-    localStorage.setItem('theme', 'charcoal');
+    localStorage.setItem('theme', 'black');
     run();
     media.switchTo('light');
-    expect(painted()).toEqual(['charcoal', 'dark']);
+    expect(painted()).toEqual(['black', 'black']);
   });
 
   it('applies a choice made in another tab', () => {
     device('dark');
     run();
-    expect(painted()).toEqual(['system', 'black']);
+    expect(painted()).toEqual(['system', 'dark']);
     localStorage.setItem('theme', 'bright');
     window.dispatchEvent(new StorageEvent('storage', { key: 'theme', newValue: 'bright' }));
     expect(painted()).toEqual(['bright', 'bright']);
     localStorage.removeItem('theme');
     window.dispatchEvent(new StorageEvent('storage', { key: 'theme', newValue: null }));
-    expect(painted()).toEqual(['system', 'black']);
+    expect(painted()).toEqual(['system', 'dark']);
   });
 
   it.each([['blue'], [''], ['Dark']])('treats the stored value %j as System', (value) => {
     device('dark');
     localStorage.setItem('theme', value);
     run();
-    expect(painted()).toEqual(['system', 'black']);
+    expect(painted()).toEqual(['system', 'dark']);
   });
 
-  it('is System, painting Black, with nothing stored and no matchMedia', () => {
+  it('is System, painting Dark, with nothing stored and no matchMedia', () => {
     run();
-    expect(painted()).toEqual(['system', 'black']);
+    expect(painted()).toEqual(['system', 'dark']);
   });
 
   it('is System when localStorage throws', () => {

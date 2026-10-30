@@ -12,13 +12,14 @@ import { publishHomeFixture } from '../support/homeFixture';
 import { routePhotoFixtures } from '../support/test';
 import { compare, failures, walk, type Allowance, type Comparison, type Walk } from './computed';
 
-// Black is today's site, exactly (the owner's ruling, 2026-10-28). This loads the same page states from two builds, the
+// Dark is today's site, exactly (the owner's ruling, 2026-10-29: the remap; it was Black until then, and this file keeps
+// that name). This loads the same page states from two builds, the
 // base (PARITY_BASE_DIR: next before the themes) and the head, on the same fixtures, a dark device and reduced motion.
 //
 // The gate is computed style (the lead's ruling, 2026-10-29; spec §10; e2e/themes/computed.ts). The base doesn't render
 // the same pixels twice: its own photographs, the intro's ripples and a focus ring's edge differ from one load to the
-// next, so a pixel gate flakes on the base itself. What Black is made of can be compared exactly instead:
-// 1. Tokens: every custom property the base resolves on :root and body must resolve the same in the head's Black. New
+// next, so a pixel gate flakes on the base itself. What Dark is made of can be compared exactly instead:
+// 1. Tokens: every custom property the base resolves on :root and body must resolve the same in the head's Dark. New
 //    tokens are allowed, and listed.
 // 2. Elements: every element under body (and in the curator's preview frame), matched by a path of tag and
 //    nth-of-type, with its ::before, ::after, ::placeholder and ::marker: paint, backgrounds, borders and radii, type and
@@ -28,7 +29,7 @@ import { compare, failures, walk, type Allowance, type Comparison, type Walk } f
 //    and the slot that holds only them is compared by style alone; the curator's head takes its control out of the
 //    layout, as no JavaScript does, since the base's header had none. A wait that times out fails the row, so a head
 //    that doesn't hydrate fails.
-// At 1440, 1024 and 390, in all three of Black's routes: System on a dark device and today's stored `dark`, each
+// At 1440, 1024 and 390, in all three of Dark's routes: System on a dark device and today's stored `dark`, each
 // against the base on its stored `dark`, and no JavaScript against the base without it. Home's intro has a fourth:
 // motion allowed, on a paused clock run to a fixed point in its loading phase, where the grain and the ripples are.
 // The gate also walks hover and focus on the nav links, Home's controls (their hover only with motion allowed), About's
@@ -535,7 +536,7 @@ const VISITOR: Pair[] = [
         },
     },
     { name: 'cover-fallback', url: series, act: (page) => failCover(page) },
-    // A focused Work entry: its ring's offset comes from [data-ring-room], 3 px in Black as today.
+    // A focused Work entry: its ring's offset comes from [data-ring-room], 3 px in Dark as today.
     {
         name: 'work-focus',
         url: '/work',
@@ -716,7 +717,7 @@ const CURATOR: Pair[] = [
     } },
 ];
 
-/** Shoots `pair` from both, at every size and scale, and pins the diff; and, with `legacy`, the head on a stored `dark`. */
+/** Shoots `pair` from both, at every size and scale, and pins the diff; and, with `legacy`, the head on the preview's stored `charcoal`. */
 const row = (label: string, size: string, width: number, scale: number, d: Diff) =>
     record(`| ${label} | ${size} ${width} | ${scale}x | ${d.count} | ${d.maxStep} | ${d.photoStep} | ${d.styles.length} | ${d.box} |`);
 
@@ -772,7 +773,7 @@ function judge(label: string, width: number, c: Comparison, timedOut: string[] =
 }
 
 /**
- * The gate, at each size: Black in the head against the base, element by element, in all three of Black's routes.
+ * The gate, at each size: Dark in the head against the base, element by element, in all three of Dark's routes.
  * System on a dark device and today's stored `dark` against the base on its stored `dark`; no JavaScript against the
  * base without it. A wait that times out in either build fails the row, and a head with JavaScript that doesn't
  * hydrate fails it too (its hydration wait is one of them). Home's intro has a fourth route: motion allowed, held in
@@ -827,9 +828,9 @@ function parity(group: string, pairs: Pair[], origins: () => { base: string; hea
                     const name = `${pair.name}-${viewport.width}-${scale}x`;
                     const before = await shoot(base, 'dark', pair, viewport, scale, 'base', cookies?.base);
                     row(`${pair.name}, the base against itself`, size, viewport.width, scale, await diff(before, await shoot(base, 'dark', pair, viewport, scale, 'base-again', cookies?.base), scale, `${name}-base-against-itself`));
-                    row(pair.name, size, viewport.width, scale, await diff(before, await shoot(head, 'black', pair, viewport, scale, 'head', cookies?.head), scale, name));
+                    row(pair.name, size, viewport.width, scale, await diff(before, await shoot(head, 'dark', pair, viewport, scale, 'head', cookies?.head), scale, name));
                     if (options.legacy && scale === 1) {
-                        row(`${pair.name}, head on stored \`dark\``, size, viewport.width, 1, await diff(before, await shoot(head, 'dark', pair, viewport, scale, 'head-legacy-dark', cookies?.head), scale, `${name}-legacy-dark`));
+                        row(`${pair.name}, head on stored \`charcoal\``, size, viewport.width, 1, await diff(before, await shoot(head, 'charcoal', pair, viewport, scale, 'head-legacy-charcoal', cookies?.head), scale, `${name}-legacy-charcoal`));
                     }
                 }
             }
@@ -883,13 +884,13 @@ test.afterAll(async () => {
     fs.writeFileSync(
         path.join(OUT, 'black-parity.md'),
         [
-            '# Black against the base',
+            '# Dark against the base',
             '',
             `Base: \`${baseCommit()}\`.`,
             '',
             '## The gate: computed style',
             '',
-            "Every element under body (and in the curator's preview frame), matched by tag and nth-of-type, its ::before and ::after, and the custom properties on :root and body, in the head's Black against the base, at 1440, 1024 and 390, in Black's three routes, with Home's intro also in its loading phase with motion allowed, and hover and focus on the nav links, Home's controls, About's links and the Inbox's rows and buttons. The theme control and today's toggle are left out with their subtrees; the curator's head takes its control out of the layout, as no JavaScript does. Structure, styles, base tokens, any box that moved (beyond the one named allowance) and any wait that timed out fail; every box delta and the tokens new in the head are listed below.",
+            "Every element under body (and in the curator's preview frame), matched by tag and nth-of-type, its ::before and ::after, and the custom properties on :root and body, in the head's Dark against the base, at 1440, 1024 and 390, in Dark's three routes, with Home's intro also in its loading phase with motion allowed, and hover and focus on the nav links, Home's controls, About's links and the Inbox's rows and buttons. The theme control and today's toggle are left out with their subtrees; the curator's head takes its control out of the layout, as no JavaScript does. Structure, styles, base tokens, any box that moved (beyond the one named allowance) and any wait that timed out fail; every box delta and the tokens new in the head are listed below.",
             '',
             '| Page, route | Width | Structure | Styles | Tokens | Boxes over allowance | Box deltas | Largest delta (px) | Waits timed out | New tokens |',
             '|---|---|---|---|---|---|---|---|---|---|',
@@ -943,7 +944,7 @@ test.describe('the visitor site and the legacy Gallery', () => {
             },
         };
         const viewport = VIEWPORTS.desktop;
-        const result = await diff(await shoot(visitor.base, 'dark', pair, viewport, 1, 'base'), await shoot(visitor.head, 'black', pair, viewport, 1, 'head'), 1, 'home-chrome-will-change');
+        const result = await diff(await shoot(visitor.base, 'dark', pair, viewport, 1, 'base'), await shoot(visitor.head, 'dark', pair, viewport, 1, 'head'), 1, 'home-chrome-will-change');
         row('home-chrome, the scrim on its own layer (diagnosis)', 'desktop', 1440, 1, result);
         test.info().annotations.push({ type: 'diagnosis', description: `${result.count} pixels differ, max step ${result.maxStep}` });
     });
@@ -968,7 +969,7 @@ test.describe('the visitor site and the legacy Gallery', () => {
         test(`self-test: ${name} in the head fails the gate`, async () => {
             const pair: Pair = { name: `self-test, ${name}`, url, headStyle, act, motion };
             const viewport = VIEWPORTS.desktop;
-            const [base, head] = [await styles(visitor.base, 'dark', pair, viewport, 'base'), await styles(visitor.head, 'black', pair, viewport, 'head')];
+            const [base, head] = [await styles(visitor.base, 'dark', pair, viewport, 'base'), await styles(visitor.head, 'dark', pair, viewport, 'head')];
             const comparison = compare(base.walk, head.walk);
             judge(pair.name, viewport.width, comparison, [...base.timedOut, ...head.timedOut]);
             // Seen as the change itself, in a style or a token, on loads that settled.
