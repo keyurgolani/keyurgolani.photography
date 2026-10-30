@@ -5,7 +5,7 @@ import type { Page } from '@playwright/test';
  * doesn't render the same pixels twice (its own photos, the intro's ripples, a focus ring's edge), so pixels can't be
  * the gate; what Dark is made of, its tokens and every element's computed paint, type and box, can be compared
  * exactly. What this can't see is raster-only: how the browser draws a blur, a resample, an antialiased edge. The pixel
- * passes in black-parity.spec.ts report those, as an artefact, not a gate.
+ * passes in dark-parity.spec.ts report those, as an artefact, not a gate.
  */
 
 /** Compared exactly on every element and on its ::before, ::after, ::placeholder (inputs) and ::marker (list items). */

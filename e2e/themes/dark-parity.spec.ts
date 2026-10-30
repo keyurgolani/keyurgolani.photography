@@ -12,9 +12,9 @@ import { publishHomeFixture } from '../support/homeFixture';
 import { routePhotoFixtures } from '../support/test';
 import { compare, failures, walk, type Allowance, type Comparison, type Walk } from './computed';
 
-// Dark is today's site, exactly (the owner's ruling, 2026-10-29: the remap; it was Black until then, and this file keeps
-// that name). This loads the same page states from two builds, the
-// base (PARITY_BASE_DIR: next before the themes) and the head, on the same fixtures, a dark device and reduced motion.
+// Dark is today's site, exactly (the owner's ruling, 2026-10-29: the remap; it was Black until then). This loads the
+// same page states from two builds, the base (PARITY_BASE_DIR: next before the themes) and the head, on the same
+// fixtures, a dark device and reduced motion.
 //
 // The gate is computed style (the lead's ruling, 2026-10-29; spec §10; e2e/themes/computed.ts). The base doesn't render
 // the same pixels twice: its own photographs, the intro's ripples and a focus ring's edge differ from one load to the
@@ -75,9 +75,9 @@ const SETTLED: Motion = { at: 12_000 };
 const SCALES = [1, 2] as const;
 // Rows go to a file as they're measured: a failed test restarts the worker, which would drop rows held in memory.
 // build.ts, the global setup, starts it empty.
-const ROWS = path.join(OUT, 'black-parity.rows');
+const ROWS = path.join(OUT, 'dark-parity.rows');
 const record = (row: string) => fs.appendFileSync(ROWS, `${row}\n`);
-const RECTS = path.join(OUT, 'black-parity.rects');
+const RECTS = path.join(OUT, 'dark-parity.rects');
 
 // One worker, in order, and soft checks, so one page's difference never skips the others.
 // In CI a missing base is a broken job, not a skip: a skipped spec would leave the Themes job green.
@@ -713,8 +713,8 @@ const row = (label: string, size: string, width: number, scale: number, d: Diff)
 
 // --- The gate: computed style ------------------------------------------------------------------------------------
 
-const STYLE_ROWS = path.join(OUT, 'black-styles.rows');
-const STYLE_DETAILS = path.join(OUT, 'black-styles.details');
+const STYLE_ROWS = path.join(OUT, 'dark-styles.rows');
+const STYLE_DETAILS = path.join(OUT, 'dark-styles.details');
 
 /** A walk of `pair` in one build: every element's computed style and box, and the tokens, from a fresh settled load. */
 /**
@@ -872,7 +872,7 @@ test.afterAll(async () => {
     }
     const read = (file: string) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '');
     fs.writeFileSync(
-        path.join(OUT, 'black-parity.md'),
+        path.join(OUT, 'dark-parity.md'),
         [
             '# Dark against the base',
             '',
