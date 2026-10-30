@@ -741,7 +741,7 @@ interface Walked2 {
     timedOut: string[];
     /** What painted: `<html data-theme>` once the page settled. */
     theme: string | null;
-    /** Next's bare error shell: `<html id="__next_error__">` with nothing in its body but scripts. */
+    /** Next's bare error shell: `<html id="__next_error__">` with nothing in its body but scripts and an empty hidden div. */
     shell: boolean;
 }
 
@@ -774,7 +774,12 @@ async function styles(
         if (stripTheme) await page.evaluate(() => document.documentElement.removeAttribute('data-theme'));
         const painted = await page.evaluate(() => ({
             theme: document.documentElement.getAttribute('data-theme'),
-            shell: document.documentElement.id === '__next_error__' && [...document.body.children].every((child) => child.localName === 'script') && document.body.textContent?.trim() === '',
+            shell:
+                document.documentElement.id === '__next_error__' &&
+                // Next's shell holds its scripts, some inline, and one empty hidden div for its Suspense markers. Nothing
+                // else in it may carry text.
+                [...document.body.children].every((child) => child.localName === 'script' || (child.localName === 'div' && child.hasAttribute('hidden') && child.textContent?.trim() === '')) &&
+                [...document.body.childNodes].every((node) => node.nodeType !== Node.TEXT_NODE || node.textContent?.trim() === ''),
         }));
         return { walk: await walk(page, selectors), timedOut, ...painted };
     } finally {
