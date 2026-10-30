@@ -1142,6 +1142,13 @@ main.state {
   --curator-primary-ink: #ffffff;
 }
 
+/* Black draws its current tab, a line in place of a fill (the round 2 review's C2-4), so the header reads as Black at
+   the top of a phone frame; `aria-current` still carries the state. */
+:global(html[data-theme='black']) .screen[aria-current='page'] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--gah-rule-strong);
+}
+
 /* Black's KG mark is filled, a white disc with black letters (the OLED review's P2-1): the one lit mark on a page of
    type on nothing. It's identity, not an action, so it isn't drawn. */
 :global(html[data-theme='black']) .monogram {

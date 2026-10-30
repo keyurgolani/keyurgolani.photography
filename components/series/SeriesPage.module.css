@@ -458,11 +458,13 @@
 }
 
 :global(html[data-theme='black']) .coverLink:focus-visible {
-  outline: none;
+  outline-color: transparent;
+  outline-offset: calc(-1 * var(--focus-ring-width));
 }
 
 /* The ring is an overlay above the print, so the photograph can't paint over it: the light line at the edge, where the
-   screen's black frames it, and the dark band inside it, where a pale print meets it (P1-1). */
+   screen's black frames it, and the dark band inside it, where a pale print meets it (P1-1). The outline above stays,
+   transparent, so forced colours, which drop the shadows, still show the ring (C2-1b). */
 :global(html[data-theme='black']) .coverLink:focus-visible .coverFrame::after {
   content: '';
   position: absolute;
@@ -472,6 +474,19 @@
     inset 0 0 0 var(--focus-ring-width) var(--focus-ring-light),
     inset 0 0 0 calc(var(--focus-ring-width) + var(--focus-ring-offset)) var(--focus-ring-dark);
   pointer-events: none;
+}
+
+/* The hover mark draws on the same overlay, above the print, where an inset shadow on the frame would paint under it
+   (C2-1c). */
+@media (hover: hover) and (pointer: fine) {
+  :global(html[data-theme='black']) .coverLink:hover .coverFrame::after {
+    content: '';
+    position: absolute;
+    z-index: 1;
+    inset: 0;
+    box-shadow: inset 0 0 0 1px var(--gah-rule-strong);
+    pointer-events: none;
+  }
 }
 
 :global(html[data-theme='black']) .fallback {
