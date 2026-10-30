@@ -986,14 +986,16 @@ test.describe('the visitor site and the legacy Gallery', () => {
         });
     }
 
-    // Black's page must never pass as Dark (the remap's review, L1): the head on a stored `black` fails the gate's
-    // paint check, whatever its styles compute to while Black's layer is still to come.
+    // Black's page must never pass as Dark (the remap's review, L1): the head on a stored `black` fails both the gate's
+    // paint check and its comparison, since Black's layer computes its own styles and tokens.
     test("self-test: Black's page in the head fails the gate as Dark", async () => {
         const pair: Pair = { name: "self-test, Black's page", url: '/work' };
         const viewport = VIEWPORTS.desktop;
-        const head = await styles(visitor.head, 'black', pair, viewport, 'head');
-        expect(head.timedOut, 'the load settled').toEqual([]);
+        const [base, head] = [await styles(visitor.base, 'dark', pair, viewport, 'base'), await styles(visitor.head, 'black', pair, viewport, 'head')];
+        expect([...base.timedOut, ...head.timedOut], 'both loads settled').toEqual([]);
         expect(paintsDark(head), 'the gate sees Black').toEqual(['painted black, not dark']);
+        const comparison = compare(base.walk, head.walk);
+        expect(comparison.styles.length + comparison.tokens.length, "the comparison sees Black's styles too").toBeGreaterThan(0);
         // And a Dark head passes the same check, so the check isn't failing everything.
         expect(paintsDark(await styles(visitor.head, 'dark', pair, viewport, 'head')), 'a Dark head passes it').toEqual([]);
     });

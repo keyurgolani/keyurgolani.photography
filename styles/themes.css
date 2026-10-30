@@ -7,7 +7,8 @@
      light   paper: a toned warm sheet, blue-black ink.
      bright  a white wall: pure white, flat greys, black ink.
      dark    today's site, exactly: v1.2.0's Gallery After Hours.
-     black   true black, nothing but the photograph (its layer comes with the remap's design gate).
+     black   OLED: pure #000, nothing but the photograph. No surface, mat, keyline, band or bar shows; the grey ramp is
+             neutral where Dark's is tinted, and actions are drawn, not filled (the OLED spec, round 2).
 
    Dark declares almost nothing. It paints with v1.2.0's own values, which are styles/tokens.css's :root (where every
    theme starts) and each module's var() fallback. Nothing theme-specific goes on :root, since every theme would
@@ -17,12 +18,50 @@
    surround, Home's stage, the Viewer's backdrop). About's per-theme paper is About's alone, in
    app/about/aboutThemes.ts. */
 
-/* Today's two menu tokens, which nothing else defines: the popover's sheet and its checked ring. Black takes them too
-   until its own layer sets its own (the remap's review, M1). */
-html[data-theme='dark'],
-html[data-theme='black'] {
+/* Today's two menu tokens, which nothing else defines: the popover's sheet and its checked ring. */
+html[data-theme='dark'] {
   --gah-raised: #151917;
   --gah-accent: #eff4f1;
+}
+
+/* OLED: every surface is the ground, so a photograph meets the screen's own black. The ramp is chroma 0. The nav's
+   glass is the ground too: at rest the bar disappears, and content that scrolls under it goes to black. */
+html[data-theme='black'] {
+  color-scheme: dark;
+  --gah-color-scheme: dark;
+  --gah-ground: #000000;
+  --gah-surface: #000000;
+  --gah-raised: #000000;
+  --gah-ink: #f5f5f5;
+  --gah-ink-soft: rgba(255, 255, 255, 0.76);
+  --gah-ink-muted: rgba(255, 255, 255, 0.62);
+  --gah-label: #bdbdbd;
+  /* No lines: the nav's hairline, the series' dividers and the error page's rule go dark. The strong rule stays for
+     what needs an edge to work: a field, a control, a missing photograph's box, a link's underline. */
+  --gah-rule: transparent;
+  --gah-rule-strong: rgba(255, 255, 255, 0.4);
+  --gah-accent: #ffffff;
+  --gah-glass: rgba(0, 0, 0, 0.94);
+  /* Drawn, not filled: the action is a white line around white type, and fills on hover. */
+  --gah-action: transparent;
+  --gah-action-ink: #f5f5f5;
+  --gah-action-rule: #f5f5f5;
+  --gah-action-hover: #ffffff;
+  --gah-action-hover-ink: #000000;
+  --gah-popover-rule: rgba(255, 255, 255, 0.32);
+  --gah-popover-shadow: none;
+  /* The KG mark filled, a white disc with black letters (the OLED review's P2-1): the one lit mark on a page of type
+     on nothing. It's identity, not an action, so it isn't drawn (SiteNav and the error page read these). */
+  --gah-mark-rule: #ffffff;
+  --gah-mark-fill: #ffffff;
+  --gah-mark-ink: #000000;
+  /* The focus token keeps its dark band (#27, the OLED review's P1-1): invisible on the ground, it's what holds the
+     ring over a pale print. */
+  --focus-ring-light: #ffffff;
+  --focus-ring-dark: #000000;
+  /* The legacy variables Home's intro and the legacy Gallery paint with. */
+  --background-color: #000000;
+  --primary-color: #f5f5f5;
 }
 
 html[data-theme='light'] {
@@ -86,6 +125,15 @@ html[data-theme='bright'] {
    (--gah-caption-font). Dark sets none of these, so every module falls back to today's: no surround, the letterbox on
    the surface, today's radius, caption and hover ring. The Viewer's lg size comes with the Viewer's PR. The mark's
    outline resolves on html, so a subtree that sets its own --gah-rule-strong doesn't move it (none does). */
+/* Black's photographs: square to the screen, with nothing around them. No surround, no print edge, no mat; a letterbox
+   is the ground, so a print of any shape sits on black. The hover and focus rings stay, since they're states, not
+   frames. */
+html[data-theme='black'] {
+  --gah-photo-radius: 0px;
+  --gah-caption-ink: rgba(255, 255, 255, 0.78);
+  --gah-mat-fill: #000000;
+}
+
 html[data-theme='light'] {
   --gah-photo-radius: 1px;
   --gah-caption-ink: #3a3229;
