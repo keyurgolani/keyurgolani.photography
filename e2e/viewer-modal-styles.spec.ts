@@ -301,10 +301,16 @@ test.describe("when the Viewer's styles can't load, a photo opens as its own pag
         // The shell's chunk: data-viewer-announcer is ViewerShell's alone.
         const failed: string[] = [];
         await page.route('**/_next/static/**/*.js*', async (route) => {
-            const response = await route.fetch();
-            if (!(await response.text()).includes('data-viewer-announcer')) return route.fulfill({ response });
-            failed.push(route.request().url());
-            await route.fulfill({ status: 404, body: '' });
+            try {
+                const response = await route.fetch();
+                const body = await response.text();
+                if (!body.includes('data-viewer-announcer')) return await route.fulfill({ response, body });
+                failed.push(route.request().url());
+                await route.fulfill({ status: 404, body: '' });
+            } catch (error) {
+                // A click on Next or Close loads a new document, which cancels this one's chunk requests mid-fetch.
+                if (!/disposed|has been closed/.test(String(error))) throw error;
+            }
         });
         const viewer = page.locator('main[data-surface="viewer"]');
         const opened = async (photoId: string) => {
