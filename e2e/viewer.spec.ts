@@ -543,12 +543,12 @@ for (const [choice, want] of Object.entries(VIEWER_THEMES)) {
             };
         });
         // The first-viewport check (spec §8): the room the box reserves is at most 50 px, and the image's sizes is
-        // fitSizes() of the record's shape alone, theme-blind, so no theme can ask for a larger rung than Black.
+        // fitSizes() of the record's shape alone, theme-blind, so no theme can ask for a larger rung than Dark.
         expect(2 * look.room, 'the reserved room is at most 50 px').toBeLessThanOrEqual(50);
         const [w, h] = look.ratio.split('/').map(Number);
         expect(look.sizes, "the sizes the record's shape implies, in every theme").toBe(fitSizes(w, h));
         if (want.bands) {
-            expect(look.shadow, "Black's print has no surround").toBe('none');
+            expect(look.shadow, "Dark's print has no surround").toBe('none');
             expect(look.outline, "today's hairline").toBe('solid');
             expect(look.fit, "today's fit").toBe('fill');
         } else {

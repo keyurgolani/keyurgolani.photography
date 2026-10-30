@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import postcss, { type Declaration, type Rule } from 'postcss';
 import { describe, expect, it } from 'vitest';
 
-// The Viewer in each theme (spec §3 and §5, R2-P1-1), from StoryViewer.module.css itself: Black sets nothing and
+// The Viewer in each theme (spec §3 and §5, R2-P1-1), from StoryViewer.module.css itself: Dark sets nothing and
 // falls back to today's values, the other three each set their whole room, and every text and control pair reads.
 
 const CSS = fs.readFileSync(fileURLToPath(new URL('../StoryViewer.module.css', import.meta.url)), 'utf8');
@@ -68,12 +68,12 @@ const contrast = (a: number[], b: number[]) => {
   return (x + 0.05) / (y + 0.05);
 };
 
-const THEMES = ['dark', 'light', 'bright'] as const;
+const THEMES = ['light', 'bright'] as const;
 const CC = ['--cc-ground', '--cc-ink', '--cc-ink-soft', '--cc-caption-ink', '--cc-label', '--cc-chrome', '--cc-rule', '--cc-rule-strong'];
 
-describe('the Viewer in Black', () => {
+describe('the Viewer in Dark', () => {
   it('has no rule of its own and no branch against it, so it is today\'s Viewer', () => {
-    expect(CSS).not.toMatch(/data-theme='black'|data-theme="black"|:not\(\[data-theme/);
+    expect(CSS).not.toMatch(/data-theme=['"]?(dark|black)|:not\(\[data-theme/);
   });
 
   it("falls back to v1.2.0's own values", () => {

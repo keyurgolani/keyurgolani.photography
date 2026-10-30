@@ -2,7 +2,7 @@
    Close, the series title and position, and Zoom; the photograph on the dark
    bands with Previous and Next beside it; and the reading area under it. Every
    color is a --cc-* token, which resolve only under [data-surface='viewer'],
-   and each theme sets its own below: Black is today's dark Viewer. The accent, when the revision
+   and each theme sets its own below: Dark is today's Viewer. The accent, when the revision
    stores one, arrives as --cc-accent on the root and paints the two rules the
    mockup paints. Nothing sits on the photograph, so no text needs a scrim. */
 /* The body under the Viewer is its ground too, so a touch overscroll or the
@@ -13,21 +13,18 @@
   transition: none;
 }
 
-/* The Viewer in each theme (spec §3 and §5, round 3's R2-P1-1). Black sets nothing: it is today's Chromatic Chapters
+/* The Viewer in each theme (spec §3 and §5, round 3's R2-P1-1). Dark sets nothing: it is today's Chromatic Chapters
    (styles/surfaces/chromatic-chapters.css), its bands and translucent bars, and a bare print with today's hairline.
-   The others have no bands, a solid ground and bars, and a matted print: the lg surround, md on a phone (the md
+   Light and Bright have no bands, a solid ground and bars, and a matted print: the lg surround, md on a phone (the md
    tokens are styles/themes.css's, the Work and series pages'). These tokens are the Viewer's alone, so they ride
    here and not on every route's first load. Each block outranks the surface's own [data-surface='viewer']. */
-:global(html[data-theme='dark']):has(.viewer),
 :global(html[data-theme='light']):has(.viewer),
 :global(html[data-theme='bright']):has(.viewer) {
   --gah-viewer-ground: var(--gah-ground);
 }
 
-/* What the three share: the theme's own ground, ink, label and strong rule (Dark keeps its own ink and label), the
-   caption in the soft ink, and a print matted from
-   #124's primitives (--gah-print-edge, --gah-mat-fill) in styles/themes.css. */
-:global(html[data-theme='dark']) .viewer,
+/* What the two share: the theme's own ground, ink, label and strong rule, the caption in the soft ink, and a print
+   matted from #124's primitives (--gah-print-edge, --gah-mat-fill) in styles/themes.css. */
 :global(html[data-theme='light']) .viewer,
 :global(html[data-theme='bright']) .viewer {
   --cc-ground: var(--gah-ground);
@@ -45,17 +42,6 @@
   --gah-viewer-fit: contain;
   /* The stage clips sideways only, so a print's shadow fades out below it instead of ending on a line. */
   --gah-viewer-clip-y: visible;
-}
-
-/* A charcoal room: the print matted and keylined, as on Work and the series, on a solid #232826 panel. */
-:global(html[data-theme='dark']) .viewer {
-  --cc-ink: #f3f2ec;
-  --cc-ink-soft: #d0d5d1;
-  --cc-label: #aab4af;
-  --cc-chrome: #232826;
-  --cc-rule: rgba(255, 255, 255, 0.14);
-  --gah-surround-lg: var(--gah-print-edge), 0 0 0 14px var(--gah-mat-fill), 0 24px 44px -18px rgba(0, 0, 0, 0.8);
-  --gah-room-lg: 14px;
 }
 
 /* Paper: a toned sheet, the header and reading area on a lighter one, the print in Light's mat with a bevel. */
@@ -264,7 +250,7 @@
   height: calc(var(--viewer-stage-height) + 2 * var(--viewer-stage-pad));
   padding-block: var(--viewer-stage-pad);
   /* The neighbors wait beside the photograph (9a), outside the stage, so the page never scrolls sideways to them.
-     Black clips both ways, as today; a theme lets its print's shadow fade out below the stage (--gah-viewer-clip-y). */
+     Dark clips both ways, as today; a theme lets its print's shadow fade out below the stage (--gah-viewer-clip-y). */
   overflow-x: clip;
   overflow-y: var(--gah-viewer-clip-y, clip);
   /* #9's swipe: the browser keeps vertical scroll and pinch zoom, and leaves a sideways drag to the Viewer. */
@@ -331,7 +317,7 @@
 .missing {
   --fit-vw: 100vw;
   /* The theme's surround, and the room the box leaves for it on every side, its thickness and the clear ground, so
-     nothing clips it and it never meets the screen's edge. All 0 in Black, today's box. */
+     nothing clips it and it never meets the screen's edge. All 0 in Dark, today's box. */
   --viewer-surround: var(--gah-surround-lg, none);
   --viewer-room: calc(var(--gah-room-lg, 0px) + var(--gah-surround-clear, 0px));
   width: min(100% - 2 * var(--viewer-room), var(--fit-vw) - 2 * var(--viewer-room), calc((var(--viewer-stage-height) - 2 * var(--viewer-room)) * var(--ratio, 3 / 2)));
@@ -396,7 +382,7 @@
   width: 100%;
   height: 100%;
   object-fit: var(--gah-viewer-fit, fill);
-  /* Today's hairline on the print's edge, which Black keeps. */
+  /* Today's hairline on the print's edge, which Dark keeps. */
   outline: var(--gah-viewer-image-outline, 1px solid var(--cc-rule));
 }
 
@@ -421,7 +407,7 @@
 
 .viewport[data-zoomed] .frame {
   width: var(--zoom-width);
-  /* The scroller would clip a surround at its edges, so a zoomed print goes bare (P3-7). Black has none to lose. */
+  /* The scroller would clip a surround at its edges, so a zoomed print goes bare (P3-7). Dark has none to lose. */
   box-shadow: none;
 }
 
@@ -510,7 +496,7 @@
   font-size: var(--gah-type-statement);
   line-height: 1.5;
   overflow-wrap: anywhere;
-  /* The theme's caption ink. Black keeps today's, the reading area's ink. */
+  /* The theme's caption ink. Dark keeps today's, the reading area's ink. */
   color: var(--cc-caption-ink, inherit);
 }
 
