@@ -20,10 +20,13 @@ import { CURATOR_RESPONSE_HEADERS } from './policy';
 
 const STYLE = [
     // The four themes as custom properties, keyed on what the theme script resolves.
-    // Dark (the default, and System on a dark device) is today's 503, exactly. Black takes it too until its own layer.
+    // Dark (the default, and System on a dark device) is today's 503, exactly. Black is the screen's own black.
     ':root,html[data-theme=dark]{color-scheme:dark;--g:#080a09;--i:#f4f6f5;--s:rgba(244,246,245,0.76);--h:#171a18;--r:#343936;--m:rgba(255,255,255,0.38)}',
+    'html[data-theme=black]{color-scheme:dark;--g:#000;--i:#f5f5f5;--s:rgba(255,255,255,0.76);--h:#000;--r:transparent;--m:rgba(255,255,255,0.4)}',
     'html[data-theme=light]{color-scheme:light;--g:#ebe5d9;--i:#29231d;--s:#4d443a;--h:#e2dbcd;--r:#c9bfae;--m:#8c7f6f}',
     'html[data-theme=bright]{color-scheme:light;--g:#fff;--i:#0b0b0b;--s:#333;--h:#fff;--r:#d4d4d4;--m:#767676}',
+    // Black's KG mark is filled, a white disc with black letters (the OLED review's P2-1).
+    'html[data-theme=black] .mark{border-color:#fff;background:#fff;color:#000}',
     '*{box-sizing:border-box}',
     'html,body{margin:0}',
     'body{display:flex;min-height:100svh;flex-direction:column;background:var(--g);color:var(--i);font:0.875rem/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;-webkit-font-smoothing:antialiased}',

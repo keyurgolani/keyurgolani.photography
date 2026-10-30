@@ -180,3 +180,24 @@
     aspect-ratio: 4 / 5;
   }
 }
+
+/* Black: the covers meet the screen's edge (the OLED review's P1-2), its black their only surround. Two covers in a row
+   meet at a 2 px seam; the copy keeps the gutter. A missing photograph's box keeps an edge, since Black's plain rule is
+   dark. (The focus ring over a cover comes with the OLED gate's round 3.) */
+:global(html[data-theme='black']) .list {
+  margin-inline: calc(-1 * var(--site-gutter));
+}
+
+:global(html[data-theme='black']) .copy {
+  padding-inline: var(--site-gutter);
+}
+
+:global(html[data-theme='black']) .fallback {
+  box-shadow: inset 0 0 0 1px var(--gah-rule-strong);
+}
+
+@media (min-width: 768px) {
+  :global(html[data-theme='black']) .list {
+    column-gap: 2px;
+  }
+}

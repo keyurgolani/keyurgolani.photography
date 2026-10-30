@@ -63,7 +63,7 @@
 .actions > a:first-child,
 .actions > button:first-child,
 .actions > form:first-child > button {
-  border-color: var(--gah-action);
+  border-color: var(--gah-action-rule, var(--gah-action));
   background: var(--gah-action);
   color: var(--gah-action-ink);
 }
@@ -80,6 +80,6 @@
   .actions > button:first-child:hover,
   .actions > form:first-child > button:hover {
     background: var(--gah-ink);
-    color: var(--gah-action-ink);
+    color: var(--gah-action-hover-ink, var(--gah-action-ink));
   }
 }
