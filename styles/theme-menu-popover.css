@@ -91,7 +91,9 @@
 .theme-menu-preview[data-preview='bright'] .theme-menu-preview-photo { width: 22px; height: 14px; box-shadow: 0 0 0 3px #ffffff, 0 0 0 4px #111111; }
 .theme-menu-preview[data-preview='dark'] { background: #080a09; }
 .theme-menu-preview[data-preview='dark'] .theme-menu-preview-photo { border-radius: 1px; }
-.theme-menu-preview[data-preview='black'] { background: #000000; }
+/* Black's is the print alone, edge to edge in a square tile: the OLED review's P2-3, so it never twins Dark's inset print. */
+.theme-menu-preview[data-preview='black'] { overflow: hidden; border-radius: 0; background: #000000; }
+.theme-menu-preview[data-preview='black'] .theme-menu-preview-photo { width: 100%; height: 100%; border-radius: 0; }
 .theme-menu-preview[data-preview='system'] { background: linear-gradient(135deg, #ebe5d9 0 50%, #080a09 50% 100%); }
 .theme-menu-preview[data-preview='system'] .theme-menu-preview-photo { box-shadow: 0 0 0 3px rgb(128 128 128 / 0.35); }
 

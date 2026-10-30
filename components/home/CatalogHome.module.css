@@ -90,7 +90,7 @@
   align-items: center;
   margin-top: 1.25rem;
   padding: 0.5rem 1rem;
-  border: 1px solid var(--gah-rule-strong);
+  border: 1px solid var(--gah-action-rule, var(--gah-rule-strong));
   border-radius: var(--gah-radius);
   background: var(--gah-action);
   color: var(--gah-action-ink);
@@ -103,6 +103,7 @@
 @media (hover: hover) and (pointer: fine) {
   .enter:hover {
     background: var(--gah-action-hover, #fff);
+    color: var(--gah-action-hover-ink, var(--gah-action-ink));
   }
 }
 
