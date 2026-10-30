@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { ABOUT_THEMES_CSS } from '../aboutThemes';
 
 // About in Light, Bright and Dark (spec §5, R2-P1-2, P3-3), from the stylesheet AboutPage hoists: every text pair at
-// 4.5:1 and the link rule at 3:1 on the paper, and the caption on what sits under it. Black sets nothing (today's).
+// 4.5:1 and the link rule at 3:1 on the paper, and the caption on what sits under it. Dark sets nothing (today's).
 
 function themeTokens(theme: string) {
   const found: Record<string, string> = {};
@@ -38,11 +38,11 @@ const contrast = (a: number[], b: number[]) => {
 const FRAME_GROUND = rgba('#101311');
 
 describe('About in each theme', () => {
-  it('sets nothing for Black, which is today\'s About', () => {
+  it('sets nothing for Dark, which is today\'s About', () => {
     expect(ABOUT_THEMES_CSS).not.toMatch(/data-theme=black|:not\(/);
   });
 
-  it.each(['light', 'bright', 'dark'])('%s reads: ink and ink soft at 4.5:1 and the link rule at 3:1 on its paper, the caption at 4.5:1 on its band', (theme) => {
+  it.each(['light', 'bright'])('%s reads: ink and ink soft at 4.5:1 and the link rule at 3:1 on its paper, the caption at 4.5:1 on its band', (theme) => {
     const t = themeTokens(theme);
     const paper = rgba(t['--lts-paper']);
     expect(contrast(over(t['--lts-ink'], paper), paper), 'ink').toBeGreaterThanOrEqual(4.5);

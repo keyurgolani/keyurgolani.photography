@@ -8,17 +8,16 @@ import { waitForHydration } from './support/hydration';
 import { expect, test } from './support/test';
 
 // The 404 and the error page in every theme (spec §5): the ground, ink and actions follow the theme, and each pair
-// reads, every action's edge included. Black's are black-parity's to pin against v1.2.0; they're read here too.
+// reads, every action's edge included. Dark's are dark-parity's to pin against v1.2.0; they're read here too.
 // The error page comes from a server whose catalog pointer is damaged, so a page throws into app/error.tsx.
 
 test.describe.configure({ mode: 'serial' });
 test.skip(({ isMobile }) => isMobile, 'Each test sets the 1440 and 390 viewports itself, on the desktop project.');
 
 const THEMES = {
-    black: { paints: 'black', ground: 'rgb(8, 10, 9)' },
+    dark: { paints: 'dark', ground: 'rgb(8, 10, 9)' },
     light: { paints: 'light', ground: 'rgb(235, 229, 217)' },
     bright: { paints: 'bright', ground: 'rgb(255, 255, 255)' },
-    charcoal: { paints: 'dark', ground: 'rgb(27, 31, 29)' },
 } as const;
 const VIEWPORTS = [
     { width: 1440, height: 900 },
@@ -29,7 +28,7 @@ const VIEWPORTS = [
 function paint(page: Page) {
     return page.getByRole('main').evaluate((main) => {
         const rgb = (color: string) => color.match(/[\d.]+/g)!.slice(0, 4).map(Number);
-        // Some inks are translucent (Black's ink soft), so each colour is flattened onto what it sits on.
+        // Some inks are translucent (Dark's ink soft), so each colour is flattened onto what it sits on.
         const flat = (color: string, under: number[]) => {
             const [r, g, b, a = 1] = rgb(color);
             return [r, g, b].map((channel, i) => channel * a + under[i] * (1 - a));
