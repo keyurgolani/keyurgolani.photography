@@ -70,8 +70,15 @@ for (const viewport of VIEWPORTS) {
         const mark = nav.locator('[class*="monogram"]').first();
         const kg = await mark.evaluate((el) => ({ fill: getComputedStyle(el).backgroundColor, ink: getComputedStyle(el).color }));
         expect(kg, 'the KG mark is a white disc with black letters').toEqual({ fill: 'rgb(255, 255, 255)', ink: BLACK });
-        const ring = await page.evaluate(() => ({ light: getComputedStyle(document.documentElement).getPropertyValue('--focus-ring-light').trim(), dark: getComputedStyle(document.documentElement).getPropertyValue('--focus-ring-dark').trim() }));
-        expect(ring, 'the focus ring keeps its dark band (P1-1)').toEqual({ light: '#ffffff', dark: '#000000' });
+        // Resolved as colours, since the production build writes the tokens short (#fff).
+        const ring = await page.evaluate(() => {
+            const probe = document.body.appendChild(document.createElement('span'));
+            const colour = (token: string) => ((probe.style.color = `var(${token})`), getComputedStyle(probe).color);
+            const found = { light: colour('--focus-ring-light'), dark: colour('--focus-ring-dark') };
+            probe.remove();
+            return found;
+        });
+        expect(ring, 'the focus ring keeps its dark band (P1-1)').toEqual({ light: 'rgb(255, 255, 255)', dark: BLACK });
     });
 
     test(`at ${viewport.width}, Work's covers and a series' cover meet the screen's edge, with no box`, async ({ page }) => {

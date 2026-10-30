@@ -741,23 +741,42 @@ interface Walked2 {
     timedOut: string[];
     /** What painted: `<html data-theme>` once the page settled. */
     theme: string | null;
+    /** Next's bare error shell: `<html id="__next_error__">` with nothing in its body but scripts. */
+    shell: boolean;
 }
 
 /**
  * The gate's own check that the head painted Dark (the remap's review, L1): until Black's layer lands, Black computes
  * the same styles as Dark, so a route sent to `black` would otherwise pass every comparison. Its failing lines, or none.
+ * One page carries no theme: the error page with no JavaScript, which is Next's own error shell, a bare
+ * `<html id="__next_error__">` that never renders the root layout. A missing theme passes only when both builds serve
+ * that shell, and the comparison with the base is the check there. Any other page with no theme fails.
  */
-const paintsDark = (walked: Walked2): string[] => (walked.theme === 'dark' ? [] : [`painted ${walked.theme ?? 'nothing'}, not dark`]);
+const paintsDark = (walked: Walked2, base?: Walked2): string[] =>
+    walked.theme === 'dark' || (walked.theme === null && walked.shell && base?.theme === null && base.shell) ? [] : [`painted ${walked.theme ?? 'nothing'}, not dark`];
 
 /** A walk of `pair` in one build: every element's computed style and box, and the tokens, from a fresh settled load. */
-async function styles(origin: string, stored: string, pair: Pair, viewport: { width: number; height: number }, tag: string, { js = true, session, motion }: { js?: boolean; session?: string; motion?: Motion } = {}): Promise<Walked2> {
+async function styles(
+    origin: string,
+    stored: string,
+    pair: Pair,
+    viewport: { width: number; height: number },
+    tag: string,
+    { js = true, session, motion, stripTheme = false }: { js?: boolean; session?: string; motion?: Motion; stripTheme?: boolean } = {},
+): Promise<Walked2> {
     const head = !tag.startsWith('base');
     // The curator's head takes the control out of the layout, as no JavaScript does, since the base's header had none.
     const css = [pair.addsControl && head ? '[data-theme-control]{display:none!important}' : '', pair.headStyle && head ? pair.headStyle : ''].join('');
     const { context, page, timedOut } = await open(origin, stored, pair, viewport, 1, css, { js, session, motion });
     try {
         const selectors = ALLOWANCES.filter((entry) => entry.page === (pair.stateOf ?? pair.name) && entry.width === viewport.width).map((entry) => entry.selector);
-        return { walk: await walk(page, selectors), timedOut, theme: await page.evaluate(() => document.documentElement.getAttribute('data-theme')) };
+        // The self-test's page with its theme taken off, to show a missing theme fails anywhere but the error shell.
+        if (stripTheme) await page.evaluate(() => document.documentElement.removeAttribute('data-theme'));
+        const painted = await page.evaluate(() => ({
+            theme: document.documentElement.getAttribute('data-theme'),
+            shell: document.documentElement.id === '__next_error__' && [...document.body.children].every((child) => child.localName === 'script') && document.body.textContent?.trim() === '',
+        }));
+        return { walk: await walk(page, selectors), timedOut, ...painted };
     } finally {
         await context.close();
     }
@@ -806,7 +825,7 @@ async function gate(pair: Pair, origins: { base: string; head: string }, cookies
                 ALLOWANCES.filter((entry) => entry.page === (pair.stateOf ?? pair.name) && entry.width === viewport.width && against.walk.resolved[entry.selector]).map((entry) => [against.walk.resolved[entry.selector], entry.maxDelta]),
             );
             const timedOut = [...against.timedOut.map((wait) => `${wait} (base)`), ...head.timedOut.map((wait) => `${wait} (head)`)];
-            const failing = [...judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk, allowances), timedOut), ...paintsDark(head)];
+            const failing = [...judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk, allowances), timedOut), ...paintsDark(head, against)];
             expect.soft(failing, `${pair.name} at ${size} ${viewport.width}, ${route}: computed style against the base`).toEqual([]);
         }
         if (pair.intro) {
@@ -814,7 +833,7 @@ async function gate(pair: Pair, origins: { base: string; head: string }, cookies
             const against = await styles(origins.base, 'dark', pair, viewport, 'base', { motion: LOADING });
             const head = await styles(origins.head, '', pair, viewport, 'head', { motion: LOADING });
             const timedOut = [...against.timedOut.map((wait) => `${wait} (base)`), ...head.timedOut.map((wait) => `${wait} (head)`)];
-            const failing = [...judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk), timedOut), ...paintsDark(head)];
+            const failing = [...judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk), timedOut), ...paintsDark(head, against)];
             expect.soft(failing, `${pair.name} at ${size} ${viewport.width}, ${route}: computed style against the base`).toEqual([]);
         }
     }
@@ -998,6 +1017,11 @@ test.describe('the visitor site and the legacy Gallery', () => {
         expect(comparison.styles.length + comparison.tokens.length, "the comparison sees Black's styles too").toBeGreaterThan(0);
         // And a Dark head passes the same check, so the check isn't failing everything.
         expect(paintsDark(await styles(visitor.head, 'dark', pair, viewport, 'head')), 'a Dark head passes it').toEqual([]);
+        // A missing theme passes only on Next's error shell: a normal page with its theme taken off fails, even
+        // against a base with none either.
+        const [bare, bareBase] = [await styles(visitor.head, 'dark', pair, viewport, 'head', { stripTheme: true }), await styles(visitor.base, 'dark', pair, viewport, 'base', { stripTheme: true })];
+        expect([bare.theme, bare.shell, bareBase.shell], 'the stripped pages are normal pages with no theme').toEqual([null, false, false]);
+        expect(paintsDark(bare, bareBase), 'a normal page with no theme fails').toEqual(['painted nothing, not dark']);
     });
 });
 
