@@ -1,16 +1,36 @@
 'use client';
 
 import { usePathname, useSelectedLayoutSegments } from 'next/navigation';
-import { lazy, useEffect, useRef, type ReactNode } from 'react';
-import { loadViewerShell } from './viewerShellLoader';
+import { use, useEffect, useRef, type ReactNode } from 'react';
+import type { ViewerMode } from './viewerContext';
+import { cancelViewerShellLoad, loadViewerShell, preloadViewerShell, viewerShellLoaded } from './viewerShellLoader';
 import { isViewerPath } from './viewerKeys';
 import { whenIdle } from './whenIdle';
 
-// Lazy, so the Viewer's styles stay out of the series page's first load (viewerShellLoader).
-const ViewerShell = lazy(loadViewerShell);
+/**
+ * The shell, read from viewerShellLoader, so the Viewer's styles stay out of the series page's first load. The load
+ * never rejects (a failure settles on the fallback), and `use` reads whichever load is current, so a failed one is
+ * never kept the way React.lazy would keep it.
+ */
+function ViewerShell(props: { mode: ViewerMode; children: ReactNode }) {
+    const Shell = use(loadViewerShell());
+    return <Shell {...props} />;
+}
 
 // A direct load of a photo page asks for the shell as soon as this module runs, ahead of hydration.
-if (typeof window !== 'undefined' && isViewerPath(window.location.pathname)) void loadViewerShell().catch(() => {});
+if (typeof window !== 'undefined' && isViewerPath(window.location.pathname)) void loadViewerShell();
+
+/** Marks a photo link busy while its open waits on the shell (the review's L4), and clears it. */
+function markBusy(link: HTMLElement | null, busy: boolean): void {
+    if (link === null) return;
+    if (busy) {
+        link.setAttribute('aria-busy', 'true');
+        link.style.cursor = 'progress';
+    } else {
+        link.removeAttribute('aria-busy');
+        link.style.removeProperty('cursor');
+    }
+}
 
 /** The intercepted route's segment in the `@modal` slot. */
 const MODAL_SEGMENT = '(.)photo';
@@ -54,6 +74,7 @@ export default function ViewerHost({ children, modal }: { children: ReactNode; m
     const modalOpen = !onPhotoPage && slotHoldsPhoto;
     const opener = useRef<Opener | null>(null);
     const wasOpen = useRef(false);
+    const busy = useRef<HTMLElement | null>(null);
 
     useEffect(() => {
         const onClick = (event: MouseEvent) => {
@@ -63,6 +84,9 @@ export default function ViewerHost({ children, modal }: { children: ReactNode; m
             const url = new URL(link.href, window.location.href);
             if (url.origin !== window.location.origin || !isViewerPath(url.pathname)) return;
             opener.current = { element: link, photoId: photoIdOf(url.pathname) };
+            markBusy(busy.current, false);
+            busy.current = viewerShellLoaded() ? null : link;
+            markBusy(busy.current, true);
         };
         // Capture, so it's recorded before the link's own handler starts the navigation.
         document.addEventListener('click', onClick, true);
@@ -73,21 +97,31 @@ export default function ViewerHost({ children, modal }: { children: ReactNode; m
     // it, focus on it, a touch on it) and once the browser is idle.
     useEffect(() => {
         if (onPhotoPage) return;
+        const intents = ['pointerover', 'focusin', 'touchstart'] as const;
+        const stopListening = () => {
+            for (const type of intents) document.removeEventListener(type, onIntent, { capture: true });
+        };
         const onIntent = (event: Event) => {
+            // Once the shell is in, nothing is left to ask for.
+            if (viewerShellLoaded()) return stopListening();
             const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[href]') : null;
             if (link === null || link.closest('[data-surface="viewer"]') !== null) return;
-            if (isViewerPath(new URL(link.href, window.location.href).pathname)) void loadViewerShell().catch(() => {});
+            if (isViewerPath(new URL(link.href, window.location.href).pathname)) preloadViewerShell();
         };
-        const intents = ['pointerover', 'focusin', 'touchstart'] as const;
         for (const type of intents) document.addEventListener(type, onIntent, { capture: true, passive: true });
-        const cancelIdle = whenIdle(() => void loadViewerShell().catch(() => {}));
+        const cancelIdle = whenIdle(preloadViewerShell, { afterLoad: true });
         return () => {
-            for (const type of intents) document.removeEventListener(type, onIntent, { capture: true });
+            stopListening();
             cancelIdle();
+            cancelViewerShellLoad();
         };
     }, [onPhotoPage]);
 
     useEffect(() => {
+        if (modalOpen) {
+            markBusy(busy.current, false);
+            busy.current = null;
+        }
         if (wasOpen.current && !modalOpen) {
             const recorded = opener.current;
             opener.current = null;
