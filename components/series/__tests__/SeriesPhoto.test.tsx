@@ -91,4 +91,13 @@ describe('SeriesPhoto', () => {
             current.mockRestore();
         }
     });
+    it("hands a whole photograph's own ratio to its slot as --photo-ratio, and nothing else does", () => {
+        const ratio = (element: Element | null) => (element as HTMLElement).style.getPropertyValue('--photo-ratio');
+        // A contain photograph: the theme's window cut sizes its print to this.
+        expect(ratio(render(<SeriesPhoto {...base} image={image(1800, 1200)} crop="contain" />).container.firstElementChild)).toBe('1800 / 1200');
+        // A cropped one fills its box, so it has none; nor has one with no size, or the missing-image box.
+        expect(ratio(render(<SeriesPhoto {...base} image={image(1800, 1200)} crop="cover" />).container.firstElementChild)).toBe('');
+        expect(ratio(render(<SeriesPhoto {...base} image={image(0, 1200)} crop="contain" />).container.firstElementChild)).toBe('');
+        expect(ratio(render(<SeriesPhoto {...base} image={null} crop="contain" />).container.firstElementChild)).toBe('');
+    });
 });

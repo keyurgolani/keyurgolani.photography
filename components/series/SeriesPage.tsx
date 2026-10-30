@@ -101,6 +101,8 @@ export default function SeriesPage({ page }: SeriesPageProps) {
                             aria-label={coverEntryName({ alt: altOf(cover.description), position: cover.position, total })}
                             className={styles.coverLink}
                             style={{ '--ratio': `${cover.image.width} / ${cover.image.height}` } as CSSProperties}
+                            // The focus ring clears the cover's surround (--ring-room, SeriesPage.module.css).
+                            data-ring-room=""
                         >
                             {/* alt="" inside the named link, and no fallback text, which would have to be part of the name (WCAG 2.5.3). */}
                             <SeriesPhoto
