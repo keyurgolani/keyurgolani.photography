@@ -76,6 +76,12 @@ describe.each(Object.entries(THEMES))('the curator in %s', (_, t) => {
         expect(on(outline, list), 'the outline against the list').toBeGreaterThanOrEqual(3);
     });
 
+    it('hovers the primary with a fill that differs from its rest, its ink still at 4.5:1 (P2-2)', () => {
+        const hover = t['--curator-primary-hover'] ?? t['--gah-ink'];
+        expect(parse(hover), 'the hover is not the rest fill').not.toEqual(color('--curator-primary'));
+        expect(ratio(color('--curator-primary-ink'), parse(hover)), 'the ink on the hover').toBeGreaterThanOrEqual(4.5);
+    });
+
     it("draws a field's edge at 3:1", () => {
         expect(on(t['--gah-rule-strong'], over(color('--curator-field'), page))).toBeGreaterThanOrEqual(3);
     });
@@ -93,6 +99,28 @@ describe.each(Object.entries(THEMES))('the curator in %s', (_, t) => {
 describe('the curator in Dark', () => {
     it("is today's curator: the module's own block, with no Dark override", () => {
         expect(curator).not.toMatch(/data-theme='dark'/);
+    });
+});
+
+// The design review's P2-1: the selected row's outline lies on the rules around it, so no edge reads as two lines.
+describe("the selected row's outline", () => {
+    const rule = [...curator.matchAll(/\n\.item\[aria-current='true'\] \{([^}]*)\}/g)].map((m) => m[1]).find((body) => body.includes('box-shadow')) ?? '';
+    const outline = 'var(--curator-selected-rule, var(--gah-rule-strong))';
+
+    it("takes the row's own separator as its bottom edge", () => {
+        expect(rule).toContain(`border-bottom-color: ${outline};`);
+    });
+
+    it("covers the separator above and the list column's rule, and draws the left edge inside", () => {
+        const shadow = rule.replace(/\s+/g, ' ');
+        expect(shadow).toContain(`0 -1px 0 0 ${outline}`);
+        expect(shadow).toContain(`1px -1px 0 0 ${outline}`);
+        expect(shadow).toContain(`inset 1px 0 0 0 ${outline}`);
+        expect(shadow, 'no full inset ring beside the rules').not.toContain('inset 0 0 0 1px');
+    });
+
+    it("gives the phone's list view its plain separator back", () => {
+        expect(curator).toMatch(/\.body\[data-view='list'\] \.item\[aria-current='true'\] \{\s*border-bottom-color: var\(--curator-rule\);/);
     });
 });
 
@@ -162,6 +190,13 @@ describe('the curator in Black', () => {
         const frame = read('components/curation/PreviewFrame.module.css');
         expect(frame).toMatch(/\.toolbar \{[^}]*border-bottom: 1px solid var\(--gah-rule-strong\)/);
         expect(on(t['--gah-rule-strong'], parse(t['--gah-ground']))).toBeGreaterThanOrEqual(3);
+    });
+
+    it("closes Publish's embedded preview with the same strong line, in Black only (P2-3)", () => {
+        const frame = read('components/curation/PreviewFrame.module.css');
+        expect(frame).toMatch(/:global\(html\[data-theme='black'\]\) \.frame\[data-embedded='true'\] \{\s*border-bottom: 1px solid var\(--gah-rule-strong\);\s*\}/);
+        expect(frame).not.toMatch(/data-theme='dark'/);
+        expect(parse(t['--gah-rule-strong'])[3]).toBeCloseTo(0.4);
     });
 });
 

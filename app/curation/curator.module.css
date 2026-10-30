@@ -245,12 +245,23 @@
   background: var(--curator-active);
 }
 
-/* The selected tab and row carry a 1 px outline inside their box (P2-8, R2-P2-3), in every theme, Dark included: the
-   fill alone is 1.32:1 against the list in today's curator, so the state reads by its edge. aria-current names it. A
-   theme whose strong rule is under 3:1 on its fill sets --curator-selected-rule (Light). Focus draws over it. */
-.screen[aria-current='page'],
-.item[aria-current='true'] {
+/* The selected tab and row carry a 1 px outline (P2-8, R2-P2-3), in every theme, Dark included: the fill alone is
+   1.32:1 against the list in today's curator, so the state reads by its edge. aria-current names it. A theme whose
+   strong rule is under 3:1 on its fill sets --curator-selected-rule (Light). Focus draws over it. The tab has no
+   neighbours, so its outline sits inside its box. */
+.screen[aria-current='page'] {
   box-shadow: inset 0 0 0 1px var(--curator-selected-rule, var(--gah-rule-strong));
+}
+
+/* The row's outline is drawn on the rules around it, not beside them, so each edge is one line (the design review's
+   P2-1): the bottom takes the row's own separator, the top covers the separator of the row above, the right covers
+   the list column's rule, and only the left, at the screen's edge, sits inside the row. */
+.item[aria-current='true'] {
+  border-bottom-color: var(--curator-selected-rule, var(--gah-rule-strong));
+  box-shadow:
+    0 -1px 0 0 var(--curator-selected-rule, var(--gah-rule-strong)),
+    1px -1px 0 0 var(--curator-selected-rule, var(--gah-rule-strong)),
+    inset 1px 0 0 0 var(--curator-selected-rule, var(--gah-rule-strong));
 }
 
 /* The list column ends at the row's edges, so the focus token sits inside the row instead of outside it. */
@@ -920,7 +931,7 @@ main.state {
     background: var(--curator-active);
   }
 
-  /* Black's filled white can't step up to the ink, so it sets --curator-primary-hover a step down toward the ground. */
+  /* Where the fill is the ink already (Bright, Black) or the ink would jump hue (Light), the theme sets --curator-primary-hover. */
   .primary:hover:not(:disabled):not([aria-disabled='true']) {
     background: var(--curator-primary-hover, var(--gah-ink));
   }
@@ -1014,6 +1025,7 @@ main.state {
 
   /* The list view opens no item, so the row the server selected for a wide screen isn't marked here (ReturnToRow drops its aria-current too). */
   .body[data-view='list'] .item[aria-current='true'] {
+    border-bottom-color: var(--curator-rule);
     background: transparent;
     box-shadow: none;
   }
@@ -1107,6 +1119,8 @@ main.state {
   --curator-suggestion: #2f6352;
   --curator-primary: #2a4a72;
   --curator-primary-ink: #fbf8f2;
+  /* The hover deepens the navy rather than jumping to the brown ink (the design review's P3-3). */
+  --curator-primary-hover: #1d3654;
 }
 
 :global(html[data-theme='bright']) .page {
@@ -1133,6 +1147,8 @@ main.state {
   --curator-suggestion: #1d6a4a;
   --curator-primary: #0b0b0b;
   --curator-primary-ink: #ffffff;
+  /* Bright's primary is its ink already, so the hover steps up toward the ground (the design review's P2-2). */
+  --curator-primary-hover: #3a3a3a;
 }
 
 /* Black (OLED, photography-themes-oled-spec.md §3): no surfaces. The header, the list, the boxes and the fields are

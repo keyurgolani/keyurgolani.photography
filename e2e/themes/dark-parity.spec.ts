@@ -762,7 +762,8 @@ const STYLE_DETAILS = path.join(OUT, 'dark-styles.details');
  * in every theme, Dark included, an accessibility fix, since today's fill alone is 1.32:1 against the list.
  */
 const ALLOWANCES: Allowance[] = [
-    { page: 'inbox', selector: 'main ul a[aria-current="true"]', properties: ['box-shadow'], why: "P2-8: the Inbox's selected row's outline" },
+    // Drawn on the rules around the row (the design review's P2-1): its own separator takes the outline's colour.
+    { page: 'inbox', selector: 'main ul a[aria-current="true"]', properties: ['box-shadow', 'border-bottom-color'], why: "P2-8: the Inbox's selected row's outline" },
     { page: 'inbox', selector: 'header nav a[aria-current="page"]', properties: ['box-shadow'], why: "P2-8: the Inbox's selected tab's outline" },
     { page: 'publish', selector: 'header nav a[aria-current="page"]', properties: ['box-shadow'], why: "P2-8: Publish's selected tab's outline" },
 ];
