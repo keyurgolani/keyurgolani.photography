@@ -32,7 +32,7 @@ html[data-theme='black'] {
   --gah-ground: #000000;
   --gah-surface: #000000;
   --gah-raised: #000000;
-  --gah-ink: #f5f5f5;
+  --gah-ink: #ffffff;
   --gah-ink-soft: rgba(255, 255, 255, 0.76);
   --gah-ink-muted: rgba(255, 255, 255, 0.62);
   --gah-label: #bdbdbd;
@@ -116,6 +116,14 @@ html[data-theme='bright'] {
    (--gah-caption-font). Dark sets none of these, so every module falls back to today's: no surround, the letterbox on
    the surface, today's radius, caption and hover ring. The Viewer's lg size comes with the Viewer's PR. The mark's
    outline resolves on html, so a subtree that sets its own --gah-rule-strong doesn't move it (none does). */
+/* Black's type (the separating move for pages with nothing behind a photograph, where #000 against Dark's #080a09
+   alone doesn't read): the display serif thin and luminous, weight 300 in pure white, against Dark's 400 in today's
+   ink. It adds no surface, so the page stays nothing but type and photograph. */
+html[data-theme='black'] h1 {
+  font-weight: 300;
+  color: #ffffff;
+}
+
 /* Black's photographs: square to the screen, with nothing around them. No surround, no print edge, no mat; a letterbox
    is the ground, so a print of any shape sits on black. The hover and focus rings stay, since they're states, not
    frames. */
