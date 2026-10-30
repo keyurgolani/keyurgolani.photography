@@ -13,7 +13,7 @@ import { expect, test } from '../support/test';
 // Viewer's Chromatic Chapters ground. Light paints its paper on the shell and
 // About (R2-P1-2); the Viewer keeps today's ground in every theme until its own
 // PR themes it. (Before the five themes, #21 pinned one look for both; Dark
-// against v1.2.0 pixel for pixel is e2e/themes/black-parity.spec.ts.)
+// against v1.2.0 pixel for pixel is e2e/themes/dark-parity.spec.ts.)
 // The catalog-mode server serves the published Home fixture, so Work, the
 // series, and the Viewer are real pages. The legacy Gallery is on the harness
 // server.

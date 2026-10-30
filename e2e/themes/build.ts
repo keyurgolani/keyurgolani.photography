@@ -14,7 +14,7 @@ export default async function build(): Promise<() => Promise<void>> {
     // Emptied, not deleted: the report's rows start over each run.
     const out = path.join(process.cwd(), 'test-results', 'parity');
     fs.mkdirSync(out, { recursive: true });
-    for (const file of ['black-parity.rows', 'black-parity.rects', 'black-styles.rows', 'black-styles.details']) fs.writeFileSync(path.join(out, file), '');
+    for (const file of ['dark-parity.rows', 'dark-parity.rects', 'dark-styles.rows', 'dark-styles.details']) fs.writeFileSync(path.join(out, file), '');
     const removeFixtures = await writePhotoFixtures();
     if (process.env.PARITY_BUILD !== '1') return removeFixtures;
     const base = process.env.PARITY_BASE_DIR;
