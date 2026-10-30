@@ -7,7 +7,7 @@ import {THEME_CHOICES, type Theme, type ThemeChoice} from '@/components/themeCho
 
 export type {Theme, ThemeChoice};
 
-// <html data-theme-choice> and <html data-theme> are the store. The server sends system and black; the inline script
+// <html data-theme-choice> and <html data-theme> are the store. The server sends system and dark; the inline script
 // in app/layout.tsx puts the stored choice and its theme there before first paint, keeps System following the device
 // and follows a choice made in another tab; setThemeChoice writes them here. Each reader subscribes on its own, so the
 // provider's value never changes: a provider value that changed on mount is a context change above every Suspense
@@ -44,14 +44,13 @@ const readChoice = (): ThemeChoice => {
 
 const readTheme = (): Theme => {
     const value = document.documentElement.getAttribute('data-theme');
-    return value === 'light' || value === 'bright' || value === 'dark' ? value : 'black';
+    return value === 'light' || value === 'bright' || value === 'black' ? value : 'dark';
 };
 
 const prefersLight = () => typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: light)').matches;
 
 /** What a choice paints, on this device now. */
-const resolveTheme = (choice: ThemeChoice): Theme =>
-    choice === 'system' ? (prefersLight() ? 'light' : 'black') : choice === 'charcoal' ? 'dark' : choice;
+const resolveTheme = (choice: ThemeChoice): Theme => (choice === 'system' ? (prefersLight() ? 'light' : 'dark') : choice);
 
 /**
  * Applies a choice at once and stores it. With `animate`, motion allowed and view transitions available, the page's
@@ -77,11 +76,11 @@ const setThemeChoice = (choice: ThemeChoice, {animate = false}: {animate?: boole
 };
 
 /** Each theme's ground, for the browser's own bar when the choice is explicit. */
-const BAR: Record<Theme, string> = {light: '#ebe5d9', bright: '#ffffff', dark: '#1b1f1d', black: '#080a09'};
+const BAR: Record<Theme, string> = {light: '#ebe5d9', bright: '#ffffff', dark: '#080a09', black: '#000000'};
 
 /**
  * The browser's bar (P3-10). The layout sends System's pair, a light and a dark `theme-color` meta, each with its
- * media query. An explicit choice paints both with its own ground, so Bright and Dark get theirs whatever the device;
+ * media query. An explicit choice paints both with its own ground, so Bright and Black get theirs whatever the device;
  * System puts the pair back. The inline script can't do it: it runs before Next writes the metas.
  */
 const syncThemeColor = () => {
@@ -120,6 +119,6 @@ export const useSetThemeChoice = (): typeof setThemeChoice => setThemeChoice;
 export const useThemeChoice = (): {choice: ThemeChoice; theme: Theme; setChoice: typeof setThemeChoice} => {
     const setChoice = useSetThemeChoice();
     const choice = useSyncExternalStore(subscribe, readChoice, () => 'system' as const);
-    const theme = useSyncExternalStore(subscribe, readTheme, () => 'black' as const);
+    const theme = useSyncExternalStore(subscribe, readTheme, () => 'dark' as const);
     return {choice, theme, setChoice};
 };

@@ -42,7 +42,7 @@ for (const [path, content] of [
         const response = await request.get(path);
         expect(response.status()).toBe(200);
         const html = await response.text();
-        expect(html).toMatch(/<html[^>]*data-theme="black"/);
+        expect(html).toMatch(/<html[^>]*data-theme="dark"/);
         expect(html).toMatch(NAV);
         expect(html).toMatch(content);
     });

@@ -8,11 +8,11 @@ import { expect, test } from '../support/test';
 // Each theme paints its own ground, and the shell owns it: body paints it and
 // html stays unpainted, so the window's own ground (what overscroll shows) is
 // the page's, and the bottom row of a page scrolled to its end shows that
-// ground, never a strip of another. Black is today's site, so its grounds are
+// ground, never a strip of another. Dark is today's site, so its grounds are
 // v1.2.0's: the Gallery After Hours ground, About's approved paper, the
 // Viewer's Chromatic Chapters ground. Light paints its paper on the shell and
 // About (R2-P1-2); the Viewer keeps today's ground in every theme until its own
-// PR themes it. (Before the five themes, #21 pinned one look for both; Black
+// PR themes it. (Before the five themes, #21 pinned one look for both; Dark
 // against v1.2.0 pixel for pixel is e2e/themes/black-parity.spec.ts.)
 // The catalog-mode server serves the published Home fixture, so Work, the
 // series, and the Viewer are real pages. The legacy Gallery is on the harness
@@ -38,7 +38,7 @@ interface Route {
     path: string;
     /** Whether SiteNav renders here. The Viewer has none. */
     nav: boolean;
-    /** The ground the body paints in Black, and so the window's: the canvas past the page, and the bottom row. html paints none. */
+    /** The ground the body paints in Dark, and so the window's: the canvas past the page, and the bottom row. html paints none. */
     ground: Rgb;
     /** The same in Light. */
     light: Rgb;
@@ -69,7 +69,7 @@ const VIEWPORTS = [
     { width: 390, height: 844 },
 ] as const;
 
-async function openIn(page: Page, route: Route, theme: 'black' | 'light') {
+async function openIn(page: Page, route: Route, theme: 'dark' | 'light') {
     await page.evaluate((value) => localStorage.setItem('theme', value), theme);
     await page.goto(route.path);
     await waitForHydration(page);
@@ -100,16 +100,16 @@ for (const viewport of VIEWPORTS) {
             await page.setViewportSize(viewport);
             // A first visit puts the origin in place, so localStorage can be set before the measured load.
             await page.goto(route.path);
-            for (const theme of ['black', 'light'] as const) {
+            for (const theme of ['dark', 'light'] as const) {
                 await openIn(page, route, theme);
                 const seen = await read(page, route);
-                const ground = theme === 'black' ? route.ground : route.light;
+                const ground = theme === 'dark' ? route.ground : route.light;
                 if (!route.nav) await expect(primary(page)).toHaveCount(0);
                 // A painted html would keep About's paper and the Viewer's ground off the canvas.
                 expect(seen.roots.html, `html's ground in ${theme}`).toBe(UNPAINTED);
                 expect(seen.roots.body, `body's ground in ${theme}`).toBe(css(ground));
                 expect(near(seen.window, ground), `the window's ground in ${theme}: ${seen.window}, not ${ground}`).toBe(true);
-                // SiteNav's own paint on the gallery surface: Light's glass and rule (Black's is black-parity's to pin).
+                // SiteNav's own paint on the gallery surface: Light's glass and rule (Dark's is the parity gate's to pin).
                 if (theme === 'light' && route.nav && route.path !== '/' && route.name !== 'About') {
                     const nav = await primary(page).evaluate((el) => {
                         const style = getComputedStyle(el);

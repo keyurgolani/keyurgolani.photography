@@ -16,7 +16,7 @@ import { expect, test } from '../support/test';
 //
 // It runs non-exclusive on a shared machine, so it gates on ratios, not milliseconds. The base (next before the themes,
 // PARITY_BASE_DIR) and the head serve the same catalog side by side, and each sweep of the head (a scroll from the top
-// to the end, in Black and in the three themes with a surround) is paired with a base sweep taken right beside it, the
+// to the end, in Dark, today's, and in the two themes with a surround) is paired with a base sweep taken right beside it, the
 // order alternating by round, with the machine's load on every row. Each sweep is traced, and the gate is the median
 // ratio of the compositor's total raster time and of its dropped frames (#124's review, M1); the main thread's rAF p95
 // is reported beside them, since it snaps to whole frames. A desktop at 1440, DPR 1, and a phone at 390, DPR 3 with
@@ -24,7 +24,7 @@ import { expect, test } from '../support/test';
 // workers, so the phone's raster cost grows with its DPR, not with the throttle.
 //
 // The gate tests each half on each device (#124's review, D2 and D8), and every sweep must have raster time to compare,
-// since a trace with none would give a ratio near 1 and pass: the head in Black with a deliberately heavy shadow on
+// since a trace with none would give a ratio near 1 and pass: the head in Dark with a deliberately heavy shadow on
 // every slot must cost more than the surround bound in raster, and the head with a 40 ms task on every frame must drop
 // more than the bound's share of frames.
 //
@@ -46,14 +46,14 @@ const ROUNDS = (() => {
     if (!/^\d+$/.test(value) || Number(value) < 3) throw new Error(`PERF_ROUNDS is a whole number of at least 3, not ${JSON.stringify(value)}`);
     return Number(value);
 })();
-const THEMES = { black: 'black', light: 'light', charcoal: 'dark', bright: 'bright' } as const;
+const THEMES = { dark: 'dark', light: 'light', bright: 'bright' } as const;
 type Choice = keyof typeof THEMES;
 const DEVICES = {
     desktop: { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, throttle: 1, steps: 200 },
     phone: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, throttle: 4, steps: 120 },
 } as const;
-/** The head may cost this much more than the base beside it: Black about nothing, a surround a little. */
-const BOUND = { black: 1.25, surround: 1.5 };
+/** The head may cost this much more than the base beside it: Dark about nothing, a surround a little. */
+const BOUND = { dark: 1.25, surround: 1.5 };
 /** The self-test's head: a mat and a wide blur on every slot, well past any theme's surround. */
 const HEAVY = '[data-photo] { box-shadow: 0 0 0 6px #888, 0 30px 60px -10px #000 !important; }';
 /** The dropped-frame self-test's head: 40 ms of main-thread work on every frame, past a 16.7 ms budget. */
@@ -284,12 +284,12 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
                 ratios[key] ??= { raster: [], dropped: [] };
                 ratios[key].raster.push(h.raster / b.raster);
                 ratios[key].dropped.push(ratio(h.dropped, b.dropped));
-                rows.push(`| ${device} | ${round} | ${theme === 'charcoal' ? 'dark' : theme} | ${load} | ${b.raster} | ${h.raster} | ${(h.raster / b.raster).toFixed(2)} | ${b.dropped} / ${h.dropped} | ${b.rafP95} / ${h.rafP95} |`);
+                rows.push(`| ${device} | ${round} | ${theme} | ${load} | ${b.raster} | ${h.raster} | ${(h.raster / b.raster).toFixed(2)} | ${b.dropped} / ${h.dropped} | ${b.rafP95} / ${h.rafP95} |`);
             }
         }
-        // The self-tests, each in Black against the base, once in each order. Each must fail its half of the gate.
+        // The self-tests, each in Dark against the base, once in each order. Each must fail its half of the gate.
         // Raster: a heavy shadow on every slot.
-        await paint('black');
+        await paint('dark');
         const heavy = await headPage.page.addStyleTag({ content: HEAVY });
         for (const round of [1, 2]) {
             const load = os.loadavg()[0].toFixed(1);
@@ -332,11 +332,11 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
         '',
         '| Device, head theme | Median raster ratio | Median dropped-frame ratio, (head + 1) / (base + 1) |',
         '|---|---|---|',
-        ...verdict.map((v) => `| ${v.key.replace('charcoal', 'dark')} | ${v.raster} | ${v.dropped} |`),
+        ...verdict.map((v) => `| ${v.key} | ${v.raster} | ${v.dropped} |`),
         '',
-        `Bounds: Black ${BOUND.black}, a theme with a surround ${BOUND.surround}, on both medians.`,
+        `Bounds: Dark ${BOUND.dark}, a theme with a surround ${BOUND.surround}, on both medians.`,
         '',
-        `The self-tests, each in Black: the head with \`${HEAVY}\` must cost more than ${BOUND.surround} in raster, and the head with a ${LONG_TASK_MS} ms task on every frame more than ${BOUND.surround} in dropped frames, against the base.`,
+        `The self-tests, each in Dark: the head with \`${HEAVY}\` must cost more than ${BOUND.surround} in raster, and the head with a ${LONG_TASK_MS} ms task on every frame more than ${BOUND.surround} in dropped frames, against the base.`,
         '',
         '| Device | Head | Round | Load (1 min) | Raster ms, base / head | Raster ratio | Dropped frames, base / head | Dropped-frame ratio |',
         '|---|---|---|---|---|---|---|---|',
@@ -349,7 +349,7 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
     // Every device and theme was gated, unless this was the self-test alone (D7).
     expect(verdict, 'every device and theme has a verdict').toHaveLength(SELF_TEST_ONLY ? 0 : Object.keys(DEVICES).length * Object.keys(THEMES).length);
     for (const v of verdict) {
-        const bound = v.key.endsWith('black') ? BOUND.black : BOUND.surround;
+        const bound = v.key.endsWith('dark') ? BOUND.dark : BOUND.surround;
         expect.soft(v.raster, `${v.key}: the head's raster time against the base's`).toBeLessThanOrEqual(bound);
         expect.soft(v.dropped, `${v.key}: the head's dropped frames against the base's`).toBeLessThanOrEqual(bound);
     }

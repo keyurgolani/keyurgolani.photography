@@ -15,7 +15,7 @@ vi.mock('next/dynamic', () => ({
 
 const setChoice = vi.hoisted(() => vi.fn());
 vi.mock('../ThemeContext', () => ({
-  useThemeChoice: () => ({ choice: 'system', theme: 'black', setChoice }),
+  useThemeChoice: () => ({ choice: 'system', theme: 'dark', setChoice }),
 }));
 
 import ThemeMenu from '../ThemeMenu';
@@ -44,7 +44,7 @@ describe('ThemeMenu', () => {
     const html = renderToString(<ThemeMenu />);
     for (const name of ['System', 'Light', 'Bright', 'Dark', 'Black']) expect(html).toContain(`>${name}</span>`);
     expect(html).toContain('data-now="light"');
-    expect(html).toContain('data-now="black"');
+    expect(html).toContain('data-now="dark"');
     expect(html).toContain('data-theme-control=""');
     // No popovertarget until the styles are in, so the popover never opens unstyled.
     expect(html).not.toContain('popovertarget');
@@ -108,7 +108,7 @@ describe('ThemeMenu', () => {
     fireEvent.pointerUp(window);
     await nextTask();
     fireEvent.click(radio(/^Dark/));
-    expect(setChoice).toHaveBeenLastCalledWith('charcoal', { animate: false });
+    expect(setChoice).toHaveBeenLastCalledWith('dark', { animate: false });
   });
 
   it('keeps the button inert if the styles fail to load, instead of taking the route down (L8)', async () => {

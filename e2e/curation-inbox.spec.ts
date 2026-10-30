@@ -494,8 +494,8 @@ test('shows a phone one item at a time, and Back to inbox or the browser Back re
     expect(Math.abs((await page.evaluate(() => window.scrollY)) - scrolled)).toBeLessThanOrEqual(2);
 });
 
-// The walkthrough on 018ec79a found a phone in the light theme left at the top of the page; the curator lands the same in Black and in Light.
-for (const theme of ['black', 'light'] as const) {
+// The walkthrough on 018ec79a found a phone in the light theme left at the top of the page; the curator lands the same in Dark and in Light.
+for (const theme of ['dark', 'light'] as const) {
     test(`lands a phone's opened item at the top in the ${theme} theme, its heading focused`, async ({ page, isMobile }) => {
         test.skip(!isMobile, 'a wide screen shows the item beside the list');
         await page.evaluate((stored) => localStorage.setItem('theme', stored), theme);

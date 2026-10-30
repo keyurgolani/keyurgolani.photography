@@ -41,7 +41,7 @@ test('passes axe', async ({ page }) => {
 
 test('Tab goes through SiteNav, its theme control last, then the external links, and Shift+Tab walks back', async ({ page }) => {
     await openAbout(page);
-    const stops = ['KG, Keyur Golani', '/', '/work', '/about', 'Theme: System (Black now)', ...ENABLED.map((destination) => destination.href)];
+    const stops = ['KG, Keyur Golani', '/', '/work', '/about', 'Theme: System (Dark now)', ...ENABLED.map((destination) => destination.href)];
     const forward: (string | undefined)[] = [];
     for (let press = 0; press < stops.length; press++) {
         await page.keyboard.press('Tab');
