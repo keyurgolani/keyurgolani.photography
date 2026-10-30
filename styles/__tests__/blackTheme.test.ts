@@ -69,6 +69,23 @@ describe("Black's pages", () => {
         expect(series[":global(html[data-theme='black']) .stage"]['margin-inline']).toBe('calc(-1 * var(--site-gutter))');
     });
 
+    it("draws the focus ring on Work and the series cover inside, above the print, with the outline kept for forced colours", () => {
+        const work = blackRules('components/work/SeriesCatalog.module.css');
+        expect(work[":global(html[data-theme='black']) .entry:focus-visible"]).toEqual({ 'outline-color': 'transparent', 'outline-offset': 'calc(-1 * var(--focus-ring-width))', 'box-shadow': 'none' });
+        expect(work[":global(html[data-theme='black']) .entry:focus-visible::after"]).toMatchObject({ position: 'absolute', 'z-index': '1', inset: '0' });
+        const series = blackRules('components/series/SeriesPage.module.css');
+        expect(series[":global(html[data-theme='black']) .coverLink:focus-visible"]).toEqual({ 'outline-color': 'transparent', 'outline-offset': 'calc(-1 * var(--focus-ring-width))' });
+        expect(series[":global(html[data-theme='black']) .coverLink:focus-visible .coverFrame::after"]).toMatchObject({ position: 'absolute', 'z-index': '1' });
+        expect(series[":global(html[data-theme='black']) .coverLink:hover .coverFrame::after"]).toMatchObject({ 'box-shadow': 'inset 0 0 0 1px var(--gah-rule-strong)' });
+        expect(series[":global(html[data-theme='black']) .stageNote"]).toEqual({ 'padding-inline': 'var(--site-gutter)' });
+    });
+
+    it("keeps a missing photograph's edge and diagonal in the strong rule", () => {
+        const fallback = blackRules('components/series/SeriesPage.module.css')[":global(html[data-theme='black']) .thumbFrame.fallback,\n:global(html[data-theme='black']) .coverFrame.fallback"];
+        expect(fallback['box-shadow']).toBe('inset 0 0 0 1px var(--gah-rule-strong)');
+        expect(fallback.background).toContain('var(--gah-rule-strong) calc(50% - 0.5px)');
+    });
+
     it('the 503 is black, with no header rule and the KG filled', () => {
         const source = fs.readFileSync(path.join(ROOT, 'lib/curation/auth/unavailable.ts'), 'utf8');
         expect(source).toContain("'html[data-theme=black]{color-scheme:dark;--g:#000;");
