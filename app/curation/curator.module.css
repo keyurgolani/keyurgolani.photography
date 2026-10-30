@@ -77,8 +77,11 @@
   width: 2rem;
   height: 2rem;
   place-items: center;
-  border: 1px solid var(--gah-rule-strong);
+  /* The mark's own tokens, as SiteNav's and the sign-in's: only Black sets them, for its filled KG. */
+  border: 1px solid var(--gah-mark-rule, var(--gah-rule-strong));
   border-radius: 50%;
+  background: var(--gah-mark-fill, none);
+  color: var(--gah-mark-ink, currentcolor);
   font-family: var(--gah-font-serif);
   font-size: var(--gah-type-label);
 }
@@ -917,8 +920,9 @@ main.state {
     background: var(--curator-active);
   }
 
+  /* Black's filled white can't step up to the ink, so it sets --curator-primary-hover a step down toward the ground. */
   .primary:hover:not(:disabled):not([aria-disabled='true']) {
-    background: var(--gah-ink);
+    background: var(--curator-primary-hover, var(--gah-ink));
   }
 }
 
@@ -1074,9 +1078,7 @@ main.state {
 }
 
 /* The curator's surfaces and states per theme. Dark is today's curator, the block at the top, so it sets nothing
-   here. Light and Bright turn every tone into a light badge of the same hue. Black (OLED) lands here once its design
-   gate approves it (photography-themes-oled-spec.md §3): its :has(.page) ground, its .page surfaces, its .box
-   hairline and its filled KG, after the Bright block. */
+   here. Light and Bright turn every tone into a light badge of the same hue. Black is after Bright. */
 :global(html[data-theme='light']) .page {
   --curator-header: #e2dbcd;
   --curator-list: #e6dfd2;
@@ -1131,4 +1133,28 @@ main.state {
   --curator-suggestion: #1d6a4a;
   --curator-primary: #0b0b0b;
   --curator-primary-ink: #ffffff;
+}
+
+/* Black (OLED, photography-themes-oled-spec.md §3): no surfaces. The header, the list, the boxes and the fields are
+   the screen's own black, and the page ground is already Black's --gah-surface, the fallback. What stays is working
+   structure in a tool: #3a3a3a hairlines, the selected row a faint lift (#1a1a1a) that aria-current and P2-8's white
+   .40 outline carry, today's dark badges, which read on black, and the KG filled through the mark's tokens. The
+   primary stays filled white (owner question 3): the tool's one commit button keeps its rank over the drawn rest. */
+:global(html[data-theme='black']) .page {
+  --curator-header: #000000;
+  --curator-list: #000000;
+  --curator-box: #000000;
+  --curator-field: #000000;
+  --curator-active: #1a1a1a;
+  --curator-rule: #3a3a3a;
+  --curator-primary: #f5f5f5;
+  --curator-primary-ink: #000000;
+  --curator-primary-hover: #cccccc;
+}
+
+/* The current tab is drawn, P2-8's white .40 line with no fill (the round 2 review's C2-4, 3.66:1), so a phone's
+   header reads as Black; it shares the drawn grammar with Sign out and the refresh button, so the state rides on
+   aria-current and its place in the tab row. */
+:global(html[data-theme='black']) .screen[aria-current='page'] {
+  background: transparent;
 }

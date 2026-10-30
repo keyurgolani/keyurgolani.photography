@@ -207,8 +207,7 @@
   }
 }
 
-/* The login's surfaces and notices per theme, as the Inbox's (curator.module.css). Dark is the block at the top.
-   Black (OLED) lands after the Bright block once its design gate approves it (photography-themes-oled-spec.md §3). */
+/* The login's surfaces and notices per theme, as the Inbox's (curator.module.css). Dark is the block at the top. */
 :global(html[data-theme='light']) .page {
   --login-header: #e2dbcd;
   --login-rule: #c9bfae;
@@ -227,6 +226,15 @@
   --login-alert-bg: #fde0e0;
   --login-done-rule: #8cc0a6;
   --login-done-bg: #e5f3eb;
+}
+
+/* Black (OLED): the header and the field are the screen's own black, and the header has no rule (the round 2
+   review's C2-5), so sign-in draws no plain line. The field keeps its white .40 edge, the button is drawn and the
+   KG filled through Black's tokens, and the notices keep today's dark tints. */
+:global(html[data-theme='black']) .page {
+  --login-header: #000000;
+  --login-rule: transparent;
+  --login-field: #000000;
 }
 
 .header > button:first-of-type {
