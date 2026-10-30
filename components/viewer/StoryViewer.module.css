@@ -50,10 +50,9 @@
   --gah-viewer-clip-y: visible;
 }
 
-/* Black (OLED, provisional until its design gate's round 2 is approved): the print, square, on black. Every bar is the
-   ground, so nothing frames the photograph, and the reading area's ink is the neutral ramp. The hairline is
-   transparent rather than none, so forced colours still give the print an edge. The focus ring keeps its dark band
-   under the white (the OLED review's P1-1), so a ring over a pale print still shows. */
+/* Black (OLED, the OLED spec's round 2): the print, square, on black. Every bar is the ground, so nothing frames the
+   photograph, and the reading area's ink is the neutral ramp. The hairline is transparent rather than none, so forced
+   colours still give the print an edge. The focus ring's dark band is Black's own token (styles/themes.css). */
 :global(html[data-theme='black']) .viewer {
   --cc-bands: none;
   --cc-ground: #000000;
@@ -65,8 +64,6 @@
   --cc-rule: transparent;
   --cc-rule-strong: rgba(255, 255, 255, 0.4);
   --gah-viewer-image-outline: 1px solid transparent;
-  --focus-ring-light: #ffffff;
-  --focus-ring-dark: #000000;
 }
 
 /* A missing photograph's box keeps an edge in Black, since its plain rule is transparent. */

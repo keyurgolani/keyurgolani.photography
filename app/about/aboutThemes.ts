@@ -4,7 +4,7 @@
  *   Light   Light's own paper and mat: toned paper, no ribs, a matted portrait, blue-black link rules.
  *   Bright  the shade lit white: faint grey ribs, a white mat in a 2px black line, the caption on the mat under the
  *           print (P3-3), not a band over the frame's dark ground.
- *   Black   the screen's own black (OLED, provisional until its design gate's round 2): no paper, no ribs, no mat or
+ *   Black   the screen's own black (OLED, the OLED spec's round 2): no paper, no ribs, no mat or
  *           shadow round the portrait, neutral ink, the caption on the black under the print, and no boxes round the
  *           links at rest (ExternalLinks.module.css).
  *

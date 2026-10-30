@@ -16,6 +16,8 @@ test.skip(({ isMobile }) => isMobile, 'Each test sets the 1440 and 390 viewports
 
 const THEMES = {
     dark: { paints: 'dark', ground: 'rgb(8, 10, 9)' },
+    // Black's action is drawn: its fill is the ground, its label and line white.
+    black: { paints: 'black', ground: 'rgb(0, 0, 0)' },
     light: { paints: 'light', ground: 'rgb(235, 229, 217)' },
     bright: { paints: 'bright', ground: 'rgb(255, 255, 255)' },
 } as const;

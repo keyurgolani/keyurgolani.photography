@@ -89,7 +89,7 @@ describe('the Viewer in Dark', () => {
   });
 });
 
-describe('the Viewer in Black (OLED, provisional)', () => {
+describe('the Viewer in Black (OLED)', () => {
   const viewer = tokens('black', '.viewer');
   const html = tokens('black', ':has');
 
@@ -101,8 +101,7 @@ describe('the Viewer in Black (OLED, provisional)', () => {
     expect(viewer['--gah-viewer-image-outline'], 'a transparent hairline, for forced colours').toBe('1px solid transparent');
   });
 
-  it("keeps the focus ring's dark band, and a missing photograph's edge", () => {
-    expect([viewer['--focus-ring-light'], viewer['--focus-ring-dark']]).toEqual(['#ffffff', '#000000']);
+  it("keeps a missing photograph's edge", () => {
     expect(value(":global(html[data-theme='black']) .missing", 'box-shadow')).toBe('inset 0 0 0 1px var(--cc-rule-strong)');
   });
 
