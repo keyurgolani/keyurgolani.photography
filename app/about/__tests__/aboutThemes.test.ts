@@ -3,7 +3,7 @@ import postcss, { type Declaration, type Rule } from 'postcss';
 import { describe, expect, it } from 'vitest';
 import { ABOUT_THEMES_CSS } from '../aboutThemes';
 
-// About in Light, Bright and Dark (spec §5, R2-P1-2, P3-3), from the stylesheet AboutPage hoists: every text pair at
+// About in Light, Bright and Black (spec §5, R2-P1-2, P3-3; Black provisional, the OLED gate's round 1), from the stylesheet AboutPage hoists: every text pair at
 // 4.5:1 and the link rule at 3:1 on the paper, and the caption on what sits under it. Dark sets nothing (today's).
 
 function themeTokens(theme: string) {
@@ -16,6 +16,7 @@ function themeTokens(theme: string) {
 
 type Rgba = [number, number, number, number];
 function rgba(color: string): Rgba {
+  if (color === 'transparent') return [0, 0, 0, 0];
   const short = /^#([0-9a-f]{3})$/i.exec(color);
   if (short) return [...short[1]].map((h) => parseInt(h + h, 16)).concat(1) as Rgba;
   const hex = /^#([0-9a-f]{6})$/i.exec(color);
@@ -39,19 +40,26 @@ const FRAME_GROUND = rgba('#101311');
 
 describe('About in each theme', () => {
   it('sets nothing for Dark, which is today\'s About', () => {
-    expect(ABOUT_THEMES_CSS).not.toMatch(/data-theme=black|:not\(/);
+    expect(ABOUT_THEMES_CSS).not.toMatch(/data-theme=dark|:not\(/);
   });
 
-  it.each(['light', 'bright'])('%s reads: ink and ink soft at 4.5:1 and the link rule at 3:1 on its paper, the caption at 4.5:1 on its band', (theme) => {
+  it.each(['light', 'bright', 'black'])('%s reads: ink and ink soft at 4.5:1 and the link rule at 3:1 on its paper, the caption at 4.5:1 on its band', (theme) => {
     const t = themeTokens(theme);
     const paper = rgba(t['--lts-paper']);
     expect(contrast(over(t['--lts-ink'], paper), paper), 'ink').toBeGreaterThanOrEqual(4.5);
     expect(contrast(over(t['--lts-ink-soft'], paper), paper), 'ink soft').toBeGreaterThanOrEqual(4.5);
     expect(contrast(over(t['--lts-link-rule'], paper), paper), 'link rule').toBeGreaterThanOrEqual(3);
-    const band = over(t['--lts-caption-bg'], FRAME_GROUND);
+    // Black puts the frame's ground on its own black (about.module.css).
+    const band = over(t['--lts-caption-bg'], theme === 'black' ? rgba('#000') : FRAME_GROUND);
     expect(contrast(over(t['--lts-caption-ink'], band), band), 'caption').toBeGreaterThanOrEqual(4.5);
     // The body's ground under the page is the paper.
     expect(themeTokens(theme)['--gah-about-ground']).toBe(t['--lts-paper']);
+  });
+
+  it('puts Black on the screen\'s black: no paper, no ribs, no mat, no shadow, and the caption on the black', () => {
+    const t = themeTokens('black');
+    expect([t['--lts-paper'], t['--lts-frame'], t['--gah-about-ground']]).toEqual(['#000', '#000', '#000']);
+    expect([t['--lts-ribs'], t['--lts-shadow'], t['--lts-caption-bg']]).toEqual(['none', 'none', 'transparent']);
   });
 
   it("puts Bright's caption on the white mat under the print (P3-3), not on a band", () => {

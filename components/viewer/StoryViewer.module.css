@@ -15,9 +15,15 @@
 
 /* The Viewer in each theme (spec §3 and §5, round 3's R2-P1-1). Dark sets nothing: it is today's Chromatic Chapters
    (styles/surfaces/chromatic-chapters.css), its bands and translucent bars, and a bare print with today's hairline.
+   Black is the photograph alone on the screen's black: no bands, no hairline, and the header and reading area on the
+   ground, divided by nothing; a series' stored accent still paints the two rules, Black's one colour, the content's.
    Light and Bright have no bands, a solid ground and bars, and a matted print: the lg surround, md on a phone (the md
    tokens are styles/themes.css's, the Work and series pages'). These tokens are the Viewer's alone, so they ride
    here and not on every route's first load. Each block outranks the surface's own [data-surface='viewer']. */
+:global(html[data-theme='black']):has(.viewer) {
+  --gah-viewer-ground: #000000;
+}
+
 :global(html[data-theme='light']):has(.viewer),
 :global(html[data-theme='bright']):has(.viewer) {
   --gah-viewer-ground: var(--gah-ground);
@@ -42,6 +48,30 @@
   --gah-viewer-fit: contain;
   /* The stage clips sideways only, so a print's shadow fades out below it instead of ending on a line. */
   --gah-viewer-clip-y: visible;
+}
+
+/* Black (OLED, provisional until its design gate's round 2 is approved): the print, square, on black. Every bar is the
+   ground, so nothing frames the photograph, and the reading area's ink is the neutral ramp. The hairline is
+   transparent rather than none, so forced colours still give the print an edge. The focus ring keeps its dark band
+   under the white (the OLED review's P1-1), so a ring over a pale print still shows. */
+:global(html[data-theme='black']) .viewer {
+  --cc-bands: none;
+  --cc-ground: #000000;
+  --cc-ink: #f5f5f5;
+  --cc-ink-soft: rgba(255, 255, 255, 0.8);
+  --cc-caption-ink: rgba(255, 255, 255, 0.8);
+  --cc-label: #bdbdbd;
+  --cc-chrome: #000000;
+  --cc-rule: transparent;
+  --cc-rule-strong: rgba(255, 255, 255, 0.4);
+  --gah-viewer-image-outline: 1px solid transparent;
+  --focus-ring-light: #ffffff;
+  --focus-ring-dark: #000000;
+}
+
+/* A missing photograph's box keeps an edge in Black, since its plain rule is transparent. */
+:global(html[data-theme='black']) .missing {
+  box-shadow: inset 0 0 0 1px var(--cc-rule-strong);
 }
 
 /* Paper: a toned sheet, the header and reading area on a lighter one, the print in Light's mat with a bevel. */
