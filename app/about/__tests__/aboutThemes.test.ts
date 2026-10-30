@@ -3,7 +3,7 @@ import postcss, { type Declaration, type Rule } from 'postcss';
 import { describe, expect, it } from 'vitest';
 import { ABOUT_THEMES_CSS } from '../aboutThemes';
 
-// About in Light, Bright and Black (spec §5, R2-P1-2, P3-3; Black provisional, the OLED gate's round 1), from the stylesheet AboutPage hoists: every text pair at
+// About in Light, Bright and Black (spec §5, R2-P1-2, P3-3; Black from the OLED spec's round 2), from the stylesheet AboutPage hoists: every text pair at
 // 4.5:1 and the link rule at 3:1 on the paper, and the caption on what sits under it. Dark sets nothing (today's).
 
 function themeTokens(theme: string) {
