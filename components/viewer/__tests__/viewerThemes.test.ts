@@ -73,7 +73,7 @@ const CC = ['--cc-ground', '--cc-ink', '--cc-ink-soft', '--cc-caption-ink', '--c
 
 describe('the Viewer in Dark', () => {
   it('has no rule of its own and no branch against it, so it is today\'s Viewer', () => {
-    expect(CSS).not.toMatch(/data-theme=['"]?(dark|black)|:not\(\[data-theme/);
+    expect(CSS).not.toMatch(/data-theme=['"]?dark|:not\(\[data-theme/);
   });
 
   it("falls back to v1.2.0's own values", () => {
@@ -86,6 +86,31 @@ describe('the Viewer in Dark', () => {
     expect(value('.caption', 'color')).toBe('var(--cc-caption-ink, inherit)');
     // Today's bands are the surface's.
     expect(SURFACE).toContain('--cc-bands: linear-gradient(');
+  });
+});
+
+describe('the Viewer in Black (OLED, provisional)', () => {
+  const viewer = tokens('black', '.viewer');
+  const html = tokens('black', ':has');
+
+  it("is the print alone on the screen's black: no bands, solid black bars, no rules, no mat, a bare print", () => {
+    expect([viewer['--cc-ground'], viewer['--cc-chrome'], html['--gah-viewer-ground']]).toEqual(['#000000', '#000000', '#000000']);
+    expect(viewer['--cc-bands']).toBe('none');
+    expect(viewer['--cc-rule']).toBe('transparent');
+    expect(viewer['--gah-surround-lg'], 'no mat').toBeUndefined();
+    expect(viewer['--gah-viewer-image-outline'], 'a transparent hairline, for forced colours').toBe('1px solid transparent');
+  });
+
+  it("keeps the focus ring's dark band, and a missing photograph's edge", () => {
+    expect([viewer['--focus-ring-light'], viewer['--focus-ring-dark']]).toEqual(['#ffffff', '#000000']);
+    expect(value(":global(html[data-theme='black']) .missing", 'box-shadow')).toBe('inset 0 0 0 1px var(--cc-rule-strong)');
+  });
+
+  it('reads: every text pair at 4.5:1 and the control edge at 3:1 on its black', () => {
+    const ground = rgba(viewer['--cc-ground']);
+    for (const [ink, min] of [['--cc-ink', 4.5], ['--cc-ink-soft', 4.5], ['--cc-caption-ink', 4.5], ['--cc-label', 4.5], ['--cc-rule-strong', 3]] as const) {
+      expect(contrast(over(viewer[ink], ground), ground), ink).toBeGreaterThanOrEqual(min);
+    }
   });
 });
 

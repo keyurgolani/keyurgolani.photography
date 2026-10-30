@@ -245,3 +245,9 @@
     display: none;
   }
 }
+
+/* Black (OLED, provisional) draws no box round a link at rest (the OLED review's P2-4): the icon and the label carry it,
+   each tile keeps its 44 px target, and the brand's line still lights on hover and focus. */
+:global(html[data-theme='black']) .link {
+  --about-rule: transparent;
+}
