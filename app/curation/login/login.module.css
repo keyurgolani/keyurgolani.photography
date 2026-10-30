@@ -52,8 +52,11 @@
   width: 2rem;
   height: 2rem;
   place-items: center;
-  border: 1px solid var(--gah-rule-strong);
+  /* The mark's own tokens, as SiteNav's: only Black sets them, for its filled KG. */
+  border: 1px solid var(--gah-mark-rule, var(--gah-rule-strong));
   border-radius: 50%;
+  background: var(--gah-mark-fill, none);
+  color: var(--gah-mark-ink, currentcolor);
   font-family: var(--gah-font-serif);
   font-size: var(--gah-type-label);
 }
@@ -161,7 +164,8 @@
   min-height: 44px;
   margin-top: 0.75rem;
   padding: 0 1.125rem;
-  border: 1px solid var(--gah-action);
+  /* Black draws its action in a white line (--gah-action-rule); the others fill it. */
+  border: 1px solid var(--gah-action-rule, var(--gah-action));
   border-radius: var(--gah-radius);
   background: var(--gah-action);
   color: var(--gah-action-ink);
@@ -192,8 +196,9 @@
 @media (hover: hover) and (pointer: fine) {
   /* The action's near-white is too close to the ink to step up to, so hover steps down toward the ground. */
   .button:enabled:not([aria-disabled='true']):hover {
-    border-color: color-mix(in srgb, var(--gah-action) 82%, var(--gah-ground));
-    background: color-mix(in srgb, var(--gah-action) 82%, var(--gah-ground));
+    border-color: var(--gah-action-hover, color-mix(in srgb, var(--gah-action) 82%, var(--gah-ground)));
+    background: var(--gah-action-hover, color-mix(in srgb, var(--gah-action) 82%, var(--gah-ground)));
+    color: var(--gah-action-hover-ink, var(--gah-action-ink));
   }
 
   .wordmark:hover {
@@ -202,13 +207,7 @@
   }
 }
 
-/* The login's surfaces and notices per theme, as the Inbox's (curator.module.css). Black is the block at the top. */
-:global(html[data-theme='dark']) .page {
-  --login-header: #232826;
-  --login-rule: #3f4643;
-  --login-field: #181c1a;
-}
-
+/* The login's surfaces and notices per theme, as the Inbox's (curator.module.css). Dark is the block at the top. */
 :global(html[data-theme='light']) .page {
   --login-header: #e2dbcd;
   --login-rule: #c9bfae;

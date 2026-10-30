@@ -315,8 +315,8 @@ describe('proxy.ts and the curator session', () => {
             `default-src 'none'; script-src ${sha(THEME_INIT_SCRIPT)}; style-src ${sha(style)}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
         );
         // Pinned, so a change to the page's style or the theme script shows up here and in review as a new hash.
-        expect(UNAVAILABLE_CSP).toContain("script-src 'sha256-PCL3hTOGo4fCAuD2yfVntnLyO+NR+ax6Z3b5O7gc++k=';");
-        expect(UNAVAILABLE_CSP).toContain("style-src 'sha256-fF4CeUAxJvdAIKk74Pj88tzAqLcYtags+otlANwHnIc=';");
+        expect(UNAVAILABLE_CSP).toContain("script-src 'sha256-pMyO2mbBmfmwymS5MXxwmBXN1Dz7DlvdbhqEXcCfKP8=';");
+        expect(UNAVAILABLE_CSP).toContain("style-src 'sha256-EHgSSYxo+QHtVIWwJmGdLJPf/dQw5neR4YRsrH+htn4=';");
         expect(body.match(/<style>/g)).toHaveLength(1);
         vi.stubEnv('CURATION_ENABLED', 'false');
         expect((await send('/curation')).status).toBe(404);

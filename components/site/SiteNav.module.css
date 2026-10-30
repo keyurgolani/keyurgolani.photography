@@ -46,8 +46,12 @@
   justify-content: center;
   width: 2rem;
   height: 2rem;
-  border: 1px solid var(--gah-rule-strong);
+  /* The mark's own tokens, which only Black sets: its KG is filled, a white disc with black letters (the OLED review's
+     P2-1), the one lit mark on a page of type on nothing. Elsewhere today's ring on the page's ink. */
+  border: 1px solid var(--gah-mark-rule, var(--gah-rule-strong));
   border-radius: 50%;
+  background: var(--gah-mark-fill, none);
+  color: var(--gah-mark-ink, currentcolor);
   font-family: var(--gah-font-serif);
   font-size: var(--gah-type-label);
   line-height: 1;
@@ -119,7 +123,7 @@
 }
 
 .nav[data-surface='about'] .monogram {
-  border-color: var(--lts-rule-strong);
+  border-color: var(--gah-mark-rule, var(--lts-rule-strong));
 }
 
 .nav[data-surface='about'] .item {

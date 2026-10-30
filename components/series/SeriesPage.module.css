@@ -95,8 +95,8 @@
    fallback box keeps 3:2. */
 .stage {
   /* The cover wears the theme's md surround (sm on a phone), and its real thickness is the room the note and the focus
-     ring reserve (styles/themes.css). Black has none: today's cover. The hover and focus mark keeps the surround and
-     rings it from outside (--gah-mark-outline), or is today's 1 px ring in Black. */
+     ring reserve (styles/themes.css). Dark has none: today's cover. The hover and focus mark keeps the surround and
+     rings it from outside (--gah-mark-outline), or is today's 1 px ring in Dark. */
   --series-cover-surround: var(--gah-surround-md, none);
   --series-cover-mark: var(--gah-surround-md, 0 0 0 1px var(--gah-rule-strong));
   --series-cover-room: var(--gah-room-md, 0px);
@@ -266,7 +266,7 @@
    frame, Light's hairline and shadow, Dark's shadow). The print is centred and, where the theme sets
    --gah-slot-print to 1, sized to its own ratio (--photo-ratio, from SeriesPhoto) in the slot's, and carries the
    inner layer on its own edge (Light's bevel, Dark's keyline), so a portrait, a landscape and a square in one row each
-   have an edge of their own. The slot lets that edge show past a full-width print. Black sets none of it, so it's
+   have an edge of their own. The slot lets that edge show past a full-width print. Dark sets none of it, so it's
    today's letterbox on the surface. */
 .thumbFrame[data-photo='contain'] {
   --thumb-surround: var(--gah-slot-surround-sm, none);
@@ -306,10 +306,10 @@
 }
 
 /* Below the thumbnail's room too, so the focus ring, which clears the surround, never crosses the title's line box:
-   the ring reaches room + 2 + 3 px under the link, 1 px more than room + 0.25rem where there's a room (0 in Black). */
+   the ring reaches room + 2 + 3 px under the link, 1 px more than room + 0.25rem where there's a room (0 in Dark). */
 .caption {
   margin: calc(0.25rem + var(--gah-room-sm, 0px) + min(var(--gah-room-sm, 0px), 1px)) 0 0;
-  /* Light's captions are in the serif (spec §3); the others, Black included, keep the sans. */
+  /* Light's captions are in the serif (spec §3); the others, Dark included, keep the sans. */
   font-family: var(--gah-caption-font, var(--gah-font-sans));
   font-size: var(--gah-type-ui);
   line-height: 1.45;
@@ -326,7 +326,7 @@
   color: var(--gah-caption-ink, var(--gah-ink-soft));
 }
 
-/* Hover parity: focus marks the entry the same way a pointer does. No scaling either way. In Black, today's 1 px ring
+/* Hover parity: focus marks the entry the same way a pointer does. No scaling either way. In Dark, today's 1 px ring
    on the frame's edge; where a theme has a surround, the surround stays and a 1 px outline rings it from outside its
    room, never through its mat (R2-P3-2). */
 .entry:focus-visible .thumbFrame {
@@ -447,4 +447,59 @@
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 0.2em;
+}
+
+/* Black: the cover meets the screen's edge (the OLED review's P1-2), to the left at 1440 and edge to edge on a phone;
+   the copy and the note keep their gutter (C2-3). Its ring and its hover mark draw inside, so the edge never clips
+   them, on an overlay above the print, since an inset shadow on the frame paints under the photograph (C2-1c). */
+:global(html[data-theme='black']) .stage {
+  margin-inline: calc(-1 * var(--site-gutter));
+  --series-cover-mark: none;
+}
+
+:global(html[data-theme='black']) .stageNote {
+  padding-inline: var(--site-gutter);
+}
+
+/* The outline stays, transparent and inset, so forced colours, which drop the shadows, still show the ring (C2-1b). */
+:global(html[data-theme='black']) .coverLink:focus-visible {
+  outline-color: transparent;
+  outline-offset: calc(-1 * var(--focus-ring-width));
+}
+
+/* The ring is an overlay above the print, so the photograph can't paint over it: the light line at the edge, where the
+   screen's black frames it, and the dark band inside it, where a pale print meets it (P1-1). The overlay carries a
+   transparent outline too: forced colours drop the shadows and paint it in the system's colour, above the print, where
+   the link's own outline would sit under it (C2-1b). */
+:global(html[data-theme='black']) .coverLink:focus-visible .coverFrame::after {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  box-shadow:
+    inset 0 0 0 var(--focus-ring-width) var(--focus-ring-light),
+    inset 0 0 0 calc(var(--focus-ring-width) + var(--focus-ring-offset)) var(--focus-ring-dark);
+  outline: var(--focus-ring-width) solid transparent;
+  outline-offset: calc(-1 * var(--focus-ring-width));
+  pointer-events: none;
+}
+
+/* Focus wins over hover: a focused cover keeps its ring when the pointer rests on it too. */
+@media (hover: hover) and (pointer: fine) {
+  :global(html[data-theme='black']) .coverLink:hover:not(:focus-visible) .coverFrame::after {
+    content: '';
+    position: absolute;
+    z-index: 1;
+    inset: 0;
+    box-shadow: inset 0 0 0 1px var(--gah-rule-strong);
+    pointer-events: none;
+  }
+}
+
+/* A missing photograph keeps its edge and its diagonal in the strong rule, since Black's plain rule is transparent, so
+   the box never reads as a photograph still loading (C2-6.5). */
+:global(html[data-theme='black']) .thumbFrame.fallback,
+:global(html[data-theme='black']) .coverFrame.fallback {
+  background: linear-gradient(to top right, transparent calc(50% - 0.5px), var(--gah-rule-strong) calc(50% - 0.5px), var(--gah-rule-strong) calc(50% + 0.5px), transparent calc(50% + 0.5px)), var(--gah-surface);
+  box-shadow: inset 0 0 0 1px var(--gah-rule-strong);
 }

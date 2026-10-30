@@ -1,7 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
 /**
- * Black against the pre-themes site, pixel for pixel (black-parity.spec.ts). Its own config, since it starts its own
+ * Dark, today's site, against the pre-themes site (dark-parity.spec.ts). Its own config, since it starts its own
  * servers from two builds, the head's (this checkout) and the base's (PARITY_BASE_DIR), and needs none of the harness's.
  * CI's "Themes" job runs it with PARITY_BUILD=1, so its global setup (build.ts) builds both first; playwright.config.ts
  * leaves e2e/themes out of the main suite.
@@ -13,7 +13,7 @@ import { defineConfig, devices } from '@playwright/test';
  */
 export default defineConfig({
   testDir: '.',
-  testMatch: /black-parity\.spec\.ts$/,
+  testMatch: /dark-parity\.spec\.ts$/,
   globalSetup: './build.ts',
   fullyParallel: false,
   workers: 1,

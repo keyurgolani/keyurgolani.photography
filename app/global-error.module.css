@@ -25,8 +25,11 @@
   justify-content: center;
   width: 2rem;
   height: 2rem;
-  border: 1px solid var(--gah-rule-strong);
+  /* The mark's own tokens, as SiteNav's: only Black sets them, for its filled KG. */
+  border: 1px solid var(--gah-mark-rule, var(--gah-rule-strong));
   border-radius: 50%;
+  background: var(--gah-mark-fill, none);
+  color: var(--gah-mark-ink, currentcolor);
   font-family: var(--gah-font-serif);
   letter-spacing: 0;
   line-height: 1;

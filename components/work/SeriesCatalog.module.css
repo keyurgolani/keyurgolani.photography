@@ -180,3 +180,52 @@
     aspect-ratio: 4 / 5;
   }
 }
+
+/* Black: the covers meet the screen's edge (the OLED review's P1-2), its black their only surround. Two covers in a row
+   meet at a 2 px seam; the copy keeps the gutter. A missing photograph's box keeps an edge, since Black's plain rule is
+   dark. */
+:global(html[data-theme='black']) .list {
+  margin-inline: calc(-1 * var(--site-gutter));
+}
+
+:global(html[data-theme='black']) .copy {
+  padding-inline: var(--site-gutter);
+}
+
+:global(html[data-theme='black']) .fallback {
+  box-shadow: inset 0 0 0 1px var(--gah-rule-strong);
+}
+
+:global(html[data-theme='black']) .entry {
+  position: relative;
+}
+
+/* One ring round the whole entry, cover and copy (the round 2 review's C2-1), drawn inside it, so the screen's edge,
+   which the cover now meets, never clips it, and as an overlay above the print, so the photograph can't paint over
+   it: the light line at the edge, where the screen's black frames it, and the dark band inside it, where a pale print
+   meets it (P1-1). The overlay carries a transparent outline as well: forced colours drop the shadows and paint it in
+   the system's colour, above the print, where the entry's own outline sits under it (C2-1b). */
+:global(html[data-theme='black']) .entry:focus-visible {
+  outline-color: transparent;
+  outline-offset: calc(-1 * var(--focus-ring-width));
+  box-shadow: none !important;
+}
+
+:global(html[data-theme='black']) .entry:focus-visible::after {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  box-shadow:
+    inset 0 0 0 var(--focus-ring-width) var(--focus-ring-light),
+    inset 0 0 0 calc(var(--focus-ring-width) + var(--focus-ring-offset)) var(--focus-ring-dark);
+  outline: var(--focus-ring-width) solid transparent;
+  outline-offset: calc(-1 * var(--focus-ring-width));
+  pointer-events: none;
+}
+
+@media (min-width: 768px) {
+  :global(html[data-theme='black']) .list {
+    column-gap: 2px;
+  }
+}

@@ -12,13 +12,14 @@ import { publishHomeFixture } from '../support/homeFixture';
 import { routePhotoFixtures } from '../support/test';
 import { compare, failures, walk, type Allowance, type Comparison, type Walk } from './computed';
 
-// Black is today's site, exactly (the owner's ruling, 2026-10-28). This loads the same page states from two builds, the
-// base (PARITY_BASE_DIR: next before the themes) and the head, on the same fixtures, a dark device and reduced motion.
+// Dark is today's site, exactly (the owner's ruling, 2026-10-29: the remap; it was Black until then). This loads the
+// same page states from two builds, the base (PARITY_BASE_DIR: next before the themes) and the head, on the same
+// fixtures, a dark device and reduced motion.
 //
 // The gate is computed style (the lead's ruling, 2026-10-29; spec §10; e2e/themes/computed.ts). The base doesn't render
 // the same pixels twice: its own photographs, the intro's ripples and a focus ring's edge differ from one load to the
-// next, so a pixel gate flakes on the base itself. What Black is made of can be compared exactly instead:
-// 1. Tokens: every custom property the base resolves on :root and body must resolve the same in the head's Black. New
+// next, so a pixel gate flakes on the base itself. What Dark is made of can be compared exactly instead:
+// 1. Tokens: every custom property the base resolves on :root and body must resolve the same in the head's Dark. New
 //    tokens are allowed, and listed.
 // 2. Elements: every element under body (and in the curator's preview frame), matched by a path of tag and
 //    nth-of-type, with its ::before, ::after, ::placeholder and ::marker: paint, backgrounds, borders and radii, type and
@@ -28,7 +29,7 @@ import { compare, failures, walk, type Allowance, type Comparison, type Walk } f
 //    and the slot that holds only them is compared by style alone; the curator's head takes its control out of the
 //    layout, as no JavaScript does, since the base's header had none. A wait that times out fails the row, so a head
 //    that doesn't hydrate fails.
-// At 1440, 1024 and 390, in all three of Black's routes: System on a dark device and today's stored `dark`, each
+// At 1440, 1024 and 390, in all three of Dark's routes: System on a dark device and today's stored `dark`, each
 // against the base on its stored `dark`, and no JavaScript against the base without it. Home's intro has a fourth:
 // motion allowed, on a paused clock run to a fixed point in its loading phase, where the grain and the ripples are.
 // The gate also walks hover and focus on the nav links, Home's controls (their hover only with motion allowed), About's
@@ -74,9 +75,9 @@ const SETTLED: Motion = { at: 12_000 };
 const SCALES = [1, 2] as const;
 // Rows go to a file as they're measured: a failed test restarts the worker, which would drop rows held in memory.
 // build.ts, the global setup, starts it empty.
-const ROWS = path.join(OUT, 'black-parity.rows');
+const ROWS = path.join(OUT, 'dark-parity.rows');
 const record = (row: string) => fs.appendFileSync(ROWS, `${row}\n`);
-const RECTS = path.join(OUT, 'black-parity.rects');
+const RECTS = path.join(OUT, 'dark-parity.rects');
 
 // One worker, in order, and soft checks, so one page's difference never skips the others.
 // In CI a missing base is a broken job, not a skip: a skipped spec would leave the Themes job green.
@@ -535,7 +536,7 @@ const VISITOR: Pair[] = [
         },
     },
     { name: 'cover-fallback', url: series, act: (page) => failCover(page) },
-    // A focused Work entry: its ring's offset comes from [data-ring-room], 3 px in Black as today.
+    // A focused Work entry: its ring's offset comes from [data-ring-room], 3 px in Dark as today.
     {
         name: 'work-focus',
         url: '/work',
@@ -716,14 +717,14 @@ const CURATOR: Pair[] = [
     } },
 ];
 
-/** Shoots `pair` from both, at every size and scale, and pins the diff; and, with `legacy`, the head on a stored `dark`. */
+/** Shoots `pair` from both, at every size and scale, and pins the diff; and, with `legacy`, the head on the preview's stored `charcoal`. */
 const row = (label: string, size: string, width: number, scale: number, d: Diff) =>
     record(`| ${label} | ${size} ${width} | ${scale}x | ${d.count} | ${d.maxStep} | ${d.photoStep} | ${d.styles.length} | ${d.box} |`);
 
 // --- The gate: computed style ------------------------------------------------------------------------------------
 
-const STYLE_ROWS = path.join(OUT, 'black-styles.rows');
-const STYLE_DETAILS = path.join(OUT, 'black-styles.details');
+const STYLE_ROWS = path.join(OUT, 'dark-styles.rows');
+const STYLE_DETAILS = path.join(OUT, 'dark-styles.details');
 
 /** A walk of `pair` in one build: every element's computed style and box, and the tokens, from a fresh settled load. */
 /**
@@ -738,17 +739,49 @@ interface Walked2 {
     walk: Walk;
     /** The waits that timed out on this load: any fails the row. */
     timedOut: string[];
+    /** What painted: `<html data-theme>` once the page settled. */
+    theme: string | null;
+    /** Next's bare error shell: `<html id="__next_error__">` with nothing in its body but scripts and an empty hidden div. */
+    shell: boolean;
 }
 
+/**
+ * The gate's own check that the head painted Dark (the remap's review, L1): until Black's layer lands, Black computes
+ * the same styles as Dark, so a route sent to `black` would otherwise pass every comparison. Its failing lines, or none.
+ * One page carries no theme: the error page with no JavaScript, which is Next's own error shell, a bare
+ * `<html id="__next_error__">` that never renders the root layout. A missing theme passes only when both builds serve
+ * that shell, and the comparison with the base is the check there. Any other page with no theme fails.
+ */
+const paintsDark = (walked: Walked2, base?: Walked2): string[] =>
+    walked.theme === 'dark' || (walked.theme === null && walked.shell && base?.theme === null && base.shell) ? [] : [`painted ${walked.theme ?? 'nothing'}, not dark`];
+
 /** A walk of `pair` in one build: every element's computed style and box, and the tokens, from a fresh settled load. */
-async function styles(origin: string, stored: string, pair: Pair, viewport: { width: number; height: number }, tag: string, { js = true, session, motion }: { js?: boolean; session?: string; motion?: Motion } = {}): Promise<Walked2> {
+async function styles(
+    origin: string,
+    stored: string,
+    pair: Pair,
+    viewport: { width: number; height: number },
+    tag: string,
+    { js = true, session, motion, stripTheme = false }: { js?: boolean; session?: string; motion?: Motion; stripTheme?: boolean } = {},
+): Promise<Walked2> {
     const head = !tag.startsWith('base');
     // The curator's head takes the control out of the layout, as no JavaScript does, since the base's header had none.
     const css = [pair.addsControl && head ? '[data-theme-control]{display:none!important}' : '', pair.headStyle && head ? pair.headStyle : ''].join('');
     const { context, page, timedOut } = await open(origin, stored, pair, viewport, 1, css, { js, session, motion });
     try {
         const selectors = ALLOWANCES.filter((entry) => entry.page === (pair.stateOf ?? pair.name) && entry.width === viewport.width).map((entry) => entry.selector);
-        return { walk: await walk(page, selectors), timedOut };
+        // The self-test's page with its theme taken off, to show a missing theme fails anywhere but the error shell.
+        if (stripTheme) await page.evaluate(() => document.documentElement.removeAttribute('data-theme'));
+        const painted = await page.evaluate(() => ({
+            theme: document.documentElement.getAttribute('data-theme'),
+            shell:
+                document.documentElement.id === '__next_error__' &&
+                // Next's shell holds its scripts, some inline, and one empty hidden div for its Suspense markers. Nothing
+                // else in it may carry text.
+                [...document.body.children].every((child) => child.localName === 'script' || (child.localName === 'div' && child.hasAttribute('hidden') && child.textContent?.trim() === '')) &&
+                [...document.body.childNodes].every((node) => node.nodeType !== Node.TEXT_NODE || node.textContent?.trim() === ''),
+        }));
+        return { walk: await walk(page, selectors), timedOut, ...painted };
     } finally {
         await context.close();
     }
@@ -772,7 +805,7 @@ function judge(label: string, width: number, c: Comparison, timedOut: string[] =
 }
 
 /**
- * The gate, at each size: Black in the head against the base, element by element, in all three of Black's routes.
+ * The gate, at each size: Dark in the head against the base, element by element, in all three of Dark's routes.
  * System on a dark device and today's stored `dark` against the base on its stored `dark`; no JavaScript against the
  * base without it. A wait that times out in either build fails the row, and a head with JavaScript that doesn't
  * hydrate fails it too (its hydration wait is one of them). Home's intro has a fourth route: motion allowed, held in
@@ -797,7 +830,7 @@ async function gate(pair: Pair, origins: { base: string; head: string }, cookies
                 ALLOWANCES.filter((entry) => entry.page === (pair.stateOf ?? pair.name) && entry.width === viewport.width && against.walk.resolved[entry.selector]).map((entry) => [against.walk.resolved[entry.selector], entry.maxDelta]),
             );
             const timedOut = [...against.timedOut.map((wait) => `${wait} (base)`), ...head.timedOut.map((wait) => `${wait} (head)`)];
-            const failing = judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk, allowances), timedOut);
+            const failing = [...judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk, allowances), timedOut), ...paintsDark(head, against)];
             expect.soft(failing, `${pair.name} at ${size} ${viewport.width}, ${route}: computed style against the base`).toEqual([]);
         }
         if (pair.intro) {
@@ -805,7 +838,7 @@ async function gate(pair: Pair, origins: { base: string; head: string }, cookies
             const against = await styles(origins.base, 'dark', pair, viewport, 'base', { motion: LOADING });
             const head = await styles(origins.head, '', pair, viewport, 'head', { motion: LOADING });
             const timedOut = [...against.timedOut.map((wait) => `${wait} (base)`), ...head.timedOut.map((wait) => `${wait} (head)`)];
-            const failing = judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk), timedOut);
+            const failing = [...judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk), timedOut), ...paintsDark(head, against)];
             expect.soft(failing, `${pair.name} at ${size} ${viewport.width}, ${route}: computed style against the base`).toEqual([]);
         }
     }
@@ -827,9 +860,9 @@ function parity(group: string, pairs: Pair[], origins: () => { base: string; hea
                     const name = `${pair.name}-${viewport.width}-${scale}x`;
                     const before = await shoot(base, 'dark', pair, viewport, scale, 'base', cookies?.base);
                     row(`${pair.name}, the base against itself`, size, viewport.width, scale, await diff(before, await shoot(base, 'dark', pair, viewport, scale, 'base-again', cookies?.base), scale, `${name}-base-against-itself`));
-                    row(pair.name, size, viewport.width, scale, await diff(before, await shoot(head, 'black', pair, viewport, scale, 'head', cookies?.head), scale, name));
+                    row(pair.name, size, viewport.width, scale, await diff(before, await shoot(head, 'dark', pair, viewport, scale, 'head', cookies?.head), scale, name));
                     if (options.legacy && scale === 1) {
-                        row(`${pair.name}, head on stored \`dark\``, size, viewport.width, 1, await diff(before, await shoot(head, 'dark', pair, viewport, scale, 'head-legacy-dark', cookies?.head), scale, `${name}-legacy-dark`));
+                        row(`${pair.name}, head on stored \`charcoal\``, size, viewport.width, 1, await diff(before, await shoot(head, 'charcoal', pair, viewport, scale, 'head-legacy-charcoal', cookies?.head), scale, `${name}-legacy-charcoal`));
                     }
                 }
             }
@@ -881,15 +914,15 @@ test.afterAll(async () => {
     }
     const read = (file: string) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '');
     fs.writeFileSync(
-        path.join(OUT, 'black-parity.md'),
+        path.join(OUT, 'dark-parity.md'),
         [
-            '# Black against the base',
+            '# Dark against the base',
             '',
             `Base: \`${baseCommit()}\`.`,
             '',
             '## The gate: computed style',
             '',
-            "Every element under body (and in the curator's preview frame), matched by tag and nth-of-type, its ::before and ::after, and the custom properties on :root and body, in the head's Black against the base, at 1440, 1024 and 390, in Black's three routes, with Home's intro also in its loading phase with motion allowed, and hover and focus on the nav links, Home's controls, About's links and the Inbox's rows and buttons. The theme control and today's toggle are left out with their subtrees; the curator's head takes its control out of the layout, as no JavaScript does. Structure, styles, base tokens, any box that moved (beyond the one named allowance) and any wait that timed out fail; every box delta and the tokens new in the head are listed below.",
+            "Every element under body (and in the curator's preview frame), matched by tag and nth-of-type, its ::before and ::after, and the custom properties on :root and body, in the head's Dark against the base, at 1440, 1024 and 390, in Dark's three routes, with Home's intro also in its loading phase with motion allowed, and hover and focus on the nav links, Home's controls, About's links and the Inbox's rows and buttons. The theme control and today's toggle are left out with their subtrees; the curator's head takes its control out of the layout, as no JavaScript does. Structure, styles, base tokens, any box that moved (beyond the one named allowance) and any wait that timed out fail; every box delta and the tokens new in the head are listed below.",
             '',
             '| Page, route | Width | Structure | Styles | Tokens | Boxes over allowance | Box deltas | Largest delta (px) | Waits timed out | New tokens |',
             '|---|---|---|---|---|---|---|---|---|---|',
@@ -943,7 +976,7 @@ test.describe('the visitor site and the legacy Gallery', () => {
             },
         };
         const viewport = VIEWPORTS.desktop;
-        const result = await diff(await shoot(visitor.base, 'dark', pair, viewport, 1, 'base'), await shoot(visitor.head, 'black', pair, viewport, 1, 'head'), 1, 'home-chrome-will-change');
+        const result = await diff(await shoot(visitor.base, 'dark', pair, viewport, 1, 'base'), await shoot(visitor.head, 'dark', pair, viewport, 1, 'head'), 1, 'home-chrome-will-change');
         row('home-chrome, the scrim on its own layer (diagnosis)', 'desktop', 1440, 1, result);
         test.info().annotations.push({ type: 'diagnosis', description: `${result.count} pixels differ, max step ${result.maxStep}` });
     });
@@ -968,7 +1001,7 @@ test.describe('the visitor site and the legacy Gallery', () => {
         test(`self-test: ${name} in the head fails the gate`, async () => {
             const pair: Pair = { name: `self-test, ${name}`, url, headStyle, act, motion };
             const viewport = VIEWPORTS.desktop;
-            const [base, head] = [await styles(visitor.base, 'dark', pair, viewport, 'base'), await styles(visitor.head, 'black', pair, viewport, 'head')];
+            const [base, head] = [await styles(visitor.base, 'dark', pair, viewport, 'base'), await styles(visitor.head, 'dark', pair, viewport, 'head')];
             const comparison = compare(base.walk, head.walk);
             judge(pair.name, viewport.width, comparison, [...base.timedOut, ...head.timedOut]);
             // Seen as the change itself, in a style or a token, on loads that settled.
@@ -976,6 +1009,25 @@ test.describe('the visitor site and the legacy Gallery', () => {
             expect([...base.timedOut, ...head.timedOut], `${name}: both loads settled`).toEqual([]);
         });
     }
+
+    // Black's page must never pass as Dark (the remap's review, L1): the head on a stored `black` fails both the gate's
+    // paint check and its comparison, since Black's layer computes its own styles and tokens.
+    test("self-test: Black's page in the head fails the gate as Dark", async () => {
+        const pair: Pair = { name: "self-test, Black's page", url: '/work' };
+        const viewport = VIEWPORTS.desktop;
+        const [base, head] = [await styles(visitor.base, 'dark', pair, viewport, 'base'), await styles(visitor.head, 'black', pair, viewport, 'head')];
+        expect([...base.timedOut, ...head.timedOut], 'both loads settled').toEqual([]);
+        expect(paintsDark(head), 'the gate sees Black').toEqual(['painted black, not dark']);
+        const comparison = compare(base.walk, head.walk);
+        expect(comparison.styles.length + comparison.tokens.length, "the comparison sees Black's styles too").toBeGreaterThan(0);
+        // And a Dark head passes the same check, so the check isn't failing everything.
+        expect(paintsDark(await styles(visitor.head, 'dark', pair, viewport, 'head')), 'a Dark head passes it').toEqual([]);
+        // A missing theme passes only on Next's error shell: a normal page with its theme taken off fails, even
+        // against a base with none either.
+        const [bare, bareBase] = [await styles(visitor.head, 'dark', pair, viewport, 'head', { stripTheme: true }), await styles(visitor.base, 'dark', pair, viewport, 'base', { stripTheme: true })];
+        expect([bare.theme, bare.shell, bareBase.shell], 'the stripped pages are normal pages with no theme').toEqual([null, false, false]);
+        expect(paintsDark(bare, bareBase), 'a normal page with no theme fails').toEqual(['painted nothing, not dark']);
+    });
 });
 
 test.describe('the curator and its 503', () => {

@@ -7,14 +7,14 @@
   background: var(--home-ground, #000);
 }
 
-/* Home's part of the themes (styles/themes.css has the palettes). Light, Bright and Dark hang the photograph inside a
+/* Home's part of the themes (styles/themes.css has the palettes). Light and Bright hang the photograph inside a
    margin of their ground with their surround, wash it in their ground and ink, and raise the badge over the scrim.
-   Black is today's site: it sets none of these, so every rule below falls back to v1.2.0's own value. Home's modules
+   Dark is today's site: it sets none of these, so every rule below falls back to v1.2.0's own value. Black is full
+   bleed too, with its scrim and the controls' pill in pure black. Home's modules
    sit in the shared visitor chunk (as in v1.2.0), so every visitor route carries these; they're scoped to Home's
    <main>, so only Home applies them. */
 :global(html[data-theme='light']) .root,
-:global(html[data-theme='bright']) .root,
-:global(html[data-theme='dark']) .root {
+:global(html[data-theme='bright']) .root {
   --home-ground: var(--gah-ground);
   --gah-stage-position: absolute;
   --gah-stage-size: auto;
@@ -47,16 +47,15 @@
   --gah-panel-alpha: 0.78;
 }
 
-:global(html[data-theme='dark']) .root {
-  --gah-stage-inset: clamp(14px, 1.1vw, 16px);
-  --gah-stage-surround: 0 0 0 1px rgb(255 255 255 / 0.14), 0 24px 60px -20px rgb(0 0 0 / 0.8);
-  --gah-mat-fill: #2a2f2d;
-  --gah-scrim-rgb: 27 31 29;
-  --gah-scrim-ink: #eef2f0;
-  --gah-scrim-ink-soft: #d3d9d6;
-  --gah-control-scrim: rgb(20 23 22 / 0.8);
-  --gah-control-ink: #eef2f0;
-  --gah-action-hover: #c3e3d5;
+:global(html[data-theme='black']) .root {
+  /* Over the scrim, as in Light and Bright, so the hold never dims the portrait (the OLED review's P2-2): the layer-42
+     ruling was today's, which is now Dark's. */
+  --gah-badge-layer: 50;
+  --gah-scrim-rgb: 0 0 0;
+  --gah-scrim-ink: #f5f5f5;
+  --gah-scrim-ink-soft: rgba(255, 255, 255, 0.8);
+  --gah-control-scrim: rgb(0 0 0 / 0.72);
+  --gah-control-ink: #f5f5f5;
 }
 
 /* On a phone Light's lift sits closer, so the stage's shadow doesn't brown the paper strip below it. */
@@ -70,7 +69,7 @@
    white scrim reads as fog, so the copy takes a dark scrim and light ink there. HomeSequence samples the photograph
    under the copy at each slide change (badgePlace.ts's copyTone()) and sets data-copy-tone on Home's root; unmeasured
    means light, the theme's own. The theme still owns the margin, the mat, the nav, the button, the pill and the badge,
-   and the panel's alpha and the phone hold don't change. Dark and Black never read it. */
+   and the panel's alpha and the phone hold don't change. Dark never reads it. */
 :global(html[data-theme='light']) .root[data-copy-tone='dark'] {
   --gah-scrim-rgb: 41 35 29;
   --gah-scrim-ink: #f5f1e8;
@@ -87,7 +86,7 @@
    portrait (42). It scrolls when large text needs more room, with room for a
    phone's home indicator. */
 .chrome {
-  /* Inside the print in every theme (P2-2): today's 1.5rem and gutter are the floor, so Black doesn't move. */
+  /* Inside the print in every theme (P2-2): today's 1.5rem and gutter are the floor, so Dark doesn't move. */
   --home-print-corner: max(1.5rem, calc(var(--gah-stage-inset, 0px) + 0.75rem));
   --home-print-inline: max(var(--site-gutter), calc(var(--gah-stage-inset, 0px) + 0.75rem));
   position: fixed;
@@ -116,9 +115,9 @@
 }
 
 /* The prototype's left-weighted scrim, in Gallery After Hours' ground, and bottom-weighted on a narrow screen. It's
-   clipped to the print, so it never paints a theme's margin or Bright's frame line (P1-1). Black's gradients stay
-   literal: the same gradient built from a custom property rasterizes 1/255 off today's in places, and Black is
-   today's pixel for pixel. Dark writes its own in its ground. */
+   clipped to the print, so it never paints a theme's margin or Bright's frame line (P1-1). Dark's gradients stay
+   literal: the same gradient built from a custom property rasterizes 1/255 off today's in places, and Dark is
+   today's pixel for pixel. Black writes its own in pure black. */
 .vignette {
   position: fixed;
   inset: var(--gah-stage-inset, 0px);
@@ -126,8 +125,8 @@
   background: linear-gradient(90deg, rgb(8 10 9 / 0.9) 0%, rgb(8 10 9 / 0.46) 38%, rgb(8 10 9 / 0.08) 70%);
 }
 
-:global(html[data-theme='dark']) .vignette {
-  background: linear-gradient(90deg, rgb(27 31 29 / 0.9) 0%, rgb(27 31 29 / 0.46) 38%, rgb(27 31 29 / 0.08) 70%);
+:global(html[data-theme='black']) .vignette {
+  background: linear-gradient(90deg, rgb(0 0 0 / 0.9) 0%, rgb(0 0 0 / 0.46) 38%, rgb(0 0 0 / 0.08) 70%);
 }
 
 /* A paper or white wash reads as fog, not as dimming. On a wide screen Light and Bright have none: the title's panel
@@ -142,25 +141,24 @@
     background: linear-gradient(0deg, rgb(8 10 9 / 0.92) 0%, rgb(8 10 9 / 0.28) 66%, rgb(8 10 9 / 0.12) 100%);
   }
 
-  /* On a phone the panel doesn't show. Light's, Bright's and Dark's wash holds at --home-wash-hold up to 1.5rem
-     above the copy's top (--home-copy-top, the copy block's top as a percentage of the stage, which HeroReveal
-     measures with badgePlace.ts's homeCopyTop()), then ends at 0 16% higher, so it follows a long title or large text
-     up the photograph and leaves the rest clear. Dark takes it too: today's fixed wash is 0.28 at a title that large
-     text lifts to a third of the way down. contrast-home.mjs reads the title at the hold. Black keeps today's at
-     default text. */
+  /* On a phone the panel doesn't show. Light's and Bright's wash holds at --home-wash-hold up to 1.5rem above the
+     copy's top (--home-copy-top, the copy block's top as a percentage of the stage, which HeroReveal measures with
+     badgePlace.ts's homeCopyTop()), then ends at 0 16% higher, so it follows a long title or large text up the
+     photograph and leaves the rest clear. Black takes it too, in pure black, at every text size. contrast-home.mjs
+     reads the title at the hold. Dark keeps today's at default text. */
   :global(html[data-theme='light']) .vignette,
   :global(html[data-theme='bright']) .vignette,
-  :global(html[data-theme='dark']) .vignette {
+  :global(html[data-theme='black']) .vignette {
     --home-wash-hold: 0.86;
     --home-hold-at: calc(100% - var(--home-copy-top, 66%) + 1.5rem);
     background: linear-gradient(0deg, rgb(var(--gah-scrim-rgb) / 0.92) 0%, rgb(var(--gah-scrim-rgb) / var(--home-wash-hold)) var(--home-hold-at), rgb(var(--gah-scrim-rgb) / 0) calc(var(--home-hold-at) + 16%));
   }
 
-  /* Black, at enlarged text only (spec §10, a sanctioned departure): today's fixed wash is 0.28 where large text lifts
+  /* Dark, at enlarged text only (spec §10, a sanctioned departure): today's fixed wash is 0.28 where large text lifts
      the title, 1.77:1. Once the visitor enlarges the text (HeroReveal sets data-text-enlarged on Home's root), the wash
      holds at 0.86 up to the copy's top, as the other themes' does, then eases to today's 0.12 above it. At default text
-     none of this applies, so Black stays today's, rule for rule. */
-  :global(html[data-theme='black']) .root[data-text-enlarged] .vignette {
+     none of this applies, so Dark stays today's, rule for rule. Black holds at every size, in its own black, above. */
+  :global(html[data-theme='dark']) .root[data-text-enlarged] .vignette {
     --home-hold-at: calc(100% - var(--home-copy-top, 66%) + 1.5rem);
     background: linear-gradient(0deg, rgb(8 10 9 / 0.92) 0%, rgb(8 10 9 / 0.86) var(--home-hold-at), rgb(8 10 9 / 0.12) calc(var(--home-hold-at) + 16%), rgb(8 10 9 / 0.12) 100%);
   }

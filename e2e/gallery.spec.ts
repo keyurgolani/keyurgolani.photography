@@ -20,7 +20,7 @@ const navLinks = (page: Page) => primary(page).getByRole('link');
 const themeControl = (page: Page) => page.getByRole('button', { name: /^Theme:/ });
 const lightbox = (page: Page) => page.getByRole('dialog', { name: 'Lightbox' });
 
-async function openGallery(page: Page, theme: 'black' | 'light' = 'black') {
+async function openGallery(page: Page, theme: 'dark' | 'light' = 'dark') {
     if (theme === 'light') await page.addInitScript(() => localStorage.setItem('theme', 'light'));
     await page.goto('/gallery');
     await waitForHydration(page);
@@ -35,7 +35,7 @@ for (const viewport of [undefined, { width: 640, height: 400 }]) {
     test.describe(viewport ? 'at 640 by 400, which is 200% zoom' : 'at the project viewport', () => {
         if (viewport) test.use({ viewport });
 
-        for (const theme of ['black', 'light'] as const) {
+        for (const theme of ['dark', 'light'] as const) {
             test(`passes the surface checks in the ${theme} theme`, async ({ page }) => {
                 await openGallery(page, theme);
                 await checkSurface(page, {
@@ -50,7 +50,7 @@ for (const viewport of [undefined, { width: 640, height: 400 }]) {
 
 test('Tab goes through SiteNav, its theme control last, then each photo in order, and Shift+Tab walks back', async ({ page }) => {
     await openGallery(page);
-    const stops = ['KG, Keyur Golani', 'Home', 'Work', 'About', 'Theme: System (Black now)', ...Array.from({ length: COUNT }, (_, index) => photoName(index + 1))];
+    const stops = ['KG, Keyur Golani', 'Home', 'Work', 'About', 'Theme: System (Dark now)', ...Array.from({ length: COUNT }, (_, index) => photoName(index + 1))];
     const forward: (string | undefined)[] = [];
     for (let press = 0; press < stops.length; press++) {
         await page.keyboard.press('Tab');
@@ -130,7 +130,7 @@ test('the photo grid fills in DOM order, without dense packing', async ({ page }
 });
 
 // Each theme has its own hover rules, and only the active theme's match markup.
-for (const theme of ['black', 'light'] as const) {
+for (const theme of ['dark', 'light'] as const) {
     test(`every app hover rule on the page waits for a fine pointer in the ${theme} theme`, async ({ page }) => {
         await openGallery(page, theme);
         await expectHoverRulesGated(page);

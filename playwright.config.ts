@@ -61,7 +61,7 @@ function catalogDataRoot(): string {
 
 export default defineConfig({
   testDir: 'e2e',
-  // e2e/themes holds Black's parity spec, which builds and serves two trees of its own (its own config).
+  // e2e/themes holds Dark's parity spec, which builds and serves two trees of its own (its own config).
   testIgnore: '**/themes/**',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
@@ -71,7 +71,7 @@ export default defineConfig({
   use: {
     baseURL: origin,
     trace: 'retain-on-failure',
-    // A dark device, so System paints Black, today's site, which the suite's looks were written against. A case about
+    // A dark device, so System paints Dark, today's site, which the suite's looks were written against. A case about
     // the light themes opts in with its own colorScheme or a stored choice.
     colorScheme: 'dark',
   },

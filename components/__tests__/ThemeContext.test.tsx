@@ -5,11 +5,11 @@ import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ThemeProvider, useSetThemeChoice, useThemeChoice } from '../ThemeContext';
 
-/** Reads the choice and what paints, and flips between Light and Dark (stored as `charcoal`). */
+/** Reads the choice and what paints, and flips between Light and Black. */
 function Probe() {
   const { choice, theme, setChoice } = useThemeChoice();
   return (
-    <button type="button" onClick={() => setChoice(theme === 'light' ? 'charcoal' : 'light')}>
+    <button type="button" onClick={() => setChoice(theme === 'light' ? 'black' : 'light')}>
       {choice}/{theme}
     </button>
   );
@@ -19,18 +19,18 @@ const html = document.documentElement;
 
 describe('ThemeProvider', () => {
   beforeEach(() => {
-    html.setAttribute('data-theme', 'black');
+    html.setAttribute('data-theme', 'dark');
     html.setAttribute('data-theme-choice', 'system');
     delete html.dataset.hydrated;
     localStorage.clear();
   });
 
   afterEach(() => {
-    html.setAttribute('data-theme', 'black');
+    html.setAttribute('data-theme', 'dark');
     html.setAttribute('data-theme-choice', 'system');
   });
 
-  it('renders its children on the first pass, in System painting Black, as the server sends', () => {
+  it('renders its children on the first pass, in System painting Dark, as the server sends', () => {
     // The server render runs no effects, so a gate that waits for a mount effect would send no child.
     let firstPass = '';
     function First() {
@@ -44,7 +44,7 @@ describe('ThemeProvider', () => {
       </ThemeProvider>,
     );
     expect(markup).toContain('<p>child</p>');
-    expect(firstPass).toBe('system/black');
+    expect(firstPass).toBe('system/dark');
   });
 
   it('picks up the light theme the inline script put on <html>', () => {
@@ -179,7 +179,7 @@ describe('ThemeProvider', () => {
     expect(html.dataset.hydrated).toBe('true');
   });
 
-  it('writes both attributes and localStorage.theme on each choice, and Dark as charcoal', () => {
+  it('writes both attributes and localStorage.theme on each choice', () => {
     render(
       <ThemeProvider>
         <Probe />
@@ -191,9 +191,9 @@ describe('ThemeProvider', () => {
     expect(screen.getByRole('button')).toHaveTextContent('light/light');
 
     act(() => fireEvent.click(screen.getByRole('button')));
-    expect([html.getAttribute('data-theme-choice'), html.getAttribute('data-theme')]).toEqual(['charcoal', 'dark']);
-    expect(localStorage.getItem('theme')).toBe('charcoal');
-    expect(screen.getByRole('button')).toHaveTextContent('charcoal/dark');
+    expect([html.getAttribute('data-theme-choice'), html.getAttribute('data-theme')]).toEqual(['black', 'black']);
+    expect(localStorage.getItem('theme')).toBe('black');
+    expect(screen.getByRole('button')).toHaveTextContent('black/black');
   });
 
   it('follows the inline script when it changes <html>, as System does when the device switches', async () => {
@@ -202,7 +202,7 @@ describe('ThemeProvider', () => {
         <Probe />
       </ThemeProvider>,
     );
-    expect(screen.getByRole('button')).toHaveTextContent('system/black');
+    expect(screen.getByRole('button')).toHaveTextContent('system/dark');
     await act(async () => {
       html.setAttribute('data-theme', 'light');
     });
@@ -223,8 +223,8 @@ describe('ThemeProvider', () => {
       expect(html.getAttribute('data-theme')).toBe('light');
       expect(screen.getByRole('button')).toHaveTextContent('light/light');
       act(() => fireEvent.click(screen.getByRole('button')));
-      expect(html.getAttribute('data-theme')).toBe('dark');
-      expect(screen.getByRole('button')).toHaveTextContent('charcoal/dark');
+      expect(html.getAttribute('data-theme')).toBe('black');
+      expect(screen.getByRole('button')).toHaveTextContent('black/black');
     } finally {
       setItem.mockRestore();
     }
@@ -244,11 +244,11 @@ describe('ThemeProvider', () => {
       );
       act(() => fireEvent.click(screen.getByRole('button')));
       act(() => fireEvent.click(screen.getByRole('button')));
-      expect([light.content, dark.content]).toEqual(['#1b1f1d', '#1b1f1d']);
+      expect([light.content, dark.content]).toEqual(['#000000', '#000000']);
       // A choice made in another tab reaches the provider through the inline script's write on <html>.
       await act(async () => {
         html.setAttribute('data-theme-choice', 'system');
-        html.setAttribute('data-theme', 'black');
+        html.setAttribute('data-theme', 'dark');
       });
       expect([light.content, dark.content]).toEqual(['#ebe5d9', '#080a09']);
     } finally {

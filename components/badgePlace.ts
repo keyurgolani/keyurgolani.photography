@@ -124,8 +124,8 @@ export function chromeOverflows(scrollHeight: number, clientHeight: number): boo
 export const DEFAULT_REM_PX = 16;
 
 /**
- * Whether the visitor enlarged the text, from 1rem in px. Black's phone wash follows the copy only then (spec §10), so
- * at default text Black is today's exactly.
+ * Whether the visitor enlarged the text, from 1rem in px. Dark's phone wash follows the copy only then (spec §10), so
+ * at default text Dark is today's exactly.
  */
 export function textEnlarged(remPx: number): boolean {
   return Number.isFinite(remPx) && remPx > DEFAULT_REM_PX;
