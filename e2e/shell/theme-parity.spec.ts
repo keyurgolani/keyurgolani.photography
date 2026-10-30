@@ -48,7 +48,7 @@ interface Route {
      */
     bottom: 'ground' | 'chrome' | 'none';
     /** The Viewer's reading area at the foot of the page, per theme: --cc-chrome over the Viewer's ground. */
-    chrome?: Record<'black' | 'light', Rgb>;
+    chrome?: Record<'dark' | 'light', Rgb>;
     tolerance?: number;
 }
 
@@ -56,10 +56,10 @@ const ROUTES: readonly Route[] = [
     { name: 'Home', path: '/', nav: true, ground: GAH_GROUND, light: LIGHT_PAPER, bottom: 'none' },
     { name: 'Work', path: '/work', nav: true, ground: GAH_GROUND, light: LIGHT_PAPER, bottom: 'ground' },
     { name: 'a series', path: `/work/${HOME_SERIES.slug}`, nav: true, ground: GAH_GROUND, light: LIGHT_PAPER, bottom: 'ground' },
-    // The Viewer paints its own ground on the body too (#7): today's Chromatic Chapters in Black, Light's paper in Light.
+    // The Viewer paints its own ground on the body too (#7): today's Chromatic Chapters in Dark, Light's paper in Light.
     { name: 'the Viewer', path: `/work/${HOME_SERIES.slug}/photo/${HOME_OPENING}`, nav: false, ground: CC_GROUND, light: LIGHT_PAPER, bottom: 'chrome',
-        // Black's rgba(8, 11, 10, 0.9) over the bands' edge, and Light's solid sheet.
-        chrome: { black: [9, 12, 11], light: [242, 237, 227] } },
+        // Dark's rgba(8, 11, 10, 0.9) over the bands' edge, and Light's solid sheet.
+        chrome: { dark: [9, 12, 11], light: [242, 237, 227] } },
     // The paper's ribs darken it by under 5% at the edges.
     // Light's About paper has no ribs, so it holds its ground exactly.
     { name: 'About', path: '/about', nav: true, ground: PAPER, light: LIGHT_PAPER, bottom: 'ground', tolerance: 10 },
