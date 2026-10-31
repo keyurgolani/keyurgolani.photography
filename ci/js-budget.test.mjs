@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { jsBudget, LIMIT, ROUTES, routeJs } from './js-budget.mjs';
+import { errorShownJs, jsBudget, LIMIT, ROUTES, routeJs } from './js-budget.mjs';
 
 const gz = (text) => zlib.gzipSync(text, { level: 9 }).length;
 
@@ -59,7 +59,22 @@ describe('js-budget', () => {
     const noise = randomBytes(LIMIT * 2).toString('base64');
     const { rows, over } = await jsBudget(base, tree({ extra: noise }));
     expect(over).toBe(Object.keys(ROUTES).length);
+    // The error page as shown is reported after the gated rows, and never counts as over.
+    expect(rows).toHaveLength(Object.keys(ROUTES).length + 1);
+    expect(rows.at(-1)).toMatch(/^\| The error page, shown on Work \(reported, not gated\) \|/);
     expect(rows[0]).toMatch(/^\| Home \| \d+ B \(3 files\) \| \d+ B \(3 files\) \| \+\d+ B \| over by \d+ B \|$/);
+  });
+
+  it("adds the chunks the error entry imports lazily to the route's first load, for the error page as shown", async () => {
+    const root = tree();
+    const next = path.join(root, '.next');
+    fs.writeFileSync(path.join(next, 'static', 'chunks', 'error.js'), 'e.l("static/chunks/nav.js")');
+    fs.writeFileSync(path.join(next, 'static', 'chunks', 'nav.js'), 'nav();');
+    const file = path.join(next, 'server', 'app', 'work/page_client-reference-manifest.js');
+    const manifest = { entryCSSFiles: {}, entryJSFiles: { '[project]/app/layout': ['static/chunks/layout.js'], '[project]/app/error': ['static/chunks/error.js'], '[project]/app/work/page': ['static/chunks/page.js'] } };
+    fs.writeFileSync(file, `globalThis.__RSC_MANIFEST = { "/work/page": ${JSON.stringify(manifest)} };\n`);
+    const first = await routeJs(root, 'work/page');
+    expect(await errorShownJs(root, 'work/page')).toEqual({ gzip: first.gzip + gz('nav();'), files: first.files + 1 });
   });
 
   it('names a route with no build', async () => {

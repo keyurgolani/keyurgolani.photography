@@ -24,7 +24,13 @@ export const ROUTES = {
   'The Viewer, cold': 'work/[slug]/photo/[photoId]/page',
   Work: 'work/page',
   About: 'about/page',
+  'The 404': '_not-found/page',
 };
+/**
+ * Reported, not gated: the error page as shown on a route, which is that route's first load plus the chunks the
+ * error boundary's entry imports lazily when it renders (app/error.tsx's nav), found as chunk paths in its files.
+ */
+export const SHOWN = { 'The error page, shown on Work': 'work/page' };
 
 /** The route's first-load scripts, from the build manifest and its client reference manifest, plus the inline ones, gzipped. */
 export async function routeJs(tree, route) {
@@ -52,6 +58,26 @@ export async function routeJs(tree, route) {
   return { gzip, files: count };
 }
 
+/** The route's first load plus the chunks its error entry loads when it shows, gzipped. */
+export async function errorShownJs(tree, route) {
+  const root = path.join(tree, '.next');
+  const first = await routeJs(tree, route);
+  const scope = {};
+  new Function('globalThis', fs.readFileSync(path.join(root, 'server', 'app', `${route}_client-reference-manifest.js`), 'utf8'))(scope);
+  const manifest = Object.values(scope.__RSC_MANIFEST)[0];
+  const build = JSON.parse(fs.readFileSync(path.join(root, 'build-manifest.json'), 'utf8'));
+  const loaded = new Set(build.rootMainFiles ?? []);
+  for (const [entry, list] of Object.entries(manifest.entryJSFiles ?? {})) if (!entry.includes('metadata')) for (const item of list) loaded.add(typeof item === 'string' ? item : item.path);
+  const lazy = new Set();
+  for (const item of manifest.entryJSFiles?.['[project]/app/error'] ?? []) {
+    const text = fs.readFileSync(path.join(root, typeof item === 'string' ? item : item.path), 'utf8');
+    for (const [chunk] of text.matchAll(/static\/chunks\/[A-Za-z0-9_-]+\.js/g)) if (!loaded.has(chunk) && fs.existsSync(path.join(root, chunk))) lazy.add(chunk);
+  }
+  let gzip = first.gzip;
+  for (const chunk of lazy) gzip += zlib.gzipSync(fs.readFileSync(path.join(root, chunk)), { level: 9 }).length;
+  return { gzip, files: first.files + lazy.size };
+}
+
 /** The table's rows and how many routes are over. */
 export async function jsBudget(base, head) {
   const rows = [];
@@ -62,6 +88,11 @@ export async function jsBudget(base, head) {
     const ok = change <= LIMIT;
     if (!ok) over++;
     rows.push(`| ${name} | ${before.gzip} B (${before.files} files) | ${after.gzip} B (${after.files} files) | ${change >= 0 ? '+' : ''}${change} B | ${ok ? 'within' : `over by ${change - LIMIT} B`} |`);
+  }
+  for (const [name, route] of Object.entries(SHOWN)) {
+    const [before, after] = [await errorShownJs(base, route), await errorShownJs(head, route)];
+    const change = after.gzip - before.gzip;
+    rows.push(`| ${name} (reported, not gated) | ${before.gzip} B (${before.files} files) | ${after.gzip} B (${after.files} files) | ${change >= 0 ? '+' : ''}${change} B | ${change <= LIMIT ? 'within' : `over by ${change - LIMIT} B`} |`);
   }
   return { rows, over };
 }
