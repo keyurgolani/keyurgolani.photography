@@ -1,4 +1,6 @@
 // @vitest-environment node
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import postcss, { type Declaration, type Rule } from 'postcss';
 import { describe, expect, it } from 'vitest';
 import { ABOUT_THEMES_CSS } from '../aboutThemes';
@@ -9,9 +11,19 @@ import { ABOUT_THEMES_CSS } from '../aboutThemes';
 function themeTokens(theme: string) {
   const found: Record<string, string> = {};
   postcss.parse(ABOUT_THEMES_CSS).walkRules((rule: Rule) => {
-    if (rule.selector.startsWith(`html[data-theme=${theme}]`)) rule.walkDecls((decl: Declaration) => void (found[decl.prop] = decl.value));
+    if (rule.parent?.type === 'root' && rule.selectors.some((selector) => selector.includes(`[data-theme=${theme}]`))) rule.walkDecls((decl: Declaration) => void (found[decl.prop] = decl.value));
   });
   return found;
+}
+
+/** The site's own ground for a theme, in styles/themes.css. */
+const THEMES_CSS = postcss.parse(fs.readFileSync(fileURLToPath(new URL('../../../styles/themes.css', import.meta.url)), 'utf8'));
+function siteGround(theme: string) {
+  let ground: string | undefined;
+  THEMES_CSS.walkRules((rule: Rule) => {
+    if (rule.parent?.type === 'root' && rule.selector === `html[data-theme='${theme}']`) rule.walkDecls('--gah-ground', (decl) => void (ground = decl.value));
+  });
+  return ground;
 }
 
 type Rgba = [number, number, number, number];
@@ -58,13 +70,15 @@ describe('About in each theme', () => {
     // Black puts the frame's ground on its own black (--lts-frame-ground, which about.module.css reads).
     const band = over(t['--lts-caption-bg'], t['--lts-frame-ground'] ? rgba(t['--lts-frame-ground']) : FRAME_GROUND);
     expect(contrast(over(t['--lts-caption-ink'], band), band), 'caption').toBeGreaterThanOrEqual(4.5);
-    // The body's ground under the page is the paper.
-    expect(themeTokens(theme)['--gah-about-ground']).toBe(t['--lts-paper']);
+    // The body's ground under the page is the theme's own ground, which is the paper.
+    expect(t['--gah-about-ground']).toBe('var(--gah-ground)');
+    expect(rgba(siteGround(theme)!)).toEqual(paper);
   });
 
   it('puts Black on the screen\'s black: no paper, no ribs, no mat, no shadow, and the caption on the black', () => {
     const t = themeTokens('black');
-    expect([t['--lts-paper'], t['--lts-frame'], t['--lts-frame-ground'], t['--gah-about-ground']]).toEqual(['#000', '#000', '#000', '#000']);
+    expect([t['--lts-paper'], t['--lts-frame'], t['--lts-frame-ground']]).toEqual(['#000', '#000', '#000']);
+    expect(siteGround('black')).toBe('#000000');
     expect([t['--lts-ribs'], t['--lts-shadow'], t['--lts-caption-bg']]).toEqual(['none', 'none', 'transparent']);
   });
 

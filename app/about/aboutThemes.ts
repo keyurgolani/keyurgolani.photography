@@ -14,12 +14,12 @@
  * these bytes on every page (the first-load CSS budget). `--gah-about-ground` is the body's ground under the page.
  */
 const LIGHT =
-  '--lts-paper:#ebe5d9;--lts-glass:rgba(235,229,217,.9);--lts-ink:#29231d;--lts-ink-soft:#4d443a;--lts-ribs:none;' +
-  '--lts-rule:rgba(41,35,29,.14);--lts-rule-strong:#8c7f6f;--lts-frame:#f8f5ee;' +
-  '--lts-shadow:0 0 0 1px rgba(41,35,29,.08),0 16px 28px -14px rgba(60,42,20,.42);--lts-link-rule:#2a4a72;' +
-  '--lts-caption-bg:rgba(248,245,238,.92);--lts-caption-ink:#3a3229';
+  '--lts-paper:#ebe5d9;--lts-glass:#ebe5d9e6;--lts-ink:#29231d;--lts-ink-soft:#4d443a;--lts-ribs:none;' +
+  '--lts-rule:#29231d24;--lts-rule-strong:#8c7f6f;--lts-frame:#f8f5ee;' +
+  '--lts-shadow:0 0 0 1px #29231d14,0 16px 28px -14px #3c2a146b;--lts-link-rule:#2a4a72;' +
+  '--lts-caption-bg:#f8f5eeeb;--lts-caption-ink:#3a3229';
 const BRIGHT =
-  '--lts-paper:#fff;--lts-ink:#0b0b0b;--lts-ink-soft:#3d3d3d;--lts-rib:rgba(0,0,0,.035);--lts-rule:rgba(0,0,0,.16);' +
+  '--lts-paper:#fff;--lts-ink:#0b0b0b;--lts-ink-soft:#3d3d3d;--lts-rib:#00000009;--lts-rule:#00000029;' +
   '--lts-rule-strong:#767676;--lts-glass:#fff;--lts-frame:#fff;--lts-shadow:0 0 0 2px #111;--lts-link-rule:#767676;' +
   '--lts-caption-bg:#fff;--lts-caption-ink:#0b0b0b';
 const BLACK =
@@ -27,8 +27,9 @@ const BLACK =
   '--lts-rule-strong:#fff6;--lts-glass:#000000f0;--lts-frame:#000;--lts-frame-ground:#000;--lts-shadow:none;' +
   '--lts-link-rule:transparent;--about-glow-rest:0;--lts-caption-bg:transparent;--lts-caption-ink:#f5f5f5';
 export const ABOUT_THEMES_CSS =
-  `html[data-theme=light]{--gah-about-ground:#ebe5d9}html[data-theme=light] [data-surface=about]{${LIGHT}}` +
-  `html[data-theme=bright]{--gah-about-ground:#fff}html[data-theme=bright] [data-surface=about]{${BRIGHT}}` +
-  `html[data-theme=black]{--gah-about-ground:#000}html[data-theme=black] [data-surface=about]{${BLACK}}` +
+  // The body's ground under the page is each theme's own ground, which is its paper here.
+  'html[data-theme=light],html[data-theme=bright],html[data-theme=black]{--gah-about-ground:var(--gah-ground)}' +
+  `[data-theme=light] [data-surface=about]{${LIGHT}}[data-theme=bright] [data-surface=about]{${BRIGHT}}` +
+  `[data-theme=black] [data-surface=about]{${BLACK}}` +
   // Light Takes Shape's own reduced-transparency rule, which the blocks above would otherwise outrank.
   '@media (prefers-reduced-transparency:reduce){html[data-theme] [data-surface=about]{--lts-glass:var(--lts-paper)}}';
