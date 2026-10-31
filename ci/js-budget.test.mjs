@@ -52,7 +52,7 @@ describe('js-budget', () => {
     expect(result).toEqual({ gzip: gz('main();') + gz('layout();') + gz('page();') + gz('theme();'), files: 4 });
   });
 
-  it('passes a head within +1,000 B on every route, and fails one past it by its overage', async () => {
+  it('passes a head within +3,000 B on every route, and fails one past it by its overage', async () => {
     const base = tree();
     expect((await jsBudget(base, tree({ inline: 'theme();' }))).over).toBe(0);
     // Random bytes don't compress, so the page chunk grows by more than the budget.
