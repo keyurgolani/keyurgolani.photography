@@ -1,11 +1,15 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { startTransition } from 'react';
-import SiteNav from '@/components/site/SiteNav';
+import { lazy, startTransition, Suspense } from 'react';
 import StatusPage from '@/components/site/StatusPage';
 import { ERROR_HEADING, errorCopy, useOnline } from '@/components/site/onlineStatus';
 import { useStoredChoice } from '@/components/site/useStoredChoice';
+
+// The nav loads when the page shows, not with every route: an error boundary's module is part of every page's first
+// load, and SiteNav with its theme menu tripled the JS each route ships (perf5: Home, Work and About past the JS
+// budget). The page renders on the client (Next's error shell), so nothing here is lost without JavaScript.
+const SiteNav = lazy(() => import('@/components/site/SiteNav'));
 
 interface ErrorPageProps {
   error: Error & { digest?: string };
@@ -27,7 +31,9 @@ export default function ErrorPage({ reset }: ErrorPageProps) {
     });
   return (
     <>
-      <SiteNav />
+      <Suspense fallback={null}>
+        <SiteNav />
+      </Suspense>
       <StatusPage
         heading={ERROR_HEADING}
         actions={
