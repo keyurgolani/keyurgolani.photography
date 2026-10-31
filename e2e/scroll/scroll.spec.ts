@@ -4,13 +4,21 @@ import path from 'node:path';
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { catalogCodeVersion, DEFAULT_CATALOG_CACHE, perfCatalog } from '../../lib/perf/catalogCache';
 import { BUDGET_VARIANT_BYTES } from '../../lib/perf/fixture';
+import { checkDiskFloor, makeRunTemp, removeRunTemp } from '../../lib/perf/runFiles';
+import { tracedToFile, type TraceEvent } from '../themes/perfTrace';
 import { phase, readOnlyTree, serve, standInPrints, VARIANT_REQUEST, variantFormat, type Server } from '../themes/perfServer';
 
 // photo-perf-scroll (2026-10-31): the surround's phone scroll alone (e2e/themes/surround-perf.spec.ts @ 5a825824),
 // for a bisect point. Copied into the tools worktree's e2e/scroll/ by the runner; the master copy is in the notes.
 //   pairs   (default): base and head side by side, PERF_THEMES (dark), PERF_ROUNDS pairs each, order alternating.
-//   profile (SCROLL_PROFILE_DIR set): one traced sweep per tree, alone in the browser, with the timeline categories.
+//   profile (SCROLL_PROFILE_DIR set): one traced sweep per tree, alone in the browser, with the timeline categories,
+//            and on the head one traced theme switch before it (from Dark to PERF_THEMES' first other theme).
 // Same sweep, expand, device, throttle and trace categories as the surround, so the numbers compare with perf5's.
+//
+// Its writes are capped (the 2026-10-31 disk fill, notes/photo-perf-scroll/disk-0704.md): nothing starts under the disk
+// floor (PERF_DISK_MIN_GB, 20 GB); the catalog is served read-only from the cache, never copied; a profile trace streams
+// to a file under PERF_TRACE_MAX_MB (150) and fails its phase past it; only its summary JSON is kept, the raw trace
+// too with PERF_KEEP_TRACE=1; and the run's temp folder is removed in place when it ends, passed or failed.
 
 const PHOTOS = 5_000;
 const PHONE = { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, throttle: 4, steps: 120 };
@@ -27,16 +35,14 @@ const PROFILE_CATEGORIES = [
     ...SURROUND_CATEGORIES,
     'devtools.timeline',
     'disabled-by-default-devtools.timeline',
-    'disabled-by-default-devtools.timeline.stack',
+    // Not disabled-by-default-devtools.timeline.stack or v8.execute: they made each trace about 125 MB.
     'blink.user_timing',
-    'v8.execute',
     'disabled-by-default-v8.cpu_profiler',
     'loading',
 ];
 
 test.skip(!BASE || !HEAD, 'Set PARITY_BASE_DIR and HEAD_DIR to built trees.');
 
-type TraceEvent = { name: string; ph: string; pid: number; tid: number; dur?: number; args?: Record<string, unknown> & { chrome_frame_reporter?: { state?: string }; name?: string } };
 
 interface Sweep {
     rafP95: number;
@@ -52,8 +58,30 @@ interface Sweep {
     wallMs: number;
 }
 
-async function sweep(browser: Browser, page: Page, steps: number, categories: string[], save?: string): Promise<Sweep> {
+/**
+ * A traced sweep. With `file`, the trace streams there under the cap and goes once its events are read (perfTrace.ts);
+ * without one, it's the surround's own light trace, held in memory and never written.
+ */
+async function sweep(browser: Browser, page: Page, steps: number, categories: string[], file?: string): Promise<Sweep> {
+    if (file) {
+        const { result, events } = await tracedToFile(browser, categories, file, () => scroll(page, steps));
+        return summarise(events, result);
+    }
     await browser.startTracing(page, { categories });
+    let swept: [number, number, number];
+    try {
+        swept = await scroll(page, steps);
+    } catch (error) {
+        // Stopped either way, so a failed sweep never leaves Chrome tracing.
+        await browser.stopTracing().catch(() => undefined);
+        throw error;
+    }
+    const buffer = await browser.stopTracing();
+    return summarise((JSON.parse(buffer.toString('utf8')) as { traceEvents?: TraceEvent[] }).traceEvents ?? [], swept);
+}
+
+/** The scroll from the top to the end in even steps, one per frame: its rAF p95, its frames and its wall time. */
+async function scroll(page: Page, steps: number): Promise<[number, number, number]> {
     const swept = page.evaluate(
         (count) =>
             new Promise<[number, number, number]>((resolve, reject) => {
@@ -91,10 +119,11 @@ async function sweep(browser: Browser, page: Page, steps: number, categories: st
         steps,
     );
     let timer: NodeJS.Timeout | undefined;
-    const [rafP95, frames, wallMs] = await Promise.race([swept, new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error('the sweep ran past 2 minutes')), 120_000)))]).finally(() => clearTimeout(timer));
-    const buffer = await browser.stopTracing();
-    if (save) fs.writeFileSync(save, buffer);
-    const events = (JSON.parse(buffer.toString('utf8')) as { traceEvents?: TraceEvent[] }).traceEvents ?? [];
+    return Promise.race([swept, new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error('the sweep ran past 2 minutes')), 120_000)))]).finally(() => clearTimeout(timer));
+}
+
+/** A sweep's numbers from its trace's events. */
+function summarise(events: TraceEvent[], [rafP95, frames, wallMs]: [number, number, number]): Sweep {
     const processName = new Map<number, string>();
     for (const event of events) if (event.ph === 'M' && event.name === 'process_name') processName.set(event.pid, String(event.args?.name ?? '?'));
     const rasterByProcess: Sweep['rasterByProcess'] = {};
@@ -163,15 +192,18 @@ let prints: Record<string, Buffer> = {};
 
 test.beforeAll(async () => {
     test.setTimeout(20 * 60_000);
-    temp = fs.mkdtempSync(path.join(os.tmpdir(), 'perf-scroll-'));
+    checkDiskFloor(os.tmpdir());
+    if (PROFILE_DIR) checkDiskFloor(path.dirname(PROFILE_DIR));
+    temp = makeRunTemp('scroll-');
     const library = path.join(temp, 'library');
     const siteConfig = path.join(temp, 'site-config');
     fs.mkdirSync(library);
     fs.mkdirSync(siteConfig);
     prints = await standInPrints(12, 8);
-    const cached = await perfCatalog({ photos: PHOTOS, seed: 6, variantBytes: BUDGET_VARIANT_BYTES, code: catalogCodeVersion(process.cwd()) }, path.join(temp, 'catalog'), process.env.PERF_CATALOG_CACHE ?? DEFAULT_CATALOG_CACHE);
+    // Served from the cache in place, read-only, never copied (lib/perf/catalogCache.ts).
+    const cached = await perfCatalog({ photos: PHOTOS, seed: 6, variantBytes: BUDGET_VARIANT_BYTES, code: catalogCodeVersion(process.cwd()) }, process.env.PERF_CATALOG_CACHE ?? DEFAULT_CATALOG_CACHE, path.join(temp, 'catalog'));
     catalog = { root: cached.root, slug: cached.slug };
-    phase(`catalog from ${cached.from}; serving base ${BASE} (read-only copy) and head ${HEAD}`);
+    phase(`catalog from ${cached.from}, read-only at ${cached.root}; serving base ${BASE} (cloned .next) and head ${HEAD}`);
     const base = readOnlyTree(BASE!, path.join(temp, 'base-tree'));
     servers.push(await serve(base, ports[0], catalog.root, library, siteConfig), await serve(HEAD!, ports[1], catalog.root, library, siteConfig));
 });
@@ -179,12 +211,8 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
     test.setTimeout(5 * 60_000);
     await Promise.all(servers.map((server) => server.stop()));
-    const trash = path.join(os.homedir(), '.Trash');
-    try {
-        if (temp && fs.existsSync(trash)) fs.renameSync(temp, path.join(trash, `${path.basename(temp)}-${Date.now()}`));
-    } catch {
-        // Another volume: it stays.
-    }
+    // The run's own temp folder goes, passed or failed, in place: a move to ~/.Trash is the same volume and frees nothing.
+    removeRunTemp(temp);
 });
 
 test(`the phone scroll of a ${PHOTOS}-photo series, ${LABEL} against the base`, async ({ browser }) => {
@@ -231,32 +259,36 @@ test(`the phone scroll of a ${PHOTOS}-photo series, ${LABEL} against the base`, 
         );
 
     if (PROFILE_DIR) {
-        // One tree at a time, alone in the browser, so the trace holds one renderer's work. The base: a Dark sweep.
-        // The head: from Dark, each theme in turn, the switch traced on its own (paint, then settle), then its sweep.
+        // One sweep per tree, alone in the browser, so the trace holds one renderer's work: the base's in Dark, and the
+        // head's after one traced switch, from Dark to PERF_THEMES' first other theme. Each trace streams to a file
+        // under the cap, and only its summary JSON is kept beside it (the raw trace too with PERF_KEEP_TRACE=1).
         fs.mkdirSync(PROFILE_DIR, { recursive: true });
+        const keep = (name: string, summary: object) => {
+            const file = path.join(PROFILE_DIR, `${name}.summary.json`);
+            fs.writeFileSync(file, `${JSON.stringify(summary, null, 2)}\n`);
+            return file;
+        };
         phase('profile base');
         const opened = await open(base.origin);
-        await sweep(browser, opened.page, PHONE.steps, SURROUND_CATEGORIES);
-        const baseFile = path.join(PROFILE_DIR, 'base-dark.json');
-        record({ mode: 'profile', tree: 'base', theme: 'dark', trace: baseFile, ...(await sweep(browser, opened.page, PHONE.steps, PROFILE_CATEGORIES, baseFile)) });
+        const baseSweep = await sweep(browser, opened.page, PHONE.steps, PROFILE_CATEGORIES, path.join(PROFILE_DIR, 'base-dark.json'));
+        record({ mode: 'profile', tree: 'base', theme: 'dark', summary: keep('base-dark', baseSweep), ...baseSweep });
         await opened.page.context().close();
-        phase(`profile ${LABEL}`);
+        const theme = THEMES.find((choice) => choice !== 'dark') ?? 'dark';
+        phase(`profile ${LABEL}, dark to ${theme}`);
         const headPage = await open(head.origin);
-        await sweep(browser, headPage.page, PHONE.steps, SURROUND_CATEGORIES);
-        let from = 'dark';
-        for (const theme of THEMES) {
-            if (theme !== from) {
-                const switchFile = path.join(PROFILE_DIR, `${LABEL}-switch-${from}-${theme}.json`);
-                await browser.startTracing(headPage.page, { categories: PROFILE_CATEGORIES });
+        if (theme !== 'dark') {
+            const name = `${LABEL}-switch-dark-${theme}`;
+            const { result: settled, events } = await tracedToFile(browser, PROFILE_CATEGORIES, path.join(PROFILE_DIR, `${name}.json`), async () => {
                 await paint(headPage.page, theme);
-                const settled = await settle(headPage.page);
-                fs.writeFileSync(switchFile, await browser.stopTracing());
-                record({ mode: 'switch', tree: LABEL, from, theme, settleMs: settled, trace: switchFile });
-            }
-            const file = path.join(PROFILE_DIR, `${LABEL}-${theme}.json`);
-            record({ mode: 'profile', tree: LABEL, theme, trace: file, ...(await sweep(browser, headPage.page, PHONE.steps, PROFILE_CATEGORIES, file)) });
-            from = theme;
+                return settle(headPage.page);
+            });
+            const top = new Map<string, number>();
+            for (const event of events) if (event.ph === 'X' && typeof event.dur === 'number') top.set(event.name, (top.get(event.name) ?? 0) + event.dur / 1000);
+            const summary = { settleMs: settled, traceEvents: events.length, top: [...top].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([event, ms]) => `${event} ${Math.round(ms)}`) };
+            record({ mode: 'switch', tree: LABEL, from: 'dark', theme, settleMs: settled, summary: keep(name, summary) });
         }
+        const headSweep = await sweep(browser, headPage.page, PHONE.steps, PROFILE_CATEGORIES, path.join(PROFILE_DIR, `${LABEL}-${theme}.json`));
+        record({ mode: 'profile', tree: LABEL, theme, summary: keep(`${LABEL}-${theme}`, headSweep), ...headSweep });
         await headPage.page.context().close();
         return;
     }
