@@ -73,9 +73,10 @@ function expectReads(seen: Awaited<ReturnType<typeof paint>>, ground: string, ac
     }
 }
 
-async function openIn(page: Page, url: string, choice: string, viewport: { width: number; height: number }) {
+/** Opens the page with `choice` stored, or with nothing stored when it's undefined (System). */
+async function openIn(page: Page, url: string, choice: string | undefined, viewport: { width: number; height: number }) {
     await page.setViewportSize(viewport);
-    await page.addInitScript((value) => localStorage.setItem('theme', value), choice);
+    if (choice !== undefined) await page.addInitScript((value) => localStorage.setItem('theme', value), choice);
     const response = await page.goto(url);
     await waitForHydration(page);
     return response?.status();
@@ -90,6 +91,34 @@ for (const [choice, want] of Object.entries(THEMES)) {
             expectReads(await paint(page), want.ground, 1);
         });
     }
+}
+
+const SCHEMES = ['light', 'dark'] as const;
+
+/**
+ * System, with nothing stored: the page paints Light on a light device and Dark on a dark one, then follows the device
+ * when it switches with the page open. The 404 gets there through the layout's inline script; the error page, which
+ * React renders on the client from the start, through useStoredChoice (#126's review, L1″).
+ */
+async function expectSystemFollows(page: Page, scheme: (typeof SCHEMES)[number]) {
+    const html = page.locator('html');
+    for (const now of [scheme, scheme === 'light' ? 'dark' : 'light'] as const) {
+        if (now !== scheme) await page.emulateMedia({ colorScheme: now });
+        await expect(html).toHaveAttribute('data-theme-choice', 'system');
+        await expect(html, `System on a ${now} device`).toHaveAttribute('data-theme', now);
+        // After a live switch the ground snaps, but the action's fill and label fade over --motion-fast (160 ms), and
+        // mid-fade they nearly meet (CI on #130: 1.42). So the whole read is retried until it passes, at full bounds.
+        await expect(async () => expectReads(await paint(page), THEMES[now].ground, 1), `every pair reads in ${now}`).toPass({ timeout: 5_000 });
+    }
+}
+
+for (const scheme of SCHEMES) {
+    test(`the 404 in System on a ${scheme} device, with nothing stored, is ${scheme === 'light' ? 'Light' : 'Dark'} and follows the device`, async ({ page }) => {
+        await page.emulateMedia({ colorScheme: scheme });
+        expect(await openIn(page, '/does-not-exist', undefined, VIEWPORTS[0])).toBe(404);
+        await expect(page.getByRole('heading', { level: 1, name: 'Page not found' })).toBeVisible();
+        await expectSystemFollows(page, scheme);
+    });
 }
 
 test.describe('the error page', () => {
@@ -133,4 +162,53 @@ test.describe('the error page', () => {
             });
         }
     }
+
+    for (const scheme of SCHEMES) {
+        test(`in System on a ${scheme} device, with nothing stored: ${scheme === 'light' ? 'Light' : 'Dark'}, following the device`, async ({ page }) => {
+            if (!server) throw new Error('The failing server did not start');
+            await page.emulateMedia({ colorScheme: scheme });
+            expect(await openIn(page, `${server.origin}/work`, undefined, VIEWPORTS[0])).toBe(500);
+            expect((await paint(page)).heading.text).toBe(ERROR_HEADING);
+            await expectSystemFollows(page, scheme);
+        });
+    }
+
+    // #126's review, L3″: with site data blocked, the menu's choice lives only on <html>, so a device switch must keep
+    // it rather than read a storage that says System. The hook before this fix painted Dark here.
+    test('with storage blocked, a choice from the menu survives a device switch', async ({ page }) => {
+        if (!server) throw new Error('The failing server did not start');
+        await page.addInitScript(() => {
+            const { getItem, setItem } = Storage.prototype;
+            const blocked = () => {
+                throw new DOMException('The operation is insecure.', 'SecurityError');
+            };
+            // localStorage only: sessionStorage stays Next's.
+            Storage.prototype.getItem = function (this: Storage, key: string) {
+                return this === window.localStorage ? blocked() : getItem.call(this, key);
+            };
+            Storage.prototype.setItem = function (this: Storage, key: string, value: string) {
+                return this === window.localStorage ? blocked() : setItem.call(this, key, value);
+            };
+        });
+        await page.emulateMedia({ colorScheme: 'light' });
+        expect(await openIn(page, `${server.origin}/work`, undefined, VIEWPORTS[0])).toBe(500);
+        const html = page.locator('html');
+        await expect(html).toHaveAttribute('data-theme-choice', 'system');
+        await expect(html).toHaveAttribute('data-theme', 'light');
+
+        await page.getByRole('button', { name: /^Theme:/ }).click();
+        // A pointer's choice applies in the view transition's callback, a frame later.
+        await page.getByRole('radio', { name: /^Light/ }).click();
+        await expect(html).toHaveAttribute('data-theme-choice', 'light');
+        await page.keyboard.press('Escape');
+
+        await page.emulateMedia({ colorScheme: 'dark' });
+        // The query's change event goes out in a rendering update, so wait for the device to read dark and for two
+        // frames after, before checking that nothing put Dark back.
+        await page.waitForFunction(() => matchMedia('(prefers-color-scheme: dark)').matches);
+        await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+        const now = await html.evaluate((root) => [root.getAttribute('data-theme-choice'), root.getAttribute('data-theme')]);
+        expect(now, 'Light, on a dark device').toEqual(['light', 'light']);
+        expectReads(await paint(page), THEMES.light.ground, 1);
+    });
 });
