@@ -2,12 +2,17 @@
  * The perf run's lab LCP gate, judged (e2e/themes/lcp.spec.ts). Each route is loaded cold, on a desktop at 1440 and a
  * phone at 390, from v1.2.0's build and from the head in each theme choice, the loads interleaved per route so the
  * machine's load hits both alike. The head passes a route, device and theme when its median LCP is at most the base's
- * median times LCP_BOUND.ratio and at most LCP_BOUND.ceilingMs (the themes scope, item 7). TBT is reported beside it,
+ * median times LCP_BOUND.ratio, or the base's plus LCP_BOUND.floorMs if that's more, and at most LCP_BOUND.ceilingMs
+ * (the themes scope, item 7; the floor is the lead's ruling after perf5, where 8 ms, two of Chrome's 4 ms LCP steps,
+ * failed a 60 ms median). TBT is reported beside it,
  * against the same base, with no gate. Every cell needs all its loads, and every load an LCP, or the run fails: a
  * cell with no samples has nothing to compare and would otherwise pass.
  */
 
-export const LCP_BOUND = { ratio: 1.1, ceilingMs: 2500 } as const;
+export const LCP_BOUND = { ratio: 1.1, floorMs: 16, ceilingMs: 2500 } as const;
+
+/** The most the head's median may be: 1.10 × the base's, or the base's + 16 ms, whichever is more. */
+export const lcpAllowance = (base: number) => Math.max(LCP_BOUND.ratio * base, base + LCP_BOUND.floorMs);
 /** Cold loads per route, device and build or theme: the median of 5. */
 export const LCP_LOADS = 5;
 /** Lighthouse's long-task threshold: TBT counts what each task runs past it. */
@@ -71,7 +76,7 @@ export function lcpVerdicts(samples: readonly LcpSample[], { routes, devices, th
                 const head = cell(route, device, theme);
                 const ratio = head.lcp / base.lcp;
                 const why: string[] = [];
-                if (!(ratio <= LCP_BOUND.ratio)) why.push(`${Number.isFinite(ratio) ? ratio.toFixed(2) : 'no'} × the base, over ${LCP_BOUND.ratio}`);
+                if (!(head.lcp <= lcpAllowance(base.lcp))) why.push(`${Number.isFinite(ratio) ? ratio.toFixed(2) : 'no'} × the base, over ${LCP_BOUND.ratio} and over the base + ${LCP_BOUND.floorMs} ms`);
                 if (!(head.lcp <= LCP_BOUND.ceilingMs)) why.push(`${Number.isFinite(head.lcp) ? Math.round(head.lcp) : 'no'} ms, over ${LCP_BOUND.ceilingMs} ms`);
                 verdicts.push({ route, device, theme, baseLcp: base.lcp, headLcp: head.lcp, ratio, baseTbt: base.tbt, headTbt: head.tbt, pass: why.length === 0, why });
             }

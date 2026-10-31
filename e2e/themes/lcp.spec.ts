@@ -13,8 +13,9 @@ import { phase, readOnlyTree, serve, standInPrints, VARIANT_REQUEST, variantForm
 // desktop at 1440 and a phone at 390 (DPR 3, the CPU throttled 4x), from v1.2.0's build and from the head in every
 // theme choice: System (on a light device, so it paints Light through the choice's own path), Light, Bright, Dark and
 // Black. Five loads each, interleaved per route and rotated by load, so the machine's load hits both builds alike and
-// neither always goes first. The gate: the head's median LCP at most 1.10 × v1.2.0's and at most 2,500 ms. TBT,
-// from long tasks after first contentful paint until the load goes quiet, is reported beside it with no gate.
+// neither always goes first. The gate: the head's median LCP at most 1.10 × v1.2.0's or v1.2.0's + 16 ms, whichever is
+// more, and at most 2,500 ms. TBT, from long tasks after first contentful paint until the load goes quiet, is
+// reported beside it with no gate.
 //
 // Both serve the perf catalog (lib/perf/catalogCache.ts, the surround run's, shared through the cache) and every image
 // request is answered with one flat print of its format, large enough that the photograph is the largest paint, so
@@ -159,7 +160,7 @@ test(`lab LCP on every route, device and theme: the head against v1.2.0, ${LCP_L
     }
     const { verdicts, problems } = lcpVerdicts(samples, { routes: Object.keys(routes), devices: Object.keys(DEVICES), themes: THEMES });
     const report = [
-        `Lab LCP, the head against v1.2.0: median of ${LCP_LOADS} cold loads. Pass: at most ${LCP_BOUND.ratio} × v1.2.0's median and at most ${LCP_BOUND.ceilingMs} ms. TBT is reported only.`,
+        `Lab LCP, the head against v1.2.0: median of ${LCP_LOADS} cold loads. Pass: at most ${LCP_BOUND.ratio} × v1.2.0's median or its median + ${LCP_BOUND.floorMs} ms, whichever is more, and at most ${LCP_BOUND.ceilingMs} ms. TBT is reported only.`,
         'The phone is 390 × 844 at DPR 3 with the CPU throttled 4x; the desktop 1440 × 900 at DPR 1. System runs on a light device. v1.2.0 has one look, Dark.',
         '',
         lcpTable(verdicts),

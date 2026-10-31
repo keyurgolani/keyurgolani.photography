@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * The themes' JS budget (the themes scope, item 7): each visitor route's first-load JS, gzipped, may grow at most
- * 1,000 bytes over v1.2.0's. Measured as ci/themes-budget.mjs measures CSS, from the production build with no server:
+ * 3,000 bytes over v1.2.0's (the lead's ruling after perf5: it pays for the inline theme script and the theme control). Measured as ci/themes-budget.mjs measures CSS, from the production build with no server:
  * the root main files every page loads (build-manifest.json's rootMainFiles) and the route's entry chunks (its client
  * reference manifest's entryJSFiles, leaving out metadata routes), each file gzipped at level 9 and summed. The
  * polyfills are left out, since they load only in browsers without modules. An inline script every page renders
@@ -15,7 +15,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import zlib from 'node:zlib';
 
-export const LIMIT = 1000;
+export const LIMIT = 3000;
 /** Inline scripts every page renders, by the module and export that hold them, read from each tree's source. */
 export const INLINE = [['components/site/themeScript.ts', 'THEME_INIT_SCRIPT']];
 export const ROUTES = {
