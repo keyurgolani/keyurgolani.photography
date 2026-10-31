@@ -22,7 +22,7 @@ import { phase, readOnlyTree, serve, standInPrints, VARIANT_REQUEST, variantForm
 // LCP times the page, not the disk. v1.2.0 is served from a copy of its build (perfServer.ts, readOnlyTree), so its
 // tree is only read and never rebuilt.
 //
-//   PERF_V120_DIR=<built v1.2.0> PERF_LCP_PORTS=3377,3378 npx playwright test -c e2e/themes/perf.config.ts lcp
+//   PERF_V120_DIR=<built v1.2.0> PERF_LCP_PORTS=3377,3378 [PERF_LCP_ROUTES=Home,About] npx playwright test -c e2e/themes/perf.config.ts lcp
 
 const PHOTOS = 5_000;
 const V120 = process.env.PERF_V120_DIR;
@@ -141,7 +141,11 @@ test(`lab LCP on every route, device and theme: the head against v1.2.0, ${LCP_L
     test.setTimeout(35 * 60_000);
     const [base, head] = servers;
     const { slug, photoId } = catalog!;
-    const routes: Record<string, string> = { Home: '/', Work: '/work', 'A series': `/work/${slug}`, 'The Viewer, cold': `/work/${slug}/photo/${photoId}`, About: '/about' };
+    const every: Record<string, string> = { Home: '/', Work: '/work', 'A series': `/work/${slug}`, 'The Viewer, cold': `/work/${slug}/photo/${photoId}`, About: '/about' };
+    // PERF_LCP_ROUTES=Home,About re-measures those alone (a change that touches only them); a name it doesn't know fails.
+    const only = process.env.PERF_LCP_ROUTES?.split(',').map((name) => name.trim()).filter(Boolean);
+    for (const name of only ?? []) expect(Object.keys(every), `PERF_LCP_ROUTES names ${name}`).toContain(name);
+    const routes = only ? Object.fromEntries(Object.entries(every).filter(([name]) => only.includes(name))) : every;
     const samples: LcpSample[] = [];
     const loads: string[] = [];
     for (const [name, route] of Object.entries(routes)) {
