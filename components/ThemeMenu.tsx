@@ -1,7 +1,8 @@
 'use client';
 
 import { Check } from 'lucide-react';
-import { Component, lazy, type ReactNode, Suspense, useCallback, useEffect, useId, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useId, useRef, useState } from 'react';
+import QuietBoundary from './QuietBoundary';
 import { useThemeChoice } from './ThemeContext';
 import { THEME_CHOICES, type ThemeChoice } from './themeChoices';
 
@@ -20,26 +21,6 @@ const THEME_LABELS: Record<ThemeChoice, { name: string; note: string }> = {
 // server never renders them. React's lazy, not next/dynamic, whose loader runtime would ride in every chunk that holds
 // the menu, the not-found page's included (perf5's JS budget).
 const ThemeMenuPopoverStyles = lazy(() => import('./ThemeMenuPopoverStyles'));
-
-/**
- * A failed load of the styles' chunk (a page left open across a redeploy, a dropped request) renders nothing, so the
- * button stays inert, as without JavaScript, instead of the route's error page taking over.
- */
-class StylesBoundary extends Component<{ children: ReactNode; onFailed: () => void }, { failed: boolean }> {
-  state = { failed: false };
-
-  static getDerivedStateFromError() {
-    return { failed: true };
-  }
-
-  componentDidCatch() {
-    this.props.onFailed();
-  }
-
-  render() {
-    return this.state.failed ? null : this.props.children;
-  }
-}
 
 /**
  * The theme control: a 44 by 44 button in `SiteNav` (and the curator's header)
@@ -95,11 +76,13 @@ export default function ThemeMenu({ placement = 'nav' }: { placement?: 'nav' | '
   return (
     <>
       {wanted && (
-        <StylesBoundary onFailed={onFailed}>
+        // A failed load of the styles' chunk renders nothing, so the button stays inert, as without JavaScript,
+        // instead of the route's error page taking over.
+        <QuietBoundary onFailed={onFailed}>
           <Suspense fallback={null}>
             <ThemeMenuPopoverStyles onReady={onReady} />
           </Suspense>
-        </StylesBoundary>
+        </QuietBoundary>
       )}
       <button
         type="button"
