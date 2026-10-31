@@ -609,10 +609,13 @@ h1, h2, h3, h4, h5, h6 {
     }
 }
 
-/* The lightbox's own !important transitions above outrank the baseline. */
+/* The lightbox's own !important transitions above outrank the baseline. While a theme swaps in (data-theme-swap,
+   components/ThemeContext.tsx), nothing transitions: the baseline's 0.01 ms of `all` on every element would otherwise
+   start a transition per element and colour, tens of thousands on a long series. */
 @media (prefers-reduced-motion: reduce) {
     :root .yarl__button,
-    :root .yarl__thumbnails_thumbnail {
+    :root .yarl__thumbnails_thumbnail,
+    [data-theme-swap] * {
         transition: none !important;
     }
 }
