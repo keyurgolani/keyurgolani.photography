@@ -78,20 +78,31 @@ interface Sweep {
 /** A traced scroll from the top to the end in even steps, one per frame. Raster in ms, summed; dropped frames, counted. */
 async function sweep(browser: Browser, page: Page, steps: number): Promise<Sweep> {
     await browser.startTracing(page, { categories: TRACE_CATEGORIES });
-    const rafP95 = await page.evaluate(
+    // The end is read every frame, since the page's height can settle under a theme change after the sweep starts
+    // (perf5's first run hung in round 2: the scroll stopped short of an end read once). A scroll that stops moving,
+    // or runs past five times its steps, fails by name instead of waiting forever, and so does a sweep past 2 minutes.
+    const swept = page.evaluate(
         (count) =>
-            new Promise<number>((resolve) => {
+            new Promise<number>((resolve, reject) => {
                 window.scrollTo(0, 0);
-                const end = document.documentElement.scrollHeight - innerHeight;
-                const step = Math.max(40, end / count);
+                const end = () => document.documentElement.scrollHeight - innerHeight;
+                const step = Math.max(40, end() / count);
                 const deltas: number[] = [];
                 let last = 0;
+                let still = 0;
+                let at = -1;
                 const tick = (now: number) => {
                     deltas.push(now - last);
                     last = now;
-                    if (window.scrollY >= end - 1) {
+                    if (window.scrollY >= end() - 1) {
                         deltas.sort((a, b) => a - b);
                         resolve(+deltas[Math.min(deltas.length - 1, Math.floor(0.95 * deltas.length))].toFixed(2));
+                        return;
+                    }
+                    still = window.scrollY === at ? still + 1 : 0;
+                    at = window.scrollY;
+                    if (still >= 30 || deltas.length > count * 5) {
+                        reject(new Error(`the sweep stopped at ${Math.round(window.scrollY)} of ${Math.round(end())} px after ${deltas.length} frames`));
                         return;
                     }
                     window.scrollBy(0, step);
@@ -104,6 +115,8 @@ async function sweep(browser: Browser, page: Page, steps: number): Promise<Sweep
             }),
         steps,
     );
+    let timer: NodeJS.Timeout | undefined;
+    const rafP95 = await Promise.race([swept, new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error('the sweep ran past 2 minutes')), 120_000)))]).finally(() => clearTimeout(timer));
     const trace = JSON.parse((await browser.stopTracing()).toString('utf8')) as { traceEvents?: { name: string; ph: string; dur?: number; args?: { chrome_frame_reporter?: { state?: string } } }[] };
     const events = trace.traceEvents ?? [];
     const raster = events.filter((event) => event.name === 'RasterTask' && typeof event.dur === 'number').reduce((sum, event) => sum + (event.dur ?? 0), 0) / 1000;
@@ -226,8 +239,14 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
 
         /** A base sweep and a head sweep, the order alternating by round, each checked for raster time to compare. */
         const pairOf = async (round: number, label: string) => {
+            phase(label);
             const pair = round % 2 === 1 ? [basePage, headPage] : [headPage, basePage];
-            const [first, second] = [await sweep(browser, pair[0].page, spec.steps), await sweep(browser, pair[1].page, spec.steps)];
+            // Each sweep, tracing included, is bounded too, so a trace that never stops fails the pair by name.
+            const bounded = (page: Page, which: string) => {
+                let timer: NodeJS.Timeout | undefined;
+                return Promise.race([sweep(browser, page, spec.steps), new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error(`${label}: the ${which} sweep ran past 3 minutes`)), 180_000)))]).finally(() => clearTimeout(timer));
+            };
+            const [first, second] = [await bounded(pair[0].page, 'first'), await bounded(pair[1].page, 'second')];
             const [b, h] = round % 2 === 1 ? [first, second] : [second, first];
             expect(b.raster, `${label}: the base's trace carries raster time`).toBeGreaterThan(0);
             expect(h.raster, `${label}: the head's trace carries raster time`).toBeGreaterThan(0);
