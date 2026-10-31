@@ -1,16 +1,15 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The popover's styles stand in as a component that hands its onReady to the test, so the test decides when they land.
 const styles = vi.hoisted(() => ({ ready: null as null | (() => void), mounted: 0 }));
-vi.mock('next/dynamic', () => ({
-  default: () =>
-    function PopoverStyles({ onReady }: { onReady: () => void }) {
-      styles.mounted++;
-      styles.ready = onReady;
-      return null;
-    },
+vi.mock('../ThemeMenuPopoverStyles', () => ({
+  default: function PopoverStyles({ onReady }: { onReady: () => void }) {
+    styles.mounted++;
+    styles.ready = onReady;
+    return null;
+  },
 }));
 
 const setChoice = vi.hoisted(() => vi.fn());
@@ -55,7 +54,8 @@ describe('ThemeMenu', () => {
     expect(button()).not.toHaveAttribute('popovertarget');
     fireEvent.click(button());
     expect(button()).toHaveAttribute('aria-busy', 'true');
-    expect(styles.ready).not.toBeNull();
+    // The styles' module loads lazily, after the press.
+    await waitFor(() => expect(styles.ready).not.toBeNull());
     expect(showPopover).not.toHaveBeenCalled();
     await act(async () => styles.ready!());
     expect(showPopover).toHaveBeenCalledTimes(1);
@@ -113,21 +113,18 @@ describe('ThemeMenu', () => {
 
   it('keeps the button inert if the styles fail to load, instead of taking the route down (L8)', async () => {
     vi.resetModules();
-    vi.doMock('next/dynamic', () => ({
-      default: () =>
-        function FailingStyles(): never {
-          throw new Error('chunk failed to load');
-        },
-    }));
+    vi.doMock('../ThemeMenuPopoverStyles', () => {
+      throw new Error('chunk failed to load');
+    });
     const { default: Menu } = await import('../ThemeMenu');
     const quiet = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     render(<Menu />);
     fireEvent.click(button());
     expect(button()).not.toHaveAttribute('popovertarget');
     // The press stops waiting once the load has failed, so the button isn't left busy (D5).
-    expect(button()).not.toHaveAttribute('aria-busy');
+    await waitFor(() => expect(button()).not.toHaveAttribute('aria-busy'));
     expect(showPopover).not.toHaveBeenCalled();
     quiet.mockRestore();
-    vi.doUnmock('next/dynamic');
+    vi.doUnmock('../ThemeMenuPopoverStyles');
   });
 });
