@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LCP_BOUND, lcpTable, lcpVerdicts, median, totalBlockingTime, type LcpSample } from '../lcp';
+import { LCP_BOUND, lcpAllowance, lcpTable, lcpVerdicts, median, totalBlockingTime, type LcpSample } from '../lcp';
 
 const shape = { routes: ['Home'], devices: ['desktop'], themes: ['dark'], loads: 3 };
 const loads = (variant: string, lcps: number[], tbt = 0): LcpSample[] => lcps.map((lcp) => ({ route: 'Home', device: 'desktop', variant, lcp, tbt }));
@@ -34,6 +34,16 @@ describe('lcpVerdicts', () => {
         const late = lcpVerdicts([...loads('base', [2600, 2600, 2600]), ...loads('dark', [2600, 2600, 2600])], shape).verdicts[0];
         expect(late.pass).toBe(false);
         expect(late.why).toEqual([`2600 ms, over ${LCP_BOUND.ceilingMs} ms`]);
+    });
+
+    it('gives a fast median 16 ms of room, where 1.10 × it is less (Chrome reports LCP in 4 ms steps)', () => {
+        const within = lcpVerdicts([...loads('base', [60, 60, 60]), ...loads('dark', [76, 76, 76])], shape).verdicts[0];
+        expect(within).toMatchObject({ baseLcp: 60, headLcp: 76, pass: true });
+        const past = lcpVerdicts([...loads('base', [60, 60, 60]), ...loads('dark', [77, 77, 77])], shape).verdicts[0];
+        expect(past.pass).toBe(false);
+        expect(past.why.join()).toContain(`the base + ${LCP_BOUND.floorMs} ms`);
+        expect(lcpAllowance(60)).toBe(76);
+        expect(lcpAllowance(1000)).toBe(1100);
     });
 
     it('names a cell short of its loads or with a load that reported no LCP, and never passes a cell with none', () => {
