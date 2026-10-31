@@ -4,14 +4,15 @@ import { waitForHydration } from './support/hydration';
 import { expectReflow } from './support/reflow';
 import { checkSurface } from './support/surface';
 import { expect, test } from './support/test';
+import { fitSizes } from '../components/viewer/viewerSizes';
 import { expectSingleTapActivates } from './support/touch';
 import { FACTS_ONLY, HARBOR, P, SENTINELS, SITE_URL, href, id, useViewerCatalog } from './support/viewerCatalog';
 
 // The Viewer (#7) on a published catalog, on both #1 projects: a direct load,
 // the series and position, Previous and Next inside the series that stop at
 // the ends and replace the history entry, the collapsed technical details,
-// the #1 checks, keyboard and touch, share metadata on SITE_URL, the same
-// dark ground under both site themes, and nothing outside the allowlist in
+// the #1 checks, keyboard and touch, share metadata on SITE_URL, each
+// theme's own Viewer, and nothing outside the allowlist in
 // the HTML or the RSC payload. Each project's worker publishes its own
 // fixture and serves it from a second `next start`, so the harness server
 // stays in legacy mode for every other spec. Close points at #5's series
@@ -488,19 +489,121 @@ test('share metadata names the photo and its series, on SITE_URL, with a /media 
     expect(await meta('og:image:alt')).toBe('Fixture description of the harbor.');
 });
 
-for (const theme of ['dark', 'light'] as const) {
-    test(`the Viewer keeps its own dark ground under the ${theme} site theme`, async ({ page }) => {
-        if (theme === 'light') await page.addInitScript(() => localStorage.setItem('theme', 'light'));
-        await openViewer(page, P[0]);
-        await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
-        const colors = await page.locator('[data-surface="viewer"]').evaluate((root) => {
-            const style = getComputedStyle(root);
-            return { ground: style.backgroundColor, ink: style.color, accent: style.getPropertyValue('--cc-accent').trim() };
+/** Each theme's Viewer (spec §3 and §5, R2-P1-1): its ground and ink, and whether it keeps today's bands. */
+const VIEWER_THEMES = {
+    // Dark is today's Viewer; Black the print alone on black (the OLED spec), with no bands and no surround.
+    dark: { paints: 'dark', ground: 'rgb(17, 21, 19)', ink: 'rgb(246, 244, 238)', bands: true, surround: false },
+    light: { paints: 'light', ground: 'rgb(235, 229, 217)', ink: 'rgb(41, 35, 29)', bands: false, surround: true },
+    bright: { paints: 'bright', ground: 'rgb(255, 255, 255)', ink: 'rgb(11, 11, 11)', bands: false, surround: true },
+    black: { paints: 'black', ground: 'rgb(0, 0, 0)', ink: 'rgb(245, 245, 245)', bands: false, surround: false },
+} as const;
+
+/** The checks every theme's Viewer takes, once it is open: its ground and ink, its bands or none, and its print. */
+async function expectViewerTheme(page: Page, want: (typeof VIEWER_THEMES)[keyof typeof VIEWER_THEMES]) {
+    await expect(page.locator('html')).toHaveAttribute('data-theme', want.paints);
+    const colors = await page.locator('[data-surface="viewer"]').evaluate((root) => {
+        const style = getComputedStyle(root);
+        return { ground: style.backgroundColor, ink: style.color, accent: style.getPropertyValue('--cc-accent').trim() };
+    });
+    expect(colors).toEqual({ ground: want.ground, ink: want.ink, accent: '#c08040' });
+    const bands = await page.locator('[data-surface="viewer"]').evaluate((root) => getComputedStyle(root).backgroundImage);
+    if (want.bands) expect(bands, "today's bands").toMatch(/^linear-gradient\(/);
+    // The root's background is the bands' layer over the ground's, so every layer is none.
+    else expect(bands.split(',').map((layer) => layer.trim()), 'no bands').toEqual(bands.split(',').map(() => 'none'));
+    // The body behind the root is the same ground, so an overscroll never shows the site's.
+    expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe(want.ground);
+    // No theme control: the Viewer renders no SiteNav.
+    await expect(page.getByRole('button', { name: /^Theme:/ })).toHaveCount(0);
+
+    const look = await page.locator('[data-viewer-current]').first().evaluate((frame) => {
+        const image = frame.querySelector('img')!;
+        const viewport = frame.closest('[data-zoomed], [class*="viewport"]')!;
+        // What the theme's surround resolves to at this width: lg, or md on a phone.
+        const probe = document.createElement('div');
+        probe.style.boxShadow = `var(${innerWidth < 640 ? '--gah-surround-md' : '--gah-surround-lg'}, none)`;
+        // And the room the box keeps for it, resolved to px (a custom property computes to its unresolved calc()).
+        probe.style.width = 'var(--viewer-room)';
+        probe.style.position = 'absolute';
+        frame.append(probe);
+        const surround = getComputedStyle(probe).boxShadow;
+        const room = parseFloat(getComputedStyle(probe).width);
+        probe.remove();
+        const [f, v] = [frame.getBoundingClientRect(), viewport.getBoundingClientRect()];
+        return {
+            // The <picture>'s sources carry the sizes (ResponsivePhoto); the <img> is its w1200 fallback.
+            sizes: [...new Set([...frame.querySelectorAll('source')].map((source) => source.getAttribute('sizes')))].join(' | '),
+            ratio: frame instanceof HTMLElement ? frame.style.getPropertyValue('--ratio') : '',
+            shadow: getComputedStyle(frame).boxShadow,
+            surround,
+            outline: getComputedStyle(image).outlineStyle,
+            outlineColor: getComputedStyle(image).outlineColor,
+            fit: getComputedStyle(image).objectFit,
+            room,
+            clear: Math.min(f.left - v.left, v.right - f.right, f.top - v.top, v.bottom - f.bottom),
+        };
+    });
+    // The first-viewport check (spec §8): the room the box reserves is at most 50 px, and the image's sizes is
+    // fitSizes() of the record's shape alone, theme-blind, so no theme can ask for a larger rung than Dark.
+    expect(2 * look.room, 'the reserved room is at most 50 px').toBeLessThanOrEqual(50);
+    const [w, h] = look.ratio.split('/').map(Number);
+    expect(look.sizes, "the sizes the record's shape implies, in every theme").toBe(fitSizes(w, h));
+    if (want.bands) {
+        expect(look.shadow, "Dark's print has no surround").toBe('none');
+        expect(look.outline, "today's hairline").toBe('solid');
+        expect(look.fit, "today's fit").toBe('fill');
+        return;
+    }
+    // Every theme but Dark: the hairline is transparent, and a stale ratio letterboxes, never crops or stretches
+    // (P3-6). On Black's black the letterbox is invisible.
+    expect(look.outlineColor, 'no hairline').toBe('rgba(0, 0, 0, 0)');
+    expect(look.fit, 'a stale ratio letterboxes').toBe('contain');
+    // Forced colours drop any surround, so the transparent hairline takes a system colour and the print keeps an
+    // edge, Black's bare print too.
+    await page.emulateMedia({ forcedColors: 'active' });
+    expect(await page.locator('[data-viewer-current] img').first().evaluate((image) => getComputedStyle(image).outlineColor), 'an edge in forced colours').not.toBe('rgba(0, 0, 0, 0)');
+    await page.emulateMedia({ forcedColors: 'none' });
+    if (!want.surround) {
+        // Black: nothing round the print.
+        expect(look.shadow, "Black's print has no surround").toBe('none');
+        expect(look.room, 'no room reserved').toBe(0);
+        return;
+    }
+    expect(look.shadow, "the theme's surround").toBe(look.surround);
+    // Not by accident: md comes from styles/themes.css (#124), and without it both would read none.
+    expect(look.shadow, 'a themed print always wears a surround').not.toBe('none');
+    // The box leaves its surround's thickness and the clear ground on every side of the stage.
+    expect(look.room, 'the room is reserved').toBeGreaterThan(0);
+    expect(look.clear, 'the mat fits inside the stage').toBeGreaterThanOrEqual(look.room - 0.5);
+    // Zoomed, the scroller would clip the surround, so the print goes bare (P3-7).
+    await zoom(page).click();
+    await expect(page.locator('[data-zoomed]')).toHaveCount(1);
+    expect(await page.locator('[data-zoomed] figure').first().evaluate((frame) => getComputedStyle(frame).boxShadow)).toBe('none');
+}
+
+// Each theme at the project's own size (1280 on desktop, a phone on the mobile projects), and on the desktop project at
+// 1024, lg above the 48rem rule, and 1440 (#126's Delta 1, M2').
+const VIEWER_SIZES = [undefined, { width: 1024, height: 768 }, { width: 1440, height: 900 }] as const;
+
+for (const [choice, want] of Object.entries(VIEWER_THEMES)) {
+    for (const size of VIEWER_SIZES) {
+        test(`the Viewer in ${choice}${size ? ` at ${size.width}` : ''}: its own ground under the body too, and ${want.bands ? "today's bands and a bare print with its hairline" : want.surround ? 'a matted print with room for its mat, bare when zoomed' : 'a bare print on black, with no hairline'}`, async ({ page }, testInfo) => {
+            if (size) {
+                test.skip(testInfo.project.name !== 'desktop', 'The set widths run on the desktop project.');
+                await page.setViewportSize(size);
+            }
+            await page.addInitScript((value) => localStorage.setItem('theme', value), choice);
+            await openViewer(page, P[0]);
+            await expectViewerTheme(page, want);
         });
-        expect(colors).toEqual({ ground: 'rgb(17, 21, 19)', ink: 'rgb(246, 244, 238)', accent: '#c08040' });
-        // The body behind the root is the same ground, so an overscroll never shows the site theme.
-        expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgb(17, 21, 19)');
-        // No theme toggle: the Viewer renders no SiteNav.
-        await expect(page.getByRole('button', { name: /^Theme:/ })).toHaveCount(0);
+    }
+}
+
+// System, with nothing stored: Light's Viewer on a light device, and Dark's, today's, on a dark one.
+for (const scheme of ['light', 'dark'] as const) {
+    test(`the Viewer in System on a ${scheme} device, with nothing stored, is ${scheme === 'light' ? "Light's" : "Dark's, today's"}`, async ({ page }) => {
+        await page.emulateMedia({ colorScheme: scheme });
+        await openViewer(page, P[0]);
+        await expect(page.locator('html')).toHaveAttribute('data-theme-choice', 'system');
+        await expectViewerTheme(page, VIEWER_THEMES[scheme]);
     });
 }

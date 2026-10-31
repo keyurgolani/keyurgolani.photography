@@ -60,7 +60,8 @@
    so both states are the same box in the same tone. */
 .portrait {
   --about-frame: 9px;
-  --about-frame-ground: #101311;
+  /* Black sets its own, the screen's black, in About's inline sheet (aboutThemes.ts). */
+  --about-frame-ground: var(--lts-frame-ground, #101311);
   display: flex;
   flex-direction: column;
   margin: 0;
