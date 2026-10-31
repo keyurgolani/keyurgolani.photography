@@ -106,8 +106,9 @@ async function expectSystemFollows(page: Page, scheme: (typeof SCHEMES)[number])
         if (now !== scheme) await page.emulateMedia({ colorScheme: now });
         await expect(html).toHaveAttribute('data-theme-choice', 'system');
         await expect(html, `System on a ${now} device`).toHaveAttribute('data-theme', now);
-        await expect.poll(async () => (await paint(page)).ground, `the ${now} ground`).toBe(THEMES[now].ground);
-        expectReads(await paint(page), THEMES[now].ground, 1);
+        // After a live switch the ground snaps, but the action's fill and label fade over --motion-fast (160 ms), and
+        // mid-fade they nearly meet (CI on #130: 1.42). So the whole read is retried until it passes, at full bounds.
+        await expect(async () => expectReads(await paint(page), THEMES[now].ground, 1), `every pair reads in ${now}`).toPass({ timeout: 5_000 });
     }
 }
 
