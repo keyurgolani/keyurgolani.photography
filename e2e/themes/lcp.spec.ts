@@ -51,6 +51,7 @@ test.beforeAll(async () => {
     const library = path.join(temp, 'library');
     const siteConfig = path.join(temp, 'site-config');
     fs.mkdirSync(library);
+    fs.mkdirSync(siteConfig);
     // About's stand-in portrait, as the e2e suite's server has it.
     const written = spawnSync(path.join(process.cwd(), 'node_modules', '.bin', 'tsx'), ['e2e/support/write-site-config.ts', siteConfig], { cwd: process.cwd(), encoding: 'utf8' });
     if (written.status !== 0) throw new Error(`The site config wasn't written: ${written.stderr}`);
