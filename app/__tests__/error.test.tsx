@@ -41,9 +41,9 @@ describe('app/error', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders SiteNav before the heading and says the page did not load', () => {
+  it('renders SiteNav, loaded with the page, before the heading and says the page did not load', async () => {
     render(<ErrorPage error={failure} reset={vi.fn()} />);
-    const nav = screen.getByRole('navigation', { name: 'Primary' });
+    const nav = await screen.findByRole('navigation', { name: 'Primary' });
     const heading = screen.getByRole('heading', { level: 1, name: 'Something went wrong' });
     expect(nav.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByText("This page didn't load. Try again in a moment.")).toBeInTheDocument();
