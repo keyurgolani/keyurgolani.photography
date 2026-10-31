@@ -18,7 +18,14 @@ function Page() {
 /** A device whose colour scheme is light or dark, with the change listener the hook adds. */
 function device(light: boolean) {
   const listeners: (() => void)[] = [];
-  const query = { matches: light, addEventListener: (_: string, listener: () => void) => listeners.push(listener), removeEventListener: vi.fn() };
+  const query = {
+    matches: light,
+    addEventListener: (_: string, listener: () => void) => listeners.push(listener),
+    removeEventListener: (_: string, listener: () => void) => {
+      const at = listeners.indexOf(listener);
+      if (at >= 0) listeners.splice(at, 1);
+    },
+  };
   vi.stubGlobal('matchMedia', () => query);
   return {
     switchTo(next: boolean) {
@@ -67,6 +74,9 @@ describe('useStoredChoice', () => {
     const { unmount } = render(<Page />);
     expect([html.getAttribute('data-theme-choice'), html.getAttribute('data-theme')]).toEqual(['dark', 'dark']);
     unmount();
+    // A new document: the server's System again.
+    html.setAttribute('data-theme', 'dark');
+    html.setAttribute('data-theme-choice', 'system');
     localStorage.setItem('theme', 'blue');
     render(<Page />);
     expect([html.getAttribute('data-theme-choice'), html.getAttribute('data-theme')]).toEqual(['system', 'light']);
@@ -92,6 +102,7 @@ describe('useStoredChoice', () => {
     observer.disconnect();
     expect(writes).toEqual([]);
   });
+
   it('applies a choice made in another tab', () => {
     device(false);
     render(<Page />);
@@ -127,6 +138,35 @@ describe('useStoredChoice', () => {
     act(() => choose('system'));
     expect(painted()).toEqual(['system', 'dark']);
     screen.switchTo(true);
+    expect(painted()).toEqual(['system', 'light']);
+  });
+
+  // #126's errfix review, M1: the error page also mounts into a live document (Home, then a Work that throws), where
+  // the script ran and, with storage blocked, the menu's choice lives only on <html>. Mounting must keep it.
+  it('keeps a choice made before it mounts, with storage blocked', () => {
+    const screen = device(true);
+    blockStorage();
+    let choose: ReturnType<typeof useSetThemeChoice> = () => undefined;
+    function Menu() {
+      choose = useSetThemeChoice();
+      return null;
+    }
+    render(<Menu />);
+    act(() => choose('light'));
+    render(<Page />);
+    expect(painted()).toEqual(['light', 'light']);
+    screen.switchTo(false);
+    expect(painted()).toEqual(['light', 'light']);
+  });
+
+  it('stops listening once the page goes', () => {
+    const screen = device(true);
+    const { unmount } = render(<Page />);
+    expect(painted()).toEqual(['system', 'light']);
+    unmount();
+    screen.switchTo(false);
+    localStorage.setItem('theme', 'black');
+    window.dispatchEvent(new StorageEvent('storage', { key: 'theme', newValue: 'black' }));
     expect(painted()).toEqual(['system', 'light']);
   });
 

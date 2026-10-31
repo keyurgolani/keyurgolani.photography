@@ -17,8 +17,9 @@ function put(name: string, value: string): void {
  *
  * It does what themeScript.ts does, step for step (useStoredChoice.test.tsx runs both over the same inputs): `read`
  * is the script's `r()`, storage to `data-theme-choice`, and `paint` its `a()`, `data-theme-choice` to `data-theme`.
- * A device change only repaints the choice on <html>, never re-reading storage: with site data blocked, the menu's
- * choice lives only there (ThemeContext's setThemeChoice), and storage would say System.
+ * Only a mount over the server's System and another tab's write read storage. A device change, or a mount over a
+ * choice already made, only repaints the choice on <html>: with site data blocked, the menu's choice lives only there
+ * (ThemeContext's setThemeChoice), and storage would say System.
  */
 export function useStoredChoice(): void {
     useLayoutEffect(() => {
@@ -42,7 +43,11 @@ export function useStoredChoice(): void {
         const fromAnotherTab = (event: StorageEvent) => {
             if (event.key === 'theme' || event.key === null) read();
         };
-        read();
+        // The script reads storage once per document; this mounts again on each error in a live document (Home, then
+        // a Work that throws), where the menu may have chosen with storage blocked. So it reads only while <html> still
+        // says the server's System, and otherwise keeps the choice there.
+        if (document.documentElement.getAttribute('data-theme-choice') === 'system') read();
+        else paint();
         light?.addEventListener?.('change', paint);
         window.addEventListener('storage', fromAnotherTab);
         return () => {
