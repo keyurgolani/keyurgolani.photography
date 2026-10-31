@@ -5,14 +5,18 @@ import os from 'node:os';
 import path from 'node:path';
 import { publish } from '../catalog/publish';
 import { createTestCatalog, type VariantByteTable } from '../catalog/testing';
+import { isReadOnly, makeReadOnly } from './runFiles';
 
 /**
- * The perf run's published catalog, built once and copied per run (e2e/themes/surround-perf.spec.ts). Building and
- * publishing 5,000 photographs is most of the run's setup, and under load it took perf4 past its cap, so the published
- * data root is kept in a cache folder outside the repository, keyed by everything that shapes it: the photo count, the
- * seed, the variant sizes, and the catalog code that writes and publishes it. A run copies it into its own folder (a
- * clone on APFS, so it's quick and takes no space), and the servers write only there. Nothing in the cache is ever
- * deleted; a new key is a new folder.
+ * The perf run's published catalog, built once and served from the cache (e2e/themes/surround-perf.spec.ts). Building
+ * and publishing 5,000 photographs is most of the run's setup, and under load it took perf4 past its cap, so the
+ * published data root is kept in a cache folder outside the repository, keyed by everything that shapes it: the photo
+ * count, the seed, the variant sizes, and the catalog code that writes and publishes it.
+ *
+ * The servers read the cache entry in place, marked read-only, and nothing copies it: its variant files are sparse, and
+ * a copy that can't clone writes them out whole (the 2026-10-31 disk fill, notes/photo-perf-scroll/disk-0704.md). A
+ * server that writes to its data root fails on the read-only entry; that's a run that needs a writable root, and it
+ * should fail and say so, not fall back to a copy. Nothing in the cache is ever deleted; a new key is a new folder.
  */
 
 export interface CatalogSpec {
@@ -24,12 +28,12 @@ export interface CatalogSpec {
 }
 
 export interface PerfCatalog {
-    /** The run's own data root. */
+    /** The data root to serve: the cache entry's, read-only, or the run's scratch one when nothing is cached. */
     root: string;
     /** The one series' slug. */
     slug: string;
-    /** Whether this run built the catalog or copied it from the cache. */
-    from: 'built' | 'cache';
+    /** Whether this run built the cache entry, found it, or built an uncached catalog in its scratch folder. */
+    from: 'built' | 'cache' | 'uncached';
 }
 
 /** The git tree of `lib/catalog` at HEAD, or null if it has uncommitted changes or there's no git. */
@@ -55,18 +59,14 @@ async function build(spec: CatalogSpec, dataRoot: string): Promise<string> {
     return catalog.series[0].slug;
 }
 
-/** A copy of `from` at `to`, cloned where the volume can. */
-function copy(from: string, to: string) {
-    fs.cpSync(from, to, { recursive: true, mode: fs.constants.COPYFILE_FICLONE });
-}
-
 /**
- * The catalog for `spec` at `into` (absent): copied from `cacheDir` when it holds one with this key, otherwise built
- * there first, then copied. With no key (uncommitted catalog code), it's built straight into `into` and not kept.
+ * The catalog for `spec`: the cache entry in `cacheDir` with this key, built there first when there's none, served in
+ * place and read-only. With no key (uncommitted catalog code), it's built into `scratch` (absent), a folder of the
+ * run's own that the run removes, and not kept.
  */
-export async function perfCatalog(spec: CatalogSpec, into: string, cacheDir: string): Promise<PerfCatalog> {
+export async function perfCatalog(spec: CatalogSpec, cacheDir: string, scratch: string): Promise<PerfCatalog> {
     const key = catalogKey(spec);
-    if (key === null) return { root: into, slug: await build(spec, into), from: 'built' };
+    if (key === null) return { root: scratch, slug: await build(spec, scratch), from: 'uncached' };
     const entry = path.join(cacheDir, key);
     const manifest = path.join(entry, 'catalog.json');
     let from: PerfCatalog['from'] = 'cache';
@@ -77,6 +77,7 @@ export async function perfCatalog(spec: CatalogSpec, into: string, cacheDir: str
         const stage = fs.mkdtempSync(path.join(cacheDir, `${key}.building-`));
         const slug = await build(spec, path.join(stage, 'data'));
         fs.writeFileSync(path.join(stage, 'catalog.json'), `${JSON.stringify({ slug, photos: spec.photos, seed: spec.seed, code: spec.code })}\n`);
+        makeReadOnly(path.join(stage, 'data'));
         try {
             fs.renameSync(stage, entry);
         } catch {
@@ -84,8 +85,10 @@ export async function perfCatalog(spec: CatalogSpec, into: string, cacheDir: str
         }
     }
     const { slug } = JSON.parse(fs.readFileSync(manifest, 'utf8')) as { slug: string };
-    copy(path.join(entry, 'data'), into);
-    return { root: into, slug, from };
+    const data = path.join(entry, 'data');
+    // An entry filed before the cache was read-only is marked now.
+    if (!isReadOnly(data)) makeReadOnly(data);
+    return { root: data, slug, from };
 }
 
 /** Where the cache lives unless PERF_CATALOG_CACHE says otherwise: outside the repository, under the user's cache. */

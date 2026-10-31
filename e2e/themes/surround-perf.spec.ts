@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { Browser, Page } from '@playwright/test';
 import { catalogCodeVersion, DEFAULT_CATALOG_CACHE, perfCatalog } from '../../lib/perf/catalogCache';
+import { checkDiskFloor, makeRunTemp, removeRunTemp } from '../../lib/perf/runFiles';
 import { DROPPED_FLOOR, selfTestProblems, type SelfTestResult } from '../../lib/perf/selfTest';
 import { BUDGET_VARIANT_BYTES } from '../../lib/perf/fixture';
 import { waitForHydration } from '../support/hydration';
@@ -36,8 +37,9 @@ import { phase, serve, standInPrints, VARIANT_REQUEST, variantFormat, type Serve
 // gated: past PERF_SETTLE_MAX_MS (5,000 by default) the run fails, and a page that hasn't settled in 90 s fails it at
 // once, by name, rather than sweeping (the scroll regression's review, M3).
 //
-// The published catalog is built once and copied per run (lib/perf/catalogCache.ts), into PERF_CATALOG_CACHE or
-// ~/.cache/photography-perf, keyed by its photos, seed, variant sizes and the catalog code's git tree.
+// The published catalog is built once and served read-only from the cache, never copied (lib/perf/catalogCache.ts), in
+// PERF_CATALOG_CACHE or ~/.cache/photography-perf, keyed by its photos, seed, variant sizes and the catalog code's git
+// tree. The run checks the disk first (PERF_DISK_MIN_GB) and removes its own temp folder in place when it ends.
 //
 //   PARITY_BASE_DIR=<built base> PERF_PORTS=3375,3376 [PERF_ROUNDS=3] [PERF_SELFTEST=1] [PERF_SETTLE_MAX_MS=5000] [PERF_PHOTOS=5000] npx playwright test -c e2e/themes/perf.config.ts
 
@@ -210,7 +212,7 @@ async function expand(page: Page, url: string) {
 const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
 const ratio = (head: number, base: number) => (head + 1) / (base + 1);
 
-/** The run's copy of the cached published catalog (lib/perf/catalogCache.ts), and its one series. */
+/** The cached published catalog the servers read (lib/perf/catalogCache.ts), and its one series. */
 let catalog: { root: string; slug: string } | undefined;
 const servers: Server[] = [];
 let temp = '';
@@ -219,16 +221,19 @@ let prints: Record<string, Buffer> = {};
 test.beforeAll(async () => {
     // Setup's own cap: the catalog, its publish and the two servers.
     test.setTimeout(20 * 60_000);
-    temp = fs.mkdtempSync(path.join(os.tmpdir(), 'surround-perf-'));
+    // Nothing starts under the disk floor (PERF_DISK_MIN_GB, 20 GB), and the run's scratch is one folder of its own.
+    checkDiskFloor(os.tmpdir());
+    temp = makeRunTemp('surround-');
     const library = path.join(temp, 'library');
     const siteConfig = path.join(temp, 'site-config');
     fs.mkdirSync(library);
     fs.mkdirSync(siteConfig);
     prints = await standInPrints(12, 8);
-    // Built and published once, then copied per run: setup was most of a run, and under load it ran perf4 out of time.
+    // Built and published once, then served from the cache, read-only and uncopied: setup was most of a run, and under
+    // load it ran perf4 out of time; a copy of its sparse files filled the disk (2026-10-31).
     phase(`the ${PHOTOS}-photo published catalog`);
-    const cached = await perfCatalog({ photos: PHOTOS, seed: 6, variantBytes: BUDGET_VARIANT_BYTES, code: catalogCodeVersion(process.cwd()) }, path.join(temp, 'catalog'), process.env.PERF_CATALOG_CACHE ?? DEFAULT_CATALOG_CACHE);
-    phase(cached.from === 'cache' ? 'the catalog, copied from the cache' : 'the catalog, built and cached');
+    const cached = await perfCatalog({ photos: PHOTOS, seed: 6, variantBytes: BUDGET_VARIANT_BYTES, code: catalogCodeVersion(process.cwd()) }, process.env.PERF_CATALOG_CACHE ?? DEFAULT_CATALOG_CACHE, path.join(temp, 'catalog'));
+    phase({ cache: 'the catalog, served from the cache', built: 'the catalog, built and cached', uncached: 'the catalog, built uncached (catalog code not committed)' }[cached.from]);
     catalog = { root: cached.root, slug: cached.slug };
     phase('the base and head servers');
     servers.push(await serve(BASE!, ports[0] ?? 3375, catalog.root, library, siteConfig), await serve(process.cwd(), ports[1] ?? 3376, catalog.root, library, siteConfig));
@@ -237,13 +242,8 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
     test.setTimeout(5 * 60_000);
     await Promise.all(servers.map((server) => server.stop()));
-    // Nothing is deleted: the run's folder (its 5,000-photo catalog) goes to the Trash, or stays where it is.
-    const trash = path.join(os.homedir(), '.Trash');
-    try {
-        if (temp && fs.existsSync(trash)) fs.renameSync(temp, path.join(trash, `${path.basename(temp)}-${Date.now()}`));
-    } catch {
-        // On another volume than the Trash (EXDEV): it stays where it is.
-    }
+    // The run's own temp folder goes, passed or failed, in place: a move to ~/.Trash is the same volume and frees nothing.
+    removeRunTemp(temp);
 });
 
 test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every theme, against the base beside it`, async ({ browser }) => {
