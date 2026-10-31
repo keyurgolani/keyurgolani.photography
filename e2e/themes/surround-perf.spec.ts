@@ -1,14 +1,13 @@
-import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Browser, Page } from '@playwright/test';
-import sharp from 'sharp';
 import { catalogCodeVersion, DEFAULT_CATALOG_CACHE, perfCatalog } from '../../lib/perf/catalogCache';
 import { DROPPED_FLOOR, selfTestProblems, type SelfTestResult } from '../../lib/perf/selfTest';
 import { BUDGET_VARIANT_BYTES } from '../../lib/perf/fixture';
 import { waitForHydration } from '../support/hydration';
 import { expect, test } from '../support/test';
+import { phase, serve, standInPrints, VARIANT_REQUEST, variantFormat, type Server } from './perfServer';
 
 // The perf run for the sequence's surround (spec §13, PR map item 3), on a 5,000-photo series with every page shown by
 // Show more, every slot a real print: the catalog's variant files are sparse, so each image request is answered with
@@ -69,58 +68,6 @@ const BASE = process.env.PARITY_BASE_DIR;
 const ports = (process.env.PERF_PORTS ?? '').split(',').map(Number).filter(Boolean);
 
 test.skip(!BASE, 'Set PARITY_BASE_DIR to a built checkout of the base.');
-
-interface Server {
-    origin: string;
-    stop: () => Promise<void>;
-}
-
-/** `next start` from `tree` on 127.0.0.1, on the catalog. */
-async function serve(tree: string, port: number, root: string, library: string, siteConfig: string): Promise<Server> {
-    const kept = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('PHOTOGRAPHY_') && !name.startsWith('CURAT') && name !== 'SITE_URL'));
-    const child: ChildProcess = spawn(process.execPath, [path.join(tree, 'node_modules', 'next', 'dist', 'bin', 'next'), 'start', '--hostname', '127.0.0.1', '--port', String(port)], {
-        cwd: tree,
-        env: { ...kept, NODE_ENV: 'production', ALLOW_PROVISIONAL_COPY: '1', NEXT_TELEMETRY_DISABLED: '1', PHOTOGRAPHY_DATA_DIR: root, PHOTOGRAPHY_LIBRARY_DIR: library, PHOTOGRAPHY_SITE_CONFIG_DIR: siteConfig },
-        detached: true,
-        stdio: 'ignore',
-    });
-    const kill = (signal: NodeJS.Signals) => {
-        try {
-            if (child.pid) process.kill(-child.pid, signal);
-        } catch {
-            // Gone already.
-        }
-    };
-    process.once('exit', () => kill('SIGKILL'));
-    const origin = `http://127.0.0.1:${port}`;
-    const deadline = Date.now() + 90_000;
-    while (Date.now() < deadline) {
-        if ((await fetch(`${origin}/api/ready`).then((r) => r.status, () => 0)) === 200) {
-            return {
-                origin,
-                stop: () =>
-                    new Promise<void>((resolve) => {
-                        if (child.exitCode !== null) return resolve();
-                        const force = setTimeout(() => kill('SIGKILL'), 5000);
-                        child.once('exit', () => {
-                            clearTimeout(force);
-                            resolve();
-                        });
-                        kill('SIGTERM');
-                    }),
-            };
-        }
-        await new Promise((resolve) => setTimeout(resolve, 300));
-    }
-    kill('SIGKILL');
-    throw new Error(`${tree} never answered on ${port}`);
-}
-
-/** One valid tiny file per format, which every variant request is answered with. */
-async function tinyPrints(): Promise<Record<string, Buffer>> {
-    const source = sharp({ create: { width: 12, height: 8, channels: 3, background: { r: 120, g: 132, b: 128 } } });
-    return { webp: await source.clone().webp().toBuffer(), avif: await source.clone().avif().toBuffer(), jpeg: await source.clone().jpeg().toBuffer() };
-}
 
 interface Sweep {
     rafP95: number;
@@ -200,9 +147,6 @@ async function expand(page: Page, url: string) {
     return renders;
 }
 
-/** A timestamped line per phase, so a run that runs out of time says where (perf4 hit its cap with no clue). */
-const phase = (what: string) => console.log(`[perf ${new Date().toISOString().slice(11, 19)}, load ${os.loadavg()[0].toFixed(1)}] ${what}`);
-
 const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
 const ratio = (head: number, base: number) => (head + 1) / (base + 1);
 
@@ -220,7 +164,7 @@ test.beforeAll(async () => {
     const siteConfig = path.join(temp, 'site-config');
     fs.mkdirSync(library);
     fs.mkdirSync(siteConfig);
-    prints = await tinyPrints();
+    prints = await standInPrints(12, 8);
     // Built and published once, then copied per run: setup was most of a run, and under load it ran perf4 out of time.
     phase(`the ${PHOTOS}-photo published catalog`);
     const cached = await perfCatalog({ photos: PHOTOS, seed: 6, variantBytes: BUDGET_VARIANT_BYTES, code: catalogCodeVersion(process.cwd()) }, path.join(temp, 'catalog'), process.env.PERF_CATALOG_CACHE ?? DEFAULT_CATALOG_CACHE);
@@ -258,8 +202,8 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
             const context = await browser.newContext({ viewport: spec.viewport, deviceScaleFactor: spec.deviceScaleFactor, colorScheme: 'dark', reducedMotion: 'reduce' });
             await context.addInitScript(() => localStorage.setItem('theme', 'dark'));
             const page = await context.newPage();
-            await page.route(/\/w\d+\.(webp|avif|jpe?g)(\?|$)/, (route) => {
-                const format = /\.(webp|avif|jpe?g)/.exec(route.request().url())![1].replace('jpg', 'jpeg');
+            await page.route(VARIANT_REQUEST, (route) => {
+                const format = variantFormat(route.request().url());
                 return route.fulfill({ body: prints[format], contentType: `image/${format}` });
             });
             const renders = await expand(page, url(origin));
