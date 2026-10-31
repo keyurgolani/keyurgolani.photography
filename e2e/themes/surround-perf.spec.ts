@@ -31,10 +31,15 @@ import { phase, serve, standInPrints, VARIANT_REQUEST, variantFormat, type Serve
 // PERF_ROUNDS is at least 3, and anything else fails the run (D7), so a run can't pass with no theme gated.
 // PERF_SELFTEST=1 runs the self-tests alone, and its table says so; it passes only if they ran and failed as they must.
 //
+// A theme change recolours every entry, seconds of main thread on the throttled phone, which the base, never switched,
+// doesn't pay. So each page settles before its own sweep, and the head's settle after each switch is in the table and
+// gated: past PERF_SETTLE_MAX_MS (5,000 by default) the run fails, and a page that hasn't settled in 90 s fails it at
+// once, by name, rather than sweeping (the scroll regression's review, M3).
+//
 // The published catalog is built once and copied per run (lib/perf/catalogCache.ts), into PERF_CATALOG_CACHE or
 // ~/.cache/photography-perf, keyed by its photos, seed, variant sizes and the catalog code's git tree.
 //
-//   PARITY_BASE_DIR=<built base> PERF_PORTS=3375,3376 [PERF_ROUNDS=3] [PERF_SELFTEST=1] npx playwright test -c e2e/themes/perf.config.ts
+//   PARITY_BASE_DIR=<built base> PERF_PORTS=3375,3376 [PERF_ROUNDS=3] [PERF_SELFTEST=1] [PERF_SETTLE_MAX_MS=5000] npx playwright test -c e2e/themes/perf.config.ts
 
 const PHOTOS = 5_000;
 const SELF_TEST_ONLY = (() => {
@@ -49,6 +54,14 @@ const ROUNDS = (() => {
     if (!/^\d+$/.test(value) || Number(value) < 3) throw new Error(`PERF_ROUNDS is a whole number of at least 3, not ${JSON.stringify(value)}`);
     return Number(value);
 })();
+/** The longest the head may take to settle after a switch, in ms: a whole number above 0. */
+const SETTLE_MAX_MS = (() => {
+    const value = process.env.PERF_SETTLE_MAX_MS ?? '5000';
+    if (!/^\d+$/.test(value) || Number(value) <= 0) throw new Error(`PERF_SETTLE_MAX_MS is a whole number of ms above 0, not ${JSON.stringify(value)}`);
+    return Number(value);
+})();
+/** A page that hasn't settled by then never will: the run fails there, by name, instead of sweeping it. */
+const SETTLE_CAP_MS = 90_000;
 const THEMES = { dark: 'dark', black: 'black', light: 'light', bright: 'bright' } as const;
 type Choice = keyof typeof THEMES;
 const DEVICES = {
@@ -124,6 +137,32 @@ async function sweep(browser: Browser, page: Page, steps: number): Promise<Sweep
         events.filter((event) => event.name === 'DroppedFrame').length +
         events.filter((event) => event.name === 'PipelineReporter' && event.ph === 'b' && event.args?.chrome_frame_reporter?.state === 'STATE_DROPPED').length;
     return { rafP95, raster: +raster.toFixed(1), dropped };
+}
+
+/**
+ * Waits until the page's frames run at the display's pace again, 20 in a row under 50 ms, and returns how long that
+ * took, in ms. Past SETTLE_CAP_MS it rejects, so a page that never settles fails the run instead of being swept.
+ */
+async function settle(page: Page, label: string) {
+    const settled = await page.evaluate(
+        (cap) =>
+            new Promise<number | null>((resolve) => {
+                const started = performance.now();
+                let calm = 0;
+                let last = started;
+                const frame = (now: number) => {
+                    calm = now - last < 50 ? calm + 1 : 0;
+                    last = now;
+                    if (calm >= 20) resolve(Math.round(now - started));
+                    else if (now - started > cap) resolve(null);
+                    else requestAnimationFrame(frame);
+                };
+                requestAnimationFrame(frame);
+            }),
+        SETTLE_CAP_MS,
+    );
+    if (settled === null) throw new Error(`${label}: the page hadn't settled after ${SETTLE_CAP_MS / 1000} s`);
+    return settled;
 }
 
 /** Opens the series and presses Show more until every entry is in, every one a decoded print; returns each press's time to render. */
@@ -208,6 +247,7 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
     const notes: string[] = [];
     const ratios: Record<string, { raster: number[]; dropped: number[] }> = {};
     const selfRows: string[] = [];
+    const settles: { key: string; ms: number }[] = [];
     const calibration: SelfTestResult[] = [];
 
     for (const [device, spec] of Object.entries(DEVICES)) {
@@ -237,8 +277,12 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
                 document.documentElement.setAttribute('data-theme', painted);
             }, [theme, THEMES[theme]] as const);
 
-        /** A base sweep and a head sweep, the order alternating by round, each checked for raster time to compare. */
-        const pairOf = async (round: number, label: string) => {
+        /**
+         * A base sweep and a head sweep, the order alternating by round, each checked for raster time to compare. Each
+         * page settles before its own sweep, so neither sweep times the other's leftover work, except under the
+         * dropped-frame self-test's long task, which never lets the head settle, on purpose.
+         */
+        const pairOf = async (round: number, label: string, settled = true) => {
             phase(label);
             const pair = round % 2 === 1 ? [basePage, headPage] : [headPage, basePage];
             // Each sweep, tracing included, is bounded too, so a trace that never stops fails the pair by name.
@@ -246,7 +290,10 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
                 let timer: NodeJS.Timeout | undefined;
                 return Promise.race([sweep(browser, page, spec.steps), new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error(`${label}: the ${which} sweep ran past 3 minutes`)), 180_000)))]).finally(() => clearTimeout(timer));
             };
-            const [first, second] = [await bounded(pair[0].page, 'first'), await bounded(pair[1].page, 'second')];
+            if (settled) await settle(pair[0].page, `${label}, before the first sweep`);
+            const first = await bounded(pair[0].page, 'first');
+            if (settled) await settle(pair[1].page, `${label}, before the second sweep`);
+            const second = await bounded(pair[1].page, 'second');
             const [b, h] = round % 2 === 1 ? [first, second] : [second, first];
             expect(b.raster, `${label}: the base's trace carries raster time`).toBeGreaterThan(0);
             expect(h.raster, `${label}: the head's trace carries raster time`).toBeGreaterThan(0);
@@ -257,15 +304,18 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
         for (let round = 1; round <= ROUNDS; round++) {
             phase(`${device}: round ${round} of ${ROUNDS}`);
             for (const theme of Object.keys(THEMES) as Choice[]) {
-                await paint(theme);
-                const load = os.loadavg()[0].toFixed(1);
                 const key = `${device} ${theme}`;
+                await paint(theme);
+                // Timed from the switch, before either sweep, and gated below.
+                const settled = await settle(headPage.page, `${key}, round ${round}: the head after the switch`);
+                settles.push({ key: `${key}, round ${round}`, ms: settled });
+                const load = os.loadavg()[0].toFixed(1);
                 // The order alternates by round, so neither build always sweeps first.
                 const { b, h } = await pairOf(round, `${key}, round ${round}`);
                 ratios[key] ??= { raster: [], dropped: [] };
                 ratios[key].raster.push(h.raster / b.raster);
                 ratios[key].dropped.push(ratio(h.dropped, b.dropped));
-                rows.push(`| ${device} | ${round} | ${theme} | ${load} | ${b.raster} | ${h.raster} | ${(h.raster / b.raster).toFixed(2)} | ${b.dropped} / ${h.dropped} | ${b.rafP95} / ${h.rafP95} |`);
+                rows.push(`| ${device} | ${round} | ${theme} | ${load} | ${settled} | ${b.raster} | ${h.raster} | ${(h.raster / b.raster).toFixed(2)} | ${b.dropped} / ${h.dropped} | ${b.rafP95} / ${h.rafP95} |`);
             }
         }
         phase(`${device}: the self-tests`);
@@ -293,7 +343,7 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
         }, LONG_TASK_MS);
         for (const round of [1, 2]) {
             const load = os.loadavg()[0].toFixed(1);
-            const { b, h } = await pairOf(round, `${device} dropped-frame self-test, round ${round}`);
+            const { b, h } = await pairOf(round, `${device} dropped-frame self-test, round ${round}`, false);
             calibration.push({ device, half: 'dropped frames', ratio: +ratio(h.dropped, b.dropped).toFixed(2), dropped: h.dropped, frames: spec.steps });
             selfRows.push(`| ${device} | ${LONG_TASK_MS} ms task per frame | ${round} | ${load} | ${b.raster} / ${h.raster} | ${(h.raster / b.raster).toFixed(2)} | ${b.dropped} / ${h.dropped} | ${ratio(h.dropped, b.dropped).toFixed(2)} |`);
         }
@@ -308,15 +358,15 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
         ...(SELF_TEST_ONLY ? ['Self-test only: no theme is gated.', ''] : []),
         ...notes,
         '',
-        '| Device | Round | Head theme | Load (1 min) | Base raster ms | Head raster ms | Raster ratio | Dropped frames, base / head | rAF p95 ms, base / head |',
-        '|---|---|---|---|---|---|---|---|---|',
+        '| Device | Round | Head theme | Load (1 min) | Head settle ms | Base raster ms | Head raster ms | Raster ratio | Dropped frames, base / head | rAF p95 ms, base / head |',
+        '|---|---|---|---|---|---|---|---|---|---|',
         ...rows,
         '',
         '| Device, head theme | Median raster ratio | Median dropped-frame ratio, (head + 1) / (base + 1) |',
         '|---|---|---|',
         ...verdict.map((v) => `| ${v.key} | ${v.raster} | ${v.dropped} |`),
         '',
-        `Bounds: Dark and Black ${BOUND.dark}, a theme with a surround ${BOUND.surround}, on both medians.`,
+        `Bounds: Dark and Black ${BOUND.dark}, a theme with a surround ${BOUND.surround}, on both medians. The head settles within ${SETTLE_MAX_MS} ms of each switch.`,
         '',
         `The self-tests, each in Dark: the head with \`${HEAVY}\` must cost more than ${BOUND.surround} in raster, and the head with a ${LONG_TASK_MS} ms task on every frame more than ${BOUND.surround}, and at least ${DROPPED_FLOOR * 100}% of the frames, in dropped frames, against the base.`,
         '',
@@ -337,4 +387,5 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
         expect.soft(v.raster, `${v.key}: the head's raster time against the base's`).toBeLessThanOrEqual(bound);
         expect.soft(v.dropped, `${v.key}: the head's dropped frames against the base's`).toBeLessThanOrEqual(bound);
     }
+    for (const entry of settles) expect.soft(entry.ms, `${entry.key}: the head's settle after the switch, in ms`).toBeLessThanOrEqual(SETTLE_MAX_MS);
 });
