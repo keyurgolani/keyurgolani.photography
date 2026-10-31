@@ -39,9 +39,17 @@ import { phase, serve, standInPrints, VARIANT_REQUEST, variantFormat, type Serve
 // The published catalog is built once and copied per run (lib/perf/catalogCache.ts), into PERF_CATALOG_CACHE or
 // ~/.cache/photography-perf, keyed by its photos, seed, variant sizes and the catalog code's git tree.
 //
-//   PARITY_BASE_DIR=<built base> PERF_PORTS=3375,3376 [PERF_ROUNDS=3] [PERF_SELFTEST=1] [PERF_SETTLE_MAX_MS=5000] npx playwright test -c e2e/themes/perf.config.ts
+//   PARITY_BASE_DIR=<built base> PERF_PORTS=3375,3376 [PERF_ROUNDS=3] [PERF_SELFTEST=1] [PERF_SETTLE_MAX_MS=5000] [PERF_PHOTOS=5000] npx playwright test -c e2e/themes/perf.config.ts
 
-const PHOTOS = 5_000;
+/**
+ * The series' photos: 5,000 by default, the stress case. PERF_PHOTOS=200 with PERF_SETTLE_MAX_MS=500 is the realistic
+ * series' settle check (the scroll regression's PR). The catalog cache keys on the count, so each count builds its own.
+ */
+const PHOTOS = (() => {
+    const value = process.env.PERF_PHOTOS ?? '5000';
+    if (!/^\d+$/.test(value) || Number(value) < 1) throw new Error(`PERF_PHOTOS is a whole number of photos above 0, not ${JSON.stringify(value)}`);
+    return Number(value);
+})();
 const SELF_TEST_ONLY = (() => {
     const value = process.env.PERF_SELFTEST;
     if (value !== undefined && value !== '1') throw new Error(`PERF_SELFTEST is 1 or unset, not ${JSON.stringify(value)}`);
