@@ -56,7 +56,8 @@ export async function serve(tree: string, port: number, root: string, library: s
 /**
  * A tree to serve `tree`'s build from without writing to it: its `.next` cloned (APFS copy-on-write, so it's quick and
  * takes no space), everything else linked. `next start` writes only under `.next` (its cache), so the original build
- * is only read, and is never rebuilt.
+ * is only read, and is never rebuilt. The clone is forced: a volume that can't clone fails the run instead of copying
+ * the bytes (the 2026-10-31 disk fill).
  */
 export function readOnlyTree(tree: string, into: string): string {
     if (!fs.existsSync(path.join(tree, '.next', 'BUILD_ID'))) throw new Error(`${tree} has no build`);
@@ -65,7 +66,7 @@ export function readOnlyTree(tree: string, into: string): string {
         if (entry === '.next' || entry === '.git') continue;
         fs.symlinkSync(path.join(tree, entry), path.join(into, entry));
     }
-    fs.cpSync(path.join(tree, '.next'), path.join(into, '.next'), { recursive: true, mode: fs.constants.COPYFILE_FICLONE, verbatimSymlinks: true });
+    fs.cpSync(path.join(tree, '.next'), path.join(into, '.next'), { recursive: true, mode: fs.constants.COPYFILE_FICLONE_FORCE, verbatimSymlinks: true });
     return into;
 }
 

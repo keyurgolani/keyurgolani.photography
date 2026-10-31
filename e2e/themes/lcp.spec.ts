@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { Browser } from '@playwright/test';
 import { catalogCodeVersion, DEFAULT_CATALOG_CACHE, perfCatalog } from '../../lib/perf/catalogCache';
 import { BUDGET_VARIANT_BYTES } from '../../lib/perf/fixture';
+import { checkDiskFloor, makeRunTemp, removeRunTemp } from '../../lib/perf/runFiles';
 import { LCP_BOUND, LCP_LOADS, lcpTable, lcpVerdicts, totalBlockingTime, type LcpSample } from '../../lib/perf/lcp';
 import { expect, test } from '../support/test';
 import { phase, readOnlyTree, serve, standInPrints, VARIANT_REQUEST, variantFormat, type Server } from './perfServer';
@@ -19,7 +20,7 @@ import { phase, readOnlyTree, serve, standInPrints, VARIANT_REQUEST, variantForm
 //
 // Both serve the perf catalog (lib/perf/catalogCache.ts, the surround run's, shared through the cache) and every image
 // request is answered with one flat print of its format, large enough that the photograph is the largest paint, so
-// LCP times the page, not the disk. v1.2.0 is served from a copy of its build (perfServer.ts, readOnlyTree), so its
+// LCP times the page, not the disk. v1.2.0 is served from a clone of its build (perfServer.ts, readOnlyTree), so its
 // tree is only read and never rebuilt.
 //
 //   PERF_V120_DIR=<built v1.2.0> PERF_LCP_PORTS=3377,3378 [PERF_LCP_ROUTES=Home,About] npx playwright test -c e2e/themes/perf.config.ts lcp
@@ -48,7 +49,9 @@ let prints: Record<string, Buffer> = {};
 
 test.beforeAll(async () => {
     test.setTimeout(15 * 60_000);
-    temp = fs.mkdtempSync(path.join(os.tmpdir(), 'lcp-perf-'));
+    // Nothing starts under the disk floor (PERF_DISK_MIN_GB, 20 GB), and the run's scratch is one folder of its own.
+    checkDiskFloor(os.tmpdir());
+    temp = makeRunTemp('lcp-');
     const library = path.join(temp, 'library');
     const siteConfig = path.join(temp, 'site-config');
     fs.mkdirSync(library);
@@ -58,8 +61,9 @@ test.beforeAll(async () => {
     if (written.status !== 0) throw new Error(`The site config wasn't written: ${written.stderr}`);
     prints = await standInPrints(1920, 1280);
     phase(`lcp: the ${PHOTOS}-photo published catalog`);
-    const cached = await perfCatalog({ photos: PHOTOS, seed: 6, variantBytes: BUDGET_VARIANT_BYTES, code: catalogCodeVersion(process.cwd()) }, path.join(temp, 'catalog'), process.env.PERF_CATALOG_CACHE ?? DEFAULT_CATALOG_CACHE);
-    phase(`lcp: v1.2.0's build, copied to serve`);
+    // Served from the cache, read-only and uncopied (lib/perf/catalogCache.ts).
+    const cached = await perfCatalog({ photos: PHOTOS, seed: 6, variantBytes: BUDGET_VARIANT_BYTES, code: catalogCodeVersion(process.cwd()) }, process.env.PERF_CATALOG_CACHE ?? DEFAULT_CATALOG_CACHE, path.join(temp, 'catalog'));
+    phase(`lcp: v1.2.0's build, cloned to serve`);
     const v120 = readOnlyTree(V120!, path.join(temp, 'v120'));
     phase('lcp: the v1.2.0 and head servers');
     servers.push(await serve(v120, ports[0] ?? 3377, cached.root, library, siteConfig), await serve(process.cwd(), ports[1] ?? 3378, cached.root, library, siteConfig));
@@ -73,13 +77,8 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
     test.setTimeout(5 * 60_000);
     await Promise.all(servers.map((server) => server.stop()));
-    // Nothing is deleted: the run's folder (the catalog copy, v1.2.0's build copy) goes to the Trash, or stays.
-    const trash = path.join(os.homedir(), '.Trash');
-    try {
-        if (temp && fs.existsSync(trash)) fs.renameSync(temp, path.join(trash, `${path.basename(temp)}-${Date.now()}`));
-    } catch {
-        // On another volume than the Trash (EXDEV): it stays where it is.
-    }
+    // The run's own temp folder goes, passed or failed, in place: a move to ~/.Trash is the same volume and frees nothing.
+    removeRunTemp(temp);
 });
 
 /** One cold load: a fresh context, so nothing is cached. Its LCP, and its TBT from long tasks after first paint. */
