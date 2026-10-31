@@ -530,7 +530,8 @@ async function expectViewerTheme(page: Page, want: (typeof VIEWER_THEMES)[keyof 
         probe.remove();
         const [f, v] = [frame.getBoundingClientRect(), viewport.getBoundingClientRect()];
         return {
-            sizes: image.getAttribute('sizes'),
+            // The <picture>'s sources carry the sizes (ResponsivePhoto); the <img> is its w1200 fallback.
+            sizes: [...new Set([...frame.querySelectorAll('source')].map((source) => source.getAttribute('sizes')))].join(' | '),
             ratio: frame instanceof HTMLElement ? frame.style.getPropertyValue('--ratio') : '',
             shadow: getComputedStyle(frame).boxShadow,
             surround,
