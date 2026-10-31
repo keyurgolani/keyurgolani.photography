@@ -35,16 +35,20 @@ export const PROPERTIES = [
 export const GEOMETRY_SLACK = 0;
 
 /**
- * Named allowances over GEOMETRY_SLACK, each for one element on one page at one width. Only the curator's KG ring at
- * 390 (spec §10): the monogram in the Inbox's header, whose sub-pixel cause is still open; the curator PR owns it.
+ * Named allowances, each for one element on one page, at one width or at every width: a box that may move by up to
+ * `maxDelta` over GEOMETRY_SLACK, or `properties` that may differ from the base, a sanctioned departure from today's
+ * site that spec §10 records. Each departure is listed in the report, never silent.
  */
 export interface Allowance {
     page: string;
-    width: number;
+    /** One width, or every width when it's left out. */
+    width?: number;
     /** The element, by a selector the walk resolves to its path. */
     selector: string;
     /** The most its box may move, in CSS px. */
-    maxDelta: number;
+    maxDelta?: number;
+    /** Computed properties that may differ, by name. */
+    properties?: readonly string[];
     why: string;
 }
 
@@ -163,13 +167,18 @@ export interface Comparison {
     largest: number;
     /** Base tokens the head resolves differently, or lacks. Fail. */
     tokens: string[];
+    /** Differences a named allowance sanctions. Allowed, and listed. */
+    sanctioned: string[];
     /** Tokens the head has and the base doesn't. Allowed, and listed. */
     added: string[];
 }
 
-/** `allowances` maps a path to the most its box may move; every other box must match exactly. */
-export function compare(base: Walk, head: Walk, allowances: Record<string, number> = {}): Comparison {
-    const result: Comparison = { structural: [], styles: [], geometry: [], deltas: [], largest: 0, tokens: [], added: [] };
+/**
+ * `allowances` maps a path to the most its box may move, and `sanctioned` a path to the properties that may differ;
+ * every other box and property must match exactly.
+ */
+export function compare(base: Walk, head: Walk, allowances: Record<string, number> = {}, sanctioned: Record<string, readonly string[]> = {}): Comparison {
+    const result: Comparison = { structural: [], styles: [], geometry: [], deltas: [], largest: 0, tokens: [], added: [], sanctioned: [] };
     for (const where of ['root', 'body'] as const) {
         const [b, h] = [base.tokens[where], head.tokens[where]];
         for (const [name, value] of Object.entries(b)) {
@@ -194,7 +203,10 @@ export function compare(base: Walk, head: Walk, allowances: Record<string, numbe
                 return;
             }
             left.forEach((line, i) => {
-                if (line !== right[i]) result.styles.push(`${b.path}${label} ${line} against ${right[i].slice(right[i].indexOf(':') + 2)}`);
+                if (line === right[i]) return;
+                const difference = `${b.path}${label} ${line} against ${right[i].slice(right[i].indexOf(':') + 2)}`;
+                if (label === '' && sanctioned[b.path]?.includes(line.slice(0, line.indexOf(':')))) result.sanctioned.push(difference);
+                else result.styles.push(difference);
             });
         };
         lines('', b.styles, h.styles);

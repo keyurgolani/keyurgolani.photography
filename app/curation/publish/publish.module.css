@@ -769,7 +769,7 @@
   /* As specific as the curator's own .linkButton hover, which would otherwise give the primary's dark ink a dark fill. */
   a.primaryLink:hover:not([aria-disabled='true']) {
     color: var(--curator-primary-ink);
-    background: var(--gah-ink);
+    background: var(--curator-primary-hover, var(--gah-ink));
   }
 }
 

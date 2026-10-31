@@ -228,6 +228,15 @@
   --login-done-bg: #e5f3eb;
 }
 
+/* Black (OLED): the header and the field are the screen's own black, and the header has no rule (the round 2
+   review's C2-5), so sign-in draws no plain line. The field keeps its white .40 edge, the button is drawn and the
+   KG filled through Black's tokens, and the notices keep today's dark tints. */
+:global(html[data-theme='black']) .page {
+  --login-header: #000000;
+  --login-rule: transparent;
+  --login-field: #000000;
+}
+
 .header > button:first-of-type {
   margin-left: auto;
 }
