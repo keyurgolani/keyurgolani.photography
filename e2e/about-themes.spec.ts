@@ -13,6 +13,13 @@ test.skip(({ isMobile }) => isMobile, 'Each test sets the 1440, 1024 and 390 vie
 
 const FRAME = 'rgb(16, 19, 17)';
 const NONE = 'rgba(0, 0, 0, 0)';
+/** A computed colour's alpha, whichever way the browser writes it: rgb(), rgba(), or color-mix()'s color(srgb … / a). */
+const alpha = (color: string) => {
+    const slash = /\/\s*([\d.]+)\s*\)$/.exec(color);
+    if (slash) return Number(slash[1]);
+    const parts = color.match(/[\d.]+/g) ?? [];
+    return color.startsWith('rgba(') ? Number(parts[3]) : 1;
+};
 const ABOUT_THEMES = {
     dark: { paints: 'dark', ground: 'rgb(244, 236, 215)', frame: FRAME, lines: true },
     light: { paints: 'light', ground: 'rgb(235, 229, 217)', frame: FRAME, lines: true },
@@ -77,12 +84,12 @@ function expectAbout(seen: Awaited<ReturnType<typeof paint>>, want: (typeof ABOU
     expect(seen.tiles.length, 'the link tiles').toBeGreaterThan(0);
     if (want.lines) {
         expect(seen.navLine, 'the line under the nav').not.toBe(NONE);
-        for (const tile of seen.tiles) expect(tile.edge, `${tile.brand}: its box at rest`).not.toBe(NONE);
+        for (const tile of seen.tiles) expect(alpha(tile.edge), `${tile.brand}: its box at rest`).toBeGreaterThan(0);
         return;
     }
     expect(seen.navLine, 'no line under the nav (C2-5)').toBe(NONE);
     for (const tile of seen.tiles) {
-        expect(tile.edge, `${tile.brand}: no box at rest`).toBe(NONE);
+        expect(alpha(tile.edge), `${tile.brand}: no box at rest`).toBe(0);
         // The mark's light rests at 0, so the link's clip draws no ghost box (L2').
         expect(tile.glow, `${tile.brand}: no resting glow`).toBe('0');
     }
@@ -105,7 +112,7 @@ for (const [choice, want] of Object.entries(ABOUT_THEMES)) {
             // Lit, each box is drawn in the brand's line, Black's too ("they light on hover").
             const first = tiles(page).first();
             await first.hover();
-            await expect.poll(() => first.evaluate((tile) => getComputedStyle(tile).borderTopColor), 'a hovered box is drawn').not.toBe(NONE);
+            await expect.poll(async () => alpha(await first.evaluate((tile) => getComputedStyle(tile).borderTopColor)), 'a hovered box is drawn').toBeGreaterThan(0);
         });
     }
 }
