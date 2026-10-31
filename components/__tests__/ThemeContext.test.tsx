@@ -22,12 +22,15 @@ describe('ThemeProvider', () => {
     html.setAttribute('data-theme', 'dark');
     html.setAttribute('data-theme-choice', 'system');
     delete html.dataset.hydrated;
+    html.removeAttribute('data-theme-swap');
     localStorage.clear();
   });
 
   afterEach(() => {
     html.setAttribute('data-theme', 'dark');
     html.setAttribute('data-theme-choice', 'system');
+    // A test that fails inside a swap's two frames would otherwise leave transitions off for the next one.
+    html.removeAttribute('data-theme-swap');
   });
 
   it('renders its children on the first pass, in System painting Dark, as the server sends', () => {
@@ -258,11 +261,20 @@ describe('ThemeProvider', () => {
   });
 
   it('turns transitions off while a new theme lands, for two frames, and not for a write of the same theme', async () => {
-    // Each frame's callbacks, run by hand: the guard must outlast the frame the new theme's styles land in.
-    const frames: FrameRequestCallback[] = [];
-    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => frames.push(callback));
-    const caf = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
-    const nextFrame = () => frames.splice(0).forEach((callback) => callback(0));
+    // Each frame's callbacks, run by hand, and cancelled for real: the guard must outlast the frame the new theme's
+    // styles land in, and a second switch inside that window must restart it rather than let the first one's end land.
+    const frames = new Map<number, FrameRequestCallback>();
+    let ids = 0;
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      frames.set(++ids, callback);
+      return ids;
+    });
+    const caf = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => void frames.delete(id));
+    const nextFrame = () => {
+      const due = [...frames.values()];
+      frames.clear();
+      due.forEach((callback) => callback(0));
+    };
     try {
       const { unmount } = render(
         <ThemeProvider>
@@ -281,6 +293,22 @@ describe('ThemeProvider', () => {
       expect(html.hasAttribute('data-theme-swap')).toBe(true);
       nextFrame();
       expect(html.hasAttribute('data-theme-swap')).toBe(false);
+      expect(frames.size, 'no frame is left waiting once the guard is off').toBe(0);
+
+      // Back to Dark, then Light, then Black a frame later, inside Light's two: the guard ends two frames after the last.
+      await act(async () => {
+        html.setAttribute('data-theme', 'dark');
+      });
+      act(() => fireEvent.click(screen.getByRole('button')));
+      await act(async () => {});
+      nextFrame();
+      act(() => fireEvent.click(screen.getByRole('button')));
+      await act(async () => {});
+      expect(html.getAttribute('data-theme')).toBe('black');
+      nextFrame();
+      expect(html.hasAttribute('data-theme-swap'), "the first switch's second frame doesn't end the second's guard").toBe(true);
+      nextFrame();
+      expect(html.hasAttribute('data-theme-swap')).toBe(false);
 
       // The inline script's write (System following the device) is guarded too, and unmounting clears a guard.
       await act(async () => {
@@ -289,6 +317,7 @@ describe('ThemeProvider', () => {
       expect(html.hasAttribute('data-theme-swap')).toBe(true);
       unmount();
       expect(html.hasAttribute('data-theme-swap')).toBe(false);
+      expect(frames.size, 'unmounting cancels the waiting frame').toBe(0);
     } finally {
       raf.mockRestore();
       caf.mockRestore();
