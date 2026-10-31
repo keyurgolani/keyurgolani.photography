@@ -98,7 +98,10 @@ const syncThemeColor = () => {
  * slow phone's main thread, and its scroll stays slower after (the v1.3.0 phone scroll regression). So while the new
  * theme lands, <html data-theme-swap> turns transitions off (globals.css, under reduced motion only, where 0.01 ms is
  * invisible anyway), and it goes two frames later, once that theme's frame has drawn. The observer's callback runs
- * before the next frame's style, whoever wrote the attribute: setThemeChoice, the inline script, or a test.
+ * before the next frame's style, whoever wrote the attribute: setThemeChoice, the inline script, or a test. The cost
+ * of that: no transitionend inside those two frames, so a Home slide change that lands in them keeps its outgoing slide
+ * mounted, invisible, until the next change (HomeSequence, CatalogSequence). A theme write before hydration, from the
+ * inline script's listeners, is not guarded.
  */
 const guardThemeSwaps = (): (() => void) => {
     const root = document.documentElement;
