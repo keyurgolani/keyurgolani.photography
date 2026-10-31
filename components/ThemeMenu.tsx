@@ -1,8 +1,7 @@
 'use client';
 
 import { Check } from 'lucide-react';
-import dynamic from 'next/dynamic';
-import { Component, type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react';
+import { Component, lazy, type ReactNode, Suspense, useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useThemeChoice } from './ThemeContext';
 import { THEME_CHOICES, type ThemeChoice } from './themeChoices';
 
@@ -17,8 +16,10 @@ const THEME_LABELS: Record<ThemeChoice, { name: string; note: string }> = {
 };
 
 // The popover's styles, off every page's first-load CSS (the CSS budget): they load once the page is idle after
-// hydration, or as soon as the pointer or focus reaches the button.
-const ThemeMenuPopoverStyles = dynamic(() => import('./ThemeMenuPopoverStyles'), { ssr: false });
+// hydration, or as soon as the pointer or focus reaches the button. They mount only after hydration (`wanted`), so the
+// server never renders them. React's lazy, not next/dynamic, whose loader runtime would ride in every chunk that holds
+// the menu, the not-found page's included (perf5's JS budget).
+const ThemeMenuPopoverStyles = lazy(() => import('./ThemeMenuPopoverStyles'));
 
 /**
  * A failed load of the styles' chunk (a page left open across a redeploy, a dropped request) renders nothing, so the
@@ -95,7 +96,9 @@ export default function ThemeMenu({ placement = 'nav' }: { placement?: 'nav' | '
     <>
       {wanted && (
         <StylesBoundary onFailed={onFailed}>
-          <ThemeMenuPopoverStyles onReady={onReady} />
+          <Suspense fallback={null}>
+            <ThemeMenuPopoverStyles onReady={onReady} />
+          </Suspense>
         </StylesBoundary>
       )}
       <button
