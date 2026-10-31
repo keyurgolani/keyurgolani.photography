@@ -309,7 +309,7 @@ test.describe("when the Viewer's styles can't load, a photo opens as its own pag
                 await route.fulfill({ status: 404, body: '' });
             } catch (error) {
                 // A click on Next or Close loads a new document, which cancels this one's chunk requests mid-fetch.
-                if (!/disposed|has been closed/.test(String(error))) throw error;
+                if (!/disposed|has been closed|Test ended/.test(String(error))) throw error;
             }
         });
         const viewer = page.locator('main[data-surface="viewer"]');

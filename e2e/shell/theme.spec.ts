@@ -251,3 +251,34 @@ test.describe('with JavaScript disabled', () => {
         });
     }
 });
+
+test('under reduced motion a switch starts next to no transitions, however many elements it recolours', async ({ page }) => {
+    // The v1.3.0 phone scroll regression: the reduced-motion baseline's 0.01 ms of `all` on every element made a switch
+    // start a transition per element and colour, about 45,000 on the 5,000-photo series. ThemeProvider's
+    // data-theme-swap and its rule in app/globals.css stop them; drop either and this counts hundreds.
+    await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
+    await page.goto('/gallery');
+    await waitForHydration(page);
+    await control(page).click();
+    const light = page.getByRole('radio', { name: /^Light/ });
+    await expect(light).toBeVisible();
+    await light.hover();
+    const elements = await page.evaluate(() => {
+        const counted = window as unknown as { transitionRuns: number };
+        counted.transitionRuns = 0;
+        document.addEventListener('transitionrun', () => void counted.transitionRuns++, true);
+        return document.querySelectorAll('body *').length;
+    });
+    // Work in CI's fixture holds about 120 elements: an unguarded switch still starts at least one transition per
+    // recoloured element, several times the ceiling below.
+    expect(elements, 'a page with enough elements that an unguarded switch would count far past the ceiling').toBeGreaterThanOrEqual(100);
+
+    await light.click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+    await expect.poll(() => page.evaluate(() => document.documentElement.hasAttribute('data-theme-swap')), 'the guard comes off two frames later').toBe(false);
+    // A few frames more, for any 0.01 ms transition's events to land.
+    await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(done, 100)))));
+    const runs = await page.evaluate(() => (window as unknown as { transitionRuns: number }).transitionRuns);
+    // The radio's own :checked and the menu's rows may start a handful; a recoloured page starts one per element.
+    expect(runs, `transitions a switch started, against ${elements} elements`).toBeLessThanOrEqual(20);
+});
