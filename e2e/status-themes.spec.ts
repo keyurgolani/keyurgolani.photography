@@ -171,4 +171,43 @@ test.describe('the error page', () => {
             await expectSystemFollows(page, scheme);
         });
     }
+
+    // #126's review, L3″: with site data blocked, the menu's choice lives only on <html>, so a device switch must keep
+    // it rather than read a storage that says System. The hook before this fix painted Dark here.
+    test('with storage blocked, a choice from the menu survives a device switch', async ({ page }) => {
+        if (!server) throw new Error('The failing server did not start');
+        await page.addInitScript(() => {
+            const { getItem, setItem } = Storage.prototype;
+            const blocked = () => {
+                throw new DOMException('The operation is insecure.', 'SecurityError');
+            };
+            // localStorage only: sessionStorage stays Next's.
+            Storage.prototype.getItem = function (this: Storage, key: string) {
+                return this === window.localStorage ? blocked() : getItem.call(this, key);
+            };
+            Storage.prototype.setItem = function (this: Storage, key: string, value: string) {
+                return this === window.localStorage ? blocked() : setItem.call(this, key, value);
+            };
+        });
+        await page.emulateMedia({ colorScheme: 'light' });
+        expect(await openIn(page, `${server.origin}/work`, undefined, VIEWPORTS[0])).toBe(500);
+        const html = page.locator('html');
+        await expect(html).toHaveAttribute('data-theme-choice', 'system');
+        await expect(html).toHaveAttribute('data-theme', 'light');
+
+        await page.getByRole('button', { name: /^Theme:/ }).click();
+        // A pointer's choice applies in the view transition's callback, a frame later.
+        await page.getByRole('radio', { name: /^Light/ }).click();
+        await expect(html).toHaveAttribute('data-theme-choice', 'light');
+        await page.keyboard.press('Escape');
+
+        await page.emulateMedia({ colorScheme: 'dark' });
+        // The query's change event goes out in a rendering update, so wait for the device to read dark and for two
+        // frames after, before checking that nothing put Dark back.
+        await page.waitForFunction(() => matchMedia('(prefers-color-scheme: dark)').matches);
+        await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+        const now = await html.evaluate((root) => [root.getAttribute('data-theme-choice'), root.getAttribute('data-theme')]);
+        expect(now, 'Light, on a dark device').toEqual(['light', 'light']);
+        expectReads(await paint(page), THEMES.light.ground, 1);
+    });
 });
