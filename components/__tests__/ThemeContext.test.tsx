@@ -256,4 +256,42 @@ describe('ThemeProvider', () => {
       dark.remove();
     }
   });
+
+  it('turns transitions off while a new theme lands, for two frames, and not for a write of the same theme', async () => {
+    // Each frame's callbacks, run by hand: the guard must outlast the frame the new theme's styles land in.
+    const frames: FrameRequestCallback[] = [];
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => frames.push(callback));
+    const caf = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+    const nextFrame = () => frames.splice(0).forEach((callback) => callback(0));
+    try {
+      const { unmount } = render(
+        <ThemeProvider>
+          <Probe />
+        </ThemeProvider>,
+      );
+      await act(async () => {
+        html.setAttribute('data-theme', 'dark');
+      });
+      expect(html.hasAttribute('data-theme-swap')).toBe(false);
+
+      act(() => fireEvent.click(screen.getByRole('button')));
+      await act(async () => {});
+      expect(html.hasAttribute('data-theme-swap')).toBe(true);
+      nextFrame();
+      expect(html.hasAttribute('data-theme-swap')).toBe(true);
+      nextFrame();
+      expect(html.hasAttribute('data-theme-swap')).toBe(false);
+
+      // The inline script's write (System following the device) is guarded too, and unmounting clears a guard.
+      await act(async () => {
+        html.setAttribute('data-theme', 'dark');
+      });
+      expect(html.hasAttribute('data-theme-swap')).toBe(true);
+      unmount();
+      expect(html.hasAttribute('data-theme-swap')).toBe(false);
+    } finally {
+      raf.mockRestore();
+      caf.mockRestore();
+    }
+  });
 });

@@ -92,9 +92,35 @@ const syncThemeColor = () => {
 };
 
 /**
- * The store is the DOM (above), so there's no context to provide: the provider only marks hydration and keeps the
- * browser's bar on the painting theme, and the hooks work with or without it (the curator's login tests render the
- * menu bare).
+ * A theme change swaps in one frame (P2-7). Under reduced motion the motion baseline (app/globals.css) gives every
+ * element a 0.01 ms transition of `all`, so a change of what paints, which changes colours on every element, would start
+ * one transition per element and property: about 45,000 on a 5,000-photo series, each with its events, seconds of a
+ * slow phone's main thread, and its scroll stays slower after (the v1.3.0 phone scroll regression). So while the new
+ * theme lands, <html data-theme-swap> turns transitions off (globals.css, under reduced motion only, where 0.01 ms is
+ * invisible anyway), and it goes two frames later, once that theme's frame has drawn. The observer's callback runs
+ * before the next frame's style, whoever wrote the attribute: setThemeChoice, the inline script, or a test.
+ */
+const guardThemeSwaps = (): (() => void) => {
+    const root = document.documentElement;
+    let frame = 0;
+    const observer = new MutationObserver((records) => {
+        if (records.every((record) => record.oldValue === root.getAttribute('data-theme'))) return;
+        root.setAttribute('data-theme-swap', '');
+        cancelAnimationFrame(frame);
+        frame = requestAnimationFrame(() => (frame = requestAnimationFrame(() => root.removeAttribute('data-theme-swap'))));
+    });
+    observer.observe(root, {attributes: true, attributeFilter: ['data-theme'], attributeOldValue: true});
+    return () => {
+        observer.disconnect();
+        cancelAnimationFrame(frame);
+        root.removeAttribute('data-theme-swap');
+    };
+};
+
+/**
+ * The store is the DOM (above), so there's no context to provide: the provider only marks hydration, keeps the
+ * browser's bar on the painting theme and guards each theme swap (above), and the hooks work with or without it (the
+ * curator's login tests render the menu bare).
  */
 export const ThemeProvider = ({children}: { children: ReactNode }) => {
     // A parent's effect runs after its children's, so this lands once the page has committed.
@@ -102,7 +128,12 @@ export const ThemeProvider = ({children}: { children: ReactNode }) => {
     useEffect(() => {
         document.documentElement.dataset.hydrated = 'true';
         syncThemeColor();
-        return subscribe(syncThemeColor);
+        const unguard = guardThemeSwaps();
+        const unsubscribe = subscribe(syncThemeColor);
+        return () => {
+            unsubscribe();
+            unguard();
+        };
     }, []);
 
     return children;
