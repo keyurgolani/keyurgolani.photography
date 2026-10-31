@@ -41,7 +41,7 @@ import { phase, serve, standInPrints, VARIANT_REQUEST, variantFormat, type Serve
 // PERF_CATALOG_CACHE or ~/.cache/photography-perf, keyed by its photos, seed, variant sizes and the catalog code's git
 // tree. The run checks the disk first (PERF_DISK_MIN_GB) and removes its own temp folder in place when it ends.
 //
-//   PARITY_BASE_DIR=<built base> PERF_PORTS=3375,3376 [PERF_ROUNDS=3] [PERF_SELFTEST=1] [PERF_SETTLE_MAX_MS=5000] [PERF_PHOTOS=5000] npx playwright test -c e2e/themes/perf.config.ts
+//   PARITY_BASE_DIR=<built base> PERF_PORTS=3375,3376 [PERF_ROUNDS=3] [PERF_SELFTEST=1] [PERF_SETTLE_MAX_MS=5000] [PERF_PHOTOS=5000] [PERF_HEAD_DIR=<built head>] npx playwright test -c e2e/themes/perf.config.ts
 
 /**
  * The series' photos: 5,000 by default, the stress case. PERF_PHOTOS=200 with PERF_SETTLE_MAX_MS=500 is the realistic
@@ -88,6 +88,8 @@ const HEAVY = '[data-photo] { box-shadow: 0 0 0 6px #888, 0 30px 60px -10px #000
 const LONG_TASK_MS = 40;
 const TRACE_CATEGORIES = ['cc', 'viz', 'gpu', 'disabled-by-default-devtools.timeline.frame'];
 const BASE = process.env.PARITY_BASE_DIR;
+/** The built head: PERF_HEAD_DIR, or this checkout. With another tree, this one runs the harness and serves nothing. */
+const HEAD = process.env.PERF_HEAD_DIR ?? process.cwd();
 const ports = (process.env.PERF_PORTS ?? '').split(',').map(Number).filter(Boolean);
 
 test.skip(!BASE, 'Set PARITY_BASE_DIR to a built checkout of the base.');
@@ -236,7 +238,7 @@ test.beforeAll(async () => {
     phase({ cache: 'the catalog, served from the cache', built: 'the catalog, built and cached', uncached: 'the catalog, built uncached (catalog code not committed)' }[cached.from]);
     catalog = { root: cached.root, slug: cached.slug };
     phase('the base and head servers');
-    servers.push(await serve(BASE!, ports[0] ?? 3375, catalog.root, library, siteConfig), await serve(process.cwd(), ports[1] ?? 3376, catalog.root, library, siteConfig));
+    servers.push(await serve(BASE!, ports[0] ?? 3375, catalog.root, library, siteConfig), await serve(HEAD, ports[1] ?? 3376, catalog.root, library, siteConfig));
 });
 
 test.afterAll(async () => {
