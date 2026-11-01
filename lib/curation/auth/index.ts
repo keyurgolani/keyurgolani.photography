@@ -20,6 +20,7 @@ async function check(options: { read?: boolean }, session: 'required' | 'not-che
             host,
             origin: request.get('origin'),
             forwardedHost: request.get('x-forwarded-host'),
+            forwardedProto: request.get('x-forwarded-proto'),
             mutation,
             session: session === 'required' ? { cookie: request.get('cookie') } : 'not-checked',
         },

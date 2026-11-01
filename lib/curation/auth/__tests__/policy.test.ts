@@ -13,6 +13,7 @@ import {
     isCuratorPath,
     listenTarget,
     plainLanRequest,
+    redirectScheme,
     type BindProbe,
     type CuratorEnv,
     type CuratorRequest,
@@ -254,6 +255,36 @@ describe('LAN mode', () => {
             expect(mutate('homelab.local:443', 'https://homelab.local')).toBeNull();
             expect(mutate('homelab.local:3443', 'https://homelab.local')).toEqual({ status: 403, reason: 'origin' });
             expect(mutate('homelab.local:443', 'http://homelab.local')).toEqual({ status: 403, reason: 'origin' });
+        });
+
+        it('reads a LAN Host with no port as 443 when the first X-Forwarded-Proto is https, as a TLS proxy on 443 passes it on', () => {
+            const env = tls();
+            expect(evaluate({ host: 'homelab.local', forwardedProto: 'https', mutation: true, origin: 'https://homelab.local' }, env)).toBeNull();
+            expect(evaluate({ host: 'HomeLab.local', forwardedProto: 'https' }, env)).toBeNull();
+            expect(evaluate({ host: 'homelab.local', forwardedProto: 'https, http' }, env)).toBeNull();
+            expect(evaluate({ host: 'homelab.local', forwardedProto: 'https', forwardedHost: 'homelab.local' }, env)).toBeNull();
+            expect(evaluate({ host: 'homelab.local', forwardedProto: 'https', forwardedHost: 'homelab.local:443' }, env)).toBeNull();
+            expect(evaluate({ host: 'homelab.local', forwardedProto: 'https', forwardedHost: 'other.local' }, env)).toEqual({ status: 421, reason: 'host' });
+            expect(evaluate({ host: 'homelab.local', forwardedProto: 'https', mutation: true, origin: 'https://homelab.local:3443' }, env)).toEqual({ status: 403, reason: 'origin' });
+            expect(redirectScheme({ host: 'homelab.local', forwardedProto: 'https' }, env)).toBe('https');
+            expect(plainLanRequest({ host: 'homelab.local', forwardedProto: 'https' }, env)).toBe(false);
+        });
+
+        it('reads it as 80 otherwise, which is refused unless that is listed', () => {
+            expect(evaluate({ host: 'homelab.local', mutation: true, origin: 'https://homelab.local' }, tls())).toEqual({ status: 421, reason: 'host' });
+            expect(evaluate({ host: 'homelab.local', forwardedProto: 'http' }, tls())).toEqual({ status: 421, reason: 'host' });
+            expect(evaluate({ host: 'homelab.local', forwardedProto: 'http, https' }, tls())).toEqual({ status: 421, reason: 'host' });
+            const on80 = lan({ CURATOR_EXTRA_HOSTS: 'homelab.local:80' });
+            expect(evaluate({ host: 'homelab.local', mutation: true, origin: 'http://homelab.local' }, on80)).toBeNull();
+            expect(plainLanRequest({ host: 'homelab.local', forwardedProto: null }, on80)).toBe(true);
+            expect(evaluate({ host: 'homelab.local', forwardedProto: 'https' }, on80)).toEqual({ status: 421, reason: 'host' });
+        });
+
+        it('never reads a port into a Host on a loopback name, or in loopback mode', () => {
+            expect(evaluate({ host: 'localhost', forwardedProto: 'https' }, lan({ CURATOR_EXTRA_HOSTS: TLS, CURATOR_HOST_PORT: '443' }))).toEqual({ status: 421, reason: 'host' });
+            expect(evaluate({ host: '127.0.0.1' }, lan({ CURATOR_HOST_PORT: '80' }))).toEqual({ status: 421, reason: 'host' });
+            expect(evaluate({ host: 'localhost', forwardedProto: 'https' }, { ...ON, CURATOR_HOST_PORT: '443' })).toEqual({ status: 421, reason: 'host' });
+            expect(evaluate({ host: 'homelab.local', forwardedProto: 'https' }, { ...ON, CURATOR_EXTRA_HOSTS: 'homelab.local:443' })).toEqual({ status: 421, reason: 'host' });
         });
 
         it("still matches an http Origin by host and port, as today, whatever X-Forwarded-Proto says", () => {

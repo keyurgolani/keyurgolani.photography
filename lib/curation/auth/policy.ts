@@ -194,6 +194,28 @@ export function curatorHosts(env: CuratorEnv): { hosts: ReadonlySet<string>; lan
     return { hosts, lanHosts };
 }
 
+/** The first value of an `X-Forwarded-Proto` header, trimmed and in lower case, or '' when there's none. */
+function firstForwardedProto(value: string | null | undefined): string {
+    return (value ?? '').split(',')[0].trim().toLowerCase();
+}
+
+/**
+ * A `Host` as the allowlist reads it: in lower case, and, when it carries no
+ * port, with the scheme's default port added (443 when the first
+ * `X-Forwarded-Proto` is `https`, 80 otherwise) if that makes it a LAN-mode
+ * name. A browser leaves the port out on 443, and a TLS proxy there passes
+ * that on. Anything else is read as sent, so a loopback name and loopback
+ * mode answer exactly as before. Null for a missing `Host`.
+ */
+function allowlistHost(host: string | null, forwardedProto: string | null | undefined, lanHosts: ReadonlySet<string>): string | null {
+    if (host === null) return null;
+    const lower = host.toLowerCase();
+    const hasPort = lower.startsWith('[') ? lower.includes(']:') : lower.includes(':');
+    if (lower === '' || hasPort) return lower;
+    const withPort = `${lower}:${firstForwardedProto(forwardedProto) === 'https' ? 443 : 80}`;
+    return lanHosts.has(withPort) ? withPort : lower;
+}
+
 /** What the scheme checks read of a request: its `Host` and `X-Forwarded-Proto`, as sent, or null when missing. */
 export interface CuratorTransport {
     host: string | null;
@@ -212,9 +234,9 @@ export interface CuratorTransport {
 function lanScheme(request: CuratorTransport, env: CuratorEnv): 'http' | 'https' | 'other' | null {
     const allowed = curatorHosts(env);
     if ('problem' in allowed) return null;
-    const host = request.host?.toLowerCase() ?? null;
+    const host = allowlistHost(request.host, request.forwardedProto, allowed.lanHosts);
     if (host === null || !allowed.lanHosts.has(host)) return null;
-    const scheme = (request.forwardedProto ?? '').split(',')[0].trim().toLowerCase();
+    const scheme = firstForwardedProto(request.forwardedProto);
     if (scheme === '' || scheme === 'http') return 'http';
     return scheme === 'https' ? 'https' : 'other';
 }
@@ -392,6 +414,8 @@ export interface CuratorRequest {
     host: string | null;
     origin: string | null;
     forwardedHost: string | null;
+    /** `X-Forwarded-Proto`, which only places a LAN Host sent with no port on 443 or 80. Missing reads as http. */
+    forwardedProto?: string | null;
     /** True for anything that can change state: every method but GET and HEAD, and any server action call. */
     mutation: boolean;
     /**
@@ -443,7 +467,8 @@ function originHost(origin: string, schemes: ReadonlySet<string>): string | null
 /**
  * Whether a curator request may go on, or why not. Checked in this order:
  * the flag; the bind, the tunnel port setting and the secret files; the
- * `Host` (and an `X-Forwarded-Host`, which must match it); for a mutation,
+ * `Host` (and an `X-Forwarded-Host`, which must match it), a LAN one sent
+ * with no port read on its scheme's default port (allowlistHost()); for a mutation,
  * an `Origin` whose host and port equal `Host`, over http, or over https too
  * on a LAN-mode name; and last, unless the caller
  * says `'not-checked'`, a live session from the `curator_session` cookie.
@@ -461,9 +486,11 @@ export function evaluateCuratorRequest(
     if ('problem' in allowed || bindProblem(env, argv, probe) !== null) return { status: 503, reason: 'misconfigured' };
     const secrets = readCuratorSecrets(env);
     if ('problem' in secrets) return { status: 503, reason: 'misconfigured' };
-    const host = request.host?.toLowerCase() ?? null;
+    const host = allowlistHost(request.host, request.forwardedProto, allowed.lanHosts);
     if (host === null || !allowed.hosts.has(host)) return { status: 421, reason: 'host' };
-    if (request.forwardedHost !== null && request.forwardedHost.toLowerCase() !== host) return { status: 421, reason: 'host' };
+    if (request.forwardedHost !== null && allowlistHost(request.forwardedHost, request.forwardedProto, allowed.lanHosts) !== host) {
+        return { status: 421, reason: 'host' };
+    }
     if (request.mutation) {
         // https only on a LAN name: the loopback names keep today's http-only rule in either mode.
         const schemes = allowed.lanHosts.has(host) ? HTTP_OR_HTTPS : HTTP_ONLY;

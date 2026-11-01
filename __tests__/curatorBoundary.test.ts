@@ -456,6 +456,10 @@ describe('proxy.ts in LAN mode', () => {
         const login = async (host: string, proto?: string) =>
             (await send('/curation', { headers: { host, ...(proto ? { 'x-forwarded-proto': proto } : {}) } })).headers.get('location');
         expect(await login('homelab.local:3443', 'https')).toBe('https://homelab.local:3443/curation/login');
+        // A TLS proxy on 443 passes on the Host the browser sent, with no port.
+        vi.stubEnv('CURATOR_EXTRA_HOSTS', 'homelab.local:3443,homelab.local:443');
+        expect(await login('homelab.local', 'https')).toBe('https://homelab.local/curation/login');
+        expect((await send('/curation', { headers: { host: 'homelab.local' } })).status).toBe(421);
         expect(await login('192.168.86.250:3001', 'http')).toBe('http://192.168.86.250:3001/curation/login');
         expect(await login('192.168.86.250:3001')).toBe('http://192.168.86.250:3001/curation/login');
         // The loopback names keep today's http, whatever the header says.

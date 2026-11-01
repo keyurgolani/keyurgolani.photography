@@ -152,6 +152,7 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
                 host: request.headers.get('host'),
                 origin: request.headers.get('origin'),
                 forwardedHost: request.headers.get('x-forwarded-host'),
+                forwardedProto: request.headers.get('x-forwarded-proto'),
                 mutation,
                 session: isLoginRequest(pathname, method, action) ? 'not-checked' : { cookie: request.headers.get('cookie') },
             },
@@ -176,7 +177,14 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
     // Host too, so nothing it serves differs by Host from what the tunnel sees.
     if (isCurationEnabled(process.env)) {
         const denial = evaluateCuratorRequest(
-            { host: request.headers.get('host'), origin: null, forwardedHost: request.headers.get('x-forwarded-host'), mutation: false, session: 'not-checked' },
+            {
+                host: request.headers.get('host'),
+                origin: null,
+                forwardedHost: request.headers.get('x-forwarded-host'),
+                forwardedProto: request.headers.get('x-forwarded-proto'),
+                mutation: false,
+                session: 'not-checked',
+            },
             process.env,
             process.argv,
         );

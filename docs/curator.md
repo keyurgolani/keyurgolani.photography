@@ -47,10 +47,10 @@ CURATOR_PUBLISH=192.168.86.250
 CURATOR_HOST_PORT=3001
 ```
 
-Then recreate `curator` alone, and open `http://192.168.86.250:3001/curation/login` from another device on the network:
+Then recreate `curator` alone, and open `http://192.168.86.250:3001/curation/login` from another device on the network. Every command in this guide takes both files, `-f docker-compose.prod.yml -f <override>`, as [releasing.md](releasing.md#deploying) says; without an override, leave out `-f <override>`. With releasing.md's symlink layout, plain `docker compose` loads both:
 
 ```bash
-docker compose -f docker-compose.prod.yml --profile curator up -d --no-deps curator
+docker compose -f docker-compose.prod.yml -f <override> --profile curator up -d --no-deps curator
 ```
 
 `CURATOR_HOST_PORT` is optional and defaults to 3001. `web` and the watcher don't read either line.
@@ -60,6 +60,7 @@ docker compose -f docker-compose.prod.yml --profile curator up -d --no-deps cura
 - **It's plain http.** The passphrase and the session cookie cross your network unencrypted. Anyone on it who watches the traffic, from a compromised device or on an open Wi-Fi, can read the passphrase as you sign in and copy the cookie. The login page says so, in one line above the form. So the cookie drops `Secure` for the LAN names over http, or the browser wouldn't keep it; it keeps `HttpOnly`, `SameSite=Strict` and its 12 hours. On `127.0.0.1` and `localhost`, and over https, it keeps `Secure` as before.
 - **Don't forward this port on your router,** and don't put it behind a public reverse proxy or a tunnel service. With a forward, anyone on the internet gets the sign-in page, over plain http.
 - **Use the LAN address, never `0.0.0.0`.** `0.0.0.0` publishes on every interface the host has, its public one included if it has one. The curator refuses it: with `CURATOR_PUBLISH` set to anything but `127.0.0.1`, `localhost`, `::1` or a private address (10/8, 172.16/12, 192.168/16, 169.254/16, `fc00::/7`, `fe80::/10`), it logs which setting is wrong and stops, and answers 503 on every path, the login page included, until it does. An IPv6 address goes in brackets, such as `CURATOR_PUBLISH=[fd00::5]`, so Compose can read the publish.
+- **Publish it with `CURATOR_PUBLISH` only.** Publishing the curator from an override file instead isn't supported. In loopback mode the curator can't see a wider publish, and any caller can send `Host: localhost:3001`, so the allowlist would let them in.
 - **No rule on the caller's address.** The curator doesn't check that a request comes from a private address. Next gives its request handling no socket peer address, and `X-Forwarded-For` is whatever the caller sent, so a check on it would only look like one. The publish on the LAN address and your router are what keep the internet out.
 - **The lockout is shared.** It's one lock for the whole curator, so in LAN mode anyone on your network can trip it with five wrong tries and keep you out for 15 minutes. A restart of `curator` clears it.
 
@@ -74,12 +75,12 @@ Each entry is a hostname, an IPv4 address or a bracketed IPv6 address, then `:` 
 **Turning it off.** Remove the `CURATOR_PUBLISH`, `CURATOR_HOST_PORT` and `CURATOR_EXTRA_HOSTS` lines from `.env`, and recreate `curator` the same way:
 
 ```bash
-docker compose -f docker-compose.prod.yml --profile curator up -d --no-deps curator
+docker compose -f docker-compose.prod.yml -f <override> --profile curator up -d --no-deps curator
 ```
 
 It's back on `127.0.0.1:3001`, with `Secure` on every cookie. A session from LAN mode doesn't carry over: sign in again through the tunnel.
 
-**The stronger option: https on the LAN.** Put a TLS proxy on the host in front of the curator, with a certificate from a local certificate authority you install on each of your devices. It encrypts the passphrase and the cookie, and the cookie keeps `Secure`, at the cost of that certificate setup on every device. Run the proxy on its own port, say `homelab.local:3443`, forwarding to `http://192.168.86.250:3001`. It has to pass the browser's `Host` on unchanged and send `X-Forwarded-Proto: https`, which most proxies do by default. List that name in `CURATOR_EXTRA_HOSTS=homelab.local:3443`, and open `https://homelab.local:3443/curation/login`. On a name in LAN mode, the `Origin` check takes `https` as well as `http`, still for the same host and port as `Host`, and an `https` Origin with no port counts as 443. The plain http port stays open on the network beside it, so sign in only on the https name.
+**The stronger option: https on the LAN.** Put a TLS proxy on the host in front of the curator, with a certificate from a local certificate authority you install on each of your devices. It encrypts the passphrase and the cookie, and the cookie keeps `Secure`, at the cost of that certificate setup on every device. Run the proxy on its own port, say `homelab.local:3443`, forwarding to `http://192.168.86.250:3001`. It has to pass the browser's `Host` on unchanged and send `X-Forwarded-Proto: https`, which most proxies do by default. List that name in `CURATOR_EXTRA_HOSTS=homelab.local:3443`, and open `https://homelab.local:3443/curation/login`. On a name in LAN mode, the `Origin` check takes `https` as well as `http`, still for the same host and port as `Host`, and an `https` Origin with no port counts as 443. A proxy on 443 works too: list `homelab.local:443`. The browser then sends `Host: homelab.local` with no port, and on a LAN name the curator reads that as 443 when the first `X-Forwarded-Proto` is `https`, and as 80 otherwise. The plain http port stays open on the network beside it, so sign in only on the https name.
 
 Every curator page, route handler and server action runs `requireCurator()` (`lib/curation/auth/index.ts`) first. It checks the flag, then the `Host`, then the `Origin` on anything that changes state, then a live session. Only the login page and its form skip the session.
 
@@ -113,10 +114,10 @@ sudo ls -ln secrets
 
 ### Rotating them
 
-Make new ones the same way (each command replaces its file in one rename) and restart the curator:
+Make new ones the same way (each command replaces its file in one rename) and restart the curator (without an override, leave out `-f <override>`):
 
 ```bash
-docker compose -f docker-compose.prod.yml restart curator
+docker compose -f docker-compose.prod.yml -f <override> restart curator
 ```
 
 A new passphrase hash counts from the next login. A new session secret, or any restart, ends every session. The files need no backup: if they're lost, make new ones.
@@ -137,11 +138,11 @@ The login page says what happened last: a wrong passphrase, the lock, "You're si
 
 ## Turning it on and off
 
-`curator` belongs to a Compose profile of its own, so `docker compose up -d` never starts it. Make [the login credential](#the-login-credential) first. Then start it by name when you need it, and stop it when you're done:
+`curator` belongs to a Compose profile of its own, so `docker compose up -d` never starts it. Make [the login credential](#the-login-credential) first. Then start it by name when you need it, and stop it when you're done. Without an override, leave out `-f <override>`, or use plain `docker compose` with releasing.md's symlink layout:
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d curator
-docker compose -f docker-compose.prod.yml stop curator
+docker compose -f docker-compose.prod.yml -f <override> --profile curator up -d --no-deps curator
+docker compose -f docker-compose.prod.yml -f <override> stop curator
 ```
 
 Its restart policy is `no`, so a reboot or a Docker restart leaves it off. It reads the library (`:ro`), writes the data root, and runs as uid 1001, the watcher's, so the data root setup in [data-root.md](data-root.md) covers it too. Its Inbox, Publish and Restore write `authored/`, `catalog/`, `locks/` and `curation/events/` there, so stop it with the watcher whenever the data root has to hold still: [Backing up](data-root.md#backing-up), [Restoring](data-root.md#restoring) and [Editing a document by hand](data-root.md#editing-a-document-by-hand) say how.
