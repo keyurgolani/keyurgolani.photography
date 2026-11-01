@@ -14,11 +14,12 @@ export interface CuratorServer extends CatalogServer {
     passphrase: string;
 }
 
-export async function startCuratorServer(dataRoot: string, port?: number, options: Omit<CatalogServerOptions, 'curator' | 'env'> = {}): Promise<CuratorServer> {
+/** `env` adds curator settings, such as LAN mode's CURATOR_PUBLISH. The secret file paths are always the test ones. */
+export async function startCuratorServer(dataRoot: string, port?: number, options: Omit<CatalogServerOptions, 'curator'> = {}): Promise<CuratorServer> {
     const secrets = await makeCuratorSecrets();
     let server: CatalogServer;
     try {
-        server = await startCatalogServer(dataRoot, port, { ...options, curator: true, env: secrets.env });
+        server = await startCatalogServer(dataRoot, port, { ...options, curator: true, env: { ...options.env, ...secrets.env } });
     } catch (error) {
         secrets.cleanup();
         throw error;

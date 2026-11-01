@@ -30,6 +30,9 @@ beforeEach(() => {
     vi.stubEnv('CURATION_ENABLED', 'true');
     vi.stubEnv('HOSTNAME', '127.0.0.1');
     vi.stubEnv('CURATOR_TUNNEL_PORT', '');
+    vi.stubEnv('CURATOR_PUBLISH', '');
+    vi.stubEnv('CURATOR_HOST_PORT', '');
+    vi.stubEnv('CURATOR_EXTRA_HOSTS', '');
     vi.stubEnv('CURATION_BIND_SCOPE', '');
     for (const [name, value] of Object.entries(secrets.env)) vi.stubEnv(name, value);
 });
@@ -290,5 +293,83 @@ describe('the login page', () => {
         const cookie = `${SESSION_COOKIE}=${signSessionId(createSession(), secrets.sessionKey)}`;
         const outcome = await render({}, cookie).catch((error: unknown) => error);
         expect(String((outcome as { digest?: string }).digest)).toMatch(/^NEXT_REDIRECT;replace;\/curation;/);
+    });
+});
+
+describe('in LAN mode (CURATOR_PUBLISH on a private address)', () => {
+    const LAN_HOST = '192.168.86.250:3001';
+    const LAN_ORIGIN = `http://${LAN_HOST}`;
+    const EXTRA_HOST = 'homelab.local:3001';
+    const CAVEAT = "This page isn't encrypted on this network. Anyone on it who watches the traffic can see your passphrase.";
+
+    beforeEach(() => {
+        vi.stubEnv('CURATOR_PUBLISH', '192.168.86.250');
+        vi.stubEnv('CURATOR_EXTRA_HOSTS', EXTRA_HOST);
+    });
+
+    const attributes = (response: Response) => response.headers.get('set-cookie')!.split('; ').slice(1).sort();
+    const PLAIN = ['HttpOnly', 'Max-Age=43200', 'Path=/', 'SameSite=Strict'];
+    const SECURE = [...PLAIN, 'Secure'].sort();
+
+    it.each([
+        ['http on the LAN address', { host: LAN_HOST, origin: LAN_ORIGIN, 'x-forwarded-proto': 'http' }, PLAIN],
+        ['the LAN address, with no X-Forwarded-Proto', { host: LAN_HOST, origin: LAN_ORIGIN }, PLAIN],
+        ['http on a listed extra host', { host: EXTRA_HOST, origin: `http://${EXTRA_HOST}`, 'x-forwarded-proto': 'http' }, PLAIN],
+        ['https on the LAN address, from a TLS proxy', { host: LAN_HOST, origin: LAN_ORIGIN, 'x-forwarded-proto': 'https' }, SECURE],
+        ['http on 127.0.0.1, through an SSH tunnel', { host: HOST, origin: ORIGIN, 'x-forwarded-proto': 'http' }, SECURE],
+    ])('signs in over %s, with the matching cookie, and logout clears it the same way', async (_, headers, expected) => {
+        const response = await postLogin(form(secrets.passphrase), headers);
+        expect(response.status).toBe(303);
+        expect(response.headers.get('location')).toBe('/curation');
+        expect(attributes(response)).toEqual(expected);
+        const cookie = cookieFrom(response)!;
+        expect(sessionFromCookies(cookie, secrets.sessionKey)).not.toBeNull();
+
+        requestHeaders = new Headers({ ...headers, cookie });
+        const out = await logout();
+        expect(out.headers.get('set-cookie')).toMatch(new RegExp(`^${SESSION_COOKIE}=; `));
+        expect(attributes(out)).toEqual(expected.map((attribute) => (attribute === 'Max-Age=43200' ? 'Max-Age=0' : attribute)).sort());
+        expect(sessionFromCookies(cookie, secrets.sessionKey)).toBeNull();
+    });
+
+    it('starts nothing on a Host it was not given', async () => {
+        const outcome = await postLogin(form(secrets.passphrase), { host: '192.168.86.251:3001', origin: 'http://192.168.86.251:3001' }).catch((error: unknown) => error);
+        expect(String((outcome as { digest?: string }).digest)).toMatch(/^NEXT_HTTP_ERROR_FALLBACK;404/);
+    });
+
+    async function renderOn(headers: Record<string, string>, search: Record<string, string> = {}) {
+        requestHeaders = new Headers(headers);
+        return renderToStaticMarkup(await LoginPage({ searchParams: Promise.resolve(search) }));
+    }
+    const caveat = (html: string) => (/<p id="curator-login-caveat"[^>]*>([\s\S]*?)<\/p>/.exec(html)?.[1] ?? '').replace(/&#x27;/g, "'");
+    const field = (html: string) => /<input[^>]*id="curator-passphrase"[^>]*>/.exec(html)?.[0] ?? '';
+
+    it('says, on the login page over plain http, in one plain line above the form, that the page is not encrypted', async () => {
+        for (const host of [LAN_HOST, EXTRA_HOST]) {
+            const html = await renderOn({ host, 'x-forwarded-proto': 'http' });
+            expect(caveat(html), host).toBe(CAVEAT);
+            expect(html.indexOf('id="curator-login-caveat"')).toBeLessThan(html.indexOf('<form'));
+            // Not an alert or a status: it's there on every load, so it's part of the field's description instead.
+            expect(html).not.toMatch(/<p id="curator-login-caveat"[^>]*role=/);
+            expect(field(html)).toContain('aria-describedby="curator-login-caveat"');
+        }
+        const failed = await renderOn({ host: LAN_HOST }, { failed: '1' });
+        expect(caveat(failed)).toBe(CAVEAT);
+        expect(field(failed)).toContain('aria-describedby="curator-login-notice curator-login-caveat"');
+    });
+
+    it.each([
+        ['https from a TLS proxy', { host: LAN_HOST, 'x-forwarded-proto': 'https' }],
+        ['loopback, through an SSH tunnel', { host: HOST, 'x-forwarded-proto': 'http' }],
+    ])('says nothing of it over %s', async (_, headers) => {
+        const html = await renderOn(headers);
+        expect(html).not.toContain('curator-login-caveat');
+        expect(html).not.toContain("isn't encrypted");
+    });
+
+    it('says nothing of it in loopback mode', async () => {
+        vi.stubEnv('CURATOR_PUBLISH', '');
+        const html = await renderOn({ host: HOST });
+        expect(html).not.toContain('curator-login-caveat');
     });
 });

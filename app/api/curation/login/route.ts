@@ -1,4 +1,4 @@
-import { requireCuratorLogin } from '@/lib/curation/auth';
+import { isPlainLanRequest, requireCuratorLogin } from '@/lib/curation/auth';
 import { attemptLogin } from '@/lib/curation/auth/login';
 import { readCuratorSecrets } from '@/lib/curation/auth/secrets';
 import { curatorUnavailable } from '@/lib/curation/auth/unavailable';
@@ -12,7 +12,8 @@ import { deleteSession, sessionCookie, sessionFromCookies } from '@/lib/curation
  *
  * A match starts a new session, ends the one the request carried if any (so
  * the session ID changes at every login), and sends the curator to
- * `/curation` with the cookie. Anything else, a wrong passphrase or the
+ * `/curation` with the cookie, `Secure` but on a LAN-mode name over plain
+ * http (isPlainLanRequest()). Anything else, a wrong passphrase or the
  * lock, gets the same answer: back to the login page with `failed=1`, no
  * cookie. The page itself says when the lock is on, and then says only that.
  */
@@ -49,5 +50,5 @@ export async function POST(request: Request): Promise<Response> {
     if (!outcome.ok) return seeOther(FAILED);
     const previous = sessionFromCookies(request.headers.get('cookie'), sessionKey);
     if (previous !== null) deleteSession(previous);
-    return seeOther('/curation', sessionCookie(outcome.sessionId, sessionKey));
+    return seeOther('/curation', sessionCookie(outcome.sessionId, sessionKey, { secure: !(await isPlainLanRequest()) }));
 }

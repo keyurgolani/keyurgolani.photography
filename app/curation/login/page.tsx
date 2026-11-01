@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import SameOriginPostForm from '@/components/site/SameOriginPostForm';
-import { hasCuratorSession, requireCuratorLogin } from '@/lib/curation/auth';
+import { hasCuratorSession, isPlainLanRequest, requireCuratorLogin } from '@/lib/curation/auth';
 import { loginLockedUntil } from '@/lib/curation/auth/login';
 import styles from './login.module.css';
 import ThemeMenu from '@/components/ThemeMenu';
@@ -20,12 +20,19 @@ import ThemeMenu from '@/components/ThemeMenu';
  * The other notices come from the query: `failed=1` from the login handler,
  * `signed-out=1` from logout, and `ended=1` from a page read whose session
  * cookie no longer counts. None of them changes what the form posts.
+ *
+ * In LAN mode over plain http (docs/curator.md, From your home network), one
+ * plain line under the intro says the page isn't encrypted on this network,
+ * and the field is described by it, so a screen reader hears it with the
+ * field. It isn't a notice: it's true on every load, so it's no alert or
+ * status, and it never shows on loopback or over https.
  */
 export const dynamic = 'force-dynamic';
 
 export const metadata: Metadata = { title: 'Sign in to curation', robots: { index: false, follow: false } };
 
 const NOTICE_ID = 'curator-login-notice';
+const CAVEAT_ID = 'curator-login-caveat';
 
 type Notice = { kind: 'locked'; minutes: number } | { kind: 'failed' } | { kind: 'ended' } | { kind: 'signed-out' };
 
@@ -61,6 +68,8 @@ export default async function CuratorLoginPage({ searchParams }: { searchParams:
   if (await hasCuratorSession()) redirect('/curation');
   const now = Date.now();
   const notice = noticeFor(await searchParams, loginLockedUntil(now), now);
+  const unencrypted = await isPlainLanRequest();
+  const describedBy = [notice ? NOTICE_ID : null, unencrypted ? CAVEAT_ID : null].filter((id) => id !== null).join(' ');
   // A refusal goes under the field, as the Inbox's does; a status line goes above the form.
   const refusal = notice?.kind === 'locked' || notice?.kind === 'failed';
   const noticeLine = notice ? (
@@ -83,6 +92,11 @@ export default async function CuratorLoginPage({ searchParams }: { searchParams:
         <div className={styles.body}>
           <h1 className={styles.heading}>Sign in to curation</h1>
           <p className={styles.text}>Enter the passphrase you chose when you set up the curator.</p>
+          {unencrypted ? (
+            <p id={CAVEAT_ID} className={styles.caveat}>
+              This page isn&apos;t encrypted on this network. Anyone on it who watches the traffic can see your passphrase.
+            </p>
+          ) : null}
           {refusal ? null : noticeLine}
           <SameOriginPostForm
             className={styles.form}
@@ -108,7 +122,7 @@ export default async function CuratorLoginPage({ searchParams }: { searchParams:
               required
               autoFocus
               aria-invalid={notice?.kind === 'failed' ? true : undefined}
-              aria-describedby={notice ? NOTICE_ID : undefined}
+              aria-describedby={describedBy === '' ? undefined : describedBy}
             />
             {refusal ? noticeLine : null}
           </SameOriginPostForm>

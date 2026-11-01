@@ -1,7 +1,7 @@
 import 'server-only';
 import { headers } from 'next/headers';
 import { notFound, redirect } from 'next/navigation';
-import { evaluateCuratorRequest, loginRedirectPath, type CuratorDenial } from './policy';
+import { evaluateCuratorRequest, loginRedirectPath, plainLanRequest, type CuratorDenial } from './policy';
 import { readCuratorSecrets } from './secrets';
 import { deleteSession, sessionFromCookies } from './sessions';
 
@@ -65,6 +65,17 @@ export async function requireCuratorLogin(options: { read?: boolean } = {}): Pro
     const result = await check(options, 'not-checked');
     if ('access' in result) return result.access;
     notFound();
+}
+
+/**
+ * Whether this request came on a LAN-mode name over plain http
+ * (plainLanRequest() in policy.ts). The login page then says the page isn't
+ * encrypted, and login and logout set the cookie without `Secure`. Anywhere
+ * else, the cookie keeps `Secure`, as it always has.
+ */
+export async function isPlainLanRequest(): Promise<boolean> {
+    const request = await headers();
+    return plainLanRequest({ host: request.get('host'), forwardedProto: request.get('x-forwarded-proto') }, process.env);
 }
 
 /** Whether this request carries a live curator session. For the login page, which sends a signed-in curator on. */
