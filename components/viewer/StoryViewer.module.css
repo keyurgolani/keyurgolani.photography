@@ -2,15 +2,86 @@
    Close, the series title and position, and Zoom; the photograph on the dark
    bands with Previous and Next beside it; and the reading area under it. Every
    color is a --cc-* token, which resolve only under [data-surface='viewer'],
-   so the Viewer is dark under both site themes. The accent, when the revision
+   and each theme sets its own below: Dark is today's Viewer. The accent, when the revision
    stores one, arrives as --cc-accent on the root and paints the two rules the
    mockup paints. Nothing sits on the photograph, so no text needs a scrim. */
 /* The body under the Viewer is its ground too, so a touch overscroll or the
-   strip past the root never shows the light site theme, and it doesn't fade in
+   strip past the root never shows the site's ground, and it doesn't fade in
    from it. The body sits outside the surface, so this is --cc-ground's value. */
 :global(body):has(.viewer) {
-  background-color: #111513;
+  background-color: var(--gah-viewer-ground, #111513);
   transition: none;
+}
+
+/* The Viewer in each theme (spec §3 and §5, round 3's R2-P1-1). Dark sets nothing: it is today's Chromatic Chapters
+   (styles/surfaces/chromatic-chapters.css), its bands and translucent bars, and a bare print with today's hairline.
+   Black is the photograph alone on the screen's black: no bands, no hairline, and the header and reading area on the
+   ground, divided by nothing; a series' stored accent still paints the two rules, Black's one colour, the content's.
+   Light and Bright have no bands, a solid ground and bars, and a matted print: the lg surround, md on a phone (the md
+   tokens are styles/themes.css's, the Work and series pages'). These tokens are the Viewer's alone, so they ride
+   here and not on every route's first load. Each block outranks the surface's own [data-surface='viewer']. */
+/* Black's ground is #000000, so one rule gives all three their own. */
+:global(html[data-theme='black']):has(.viewer),
+:global(html[data-theme='light']):has(.viewer),
+:global(html[data-theme='bright']):has(.viewer) {
+  --gah-viewer-ground: var(--gah-ground);
+}
+
+/* What the three share: the theme's own ground, ink, label and strong rule, no bands, the caption in the soft ink, a
+   print that letterboxes a stale record ratio instead of stretching (P3-6), and a transparent hairline, not none:
+   forced colours drop a surround (box-shadow) and paint an outline in a system colour, so the print keeps an edge. */
+:global(html[data-theme='black']) .viewer,
+:global(html[data-theme='light']) .viewer,
+:global(html[data-theme='bright']) .viewer {
+  --cc-ground: var(--gah-ground);
+  --cc-bands: none;
+  --cc-ink: var(--gah-ink);
+  --cc-label: var(--gah-label);
+  --cc-caption-ink: var(--cc-ink-soft);
+  --cc-rule-strong: var(--gah-rule-strong);
+  --gah-viewer-image-outline: 1px solid transparent;
+  --gah-viewer-fit: contain;
+}
+
+/* Light and Bright mat the print from #124's primitives (--gah-print-edge, --gah-mat-fill) in styles/themes.css. The
+   frame keeps ground clear round the surround, so the mat never meets the screen's edge, and the stage clips sideways
+   only, so a print's shadow fades out below it instead of ending on a line. */
+:global(html[data-theme='light']) .viewer,
+:global(html[data-theme='bright']) .viewer {
+  --gah-surround-clear: 8px;
+  --gah-viewer-clip-y: visible;
+}
+
+/* Black (OLED, the OLED spec's round 2): the print, square, on black. Every bar is the ground, so nothing frames the
+   photograph, and the 4 px bar rules are gone unless a series' accent paints them. The focus ring's dark band is
+   Black's own token (styles/themes.css). */
+:global(html[data-theme='black']) .viewer {
+  --cc-ink-soft: #fffc;
+  --cc-chrome: var(--gah-ground);
+  --cc-rule: transparent;
+}
+
+/* A missing photograph's box keeps an edge in Black, since its plain rule is transparent. */
+:global(html[data-theme='black']) .missing {
+  box-shadow: inset 0 0 0 1px var(--cc-rule-strong);
+}
+
+/* Paper: a toned sheet, the header and reading area on a lighter one, the print in Light's mat with a bevel. */
+:global(html[data-theme='light']) .viewer {
+  --cc-ink-soft: #3a3229;
+  --cc-chrome: #f2ede3;
+  --cc-rule: rgba(41, 35, 29, 0.16);
+  --gah-surround-lg: var(--gah-print-edge), 0 0 0 15px var(--gah-mat-fill), 0 0 0 16px rgba(41, 35, 29, 0.08), 0 22px 40px -18px rgba(60, 42, 20, 0.45);
+  --gah-room-lg: 16px;
+}
+
+/* A white wall: a 14 px white mat in a 3 px black frame. */
+:global(html[data-theme='bright']) .viewer {
+  --cc-ink-soft: #1a1a1a;
+  --cc-chrome: #fff;
+  --cc-rule: rgba(0, 0, 0, 0.1);
+  --gah-surround-lg: 0 0 0 14px var(--gah-mat-fill), 0 0 0 17px #111;
+  --gah-room-lg: 17px;
 }
 
 /* One grid for the whole Viewer (#9). The shell's controls and the
@@ -46,7 +117,7 @@
   min-height: 100dvh;
   background: var(--cc-bands), var(--cc-ground);
   color: var(--cc-ink);
-  color-scheme: dark;
+  color-scheme: var(--gah-color-scheme, dark);
   font-family: var(--gah-font-sans);
 }
 
@@ -71,7 +142,7 @@
 }
 
 .viewer::backdrop {
-  background: #111513;
+  background: var(--gah-viewer-ground, #111513);
 }
 
 .header {
@@ -200,8 +271,10 @@
   /* The fixed stage on a wide screen: the box and its padding, never the photograph's own height. A phone's is below. */
   height: calc(var(--viewer-stage-height) + 2 * var(--viewer-stage-pad));
   padding-block: var(--viewer-stage-pad);
-  /* The neighbors wait beside the photograph (9a), outside the stage, so the page never scrolls sideways to them. */
-  overflow: clip;
+  /* The neighbors wait beside the photograph (9a), outside the stage, so the page never scrolls sideways to them.
+     Dark clips both ways, as today; a theme lets its print's shadow fade out below the stage (--gah-viewer-clip-y). */
+  overflow-x: clip;
+  overflow-y: var(--gah-viewer-clip-y, clip);
   /* #9's swipe: the browser keeps vertical scroll and pinch zoom, and leaves a sideways drag to the Viewer. */
   touch-action: pan-y pinch-zoom;
 }
@@ -265,8 +338,21 @@
 .frame,
 .missing {
   --fit-vw: 100vw;
-  width: min(100%, var(--fit-vw), calc(var(--viewer-stage-height) * var(--ratio, 3 / 2)));
+  /* The theme's surround, and the room the box leaves for it on every side, its thickness and the clear ground, so
+     nothing clips it and it never meets the screen's edge. All 0 in Dark, today's box. */
+  --viewer-surround: var(--gah-surround-lg, none);
+  --viewer-room: calc(var(--gah-room-lg, 0px) + var(--gah-surround-clear, 0px));
+  width: min(100% - 2 * var(--viewer-room), var(--fit-vw) - 2 * var(--viewer-room), calc((var(--viewer-stage-height) - 2 * var(--viewer-room)) * var(--ratio, 3 / 2)));
   aspect-ratio: var(--ratio, 3 / 2);
+}
+
+/* On a phone the surround steps down a size. */
+@media (max-width: 39.99rem) {
+  .frame,
+  .missing {
+    --viewer-surround: var(--gah-surround-md, none);
+    --viewer-room: calc(var(--gah-room-md, 0px) + var(--gah-surround-clear, 0px));
+  }
 }
 
 @media (min-width: 48rem) {
@@ -310,13 +396,16 @@
 
 .frame {
   margin: 0;
+  box-shadow: var(--viewer-surround);
 }
 
 .image {
   display: block;
   width: 100%;
   height: 100%;
-  outline: 1px solid var(--cc-rule);
+  object-fit: var(--gah-viewer-fit, fill);
+  /* Today's hairline on the print's edge, which Dark keeps. */
+  outline: var(--gah-viewer-image-outline, 1px solid var(--cc-rule));
 }
 
 /* No usable set, or its file failed: a reserved box on the dark ground with the
@@ -340,6 +429,8 @@
 
 .viewport[data-zoomed] .frame {
   width: var(--zoom-width);
+  /* The scroller would clip a surround at its edges, so a zoomed print goes bare (P3-7). Dark has none to lose. */
+  box-shadow: none;
 }
 
 .step {
@@ -427,6 +518,8 @@
   font-size: var(--gah-type-statement);
   line-height: 1.5;
   overflow-wrap: anywhere;
+  /* The theme's caption ink. Dark keeps today's, the reading area's ink. */
+  color: var(--cc-caption-ink, inherit);
 }
 
 .label {
@@ -545,6 +638,6 @@
   /* The box, not the image, takes the height cap, so it stays reserved from the record's shape (#6). */
   .frame,
   .missing {
-    width: min(100%, 100cqh * var(--ratio, 3 / 2));
+    width: min(100% - 2 * var(--viewer-room), (100cqh - 2 * var(--viewer-room)) * var(--ratio, 3 / 2));
   }
 }

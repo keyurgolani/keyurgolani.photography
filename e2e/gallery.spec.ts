@@ -17,7 +17,7 @@ const photoName = (position: number) => `Photograph ${position} of ${COUNT}`;
 const entries = (page: Page) => page.getByRole('button', { name: /^Photograph \d+ of 12$/ });
 const primary = (page: Page) => page.getByRole('navigation', { name: 'Primary' });
 const navLinks = (page: Page) => primary(page).getByRole('link');
-const themeToggle = (page: Page) => page.getByRole('button', { name: /^Switch to (dark|light) mode$/ });
+const themeControl = (page: Page) => page.getByRole('button', { name: /^Theme:/ });
 const lightbox = (page: Page) => page.getByRole('dialog', { name: 'Lightbox' });
 
 async function openGallery(page: Page, theme: 'dark' | 'light' = 'dark') {
@@ -27,9 +27,9 @@ async function openGallery(page: Page, theme: 'dark' | 'light' = 'dark') {
     await expect(entries(page)).toHaveCount(COUNT);
 }
 
-/** The name of whatever has focus: its aria-label, or its rendered text, which skips the toggle's hidden other name. */
+/** The name of whatever has focus: its aria-label, or its rendered text, which skips the theme control's hidden names. */
 const focusedLabel = (page: Page) =>
-    page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? (document.activeElement as HTMLElement | null)?.innerText.trim());
+    page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? (document.activeElement as HTMLElement | null)?.innerText.replace(/\s+/g, ' ').trim());
 
 for (const viewport of [undefined, { width: 640, height: 400 }]) {
     test.describe(viewport ? 'at 640 by 400, which is 200% zoom' : 'at the project viewport', () => {
@@ -40,7 +40,7 @@ for (const viewport of [undefined, { width: 640, height: 400 }]) {
                 await openGallery(page, theme);
                 await checkSurface(page, {
                     entries: entries(page),
-                    controls: [navLinks(page), themeToggle(page)],
+                    controls: [navLinks(page), themeControl(page)],
                     chrome: [primary(page)],
                 });
             });
@@ -48,9 +48,9 @@ for (const viewport of [undefined, { width: 640, height: 400 }]) {
     });
 }
 
-test('Tab goes through SiteNav, its toggle last, then each photo in order, and Shift+Tab walks back', async ({ page }) => {
+test('Tab goes through SiteNav, its theme control last, then each photo in order, and Shift+Tab walks back', async ({ page }) => {
     await openGallery(page);
-    const stops = ['KG, Keyur Golani', 'Home', 'Work', 'About', 'Switch to light mode', ...Array.from({ length: COUNT }, (_, index) => photoName(index + 1))];
+    const stops = ['KG, Keyur Golani', 'Home', 'Work', 'About', 'Theme: System (Dark now)', ...Array.from({ length: COUNT }, (_, index) => photoName(index + 1))];
     const forward: (string | undefined)[] = [];
     for (let press = 0; press < stops.length; press++) {
         await page.keyboard.press('Tab');
@@ -65,11 +65,11 @@ test('Tab goes through SiteNav, its toggle last, then each photo in order, and S
     expect(back).toEqual(stops.slice(0, -1).reverse());
 });
 
-test('the Primary navigation sits outside main, and the theme toggle is a plain button', async ({ page }) => {
+test('the Primary navigation sits outside main, and the theme control is a plain button', async ({ page }) => {
     await openGallery(page);
     await expect(primary(page)).toHaveCount(1);
     await expect(page.locator('main nav')).toHaveCount(0);
-    await expect(themeToggle(page)).toHaveAttribute('type', 'button');
+    await expect(themeControl(page)).toHaveAttribute('type', 'button');
 });
 
 test('the Primary navigation is within 3 Tab presses of page load', async ({ page }) => {
@@ -89,14 +89,21 @@ test('Enter and Space on a photo open the lightbox on it', async ({ page }) => {
     }
 });
 
-test('Enter and Space on the theme toggle flip the theme', async ({ page }) => {
+test('Enter on the theme control opens its menu on the checked choice, an arrow chooses, and Escape closes it', async ({ page }) => {
     await openGallery(page);
     const html = page.locator('html');
-    await themeToggle(page).focus();
+    await themeControl(page).focus();
+    // Focus loads the menu's styles; it opens once they're in.
+    await expect(themeControl(page)).toHaveAttribute('popovertarget', /.+/);
     await page.keyboard.press('Enter');
+    await expect(page.getByRole('radio', { name: /^System/ })).toBeChecked();
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('radio', { name: /^System/ })).toBeFocused();
+    await page.keyboard.press('ArrowDown');
+    await expect(html).toHaveAttribute('data-theme-choice', 'light');
     await expect(html).toHaveAttribute('data-theme', 'light');
-    await page.keyboard.press('Space');
-    await expect(html).toHaveAttribute('data-theme', 'dark');
+    await page.keyboard.press('Escape');
+    await expect(themeControl(page)).toBeFocused();
 });
 
 for (const [name, path] of [['Home', '/'], ['About', '/about']] as const) {
@@ -168,12 +175,12 @@ test('the caption keeps 4.5:1 over the white photo on a 3-row tile, where the sc
     await expectCaptionContrast(tile);
 });
 
-test('a photo, the theme toggle, and the Primary links drop their focus ring at once on blur', async ({ page }) => {
+test('a photo, the theme control, and the Primary links drop their focus ring at once on blur', async ({ page }) => {
     await openGallery(page);
-    for (const target of [entries(page).first(), themeToggle(page), ...(await navLinks(page).all())]) await expectNoFadeOnBlur(target);
+    for (const target of [entries(page).first(), themeControl(page), ...(await navLinks(page).all())]) await expectNoFadeOnBlur(target);
 });
 
-test('ThemeToggle and the Primary links reflow at 320 px with 200% text', async ({ page }) => {
+test('The theme control and the Primary links reflow at 320 px with 200% text', async ({ page }) => {
     await openGallery(page);
-    await expectReflow(themeToggle(page).or(navLinks(page)));
+    await expectReflow(themeControl(page).or(navLinks(page)));
 });

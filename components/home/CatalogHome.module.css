@@ -9,8 +9,9 @@
   min-height: 100%;
   flex-direction: column;
   justify-content: flex-end;
-  padding: 1.5rem var(--site-gutter) 1rem;
-  color: var(--gah-ink);
+  /* --home-print-inline (HomeChrome.module.css) keeps the copy inside the print in every theme (P2-2). */
+  padding: 1.5rem var(--home-print-inline, var(--site-gutter)) 1rem;
+  color: var(--gah-scrim-ink, var(--gah-ink));
 }
 
 /* The title and statement, as wide as their longest line. --panel-fade is
@@ -32,7 +33,7 @@
    reaches the lane. */
 @media (min-width: 85rem) {
   .copy[data-badge-lane] {
-    max-width: calc(50vw - var(--badge-lane) - var(--panel-fade) - var(--site-gutter));
+    max-width: calc(50vw - var(--badge-lane) - var(--panel-fade) - var(--home-print-inline, var(--site-gutter)));
   }
 }
 
@@ -52,8 +53,10 @@
     display: block;
     position: absolute;
     z-index: -1;
-    inset: -3rem calc(-1 * var(--panel-fade)) -1.5rem calc(-1 * var(--site-gutter));
-    background: linear-gradient(90deg, rgb(8 10 9 / 0.6) calc(100% - var(--panel-fade)), rgb(8 10 9 / 0) 100%);
+    /* It starts at the print's edge, not the screen's, so it never washes a theme's margin or frame, and its strength
+       is the theme's: Light and Bright lean on it alone (P1-1). */
+    inset: -3rem calc(-1 * var(--panel-fade)) -1.5rem calc(var(--gah-stage-inset, 0px) - var(--home-print-inline, var(--site-gutter)));
+    background: linear-gradient(90deg, rgb(var(--gah-scrim-rgb, 8 10 9) / var(--gah-panel-alpha, 0.6)) calc(100% - var(--panel-fade)), rgb(var(--gah-scrim-rgb, 8 10 9) / 0) 100%);
     mask-image: linear-gradient(0deg, transparent 0, #000 1.5rem, #000 calc(100% - 3rem), transparent 100%);
     pointer-events: none;
   }
@@ -73,7 +76,7 @@
 .statement {
   max-width: 39ch;
   margin: 0.75rem 0 0;
-  color: var(--gah-ink-soft);
+  color: var(--gah-scrim-ink-soft, var(--gah-ink-soft));
   font-family: var(--gah-font-serif);
   font-size: var(--gah-type-statement);
   line-height: 1.25;
@@ -87,7 +90,7 @@
   align-items: center;
   margin-top: 1.25rem;
   padding: 0.5rem 1rem;
-  border: 1px solid var(--gah-rule-strong);
+  border: 1px solid var(--gah-action-rule, var(--gah-rule-strong));
   border-radius: var(--gah-radius);
   background: var(--gah-action);
   color: var(--gah-action-ink);
@@ -99,7 +102,8 @@
 
 @media (hover: hover) and (pointer: fine) {
   .enter:hover {
-    background: #fff;
+    background: var(--gah-action-hover, #fff);
+    color: var(--gah-action-hover-ink, var(--gah-action-ink));
   }
 }
 
@@ -116,8 +120,8 @@
 .failure:not(:empty) {
   padding: 0.5rem 0.875rem;
   border-radius: var(--gah-radius);
-  background: rgba(0, 0, 0, 0.65);
-  color: #fff;
+  background: var(--gah-control-scrim, rgba(0, 0, 0, 0.65));
+  color: var(--gah-control-ink, #fff);
   font-size: var(--gah-type-ui);
 }
 
@@ -138,8 +142,8 @@
   padding: 0 1rem;
   border: 1px solid var(--gah-rule-strong);
   border-radius: var(--gah-radius);
-  background: rgba(0, 0, 0, 0.65);
-  color: #fff;
+  background: var(--gah-control-scrim, rgba(0, 0, 0, 0.65));
+  color: var(--gah-control-ink, #fff);
   font: inherit;
   font-size: var(--gah-type-ui);
   cursor: pointer;
@@ -147,6 +151,6 @@
 
 @media (hover: hover) and (pointer: fine) {
   .action:hover {
-    border-color: #fff;
+    border-color: var(--gah-control-ink, #fff);
   }
 }

@@ -4,7 +4,7 @@ import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
 import { setPrefersReducedMotion } from '@/test/matchMedia';
-import { badgePlace, V110_LANE, type Box } from '../badgePlace';
+import { badgePlace, chromeOverflows, copyTone, coverSource, homeCopyTop, luminance, positionOf, regionLevel, textEnlarged, TONE_LIGHT_FLOOR, toneFor, unionOf, V110_LANE, type Box } from '../badgePlace';
 import HeroReveal, { BADGE_LINGER_MS, type HeroRevealPhase } from '../HeroReveal';
 import { HOME_LOADING_TIMEOUT_MS } from '../home/homeChromeConfig';
 
@@ -564,5 +564,188 @@ describe('badgePlace', () => {
 
   it('leaves the place alone before there is a card to measure', () => {
     expect(badgePlace({ width: 390, height: 844 }, 0, nav(390), [])).toBeNull();
+  });
+});
+
+describe('homeCopyTop', () => {
+  const stage: Box = { left: 0, top: 0, right: 390, bottom: 844 };
+
+  it("gives the copy's top as a percentage of the stage, from its highest box", () => {
+    const title: Box = { left: 16, top: 520, right: 300, bottom: 600 };
+    const link: Box = { left: 16, top: 700, right: 160, bottom: 744 };
+    expect(homeCopyTop(stage, [link, title])).toBe(61.61);
+  });
+
+  it('follows a title that grows, as with large text, up the stage', () => {
+    const at200: Box = { left: 16, top: 280, right: 374, bottom: 600 };
+    expect(homeCopyTop(stage, [at200])).toBe(33.18);
+  });
+
+  it("measures from the stage's own top, and stays within 0 and 100", () => {
+    expect(homeCopyTop({ ...stage, top: 100, bottom: 944 }, [{ left: 0, top: 620, right: 10, bottom: 640 }])).toBe(61.61);
+    expect(homeCopyTop(stage, [{ left: 0, top: -40, right: 10, bottom: 10 }])).toBe(0);
+  });
+
+  it("leaves the stylesheet's default with no copy or no stage", () => {
+    expect(homeCopyTop(stage, [])).toBeNull();
+    expect(homeCopyTop({ ...stage, bottom: 0 }, [{ left: 0, top: 10, right: 10, bottom: 20 }])).toBeNull();
+  });
+});
+
+describe("Home's root and the text size", () => {
+  const home = () => (
+    <main data-testid="home">
+      <div data-chrome-region="story">
+        <h1>Coastline, early</h1>
+      </div>
+      <HeroReveal isLoading={false} onSettled={() => undefined} />
+    </main>
+  );
+
+  afterEach(() => {
+    document.documentElement.style.removeProperty('font-size');
+  });
+
+  it('says so on Home\'s root while the text is enlarged, and stops saying so when Home goes', () => {
+    document.documentElement.style.fontSize = '32px';
+    const view = render(home());
+    const root = view.getByTestId('home');
+    expect(root.hasAttribute('data-text-enlarged')).toBe(true);
+    view.unmount();
+    expect(root.hasAttribute('data-text-enlarged')).toBe(false);
+  });
+
+  it('says nothing at default text, so Dark keeps its wash', () => {
+    document.documentElement.style.fontSize = '16px';
+    const view = render(home());
+    expect(view.getByTestId('home').hasAttribute('data-text-enlarged')).toBe(false);
+  });
+});
+
+describe('textEnlarged', () => {
+  it('is default text at 16px a rem, and at less', () => {
+    expect(textEnlarged(16)).toBe(false);
+    expect(textEnlarged(14)).toBe(false);
+  });
+
+  it('is enlarged text above it, as at 200%', () => {
+    expect(textEnlarged(16.5)).toBe(true);
+    expect(textEnlarged(32)).toBe(true);
+  });
+
+  it("isn't enlarged when the size can't be read", () => {
+    expect(textEnlarged(Number.NaN)).toBe(false);
+  });
+});
+
+describe('chromeOverflows', () => {
+  it('is a chrome taller than its box, past a pixel of rounding', () => {
+    expect(chromeOverflows(900, 844)).toBe(true);
+    expect(chromeOverflows(845, 844)).toBe(false);
+    expect(chromeOverflows(844, 844)).toBe(false);
+  });
+});
+
+describe('copyTone', () => {
+  const pixels = (r: number, g: number, b: number, count = 32 * 18) => Array.from({ length: count * 4 }, (_, i) => [r, g, b, 255][i % 4]);
+  const image = (overrides: Partial<HTMLImageElement> = {}) =>
+    ({
+      complete: true,
+      naturalWidth: 1600,
+      naturalHeight: 900,
+      decode: () => Promise.resolve(),
+      getBoundingClientRect: () => ({ left: 0, top: 0, right: 1440, bottom: 810, width: 1440, height: 810 }),
+      ...overrides,
+    }) as unknown as HTMLImageElement;
+  const copy: Box = { left: 40, top: 480, right: 600, bottom: 720 };
+
+  it('is dark over a dark region and light over a light one', async () => {
+    expect(await copyTone(image(), copy, { sample: async () => pixels(12, 16, 28) })).toBe('dark');
+    expect(await copyTone(image(), copy, { sample: async () => pixels(240, 236, 228) })).toBe('light');
+  });
+
+  it('is dark over a mid-tone region, where a light scrim would fog the photograph', async () => {
+    // A dusk sky: relative luminance about 0.3, under the light floor.
+    expect(luminance(150, 150, 150)).toBeLessThan(TONE_LIGHT_FLOOR);
+    expect(await copyTone(image(), copy, { sample: async () => pixels(150, 150, 150) })).toBe('dark');
+  });
+
+  it('is light only from the light floor up', () => {
+    expect(TONE_LIGHT_FLOOR).toBe(0.36);
+    expect(toneFor(0.2)).toBe('dark');
+    expect(toneFor(0.35)).toBe('dark');
+    expect(toneFor(0.36)).toBe('light');
+    expect(toneFor(0.5)).toBe('light');
+  });
+
+  it("is light, the theme's own, when it can't measure at all: a tainted canvas or no canvas", async () => {
+    const tainted = async () => {
+      throw new DOMException('The canvas has been tainted by cross-origin data.', 'SecurityError');
+    };
+    expect(await copyTone(image(), copy, { sample: tainted })).toBe('light');
+    expect(await copyTone(image(), copy, { sample: async () => null })).toBe('light');
+  });
+
+  it("is nothing when it can't measure now, so the caller keeps its tone: an image not in, mid-swap, or not under the copy", async () => {
+    const sample = async () => pixels(0, 0, 0);
+    expect(await copyTone(image({ complete: false }), copy, { sample })).toBeNull();
+    expect(await copyTone(image({ naturalWidth: 0 }), copy, { sample })).toBeNull();
+    expect(await copyTone(image({ decode: () => Promise.reject(new Error('EncodingError')) }), copy, { sample })).toBeNull();
+    expect(await copyTone(image(), { left: 2000, top: 0, right: 2100, bottom: 10 }, { sample })).toBeNull();
+  });
+
+  it('samples the part of the photograph that paints under the copy, as cover crops it', async () => {
+    const sample = vi.fn(async () => pixels(0, 0, 0));
+    await copyTone(image(), copy, { sample });
+    // 1600 x 900 in 1440 x 810 is a scale of 0.9 with no crop.
+    const [, source] = sample.mock.calls[0] as unknown as [HTMLImageElement, { x: number; y: number; width: number; height: number }];
+    expect(source.x).toBeCloseTo(44.44, 2);
+    expect(source.y).toBeCloseTo(533.33, 2);
+    expect(source.width).toBeCloseTo(622.22, 2);
+    expect(source.height).toBeCloseTo(266.67, 2);
+  });
+});
+
+describe('coverSource', () => {
+  const shown: Box = { left: 0, top: 0, right: 390, bottom: 844 };
+
+  it("maps a region through cover's crop and object-position", () => {
+    // A 1600 x 900 photograph in a 390 x 844 phone: scaled by 844/900, 1500 px wide, cropped 555 px a side at 50%.
+    const centre = coverSource({ width: 1600, height: 900 }, shown, { left: 0, top: 422, right: 390, bottom: 844 })!;
+    expect(centre.x).toBeCloseTo(592.06, 2);
+    expect(centre.y).toBeCloseTo(450, 5);
+    expect(centre.width).toBeCloseTo(415.88, 2);
+    const left = coverSource({ width: 1600, height: 900 }, shown, { left: 0, top: 0, right: 390, bottom: 844 }, { x: 0, y: 0.5 })!;
+    expect(left.x).toBeCloseTo(0, 5);
+  });
+
+  it('clips the region to the photograph, and is null where nothing of it paints', () => {
+    expect(coverSource({ width: 100, height: 100 }, shown, { left: -50, top: -50, right: 10, bottom: 10 })).not.toBeNull();
+    expect(coverSource({ width: 100, height: 100 }, shown, { left: 400, top: 0, right: 500, bottom: 10 })).toBeNull();
+    expect(coverSource({ width: 0, height: 100 }, shown, shown)).toBeNull();
+  });
+});
+
+describe('the tone helpers', () => {
+  it("reads a region's level as the darker of its mean and its 25th percentile, and none for no pixels", () => {
+    const px = (...levels: number[]) => levels.flatMap((v) => [v, v, v, 255]);
+    // Half white, half black: mean 0.5, 25th percentile black.
+    expect(regionLevel(px(255, 255, 0, 0))).toBe(0);
+    // All white but a dark band of a quarter: the band counts.
+    expect(regionLevel(px(255, 255, 255, 255, 255, 255, 0, 0))).toBe(0);
+    // A light region with a thin dark line: the mean, slightly under white.
+    expect(regionLevel(px(255, 255, 255, 255, 255, 255, 255, 0))).toBeCloseTo(0.875, 5);
+    expect(regionLevel([])).toBeNull();
+  });
+
+  it("reads object-position's percentages, and the centre for anything else", () => {
+    expect(positionOf('30% 80%')).toEqual({ x: 0.3, y: 0.8 });
+    expect(positionOf('center')).toEqual({ x: 0.5, y: 0.5 });
+    expect(positionOf('10px 20px')).toEqual({ x: 0.5, y: 0.5 });
+  });
+
+  it('unions boxes, and gives none for none', () => {
+    expect(unionOf([{ left: 10, top: 20, right: 30, bottom: 40 }, { left: 0, top: 30, right: 20, bottom: 60 }])).toEqual({ left: 0, top: 20, right: 30, bottom: 60 });
+    expect(unionOf([])).toBeNull();
   });
 });

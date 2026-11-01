@@ -94,7 +94,21 @@
    would shorten the box without narrowing it and crop the photograph. The
    fallback box keeps 3:2. */
 .stage {
+  /* The cover wears the theme's md surround (sm on a phone), and its real thickness is the room the note and the focus
+     ring reserve (styles/themes.css). Dark has none: today's cover. The hover and focus mark keeps the surround and
+     rings it from outside (--gah-mark-outline), or is today's 1 px ring in Dark. */
+  --series-cover-surround: var(--gah-surround-md, none);
+  --series-cover-mark: var(--gah-surround-md, 0 0 0 1px var(--gah-rule-strong));
+  --series-cover-room: var(--gah-room-md, 0px);
   margin: 0;
+}
+
+@media (max-width: 39.99rem) {
+  .stage {
+    --series-cover-surround: var(--gah-surround-sm, none);
+    --series-cover-mark: var(--gah-surround-sm, 0 0 0 1px var(--gah-rule-strong));
+    --series-cover-room: var(--gah-room-sm, 0px);
+  }
 }
 
 .coverFrame {
@@ -103,8 +117,9 @@
   display: block;
   overflow: hidden;
   width: min(100%, calc(82svh * var(--ratio)));
-  border-radius: var(--gah-radius);
+  border-radius: var(--gah-photo-radius, var(--gah-radius));
   background: var(--gah-surface);
+  box-shadow: var(--series-cover-surround);
 }
 
 /* The cover's link to its Viewer takes the same width cap, from the page's
@@ -112,6 +127,8 @@
    empty column beside a tall one. The frame inside fills it. */
 .coverLink {
   --ratio: 3 / 2;
+  /* The focus ring clears the surround ([data-ring-room], globals.css). */
+  --ring-room: var(--series-cover-room);
   display: block;
   width: min(100%, calc(82svh * var(--ratio)));
   border-radius: var(--gah-radius);
@@ -143,7 +160,7 @@
 }
 
 .stageNote {
-  margin-top: 0.75rem;
+  margin-top: calc(0.75rem + var(--series-cover-room));
   color: var(--gah-ink-muted);
   font-family: var(--gah-font-sans);
   font-size: var(--gah-type-label);
@@ -199,7 +216,9 @@
 .entries {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 9.5rem), 1fr));
-  gap: clamp(1.25rem, 3vw, 2rem) clamp(0.75rem, 2vw, 1.25rem);
+  /* Each gap reserves the surrounds it meets: the next row's above, both neighbours' beside, so a caption stays its own
+     print's and two mats never read as one double line. */
+  gap: calc(clamp(1.25rem, 3vw, 2rem) + var(--gah-room-sm, 0px)) calc(clamp(0.75rem, 2vw, 1.25rem) + 2 * var(--gah-room-sm, 0px));
   align-items: start;
   margin: 0;
   padding: 0;
@@ -216,8 +235,10 @@
   min-width: 0;
 }
 
-/* One link per entry: the thumbnail and its number. */
+/* One link per entry: the thumbnail and its number. The focus ring clears the thumbnail's sm surround
+   ([data-ring-room], globals.css). */
 .entry {
+  --ring-room: var(--gah-room-sm, 0px);
   position: relative;
   display: block;
   border-radius: var(--gah-radius);
@@ -225,17 +246,43 @@
   text-decoration: none;
 }
 
-/* A fixed box, so rows line up while images load, fail, or are missing. The whole photograph shows, uncropped. */
+/* A fixed box, so rows line up while images load, fail, or are missing. The whole photograph shows, uncropped. It wears
+   the theme's sm surround, and its hover and focus mark (below) keeps it. */
 .thumbFrame {
+  /* The slot's shape, which the window cut below sizes each print against. */
+  --slot-ratio: 4 / 3;
+  --thumb-surround: var(--gah-surround-sm, none);
+  --thumb-mark: var(--gah-surround-sm, 0 0 0 1px var(--gah-rule-strong));
   position: relative;
   display: block;
   overflow: hidden;
-  aspect-ratio: 4 / 3;
-  border-radius: var(--gah-radius);
+  aspect-ratio: var(--slot-ratio);
+  border-radius: var(--gah-photo-radius, var(--gah-radius));
   background: var(--gah-surface);
+  box-shadow: var(--thumb-surround);
+}
+
+/* One frame size, a window cut to each print (spec §3). The slot is the mat: its fill and the outer layers (Bright's
+   frame, Light's hairline and shadow, Dark's shadow). The print is centred and, where the theme sets
+   --gah-slot-print to 1, sized to its own ratio (--photo-ratio, from SeriesPhoto) in the slot's, and carries the
+   inner layer on its own edge (Light's bevel, Dark's keyline), so a portrait, a landscape and a square in one row each
+   have an edge of their own. The slot lets that edge show past a full-width print. Dark sets none of it, so it's
+   today's letterbox on the surface. */
+.thumbFrame[data-photo='contain'] {
+  --thumb-surround: var(--gah-slot-surround-sm, none);
+  --thumb-mark: var(--gah-slot-surround-sm, 0 0 0 1px var(--gah-rule-strong));
+  overflow: var(--gah-slot-overflow, hidden);
+  background: var(--gah-mat-fill, var(--gah-surface));
 }
 
 .thumbFrame[data-photo='contain'] .image {
+  /* 0 or 1: the print's width and height in the slot, each as a share of it, are 100% at 0 and the print's own at 1. */
+  --print: var(--gah-slot-print, 0);
+  width: calc(100% - var(--print) * (100% - min(100%, 100% * (var(--photo-ratio, 4 / 3)) / (var(--slot-ratio)))));
+  height: calc(100% - var(--print) * (100% - min(100%, 100% * (var(--slot-ratio)) / (var(--photo-ratio, 4 / 3)))));
+  margin: auto;
+  border-radius: var(--gah-photo-radius, 0px);
+  box-shadow: var(--gah-print-edge, none);
   object-fit: contain;
 }
 
@@ -243,11 +290,14 @@
 .thumbFrame.fallback,
 .coverFrame.fallback {
   background: linear-gradient(to top right, transparent calc(50% - 0.5px), var(--gah-rule) calc(50% - 0.5px), var(--gah-rule) calc(50% + 0.5px), transparent calc(50% + 0.5px)), var(--gah-surface);
+  /* Its edge, in every theme, as today: no photograph, so no surround, though its room stays reserved. Above the
+     frames' own box-shadow, which a missing box would otherwise take. */
+  box-shadow: inset 0 0 0 1px var(--gah-rule);
 }
 
 .position {
   display: block;
-  margin-top: 0.5rem;
+  margin-top: calc(0.5rem + var(--gah-room-sm, 0px));
   color: var(--gah-label);
   font-family: var(--gah-font-sans);
   font-size: var(--gah-type-label);
@@ -255,9 +305,12 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Below the thumbnail's room too, so the focus ring, which clears the surround, never crosses the title's line box:
+   the ring reaches room + 2 + 3 px under the link, 1 px more than room + 0.25rem where there's a room (0 in Dark). */
 .caption {
-  margin: 0.25rem 0 0;
-  font-family: var(--gah-font-sans);
+  margin: calc(0.25rem + var(--gah-room-sm, 0px) + min(var(--gah-room-sm, 0px), 1px)) 0 0;
+  /* Light's captions are in the serif (spec §3); the others, Dark included, keep the sans. */
+  font-family: var(--gah-caption-font, var(--gah-font-sans));
   font-size: var(--gah-type-ui);
   line-height: 1.45;
   overflow-wrap: anywhere;
@@ -270,18 +323,50 @@
 
 .description {
   display: block;
-  color: var(--gah-ink-soft);
+  color: var(--gah-caption-ink, var(--gah-ink-soft));
 }
 
-/* Hover parity: focus marks the entry the same way a pointer does. No scaling either way. */
-.entry:focus-visible .thumbFrame,
+/* Hover parity: focus marks the entry the same way a pointer does. No scaling either way. In Dark, today's 1 px ring
+   on the frame's edge; where a theme has a surround, the surround stays and a 1 px outline rings it from outside its
+   room, never through its mat (R2-P3-2). */
+.entry:focus-visible .thumbFrame {
+  box-shadow: var(--thumb-mark);
+  outline: var(--gah-mark-outline, none);
+  outline-offset: var(--gah-room-sm, 0px);
+}
+
 .coverLink:focus-visible .coverFrame {
-  box-shadow: 0 0 0 1px var(--gah-rule-strong);
+  box-shadow: var(--series-cover-mark);
+  outline: var(--gah-mark-outline, none);
+  outline-offset: var(--series-cover-room);
 }
 
 @media (hover: hover) and (pointer: fine) {
   .entry:hover .thumbFrame {
+    box-shadow: var(--thumb-mark);
+    outline: var(--gah-mark-outline, none);
+    outline-offset: var(--gah-room-sm, 0px);
+  }
+}
+
+/* A missing thumbnail or cover wears no surround, so its mark is today's 1 px ring in every theme. */
+.entry:focus-visible .thumbFrame.fallback,
+.coverLink:focus-visible .coverFrame.fallback {
+  box-shadow: 0 0 0 1px var(--gah-rule-strong);
+  outline: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .entry:hover .thumbFrame.fallback {
     box-shadow: 0 0 0 1px var(--gah-rule-strong);
+    outline: none;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .coverLink:hover .coverFrame.fallback {
+    box-shadow: 0 0 0 1px var(--gah-rule-strong);
+    outline: none;
   }
 }
 
@@ -337,7 +422,9 @@
 
 @media (hover: hover) and (pointer: fine) {
   .coverLink:hover .coverFrame {
-    box-shadow: 0 0 0 1px var(--gah-rule-strong);
+    box-shadow: var(--series-cover-mark);
+    outline: var(--gah-mark-outline, none);
+    outline-offset: var(--series-cover-room);
   }
 }
 
@@ -360,4 +447,59 @@
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 0.2em;
+}
+
+/* Black: the cover meets the screen's edge (the OLED review's P1-2), to the left at 1440 and edge to edge on a phone;
+   the copy and the note keep their gutter (C2-3). Its ring and its hover mark draw inside, so the edge never clips
+   them, on an overlay above the print, since an inset shadow on the frame paints under the photograph (C2-1c). */
+:global(html[data-theme='black']) .stage {
+  margin-inline: calc(-1 * var(--site-gutter));
+  --series-cover-mark: none;
+}
+
+:global(html[data-theme='black']) .stageNote {
+  padding-inline: var(--site-gutter);
+}
+
+/* The outline stays, transparent and inset, so forced colours, which drop the shadows, still show the ring (C2-1b). */
+:global(html[data-theme='black']) .coverLink:focus-visible {
+  outline-color: transparent;
+  outline-offset: calc(-1 * var(--focus-ring-width));
+}
+
+/* The ring is an overlay above the print, so the photograph can't paint over it: the light line at the edge, where the
+   screen's black frames it, and the dark band inside it, where a pale print meets it (P1-1). The overlay carries a
+   transparent outline too: forced colours drop the shadows and paint it in the system's colour, above the print, where
+   the link's own outline would sit under it (C2-1b). */
+:global(html[data-theme='black']) .coverLink:focus-visible .coverFrame::after {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  box-shadow:
+    inset 0 0 0 var(--focus-ring-width) var(--focus-ring-light),
+    inset 0 0 0 calc(var(--focus-ring-width) + var(--focus-ring-offset)) var(--focus-ring-dark);
+  outline: var(--focus-ring-width) solid transparent;
+  outline-offset: calc(-1 * var(--focus-ring-width));
+  pointer-events: none;
+}
+
+/* Focus wins over hover: a focused cover keeps its ring when the pointer rests on it too. */
+@media (hover: hover) and (pointer: fine) {
+  :global(html[data-theme='black']) .coverLink:hover:not(:focus-visible) .coverFrame::after {
+    content: '';
+    position: absolute;
+    z-index: 1;
+    inset: 0;
+    box-shadow: inset 0 0 0 1px var(--gah-rule-strong);
+    pointer-events: none;
+  }
+}
+
+/* A missing photograph keeps its edge and its diagonal in the strong rule, since Black's plain rule is transparent, so
+   the box never reads as a photograph still loading (C2-6.5). */
+:global(html[data-theme='black']) .thumbFrame.fallback,
+:global(html[data-theme='black']) .coverFrame.fallback {
+  background: linear-gradient(to top right, transparent calc(50% - 0.5px), var(--gah-rule-strong) calc(50% - 0.5px), var(--gah-rule-strong) calc(50% + 0.5px), transparent calc(50% + 0.5px)), var(--gah-surface);
+  box-shadow: inset 0 0 0 1px var(--gah-rule-strong);
 }

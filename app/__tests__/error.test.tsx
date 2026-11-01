@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ErrorPage from '../error';
 
@@ -26,8 +26,9 @@ vi.mock('react', async (importOriginal) => {
   };
 });
 
+// The full nav, which the page loads lazily: marked, so a test can tell it from StaticSiteNav.
 vi.mock('@/components/site/SiteNav', () => ({
-  default: () => <nav aria-label="Primary" />,
+  default: () => <nav aria-label="Primary" data-full-nav="" />,
 }));
 
 const failure = Object.assign(new Error('ENOENT: no such file, /srv/photos/catalog.json'), { digest: '2315104823' });
@@ -41,8 +42,13 @@ describe('app/error', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders SiteNav before the heading and says the page did not load', () => {
-    render(<ErrorPage error={failure} reset={vi.fn()} />);
+  it('shows the static nav at once, then SiteNav once it loads, before the heading, and says the page did not load', async () => {
+    const { container } = render(<ErrorPage error={failure} reset={vi.fn()} />);
+    // At once: the static nav, a way home with no theme menu, where SiteNav will stand (#132's review, M2).
+    expect(screen.getByRole('link', { name: 'KG, Keyur Golani' })).toHaveAttribute('href', '/');
+    for (const [name, href] of [['Home', '/'], ['Work', '/work'], ['About', '/about']]) expect(screen.getByRole('link', { name })).toHaveAttribute('href', href);
+    await waitFor(() => expect(container.querySelector('[data-full-nav]')).not.toBeNull());
+    expect(screen.getAllByRole('navigation', { name: 'Primary' })).toHaveLength(1);
     const nav = screen.getByRole('navigation', { name: 'Primary' });
     const heading = screen.getByRole('heading', { level: 1, name: 'Something went wrong' });
     expect(nav.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -69,5 +75,26 @@ describe('app/error', () => {
     vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
     render(<ErrorPage error={failure} reset={vi.fn()} />);
     expect(screen.getByText("You're offline. Reconnect, then try again.")).toBeInTheDocument();
+  });
+
+  it('keeps the static nav when SiteNav fails to load, never falls through to global-error, and loads it on Try again', async () => {
+    // #132's review, M1: offline, or a tab left open across a redeploy, the nav's chunk fails.
+    vi.resetModules();
+    vi.doMock('@/components/site/SiteNav', () => {
+      throw new Error('chunk failed to load');
+    });
+    const { default: FreshErrorPage } = await import('../error');
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { container } = render(<FreshErrorPage error={failure} reset={vi.fn()} />);
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(screen.getByRole('heading', { level: 1, name: 'Something went wrong' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Home' })).toHaveAttribute('href', '/');
+    expect(container.querySelector('[data-full-nav]')).toBeNull();
+    // The load is tried again with the page.
+    vi.doMock('@/components/site/SiteNav', () => ({ default: () => <nav aria-label="Primary" data-full-nav="" /> }));
+    act(() => fireEvent.click(screen.getByRole('button', { name: 'Try again' })));
+    await waitFor(() => expect(container.querySelector('[data-full-nav]')).not.toBeNull());
+    quiet.mockRestore();
+    vi.doUnmock('@/components/site/SiteNav');
   });
 });

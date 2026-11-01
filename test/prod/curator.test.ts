@@ -18,6 +18,7 @@
  * a machine that hands out ranges; by default they're free ones.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -25,8 +26,12 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { THEME_INIT_SCRIPT } from '../../components/site/themeScript';
 import { makeCuratorSecrets, type TestCuratorSecrets } from '../helpers/curatorSecrets';
 import { folderBytes } from '../helpers/folderBytes';
+
+/** The theme script's hash, the 503's one allowed script. */
+const THEME_SCRIPT_HASH = `sha256-${createHash('sha256').update(THEME_INIT_SCRIPT).digest('base64')}`;
 
 const STANDALONE = path.resolve(import.meta.dirname, '../../.next/standalone');
 const ACTION_ID = '7f'.repeat(21);
@@ -336,7 +341,8 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the curator boundary on the
             expect(answer.body).toBe(pages[0].body);
             expect(answer.headers['content-type']).toBe('text/html; charset=utf-8');
             expect(String(answer.headers['cache-control'])).toContain('no-store');
-            expect(String(answer.headers['content-security-policy'])).toMatch(/^default-src 'none'; style-src 'sha256-[A-Za-z0-9+/=]+'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'$/);
+            // The page's one stylesheet and the theme script, each by its hash, and nothing else.
+            expect(String(answer.headers['content-security-policy'])).toMatch(new RegExp(`^default-src 'none'; script-src '${THEME_SCRIPT_HASH.replace(/[+/]/g, '\\$&')}'; style-src 'sha256-[A-Za-z0-9+/=]+'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'$`));
         }
         expect(pages[0].body).toContain("The curator's log names the setting");
         expect(pages[0].body).not.toContain('CURATOR_SESSION_SECRET_FILE');

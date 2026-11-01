@@ -5,6 +5,7 @@ import ResponsivePhoto from '@/components/ResponsivePhoto';
 import type { HomePhoto as CatalogPhoto } from '@/lib/catalog/projections/home';
 import type { PlaybackState } from './homePlayback';
 import styles from './HomeSequence.module.css';
+import { useCopyTone } from './useCopyTone';
 
 /** Every slide fills the viewport. */
 export const HOME_SIZES = '100vw';
@@ -63,6 +64,10 @@ export default function CatalogSequence({ photoIds, photos, index, openingId, pl
 
   const markLoaded = useCallback((id: string) => setLoaded((current) => addTo(current, id)), []);
 
+  // The tone of the photograph on screen under the copy, for Light's and Bright's scrim.
+  const carouselRef = useRef<HTMLDivElement>(null);
+  useCopyTone(carouselRef, shownId, shownId !== undefined && loaded.has(shownId));
+
   useEffect(() => {
     if (activeId !== undefined && loaded.has(activeId)) onImageReady(activeId);
   }, [activeId, loaded, onImageReady]);
@@ -76,7 +81,7 @@ export default function CatalogSequence({ photoIds, photos, index, openingId, pl
   const anyLoaded = loaded.size > 0;
 
   return (
-    <div className={styles.carousel} data-zoom={playbackState === 'advancing' ? 'running' : 'paused'}>
+    <div ref={carouselRef} className={styles.carousel} data-zoom={playbackState === 'advancing' ? 'running' : 'paused'}>
       {photoIds.map((id) => {
         const on = id === shownId;
         const outgoing = stage.outgoing.includes(id);

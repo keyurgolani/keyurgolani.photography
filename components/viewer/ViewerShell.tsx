@@ -10,6 +10,7 @@ import { ViewerContext, peekKey, type ViewerChromeState, type ViewerMode, type V
 import { stepForKey, type ViewerStep } from './viewerKeys';
 import { useDoubleTap } from './useDoubleTap';
 import { useSwipe, type SwipeShell } from './useSwipe';
+import { whenIdle } from './whenIdle';
 import { accentValue, boundaryText, positionText } from './viewerLabels';
 import styles from './StoryViewer.module.css';
 
@@ -26,16 +27,6 @@ type PrefetchOptions = NonNullable<Parameters<ReturnType<typeof useRouter>['pref
  * boundary, since the Viewer's page is dynamic and has none.
  */
 const FULL_PREFETCH = { kind: 'full' } as unknown as PrefetchOptions;
-
-/** Runs `task` once the browser is idle, or soon where it can't say; returns the cancel. */
-function whenIdle(task: () => void): () => void {
-    if (typeof window.requestIdleCallback === 'function') {
-        const handle = window.requestIdleCallback(task, { timeout: 2000 });
-        return () => window.cancelIdleCallback(handle);
-    }
-    const handle = window.setTimeout(task, 200);
-    return () => window.clearTimeout(handle);
-}
 
 /** The endpoint's answer when the revision asked for isn't the one it serves any more. */
 const REVISED = 'revised';

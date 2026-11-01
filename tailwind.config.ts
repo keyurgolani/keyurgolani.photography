@@ -6,7 +6,8 @@ const config: Config = {
     "./components/**/*.{js,ts,jsx,tsx,mdx}",
     "./utils/**/*.{js,ts,jsx,tsx,mdx}",
   ],
-  darkMode: ['class', '[data-theme="dark"]'],
+  // Dark is today's site, and Black is dark too, so the legacy dark: variants apply in both.
+  darkMode: ['variant', ['&:is([data-theme="dark"] *)', '&:is([data-theme="black"] *)']],
   // Wraps every hover: and group-hover: utility in (hover: hover) and (pointer: fine), so a tap never leaves hover styles behind.
   future: { hoverOnlyWhenSupported: true },
   theme: {

@@ -46,3 +46,9 @@
 .frame[data-embedded='true'] .toolbar {
   padding: 0 0.875rem;
 }
+
+/* In Black the visitor's site has no ground of its own to end on, so the embedded frame closes with the same strong
+   line its toolbar opens with (the design review's P2-3). Dark keeps the summary box's fill as the edge. */
+:global(html[data-theme='black']) .frame[data-embedded='true'] {
+  border-bottom: 1px solid var(--gah-rule-strong);
+}

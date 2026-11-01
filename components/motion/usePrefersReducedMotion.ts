@@ -28,3 +28,6 @@ const getServerSnapshot = () => false;
 export function usePrefersReducedMotion(): boolean {
     return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 }
+
+/** The same setting, read once, for code that acts on an event rather than rendering (a theme change's crossfade). */
+export const prefersReducedMotion = (): boolean => getSnapshot();

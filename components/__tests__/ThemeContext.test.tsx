@@ -3,13 +3,14 @@ import { hydrateRoot } from 'react-dom/client';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ThemeProvider, useTheme, useThemeToggle } from '../ThemeContext';
+import { ThemeProvider, useSetThemeChoice, useThemeChoice } from '../ThemeContext';
 
+/** Reads the choice and what paints, and flips between Light and Black. */
 function Probe() {
-  const { theme, toggleTheme } = useTheme();
+  const { choice, theme, setChoice } = useThemeChoice();
   return (
-    <button type="button" onClick={toggleTheme}>
-      {theme}
+    <button type="button" onClick={() => setChoice(theme === 'light' ? 'black' : 'light')}>
+      {choice}/{theme}
     </button>
   );
 }
@@ -19,20 +20,25 @@ const html = document.documentElement;
 describe('ThemeProvider', () => {
   beforeEach(() => {
     html.setAttribute('data-theme', 'dark');
+    html.setAttribute('data-theme-choice', 'system');
     delete html.dataset.hydrated;
+    html.removeAttribute('data-theme-swap');
     localStorage.clear();
   });
 
   afterEach(() => {
     html.setAttribute('data-theme', 'dark');
+    html.setAttribute('data-theme-choice', 'system');
+    // A test that fails inside a swap's two frames would otherwise leave transitions off for the next one.
+    html.removeAttribute('data-theme-swap');
   });
 
-  it('renders its children on the first pass, in the dark theme the server sends', () => {
+  it('renders its children on the first pass, in System painting Dark, as the server sends', () => {
     // The server render runs no effects, so a gate that waits for a mount effect would send no child.
     let firstPass = '';
     function First() {
-      const { theme } = useTheme();
-      if (!firstPass) firstPass = theme;
+      const { choice, theme } = useThemeChoice();
+      if (!firstPass) firstPass = `${choice}/${theme}`;
       return <p>child</p>;
     }
     const markup = renderToString(
@@ -41,17 +47,18 @@ describe('ThemeProvider', () => {
       </ThemeProvider>,
     );
     expect(markup).toContain('<p>child</p>');
-    expect(firstPass).toBe('dark');
+    expect(firstPass).toBe('system/dark');
   });
 
   it('picks up the light theme the inline script put on <html>', () => {
     html.setAttribute('data-theme', 'light');
+    html.setAttribute('data-theme-choice', 'light');
     render(
       <ThemeProvider>
         <Probe />
       </ThemeProvider>,
     );
-    expect(screen.getByRole('button')).toHaveTextContent('light');
+    expect(screen.getByRole('button')).toHaveTextContent('light/light');
   });
 
   it('renders once for a stored light theme, so no context change reaches a boundary still streaming in', () => {
@@ -71,10 +78,11 @@ describe('ThemeProvider', () => {
   });
 
   describe('hydrating a stored light theme', () => {
+    // The setter alone, as a control that never reads the theme: no subscription, so no render after hydration.
     function Toggle() {
-      const toggle = useThemeToggle();
+      const setChoice = useSetThemeChoice();
       return (
-        <button type="button" onClick={toggle}>
+        <button type="button" onClick={() => setChoice('light')}>
           toggle
         </button>
       );
@@ -174,23 +182,37 @@ describe('ThemeProvider', () => {
     expect(html.dataset.hydrated).toBe('true');
   });
 
-  it('writes the attribute and localStorage.theme on each toggle', () => {
+  it('writes both attributes and localStorage.theme on each choice', () => {
     render(
       <ThemeProvider>
         <Probe />
       </ThemeProvider>,
     );
     act(() => fireEvent.click(screen.getByRole('button')));
-    expect(html.getAttribute('data-theme')).toBe('light');
+    expect([html.getAttribute('data-theme-choice'), html.getAttribute('data-theme')]).toEqual(['light', 'light']);
     expect(localStorage.getItem('theme')).toBe('light');
-    expect(screen.getByRole('button')).toHaveTextContent('light');
+    expect(screen.getByRole('button')).toHaveTextContent('light/light');
 
     act(() => fireEvent.click(screen.getByRole('button')));
-    expect(html.getAttribute('data-theme')).toBe('dark');
-    expect(localStorage.getItem('theme')).toBe('dark');
+    expect([html.getAttribute('data-theme-choice'), html.getAttribute('data-theme')]).toEqual(['black', 'black']);
+    expect(localStorage.getItem('theme')).toBe('black');
+    expect(screen.getByRole('button')).toHaveTextContent('black/black');
   });
 
-  it('still flips both ways when localStorage throws on write', () => {
+  it('follows the inline script when it changes <html>, as System does when the device switches', async () => {
+    render(
+      <ThemeProvider>
+        <Probe />
+      </ThemeProvider>,
+    );
+    expect(screen.getByRole('button')).toHaveTextContent('system/dark');
+    await act(async () => {
+      html.setAttribute('data-theme', 'light');
+    });
+    expect(screen.getByRole('button')).toHaveTextContent('system/light');
+  });
+
+  it('still applies a choice when localStorage throws on write', () => {
     const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new DOMException('The operation is insecure.', 'SecurityError');
     });
@@ -202,12 +224,103 @@ describe('ThemeProvider', () => {
       );
       act(() => fireEvent.click(screen.getByRole('button')));
       expect(html.getAttribute('data-theme')).toBe('light');
-      expect(screen.getByRole('button')).toHaveTextContent('light');
+      expect(screen.getByRole('button')).toHaveTextContent('light/light');
       act(() => fireEvent.click(screen.getByRole('button')));
-      expect(html.getAttribute('data-theme')).toBe('dark');
-      expect(screen.getByRole('button')).toHaveTextContent('dark');
+      expect(html.getAttribute('data-theme')).toBe('black');
+      expect(screen.getByRole('button')).toHaveTextContent('black/black');
     } finally {
       setItem.mockRestore();
+    }
+  });
+
+  it('paints the browser bar with an explicit choice, and puts System\'s pair back', async () => {
+    const light = Object.assign(document.createElement('meta'), { name: 'theme-color', content: '#ebe5d9' });
+    light.media = '(prefers-color-scheme: light)';
+    const dark = Object.assign(document.createElement('meta'), { name: 'theme-color', content: '#080a09' });
+    dark.media = '(prefers-color-scheme: dark)';
+    document.head.append(light, dark);
+    try {
+      render(
+        <ThemeProvider>
+          <Probe />
+        </ThemeProvider>,
+      );
+      act(() => fireEvent.click(screen.getByRole('button')));
+      act(() => fireEvent.click(screen.getByRole('button')));
+      expect([light.content, dark.content]).toEqual(['#000000', '#000000']);
+      // A choice made in another tab reaches the provider through the inline script's write on <html>.
+      await act(async () => {
+        html.setAttribute('data-theme-choice', 'system');
+        html.setAttribute('data-theme', 'dark');
+      });
+      expect([light.content, dark.content]).toEqual(['#ebe5d9', '#080a09']);
+    } finally {
+      light.remove();
+      dark.remove();
+    }
+  });
+
+  it('turns transitions off while a new theme lands, for two frames, and not for a write of the same theme', async () => {
+    // Each frame's callbacks, run by hand, and cancelled for real: the guard must outlast the frame the new theme's
+    // styles land in, and a second switch inside that window must restart it rather than let the first one's end land.
+    const frames = new Map<number, FrameRequestCallback>();
+    let ids = 0;
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      frames.set(++ids, callback);
+      return ids;
+    });
+    const caf = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => void frames.delete(id));
+    const nextFrame = () => {
+      const due = [...frames.values()];
+      frames.clear();
+      due.forEach((callback) => callback(0));
+    };
+    try {
+      const { unmount } = render(
+        <ThemeProvider>
+          <Probe />
+        </ThemeProvider>,
+      );
+      await act(async () => {
+        html.setAttribute('data-theme', 'dark');
+      });
+      expect(html.hasAttribute('data-theme-swap')).toBe(false);
+
+      act(() => fireEvent.click(screen.getByRole('button')));
+      await act(async () => {});
+      expect(html.hasAttribute('data-theme-swap')).toBe(true);
+      nextFrame();
+      expect(html.hasAttribute('data-theme-swap')).toBe(true);
+      nextFrame();
+      expect(html.hasAttribute('data-theme-swap')).toBe(false);
+      expect(frames.size, 'no frame is left waiting once the guard is off').toBe(0);
+
+      // Back to Dark, then Light, then Black a frame later, inside Light's two: the guard ends two frames after the last.
+      await act(async () => {
+        html.setAttribute('data-theme', 'dark');
+      });
+      act(() => fireEvent.click(screen.getByRole('button')));
+      await act(async () => {});
+      nextFrame();
+      act(() => fireEvent.click(screen.getByRole('button')));
+      await act(async () => {});
+      expect(html.getAttribute('data-theme')).toBe('black');
+      nextFrame();
+      expect(html.hasAttribute('data-theme-swap'), "the first switch's second frame doesn't end the second's guard").toBe(true);
+      nextFrame();
+      expect(html.hasAttribute('data-theme-swap')).toBe(false);
+
+      // The inline script's write (System following the device) is guarded too, and unmounting clears a guard.
+      await act(async () => {
+        html.setAttribute('data-theme', 'dark');
+      });
+      expect(html.hasAttribute('data-theme-swap')).toBe(true);
+      unmount();
+      expect(html.hasAttribute('data-theme-swap')).toBe(false);
+      expect(frames.size, 'unmounting cancels the waiting frame').toBe(0);
+    } finally {
+      raf.mockRestore();
+      caf.mockRestore();
     }
   });
 });

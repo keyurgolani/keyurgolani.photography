@@ -3,12 +3,12 @@ import { expectFocusRingVisible } from './support/focus';
 import { measure } from './support/measure';
 import { expect, test } from './support/test';
 
-// The focus token on ThemeToggle, each SiteNav link, and the About source
+// The focus token on the theme control, each SiteNav link, and the About source
 // link, in both themes and under hover, since Tailwind's dark: and hover:
 // shadow variants land after the token. Then the lightbox elements YARL
 // focuses on its own, which must not draw it.
 
-const toggle = (page: Page) => page.getByRole('button', { name: /^Switch to (dark|light) mode$/ });
+const toggle = (page: Page) => page.getByRole('button', { name: /^Theme:/ });
 const source = (page: Page) => page.getByRole('navigation', { name: 'External profiles' }).getByRole('link', { name: 'Site source', exact: true });
 const firstPhoto = (page: Page) => page.getByRole('button', { name: 'Photograph 1 of 12', exact: true });
 
@@ -32,7 +32,7 @@ for (const theme of ['dark', 'light'] as const) {
             await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
         }
 
-        test('ThemeToggle shows the focus ring', async ({ page }) => {
+        test('the theme control shows the focus ring', async ({ page }) => {
             await open(page, '/gallery');
             await expectFocusRingVisible(toggle(page));
         });
@@ -50,7 +50,7 @@ for (const theme of ['dark', 'light'] as const) {
         });
 
         for (const [label, path, target] of [
-            ['ThemeToggle', '/gallery', toggle],
+            ['the theme control', '/gallery', toggle],
             ['the About source link', '/about', source],
         ] as const) {
             test(`${label} keeps the band under hover`, async ({ page }, testInfo) => {
@@ -80,7 +80,9 @@ for (const theme of ['dark', 'light'] as const) {
             expect(await ringOf(track)).toEqual({ focused: true, focusVisible: true, outline: 'none', boxShadow: 'none' });
             const active = await measure(page.locator('.yarl__thumbnails_thumbnail_active'));
             expect(active.outline).toEqual({ style: 'solid', width: 3, offset: 3, alpha: 1 });
-            expect(active.boxShadow).toMatch(/^rgb\(0, 0, 0\) 0px 0px 0px 3px/);
+            // The band is the theme's --focus-ring-dark: black on Dark, the paper's near-white on Light.
+            const band = theme === 'light' ? 'rgb\\(251, 248, 242\\)' : 'rgb\\(0, 0, 0\\)';
+            expect(active.boxShadow).toMatch(new RegExp(`^${band} 0px 0px 0px 3px`));
         });
     });
 }

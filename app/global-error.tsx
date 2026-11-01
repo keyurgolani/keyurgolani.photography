@@ -5,8 +5,11 @@ import { startTransition } from 'react';
 import { sans, serif } from '@/app/fonts';
 import StatusPage from '@/components/site/StatusPage';
 import { ERROR_HEADING, errorCopy, useOnline } from '@/components/site/onlineStatus';
+import { THEME_INIT_SCRIPT } from '@/components/site/themeScript';
+import { useStoredChoice } from '@/components/site/useStoredChoice';
 import '@/styles/tokens.css';
 import './globals.css';
+import '@/styles/themes.css';
 import styles from './global-error.module.css';
 
 interface GlobalErrorProps {
@@ -17,18 +20,28 @@ interface GlobalErrorProps {
 /**
  * The root layout itself failed, so this page brings its own html and body,
  * with no ThemeProvider and so no SiteNav: a text wordmark, the error copy,
- * Try again, and a way home.
+ * Try again, and a way home. It paints in the visitor's theme from the same
+ * inline script as every page, or from useStoredChoice where React renders it
+ * on the client and the script never runs.
  */
 export default function GlobalError({ reset }: GlobalErrorProps) {
   const router = useRouter();
   const online = useOnline();
+  // Rendered on the client, as Next's error shell is, the inline script below never runs; this does its job.
+  useStoredChoice();
   const tryAgain = () =>
     startTransition(() => {
       router.refresh();
       reset();
     });
   return (
-    <html lang="en" data-theme="dark" className={`${serif.variable} ${sans.variable}`}>
+    <html lang="en" data-theme="dark" data-theme-choice="system" suppressHydrationWarning className={`${serif.variable} ${sans.variable}`}>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+        <noscript>
+          <style>{'[data-theme-control]{display:none}'}</style>
+        </noscript>
+      </head>
       <body className="font-sans">
         <header className={styles.header}>
           <p className={styles.wordmark}>

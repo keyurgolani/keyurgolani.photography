@@ -92,7 +92,8 @@
    faint glow behind the mark and rises when the link is lit, as the mark
    brightens to the full ink. */
 .mark {
-  --glow-rest: 0.22;
+  /* About's Black rests at 0 (aboutThemes.ts), so a link there is no box at all until it lights. */
+  --glow-rest: var(--about-glow-rest, 0.22);
   /* In a row the label starts 8px after the mark, so the pool stays centered
      on the mark and off the label, which keeps a lit label at 4.5:1. */
   --glow-inset: -12px;

@@ -49,6 +49,11 @@ export interface CatalogServerOptions {
     /** SITE_URL for this server only. Unset otherwise, whatever this shell has. */
     siteUrl?: string;
     /**
+     * A server whose catalog can't be read on purpose (the error page's tests): ready once /api/ready answers 503
+     * `unavailable`, which is the state it serves in, instead of 200.
+     */
+    unavailable?: boolean;
+    /**
      * A site config folder of its own, for a spec that takes the portrait
      * away while the harness's servers keep theirs. Defaults to theirs.
      */
@@ -155,7 +160,7 @@ export async function startCatalogServer(dataRoot: string, port?: number, option
             if (spawnError) return `could not start: ${spawnError.message}`;
             if (exited()) return `exited (${child.exitCode ?? child.signalCode}) before it answered`;
             return null;
-        }, () => LISTENING.test(output));
+        }, () => LISTENING.test(output), options.unavailable ? 503 : 200);
     } catch (error) {
         // No hook gets the server back to stop it, so a failed start stops its own.
         await stop();
@@ -173,22 +178,22 @@ const POLL_INTERVAL = 250;
  * and has logged that it listens, so a 200 from whatever else holds a pinned
  * port never counts. Fails as soon as `failure` names a reason.
  */
-async function waitUntilReady(origin: string, failure: () => string | null, listening: () => boolean): Promise<void> {
+async function waitUntilReady(origin: string, failure: () => string | null, listening: () => boolean, ready = 200): Promise<void> {
     const deadline = Date.now() + READY_TIMEOUT;
     while (Date.now() < deadline) {
         const before = failure();
         if (before) throw new Error(`next start ${before}`);
         let status = 0;
         try {
-            // /api/ready answers 200 only once the catalog it serves is readable.
+            // /api/ready answers 200 only once the catalog it serves is readable, and 503 while it can't be.
             status = (await fetch(`${origin}/api/ready`, { signal: AbortSignal.timeout(POLL_INTERVAL * 8) })).status;
         } catch {
             // Not listening yet.
         }
         const after = failure();
         if (after) throw new Error(`next start ${after}`);
-        if (status === 200 && listening()) return;
+        if (status === ready && listening()) return;
         await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
     }
-    throw new Error(`next start did not answer 200 on /api/ready within ${READY_TIMEOUT} ms`);
+    throw new Error(`next start did not answer ${ready} on /api/ready within ${READY_TIMEOUT} ms`);
 }

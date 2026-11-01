@@ -9,13 +9,28 @@ vi.mock('next/navigation', () => ({
     usePathname: () => navigation.pathname,
     useSelectedLayoutSegments: (key = 'children') => (key === 'modal' ? navigation.modal : navigation.children),
 }));
-vi.mock('../ViewerShell', () => ({
-    default: ({ mode, children }: { mode: string; children: ReactNode }) => (
+// The host reads the shell from viewerShellLoader. Here the load is a thenable that settles as it's asked and never
+// rejects (as the real loader never does), so `use` renders the stand-in at once. Each ask is counted, and `loaded`
+// says whether the shell is in.
+const loader = vi.hoisted(() => ({ asks: 0, loaded: false, cancels: 0 }));
+vi.mock('../viewerShellLoader', () => {
+    const Shell = ({ mode, children }: { mode: string; children: ReactNode }) => (
         <div data-testid="shell" data-mode={mode} data-surface="viewer">
             {children}
         </div>
-    ),
-}));
+    );
+    const settled = { status: 'fulfilled', value: Shell, then: (resolve: (value: typeof Shell) => void) => (resolve(Shell), settled) };
+    return {
+        loadViewerShell: () => settled,
+        preloadViewerShell: () => {
+            loader.asks++;
+        },
+        viewerShellLoaded: () => loader.loaded,
+        cancelViewerShellLoad: () => {
+            loader.cancels++;
+        },
+    };
+});
 
 beforeAll(() => {
     // A click on a link would try to navigate jsdom.
@@ -23,6 +38,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+    Object.assign(loader, { asks: 0, loaded: false, cancels: 0 });
     Object.assign(navigation, { pathname: '/work/fixture', children: [], modal: ['(__SLOT__)', '__DEFAULT__'] });
 });
 
@@ -241,5 +257,66 @@ describe('ViewerHost', () => {
         closeModal();
         view.rerender(host());
         expect(document.activeElement).toBe(document.body);
+    });
+    it("loads the shell and its styles ahead of an open, on a photo link's intent and once the browser is idle", () => {
+        const idle: (() => void)[] = [];
+        vi.stubGlobal('requestIdleCallback', (task: () => void) => idle.push(task));
+        vi.stubGlobal('cancelIdleCallback', () => {});
+        const view = render(host());
+        try {
+            expect(loader.asks, 'nothing at first').toBe(0);
+            fireEvent.pointerOver(screen.getByText('About'));
+            expect(loader.asks, 'not for a link that opens no photo').toBe(0);
+            fireEvent.pointerOver(screen.getByText('Entry a'));
+            fireEvent.focusIn(screen.getByText('Entry b'));
+            fireEvent.touchStart(screen.getByText('Entry a'));
+            expect(loader.asks, 'a pointer over, focus on, and a touch on a photo link').toBe(3);
+            idle.forEach((task) => task());
+            expect(loader.asks, 'and once idle').toBe(4);
+        } finally {
+            view.unmount();
+            vi.unstubAllGlobals();
+        }
+    });
+
+    it('asks for nothing ahead on a photo page, which renders the shell itself', () => {
+        Object.assign(navigation, { pathname: '/work/fixture/photo/a', children: ['photo', 'a'] });
+        render(host(PHOTO));
+        const asked = loader.asks;
+        fireEvent.pointerOver(screen.getByText('Photo content'));
+        expect(loader.asks).toBe(asked);
+    });
+    it('stops listening for intent once the shell is in, and stops a load still waiting when the series goes', () => {
+        const view = render(host());
+        loader.loaded = true;
+        fireEvent.pointerOver(screen.getByText('Entry a'));
+        loader.loaded = false;
+        fireEvent.pointerOver(screen.getByText('Entry b'));
+        expect(loader.asks, 'the listeners went with the first intent after the load').toBe(0);
+        view.unmount();
+        expect(loader.cancels).toBe(1);
+    });
+
+    it('marks the photo link busy while its open waits on the shell, and clears it once the modal opens', () => {
+        const view = render(host());
+        const entry = screen.getByText('Entry a');
+        fireEvent.click(entry);
+        expect(entry).toHaveAttribute('aria-busy', 'true');
+        expect(entry.style.cursor).toBe('progress');
+        // A second photo clicked meanwhile takes the mark over.
+        const other = screen.getByText('Entry b');
+        fireEvent.click(other);
+        expect(entry).not.toHaveAttribute('aria-busy');
+        expect(other).toHaveAttribute('aria-busy', 'true');
+        openModal('b');
+        view.rerender(host());
+        expect(other).not.toHaveAttribute('aria-busy');
+        expect(other.style.cursor).toBe('');
+        // With the shell in, a click marks nothing.
+        closeModal();
+        view.rerender(host());
+        loader.loaded = true;
+        fireEvent.click(entry);
+        expect(entry).not.toHaveAttribute('aria-busy');
     });
 });

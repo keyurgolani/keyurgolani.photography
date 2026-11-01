@@ -40,21 +40,30 @@ async function servePhoto(route: Route, pathname: string): Promise<void> {
     await route.fulfill({ path: path.join(fixtureDir(), file), contentType: 'image/jpeg' });
 }
 
+/**
+ * Routes `page`'s /api/photos, its photo files, and the image optimizer's photo URLs to the fixtures, so the legacy
+ * Gallery only ever sees them. Every page of this suite gets it before its first navigation; the theme parity run
+ * (e2e/themes) calls it on its own pages.
+ */
+export async function routePhotoFixtures(page: Page): Promise<void> {
+    await page.route('**/api/photos', (route) => route.fulfill({ json: photoRecords(photoLists.get(page) ?? DEFAULT_PHOTO_NAMES) }));
+    await page.route('**/assets/photos/**', (route) => servePhoto(route, new URL(route.request().url()).pathname));
+    // Photo URLs through the image optimizer get the fixture too. Anything else passes through.
+    await page.route('**/_next/image**', (route) => {
+        const request = new URL(route.request().url());
+        const source = new URL(request.searchParams.get('url') ?? '', request);
+        if (source.origin === request.origin && source.pathname.startsWith('/assets/photos/')) {
+            return servePhoto(route, source.pathname);
+        }
+        return route.fallback();
+    });
+}
+
 export const test = base.extend<{ photoRoutes: void }>({
     // Routes every page before its first navigation, so the app only ever sees fixtures
     photoRoutes: [
         async ({ page }, use) => {
-            await page.route('**/api/photos', (route) => route.fulfill({ json: photoRecords(photoLists.get(page) ?? DEFAULT_PHOTO_NAMES) }));
-            await page.route('**/assets/photos/**', (route) => servePhoto(route, new URL(route.request().url()).pathname));
-            // Photo URLs through the image optimizer get the fixture too. Anything else passes through.
-            await page.route('**/_next/image**', (route) => {
-                const request = new URL(route.request().url());
-                const source = new URL(request.searchParams.get('url') ?? '', request);
-                if (source.origin === request.origin && source.pathname.startsWith('/assets/photos/')) {
-                    return servePhoto(route, source.pathname);
-                }
-                return route.fallback();
-            });
+            await routePhotoFixtures(page);
             await use();
         },
         { auto: true },

@@ -5,17 +5,17 @@ import { waitForHydration } from '../support/hydration';
 import { bottomRowEdges, navPaint, navPixels, near, rootGrounds, windowGround, type Rgb } from '../support/shellPaint';
 import { expect, test } from '../support/test';
 
-// #21: the shell looks the same under both themes. SiteNav's background, ink,
-// and border, as computed and as painted, match between the dark and the
-// light theme on every page that has it, at 1440 and 390. And the shell owns
-// its ground: body paints it and html stays unpainted, so the window's own
-// ground (what overscroll shows) is the page's: About's paper, the Viewer's
-// ground, the Gallery After Hours ground elsewhere. The bottom row of a page
-// scrolled to its end shows the page's own ground in both themes, never a
-// light strip.
+// Each theme paints its own ground, and the shell owns it: body paints it and
+// html stays unpainted, so the window's own ground (what overscroll shows) is
+// the page's, and the bottom row of a page scrolled to its end shows that
+// ground, never a strip of another. Dark is today's site, so its grounds are
+// v1.2.0's: the Gallery After Hours ground, About's approved paper, the
+// Viewer's Chromatic Chapters ground. Light paints its paper on the shell,
+// About (R2-P1-2) and the Viewer (R2-P1-1). (Before the five themes, #21
+// pinned one look for both; Dark against v1.2.0 is e2e/themes/dark-parity.spec.ts.)
 // The catalog-mode server serves the published Home fixture, so Work, the
-// series, and the Viewer are real pages. The legacy Gallery, on the harness
-// server, is the one page the theme repaints, below its nav.
+// series, and the Viewer are real pages. The legacy Gallery is on the harness
+// server.
 
 test.skip(({ isMobile }) => isMobile, 'Each test sets the 1440 and 390 viewports itself, on the desktop project.');
 test.use({ baseURL: CATALOG_ORIGIN });
@@ -24,6 +24,8 @@ const LEGACY_ORIGIN = `http://127.0.0.1:${process.env.E2E_PORT || '3100'}`;
 const GAH_GROUND: Rgb = [8, 10, 9];
 const PAPER: Rgb = [244, 236, 215];
 const CC_GROUND: Rgb = [17, 21, 19];
+/** Light's paper, on the shell and on About (R3-P2-1). */
+const LIGHT_PAPER: Rgb = [235, 229, 217];
 const css = ([r, g, b]: Rgb) => `rgb(${r}, ${g}, ${b})`;
 /** html's computed background when nothing paints it, which leaves the canvas to body's. */
 const UNPAINTED = 'rgba(0, 0, 0, 0)';
@@ -35,27 +37,34 @@ interface Route {
     path: string;
     /** Whether SiteNav renders here. The Viewer has none. */
     nav: boolean;
-    /** The ground the body paints, and so the window's: the canvas past the page, and the bottom row. html paints none. */
+    /** The ground the body paints in Dark, and so the window's: the canvas past the page, and the bottom row. html paints none. */
     ground: Rgb;
+    /** The same in Light. */
+    light: Rgb;
     /**
-     * What the bottom row's edges show: the page's own ground, within `tolerance`; the same pixels in both themes, where
-     * the Viewer's chrome bar sits at the bottom; or nothing to check, since Home's stage is a photograph to the edge and
+     * What the bottom row's edges show: the page's own ground, within `tolerance`; the Viewer's reading area, its
+     * `chrome` per theme; or nothing to check, since Home's stage is a photograph to the edge and
      * the legacy Gallery repaints with the theme.
      */
-    bottom: 'ground' | 'same' | 'none';
+    bottom: 'ground' | 'chrome' | 'none';
+    /** The Viewer's reading area at the foot of the page, per theme: --cc-chrome over the Viewer's ground. */
+    chrome?: Record<'dark' | 'light', Rgb>;
     tolerance?: number;
 }
 
 const ROUTES: readonly Route[] = [
-    { name: 'Home', path: '/', nav: true, ground: GAH_GROUND, bottom: 'none' },
-    { name: 'Work', path: '/work', nav: true, ground: GAH_GROUND, bottom: 'ground' },
-    { name: 'a series', path: `/work/${HOME_SERIES.slug}`, nav: true, ground: GAH_GROUND, bottom: 'ground' },
-    // The Viewer paints its Chromatic Chapters ground on the body too, the same in both themes (#7).
-    { name: 'the Viewer', path: `/work/${HOME_SERIES.slug}/photo/${HOME_OPENING}`, nav: false, ground: CC_GROUND, bottom: 'same' },
+    { name: 'Home', path: '/', nav: true, ground: GAH_GROUND, light: LIGHT_PAPER, bottom: 'none' },
+    { name: 'Work', path: '/work', nav: true, ground: GAH_GROUND, light: LIGHT_PAPER, bottom: 'ground' },
+    { name: 'a series', path: `/work/${HOME_SERIES.slug}`, nav: true, ground: GAH_GROUND, light: LIGHT_PAPER, bottom: 'ground' },
+    // The Viewer paints its own ground on the body too (#7): today's Chromatic Chapters in Dark, Light's paper in Light.
+    { name: 'the Viewer', path: `/work/${HOME_SERIES.slug}/photo/${HOME_OPENING}`, nav: false, ground: CC_GROUND, light: LIGHT_PAPER, bottom: 'chrome',
+        // Dark's rgba(8, 11, 10, 0.9) over the bands' edge, and Light's solid sheet.
+        chrome: { dark: [9, 12, 11], light: [242, 237, 227] } },
     // The paper's ribs darken it by under 5% at the edges.
-    { name: 'About', path: '/about', nav: true, ground: PAPER, bottom: 'ground', tolerance: 10 },
-    { name: 'the 404', path: '/does-not-exist', nav: true, ground: GAH_GROUND, bottom: 'ground' },
-    { name: 'the legacy Gallery', path: `${LEGACY_ORIGIN}/gallery`, nav: true, ground: GAH_GROUND, bottom: 'none' },
+    // Light's About paper has no ribs, so it holds its ground exactly.
+    { name: 'About', path: '/about', nav: true, ground: PAPER, light: LIGHT_PAPER, bottom: 'ground', tolerance: 10 },
+    { name: 'the 404', path: '/does-not-exist', nav: true, ground: GAH_GROUND, light: LIGHT_PAPER, bottom: 'ground' },
+    { name: 'the legacy Gallery', path: `${LEGACY_ORIGIN}/gallery`, nav: true, ground: GAH_GROUND, light: LIGHT_PAPER, bottom: 'none' },
 ];
 
 const VIEWPORTS = [
@@ -90,47 +99,38 @@ async function read(page: Page, route: Route) {
 
 for (const viewport of VIEWPORTS) {
     for (const route of ROUTES) {
-        test(`${route.name} keeps the shell the same in both themes at ${viewport.width}`, async ({ page }) => {
+        test(`${route.name} paints each theme's own ground at ${viewport.width}`, async ({ page }) => {
             await page.setViewportSize(viewport);
             // A first visit puts the origin in place, so localStorage can be set before the measured load.
             await page.goto(route.path);
-            await openIn(page, route, 'dark');
-            const dark = await read(page, route);
-            await openIn(page, route, 'light');
-            const light = await read(page, route);
-
-            if (route.nav) {
-                expect(light.paint?.styles, "SiteNav's computed background, ink, and border").toEqual(dark.paint?.styles);
-                expect(light.paint?.ground, "SiteNav's ground over the page").toEqual(dark.paint?.ground);
-                if (dark.pixels && light.pixels) {
-                    expect(near(light.pixels, dark.pixels), `SiteNav as painted: ${light.pixels} in light, ${dark.pixels} in dark`).toBe(true);
-                }
-            } else {
-                await expect(primary(page)).toHaveCount(0);
-            }
-
-            const ground = css(route.ground);
-            for (const [theme, seen] of [['dark', dark], ['light', light]] as const) {
+            for (const theme of ['dark', 'light'] as const) {
+                await openIn(page, route, theme);
+                const seen = await read(page, route);
+                const ground = theme === 'dark' ? route.ground : route.light;
+                if (!route.nav) await expect(primary(page)).toHaveCount(0);
                 // A painted html would keep About's paper and the Viewer's ground off the canvas.
-                expect(seen.roots.html, `html's ground in the ${theme} theme`).toBe(UNPAINTED);
-                // About's body is paper and the Viewer's its own ground, in both themes; every other body is the Gallery After Hours ground.
-                expect(seen.roots.body, `body's ground in the ${theme} theme`).toBe(ground);
-                expect(near(seen.window, route.ground), `the window's ground in the ${theme} theme: ${seen.window}, not ${route.ground}`).toBe(true);
-            }
-
-            if (route.bottom !== 'none') {
-                for (const [theme, edges] of [['dark', dark.bottom], ['light', light.bottom]] as const) {
-                    expect(edges, `the bottom row in the ${theme} theme`).not.toBeNull();
-                    if (route.bottom === 'ground') {
-                        const off = edges!.filter((pixel) => !near(pixel, route.ground, route.tolerance));
-                        expect(off, `bottom-row edge pixels off the ground ${route.ground} in the ${theme} theme`).toEqual([]);
-                    }
+                expect(seen.roots.html, `html's ground in ${theme}`).toBe(UNPAINTED);
+                expect(seen.roots.body, `body's ground in ${theme}`).toBe(css(ground));
+                expect(near(seen.window, ground), `the window's ground in ${theme}: ${seen.window}, not ${ground}`).toBe(true);
+                // SiteNav's own paint on the gallery surface: Light's glass and rule (Dark's is the parity gate's to pin).
+                if (theme === 'light' && route.nav && route.path !== '/' && route.name !== 'About') {
+                    const nav = await primary(page).evaluate((el) => {
+                        const style = getComputedStyle(el);
+                        return { background: style.backgroundColor, rule: style.boxShadow };
+                    });
+                    expect(nav.background, "SiteNav's glass in Light").toBe('rgba(235, 229, 217, 0.9)');
+                    expect(nav.rule, "SiteNav's rule in Light").toBe('rgba(41, 35, 29, 0.14) 0px -1px 0px 0px inset');
                 }
-                const differ = light.bottom!.filter((pixel, i) => !near(pixel, dark.bottom![i]));
-                expect(differ, 'bottom-row edge pixels that change with the theme').toEqual([]);
-            } else if (route.path === '/') {
-                // Home's stage is the window, so nothing sits below it for a light strip to show through.
-                expect(light.scroll.height).toBeLessThanOrEqual(light.scroll.viewport);
+                if (route.bottom === 'ground') {
+                    const off = seen.bottom!.filter((pixel) => !near(pixel, ground, route.tolerance));
+                    expect(off, `bottom-row edge pixels off the ground ${ground} in ${theme}`).toEqual([]);
+                } else if (route.bottom === 'chrome') {
+                    const off = seen.bottom!.filter((pixel) => !near(pixel, route.chrome![theme]));
+                    expect(off, `bottom-row edge pixels off the reading area's ${route.chrome![theme]} in ${theme}`).toEqual([]);
+                } else if (route.path === '/') {
+                    // Home's stage is the window, so nothing sits below it for a strip to show through.
+                    expect(seen.scroll.height).toBeLessThanOrEqual(seen.scroll.viewport);
+                }
             }
         });
     }

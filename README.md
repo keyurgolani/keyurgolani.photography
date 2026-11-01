@@ -145,7 +145,7 @@ Most commands in this README and in [docs/](docs/) name `-f docker-compose.prod.
 ├── components/            # React components
 │   ├── Gallery.tsx        # Masonry gallery grid
 │   ├── home/              # Home slideshow, its controls, and playback
-│   ├── ThemeToggle.tsx    # Dark/light theme switcher
+│   ├── ThemeMenu.tsx      # The theme menu: System, Light, Bright, Dark and Black
 │   └── LoadingAnimation.tsx # Loading screen animation
 ├── utils/                 # Utility functions
 │   ├── imageOptimizer.ts  # Sharp-based image processing

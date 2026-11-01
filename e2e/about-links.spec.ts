@@ -33,7 +33,7 @@ const external = (page: Page) => page.getByRole('navigation', { name: /^External
 const links = (page: Page) => external(page).getByRole('link');
 /** The span with the link's text. The mark's span holds only its svg. */
 const labelOf = (link: Locator) => link.locator('span').filter({ hasText: /\S/ });
-const toggle = (page: Page) => page.getByRole('button', { name: /^Switch to (light|dark) mode$/ });
+const toggle = (page: Page) => page.getByRole('button', { name: /^Theme:/ });
 const primaryLinks = (page: Page) => page.getByRole('navigation', { name: 'Primary' }).getByRole('link');
 /** The site nav bar: every navigation landmark but the external links' own, which since #21 is SiteNav. */
 const siteNav = (page: Page) => page.getByRole('navigation').and(page.locator(':not([aria-label^="External profiles"])'));
