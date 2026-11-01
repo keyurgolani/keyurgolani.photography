@@ -137,15 +137,17 @@ A release's notes describe what changed since the release before it, so a host t
 
 When the host has an override, as the override rules further down this section describe, every command here names both files, `-f docker-compose.prod.yml -f <override>`, or runs as plain `docker compose` with the symlink layout below. `-f docker-compose.prod.yml` alone leaves the override out, so its photos path, networks, and services, a tunnel or proxy included, drop out of the project. The commands below write the two-file form.
 
-Back up before you deploy. Stop `curator` if it's running, and `image-watcher`, so neither writes while you copy. `web` keeps serving. Copy `./portfolio-data` and `./site-config` to a dated folder, as [Backing up](data-root.md#backing-up) describes, then start the two again. On a small data root this takes seconds:
+Back up before you deploy. Stop `image-watcher`, and `curator` if it runs, so neither writes while you copy. `web` keeps serving. Copy `./portfolio-data` and `./site-config` to a dated folder, as [Backing up](data-root.md#backing-up) describes, then start them again. On a small data root this takes seconds:
 
 ```bash
-docker compose -f docker-compose.prod.yml -f <override> stop curator image-watcher
+docker compose -f docker-compose.prod.yml -f <override> stop image-watcher
+# only if curator runs:
+docker compose -f docker-compose.prod.yml -f <override> stop curator
 # copy ./portfolio-data and ./site-config, as data-root.md's Backing up describes
 docker compose -f docker-compose.prod.yml -f <override> start image-watcher
 ```
 
-Start `curator` again only if it was running. Then set the new tag in `.env`. Compose reads that file on its own.
+Start `curator` again only if it was running, with `--profile curator start curator`, since it sits behind that profile. Then set the new tag in `.env`. Compose reads that file on its own.
 
 ```bash
 PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z
