@@ -131,7 +131,21 @@ Releases run one at a time, and waiting ones queue. The job summary shows the ve
 
 ## Deploying
 
-Set the tag in the `.env` next to `docker-compose.prod.yml` on the host. Compose reads that file on its own.
+Start from the tag the host runs now. It's the `PHOTOGRAPHY_IMAGE_TAG` line in the `.env` next to `docker-compose.prod.yml`, and `docker inspect --format '{{.Config.Image}}' <web container>` shows the image `web` really runs. Note it, since [Rollback](#rollback) goes back to it.
+
+A release's notes describe what changed since the release before it, so a host that skipped a release also takes every step the skipped ones listed. When any release between the running one and the new one changed `docker-compose.prod.yml`, install the new file first, the way the slice C block of #10 below does: fetch it, check it with your override, keep the old copy as `docker-compose.prod.yml.before-vX.Y.Z`, then move it in. `v1.2.1` changed it, giving `curator` the read-only `./site-config` mount, so a host on `v1.2.0` installs the new file on the way to any later release.
+
+When the host has an override, as the override rules further down this section describe, every command here names both files, `-f docker-compose.prod.yml -f <override>`, or runs as plain `docker compose` with the symlink layout below. `-f docker-compose.prod.yml` alone leaves the override out, so its photos path, networks, and services, a tunnel or proxy included, drop out of the project. The commands below write the two-file form.
+
+Back up before you deploy. Stop `curator` if it's running, and `image-watcher`, so neither writes while you copy. `web` keeps serving. Copy `./portfolio-data` and `./site-config` to a dated folder, as [Backing up](data-root.md#backing-up) describes, then start the two again. On a small data root this takes seconds:
+
+```bash
+docker compose -f docker-compose.prod.yml -f <override> stop curator image-watcher
+# copy ./portfolio-data and ./site-config, as data-root.md's Backing up describes
+docker compose -f docker-compose.prod.yml -f <override> start image-watcher
+```
+
+Start `curator` again only if it was running. Then set the new tag in `.env`. Compose reads that file on its own.
 
 ```bash
 PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z
@@ -139,12 +153,14 @@ PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z
 
 To pin the exact image too, add the digest from the release's job summary: `PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z@sha256:<digest>`. Compose then pulls that digest whatever the tag names later.
 
-Then pull and restart:
+Then pull and restart the site's own services, by name:
 
 ```bash
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml -f <override> pull web image-watcher
+docker compose -f docker-compose.prod.yml -f <override> up -d --no-deps web image-watcher
 ```
+
+Without an override, leave out `-f <override>`. Add `curator` to both lines when it runs, since it starts only by name. Naming the services keeps `pull` and `up -d` off everything else in the project, such as a tunnel or proxy in the override, which an unscoped `pull` would update and an unscoped `up -d` would recreate. `--no-deps` also starts nothing those services depend on, so it won't start a service a release adds. A release that adds one names it in its notes, and the version check above catches it on the way.
 
 Both services switch together. Every `docker compose -f docker-compose.prod.yml` command needs `PHOTOGRAPHY_IMAGE_TAG`, not just `up`, so `pull`, `ps`, `logs`, and `down` refuse to run without it too. A `PHOTOGRAPHY_IMAGE_TAG` exported in your shell overrides `.env`. Nothing pulls `:latest` anymore, so every release needs this `.env` edit.
 
@@ -424,9 +440,9 @@ A revision with carried-over photos names them by their place, which no release 
 
 After the launch, an image older than v1.2.1 can't read the catalog. Take the site back to legacy mode first (Rollback C), then change the tag. Legacy mode comes back only from a data-root backup made before the launch publish, as [After the catalog launch](#after-the-catalog-launch) says.
 
-Before changing `.env`, note the tag the host runs now. To roll back, set `PHOTOGRAPHY_IMAGE_TAG` back to that tag and run the same two commands. That swaps the code, not the photo library. A release before `v1.2.0` ignores `./site-config` and shows the portrait built into its image. Rolling back to a release before Phase 0 of #17 brings back the watcher's startup cleanup, which deletes the derivative sets this release keeps for removed photos. That older release also refills `./.next-images-cache` under its year-long headers and writes new `cache/dynamic` files, so roll forward again the way Deploying describes for `v1.1.0`.
+Before changing `.env`, note the tag the host runs now, as Deploying says. To roll back, set `PHOTOGRAPHY_IMAGE_TAG` back to that tag and run the same scoped `pull` and `up -d --no-deps` as Deploying, with the same files. Once the catalog has launched, `v1.2.1` is the floor, as above. That swaps the code, not the photo library. A release before `v1.2.0` ignores `./site-config` and shows the portrait built into its image. Rolling back to a release before Phase 0 of #17 brings back the watcher's startup cleanup, which deletes the derivative sets this release keeps for removed photos. That older release also refills `./.next-images-cache` under its year-long headers and writes new `cache/dynamic` files, so roll forward again the way Deploying describes for `v1.1.0`.
 
-Rolling back past the first release with slice C of #10 needs the compose file the host ran before it too, since that older image has no `dist/scripts` for this file's watcher command. Put back the copy that release's deploy step saved, `docker-compose.prod.yml.before-vX.Y.Z`, rather than the repository's older file, so the host's own changes come back with it. Leave out of the override whatever only moved there from that copy, since the copy already has it. Restore the file first, then set the older tag in `.env`, then run the two commands.
+Rolling back past the first release with slice C of #10 needs the compose file the host ran before it too, since that older image has no `dist/scripts` for this file's watcher command. Put back the copy that release's deploy step saved, `docker-compose.prod.yml.before-vX.Y.Z`, rather than the repository's older file, so the host's own changes come back with it. Leave out of the override whatever only moved there from that copy, since the copy already has it. Restore the file first, then set the older tag in `.env`, then run the two scoped commands below.
 
 That copy publishes `web` the way the host did before, which for the repository's older file is `"3000:3000"`, every interface. The older image doesn't care which address it's published on, so if the proxy or tunnel reaches `web` on the host's loopback, keep it there: the `sed` line changes `"3000:3000"` to `"127.0.0.1:3000:3000"` before `up -d`, and the `grep` after it shows the line it left. Leave both lines out only when something reaches `web` from another machine:
 
@@ -435,9 +451,11 @@ cp -p docker-compose.prod.yml.before-vX.Y.Z docker-compose.prod.yml
 sed -i 's/^\([[:space:]]*- "\)3000:3000"/\1127.0.0.1:3000:3000"/' docker-compose.prod.yml
 grep -n '3000:3000' docker-compose.prod.yml
 # set PHOTOGRAPHY_IMAGE_TAG in .env back to the older tag
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml -f <override> pull web image-watcher
+docker compose -f docker-compose.prod.yml -f <override> up -d --no-deps web image-watcher
 ```
+
+Without an override, leave out `-f <override>`. Add `curator` to both lines when it runs.
 
 Leave `./portfolio-data` where it is. Older releases never read it, and once you roll forward, the watcher's next pass catches up with what changed in the library meanwhile. A release that finds a data root written by a newer one, with a schema it doesn't know, treats it as unavailable and runs only the legacy step.
 
