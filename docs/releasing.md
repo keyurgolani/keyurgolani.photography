@@ -355,6 +355,8 @@ curl -s http://127.0.0.1:3000/api/ready
 
 It should report `"mode":"legacy"` and `"state":"ok"`. Until a catalog revision is published, `/media` serves no set and the site keeps serving the legacy derivatives.
 
+`v1.3.1` changes the host's compose file too: `curator`'s publish reads `CURATOR_PUBLISH` and `CURATOR_HOST_PORT` from `.env`, for the opt-in [LAN mode](curator.md#from-your-home-network). With neither set it publishes on `127.0.0.1:3001` exactly as before, and `web` is the same.
+
 ## About's portrait
 
 About reads its portrait from the host. It's one file in `./site-config`, next to `docker-compose.prod.yml`, which `web` mounts read-only at `/config/site` (`PHOTOGRAPHY_SITE_CONFIG_DIR`). From `v1.2.1`, `curator` mounts it the same way, so the draft preview's About shows the same portrait ([curator.md](curator.md#preview-and-publish)):

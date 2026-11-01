@@ -99,7 +99,16 @@ function standaloneDir(): string {
 }
 
 /** The settings that turn a server into the curator. A plain catalog server never inherits them from this shell. */
-const CURATOR_SETTINGS = ['CURATION_ENABLED', 'CURATOR_TUNNEL_PORT', 'CURATION_BIND_SCOPE', 'CURATOR_PASSPHRASE_HASH_FILE', 'CURATOR_SESSION_SECRET_FILE'];
+const CURATOR_SETTINGS = [
+    'CURATION_ENABLED',
+    'CURATOR_TUNNEL_PORT',
+    'CURATOR_PUBLISH',
+    'CURATOR_HOST_PORT',
+    'CURATOR_EXTRA_HOSTS',
+    'CURATION_BIND_SCOPE',
+    'CURATOR_PASSPHRASE_HASH_FILE',
+    'CURATOR_SESSION_SECRET_FILE',
+];
 
 /**
  * Serve the build with `dataRoot` as its data root, and wait until it

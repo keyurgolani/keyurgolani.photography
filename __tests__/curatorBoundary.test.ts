@@ -48,6 +48,9 @@ afterAll(() => secrets.cleanup());
 beforeEach(() => {
     vi.stubEnv('HOSTNAME', '127.0.0.1');
     vi.stubEnv('CURATOR_TUNNEL_PORT', '');
+    vi.stubEnv('CURATOR_PUBLISH', '');
+    vi.stubEnv('CURATOR_HOST_PORT', '');
+    vi.stubEnv('CURATOR_EXTRA_HOSTS', '');
     vi.stubEnv('CURATION_BIND_SCOPE', '');
     for (const [name, value] of Object.entries(secrets.env)) vi.stubEnv(name, value);
     signedIn = secrets.cookie();
@@ -439,5 +442,34 @@ describe("next.config.mjs's curator headers", () => {
             expect(response.headers.get('x-robots-tag'), pathname).toBeNull();
             expect(response.headers.get('content-security-policy'), pathname).toBeNull();
         }
+    });
+});
+
+describe('proxy.ts in LAN mode', () => {
+    beforeEach(() => {
+        vi.stubEnv('CURATION_ENABLED', 'true');
+        vi.stubEnv('CURATOR_PUBLISH', '192.168.86.250');
+        vi.stubEnv('CURATOR_EXTRA_HOSTS', 'homelab.local:3443');
+    });
+
+    it('sends a page without a session to the login on the scheme it came in on: https only from a TLS proxy on a LAN name', async () => {
+        const login = async (host: string, proto?: string) =>
+            (await send('/curation', { headers: { host, ...(proto ? { 'x-forwarded-proto': proto } : {}) } })).headers.get('location');
+        expect(await login('homelab.local:3443', 'https')).toBe('https://homelab.local:3443/curation/login');
+        // A TLS proxy on 443 passes on the Host the browser sent, with no port.
+        vi.stubEnv('CURATOR_EXTRA_HOSTS', 'homelab.local:3443,homelab.local:443');
+        expect(await login('homelab.local', 'https')).toBe('https://homelab.local/curation/login');
+        expect((await send('/curation', { headers: { host: 'homelab.local' } })).status).toBe(421);
+        expect(await login('192.168.86.250:3001', 'http')).toBe('http://192.168.86.250:3001/curation/login');
+        expect(await login('192.168.86.250:3001')).toBe('http://192.168.86.250:3001/curation/login');
+        // The loopback names keep today's http, whatever the header says.
+        expect(await login(CURATOR_HOST, 'https')).toBe(`http://${CURATOR_HOST}/curation/login`);
+    });
+
+    it('takes a mutation with an https Origin on a LAN name, and refuses one on another host', async () => {
+        const post = (origin: string) =>
+            send('/api/curation/events', { method: 'POST', headers: { host: 'homelab.local:3443', origin, 'x-forwarded-proto': 'https', cookie: signedIn } });
+        expect(passes(await post('https://homelab.local:3443'))).toBe(true);
+        expect((await post('https://attacker.example')).status).toBe(403);
     });
 });
