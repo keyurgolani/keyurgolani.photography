@@ -1,8 +1,8 @@
 'use client';
 
 import { Check } from 'lucide-react';
-import dynamic from 'next/dynamic';
-import { Component, type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useId, useRef, useState } from 'react';
+import QuietBoundary from './QuietBoundary';
 import { useThemeChoice } from './ThemeContext';
 import { THEME_CHOICES, type ThemeChoice } from './themeChoices';
 
@@ -17,28 +17,10 @@ const THEME_LABELS: Record<ThemeChoice, { name: string; note: string }> = {
 };
 
 // The popover's styles, off every page's first-load CSS (the CSS budget): they load once the page is idle after
-// hydration, or as soon as the pointer or focus reaches the button.
-const ThemeMenuPopoverStyles = dynamic(() => import('./ThemeMenuPopoverStyles'), { ssr: false });
-
-/**
- * A failed load of the styles' chunk (a page left open across a redeploy, a dropped request) renders nothing, so the
- * button stays inert, as without JavaScript, instead of the route's error page taking over.
- */
-class StylesBoundary extends Component<{ children: ReactNode; onFailed: () => void }, { failed: boolean }> {
-  state = { failed: false };
-
-  static getDerivedStateFromError() {
-    return { failed: true };
-  }
-
-  componentDidCatch() {
-    this.props.onFailed();
-  }
-
-  render() {
-    return this.state.failed ? null : this.props.children;
-  }
-}
+// hydration, or as soon as the pointer or focus reaches the button. They mount only after hydration (`wanted`), so the
+// server never renders them. React's lazy, not next/dynamic, whose loader runtime would ride in every chunk that holds
+// the menu, the not-found page's included (perf5's JS budget).
+const ThemeMenuPopoverStyles = lazy(() => import('./ThemeMenuPopoverStyles'));
 
 /**
  * The theme control: a 44 by 44 button in `SiteNav` (and the curator's header)
@@ -94,9 +76,13 @@ export default function ThemeMenu({ placement = 'nav' }: { placement?: 'nav' | '
   return (
     <>
       {wanted && (
-        <StylesBoundary onFailed={onFailed}>
-          <ThemeMenuPopoverStyles onReady={onReady} />
-        </StylesBoundary>
+        // A failed load of the styles' chunk renders nothing, so the button stays inert, as without JavaScript,
+        // instead of the route's error page taking over.
+        <QuietBoundary onFailed={onFailed}>
+          <Suspense fallback={null}>
+            <ThemeMenuPopoverStyles onReady={onReady} />
+          </Suspense>
+        </QuietBoundary>
       )}
       <button
         type="button"
