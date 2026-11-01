@@ -1,72 +1,95 @@
-# 📸 Showcase — Photography Portfolio
+# Showcase
 
-A visual tour of the photography portfolio: an immersive, glassmorphism-styled Next.js 16 site with a full-bleed hero carousel, a masonry gallery, a feature-rich lightbox, and seamless dark/light theming.
-
-> _Gallery images shown below are representative samples used to demonstrate the layout, lazy-loading, and lightbox behavior._
+A tour of the site as it's live at v1.3.0. The big change in this release is the themes: five of them, each one a different way to hang the photographs. Home keeps out of the photograph's way, the Gallery holds every photograph, and About says who took them.
 
 ---
 
-## 🏠 Home — Immersive Hero Carousel
+## Themes
 
-The landing experience is a full-viewport, auto-advancing hero carousel that cycles through featured photography. The UI is context-aware and auto-hides for a clean, immersive view, revealing navigation and controls on interaction. A parallax profile composition sits over the carousel.
+The theme menu, top right on every page, has five choices:
 
-**Dark theme**
+- **System** follows the device, Light or Dark.
+- **Light**: soft paper, with the prints matted.
+- **Bright**: a white wall, with the prints framed.
+- **Dark**: the site as it looked before v1.3.0.
+- **Black**: pure black, nothing but the photograph.
 
-![Home hero — dark](docs/screenshots/home-hero-dark.png)
+The browser keeps the choice, and every page paints in it from the first frame, so there's no flash on load. Without JavaScript the site is Dark and the menu is hidden, since nothing in it could work.
 
-**Light theme**
+**The Gallery in Light, Bright, Dark and Black**
 
-![Home hero — light](docs/screenshots/home-hero-light.png)
+![The Gallery in Light, Bright, Dark and Black](docs/screenshots/gallery-themes.png)
 
-**Carousel transition** — smooth Framer Motion cross-fades between slides with previous/next controls.
+**About in Light, Bright, Dark and Black**
 
-![Home carousel](docs/screenshots/home-carousel.png)
-
----
-
-## 🖼️ Gallery — Masonry Grid
-
-The gallery uses a dynamic masonry grid (best-fit placement across breakpoints) with IntersectionObserver-based lazy loading, low-quality image placeholders (LQIP), and a blur-up reveal as full-resolution images stream in. Next.js Image optimization negotiates AVIF/WebP automatically.
-
-**Dark theme**
-
-![Gallery — dark](docs/screenshots/gallery-dark.png)
-
-**Light theme**
-
-![Gallery — light](docs/screenshots/gallery-light.png)
+![About in Light, Bright, Dark and Black](docs/screenshots/about-themes.png)
 
 ---
 
-## 🔍 Lightbox Viewer
+## Home
 
-Clicking any photo opens a full-featured lightbox with zoom, slideshow, keyboard navigation, and a thumbnail filmstrip for quick jumping between images.
+Home shows the photograph and nothing else. Move the pointer, tab in, or tap, and the chrome comes back: the navigation and the theme control at the top, and Previous, the position, Next and Play at the bottom. It goes away again after four seconds without activity, and stays while a control has keyboard focus. The slideshow moves on every 12 seconds, and holds still under reduced motion.
 
-![Lightbox viewer](docs/screenshots/lightbox-viewer.png)
+**At rest, Dark**
 
----
+![Home at rest, Dark](docs/screenshots/home-dark.png)
 
-## 👤 About — Identity & Social Profiles
+**With the chrome, Dark**
 
-The About page presents the photographer's portrait and name, then links to their photography profiles and the site's source. Each link lights up in its brand's own color on hover or keyboard focus.
+![Home with its chrome revealed, Dark](docs/screenshots/home-dark-chrome.png)
 
-![About page](docs/screenshots/about.png)
+**At rest, Light**
 
----
+![Home at rest, Light](docs/screenshots/home-light.png)
 
-## ✨ Highlights at a Glance
+**With the chrome, Light**
 
-| Capability | Detail |
-|------------|--------|
-| **Framework** | Next.js 16 (App Router, Turbopack) + TypeScript |
-| **Design** | Glassmorphism UI, backdrop blur, Framer Motion animations |
-| **Theming** | Dark/light with system-preference detection, persisted choice |
-| **Gallery** | Masonry layout, lazy loading, LQIP blur-up placeholders |
-| **Lightbox** | Zoom, slideshow, thumbnails, keyboard navigation |
-| **Images** | Sharp pipeline (400/800/1920px), AVIF/WebP, EXIF captions |
-| **Performance** | Registry-backed photo list, pre-generated derivatives, Next.js image optimization |
-| **Deployment** | Docker-ready, background image watcher |
+![Home with its chrome revealed, Light](docs/screenshots/home-light-chrome.png)
 
 ---
 
-_See the [README](README.md) for setup and configuration. Screenshots generated from a local development build._
+## Gallery
+
+The Gallery holds every photograph in one grid. Each tile takes the photograph's own shape, and the photographs load as you scroll, with a blurred preview until the full image is in.
+
+**Dark**
+
+![The Gallery, Dark](docs/screenshots/gallery-dark.png)
+
+**Light**
+
+![The Gallery, Light](docs/screenshots/gallery-light.png)
+
+Any photograph opens over the grid, with zoom, a slideshow, and a strip of thumbnails to jump around. The arrow keys and a swipe move through the photographs. Closing it puts you back on the tile you opened.
+
+![A photograph opened from the Gallery, Dark](docs/screenshots/gallery-photo-dark.png)
+
+---
+
+## About
+
+About shows the portrait and the name, a short note, and links to my photography profiles and the site's source. Each link lights up in its brand's color on hover or keyboard focus.
+
+![About, Dark](docs/screenshots/about.png)
+
+---
+
+## Coming next
+
+Work and the series pages arrive with the catalog launch. Until then, Work in the navigation opens the Gallery.
+
+---
+
+## At a glance
+
+| | |
+|---|---|
+| **Framework** | Next.js 16 (App Router) and React 19, in TypeScript |
+| **Themes** | System, Light, Bright, Dark and Black, kept per browser and painted before the first frame |
+| **Images** | Sharp derivatives at 400, 800, 1200 and 1920 px in AVIF and WebP, with camera details read from the file |
+| **Accessibility** | Keyboard, screen reader and touch on every page, to the rules in [docs/accessibility-contract.md](docs/accessibility-contract.md) |
+| **Deployment** | Docker, with a background watcher that builds new photographs as they land in the library |
+
+---
+
+_Screenshots from the live site at v1.3.0, in Chromium at 1200 px wide with reduced motion, which is why Home's slideshow shows Play. About's use a stand-in portrait, and Home's are taken without its portrait badge. See the [README](README.md) for setup and configuration._
