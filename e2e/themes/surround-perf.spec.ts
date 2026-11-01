@@ -4,11 +4,12 @@ import path from 'node:path';
 import type { Browser, Page } from '@playwright/test';
 import { catalogCodeVersion, DEFAULT_CATALOG_CACHE, perfCatalog } from '../../lib/perf/catalogCache';
 import { checkDiskFloor, makeRunTemp, removeRunTemp } from '../../lib/perf/runFiles';
+import { tracedToFile, type TraceEvent } from './perfTrace';
 import { DROPPED_FLOOR, selfTestProblems, type SelfTestResult } from '../../lib/perf/selfTest';
 import { BUDGET_VARIANT_BYTES } from '../../lib/perf/fixture';
 import { waitForHydration } from '../support/hydration';
 import { expect, test } from '../support/test';
-import { phase, serve, standInPrints, VARIANT_REQUEST, variantFormat, type Server } from './perfServer';
+import { phase, readOnlyTree, serve, standInPrints, VARIANT_REQUEST, variantFormat, type Server } from './perfServer';
 
 // The perf run for the sequence's surround (spec §13, PR map item 3), on a 5,000-photo series with every page shown by
 // Show more, every slot a real print: the catalog's variant files are sparse, so each image request is answered with
@@ -66,6 +67,28 @@ const HEAVY = '[data-photo] { box-shadow: 0 0 0 6px #888, 0 30px 60px -10px #000
 /** The dropped-frame self-test's head: 40 ms of main-thread work on every frame, past a 16.7 ms budget. */
 const LONG_TASK_MS = 40;
 const TRACE_CATEGORIES = ['cc', 'viz', 'gpu', 'disabled-by-default-devtools.timeline.frame'];
+/** The profile's categories: the gate's, plus the timeline, without the stack and v8.execute ones (about 125 MB a trace). */
+const PROFILE_CATEGORIES = [...TRACE_CATEGORIES, 'devtools.timeline', 'disabled-by-default-devtools.timeline', 'blink.user_timing'];
+/** A subset of a run's names from a comma list in `variable`, every name known, or all of them when it's unset. */
+function subset<T extends string>(variable: string, all: readonly T[]): T[] {
+    const value = process.env[variable];
+    if (value === undefined) return [...all];
+    const names = value.split(',').map((name) => name.trim()).filter(Boolean);
+    const unknown = names.filter((name) => !(all as readonly string[]).includes(name));
+    if (names.length === 0 || unknown.length > 0) throw new Error(`${variable} names some of ${all.join(', ')}, not ${JSON.stringify(value)}`);
+    return names as T[];
+}
+/** PERF_DEVICES and PERF_THEMES narrow a rerun (the lead's phone Light rerun, 2026-10-31); a full gate sets neither. */
+const SWEPT_DEVICES = subset('PERF_DEVICES', Object.keys(DEVICES) as (keyof typeof DEVICES)[]);
+const SWEPT_THEMES = subset('PERF_THEMES', Object.keys(THEMES) as Choice[]);
+/**
+ * PERF_PROFILE_DIR with PERF_PROFILE_IF_OVER=<theme>: when that theme's median raster ratio on a device is past its
+ * bound, one sweep each of the head in that theme, the head in Dark and the base is traced with the timeline (streamed
+ * under PERF_TRACE_MAX_MB, e2e/themes/perfTrace.ts), and where the raster goes is kept as summary JSON, not the trace.
+ */
+const PROFILE_DIR = process.env.PERF_PROFILE_DIR;
+const PROFILE_IF_OVER = process.env.PERF_PROFILE_IF_OVER as Choice | undefined;
+if (PROFILE_IF_OVER !== undefined && !(PROFILE_IF_OVER in THEMES)) throw new Error(`PERF_PROFILE_IF_OVER is a theme, not ${JSON.stringify(PROFILE_IF_OVER)}`);
 const BASE = process.env.PARITY_BASE_DIR;
 const ports = (process.env.PERF_PORTS ?? '').split(',').map(Number).filter(Boolean);
 
@@ -80,6 +103,19 @@ interface Sweep {
 /** A traced scroll from the top to the end in even steps, one per frame. Raster in ms, summed; dropped frames, counted. */
 async function sweep(browser: Browser, page: Page, steps: number): Promise<Sweep> {
     await browser.startTracing(page, { categories: TRACE_CATEGORIES });
+    let rafP95: number;
+    try {
+        rafP95 = await scroll(page, steps);
+    } catch (error) {
+        await browser.stopTracing().catch(() => undefined);
+        throw error;
+    }
+    const trace = JSON.parse((await browser.stopTracing()).toString('utf8')) as { traceEvents?: TraceEvent[] };
+    return summarise(trace.traceEvents ?? [], rafP95);
+}
+
+/** The scroll from the top to the end in even steps, one per frame; its rAF p95. */
+async function scroll(page: Page, steps: number): Promise<number> {
     // The end is read every frame, since the page's height can settle under a theme change after the sweep starts
     // (perf5's first run hung in round 2: the scroll stopped short of an end read once). A scroll that stops moving,
     // or runs past five times its steps, fails by name instead of waiting forever, and so does a sweep past 2 minutes.
@@ -118,14 +154,40 @@ async function sweep(browser: Browser, page: Page, steps: number): Promise<Sweep
         steps,
     );
     let timer: NodeJS.Timeout | undefined;
-    const rafP95 = await Promise.race([swept, new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error('the sweep ran past 2 minutes')), 120_000)))]).finally(() => clearTimeout(timer));
-    const trace = JSON.parse((await browser.stopTracing()).toString('utf8')) as { traceEvents?: { name: string; ph: string; dur?: number; args?: { chrome_frame_reporter?: { state?: string } } }[] };
-    const events = trace.traceEvents ?? [];
+    return Promise.race([swept, new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error('the sweep ran past 2 minutes')), 120_000)))]).finally(() => clearTimeout(timer));
+}
+
+/** A sweep's numbers from its trace: raster in ms, summed; dropped frames, counted. */
+function summarise(events: TraceEvent[], rafP95: number): Sweep {
     const raster = events.filter((event) => event.name === 'RasterTask' && typeof event.dur === 'number').reduce((sum, event) => sum + (event.dur ?? 0), 0) / 1000;
     const dropped =
         events.filter((event) => event.name === 'DroppedFrame').length +
         events.filter((event) => event.name === 'PipelineReporter' && event.ph === 'b' && event.args?.chrome_frame_reporter?.state === 'STATE_DROPPED').length;
     return { rafP95, raster: +raster.toFixed(1), dropped };
+}
+
+/** One profiled sweep: the gate's numbers, and where raster and the rest of the time went, by process and by event. */
+async function profileSweep(browser: Browser, page: Page, steps: number, file: string) {
+    const { result: rafP95, events, bytes } = await tracedToFile(browser, PROFILE_CATEGORIES, file, () => scroll(page, steps));
+    const processName = new Map<number, string>();
+    for (const event of events) if (event.ph === 'M' && event.name === 'process_name') processName.set(event.pid, String(event.args?.name ?? '?'));
+    const where = (event: TraceEvent) => `${processName.get(event.pid) ?? '?'} ${event.pid}`;
+    const rasterByProcess: Record<string, { ms: number; tasks: number }> = {};
+    const byProcess = new Map<string, Map<string, number>>();
+    for (const event of events) {
+        if (event.ph !== 'X' || typeof event.dur !== 'number') continue;
+        const key = where(event);
+        if (event.name === 'RasterTask') {
+            rasterByProcess[key] ??= { ms: 0, tasks: 0 };
+            rasterByProcess[key].ms = +(rasterByProcess[key].ms + event.dur / 1000).toFixed(1);
+            rasterByProcess[key].tasks++;
+        }
+        const names = byProcess.get(key) ?? new Map<string, number>();
+        names.set(event.name, (names.get(event.name) ?? 0) + event.dur / 1000);
+        byProcess.set(key, names);
+    }
+    const top = Object.fromEntries([...byProcess].map(([key, names]) => [key, [...names].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([name, ms]) => `${name} ${Math.round(ms)}`)]));
+    return { ...summarise(events, rafP95), traceBytes: bytes, traceEvents: events.length, rasterByProcess, top };
 }
 
 /** Opens the series and presses Show more until every entry is in, every one a decoded print; returns each press's time to render. */
@@ -189,7 +251,9 @@ test.beforeAll(async () => {
     phase({ cache: 'the catalog, served from the cache', built: 'the catalog, built and cached', uncached: 'the catalog, built uncached (catalog code not committed)' }[cached.from]);
     catalog = { root: cached.root, slug: cached.slug };
     phase('the base and head servers');
-    servers.push(await serve(BASE!, ports[0] ?? 3375, catalog.root, library, siteConfig), await serve(process.cwd(), ports[1] ?? 3376, catalog.root, library, siteConfig));
+    // The base is served from a clone of its build, so its tree is only read (v1.2.0's included).
+    const base = readOnlyTree(BASE!, path.join(temp, 'base-tree'));
+    servers.push(await serve(base, ports[0] ?? 3375, catalog.root, library, siteConfig), await serve(process.cwd(), ports[1] ?? 3376, catalog.root, library, siteConfig));
 });
 
 test.afterAll(async () => {
@@ -210,7 +274,8 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
     const selfRows: string[] = [];
     const calibration: SelfTestResult[] = [];
 
-    for (const [device, spec] of Object.entries(DEVICES)) {
+    for (const device of SWEPT_DEVICES) {
+        const spec = DEVICES[device];
         const open = async (origin: string) => {
             const context = await browser.newContext({ viewport: spec.viewport, deviceScaleFactor: spec.deviceScaleFactor, colorScheme: 'dark', reducedMotion: 'reduce' });
             await context.addInitScript(() => localStorage.setItem('theme', 'dark'));
@@ -256,7 +321,7 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
         await throttle(true);
         for (let round = 1; round <= ROUNDS; round++) {
             phase(`${device}: round ${round} of ${ROUNDS}`);
-            for (const theme of Object.keys(THEMES) as Choice[]) {
+            for (const theme of SWEPT_THEMES) {
                 await paint(theme);
                 const load = os.loadavg()[0].toFixed(1);
                 const key = `${device} ${theme}`;
@@ -267,6 +332,19 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
                 ratios[key].dropped.push(ratio(h.dropped, b.dropped));
                 rows.push(`| ${device} | ${round} | ${theme} | ${load} | ${b.raster} | ${h.raster} | ${(h.raster / b.raster).toFixed(2)} | ${b.dropped} / ${h.dropped} | ${b.rafP95} / ${h.rafP95} |`);
             }
+        }
+        const over = PROFILE_IF_OVER && ratios[`${device} ${PROFILE_IF_OVER}`] && median(ratios[`${device} ${PROFILE_IF_OVER}`].raster) > THEME_BOUND[PROFILE_IF_OVER];
+        if (PROFILE_DIR && over) {
+            phase(`${device}: ${PROFILE_IF_OVER} is past its bound, so the head in it, the head in Dark and the base are profiled`);
+            fs.mkdirSync(PROFILE_DIR, { recursive: true });
+            const profile: Record<string, unknown> = {};
+            await paint(PROFILE_IF_OVER);
+            profile[`head ${PROFILE_IF_OVER}`] = await profileSweep(browser, headPage.page, spec.steps, path.join(PROFILE_DIR, `${device}-head-${PROFILE_IF_OVER}.json`));
+            await paint('dark');
+            profile['head dark'] = await profileSweep(browser, headPage.page, spec.steps, path.join(PROFILE_DIR, `${device}-head-dark.json`));
+            profile['base'] = await profileSweep(browser, basePage.page, spec.steps, path.join(PROFILE_DIR, `${device}-base.json`));
+            fs.writeFileSync(path.join(PROFILE_DIR, `${device}-profile.summary.json`), `${JSON.stringify(profile, null, 2)}\n`);
+            notes.push(`${device}: profiled, summary in ${path.join(PROFILE_DIR, `${device}-profile.summary.json`)}`);
         }
         phase(`${device}: the self-tests`);
         // The self-tests, each in Dark against the base, once in each order. Each must fail its half of the gate.
@@ -329,9 +407,9 @@ test(`a ${PHOTOS}-photo sequence of real prints: the head's scroll, in every the
     console.log(table);
     // Every self-test ran, in both orders on each device, and each failed its half of the gate (lib/perf/selfTest.ts), so
     // a run that skipped them, the self-tests alone included, can't pass.
-    expect.soft(selfTestProblems(calibration, { devices: Object.keys(DEVICES), bound: BOUND.surround }), 'the self-tests fail the gate as they must').toEqual([]);
+    expect.soft(selfTestProblems(calibration, { devices: SWEPT_DEVICES, bound: BOUND.surround }), 'the self-tests fail the gate as they must').toEqual([]);
     // Every device and theme was gated, unless this was the self-test alone (D7).
-    expect(verdict, 'every device and theme has a verdict').toHaveLength(SELF_TEST_ONLY ? 0 : Object.keys(DEVICES).length * Object.keys(THEMES).length);
+    expect(verdict, 'every device and theme has a verdict').toHaveLength(SELF_TEST_ONLY ? 0 : SWEPT_DEVICES.length * SWEPT_THEMES.length);
     for (const v of verdict) {
         const bound = THEME_BOUND[v.key.split(' ')[1] as Choice];
         expect.soft(v.raster, `${v.key}: the head's raster time against the base's`).toBeLessThanOrEqual(bound);
