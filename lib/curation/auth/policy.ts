@@ -194,22 +194,46 @@ export function curatorHosts(env: CuratorEnv): { hosts: ReadonlySet<string>; lan
     return { hosts, lanHosts };
 }
 
+/** What the scheme checks read of a request: its `Host` and `X-Forwarded-Proto`, as sent, or null when missing. */
+export interface CuratorTransport {
+    host: string | null;
+    forwardedProto: string | null;
+}
+
+/**
+ * The scheme a request reached the curator on, as far as the curator can
+ * tell: `https` only on a LAN-mode name whose first `X-Forwarded-Proto` is
+ * `https`, as a TLS proxy in front sends it; `http` for any other first value
+ * or none. Null on a loopback name, an unlisted or missing `Host`, and while
+ * the settings are wrong, where the curator keeps today's rules. The header
+ * is the caller's to set, and either way it only decides what that caller
+ * gets back: its own cookie's `Secure`, and its own redirect's scheme.
+ */
+function lanScheme(request: CuratorTransport, env: CuratorEnv): 'http' | 'https' | 'other' | null {
+    const allowed = curatorHosts(env);
+    if ('problem' in allowed) return null;
+    const host = request.host?.toLowerCase() ?? null;
+    if (host === null || !allowed.lanHosts.has(host)) return null;
+    const scheme = (request.forwardedProto ?? '').split(',')[0].trim().toLowerCase();
+    if (scheme === '' || scheme === 'http') return 'http';
+    return scheme === 'https' ? 'https' : 'other';
+}
+
 /**
  * Whether a request reached the curator on a LAN name over plain http: the
  * one case where the session cookie goes without `Secure` and the login page
  * says the page isn't encrypted. False in loopback mode, on a loopback name
- * (a tunnel), on an unlisted or missing `Host`, and while the settings are
- * wrong. An `X-Forwarded-Proto` whose first value is anything but `http`
- * (`https` from a TLS proxy in front, say) keeps `Secure`. The header is the
- * caller's to set, and either way it only decides the cookie that caller gets.
+ * (a tunnel), on an unlisted or missing `Host`, while the settings are
+ * wrong, and for any first `X-Forwarded-Proto` but `http` (`https` from a TLS
+ * proxy in front, say), all of which keep `Secure`.
  */
-export function plainLanRequest(request: { host: string | null; forwardedProto: string | null }, env: CuratorEnv): boolean {
-    const allowed = curatorHosts(env);
-    if ('problem' in allowed) return false;
-    const host = request.host?.toLowerCase() ?? null;
-    if (host === null || !allowed.lanHosts.has(host)) return false;
-    const scheme = (request.forwardedProto ?? '').split(',')[0].trim().toLowerCase();
-    return scheme === '' || scheme === 'http';
+export function plainLanRequest(request: CuratorTransport, env: CuratorEnv): boolean {
+    return lanScheme(request, env) === 'http';
+}
+
+/** The scheme the proxy's redirect to the login page uses: `https` only behind a TLS proxy on a LAN name, `http` everywhere else, as before LAN mode. */
+export function redirectScheme(request: CuratorTransport, env: CuratorEnv): 'http' | 'https' {
+    return lanScheme(request, env) === 'https' ? 'https' : 'http';
 }
 
 /** Where the process was told to listen, and how the server reads it. */
@@ -384,7 +408,7 @@ export interface CuratorRequest {
  * - 404 `off`: the flag is off, so curator paths don't exist.
  * - 503 `misconfigured`: the flag is on, but the bind, a publish or port setting (`CURATOR_PUBLISH`, `CURATOR_HOST_PORT`, `CURATOR_EXTRA_HOSTS`, `CURATOR_TUNNEL_PORT`), or a secret file is wrong.
  * - 421 `host`: the `Host` isn't one the curator answers to, as after a DNS rebinding.
- * - 403 `origin`: a mutation without an `Origin` naming the same allowed host, as from another site's form.
+ * - 403 `origin`: a mutation without an `Origin` naming the same allowed host and port, as from another site's form.
  * - 401 `session`: no live curator session: no `curator_session` cookie, one whose tag doesn't match, or one for a session that ended.
  */
 export type CuratorDenial =
@@ -394,23 +418,34 @@ export type CuratorDenial =
     | { status: 403; reason: 'origin' }
     | { status: 401; reason: 'session' };
 
-/** The host and port of an `Origin` header naming an http origin, or null. `null` and anything with a path count as none. */
-function originHost(origin: string): string | null {
+/** The schemes an `Origin` may name: `http` on every allowed Host, and `https` too on a LAN-mode name, behind a TLS proxy. */
+const HTTP_ONLY: ReadonlySet<string> = new Set(['http:']);
+const HTTP_OR_HTTPS: ReadonlySet<string> = new Set(['http:', 'https:']);
+
+/**
+ * The `host:port` of an `Origin` header naming an origin in one of
+ * `schemes`, with the port always spelled out (80 for http, 443 for https
+ * when the Origin has none, as a browser sends it), or null. `null`, a path,
+ * credentials and any other scheme count as none. An allowed `Host` always
+ * carries its port, so the two compare exactly.
+ */
+function originHost(origin: string, schemes: ReadonlySet<string>): string | null {
     let url: URL;
     try {
         url = new URL(origin);
     } catch {
         return null;
     }
-    if (url.protocol !== 'http:' || url.origin !== origin) return null;
-    return url.host;
+    if (!schemes.has(url.protocol) || url.origin !== origin) return null;
+    return `${url.hostname}:${url.port || (url.protocol === 'https:' ? '443' : '80')}`;
 }
 
 /**
  * Whether a curator request may go on, or why not. Checked in this order:
  * the flag; the bind, the tunnel port setting and the secret files; the
  * `Host` (and an `X-Forwarded-Host`, which must match it); for a mutation,
- * an `Origin` whose host and port equal `Host`; and last, unless the caller
+ * an `Origin` whose host and port equal `Host`, over http, or over https too
+ * on a LAN-mode name; and last, unless the caller
  * says `'not-checked'`, a live session from the `curator_session` cookie.
  * `now` is for tests.
  */
@@ -430,7 +465,9 @@ export function evaluateCuratorRequest(
     if (host === null || !allowed.hosts.has(host)) return { status: 421, reason: 'host' };
     if (request.forwardedHost !== null && request.forwardedHost.toLowerCase() !== host) return { status: 421, reason: 'host' };
     if (request.mutation) {
-        const fromOrigin = request.origin === null ? null : originHost(request.origin);
+        // https only on a LAN name: the loopback names keep today's http-only rule in either mode.
+        const schemes = allowed.lanHosts.has(host) ? HTTP_OR_HTTPS : HTTP_ONLY;
+        const fromOrigin = request.origin === null ? null : originHost(request.origin, schemes);
         if (fromOrigin === null || fromOrigin !== host) return { status: 403, reason: 'origin' };
     }
     if (request.session !== 'not-checked' && sessionFromCookies(request.session.cookie, secrets.secrets.sessionKey, now) === null) {

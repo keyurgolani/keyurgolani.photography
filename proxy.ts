@@ -9,6 +9,7 @@ import {
     isCuratorPath,
     isLoginRequest,
     loginRedirectPath,
+    redirectScheme,
 } from './lib/curation/auth/policy';
 import { UNAVAILABLE_HEADERS, UNAVAILABLE_HTML } from './lib/curation/auth/unavailable';
 import { dataRoot } from './lib/storage/config';
@@ -90,13 +91,14 @@ function curatorDenial(status: number): NextResponse {
  * every curator header, and `?ended=1` when the request sent a session
  * cookie that no longer counts (loginRedirectPath()). Next takes only an
  * absolute Location from a proxy, so it's built on `host`, which has passed
- * the allowlist by now, and never on anything else the request sent. Next
- * sends it on as a relative one when it's the request's own origin.
+ * the allowlist by now, and on `scheme`, `https` only behind a TLS proxy on
+ * a LAN-mode name (redirectScheme()), and never on anything else the request
+ * sent. Next sends it on as a relative one when it's the request's own origin.
  */
-function toLogin(host: string, cookie: string | null): NextResponse {
+function toLogin(host: string, scheme: 'http' | 'https', cookie: string | null): NextResponse {
     return new NextResponse(null, {
         status: 307,
-        headers: { Location: new URL(loginRedirectPath(cookie), `http://${host}`).toString(), ...CURATOR_RESPONSE_HEADERS, ...CURATOR_FRAME_POLICY },
+        headers: { Location: new URL(loginRedirectPath(cookie), `${scheme}://${host}`).toString(), ...CURATOR_RESPONSE_HEADERS, ...CURATOR_FRAME_POLICY },
     });
 }
 
@@ -160,7 +162,10 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
             // Next hides the RSC headers from the proxy, so a page's RSC fetch is sent to the login like the page itself.
             const page = !resolvedPathname(pathname).toLowerCase().startsWith('/api');
             const host = request.headers.get('host');
-            if (denial.reason === 'session' && !mutation && page && host) return toLogin(host.toLowerCase(), request.headers.get('cookie'));
+            if (denial.reason === 'session' && !mutation && page && host) {
+                const scheme = redirectScheme({ host, forwardedProto: request.headers.get('x-forwarded-proto') }, process.env);
+                return toLogin(host.toLowerCase(), scheme, request.headers.get('cookie'));
+            }
             return curatorDenial(denial.status);
         }
         const response = NextResponse.next();

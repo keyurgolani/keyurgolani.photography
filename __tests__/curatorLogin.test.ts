@@ -332,6 +332,28 @@ describe('in LAN mode (CURATOR_PUBLISH on a private address)', () => {
         expect(sessionFromCookies(cookie, secrets.sessionKey)).toBeNull();
     });
 
+    it('signs in through a TLS proxy, with an https Origin and a Secure cookie, and logout clears it the same way', async () => {
+        vi.stubEnv('CURATOR_EXTRA_HOSTS', `${EXTRA_HOST},homelab.local:3443`);
+        const headers = { host: 'homelab.local:3443', origin: 'https://homelab.local:3443', 'x-forwarded-proto': 'https' };
+        const response = await postLogin(form(secrets.passphrase), headers);
+        expect(response.headers.get('location')).toBe('/curation');
+        expect(attributes(response)).toEqual(SECURE);
+        const cookie = cookieFrom(response)!;
+        requestHeaders = new Headers({ ...headers, cookie });
+        const out = await logout();
+        expect(attributes(out)).toEqual(SECURE.map((attribute) => (attribute === 'Max-Age=43200' ? 'Max-Age=0' : attribute)).sort());
+        expect(sessionFromCookies(cookie, secrets.sessionKey)).toBeNull();
+        expect(await renderOn({ host: 'homelab.local:3443', 'x-forwarded-proto': 'https' })).not.toContain('curator-login-caveat');
+    });
+
+    it('starts nothing with an https Origin on another host', async () => {
+        vi.stubEnv('CURATOR_EXTRA_HOSTS', `${EXTRA_HOST},homelab.local:3443`);
+        const outcome = await postLogin(form(secrets.passphrase), { host: 'homelab.local:3443', origin: 'https://attacker.example', 'x-forwarded-proto': 'https' }).catch(
+            (error: unknown) => error,
+        );
+        expect(String((outcome as { digest?: string }).digest)).toMatch(/^NEXT_HTTP_ERROR_FALLBACK;404/);
+    });
+
     it('starts nothing on a Host it was not given', async () => {
         const outcome = await postLogin(form(secrets.passphrase), { host: '192.168.86.251:3001', origin: 'http://192.168.86.251:3001' }).catch((error: unknown) => error);
         expect(String((outcome as { digest?: string }).digest)).toMatch(/^NEXT_HTTP_ERROR_FALLBACK;404/);

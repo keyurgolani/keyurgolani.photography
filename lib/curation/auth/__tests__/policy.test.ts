@@ -237,7 +237,47 @@ describe('LAN mode', () => {
         expect(evaluate({ host: 'homelab.local:3001', mutation: true, origin: 'http://homelab.local:3001' }, env)).toBeNull();
         // The Origin has to name the Host the request came on, not just any host on the list.
         expect(evaluate({ host: 'homelab.local:3001', mutation: true, origin: 'http://192.168.86.250:3001' }, env)).toEqual({ status: 403, reason: 'origin' });
-        expect(evaluate({ host: '192.168.86.250:3001', mutation: true, origin: 'https://192.168.86.250:3001' }, env)).toEqual({ status: 403, reason: 'origin' });
+    });
+
+    describe('the Origin check behind a TLS proxy (LAN https)', () => {
+        const TLS = 'homelab.local:3443, homelab.local:443, 192.168.86.250:3443';
+        const tls = () => lan({ CURATOR_EXTRA_HOSTS: TLS });
+        const mutate = (host: string, origin: string | null) => evaluate({ host, mutation: true, origin }, tls());
+
+        it('admits an https Origin naming the same host and port as Host', () => {
+            expect(mutate('homelab.local:3443', 'https://homelab.local:3443')).toBeNull();
+            expect(mutate('192.168.86.250:3443', 'https://192.168.86.250:3443')).toBeNull();
+            expect(mutate('192.168.86.250:3001', 'https://192.168.86.250:3001')).toBeNull();
+        });
+
+        it('reads an https Origin without a port as 443, and an http one as 80', () => {
+            expect(mutate('homelab.local:443', 'https://homelab.local')).toBeNull();
+            expect(mutate('homelab.local:3443', 'https://homelab.local')).toEqual({ status: 403, reason: 'origin' });
+            expect(mutate('homelab.local:443', 'http://homelab.local')).toEqual({ status: 403, reason: 'origin' });
+        });
+
+        it("still matches an http Origin by host and port, as today, whatever X-Forwarded-Proto says", () => {
+            expect(mutate('192.168.86.250:3001', 'http://192.168.86.250:3001')).toBeNull();
+            expect(mutate('homelab.local:3443', 'http://homelab.local:3443')).toBeNull();
+        });
+
+        it.each([
+            ['an https Origin on another host', 'homelab.local:3443', 'https://other.local:3443'],
+            ['an https Origin on another listed host', 'homelab.local:3443', 'https://192.168.86.250:3443'],
+            ['an https Origin on another port', 'homelab.local:3443', 'https://homelab.local:3444'],
+            ['no Origin', 'homelab.local:3443', null],
+            ['Origin null', 'homelab.local:3443', 'null'],
+            ['an https Origin with a path', 'homelab.local:3443', 'https://homelab.local:3443/curation'],
+            ['an https Origin with a trailing slash', 'homelab.local:3443', 'https://homelab.local:3443/'],
+            ['an https Origin with credentials', 'homelab.local:3443', 'https://user@homelab.local:3443'],
+            ['an https Origin spelling out 443', 'homelab.local:443', 'https://homelab.local:443'],
+            ['a ws Origin', 'homelab.local:3443', 'ws://homelab.local:3443'],
+            ['an ftp Origin', 'homelab.local:3443', 'ftp://homelab.local:3443'],
+            ['an https Origin on a loopback name, which keeps the http-only rule', '127.0.0.1:3001', 'https://127.0.0.1:3001'],
+            ['an https Origin on localhost', 'localhost:3001', 'https://localhost:3001'],
+        ])('refuses %s with 403', (_, host, origin) => {
+            expect(mutate(host, origin)).toEqual({ status: 403, reason: 'origin' });
+        });
     });
 
     it.each([
