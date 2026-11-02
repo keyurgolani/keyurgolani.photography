@@ -64,12 +64,12 @@ export const SYSTEM_RESPONSE: Record<CurationEventType, string> = {
 /**
  * The primary action for each type that has one. The mockup's own names,
  * except a new photograph's, which the owner renamed (2026-10-25), since it
- * commits an approval.
+ * commits an approval. A missing source has two ways to settle it in the
+ * inbox, Bind and Archive (#118), so neither is its one primary action.
  */
 export const PRIMARY_ACTION: Partial<Record<CurationEventType, string>> = {
     new: 'Approve into draft',
     replacement: 'Confirm new asset revision',
-    missing: 'Resolve source or archive intentionally',
 };
 
 /** The button that defers an item (14-1's `defer`), as the owner named it (2026-10-25). */
@@ -94,7 +94,40 @@ export const DONE_ANSWER = {
     keepsNew: `Left for later. ${DEFER_TAIL.keepsNew}`,
     /** Reopen on a confirmed replacement whose Decide later would put the earlier version back. */
     reopenedPutBack: 'Reopened. The draft still uses the new version until you decide.',
+    /** #118: a confirm that pointed the photo record at the new bytes. */
+    confirm: 'Confirmed the new version into the draft. Its series, position, title, description, and story stay as they were. Visitors keep the current one until you publish.',
+    /** #118: a confirm on a photo record that already pinned the new bytes, which writes the item only. */
+    confirmedAlready: "The draft already uses the new version, so nothing in it changed, and it's recorded as confirmed. Nothing is published until you publish.",
+    /** #118: an archive, which is the next publish's takedown. Any notes about the series it left follow. */
+    archive: "Archived. It's out of every series in the draft, and the next publish takes it off the public site. Visitors see it until then. Nothing was deleted.",
 } as const;
+
+/**
+ * #118: what a bind answers. It only records the decision, which the watcher applies on its next pass, so the answer
+ * says it waits and never that it's done. `path` is the library path it binds, or null when the event doesn't say.
+ * `ownBytes` says whether the file holds the photograph's own bytes (nothing new to confirm) or other ones (a
+ * replacement item opens), and is null when the writer didn't say.
+ */
+export function bindAnswer(path: string | null, ownBytes: boolean | null): string {
+    const file = path === null ? 'the file you chose' : `the file at ${path}`;
+    const waiting = `Bind recorded, and waiting for the watcher. On its next pass, unless the file is still changing, it gives this photograph ${file}, and this item closes then. Refresh after it runs.`;
+    if (ownBytes === null) return waiting;
+    return ownBytes
+        ? `${waiting} That file holds this photograph's own bytes, so nothing new needs confirming.`
+        : `${waiting} A replacement item then opens for the new bytes: confirm it there once its derivatives are built. Visitors keep the current photograph until you publish.`;
+}
+
+/** #118: what Archive says before the reason field, plainly: it's the takedown, at the next publish. */
+export const ARCHIVE_TAKEDOWN =
+    "Archiving is a takedown. It takes this photograph out of every series in the draft now, and the next publish takes it off the public site. Copies already served can stay in browsers and caches for a while. Nothing is deleted, and reopening the item doesn't undo it.";
+
+/** #118: Archive's second step, which names the file, so the curator confirms the one they mean. */
+export function archiveQuestion(fileName: string): string {
+    return `Archive ${fileName}? The next publish takes it off the public site.`;
+}
+
+/** #118: the hint under Bind's library path field. */
+export const LIBRARY_PATH_HINT = "From the library's top folder, such as harbor/landscape.jpg.";
 
 type ArrivalAnswer = 'approve' | keyof typeof DEFER_TAIL;
 
@@ -232,13 +265,20 @@ export interface InboxDetail extends InboxItem {
     reviewedAt: string | null;
     reviewedBy: string | null;
     /** What each action would do now, so the page offers only those that can work. */
-    can: { approve: boolean; edit: boolean; defer: boolean; dismiss: boolean; retry: boolean; reopen: boolean };
+    can: { approve: boolean; edit: boolean; defer: boolean; dismiss: boolean; retry: boolean; reopen: boolean; confirm: boolean; bind: boolean; archive: boolean };
     /**
-     * The hint under the actions while the type's primary action isn't in the inbox and Decide later is offered: why
-     * it isn't, or for a replacement, what Decide later does with the draft now. For a new photograph a pending bind
-     * merges, why it can't be approved yet. Null when none applies.
+     * The hint under the actions while Decide later is offered: for a replacement, what Decide later does with the
+     * draft now; for a missing source, what settles it, or why Bind and Archive wait. For a new photograph a pending
+     * bind merges, why it can't be approved yet. Null when none applies.
      */
     primaryUnavailable: string | null;
+    /** #118: why an open replacement's Confirm is unavailable now (CONFIRM_UNAVAILABLE), or null when it's offered or settled. */
+    confirmUnavailable: string | null;
+    /**
+     * #118: for an open missing source, the new files #10 found at its last path, which Bind offers: each one's item
+     * ID, which the form sends, and its library path, escaped for the page. Empty for every other item.
+     */
+    linkedFiles: { id: string; path: string }[];
     /** For a replacement of a known photo and revision, what its draft holds and what Decide later does with it. Null otherwise. */
     replacement: ReplacementDraft | null;
     /**
@@ -341,16 +381,37 @@ export const BLOCKED_NEXT = 'Dismiss this item to keep the new version, or leave
 /** The hint under a replacement's actions, by what Decide later does with its draft now. */
 export const REPLACEMENT_HINT = {
     /** Never confirmed, or the draft already on another version: Decide later writes nothing. */
-    keeps: "Confirming a new version isn't in the inbox yet, so choose Decide later until it is. The published photograph keeps its current revision.",
+    keeps: 'Decide later writes nothing, so the draft keeps the version it has. Confirm new asset revision puts the new version in the draft instead. Nothing is published until you publish.',
     keepsNew: 'The draft already uses the new version, so Decide later keeps it there, and the next publish uses it. Nothing is published until you publish.',
     putBack: 'The draft uses the new version, confirmed earlier. Decide later puts the earlier version back in the draft. Nothing is published until you publish.',
     refuses: "This photograph's draft moved to another version after the new one was confirmed, so Decide later can't tell which one to put back. Set its version with photos edit, or dismiss this item.",
     /** As leaveInDraft()'s refusal says it after the click (lib/curation/inbox-form.ts REFUSAL_WORDING). */
     blocked: `${BLOCKED_WHY} ${BLOCKED_NEXT}`,
+    /** #118: no photo record, so Confirm is unavailable and Decide later writes nothing. Promises neither. */
+    noRecord: "This photograph has no photo record in the draft yet, so there's no version for the new one to replace, and Decide later writes nothing. Nothing is published until you publish.",
 } as const;
 
-/** Why a replacement's Confirm is disabled, for that button alone; the hint beside it is about Decide later. */
-export const CONFIRM_UNAVAILABLE = "Confirming a new version isn't in the inbox yet.";
+/**
+ * #118: why a replacement's Confirm is disabled, for that button alone; the hint beside it is about Decide later. By
+ * what confirmReplacement() would refuse: a set still building or failed, a source that changed again, a photograph
+ * with no photo record, or a registry the page can't read.
+ */
+export const CONFIRM_UNAVAILABLE = {
+    building: "Its new derivatives are still building. Confirm it once they're ready.",
+    failed: "Building the new version failed, so there's nothing ready to confirm. Choose Decide later to keep the current version.",
+    changed: 'The source changed again since this item opened, so a newer item reviews it.',
+    noRecord: "This photograph has no photo record in the draft yet, so there's no version for the new one to replace.",
+    unknown: "The identity registry can't be read, so the page can't tell whether the new version is ready.",
+} as const;
+
+/** #118: the hint under a missing source's actions, while Decide later is offered. */
+export const MISSING_HINT = {
+    open: 'Decide later keeps it here, and the published photograph stays as it is. To settle it, put the same file back in the library, bind it to the file that replaces it, or archive it.',
+    bindWaiting: 'Bind and Archive wait until the watcher applies the bind on its next pass. Decide later keeps it here meanwhile.',
+    /** A reopened item whose archive the watcher hasn't applied yet. */
+    archiveWaiting: "An archive waits for the watcher's next pass, which takes this photograph down, so Bind and Archive aren't offered. Decide later keeps it here meanwhile.",
+    back: 'Its source is back in the library, so the watcher closes this item on its next pass. Decide later keeps it here meanwhile.',
+} as const;
 
 /** Decide later can't do anything for this draft, so the page shows it disabled with the hint as its reason. */
 export function decideLaterRefuses(replacement: ReplacementDraft | null): boolean {
@@ -362,6 +423,7 @@ export function replacementHint(replacement: ReplacementDraft | null): string {
     if (replacement?.decideLater === 'put-back') return REPLACEMENT_HINT.putBack;
     if (replacement?.decideLater === 'refuses') return REPLACEMENT_HINT.refuses;
     if (replacement?.decideLater === 'blocked') return REPLACEMENT_HINT.blocked;
+    if (replacement?.draft === 'none') return REPLACEMENT_HINT.noRecord;
     return replacement?.draft === 'new' ? REPLACEMENT_HINT.keepsNew : REPLACEMENT_HINT.keeps;
 }
 
@@ -792,8 +854,8 @@ export function nextItemId(seen: readonly string[], currentId: string, open: rea
     return open.find((id) => waiting.has(id)) ?? null;
 }
 
-/** What a curator action answered, as the page shows it. */
-export type InboxActionKind = 'approve' | 'edit' | 'defer' | 'dismiss' | 'retry' | 'reopen';
+/** What a curator action answered, as the page shows it. #118 added confirm, bind and archive. */
+export type InboxActionKind = 'approve' | 'edit' | 'defer' | 'dismiss' | 'retry' | 'reopen' | 'confirm' | 'bind' | 'archive';
 
 export type InboxActionState =
     | { status: 'idle' }
@@ -804,7 +866,7 @@ export type InboxActionState =
           eventId: string | null;
           message: string;
           /** The form field the answer is about, when it's about one, so the page shows it there. */
-          field?: 'description' | 'reason';
+          field?: 'description' | 'reason' | 'path' | 'bindTo';
           /** Counts up, so the page can tell one answer from the next. */
           serial: number;
       };

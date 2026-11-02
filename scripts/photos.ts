@@ -63,15 +63,16 @@
  *     lengths it refuses. --dry-run takes no lock and writes nothing.
  *
  *   npx tsx scripts/photos.ts carry-over [--apply --actor <name>] [--allow-missing <photoId or path>,...]
- *     The one-time step before the launch publish: put every photo the legacy
- *     Gallery lists into one published series, Gallery, in its order, featured
- *     and alone in Work's order. The photos keep the names the Gallery gives
- *     them, "Photograph N of T", with no description, and their records say
- *     they were carried over. Without --apply it writes nothing and prints the
- *     plan. It refuses a working layer with series, a Work order, or a featured
- *     series of the owner's, and exits 1 while a photo the legacy site has
- *     can't carry over, unless --allow-missing names it. Running it again
- *     changes nothing. Exits 3 when a lock stays busy, and 4 for I/O.
+ *     One-time setup for a new data root, before the launch publish: put
+ *     every photo the legacy Gallery lists into one published series,
+ *     Gallery, in its order, featured and alone in Work's order. The photos
+ *     keep the names the Gallery gives them, "Photograph N of T", with no
+ *     description, and their records say they were carried over. Without
+ *     --apply it writes nothing and prints the plan. It refuses a working
+ *     layer with series, a Work order, or a featured series of the owner's,
+ *     and exits 1 while a photo the legacy site has can't carry over, unless
+ *     --allow-missing names it. Running it again changes nothing. Exits 3
+ *     when a lock stays busy, and 4 for I/O.
  *
  *   npx tsx scripts/photos.ts edit (<photoId> | <seriesId> | site) [--file <path>] [--expect-version <N>]
  *     Open a record's newest version in $VISUAL or $EDITOR, check it, and
@@ -107,7 +108,8 @@
  *     PHOTOS_ACTOR, and one is required. --reason defaults to publish.
  *     --expect stops unless the candidate has that ID, and --dry-run stops
  *     after validation. The first publish replaces the legacy Home and
- *     Gallery, so it needs --confirm-launch, and prints what changes.
+ *     Gallery, so it needs --confirm-launch, and prints what changes: a
+ *     one-time setup step for a new data root, never a routine publish.
  *     --reprofile moves every photograph the watcher can rebuild to the
  *     current profile: run identity reprofile --all first. Exits 0 when
  *     published, unchanged, or a dry run passes, 1 on validation errors, 2
@@ -258,6 +260,7 @@ const USAGE = `Usage:
   ${PROGRAM} draft:init
   ${PROGRAM} describe --import <file> [--dry-run]
   ${PROGRAM} carry-over [--apply --actor <name>] [--allow-missing <photoId or path>,...]
+        One-time setup for a new data root, before the launch publish.
   ${PROGRAM} edit (<photoId> | <seriesId> | site) [--file <path>] [--expect-version <N>]
   ${PROGRAM} sequence show <seriesId>
   ${PROGRAM} sequence set <seriesId> <photoId>... [--expect-version <N>]
@@ -272,6 +275,7 @@ const USAGE = `Usage:
   ${PROGRAM} series featured (<seriesId>... | --clear) [--expect-version <N>]
   ${PROGRAM} validate [--reprofile]
   ${PROGRAM} publish [--actor <name>] [--reason <text>] [--expect <candidateId>] [--dry-run] [--confirm-launch] [--reprofile]
+        --confirm-launch is for the launch publish only, the one-time setup step that replaces the legacy site.
   ${PROGRAM} history
   ${PROGRAM} rollback --to <number | revisionId> --reason <text> [--actor <name>] [--expect-active <revisionId>] [--yes]
 ${curationUsage(PROGRAM)}

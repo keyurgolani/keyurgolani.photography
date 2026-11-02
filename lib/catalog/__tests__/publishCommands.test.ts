@@ -103,6 +103,9 @@ describe('photos validate', { timeout: 120_000 }, () => {
         const usage = await photos(missing, ['validate', '--fast']);
         expect(usage.code).toBe(2);
         expect(usage.stderr).toContain('Usage:');
+        // #118: the carry-over and the launch publish are a new data root's one-time setup, not routine curation.
+        expect(usage.stderr).toMatch(/carry-over \[--apply[^\n]*\n +One-time setup for a new data root, before the launch publish\./);
+        expect(usage.stderr).toMatch(/publish \[--actor[^\n]*\n +--confirm-launch is for the launch publish only, the one-time setup step that replaces the legacy site\./);
     });
 });
 

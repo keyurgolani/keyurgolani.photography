@@ -1,23 +1,29 @@
+import fs from 'node:fs';
 import path from 'node:path';
-import { request as httpRequest, type APIRequestContext, type Locator, type Page } from '@playwright/test';
+import { request as httpRequest, type APIRequestContext, type Locator, type Page, type Route } from '@playwright/test';
 import { folderBytes } from '../test/helpers/folderBytes';
 import { validateWorkingLayer } from '../lib/catalog/publish';
 import { readActivePointer, readAuthoredRecord } from '../lib/catalog/working-layer';
 import { writeAuthoredRecord } from '../lib/catalog/working-layer-writer';
 import { deferEvent } from '../lib/curation/actions';
 import { eventIdOf, eventKey } from '../lib/curation/events';
-import { humanTime } from '../lib/curation/inbox-view';
+import { ARCHIVE_TAKEDOWN, archiveQuestion, bindAnswer, DONE_ANSWER, humanTime, REPLACEMENT_HINT } from '../lib/curation/inbox-view';
+import { identityPaths } from '../lib/identity/registry';
 import { listEvents, readEvent } from '../lib/curation/repository';
 import { confirmReplacement } from '../lib/curation/resolutions';
 import { startCatalogServer, READY_TIMEOUT, type CatalogServer } from './support/catalogServer';
 import { signIn, startCuratorServer, type CuratorServer } from './support/curatorServer';
 import {
+    ARCHIVED,
     createInboxFixture,
     FAILED_SOURCE,
     FRESH,
     FRESH_SOURCES,
     INBOX_SERIES,
+    LINKED,
     PUBLISHED_IDS,
+    openArchiveItem,
+    openBindItems,
     openInboxItems,
     openReplacementItem,
     REPLACED,
@@ -26,7 +32,9 @@ import {
     undisclosed,
     type InboxFixture,
 } from './support/curation-inbox';
+import { expectNoA11yViolations } from './support/a11y';
 import { holdNextPost } from './support/holdPost';
+import { expectMinTargetSize } from './support/targets';
 import { waitForHydration } from './support/hydration';
 import { expect, test } from './support/test';
 
@@ -116,6 +124,45 @@ async function pressWhileHeld(page: Page, button: Locator) {
     await expect(button).toHaveAttribute('aria-disabled', 'true');
     await expect(button).toBeFocused();
     await held.release();
+}
+
+/** A server action's post as the page sent it, which the boundary tests replay. */
+interface SentPost {
+    headers: Record<string, string>;
+    body: Buffer;
+}
+
+/** Runs `act`, which submits a form, and takes the page's POST to the inbox on the way, so it never reaches the server. */
+async function capturePost(page: Page, act: () => Promise<void>): Promise<SentPost> {
+    let captured: SentPost | null = null;
+    const matches = (url: URL) => url.pathname === '/curation/inbox';
+    const handler = async (route: Route) => {
+        if (captured !== null || route.request().method() !== 'POST') return route.fallback();
+        captured = { headers: route.request().headers(), body: route.request().postDataBuffer() ?? Buffer.alloc(0) };
+        await route.abort();
+    };
+    await page.route(matches, handler);
+    await act();
+    await expect.poll(() => captured).not.toBeNull();
+    await page.unroute(matches, handler);
+    const sent = captured as unknown as SentPost;
+    expect(sent.headers['next-action']).toBeTruthy();
+    return sent;
+}
+
+/** The same action, replayed as `request` sends it, with `origin` as its Origin. */
+function replay(request: APIRequestContext, sent: SentPost, origin: string) {
+    return request.post(`${curatorOrigin()}/curation/inbox`, {
+        headers: { 'next-action': sent.headers['next-action'], 'content-type': sent.headers['content-type'], origin, accept: 'text/x-component' },
+        data: sent.body,
+        maxRedirects: 0,
+    });
+}
+
+/** #10's decisions waiting for the watcher's next pass. */
+function pendingDecisions(): unknown[] {
+    const dir = identityPaths(data().root).decisions;
+    return fs.existsSync(dir) ? fs.readdirSync(dir).filter((name) => name.endsWith('.json')).map((name) => JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'))) : [];
 }
 
 /** `landed` opens the item on `#item`, as its row link does, so a link back to the same URL only scrolls unless the page reloads it. */
@@ -640,15 +687,56 @@ test('Decide later moves on to the next item too, and the last decision, from th
     for (const id of [missing.id, failed.id]) expect((await readEvent(data().root, id))?.status).toBe('deferred');
 });
 
-test('says what a replacement\'s draft holds before and after Reopen and Decide later, once it was confirmed (#17)', async ({ page }) => {
+/** #118: the replacement item the Confirm test opens, which #17's test below goes on from. */
+let replacementId: string | null = null;
+
+test('confirms a replacement from the page into the draft only, and the boundary turns away a replayed Confirm (#118)', async ({ page, request }) => {
     const root = data().root;
     const eventId = await openReplacementItem(data());
+    replacementId = eventId;
+    const file = path.posix.basename(REPLACED_SOURCE);
+    const base = (await readActivePointer(root))?.revisionId ?? null;
+    const pinned = async () => (await readAuthoredRecord(root, 'photo', REPLACED))?.assetRevision;
+    const confirm = page.getByRole('button', { name: 'Confirm new asset revision' });
+
+    // Never confirmed: Confirm is live, in the primary place, and the hint says what Decide later and Confirm each do.
+    await openInbox(page, eventId);
+    await expect(page.getByRole('heading', { level: 2, name: file })).toBeVisible();
+    await expect(confirm).toBeEnabled();
+    await expect(page.locator('#primary-unavailable')).toHaveText(REPLACEMENT_HINT.keeps);
+    await expectMinTargetSize(confirm);
+
+    // The page's own post, replayed without the session, then from another site with it: the boundary refuses both
+    // before the action runs, and nothing is written.
+    const sent = await capturePost(page, () => confirm.click());
+    const before = { event: await readEvent(root, eventId), pinned: await pinned(), catalog: layers() };
+    expect((await replay(request, sent, curatorOrigin())).status()).toBe(401);
+    expect((await replay(page.request, sent, 'https://attacker.example')).status()).toBe(403);
+    expect({ event: await readEvent(root, eventId), pinned: await pinned(), catalog: layers() }).toEqual(before);
+
+    // Confirmed from the page, by keyboard: the draft takes the new bytes, and nothing public changes.
+    await openInbox(page, eventId);
+    await pressWhileHeld(page, confirm);
+    await expect(answer(page, 'done')).toHaveText(DONE_ANSWER.confirm);
+    expect(await pinned()).toBe(REPLACEMENT_REVISION);
+    expect(await readEvent(root, eventId)).toMatchObject({ status: 'approved', reviewedBy: 'curator:web' });
+    expect(layers()).toEqual(before.catalog);
+    expect((await readActivePointer(root))?.revisionId ?? null).toBe(base);
+    // The refresh took Confirm away, so its answer holds the focus.
+    await expect(confirm).toHaveCount(0);
+    await expect(page.locator('[role="status"]:has([data-state="done"])')).toBeFocused();
+});
+
+test('says what a replacement\'s draft holds before and after Reopen and Decide later, once it was confirmed (#17)', async ({ page }) => {
+    const root = data().root;
+    // Confirmed from the page by the test above.
+    const eventId = replacementId ?? (await openReplacementItem(data()));
     const earlier = data().revisionOf(REPLACED);
     const file = path.posix.basename(REPLACED_SOURCE);
     const base = (await readActivePointer(root))?.revisionId ?? null;
     const hint = page.locator('#primary-unavailable');
     const pinned = async () => (await readAuthoredRecord(root, 'photo', REPLACED))?.assetRevision;
-    // `curation confirm`, which the inbox doesn't offer yet.
+    // `curation confirm`, as the CLI runs it, for the rounds after the page's first confirm.
     const confirm = async () => {
         const shown = (await readEvent(root, eventId))!;
         expect(await confirmReplacement({ root, eventId, expectedVersion: shown.version, expectedBase: base, actor: 'curator:cli' })).toMatchObject({ ok: true });
@@ -671,14 +759,9 @@ test('says what a replacement\'s draft holds before and after Reopen and Decide 
         await expect(page.locator('[data-state="done"]').filter({ hasText: `Left ${file} for later.` })).toHaveText(`${text}Open ${file} again`);
     };
 
-    // Never confirmed: Decide later writes nothing.
-    await openInbox(page, eventId);
-    await expect(page.getByRole('heading', { level: 2, name: file })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Confirm new asset revision' })).toBeDisabled();
-    await expect(hint).toHaveText(/^Confirming a new version isn't in the inbox yet, so choose Decide later until it is\./);
-
+    // An item the test above didn't confirm, as when this one runs alone, is confirmed first.
+    if ((await readEvent(root, eventId))?.status !== 'approved') await confirm();
     // Confirmed: in the draft only, and nothing on the item offers or recommends Decide later, or a series or description.
-    await confirm();
     expect(await pinned()).toBe(REPLACEMENT_REVISION);
     await openInbox(page, eventId);
     await expect(page.locator('header').getByText('New version confirmed', { exact: true })).toBeVisible();
@@ -720,13 +803,116 @@ test('says what a replacement\'s draft holds before and after Reopen and Decide 
         const later = page.getByRole('button', { name: 'Decide later' });
         await expect(later).toBeDisabled();
         await expect(later).toHaveAccessibleDescription(moved);
-        await expect(page.getByRole('button', { name: 'Confirm new asset revision' })).toHaveAccessibleDescription("Confirming a new version isn't in the inbox yet.");
+        // Confirm can still work, so it's live, and the hint about Decide later isn't its description.
+        await expect(page.getByRole('button', { name: 'Confirm new asset revision' })).toBeEnabled();
+        await expect(page.getByRole('button', { name: 'Confirm new asset revision' })).not.toHaveAccessibleDescription(moved);
         // Said once, and nothing to refresh.
         await expect(page.getByText(moved)).toHaveCount(1);
         await expect(page.getByRole('link', { name: 'Refresh and review again' })).toHaveCount(0);
         expect(await readEvent(root, eventId)).toEqual(before);
         expect(await pinned()).toBe(third);
     }
+});
+
+test('binds a missing photograph to the file found at its last path, and the item waits for the watcher (#118)', async ({ page }) => {
+    const root = data().root;
+    const { missingId, linkedId, path: at } = await openBindItems(data());
+    await openInbox(page, missingId);
+    await page.getByText('Bind to the file that replaces it').click();
+    const form = page.getByRole('form', { name: 'Bind' });
+    const linked = form.getByRole('radio', { name: `${at}, the new file at its last path` });
+    await expect(linked).toBeChecked();
+    const field = form.getByRole('textbox', { name: 'Library path' });
+    const bind = form.getByRole('button', { name: 'Bind', exact: true });
+    await expectMinTargetSize(form.locator('label:has(input[type="radio"]), button'));
+    await expectNoA11yViolations(page, { include: 'form[aria-label="Bind"]' });
+
+    // A typed path outside the library is refused by its field, which takes focus, and nothing is written.
+    await field.fill('../outside.jpg');
+    await expect(form.getByRole('radio', { name: 'Another file in the library' })).toBeChecked();
+    const before = { event: await readEvent(root, missingId), decisions: pendingDecisions() };
+    await bind.click();
+    const refused = "That isn't a path inside the library. Type it from the library's top folder, such as harbor/landscape.jpg. Nothing was written.";
+    await expect(form.getByText(refused)).toBeVisible();
+    await expect(field).toHaveAttribute('aria-invalid', 'true');
+    await expect(field).toBeFocused();
+    expect({ event: await readEvent(root, missingId), decisions: pendingDecisions() }).toEqual(before);
+
+    // The linked file, by keyboard: the answer says it waits for the watcher, never that it's done.
+    await linked.check();
+    await pressWhileHeld(page, bind);
+    await expect(answer(page, 'done')).toHaveText(bindAnswer(at, false));
+    await expect(answer(page, 'done')).toHaveAttribute('data-tone', 'change');
+    expect(pendingDecisions()).toEqual([expect.objectContaining({ type: 'bind', path: at, photoId: before.event!.photoId, merge: LINKED })]);
+    expect(await readEvent(root, missingId)).toMatchObject({ status: 'open', version: before.event!.version + 1 });
+    // The refresh: the bind waits, so the item stays open, with nothing more to bind or archive, and the answer holds the focus.
+    await expect(page.getByText('Bind waiting', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Bind', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Archive', exact: true })).toHaveCount(0);
+    await expect(page.locator('[role="status"]:has([data-state="done"])')).toBeFocused();
+    // And the new photograph's item says the bind makes it this one's new version, so it isn't approved meanwhile.
+    await openInbox(page, linkedId);
+    await expect(page.getByRole('button', { name: 'Approve into draft' })).toBeDisabled();
+});
+
+test('archives a missing photograph only with a reason and a second confirm, as a takedown at the next publish, and the boundary turns away a replayed Archive (#118)', async ({ page, request }) => {
+    const root = data().root;
+    const eventId = await openArchiveItem(data());
+    const file = path.posix.basename((await readEvent(root, eventId))!.derivedFacts.sourcePath);
+    const series = async () => (await readAuthoredRecord(root, 'series', INBOX_SERIES.published.id))?.photoIds;
+    const state = async () => ({ event: await readEvent(root, eventId), series: await series(), decisions: pendingDecisions(), catalog: layers() });
+    expect(await series()).toContain(ARCHIVED);
+    const before = await state();
+    const base = (await readActivePointer(root))?.revisionId ?? null;
+
+    /** Opens Archive, gives it `reason`, and goes to its second step. */
+    const toSecondStep = async (reason: string) => {
+        await openInbox(page, eventId);
+        await page.getByText('Archive and take it down').click();
+        await page.getByRole('textbox', { name: 'Reason for archiving' }).fill(reason);
+        await page.getByRole('button', { name: 'Archive', exact: true }).click();
+        await expect(page.getByText(archiveQuestion(file))).toBeFocused();
+    };
+
+    // It says plainly what it is, and needs a reason before it asks again.
+    await openInbox(page, eventId);
+    await page.getByText('Archive and take it down').click();
+    await expect(page.getByText(ARCHIVE_TAKEDOWN)).toBeVisible();
+    const archive = page.getByRole('button', { name: 'Archive', exact: true });
+    await archive.click();
+    await expect(page.locator('#archive-reason-error')).toHaveText('Archiving needs a reason.');
+    // Said in the live region too, since the field may already hold focus.
+    await expect(page.getByRole('form', { name: 'Archive' }).locator('xpath=..').getByRole('status')).toHaveText('Archiving needs a reason.');
+    await expect(page.getByRole('textbox', { name: 'Reason for archiving' })).toBeFocused();
+    await expect(page.getByRole('button', { name: 'Yes, archive it' })).toHaveCount(0);
+
+    // The page's own post, replayed without the session, then from another site with it: refused, and nothing written.
+    await toSecondStep('Gone for good: the file was lost.');
+    await expectMinTargetSize(page.getByRole('form', { name: 'Archive' }).getByRole('button'));
+    await expectNoA11yViolations(page, { include: 'form[aria-label="Archive"]' });
+    const sent = await capturePost(page, () => page.getByRole('button', { name: 'Yes, archive it' }).click());
+    expect((await replay(request, sent, curatorOrigin())).status()).toBe(401);
+    expect((await replay(page.request, sent, 'https://attacker.example')).status()).toBe(403);
+    expect(await state()).toEqual(before);
+
+    // Cancel sends nothing, and puts focus back on Archive.
+    await toSecondStep('Gone for good: the file was lost.');
+    await page.getByRole('button', { name: 'Cancel' }).click();
+    await expect(page.getByRole('button', { name: 'Archive', exact: true })).toBeFocused();
+    expect(await state()).toEqual(before);
+
+    // Archived, by keyboard: out of the draft's series, with the archive decision waiting for the watcher, and nothing public yet.
+    await page.getByRole('button', { name: 'Archive', exact: true }).press('Enter');
+    await expect(page.getByText(archiveQuestion(file))).toBeFocused();
+    await pressWhileHeld(page, page.getByRole('button', { name: 'Yes, archive it' }));
+    await expect(answer(page, 'done')).toContainText(DONE_ANSWER.archive);
+    expect(await series()).not.toContain(ARCHIVED);
+    expect(await readEvent(root, eventId)).toMatchObject({ status: 'approved', decisions: expect.arrayContaining([expect.objectContaining({ action: 'archive', reason: 'Gone for good: the file was lost.', by: 'curator:web' })]) });
+    expect(pendingDecisions()).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'archive', photoId: ARCHIVED })]));
+    expect(layers()).toEqual(before.catalog);
+    expect((await readActivePointer(root))?.revisionId ?? null).toBe(base);
+    await expect(page.locator('header').getByText('Archived', { exact: true })).toBeVisible();
+    await expect(page.locator('[role="status"]:has([data-state="done"])')).toBeFocused();
 });
 
 /** Every public page and API the approved criterion names, by path, on `web`. */

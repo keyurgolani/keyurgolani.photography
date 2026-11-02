@@ -16,7 +16,7 @@ import { verifyDirectory } from '../storage/publish';
 import { act, decided, fail, readAuthored, requireStatus, type ActionInput, type ActionOutcome, type Change, type Step, type WrittenRecord } from './actions';
 import { candidateOf } from './candidates';
 import type { CandidateFailure, CurationEvent } from './events';
-import { pendingBindOf, pendingMergeOf } from './binds';
+import { pendingArchiveOf, pendingBindOf, pendingMergeOf } from './binds';
 import { mergeBlockers, type MergeBlockers } from './holders';
 import { canPutBack, confirmStampOf, draftPlan, latestPin, stampedWayBack } from './pins';
 
@@ -332,6 +332,17 @@ function missingPhoto(event: CurationEvent, registry: Registry, action: string):
 }
 
 /**
+ * #118: refuse while an archive of the photo waits for the watcher, which still calls it missing until then, so a
+ * reopened item can't bind it, or archive it a second time, beside that decision.
+ */
+async function refuseWhileArchiving(root: string, photoId: string): Promise<void> {
+    const archive = await pendingArchiveOf(root, photoId).catch((error: unknown) => fail('damaged', `${(error as Error).message}. Nothing was written.`));
+    if (archive) {
+        fail('refused', `An archive of ${photoId} waits for the watcher's next pass: the decision ${archive.decisionId}. Nothing can be bound to it, and it needs no second archive. Nothing was written.`);
+    }
+}
+
+/**
  * The open `new` items for other bytes at this photo's last path, which #10
  * marked with `samePathAs`, whose photo is still present there: a file gone
  * since links nothing.
@@ -496,6 +507,12 @@ export function bindReplacement(input: ActionInput & { path?: string; reason?: s
         const registry = await readRegistryOrFail(root);
         const photo = missingPhoto(event, registry, 'bind');
         if (photo.sourceHealth === 'archived') fail('refused', `${photo.photoId} is archived, so nothing can be bound to it. Nothing was written.`);
+        // #118: one bind at a time, and none beside an archive, both still waiting for the watcher's next pass.
+        await refuseWhileArchiving(root, photo.photoId);
+        const waiting = await pendingBindOf(root, photo.photoId).catch((error: unknown) => fail('damaged', `${(error as Error).message}. Nothing was written.`));
+        if (waiting) {
+            fail('refused', `A bind for ${photo.photoId} already waits for the watcher's next pass: the decision ${waiting.decisionId} gives it ${waiting.path}. Wait for that pass, or for the watcher to refuse it; curation show ${event.id} says which. Nothing was written.`);
+        }
 
         let target = input.path;
         if (target === undefined) {
@@ -575,6 +592,8 @@ export function archiveMissing(input: ActionInput & { reason?: string; faults?: 
             if (bind) {
                 fail('refused', `A bind for ${event.photoId} waits for the watcher's next pass: the decision ${bind.decisionId} gives it ${bind.path}. Archive after the watcher applies it, or once it refuses it; curation show ${event.id} says which. Nothing was written.`);
             }
+            // #118: a reopened item whose archive the watcher hasn't applied yet would write a second decision.
+            await refuseWhileArchiving(root, event.photoId);
         }
         const registry = await readRegistryOrFail(root);
         const photo = missingPhoto(event, registry, 'archive');
