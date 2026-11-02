@@ -279,11 +279,11 @@ describe('sessions', () => {
 
     it('go out in an HttpOnly, Secure, SameSite=Strict cookie for 12 hours on Path=/', () => {
         const id = createSession();
-        const header = sessionCookie(id, key);
+        const header = sessionCookie(id, key, { secure: true });
         const [pair, ...attributes] = header.split('; ');
         expect(pair).toBe(`${SESSION_COOKIE}=${signSessionId(id, key)}`);
         expect(attributes.sort()).toEqual(['HttpOnly', 'Max-Age=43200', 'Path=/', 'SameSite=Strict', 'Secure']);
-        const [cleared, ...clearing] = clearedSessionCookie().split('; ');
+        const [cleared, ...clearing] = clearedSessionCookie({ secure: true }).split('; ');
         expect(cleared).toBe(`${SESSION_COOKIE}=`);
         expect(clearing.sort()).toEqual(['HttpOnly', 'Max-Age=0', 'Path=/', 'SameSite=Strict', 'Secure']);
     });

@@ -5,12 +5,14 @@
 # loopback, that the data root, the library, web's image cache, and the
 # site config folder mounts keep their guarantees, and that the curator (#14)
 # is the only service with CURATION_ENABLED, starts only by name, publishes
-# on 127.0.0.1:3001 alone, and is the only service that mounts ./secrets.
-# Compose runs from an empty project directory so a local .env can't leak in.
+# on 127.0.0.1:3001 alone unless LAN mode's CURATOR_PUBLISH says otherwise
+# (and only the curator reads it), and is the only service that mounts
+# ./secrets. Compose runs from an empty project directory, with the curator's
+# publish settings unset, so a local .env or this shell can't leak in.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-unset COMPOSE_PROFILES
+unset COMPOSE_PROFILES CURATOR_PUBLISH CURATOR_HOST_PORT CURATOR_EXTRA_HOSTS CURATOR_TUNNEL_PORT
 
 FILE=docker-compose.prod.yml
 IMAGE=ghcr.io/keyurgolani/keyurgolani.photography
@@ -223,7 +225,7 @@ if ! jq -e '.services.curator.profiles == ["curator"]' <<<"$resolved" >/dev/null
   fail "curator must sit behind the curator profile, so it starts only by name."
 fi
 if ! jq -e '.services.curator.ports | length == 1 and all(.host_ip == "127.0.0.1" and (.published | tostring) == "3001" and .target == 3000)' <<<"$resolved" >/dev/null; then
-  fail "curator must publish exactly \"127.0.0.1:3001:3000\"."
+  fail "With CURATOR_PUBLISH and CURATOR_HOST_PORT unset, curator must publish exactly \"127.0.0.1:3001:3000\"."
 fi
 if ! jq -e '(.services.curator.network_mode // "") == "" and (.services.curator.networks // {} | keys) == ["curator"]
     and ([.services | to_entries[] | select(.key != "curator") | (.value.networks // {"default": null}) | keys[]] | index("curator") == null)' <<<"$resolved" >/dev/null; then
@@ -260,3 +262,52 @@ if ! jq -e '[.services[] | .environment // {} | keys[] | select(test("PASSPHRASE
   fail "No service may set a passphrase, a session secret, or a secret file path in its environment. curator reads the files from its mount."
 fi
 echo "Only curator mounts ./secrets, read-only, and no environment carries a secret."
+
+# 13. LAN mode (docs/curator.md, From your home network). The resolved file
+#     with nothing set is check 11's: curator on 127.0.0.1:3001 alone. In the
+#     raw file, only curator names CURATOR_PUBLISH, CURATOR_HOST_PORT or
+#     CURATOR_EXTRA_HOSTS, and web's publish keeps its literal 127.0.0.1. With
+#     them set, curator publishes on the address and port they name, hands the
+#     same values to the curator process, which answers 503 to anything but
+#     loopback or a private address, and every other service publishes
+#     exactly as it does with them unset.
+LAN_VARIABLES='CURATOR_PUBLISH|CURATOR_HOST_PORT|CURATOR_EXTRA_HOSTS'
+# The service each line sits in, from the two-space keys under services:, for every non-comment line naming a LAN variable.
+if ! users=$(awk -v pattern="$LAN_VARIABLES" '
+    /^[^ #]/ { in_services = ($0 ~ /^services:/); service = ""; next }
+    in_services && /^  [A-Za-z0-9_.-]+:/ { service = $1; sub(/:$/, "", service); next }
+    { line = $0; sub(/#.*/, "", line) }
+    line ~ pattern { print (in_services && service != "" ? service : "(outside services)") }' "$FILE"); then
+  fail "Could not read $FILE for the LAN mode variables."
+fi
+if [ -z "$users" ] || [ "$(LC_ALL=C sort -u <<<"$users")" != "curator" ]; then
+  fail "Only curator may name CURATOR_PUBLISH, CURATOR_HOST_PORT or CURATOR_EXTRA_HOSTS. Found in: $(LC_ALL=C sort -u <<<"$users" | tr '\n' ' ')"
+fi
+# web's ports: entries, as written: every one starts with the literal 127.0.0.1.
+if ! web_ports=$(awk '
+    /^[^ #]/ { in_services = ($0 ~ /^services:/); service = ""; next }
+    in_services && /^  [A-Za-z0-9_.-]+:/ { service = $1; sub(/:$/, "", service); in_ports = 0; next }
+    service == "web" && /^    [A-Za-z_]+:/ { in_ports = ($1 == "ports:"); next }
+    service == "web" && in_ports && /^      - / { print }' "$FILE"); then
+  fail "Could not read web's ports from $FILE."
+fi
+if [ -z "$web_ports" ] || grep -qv '^      - "127\.0\.0\.1:' <<<"$web_ports"; then
+  fail "web's ports: entries must each start with the literal 127.0.0.1, as \"127.0.0.1:\${PHOTOGRAPHY_PORT:-3000}:3000\". Found: $web_ports"
+fi
+if ! jq -e '.services.curator.environment | .CURATOR_PUBLISH == "" and .CURATOR_HOST_PORT == "" and .CURATOR_EXTRA_HOSTS == ""' <<<"$resolved" >/dev/null; then
+  fail "With them unset, curator must pass CURATOR_PUBLISH, CURATOR_HOST_PORT and CURATOR_EXTRA_HOSTS to the container empty, which it reads as loopback mode."
+fi
+if ! lan=$(PHOTOGRAPHY_IMAGE_TAG=v9.9.9 CURATOR_PUBLISH=192.168.86.250 CURATOR_HOST_PORT=4011 CURATOR_EXTRA_HOSTS=homelab.local:4011 compose config --format json); then
+  fail "docker compose config failed with the LAN mode variables set."
+fi
+if ! jq -e '.services.curator.ports | length == 1 and all(.host_ip == "192.168.86.250" and (.published | tostring) == "4011" and .target == 3000)' <<<"$lan" >/dev/null; then
+  fail "With CURATOR_PUBLISH=192.168.86.250 and CURATOR_HOST_PORT=4011, curator must publish exactly 192.168.86.250:4011:3000."
+fi
+if ! jq -e '.services.curator.environment | .CURATOR_PUBLISH == "192.168.86.250" and .CURATOR_HOST_PORT == "4011" and .CURATOR_EXTRA_HOSTS == "homelab.local:4011"' <<<"$lan" >/dev/null; then
+  fail "curator must pass CURATOR_PUBLISH, CURATOR_HOST_PORT and CURATOR_EXTRA_HOSTS to the container as set, the values its publish reads."
+fi
+if ! jq -e --argjson before "$(jq -c '.services | del(.curator) | map_values(.ports // [])' <<<"$resolved")" \
+    '(.services | del(.curator) | map_values(.ports // [])) == $before' <<<"$lan" >/dev/null; then
+  fail "The LAN mode variables must change curator's publish alone: every other service must publish as it does with them unset."
+fi
+echo "With nothing set, curator publishes 127.0.0.1:3001; only curator reads CURATOR_PUBLISH, CURATOR_HOST_PORT and CURATOR_EXTRA_HOSTS, and web keeps its literal 127.0.0.1."

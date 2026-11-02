@@ -5,13 +5,15 @@ import { createSession } from './sessions';
  * Curator login (#14's 14-2): the passphrase check and the lockout.
  *
  * Five failed logins within 15 minutes lock login for 15 minutes. The lock
- * is global, one for the whole curator, not one per client. Every request
- * reaches the curator over loopback, through the owner's SSH tunnel or a
- * shell on the host, so they all come from the same address, and anything
- * else a client could send to tell itself apart (a header, a cookie) is the
- * client's to change. A per-client count would let one caller reset its own.
- * The cost: whoever can reach the port can keep the owner locked out, and
- * that is someone who already has the host or the owner's tunnel.
+ * is global, one for the whole curator, not one per client. By default every
+ * request reaches the curator over loopback, through the owner's SSH tunnel
+ * or a shell on the host, so they all come from the same address. In LAN mode
+ * they come from the home network, and the app still sees no peer address it
+ * can trust (policy.ts). Either way, anything a client could send to tell
+ * itself apart (a header, a cookie) is the client's to change, and a
+ * per-client count would let one caller reset its own. The cost: whoever can
+ * reach the port can keep the owner locked out, which is someone who already
+ * has the host or the owner's tunnel, or in LAN mode anyone on that network.
  *
  * Attempts run one at a time, so a burst sent together still meets the
  * count. While the lock is on, a login still derives the key, so it takes as

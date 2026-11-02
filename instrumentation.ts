@@ -4,13 +4,14 @@ export async function register() {
     const { checkSiteUrl } = await import('./lib/site/config');
     checkSiteUrl();
     // With CURATION_ENABLED=true, a server told to listen, or listening, beyond loopback, or
-    // with a bad CURATOR_TUNNEL_PORT, stops here. Next has already opened its
+    // with a bad CURATOR_TUNNEL_PORT, CURATOR_HOST_PORT, CURATOR_EXTRA_HOSTS, or a CURATOR_PUBLISH
+    // that is neither loopback nor a private address, stops here. Next has already opened its
     // port by now, so every curator request is also refused on its own until
     // the process exits (lib/curation/auth/policy.ts).
     const { curatorSecretsProblem, curatorStartupProblem } = await import('./lib/curation/auth/policy');
     const problem = curatorStartupProblem(process.env, process.argv);
     if (problem !== null) {
-      console.error(`CURATION_ENABLED is true, but ${problem}. The curator listens on loopback only: see docs/curator.md. Stopping.`);
+      console.error(`CURATION_ENABLED is true, but ${problem}. See docs/curator.md for where the curator may listen and publish. Stopping.`);
       process.exit(1);
     }
     // Missing or unusable secret files don't stop it: every curator path

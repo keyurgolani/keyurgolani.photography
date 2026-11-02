@@ -100,6 +100,17 @@
   text-wrap: pretty;
 }
 
+/* LAN mode over plain http: one plain line under the intro, in the intro's
+   ink at the UI size. No box and no tint: it's a fact about this network,
+   true on every load, not a notice about the last try. */
+.caveat {
+  margin: 0.75rem 0 0;
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-ui);
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
 .form {
   display: flex;
   flex-direction: column;

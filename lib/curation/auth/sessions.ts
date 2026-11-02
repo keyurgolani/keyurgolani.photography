@@ -123,16 +123,28 @@ export function sessionFromCookies(cookieHeader: string | null, key: Buffer, now
     return id !== null && isLive(id, now) ? id : null;
 }
 
-const COOKIE_ATTRIBUTES = 'Path=/; HttpOnly; Secure; SameSite=Strict';
-
-/** The Set-Cookie value that hands the browser session `id`. */
-export function sessionCookie(id: string, key: Buffer): string {
-    return `${SESSION_COOKIE}=${signSessionId(id, key)}; ${COOKIE_ATTRIBUTES}; Max-Age=${SESSION_MAX_AGE_SECONDS}`;
+/**
+ * How the cookie goes out. `secure: false` only for a LAN-mode name over
+ * plain http (policy.ts, plainLanRequest()), where a browser would drop a
+ * `Secure` cookie; loopback and https keep it. Every other attribute is the
+ * same in every mode.
+ */
+export interface SessionCookieOptions {
+    secure: boolean;
 }
 
-/** The Set-Cookie value that clears it. */
-export function clearedSessionCookie(): string {
-    return `${SESSION_COOKIE}=; ${COOKIE_ATTRIBUTES}; Max-Age=0`;
+function attributes({ secure }: SessionCookieOptions): string {
+    return secure ? 'Path=/; HttpOnly; Secure; SameSite=Strict' : 'Path=/; HttpOnly; SameSite=Strict';
+}
+
+/** The Set-Cookie value that hands the browser session `id`. */
+export function sessionCookie(id: string, key: Buffer, options: SessionCookieOptions): string {
+    return `${SESSION_COOKIE}=${signSessionId(id, key)}; ${attributes(options)}; Max-Age=${SESSION_MAX_AGE_SECONDS}`;
+}
+
+/** The Set-Cookie value that clears it. The same attributes it was set with, or a browser on plain http won't take it. */
+export function clearedSessionCookie(options: SessionCookieOptions): string {
+    return `${SESSION_COOKIE}=; ${attributes(options)}; Max-Age=0`;
 }
 
 /** For tests: forget every session, as a restart does. */

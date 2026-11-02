@@ -3,19 +3,21 @@ import { createTestCatalog, type TestCatalog } from '../lib/catalog/testing';
 import { READY_TIMEOUT } from './support/catalogServer';
 import { signIn, startCuratorServer, type CuratorServer } from './support/curatorServer';
 import { expectNoA11yViolations } from './support/a11y';
+import { startForwardProxy, type ForwardProxy } from './support/forwardProxy';
 import { holdNextPost } from './support/holdPost';
 import { waitForHydration } from './support/hydration';
 import { checkSurface } from './support/surface';
 import { expect, test } from './support/test';
-import type { Page } from '@playwright/test';
+import type { Browser, Page } from '@playwright/test';
 
 // #14's 14-2: the curator's `Secure` session cookie over plain http on
 // loopback, as the owner's SSH tunnel serves it. The curator listens on
 // 127.0.0.1 only. For each name the tunnel answers to, `localhost` and
 // `127.0.0.1`, the browser has to keep the cookie the login sets and send
 // it back, and logout has to end it, a replayed copy included. A browser
-// that drops a `Secure` cookie on http would fail here; the fix is never to
-// drop `Secure`.
+// that drops a `Secure` cookie on http would fail here; in loopback mode the
+// fix is never to drop `Secure`. Only LAN mode, last but one below, drops it,
+// and only for its LAN names over plain http (the owner's choice, 2026-11-01).
 
 test.describe.configure({ mode: 'serial' });
 
@@ -194,6 +196,118 @@ test('passes the automated and keyboard checks, at rest and with a refusal', asy
     await page.getByRole('banner').getByRole('link', { name: 'Portfolio curation' }).focus();
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(`${origin}/`);
+});
+
+// LAN mode (docs/curator.md, From your home network): the curator started
+// with CURATOR_PUBLISH on a private address, as compose would publish it on
+// the owner's LAN. It still listens on 127.0.0.1 here; the browser reaches it
+// through a forward proxy on 127.0.0.1 (e2e/support/forwardProxy.ts), so it
+// sends the LAN Host a device on that network would. Its own server, so its
+// lock and sessions are its own.
+test.describe('in LAN mode', () => {
+    const LAN_ORIGIN = 'http://192.168.86.250:3001';
+    const EXTRA_ORIGIN = 'http://curator-lan.test:3001';
+    const CAVEAT = "This page isn't encrypted on this network. Anyone on it who watches the traffic can see your passphrase.";
+    let lan: CuratorServer | undefined;
+    let proxy: ForwardProxy | undefined;
+
+    test.beforeAll(async () => {
+        test.setTimeout(HOOK_TIMEOUT);
+        const base = Number(process.env.E2E_CURATOR_PORT);
+        // Above the ports the file's own server takes when E2E_CURATOR_PORT pins them, one per worker.
+        const port = Number.isInteger(base) && base > 0 ? base + test.info().config.workers + test.info().parallelIndex : undefined;
+        lan = await startCuratorServer(catalog!.root, port, {
+            env: { CURATOR_PUBLISH: '192.168.86.250', CURATOR_HOST_PORT: '3001', CURATOR_EXTRA_HOSTS: 'curator-lan.test:3001' },
+        });
+        proxy = await startForwardProxy(Number(new URL(lan.origin).port));
+    });
+
+    test.afterAll(async () => {
+        test.setTimeout(HOOK_TIMEOUT);
+        await proxy?.stop();
+        await lan?.stop();
+    });
+
+    const onLan = (browser: Browser) => {
+        if (!lan || !proxy) throw new Error('The LAN curator did not start');
+        return browser.newContext({ proxy: { server: proxy.server } });
+    };
+
+    test('signs in over plain http on the LAN address, keeps the cookie without Secure, and says the page is not encrypted', async ({ browser }) => {
+        const context = await onLan(browser);
+        const page = await context.newPage();
+        try {
+            await page.goto(`${LAN_ORIGIN}/curation`);
+            await expect(page).toHaveURL(`${LAN_ORIGIN}/curation/login`);
+            const caveat = page.locator('#curator-login-caveat');
+            await expect(caveat).toHaveText(CAVEAT);
+            await expect(passphrase(page)).toHaveAccessibleDescription(CAVEAT);
+            await buttonAtRest(page);
+            await expectNoA11yViolations(page);
+
+            await signIn(page, LAN_ORIGIN, lan!.passphrase);
+            await expect(page.getByRole('heading', { name: 'Curation' })).toBeVisible();
+
+            // Kept, with every attribute but Secure, which a browser would drop on plain http here.
+            const kept = (await context.cookies(LAN_ORIGIN)).filter((cookie) => cookie.name === 'curator_session');
+            expect(kept).toHaveLength(1);
+            const [cookie] = kept;
+            expect(cookie.domain).toBe('192.168.86.250');
+            expect(cookie.path).toBe('/');
+            expect(cookie.secure).toBe(false);
+            expect(cookie.httpOnly).toBe(true);
+            expect(cookie.sameSite).toBe('Strict');
+            expect(await page.evaluate(() => document.cookie)).not.toContain('curator_session');
+
+            // And sent back: a fresh load is served, not sent to the login.
+            const response = await page.goto(`${LAN_ORIGIN}/curation`);
+            expect(response?.status()).toBe(200);
+            await expect(page).toHaveURL(`${LAN_ORIGIN}/curation`);
+
+            // Logout clears it with the same attributes, so the browser takes the clearing cookie.
+            await waitForHydration(page);
+            await page.getByRole('button', { name: 'Sign out' }).click();
+            await expect(page).toHaveURL(`${LAN_ORIGIN}/curation/login?signed-out=1`);
+            expect((await context.cookies(LAN_ORIGIN)).filter((entry) => entry.name === 'curator_session')).toEqual([]);
+            await expect(caveat).toHaveText(CAVEAT);
+        } finally {
+            await context.close();
+        }
+    });
+
+    test('answers a host CURATOR_EXTRA_HOSTS lists, and refuses an unlisted Host with 421', async ({ browser }) => {
+        const context = await onLan(browser);
+        const page = await context.newPage();
+        try {
+            const listed = await page.goto(`${EXTRA_ORIGIN}/curation/login`);
+            expect(listed?.status()).toBe(200);
+            await expect(page.locator('#curator-login-caveat')).toHaveText(CAVEAT);
+
+            for (const origin of ['http://192.168.86.251:3001', 'http://192.168.86.250:3002', 'http://homelab.test:3001']) {
+                const refused = await page.goto(`${origin}/curation/login`);
+                expect(refused?.status(), origin).toBe(421);
+                await expect(page.getByRole('heading', { name: 'Sign in to curation' }), origin).toHaveCount(0);
+            }
+        } finally {
+            await context.close();
+        }
+    });
+
+    test('still keeps Secure on the loopback names, as an SSH tunnel serves them', async ({ browser, browserName }) => {
+        // As above: Linux WebKit drops a Secure cookie over plain http on loopback.
+        test.fail(browserName === 'webkit', 'WebKit on Linux drops Secure cookies over plain http, on localhost and 127.0.0.1');
+        const context = await browser.newContext();
+        const page = await context.newPage();
+        try {
+            await page.goto(`${lan!.origin}/curation/login`);
+            await expect(page.locator('#curator-login-caveat')).toHaveCount(0);
+            await signIn(page, lan!.origin, lan!.passphrase);
+            const [cookie] = (await context.cookies(lan!.origin)).filter((entry) => entry.name === 'curator_session');
+            expect(cookie?.secure).toBe(true);
+        } finally {
+            await context.close();
+        }
+    });
 });
 
 // Last in this serial file: the lock holds for 15 minutes, and every test above shares this server.

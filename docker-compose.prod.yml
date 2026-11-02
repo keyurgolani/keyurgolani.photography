@@ -112,17 +112,23 @@ services:
   #   docker compose -f docker-compose.prod.yml up -d curator
   #   docker compose -f docker-compose.prod.yml stop curator
   # The same image as web, with the curator flag on, which no other service
-  # sets. It publishes only on the host's 127.0.0.1:3001, and from another
-  # machine the way in is an SSH tunnel to that port, and then the curator's
-  # passphrase login. It reads the library and writes the data root, as the
+  # sets. By default it publishes only on the host's 127.0.0.1:3001, and from
+  # another machine the way in is an SSH tunnel to that port, and then the
+  # curator's passphrase login. With CURATOR_PUBLISH set in .env to the
+  # host's private LAN address (LAN mode, opt-in), every device on that
+  # network can reach the login, over plain http: docs/curator.md, From your
+  # home network. It reads the library and writes the data root, as the
   # watcher's uid, on a network of its own, so no other container can reach it.
   curator:
     image: ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?Set PHOTOGRAPHY_IMAGE_TAG to a release tag, for example v1.1.0}
     profiles: ["curator"]
     user: "1001:1001"
     ports:
-      # Loopback only, and never configurable: the Host allowlist answers to 3001.
-      - "127.0.0.1:3001:3000"
+      # 127.0.0.1:3001 unless .env says otherwise. CURATOR_PUBLISH may name the
+      # host's private LAN address, never 0.0.0.0: the curator reads the same
+      # value below and answers 503 on every path to anything but loopback or
+      # a private address. CURATOR_HOST_PORT changes the host port.
+      - "${CURATOR_PUBLISH:-127.0.0.1}:${CURATOR_HOST_PORT:-3001}:3000"
     networks:
       - curator
     volumes:
@@ -172,6 +178,13 @@ services:
       # Optional, from .env: one more local tunnel port the Host allowlist
       # answers to, when 3001 is taken on the owner's machine.
       - CURATOR_TUNNEL_PORT=${CURATOR_TUNNEL_PORT:-}
+      # Optional, from .env, and the same values the publish above reads, so
+      # the curator knows the mode it was published in: the Host allowlist
+      # and the cookie follow them. CURATOR_EXTRA_HOSTS lists more name:port
+      # Hosts, read in LAN mode only.
+      - CURATOR_PUBLISH=${CURATOR_PUBLISH:-}
+      - CURATOR_HOST_PORT=${CURATOR_HOST_PORT:-}
+      - CURATOR_EXTRA_HOSTS=${CURATOR_EXTRA_HOSTS:-}
     healthcheck:
       # With the flag on, every path answers only the curator's Host.
       test: ["CMD", "wget", "-q", "--spider", "--header", "Host: localhost:3001", "http://localhost:3000/api/health"]
