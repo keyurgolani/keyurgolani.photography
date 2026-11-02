@@ -95,6 +95,10 @@
  *     below lists each form. sequence set and series order need at least one
  *     ID. Exits 0 on success, 1 when the operation is refused, 2 on a usage
  *     error, 3 on a version conflict or a busy authored lock, and 4 for I/O.
+ *     The curator's Series screen inserts, moves and removes photos, sets the
+ *     cover and opening photo, adds, moves and removes chapters, and sets the
+ *     Work order and featured series through the same operations
+ *     (docs/curator.md).
  *
  *   npx tsx scripts/photos.ts validate [--reprofile]
  *     Compile the working layer and run every rule, taking no lock and

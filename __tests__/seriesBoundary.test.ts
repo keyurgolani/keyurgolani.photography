@@ -8,10 +8,11 @@ import { resetLoginForTests } from '../lib/curation/auth/login';
 import { resetSessionsForTests } from '../lib/curation/auth/sessions';
 import { createTestCatalog } from '../lib/catalog/testing';
 import { readAuthoredRecord } from '../lib/catalog/working-layer';
-import { IDLE_SERIES, type SeriesActionState } from '../lib/curation/series-view';
+import { IDLE_ORDER, IDLE_SERIES, type OrderActionState, type SeriesActionState } from '../lib/curation/series-view';
 import { proxy } from '../proxy';
 
-// #150's 2a: New series and a series' Save write the draft from the curator, so both are held to the curator's two
+// #150's 2a: New series and a series' Save write the draft from the curator, and 2b's ordering forms do too, a
+// sequence operation (#8's move) and a site one (the Work order) among them, so each is held to the curator's two
 // gates, as the Inbox's Confirm and Archive are (__tests__/inboxResolutionBoundary.test.ts): a live session, and an
 // Origin naming the curator's own host. Each is refused from a request with no session and from a cross-origin
 // Origin, by proxy() as the request arrives and by requireCurator() in the server action itself, with a real form for
@@ -24,7 +25,7 @@ let requestHeaders = new Headers();
 vi.mock('next/headers', () => ({ headers: async () => requestHeaders }));
 // A finished action refreshes the page, which needs a Next request; there is none here.
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
-const { createSeries, saveSeries } = await import('../app/curation/series/actions');
+const { createSeries, orderSeries, orderWork, saveSeries } = await import('../app/curation/series/actions');
 
 const CURATOR_HOST = '127.0.0.1:3001';
 const CURATOR_ORIGIN = `http://${CURATOR_HOST}`;
@@ -69,10 +70,10 @@ function post(pathname: string, headers: Record<string, string>, form: FormData)
 }
 
 /** How a server action ended: its answer, or what it threw. */
-async function run(headers: Record<string, string>, action: (previous: SeriesActionState, form: FormData) => Promise<SeriesActionState>, form: FormData): Promise<unknown> {
+async function run(headers: Record<string, string>, action: ((previous: SeriesActionState, form: FormData) => Promise<SeriesActionState>) | ((previous: OrderActionState, form: FormData) => Promise<OrderActionState>), form: FormData): Promise<unknown> {
     requestHeaders = new Headers(headers);
     try {
-        return await action(IDLE_SERIES, form);
+        return await (action as (previous: unknown, form: FormData) => Promise<unknown>)(action === createSeries || action === saveSeries ? IDLE_SERIES : IDLE_ORDER, form);
     } catch (error) {
         return error;
     }
@@ -86,15 +87,15 @@ function formOf(fields: Record<string, string>): FormData {
     return form;
 }
 
-/** A data root with one published series, served as the curator's. */
+/** A data root with one published series, and a draft one after it in Work order, served as the curator's. */
 async function root(): Promise<string> {
-    const catalog = await createTestCatalog({ seed: 1502, photos: 2, series: [{ id: SERIES, photos: 2, title: 'Harbor', visibility: 'published' }] });
+    const catalog = await createTestCatalog({ seed: 1502, photos: 3, series: [{ id: SERIES, photos: 2, title: 'Harbor', visibility: 'published' }, { id: 'ser_fixture-01', photos: 1, title: 'Salt roads', visibility: 'draft' }] });
     cleanups.push(() => catalog.cleanup());
     vi.stubEnv('PHOTOGRAPHY_DATA_DIR', catalog.root);
     return catalog.root;
 }
 
-describe('New series and Save at the curator boundary (#150)', { timeout: 60_000 }, () => {
+describe('New series, Save, and the ordering forms at the curator boundary (#150)', { timeout: 60_000 }, () => {
     /** New series, from the Series screen. */
     async function creatable() {
         const dataRoot = await root();
@@ -109,7 +110,23 @@ describe('New series and Save at the curator boundary (#150)', { timeout: 60_000
         return { root: dataRoot, pathname: `/curation/series/${SERIES}`, form: () => formOf(fields), action: saveSeries, kind: 'edit' };
     }
 
-    const FORMS = { 'New series': creatable, 'a series edit': editable } as const;
+    /** 2b: a sequence operation, a move from the series' page, at the version it shows. */
+    async function orderable() {
+        const dataRoot = await root();
+        const record = (await readAuthoredRecord(dataRoot, 'series', SERIES))!;
+        const fields = { op: 'move', seriesId: SERIES, version: String(record.version), base: 'none', photoId: record.photoIds[0], position: '2' };
+        return { root: dataRoot, pathname: `/curation/series/${SERIES}`, form: () => formOf(fields), action: orderSeries, kind: 'move' };
+    }
+
+    /** 2b: a site operation, the Work order, from the Series screen, at the site version it shows. */
+    async function workable() {
+        const dataRoot = await root();
+        const site = (await readAuthoredRecord(dataRoot, 'site', 'site'))!;
+        const fields = { op: 'work-order', version: String(site.version), base: 'none', seriesId: 'ser_fixture-01', move: 'up' };
+        return { root: dataRoot, pathname: '/curation/series', form: () => formOf(fields), action: orderWork, kind: 'work-order' };
+    }
+
+    const FORMS = { 'New series': creatable, 'a series edit': editable, 'a sequence move': orderable, 'a Work order move': workable } as const;
     const written = (dataRoot: string) => folderBytes(path.join(dataRoot, 'authored'));
 
     for (const [label, make] of Object.entries(FORMS)) {

@@ -4,15 +4,16 @@ import styles from '../curator.module.css';
 import NewSeriesForm from './NewSeriesForm';
 import SeriesList from './SeriesList';
 import series from './series.module.css';
+import { FeaturedForm, WorkOrderEditor } from './WorkOrder';
 import { requireCurator } from '@/lib/curation/auth';
 import { loadSeriesScreen } from '@/lib/curation/series-form';
 import { NOTHING_PUBLIC } from '@/lib/curation/series-view';
 
 /**
- * `/curation/series` (#150's 2a): every series in the working layer, and New
- * series. It reads per request, behind requireCurator(), and writes nothing;
- * New series posts to ./actions.ts, and each series' page is
- * ./[seriesId]/page.tsx.
+ * `/curation/series` (#150): every series in the working layer, and New
+ * series (2a), then the Work order and the featured series (2b). It reads
+ * per request, behind requireCurator(), and writes nothing; its forms post
+ * to ./actions.ts, and each series' page is ./[seriesId]/page.tsx.
  */
 export const dynamic = 'force-dynamic';
 
@@ -47,6 +48,14 @@ export default async function SeriesPage() {
                         <SeriesList rows={screen.rows} unreadable={screen.unreadable} />
                         <NewSeriesForm activeRevisionId={screen.activeRevisionId} />
                     </div>
+                    {screen.work === null ? (
+                        <p className={series.unreadable}>Work order and the featured series can&apos;t be read right now, so they can&apos;t be changed here. The server log names the problem.</p>
+                    ) : (
+                        <div className={series.layout}>
+                            <WorkOrderEditor work={screen.work} activeRevisionId={screen.activeRevisionId} />
+                            <FeaturedForm work={screen.work} activeRevisionId={screen.activeRevisionId} />
+                        </div>
+                    )}
                 </main>
             )}
         </div>

@@ -97,3 +97,83 @@ export const BUSY_ANSWER = 'Another change is being written right now, so nothin
 
 /** The web address field's hint, which New series' field is described by. */
 export const SLUG_HINT = 'The series’ address on the site, after /work/: lowercase letters and digits in words joined by hyphens. Leave it empty to make one from the title.';
+
+/**
+ * #150's 2b: one photograph a series' page shows, in its sequence or offered to it. Named by its title, or its file's
+ * name, never by its ID; the ID is only what the page's forms send back.
+ */
+export interface SequencePhoto {
+    id: string;
+    name: string;
+    /** The curator-only route's w400 WebP of the set it pins, or null when no set is ready. */
+    thumbnailUrl: string | null;
+}
+
+/** A photograph the page offers to add: the draft holds its photo record and its source is in the library. */
+export interface AddablePhoto extends SequencePhoto {
+    /** The title of a series that already holds it, or null when none does. */
+    heldBy: string | null;
+}
+
+export interface SequenceChapter {
+    id: string;
+    title: string;
+    startPhotoId: string;
+}
+
+/** A series' order, as its page shows it and its ordering forms change it, with the version they carry. */
+export interface SeriesOrderView {
+    version: number;
+    published: boolean;
+    photos: SequencePhoto[];
+    /** A focal point from 0 to 1 across and down, as the record holds it. */
+    cover: { photoId: string; focalPoint: { x: number; y: number } | null } | null;
+    openingPhotoId: string | null;
+    /** In the order they start. */
+    chapters: SequenceChapter[];
+    addable: AddablePhoto[];
+}
+
+/** One series in the Work order editor, by its title. */
+export interface WorkSeries {
+    id: string;
+    title: string;
+    visibility: SeriesVisibility;
+}
+
+/** The site record's Work order and featured series, as the Series screen changes them, with the version they carry. */
+export interface WorkOrderView {
+    /** 0 while there's no site record yet. */
+    version: number;
+    /** Every series the Work order lists that the screen can show, in its order. */
+    order: WorkSeries[];
+    /** Series the Work order doesn't list, by title. */
+    offWork: WorkSeries[];
+    /** Every series the screen can show, in Work order and then by title, for the featured choice. */
+    all: WorkSeries[];
+    /** The featured series' IDs, in their order: Home opens on the first one a publish holds. */
+    featured: string[];
+}
+
+export type SeriesOrderKind = 'insert' | 'move' | 'remove' | 'cover' | 'opening' | 'chapter-add' | 'chapter-move' | 'chapter-remove';
+export type WorkOrderKind = 'work-order' | 'featured';
+export type OrderActionKind = SeriesOrderKind | WorkOrderKind;
+
+/** The ordering forms' fields an answer can be about. */
+export type OrderField = 'addPhoto' | 'position' | 'cover' | 'focal' | 'chapterTitle' | 'chapterStart';
+
+export type OrderActionState =
+    | { status: 'idle' }
+    | {
+          /** As SeriesActionState's: `stale` and `busy` wrote nothing, and the page refreshes or tries again. */
+          status: 'done' | 'stale' | 'busy' | 'refused' | 'invalid' | 'failed';
+          action: OrderActionKind;
+          message: string;
+          field?: OrderField;
+          serial: number;
+      };
+
+export const IDLE_ORDER: OrderActionState = { status: 'idle' };
+
+/** A photograph's place, as the page numbers it: from 1. */
+export const placeLabel = (index: number, name: string) => `${index + 1}. ${name}`;

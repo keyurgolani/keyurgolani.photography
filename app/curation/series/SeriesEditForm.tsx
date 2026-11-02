@@ -26,9 +26,10 @@ function focusTarget(refs: Refs, field: SeriesField): HTMLElement | null {
 const errorFor = (state: SeriesActionState, name: SeriesField) => (state.status === 'invalid' && state.field === name ? state.message : null);
 
 /**
- * The four fields, opened on the version the page showed. Keyed by that
- * version, so the refresh after a save opens them on what was stored, the
- * text as the cleaning left it.
+ * The four fields, opened on the version the page showed. Keyed by what
+ * they show, so the refresh after a save opens them on what was stored, the
+ * text as the cleaning left it, while a change to the series' order (2b),
+ * which bumps the version but not the text, keeps what was typed here.
  */
 function Fields({ detail, activeRevisionId, state, refs }: { detail: SeriesDetail; activeRevisionId: string | null; state: SeriesActionState; refs: Refs }) {
     const [shortStatement, setShortStatement] = useState(detail.shortStatement);
@@ -175,7 +176,7 @@ export default function SeriesEditForm({ detail, activeRevisionId }: { detail: S
                 </p>
             ) : null}
             <form method="post" onSubmit={submit} aria-label="Edit series">
-                <Fields key={detail.version} detail={detail} activeRevisionId={activeRevisionId} state={state} refs={refs} />
+                <Fields key={JSON.stringify([detail.title, detail.statement, detail.shortStatement, detail.visibility])} detail={detail} activeRevisionId={activeRevisionId} state={state} refs={refs} />
                 <p className={styles.hint}>Saving changes the draft only. {NOTHING_PUBLIC}</p>
                 <div className={styles.actions}>
                     <button type="submit" className={`${styles.button} ${styles.primary}`} {...offWhile(pending)}>
