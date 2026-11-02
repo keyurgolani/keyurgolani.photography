@@ -1,11 +1,11 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { chromium, expect, test, type Browser, type Locator, type Page } from '@playwright/test';
 import sharp from 'sharp';
 import { makeCuratorSecrets, type TestCuratorSecrets } from '../../test/helpers/curatorSecrets';
+import { retryOnAddrInUse } from '../../test/helpers/ports';
 import { HOME_OPENING, HOME_PHOTO_IDS, HOME_SERIES } from '../support/catalog-home';
 import { createInboxFixture, openInboxItems, type InboxFixture } from '../support/curation-inbox';
 import { publishHomeFixture } from '../support/homeFixture';
@@ -89,24 +89,25 @@ test.skip(!BASE, 'Set PARITY_BASE_DIR to a built checkout of the base; CI\'s The
 
 const pinned = (process.env.PARITY_PORTS ?? '').split(',').map(Number).filter(Boolean);
 
-function freePort(): Promise<number> {
-    return new Promise((resolve, reject) => {
-        const server = net.createServer();
-        server.once('error', reject);
-        server.listen(0, '127.0.0.1', () => {
-            const { port } = server.address() as net.AddressInfo;
-            server.close(() => resolve(port));
-        });
-    });
-}
 
 interface Server {
     origin: string;
     stop: () => Promise<void>;
 }
 
-/** `next start` from `tree`'s build on 127.0.0.1, with `env`, answering `status` on `ready`. */
-async function serve(tree: string, port: number, env: Record<string, string>, ready: string, status = 200): Promise<Server> {
+type Env = Record<string, string>;
+
+/**
+ * `next start` from `tree`'s build on 127.0.0.1, with `env`, answering `status` on `ready`. A pinned `port` is used
+ * as it is. With none, it takes a free one, and a fresh one if a server finds its port taken (test/helpers/ports.ts),
+ * so `env` can be a builder for the env of whichever port it lands on.
+ */
+function serve(tree: string, port: number | null, env: Env | ((port: number) => Env), ready: string, status = 200): Promise<Server> {
+    const on = (listen: number) => serveOn(tree, listen, typeof env === 'function' ? env(listen) : env, ready, status);
+    return port === null ? retryOnAddrInUse(on) : on(port);
+}
+
+async function serveOn(tree: string, port: number, env: Env, ready: string, status: number): Promise<Server> {
     const kept = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('PHOTOGRAPHY_') && !name.startsWith('CURAT') && name !== 'SITE_URL'));
     const child: ChildProcess = spawn(process.execPath, [path.join(tree, 'node_modules', 'next', 'dist', 'bin', 'next'), 'start', '--hostname', '127.0.0.1', '--port', String(port)], {
         cwd: tree,
@@ -946,7 +947,7 @@ let library = '';
 let visitorRoot = '';
 let inbox: InboxFixture | undefined;
 let secrets: TestCuratorSecrets | undefined;
-const port = async (index: number) => pinned[index] ?? (await freePort());
+const port = (index: number): number | null => pinned[index] ?? null;
 
 test.beforeAll(async () => {
     fs.mkdirSync(OUT, { recursive: true });
@@ -1012,7 +1013,7 @@ test.describe('the visitor site and the legacy Gallery', () => {
     test.beforeAll(async () => {
         const common = { PHOTOGRAPHY_LIBRARY_DIR: library, PHOTOGRAPHY_SITE_CONFIG_DIR: siteConfig };
         const catalog = { ...common, PHOTOGRAPHY_DATA_DIR: visitorRoot };
-        const [a, b, c, d] = [await port(0), await port(1), await port(2), await port(3)];
+        const [a, b, c, d] = [port(0), port(1), port(2), port(3)];
         const started = await Promise.all([serve(BASE!, a, catalog, '/api/ready'), serve(HEAD, b, catalog, '/api/ready'), serve(BASE!, c, common, '/'), serve(HEAD, d, common, '/')]);
         servers.push(...started);
         visitor = { base: started[0].origin, head: started[1].origin };
@@ -1111,7 +1112,7 @@ test.describe('the curator and its 503', () => {
         inbox = await createInboxFixture();
         await openInboxItems(inbox);
         secrets = await makeCuratorSecrets();
-        const [a, b, c, d] = [await port(0), await port(1), await port(2), await port(3)];
+        const [a, b, c, d] = [port(0), port(1), port(2), port(3)];
         const env = (listen: number, secretEnv: Record<string, string>) => ({
             PHOTOGRAPHY_LIBRARY_DIR: inbox!.library,
             PHOTOGRAPHY_SITE_CONFIG_DIR: siteConfig,
@@ -1120,12 +1121,13 @@ test.describe('the curator and its 503', () => {
             CURATOR_TUNNEL_PORT: String(listen),
             ...secretEnv,
         });
+        const signedIn = secrets.env;
         const missing = { CURATOR_PASSPHRASE_HASH_FILE: path.join(temp, 'no-such.hash'), CURATOR_SESSION_SECRET_FILE: path.join(temp, 'no-such.key') };
         const started = await Promise.all([
-            serve(BASE!, a, env(a, secrets.env), '/curation/login'),
-            serve(HEAD, b, env(b, secrets.env), '/curation/login'),
-            serve(BASE!, c, env(c, missing), '/curation/login', 503),
-            serve(HEAD, d, env(d, missing), '/curation/login', 503),
+            serve(BASE!, a, (listen) => env(listen, signedIn), '/curation/login'),
+            serve(HEAD, b, (listen) => env(listen, signedIn), '/curation/login'),
+            serve(BASE!, c, (listen) => env(listen, missing), '/curation/login', 503),
+            serve(HEAD, d, (listen) => env(listen, missing), '/curation/login', 503),
         ]);
         servers.push(...started);
         curator = { base: started[0].origin, head: started[1].origin };
@@ -1163,7 +1165,7 @@ test.describe('the error page', () => {
         fs.mkdirSync(path.join(root, 'catalog', 'active'), { recursive: true });
         fs.writeFileSync(path.join(root, 'catalog', 'active', 'v1.json'), 'not a pointer');
         const env = { PHOTOGRAPHY_LIBRARY_DIR: library, PHOTOGRAPHY_SITE_CONFIG_DIR: siteConfig, PHOTOGRAPHY_DATA_DIR: root };
-        const [a, b] = [await port(0), await port(1)];
+        const [a, b] = [port(0), port(1)];
         const started = await Promise.all([serve(BASE!, a, env, '/work', 500), serve(HEAD, b, env, '/work', 500)]);
         servers.push(...started);
         failing = { base: started[0].origin, head: started[1].origin };

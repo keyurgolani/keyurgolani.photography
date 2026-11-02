@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import net from 'node:net';
+import { freePort } from '../../test/helpers/ports';
 import path from 'node:path';
 
 /**
@@ -14,17 +14,6 @@ import path from 'node:path';
 export const READY_TIMEOUT = 30_000;
 const STOP_TIMEOUT = 5_000;
 
-/** A port nothing on 127.0.0.1 listens on right now. */
-function freePort(): Promise<number> {
-    return new Promise((resolve, reject) => {
-        const server = net.createServer();
-        server.once('error', reject);
-        server.listen(0, '127.0.0.1', () => {
-            const { port } = server.address() as net.AddressInfo;
-            server.close(() => resolve(port));
-        });
-    });
-}
 
 export interface CatalogServer {
     origin: string;
