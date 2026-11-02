@@ -6,6 +6,7 @@ import { publish } from '../../lib/catalog/publish';
 import { createTestCatalog, type TestCatalog } from '../../lib/catalog/testing';
 import { authoredRecordDir } from '../../lib/catalog/working-layer';
 import { eventIdOf, eventKey } from '../../lib/curation/events';
+import { readEvent } from '../../lib/curation/repository';
 import { createCurationSink } from '../../lib/curation/sink';
 import { readRegistry, writeRegistry } from '../../lib/identity/registry';
 import type { IdentityFact, IdentityFactType } from '../../lib/identity/types';
@@ -39,6 +40,11 @@ export const FAILED_SOURCE = 'inbox/raw-frame.heic';
 export const REPLACED = PUBLISHED_IDS[0];
 export const REPLACED_SOURCE = 'inbox-harbor/landscape.jpg';
 export const REPLACEMENT_REVISION = `sha256-${createHash('sha256').update('e2e inbox replacement bytes').digest('hex')}`;
+/** #118: the new photograph openBindItems() finds at the draft photograph's last path, and its bytes. Sample values. */
+export const LINKED = id(31);
+export const LINKED_REVISION = `sha256-${createHash('sha256').update('e2e inbox linked bytes').digest('hex')}`;
+/** #118: the published photograph openArchiveItem() archives. */
+export const ARCHIVED = PUBLISHED_IDS[1];
 
 export interface InboxFixture {
     catalog: TestCatalog;
@@ -149,6 +155,67 @@ export async function openReplacementItem(fixture: InboxFixture): Promise<string
     return eventIdOf(eventKey('replacement', { photoId, assetRevision: REPLACEMENT_REVISION, key: `replaced:${photoId}:${REPLACEMENT_REVISION}` }));
 }
 
+const quietSink = (fixture: InboxFixture) => createCurationSink({ root: fixture.root, logger: { log: () => undefined, warn: () => undefined, error: () => undefined } });
+
+const missingEventOf = (photoId: string, assetRevision: string) => eventIdOf(eventKey('missing', { photoId, assetRevision, key: `missing:${photoId}:${assetRevision}` }));
+
+/** #118: the registry says `photoId`'s source is gone, as the watcher's pass that reported it missing leaves it. */
+async function markMissing(fixture: InboxFixture, photoId: string): Promise<void> {
+    const registry = await readRegistry(fixture.root);
+    const record = registry.photos[photoId];
+    record.source = { ...record.source, present: false };
+    record.sourceHealth = 'missing';
+    await writeRegistry(fixture.root, registry, registry.version);
+}
+
+/**
+ * #118: the draft-only photograph's file gone, and other bytes at its path, as the watcher sees them: the registry
+ * marks it missing and holds the new bytes as a new photograph there, and the sink opens the missing item and the new
+ * one linked to it (`samePathAs`). Returns both items' IDs and the path.
+ */
+export async function openBindItems(fixture: InboxFixture): Promise<{ missingId: string; linkedId: string; path: string }> {
+    await markMissing(fixture, DRAFT_ID);
+    const registry = await readRegistry(fixture.root);
+    const draft = registry.photos[DRAFT_ID];
+    const at = draft.source.path;
+    const observedAt = '2026-02-01T00:05:00.000Z';
+    registry.photos[LINKED] = {
+        ...draft,
+        photoId: LINKED,
+        createdAt: observedAt,
+        source: { ...draft.source, present: true, observedRevision: LINKED_REVISION, lastSeenAt: observedAt },
+        sourceHealth: 'present',
+        revisions: {
+            [LINKED_REVISION]: {
+                ...draft.revisions[draft.source.observedRevision],
+                assetRevision: LINKED_REVISION,
+                pixelDigest: `sha256-${createHash('sha256').update('e2e inbox linked pixels').digest('hex')}`,
+                firstSeenAt: observedAt,
+                firstSeenPath: at,
+                profiles: {},
+            },
+        },
+    };
+    await writeRegistry(fixture.root, registry, registry.version);
+    await quietSink(fixture)([
+        fact(fixture, 'missing', DRAFT_ID, { observedAt }),
+        fact(fixture, 'new', LINKED, { assetRevision: LINKED_REVISION, path: at, samePathAs: DRAFT_ID, observedAt }),
+    ]);
+    return {
+        missingId: missingEventOf(DRAFT_ID, fixture.revisionOf(DRAFT_ID)),
+        linkedId: eventIdOf(eventKey('new', { photoId: LINKED, assetRevision: LINKED_REVISION, key: `new:${LINKED}:${LINKED_REVISION}` })),
+        path: at,
+    };
+}
+
+/** #118: the published photograph's file gone for good: its missing item, which openInboxItems() opened, with the registry saying so. */
+export async function openArchiveItem(fixture: InboxFixture): Promise<string> {
+    await markMissing(fixture, ARCHIVED);
+    const eventId = missingEventOf(ARCHIVED, fixture.revisionOf(ARCHIVED));
+    if ((await readEvent(fixture.root, eventId)) === null) await quietSink(fixture)([fact(fixture, 'missing', ARCHIVED)]);
+    return eventId;
+}
+
 /** Strings no public response may hold while no active revision references the new photographs. */
 export function undisclosed(fixture: InboxFixture): string[] {
     return [
@@ -166,5 +233,9 @@ export function undisclosed(fixture: InboxFixture): string[] {
         // A replacement's new bytes stay private until a publish activates them.
         REPLACEMENT_REVISION,
         REPLACEMENT_REVISION.slice('sha256-'.length),
+        // #118: so does the new photograph a bind waits to merge.
+        LINKED,
+        LINKED.slice('ph_'.length),
+        LINKED_REVISION.slice('sha256-'.length),
     ];
 }
