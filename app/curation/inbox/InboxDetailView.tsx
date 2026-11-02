@@ -213,7 +213,8 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
                     )}
                 </div>
             </div>
-            <div className={styles.fields}>
+            {/* On a wide screen this scrolls on its own beside the photograph (#145), so it's a named region a keyboard can reach. */}
+            <div className={styles.fields} id="item-details" role="region" aria-label="Item details" tabIndex={0}>
                 <header className={styles.fieldsHeader}>
                     <div>
                         {/* tabIndex -1: LandOnItem focuses it when a row or the next item opens, and it stays out of the tab order. */}

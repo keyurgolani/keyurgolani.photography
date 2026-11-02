@@ -942,6 +942,63 @@ main.state {
   }
 }
 
+/* #145: on the wide layout the list and the item's form each scroll on their own, and the photograph between them
+   holds still. The Inbox is one screen tall and the window never scrolls; each panel keeps its own place, and its
+   overscroll stays in it. Below 768 px a phone keeps one side at a time in the window's own scroll (below). */
+@media (min-width: 768px) {
+  .page:has(> .body) {
+    display: flex;
+    height: 100svh;
+    min-height: 0;
+    flex-direction: column;
+  }
+
+  .page:has(> .body) > .body {
+    min-height: 0;
+    flex: 1;
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .body > .list,
+  .detail > .fields {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    /* As the window's own scroll padding does for the page: a focused row or field scrolls into view with room. */
+    scroll-padding-block: 1rem;
+  }
+
+  /* A panel takes focus to scroll from the keyboard. It meets the window's edge, so its ring sits inside it, as a row's does. */
+  .body > .list:focus-visible,
+  .detail > .fields:focus-visible {
+    outline-offset: calc(-1 * var(--focus-ring-width));
+    box-shadow: inset 0 0 0 calc(var(--focus-ring-width) + var(--focus-ring-offset)) var(--focus-ring-dark) !important;
+  }
+
+  .detail {
+    min-height: 0;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  /* The photograph's column is the panels' height and never scrolls, so the frame fills it instead of sticking in it. */
+  .photo {
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .photoFrame {
+    position: relative;
+    height: 100%;
+    min-height: 0;
+    grid-template-rows: minmax(0, 1fr);
+    align-items: center;
+  }
+
+  .photoFrame img {
+    max-height: 100%;
+  }
+}
+
 /* The mockup's mobile frame: the header stacks, the list sits above the detail. */
 @media (max-width: 767px) {
   /* Sign out shares the wordmark's row, so the header takes two rows, not three. */

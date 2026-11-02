@@ -337,7 +337,7 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
     // The version an approval or Decide later was sent for. Once the page shows a newer one, the refresh after it has landed, and `open` is current.
     const sentVersion = useRef<number | null>(null);
     // Where the page was when a submit named this item in the URL, and what the page showed then. See the effect below.
-    const pinned = useRef<{ scrollY: number; state: InboxActionState; detail: InboxDetail } | null>(null);
+    const pinned = useRef<{ scrollY: number; panelTop: number; state: InboxActionState; detail: InboxDetail } | null>(null);
     // Submitting by hand, not through <form action>, so React never resets the form after an answer: a reset would put
     // each select back to its page-load option while the curator's choice is still what the form sends.
     const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -356,7 +356,7 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
         // its router skips the new URL, which the action posts to. It's the URL this item's row links to.
         pinned.current = null;
         if (new URLSearchParams(window.location.search).get('item') !== detail.id) {
-            pinned.current = { scrollY: window.scrollY, state, detail };
+            pinned.current = { scrollY: window.scrollY, panelTop: document.getElementById('item-details')?.scrollTop ?? 0, state, detail };
             window.history.replaceState(null, '', itemUrl(detail.id));
         }
         startTransition(() => dispatch(form));
@@ -369,6 +369,8 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
         if (pin === null || state === pin.state || state.status !== 'done' || detail === pin.detail) return;
         pinned.current = null;
         window.scrollTo({ top: pin.scrollY, behavior: 'instant' });
+        const panel = document.getElementById('item-details');
+        if (panel) panel.scrollTop = pin.panelTop;
     }, [state, detail]);
     // After an approval or Decide later, open the next item that needs a decision (owner, 2026-10-25). Reopen and the rest stay on the item.
     useEffect(() => {
