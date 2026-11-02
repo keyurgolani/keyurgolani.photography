@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
-import { rememberedRow, rememberRow } from './journey';
+import { listPlace, rememberedRow, rememberListPlace, rememberRow } from './journey';
 
 const ROW_HASH = /^#row-(evt_[0-9a-f]{24})$/;
 
@@ -57,11 +57,36 @@ function currentOnlyWhenShown(): () => void {
     return () => phone.removeEventListener('change', sync);
 }
 
+/**
+ * A wide screen's list scrolls on its own (#145), and every row's link is a
+ * page load, so the list would start at the top each time another item
+ * opens. It goes back to where it was instead, and if the item now open
+ * isn't in view there, just far enough to show its row.
+ */
+function keepListPlace(list: HTMLElement): () => void {
+    if (typeof window.matchMedia !== 'function' || window.matchMedia(PHONE).matches) return () => undefined;
+    const top = listPlace();
+    if (top !== null) list.scrollTop = top;
+    const current = list.querySelector<HTMLElement>('a[data-row][aria-current="true"]');
+    if (current) {
+        const row = current.getBoundingClientRect();
+        const box = list.getBoundingClientRect();
+        if (row.top < box.top || row.bottom > box.bottom) current.scrollIntoView({ block: 'nearest' });
+    }
+    const save = () => rememberListPlace(list.scrollTop);
+    window.addEventListener('pagehide', save);
+    return () => {
+        save();
+        window.removeEventListener('pagehide', save);
+    };
+}
+
 /** On the list: remembers the row a click leaves from, and, on the list view, returns to it. */
 export default function ReturnToRow({ listView }: { listView: boolean }) {
     useEffect(() => {
         const unmark = listView ? currentOnlyWhenShown() : () => undefined;
         const list = document.getElementById('inbox-list');
+        const unkeep = list ? keepListPlace(list) : () => undefined;
         const leave = (event: MouseEvent) => {
             const row = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[data-row]') : null;
             if (row?.dataset.row) rememberRow(row.dataset.row, window.scrollY);
@@ -75,6 +100,7 @@ export default function ReturnToRow({ listView }: { listView: boolean }) {
         if (listView) restore(false);
         return () => {
             unmark();
+            unkeep();
             list?.removeEventListener('click', leave);
             window.removeEventListener('pageshow', shown);
         };
