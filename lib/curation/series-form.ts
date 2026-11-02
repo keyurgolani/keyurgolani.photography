@@ -8,6 +8,7 @@ import { dataRootStatus, libraryRoot } from '../storage/config';
 import { LockLostError, LockTimeoutError, withLock } from '../storage/lock';
 import { scrub } from './commands';
 import { WEB_ACTOR } from './inbox-form';
+import { seriesOrderView, workOrderView } from './series-order';
 import {
     BUSY_ANSWER,
     DONE_ANSWER,
@@ -19,8 +20,10 @@ import {
     type SeriesActionState,
     type SeriesDetail,
     type SeriesField,
+    type SeriesOrderView,
     type SeriesRow,
     type SeriesVisibility,
+    type WorkOrderView,
 } from './series-view';
 
 /**
@@ -37,9 +40,9 @@ import {
  *
  * A series' page edits what `photos edit` shows of it (editable()), and only
  * its title, statements and visibility: the order, the cover, the opening
- * photograph and the chapters are 2b's, and the photographs and the
- * carry-over marker are never the form's, so whatever else a form sends is
- * not read. Both forms clean those three texts, and only those, with
+ * photograph and the chapters are 2b's, through `photos sequence`' path in
+ * series-order.ts, and the photographs and the carry-over marker are never
+ * this form's, so whatever else a form sends is not read. Both forms clean those three texts, and only those, with
  * edit-fields.ts's checkText(), so the curator and the CLI store the same
  * text and the chapters stay as `photos sequence` stored them. Both save
  * with writeAuthoredRecord() under the version the page showed, so a series
@@ -287,7 +290,7 @@ export async function runSeriesAction(kind: SeriesActionKind, form: unknown, opt
 const liveRevision = async (root: string) => (await readActivePointer(root))?.revisionId ?? null;
 
 /** The Series screen, or why it can't be shown. Throws when the working layer can't be read, as loadInbox() does. */
-export async function loadSeriesScreen(): Promise<{ state: 'ready'; rows: SeriesRow[]; unreadable: number; activeRevisionId: string | null } | { state: 'not-ready'; message: string }> {
+export async function loadSeriesScreen(): Promise<{ state: 'ready'; rows: SeriesRow[]; unreadable: number; activeRevisionId: string | null; work: WorkOrderView | null } | { state: 'not-ready'; message: string }> {
     const status = dataRootStatus();
     if (status.state !== 'ready' || status.root === null) return { state: 'not-ready', message: `The data root is ${status.state}, so the series can't be shown. Nothing was written.` };
     const root = status.root;
@@ -308,7 +311,9 @@ export async function loadSeriesScreen(): Promise<{ state: 'ready'; rows: Series
     // Work order first, as visitors see it, then the rest by title.
     const place = (row: SeriesRow) => order.get(row.id) ?? Number.POSITIVE_INFINITY;
     rows.sort((a, b) => place(a) - place(b) || seriesName(a.title).localeCompare(seriesName(b.title)) || a.id.localeCompare(b.id));
-    return { state: 'ready', rows, unreadable: problems.filter((problem) => problem.kind === 'series').length, activeRevisionId };
+    // 2b: Work order and the featured series, which the screen changes through series-order.ts.
+    const work = await workOrderView(root, series);
+    return { state: 'ready', rows, unreadable: problems.filter((problem) => problem.kind === 'series').length, activeRevisionId, work };
 }
 
 /** The site record's Work order, by place. Empty when there's no site record, or it can't be read: the list then shows every series by title. */
@@ -323,7 +328,7 @@ async function workOrder(root: string): Promise<Map<string, number>> {
 }
 
 /** One series for its page. Not found for an ID that can't name a series or one with no record. Throws when the record can't be read. */
-export async function loadSeriesDetail(seriesId: string): Promise<{ state: 'ready'; detail: SeriesDetail; activeRevisionId: string | null } | { state: 'not-found' } | { state: 'not-ready'; message: string }> {
+export async function loadSeriesDetail(seriesId: string): Promise<{ state: 'ready'; detail: SeriesDetail; order: SeriesOrderView; activeRevisionId: string | null } | { state: 'not-found' } | { state: 'not-ready'; message: string }> {
     if (!SERIES_ID_RE.test(seriesId)) return { state: 'not-found' };
     const status = dataRootStatus();
     if (status.state !== 'ready' || status.root === null) return { state: 'not-ready', message: `The data root is ${status.state}, so the series can't be shown. Nothing was written.` };
@@ -334,6 +339,8 @@ export async function loadSeriesDetail(seriesId: string): Promise<{ state: 'read
     return {
         state: 'ready',
         activeRevisionId,
+        // 2b: its order, from the same read, so the ordering forms carry the version the text form does.
+        order: await seriesOrderView(status.root, record),
         detail: {
             id: record.id,
             version: record.version,

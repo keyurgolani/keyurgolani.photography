@@ -30,7 +30,7 @@ async function restrictedImports(relativePath: string, source: string): Promise<
 const importing = (specifier: string) => `import * as probe from '${specifier}';\nexport { probe };\n`;
 
 /** What the watcher process must never load: the operations, the writer, and the curation modules that use them. */
-const FORBIDDEN = /^lib\/catalog\/(?:sequence[^/]*|working-layer-writer)\.ts$|^lib\/curation\/(?:actions|policy|resolutions|series-form)\.ts$/;
+const FORBIDDEN = /^lib\/catalog\/(?:sequence[^/]*|working-layer-writer)\.ts$|^lib\/curation\/(?:actions|policy|resolutions|series-form|series-order)\.ts$/;
 const forbidden = (files: string[]) => files.filter((file) => FORBIDDEN.test(file));
 
 describe('the ingestion lint rule', { timeout: 60_000 }, () => {
@@ -65,6 +65,7 @@ describe('the ingestion lint rule', { timeout: 60_000 }, () => {
         ['lib/curation/policy.ts', importing('../catalog/sequence')],
         ['lib/curation/resolutions.ts', importing('../catalog/working-layer-writer')],
         ['lib/curation/series-form.ts', importing('../catalog/working-layer-writer')],
+        ['lib/curation/series-order.ts', importing('../catalog/sequence')],
     ])('allows %s: %j', async (file, source) => {
         expect(await restrictedImports(file, source)).toEqual([]);
     });

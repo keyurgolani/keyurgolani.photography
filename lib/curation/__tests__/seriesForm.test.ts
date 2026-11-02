@@ -460,6 +460,8 @@ describe('The screens\' reads', { timeout: 30_000 }, () => {
             state: 'ready',
             activeRevisionId: null,
             detail: { id: GALLERY, version: record.version, title: 'Gallery', slug: 'gallery', statement: '', shortStatement: '', visibility: 'published', photoCount: 2, carriedOver: true, inWorkOrder: true },
+            // 2b's order, from the same read: lib/curation/__tests__/seriesOrder.test.ts reads it in full.
+            order: expect.objectContaining({ version: record.version, photos: record.photoIds.map((id) => expect.objectContaining({ id })) }),
         });
         expect(await loadSeriesDetail('ser_nowhere')).toEqual({ state: 'not-found' });
         expect(await loadSeriesDetail('../site')).toEqual({ state: 'not-found' });

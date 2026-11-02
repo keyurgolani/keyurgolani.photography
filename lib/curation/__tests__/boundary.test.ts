@@ -78,13 +78,19 @@ describe('the public routes', () => {
             'app/curation/publish/jump.ts',
             'app/curation/publish/load.ts',
             'app/curation/publish/page.tsx',
+            'app/curation/series/ChapterEditor.tsx',
+            'app/curation/series/CoverForm.tsx',
             'app/curation/series/NewSeriesForm.tsx',
+            'app/curation/series/SequenceEditor.tsx',
             'app/curation/series/SeriesAnswer.tsx',
             'app/curation/series/SeriesEditForm.tsx',
             'app/curation/series/SeriesList.tsx',
+            'app/curation/series/Thumbnail.tsx',
+            'app/curation/series/WorkOrder.tsx',
             'app/curation/series/[seriesId]/page.tsx',
             'app/curation/series/actions.ts',
             'app/curation/series/page.tsx',
+            'app/curation/series/useOrder.ts',
         ]);
     });
 });

@@ -4,6 +4,9 @@ import { notFound } from 'next/navigation';
 import { ArrowLeft } from 'lucide-react';
 import CuratorHeader from '../../CuratorHeader';
 import styles from '../../curator.module.css';
+import ChapterEditor from '../ChapterEditor';
+import CoverForm from '../CoverForm';
+import SequenceEditor from '../SequenceEditor';
 import SeriesEditForm from '../SeriesEditForm';
 import series from '../series.module.css';
 import { requireCurator } from '@/lib/curation/auth';
@@ -11,11 +14,12 @@ import { loadSeriesDetail } from '@/lib/curation/series-form';
 import { photoCountLabel, seriesName, VISIBILITY_LABEL } from '@/lib/curation/series-view';
 
 /**
- * `/curation/series/<seriesId>` (#150's 2a): one series' title, statements
- * and visibility, as `photos edit` would open them. It reads per request,
- * behind requireCurator(), and writes nothing; Save posts to ../actions.ts
- * with the version this page showed. The order, the cover and the chapters
- * are 2b's, so they aren't here.
+ * `/curation/series/<seriesId>` (#150): one series' title, statements and
+ * visibility, as `photos edit` would open them (2a), then its sequence,
+ * cover, opening photograph and chapters, as `photos sequence show` lists
+ * them (2b). It reads per request, behind requireCurator(), and writes
+ * nothing; Save and every ordering form post to ../actions.ts with the
+ * version this page showed.
  */
 export const dynamic = 'force-dynamic';
 
@@ -74,6 +78,9 @@ export default async function SeriesDetailPage({ params }: SeriesDetailPageProps
                         </div>
                     </dl>
                     <SeriesEditForm detail={loaded.detail} activeRevisionId={loaded.activeRevisionId} />
+                    <SequenceEditor seriesId={loaded.detail.id} order={loaded.order} activeRevisionId={loaded.activeRevisionId} />
+                    <CoverForm seriesId={loaded.detail.id} order={loaded.order} activeRevisionId={loaded.activeRevisionId} />
+                    <ChapterEditor seriesId={loaded.detail.id} order={loaded.order} activeRevisionId={loaded.activeRevisionId} />
                 </main>
             )}
         </div>

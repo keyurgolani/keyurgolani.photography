@@ -1,7 +1,7 @@
-/* #150's Series screen and a series' page, on the curator's tokens
-   (app/curation/curator.module.css, whose custom properties .page sets in
-   every theme), so the five themes need nothing here. States are text,
-   never color alone. Every control is at least 44 px (contract rule 5),
+/* #150's Series screen and a series' page, with 2b's order sections, on
+   the curator's tokens (app/curation/curator.module.css, whose custom
+   properties .page sets in every theme), so the five themes need nothing
+   here. States are text, never color alone. Every control is at least 44 px (contract rule 5),
    hover applies only under a fine pointer (rule 3), and nothing here clips
    a focus ring: no container scrolls or hides overflow. */
 
@@ -166,6 +166,133 @@ textarea.statement {
 .choiceHint {
   margin: 0;
   padding: 0 0.625rem 0.5rem calc(0.625rem + 1.25rem);
+}
+
+/* 2b: a series' order, under its text form, each part its own section with a rule above it. */
+.section {
+  margin-top: 2.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--curator-rule);
+}
+
+.section h2 {
+  margin: 0 0 0.25rem;
+  font-family: var(--gah-font-sans);
+  font-size: 1.25rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.subform h3 {
+  margin: 0;
+  color: var(--gah-ink-soft);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-ui);
+  font-weight: 500;
+}
+
+/* A part of a section with fields of its own: Add a photograph, Move to a position, the cover, a new chapter. */
+.subform {
+  margin-top: 1.5rem;
+}
+
+.sequenceList,
+.chapterList,
+.workList {
+  margin: 0.75rem 0 0;
+  padding: 0;
+  border-top: 1px solid var(--curator-rule);
+  list-style: none;
+}
+
+/* A photograph's row: its thumbnail, its place and name with what it is to the series, then its buttons, which
+   wrap under the name on a narrow screen. DOM order is the reading order (contract rule 6). */
+.member {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  gap: 0.5rem 0.75rem;
+  align-items: start;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--curator-rule);
+}
+
+.memberText {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.memberName {
+  margin: 0;
+  color: var(--gah-ink);
+  overflow-wrap: anywhere;
+}
+
+.memberNotes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.5rem;
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}
+
+.memberActions {
+  display: flex;
+  flex-wrap: wrap;
+  grid-column: 1 / -1;
+  gap: 0.5rem;
+}
+
+@media (min-width: 640px) {
+  .member {
+    grid-template-columns: 56px minmax(0, 1fr) auto;
+  }
+
+  .memberActions {
+    grid-column: auto;
+    justify-content: flex-end;
+  }
+}
+
+.focal {
+  margin-top: 1rem;
+  padding-bottom: 0.625rem;
+}
+
+/* Across and down, side by side where they fit, inside the radio group they belong to. */
+.focalPoint {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0 0.75rem;
+  padding: 0 0.625rem;
+}
+
+.chapter {
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--curator-rule);
+}
+
+/* Work order and Featured, the list page's two boxes under the list. */
+.workBox {
+  margin-top: 0;
+}
+
+.workRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.625rem 0;
+  border-bottom: 1px solid var(--curator-rule);
+}
+
+.workRow .memberName {
+  flex: 1 1 10rem;
+}
+
+.workRow .memberActions {
+  flex: 1 1 100%;
 }
 
 @media (hover: hover) and (pointer: fine) {
