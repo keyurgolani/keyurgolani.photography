@@ -60,17 +60,17 @@ export function WorkOrderEditor({ work, activeRevisionId }: { work: WorkOrderVie
                                 {VISIBILITY_LABEL[entry.visibility]}
                             </span>
                             <span className={series.memberActions}>
-                                <button type="button" className={styles.button} data-control="up" onClick={() => move(entry.id, index, 'up')} {...offWhile(pending || index === 0)}>
+                                <button type="button" className={styles.button} data-control="up" aria-label={`Move up: ${entry.title}`} onClick={() => move(entry.id, index, 'up')} {...offWhile(pending || index === 0)}>
                                     <ArrowUp size={16} aria-hidden="true" />
-                                    Move up<span className={styles.visuallyHidden}>: {entry.title}</span>
+                                    Move up
                                 </button>
-                                <button type="button" className={styles.button} data-control="down" onClick={() => move(entry.id, index, 'down')} {...offWhile(pending || index === count - 1)}>
+                                <button type="button" className={styles.button} data-control="down" aria-label={`Move down: ${entry.title}`} onClick={() => move(entry.id, index, 'down')} {...offWhile(pending || index === count - 1)}>
                                     <ArrowDown size={16} aria-hidden="true" />
-                                    Move down<span className={styles.visuallyHidden}>: {entry.title}</span>
+                                    Move down
                                 </button>
-                                <button type="button" className={styles.button} onClick={() => send('work-order', { seriesId: entry.id, move: 'off' })} {...offWhile(pending)}>
+                                <button type="button" className={styles.button} aria-label={`Take off Work: ${entry.title}`} onClick={() => send('work-order', { seriesId: entry.id, move: 'off' })} {...offWhile(pending)}>
                                     <X size={16} aria-hidden="true" />
-                                    Take off Work<span className={styles.visuallyHidden}>: {entry.title}</span>
+                                    Take off Work
                                 </button>
                             </span>
                         </li>

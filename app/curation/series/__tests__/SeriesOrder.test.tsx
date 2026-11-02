@@ -93,10 +93,12 @@ describe("a series' sequence", () => {
     it("gives each row's buttons names of their own that start with what they say, as native buttons the keyboard works", () => {
         render(<SequenceEditor seriesId={SERIES} order={order()} activeRevisionId={LIVE} />);
         const buttons = within(sequence()).getAllByRole('button');
-        const names = buttons.map((button) => button.textContent);
+        const names = buttons.map((button) => button.getAttribute('aria-label'));
         expect(names).toEqual(['Move up: Ferry at dawn', 'Move down: Ferry at dawn', 'Remove: Ferry at dawn', 'Move up: harbor-2.jpg', 'Move down: harbor-2.jpg', 'Remove: harbor-2.jpg', 'Move up: harbor-3.jpg', 'Move down: harbor-3.jpg', 'Remove: harbor-3.jpg']);
         expect(new Set(names).size).toBe(names.length);
         for (const button of buttons) {
+            // The name starts with the words the button shows (WCAG 2.5.3).
+            expect(button.getAttribute('aria-label')?.startsWith(`${button.textContent}: `), button.textContent ?? '').toBe(true);
             expect(button).toHaveAttribute('type', 'button');
             expect(button).not.toBeDisabled();
             expect(button).not.toHaveAttribute('tabindex');

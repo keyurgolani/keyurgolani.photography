@@ -89,18 +89,19 @@ export default function SequenceEditor({ seriesId, order, activeRevisionId }: { 
                                         </span>
                                     ) : null}
                                 </div>
+                                {/* Each name starts with the button's words, then the photograph's (contract rule 2), so no two rows share one. */}
                                 <div className={series.memberActions}>
-                                    <button type="button" className={styles.button} data-control="up" onClick={() => move(photo.id, index, 'up')} {...offWhile(pending || index === 0)}>
+                                    <button type="button" className={styles.button} data-control="up" aria-label={`Move up: ${photo.name}`} onClick={() => move(photo.id, index, 'up')} {...offWhile(pending || index === 0)}>
                                         <ArrowUp size={16} aria-hidden="true" />
-                                        Move up<span className={styles.visuallyHidden}>: {photo.name}</span>
+                                        Move up
                                     </button>
-                                    <button type="button" className={styles.button} data-control="down" onClick={() => move(photo.id, index, 'down')} {...offWhile(pending || index === count - 1)}>
+                                    <button type="button" className={styles.button} data-control="down" aria-label={`Move down: ${photo.name}`} onClick={() => move(photo.id, index, 'down')} {...offWhile(pending || index === count - 1)}>
                                         <ArrowDown size={16} aria-hidden="true" />
-                                        Move down<span className={styles.visuallyHidden}>: {photo.name}</span>
+                                        Move down
                                     </button>
-                                    <button type="button" className={styles.button} onClick={() => send('remove', { photoId: photo.id })} {...offWhile(pending)}>
+                                    <button type="button" className={styles.button} aria-label={`Remove: ${photo.name}`} onClick={() => send('remove', { photoId: photo.id })} {...offWhile(pending)}>
                                         <X size={16} aria-hidden="true" />
-                                        Remove<span className={styles.visuallyHidden}>: {photo.name}</span>
+                                        Remove
                                     </button>
                                 </div>
                             </li>
