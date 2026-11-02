@@ -447,6 +447,9 @@ describe('confirm, bind and archive in the inbox (#118)', () => {
 
     it("says what Decide later and Confirm each do on a replacement that was never confirmed", () => {
         expect(REPLACEMENT_HINT.keeps).toBe('Decide later writes nothing, so the draft keeps the version it has. Confirm new asset revision puts the new version in the draft instead. Nothing is published until you publish.');
+        // With no photo record, Confirm is unavailable, so the hint promises it nowhere.
+        expect(replacementHint({ draft: 'none', live: false, decideLater: 'keeps' })).toBe(REPLACEMENT_HINT.noRecord);
+        expect(REPLACEMENT_HINT.noRecord).not.toMatch(/Confirm/);
     });
 
     it('says why Confirm is unavailable, by what holds it back, with no ID or command', () => {
@@ -465,6 +468,7 @@ describe('confirm, bind and archive in the inbox (#118)', () => {
             open: 'Decide later keeps it here, and the published photograph stays as it is. To settle it, put the same file back in the library, bind it to the file that replaces it, or archive it.',
             bindWaiting: "Bind and Archive wait until the watcher applies the bind on its next pass. Decide later keeps it here meanwhile.",
             back: 'Its source is back in the library, so the watcher closes this item on its next pass. Decide later keeps it here meanwhile.',
+            archiveWaiting: "An archive waits for the watcher's next pass, which takes this photograph down, so Bind and Archive aren't offered. Decide later keeps it here meanwhile.",
         });
     });
 

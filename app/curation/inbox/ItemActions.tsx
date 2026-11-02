@@ -137,10 +137,18 @@ function slotOf(state: InboxActionState, can: InboxDetail['can']): AnswerSlot | 
  * The one under the buttons takes focus when the control that was pressed is
  * gone after the refresh, so focus never drops to the page's body.
  */
-function AnswerRegion({ show, state, detail, regionRef }: { show: boolean; state: InboxActionState; detail: InboxDetail; regionRef?: RefObject<HTMLDivElement | null> }) {
+function AnswerRegion({ show, state, detail, regionRef, announce }: { show: boolean; state: InboxActionState; detail: InboxDetail; regionRef?: RefObject<HTMLDivElement | null>; announce?: { text: string; serial: number } | null }) {
     return (
         <div role="status" aria-live="polite" className={styles.answer} ref={regionRef} tabIndex={regionRef ? -1 : undefined}>
-            {show ? <Notice state={state} detail={detail} /> : null}
+            {/* #118: a refusal the page makes itself, before any post, said here too, since the field it's by may already
+                hold focus. A new node each time, so the same words are read again. The field shows it on screen. */}
+            {announce ? (
+                <p key={announce.serial} className={styles.visuallyHidden}>
+                    {announce.text}
+                </p>
+            ) : show ? (
+                <Notice state={state} detail={detail} />
+            ) : null}
         </div>
     );
 }
@@ -165,32 +173,34 @@ interface ResolveProps {
  */
 function BindForm({ detail, activeRevisionId, state, pending, slot, submit }: ResolveProps) {
     const linked = detail.linkedFiles;
-    const [choice, setChoice] = useState<string | null>(linked.length === 1 ? 'linked' : linked.length === 0 ? 'typed' : null);
+    // A linked file goes by its item's ID, never its path, which the page shows escaped: the server reads the path again.
+    const [choice, setChoice] = useState<string | null>(linked.length === 1 ? linked[0].id : linked.length === 0 ? 'typed' : null);
     const [path, setPath] = useState('');
     const pathRef = useRef<HTMLInputElement>(null);
-    const pathError = state.status !== 'idle' && state.status !== 'done' && state.action === 'bind' && state.field === 'path' ? state.message : null;
+    const firstFileRef = useRef<HTMLInputElement>(null);
+    const refusedBind = state.status !== 'idle' && state.status !== 'done' && state.action === 'bind' ? state : null;
+    const pathError = refusedBind?.field === 'path' ? refusedBind.message : null;
+    // A refusal about which linked file shows by the files, while there are files to show it by.
+    const filesError = refusedBind?.field === 'bindTo' && linked.length > 0 ? refusedBind.message : null;
     const answerSerial = state.status === 'idle' ? 0 : state.serial;
     useEffect(() => {
         if (pathError) pathRef.current?.focus();
-    }, [answerSerial, pathError]);
+        else if (filesError) firstFileRef.current?.focus();
+    }, [answerSerial, pathError, filesError]);
     return (
         <details className={styles.more}>
             <summary>Bind to the file that replaces it</summary>
             <form method="post" onSubmit={submit} aria-label="Bind">
                 <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
                 {linked.length > 0 ? (
-                    <fieldset className={styles.sequence}>
+                    <fieldset className={styles.sequence} aria-describedby={filesError ? 'bind-to-error' : undefined}>
                         <legend>File to bind</legend>
-                        {linked.map((file) => {
-                            // One linked file goes as `linked`, so the writer binds the one it finds, whatever the page escaped in its path.
-                            const value = linked.length === 1 ? 'linked' : file;
-                            return (
-                                <label key={file} className={styles.slot}>
-                                    <input type="radio" name="bindTo" value={value} checked={choice === value} onChange={() => setChoice(value)} />
-                                    {linked.length === 1 ? `${file}, the new file at its last path` : file}
-                                </label>
-                            );
-                        })}
+                        {linked.map((file, index) => (
+                            <label key={file.id} className={styles.slot}>
+                                <input ref={index === 0 ? firstFileRef : undefined} type="radio" name="bindTo" value={file.id} checked={choice === file.id} onChange={() => setChoice(file.id)} />
+                                {linked.length === 1 ? `${file.path}, the new file at its last path` : file.path}
+                            </label>
+                        ))}
                         <label className={styles.slot}>
                             <input type="radio" name="bindTo" value="typed" checked={choice === 'typed'} onChange={() => setChoice('typed')} />
                             Another file in the library
@@ -199,6 +209,11 @@ function BindForm({ detail, activeRevisionId, state, pending, slot, submit }: Re
                 ) : (
                     <input type="hidden" name="bindTo" value="typed" />
                 )}
+                {filesError ? (
+                    <p className={styles.fieldError} id="bind-to-error" data-state="invalid">
+                        {filesError}
+                    </p>
+                ) : null}
                 <label className={styles.label}>
                     Library path
                     <input
@@ -233,8 +248,8 @@ function BindForm({ detail, activeRevisionId, state, pending, slot, submit }: Re
                     </button>
                 </div>
             </form>
-            {/* A refused path shows by its field; every other answer to Bind shows here, while Bind is still offered. */}
-            <AnswerRegion show={slot === 'bind' && pathError === null} state={state} detail={detail} />
+            {/* A refused path or file shows by its field; every other answer to Bind shows here, while Bind is still offered. */}
+            <AnswerRegion show={slot === 'bind' && pathError === null && filesError === null} state={state} detail={detail} />
         </details>
     );
 }
@@ -248,6 +263,9 @@ function ArchiveForm({ detail, activeRevisionId, state, pending, slot, submit }:
     const [reason, setReason] = useState('');
     const [confirming, setConfirming] = useState(false);
     const [missingReason, setMissingReason] = useState(false);
+    // Counts each time the page asks for a reason, so the live region says it every time, and the field takes focus
+    // once the error is there to describe it.
+    const [asked, setAsked] = useState(0);
     const reasonRef = useRef<HTMLInputElement>(null);
     const archiveRef = useRef<HTMLButtonElement>(null);
     const questionRef = useRef<HTMLParagraphElement>(null);
@@ -260,6 +278,9 @@ function ArchiveForm({ detail, activeRevisionId, state, pending, slot, submit }:
     useEffect(() => {
         if (confirming) questionRef.current?.focus();
     }, [confirming]);
+    useEffect(() => {
+        if (asked > 0) reasonRef.current?.focus();
+    }, [asked]);
     const toggle = () => {
         if (confirming) {
             setConfirming(false);
@@ -267,7 +288,7 @@ function ArchiveForm({ detail, activeRevisionId, state, pending, slot, submit }:
         }
         if (reason.trim() === '') {
             setMissingReason(true);
-            reasonRef.current?.focus();
+            setAsked((count) => count + 1);
             return;
         }
         setMissingReason(false);
@@ -343,7 +364,7 @@ function ArchiveForm({ detail, activeRevisionId, state, pending, slot, submit }:
                 </div>
             </form>
             {/* A refused reason shows by its field; every other answer to Archive shows here, while Archive is still offered. */}
-            <AnswerRegion show={slot === 'archive' && refused === null} state={state} detail={detail} />
+            <AnswerRegion show={slot === 'archive' && refused === null} state={state} detail={detail} announce={missingReason ? { text: 'Archiving needs a reason.', serial: asked } : null} />
         </details>
     );
 }

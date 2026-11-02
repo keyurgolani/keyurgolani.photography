@@ -1,13 +1,16 @@
 import { REVISION_ID_RE, SERIES_ID_RE } from '../catalog/schema';
 import { readAuthoredRecord, readAuthoredSeries } from '../catalog/working-layer';
 import { isLibraryPath, PHOTO_ID_RE } from '../identity/ids';
+import { readRegistry } from '../identity/registry';
 import { dataRootStatus, libraryRoot } from '../storage/config';
 import { approveEvent, dismissEvent, editEvent, reopenEvent, retryEvent, type ActionInput, type ActionOutcome, type Choices } from './actions';
+import { pendingArchiveOf } from './binds';
 import { printable, scrub } from './commands';
 import { EVENT_ID_RE, type CurationEvent, type CuratorDescription } from './events';
 import { bindAnswer, BIND_WAITING_NEXT, BLOCKED_NEXT, BLOCKED_WHY, CONFIRM_UNAVAILABLE, DONE_ANSWER, MOVED_ANSWER, parsePlacementValue, type InboxActionKind, type InboxActionState } from './inbox-view';
 import { readDraftPlan } from './pins';
-import { archiveMissing, bindReplacement, confirmReplacement, leaveInDraft } from './resolutions';
+import { readEvent } from './repository';
+import { archiveMissing, bindReplacement, confirmReplacement, leaveInDraft, linkedNewItems } from './resolutions';
 import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from './text';
 
 /**
@@ -32,7 +35,7 @@ import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from './text';
 /** Who the web curator acts as. There's no session, so there's no name: the SSH tunnel is the way in (docs/curator.md). */
 export const WEB_ACTOR = 'curator:web';
 
-type FormField = 'description' | 'reason' | 'path';
+type FormField = 'description' | 'reason' | 'path' | 'bindTo';
 
 export class InboxFormError extends Error {
     /** The field the refusal is about, so the page shows it beside that field. */
@@ -130,20 +133,28 @@ function reasonFrom(form: FormData, required?: 'Dismissing' | 'Archiving'): stri
 
 const OUTSIDE_LIBRARY = "That isn't a path inside the library. Type it from the library's top folder, such as harbor/landscape.jpg. Nothing was written.";
 
+const NOT_LINKED = "That file isn't linked to this photograph any more. Refresh the inbox. Nothing was written.";
+
 /**
- * #118: the file Bind gives the missing photograph. `bindTo` is `linked` for the one file #10 linked at its last path,
- * which bindReplacement() finds itself, `typed` for the library path in `path`, or one of several linked files' paths.
- * Undefined leaves the choice to the writer, which binds the one linked file or says none or several are. A path that
- * isn't inside the library is refused here, before the writer runs.
+ * #118: the file Bind gives the missing photograph. `bindTo` names a linked file by its item's ID, whose path is read
+ * here again, unescaped, from linkedNewItems(), since the page only shows an escaped copy; or it's `typed`, for the
+ * library path in `path`, which is refused here when it isn't inside the library. With neither, the writer binds the
+ * one linked file, or says none or several are.
  */
-function bindPathFrom(form: FormData): string | undefined {
+async function bindPathFrom(form: FormData, root: string, eventId: string): Promise<string | undefined> {
     const choice = field(form, 'bindTo');
     const typed = (field(form, 'path') ?? '').trim();
-    if (choice === 'linked' || (choice === null && typed === '')) return undefined;
-    const at = choice === 'typed' || choice === null ? typed : choice;
-    if (at === '') invalid('Type the library path of the file that replaces it. Nothing was written.', 'path');
-    if (!isLibraryPath(at)) invalid(OUTSIDE_LIBRARY, 'path');
-    return at;
+    if (choice === null || choice === 'typed') {
+        if (choice === null && typed === '') return undefined;
+        if (typed === '') invalid('Type the library path of the file that replaces it. Nothing was written.', 'path');
+        if (!isLibraryPath(typed)) invalid(OUTSIDE_LIBRARY, 'path');
+        return typed;
+    }
+    if (!EVENT_ID_RE.test(choice)) invalid(NOT_LINKED, 'bindTo');
+    const event = await readEvent(root, eventId);
+    if (event?.photoId === null || event?.photoId === undefined) return invalid(NOT_LINKED, 'bindTo');
+    const linked = (await linkedNewItems(root, event.photoId, await readRegistry(root))).find((item) => item.id === choice);
+    return linked?.derivedFacts.sourcePath ?? invalid(NOT_LINKED, 'bindTo');
 }
 
 /** #118: Archive's reason, and its second step, which the page's confirm button alone sends, so no stray post archives. */
@@ -187,7 +198,10 @@ const PAGE_WORDING: [RegExp, string][] = [
     [/^--version takes/, 'The form carries no item version. Refresh the inbox.'],
     [/^edit needs a series/, 'Nothing changed, so there is nothing to save.'],
     [/^dismiss needs a reason/, 'Dismissing needs a reason.'],
-    // #17's bind, with nothing linked and no --path, or several linked files and no --path to pick one.
+    // #17's bind, with nothing linked and no --path, or several linked files and no --path to pick one, or one waiting already.
+    [/^A bind for \S+ already waits for the watcher's next pass/, "A bind waiting for the watcher's next pass already gives this photograph a file. Refresh after the watcher runs. Nothing was written."],
+    // #118: a bind or a second archive while an archive waits, as after an archive and a reopen.
+    [/^An archive of \S+ waits for the watcher's next pass/, "An archive waiting for the watcher's next pass takes this photograph down already, so it can't be bound or archived again. Refresh after the watcher runs. Nothing was written."],
     [/^No file is linked to /, `No file is linked to this photograph. ${LINK_PATH} Nothing was written.`],
     [/^\d+ files are linked to /, 'More than one file is linked to this photograph. Choose the one that replaces it. Nothing was written.'],
     [/ is not a path inside the library\./, OUTSIDE_LIBRARY],
@@ -236,7 +250,7 @@ const REFUSAL_WORDING: [RegExp, (match: RegExpMatchArray) => string][] = [
 ];
 
 /** #118: the bind refusals about the path the curator chose, which the page shows by that field. */
-const PATH_REFUSAL = /^No file is linked to |^\d+ files are linked to | is not a path inside the library\.|^The watcher hasn't seen a photograph at |gave to \S+, so the watcher would refuse the bind|^#10 holds |more than the one revision first seen there|by the pending bind decision|A photograph visitors see can't be merged| in the draft\. Take it out of |the retained catalog revisions? |has a photo record in the draft with the owner's /;
+const PATH_REFUSAL = /^No file is linked to | is not a path inside the library\.|^The watcher hasn't seen a photograph at |gave to \S+, so the watcher would refuse the bind|^#10 holds |more than the one revision first seen there|by the pending bind decision|A photograph visitors see can't be merged| in the draft\. Take it out of |the retained catalog revisions? |has a photo record in the draft with the owner's /;
 
 /** What a refusal says when nothing more specific fits: no internal ID, no flag, no command. */
 const FALLBACK: Record<'refused' | 'invalid' | 'failed', string> = {
@@ -312,6 +326,45 @@ async function archiveNotes(root: string, notes: readonly string[]): Promise<str
         .filter((note) => !NOT_FOR_THE_PAGE.test(note));
 }
 
+/** #118: the field a bind's refusal is about: the files to choose from when several are linked, the path otherwise. */
+function bindField(message: string): FormField | undefined {
+    if (/^\d+ files are linked to /.test(message)) return 'bindTo';
+    return PATH_REFUSAL.test(message) ? 'path' : undefined;
+}
+
+/** #118: what an archive has written of a photograph so far: the series that list it, and its pending archive decision. */
+interface ArchiveFootprint {
+    series: string[];
+    decision: string | null;
+}
+
+/** Null when the item or the working layer can't be read, so nothing can be told. */
+async function archiveFootprint(root: string, eventId: string): Promise<ArchiveFootprint | null> {
+    try {
+        const photoId = (await readEvent(root, eventId))?.photoId ?? null;
+        if (photoId === null) return null;
+        const { series } = await readAuthoredSeries(root);
+        return { series: series.filter((entry) => entry.photoIds.includes(photoId)).map((entry) => entry.id), decision: (await pendingArchiveOf(root, photoId))?.decisionId ?? null };
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * #118: an archive that failed after part of it landed, by what changed since it started: a series it left, or the
+ * archive decision, written before the event was. Null when neither changed, so the plain answer, nothing written, is true.
+ */
+function partialArchive(before: ArchiveFootprint | null, after: ArchiveFootprint | null): string | null {
+    if (before === null || after === null) return null;
+    if (after.decision !== null && before.decision === null) {
+        return "The archive stopped part way: it's written, but the item hasn't changed. The watcher applies it on its next pass. Refresh after it runs.";
+    }
+    if (before.series.some((id) => !after.series.includes(id))) {
+        return "The archive stopped part way: this photograph is out of the draft's series, but it isn't archived, and the item hasn't changed. Refresh, then archive it again to finish it.";
+    }
+    return null;
+}
+
 /** #118: a bind's answer, by the path the event recorded and whether the file holds the photograph's own bytes. */
 function bindDone(event: CurationEvent, notes: readonly string[]): string {
     const bound = event.decisions.at(-1);
@@ -340,6 +393,9 @@ export async function runInboxAction(kind: InboxActionKind, form: unknown, optio
         throw error;
     }
     let outcome: ActionOutcome;
+    // #118: what an archive has written before it runs, so a failure part way never answers that nothing was.
+    const footprint = kind === 'archive' ? await archiveFootprint(input.root, input.eventId) : null;
+    const partWritten = async () => (kind === 'archive' ? partialArchive(footprint, await archiveFootprint(input.root, input.eventId)) : null);
     try {
         switch (kind) {
             case 'approve':
@@ -367,7 +423,7 @@ export async function runInboxAction(kind: InboxActionKind, form: unknown, optio
                 outcome = await confirmReplacement(input);
                 break;
             case 'bind':
-                outcome = await bindReplacement({ ...input, path: bindPathFrom(form) });
+                outcome = await bindReplacement({ ...input, path: await bindPathFrom(form, input.root, input.eventId) });
                 break;
             case 'archive':
                 outcome = await archiveMissing({ ...input, reason: archiveFrom(form) });
@@ -377,6 +433,8 @@ export async function runInboxAction(kind: InboxActionKind, form: unknown, optio
         if (error instanceof InboxFormError) return answer('invalid', input.eventId, error.message, error.field);
         // Storage errors can name a host path, so only the kind of failure shows here. The server log keeps the rest.
         console.error(`[curation] The inbox ${kind} on ${input.eventId} failed:`, error);
+        const partial = await partWritten();
+        if (partial !== null) return answer('failed', input.eventId, partial);
         return answer('failed', input.eventId, `The inbox couldn't finish that (${error instanceof Error ? error.name : 'an error'}). Refresh and check the item before trying again.`);
     }
     if (outcome.ok) {
@@ -393,10 +451,12 @@ export async function runInboxAction(kind: InboxActionKind, form: unknown, optio
     }
     // Refreshing doesn't change what the draft holds, so this refusal names what changed and what to do, with no refresh to offer.
     if (kind === 'defer' && outcome.code === 'stale' && MOVED_REFUSAL.test(outcome.message)) return answer('refused', input.eventId, MOVED_ANSWER);
-    // #118: an archive that stopped after a series changed wrote something, so none of the "nothing was written" answers fits.
-    if (kind === 'archive' && (outcome.writes?.length ?? 0) > 0) {
+    // #118: an archive that stopped after a series or its decision landed wrote something, so none of the "nothing was
+    // written" answers fits, whatever the writer or the event's write said.
+    const partial = kind === 'archive' ? await partWritten() : null;
+    if (partial !== null) {
         console.warn(`[curation] The inbox archive on ${input.eventId} stopped part way: ${scrub(outcome.message, [dataRootStatus().root, libraryRoot()])}`);
-        return answer('failed', input.eventId, "The archive stopped part way: this photograph is out of some series in the draft, and the item hasn't changed. Refresh, then archive it again to finish.");
+        return answer('failed', input.eventId, partial);
     }
     // A set still building is the item waiting, not the data root failing.
     if (kind === 'confirm' && outcome.code === 'not-ready' && /derivatives are still building/.test(outcome.message)) return answer('refused', input.eventId, `${CONFIRM_UNAVAILABLE.building} Nothing was written.`);
@@ -405,5 +465,5 @@ export async function runInboxAction(kind: InboxActionKind, form: unknown, optio
     const status = STATUS_FOR[outcome.code] as 'refused' | 'invalid' | 'failed';
     // 14-1's own words, IDs and all, stay in the server log.
     if (status === 'failed') console.warn(`[curation] The inbox ${kind} on ${input.eventId} failed: ${scrub(outcome.message, [dataRootStatus().root, libraryRoot()])}`);
-    return answer(status, input.eventId, pageWording(outcome.message, status), kind === 'bind' && PATH_REFUSAL.test(outcome.message) ? 'path' : undefined);
+    return answer(status, input.eventId, pageWording(outcome.message, status), kind === 'bind' ? bindField(outcome.message) : undefined);
 }

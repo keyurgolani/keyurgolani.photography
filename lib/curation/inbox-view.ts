@@ -275,10 +275,10 @@ export interface InboxDetail extends InboxItem {
     /** #118: why an open replacement's Confirm is unavailable now (CONFIRM_UNAVAILABLE), or null when it's offered or settled. */
     confirmUnavailable: string | null;
     /**
-     * #118: for an open missing source, the library paths of the new files #10 found at its last path, which Bind
-     * offers. Empty for every other item.
+     * #118: for an open missing source, the new files #10 found at its last path, which Bind offers: each one's item
+     * ID, which the form sends, and its library path, escaped for the page. Empty for every other item.
      */
-    linkedFiles: string[];
+    linkedFiles: { id: string; path: string }[];
     /** For a replacement of a known photo and revision, what its draft holds and what Decide later does with it. Null otherwise. */
     replacement: ReplacementDraft | null;
     /**
@@ -387,6 +387,8 @@ export const REPLACEMENT_HINT = {
     refuses: "This photograph's draft moved to another version after the new one was confirmed, so Decide later can't tell which one to put back. Set its version with photos edit, or dismiss this item.",
     /** As leaveInDraft()'s refusal says it after the click (lib/curation/inbox-form.ts REFUSAL_WORDING). */
     blocked: `${BLOCKED_WHY} ${BLOCKED_NEXT}`,
+    /** #118: no photo record, so Confirm is unavailable and Decide later writes nothing. Promises neither. */
+    noRecord: "This photograph has no photo record in the draft yet, so there's no version for the new one to replace, and Decide later writes nothing. Nothing is published until you publish.",
 } as const;
 
 /**
@@ -406,6 +408,8 @@ export const CONFIRM_UNAVAILABLE = {
 export const MISSING_HINT = {
     open: 'Decide later keeps it here, and the published photograph stays as it is. To settle it, put the same file back in the library, bind it to the file that replaces it, or archive it.',
     bindWaiting: 'Bind and Archive wait until the watcher applies the bind on its next pass. Decide later keeps it here meanwhile.',
+    /** A reopened item whose archive the watcher hasn't applied yet. */
+    archiveWaiting: "An archive waits for the watcher's next pass, which takes this photograph down, so Bind and Archive aren't offered. Decide later keeps it here meanwhile.",
     back: 'Its source is back in the library, so the watcher closes this item on its next pass. Decide later keeps it here meanwhile.',
 } as const;
 
@@ -419,6 +423,7 @@ export function replacementHint(replacement: ReplacementDraft | null): string {
     if (replacement?.decideLater === 'put-back') return REPLACEMENT_HINT.putBack;
     if (replacement?.decideLater === 'refuses') return REPLACEMENT_HINT.refuses;
     if (replacement?.decideLater === 'blocked') return REPLACEMENT_HINT.blocked;
+    if (replacement?.draft === 'none') return REPLACEMENT_HINT.noRecord;
     return replacement?.draft === 'new' ? REPLACEMENT_HINT.keepsNew : REPLACEMENT_HINT.keeps;
 }
 
@@ -861,7 +866,7 @@ export type InboxActionState =
           eventId: string | null;
           message: string;
           /** The form field the answer is about, when it's about one, so the page shows it there. */
-          field?: 'description' | 'reason' | 'path';
+          field?: 'description' | 'reason' | 'path' | 'bindTo';
           /** Counts up, so the page can tell one answer from the next. */
           serial: number;
       };

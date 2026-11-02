@@ -7,6 +7,7 @@ import { folderBytes } from '../../../test/helpers/folderBytes';
 import { setDataDir, writeDataRootMarker } from '../../../test/helpers/tempDataRoot';
 import { authoredRecordDir, readAuthoredRecord } from '../../catalog/working-layer';
 import { AUTHORED_LOCK, writeAuthoredRecord } from '../../catalog/working-layer-writer';
+import { writeDecision } from '../../identity/decisions';
 import { profileIdOf } from '../../identity/ids';
 import { PROFILE_1 } from '../../identity/profile';
 import { identityPaths, readRegistry, writeRegistry } from '../../identity/registry';
@@ -14,7 +15,7 @@ import type { IdentityFact } from '../../identity/types';
 import { withLock } from '../../storage/lock';
 import { approveEvent, deferEvent, reopenEvent } from '../actions';
 import { eventIdOf, eventKey, type CurationEvent, type CurationEventType } from '../events';
-import { runCurationCli } from '../commands';
+import { printable, runCurationCli } from '../commands';
 import { loadInbox } from '../inbox';
 import { pageWording, runInboxAction, WEB_ACTOR } from '../inbox-form';
 import {
@@ -33,11 +34,21 @@ import {
     type InboxActionState,
     type InboxView,
 } from '../inbox-view';
-import { eventDir, readEvent, withCurationLock, writeEvent } from '../repository';
+import { EventMovedError, eventDir, listEvents, readEvent, withCurationLock, writeEvent } from '../repository';
 import { createCurationSink } from '../sink';
 import { createCurationFixture, DRAFT, GPS, PUBLISHED, SERIAL, writeRules, type CurationFixture } from './curationFixtures';
 import { createMissingWorld, removeMissingTemplate, type MissingWorld } from './missingWorld';
 import { createWorld, makeImages, P_PATH, photoRecord, removeTemplate, SERIES, served, type Images, type World } from './replacementWorld';
+
+// The real writers, which a #118 test can fail once to land a fault after an archive's series changed.
+vi.mock('../../identity/decisions', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../../identity/decisions')>();
+    return { ...actual, writeDecision: vi.fn(actual.writeDecision) };
+});
+vi.mock('../repository', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../repository')>();
+    return { ...actual, writeEvent: vi.fn(actual.writeEvent) };
+});
 
 // #14's 14-3: what the Inbox page reads, and what its forms do through
 // 14-1's actions. The server actions in app/curation/inbox/actions.ts call
@@ -822,6 +833,18 @@ describe('confirm, bind and archive from the page (#118)', { timeout: 60_000 }, 
             expect(again).toMatchObject({ status: 'stale' });
         });
 
+        it('offers no Confirm on a settled replacement, and an open one with no photo record says why without promising Confirm', async () => {
+            const w = await replacement();
+            await w.build(w.job(w.b));
+            fs.rmSync(authoredRecordDir(w.root, 'photo', w.p), { recursive: true, force: true });
+            const open = await shown(w.eventId);
+            expect(open).toMatchObject({ can: { confirm: false }, confirmUnavailable: CONFIRM_UNAVAILABLE.noRecord, primaryUnavailable: REPLACEMENT_HINT.noRecord });
+            expect(open.primaryUnavailable).not.toMatch(/Confirm/);
+            const stored = await w.event();
+            await withCurationLock(w.root, {}, (hold) => writeEvent(w.root, { ...stored, status: 'dismissed' }, stored.version, hold));
+            expect(await shown(w.eventId)).toMatchObject({ status: 'dismissed', can: { confirm: false }, confirmUnavailable: null });
+        });
+
         it('refuses one whose derivatives are still building, in page words, writing nothing', async () => {
             const w = await replacement();
             const before = written(w.root);
@@ -867,7 +890,8 @@ describe('confirm, bind and archive from the page (#118)', { timeout: 60_000 }, 
             expect(await shown(w.missingId)).toMatchObject({ type: 'missing', can: { bind: true, archive: true, defer: true, dismiss: false, confirm: false }, linkedFiles: [], primaryUnavailable: MISSING_HINT.open });
             fs.writeFileSync(w.lib.file(P_PATH), images.third);
             await w.pass();
-            expect(await shown(w.missingId)).toMatchObject({ can: { bind: true, archive: true }, linkedFiles: [P_PATH] });
+            const linkedItem = (await listEvents(w.root)).events.find((entry) => entry.type === 'new' && entry.derivedFacts.samePathAs === w.p)!;
+            expect(await shown(w.missingId)).toMatchObject({ can: { bind: true, archive: true }, linkedFiles: [{ id: linkedItem.id, path: P_PATH }] });
         });
 
         it('binds the linked file, and the item stays open, waiting for the watcher, with Archive refused until then', async () => {
@@ -875,7 +899,8 @@ describe('confirm, bind and archive from the page (#118)', { timeout: 60_000 }, 
             await otherBytes(w);
             const event = await w.event(w.missingId);
             const catalog = layers(w.root).catalog;
-            const state = await runInboxAction('bind', itemForm(event, w.revisionId, { bindTo: 'linked' }));
+            const [linked] = (await shown(w.missingId)).linkedFiles;
+            const state = await runInboxAction('bind', itemForm(event, w.revisionId, { bindTo: linked.id }));
             expect(state).toMatchObject({ status: 'done', action: 'bind', message: bindAnswer(P_PATH, false) });
             inPageWords(state, [w.root, w.lib.root]);
             // Not done: the watcher applies it, so the item is open until its next pass.
@@ -930,10 +955,116 @@ describe('confirm, bind and archive from the page (#118)', { timeout: 60_000 }, 
             const unseen = await runInboxAction('bind', itemForm(event, w.revisionId, { bindTo: 'typed', path: 'harbor/elsewhere.jpg' }));
             expect(unseen).toMatchObject({ status: 'refused', field: 'path', message: "The watcher hasn't seen a photograph at that path. Check it, or wait for the watcher's next pass after copying the file there. Nothing was written." });
             // Nothing is linked, and no path is typed.
-            const none = await runInboxAction('bind', itemForm(event, w.revisionId, { bindTo: 'linked' }));
+            const none = await runInboxAction('bind', itemForm(event, w.revisionId));
             expect(none).toMatchObject({ status: 'invalid', field: 'path', message: 'No file is linked to this photograph. Type the library path of the file that replaces it. Nothing was written.' });
             for (const state of [unseen, none]) inPageWords(state, [w.root, w.lib.root]);
             expect(written(w.root)).toEqual(before);
+        });
+
+        it('binds one of several linked files whose names hold a backslash or a bidi control, by the item the page names, never its escaped path', async () => {
+            for (const name of ['harbor/back\\slash.jpg', 'harbor/\u202Egpj.jpg']) {
+                const w = await missing();
+                removeP(w);
+                await w.pass();
+                fs.writeFileSync(w.lib.file(name), images.third);
+                fs.writeFileSync(w.lib.file('harbor/plain.jpg'), images.second);
+                await w.pass();
+                // Both link to P's missing item, as other bytes at its last path do.
+                for (const entry of (await listEvents(w.root)).events.filter((item) => item.type === 'new' && [name, 'harbor/plain.jpg'].includes(item.derivedFacts.sourcePath))) {
+                    await withCurationLock(w.root, {}, (hold) => writeEvent(w.root, { ...entry, derivedFacts: { ...entry.derivedFacts, samePathAs: w.p } }, entry.version, hold));
+                }
+                const detail = await shown(w.missingId);
+                expect(detail.linkedFiles.map((file) => file.path).sort()).toEqual([printable(name), 'harbor/plain.jpg'].sort());
+                const odd = detail.linkedFiles.find((file) => file.path === printable(name))!;
+                expect(odd.path, name).not.toBe(name);
+                const event = await w.event(w.missingId);
+                const before = written(w.root);
+                // None chosen, or a file no longer linked: the page says so by the files, and writes nothing.
+                expect(await runInboxAction('bind', itemForm(event, w.revisionId))).toMatchObject({ status: 'invalid', field: 'bindTo', message: 'More than one file is linked to this photograph. Choose the one that replaces it. Nothing was written.' });
+                expect(await runInboxAction('bind', itemForm(event, w.revisionId, { bindTo: event.id }))).toMatchObject({ status: 'invalid', field: 'bindTo', message: "That file isn't linked to this photograph any more. Refresh the inbox. Nothing was written." });
+                expect(written(w.root)).toEqual(before);
+                const state = await runInboxAction('bind', itemForm(event, w.revisionId, { bindTo: odd.id }));
+                expect(state, name).toMatchObject({ status: 'done', message: bindAnswer(printable(name), false) });
+                inPageWords(state, [w.root, w.lib.root]);
+                expect(pendingDecisions(w.root)).toEqual([expect.objectContaining({ type: 'bind', path: name, photoId: w.p })]);
+            }
+        });
+
+        it('withdraws Bind and Archive while an archive waits for the watcher, as after a reopen, and refuses an old form in page words', async () => {
+            const w = await missing();
+            removeP(w);
+            await w.pass();
+            fs.writeFileSync(w.lib.file('harbor/elsewhere.jpg'), images.third);
+            await w.pass();
+            const shownFirst = await w.event(w.missingId);
+            expect(await runInboxAction('archive', itemForm(shownFirst, w.revisionId, { reason: 'Gone for good.', confirmed: 'yes' }))).toMatchObject({ status: 'done' });
+            expect(await runInboxAction('reopen', itemForm(await w.event(w.missingId), w.revisionId))).toMatchObject({ status: 'done' });
+            expect(await shown(w.missingId)).toMatchObject({ status: 'open', can: { bind: false, archive: false, defer: true }, primaryUnavailable: MISSING_HINT.archiveWaiting });
+            const event = await w.event(w.missingId);
+            const before = written(w.root);
+            const refusal = "An archive waiting for the watcher's next pass takes this photograph down already, so it can't be bound or archived again. Refresh after the watcher runs. Nothing was written.";
+            const answers = [
+                await runInboxAction('bind', itemForm(event, w.revisionId, { bindTo: 'typed', path: 'harbor/elsewhere.jpg' })),
+                await runInboxAction('archive', itemForm(event, w.revisionId, { reason: 'Again.', confirmed: 'yes' })),
+            ];
+            for (const state of answers) {
+                expect(state).toMatchObject({ status: 'refused', message: refusal });
+                inPageWords(state, [w.root, w.lib.root]);
+            }
+            expect(written(w.root)).toEqual(before);
+        });
+
+        it('names the series an archive left by title, and what leaving changed there', async () => {
+            const w = await missing();
+            removeP(w);
+            await w.pass();
+            // P leads the series, as its cover, its opening photograph, and a chapter's start.
+            const series = (await readAuthoredRecord(w.root, 'series', SERIES))!;
+            await writeAuthoredRecord(
+                { ...series, photoIds: [w.p, w.q], cover: { photoId: w.p, focalPoint: { x: 0.5, y: 0.5 } }, openingPhotoId: w.p, chapters: [{ id: 'chapter-1', title: 'Fixture chapter', startPhotoId: w.p }] },
+                { expectedVersion: series.version, root: w.root },
+            );
+            const state = await runInboxAction('archive', itemForm(await w.event(w.missingId), w.revisionId, { reason: 'Gone for good.', confirmed: 'yes' }));
+            expect(state).toMatchObject({ status: 'done' });
+            const message = inPageWords(state, [w.root, w.lib.root]);
+            expect(message.startsWith(DONE_ANSWER.archive)).toBe(true);
+            for (const note of [
+                'Fixture harbor has no cover now. A published series needs one, so set another before publishing.',
+                "Fixture harbor's cover focal point went with it.",
+                'Fixture harbor has no opening photograph now.',
+                'A chapter in Fixture harbor starts at the next photograph now.',
+            ]) expect(message).toContain(note);
+        });
+
+        it('says an archive stopped part way, never that nothing was written, when it fails after the series changed', async () => {
+            for (const fault of ['the decision', 'the event'] as const) {
+                const w = await missing();
+                removeP(w);
+                await w.pass();
+                const event = await w.event(w.missingId);
+                if (fault === 'the decision') vi.mocked(writeDecision).mockRejectedValueOnce(Object.assign(new Error('EIO: i/o error, write'), { code: 'EIO' }));
+                else vi.mocked(writeEvent).mockImplementationOnce(async (_root, next, expected) => {
+                    throw new EventMovedError(next.id, expected, expected + 1);
+                });
+                const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+                const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+                try {
+                    const state = await runInboxAction('archive', itemForm(event, w.revisionId, { reason: 'Gone for good.', confirmed: 'yes' }));
+                    expect((await readAuthoredRecord(w.root, 'series', SERIES))?.photoIds, fault).not.toContain(w.p);
+                    expect(await w.event(w.missingId), fault).toEqual(event);
+                    expect(state, fault).toMatchObject({
+                        status: 'failed',
+                        message: fault === 'the decision'
+                            ? "The archive stopped part way: this photograph is out of the draft's series, but it isn't archived, and the item hasn't changed. Refresh, then archive it again to finish it."
+                            : "The archive stopped part way: it's written, but the item hasn't changed. The watcher applies it on its next pass. Refresh after it runs.",
+                    });
+                    inPageWords(state, [w.root, w.lib.root]);
+                    expect(pendingDecisions(w.root), fault).toEqual(fault === 'the decision' ? [] : [expect.objectContaining({ type: 'archive', photoId: w.p })]);
+                } finally {
+                    warn.mockRestore();
+                    error.mockRestore();
+                }
+            }
         });
 
         it('archives with a reason and a second confirm, out of every series in the draft, and nothing public until a publish', async () => {
@@ -993,6 +1124,8 @@ describe('confirm, bind and archive from the page (#118)', { timeout: 60_000 }, 
             [`2 files are linked to ${P}: a.jpg, b.jpg. Pass --path with the one that replaces it. Nothing was written.`, 'More than one file is linked to this photograph. Choose the one that replaces it. Nothing was written.'],
             [`A bind for ${P} waits for the watcher's next pass: the decision d gives it a.jpg. Archive after the watcher applies it, or once it refuses it; curation show ${E} says which. Nothing was written.`, "A bind waiting for the watcher's next pass gives this photograph a file, so it can't be archived yet. Refresh after the watcher runs, and archive it then if the bind didn't go through. Nothing was written."],
             [`#10 holds a.jpg in doubt: it may still be ${P}'s file, and a bind would merge ${P} into ${P}. Settle that path's ambiguous item first, with photos identity bind or photos identity new, then bind again. Nothing was written.`, "The watcher isn't sure whose file that is. Settle that path's ambiguous item first, then bind again. Nothing was written."],
+            [`A bind for ${P} already waits for the watcher's next pass: the decision d gives it a.jpg. Wait for that pass, or for the watcher to refuse it; curation show ${E} says which. Nothing was written.`, "A bind waiting for the watcher's next pass already gives this photograph a file. Refresh after the watcher runs. Nothing was written."],
+            [`An archive of ${P} waits for the watcher's next pass: the decision d. Nothing can be bound to it, and it needs no second archive. Nothing was written.`, "An archive waiting for the watcher's next pass takes this photograph down already, so it can't be bound or archived again. Refresh after the watcher runs. Nothing was written."],
             [`${P}'s photo record pins sha256-${'a'.repeat(64)}, not this event's sha256-${'b'.repeat(64)}. Confirming new bytes for a photograph is #17's. Nothing was written.`, "Its photo record holds another version of this photograph, so approving can't place these bytes. Confirm the new version on its replacement item instead. Nothing was written."],
             [`The event ${E} is approved, so it can't be confirmed. Reopen it first.`, "This item is approved, so it can't be confirmed. Refresh the inbox."],
             [`The event ${E} is approved, so it can't be archived. Reopen it first.`, "This item is approved, so it can't be archived. Refresh the inbox."],

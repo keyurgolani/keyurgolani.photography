@@ -3,7 +3,7 @@ import { currentProfileId } from '../identity/profile';
 import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
 import { dataRootStatus, libraryRoot } from '../storage/config';
-import { pendingBindOf, pendingMergeOf } from './binds';
+import { pendingArchiveOf, pendingBindOf, pendingMergeOf } from './binds';
 import { candidateOf } from './candidates';
 import { printable, scrub } from './commands';
 import { backAtItsPath, closeCauseOf, EVENT_ID_RE, FAILURE_TEXT, needsJudgment, waitingReason, type CurationEvent } from './events';
@@ -262,21 +262,35 @@ function abilities(event: CurationEvent, registry: Registry | null): InboxDetail
  * Decide later does with the draft now; for a missing source, what settles it, or why Bind and Archive wait (#118). A
  * settled item (approved, dismissed, or #17's resolved or archived missing item) offers no Decide later, so it gets none.
  */
-function primaryUnavailable(event: CurationEvent, can: InboxDetail['can'], replacement: ReplacementDraft | null, bindWaiting: BindWaiting | null, registry: Registry | null): string | null {
+function primaryUnavailable(event: CurationEvent, can: InboxDetail['can'], replacement: ReplacementDraft | null, bindWaiting: BindWaiting | null, archiveWaiting: boolean, registry: Registry | null): string | null {
     // #17: a new photograph a pending bind merges can't be approved, so the page says why before any click.
     if (event.type === 'new' && bindWaiting?.kind === 'merge') return bindWaitingText(bindWaiting, printable(event.derivedFacts.sourcePath));
     if (!can.defer) return null;
     if (event.type === 'replacement') return replacementHint(replacement);
     if (event.type !== 'missing') return null;
     if (bindWaiting?.kind === 'bind') return MISSING_HINT.bindWaiting;
+    if (archiveWaiting) return MISSING_HINT.archiveWaiting;
     return missingSettles(event, registry).back ? MISSING_HINT.back : MISSING_HINT.open;
 }
 
-/** #118: the new files linked at a missing photograph's last path, which Bind offers. Empty when none is, or they can't be read. */
-async function linkedFilesOf(root: string, event: CurationEvent, can: InboxDetail['can'], registry: Registry | null): Promise<string[]> {
+/**
+ * #118: whether an archive of the missing item's photograph waits for the watcher, as after an archive and a reopen.
+ * A decision file that can't be read counts as one, so Bind and Archive stay withdrawn, and their writers say why.
+ */
+async function archiveWaitingOf(root: string, event: CurationEvent): Promise<boolean> {
+    if (event.type !== 'missing' || event.photoId === null || !(event.status === 'open' || event.status === 'deferred' || event.status === 'failed')) return false;
+    return (await pendingArchiveOf(root, event.photoId).catch(() => ({ decisionId: '' }))) !== null;
+}
+
+/**
+ * #118: the new files linked at a missing photograph's last path, which Bind offers, by their items. The form sends
+ * the item's ID and the server reads the path again, since the page's copy is escaped. Empty when none is linked, or
+ * they can't be read.
+ */
+async function linkedFilesOf(root: string, event: CurationEvent, can: InboxDetail['can'], registry: Registry | null): Promise<InboxDetail['linkedFiles']> {
     if (event.type !== 'missing' || event.photoId === null || registry === null || !can.bind) return [];
     try {
-        return (await linkedNewItems(root, event.photoId, registry)).map((item) => printable(item.derivedFacts.sourcePath));
+        return (await linkedNewItems(root, event.photoId, registry)).map((item) => ({ id: item.id, path: printable(item.derivedFacts.sourcePath) }));
     } catch {
         return [];
     }
@@ -337,16 +351,19 @@ async function detailOf(root: string, event: CurationEvent, item: InboxItem, reg
     }
     const replacement = await replacementOf(root, event, registry, cache);
     const bindWaiting = await bindWaitingOf(root, event, registry);
-    // #118: confirmReplacement() refuses a photograph with no photo record, which replacementOf() has read.
-    const confirmUnavailable = confirmBlock(event, registry) ?? (replacement?.draft === 'none' ? CONFIRM_UNAVAILABLE.noRecord : null);
+    const archiveWaiting = await archiveWaitingOf(root, event);
+    // #118: confirmReplacement() refuses a photograph with no photo record, which replacementOf() has read. Only an
+    // item Confirm could take needs a reason; a settled one shows no Confirm at all.
+    const confirmable = event.type === 'replacement' && (event.status === 'open' || event.status === 'deferred' || event.status === 'failed');
+    const confirmUnavailable = confirmBlock(event, registry) ?? (confirmable && replacement?.draft === 'none' ? CONFIRM_UNAVAILABLE.noRecord : null);
     const can = {
         ...abilities(event, registry),
         ...(event.type === 'missing' && references?.length !== 0 ? { dismiss: false } : {}),
         // approveEvent() refuses a photograph a pending bind merges, so the page doesn't offer it.
         ...(bindWaiting?.kind === 'merge' ? { approve: false } : {}),
         ...(confirmUnavailable !== null ? { confirm: false } : {}),
-        // #118: archiveMissing() refuses while a bind waits, and a second bind would only race the first.
-        ...(bindWaiting?.kind === 'bind' ? { bind: false, archive: false } : {}),
+        // #118: archiveMissing() and bindReplacement() refuse while a bind or an archive of the photograph waits.
+        ...(bindWaiting?.kind === 'bind' || archiveWaiting ? { bind: false, archive: false } : {}),
     };
     const suggestedSeries = event.suggestions.series;
     const placement = event.suggestions.placement;
@@ -384,7 +401,7 @@ async function detailOf(root: string, event: CurationEvent, item: InboxItem, reg
         reviewedAt: event.reviewedAt,
         reviewedBy: event.reviewedBy === null ? null : printable(event.reviewedBy),
         can,
-        primaryUnavailable: primaryUnavailable(event, can, replacement, bindWaiting, registry),
+        primaryUnavailable: primaryUnavailable(event, can, replacement, bindWaiting, archiveWaiting, registry),
         confirmUnavailable,
         linkedFiles: await linkedFilesOf(root, event, can, registry),
         replacement,

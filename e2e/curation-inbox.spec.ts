@@ -880,7 +880,9 @@ test('archives a missing photograph only with a reason and a second confirm, as 
     await expect(page.getByText(ARCHIVE_TAKEDOWN)).toBeVisible();
     const archive = page.getByRole('button', { name: 'Archive', exact: true });
     await archive.click();
-    await expect(page.getByText('Archiving needs a reason.')).toBeVisible();
+    await expect(page.locator('#archive-reason-error')).toHaveText('Archiving needs a reason.');
+    // Said in the live region too, since the field may already hold focus.
+    await expect(page.getByRole('form', { name: 'Archive' }).locator('xpath=..').getByRole('status')).toHaveText('Archiving needs a reason.');
     await expect(page.getByRole('textbox', { name: 'Reason for archiving' })).toBeFocused();
     await expect(page.getByRole('button', { name: 'Yes, archive it' })).toHaveCount(0);
 

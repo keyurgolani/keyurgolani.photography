@@ -765,19 +765,19 @@ describe('confirm, bind and archive (#118)', () => {
         expect(notice.closest('[role="status"]')).toHaveFocus();
     });
 
-    it('binds the file linked at its last path by default, with no path sent, so the writer picks that one', async () => {
-        renderInbox(view({ selected: missingItem({ linkedFiles: ['harbor/landscape.jpg'] }) }));
+    it('binds the file linked at its last path by default, naming its item, not its path', async () => {
+        renderInbox(view({ selected: missingItem({ linkedFiles: [{ id: EVT(7), path: 'harbor/landscape.jpg' }] }) }));
         const files = screen.getByRole('group', { name: 'File to bind' });
         const linked = within(files).getByRole('radio', { name: 'harbor/landscape.jpg, the new file at its last path' });
         expect(linked).toBeChecked();
         expect(within(files).getByRole('radio', { name: 'Another file in the library' })).not.toBeChecked();
         expect(screen.getByRole('textbox', { name: 'Library path' })).toHaveAccessibleDescription(LIBRARY_PATH_HINT);
         await press(screen.getByRole('button', { name: 'Bind' }));
-        expect(sent.forms[0]).toEqual({ action: 'bind', fields: { eventId: EVT(1), version: '3', base: ACTIVE, bindTo: 'linked', path: '', intent: 'bind' } });
+        expect(sent.forms[0]).toEqual({ action: 'bind', fields: { eventId: EVT(1), version: '3', base: ACTIVE, bindTo: EVT(7), path: '', intent: 'bind' } });
     });
 
     it('binds a typed library path instead, choosing "Another file" as the curator types', async () => {
-        renderInbox(view({ selected: missingItem({ linkedFiles: ['harbor/landscape.jpg'] }) }));
+        renderInbox(view({ selected: missingItem({ linkedFiles: [{ id: EVT(7), path: 'harbor/landscape.jpg' }] }) }));
         fireEvent.change(screen.getByRole('textbox', { name: 'Library path' }), { target: { value: 'harbor/landscape-2.jpg' } });
         expect(screen.getByRole('radio', { name: 'Another file in the library' })).toBeChecked();
         await press(screen.getByRole('button', { name: 'Bind' }));
@@ -792,13 +792,16 @@ describe('confirm, bind and archive (#118)', () => {
         await press(screen.getByRole('button', { name: 'Bind' }));
         expect(sent.forms[0].fields).toMatchObject({ bindTo: 'typed', path: 'elsewhere/landscape.jpg' });
         unmount();
-        renderInbox(view({ selected: missingItem({ linkedFiles: ['harbor/a.jpg', 'harbor/b.jpg'] }) }));
+        // The page shows each path escaped, as the server gave it, and sends its item's ID, so the server binds the real path.
+        renderInbox(view({ selected: missingItem({ linkedFiles: [{ id: EVT(7), path: 'harbor/back\\\\slash.jpg' }, { id: EVT(8), path: 'harbor/\\u202egpj.jpg' }] }) }));
         const radios = within(screen.getByRole('group', { name: 'File to bind' })).getAllByRole('radio');
-        expect(radios.map((radio) => radio.getAttribute('value'))).toEqual(['harbor/a.jpg', 'harbor/b.jpg', 'typed']);
+        expect(radios.map((radio) => radio.getAttribute('value'))).toEqual([EVT(7), EVT(8), 'typed']);
+        expect(screen.getByRole('radio', { name: 'harbor/back\\\\slash.jpg' })).toBeInTheDocument();
+        expect(screen.getByRole('radio', { name: 'harbor/\\u202egpj.jpg' })).toBeInTheDocument();
         for (const radio of radios) expect(radio).not.toBeChecked();
         fireEvent.click(radios[1]);
         await press(screen.getByRole('button', { name: 'Bind' }));
-        expect(sent.forms[1].fields).toMatchObject({ bindTo: 'harbor/b.jpg' });
+        expect(sent.forms[1].fields).toMatchObject({ bindTo: EVT(8) });
     });
 
     it('shows a refused path by the path field, marks it, and moves focus there', async () => {
@@ -817,10 +820,23 @@ describe('confirm, bind and archive (#118)', () => {
         expect(field).toHaveValue('../outside.jpg');
     });
 
+    it('shows a refusal about the linked files by the files, and moves focus to the first one, not the path field', async () => {
+        const message = 'More than one file is linked to this photograph. Choose the one that replaces it. Nothing was written.';
+        sent.answer = { status: 'invalid', action: 'bind', eventId: EVT(1), message, field: 'bindTo', serial: 1 };
+        renderInbox(view({ selected: missingItem({ linkedFiles: [{ id: EVT(7), path: 'harbor/a.jpg' }, { id: EVT(8), path: 'harbor/b.jpg' }] }) }));
+        await press(screen.getByRole('button', { name: 'Bind' }));
+        await screen.findByText(message);
+        const files = screen.getByRole('group', { name: 'File to bind' });
+        expect(files).toHaveAccessibleDescription(message);
+        expect(within(files).getAllByRole('radio')[0]).toHaveFocus();
+        expect(screen.getByRole('textbox', { name: 'Library path' })).not.toHaveAttribute('aria-invalid');
+        expect(screen.getAllByText(message)).toHaveLength(1);
+    });
+
     it("says after a bind that it's waiting for the watcher, not done, and once the page refreshes, shows the bind waiting with no Bind or Archive", async () => {
         const waiting = bindAnswer('harbor/landscape.jpg', false);
         sent.answer = { status: 'done', action: 'bind', eventId: EVT(1), message: waiting, serial: 1 };
-        const { rerender } = renderInbox(view({ selected: missingItem({ linkedFiles: ['harbor/landscape.jpg'] }) }));
+        const { rerender } = renderInbox(view({ selected: missingItem({ linkedFiles: [{ id: EVT(7), path: 'harbor/landscape.jpg' }] }) }));
         const bind = screen.getByRole('button', { name: 'Bind' });
         bind.focus();
         await press(bind);
@@ -852,7 +868,7 @@ describe('confirm, bind and archive (#118)', () => {
         // No reason: the field says so, and nothing is sent or asked.
         fireEvent.click(archive);
         const reason = screen.getByRole('textbox', { name: 'Reason for archiving' });
-        expect(screen.getByText('Archiving needs a reason.')).toBeInTheDocument();
+        expect(reason).toHaveAccessibleDescription('Archiving needs a reason.');
         expect(reason).toHaveAttribute('aria-invalid', 'true');
         expect(reason).toHaveFocus();
         expect(screen.queryByRole('button', { name: 'Yes, archive it' })).toBeNull();
@@ -868,6 +884,26 @@ describe('confirm, bind and archive (#118)', () => {
         expect(sent.forms).toEqual([]);
         await press(within(step).getByRole('button', { name: 'Yes, archive it' }));
         expect(sent.forms).toEqual([{ action: 'archive', fields: { eventId: EVT(1), version: '3', base: ACTIVE, reason: 'Gone for good.', confirmed: 'yes', intent: 'archive' } }]);
+    });
+
+    it('announces a missing reason in the polite live region, from the Archive button and from Enter in the empty field', () => {
+        renderInbox(view({ selected: missingItem() }));
+        const reason = screen.getByRole('textbox', { name: 'Reason for archiving' });
+        const region = reason.closest('details')!.querySelector('[role="status"]')!;
+        // Enter in the field, where focus already is, so only the live region can say it.
+        reason.focus();
+        fireEvent.keyDown(reason, { key: 'Enter' });
+        expect(region).toHaveTextContent('Archiving needs a reason.');
+        expect(reason).toHaveFocus();
+        expect(reason).toHaveAccessibleDescription('Archiving needs a reason.');
+        // Again from the Archive button: the field takes focus once the error describes it, and the region says it again.
+        const first = region.firstElementChild;
+        fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
+        expect(region).toHaveTextContent('Archiving needs a reason.');
+        expect(region.firstElementChild).not.toBe(first);
+        expect(reason).toHaveFocus();
+        // Said once on screen: the region's copy is for screen readers.
+        expect(screen.getAllByText('Archiving needs a reason.').filter((node) => !node.closest('[role="status"]'))).toHaveLength(1);
     });
 
     it('cancels the second step, sending nothing, and puts focus back on Archive', () => {
