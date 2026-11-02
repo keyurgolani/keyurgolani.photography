@@ -25,7 +25,8 @@ export function WorkOrderEditor({ work, activeRevisionId }: { work: WorkOrderVie
     const pressed = useRef<Pressed | null>(null);
     const count = work.order.length;
     const move = (seriesId: string, index: number, control: 'up' | 'down') => {
-        if (control === 'up' ? index === 0 : index === count - 1) return;
+        // A press while an action is out sends nothing, so it mustn't take over where the answer puts focus either.
+        if (pending || (control === 'up' ? index === 0 : index === count - 1)) return;
         pressed.current = { seriesId, control };
         send('work-order', { seriesId, move: control });
     };
@@ -51,30 +52,32 @@ export function WorkOrderEditor({ work, activeRevisionId }: { work: WorkOrderVie
                 <p className={series.empty}>Work lists no series yet.</p>
             ) : (
                 <ol ref={listRef} className={series.workList} aria-label="Work order">
-                    {work.order.map((entry, index) => (
-                        <li key={entry.id} className={series.workRow} data-series={entry.id}>
-                            <span className={series.memberName}>
-                                {index + 1}. {entry.title}
-                            </span>
-                            <span className={series.tag} data-visibility={entry.visibility}>
-                                {VISIBILITY_LABEL[entry.visibility]}
-                            </span>
-                            <span className={series.memberActions}>
-                                <button type="button" className={styles.button} data-control="up" aria-label={`Move up: ${entry.title}`} onClick={() => move(entry.id, index, 'up')} {...offWhile(pending || index === 0)}>
-                                    <ArrowUp size={16} aria-hidden="true" />
-                                    Move up
-                                </button>
-                                <button type="button" className={styles.button} data-control="down" aria-label={`Move down: ${entry.title}`} onClick={() => move(entry.id, index, 'down')} {...offWhile(pending || index === count - 1)}>
-                                    <ArrowDown size={16} aria-hidden="true" />
-                                    Move down
-                                </button>
-                                <button type="button" className={styles.button} aria-label={`Take off Work: ${entry.title}`} onClick={() => send('work-order', { seriesId: entry.id, move: 'off' })} {...offWhile(pending)}>
-                                    <X size={16} aria-hidden="true" />
-                                    Take off Work
-                                </button>
-                            </span>
-                        </li>
-                    ))}
+                    {work.order.map((entry, index) => {
+                        // By place too, so two series titled alike never share a button's name (contract rule 2).
+                        const place = `${index + 1}. ${entry.title}`;
+                        return (
+                            <li key={entry.id} className={series.workRow} data-series={entry.id}>
+                                <span className={series.memberName}>{place}</span>
+                                <span className={series.tag} data-visibility={entry.visibility}>
+                                    {VISIBILITY_LABEL[entry.visibility]}
+                                </span>
+                                <span className={series.memberActions}>
+                                    <button type="button" className={styles.button} data-control="up" aria-label={`Move up: ${place}`} onClick={() => move(entry.id, index, 'up')} {...offWhile(pending || index === 0)}>
+                                        <ArrowUp size={16} aria-hidden="true" />
+                                        Move up
+                                    </button>
+                                    <button type="button" className={styles.button} data-control="down" aria-label={`Move down: ${place}`} onClick={() => move(entry.id, index, 'down')} {...offWhile(pending || index === count - 1)}>
+                                        <ArrowDown size={16} aria-hidden="true" />
+                                        Move down
+                                    </button>
+                                    <button type="button" className={styles.button} aria-label={`Take off Work: ${place}`} onClick={() => send('work-order', { seriesId: entry.id, move: 'off' })} {...offWhile(pending)}>
+                                        <X size={16} aria-hidden="true" />
+                                        Take off Work
+                                    </button>
+                                </span>
+                            </li>
+                        );
+                    })}
                 </ol>
             )}
             {work.offWork.length > 0 ? (

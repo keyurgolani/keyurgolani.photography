@@ -35,7 +35,8 @@ export default function SequenceEditor({ seriesId, order, activeRevisionId }: { 
     const chapterAt = new Map(order.chapters.map((chapter) => [chapter.startPhotoId, chapter.title]));
 
     const move = (photoId: string, index: number, control: 'up' | 'down') => {
-        if (control === 'up' ? index === 0 : index === count - 1) return;
+        // A press while an action is out sends nothing, so it mustn't take over where the answer puts focus either.
+        if (pending || (control === 'up' ? index === 0 : index === count - 1)) return;
         pressed.current = { photoId, control };
         send('move', { photoId, position: String(control === 'up' ? index : index + 2) });
     };
@@ -73,12 +74,13 @@ export default function SequenceEditor({ seriesId, order, activeRevisionId }: { 
                 <ol ref={listRef} className={series.sequenceList} aria-label="Photographs in order">
                     {photos.map((photo, index) => {
                         const chapter = chapterAt.get(photo.id);
+                        const place = placeLabel(index, photo.name);
                         const notes = [order.cover?.photoId === photo.id ? 'Cover' : null, order.openingPhotoId === photo.id ? 'Opening photograph' : null, chapter !== undefined ? `Starts the chapter ${chapter}` : null].filter((note) => note !== null);
                         return (
                             <li key={photo.id} className={series.member} data-photo={photo.id}>
                                 <Thumbnail url={photo.thumbnailUrl} />
                                 <div className={series.memberText}>
-                                    <span className={series.memberName}>{placeLabel(index, photo.name)}</span>
+                                    <span className={series.memberName}>{place}</span>
                                     {notes.length > 0 ? (
                                         <span className={series.memberNotes}>
                                             {notes.map((note) => (
@@ -89,17 +91,17 @@ export default function SequenceEditor({ seriesId, order, activeRevisionId }: { 
                                         </span>
                                     ) : null}
                                 </div>
-                                {/* Each name starts with the button's words, then the photograph's (contract rule 2), so no two rows share one. */}
+                                {/* Each name starts with the button's words, then the photograph's place and name, so no two rows share one even when titles repeat (contract rule 2). */}
                                 <div className={series.memberActions}>
-                                    <button type="button" className={styles.button} data-control="up" aria-label={`Move up: ${photo.name}`} onClick={() => move(photo.id, index, 'up')} {...offWhile(pending || index === 0)}>
+                                    <button type="button" className={styles.button} data-control="up" aria-label={`Move up: ${place}`} onClick={() => move(photo.id, index, 'up')} {...offWhile(pending || index === 0)}>
                                         <ArrowUp size={16} aria-hidden="true" />
                                         Move up
                                     </button>
-                                    <button type="button" className={styles.button} data-control="down" aria-label={`Move down: ${photo.name}`} onClick={() => move(photo.id, index, 'down')} {...offWhile(pending || index === count - 1)}>
+                                    <button type="button" className={styles.button} data-control="down" aria-label={`Move down: ${place}`} onClick={() => move(photo.id, index, 'down')} {...offWhile(pending || index === count - 1)}>
                                         <ArrowDown size={16} aria-hidden="true" />
                                         Move down
                                     </button>
-                                    <button type="button" className={styles.button} aria-label={`Remove: ${photo.name}`} onClick={() => send('remove', { photoId: photo.id })} {...offWhile(pending)}>
+                                    <button type="button" className={styles.button} aria-label={`Remove: ${place}`} onClick={() => send('remove', { photoId: photo.id })} {...offWhile(pending)}>
                                         <X size={16} aria-hidden="true" />
                                         Remove
                                     </button>
@@ -152,7 +154,8 @@ export default function SequenceEditor({ seriesId, order, activeRevisionId }: { 
                         </p>
                         <label className={styles.label}>
                             Position
-                            <select ref={addPositionRef} className={styles.control} name="position" defaultValue={String(count + 1)} aria-invalid={addPositionError ? true : undefined} aria-describedby={addPositionError ? 'add-position-error' : undefined}>
+                            {/* Keyed by the count, so the refresh after an Add opens it on the new end, and the form's reset keeps it there. */}
+                            <select key={count} ref={addPositionRef} className={styles.control} name="position" defaultValue={String(count + 1)} aria-invalid={addPositionError ? true : undefined} aria-describedby={addPositionError ? 'add-position-error' : undefined}>
                                 {Array.from({ length: count + 1 }, (_, index) => (
                                     <option key={index} value={String(index + 1)}>
                                         {index === 0 ? (count === 0 ? '1' : '1, the start') : index === count ? `${index + 1}, the end` : `${index + 1}, after ${photos[index - 1].name}`}

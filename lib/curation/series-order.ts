@@ -415,11 +415,20 @@ async function runSeriesOp(kind: SeriesOrderKind, form: FormData, root: string, 
     });
 }
 
-/** The series the screen can show, by ID: every one the working layer can read. */
-async function readableSeries(root: string): Promise<Map<string, AuthoredSeries>> {
-    const { series } = await readAuthoredSeries(root);
-    return new Map(series.map((entry) => [entry.id, entry]));
+/**
+ * The series a Work order or featured entry can name, read under the hold: those the screen can show, and those
+ * whose record exists but can't be read, which stay where they are since the screen can't offer them. Any other ID
+ * names a series the draft no longer holds, as a hand edit or a removed folder leaves it.
+ */
+async function knownSeries(root: string): Promise<{ readable: Map<string, AuthoredSeries>; kept: (id: string) => boolean }> {
+    const { series, problems } = await readAuthoredSeries(root);
+    const readable = new Map(series.map((entry) => [entry.id, entry]));
+    // As sequenceContext() counts them: a misnamed folder entry is a problem but names no series.
+    const unreadable = new Set(problems.filter((problem) => problem.kind === 'series' && SERIES_ID_RE.test(problem.id)).map((problem) => problem.id));
+    return { readable, kept: (id) => readable.has(id) || unreadable.has(id) };
 }
+
+type Known = Awaited<ReturnType<typeof knownSeries>>;
 
 /** Where a Work order move puts its series, among the series the screen shows; ones it can't show keep their places. */
 function moved(order: readonly string[], seriesId: string, move: 'up' | 'down', shown: (id: string) => boolean): string[] | null {
@@ -435,74 +444,112 @@ function moved(order: readonly string[], seriesId: string, move: 'up' | 'down', 
 
 type SiteChange = { seriesIds: string[]; done: string } | { unchanged: string };
 
-/** A Work order change: a series up or down past the next one shown, off Work, or on it, last. */
-function workChange(form: FormData, site: AuthoredSite | null, series: Map<string, AuthoredSeries>): SiteChange {
+/** What a site form asks for, read before the lock. The change itself is worked out under it, from the records as the write finds them. */
+type WorkRequest = { seriesId: string; move: 'up' | 'down' | 'off' | 'on' };
+
+function workRequest(form: FormData): WorkRequest {
     const seriesId = field(form, 'seriesId') ?? '';
     if (!SERIES_ID_RE.test(seriesId)) invalid('The form names no series. Refresh the page.');
     const move = field(form, 'move');
     if (move !== 'up' && move !== 'down' && move !== 'off' && move !== 'on') return invalid('The form is missing a field. Refresh the page.');
-    const entry = series.get(seriesId);
+    return { seriesId, move };
+}
+
+function featuredRequest(form: FormData): string[] {
+    const ticked: string[] = [];
+    for (const value of form.getAll('featured')) {
+        if (typeof value !== 'string' || !SERIES_ID_RE.test(value)) return invalid('The form names no series. Refresh the page.');
+        if (!ticked.includes(value)) ticked.push(value);
+    }
+    return ticked;
+}
+
+/** Said when a list named series the draft no longer holds, which this change leaves out, so the screen can mend it. */
+function droppedNote(count: number, list: 'Work order' | 'The featured series'): string {
+    if (count === 0) return '';
+    const them = list === 'Work order' ? 'it' : 'them';
+    return count === 1 ? ` ${list} also named a series the draft no longer holds, so that's gone from ${them}.` : ` ${list} also named ${count} series the draft no longer holds, so they're gone from ${them}.`;
+}
+
+/**
+ * A Work order change: a series up or down past the next one shown, off Work, or on it, last. Entries for series the
+ * draft no longer holds are left out, since `photos series order`'s rules refuse the whole list while any is there.
+ */
+function workChange({ seriesId, move }: WorkRequest, site: AuthoredSite | null, { readable, kept }: Known): SiteChange {
+    const entry = readable.get(seriesId);
     // A series the screen can't read isn't one it offers, so it isn't one it moves.
     if (!entry) throw new StaleOrder(WORK_STALE);
     const title = seriesName(entry.title);
-    const order = site?.seriesOrder ?? [];
+    const stored = site?.seriesOrder ?? [];
+    const order = stored.filter(kept);
+    const note = droppedNote(stored.length - order.length, 'Work order');
+    // Nothing the curator asked for changes, but a dangling entry still goes, so the list can be saved again.
+    const only = (unchanged: string): SiteChange => (note ? { seriesIds: order, done: note.trim() } : { unchanged });
     const listed = order.includes(seriesId);
     if (move === 'on') {
-        if (listed) return { unchanged: `${title} is in Work order already, so nothing changed.` };
-        return { seriesIds: [...order, seriesId], done: `Put ${title} on Work, last.` };
+        if (listed) return only(`${title} is in Work order already, so nothing changed.`);
+        return { seriesIds: [...order, seriesId], done: `Put ${title} on Work, last.${note}` };
     }
     if (!listed) throw new StaleOrder(WORK_STALE);
     if (move === 'off') {
         const rest = order.filter((id) => id !== seriesId);
         if (rest.length === 0) return invalid(`Work order needs at least one series, so ${title} stays. ${NOTHING}`);
+        // The series as the write found it, under the hold.
         const needed = entry.visibility === 'published' ? ' A published series needs a place in Work order, so a publish waits until it has one again, or is a draft.' : '';
-        return { seriesIds: rest, done: `Took ${title} off Work.${needed}` };
+        return { seriesIds: rest, done: `Took ${title} off Work.${needed}${note}` };
     }
-    const next = moved(order, seriesId, move, (id) => series.has(id));
-    if (next === null) return { unchanged: `${title} is ${move === 'up' ? 'first' : 'last'} in Work order already, so nothing changed.` };
-    const place = next.filter((id) => series.has(id)).indexOf(seriesId) + 1;
-    return { seriesIds: next, done: `Moved ${title} to place ${place} of ${next.filter((id) => series.has(id)).length} in Work order.` };
+    const next = moved(order, seriesId, move, (id) => readable.has(id));
+    if (next === null) return only(`${title} is ${move === 'up' ? 'first' : 'last'} in Work order already, so nothing changed.`);
+    const shown = next.filter((id) => readable.has(id));
+    return { seriesIds: next, done: `Moved ${title} to place ${shown.indexOf(seriesId) + 1} of ${shown.length} in Work order.${note}` };
 }
 
-/** The featured choice: the boxes the form sent ticked, in the order the featured series hold now, then the page's. */
-function featuredChange(form: FormData, site: AuthoredSite | null, series: Map<string, AuthoredSeries>): SiteChange {
-    const ticked: string[] = [];
-    for (const value of form.getAll('featured')) {
-        if (typeof value !== 'string' || !SERIES_ID_RE.test(value)) return invalid('The form names no series. Refresh the page.');
-        if (!series.has(value)) throw new StaleOrder(WORK_STALE);
-        if (!ticked.includes(value)) ticked.push(value);
+/**
+ * The featured choice: the boxes the form sent ticked, in the order the featured series hold now, then the page's.
+ * One the screen can't read wasn't offered, so it stays featured as it was; one the draft no longer holds goes.
+ */
+function featuredChange(ticked: readonly string[], site: AuthoredSite | null, { readable, kept }: Known): SiteChange {
+    if (ticked.some((id) => !readable.has(id))) throw new StaleOrder(WORK_STALE);
+    const stored = site?.featuredSeriesIds ?? [];
+    const current = stored.filter(kept);
+    const note = droppedNote(stored.length - current.length, 'The featured series');
+    const seriesIds = [...current.filter((id) => ticked.includes(id) || !readable.has(id)), ...ticked.filter((id) => !current.includes(id))];
+    const titles = seriesIds.filter((id) => readable.has(id)).map((id) => seriesName(readable.get(id)!.title));
+    if (seriesIds.length === 0) return { seriesIds, done: `No series is featured now, so Home has nothing to open on, and a publish waits until a published series is featured again.${note}` };
+    if (titles.length === 0) {
+        const one = seriesIds.length === 1;
+        return { seriesIds, done: `None of the series shown here is featured now. Only ${one ? "one the screen can't read still is" : `${seriesIds.length} the screen can't read still are`}, so fix ${one ? 'that series' : 'them'} or feature a published one before you publish. The server log names ${one ? 'it' : 'them'}.${note}` };
     }
-    const current = site?.featuredSeriesIds ?? [];
-    // One the screen can't read wasn't offered, so it stays featured as it was.
-    const seriesIds = [...current.filter((id) => ticked.includes(id) || !series.has(id)), ...ticked.filter((id) => !current.includes(id))];
-    const titles = seriesIds.filter((id) => series.has(id)).map((id) => seriesName(series.get(id)!.title));
-    if (seriesIds.length === 0) return { seriesIds, done: 'No series is featured now, so Home has nothing to open on, and a publish waits until a published series is featured again.' };
     const unpublished = seriesIds.flatMap((id) => {
-        const entry = series.get(id);
+        const entry = readable.get(id);
         return entry && entry.visibility !== 'published' ? [seriesName(entry.title)] : [];
     });
     const waits = unpublished.length > 0 ? ` Only a published series can be featured, so a publish waits until ${unpublished.join(' and ')} ${unpublished.length === 1 ? 'is' : 'are'} published or not featured.` : '';
     const lead = titles.length === 1 ? `${titles[0]} is featured now, so Home opens on it.` : `Featured now: ${titles.join(', then ')}. Home opens on the first of them a publish holds.`;
-    return { seriesIds, done: `${lead}${waits}` };
+    return { seriesIds, done: `${lead}${waits}${note}` };
 }
 
 async function runSiteOp(kind: WorkOrderKind, form: FormData, root: string, base: string | null, options: OrderActionOptions): Promise<string> {
     const expectedVersion = versionFrom(form, 0, 'Work order');
-    const site = await readAuthoredRecord(root, 'site', 'site');
-    if ((site?.version ?? 0) !== expectedVersion) throw new StaleOrder(WORK_STALE);
-    const series = await readableSeries(root);
-    const change = kind === 'work-order' ? workChange(form, site, series) : featuredChange(form, site, series);
-    if ('unchanged' in change) throw new OrderFormError(change.unchanged);
+    const request = kind === 'work-order' ? workRequest(form) : featuredRequest(form);
+    // The early check, so a form that's plainly behind answers refresh without the lock.
+    if (((await readAuthoredRecord(root, 'site', 'site'))?.version ?? 0) !== expectedVersion) throw new StaleOrder(WORK_STALE);
     await options.afterCheck?.();
-    const op: SequenceOp = { kind: kind === 'work-order' ? 'setSeriesOrder' : 'setFeaturedSeries', seriesIds: change.seriesIds };
     return underLock(root, base, options, async (lock) => {
+        // The site record and the series as the write finds them, so the change, and what the answer says of it, are the write's.
+        const site = await readAuthoredRecord(root, 'site', 'site');
+        if ((site?.version ?? 0) !== expectedVersion) throw new StaleOrder(WORK_STALE);
+        const known = await knownSeries(root);
+        const change = kind === 'work-order' ? workChange(request as WorkRequest, site, known) : featuredChange(request as string[], site, known);
+        if ('unchanged' in change) throw new OrderFormError(change.unchanged);
+        const op: SequenceOp = { kind: kind === 'work-order' ? 'setSeriesOrder' : 'setFeaturedSeries', seriesIds: change.seriesIds };
         const result = await applySequenceOp({ dataRoot: root }, op, { expectedVersion, actor: EDITOR, lock, review: reviewOf(base) });
         if (!result.ok) {
             if (result.error.code === 'version-conflict') throw new StaleOrder(WORK_STALE);
             if (result.error.code === 'authored-locked') throw new BusyOrder(BUSY_ANSWER);
             logged(kind, result.error);
-            // A Work order or featured series naming one the draft no longer holds, as a hand edit can leave it.
-            if (result.error.code === 'unknown-series') throw new RefusedOrder(`${kind === 'work-order' ? 'Work order' : 'The featured series'} names a series the draft doesn't hold, so it can't be saved until that's fixed. ${NOTHING} The server log names it.`);
+            // Only a series removed between the read above and the write, under this hold, by a hand edit, gets here.
+            if (result.error.code === 'unknown-series') throw new RefusedOrder(`${kind === 'work-order' ? 'Work order' : 'The featured series'} names a series the draft doesn't hold, so it can't be saved. ${NOTHING} Refresh and try again; the server log names it.`);
             throw new RefusedOrder(REFUSED);
         }
         if (!result.changed) throw new OrderFormError('Nothing changed.');

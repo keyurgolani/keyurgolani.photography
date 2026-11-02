@@ -278,8 +278,9 @@ test('orders the published series by keyboard: adds a photograph, moves it, sets
     await expect(page.locator('[role="status"]:has([data-state="done"])')).toBeFocused();
     expect((await record(HARBOR.id)).photoIds).toEqual([first, second, third, added]);
 
-    // Move it up twice: focus stays on its Move up, on its new row, so the second press moves it on.
-    const up = sequence.getByRole('button', { name: 'Move up: fixture-0005.jpg' });
+    // Move it up twice: focus stays on its Move up, on its new row, so the second press moves it on. Its name carries its place, so it's found by its row.
+    await expect(sequence.getByRole('button', { name: 'Move up: 4. fixture-0005.jpg' })).toBeVisible();
+    const up = sequence.locator(`[data-photo="${added}"] [data-control="up"]`);
     await up.focus();
     await page.keyboard.press('Enter');
     await expect(sequence.getByRole('listitem').nth(2)).toContainText('3. fixture-0005.jpg');
@@ -288,6 +289,7 @@ test('orders the published series by keyboard: adds a photograph, moves it, sets
     await expect(sequence.getByRole('listitem').nth(1)).toContainText('2. fixture-0005.jpg');
     await expect(answerIn(page, 'Sequence', 'done')).toHaveText(/^Moved fixture-0005\.jpg to position 2 of 4\./);
     await expect(up).toBeFocused();
+    await expect(up).toHaveAccessibleName('Move up: 2. fixture-0005.jpg');
     await expectFocusRingVisible(up);
     expect((await record(HARBOR.id)).photoIds).toEqual([first, added, second, third]);
 
@@ -330,7 +332,8 @@ test('reorders Work from the Series screen by keyboard, and the draft Preview sh
     await expect(work.getByRole('listitem')).toHaveText([new RegExp(`^1\\. ${RENAMED.title}`), new RegExp(`^2\\. ${COAST.title}`)]);
     await page.keyboard.press('Tab');
     await checkSurface(page, { controls: [work.getByRole('button'), page.getByRole('button', { name: 'Save featured' })] });
-    const up = work.getByRole('button', { name: `Move up: ${COAST.title}` });
+    const up = work.locator(`[data-series="${COAST.id}"] [data-control="up"]`);
+    await expect(up).toHaveAccessibleName(`Move up: 2. ${COAST.title}`);
     await up.focus();
     await page.keyboard.press('Enter');
     await expect(answerIn(page, 'Work order', 'done')).toHaveText(`Moved ${COAST.title} to place 1 of 2 in Work order. Nothing is public until you publish.`);

@@ -50,29 +50,34 @@ export default function ChapterEditor({ seriesId, order, activeRevisionId }: { s
                 <p className={series.empty}>No chapters.</p>
             ) : (
                 <ol className={series.chapterList} aria-label="Chapters">
-                    {chapters.map((chapter) => (
-                        <li key={chapter.id} className={series.chapter}>
-                            <p className={series.memberName}>{chapter.title}</p>
-                            <p className={styles.hint}>Starts at {placeOf.get(chapter.startPhotoId) ?? 'a photograph the series no longer holds'}</p>
-                            <form key={`${chapter.id}:${chapter.startPhotoId}`} method="post" onSubmit={submit('chapter-move', { chapterId: chapter.id })} aria-label={`Move the start of ${chapter.title}`}>
-                                <label className={styles.label}>
-                                    Starts at
-                                    <select className={styles.control} name="startPhotoId" defaultValue={chapter.startPhotoId} aria-label={`Starts at: ${chapter.title}`}>
-                                        {options}
-                                    </select>
-                                </label>
-                                <div className={styles.actions}>
-                                    <button type="submit" className={styles.button} aria-label={`Move start: ${chapter.title}`} {...offWhile(pending)}>
-                                        Move start
-                                    </button>
-                                    <button type="button" className={styles.button} aria-label={`Remove chapter: ${chapter.title}`} onClick={() => send('chapter-remove', { chapterId: chapter.id })} {...offWhile(pending)}>
-                                        <X size={16} aria-hidden="true" />
-                                        Remove chapter
-                                    </button>
-                                </div>
-                            </form>
-                        </li>
-                    ))}
+                    {chapters.map((chapter, index) => {
+                        // Named by where it starts too, so two chapters titled alike never share a control's name (contract rule 2).
+                        const at = photos.findIndex((photo) => photo.id === chapter.startPhotoId);
+                        const named = `${chapter.title} (${at === -1 ? `chapter ${index + 1}` : `at ${at + 1}`})`;
+                        return (
+                            <li key={chapter.id} className={series.chapter}>
+                                <p className={series.memberName}>{chapter.title}</p>
+                                <p className={styles.hint}>Starts at {placeOf.get(chapter.startPhotoId) ?? 'a photograph the series no longer holds'}</p>
+                                <form key={`${chapter.id}:${chapter.startPhotoId}`} method="post" onSubmit={submit('chapter-move', { chapterId: chapter.id })} aria-label={`Move the start of ${named}`}>
+                                    <label className={styles.label}>
+                                        Starts at
+                                        <select className={styles.control} name="startPhotoId" defaultValue={chapter.startPhotoId} aria-label={`Starts at: ${named}`}>
+                                            {options}
+                                        </select>
+                                    </label>
+                                    <div className={styles.actions}>
+                                        <button type="submit" className={styles.button} aria-label={`Move start: ${named}`} {...offWhile(pending)}>
+                                            Move start
+                                        </button>
+                                        <button type="button" className={styles.button} aria-label={`Remove chapter: ${named}`} onClick={() => send('chapter-remove', { chapterId: chapter.id })} {...offWhile(pending)}>
+                                            <X size={16} aria-hidden="true" />
+                                            Remove chapter
+                                        </button>
+                                    </div>
+                                </form>
+                            </li>
+                        );
+                    })}
                 </ol>
             )}
             <SeriesAnswer state={shown} regionRef={answerRef} refreshHref={`/curation/series/${seriesId}`} />

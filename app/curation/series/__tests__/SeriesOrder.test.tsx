@@ -90,11 +90,13 @@ describe("a series' sequence", () => {
         expect(sequence()).not.toHaveTextContent(/ph_|ser_|ch_/);
     });
 
-    it("gives each row's buttons names of their own that start with what they say, as native buttons the keyboard works", () => {
-        render(<SequenceEditor seriesId={SERIES} order={order()} activeRevisionId={LIVE} />);
+    it("gives each row's buttons names of their own that start with what they say, as native buttons the keyboard works, even when titles repeat", () => {
+        // Two photographs titled alike: the place tells their buttons apart (contract rule 2).
+        const photos = order().photos.map((photo, index) => (index < 2 ? { ...photo, name: 'Dusk' } : photo));
+        render(<SequenceEditor seriesId={SERIES} order={order({ photos })} activeRevisionId={LIVE} />);
         const buttons = within(sequence()).getAllByRole('button');
         const names = buttons.map((button) => button.getAttribute('aria-label'));
-        expect(names).toEqual(['Move up: Ferry at dawn', 'Move down: Ferry at dawn', 'Remove: Ferry at dawn', 'Move up: harbor-2.jpg', 'Move down: harbor-2.jpg', 'Remove: harbor-2.jpg', 'Move up: harbor-3.jpg', 'Move down: harbor-3.jpg', 'Remove: harbor-3.jpg']);
+        expect(names).toEqual(['Move up: 1. Dusk', 'Move down: 1. Dusk', 'Remove: 1. Dusk', 'Move up: 2. Dusk', 'Move down: 2. Dusk', 'Remove: 2. Dusk', 'Move up: 3. harbor-3.jpg', 'Move down: 3. harbor-3.jpg', 'Remove: 3. harbor-3.jpg']);
         expect(new Set(names).size).toBe(names.length);
         for (const button of buttons) {
             // The name starts with the words the button shows (WCAG 2.5.3).
@@ -104,18 +106,18 @@ describe("a series' sequence", () => {
             expect(button).not.toHaveAttribute('tabindex');
         }
         // The first can't go up nor the last down: they say so, and stay focusable where they are.
-        expect(screen.getByRole('button', { name: 'Move up: Ferry at dawn' })).toHaveAttribute('aria-disabled', 'true');
-        expect(screen.getByRole('button', { name: 'Move down: harbor-3.jpg' })).toHaveAttribute('aria-disabled', 'true');
-        expect(screen.getByRole('button', { name: 'Move down: Ferry at dawn' })).not.toHaveAttribute('aria-disabled');
+        expect(screen.getByRole('button', { name: 'Move up: 1. Dusk' })).toHaveAttribute('aria-disabled', 'true');
+        expect(screen.getByRole('button', { name: 'Move down: 3. harbor-3.jpg' })).toHaveAttribute('aria-disabled', 'true');
+        expect(screen.getByRole('button', { name: 'Move down: 1. Dusk' })).not.toHaveAttribute('aria-disabled');
     });
 
     it('moves a photograph up or down by its position, with the version and the live revision the page showed', async () => {
         render(<SequenceEditor seriesId={SERIES} order={order()} activeRevisionId={LIVE} />);
-        await press(screen.getByRole('button', { name: 'Move down: Ferry at dawn' }));
-        await press(screen.getByRole('button', { name: 'Move up: harbor-3.jpg' }));
-        await press(screen.getByRole('button', { name: 'Remove: harbor-2.jpg' }));
+        await press(screen.getByRole('button', { name: 'Move down: 1. Ferry at dawn' }));
+        await press(screen.getByRole('button', { name: 'Move up: 3. harbor-3.jpg' }));
+        await press(screen.getByRole('button', { name: 'Remove: 2. harbor-2.jpg' }));
         // The first one's Move up sends nothing.
-        await press(screen.getByRole('button', { name: 'Move up: Ferry at dawn' }));
+        await press(screen.getByRole('button', { name: 'Move up: 1. Ferry at dawn' }));
         expect(sent.forms).toEqual([
             { action: 'series', fields: { ...CARRIED, op: 'move', photoId: P(1), position: '2' } },
             { action: 'series', fields: { ...CARRIED, op: 'move', photoId: P(3), position: '2' } },
@@ -126,32 +128,33 @@ describe("a series' sequence", () => {
     it('keeps focus on the button pressed, on the moved photograph\'s new row, and reads the answer out', async () => {
         sent.answer = answer('done', 'move', 'Moved Ferry at dawn to position 2 of 3. Nothing is public until you publish.');
         const { rerender } = render(<SequenceEditor seriesId={SERIES} order={order()} activeRevisionId={LIVE} />);
-        const down = screen.getByRole('button', { name: 'Move down: Ferry at dawn' });
+        const down = screen.getByRole('button', { name: 'Move down: 1. Ferry at dawn' });
         down.focus();
         await press(down);
         // The page's refresh brings the next version, in the new order.
         const [first, second, third] = order().photos;
         rerender(<SequenceEditor seriesId={SERIES} order={order({ version: 8, photos: [second, first, third] })} activeRevisionId={LIVE} />);
-        expect(screen.getByRole('button', { name: 'Move down: Ferry at dawn' })).toHaveFocus();
+        // Its name follows it to its new place.
+        expect(screen.getByRole('button', { name: 'Move down: 2. Ferry at dawn' })).toHaveFocus();
         expect(within(sequence()).getAllByRole('listitem')[1]).toHaveTextContent('2. Ferry at dawn');
         const status = screen.getAllByRole('status')[0];
         expect(status).toHaveAttribute('aria-live', 'polite');
         expect(status).toHaveTextContent('Moved Ferry at dawn to position 2 of 3.');
         // And the next press carries the new version.
-        await press(screen.getByRole('button', { name: 'Move down: Ferry at dawn' }));
+        await press(screen.getByRole('button', { name: 'Move down: 2. Ferry at dawn' }));
         expect(sent.forms.at(-1)?.fields).toMatchObject({ version: '8', position: '3' });
     });
 
     it('focuses the answer after a remove, and after a stale move, with a way to refresh', async () => {
         sent.answer = answer('done', 'remove', 'Took harbor-2.jpg out of the series. Nothing is public until you publish.');
         const { unmount } = render(<SequenceEditor seriesId={SERIES} order={order()} activeRevisionId={LIVE} />);
-        await press(screen.getByRole('button', { name: 'Remove: harbor-2.jpg' }));
+        await press(screen.getByRole('button', { name: 'Remove: 2. harbor-2.jpg' }));
         expect(screen.getAllByRole('status')[0]).toHaveFocus();
         expect(screen.getAllByRole('status')[0]).toHaveTextContent('Took harbor-2.jpg out of the series.');
         unmount();
         sent.answer = answer('stale', 'move', 'This series changed since the page loaded, so nothing was written. Refresh to see what it holds now, and edit it again.');
         render(<SequenceEditor seriesId={SERIES} order={order()} activeRevisionId={LIVE} />);
-        await press(screen.getByRole('button', { name: 'Move down: Ferry at dawn' }));
+        await press(screen.getByRole('button', { name: 'Move down: 1. Ferry at dawn' }));
         const status = screen.getAllByRole('status')[0];
         expect(status).toHaveFocus();
         expect(within(status).getByRole('link', { name: 'Refresh' })).toHaveAttribute('href', `/curation/series/${SERIES}`);
@@ -163,20 +166,37 @@ describe("a series' sequence", () => {
             release = resolve;
         });
         render(<SequenceEditor seriesId={SERIES} order={order()} activeRevisionId={LIVE} />);
-        const down = screen.getByRole('button', { name: 'Move down: Ferry at dawn' });
+        const down = screen.getByRole('button', { name: 'Move down: 1. Ferry at dawn' });
         down.focus();
         await press(down);
         expect(down).toHaveFocus();
         for (const button of within(sequence()).getAllByRole('button')) expect(button).toHaveAttribute('aria-disabled', 'true');
-        await press(screen.getByRole('button', { name: 'Remove: harbor-2.jpg' }));
+        await press(screen.getByRole('button', { name: 'Remove: 2. harbor-2.jpg' }));
         expect(sent.forms).toHaveLength(1);
         await act(async () => release());
-        expect(screen.getByRole('button', { name: 'Remove: harbor-2.jpg' })).not.toHaveAttribute('aria-disabled');
+        expect(screen.getByRole('button', { name: 'Remove: 2. harbor-2.jpg' })).not.toHaveAttribute('aria-disabled');
+    });
+
+    it("keeps focus on the first press's row when a second press comes while the first is out", async () => {
+        let release = () => undefined as void;
+        sent.hold = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        sent.answer = answer('done', 'move', 'Moved Ferry at dawn to position 2 of 3. Nothing is public until you publish.');
+        const { rerender } = render(<SequenceEditor seriesId={SERIES} order={order()} activeRevisionId={LIVE} />);
+        await press(screen.getByRole('button', { name: 'Move down: 1. Ferry at dawn' }));
+        // A second press, on another row, before the first answer: it sends nothing, and changes nothing.
+        await press(screen.getByRole('button', { name: 'Move down: 2. harbor-2.jpg' }));
+        expect(sent.forms).toHaveLength(1);
+        await act(async () => release());
+        const [first, second, third] = order().photos;
+        rerender(<SequenceEditor seriesId={SERIES} order={order({ version: 8, photos: [second, first, third] })} activeRevisionId={LIVE} />);
+        expect(screen.getByRole('button', { name: 'Move down: 2. Ferry at dawn' })).toHaveFocus();
     });
 
     it('adds an approved photograph at the position chosen, grouped by where it is now, and empties the form after', async () => {
-        sent.answer = answer('done', 'insert', 'Added Night ferry at position 4 of 4. Nothing is public until you publish.');
-        render(<SequenceEditor seriesId={SERIES} order={order()} activeRevisionId={LIVE} />);
+        sent.answer = answer('done', 'insert', 'Added Night ferry at position 2 of 4. Nothing is public until you publish.');
+        const { rerender } = render(<SequenceEditor seriesId={SERIES} order={order()} activeRevisionId={LIVE} />);
         const add = within(screen.getByRole('form', { name: 'Add a photograph' }));
         const photo = add.getByLabelText('Photograph') as HTMLSelectElement;
         expect(add.getByRole('group', { name: 'In no series' })).toHaveTextContent('Night ferry');
@@ -188,8 +208,18 @@ describe("a series' sequence", () => {
         fireEvent.change(position, { target: { value: '2' } });
         await press(add.getByRole('button', { name: 'Add' }));
         expect(sent.forms).toEqual([{ action: 'series', fields: { photoId: P(4), position: '2', ...CARRIED, op: 'insert' } }]);
+        // The page's refresh brings the series with four photographs, and the form opens empty on the new end.
+        const [first, second, third] = order().photos;
+        rerender(<SequenceEditor seriesId={SERIES} order={order({ version: 8, photos: [first, { id: P(4), name: 'Night ferry', thumbnailUrl: null }, second, third], addable: [order().addable[1]] })} activeRevisionId={LIVE} />);
         expect(screen.getAllByRole('status')[0]).toHaveFocus();
-        expect(photo).toHaveValue('');
+        expect(add.getByLabelText('Photograph')).toHaveValue('');
+        const after = add.getByLabelText('Position') as HTMLSelectElement;
+        expect([...after.options].map((option) => option.textContent)).toEqual(['1, the start', '2, after Ferry at dawn', '3, after Night ferry', '4, after harbor-2.jpg', '5, the end']);
+        expect(after).toHaveValue('5');
+        // So the next Add, left as it opens, goes last.
+        fireEvent.change(add.getByLabelText('Photograph'), { target: { value: P(5) } });
+        await press(add.getByRole('button', { name: 'Add' }));
+        expect(sent.forms.at(-1)?.fields).toMatchObject({ photoId: P(5), position: '5', version: '8' });
     });
 
     it('shows a refused photograph by the field, marks it, and moves focus there', async () => {
@@ -273,13 +303,21 @@ describe('chapters', () => {
         expect(dawn).toHaveTextContent('Starts at 1. Ferry at dawn');
         expect(dusk).toHaveTextContent('Starts at 3. harbor-3.jpg');
         expect(list).not.toHaveTextContent(/ch_|ph_/);
-        fireEvent.change(within(dusk).getByLabelText('Starts at: Dusk'), { target: { value: P(2) } });
-        await press(within(dusk).getByRole('button', { name: 'Move start: Dusk' }));
-        await press(within(dawn).getByRole('button', { name: 'Remove chapter: Dawn' }));
+        fireEvent.change(within(dusk).getByLabelText('Starts at: Dusk (at 3)'), { target: { value: P(2) } });
+        await press(within(dusk).getByRole('button', { name: 'Move start: Dusk (at 3)' }));
+        await press(within(dawn).getByRole('button', { name: 'Remove chapter: Dawn (at 1)' }));
         expect(sent.forms).toEqual([
             { action: 'series', fields: { startPhotoId: P(2), ...CARRIED, op: 'chapter-move', chapterId: 'ch_dusk' } },
             { action: 'series', fields: { ...CARRIED, op: 'chapter-remove', chapterId: 'ch_dawn' } },
         ]);
+    });
+
+    it('names two chapters titled alike by where each starts, so no two controls share a name', () => {
+        render(<ChapterEditor seriesId={SERIES} order={order({ chapters: [{ id: 'ch_a', title: 'Dawn', startPhotoId: P(1) }, { id: 'ch_b', title: 'Dawn', startPhotoId: P(3) }] })} activeRevisionId={LIVE} />);
+        const list = screen.getByRole('list', { name: 'Chapters' });
+        const named = [...within(list).getAllByRole('button'), ...within(list).getAllByRole('combobox'), ...within(list).getAllByRole('form')].map((element) => element.getAttribute('aria-label'));
+        expect(named).toEqual(['Move start: Dawn (at 1)', 'Remove chapter: Dawn (at 1)', 'Move start: Dawn (at 3)', 'Remove chapter: Dawn (at 3)', 'Starts at: Dawn (at 1)', 'Starts at: Dawn (at 3)', 'Move the start of Dawn (at 1)', 'Move the start of Dawn (at 3)']);
+        expect(new Set(named).size).toBe(named.length);
     });
 
     it('adds a chapter with a title and a start, and empties the form after', async () => {
@@ -310,7 +348,7 @@ describe('chapters', () => {
         unmount();
         sent.answer = answer('invalid', 'chapter-move', 'The chapter Dusk would start out of order: each chapter starts after the one above it. Nothing was written.', { field: 'chapterStart' });
         render(<ChapterEditor seriesId={SERIES} order={order()} activeRevisionId={LIVE} />);
-        await press(screen.getByRole('button', { name: 'Move start: Dusk' }));
+        await press(screen.getByRole('button', { name: 'Move start: Dusk (at 3)' }));
         const status = screen.getByRole('status');
         expect(status).toHaveFocus();
         expect(status).toHaveTextContent('The chapter Dusk would start out of order');
@@ -340,19 +378,40 @@ describe("the Series screen's Work order and featured series", () => {
         const list = screen.getByRole('list', { name: 'Work order' });
         expect(within(list).getAllByRole('listitem').map((row) => row.textContent)).toEqual([expect.stringMatching(/^1\. Harbor/), expect.stringMatching(/^2\. Coast/)]);
         expect(list).not.toHaveTextContent(/ser_/);
-        const up = screen.getByRole('button', { name: 'Move up: Coast' });
+        const up = screen.getByRole('button', { name: 'Move up: 2. Coast' });
         up.focus();
         await press(up);
         expect(sent.forms).toEqual([{ action: 'work', fields: { ...SITE, op: 'work-order', seriesId: 'ser_coast', move: 'up' } }]);
         rerender(<WorkOrderEditor work={{ ...WORK, version: 4, order: [WORK.order[1], WORK.order[0]] }} activeRevisionId={LIVE} />);
-        expect(screen.getByRole('button', { name: 'Move up: Coast' })).toHaveFocus();
-        expect(screen.getByRole('button', { name: 'Move up: Coast' })).toHaveAttribute('aria-disabled', 'true');
+        expect(screen.getByRole('button', { name: 'Move up: 1. Coast' })).toHaveFocus();
+        expect(screen.getByRole('button', { name: 'Move up: 1. Coast' })).toHaveAttribute('aria-disabled', 'true');
         expect(screen.getByRole('status')).toHaveTextContent('Moved Coast to place 1 of 2 in Work order.');
+    });
+
+    it('names two series titled alike by their place, so no two buttons share a name', () => {
+        render(<WorkOrderEditor work={{ ...WORK, order: [WORK.order[0], { ...WORK.order[1], title: 'Harbor' }] }} activeRevisionId={LIVE} />);
+        const names = within(screen.getByRole('list', { name: 'Work order' })).getAllByRole('button').map((button) => button.getAttribute('aria-label'));
+        expect(names).toEqual(['Move up: 1. Harbor', 'Move down: 1. Harbor', 'Take off Work: 1. Harbor', 'Move up: 2. Harbor', 'Move down: 2. Harbor', 'Take off Work: 2. Harbor']);
+    });
+
+    it("keeps focus on the first press's row when a second press comes while the first is out", async () => {
+        let release = () => undefined as void;
+        sent.hold = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        sent.answer = answer('done', 'work-order', 'Moved Coast to place 1 of 2 in Work order. Nothing is public until you publish.');
+        const { rerender } = render(<WorkOrderEditor work={WORK} activeRevisionId={LIVE} />);
+        await press(screen.getByRole('button', { name: 'Move up: 2. Coast' }));
+        await press(screen.getByRole('button', { name: 'Move down: 1. Harbor' }));
+        expect(sent.forms).toHaveLength(1);
+        await act(async () => release());
+        rerender(<WorkOrderEditor work={{ ...WORK, version: 4, order: [WORK.order[1], WORK.order[0]] }} activeRevisionId={LIVE} />);
+        expect(screen.getByRole('button', { name: 'Move up: 1. Coast' })).toHaveFocus();
     });
 
     it('takes a series off Work, puts one on, last, and focuses the answer', async () => {
         render(<WorkOrderEditor work={WORK} activeRevisionId={null} />);
-        await press(screen.getByRole('button', { name: 'Take off Work: Harbor' }));
+        await press(screen.getByRole('button', { name: 'Take off Work: 1. Harbor' }));
         expect(screen.getByRole('status')).toHaveFocus();
         const form = within(screen.getByRole('form', { name: 'Put on Work' }));
         expect(form.getByLabelText('Series')).toHaveTextContent('Salt roads, draft');

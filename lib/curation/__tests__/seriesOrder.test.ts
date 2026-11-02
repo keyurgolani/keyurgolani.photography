@@ -384,6 +384,63 @@ describe('Work order and the featured series', { timeout: 30_000 }, () => {
         expect(authored(root)).toEqual(bytes);
     });
 
+    it("drops a Work order or featured entry for a series the draft no longer holds, and says so, so the screen can fix it", async () => {
+        const { root } = await world();
+        const shown = await site(root);
+        // A hand edit, or a series folder removed by hand, leaves IDs no series answers to.
+        await writeAuthoredRecord({ ...shown, seriesOrder: [HARBOR, 'ser_gone', DRAFT, COAST], featuredSeriesIds: [HARBOR, 'ser_gone'] }, { expectedVersion: shown.version, root });
+        expect(await work(workForm(await site(root), 'work-order', { seriesId: COAST, move: 'up' }))).toMatchObject({
+            status: 'done',
+            message: `Moved Coast to place 2 of 3 in Work order. Work order also named a series the draft no longer holds, so that's gone from it. ${PUBLIC}`,
+        });
+        expect((await site(root)).seriesOrder).toEqual([HARBOR, COAST, DRAFT]);
+        // A move that changes nothing still mends the list, and says only that.
+        const again = await site(root);
+        await writeAuthoredRecord({ ...again, seriesOrder: ['ser_gone', 'ser_lost', ...again.seriesOrder] }, { expectedVersion: again.version, root });
+        expect(await work(workForm(await site(root), 'work-order', { seriesId: HARBOR, move: 'up' }))).toMatchObject({ status: 'done', message: `Work order also named 2 series the draft no longer holds, so they're gone from it. ${PUBLIC}` });
+        expect((await site(root)).seriesOrder).toEqual([HARBOR, COAST, DRAFT]);
+        expect(await work(workForm(await site(root), 'featured', { featured: [HARBOR] }))).toMatchObject({
+            status: 'done',
+            message: `Harbor is featured now, so Home opens on it. The featured series also named a series the draft no longer holds, so that's gone from them. ${PUBLIC}`,
+        });
+        expect((await site(root)).featuredSeriesIds).toEqual([HARBOR]);
+        // One that exists but can't be read stays, as before.
+        fs.writeFileSync(path.join(authoredRecordDir(root, 'series', DRAFT), 'v1.json'), '{ not json');
+        expect(await work(workForm(await site(root), 'work-order', { seriesId: HARBOR, move: 'down' }))).toMatchObject({ status: 'done' });
+        expect((await site(root)).seriesOrder).toEqual([COAST, HARBOR, DRAFT]);
+    });
+
+    it("says so when only a series it can't read is still featured", async () => {
+        const { root } = await world();
+        const shown = await site(root);
+        await writeAuthoredRecord({ ...shown, featuredSeriesIds: [DRAFT, HARBOR] }, { expectedVersion: shown.version, root });
+        fs.writeFileSync(path.join(authoredRecordDir(root, 'series', DRAFT), 'v1.json'), '{ not json');
+        expect(await work(workForm(await site(root), 'featured', {}))).toMatchObject({
+            status: 'done',
+            message: `None of the series shown here is featured now. Only one the screen can't read still is, so fix that series or feature a published one before you publish. The server log names it. ${PUBLIC}`,
+        });
+        expect((await site(root)).featuredSeriesIds).toEqual([DRAFT]);
+    });
+
+    it("words Off Work's warning from the series as the write found it, under the lock", async () => {
+        const { root } = await world();
+        // Harbor is published when the page posts, and a draft by the time the write holds the lock.
+        const afterCheck = async () => {
+            const harbor = await series(root, HARBOR);
+            await writeAuthoredRecord({ ...harbor, visibility: 'draft' }, { expectedVersion: harbor.version, root });
+        };
+        expect(await work(workForm(await site(root), 'work-order', { seriesId: HARBOR, move: 'off' }), { afterCheck })).toMatchObject({ status: 'done', message: `Took Harbor off Work. ${PUBLIC}` });
+        // And the other way: Salt roads is published by then, so the warning shows.
+        const roads = async () => {
+            const draft = await series(root, DRAFT);
+            await writeAuthoredRecord({ ...draft, visibility: 'published' }, { expectedVersion: draft.version, root });
+        };
+        expect(await work(workForm(await site(root), 'work-order', { seriesId: DRAFT, move: 'off' }), { afterCheck: roads })).toMatchObject({
+            status: 'done',
+            message: `Took Salt roads off Work. A published series needs a place in Work order, so a publish waits until it has one again, or is a draft. ${PUBLIC}`,
+        });
+    });
+
     it('sets the featured series, keeping their order, warns of one not published, and clears them', async () => {
         const { root } = await world();
         expect(await work(workForm(await site(root), 'featured', { featured: [COAST, HARBOR] }))).toMatchObject({ status: 'done', action: 'featured', message: `Featured now: Harbor, then Coast. Home opens on the first of them a publish holds. ${PUBLIC}` });
