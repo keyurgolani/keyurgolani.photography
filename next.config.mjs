@@ -5,16 +5,28 @@ const CURATOR_SOURCES = ['/curation/:path*', '/api/curation/:path*'];
 // #16's preview site subtree, the one curator path a same-origin frame may embed.
 const PREVIEW_SITE_SOURCES = ['/curation/preview/:draftId/site', '/curation/preview/:draftId/site/:path*'];
 
+// Every response. No HSTS here: Cloudflare terminates TLS for the site, so it's set at the edge.
+const SITE_HEADERS = [
+  { key: 'X-Content-Type-Options', value: 'nosniff' },
+  { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+  { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+];
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
+  poweredByHeader: false,
   // Every curator response: never cached, indexed, framed, or sent as a
   // referrer. The framing policy is its own entry, so #16's preview can
   // override it for its own path. lib/curation/auth/policy.ts holds the same
   // values, and proxy.ts sends them on the responses it refuses.
   async headers() {
     return [
+      // First, so every entry below overrides it for a key the two share.
+      // Nothing frames a visitor page: the owner's other site sends frame-src 'none'.
+      { source: '/:path*', headers: SITE_HEADERS },
+      { source: '/:path*', headers: [{ key: 'Content-Security-Policy', value: "frame-ancestors 'self'" }] },
       ...CURATOR_SOURCES.map((source) => ({
         source,
         headers: [

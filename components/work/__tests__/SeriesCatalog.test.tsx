@@ -4,7 +4,8 @@ import { VARIANT_FORMATS, VARIANT_WIDTHS } from '@/lib/identity/variants';
 import { mediaUrl } from '@/lib/media/url';
 import type { WorkCatalog, WorkCover, WorkSeriesSummary } from '@/lib/catalog/projections/work';
 import SeriesCatalog, { WORK_TITLE } from '../SeriesCatalog';
-import WorkCoverImage, { COVER_SIZES } from '../WorkCoverImage';
+import WorkCoverImage from '../WorkCoverImage';
+import { COVER_SIZES, coverSpan } from '../coverSizes';
 import { preloadsIn, serverHtml } from '@/test/helpers/serverHtml';
 
 const REF = (n: number) => ({ photoId: `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, assetRevision: `sha256-${String(n % 10).repeat(64)}`, profileId: 'p_0123456789abcdef' });
@@ -117,7 +118,7 @@ describe('SeriesCatalog', () => {
         expect(second.querySelector('img')).not.toBeNull();
     });
 
-    it('passes the client cover component only the projection cover and the loading flag', async () => {
+    it('passes the client cover component only the projection cover, the loading flag, and its span', async () => {
         vi.resetModules();
         const seen: Record<string, unknown>[] = [];
         vi.doMock('../WorkCoverImage', () => ({
@@ -130,11 +131,19 @@ describe('SeriesCatalog', () => {
         render(<Catalog work={work([series(1), series(2, { cover: null })])} />);
         vi.doUnmock('../WorkCoverImage');
         expect(seen.map((props) => Object.keys(props).sort())).toEqual([
-            ['cover', 'eager'],
-            ['cover', 'eager'],
+            ['cover', 'eager', 'span'],
+            ['cover', 'eager', 'span'],
         ]);
         expect(Object.keys(seen[0].cover as object).sort()).toEqual(['crop', 'focalPoint', 'height', 'photoId', 'variants', 'width']);
         expect(seen[1].cover).toBeNull();
+    });
+
+    // The stylesheet's 768 px grid: the 1st and 4th of every four entries span 7 of 12 columns, the 2nd and 3rd span 5.
+    it('gives each cover the sizes of its own span, wide for the 1st and 4th of every four, narrow for the 2nd and 3rd', () => {
+        expect([0, 1, 2, 3, 4, 5, 6, 7].map(coverSpan)).toEqual(['wide', 'narrow', 'narrow', 'wide', 'wide', 'narrow', 'narrow', 'wide']);
+        render(<SeriesCatalog work={work([1, 2, 3, 4, 5].map((n) => series(n)))} />);
+        const sizes = [...document.querySelectorAll('picture')].map((picture) => picture.querySelector('source')?.getAttribute('sizes'));
+        expect(sizes).toEqual([COVER_SIZES.wide, COVER_SIZES.narrow, COVER_SIZES.narrow, COVER_SIZES.wide, COVER_SIZES.wide]);
     });
 
     it('drops a failed cover\'s fallback when a refresh brings the series a new cover, and keeps it for the same one', () => {
@@ -160,7 +169,7 @@ describe('WorkCoverImage', () => {
         expect(image).toHaveAttribute('width', '2400');
         expect(image).toHaveAttribute('height', '1600');
         expect(image).toHaveAttribute('loading', 'lazy');
-        for (const source of container.querySelectorAll('source')) expect(source).toHaveAttribute('sizes', COVER_SIZES);
+        for (const source of container.querySelectorAll('source')) expect(source).toHaveAttribute('sizes', COVER_SIZES.wide);
         const frame = container.firstElementChild as HTMLElement;
         expect(frame.style.getPropertyValue('--focal-x')).toBe('25%');
         expect(frame.style.getPropertyValue('--focal-y')).toBe('75%');
@@ -182,7 +191,14 @@ describe('WorkCoverImage', () => {
         const links = preloadsIn(serverHtml(<WorkCoverImage cover={cover(7)} eager />));
         expect(links).toHaveLength(1);
         expect(links[0].getAttribute('imagesrcset')).toBe(eager.querySelector('source[type="image/avif"]')?.getAttribute('srcset'));
-        expect(links[0].getAttribute('imagesizes')).toBe(COVER_SIZES);
+        expect(links[0].getAttribute('imagesizes')).toBe(COVER_SIZES.wide);
+    });
+
+    it('sizes a narrow cover for its 5 of 12 columns, and never asks a phone for less than its width', () => {
+        const { container } = render(<WorkCoverImage cover={cover(8)} span="narrow" />);
+        for (const source of container.querySelectorAll('source')) expect(source).toHaveAttribute('sizes', COVER_SIZES.narrow);
+        expect(COVER_SIZES.narrow).toBe('(min-width: 768px) 42vw, 100vw');
+        expect(COVER_SIZES.wide).toBe('(min-width: 768px) 59vw, 100vw');
     });
 
     it('swaps in the text fallback when the image fails, never leaving a broken image', () => {

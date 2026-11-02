@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { photoCountLabel } from '@/lib/catalog/labels';
 import type { WorkCatalog } from '@/lib/catalog/projections/work';
+import { coverSpan } from './coverSizes';
 import WorkCoverImage from './WorkCoverImage';
 import styles from './SeriesCatalog.module.css';
 
@@ -34,7 +35,7 @@ export default function SeriesCatalog({ work }: SeriesCatalogProps) {
                             <Link href={series.href} className={styles.entry} data-ring-room="">
                                 {/* The first cover loads at once, the rest as they near the viewport. Keyed on
                                     the cover's file, so a refresh that brings a new cover clears a failure. */}
-                                <WorkCoverImage key={series.cover?.variants.w1200.webp.url ?? 'none'} cover={series.cover} eager={index === 0} />
+                                <WorkCoverImage key={series.cover?.variants.w1200.webp.url ?? 'none'} cover={series.cover} eager={index === 0} span={coverSpan(index)} />
                                 <div className={styles.copy}>
                                     <h2 className={styles.seriesTitle}>{series.title}</h2>
                                     {series.shortStatement !== null && <p className={styles.statement}>{series.shortStatement}</p>}
