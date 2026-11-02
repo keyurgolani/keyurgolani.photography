@@ -1130,3 +1130,28 @@ describe("a phone's list view", () => {
         expect(rememberedRow()).toEqual({ id: EVT(2), scrollY: 40 });
     });
 });
+
+// #145: on the wide layout the list and the item's form scroll on their own, so each is a named region a keyboard can
+// reach and scroll, even where nothing focusable is in view. The stylesheet makes them scroll; Playwright checks that.
+describe('the two scrolling panels', () => {
+    it('makes the list a named region in the Tab order', () => {
+        renderInbox();
+        const list = screen.getByRole('region', { name: 'Curation inbox' });
+        expect(list).toHaveAttribute('id', 'inbox-list');
+        expect(list).toHaveAttribute('tabindex', '0');
+    });
+
+    it("makes the item's form a named region in the Tab order, apart from the photograph", () => {
+        renderInbox();
+        const form = screen.getByRole('region', { name: 'Item details' });
+        expect(form).toHaveAttribute('tabindex', '0');
+        expect(within(form).getByRole('heading', { level: 2 })).toBeInTheDocument();
+        expect(within(form).queryByRole('img', { name: /^Candidate photograph / })).toBeNull();
+    });
+
+    it('names each region once, so neither repeats the other', () => {
+        renderInbox();
+        expect(screen.getAllByRole('region', { name: 'Curation inbox' })).toHaveLength(1);
+        expect(screen.getAllByRole('region', { name: 'Item details' })).toHaveLength(1);
+    });
+});

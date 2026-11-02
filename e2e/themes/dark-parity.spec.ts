@@ -761,11 +761,38 @@ const STYLE_DETAILS = path.join(OUT, 'dark-styles.details');
  * PR). One sanctioned departure from today's site remains: the curator's selected row and tab take P2-8's 1 px outline
  * in every theme, Dark included, an accessibility fix, since today's fill alone is 1.32:1 against the list.
  */
+/**
+ * #145, the owner's request: on the wide layout the Inbox is one screen tall, its list and its form each scroll on
+ * their own, and the photograph's column holds still instead of a sticky frame in the page's scroll. So at the two
+ * wide sizes the page wrapper is a flex column, the two panels and the photograph's column clip or scroll, the frame
+ * is no longer sticky, and every box the page's height set is the screen's height now: the base's page runs up to
+ * 695.7 px taller at these sizes, and the photograph sits 28.5 px lower, centred in a shorter frame. A phone (390) is
+ * unchanged, so nothing here applies to it.
+ */
+const INDEPENDENT_PANELS: Allowance[] = [1024, 1440].flatMap((width) => {
+    const why = '#145: the Inbox list and form scroll independently on a wide screen';
+    const page = 'inbox';
+    const tall = 700;
+    return [
+        { page, width, selector: 'body', maxDelta: tall, why },
+        { page, width, selector: 'body > next-route-announcer', maxDelta: tall, why },
+        { page, width, selector: 'div:has(> main > #inbox-list)', properties: ['display'], maxDelta: tall, why },
+        { page, width, selector: 'main:has(> #inbox-list)', maxDelta: tall, why },
+        { page, width, selector: '#inbox-list', properties: ['overflow-x', 'overflow-y'], maxDelta: tall, why },
+        { page, width, selector: '#item', maxDelta: tall, why },
+        { page, width, selector: '#item > div:nth-of-type(2)', properties: ['overflow-x', 'overflow-y'], maxDelta: tall, why },
+        { page, width, selector: '#item > div:nth-of-type(2) > div:nth-of-type(1)', properties: ['position'], maxDelta: 57, why },
+        { page, width, selector: '#item > div:nth-of-type(2) > div:nth-of-type(1) > img', maxDelta: 28.5, why },
+        { page, width, selector: '#item > div:nth-of-type(3)', properties: ['overflow-x', 'overflow-y'], maxDelta: tall, why },
+    ];
+});
+
 const ALLOWANCES: Allowance[] = [
     // Drawn on the rules around the row (the design review's P2-1): its own separator takes the outline's colour.
     { page: 'inbox', selector: 'main ul a[aria-current="true"]', properties: ['box-shadow', 'border-bottom-color'], why: "P2-8: the Inbox's selected row's outline" },
     { page: 'inbox', selector: 'header nav a[aria-current="page"]', properties: ['box-shadow'], why: "P2-8: the Inbox's selected tab's outline" },
     { page: 'publish', selector: 'header nav a[aria-current="page"]', properties: ['box-shadow'], why: "P2-8: Publish's selected tab's outline" },
+    ...INDEPENDENT_PANELS,
 ];
 const allowancesFor = (pair: Pair, width: number) => ALLOWANCES.filter((entry) => entry.page === (pair.stateOf ?? pair.name) && (entry.width === undefined || entry.width === width));
 

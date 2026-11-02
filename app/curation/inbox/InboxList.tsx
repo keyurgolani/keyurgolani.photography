@@ -76,7 +76,8 @@ export default function InboxList({ view, listView = false }: { view: ReadyView;
     const others = (['unplaced', 'waiting', 'deferred', 'placed', 'settled'] as const).map((group) => ({ group, items: view.items.filter((item) => item.group === group) }));
     const empty = view.items.length === 0 && view.problems.length === 0;
     return (
-        <section className={styles.list} id="inbox-list" aria-labelledby="inbox-heading">
+        // tabIndex 0: on a wide screen the list scrolls on its own (#145), so a keyboard can reach it to scroll it.
+        <section className={styles.list} id="inbox-list" aria-labelledby="inbox-heading" tabIndex={0}>
             <ReturnToRow listView={listView} />
             <header className={styles.listHeader}>
                 <div>

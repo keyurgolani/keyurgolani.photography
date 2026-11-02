@@ -4,6 +4,8 @@
  * (owner, 2026-10-25):
  * - the row a phone left the list from, and how far down the list was, so
  *   "Back to inbox" and the browser's Back return there with that row focused;
+ * - how far down a wide screen's list was, which scrolls on its own there
+ *   (#145), so opening another item leaves the list where it was;
  * - the answer to an approval or Decide later, carried to the next item it
  *   opens, so the page can say what happened once it's there.
  * Nothing in it is sent anywhere. What's read back is checked before use,
@@ -12,6 +14,7 @@
 
 const RETURN_KEY = 'curation-inbox:return';
 const ARRIVAL_KEY = 'curation-inbox:arrival';
+const LIST_PLACE_KEY = 'curation-inbox:list-place';
 /** An arrival older than this is left over from an earlier visit, not the page that set it. */
 const ARRIVAL_MS = 30_000;
 const EVENT_ID = /^evt_[0-9a-f]{24}$/;
@@ -67,6 +70,15 @@ export function rememberedRow(): ListReturn | null {
     const value = read(RETURN_KEY);
     if (!isObject(value) || typeof value.id !== 'string' || !EVENT_ID.test(value.id) || typeof value.scrollY !== 'number' || !Number.isFinite(value.scrollY)) return null;
     return { id: value.id, scrollY: Math.max(0, value.scrollY) };
+}
+
+export function rememberListPlace(scrollTop: number): void {
+    write(LIST_PLACE_KEY, Math.max(0, Math.round(scrollTop)));
+}
+
+export function listPlace(): number | null {
+    const value = read(LIST_PLACE_KEY);
+    return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : null;
 }
 
 /** The URL that opens an item, the same one every row links to. */

@@ -213,6 +213,92 @@ test('lists what the watcher opened, and shows the selected photograph from the 
 });
 
 // The server sends times in UTC; once the page runs they read in the browser's own zone, after hydration, so nothing mismatches.
+// #145: on the wide layout the list and the item's form each scroll on their own, and the photograph between them
+// holds still. Short enough that both overflow. A phone shows one side at a time, so these are the desktop's.
+const SHORT_WIDE = { width: 1280, height: 480 };
+const panels = (page: Page) => ({ list: page.getByRole('region', { name: 'Curation inbox' }), form: page.getByRole('region', { name: 'Item details' }) });
+const scrollTop = (panel: Locator) => panel.evaluate((element) => element.scrollTop);
+const atEnd = (panel: Locator) => panel.evaluate((element) => Math.ceil(element.scrollTop + element.clientHeight) >= element.scrollHeight);
+/** The panel's scrollTop once a keyboard scroll, which Chrome animates, has come to rest. */
+async function settledTop(panel: Locator): Promise<number> {
+    let last = -1;
+    await expect.poll(async () => {
+        const now = await scrollTop(panel);
+        const still = now === last;
+        last = now;
+        return still;
+    }, { intervals: [150] }).toBe(true);
+    return last;
+}
+const photoTop = async (page: Page) => (await page.getByRole('img', { name: /^Candidate photograph / }).boundingBox())?.y;
+
+async function openShortWide(page: Page) {
+    await page.setViewportSize(SHORT_WIDE);
+    await openInbox(page, eventOf(FRESH.approve), { landed: true });
+    const { list, form } = panels(page);
+    for (const panel of [list, form]) expect(await panel.evaluate((element) => element.scrollHeight > element.clientHeight), 'the panel overflows at this height').toBe(true);
+    return { list, form };
+}
+
+test('scrolls the list alone under the wheel, to its end, and the form and the photograph stay where they are (#145)', async ({ page, isMobile }) => {
+    test.skip(isMobile, 'A phone shows one side at a time');
+    const { list, form } = await openShortWide(page);
+    const photo = await photoTop(page);
+    await list.hover();
+    await page.mouse.wheel(0, 5_000);
+    await expect.poll(() => atEnd(list)).toBe(true);
+    expect(await scrollTop(form)).toBe(0);
+    expect(await page.evaluate(() => window.scrollY)).toBe(0);
+    expect(await photoTop(page)).toBe(photo);
+});
+
+test('scrolls the form alone under the wheel, to its end, and the list and the photograph stay where they are (#145)', async ({ page, isMobile }) => {
+    test.skip(isMobile, 'A phone shows one side at a time');
+    const { list, form } = await openShortWide(page);
+    const photo = await photoTop(page);
+    await form.hover();
+    await page.mouse.wheel(0, 5_000);
+    await expect.poll(() => atEnd(form)).toBe(true);
+    expect(await scrollTop(list)).toBe(0);
+    expect(await page.evaluate(() => window.scrollY)).toBe(0);
+    expect(await photoTop(page)).toBe(photo);
+});
+
+test('scrolls only the panel that has focus from the keyboard, and each keeps its place while the other moves (#145)', async ({ page, isMobile }) => {
+    test.skip(isMobile, 'A phone shows one side at a time');
+    const { list, form } = await openShortWide(page);
+    // The panels are in the Tab order themselves, so a panel with nothing focusable in view can still be scrolled.
+    await list.focus();
+    await page.keyboard.press('PageDown');
+    await expect.poll(() => scrollTop(list)).toBeGreaterThan(0);
+    const listPlace = await settledTop(list);
+    expect(await scrollTop(form)).toBe(0);
+    await form.focus();
+    await page.keyboard.press('End');
+    await expect.poll(() => atEnd(form)).toBe(true);
+    expect(await settledTop(list)).toBe(listPlace);
+    await page.keyboard.press('Home');
+    await expect.poll(() => scrollTop(form)).toBe(0);
+    expect(await scrollTop(list)).toBe(listPlace);
+});
+
+test('keeps the list where it was when a row opens another item, with that row in view (#145)', async ({ page, isMobile }) => {
+    test.skip(isMobile, 'A phone shows one side at a time');
+    const { list } = await openShortWide(page);
+    await list.hover();
+    await page.mouse.wheel(0, 5_000);
+    await expect.poll(() => atEnd(list)).toBe(true);
+    const place = await scrollTop(list);
+    const last = list.locator('a[data-row]').last();
+    const href = await last.getAttribute('href');
+    await last.click();
+    await page.waitForURL((url) => `${url.pathname}${url.search}${url.hash}` === href);
+    await waitForHydration(page);
+    await expect.poll(() => scrollTop(panels(page).list)).toBe(place);
+    await expect(panels(page).list.locator('a[aria-current="true"]')).toBeInViewport();
+    expect(await scrollTop(panels(page).form)).toBe(0);
+});
+
 test("reads times in the browser's zone with no hydration error, from server HTML in UTC with the zone named", async ({ page, browser }) => {
     const url = `${curatorOrigin()}/curation/inbox?item=${eventOf(FRESH.approve)}#item`;
     const storageState = await page.context().storageState();
@@ -344,16 +430,19 @@ test('keeps the curator where they were after Save edits from the plain inbox UR
     await expect(itemHeading(page, FRESH.unassigned)).toBeVisible();
     await page.getByRole('textbox', { name: 'Draft description' }).fill('A harbor wall, saved from the plain inbox URL.');
     const save = page.getByRole('button', { name: 'Save edits' });
+    // On a wide screen the form scrolls on its own (#145), so its place is the one to keep.
+    const form = page.getByRole('region', { name: 'Item details' });
     await save.scrollIntoViewIfNeeded();
-    await page.evaluate(() => window.scrollBy(0, 40));
-    const before = await page.evaluate(() => window.scrollY);
+    await form.evaluate((element) => element.scrollBy(0, 40));
+    const before = await form.evaluate((element) => element.scrollTop);
     expect(before).toBeGreaterThan(0);
     await save.click();
     await expect(answer(page, 'done')).toHaveText(/^Saved your edits/);
     // The save named the item in the URL, and the refresh after it brought the same item back.
     await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox?item=${eventOf(FRESH.unassigned)}#item`);
     await expect(itemHeading(page, FRESH.unassigned)).toBeVisible();
-    await expect.poll(() => page.evaluate(() => window.scrollY)).toBeCloseTo(before, 0);
+    await expect.poll(() => form.evaluate((element) => element.scrollTop)).toBeCloseTo(before, 0);
+    expect(await page.evaluate(() => window.scrollY)).toBe(0);
     await expect(answer(page, 'done')).toBeInViewport();
     expect((await readEvent(data().root, eventOf(FRESH.unassigned)))?.edits?.description).toMatchObject({ text: 'A harbor wall, saved from the plain inbox URL.' });
 });
