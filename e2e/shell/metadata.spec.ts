@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import net from 'node:net';
+import { freePort } from '../../test/helpers/ports';
 import path from 'node:path';
 import { expect, test } from '../support/test';
 
@@ -17,16 +17,6 @@ const STOP_TIMEOUT = 5_000;
 /** Above both, so a slow start fails in startServer, which stops its child, not in the hook's own timeout. */
 const HOOK_TIMEOUT = READY_TIMEOUT + STOP_TIMEOUT + 15_000;
 
-function freePort(): Promise<number> {
-    return new Promise((resolve, reject) => {
-        const server = net.createServer();
-        server.once('error', reject);
-        server.listen(0, '127.0.0.1', () => {
-            const { port } = server.address() as net.AddressInfo;
-            server.close(() => resolve(port));
-        });
-    });
-}
 
 interface Server {
     origin: string;
