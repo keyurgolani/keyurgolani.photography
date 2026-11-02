@@ -1021,8 +1021,10 @@ main.state {
     display: none;
   }
 
+  /* Three screens since #150's Series: they wrap to a second row where a phone can't fit them in one. */
   .screens {
     grid-area: screens;
+    flex-wrap: wrap;
     justify-content: stretch;
   }
 
