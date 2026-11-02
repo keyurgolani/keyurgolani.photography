@@ -846,7 +846,7 @@ test('binds a missing photograph to the file found at its last path, and the ite
     expect(pendingDecisions()).toEqual([expect.objectContaining({ type: 'bind', path: at, photoId: before.event!.photoId, merge: LINKED })]);
     expect(await readEvent(root, missingId)).toMatchObject({ status: 'open', version: before.event!.version + 1 });
     // The refresh: the bind waits, so the item stays open, with nothing more to bind or archive, and the answer holds the focus.
-    await expect(page.getByText('Bind waiting')).toBeVisible();
+    await expect(page.getByText('Bind waiting', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Bind', exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Archive', exact: true })).toHaveCount(0);
     await expect(page.locator('[role="status"]:has([data-state="done"])')).toBeFocused();
