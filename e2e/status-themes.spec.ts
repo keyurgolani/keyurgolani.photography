@@ -163,6 +163,31 @@ test.describe('the error page', () => {
         }
     }
 
+    // The walkthrough on 10364b64 read React's #441 here as a defect. It's Next's own report of the error the page threw:
+    // in production its onCaughtError logs every error an explicit error boundary catches, and a Server Components
+    // error reaches the client as #441, its message held back (in dev, `CatalogUnavailableError: The catalog is
+    // unavailable`). v1.2.0 logs the same pair. So the page's own 500 and at most one such report are allowed, and
+    // anything else fails: a nav chunk QuietBoundary catches, a hydration error, a pageerror.
+    for (const choice of Object.keys(THEMES)) {
+        test(`in ${choice}, the console shows only the page's own 500 and Next's one report of the error it caught`, async ({ page }) => {
+            if (!server) throw new Error('The failing server did not start');
+            const errors: string[] = [];
+            page.on('console', (message) => {
+                if (message.type() === 'error') errors.push(message.text());
+            });
+            page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+            expect(await openIn(page, `${server.origin}/work`, choice, VIEWPORTS[0])).toBe(500);
+            await expect(page.getByRole('heading', { level: 1, name: ERROR_HEADING })).toBeVisible();
+            // The full nav, which loads when the page shows, is in: its theme menu is the one thing the static nav lacks.
+            await expect(page.getByRole('button', { name: /^Theme:/ })).toBeVisible();
+            const status = errors.filter((text) => /status of 500\b/.test(text));
+            const caught = errors.filter((text) => /Minified React error #441\b/.test(text));
+            expect(status, "the document's own 500").toHaveLength(1);
+            expect(caught.length, "Next's report of the Server Components error app/error.tsx caught, at most once").toBeLessThanOrEqual(1);
+            expect(errors.filter((text) => !status.includes(text) && !caught.includes(text)), 'any other console error').toEqual([]);
+        });
+    }
+
     for (const scheme of SCHEMES) {
         test(`in System on a ${scheme} device, with nothing stored: ${scheme === 'light' ? 'Light' : 'Dark'}, following the device`, async ({ page }) => {
             if (!server) throw new Error('The failing server did not start');
