@@ -4,6 +4,12 @@ The curator is the private side of the site, where you review new photographs be
 
 After **Approve into draft** or **Decide later**, the inbox opens the next item that needs a decision, in list order, starting again from the top after the last one, and says at the top of it what it just did, naming the file. That answer links back to the item you decided, where **Reopen** is. Once nothing needs a decision, it shows the empty state. On a phone it shows one thing at a time: the list, or the item you opened, with **Back to inbox** (or the browser's Back) returning to the list where you left it.
 
+## Series
+
+`/curation/series` (#150) lists every series in the draft, in Work order and then by title, each with its visibility (Published, Draft or Hidden), how many photographs it holds, and whether `photos carry-over` brought it over at the launch. **New series** takes a title, and a web address if you want one other than the title's, and makes a draft with no photographs, as `photos edit ser_<name>` does. The web address has to be free: no other series may use it, now or as an old address, and the site's own routes, such as `work`, are taken. One made from the title gets `-2`, `-3` and so on when it isn't free.
+
+A series' page edits its title, statement, short statement and visibility, with `photos edit`'s rules and limits (a title up to 200 characters, a statement 2,000, and a short statement 500, on one line). **Save** writes the draft only, under the version the page loaded: if the series changed since, say from the command line, nothing is written and the page asks you to refresh. It never changes the series' photographs, or Gallery's carry-over marker, which goes once you write either of Gallery's statements, as it does from the command line. Its order, cover, opening photograph and chapters, and Work order, are still `photos sequence` and `photos series`. Nothing on the Series screen is public until you publish.
+
 ## Preview and publish
 
 `/curation/publish` (#16) shows what the next publish changes for visitors, and publishes it. The change ledger lists every change in visitor terms, in two groups: Authored, which needs your judgment, and Derived, which the catalog works out. Before and after show where they help. A change that blocks the publish says **Blocks publishing** and carries its fix:

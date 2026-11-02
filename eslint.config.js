@@ -234,13 +234,15 @@ export default tseslint.config(
   },
   {
     // The rest of the watcher process. #17's curation actions, policy, and
-    // resolutions, and #14's auth, run only in the CLI or curator process.
+    // resolutions, #150's Series forms, and #14's auth, run only in the CLI or
+    // curator process.
     files: ['scripts/imageWatcher.ts', 'utils/**', 'lib/ingest/**', 'lib/curation/**'],
     ignores: [
       '**/__tests__/**',
       'lib/curation/actions.ts',
       'lib/curation/policy.ts',
       'lib/curation/resolutions.ts',
+      'lib/curation/series-form.ts',
       'lib/curation/auth.ts',
       'lib/curation/auth/**',
     ],

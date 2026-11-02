@@ -1,0 +1,177 @@
+/* #150's Series screen and a series' page, on the curator's tokens
+   (app/curation/curator.module.css, whose custom properties .page sets in
+   every theme), so the five themes need nothing here. States are text,
+   never color alone. Every control is at least 44 px (contract rule 5),
+   hover applies only under a fine pointer (rule 3), and nothing here clips
+   a focus ring: no container scrolls or hides overflow. */
+
+.body {
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 2rem var(--site-gutter) 3rem;
+}
+
+.body h1 {
+  margin: 0;
+  font-family: var(--gah-font-sans);
+  font-size: clamp(1.625rem, 2.4vw, 2.125rem);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.lead {
+  max-width: 62ch;
+  margin: 0.5rem 0 0;
+  color: var(--gah-ink-soft);
+  text-wrap: pretty;
+}
+
+/* The list, then New series beside it where there's room. The DOM has the list first, which is the phone's order too. */
+.layout {
+  display: grid;
+  gap: 1.5rem;
+  margin-top: 1.5rem;
+}
+
+@media (min-width: 900px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr) minmax(18rem, 26rem);
+    align-items: start;
+  }
+}
+
+.list {
+  min-width: 0;
+}
+
+.rows {
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--curator-rule);
+  list-style: none;
+}
+
+.row {
+  padding: 0.375rem 0 0.75rem;
+  border-bottom: 1px solid var(--curator-rule);
+}
+
+.rowLink {
+  display: inline-flex;
+  min-width: 44px;
+  min-height: 44px;
+  align-items: center;
+  color: var(--gah-ink);
+  font-size: 1.0625rem;
+  text-decoration: underline;
+  text-decoration-color: var(--gah-rule-strong);
+  text-underline-offset: 0.2em;
+  overflow-wrap: anywhere;
+}
+
+.rowMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.875rem;
+  margin: 0;
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}
+
+.tag {
+  padding: 0 0.4rem;
+  border: 1px solid var(--gah-rule-strong);
+  border-radius: var(--gah-radius);
+  color: var(--gah-ink-soft);
+}
+
+.empty,
+.unreadable {
+  margin: 0;
+  color: var(--gah-ink-soft);
+}
+
+.unreadable {
+  margin-top: 1rem;
+  font-size: var(--gah-type-label);
+}
+
+/* New series' box sits level with the list's first rule. */
+.newSeries {
+  margin-top: 0;
+}
+
+/* A series' page: the way back, the heading, its facts, then the form, one readable column. */
+.detail {
+  max-width: 44rem;
+}
+
+.back {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.75rem;
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
+}
+
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.25rem;
+  margin: 0.75rem 0 0;
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}
+
+.facts div {
+  display: flex;
+  gap: 0.375rem;
+}
+
+.facts dt {
+  color: var(--gah-ink-muted);
+}
+
+.facts dd {
+  margin: 0;
+  color: var(--gah-ink-soft);
+  overflow-wrap: anywhere;
+}
+
+/* A hint under a field it isn't inside the label of, clear of that field's focus ring. */
+p.clear {
+  margin-top: calc(var(--focus-ring-width) + var(--focus-ring-offset) + 0.25rem);
+}
+
+/* About a dozen lines, as a statement runs, and the curator can make it taller. */
+textarea.statement {
+  min-height: 12rem;
+}
+
+.visibility {
+  margin-top: 1rem;
+  padding-bottom: 0.25rem;
+}
+
+.choice + .choice {
+  border-top: 1px solid var(--curator-rule);
+}
+
+/* Under its choice, in line with the label's text, clear of the radio's ring. */
+.choiceHint {
+  margin: 0;
+  padding: 0 0.625rem 0.5rem calc(0.625rem + 1.25rem);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .rowLink:hover,
+  .back:hover {
+    color: var(--gah-ink);
+    text-decoration-color: currentcolor;
+  }
+}

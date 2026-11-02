@@ -1,10 +1,10 @@
 import Link from 'next/link';
-import { FileCheck2, Inbox } from 'lucide-react';
+import { FileCheck2, GalleryVerticalEnd, Inbox } from 'lucide-react';
 import SameOriginPostForm from '@/components/site/SameOriginPostForm';
 import ThemeMenu from '@/components/ThemeMenu';
 import styles from './curator.module.css';
 
-export type CuratorScreen = 'inbox' | 'publish';
+export type CuratorScreen = 'inbox' | 'series' | 'publish';
 
 interface CuratorHeaderProps {
     active: CuratorScreen;
@@ -14,10 +14,10 @@ interface CuratorHeaderProps {
 
 /**
  * The curator's header, from the approved Gallery After Hours mockup
- * (`CuratorHeader`): "Portfolio curation" back to the site, the Inbox and
- * "Preview & publish" screens, and where the data lives, plus 14-2b's Sign
- * out. #14's Inbox renders
- * it first, and #16's Publish screen reuses it with `active="publish"`.
+ * (`CuratorHeader`): "Portfolio curation" back to the site, the Inbox, #150's
+ * Series and "Preview & publish" screens, and where the data lives, plus
+ * 14-2b's Sign out. #14's Inbox renders it first, and #16's Publish screen
+ * and #150's Series screen reuse it with `active="publish"` and `"series"`.
  */
 export default function CuratorHeader({ active, publishHref }: CuratorHeaderProps) {
     return (
@@ -32,6 +32,10 @@ export default function CuratorHeader({ active, publishHref }: CuratorHeaderProp
                 <Link href="/curation/inbox" className={styles.screen} aria-current={active === 'inbox' ? 'page' : undefined}>
                     <Inbox size={16} aria-hidden="true" />
                     Inbox
+                </Link>
+                <Link href="/curation/series" className={styles.screen} aria-current={active === 'series' ? 'page' : undefined}>
+                    <GalleryVerticalEnd size={16} aria-hidden="true" />
+                    Series
                 </Link>
                 {publishHref ? (
                     <Link href={publishHref} className={styles.screen} aria-current={active === 'publish' ? 'page' : undefined}>

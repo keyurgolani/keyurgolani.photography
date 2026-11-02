@@ -79,8 +79,8 @@ export const editsDir = (root: string) => path.join(/*turbopackIgnore: true*/ ro
 // `photos carry-over`'s marker is the tools' too: the writer keeps it, and refuses one added by hand.
 const HIDDEN = new Set<string>([...MANAGED_FIELDS, 'stamp', 'carryOver']);
 
-/** What the owner edits: the record without its managed fields and stamp. */
-function editable(record: object): Record<string, unknown> {
+/** What the owner edits: the record without its managed fields and stamp. The curator's Series screen edits the same (#150). */
+export function editable(record: object): Record<string, unknown> {
     return Object.fromEntries(Object.entries(record).filter(([key]) => !HIDDEN.has(key)));
 }
 
@@ -89,8 +89,8 @@ export function slugFor(id: string): string {
     return id.slice('ser_'.length).replace(/[_-]+/g, '-').replace(/^-|-$/g, '');
 }
 
-/** The text a new series opens with: a draft with every field the owner fills in. */
-function newSeries(id: string): Record<string, unknown> {
+/** The text a new series opens with: a draft with every field the owner fills in. The curator's New series starts from it too (#150). */
+export function newSeries(id: string): Record<string, unknown> {
     return { kind: 'series', id, slug: slugFor(id), title: '', statement: '', shortStatement: '', photoIds: [], chapters: [], cover: null, visibility: 'draft' };
 }
 
@@ -108,9 +108,10 @@ const TEXT_FIELDS: Record<AuthoredKind, Record<string, TextRule>> = {
 /**
  * Run the edit's public text through plainText(), storing what it returns.
  * Non-string values are left for the schema. Returns the problems, field by
- * field, or none.
+ * field, or none, each starting with the field's name. The curator's Series
+ * screen cleans its text with it too, so both store the same text (#150).
  */
-function checkText(record: Record<string, unknown>, kind: AuthoredKind): string[] {
+export function checkText(record: Record<string, unknown>, kind: AuthoredKind): string[] {
     const problems: string[] = [];
     const check = (value: unknown, field: string, rule: TextRule, store: (text: string) => void) => {
         if (typeof value !== 'string') return;

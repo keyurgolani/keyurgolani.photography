@@ -83,7 +83,9 @@
  *     root, with the command that commits it. Exits 0 when saved or
  *     unchanged, 1 when the edit or the record can't be used, 2 on a usage
  *     error, 3 when the record isn't at the version the edit started from or
- *     the authored lock stays busy, and 4 for I/O.
+ *     the authored lock stays busy, and 4 for I/O. The curator's Series
+ *     screen makes a series and edits its title, statements and visibility
+ *     the same way (docs/curator.md).
  *
  *   npx tsx scripts/photos.ts sequence <command> <seriesId> ...
  *   npx tsx scripts/photos.ts series order <seriesId>...
