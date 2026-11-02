@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import ResponsivePhoto from '@/components/ResponsivePhoto';
 // Types only: the projection modules pull node:crypto in through lib/media/url.ts, which must stay out of the client bundle.
 import type { WorkCover } from '@/lib/catalog/projections/work';
+import { COVER_SIZES, type CoverSpan } from './coverSizes';
 import styles from './SeriesCatalog.module.css';
 
 export interface WorkCoverImageProps {
@@ -11,10 +12,9 @@ export interface WorkCoverImageProps {
     cover: WorkCover | null;
     /** The first cover: load at once at high priority, preloaded from the head, instead of lazily. */
     eager?: boolean;
+    /** Its entry's share of the row above 768 px (coverSpan()). */
+    span?: CoverSpan;
 }
-
-/** Wide entries take about 60% of the row above 768 px; below it every entry is full width. */
-export const COVER_SIZES = '(min-width: 768px) 60vw, 100vw';
 
 /**
  * A series cover in its reserved box on the dark ground, cropped around its
@@ -24,7 +24,7 @@ export const COVER_SIZES = '(min-width: 768px) 60vw, 100vw';
  * the mount check looks too. An empty currentSrc means a lazy image that
  * hasn't started, which isn't a failure.
  */
-export default function WorkCoverImage({ cover, eager = false }: WorkCoverImageProps) {
+export default function WorkCoverImage({ cover, eager = false, span = 'wide' }: WorkCoverImageProps) {
     const image = useRef<HTMLImageElement>(null);
     const [failed, setFailed] = useState(false);
 
@@ -51,7 +51,7 @@ export default function WorkCoverImage({ cover, eager = false }: WorkCoverImageP
                 ref={image}
                 asset={cover}
                 alt=""
-                sizes={COVER_SIZES}
+                sizes={COVER_SIZES[span]}
                 loading={eager ? 'eager' : 'lazy'}
                 fetchPriority={eager ? 'high' : undefined}
                 preload={eager}
