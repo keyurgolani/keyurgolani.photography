@@ -1,4 +1,4 @@
-import { checkText, editable, newSeries } from '../catalog/edit-record';
+import { checkText, editable, newSeries } from '../catalog/edit-fields';
 import { MAX_SLUG_LENGTH, RESERVED_SLUGS, REVISION_ID_RE, SERIES_ID_RE, SLUG_RE } from '../catalog/schema';
 import type { AuthoredSeries, AuthoredSeriesInput } from '../catalog/types';
 import { readActivePointer, readAuthoredRecord, readAuthoredSeries, RecordUnusableError } from '../catalog/working-layer';
@@ -29,7 +29,7 @@ import {
  * app/curation/series/actions.ts calls runSeriesAction() only after
  * requireCurator() lets the request in.
  *
- * New series opens from edit-record.ts's newSeries(), as `photos edit
+ * New series opens from edit-fields.ts's newSeries(), as `photos edit
  * <seriesId>` does for a series with no record, with the title the curator
  * typed. Its ID and slug come from the web address typed, or from the
  * title, made unique among every series' slugs and old slugs, and its ID
@@ -40,7 +40,7 @@ import {
  * photograph and the chapters are 2b's, and the photographs and the
  * carry-over marker are never the form's, so whatever else a form sends is
  * not read. Both forms clean those three texts, and only those, with
- * edit-record.ts's checkText(), so the curator and the CLI store the same
+ * edit-fields.ts's checkText(), so the curator and the CLI store the same
  * text and the chapters stay as `photos sequence` stored them. Both save
  * with writeAuthoredRecord() under the version the page showed, so a series
  * that moved since is `stale` and nothing is written.
