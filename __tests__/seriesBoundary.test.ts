@@ -98,14 +98,14 @@ describe('New series and Save at the curator boundary (#150)', { timeout: 60_000
     /** New series, from the Series screen. */
     async function creatable() {
         const dataRoot = await root();
-        return { root: dataRoot, pathname: '/curation/series', form: () => formOf({ title: 'Night ferries' }), action: createSeries, kind: 'create' };
+        return { root: dataRoot, pathname: '/curation/series', form: () => formOf({ base: 'none', title: 'Night ferries' }), action: createSeries, kind: 'create' };
     }
 
     /** A rename, from the series' page, at the version it shows. */
     async function editable() {
         const dataRoot = await root();
         const record = (await readAuthoredRecord(dataRoot, 'series', SERIES))!;
-        const fields = { seriesId: SERIES, version: String(record.version), title: 'Harbor at first light', statement: record.statement, shortStatement: record.shortStatement, visibility: record.visibility };
+        const fields = { seriesId: SERIES, version: String(record.version), base: 'none', title: 'Harbor at first light', statement: record.statement, shortStatement: record.shortStatement, visibility: record.visibility };
         return { root: dataRoot, pathname: `/curation/series/${SERIES}`, form: () => formOf(fields), action: saveSeries, kind: 'edit' };
     }
 

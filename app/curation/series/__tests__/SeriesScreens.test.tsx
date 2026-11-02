@@ -22,6 +22,8 @@ const { default: SeriesList } = await import('../SeriesList');
 const { default: NewSeriesForm } = await import('../NewSeriesForm');
 const { default: SeriesEditForm } = await import('../SeriesEditForm');
 
+const LIVE = `rev_${'b'.repeat(64)}`;
+
 beforeEach(() => {
     sent.forms = [];
     sent.answer = null;
@@ -86,18 +88,19 @@ describe('the series list', () => {
 
 describe('New series', () => {
     it('sends the title and the web address, and labels both', async () => {
-        render(<NewSeriesForm />);
+        render(<NewSeriesForm activeRevisionId={LIVE} />);
         fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Night ferries' } });
         fireEvent.change(screen.getByLabelText(/Web address/), { target: { value: 'ferries-at-night' } });
         await submit(screen.getByRole('button', { name: 'Make series' }));
-        expect(sent.forms).toEqual([{ action: 'create', fields: { title: 'Night ferries', slug: 'ferries-at-night' } }]);
-        expect(screen.getByLabelText('Title')).toHaveAttribute('maxLength', '200');
+        expect(sent.forms).toEqual([{ action: 'create', fields: { base: LIVE, title: 'Night ferries', slug: 'ferries-at-night' } }]);
+        // The server counts a title's characters by code point, so the field doesn't cut it short by UTF-16 units.
+        expect(screen.getByLabelText('Title')).not.toHaveAttribute('maxLength');
         expect(screen.getByLabelText(/Web address/)).toHaveAccessibleDescription(/Leave it empty to make one from the title/);
     });
 
     it('announces a made series with a way to open it, takes focus there, and empties the form', async () => {
         sent.answer = answer('done', 'create', 'Made Night ferries, a draft. Nothing is public until you publish.', { seriesId: 'ser_night-ferries', href: '/curation/series/ser_night-ferries', title: 'Night ferries' });
-        render(<NewSeriesForm />);
+        render(<NewSeriesForm activeRevisionId={LIVE} />);
         fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Night ferries' } });
         await submit(screen.getByRole('button', { name: 'Make series' }));
         const status = screen.getByRole('status');
@@ -109,7 +112,7 @@ describe('New series', () => {
 
     it('shows a refusal by the field it is about, marks the field, and moves focus to it', async () => {
         sent.answer = answer('invalid', 'create', 'Another series has that web address already. Choose another. Nothing was written.', { field: 'slug', seriesId: null });
-        render(<NewSeriesForm />);
+        render(<NewSeriesForm activeRevisionId={LIVE} />);
         fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Night ferries' } });
         fireEvent.change(screen.getByLabelText(/Web address/), { target: { value: 'harbor' } });
         await submit(screen.getByRole('button', { name: 'Make series' }));
@@ -124,7 +127,7 @@ describe('New series', () => {
 
     it('announces a busy answer in its region, and focuses it', async () => {
         sent.answer = answer('busy', 'create', 'Another change is being written right now, so nothing was written. Try again in a moment.', { seriesId: null });
-        render(<NewSeriesForm />);
+        render(<NewSeriesForm activeRevisionId={LIVE} />);
         fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Night ferries' } });
         await submit(screen.getByRole('button', { name: 'Make series' }));
         const status = screen.getByRole('status');
@@ -137,7 +140,7 @@ describe('New series', () => {
         sent.hold = new Promise<void>((resolve) => {
             release = resolve;
         });
-        render(<NewSeriesForm />);
+        render(<NewSeriesForm activeRevisionId={LIVE} />);
         fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Night ferries' } });
         const button = screen.getByRole('button', { name: 'Make series' });
         button.focus();
@@ -155,7 +158,7 @@ describe('New series', () => {
 
 describe("a series' page", () => {
     it('opens on what the series holds, and sends every field with the version the page showed', async () => {
-        render(<SeriesEditForm detail={detail()} />);
+        render(<SeriesEditForm activeRevisionId={LIVE} detail={detail()} />);
         expect(screen.getByLabelText('Title')).toHaveValue('Harbor');
         expect(screen.getByLabelText('Statement')).toHaveValue('The harbor before the ferries.\n\nA second paragraph.');
         expect(screen.getByLabelText('Short statement')).toHaveValue('The harbor before the ferries.');
@@ -168,29 +171,43 @@ describe("a series' page", () => {
         expect(sent.forms).toEqual([
             {
                 action: 'edit',
-                fields: { seriesId: 'ser_harbor', version: '4', title: 'Harbor at first light', statement: 'The harbor before the ferries.\n\nA second paragraph.', shortStatement: 'The harbor before the ferries.', visibility: 'hidden' },
+                fields: { seriesId: 'ser_harbor', version: '4', base: LIVE, title: 'Harbor at first light', statement: 'The harbor before the ferries.\n\nA second paragraph.', shortStatement: 'The harbor before the ferries.', visibility: 'hidden' },
             },
         ]);
         // Nothing the 2b ordering owns, nor the photographs or the carry-over marker, is a field here.
         for (const name of ['photoIds', 'cover', 'chapters', 'openingPhotoId', 'carryOver', 'slug']) expect(document.querySelector(`[name="${name}"]`), name).toBeNull();
     });
 
-    it('caps each field at its limit and labels each one', () => {
-        render(<SeriesEditForm detail={detail()} />);
-        expect(screen.getByLabelText('Title')).toHaveAttribute('maxLength', '200');
-        expect(screen.getByLabelText('Statement')).toHaveAttribute('maxLength', '2000');
-        expect(screen.getByLabelText('Short statement')).toHaveAttribute('maxLength', '500');
+    it("leaves each field's limit to the server, which counts code points, and labels each one", () => {
+        render(<SeriesEditForm activeRevisionId={LIVE} detail={detail()} />);
+        for (const label of ['Title', 'Statement', 'Short statement']) expect(screen.getByLabelText(label), label).not.toHaveAttribute('maxLength');
         expect(screen.getByLabelText('Short statement')).toHaveAccessibleDescription(/Work/);
     });
 
+    it('sends no live revision for a draft that was never published', async () => {
+        render(<SeriesEditForm activeRevisionId={null} detail={detail()} />);
+        await submit(screen.getByRole('button', { name: 'Save' }));
+        expect(sent.forms[0].fields.base).toBe('none');
+    });
+
+    it('announces a refused visibility on the chosen radio, and moves focus to it', async () => {
+        sent.answer = answer('invalid', 'edit', 'Choose Published, Draft or Hidden. Nothing was written.', { field: 'visibility' });
+        render(<SeriesEditForm activeRevisionId={LIVE} detail={detail({ visibility: 'hidden' })} />);
+        await submit(screen.getByRole('button', { name: 'Save' }));
+        const chosen = screen.getByRole('radio', { name: /Hidden/ });
+        expect(chosen).toHaveFocus();
+        expect(chosen).toHaveAccessibleDescription(/Choose Published, Draft or Hidden/);
+        expect(screen.getByRole('radiogroup', { name: 'Visibility' })).toHaveAttribute('aria-invalid', 'true');
+    });
+
     it("says a carried-over series is one, and what a statement does to that", () => {
-        render(<SeriesEditForm detail={detail({ title: 'Gallery', carriedOver: true, statement: '', shortStatement: '' })} />);
+        render(<SeriesEditForm activeRevisionId={LIVE} detail={detail({ title: 'Gallery', carriedOver: true, statement: '', shortStatement: '' })} />);
         expect(screen.getByText(/carried over from the legacy Gallery/)).toBeInTheDocument();
     });
 
     it('answers a stale form with a way to refresh, and focuses the answer', async () => {
         sent.answer = answer('stale', 'edit', 'This series changed since the page loaded, so nothing was written. Refresh to see what it holds now, and edit it again.');
-        render(<SeriesEditForm detail={detail()} />);
+        render(<SeriesEditForm activeRevisionId={LIVE} detail={detail()} />);
         await submit(screen.getByRole('button', { name: 'Save' }));
         const status = screen.getByRole('status');
         expect(status.querySelector('[data-state="stale"]')).toHaveTextContent('This series changed since the page loaded');
@@ -200,7 +217,7 @@ describe("a series' page", () => {
 
     it('shows a refused field by the field, and moves focus to it', async () => {
         sent.answer = answer('invalid', 'edit', "The short statement has a line break, which it can't hold. Nothing was written.", { field: 'shortStatement' });
-        render(<SeriesEditForm detail={detail()} />);
+        render(<SeriesEditForm activeRevisionId={LIVE} detail={detail()} />);
         await submit(screen.getByRole('button', { name: 'Save' }));
         const field = screen.getByLabelText('Short statement');
         expect(field).toHaveAttribute('aria-invalid', 'true');
@@ -211,11 +228,11 @@ describe("a series' page", () => {
 
     it('announces a save, and focuses the answer once the refreshed form is in', async () => {
         sent.answer = answer('done', 'edit', 'Saved to the draft. Nothing is public until you publish.');
-        const { rerender } = render(<SeriesEditForm detail={detail()} />);
+        const { rerender } = render(<SeriesEditForm activeRevisionId={LIVE} detail={detail()} />);
         fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Harbor at first light' } });
         await submit(screen.getByRole('button', { name: 'Save' }));
         // The page's refresh brings the next version, which the form opens on.
-        rerender(<SeriesEditForm detail={detail({ version: 5, title: 'Harbor at first light' })} />);
+        rerender(<SeriesEditForm activeRevisionId={LIVE} detail={detail({ version: 5, title: 'Harbor at first light' })} />);
         const status = screen.getByRole('status');
         expect(status).toHaveTextContent('Saved to the draft. Nothing is public until you publish.');
         expect(status).toHaveFocus();

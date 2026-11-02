@@ -6,12 +6,21 @@ import styles from '../curator.module.css';
 import { saveSeries } from './actions';
 import SeriesAnswer from './SeriesAnswer';
 import series from './series.module.css';
-import { IDLE_SERIES, NOTHING_PUBLIC, SERIES_LIMITS, VISIBILITIES, VISIBILITY_HINT, VISIBILITY_LABEL, type SeriesActionState, type SeriesDetail, type SeriesField } from '@/lib/curation/series-view';
+import { IDLE_SERIES, NOTHING_PUBLIC, VISIBILITIES, VISIBILITY_HINT, VISIBILITY_LABEL, type SeriesActionState, type SeriesDetail, type SeriesField } from '@/lib/curation/series-view';
 
 /** What the submit button says while an action is out: unavailable, but focusable still (#1's focus contract). */
 const offWhile = (pending: boolean) => ({ 'aria-disabled': pending || undefined, 'data-off': pending ? 'true' : undefined });
 
-type Refs = Record<'title' | 'statement' | 'shortStatement' | 'visibility', RefObject<HTMLInputElement | HTMLTextAreaElement | null>>;
+type Refs = Record<'title' | 'statement' | 'shortStatement', RefObject<HTMLInputElement | HTMLTextAreaElement | null>> & { visibility: RefObject<HTMLFieldSetElement | null> };
+
+/** What takes focus for a refusal about `field`: the field, or for visibility the chosen radio, else the first. */
+function focusTarget(refs: Refs, field: SeriesField): HTMLElement | null {
+    if (field === 'visibility') {
+        const group = refs.visibility.current;
+        return group?.querySelector<HTMLInputElement>('input:checked') ?? group?.querySelector<HTMLInputElement>('input') ?? null;
+    }
+    return field === 'slug' ? null : refs[field].current;
+}
 
 /** The answer's words when it's about `name`, shown by that field. */
 const errorFor = (state: SeriesActionState, name: SeriesField) => (state.status === 'invalid' && state.field === name ? state.message : null);
@@ -21,7 +30,7 @@ const errorFor = (state: SeriesActionState, name: SeriesField) => (state.status 
  * version, so the refresh after a save opens them on what was stored, the
  * text as the cleaning left it.
  */
-function Fields({ detail, state, refs }: { detail: SeriesDetail; state: SeriesActionState; refs: Refs }) {
+function Fields({ detail, activeRevisionId, state, refs }: { detail: SeriesDetail; activeRevisionId: string | null; state: SeriesActionState; refs: Refs }) {
     const [shortStatement, setShortStatement] = useState(detail.shortStatement);
     const titleError = errorFor(state, 'title');
     const statementError = errorFor(state, 'statement');
@@ -29,9 +38,10 @@ function Fields({ detail, state, refs }: { detail: SeriesDetail; state: SeriesAc
     const visibilityError = errorFor(state, 'visibility');
     return (
         <>
-            {/* The series and the version the page showed, which the save checks under the lock. */}
+            {/* The series, the version and the live revision the page showed, which the save checks under the lock. */}
             <input type="hidden" name="seriesId" value={detail.id} />
             <input type="hidden" name="version" value={detail.version} />
+            <input type="hidden" name="base" value={activeRevisionId ?? 'none'} />
             <label className={styles.label}>
                 Title
                 <input
@@ -39,7 +49,6 @@ function Fields({ detail, state, refs }: { detail: SeriesDetail; state: SeriesAc
                     className={styles.control}
                     name="title"
                     defaultValue={detail.title}
-                    maxLength={SERIES_LIMITS.title}
                     autoComplete="off"
                     aria-invalid={titleError ? true : undefined}
                     aria-describedby={titleError ? 'series-title-error' : undefined}
@@ -61,7 +70,6 @@ function Fields({ detail, state, refs }: { detail: SeriesDetail; state: SeriesAc
                 className={`${styles.control} ${series.statement}`}
                 name="statement"
                 defaultValue={detail.statement}
-                maxLength={SERIES_LIMITS.statement}
                 aria-invalid={statementError ? true : undefined}
                 aria-describedby={statementError ? 'series-statement-error series-statement-hint' : 'series-statement-hint'}
             />
@@ -84,7 +92,6 @@ function Fields({ detail, state, refs }: { detail: SeriesDetail; state: SeriesAc
                 className={styles.control}
                 name="shortStatement"
                 value={shortStatement}
-                maxLength={SERIES_LIMITS.shortStatement}
                 onKeyDown={(event) => {
                     if (event.key === 'Enter' && !event.nativeEvent.isComposing) event.preventDefault();
                 }}
@@ -100,18 +107,25 @@ function Fields({ detail, state, refs }: { detail: SeriesDetail; state: SeriesAc
             <p className={`${styles.hint} ${series.clear}`} id="series-short-hint">
                 A sentence or two, with no line break: the series&apos; line on Work, and its description in search results.
             </p>
-            <fieldset className={`${styles.sequence} ${series.visibility}`} role="radiogroup" aria-labelledby="series-visibility-legend" aria-describedby={visibilityError ? 'series-visibility-error' : undefined}>
+            <fieldset
+                ref={refs.visibility}
+                className={`${styles.sequence} ${series.visibility}`}
+                role="radiogroup"
+                aria-labelledby="series-visibility-legend"
+                aria-invalid={visibilityError ? true : undefined}
+                aria-describedby={visibilityError ? 'series-visibility-error' : undefined}
+            >
                 <legend id="series-visibility-legend">Visibility</legend>
-                {VISIBILITIES.map((value, index) => (
+                {VISIBILITIES.map((value) => (
                     <div key={value} className={series.choice}>
                         <label className={styles.slot}>
                             <input
-                                ref={index === 0 ? (refs.visibility as RefObject<HTMLInputElement | null>) : undefined}
                                 type="radio"
                                 name="visibility"
                                 value={value}
                                 defaultChecked={detail.visibility === value}
-                                aria-describedby={`series-visibility-${value}`}
+                                // The refusal first, so the radio that takes focus reads it out.
+                                aria-describedby={visibilityError ? `series-visibility-error series-visibility-${value}` : `series-visibility-${value}`}
                             />
                             {VISIBILITY_LABEL[value]}
                         </label>
@@ -135,7 +149,7 @@ function Fields({ detail, state, refs }: { detail: SeriesDetail; state: SeriesAc
  * saved to the draft through `photos edit`'s path with the version the page
  * showed. A series that moved since answers refresh, and nothing is written.
  */
-export default function SeriesEditForm({ detail }: { detail: SeriesDetail }) {
+export default function SeriesEditForm({ detail, activeRevisionId }: { detail: SeriesDetail; activeRevisionId: string | null }) {
     const [state, dispatch, pending] = useActionState(saveSeries, IDLE_SERIES);
     const refs: Refs = { title: useRef(null), statement: useRef(null), shortStatement: useRef(null), visibility: useRef(null) };
     const answerRef = useRef<HTMLDivElement>(null);
@@ -149,8 +163,7 @@ export default function SeriesEditForm({ detail }: { detail: SeriesDetail }) {
     // Each answer is a new state, so this runs once for each: the field it's about takes focus, or the answer does.
     useEffect(() => {
         if (state.status === 'idle') return;
-        const field = state.field ? refs[state.field as keyof Refs] : undefined;
-        (field?.current ?? answerRef.current)?.focus();
+        ((state.field ? focusTarget(refs, state.field) : null) ?? answerRef.current)?.focus();
         // The refs are stable; only a new answer moves focus.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [state]);
@@ -162,7 +175,7 @@ export default function SeriesEditForm({ detail }: { detail: SeriesDetail }) {
                 </p>
             ) : null}
             <form method="post" onSubmit={submit} aria-label="Edit series">
-                <Fields key={detail.version} detail={detail} state={state} refs={refs} />
+                <Fields key={detail.version} detail={detail} activeRevisionId={activeRevisionId} state={state} refs={refs} />
                 <p className={styles.hint}>Saving changes the draft only. {NOTHING_PUBLIC}</p>
                 <div className={styles.actions}>
                     <button type="submit" className={`${styles.button} ${styles.primary}`} {...offWhile(pending)}>

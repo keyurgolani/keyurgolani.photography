@@ -6,7 +6,7 @@ import styles from '../curator.module.css';
 import { createSeries } from './actions';
 import SeriesAnswer from './SeriesAnswer';
 import series from './series.module.css';
-import { IDLE_SERIES, NOTHING_PUBLIC, SERIES_LIMITS, SLUG_HINT } from '@/lib/curation/series-view';
+import { IDLE_SERIES, NOTHING_PUBLIC, SLUG_HINT } from '@/lib/curation/series-view';
 
 /** What the submit button says while an action is out: unavailable, but focusable still (#1's focus contract). */
 const offWhile = (pending: boolean) => ({ 'aria-disabled': pending || undefined, 'data-off': pending ? 'true' : undefined });
@@ -16,9 +16,10 @@ const offWhile = (pending: boolean) => ({ 'aria-disabled': pending || undefined,
  * one other than the title's. The server makes the series a draft from
  * `photos edit`'s newSeries(), so nothing is public until a publish. A made
  * series empties the form and the answer links to its page; a refusal about
- * a field shows by it, keeping what was typed.
+ * a field shows by it, keeping what was typed. The form carries the live
+ * revision the page showed, so a publish since answers refresh.
  */
-export default function NewSeriesForm() {
+export default function NewSeriesForm({ activeRevisionId }: { activeRevisionId: string | null }) {
     const [state, dispatch, pending] = useActionState(createSeries, IDLE_SERIES);
     const formRef = useRef<HTMLFormElement>(null);
     const titleRef = useRef<HTMLInputElement>(null);
@@ -50,13 +51,13 @@ export default function NewSeriesForm() {
             </h2>
             <p className={styles.hint}>It starts as a draft with no photographs. {NOTHING_PUBLIC}</p>
             <form ref={formRef} method="post" onSubmit={submit} aria-labelledby="new-series-heading">
+                <input type="hidden" name="base" value={activeRevisionId ?? 'none'} />
                 <label className={styles.label}>
                     Title
                     <input
                         ref={titleRef}
                         className={styles.control}
                         name="title"
-                        maxLength={SERIES_LIMITS.title}
                         autoComplete="off"
                         aria-invalid={titleError ? true : undefined}
                         aria-describedby={titleError ? 'new-series-title-error' : undefined}
@@ -73,6 +74,7 @@ export default function NewSeriesForm() {
                         ref={slugRef}
                         className={styles.control}
                         name="slug"
+                        // A web address is ASCII, so UTF-16 units are its characters; anything else is refused anyway.
                         maxLength={64}
                         autoComplete="off"
                         autoCapitalize="none"

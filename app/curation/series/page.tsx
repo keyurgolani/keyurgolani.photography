@@ -45,7 +45,7 @@ export default async function SeriesPage() {
                     <p className={series.lead}>Every series in the draft, in Work order and then by title. What you change here changes the draft. {NOTHING_PUBLIC}</p>
                     <div className={series.layout}>
                         <SeriesList rows={screen.rows} unreadable={screen.unreadable} />
-                        <NewSeriesForm />
+                        <NewSeriesForm activeRevisionId={screen.activeRevisionId} />
                     </div>
                 </main>
             )}

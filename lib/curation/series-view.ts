@@ -1,5 +1,3 @@
-import { FIELD_LIMITS } from '../catalog/plain-text';
-
 /**
  * #150's 2a: what the curator's Series screen and a series' page show, and
  * the answers their forms get back, in the page's words. Client-safe: the
@@ -73,9 +71,6 @@ export type SeriesActionState =
       };
 
 export const IDLE_SERIES: SeriesActionState = { status: 'idle' };
-
-/** The import's caps on each field (lib/catalog/plain-text.ts), which `photos edit` holds the same text to. */
-export const SERIES_LIMITS = { title: FIELD_LIMITS.title, statement: FIELD_LIMITS.statement, shortStatement: FIELD_LIMITS.shortStatement } as const;
 
 /** How the page names a field in an answer. */
 export const FIELD_LABEL: Record<'title' | 'statement' | 'shortStatement', string> = { title: 'The title', statement: 'The statement', shortStatement: 'The short statement' };

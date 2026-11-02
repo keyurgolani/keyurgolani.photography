@@ -73,7 +73,7 @@ export default async function SeriesDetailPage({ params }: SeriesDetailPageProps
                             <dd>{loaded.detail.inWorkOrder ? 'Listed' : 'Not listed'}</dd>
                         </div>
                     </dl>
-                    <SeriesEditForm detail={loaded.detail} />
+                    <SeriesEditForm detail={loaded.detail} activeRevisionId={loaded.activeRevisionId} />
                 </main>
             )}
         </div>
