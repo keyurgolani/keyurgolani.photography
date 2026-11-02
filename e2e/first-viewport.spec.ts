@@ -87,7 +87,7 @@ type Policy = { api: number; lead: Record<Profile, number>; rest: Record<Profile
 const POLICY: Record<Screen, Policy> = {
     // 100vw: 1280 px, or 412 px at 2.625. The opening, then the next once it shows: two at most.
     home: { images: 2, api: 1, lead: { desktop: 1920, phone: 1200 }, rest: { desktop: 1920, phone: 1200 } },
-    // 60vw above 768 px, else 100vw. Only covers near the first viewport, never the hundred.
+    // 59vw for a wide entry and 42vw for a narrow one above 768 px, else 100vw. Only covers near the first viewport, never the hundred.
     work: { reach: true, api: 0, lead: { desktop: 800, phone: 1200 }, rest: { desktop: 800, phone: 1200 } },
     // The cover at its 82vh-capped width, then thumbnails at 20vw or 50vw, only near the first viewport.
     series: { reach: true, api: 0, lead: { desktop: 1200, phone: 1200 }, rest: { desktop: 400, phone: 800 } },

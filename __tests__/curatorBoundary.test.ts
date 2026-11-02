@@ -385,16 +385,17 @@ describe("next.config.mjs's curator headers", () => {
         expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
     });
 
-    it("keeps frame-ancestors in entries of their own, 'none' everywhere but #16's preview site", async () => {
+    it("keeps frame-ancestors in entries of their own, 'none' on the curator but #16's preview site, and 'self' site-wide before it", async () => {
         const entries = await nextConfig.headers!();
         const framing = entries.filter((entry) => entry.headers.some((header) => header.key === 'Content-Security-Policy'));
         expect(framing.length).toBeGreaterThan(0);
         for (const entry of framing) {
-            const value = entry.source.startsWith('/curation/preview/:draftId/site') ? "frame-ancestors 'self'" : "frame-ancestors 'none'";
+            const self = entry.source === '/:path*' || entry.source.startsWith('/curation/preview/:draftId/site');
+            const value = self ? "frame-ancestors 'self'" : "frame-ancestors 'none'";
             expect(entry.headers, entry.source).toEqual([{ key: 'Content-Security-Policy', value }]);
         }
         expect(framing.filter((entry) => entry.headers[0].value === "frame-ancestors 'self'").map((entry) => entry.source))
-            .toEqual(['/curation/preview/:draftId/site', '/curation/preview/:draftId/site/:path*']);
+            .toEqual(['/:path*', '/curation/preview/:draftId/site', '/curation/preview/:draftId/site/:path*']);
     });
 
     // Today no visitor or curator policy sends script-src, so the inline theme script runs unhashed (spec §7). The day
@@ -413,7 +414,8 @@ describe("next.config.mjs's curator headers", () => {
 
     it('holds the same values as lib/curation/auth/policy.ts', async () => {
         const entries = await nextConfig.headers!();
-        const curator = entries.filter((entry) => !entry.source.startsWith('/curation/preview/'));
+        // The site-wide entries (siteHeaders.test.ts) and #16's preview site aside.
+        const curator = entries.filter((entry) => entry.source !== '/:path*' && !entry.source.startsWith('/curation/preview/'));
         const sent = Object.fromEntries(curator.flatMap((entry) => entry.headers.map((header) => [header.key, header.value])));
         expect(sent).toEqual({ ...CURATOR_RESPONSE_HEADERS, ...CURATOR_FRAME_POLICY });
     });
@@ -440,7 +442,10 @@ describe("next.config.mjs's curator headers", () => {
         for (const pathname of ['/', '/gallery', '/api/photos']) {
             const response = await unstable_getResponseFromNextConfig({ url: `http://localhost:3000${pathname}`, nextConfig });
             expect(response.headers.get('x-robots-tag'), pathname).toBeNull();
-            expect(response.headers.get('content-security-policy'), pathname).toBeNull();
+            expect(response.headers.get('cache-control'), pathname).toBeNull();
+            expect(response.headers.get('referrer-policy'), pathname).toBe('strict-origin-when-cross-origin');
+            // The site's own framing policy, never the curator's 'none'.
+            expect(response.headers.get('content-security-policy'), pathname).toBe("frame-ancestors 'self'");
         }
     });
 });
