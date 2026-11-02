@@ -2,15 +2,21 @@
 import { describe, expect, it } from 'vitest';
 import { SOURCE_EXTENSIONS } from '../../identity/scan';
 import { FAILURE_REASONS } from '../events';
+import * as inboxView from '../inbox-view';
 import {
+    ARCHIVE_TAKEDOWN,
+    archiveQuestion,
     arrivalMessage,
+    bindAnswer,
     BIND_WAITING_NEXT,
+    CONFIRM_UNAVAILABLE,
     bindWaitingText,
     failureNotice,
     hasPublishedStatement,
     humanDate,
     humanTime,
     descriptionHint,
+    MISSING_HINT,
     DONE_ANSWER,
     fileParts,
     formStart,
@@ -415,6 +421,71 @@ describe('the action names', () => {
         expect(DEFER_LABEL).toBe('Decide later');
         expect(STATUS_LABELS.deferred).toBe('Left for later');
     });
+
+    it("are the mockup's for a replacement, and a missing source has none: it settles by Bind or Archive (#118)", () => {
+        expect(PRIMARY_ACTION.replacement).toBe('Confirm new asset revision');
+        expect(PRIMARY_ACTION.missing).toBeUndefined();
+    });
+});
+
+describe('confirm, bind and archive in the inbox (#118)', () => {
+    /** Every string the module exports, nested ones and the ones its functions make included. */
+    const words = (): string[] => {
+        const out: string[] = [];
+        const walk = (value: unknown) => {
+            if (typeof value === 'string') out.push(value);
+            else if (value && typeof value === 'object') for (const entry of Object.values(value)) walk(entry);
+        };
+        walk(Object.fromEntries(Object.entries(inboxView).filter(([, value]) => typeof value !== 'function')));
+        out.push(bindAnswer('harbor/landscape.jpg', true), bindAnswer('harbor/landscape.jpg', false), bindAnswer('harbor/landscape.jpg', null), archiveQuestion('landscape.jpg'));
+        return out;
+    };
+
+    it('never says an action is not in the inbox yet', () => {
+        for (const text of words()) expect(text).not.toMatch(/(isn't|aren't) in the inbox yet|until (it is|they are)/);
+    });
+
+    it("says what Decide later and Confirm each do on a replacement that was never confirmed", () => {
+        expect(REPLACEMENT_HINT.keeps).toBe('Decide later writes nothing, so the draft keeps the version it has. Confirm new asset revision puts the new version in the draft instead. Nothing is published until you publish.');
+    });
+
+    it('says why Confirm is unavailable, by what holds it back, with no ID or command', () => {
+        expect(CONFIRM_UNAVAILABLE).toEqual({
+            building: "Its new derivatives are still building. Confirm it once they're ready.",
+            failed: "Building the new version failed, so there's nothing ready to confirm. Choose Decide later to keep the current version.",
+            changed: 'The source changed again since this item opened, so a newer item reviews it.',
+            noRecord: "This photograph has no photo record in the draft yet, so there's no version for the new one to replace.",
+            unknown: "The identity registry can't be read, so the page can't tell whether the new version is ready.",
+        });
+        for (const text of Object.values(CONFIRM_UNAVAILABLE)) expect(text).not.toMatch(/\b(ph|evt|rev|ser)_|sha256-|--[a-z]|photos |curation /);
+    });
+
+    it('says what settles a missing source, and what waits while a bind does', () => {
+        expect(MISSING_HINT).toEqual({
+            open: 'Decide later keeps it here, and the published photograph stays as it is. To settle it, put the same file back in the library, bind it to the file that replaces it, or archive it.',
+            bindWaiting: "Bind and Archive wait until the watcher applies the bind on its next pass. Decide later keeps it here meanwhile.",
+            back: 'Its source is back in the library, so the watcher closes this item on its next pass. Decide later keeps it here meanwhile.',
+        });
+    });
+
+    it('calls Archive a public takedown at the next publish, plainly, before the reason and again at the second step', () => {
+        expect(ARCHIVE_TAKEDOWN).toBe("Archiving is a takedown. It takes this photograph out of every series in the draft now, and the next publish takes it off the public site. Copies already served can stay in browsers and caches for a while. Nothing is deleted, and reopening the item doesn't undo it.");
+        expect(archiveQuestion('landscape.jpg')).toBe('Archive landscape.jpg? The next publish takes it off the public site.');
+    });
+
+    it('answers a confirm and an archive in page words', () => {
+        expect(DONE_ANSWER.confirm).toBe('Confirmed the new version into the draft. Its series, position, title, description, and story stay as they were. Visitors keep the current one until you publish.');
+        expect(DONE_ANSWER.confirmedAlready).toBe("The draft already uses the new version, so nothing in it changed, and it's recorded as confirmed. Nothing is published until you publish.");
+        expect(DONE_ANSWER.archive).toBe("Archived. It's out of every series in the draft, and the next publish takes it off the public site. Visitors see it until then. Nothing was deleted.");
+    });
+
+    it('answers a bind as waiting for the watcher, never as done, naming the file it binds', () => {
+        const waiting = "Bind recorded, and waiting for the watcher. On its next pass, unless the file is still changing, it gives this photograph the file at harbor/landscape.jpg, and this item closes then. Refresh after it runs.";
+        expect(bindAnswer('harbor/landscape.jpg', true)).toBe(`${waiting} That file holds this photograph's own bytes, so nothing new needs confirming.`);
+        expect(bindAnswer('harbor/landscape.jpg', false)).toBe(`${waiting} A replacement item then opens for the new bytes: confirm it there once its derivatives are built. Visitors keep the current photograph until you publish.`);
+        expect(bindAnswer('harbor/landscape.jpg', null)).toBe(waiting);
+        for (const own of [true, false, null]) expect(bindAnswer('harbor/landscape.jpg', own)).not.toMatch(/^(Done|Bound)|\b(ph|evt)_|curation show/);
+    });
 });
 
 describe('dates', () => {
@@ -440,7 +511,7 @@ describe('a processing failure', () => {
             failure: code ? `Reason for ${code}.` : null,
             failureCode: code,
             status: 'failed',
-            can: { approve: false, edit: true, defer: true, dismiss: true, retry: false, reopen: false },
+            can: { approve: false, edit: true, defer: true, dismiss: true, retry: false, reopen: false, confirm: false, bind: false, archive: false },
             sourcePath: 'inbox/no-extension',
             ...overrides,
         });
@@ -453,7 +524,7 @@ describe('a processing failure', () => {
             expect(notice.next).toMatch(/Decide later keeps it here meanwhile\.$/);
         }
         // Retry or a good copy, never both: a copy is a new revision, which Retry would not read.
-        expect(failed('undecodable', { can: { approve: false, edit: true, defer: true, dismiss: true, retry: true, reopen: false } })!.next).toBe(
+        expect(failed('undecodable', { can: { approve: false, edit: true, defer: true, dismiss: true, retry: true, reopen: false, confirm: false, bind: false, archive: false } })!.next).toBe(
             "If the file opens, choose Retry processing. If it doesn't, put a good copy in its place in the library, which the watcher picks up as a new revision, then dismiss this one with a reason. Decide later keeps it here meanwhile.",
         );
         expect(failed('undecodable')!.next).not.toMatch(/Retry/);
@@ -478,12 +549,12 @@ describe('a processing failure', () => {
     });
 
     it('offers no next step once settled, and is nothing for any other item', () => {
-        expect(failed('unsupported-format', { status: 'dismissed', can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true } })).toEqual({ reason: 'Reason for unsupported-format.', next: null });
+        expect(failed('unsupported-format', { status: 'dismissed', can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true, confirm: false, bind: false, archive: false } })).toEqual({ reason: 'Reason for unsupported-format.', next: null });
         expect(failed('unsupported-format', { type: 'new' })).toBeNull();
     });
 
     it('shows no strip once the item is settled, dismissed or closed by the watcher', () => {
-        const settled = { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true };
+        const settled = { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true, confirm: false, bind: false, archive: false };
         expect(failed('unsupported-format', { status: 'dismissed', group: 'settled', can: settled })).toBeNull();
         // A failed build closed once its set built on a later try: no failure code, and nothing to warn about.
         expect(failed(null, { status: 'resolved', group: 'settled', can: settled })).toBeNull();

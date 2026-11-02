@@ -6,7 +6,8 @@ import { runInboxAction } from '@/lib/curation/inbox-form';
 import type { InboxActionKind, InboxActionState } from '@/lib/curation/inbox-view';
 
 /**
- * The inbox's server actions, one per 14-1 action. Each calls
+ * The inbox's server actions, one per 14-1 action, and #118's three for #17's
+ * resolutions: Confirm, Bind and Archive. Each calls
  * requireCurator() first, before it reads its arguments, so a request the
  * boundary refuses (the flag, the bind, the `Host`, or the `Origin`) gets a
  * 404 and writes nothing, however it was posted. Then the form goes to
@@ -49,4 +50,19 @@ export async function retryItem(_previous: InboxActionState, form: FormData): Pr
 export async function reopenItem(_previous: InboxActionState, form: FormData): Promise<InboxActionState> {
     await requireCurator();
     return settle('reopen', form);
+}
+
+export async function confirmItem(_previous: InboxActionState, form: FormData): Promise<InboxActionState> {
+    await requireCurator();
+    return settle('confirm', form);
+}
+
+export async function bindItem(_previous: InboxActionState, form: FormData): Promise<InboxActionState> {
+    await requireCurator();
+    return settle('bind', form);
+}
+
+export async function archiveItem(_previous: InboxActionState, form: FormData): Promise<InboxActionState> {
+    await requireCurator();
+    return settle('archive', form);
 }

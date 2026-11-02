@@ -4,7 +4,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCurationFixture } from '@/lib/curation/__tests__/curationFixtures';
 import { eventIdOf, eventKey } from '@/lib/curation/events';
 import { loadInbox } from '@/lib/curation/inbox';
-import { CONFIRM_UNAVAILABLE, humanTime, REPLACEMENT_HINT, type InboxActionState, type InboxDetail, type InboxItem, type InboxView, type SeriesOption } from '@/lib/curation/inbox-view';
+import {
+    ARCHIVE_TAKEDOWN,
+    archiveQuestion,
+    bindAnswer,
+    CONFIRM_UNAVAILABLE,
+    humanTime,
+    LIBRARY_PATH_HINT,
+    MISSING_HINT,
+    REPLACEMENT_HINT,
+    type InboxActionState,
+    type InboxDetail,
+    type InboxItem,
+    type InboxView,
+    type SeriesOption,
+} from '@/lib/curation/inbox-view';
 import { createCurationSink } from '@/lib/curation/sink';
 import { setDataDir } from '@/test/helpers/tempDataRoot';
 
@@ -24,7 +38,17 @@ vi.mock('../actions', () => {
         if (sent.hold) await sent.hold;
         return sent.answer ?? { status: 'done', action: action as 'approve', eventId: String(form.get('eventId')), message: 'Done.', serial: sent.forms.length };
     };
-    return { approveItem: make('approve'), editItem: make('edit'), deferItem: make('defer'), dismissItem: make('dismiss'), retryItem: make('retry'), reopenItem: make('reopen') };
+    return {
+        approveItem: make('approve'),
+        editItem: make('edit'),
+        deferItem: make('defer'),
+        dismissItem: make('dismiss'),
+        retryItem: make('retry'),
+        reopenItem: make('reopen'),
+        confirmItem: make('confirm'),
+        bindItem: make('bind'),
+        archiveItem: make('archive'),
+    };
 });
 
 const { default: InboxList } = await import('../InboxList');
@@ -88,8 +112,10 @@ function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
         decisions: [],
         reviewedAt: null,
         reviewedBy: null,
-        can: { approve: true, edit: true, defer: true, dismiss: true, retry: false, reopen: false },
+        can: { approve: true, edit: true, defer: true, dismiss: true, retry: false, reopen: false, confirm: false, bind: false, archive: false },
         primaryUnavailable: null,
+        confirmUnavailable: null,
+        linkedFiles: [],
         replacement: null,
         resolvedBy: null,
         bindWaiting: null,
@@ -284,7 +310,7 @@ describe('the detail', () => {
             selected: detail({
                 type: 'processing-failure', status: 'dismissed', group: 'settled', title: 'Processing failed', photoId: null, shortId: 'no photo ID', assetRevision: null, previewUrl: null, identity: 'None yet. This file has no photo ID.',
                 sourcePath: 'inbox/raw-frame.heic', facts: [], failure: 'The file is not a format the watcher reads.', failureCode: 'unsupported-format',
-                can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true },
+                can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true, confirm: false, bind: false, archive: false },
             }),
         }));
         expect(document.querySelector('[data-state="failure"]')).toBeNull();
@@ -298,7 +324,7 @@ describe('the detail', () => {
             selected: detail({
                 type: 'processing-failure', status: 'failed', title: 'Processing failed', photoId: null, shortId: 'no photo ID', assetRevision: null, previewUrl: null, identity: 'None yet. This file has no photo ID.',
                 sourcePath: 'inbox/raw-frame.heic', facts: [], failure: 'The file is not a format the watcher reads.', failureCode: 'unsupported-format',
-                can: { approve: false, edit: true, defer: true, dismiss: true, retry: false, reopen: false },
+                can: { approve: false, edit: true, defer: true, dismiss: true, retry: false, reopen: false, confirm: false, bind: false, archive: false },
             }),
         }));
         const strip = screen.getByText("This is a HEIC file, which the watcher doesn't read.").closest('[data-state="failure"]') as HTMLElement;
@@ -318,13 +344,13 @@ describe('the detail', () => {
     });
 
     it('says the published statement remains unchanged only where the active revision holds the photograph', () => {
-        renderInbox(view({ selected: detail({ type: 'missing', references: [{ kind: 'revision', id: ACTIVE }], can: { approve: false, edit: true, defer: true, dismiss: false, retry: false, reopen: false }, primaryUnavailable: "Locating isn't in the inbox yet." }) }));
+        renderInbox(view({ selected: detail({ type: 'missing', references: [{ kind: 'revision', id: ACTIVE }], can: { approve: false, edit: true, defer: true, dismiss: false, retry: false, reopen: false, confirm: false, bind: false, archive: false }, primaryUnavailable: MISSING_HINT.open }) }));
         expect(screen.getByText('Published statement remains unchanged.')).toBeInTheDocument();
         expect(screen.queryByText(/not a format the watcher reads/)).toBeNull();
     });
 
     it('names series by title and keeps the live revision apart, for a replacement and in Source facts', () => {
-        renderInbox(view({ selected: detail({ type: 'replacement', photoId: P(2), shortId: SHORT(2), references: [{ kind: 'revision', id: ACTIVE }, { kind: 'series', id: 'ser_harbor' }, { kind: 'series', id: 'ser_draft' }], can: { approve: false, edit: true, defer: true, dismiss: false, retry: false, reopen: false }, primaryUnavailable: 'Not yet.' }) }));
+        renderInbox(view({ selected: detail({ type: 'replacement', photoId: P(2), shortId: SHORT(2), references: [{ kind: 'revision', id: ACTIVE }, { kind: 'series', id: 'ser_harbor' }, { kind: 'series', id: 'ser_draft' }], can: { approve: false, edit: true, defer: true, dismiss: false, retry: false, reopen: false, confirm: false, bind: false, archive: false }, primaryUnavailable: 'Not yet.' }) }));
         expect(screen.getByText('Series membership').nextElementSibling).toHaveTextContent('Harbor, position 02; Draft series');
         expect(screen.getByText('Title, description, and story stay attached to ph_0000…0002')).toBeInTheDocument();
         expect(screen.getByText('Referenced by').nextElementSibling).toHaveTextContent('The live revision; series Harbor and Draft series (draft)');
@@ -332,7 +358,7 @@ describe('the detail', () => {
     });
 
     it('never calls an approval no longer placed approved', () => {
-        renderInbox(view({ selected: detail({ status: 'approved', group: 'unplaced', unplacedSeries: 'ser_draft', lastApprovedSeries: 'ser_draft', placed: { alt: null, seriesIds: [] }, can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true } }) }));
+        renderInbox(view({ selected: detail({ status: 'approved', group: 'unplaced', unplacedSeries: 'ser_draft', lastApprovedSeries: 'ser_draft', placed: { alt: null, seriesIds: [] }, can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true, confirm: false, bind: false, archive: false } }) }));
         expect(screen.queryByText('Suggestion approved')).toBeNull();
         expect(screen.getByText('Approved, no longer placed')).toBeInTheDocument();
         expect(screen.getByText('System response').nextElementSibling).toHaveTextContent(/approved into Draft series, but nothing holds its photo now/);
@@ -340,7 +366,7 @@ describe('the detail', () => {
     });
 
     it('says once that an approval is in the draft, and where', () => {
-        renderInbox(view({ selected: detail({ status: 'approved', group: 'settled', placed: { alt: null, seriesIds: ['ser_draft'] }, lastApprovedSeries: 'ser_draft', can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true } }) }));
+        renderInbox(view({ selected: detail({ status: 'approved', group: 'settled', placed: { alt: null, seriesIds: ['ser_draft'] }, lastApprovedSeries: 'ser_draft', can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true, confirm: false, bind: false, archive: false } }) }));
         expect(screen.getByText('Suggestion approved')).toBeInTheDocument();
         expect(screen.getByText('System response').nextElementSibling).toHaveTextContent('In the draft, in Draft series. Nothing publishes until you publish.');
         expect(screen.queryAllByText(/Approved into the draft/)).toHaveLength(0);
@@ -348,7 +374,7 @@ describe('the detail', () => {
 
     it('says what a confirmed replacement holds, with no Decide later hint and no series or description to change (#17)', () => {
         const live = [{ kind: 'revision' as const, id: ACTIVE }, { kind: 'series' as const, id: 'ser_harbor' }];
-        renderInbox(view({ selected: detail({ type: 'replacement', status: 'approved', group: 'settled', references: live, replacement: { draft: 'new', live: false, decideLater: 'put-back' }, can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true }, primaryUnavailable: null }) }));
+        renderInbox(view({ selected: detail({ type: 'replacement', status: 'approved', group: 'settled', references: live, replacement: { draft: 'new', live: false, decideLater: 'put-back' }, can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true, confirm: false, bind: false, archive: false }, primaryUnavailable: null }) }));
         expect(screen.getByText('New version confirmed')).toBeInTheDocument();
         expect(screen.queryByText('Suggestion approved')).toBeNull();
         expect(screen.getByText('System response').nextElementSibling).toHaveTextContent('The draft uses the new version. Visitors keep the current one until you publish.');
@@ -377,52 +403,69 @@ describe('the detail', () => {
         ]);
     });
 
-    it('shows a replacement and a missing source with their own boxes and no primary action yet', () => {
-        const { unmount } = renderInbox(view({ selected: detail({ type: 'replacement', title: 'Replacement ready', can: { approve: false, edit: true, defer: true, dismiss: true, retry: false, reopen: false }, primaryUnavailable: "Confirming a new version isn't in the inbox yet." }) }));
+    it('shows a replacement with Confirm in the primary place, and a missing source with Bind and Archive (#118)', () => {
+        const open = { approve: false, edit: true, defer: true, dismiss: true, retry: false, reopen: false };
+        const { unmount } = renderInbox(view({ selected: detail({ type: 'replacement', title: 'Replacement ready', can: { ...open, confirm: true, bind: false, archive: false }, primaryUnavailable: REPLACEMENT_HINT.keeps }) }));
         expect(screen.getByRole('heading', { name: 'Identity-preserving replacement' })).toBeInTheDocument();
         expect(screen.getByText('Use the new bytes only after all derivatives succeed')).toBeInTheDocument();
-        expect(screen.getByRole('button', { name: 'Confirm new asset revision' })).toBeDisabled();
-        // The live action takes the primary place; the unavailable one sits before it, quieter.
+        const confirm = screen.getByRole('button', { name: 'Confirm new asset revision' });
+        expect(confirm).toBeEnabled();
+        expect(confirm).toHaveAttribute('type', 'submit');
+        // The live primary action comes last, after Decide later, as Approve does.
         const row = screen.getByRole('button', { name: 'Decide later' }).parentElement!;
-        expect(within(row).getAllByRole('button').map((button) => button.textContent)).toEqual(['Confirm new asset revision', 'Decide later']);
+        expect(within(row).getAllByRole('button').map((button) => button.textContent)).toEqual(['Decide later', 'Confirm new asset revision']);
+        expect(screen.getByText(REPLACEMENT_HINT.keeps)).toBeInTheDocument();
         expect(screen.queryByRole('combobox', { name: 'Suggested series' })).toBeNull();
+        expect(screen.queryByText(/inbox yet/)).toBeNull();
         unmount();
-        renderInbox(view({ selected: detail({ type: 'missing', can: { approve: false, edit: true, defer: true, dismiss: true, retry: false, reopen: false }, primaryUnavailable: "Locating isn't in the inbox yet." }) }));
+        renderInbox(view({ selected: detail({ type: 'missing', can: { ...open, confirm: false, bind: true, archive: true }, primaryUnavailable: MISSING_HINT.open }) }));
         expect(screen.getByRole('heading', { name: 'Published output protected' })).toBeInTheDocument();
         expect(screen.getByText('Archive after removing series references')).toBeInTheDocument();
-        expect(screen.getByRole('button', { name: 'Resolve source or archive intentionally' })).toBeDisabled();
+        expect(screen.getByText('Bind to the file that replaces it')).toBeInTheDocument();
+        expect(screen.getByText('Archive and take it down')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Bind' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Archive' })).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Confirm new asset revision' })).toBeNull();
+        expect(screen.queryByText(/inbox yet/)).toBeNull();
     });
 
-    it("shows Decide later disabled, with the hint as its reason, where the page knows it would refuse, and gives Confirm its own reason", () => {
+    it("shows Decide later disabled, with the hint as its reason, where the page knows it would refuse, and Confirm disabled with its own reason", () => {
+        const open = { approve: false, edit: true, defer: true, dismiss: true, retry: false, reopen: false, bind: false, archive: false };
         for (const [decideLater, hint] of [['refuses', REPLACEMENT_HINT.refuses], ['blocked', REPLACEMENT_HINT.blocked]] as const) {
-            const { unmount } = renderInbox(view({ selected: detail({ type: 'replacement', title: 'Replacement ready', replacement: { draft: decideLater === 'refuses' ? 'other' : 'new', live: false, decideLater }, can: { approve: false, edit: true, defer: true, dismiss: true, retry: false, reopen: false }, primaryUnavailable: hint }) }));
+            const { unmount } = renderInbox(view({ selected: detail({ type: 'replacement', title: 'Replacement ready', replacement: { draft: decideLater === 'refuses' ? 'other' : 'new', live: false, decideLater }, can: { ...open, confirm: true }, primaryUnavailable: hint }) }));
             const later = screen.getByRole('button', { name: 'Decide later' });
             expect(later).toBeDisabled();
             expect(later).toHaveAccessibleDescription(hint);
             expect(later).not.toHaveAttribute('type', 'submit');
             // Said once: no refusal can stack under it, since the button can't be pressed.
             expect(screen.getAllByText(hint)).toHaveLength(1);
-            expect(screen.getByRole('button', { name: 'Confirm new asset revision' })).toHaveAccessibleDescription(CONFIRM_UNAVAILABLE);
+            // Confirm can still work, so it's live, and the hint about Decide later doesn't describe it.
+            expect(screen.getByRole('button', { name: 'Confirm new asset revision' })).toBeEnabled();
+            expect(screen.getByRole('button', { name: 'Confirm new asset revision' })).not.toHaveAccessibleDescription(hint);
             unmount();
         }
-        // Where Decide later can work, it's live, and Confirm still says only why it's disabled.
-        renderInbox(view({ selected: detail({ type: 'replacement', title: 'Replacement ready', replacement: { draft: 'new', live: false, decideLater: 'put-back' }, can: { approve: false, edit: true, defer: true, dismiss: true, retry: false, reopen: false }, primaryUnavailable: REPLACEMENT_HINT.putBack }) }));
+        // While the new derivatives build, Confirm is there, disabled before the live actions, and says why.
+        renderInbox(view({ selected: detail({ type: 'replacement', title: 'Replacement building', group: 'waiting', waiting: 'its new derivatives are still building', replacement: { draft: 'other', live: false, decideLater: 'keeps' }, can: { ...open, confirm: false }, primaryUnavailable: REPLACEMENT_HINT.keeps, confirmUnavailable: CONFIRM_UNAVAILABLE.building }) }));
+        const confirm = screen.getByRole('button', { name: 'Confirm new asset revision' });
+        expect(confirm).toBeDisabled();
+        expect(confirm).toHaveAccessibleDescription(CONFIRM_UNAVAILABLE.building);
         expect(screen.getByRole('button', { name: 'Decide later' })).toBeEnabled();
         // The live one is described by the hint too, so a keyboard or screen reader hears what it does to the draft.
-        expect(screen.getByRole('button', { name: 'Decide later' })).toHaveAccessibleDescription(REPLACEMENT_HINT.putBack);
-        expect(screen.getByRole('button', { name: 'Confirm new asset revision' })).toHaveAccessibleDescription(CONFIRM_UNAVAILABLE);
-        expect(CONFIRM_UNAVAILABLE).not.toMatch(/bytes/);
+        expect(screen.getByRole('button', { name: 'Decide later' })).toHaveAccessibleDescription(REPLACEMENT_HINT.keeps);
+        const row = confirm.parentElement!;
+        expect(within(row).getAllByRole('button').map((button) => button.textContent)).toEqual(['Confirm new asset revision', 'Decide later']);
     });
 
     it("drops a settled missing item's recovery box, which #17's resolved or archived item no longer needs", () => {
-        renderInbox(view({ selected: detail({ type: 'missing', status: 'resolved', group: 'settled', can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true }, primaryUnavailable: null }) }));
+        renderInbox(view({ selected: detail({ type: 'missing', status: 'resolved', group: 'settled', can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true, confirm: false, bind: false, archive: false }, primaryUnavailable: null }) }));
         expect(screen.queryByRole('heading', { name: 'Published output protected' })).toBeNull();
-        expect(screen.queryByRole('button', { name: 'Resolve source or archive intentionally' })).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Bind' })).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Archive' })).toBeNull();
         expect(screen.getByRole('button', { name: 'Reopen' })).toBeInTheDocument();
     });
 
     it("shows a missing item #17 archived as archived, with no hint about series or description", () => {
-        renderInbox(view({ selected: detail({ type: 'missing', status: 'approved', group: 'settled', references: [], can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true }, primaryUnavailable: null }) }));
+        renderInbox(view({ selected: detail({ type: 'missing', status: 'approved', group: 'settled', references: [], can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true, confirm: false, bind: false, archive: false }, primaryUnavailable: null }) }));
         expect(screen.getAllByText('Archived').length).toBeGreaterThan(0);
         expect(screen.getByText('Archived, and nothing shows it any more.')).toBeInTheDocument();
         expect(screen.queryByText('Reopen it to change its series or description.')).toBeNull();
@@ -433,7 +476,7 @@ describe('the detail', () => {
 
     it('words a resolved missing item by its cause, with no Reopen, and quiets its badge in the settled list', () => {
         const settled = item({ type: 'missing', status: 'resolved', group: 'settled', title: 'Source file back' });
-        renderInbox(view({ items: [settled], needsJudgment: 0, selected: detail({ type: 'missing', status: 'resolved', group: 'settled', title: 'Source file back', resolvedBy: { kind: 'same-file' }, can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: false }, primaryUnavailable: null }) }));
+        renderInbox(view({ items: [settled], needsJudgment: 0, selected: detail({ type: 'missing', status: 'resolved', group: 'settled', title: 'Source file back', resolvedBy: { kind: 'same-file' }, can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: false, confirm: false, bind: false, archive: false }, primaryUnavailable: null }) }));
         expect(screen.getByText('The same file came back, so nothing a visitor sees changed.')).toBeInTheDocument();
         expect(screen.queryByRole('button', { name: 'Reopen' })).toBeNull();
         const row = screen.getByRole('link', { name: /Source file back/ });
@@ -442,7 +485,7 @@ describe('the detail', () => {
     });
 
     it("badges an open missing item by what shows it, and shows no badge when that can't be read", () => {
-        const missing = (references: InboxDetail['references']) => detail({ type: 'missing', references, can: { approve: false, edit: true, defer: true, dismiss: false, retry: false, reopen: false }, primaryUnavailable: "Locating isn't in the inbox yet." });
+        const missing = (references: InboxDetail['references']) => detail({ type: 'missing', references, can: { approve: false, edit: true, defer: true, dismiss: false, retry: false, reopen: false, confirm: false, bind: false, archive: false }, primaryUnavailable: MISSING_HINT.open });
         const { unmount } = renderInbox(view({ selected: missing([{ kind: 'revision', id: ACTIVE }]) }));
         expect(screen.getByText('Still live')).toBeInTheDocument();
         expect(screen.queryByText('Draft only')).toBeNull();
@@ -456,7 +499,7 @@ describe('the detail', () => {
 
     it('offers no approve while a pending bind merges the photograph, and says why before any click', () => {
         const hint = "A bind waiting for the watcher's next pass makes this file the new version of harbor/landscape.jpg. Refresh after the watcher runs: this item closes if the bind went through, and you can approve it if it didn't.";
-        renderInbox(view({ selected: detail({ bindWaiting: { kind: 'merge', into: 'harbor/landscape.jpg' }, can: { approve: false, edit: true, defer: true, dismiss: true, retry: false, reopen: false }, primaryUnavailable: hint }) }));
+        renderInbox(view({ selected: detail({ bindWaiting: { kind: 'merge', into: 'harbor/landscape.jpg' }, can: { approve: false, edit: true, defer: true, dismiss: true, retry: false, reopen: false, confirm: false, bind: false, archive: false }, primaryUnavailable: hint }) }));
         const approve = screen.getByRole('button', { name: 'Approve into draft' });
         expect(approve).toBeDisabled();
         expect(approve).toHaveAccessibleDescription(hint);
@@ -465,7 +508,7 @@ describe('the detail', () => {
     });
 
     it('says on a missing item that a bind waits for the watcher', () => {
-        renderInbox(view({ selected: detail({ type: 'missing', bindWaiting: { kind: 'bind', path: 'harbor/landscape.jpg' }, can: { approve: false, edit: true, defer: true, dismiss: false, retry: false, reopen: false }, primaryUnavailable: "Locating isn't in the inbox yet." }) }));
+        renderInbox(view({ selected: detail({ type: 'missing', bindWaiting: { kind: 'bind', path: 'harbor/landscape.jpg' }, can: { approve: false, edit: true, defer: true, dismiss: false, retry: false, reopen: false, confirm: false, bind: false, archive: false }, primaryUnavailable: MISSING_HINT.open }) }));
         expect(screen.getByText('Bind waiting')).toBeInTheDocument();
         expect(screen.getByText("A bind waiting for the watcher's next pass gives this photograph the file at harbor/landscape.jpg. Refresh after the watcher runs: this item closes once the bind goes through.")).toBeInTheDocument();
     });
@@ -687,11 +730,185 @@ describe('the forms', () => {
         await press(screen.getByRole('button', { name: 'Dismiss' }));
         expect(sent.forms[0].fields).toMatchObject({ intent: 'dismiss', reason: 'A duplicate.', eventId: EVT(1) });
         unmount();
-        renderInbox(view({ selected: detail({ status: 'approved', can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true } }) }));
+        renderInbox(view({ selected: detail({ status: 'approved', can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true, confirm: false, bind: false, archive: false } }) }));
         expect(screen.getByText('Suggestion approved')).toBeInTheDocument();
         expect(screen.queryByRole('button', { name: 'Approve into draft' })).toBeNull();
         await press(screen.getByRole('button', { name: 'Reopen' }));
         expect(sent.forms[1].fields).toMatchObject({ intent: 'reopen', version: '3' });
+    });
+});
+
+describe('confirm, bind and archive (#118)', () => {
+    const OPEN = { approve: false, edit: true, defer: true, dismiss: false, retry: false, reopen: false };
+    const replacementItem = (overrides: Partial<InboxDetail> = {}) =>
+        detail({ type: 'replacement', title: 'Replacement ready', replacement: { draft: 'other', live: false, decideLater: 'keeps' }, can: { ...OPEN, confirm: true, bind: false, archive: false }, primaryUnavailable: REPLACEMENT_HINT.keeps, ...overrides });
+    const missingItem = (overrides: Partial<InboxDetail> = {}) =>
+        detail({ type: 'missing', title: 'Source file missing', sourcePath: 'harbor/landscape.jpg', references: [{ kind: 'revision', id: ACTIVE }], can: { ...OPEN, confirm: false, bind: true, archive: true }, primaryUnavailable: MISSING_HINT.open, ...overrides });
+
+    it('confirms a replacement from its primary button, with the item, its version and the active revision', async () => {
+        renderInbox(view({ selected: replacementItem() }));
+        await press(screen.getByRole('button', { name: 'Confirm new asset revision' }));
+        expect(sent.forms).toEqual([{ action: 'confirm', fields: { eventId: EVT(1), version: '3', base: ACTIVE, intent: 'confirm' } }]);
+        expect(await screen.findByText('Done.')).toBeInTheDocument();
+    });
+
+    it("moves focus to the answer once the refresh takes away the control that was pressed, so it isn't lost", async () => {
+        sent.answer = { status: 'done', action: 'confirm', eventId: EVT(1), message: 'Confirmed the new version into the draft.', serial: 1 };
+        const { rerender } = renderInbox(view({ selected: replacementItem() }));
+        const confirm = screen.getByRole('button', { name: 'Confirm new asset revision' });
+        confirm.focus();
+        await press(confirm);
+        // The refresh: the item is confirmed now, so it offers Reopen alone.
+        rerender(tree(view({ selected: replacementItem({ version: 4, status: 'approved', group: 'settled', can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true, confirm: false, bind: false, archive: false }, primaryUnavailable: null }) })));
+        expect(screen.queryByRole('button', { name: 'Confirm new asset revision' })).toBeNull();
+        const notice = screen.getByText('Confirmed the new version into the draft.');
+        expect(notice.closest('[role="status"]')).toHaveFocus();
+    });
+
+    it('binds the file linked at its last path by default, with no path sent, so the writer picks that one', async () => {
+        renderInbox(view({ selected: missingItem({ linkedFiles: ['harbor/landscape.jpg'] }) }));
+        const files = screen.getByRole('group', { name: 'File to bind' });
+        const linked = within(files).getByRole('radio', { name: 'harbor/landscape.jpg, the new file at its last path' });
+        expect(linked).toBeChecked();
+        expect(within(files).getByRole('radio', { name: 'Another file in the library' })).not.toBeChecked();
+        expect(screen.getByRole('textbox', { name: 'Library path' })).toHaveAccessibleDescription(LIBRARY_PATH_HINT);
+        await press(screen.getByRole('button', { name: 'Bind' }));
+        expect(sent.forms[0]).toEqual({ action: 'bind', fields: { eventId: EVT(1), version: '3', base: ACTIVE, bindTo: 'linked', path: '', intent: 'bind' } });
+    });
+
+    it('binds a typed library path instead, choosing "Another file" as the curator types', async () => {
+        renderInbox(view({ selected: missingItem({ linkedFiles: ['harbor/landscape.jpg'] }) }));
+        fireEvent.change(screen.getByRole('textbox', { name: 'Library path' }), { target: { value: 'harbor/landscape-2.jpg' } });
+        expect(screen.getByRole('radio', { name: 'Another file in the library' })).toBeChecked();
+        await press(screen.getByRole('button', { name: 'Bind' }));
+        expect(sent.forms[0].fields).toMatchObject({ bindTo: 'typed', path: 'harbor/landscape-2.jpg', intent: 'bind' });
+    });
+
+    it('asks for a path when no file is linked, and offers each of several linked files with none chosen', async () => {
+        const { unmount } = renderInbox(view({ selected: missingItem() }));
+        expect(screen.queryByRole('group', { name: 'File to bind' })).toBeNull();
+        expect(screen.getByRole('textbox', { name: 'Library path' })).toBeRequired();
+        fireEvent.change(screen.getByRole('textbox', { name: 'Library path' }), { target: { value: 'elsewhere/landscape.jpg' } });
+        await press(screen.getByRole('button', { name: 'Bind' }));
+        expect(sent.forms[0].fields).toMatchObject({ bindTo: 'typed', path: 'elsewhere/landscape.jpg' });
+        unmount();
+        renderInbox(view({ selected: missingItem({ linkedFiles: ['harbor/a.jpg', 'harbor/b.jpg'] }) }));
+        const radios = within(screen.getByRole('group', { name: 'File to bind' })).getAllByRole('radio');
+        expect(radios.map((radio) => radio.getAttribute('value'))).toEqual(['harbor/a.jpg', 'harbor/b.jpg', 'typed']);
+        for (const radio of radios) expect(radio).not.toBeChecked();
+        fireEvent.click(radios[1]);
+        await press(screen.getByRole('button', { name: 'Bind' }));
+        expect(sent.forms[1].fields).toMatchObject({ bindTo: 'harbor/b.jpg' });
+    });
+
+    it('shows a refused path by the path field, marks it, and moves focus there', async () => {
+        sent.answer = { status: 'invalid', action: 'bind', eventId: EVT(1), message: "That isn't a path inside the library. Nothing was written.", field: 'path', serial: 1 };
+        renderInbox(view({ selected: missingItem() }));
+        const field = screen.getByRole('textbox', { name: 'Library path' });
+        fireEvent.change(field, { target: { value: '../outside.jpg' } });
+        await press(screen.getByRole('button', { name: 'Bind' }));
+        const error = await screen.findByText("That isn't a path inside the library. Nothing was written.");
+        expect(field).toHaveAttribute('aria-invalid', 'true');
+        expect(field).toHaveAccessibleDescription(`That isn't a path inside the library. Nothing was written. ${LIBRARY_PATH_HINT}`);
+        expect(field).toHaveFocus();
+        expect(error.closest('details')).not.toBeNull();
+        // Said once, by the field.
+        expect(screen.getAllByText("That isn't a path inside the library. Nothing was written.")).toHaveLength(1);
+        expect(field).toHaveValue('../outside.jpg');
+    });
+
+    it("says after a bind that it's waiting for the watcher, not done, and once the page refreshes, shows the bind waiting with no Bind or Archive", async () => {
+        const waiting = bindAnswer('harbor/landscape.jpg', false);
+        sent.answer = { status: 'done', action: 'bind', eventId: EVT(1), message: waiting, serial: 1 };
+        const { rerender } = renderInbox(view({ selected: missingItem({ linkedFiles: ['harbor/landscape.jpg'] }) }));
+        const bind = screen.getByRole('button', { name: 'Bind' });
+        bind.focus();
+        await press(bind);
+        const notice = (await screen.findByText(waiting)).closest('[data-state]')!;
+        // The waiting tone, not the done one: nothing has changed yet.
+        expect(notice).toHaveAttribute('data-tone', 'change');
+        expect(notice.closest('details')).not.toBeNull();
+        expect(screen.queryByText(/^Bound|^Done/)).toBeNull();
+        // The refresh: the bind waits for the watcher, so the item stays open, with nothing more to bind or archive.
+        rerender(tree(view({ selected: missingItem({ version: 4, bindWaiting: { kind: 'bind', path: 'harbor/landscape.jpg' }, linkedFiles: [], can: { ...OPEN, confirm: false, bind: false, archive: false }, primaryUnavailable: MISSING_HINT.bindWaiting }) })));
+        expect(screen.getByText('Bind waiting')).toBeInTheDocument();
+        expect(screen.getByText(MISSING_HINT.bindWaiting)).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Bind' })).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Archive' })).toBeNull();
+        expect(screen.getByRole('button', { name: 'Decide later' })).toBeEnabled();
+        // The answer stays up, under the buttons now, and takes the focus the vanished Bind had.
+        const moved = screen.getByText(waiting);
+        expect(moved.closest('details')).toBeNull();
+        expect(moved.closest('[role="status"]')).toHaveFocus();
+    });
+
+    it('archives only with a reason and a second explicit confirm, saying plainly that it is a takedown at the next publish', async () => {
+        renderInbox(view({ selected: missingItem() }));
+        expect(screen.getByText(ARCHIVE_TAKEDOWN)).toBeInTheDocument();
+        const archive = screen.getByRole('button', { name: 'Archive' });
+        expect(archive).toHaveAttribute('type', 'button');
+        expect(archive).toHaveAttribute('aria-expanded', 'false');
+        expect(archive).toHaveAccessibleDescription(ARCHIVE_TAKEDOWN);
+        // No reason: the field says so, and nothing is sent or asked.
+        fireEvent.click(archive);
+        const reason = screen.getByRole('textbox', { name: 'Reason for archiving' });
+        expect(screen.getByText('Archiving needs a reason.')).toBeInTheDocument();
+        expect(reason).toHaveAttribute('aria-invalid', 'true');
+        expect(reason).toHaveFocus();
+        expect(screen.queryByRole('button', { name: 'Yes, archive it' })).toBeNull();
+        // With a reason, the second step asks about this file, by name.
+        fireEvent.change(reason, { target: { value: 'Gone for good.' } });
+        fireEvent.click(archive);
+        expect(screen.queryByText('Archiving needs a reason.')).toBeNull();
+        expect(archive).toHaveAttribute('aria-expanded', 'true');
+        const question = screen.getByText(archiveQuestion('landscape.jpg'));
+        expect(question).toHaveFocus();
+        const step = screen.getByRole('group', { name: archiveQuestion('landscape.jpg') });
+        expect(within(step).getAllByRole('button').map((button) => button.textContent)).toEqual(['Cancel', 'Yes, archive it']);
+        expect(sent.forms).toEqual([]);
+        await press(within(step).getByRole('button', { name: 'Yes, archive it' }));
+        expect(sent.forms).toEqual([{ action: 'archive', fields: { eventId: EVT(1), version: '3', base: ACTIVE, reason: 'Gone for good.', confirmed: 'yes', intent: 'archive' } }]);
+    });
+
+    it('cancels the second step, sending nothing, and puts focus back on Archive', () => {
+        renderInbox(view({ selected: missingItem() }));
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reason for archiving' }), { target: { value: 'Gone for good.' } });
+        const archive = screen.getByRole('button', { name: 'Archive' });
+        fireEvent.click(archive);
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+        expect(archive).toHaveAttribute('aria-expanded', 'false');
+        expect(archive).toHaveFocus();
+        expect(screen.queryByRole('button', { name: 'Yes, archive it' })).toBeNull();
+        // Pressing Archive again collapses the step too.
+        fireEvent.click(archive);
+        fireEvent.click(archive);
+        expect(screen.queryByRole('button', { name: 'Yes, archive it' })).toBeNull();
+        expect(sent.forms).toEqual([]);
+    });
+
+    it("names the archive's reason apart from Dismiss's, so both have names of their own", () => {
+        renderInbox(view({ selected: missingItem({ references: [], can: { ...OPEN, dismiss: true, confirm: false, bind: true, archive: true } }) }));
+        expect(screen.getByRole('textbox', { name: 'Reason' })).toBeInTheDocument();
+        expect(screen.getByRole('textbox', { name: 'Reason for archiving' })).toBeInTheDocument();
+    });
+
+    it("shows a refused archive inside Archive, and keep each of its buttons focusable while it's out", async () => {
+        let release = () => undefined as void;
+        sent.hold = new Promise<void>((resolve) => (release = resolve));
+        sent.answer = { status: 'refused', action: 'archive', eventId: EVT(1), message: "A bind waiting for the watcher's next pass gives this photograph a file, so it can't be archived yet.", serial: 1 };
+        try {
+            renderInbox(view({ selected: missingItem() }));
+            fireEvent.change(screen.getByRole('textbox', { name: 'Reason for archiving' }), { target: { value: 'Gone for good.' } });
+            fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
+            const yes = screen.getByRole('button', { name: 'Yes, archive it' });
+            yes.focus();
+            await press(yes);
+            for (const name of ['Yes, archive it', 'Bind']) expect(screen.getByRole('button', { name })).toHaveAttribute('aria-disabled', 'true');
+            expect(yes).toHaveFocus();
+        } finally {
+            await act(async () => release());
+        }
+        expect((await screen.findByText(/can't be archived yet/)).closest('details')).not.toBeNull();
     });
 });
 
@@ -804,7 +1021,7 @@ describe('moving on after a decision', () => {
     const decided = (items: InboxItem[], status: 'approved' | 'deferred', open: string[]) => {
         const group = status === 'approved' ? ('settled' as const) : ('deferred' as const);
         const refreshed = items.map((entry) => (entry.id === EVT(1) ? { ...entry, status, group, version: 4 } : open.includes(entry.id) ? entry : { ...entry, status: 'approved' as const, group: 'settled' as const }));
-        return view({ items: refreshed, needsJudgment: open.length, selected: detail({ status, group, version: 4, can: { approve: false, edit: status === 'deferred', defer: false, dismiss: status === 'deferred', retry: false, reopen: true } }) });
+        return view({ items: refreshed, needsJudgment: open.length, selected: detail({ status, group, version: 4, can: { approve: false, edit: status === 'deferred', defer: false, dismiss: status === 'deferred', retry: false, reopen: true, confirm: false, bind: false, archive: false } }) });
     };
 
     it('opens the next item that needs a decision once the approval is in, and carries the answer there', async () => {
@@ -871,7 +1088,7 @@ describe('moving on after a decision', () => {
             await act(async () => stale.rerender(tree(view({ items: three(), needsJudgment: 3, selected: detail({ version: 5, status: 'deferred' }) }))));
             stale.unmount();
             sent.answer = null;
-            const approved = view({ items: three(), needsJudgment: 2, selected: detail({ status: 'approved', group: 'settled', can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true } }) });
+            const approved = view({ items: three(), needsJudgment: 2, selected: detail({ status: 'approved', group: 'settled', can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true, confirm: false, bind: false, archive: false } }) });
             const reopen = renderInbox(approved);
             await press(screen.getByRole('button', { name: 'Reopen' }));
             await act(async () => reopen.rerender(tree(view({ items: three(), needsJudgment: 3, selected: detail({ version: 4 }) }))));
@@ -1009,7 +1226,7 @@ describe('acting from the plain inbox URL', () => {
             // The refresh now shows the same item, at its next version, and the page moves on from it.
             const refreshed = three().map((entry) => (entry.id === EVT(1) ? { ...entry, status: 'approved' as const, group: 'settled' as const, version: 4 } : entry));
             await act(async () =>
-                rerender(tree(view({ items: refreshed, needsJudgment: 2, selected: detail({ status: 'approved', group: 'settled', version: 4, can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true } }) }))),
+                rerender(tree(view({ items: refreshed, needsJudgment: 2, selected: detail({ status: 'approved', group: 'settled', version: 4, can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true, confirm: false, bind: false, archive: false } }) }))),
             );
             expect(replace).toHaveBeenCalledWith(`/curation/inbox?item=${EVT(2)}#item`);
         } finally {
