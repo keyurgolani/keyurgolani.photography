@@ -788,12 +788,21 @@ const INDEPENDENT_PANELS: Allowance[] = [1024, 1440].flatMap((width) => {
     ];
 });
 
+/**
+ * Elements the head adds that the base never had, each named. Like the theme control, each is taken out of the head's
+ * layout and left out of the walk in both builds, so the rest of the page is still compared exactly. The report
+ * lists them.
+ */
+const HEAD_ONLY: { selector: string; why: string }[] = [{ selector: 'header nav a[href="/curation/series"]', why: "#150: the curator header's Series link" }];
+
 const ALLOWANCES: Allowance[] = [
     // Drawn on the rules around the row (the design review's P2-1): its own separator takes the outline's colour.
     { page: 'inbox', selector: 'main ul a[aria-current="true"]', properties: ['box-shadow', 'border-bottom-color'], why: "P2-8: the Inbox's selected row's outline" },
     { page: 'inbox', selector: 'header nav a[aria-current="page"]', properties: ['box-shadow'], why: "P2-8: the Inbox's selected tab's outline" },
     { page: 'publish', selector: 'header nav a[aria-current="page"]', properties: ['box-shadow'], why: "P2-8: Publish's selected tab's outline" },
     ...INDEPENDENT_PANELS,
+    // #150's Series makes three screens in the header, which may wrap to a second row on a phone.
+    ...(['inbox', 'publish'] as const).map((page) => ({ page, width: 390, selector: 'header nav', properties: ['flex-wrap'], why: "#150: the curator header's screens wrap on a phone" })),
 ];
 const allowancesFor = (pair: Pair, width: number) => ALLOWANCES.filter((entry) => entry.page === (pair.stateOf ?? pair.name) && (entry.width === undefined || entry.width === width));
 
@@ -828,7 +837,11 @@ async function styles(
 ): Promise<Walked2> {
     const head = !tag.startsWith('base');
     // The curator's head takes the control out of the layout, as no JavaScript does, since the base's header had none.
-    const css = [pair.addsControl && head ? '[data-theme-control]{display:none!important}' : '', pair.headStyle && head ? pair.headStyle : ''].join('');
+    const css = [
+        pair.addsControl && head ? '[data-theme-control]{display:none!important}' : '',
+        head ? `${HEAD_ONLY.map((entry) => entry.selector).join(',')}{display:none!important}` : '',
+        pair.headStyle && head ? pair.headStyle : '',
+    ].join('');
     const { context, page, timedOut } = await open(origin, stored, pair, viewport, 1, css, { js, session, motion });
     try {
         const selectors = allowancesFor(pair, viewport.width).map((entry) => entry.selector);
@@ -843,7 +856,7 @@ async function styles(
                 [...document.body.children].every((child) => child.localName === 'script' || (child.localName === 'div' && child.hasAttribute('hidden') && child.textContent?.trim() === '')) &&
                 [...document.body.childNodes].every((node) => node.nodeType !== Node.TEXT_NODE || node.textContent?.trim() === ''),
         }));
-        return { walk: await walk(page, selectors), timedOut, ...painted };
+        return { walk: await walk(page, selectors, HEAD_ONLY.map((entry) => entry.selector)), timedOut, ...painted };
     } finally {
         await context.close();
     }
@@ -986,6 +999,8 @@ test.afterAll(async () => {
             '## The gate: computed style',
             '',
             "Every element under body (and in the curator's preview frame), matched by tag and nth-of-type, its ::before and ::after, and the custom properties on :root and body, in the head's Dark against the base, at 1440, 1024 and 390, in Dark's three routes, with Home's intro also in its loading phase with motion allowed, and hover and focus on the nav links, Home's controls, About's links and the Inbox's rows and buttons. The theme control and today's toggle are left out with their subtrees; the curator's head takes its control out of the layout, as no JavaScript does. Structure, styles, base tokens, any box that moved (beyond the one named allowance) and any wait that timed out fail; every box delta and the tokens new in the head are listed below.",
+            '',
+            `Left out as new in the head, taken out of its layout and of both walks: ${HEAD_ONLY.map((entry) => `\`${entry.selector}\` (${entry.why})`).join('; ')}.`,
             '',
             '| Page, route | Width | Structure | Styles | Tokens | Boxes over allowance | Box deltas | Largest delta (px) | Waits timed out | New tokens |',
             '|---|---|---|---|---|---|---|---|---|---|',
