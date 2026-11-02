@@ -1,8 +1,11 @@
 // The record's editable fields and the cleaning of its public text, shared by `photos edit` (edit-record.ts) and the
-// curator's Series screen (#150). Pure, with no file system or process: edit-record.ts also opens an editor, and a
-// server module that imported it would trace the whole project into the standalone build.
-import { codePointName, FIELD_LIMITS, plainText } from './plain-text';
+// curator's Series screen (#150), and the argument rules `photos sequence` shares with the screen's ordering (#150's
+// 2b). Pure, with no file system or process: edit-record.ts also opens an editor, and a server module that imported it
+// would trace the whole project into the standalone build.
+import { codePointName, FIELD_LIMITS, plainText, type PlainTextProblem } from './plain-text';
 import type { AuthoredKind } from './schema';
+import type { Placement } from './sequence';
+import type { FocalPoint } from './types';
 import { MANAGED_FIELDS } from './working-layer-writer';
 
 // `photos carry-over`'s marker is the tools' too: the writer keeps it, and refuses one added by hand.
@@ -62,4 +65,32 @@ export function checkText(record: Record<string, unknown>, kind: AuthoredKind): 
         });
     }
     return problems;
+}
+
+/**
+ * A chapter title, public copy like an imported title, so it takes the import's plain-text rules and `title`'s limit:
+ * the text to store, or why it can't be. `photos sequence chapter add` (owner-cli.ts) and the curator's Series screen
+ * both check it here, so both store the same title (#150).
+ */
+export function checkChapterTitle(value: string): { ok: true; text: string } | { ok: false; problem: PlainTextProblem | { kind: 'empty' } } {
+    const checked = plainText(value, { limit: FIELD_LIMITS.title });
+    if (!checked.ok) return checked;
+    return checked.text === '' ? { ok: false, problem: { kind: 'empty' } } : checked;
+}
+
+/** Whether `focal` is a focal point `photos sequence cover --focal` takes: x and y, each from 0 to 1. */
+export function isFocalPoint(focal: FocalPoint): boolean {
+    const inRange = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+    return inRange(focal.x) && inRange(focal.y);
+}
+
+/**
+ * Where a photo goes so that it ends up at 1-based `position` in the result,
+ * as an anchor, or null when the result has no such position. `photos
+ * sequence --to <N>` and the Series screen's positions both turn into one here.
+ */
+export function placementAt(photoIds: readonly string[], photoId: string, position: number): Placement | null {
+    const rest = photoIds.filter((id) => id !== photoId);
+    if (position < 1 || position > rest.length + 1) return null;
+    return position === 1 ? 'start' : { after: rest[position - 2] };
 }
