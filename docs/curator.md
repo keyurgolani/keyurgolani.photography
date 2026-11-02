@@ -32,7 +32,7 @@ By default, whoever can open port 3001 on the host's loopback and knows the cura
   ```
 
   Then open `http://127.0.0.1:3001/curation` or `http://localhost:3001/curation` on your machine.
-- If 3001 is taken on your machine, forward another local port and tell the curator about it with `CURATOR_TUNNEL_PORT` (see below), say `ssh -L 4011:127.0.0.1:3001 <host>` with `CURATOR_TUNNEL_PORT=4011` in the `.env` next to `docker-compose.prod.yml`. The forward's far end stays `127.0.0.1:3001`.
+- If 3001 is taken on your machine, forward another local port and tell the curator about it with `CURATOR_TUNNEL_PORT` (see below), say `ssh -L 4011:127.0.0.1:3001 <host>` with `CURATOR_TUNNEL_PORT=4011` in the `.env` next to `docker-compose.prod.yml`. The forward's far end stays `127.0.0.1:3001`, or the LAN address in [LAN mode](#from-your-home-network).
 - Anyone with a shell on the host can reach the port too. Keep the host's accounts to the people you'd hand the curator to.
 - Then the curator asks for its passphrase, which you set when you deploy it (below). The login is defense in depth on top of the tunnel, not a reason to open the port wider: never publish it on another interface, put it behind a public reverse proxy, or share it through a tunnel service.
 
@@ -53,7 +53,7 @@ Then recreate `curator` alone, and open `http://192.168.86.250:3001/curation/log
 docker compose -f docker-compose.prod.yml -f <override> --profile curator up -d --no-deps curator
 ```
 
-`CURATOR_HOST_PORT` is optional and defaults to 3001. `web` and the watcher don't read either line.
+`CURATOR_HOST_PORT` is optional and defaults to 3001. If something else on the host has 3001, pick a free port, say `CURATOR_HOST_PORT=3011`, and open `http://192.168.86.250:3011/curation/login` instead. `web` and the watcher don't read either line.
 
 **Who can reach it.** Every device on that network can open the sign-in page: your own, and anyone else's that joins it, a guest's phone or a smart TV included. They still need the passphrase, and the lockout, the `Host` allowlist, the `Origin` check and the session work as before. Nothing outside your network can reach it, as long as your router doesn't forward the port. That's the boundary in LAN mode.
 
@@ -62,7 +62,22 @@ docker compose -f docker-compose.prod.yml -f <override> --profile curator up -d 
 - **Use the LAN address, never `0.0.0.0`.** `0.0.0.0` publishes on every interface the host has, its public one included if it has one. The curator refuses it: with `CURATOR_PUBLISH` set to anything but `127.0.0.1`, `localhost`, `::1` or a private address (10/8, 172.16/12, 192.168/16, 169.254/16, `fc00::/7`, `fe80::/10`), it logs which setting is wrong and stops, and answers 503 on every path, the login page included, until it does. An IPv6 address goes in brackets, such as `CURATOR_PUBLISH=[fd00::5]`, so Compose can read the publish.
 - **Publish it with `CURATOR_PUBLISH` only.** Publishing the curator from an override file instead isn't supported. In loopback mode the curator can't see a wider publish, and any caller can send `Host: localhost:3001`, so the allowlist would let them in.
 - **No rule on the caller's address.** The curator doesn't check that a request comes from a private address. Next gives its request handling no socket peer address, and `X-Forwarded-For` is whatever the caller sent, so a check on it would only look like one. The publish on the LAN address and your router are what keep the internet out.
-- **The lockout is shared.** It's one lock for the whole curator, so in LAN mode anyone on your network can trip it with five wrong tries and keep you out for 15 minutes. A restart of `curator` clears it.
+- **The lockout is shared.** It's one lock for the whole curator, not one per device, since the curator can't tell callers apart (above). Five wrong tries within 15 minutes, from any device on your network, lock every device out, yours included, for 15 minutes. A restart of `curator` clears it:
+
+  ```bash
+  docker compose -f docker-compose.prod.yml -f <override> --profile curator restart curator
+  ```
+- **Keep the host's address fixed.** `CURATOR_PUBLISH` names one address, and most home routers hand addresses out by DHCP. If the host gets another one, Docker can't publish on an address the host no longer has, so `curator` fails to start until `.env` matches again. Give the host a DHCP reservation on your router, or a static address, before you turn LAN mode on. If the address does change, set `CURATOR_PUBLISH` to the new one and recreate `curator` as above.
+- **After a reboot it's off,** in LAN mode as in loopback mode. Its restart policy is `no`, so it runs only while you start it ([Turning it on and off](#turning-it-on-and-off)). Start it again with the same command, and `.env`'s settings still apply:
+
+  ```bash
+  docker compose -f docker-compose.prod.yml -f <override> --profile curator up -d --no-deps curator
+  ```
+- **An SSH tunnel goes to the LAN address.** In LAN mode nothing listens on the host's `127.0.0.1:3001`, so a forward to it gets no answer. Point the far end at the LAN address instead, then open `http://127.0.0.1:3001/curation` on your machine as before. The curator still answers to `127.0.0.1` and `localhost`, and the cookie keeps `Secure` there:
+
+  ```bash
+  ssh -L 3001:192.168.86.250:3001 <host>
+  ```
 
 **More names.** The curator answers to `<CURATOR_PUBLISH>:<CURATOR_HOST_PORT>`, and to `127.0.0.1` and `localhost` for the healthcheck and an SSH tunnel. To open it by a name your network resolves, such as the host's mDNS name, list it with its port in `CURATOR_EXTRA_HOSTS`, comma-separated:
 
