@@ -46,6 +46,8 @@ for (const [name, origin] of SERVERS) {
                 const response = await get(request, at(origin, path));
                 expect(response.status(), path).toBe(308);
                 expect(response.headers()['location'], path).toBe('/work');
+                // Not kept, so a rollback to an older release's /work 307 to /gallery can't loop in a browser or at Cloudflare.
+                expect(response.headers()['cache-control'], path).toBe('no-store');
             }
         });
 

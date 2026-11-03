@@ -44,13 +44,18 @@ async function expectImageRefused(url: string): Promise<void> {
     expect(await response.text(), url).toBe(IMAGE_URL_NOT_ALLOWED);
 }
 
-/** /gallery, and its query, answer a bare 308 to /work for a read. */
+/**
+ * /gallery, and its query, answer a bare 308 to /work for a read, with
+ * nothing cached: a browser or Cloudflare that kept the 308 would loop
+ * against an older release's /work 307 to /gallery after a rollback.
+ */
 async function expectGalleryMoved(): Promise<void> {
     for (const [pathname, method] of [['/gallery', 'GET'], ['/gallery', 'HEAD'], ['/gallery?photo=3', 'GET']] as const) {
         const response = await respond(pathname, method);
         expect(response.status, `${method} ${pathname}`).toBe(308);
         expect(response.headers.get('location'), `${method} ${pathname}`).toBe('http://localhost:3000/work');
         expect(response.headers.get('x-middleware-next'), `${method} ${pathname}`).toBeNull();
+        expect(response.headers.get('cache-control'), `${method} ${pathname}`).toBe('no-store');
     }
 }
 

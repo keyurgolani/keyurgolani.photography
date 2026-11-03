@@ -142,6 +142,7 @@ check_closed() {
   expect_code "/api/catalog/home/photos/ph_00000000-0000-4000-8000-000000000001?revision=$NO_REVISION" 404
   expect_code /gallery 308
   [ "$(header location)" = /work ] || fail "GET /gallery sent Location: $(header location), expected /work."
+  [ "$(header cache-control)" = no-store ] || fail "GET /gallery sent Cache-Control: $(header cache-control), expected no-store."
   for src in "${LEGACY_WEBPS[@]}"; do
     [ -s "$LIB${src#/assets/photos}" ] || fail "The watcher wrote no $src, so its 404 would prove nothing."
     code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$BASE_URL$src") || fail "GET $src failed."

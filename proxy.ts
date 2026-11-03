@@ -37,10 +37,15 @@ const GALLERY_TO = '/work';
 /**
  * The 308 for /gallery. Next takes only an absolute Location from a proxy,
  * so it's built on the request's own origin, and Next sends it on as the
- * relative `/work`. Nothing from the query goes with it.
+ * relative `/work`. Nothing from the query goes with it. It's `no-store`, so
+ * neither a browser nor Cloudflare keeps it: a release before #13's slice E
+ * sends /work back to /gallery with a 307 on a data root without the launch,
+ * and a kept 308 would loop against that after a rollback.
  */
 function galleryMoved(request: NextRequest): NextResponse {
-    return NextResponse.redirect(new URL(GALLERY_TO, request.nextUrl.origin), 308);
+    const response = NextResponse.redirect(new URL(GALLERY_TO, request.nextUrl.origin), 308);
+    response.headers.set('Cache-Control', 'no-store');
+    return response;
 }
 
 /**
