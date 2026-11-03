@@ -10,6 +10,7 @@ import { libraryRoot } from '../../storage/config';
 import { versionFile } from '../../storage/document';
 import { LockLostError, withLock } from '../../storage/lock';
 import { initDrafts, runDraftInit } from '../draft-init';
+import { CUTOVER_KEY } from '../mode';
 import { listPhotos, ownerStatus, runListCommand, runStatusCommand } from '../owner-status';
 import { publish, type PublishOptions } from '../publish';
 import { listActivations } from '../repository';
@@ -73,6 +74,21 @@ describe('photos status', () => {
         expect(text).toContain('Watcher heartbeat: 60 s ago (2026-10-24T12:00:00.000Z)');
         // #17: the inbox's open missing sources and failures, none here.
         expect(text).toContain('Inbox: 0 missing sources, 0 failures open');
+    });
+
+    it('never says nothing is published on a data root that has published, even with no revision to name', async () => {
+        const catalog = await fixture();
+        // This process remembers a publish there (CUTOVER_KEY), as a web process that served the launch does, so it
+        // answers active-unreadable while no revision can be read, never not-published.
+        const seen = (globalThis as typeof globalThis & { [CUTOVER_KEY]?: Set<string> })[CUTOVER_KEY] ??= new Set<string>();
+        const root = path.resolve(catalog.root);
+        seen.add(root);
+        cleanups.push(async () => void seen.delete(root));
+        const status = await ownerStatus({ dataRoot: catalog.root });
+        expect(status.catalog).toMatchObject({ published: 'published', active: null });
+        const { output } = await runStatusCommand({ dataRoot: catalog.root });
+        expect(output).toContain('Catalog: this data root has published, but no live revision can be read, so the site answers unavailable (503, active-unreadable), or degraded on the revision web last loaded');
+        expect(output).not.toContain('nothing published yet');
     });
 
     it('prints JSON with the same facts', async () => {

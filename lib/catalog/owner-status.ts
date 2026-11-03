@@ -239,6 +239,11 @@ function formatStatus(status: OwnerStatus): string {
                 lines.push("  The pointer and its activation record disagree. The next photos publish repairs them, unless that revision's rules block it.");
                 break;
         }
+    } else if (catalog.published === 'published') {
+        // A data root seen to publish never reads as unpublished again (checkPublished()'s latch), and web says so too.
+        lines.push('Catalog: this data root has published, but no live revision can be read, so the site answers unavailable (503, active-unreadable), or degraded on the revision web last loaded');
+    } else if (catalog.published === 'unknown') {
+        lines.push("Catalog: can't tell whether this data root has published, so the site answers unavailable (503, catalog-unreadable)");
     } else {
         lines.push("Catalog: nothing published yet, so the site answers unavailable (503, not-published) until the first photos publish");
     }
