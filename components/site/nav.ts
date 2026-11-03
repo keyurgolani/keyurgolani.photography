@@ -34,7 +34,7 @@ export function currentSection(pathname: string, basePath = ''): NavSection | nu
   const path = stripBasePath(pathname, basePath);
   if (path === null) return null;
   if (path === '/') return 'home';
-  if (path === '/gallery' || path === '/work' || path.startsWith('/work/')) return 'work';
+  if (path === '/work' || path.startsWith('/work/')) return 'work';
   if (path === '/about') return 'about';
   return null;
 }

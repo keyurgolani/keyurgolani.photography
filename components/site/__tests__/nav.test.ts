@@ -15,7 +15,6 @@ describe('NAV_ITEMS', () => {
 describe('currentSection', () => {
   it.each([
     ['/', 'home'],
-    ['/gallery', 'work'],
     ['/work', 'work'],
     ['/work/streets', 'work'],
     ['/work/streets/photo-1', 'work'],
@@ -24,7 +23,8 @@ describe('currentSection', () => {
     expect(currentSection(pathname)).toBe(section);
   });
 
-  it.each(['/workshop', '/about-me', '/gallery/extra', '/does-not-exist', ''])('puts %s under nothing', (pathname) => {
+  // /gallery never renders a page since #13's slice E: proxy.ts sends it on to /work first.
+  it.each(['/workshop', '/about-me', '/gallery', '/gallery/extra', '/does-not-exist', ''])('puts %s under nothing', (pathname) => {
     expect(currentSection(pathname)).toBeNull();
   });
 
