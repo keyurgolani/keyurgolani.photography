@@ -8,7 +8,7 @@
  */
 import { publish } from '../../lib/catalog/publish';
 import { createTestCatalog, type TestCatalog } from '../../lib/catalog/testing';
-import { HOME_OPENING, HOME_ORDER, HOME_OTHER_PHOTO_ID, HOME_PHOTO_IDS, HOME_SERIES } from './catalog-home';
+import { HOME_OPENING, HOME_ORDER, HOME_OTHER_PHOTO_ID, HOME_PHOTO_IDS, HOME_SERIES, VARIETY_PHOTO_IDS, VARIETY_SERIES, VARIETY_UNFEATURED } from './catalog-home';
 
 /** Publishes the fixture into `root`, an empty data root outside the repository, or a temp one without it. */
 export async function publishHomeFixture(root?: string): Promise<{ catalog: TestCatalog; revisionId: string }> {
@@ -25,5 +25,24 @@ export async function publishHomeFixture(root?: string): Promise<{ catalog: Test
     });
     const result = await publish({ dataRoot: catalog.root, actor: 'e2e', reason: 'fixture', confirmLaunch: true, logger: { log: () => undefined } });
     if (result.outcome !== 'PUBLISHED' || result.revisionId === null) throw new Error(`The Home fixture didn't publish: ${result.outcome}: ${result.message} ${result.issues.map((issue) => issue.code).join(', ')}`);
+    return { catalog, revisionId: result.revisionId };
+}
+
+/**
+ * The variety fixture from e2e/support/catalog-home.ts, published into
+ * `root` or a temp one: three featured series, which Home plays as one loop,
+ * and one that isn't featured, listed first in Work order.
+ */
+export async function publishHomeVarietyFixture(root?: string): Promise<{ catalog: TestCatalog; revisionId: string }> {
+    const catalog = await createTestCatalog({
+        root,
+        withAssets: true,
+        seed: 5,
+        photos: VARIETY_PHOTO_IDS.map((id) => ({ id })),
+        series: [{ ...VARIETY_UNFEATURED, photoIds: [...VARIETY_UNFEATURED.photoIds] }, ...VARIETY_SERIES.map((series) => ({ ...series, photoIds: [...series.photoIds] }))],
+        featuredSeriesIds: VARIETY_SERIES.map((series) => series.id),
+    });
+    const result = await publish({ dataRoot: catalog.root, actor: 'e2e', reason: 'fixture', confirmLaunch: true, logger: { log: () => undefined } });
+    if (result.outcome !== 'PUBLISHED' || result.revisionId === null) throw new Error(`The variety fixture didn't publish: ${result.outcome}: ${result.message} ${result.issues.map((issue) => issue.code).join(', ')}`);
     return { catalog, revisionId: result.revisionId };
 }

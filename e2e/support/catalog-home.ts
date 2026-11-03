@@ -34,3 +34,23 @@ const fixtureAlt = (index: number) => `Fixture description of photograph ${Strin
 
 /** The alt of a photograph by ID. */
 export const altOf = (photoId: string) => fixtureAlt(HOME_PHOTO_IDS.findIndex((other) => other === photoId));
+
+/**
+ * Home's loop of featured series (v1.5.0), for e2e/home-variety.spec.ts:
+ * three featured series, in this order, each opening somewhere else in its
+ * own order. publishHomeVarietyFixture() in homeFixture.ts publishes them.
+ */
+export const VARIETY_SERIES = [
+    { id: 'ser_e2e-variety-one', slug: 'e2e-variety-one', title: 'Variety series one', shortStatement: 'The first featured series.', photoIds: [id(101), id(102), id(103)], openingPhotoId: id(102) },
+    { id: 'ser_e2e-variety-two', slug: 'e2e-variety-two', title: 'Variety series two', shortStatement: 'The second featured series.', photoIds: [id(104), id(105)], openingPhotoId: id(104) },
+    { id: 'ser_e2e-variety-three', slug: 'e2e-variety-three', title: 'Variety series three', shortStatement: 'The third featured series.', photoIds: [id(106), id(107), id(108)], openingPhotoId: id(108) },
+] as const;
+
+/** A published series that isn't featured, which Home never plays. */
+export const VARIETY_UNFEATURED = { id: 'ser_e2e-variety-other', slug: 'e2e-variety-other', title: 'Variety series, not featured', photoIds: [id(109)] } as const;
+
+/** Every photograph the variety fixture publishes, in its photo list's order. */
+export const VARIETY_PHOTO_IDS = [...VARIETY_SERIES.flatMap((series) => series.photoIds), ...VARIETY_UNFEATURED.photoIds];
+
+/** The alt of a variety fixture photograph by ID. */
+export const varietyAltOf = (photoId: string) => fixtureAlt(VARIETY_PHOTO_IDS.indexOf(photoId));
