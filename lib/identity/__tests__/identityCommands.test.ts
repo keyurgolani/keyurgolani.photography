@@ -141,7 +141,8 @@ describe('a pass with decision files', () => {
     }, 60_000);
 
     it.skipIf(isRoot)("commits without decisions when their folder can't be read, and applies them once it can", async () => {
-        const s = await setup({ 'a.jpg': 'A' });
+        // b.jpg stays, so the pass isn't refused for an empty library.
+        const s = await setup({ 'a.jpg': 'A', 'b.jpg': 'B' });
         const x = await s.photoAt('a.jpg');
         fs.rmSync(s.lib.file('a.jpg'));
         const { name } = await s.decide({ type: 'archive', photoId: x });
@@ -162,7 +163,8 @@ describe('a pass with decision files', () => {
     }, 60_000);
 
     it.skipIf(isRoot)("leaves a decision file it can't read where it is, and applies it once it can", async () => {
-        const s = await setup({ 'a.jpg': 'A' });
+        // b.jpg stays, so the pass isn't refused for an empty library.
+        const s = await setup({ 'a.jpg': 'A', 'b.jpg': 'B' });
         const x = await s.photoAt('a.jpg');
         fs.rmSync(s.lib.file('a.jpg'));
         const { name } = await s.decide({ type: 'archive', photoId: x });
@@ -181,7 +183,8 @@ describe('a pass with decision files', () => {
     }, 60_000);
 
     it.skipIf(isRoot)("keeps the registry change and warns when the decision can't be filed, and files it next time", async () => {
-        const s = await setup({ 'a.jpg': 'A' });
+        // b.jpg stays, so the pass isn't refused for an empty library.
+        const s = await setup({ 'a.jpg': 'A', 'b.jpg': 'B' });
         const x = await s.photoAt('a.jpg');
         fs.rmSync(s.lib.file('a.jpg'));
         const { name, decisionId } = await s.decide({ type: 'archive', photoId: x });
