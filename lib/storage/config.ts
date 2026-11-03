@@ -43,15 +43,41 @@ export interface DataRootStatus {
     detail?: string;
 }
 
+/** PHOTOGRAPHY_LIBRARY_DIR is unset, so nothing can say where the photo library is. */
+export class LibraryRootUnsetError extends Error {
+    readonly code = 'LIBRARY_ROOT_UNSET';
+    constructor() {
+        super('PHOTOGRAPHY_LIBRARY_DIR is not set. Point it at the photo library: /data/library in both compose files.');
+        this.name = 'LibraryRootUnsetError';
+    }
+}
+
 /**
- * The photo library: PHOTOGRAPHY_LIBRARY_DIR, or public/assets/photos under the working directory.
+ * The photo library, PHOTOGRAPHY_LIBRARY_DIR resolved, or null when it's
+ * unset. There is no default in any environment: until v1.7.0 it was
+ * public/assets/photos under the working directory, and a container that
+ * quietly read that old path could read an empty folder as an empty library.
+ * For callers that only keep the library's path out of output or check what
+ * sits inside it, such as web, which reads nothing there and mounts no library.
  *
  * The roots are found at run time, so the build must not trace them: the
  * ignore comments here and in dataRootStatus() keep Turbopack from copying
  * the whole project into .next/standalone.
  */
+export function configuredLibraryRoot(): string | null {
+    const configured = process.env.PHOTOGRAPHY_LIBRARY_DIR;
+    return configured ? path.resolve(/*turbopackIgnore: true*/ configured) : null;
+}
+
+/**
+ * The photo library, for the callers that read it: the watcher, the identity
+ * pass and builds, and the CLI. Throws LibraryRootUnsetError when
+ * PHOTOGRAPHY_LIBRARY_DIR is unset, so it never falls back to another folder.
+ */
 export function libraryRoot(): string {
-    return path.resolve(/*turbopackIgnore: true*/ process.env.PHOTOGRAPHY_LIBRARY_DIR || path.join(/*turbopackIgnore: true*/ process.cwd(), 'public/assets/photos'));
+    const root = configuredLibraryRoot();
+    if (root === null) throw new LibraryRootUnsetError();
+    return root;
 }
 
 /**
@@ -83,8 +109,9 @@ export function servedFolderContaining(target: string): string | null {
  */
 function servedFolderOf(target: string): { folder: string; name: string } | null {
     const realTarget = realpathLoose(target);
+    const library = configuredLibraryRoot();
     const served = [
-        { folder: libraryRoot(), name: 'the photo library' },
+        ...(library === null ? [] : [{ folder: library, name: 'the photo library' }]),
         { folder: path.join(/*turbopackIgnore: true*/ process.cwd(), 'public'), name: 'the app\'s public folder' },
     ];
     return served.find(({ folder }) => isInside(realTarget, realpathLoose(folder))) ?? null;

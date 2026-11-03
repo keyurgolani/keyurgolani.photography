@@ -221,9 +221,9 @@ for service in image-watcher curator; do
     fail "$service must mount the library once, at /data/library."
   fi
 done
-if ! jq -e "[.services | to_entries[] | select([.value.volumes[]? | select($LIBRARY_MOUNT)] | length > 0) | .key] | sort
-    == [.services | to_entries[] | select(.value.environment // {} | has(\"PHOTOGRAPHY_LIBRARY_DIR\")) | .key] | sort
-    and all(.services[]; (.environment // {}).PHOTOGRAPHY_LIBRARY_DIR // \"/data/library\" | . == \"/data/library\")" <<<"$resolved" >/dev/null; then
+if ! jq -e "([.services | to_entries[] | select([.value.volumes[]? | select($LIBRARY_MOUNT)] | length > 0) | .key] | sort)
+    == ([.services | to_entries[] | select(.value.environment // {} | has(\"PHOTOGRAPHY_LIBRARY_DIR\")) | .key] | sort)
+    and all(.services[]; ((.environment // {}).PHOTOGRAPHY_LIBRARY_DIR // \"/data/library\") == \"/data/library\")" <<<"$resolved" >/dev/null; then
   fail "Every service that mounts the library, and only those, must set PHOTOGRAPHY_LIBRARY_DIR=/data/library, the read-only mount."
 fi
 if ! jq -e '.services.web | ([.volumes[]? | select(((.source // "") | test("/public/assets/photos(/|$)")) or ((.target // "") | rtrimstr("/")) == "/data/library")] | length == 0) and ((.environment // {}) | has("PHOTOGRAPHY_LIBRARY_DIR") | not)' <<<"$resolved" >/dev/null; then

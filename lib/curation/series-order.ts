@@ -9,7 +9,7 @@ import { PHOTO_ID_RE } from '../identity/ids';
 import { currentProfileId } from '../identity/profile';
 import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
-import { dataRootStatus, libraryRoot } from '../storage/config';
+import { configuredLibraryRoot, dataRootStatus } from '../storage/config';
 import { LockLostError, LockTimeoutError, withLock, type LockContext } from '../storage/lock';
 import { scrub } from './commands';
 import { curatorThumbnailUrl } from './inbox';
@@ -299,7 +299,7 @@ async function consequenceText(consequence: Consequence, before: AuthoredSeries,
     }
 }
 
-const roots = () => [dataRootStatus().root, libraryRoot()];
+const roots = () => [dataRootStatus().root, configuredLibraryRoot()];
 
 /** #8's own words name IDs and fields, so they stay in the server log. */
 function logged(what: string, error: OrderError): void {
@@ -619,7 +619,7 @@ function thumbnailOf(registry: Registry | null, photoId: string, assetRevision: 
  */
 export async function seriesOrderView(root: string, record: AuthoredSeries): Promise<SeriesOrderView> {
     const [layer, registry] = await Promise.all([readWorkingLayer(root), readRegistry(root).catch((error: unknown) => {
-        console.warn(`[curation] The registry can't be read for a series' page, so its photographs are named without their files: ${scrub((error as Error).message, [root, libraryRoot()])}`);
+        console.warn(`[curation] The registry can't be read for a series' page, so its photographs are named without their files: ${scrub((error as Error).message, [root, configuredLibraryRoot()])}`);
         return null;
     })]);
     const photos = new Map(layer.photos.map((photo) => [photo.id, photo]));
@@ -665,7 +665,7 @@ export async function workOrderView(root: string, series: readonly AuthoredSerie
     try {
         site = await readAuthoredRecord(root, 'site', 'site');
     } catch (error) {
-        console.warn(`[curation] The site record can't be read for the Series screen's Work order: ${scrub((error as Error).message, [root, libraryRoot()])}`);
+        console.warn(`[curation] The site record can't be read for the Series screen's Work order: ${scrub((error as Error).message, [root, configuredLibraryRoot()])}`);
         return null;
     }
     const byId = new Map(series.map((entry) => [entry.id, entry]));

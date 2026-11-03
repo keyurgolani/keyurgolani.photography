@@ -3,7 +3,7 @@ import path from 'node:path';
 import { canonicalJson } from '../identity/ids';
 import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
-import { dataRootStatus, libraryRoot } from '../storage/config';
+import { configuredLibraryRoot, dataRootStatus } from '../storage/config';
 import { LockTimeoutError, withLock, type LockContext, type LockHooks, type LockRecord } from '../storage/lock';
 import { candidateFile, compileCandidate, type CompileResult } from './compile';
 import { legacySitePhotos } from './legacy-photos';
@@ -287,7 +287,7 @@ async function commitActivation(input: CommitInput): Promise<CommitResult> {
 
 /** Run every rule over a stored revision, as a rollback or a repair records it. */
 export function validateStored(root: string, revision: RevisionFile, registry: Registry | null): { validation: Activation['validation']; issues: Issue[] } {
-    const issues = runRules({ candidate: revision.content, authored: null, active: revision, registry, roots: { dataRoot: root, libraryRoot: libraryRoot() } });
+    const issues = runRules({ candidate: revision.content, authored: null, active: revision, registry, roots: { dataRoot: root, libraryRoot: configuredLibraryRoot() } });
     return { issues, validation: { rulesetVersion: rulesetVersion(), errors: countOf(issues, 'error'), warnings: countOf(issues, 'warning'), diagnosticsDigest: digestOf(issues) } };
 }
 
@@ -452,7 +452,7 @@ function ruleContext(root: string, snapshot: Snapshot) {
         authored: snapshot.layer,
         active: snapshot.active,
         registry: snapshot.registry,
-        roots: { dataRoot: root, libraryRoot: libraryRoot() },
+        roots: { dataRoot: root, libraryRoot: configuredLibraryRoot() },
         excluded: snapshot.compiled.excluded,
         review: snapshot.review,
     };
@@ -643,7 +643,8 @@ export async function activateRevision(options: ActivateOptions): Promise<Activa
 
 /** What a first activation takes away: photographs the legacy site counts as on it that the candidate doesn't publish. */
 function launchImpact(registry: Registry, published: number, publishedIds: ReadonlySet<string>): LaunchImpact {
-    const { onSite } = legacySitePhotos(registry, libraryRoot());
+    // Only the case-folding of shared legacy sets reads the library, so a publisher without one still counts, never lower.
+    const { onSite } = legacySitePhotos(registry, configuredLibraryRoot());
     return { published, gone: onSite.filter((photo) => !publishedIds.has(photo.photoId)).length };
 }
 

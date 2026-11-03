@@ -18,9 +18,17 @@ export interface WatcherHeartbeat {
     /** When the last pass finished, or null before the first. */
     lastPassAt: string | null;
     lastPassResult: PassResult | null;
-    /** When the pass under way started, after the legacy step went idle, or null while none runs. */
+    /** When the pass under way started, or null while none runs. */
     passStartedAt: string | null;
     heartbeatAt: string;
+    /**
+     * Whether this watcher writes the legacy basename derivatives into the
+     * library. Always false from v1.7.0, which stopped writing them (#13's
+     * slice E). Older watchers write no such field, and #15's GC reads a
+     * missing field as "still writes them", so it only takes legacy files
+     * while a fresh heartbeat says false.
+     */
+    legacyDerivatives: false;
 }
 
 export function watcherStatusFile(root: string): string {
@@ -80,9 +88,7 @@ export const WATCHER_PASS_LIMIT_MS = 30 * 60_000;
  * after this clock, and no identity pass has run longer than `passLimitMs`.
  * The watcher writes the heartbeat every 30 s while the data root exists and
  * is writable, initialized or not, so an unset, missing, or unwritable data
- * root reads as unhealthy too. A legacy derivative job that never finishes
- * isn't caught: the pass waits for the legacy step before it starts, and a
- * first start's legacy backlog can rightly take hours.
+ * root reads as unhealthy too.
  */
 export async function checkWatcherHealth(
     { clock = Date.now, maxAgeMs = WATCHER_HEALTHY_WITHIN_MS, passLimitMs = WATCHER_PASS_LIMIT_MS }: { clock?: () => number; maxAgeMs?: number; passLimitMs?: number } = {},

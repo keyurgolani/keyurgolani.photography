@@ -4,7 +4,7 @@ import type { AuthoredSeries, AuthoredSeriesInput } from '../catalog/types';
 import { readActivePointer, readAuthoredRecord, readAuthoredSeries, RecordUnusableError } from '../catalog/working-layer';
 import { AUTHORED_LEASE_MS, AUTHORED_LOCK, AUTHORED_WAIT_MS, AuthoredWriteError, writeAuthoredRecord } from '../catalog/working-layer-writer';
 import { canonicalJson } from '../storage/canonical';
-import { dataRootStatus, libraryRoot } from '../storage/config';
+import { configuredLibraryRoot, dataRootStatus } from '../storage/config';
 import { LockLostError, LockTimeoutError, withLock } from '../storage/lock';
 import { scrub } from './commands';
 import { WEB_ACTOR } from './inbox-form';
@@ -235,7 +235,7 @@ export interface SeriesActionOptions {
 export async function runSeriesAction(kind: SeriesActionKind, form: unknown, options: SeriesActionOptions = {}): Promise<SeriesActionState> {
     serial += 1;
     const answer = (status: Exclude<SeriesActionState, { status: 'idle' }>['status'], seriesId: string | null, message: string, extra: { field?: SeriesField; href?: string; title?: string } = {}): SeriesActionState => {
-        return { status, action: kind, seriesId, message: scrub(message, [dataRootStatus().root, libraryRoot()]), ...extra, serial };
+        return { status, action: kind, seriesId, message: scrub(message, [dataRootStatus().root, configuredLibraryRoot()]), ...extra, serial };
     };
     if (!(form instanceof FormData)) return answer('invalid', null, 'The form was empty. Refresh the page.');
     let seriesId: string | null = null;
@@ -266,7 +266,7 @@ export async function runSeriesAction(kind: SeriesActionKind, form: unknown, opt
         if (error instanceof StaleSeries) return answer('stale', seriesId, error.message);
         if (error instanceof RefusedSeries) return answer('refused', seriesId, error.message);
         if (error instanceof RecordUnusableError) {
-            console.warn(`[curation] The series ${kind} on ${seriesId} found it unusable: ${scrub(error.message, [dataRootStatus().root, libraryRoot()])}`);
+            console.warn(`[curation] The series ${kind} on ${seriesId} found it unusable: ${scrub(error.message, [dataRootStatus().root, configuredLibraryRoot()])}`);
             return answer('failed', seriesId, `This series can't be read, so nothing was written. The server log names the problem.`);
         }
         if (error instanceof AuthoredWriteError) {
@@ -276,7 +276,7 @@ export async function runSeriesAction(kind: SeriesActionKind, form: unknown, opt
             if (error.code === 'DATA_ROOT_NOT_READY') return answer('failed', seriesId, `The data root isn't ready, so ${NOTHING.toLowerCase()}`);
             // The writer's own words name the record by ID and its issues by field key, so they stay in the server log.
             const issues = error.issues?.map((issue) => `${issue.path || '(the record)'}: ${issue.message}`).join('; ') ?? '';
-            console.warn(`[curation] The series ${kind} on ${seriesId} was refused: ${scrub(`${error.message} ${issues}`, [dataRootStatus().root, libraryRoot()])}`);
+            console.warn(`[curation] The series ${kind} on ${seriesId} was refused: ${scrub(`${error.message} ${issues}`, [dataRootStatus().root, configuredLibraryRoot()])}`);
             return answer('refused', seriesId, REFUSED);
         }
         if (error instanceof LockTimeoutError || error instanceof LockLostError) return answer('busy', seriesId, BUSY_ANSWER);
@@ -322,7 +322,7 @@ async function workOrder(root: string): Promise<Map<string, number>> {
         const site = await readAuthoredRecord(root, 'site', 'site');
         return new Map((site?.seriesOrder ?? []).map((id, index) => [id, index]));
     } catch (error) {
-        console.warn(`[curation] The site record can't be read for the Series screen's Work order: ${scrub((error as Error).message, [root, libraryRoot()])}`);
+        console.warn(`[curation] The site record can't be read for the Series screen's Work order: ${scrub((error as Error).message, [root, configuredLibraryRoot()])}`);
         return new Map();
     }
 }

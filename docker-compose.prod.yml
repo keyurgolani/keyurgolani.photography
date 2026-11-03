@@ -8,15 +8,8 @@ services:
       # internet. PHOTOGRAPHY_PORT changes the host port.
       - "127.0.0.1:${PHOTOGRAPHY_PORT:-3000}:3000"
     volumes:
-      # Never created when missing, so a lost photos folder keeps the container
-      # from starting instead of serving an empty library. Read-only: web
-      # serves the library and never writes it.
-      - type: bind
-        source: ./public/assets/photos
-        target: /app/public/assets/photos
-        read_only: true
-        bind:
-          create_host_path: false
+      # No photo library: web reads nothing in it. Photos reach the site only
+      # as the /media sets in the data root (#13's slice E).
       # The private data root: photo identity state and the /media sets. Only
       # the watcher writes it. Never created when missing either, since an
       # empty one beside a library that had photo IDs would mint new ones.
@@ -52,24 +45,29 @@ services:
       retries: 3
       start_period: 10s
 
-  # Image optimization watcher - processes new photos automatically
+  # Image watcher - gives each new photo its ID and builds its /media set
   # Both containers run as uid 1001 (nextjs user). web writes nothing on the
-  # host. The watcher reads the photos, writes the derivative folders and
-  # cache/ in the photos folder, and writes the data root. When nothing else
-  # writes the photos, run on host:
+  # host. The watcher reads the photos, read-only, and writes only the data
+  # root. Since v1.7.0 it writes no legacy derivatives into the photos folder.
+  # Run on host:
   #   mkdir -p ./portfolio-data
-  #   chown -R 1001:1001 ./public/assets/photos ./portfolio-data
+  #   chown -R 1001:1001 ./portfolio-data
   #   chmod 700 ./portfolio-data
-  # When another process, such as a file sync tool, writes the photos, hand
-  # uid 1001 only the derivative folders and cache/ instead, and keep the
-  # photos readable to it (docs/data-root.md, Who owns the photos).
+  # and keep the photos readable to uid 1001 (docs/data-root.md, Who owns
+  # the photos). Its run --rm form is also the CLI, photos.mjs, with these
+  # same mounts.
   image-watcher:
     image: ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?Set PHOTOGRAPHY_IMAGE_TAG to a release tag, for example v1.1.0}
     user: "1001:1001"
     volumes:
+      # The photo library, the owner's originals. Read-only: nothing in the
+      # stack writes it. Never created when missing, so a lost photos folder
+      # keeps the container from starting instead of reading as an empty
+      # library, and PHOTOGRAPHY_LIBRARY_DIR has no default to fall back to.
       - type: bind
         source: ./public/assets/photos
-        target: /app/public/assets/photos
+        target: /data/library
+        read_only: true
         bind:
           create_host_path: false
       - type: bind
@@ -81,12 +79,12 @@ services:
     environment:
       - NODE_ENV=production
       - PHOTOGRAPHY_DATA_DIR=/data/portfolio
+      - PHOTOGRAPHY_LIBRARY_DIR=/data/library
     command: ["node", "dist/scripts/imageWatcher.mjs", "--watch"]
     # Healthy while status/watcher.json in the data root is at most 120 s old
     # and no identity pass has run longer than 30 minutes. The watcher rewrites
     # it every 30 s, so a stopped event loop, a data root it can't write, or a
-    # pass that never ends turns unhealthy. A stuck legacy derivative job
-    # doesn't (docs/data-root.md, Health).
+    # pass that never ends turns unhealthy (docs/data-root.md, Health).
     healthcheck:
       test: ["CMD", "node", "dist/scripts/watcherHealth.mjs"]
       interval: 30s
@@ -123,9 +121,10 @@ services:
     networks:
       - curator
     volumes:
+      # The photo library, read-only and never created, as image-watcher mounts it.
       - type: bind
         source: ./public/assets/photos
-        target: /app/public/assets/photos
+        target: /data/library
         read_only: true
         bind:
           create_host_path: false
@@ -158,6 +157,7 @@ services:
     environment:
       - NODE_ENV=production
       - PHOTOGRAPHY_DATA_DIR=/data/portfolio
+      - PHOTOGRAPHY_LIBRARY_DIR=/data/library
       - PHOTOGRAPHY_SITE_CONFIG_DIR=/config/site
       - CURATION_ENABLED=true
       # Docker's port forward reaches the container on its own interface, so

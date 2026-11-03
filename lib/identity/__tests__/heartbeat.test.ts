@@ -29,6 +29,7 @@ function beat(root: string, at = AT, passStartedAt: number | null = null): Promi
         lastPassResult: null,
         passStartedAt: passStartedAt === null ? null : new Date(passStartedAt).toISOString(),
         heartbeatAt: new Date(at).toISOString(),
+        legacyDerivatives: false,
     });
 }
 

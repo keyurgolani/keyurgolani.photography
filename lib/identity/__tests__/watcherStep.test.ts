@@ -397,7 +397,7 @@ describe('the 30 s check', { timeout: 60_000 }, () => {
 
         expect(fs.statSync(s.data.file('status')).mode & 0o777).toBe(0o700);
         expect(fs.statSync(watcherStatusFile(s.data.root)).mode & 0o777).toBe(0o600);
-        expect(s.heartbeat()).toEqual({ pid: 4242, hostname: 'test-host', lastPassAt: null, lastPassResult: null, passStartedAt: null, heartbeatAt: iso(NOW) });
+        expect(s.heartbeat()).toEqual({ pid: 4242, hostname: 'test-host', lastPassAt: null, lastPassResult: null, passStartedAt: null, heartbeatAt: iso(NOW), legacyDerivatives: false });
     });
 
     it('asks for a pass when a decision is waiting', async () => {

@@ -103,9 +103,11 @@ export interface UnlistedLegacyPhoto {
  * path of each set. A photo whose legacy derivatives aren't all built still counts,
  * so a missing or empty library folder can't make photos look already gone.
  * `hidden` names the ones left out, with why. publish's launch count and
- * `photos carry-over` both read this.
+ * `photos carry-over` both read this. With no library configured (`library`
+ * null, as in the curator's tests), only matching base names share a set, so
+ * the count can only come out higher, never lower.
  */
-export function legacySitePhotos(registry: Registry, library: string): { onSite: PhotoRecord[]; hidden: UnlistedLegacyPhoto[] } {
+export function legacySitePhotos(registry: Registry, library: string | null): { onSite: PhotoRecord[]; hidden: UnlistedLegacyPhoto[] } {
     const byPath = new Map<string, PhotoRecord>();
     for (const photo of Object.values(registry.photos)) if (onLegacySite(photo)) byPath.set(photo.source.path, photo);
     const onSite: PhotoRecord[] = [];
