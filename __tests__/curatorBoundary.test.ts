@@ -23,7 +23,7 @@ const ACTION_ID = '7f'.repeat(21);
 const CURATOR_HOST = '127.0.0.1:3001';
 const CURATOR_ORIGIN = `http://${CURATOR_HOST}`;
 
-// proxy() is async: it reads the catalog mode for /assets/photos and /_next/image.
+// proxy() answers synchronously; awaiting it changes nothing.
 async function send(pathname: string, init: { method?: string; headers?: Record<string, string> } = {}) {
     const headers = new Headers({ host: CURATOR_HOST, ...init.headers });
     return proxy(new NextRequest(new URL(pathname, `http://${headers.get('host') || CURATOR_HOST}`), { method: init.method ?? 'GET', headers }));
@@ -147,7 +147,6 @@ describe('proxy.ts with CURATION_ENABLED=true', () => {
     });
 
     it('holds every path on the curator process to the Host allowlist, the public ones too', async () => {
-        // An empty data root, so the legacy derivative below passes on an allowed Host (legacy mode).
         vi.stubEnv('PHOTOGRAPHY_DATA_DIR', emptyDataRoot);
         for (const pathname of ['/', '/gallery', '/api/photos', '/api/health', '/media/p/r/w/x.webp', '/assets/photos/optimized/a.webp']) {
             for (const host of ['keyurgolani.photography', 'rebound.example:3001', '127.0.0.1:3000']) {
@@ -155,8 +154,14 @@ describe('proxy.ts with CURATION_ENABLED=true', () => {
                 expect(response.status, `${pathname} on ${host}`).toBe(421);
                 expect(response.headers.get('cache-control')).toBe('no-store');
             }
-            expect(passes(await send(pathname)), pathname).toBe(true);
         }
+        // On an allowed Host they answer as on web: /gallery's 308 and the photo library's 404 come after the Host check.
+        for (const pathname of ['/', '/api/photos', '/api/health', '/media/p/r/w/x.webp']) expect(passes(await send(pathname)), pathname).toBe(true);
+        const gallery = await send('/gallery');
+        expect(gallery.status).toBe(308);
+        // NextURL spells a loopback host localhost, and Next sends the Location on as the relative /work.
+        expect(gallery.headers.get('location')).toBe('http://localhost:3001/work');
+        expect((await send('/assets/photos/optimized/a.webp')).status).toBe(404);
     });
 
     it('serves its public paths to an allowed Host, read-only as on web', async () => {

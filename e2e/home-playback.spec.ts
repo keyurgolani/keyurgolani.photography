@@ -1,5 +1,5 @@
 import type { Locator, Page } from '@playwright/test';
-import type { ImageItem } from '../lib/catalog/photos-api';
+import { CATALOG_ORIGIN, HOME_OPENING, HOME_ORDER } from './support/catalog-home';
 import { expectContrastOverImage } from './support/contrast';
 import { expectNotObscured } from './support/focus';
 import { photoPoint } from './support/home';
@@ -7,6 +7,18 @@ import { waitForHydration } from './support/hydration';
 import { expectReflow } from './support/reflow';
 import { checkSurface } from './support/surface';
 import { expect, setPhotoFixtures, test } from './support/test';
+
+// #2's playback on Home, on playwright.config.ts's catalog server, which serves the published Home fixture: since
+// #13's slice E Home renders only a published revision. It opens on its authored opening photograph, the third of
+// four, and the photographs are painted with the photo fixtures (setPhotoFixtures()) from there on.
+test.use({ baseURL: CATALOG_ORIGIN });
+
+/** The position Home shows `steps` on from the opening photograph, wrapping, such as 04 / 04 one after 03 / 04. */
+function at(steps: number): string {
+    const count = HOME_ORDER.length;
+    const index = (((HOME_ORDER.indexOf(HOME_OPENING) + steps) % count) + count) % count;
+    return `${String(index + 1).padStart(2, '0')} / ${String(count).padStart(2, '0')}`;
+}
 
 /** HOME_AUTO_ADVANCE_MS in components/home/homePlayback.ts. */
 const INTERVAL = 12_000;
@@ -103,12 +115,12 @@ async function revealByPointer(page: Page, isMobile: boolean, { clocked = false 
 }
 
 /**
- * Opens Home on three photographs and waits until it settles into `state`.
+ * Opens Home with `photos` painted on and waits until it settles into `state`.
  * With `clock`, it installs the page clock before the load or after it, and
  * pauses it once settled. Timers armed before an install keep real time.
  */
-async function openHome(page: Page, { state = 'advancing', clock }: { state?: string; clock?: 'before' | 'after' } = {}) {
-    setPhotoFixtures(page, ['white', 'gray', 'black']);
+async function openHome(page: Page, { state = 'advancing', clock, photos = ['white', 'gray', 'black'] }: { state?: string; clock?: 'before' | 'after'; photos?: readonly string[] } = {}) {
+    setPhotoFixtures(page, photos);
     if (clock === 'before') await page.clock.install();
     await page.goto('/');
     await waitForHydration(page);
@@ -120,16 +132,6 @@ async function openHome(page: Page, { state = 'advancing', clock }: { state?: st
         await page.clock.pauseAt(now + 1000);
         await settle(page);
     }
-}
-
-/** Two white records with distinct src values. The fixture route serves both files by basename. */
-async function serveTwoWhitePhotos(page: Page) {
-    const record = (src: string, id: number): ImageItem => ({
-        id, src, thumbnail: src, medium: src, optimized: src, width: 1200, height: 800, optimizedWidth: 1200, optimizedHeight: 800,
-        caption: '', date: Date.UTC(2024, 0, 1), lqip: '',
-    });
-    await page.route('**/api/photos', (route) =>
-        route.fulfill({ json: [record('/assets/photos/white.jpg', 0), record('/assets/photos/copy-2/white.jpg', 1)] }));
 }
 
 type Box = { left: number; top: number; right: number; bottom: number };
@@ -162,7 +164,7 @@ function shortScreenChecks(state: 'advancing' | 'reduced-motion', screens: reado
         test(`at ${width} by ${height} Previous keeps its ring in view and takes a click or tap anywhere on it`, async ({ page, isMobile }) => {
             await page.setViewportSize({ width, height });
             await openHome(page, { state });
-            await expect(position(page)).toHaveText('01 / 03');
+            await expect(position(page)).toHaveText(at(0));
             await expect(portrait(page)).toHaveCount(0);
             // Keyboard focus reveals the chrome and holds it, so it takes the pointer.
             await pressUntilFocused(page, 'Tab', previous(page));
@@ -178,7 +180,7 @@ function shortScreenChecks(state: 'advancing' | 'reduced-motion', screens: reado
             expect(missed, 'points on Previous that something else takes').toEqual([]);
             if (isMobile) await previous(page).tap();
             else await previous(page).click();
-            await expect(position(page)).toHaveText('03 / 03');
+            await expect(position(page)).toHaveText(at(-1));
         });
     }
 }
@@ -189,7 +191,7 @@ test.describe('normal motion', () => {
         // Installed before the load, so the slideshow's timer is the clock's from the start.
         await openHome(page, { clock: 'before' });
         const { width, height } = page.viewportSize()!;
-        await expect(position(page)).toHaveText('01 / 03');
+        await expect(position(page)).toHaveText(at(0));
 
         // Pause by click or tap, then move the mouse off the controls so its hold can't stand in for a broken Pause.
         await revealByPointer(page, isMobile, { clocked: true });
@@ -199,7 +201,7 @@ test.describe('normal motion', () => {
         if (!isMobile) await page.mouse.move(width / 2, height / 2);
 
         await runFor(page, INTERVAL * 3);
-        await expect(position(page)).toHaveText('01 / 03');
+        await expect(position(page)).toHaveText(at(0));
         expect(await runningLongerThan(page, 5000)).toEqual([]);
         const zooms = await zoomStates(page);
         expect(zooms.length).toBeGreaterThan(0);
@@ -218,13 +220,13 @@ test.describe('normal motion', () => {
             await expect(stage(page)).toHaveAttribute('data-playback', 'held');
             await page.mouse.move(width / 2, height / 2, { steps: 2 });
             await expect(stage(page)).toHaveAttribute('data-playback', 'advancing');
-            await expect(position(page)).toHaveText('01 / 03');
+            await expect(position(page)).toHaveText(at(0));
         }
         await settle(page);
         await runFor(page, INTERVAL - 1);
-        await expect(position(page)).toHaveText('01 / 03');
+        await expect(position(page)).toHaveText(at(0));
         await runFor(page, 1);
-        await expect(position(page)).toHaveText('02 / 03');
+        await expect(position(page)).toHaveText(at(1));
 
         // Keyboard focus on Next shows the chrome at once and keeps it up past the idle timeout.
         if (!isMobile) await page.mouse.move(width / 2, height / 2);
@@ -233,14 +235,14 @@ test.describe('normal motion', () => {
         await expect(stage(page)).toHaveAttribute('data-playback', 'held');
         await runFor(page, IDLE + 1000);
         expect(await chromeOpacity(page)).toBe(1);
-        await expect(position(page)).toHaveText('02 / 03');
+        await expect(position(page)).toHaveText(at(1));
 
         // The toggle sits in SiteNav inside the chrome, so focus there holds too, and nothing moves.
         await pressUntilFocused(page, 'Shift+Tab', themeToggle(page));
         await expect(stage(page)).toHaveAttribute('data-playback', 'held');
         await settle(page);
         await runFor(page, INTERVAL);
-        await expect(position(page)).toHaveText('02 / 03');
+        await expect(position(page)).toHaveText(at(1));
         await expect(themeToggle(page)).toBeFocused();
     });
 
@@ -251,16 +253,16 @@ test.describe('normal motion', () => {
         const { width, height } = page.viewportSize()!;
         await revealByPointer(page, false, { clocked: true });
         await next(page).click();
-        await expect(position(page)).toHaveText('02 / 03');
+        await expect(position(page)).toHaveText(at(1));
 
         // Enter moves once more and shows the ring, with no new focus event. Then the mouse leaves, so only that focus can hold.
         await page.keyboard.press('Enter');
-        await expect(position(page)).toHaveText('03 / 03');
+        await expect(position(page)).toHaveText(at(2));
         await page.mouse.move(width / 2, height / 2);
         await expect(stage(page)).toHaveAttribute('data-playback', 'held');
         await runFor(page, IDLE + INTERVAL);
         await expect(stage(page)).toHaveAttribute('data-playback', 'held');
-        await expect(position(page)).toHaveText('03 / 03');
+        await expect(position(page)).toHaveText(at(2));
         await expect(next(page)).toBeFocused();
     });
 
@@ -287,7 +289,7 @@ test.describe('normal motion', () => {
 
         await primary(page).getByRole('link', { name: 'Work', exact: true }).focus();
         await page.keyboard.press('Enter');
-        await expect(page).toHaveURL('/gallery');
+        await expect(page).toHaveURL('/work');
         await primary(page).getByRole('link', { name: 'Home', exact: true }).focus();
         await page.keyboard.press('Enter');
         await expect(page).toHaveURL('/');
@@ -327,7 +329,7 @@ test.describe('reduced motion', () => {
         await expect(portrait(page)).toHaveCount(0);
 
         await runFor(page, INTERVAL * 3);
-        await expect(position(page)).toHaveText('01 / 03');
+        await expect(position(page)).toHaveText(at(0));
 
         await expect(play(page)).toHaveAttribute('aria-disabled', 'true');
         await expect(play(page)).toHaveAccessibleDescription('Off with reduced motion');
@@ -342,7 +344,7 @@ test.describe('reduced motion', () => {
         await expect(stage(page)).toHaveAttribute('data-playback', 'reduced-motion');
         await expect(play(page)).toHaveCount(1);
         await runFor(page, INTERVAL * 2);
-        await expect(position(page)).toHaveText('01 / 03');
+        await expect(position(page)).toHaveText(at(0));
         expect(await runningLongerThan(page, 1)).toEqual([]);
     });
 
@@ -358,7 +360,7 @@ test.describe('reduced motion', () => {
         await expect.poll(() => chromeOpacity(page)).toBe(1);
         if (isMobile) await next(page).tap();
         else await next(page).click();
-        await expect(position(page)).toHaveText('02 / 03');
+        await expect(position(page)).toHaveText(at(1));
         expect(await runningLongerThan(page, 1)).toEqual([]);
 
         // A mouse resting on Next holds the chrome, so it moves onto the photograph first.
@@ -372,7 +374,7 @@ test.describe('reduced motion', () => {
         await pressUntilFocused(page, 'Tab', next(page));
         expect(await chromeOpacity(page)).toBe(1);
         await page.keyboard.press('Enter');
-        await expect(position(page)).toHaveText('03 / 03');
+        await expect(position(page)).toHaveText(at(2));
         expect(await runningLongerThan(page, 1)).toEqual([]);
     });
 
@@ -382,8 +384,7 @@ test.describe('reduced motion', () => {
     });
 
     test('over white, the controls keep their contrast, reflow, and clear SiteNav and the toggle', async ({ page }) => {
-        await serveTwoWhitePhotos(page);
-        await openHome(page, { state: 'reduced-motion' });
+        await openHome(page, { state: 'reduced-motion', photos: ['white'] });
         // Keyboard focus in the nav keeps the chrome up through the checks, with its ring clear of the controls.
         await themeToggle(page).focus();
         await pressUntilFocused(page, 'Shift+Tab', navLinks(page).first());
@@ -414,29 +415,14 @@ test.describe('reduced motion', () => {
         shortScreenChecks('reduced-motion', NARROW_SHORT_SCREENS);
     });
 
-    for (const path of ['/gallery', '/about']) {
+    for (const path of ['/work', '/about']) {
         test(`${path} runs nothing past 1 ms`, async ({ page }) => {
             await page.goto(path);
             await waitForHydration(page);
-            if (path === '/gallery') await expect(page.locator('main .grid > *')).toHaveCount(12);
+            if (path === '/work') await expect(page.locator('main a[href^="/work/"]')).not.toHaveCount(0);
             expect(await runningLongerThan(page, 1)).toEqual([]);
         });
     }
-
-    test("the lightbox's own !important transitions end at once too", async ({ page }) => {
-        await page.goto('/gallery');
-        await waitForHydration(page);
-        await page.getByRole('button', { name: 'Photograph 1 of 12', exact: true }).focus();
-        await page.keyboard.press('Enter');
-        await expect(page.getByRole('dialog', { name: 'Lightbox' })).toBeVisible();
-
-        const slow = await page.locator('.yarl__button, .yarl__thumbnails_thumbnail').evaluateAll((elements) =>
-            elements.flatMap((el) => {
-                const longest = Math.max(...getComputedStyle(el).transitionDuration.split(',').map((time) => parseFloat(time) * (time.trim().endsWith('ms') ? 1 : 1000)));
-                return longest > 0.01 ? [`${el.className} transitions for ${longest} ms`] : [];
-            }));
-        expect(slow).toEqual([]);
-    });
 
     // These rules cover the server HTML, where the intro renders before any script can.
     test('the CSS that covers server HTML hides the intro layers and the portrait, only under reduce', async ({ page }) => {

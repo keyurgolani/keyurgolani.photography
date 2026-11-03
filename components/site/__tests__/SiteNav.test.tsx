@@ -37,7 +37,6 @@ describe('SiteNav', () => {
 
   it.each([
     ['/', 'Home'],
-    ['/gallery', 'Work'],
     ['/work', 'Work'],
     ['/work/streets', 'Work'],
     ['/about', 'About'],

@@ -10,8 +10,6 @@ import { defineConfig, devices } from '@playwright/test';
 export default defineConfig({
   testDir: '.',
   testMatch: /surround-perf\.spec\.ts$/,
-  // The photo fixtures for the e2e helpers the spec imports.
-  globalSetup: '../support/global-setup.ts',
   fullyParallel: false,
   workers: 1,
   retries: 0,

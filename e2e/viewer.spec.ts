@@ -15,7 +15,7 @@ import { FACTS_ONLY, HARBOR, P, SENTINELS, SITE_URL, href, id, useViewerCatalog 
 // theme's own Viewer, and nothing outside the allowlist in
 // the HTML or the RSC payload. Each project's worker publishes its own
 // fixture and serves it from a second `next start`, so the harness server
-// stays in legacy mode for every other spec. Close points at #5's series
+// stays unpublished for every other spec. Close points at #5's series
 // page, which isn't on this branch, so only its href is checked. The fixture
 // lives in support/viewerCatalog.ts, shared with #9's viewer-modal.spec.ts.
 

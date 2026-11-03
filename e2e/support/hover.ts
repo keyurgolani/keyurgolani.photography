@@ -1,40 +1,14 @@
-import fs from 'node:fs';
-import { createRequire } from 'node:module';
 import { expect, type Page } from '@playwright/test';
 import { waitForHydration } from './hydration';
 
 const GATE = '(hover: hover) and (pointer: fine)';
 
 /**
- * Third-party stylesheets whose hover rules aren't the app's to gate. YARL
- * wraps its one hover rule in (hover: hover) alone.
- */
-const THIRD_PARTY_CSS = ['yet-another-react-lightbox/styles.css', 'yet-another-react-lightbox/plugins/thumbnails.css'];
-
-const squash = (selector: string) => selector.replace(/\s+/g, '');
-
-let thirdParty: Set<string> | undefined;
-
-/** The hover selectors the third-party stylesheets ship, whitespace removed. */
-function thirdPartyHoverSelectors(): Set<string> {
-    if (thirdParty) return thirdParty;
-    const require = createRequire(import.meta.url);
-    thirdParty = new Set(
-        THIRD_PARTY_CSS.flatMap((file) =>
-            [...fs.readFileSync(require.resolve(file), 'utf8').matchAll(/([^{}]+)\{/g)]
-                .map(([, selector]) => selector.trim())
-                .filter((selector) => selector.includes(':hover') && !selector.startsWith('@'))
-                .map(squash),
-        ),
-    );
-    return thirdParty;
-}
-
-/**
  * Contract rule 3: every app hover rule that matches markup on the page sits
  * inside @media (hover: hover) and (pointer: fine), so a tap never leaves a
  * hover style behind. Tailwind's hover: and group-hover: utilities count, and
- * so do app/globals.css and CSS modules.
+ * so do app/globals.css and CSS modules. The site ships no third-party
+ * stylesheet since #13's slice E removed the lightbox, so every rule counts.
  */
 export async function expectHoverRulesGated(page: Page): Promise<void> {
     await waitForHydration(page);
@@ -92,7 +66,5 @@ export async function expectHoverRulesGated(page: Page): Promise<void> {
         }
         return found;
     }, GATE);
-    const known = thirdPartyHoverSelectors();
-    const app = [...new Set(ungated)].filter((selector) => !known.has(squash(selector)));
-    expect(app, `App hover rules that match markup here must sit inside @media ${GATE}`).toEqual([]);
+    expect([...new Set(ungated)], `App hover rules that match markup here must sit inside @media ${GATE}`).toEqual([]);
 }

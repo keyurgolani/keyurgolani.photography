@@ -67,7 +67,6 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   reporter: [['list'], ['html', { open: 'never' }]],
-  globalSetup: './e2e/support/global-setup.ts',
   use: {
     baseURL: origin,
     trace: 'retain-on-failure',
@@ -100,7 +99,8 @@ export default defineConfig({
     {
       // next start warns that output: 'standalone' expects server.js, but it serves.
       command: `npx tsx e2e/support/write-site-config.ts "${siteConfig()}" && npm run build && npm run start -- --hostname ${host} --port ${port}`,
-      url: origin,
+      // /api/health: with no data root, / is #21's error page, a 500 Playwright doesn't count as up.
+      url: `${origin}/api/health`,
       timeout: 240_000,
       reuseExistingServer: !process.env.CI,
       // The command builds and serves under this env. ALLOW_PROVISIONAL_COPY lets

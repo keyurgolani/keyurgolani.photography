@@ -27,7 +27,7 @@ const WATCHER_ENTRIES = ['scripts/imageWatcher.ts', 'lib/identity/worker.ts', 'l
 
 describe('the retention module boundary', () => {
     it('covers every route handler and page', () => {
-        expect(WEB_ENTRIES).toEqual(expect.arrayContaining(['app/api/photos/route.ts', 'app/api/ready/route.ts', 'app/page.tsx', 'proxy.ts', 'instrumentation.ts', 'next.config.mjs']));
+        expect(WEB_ENTRIES).toEqual(expect.arrayContaining(['app/api/ready/route.ts', 'app/page.tsx', 'proxy.ts', 'instrumentation.ts', 'next.config.mjs']));
         expect(WEB_ENTRIES.some((file) => file.startsWith('app/media/'))).toBe(true);
     });
 

@@ -27,7 +27,7 @@ const seriesFor = cache((slug: string) => seriesPageFrom(getActiveCatalog, slug,
 
 /**
  * Share metadata from the published series record only. Every not-found,
- * redirect, legacy, and unavailable answer gets `{}`, so status, title, and
+ * redirect, and unavailable answer gets `{}`, so status, title, and
  * body match whichever case it was: #21's defaults and the not-found page's
  * title, with Next's noindex. URLs are paths that Next resolves against the
  * root layout's getMetadataBase(). Without a valid SITE_URL that base is
@@ -56,9 +56,9 @@ export async function generateMetadata({ params }: SeriesRouteProps): Promise<Me
 /**
  * A published series (#5). The canonical slug renders the series, a former
  * slug answers 308 to the canonical one, and everything else (malformed,
- * unknown, draft, hidden, removed, legacy mode) is the one public not-found.
- * While the catalog is unavailable it throws, so #21's error page answers
- * 500 with Try again, never a 404.
+ * unknown, draft, hidden, removed) is the one public not-found. While the
+ * catalog is unavailable, nothing published included, it throws, so #21's
+ * error page answers 500 with Try again, never a 404.
  */
 export default async function SeriesRoute({ params }: SeriesRouteProps) {
     const result = await seriesFor((await params).slug);

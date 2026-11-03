@@ -5,15 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { NextRequest } from 'next/server';
 import { unstable_doesMiddlewareMatch } from 'next/experimental/testing/server';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { VARIANT_BYTES } from '../lib/catalog/__tests__/catalogFixtures';
-import { CUTOVER_KEY } from '../lib/catalog/mode';
 import { publish } from '../lib/catalog/publish';
 import { createTestCatalog, type TestCatalog } from '../lib/catalog/testing';
-import { catalogPaths } from '../lib/catalog/working-layer';
 import nextConfig from '../next.config.mjs';
 import { config, IMAGE_URL_NOT_ALLOWED, proxy } from '../proxy';
-import { baseNameOf, getImagePaths, libraryPaths } from '../utils/imageOptimizer';
+import { getImagePaths, libraryPaths } from '../utils/imageOptimizer';
 import { resolvedPathname } from '../utils/publicDerivatives';
 
 // The function /_next/image uses to check `url` against images.localPatterns. Next ships no types for it.
@@ -21,16 +19,14 @@ const { hasLocalMatch } = createRequire(import.meta.url)('next/dist/shared/lib/m
     hasLocalMatch(patterns: unknown, url: string): boolean;
 };
 
-type Proxy = typeof proxy;
-
-function respond(pathname: string, run: Proxy = proxy) {
-    return run(new NextRequest(new URL(pathname, 'http://localhost:3000')));
+function respond(pathname: string, method = 'GET') {
+    return proxy(new NextRequest(new URL(pathname, 'http://localhost:3000'), { method }));
 }
 
-const passes = async (pathname: string, run: Proxy = proxy) => (await respond(pathname, run)).headers.get('x-middleware-next') === '1';
+const passes = async (pathname: string) => (await respond(pathname)).headers.get('x-middleware-next') === '1';
 
-async function expectNotFound(pathname: string, run: Proxy = proxy): Promise<void> {
-    const response = await respond(pathname, run);
+async function expectNotFound(pathname: string): Promise<void> {
+    const response = await respond(pathname);
     expect(response.status, pathname).toBe(404);
     expect(response.headers.get('x-middleware-next'), pathname).toBeNull();
     expect(response.headers.get('cache-control'), pathname).toBe('no-store');
@@ -40,27 +36,35 @@ async function expectNotFound(pathname: string, run: Proxy = proxy): Promise<voi
 const imageUrl = (url: string) => `/_next/image?url=${encodeURIComponent(url)}&w=400&q=75`;
 
 /** The proxy answers /_next/image's own 400 for this url, with nothing cached. */
-async function expectImageRefused(url: string, run: Proxy = proxy): Promise<void> {
-    const response = await respond(url, run);
+async function expectImageRefused(url: string): Promise<void> {
+    const response = await respond(url);
     expect(response.status, url).toBe(400);
     expect(response.headers.get('x-middleware-next'), url).toBeNull();
     expect(response.headers.get('cache-control'), url).toBe('no-store');
     expect(await response.text(), url).toBe(IMAGE_URL_NOT_ALLOWED);
 }
 
-/** A fresh copy of the proxy and the mode check behind it, as a newly started server has: no cutover remembered. */
-async function freshProxy(): Promise<Proxy> {
-    vi.resetModules();
-    Reflect.deleteProperty(globalThis, CUTOVER_KEY);
-    return (await import('../proxy')).proxy;
+/**
+ * /gallery, and its query, answer a bare 308 to /work for a read, with
+ * nothing cached: a browser or Cloudflare that kept the 308 would loop
+ * against an older release's /work 307 to /gallery after a rollback.
+ */
+async function expectGalleryMoved(): Promise<void> {
+    for (const [pathname, method] of [['/gallery', 'GET'], ['/gallery', 'HEAD'], ['/gallery?photo=3', 'GET']] as const) {
+        const response = await respond(pathname, method);
+        expect(response.status, `${method} ${pathname}`).toBe(308);
+        expect(response.headers.get('location'), `${method} ${pathname}`).toBe('http://localhost:3000/work');
+        expect(response.headers.get('x-middleware-next'), `${method} ${pathname}`).toBeNull();
+        expect(response.headers.get('cache-control'), `${method} ${pathname}`).toBe('no-store');
+    }
 }
 
 const temps: string[] = [];
 const catalogs: TestCatalog[] = [];
 
-/** An empty data root, as a host has before the migration: legacy mode. */
-function legacyRoot(): string {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-legacy-'));
+/** An empty data root, as a host has before the migration. */
+function emptyRoot(): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-empty-'));
     temps.push(root);
     return root;
 }
@@ -83,7 +87,7 @@ afterAll(async () => {
     for (const root of temps.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
-/** The legacy derivative paths the legacy pages load, directly and through /_next/image. */
+/** The legacy basename derivative paths the removed legacy pages loaded, directly and through /_next/image. */
 const DERIVATIVES = [
     '/assets/photos/thumbnails/landscape.webp',
     '/assets/photos/medium/landscape.webp',
@@ -95,9 +99,11 @@ const DERIVATIVES = [
     '/assets/photos/optimized/IMG%201234%20(edited).webp',
     '/assets/photos/optimized/caf%C3%A9.webp',
     '/assets/photos/optimized/50%25off.webp',
+    '/assets/photos/Optimized/landscape.webp',
+    '/Assets/Photos/optimized/landscape.webp',
 ];
 
-/** Paths under /assets/photos, and encoded ones anywhere, that never serve in either mode. */
+/** Paths under /assets/photos, and encoded ones anywhere, that never serve. */
 const PRIVATE: [string, string][] = [
         ['a plain original', '/assets/photos/landscape.jpg'],
         ['an uppercase original', '/assets/photos/IMG_0001.JPG'],
@@ -152,54 +158,63 @@ const PRIVATE: [string, string][] = [
         ['an encoded slash outside /assets/photos', '/gallery%2Fx'],
 ];
 
-/** Paths outside /assets/photos, which pass in either mode. */
+/** Paths outside /assets/photos, which pass whatever the data root holds. /gallery is the one that moved. */
 const OUTSIDE = [
-    '/', '/gallery', '/about', '/api/photos', '/assets/sibling/x.png', '/favicon.ico', '/assets/photosets/x.jpg',
-    '/assets/photos/../sibling/x.png', '/_next/static/chunks/%5Broot-of-the-server%5D__0a1b2c._.js',
+    '/', '/work', '/about', '/api/photos', '/api/ready', '/assets/sibling/x.png', '/favicon.ico', '/assets/photosets/x.jpg',
+    '/assets/photos/../sibling/x.png', '/galleryx', '/gallery/x', '/Gallery', '/_next/static/chunks/%5Broot-of-the-server%5D__0a1b2c._.js',
 ];
 
-describe('proxy.ts in legacy mode, before the launch', { timeout: 60_000 }, () => {
-    beforeAll(() => {
-        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', legacyRoot());
-    });
+/** Every url under /assets/photos that /_next/image is refused, however it's spelled. */
+const IMAGE_URLS = [
+    ...DERIVATIVES.filter((pathname) => !pathname.endsWith('.txt')).map((pathname) => decodeURIComponent(pathname)),
+    '/assets/photos/landscape.jpg',
+    '/assets/photos/optimized/landscape%2Ewebp',
+    '/assets%2Fphotos%2Foptimized%2Flandscape.webp',
+    '/assets/sibling/../photos/optimized/landscape.webp',
+    '\\assets\\photos\\optimized\\landscape.webp',
+    '/_next/static/media/..%2F..%2F..%2Fassets%2Fphotos%2Foptimized%2Flandscape.webp',
+    'http://localhost:3000/assets/photos/optimized/landscape.webp',
+];
 
-    it.each(DERIVATIVES)('passes the legacy derivative %s', async (pathname) => {
-        expect(await passes(pathname)).toBe(true);
-    });
-
-    it.each(DERIVATIVES.filter((pathname) => !pathname.endsWith('.txt')))('passes /_next/image for the legacy derivative %s', async (pathname) => {
-        expect(await passes(imageUrl(decodeURIComponent(pathname)))).toBe(true);
-    });
-
-    it.each(PRIVATE)('404s %s', async (_label, pathname) => {
-        await expectNotFound(pathname);
-    });
-
-    it.each([
-        ['a case-folded folder', '/assets/photos/Optimized/landscape.webp'],
-        ['a case-folded prefix', '/Assets/Photos/optimized/landscape.webp'],
-    ])('404s a derivative under %s, which only a case-insensitive disk would find', async (_label, pathname) => {
-        await expectNotFound(pathname);
-    });
-
-    it.each(OUTSIDE)('passes %s, outside /assets/photos', async (pathname) => {
-        expect(await passes(pathname)).toBe(true);
-    });
-});
-
-describe('proxy.ts in catalog mode, once a revision is live', { timeout: 60_000 }, () => {
-    beforeAll(async () => {
+/**
+ * The data roots a server can start on. Since #13's slice E the legacy
+ * derivatives never serve, so each gives the same answers: there is no
+ * mode to switch on, and nothing to fall back to.
+ */
+const STATES: [string, () => Promise<void>][] = [
+    ['with no data root, as in production with PHOTOGRAPHY_DATA_DIR unset', async () => {
+        vi.stubEnv('NODE_ENV', 'production');
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', '');
+    }],
+    ['on an empty data root, as on a host before the migration', async () => {
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', emptyRoot());
+    }],
+    ['while nothing is at the data root\'s path', async () => {
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', path.join(emptyRoot(), 'missing'));
+    }],
+    ['on a data root with authored records and nothing published yet', async () => {
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', (await testCatalog(32)).root);
+    }],
+    ['once a revision is live', async () => {
         const catalog = await testCatalog(31);
         await launch(catalog.root);
         vi.stubEnv('PHOTOGRAPHY_DATA_DIR', catalog.root);
+    }],
+];
+
+describe.each(STATES)('proxy.ts %s', { timeout: 60_000 }, (_label, enter) => {
+    const nodeEnv = process.env.NODE_ENV;
+
+    beforeAll(async () => {
+        await enter();
     });
 
-    // The site serves photos only from /media, so the legacy basename URLs close too.
-    it.each([
-        ...DERIVATIVES,
-        '/assets/photos/Optimized/landscape.webp',
-        '/Assets/Photos/optimized/landscape.webp',
-    ])('404s the legacy derivative %s', async (pathname) => {
+    afterAll(() => {
+        vi.stubEnv('NODE_ENV', nodeEnv);
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', '');
+    });
+
+    it.each(DERIVATIVES)('404s the legacy derivative %s', async (pathname) => {
         await expectNotFound(pathname);
     });
 
@@ -212,22 +227,7 @@ describe('proxy.ts in catalog mode, once a revision is live', { timeout: 60_000 
     });
 
     it('refuses every url under /assets/photos at /_next/image, before its cache can answer', async () => {
-        for (const url of [
-            '/assets/photos/thumbnails/landscape.webp',
-            '/assets/photos/optimized/landscape.webp',
-            '/assets/photos/optimized-avif/landscape.avif',
-            '/assets/photos/optimized/IMG 1234 (edited).webp',
-            '/assets/photos/landscape.jpg',
-            '/assets/photos/optimized/landscape%2Ewebp',
-            '/assets%2Fphotos%2Foptimized%2Flandscape.webp',
-            '/Assets/Photos/optimized/landscape.webp',
-            '/assets/sibling/../photos/optimized/landscape.webp',
-            '\\assets\\photos\\optimized\\landscape.webp',
-            '/_next/static/media/..%2F..%2F..%2Fassets%2Fphotos%2Foptimized%2Flandscape.webp',
-            'http://localhost:3000/assets/photos/optimized/landscape.webp',
-        ]) {
-            await expectImageRefused(imageUrl(url));
-        }
+        for (const url of IMAGE_URLS) await expectImageRefused(imageUrl(url));
         // Every `url` counts, not only the first.
         await expectImageRefused(`/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Fa.png&url=${encodeURIComponent('/assets/photos/optimized/landscape.webp')}&w=400&q=75`);
     });
@@ -236,158 +236,26 @@ describe('proxy.ts in catalog mode, once a revision is live', { timeout: 60_000 
         expect(await passes(imageUrl('/_next/static/media/front.0a1b2c3d.png'))).toBe(true);
         expect(await passes('/_next/image?w=400&q=75')).toBe(true);
     });
-});
 
-describe('the switch at the launch', { timeout: 60_000 }, () => {
-    it('closes /assets/photos and /_next/image on the publish that goes live, with no restart', async () => {
-        const catalog = await testCatalog(32);
-        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', catalog.root);
-        const run = await freshProxy();
-        const thumbnail = '/assets/photos/thumbnails/landscape.webp';
-        // A data root with authored records but nothing live is still legacy.
-        expect(await passes(thumbnail, run)).toBe(true);
-        expect(await passes(imageUrl(thumbnail), run)).toBe(true);
-        await expectNotFound('/assets/photos/landscape.jpg', run);
-
-        await launch(catalog.root);
-        await expectNotFound(thumbnail, run);
-        await expectImageRefused(imageUrl(thumbnail), run);
-        await expectNotFound('/assets/photos/landscape.jpg', run);
-    });
-
-    it('serves them again only from a data root restored from before the launch, once the server restarts', async () => {
-        const catalog = await testCatalog(33);
-        const backup = fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-backup-'));
-        temps.push(backup);
-        // The backup the cutover prompt makes just before --confirm-launch.
-        fs.cpSync(catalog.root, path.join(backup, 'root'), { recursive: true });
-        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', catalog.root);
-        const thumbnail = '/assets/photos/thumbnails/landscape.webp';
-        const running = await freshProxy();
-        await launch(catalog.root);
-        await expectNotFound(thumbnail, running);
-
-        // The restore swaps the backup in at the same path. A server still running remembers the cutover.
-        const aside = `${catalog.root}-aside`;
-        temps.push(aside);
-        fs.renameSync(catalog.root, aside);
-        fs.renameSync(path.join(backup, 'root'), catalog.root);
-        await expectNotFound(thumbnail, running);
-        await expectImageRefused(imageUrl(thumbnail), running);
-
-        // Restarted on the restored root, it's legacy mode again.
-        const restarted = await freshProxy();
-        expect(await passes(thumbnail, restarted)).toBe(true);
-        expect(await passes(imageUrl(thumbnail), restarted)).toBe(true);
-
-        // A restart on the launched root stays closed: the committed activation shows the cutover.
-        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', aside);
-        const again = await freshProxy();
-        await expectNotFound(thumbnail, again);
-        await expectImageRefused(imageUrl(thumbnail), again);
-    });
-
-    it("404s the derivatives while the data root's catalog can't be read, and serves them again once it can", async () => {
-        const root = legacyRoot();
-        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', root);
-        const run = await freshProxy();
-        const thumbnail = '/assets/photos/thumbnails/landscape.webp';
-        expect(await passes(thumbnail, run)).toBe(true);
-        const active = catalogPaths(root).active;
-        const readdir = fs.promises.readdir.bind(fs.promises);
-        const failing = vi.spyOn(fs.promises, 'readdir').mockImplementation((async (dir: fs.PathLike, options?: unknown) => {
-            if (String(dir) === active) throw Object.assign(new Error('too many open files'), { code: 'EMFILE' });
-            return readdir(dir, options as never);
-        }) as typeof fs.promises.readdir);
-        try {
-            await expectNotFound(thumbnail, run);
-            await expectImageRefused(imageUrl(thumbnail), run);
-        } finally {
-            failing.mockRestore();
-        }
-        // Nothing showed a cutover, so nothing is remembered.
-        expect(await passes(thumbnail, run)).toBe(true);
+    it('sends /gallery on to /work with a 308, and refuses any other method there', async () => {
+        await expectGalleryMoved();
+        for (const method of ['POST', 'PUT', 'DELETE']) expect((await respond('/gallery', method)).status, method).toBe(404);
     });
 });
 
-describe('the data root the mode is read from', { timeout: 60_000 }, () => {
-    const thumbnail = '/assets/photos/thumbnails/landscape.webp';
-    const nodeEnv = process.env.NODE_ENV;
-
-    afterEach(() => {
-        vi.stubEnv('NODE_ENV', nodeEnv);
-    });
-
-    /** The legacy derivative and its /_next/image copy both serve, or both are refused. */
-    async function expectServes(serves: boolean): Promise<void> {
-        if (serves) {
-            expect(await passes(thumbnail), thumbnail).toBe(true);
-            expect(await passes(imageUrl(thumbnail)), thumbnail).toBe(true);
-        } else {
-            await expectNotFound(thumbnail);
-            await expectImageRefused(imageUrl(thumbnail));
-        }
-        // An original never serves.
-        await expectNotFound('/assets/photos/landscape.jpg');
-    }
-
-    it('refuses them with no data root, as in production with PHOTOGRAPHY_DATA_DIR unset, where the legacy pages answer 503', async () => {
-        vi.stubEnv('NODE_ENV', 'production');
-        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', '');
-        await expectServes(false);
-    });
-
-    it('refuses them while nothing is at the data root\'s path', async () => {
-        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', path.join(legacyRoot(), 'missing'));
-        await expectServes(false);
-    });
-
-    it('refuses them while a file is at the data root\'s path', async () => {
-        const file = path.join(legacyRoot(), 'data-root');
-        fs.writeFileSync(file, '');
-        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', file);
-        await expectServes(false);
-    });
-
-    it('serves them from an empty data root, as on a host before the migration and in the release smoke', async () => {
-        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', legacyRoot());
-        await expectServes(true);
-    });
-
-    it('serves them from a data root with no data-root.json and no catalog revision yet', async () => {
-        const root = legacyRoot();
-        fs.mkdirSync(catalogPaths(root).active, { recursive: true });
-        fs.mkdirSync(catalogPaths(root).activationsDir, { recursive: true });
-        fs.writeFileSync(path.join(root, 'notes.txt'), 'not initialized');
-        expect(fs.existsSync(path.join(root, 'data-root.json'))).toBe(false);
-        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', root);
-        await expectServes(true);
-    });
-
-    it('refuses them while the data root can\'t be read, and serves them again once it can', async () => {
-        const root = legacyRoot();
-        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', root);
-        fs.chmodSync(root, 0o000);
+describe('proxy.ts and the data root', () => {
+    it('answers /assets/photos, /_next/image and /gallery without reading it', async () => {
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', emptyRoot());
+        const reads = [vi.spyOn(fs.promises, 'stat'), vi.spyOn(fs.promises, 'readdir'), vi.spyOn(fs.promises, 'readFile'), vi.spyOn(fs, 'statSync')];
         try {
-            await expectServes(false);
+            await expectNotFound('/assets/photos/thumbnails/landscape.webp');
+            await expectImageRefused(imageUrl('/assets/photos/thumbnails/landscape.webp'));
+            await expectGalleryMoved();
+            for (const spy of reads) expect(spy).not.toHaveBeenCalled();
         } finally {
-            fs.chmodSync(root, 0o700);
+            for (const spy of reads) spy.mockRestore();
+            vi.stubEnv('PHOTOGRAPHY_DATA_DIR', '');
         }
-        await expectServes(true);
-    });
-
-    it('refuses them on a data root with a live catalog revision', async () => {
-        const catalog = await testCatalog(35);
-        await launch(catalog.root);
-        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', catalog.root);
-        await expectServes(false);
-    });
-
-    it('refuses them while the data root\'s catalog is a file', async () => {
-        const root = legacyRoot();
-        fs.writeFileSync(catalogPaths(root).dir, '');
-        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', root);
-        await expectServes(false);
     });
 });
 
@@ -415,40 +283,18 @@ describe('proxy.ts paths and matcher', () => {
 });
 
 describe('derivative URLs', () => {
-    const outputs = [
-        ['thumbnail', 'thumbnails', '.webp'],
-        ['medium', 'medium', '.webp'],
-        ['optimized', 'optimized', '.webp'],
-        ['thumbnailAvif', 'thumbnails-avif', '.avif'],
-        ['mediumAvif', 'medium-avif', '.avif'],
-        ['optimizedAvif', 'optimized-avif', '.avif'],
-        ['lqip', 'lqip', '.txt'],
-    ] as const;
+    const outputs = ['thumbnail', 'medium', 'optimized', 'thumbnailAvif', 'mediumAvif', 'optimizedAvif', 'lqip'] as const;
     const names = ['50%off.jpg', 'a#b.jpg', 'what?.png', 'IMG 1234 (edited).jpg', 'café.webp', '100% #2.jpg', 'a%2Fb.jpg', 'a%2fb.png', 'a%5Cb.jpg'];
-    let legacy = '';
-    let launched = '';
 
-    beforeAll(async () => {
-        legacy = legacyRoot();
-        const catalog = await testCatalog(34);
-        await launch(catalog.root);
-        launched = catalog.root;
-    }, 60_000);
-
-    it.each(names)('for %s, decode to the file on disk, pass the proxy whole before the launch, and 404 after it', async (name) => {
+    // The watcher still writes the legacy sets until slice E's second PR, at these URLs, and none of them serves.
+    it.each(names)('for %s, 404 at every URL the watcher writes under /assets/photos', async (name) => {
         const urls = getImagePaths(name, libraryPaths(), new Map());
-        const base = baseNameOf(name);
-        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', legacy);
-        for (const [field, folder, extension] of outputs) {
-            const url = urls[field];
-            // Nothing in the name becomes a query or a fragment.
-            expect(new URL(url, 'http://localhost').pathname, url).toBe(url);
-            expect(resolvedPathname(url), url).toBe(`/assets/photos/${folder}/${base}${extension}`);
-            expect(await passes(url), url).toBe(true);
+        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', emptyRoot());
+        try {
+            for (const field of ['original', ...outputs] as const) await expectNotFound(urls[field]);
+        } finally {
+            vi.stubEnv('PHOTOGRAPHY_DATA_DIR', '');
         }
-        await expectNotFound(urls.original);
-        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', launched);
-        for (const field of ['original', ...outputs.map(([output]) => output)] as const) await expectNotFound(urls[field]);
     });
 });
 
@@ -461,45 +307,23 @@ describe('outputFileTracingExcludes', () => {
 describe('images.localPatterns', () => {
     const allows = (url: string) => hasLocalMatch(nextConfig.images?.localPatterns, url);
 
-    it('lets /_next/image optimize the legacy derivatives', () => {
+    // Nothing renders through next/image any more: photos are /media sets ResponsivePhoto draws itself, and About's
+    // portrait, which Home's intro shows too, comes from /about/portrait/. No public file is a static import.
+    it('names nothing, so no public file reaches /_next/image', () => {
+        expect(nextConfig.images?.localPatterns).toEqual([]);
         for (const url of [
             '/assets/photos/thumbnails/landscape.webp',
-            '/assets/photos/medium/landscape.webp',
             '/assets/photos/optimized/landscape.webp',
-            '/assets/photos/thumbnails-avif/landscape.avif',
-            '/assets/photos/medium-avif/landscape.avif',
             '/assets/photos/optimized-avif/landscape.avif',
-        ]) {
-            expect(allows(url), url).toBe(true);
-        }
-    });
-
-    it('refuses every original and every other public file, so /_next/image answers 400 for one', () => {
-        for (const url of [
-            '/assets/photos/series/x.jpg',
             '/assets/photos/landscape.jpg',
-            '/assets/photos/portrait.png',
-            '/assets/photos/square.webp',
-            '/assets/photos/optimized/landscape.jpg',
-            '/assets/photos/optimized/sub/landscape.webp',
-            '/assets/photos/optimized/..%2Flandscape.jpg',
-            '/assets/photos/lqip/landscape.txt',
-            '/assets/photos/optimized/landscape.webp?v=2',
-            '/public/assets/photos/landscape.jpg',
-            '/assets/sibling/..%2Fphotos%2Flandscape.jpg',
+            '/assets/photos/series/x.jpg',
+            '/assets/profile/portrait.jpg',
+            '/about/portrait/t/w400.webp',
+            '/media/ph_x/ar_x/pr_x/w400.webp',
             '/vite.svg',
             '/favicon.ico',
         ]) {
             expect(allows(url), url).toBe(false);
-        }
-    });
-
-    it('names nothing outside the derivative folders, so no other public file reaches /_next/image', () => {
-        const patterns = (nextConfig.images?.localPatterns ?? []) as { pathname?: string; search?: string }[];
-        expect(patterns.length).toBeGreaterThan(0);
-        for (const pattern of patterns) {
-            expect(pattern.pathname, JSON.stringify(pattern)).toMatch(/^\/assets\/photos\/[a-z-]+\/\*\.(webp|avif)$/);
-            expect(pattern.search).toBe('');
         }
     });
 });
@@ -510,16 +334,15 @@ describe('images.localPatterns as Next loads them', () => {
         default(phase: string, dir: string, options?: { silent?: boolean }): Promise<{ images: { localPatterns?: unknown } }>;
     };
 
-    it('refuses an original or an encoded path under /assets/photos at /_next/image', async () => {
+    it("holds only Next's own static media, and refuses every path under /assets/photos at /_next/image", async () => {
         const loaded = await loadConfig('phase-production-server', process.cwd(), { silent: true });
         const patterns = loaded.images.localPatterns;
-        expect(patterns).toEqual(expect.arrayContaining([
-            ...(nextConfig.images?.localPatterns ?? []),
-            { pathname: '/_next/static/media/**', search: '' },
-        ]));
-        // Loading it leaves the module's own list as written: the six image derivative folders.
-        expect(nextConfig.images?.localPatterns).toHaveLength(6);
+        expect(patterns).toEqual(expect.arrayContaining([{ pathname: '/_next/static/media/**', search: '' }]));
+        for (const pattern of patterns as { pathname: string }[]) expect(pattern.pathname, JSON.stringify(pattern)).toMatch(/^\/_next\/static\//);
+        // Loading it leaves the module's own list as written.
+        expect(nextConfig.images?.localPatterns).toEqual([]);
         for (const url of [
+            '/assets/photos/optimized/landscape.webp',
             '/assets/photos/optimized/landscape%2Ewebp',
             '/assets%2Fphotos%2Foptimized%2Flandscape.webp',
             '/assets/photos/landscape.jpg',
@@ -528,7 +351,6 @@ describe('images.localPatterns as Next loads them', () => {
         }
         // For a url under Next's own patterns, /_next/image fetches it internally, so the proxy
         // has to run on that fetch and refuse anything that encodes its way out of the folder.
-        vi.stubEnv('PHOTOGRAPHY_DATA_DIR', legacyRoot());
         for (const url of [
             '/_next/static/media/..%2F..%2F..%2Fassets%2Fphotos%2Foptimized%2Flandscape.webp',
             '/_next/static/media/..%5C..%5C..%5Cassets%5Cphotos%5Coptimized%5Clandscape.webp',

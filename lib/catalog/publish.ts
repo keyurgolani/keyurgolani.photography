@@ -6,7 +6,7 @@ import type { Registry } from '../identity/types';
 import { dataRootStatus, libraryRoot } from '../storage/config';
 import { LockTimeoutError, withLock, type LockContext, type LockHooks, type LockRecord } from '../storage/lock';
 import { candidateFile, compileCandidate, type CompileResult } from './compile';
-import { legacySitePhotos } from './photos-api';
+import { legacySitePhotos } from './legacy-photos';
 import { LAUNCH_ORDER_RULE_IDS } from './order-rules';
 import { rebaseWorkingLayer, type RebaseReport } from './rebase';
 import type { ReviewContext } from './review';

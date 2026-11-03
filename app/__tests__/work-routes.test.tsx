@@ -5,25 +5,13 @@ import type { ActiveCatalog } from '@/lib/catalog/public-reader';
 import { createCatalogReader } from '@/lib/catalog/reader';
 import { createTestCatalog, type TestCatalog } from '@/lib/catalog/testing';
 
-// The two pages' request-time gate: workRouteOf() with getActiveCatalog() and
-// publicRoutes, answered as a render, a redirect, or a throw to app/error.tsx.
+// The Work page's request-time gate: workRouteOf() with getActiveCatalog() and
+// publicRoutes, answered as a render or a throw to app/error.tsx. /gallery,
+// which #13's slice E removed, is proxy.ts's 308 (__tests__/originals.test.ts).
 
 const state = vi.hoisted(() => ({ catalog: null as unknown }));
 
-/** What Next's redirect() and permanentRedirect() throw, reduced to the facts the tests read. */
-class Redirected extends Error {
-    constructor(readonly location: string, readonly status: 307 | 308) {
-        super(`${status} ${location}`);
-    }
-}
-
 vi.mock('next/navigation', () => ({
-    redirect: (location: string) => {
-        throw new Redirected(location, 307);
-    },
-    permanentRedirect: (location: string) => {
-        throw new Redirected(location, 308);
-    },
     usePathname: () => '/work',
 }));
 
@@ -33,10 +21,8 @@ vi.mock('@/lib/catalog/public-reader', async (importOriginal) => {
 });
 
 vi.mock('@/components/site/SiteNav', () => ({ default: () => <nav aria-label="Primary" /> }));
-vi.mock('@/components/DynamicGallery', () => ({ default: () => <div data-legacy-gallery="" /> }));
 
 const { default: WorkPage, dynamic: workDynamic } = await import('../work/page');
-const { default: GalleryPage, dynamic: galleryDynamic } = await import('../gallery/page');
 const { CatalogUnavailableError } = await import('@/lib/catalog/public-reader');
 
 const id = (n: number) => `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -97,62 +83,47 @@ afterAll(async () => {
 
 const served = (servedState: 'ok' | 'degraded'): ActiveCatalog =>
     ({
-        mode: 'catalog',
         state: servedState,
         reader: createCatalogReader(catalog.content, { revisionId: catalog.revisionId, revisionNumber: 1 }),
         active: { revisionId: catalog.revisionId, revisionNumber: 1, activationId: 'act_fixture', activatedAt: null },
     }) as unknown as ActiveCatalog;
 
-const unavailable = (reason: 'catalog-unreadable' | 'active-unreadable' | 'revision-unreadable'): ActiveCatalog => ({ mode: 'catalog', state: 'unavailable', reason });
+const unavailable = (reason: 'not-published' | 'catalog-unreadable' | 'active-unreadable' | 'revision-unreadable'): ActiveCatalog => ({ state: 'unavailable', reason });
 
-async function answer(page: () => Promise<React.ReactElement>): Promise<{ html: string } | { redirect: Redirected } | { thrown: unknown }> {
+async function answer(page: () => Promise<React.ReactElement>): Promise<{ html: string } | { thrown: unknown }> {
     try {
         return { html: renderToStaticMarkup(await page()) };
     } catch (error) {
-        if (error instanceof Redirected) return { redirect: error };
         return { thrown: error };
     }
 }
 
 beforeEach(() => {
-    state.catalog = { mode: 'legacy' } satisfies ActiveCatalog;
+    state.catalog = unavailable('not-published');
 });
 
-describe('the /work and /gallery gate', () => {
-    it('renders both per request', () => {
+describe('the /work gate', () => {
+    it('renders per request', () => {
         expect(workDynamic).toBe('force-dynamic');
-        expect(galleryDynamic).toBe('force-dynamic');
     });
 
-    it('in legacy mode sends /work to /gallery with a 307 and serves the legacy Gallery unchanged', async () => {
-        const work = await answer(WorkPage);
-        expect(work).toEqual({ redirect: expect.objectContaining({ location: '/gallery', status: 307 }) });
-        const gallery = await answer(GalleryPage);
-        expect('html' in gallery && gallery.html).toContain('<h1 class="text-4xl font-bold text-center mb-10 font-primary">Gallery</h1>');
-        expect('html' in gallery && gallery.html).toContain('data-legacy-gallery');
-    });
-
-    it.each(['ok', 'degraded'] as const)('with a revision served (%s) renders Work and sends /gallery to bare /work with a 308', async (servedState) => {
+    it.each(['ok', 'degraded'] as const)('with a revision served (%s) renders Work', async (servedState) => {
         state.catalog = served(servedState);
-        const gallery = await answer(GalleryPage);
-        expect(gallery).toEqual({ redirect: expect.objectContaining({ location: '/work', status: 308 }) });
         const work = await answer(WorkPage);
         expect('html' in work).toBe(true);
         const html = (work as { html: string }).html;
         expect(html).toContain('<h1');
         expect(html).toContain('Bodies of work');
-        expect(html).not.toContain('data-legacy-gallery');
     });
 
-    it.each(['catalog-unreadable', 'active-unreadable', 'revision-unreadable'] as const)(
-        'while the catalog is unavailable (%s) throws CatalogUnavailableError on both, with no redirect',
+    // not-published: no data root, or nothing published yet, where #13's slice E left no legacy Gallery to send it to.
+    it.each(['not-published', 'catalog-unreadable', 'active-unreadable', 'revision-unreadable'] as const)(
+        'while the catalog is unavailable (%s) throws CatalogUnavailableError, with no redirect',
         async (reason) => {
             state.catalog = unavailable(reason);
-            for (const page of [WorkPage, GalleryPage]) {
-                const result = await answer(page);
-                expect(result).toEqual({ thrown: expect.any(CatalogUnavailableError) });
-                expect((result as { thrown: InstanceType<typeof CatalogUnavailableError> }).thrown.reason).toBe(reason);
-            }
+            const result = await answer(WorkPage);
+            expect(result).toEqual({ thrown: expect.any(CatalogUnavailableError) });
+            expect((result as { thrown: InstanceType<typeof CatalogUnavailableError> }).thrown.reason).toBe(reason);
         },
     );
 });

@@ -128,7 +128,6 @@ const previewPaths = (draft: string) => [
     `${base(draft)}/work/${KEPT.slug}`,
     `${base(draft)}/work/${KEPT.slug}/photo/${id(1)}`,
     `${base(draft)}/api/catalog/series/${KEPT.slug}/pages/x`,
-    `${base(draft)}/api/catalog/home/photos/${id(1)}?revision=${draft}`,
     `${base(draft)}/api/catalog/home/series/${KEPT.id}/photos/${id(1)}?revision=${draft}`,
     `${base(draft)}/api/catalog/series/${KEPT.slug}/photos/${id(1)}?revision=${draft}`,
     imagePath(draft, id(4)),
@@ -136,6 +135,8 @@ const previewPaths = (draft: string) => [
     `/curation/preview/${draft}/anything`,
     `${base(draft)}/gallery`,
     `${base(draft)}/work/${KEPT.slug}/photo/${id(1)}/more`,
+    // v1.4.0's Home records mirror, which v1.6.0 removed with the public route.
+    `${base(draft)}/api/catalog/home/photos/${id(1)}?revision=${draft}`,
 ];
 
 /** Malformed draft IDs a client sends as they are. */
@@ -427,6 +428,7 @@ test.describe('signed in', () => {
                 for (const [path, heading, frameAncestors] of [
                     [`${base(draft)}/gallery`, 'Page not found', "'self'"],
                     [`${base(draft)}/work/${KEPT.slug}/photo/${id(1)}/more`, 'Page not found', "'self'"],
+                    [`${base(draft)}/api/catalog/home/photos/${id(1)}?revision=${draft}`, 'Page not found', "'self'"],
                     [`/curation/preview/${draft}/anything`, 'Preview not found', "'none'"],
                 ] as const) {
                     const response = await page.request.get(`${origin()}${path}`);

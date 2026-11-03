@@ -1,19 +1,20 @@
 import { NextResponse } from 'next/server';
-import { legacyPhotos } from '@/lib/catalog/photos-api';
 import { getActiveCatalog } from '@/lib/catalog/public-reader';
-import { dataRoot } from '@/lib/storage/config';
 
 /**
  * `GET /api/ready`: whether the public catalog can be served, and which
  * revision. 200 for `ok` and `degraded`, 503 for `unavailable`, never
- * cached, and naming no path. Before the first activation it answers for the
- * #10 registry the legacy site reads, with null revision fields. Compose
- * healthchecks stay on /api/health, which answers whenever the server does.
+ * cached, and naming no path. Before the first activation, or with no data
+ * root, it answers 503 with `not-published` and null revision fields: since
+ * #13's slice E there is no legacy site to report on. `mode` is always
+ * `catalog` now, kept so a check written against an earlier release still
+ * reads it. Compose healthchecks stay on /api/health, which answers whenever
+ * the server does.
  */
 export const dynamic = 'force-dynamic';
 
 interface Readiness {
-    mode: 'legacy' | 'catalog';
+    mode: 'catalog';
     state: 'ok' | 'degraded' | 'unavailable';
     revisionId: string | null;
     revisionNumber: number | null;
@@ -25,11 +26,6 @@ const NO_REVISION = { revisionId: null, revisionNumber: null, activatedAt: null 
 
 async function readiness(): Promise<Readiness> {
     const catalog = await getActiveCatalog();
-    if (catalog.mode === 'legacy') {
-        const root = dataRoot();
-        const photos = root === null ? { ok: false as const, reason: 'registry-missing' } : await legacyPhotos(root);
-        return photos.ok ? { mode: 'legacy', state: 'ok', ...NO_REVISION } : { mode: 'legacy', state: 'unavailable', ...NO_REVISION, reason: photos.reason };
-    }
     if (catalog.state === 'unavailable') return { mode: 'catalog', state: 'unavailable', ...NO_REVISION, reason: catalog.reason };
     const { revisionId, revisionNumber, activatedAt } = catalog.active;
     return { mode: 'catalog', state: catalog.state, revisionId, revisionNumber, activatedAt };

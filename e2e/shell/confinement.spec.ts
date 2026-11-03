@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test';
 import { publish } from '../../lib/catalog/publish';
 import { createTestCatalog, type TestCatalog } from '../../lib/catalog/testing';
+import { CATALOG_ORIGIN } from '../support/catalog-home';
 import { startCatalogServer, READY_TIMEOUT, type CatalogServer } from '../support/catalogServer';
 import { waitForHydration } from '../support/hydration';
 import { expect, test } from '../support/test';
@@ -37,7 +38,8 @@ async function expectAboutSurface(page: Page, paper = '#f4ecd7') {
     expect(await tokensOf(page)).toEqual({ body: { paper: '', ground: '' }, nav: { paper, ground: '' }, main: { paper, ground: '' } });
 }
 
-for (const path of ['/', '/gallery', '/does-not-exist']) {
+// The harness server has published nothing, so its Home and Work are #21's error page; the catalog server's are the real ones.
+for (const path of ['/', '/work', '/does-not-exist', `${CATALOG_ORIGIN}/`, `${CATALOG_ORIGIN}/work`]) {
     test(`nothing on ${path} carries data-surface or a surface token`, async ({ page }) => {
         await page.goto(path);
         await waitForHydration(page);
@@ -59,15 +61,15 @@ test('on /about in Light the same two carry the about surface, on Light\'s own p
     await expectAboutSurface(page, '#ebe5d9');
 });
 
-test('it holds after a client-side move from /about through /work to the legacy /gallery', async ({ page }) => {
-    await page.goto('/about');
+test('it holds after a client-side move from /about to /work', async ({ page }) => {
+    await page.goto(`${CATALOG_ORIGIN}/about`);
     await waitForHydration(page);
     await expectAboutSurface(page);
     const work = page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Work', exact: true });
     await expect(work).toHaveAttribute('href', '/work');
     await work.click();
-    await expect(page).toHaveURL('/gallery');
-    await expect(page.getByRole('heading', { level: 1, name: 'Gallery' })).toBeVisible();
+    await expect(page).toHaveURL(`${CATALOG_ORIGIN}/work`);
+    await expect(page.getByRole('heading', { level: 1, name: 'Bodies of work' })).toBeVisible();
     await expectConfined(page);
 });
 

@@ -5,7 +5,7 @@ Every visitor and curator surface follows these rules. #1 added them with the br
 ## Rules
 
 1. Semantics. URL changes use a Next `Link` or `<a href>`. In-page state changes use `<button type="button">`, with `aria-pressed`, `aria-current="true"`, or `aria-expanded` when it toggles, selects, or discloses. The focusable element owns the handler and the name, with no handlers on non-interactive elements, no nested interactive elements, and `alt=""` on an `img` inside a named control.
-2. Names. Names come from `photoEntryName()` and `photoImageAlt()`, never a filename, extension, raw index, EXIF or camera string, or unreviewed suggestion. They exist before the image loads, are unique, and start with any visible label (WCAG 2.5.3). `aria-describedby` text is a description. Catalog surfaces always have a reviewed description or `decorative` (the #13 gate), so position-only names are for legacy surfaces, decorative photos, and photos `photos carry-over` brought over from the legacy Gallery with no description yet (`position`), which keep the name the Gallery gave them.
+2. Names. Names come from `photoEntryName()` and `photoImageAlt()`, never a filename, extension, raw index, EXIF or camera string, or unreviewed suggestion. They exist before the image loads, are unique, and start with any visible label (WCAG 2.5.3). `aria-describedby` text is a description. Catalog surfaces always have a reviewed description or `decorative` (the #13 gate), so position-only names are for decorative photos, and photos `photos carry-over` brought over from the legacy Gallery with no description yet (`position`), which keep the name the Gallery gave them.
 3. Hover parity. Whatever hover reveals, `:focus-visible` reveals too. Nothing required is hover-only. A tap never leaves hover styles behind, so app hover styles apply only under `(hover: hover) and (pointer: fine)`. That's the target: `hoverOnlyWhenSupported` in `tailwind.config.ts` gates every `hover:` and `group-hover:` utility, and #1's slices 3 and 4 gate the raw `:hover` rules in `app/globals.css` and the CSS modules.
 4. Focus. Use the focus token. No ancestor's overflow clips the ring, so pad clip and scroll containers by ring width plus offset or use an inset ring. Fixed chrome never entirely hides the ring, and leaves it fully clear when the element fits between the scroll paddings. Focus-revealed controls appear at full opacity with no fade.
 5. Targets. Every standalone link, button, toggle, or thumbnail is at least 44 by 44 CSS px on its bounding box. Inline links in running text are exempt. This overrides the mockup's 42 px primary, 43 px Home rail, and 38 px sequence buttons.
@@ -13,7 +13,7 @@ Every visitor and curator surface follows these rules. #1 added them with the br
 7. Touch. One tap activates, with no hover, long press, double tap, drag, or multi-finger gesture, except the first tap on idle Home, which #18 consumes as reveal intent.
 8. Contrast. Over the bright fixture, over the dark one wherever text or icons are dark, and through any scrim, text on photographs keeps 4.5:1, and control boundaries and icons 3:1.
 9. Reflow. At 320 CSS px wide with a 200% root font size, revealed controls stay inside the viewport without overlap or clipping.
-10. Focus return. Closing a Viewer returns focus to the entry that opened it. #9 owns the route Viewer, and #1 the legacy lightbox.
+10. Focus return. Closing a Viewer returns focus to the entry that opened it. #9 owns the route Viewer.
 11. Curator routes. #14, #16, and #15 follow every rule, and every reorder has a non-drag alternative such as move buttons or a position field (WCAG 2.5.7).
 12. Exceptions. Any axe rule disabled for a third-party widget is listed once in `e2e/support/a11y.ts`, with the reason and the issue that removes it.
 
@@ -27,11 +27,9 @@ Every visitor and curator surface follows these rules. #1 added them with the br
 
 | Surface | Spec | Owner |
 |---|---|---|
-| Home, `/` | `e2e/home.spec.ts` from #1 slice 4, `e2e/home-playback.spec.ts` from #2, and `e2e/home-immersive.spec.ts` from #18 | #1, #2 for playback and reduced motion, then #18 for immersive mode and #4 for the authored sequence |
-| Gallery, `/gallery` | `e2e/gallery.spec.ts` from #1 slice 3 | #1, until #13 removes the legacy page |
-| Lightbox on `/gallery` | `e2e/lightbox.spec.ts` from #1 slice 3 | #1, until #13 removes the legacy page |
+| Home, `/` | `e2e/home.spec.ts` from #1 slice 4, `e2e/home-playback.spec.ts` from #2, `e2e/home-immersive.spec.ts` from #18, and `e2e/home-catalog.spec.ts` from #4, all on the catalog server's published Home since #13's slice E | #1, #2 for playback and reduced motion, then #18 for immersive mode and #4 for the authored sequence |
 | About, `/about` | `e2e/about.spec.ts` from #1 slice 4, and `e2e/about-links.spec.ts` from #11 | #1 for the subset below, #11 for the links, then #12 for the artist statement |
-| The focus token on `SiteNav`, its theme control, and in the lightbox | `e2e/focus-ring.spec.ts` from #1 slice 2, moved onto `SiteNav` by #21 | #1, with #21 for `SiteNav` |
+| The focus token on `SiteNav` and its theme control | `e2e/focus-ring.spec.ts` from #1 slice 2, moved onto `SiteNav` by #21 | #1, with #21 for `SiteNav` |
 | Work catalog, `/work` | `e2e/work.spec.ts` from #3, on a published fixture catalog its own server serves | #3 |
 | Series pages, `/work/<slug>` | `e2e/series.spec.ts` and `e2e/series-return.spec.ts` from #5, the second for Viewer entry from the cover and the sequence and the return to it | #5 |
 | Viewer, `/work/<slug>/photo/<photoId>` | `e2e/viewer.spec.ts` from #7, `e2e/viewer-modal.spec.ts` and `e2e/viewer-touch.spec.ts` from #9 | #7, then #9 |
@@ -48,8 +46,6 @@ On `/about`, #1 checks the navigation links and theme control in full, and Tab r
 
 `app/globals.css` defines it right after the Tailwind directives, so it wins ties with the base utilities. A 3 px `--focus-ring-light` (`#ffffff`) outline sits outside a 3 px `--focus-ring-dark` (`#000000`) band that fills the offset. The outline survives forced colors. Tailwind appends its variants, such as `dark:` and `hover:`, to the end of the file, so a shadow variant would replace the band at the same specificity. The band's `box-shadow` is `!important` for that reason, and `--tw-shadow` keeps the element's own shadow under it. `expectFocusRingVisible()` fails when the band is missing. Keep the two colors at least 9:1 apart, so one of them reaches at least 3:1 on any background (4.58:1 for the current white and black). #21 may retune them within that rule, but not to the review shell's Focus Ice (`#d5f0ef`, about 1.15:1 on `#FAFAFA`).
 
-The token's outline beats YARL's `outline: none`. The app's own `!important` lightbox rules beat the token's `transition: none`, and some of their `box-shadow` rules tie the token and come later. So the end of `app/globals.css` restates the band and `transition: none` for `.yarl__button` and `.yarl__thumbnails_thumbnail`, and lifts inactive thumbnails from `opacity: 0.5`. YARL also focuses its container to take arrow keys, and the thumbnail track when a focused thumbnail leaves it. Neither is a control, so neither draws the token. In a focused track, the active thumbnail draws it instead.
-
 `html` has `scroll-padding-top: 6rem` and `scroll-padding-bottom: 8rem`, so a focused element that fits between them scrolls into view with room around it. Outside Home, `SiteNav` sits in normal flow, so no chrome covers a focused element. On Home it's part of the chrome, which keyboard focus reveals at full opacity with no fade and holds open, and settled Home's portrait badge sits under it and takes no pointer.
 
 ## Names
@@ -61,7 +57,7 @@ The token's outline beats YARL's `outline: none`. The app's own `!important` lig
 | `{ kind: 'described', text }` | `<text>, photograph N of T` | `<text>` |
 | `{ kind: 'decorative' }` | `Photograph N of T` | `""` |
 | `{ kind: 'described', text, reviewed: false }`, a #14 draft | `Photograph N of T` | `Photograph N of T` |
-| None, on legacy surfaces only | `Photograph N of T` | `Photograph N of T` |
+| None, as `photos carry-over` names a photo in its plan | `Photograph N of T` | `Photograph N of T` |
 | `{ kind: 'position' }`, carried over at the launch with no description yet | `Photograph N of T` | `Photograph N of T` |
 
 A carried-over photo is named by its place once. In the Viewer, an untitled one says it on the image alone: the header's spelled-out position and the reading area's heading are left out, so neither the dialog, a region nor a heading repeats it. The shell still announces the position on a move, since that's an event, not a name.
@@ -75,7 +71,7 @@ npx playwright install chromium webkit   # once per machine, webkit for mobile-w
 npm run test:e2e
 ```
 
-Playwright builds the site and serves it on port 3100, or on `E2E_PORT` when that is set, with `PHOTOGRAPHY_LIBRARY_DIR` pointed at an empty temp directory, so it never touches the real library. `e2e/support/test.ts` answers `/api/photos` and every photo request with the 12 fixtures `e2e/support/global-setup.ts` writes, so import `test` and `expect` from there, and call `setPhotoFixtures()` to change the list for one test. Helpers wait on `html[data-hydrated]`, never on timeouts.
+Playwright builds the site and serves it on port 3100, or on `E2E_PORT` when that is set, with `PHOTOGRAPHY_LIBRARY_DIR` pointed at an empty temp directory, so it never touches the real library. That server has published nothing, so its Home and Work show #21's error page. A second server, on `E2E_CATALOG_PORT` or 3101, serves the published Home fixture in `e2e/support/catalog-home.ts` from the same build, for Home and the pages that need a catalog. Import `test` and `expect` from `e2e/support/test.ts`, and call `setPhotoFixtures()` there to paint the catalog Home's photographs with the solid and gradient fixtures in `e2e/support/fixtures.ts`, white for the contrast checks, from the opening photograph on. Helpers wait on `html[data-hydrated]`, never on timeouts.
 
 | Rule | Helper in `e2e/support/` |
 |---|---|

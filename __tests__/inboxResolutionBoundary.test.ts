@@ -69,7 +69,7 @@ const REQUESTS = {
 } as const;
 
 /** The proxy's answer for the inbox's action post, as the browser sends it: the form as the body. */
-function post(headers: Record<string, string>, form: FormData): Promise<Response> {
+function post(headers: Record<string, string>, form: FormData): Response {
     return proxy(new NextRequest(new URL('/curation/inbox', CURATOR_ORIGIN), { method: 'POST', headers: new Headers(headers), body: form }));
 }
 

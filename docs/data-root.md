@@ -113,8 +113,8 @@ An edit that also changes or removes the stamp isn't caught. It reads as a versi
 Before the first `up -d` with this compose file, decide who owns the photos. If another process writes them, such as a file sync tool running as another user, don't `chown` them here. Run the block below as it is and follow [Who owns the photos](#who-owns-the-photos) for the photos folder:
 
 ```bash
-mkdir -p portfolio-data .next-images-cache
-sudo chown -R 1001:1001 portfolio-data .next-images-cache
+mkdir -p portfolio-data
+sudo chown -R 1001:1001 portfolio-data
 sudo chmod 700 portfolio-data
 ```
 
@@ -124,9 +124,9 @@ On a host where nothing else writes the photos, also hand the whole folder to ui
 sudo chown -R 1001:1001 public/assets/photos
 ```
 
-`./.next-images-cache` is where `web` keeps the `/_next/image` copies it makes, so it has to belong to uid 1001 too. `docker-compose.prod.yml` never creates it, like the other two folders: a short-syntax bind of a missing folder has the Docker daemon create it, owned by root when the daemon runs as root, and `web` then can't write it. A host that ran the older compose file may already have one that Docker created that way, and the `chown` fixes it.
+Compose files before #13's slice E (v1.6.0) also mounted `./.next-images-cache`, `web`'s `/_next/image` cache. Nothing on the site uses `/_next/image` now, so the file doesn't mount it, and a host that has one may delete it, as [releasing.md](releasing.md) says for v1.6.0. A rollback to an older release's compose file needs it back, owned by uid 1001.
 
-Until the migration below initializes the data root, the watcher writes only its heartbeat there, logs once that the identity step is off, and keeps writing the legacy derivatives. `GET /api/health` reports `uninitialized`. The site lists photos from the registry the migration writes, so until it runs, `/api/photos` and `GET /api/ready` answer 503 with `registry-missing`, and Home and Gallery show no photos.
+Until the migration below initializes the data root, the watcher writes only its heartbeat there, logs once that the identity step is off, and keeps writing the legacy derivatives, which nothing serves. `GET /api/health` reports `uninitialized`. The site serves only a published catalog revision, so until the first publish, `GET /api/ready` answers 503 with `not-published`, and Home and Work show #21's error page. There is no legacy Home or Gallery to fall back to.
 
 ### Who owns the photos
 
@@ -134,7 +134,7 @@ Both containers run as uid 1001, and each needs only part of the photos folder:
 
 | Container | Reads | Writes |
 |---|---|---|
-| `web` | The derivatives it serves and the `lqip` files. Each photo's size and EXIF come from the registry in the data root, so it never opens an original. | Only `./.next-images-cache`, outside the photos folder |
+| `web` | Nothing it serves: every path under `/assets/photos` answers 404, and photos come from the `/media` sets in the data root. It still mounts the folder read-only until slice E's second PR of #13 moves the library to `/data/library`. | Nothing on the host |
 | `image-watcher` | The originals, in every folder of the library | The derivative folders (`thumbnails`, `medium`, `optimized`, `thumbnails-avif`, `medium-avif`, `optimized-avif`, `lqip`) and `cache/`, all at the top of the photos folder, and the data root |
 
 When nothing else writes the photos, the second `chown -R` in [Setting it up](#setting-it-up) is the simple way to give uid 1001 all of that.
@@ -149,7 +149,7 @@ When another process writes them, such as a file sync tool running as another us
 )
 ```
 
-That works only if uid 1001 can still read the originals: every folder in the library readable and searchable, and every photo readable. The containers share no group with the tool unless you set one up, so in practice that means the world bits, folders at least `0755` and photos at least `0644`, and a tool set to create new files that way. A photo that arrives as `0600` stays out of the Gallery, since the watcher can't read it. This prints every file or folder in the library that uid 1001 can't read, so no output means it can read them all:
+That works only if uid 1001 can still read the originals: every folder in the library readable and searchable, and every photo readable. The containers share no group with the tool unless you set one up, so in practice that means the world bits, folders at least `0755` and photos at least `0644`, and a tool set to create new files that way. A photo that arrives as `0600` gets no ID or `/media` set, so it never reaches the Inbox or the site, since the watcher can't read it. This prints every file or folder in the library that uid 1001 can't read, so no output means it can read them all:
 
 ```bash
 docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher \
@@ -184,7 +184,7 @@ Both have to be real folders next to `docker-compose.prod.yml`, not symlinks. `t
 )
 ```
 
-`sudo` lets `tar` read the uid 1001 files. Your own shell writes the archive, so it belongs to you, and `umask 077` and the 0700 folder keep it readable by you only, since it holds the registry and its curator-only details. Copy it off the host the same way, into a folder only you can read. If `tar` reports an error, delete that archive and run the block again, since the redirect leaves a partial file behind. `web` keeps serving meanwhile, since it only reads, but don't run `photos.mjs` commands or start the curator while `tar` runs. `./.next-images-cache` needs no backup.
+`sudo` lets `tar` read the uid 1001 files. Your own shell writes the archive, so it belongs to you, and `umask 077` and the 0700 folder keep it readable by you only, since it holds the registry and its curator-only details. Copy it off the host the same way, into a folder only you can read. If `tar` reports an error, delete that archive and run the block again, since the redirect leaves a partial file behind. `web` keeps serving meanwhile, since it only reads, but don't run `photos.mjs` commands or start the curator while `tar` runs.
 
 ## Restoring
 
@@ -228,7 +228,7 @@ The watcher's next pass keeps the ID of every photo that archive knew, follows a
 
 `GET /api/health` answers 200 whenever `web` is up, with the data root's state: `ready`, `uninitialized`, `unavailable`, or `unset`. Both `web` healthchecks call it.
 
-`GET /api/ready` says whether `web` can list the photos, and from where: `"mode":"legacy"` lists the registry's photos before the first catalog activation, and `"mode":"catalog"` the active revision's after it, with `revisionId`, `revisionNumber`, and `activatedAt`. It answers 503 with a `reason` when it can't list them, such as `registry-missing` before the migration. `registry-old-layout` means the old one-file `identity/registry.json` is still there; move it into `identity/registry/` as the steps above say. `catalog-unreadable` means `web` can't read `catalog/` well enough to tell whether anything was published, for example when a command run as another user left it unreadable to uid 1001. It serves nothing until `catalog/` reads again, and then goes back to legacy if nothing was published.
+`GET /api/ready` says whether `web` can serve the photos, and which catalog revision: `"state":"ok"` with `revisionId`, `revisionNumber`, and `activatedAt`, or `"degraded"`, still serving the last revision it loaded because the current one can't be read. Its `mode` is always `"catalog"` since #13's slice E removed legacy mode, and is kept so a check written for an older release still reads it. It answers 503 with a `reason` when it can serve nothing. `not-published` means nothing was ever published here, or no data root is set: there is nothing to serve, and no legacy site to fall back to. `catalog-unreadable` means `web` can't read `catalog/` well enough to tell whether anything was published, for example when a command run as another user left it unreadable to uid 1001. It serves nothing until `catalog/` reads again, and then answers `not-published` if nothing was. `active-unreadable` and `revision-unreadable` mean a site that has published can't read its pointer or the revision it names, and has no revision loaded to serve meanwhile.
 
 The watcher's healthcheck runs `node dist/scripts/watcherHealth.mjs`, which passes while `status/watcher.json` is at most 120 s old, isn't stamped more than 120 s ahead of the container's clock, and shows no identity pass running longer than 30 minutes. The watcher rewrites it every 30 s, so a watcher whose loop stopped, a data root uid 1001 can't write, or an identity pass that never ends turns it unhealthy. It doesn't catch a legacy derivative job that never finishes: a pass starts only once the legacy step is idle, and the legacy backlog on a first start can rightly take hours, so the healthcheck doesn't time it. The 30-minute limit can also flag a pass that's working as it should. A pass reads, hashes, and decodes every file whose size, inode, or times changed, so after a restore, after `identity/stat-cache.json` is deleted, or after a `chown -R` of the library, the first pass reads every photo again, and on a large library that can take longer than 30 minutes. The watcher shows unhealthy until that pass ends, so check its logs before acting on it. If `/media` sets stop appearing while the watcher reads healthy, check its logs for the last photo it processed. `restart: always` doesn't act on unhealthy, so this only changes what `ps` and a dashboard show. `docker compose -f docker-compose.prod.yml ps` shows the state, and the healthcheck's last lines say why:
 
@@ -238,7 +238,7 @@ docker inspect --format '{{json .State.Health}}' "$(docker compose -f docker-com
 
 ## Migration runbook
 
-Run this once, on a library that never had a data root, to give every photo its ID. Until the catalog launches, Home and Gallery list the registry's photos at their legacy derivative URLs, so they show no photos until step 4 writes the registry. The legacy derivatives keep serving throughout.
+Run this once, on a library that never had a data root, to give every photo its ID. The site shows nothing until the first publish, before and after it: `GET /api/ready` answers 503 with `not-published`.
 
 1. Stop the watcher, so the library holds still:
 
@@ -257,7 +257,7 @@ Run this once, on a library that never had a data root, to give every photo its 
 
    Check its duplicate-byte groups, basename collisions, unreadable, unsupported, and undecodable files, and ambiguous items. An ambiguous file gets no ID until you decide with `photos.mjs identity bind` or `new`.
 
-4. Apply the plan the dry run printed. It writes the registry with exactly the plan's IDs, and `data-root.json`, after which `GET /api/health` reports `ready` and `GET /api/ready` reports `"state":"ok"`. If the library or the registry changed since the dry run, it refuses, so run the dry run again and apply that plan. Applying a plan twice prints that it's already applied and exits 0.
+4. Apply the plan the dry run printed. It writes the registry with exactly the plan's IDs, and `data-root.json`, after which `GET /api/health` reports `ready`. `GET /api/ready` still answers `not-published` until the first publish. If the library or the registry changed since the dry run, it refuses, so run the dry run again and apply that plan. Applying a plan twice prints that it's already applied and exits 0.
 
    ```bash
    docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs migrate --apply --plan <plan path>

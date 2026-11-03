@@ -27,15 +27,6 @@ services:
         read_only: true
         bind:
           create_host_path: false
-      # /_next/image's cache, which web writes as uid 1001. Never created when
-      # missing either: the Docker daemon would create it, owned by root under
-      # a root daemon, and web couldn't write it. Create it first, owned by
-      # uid 1001 (docs/data-root.md, Setting it up).
-      - type: bind
-        source: ./.next-images-cache
-        target: /app/.next/cache/images
-        bind:
-          create_host_path: false
       # The site config folder: About's portrait, about/portrait.jpg (or .jpeg,
       # .png, .webp), and its optional about/portrait.json. Read-only, and
       # read per request, so swapping the file there changes About with no
@@ -62,12 +53,12 @@ services:
       start_period: 10s
 
   # Image optimization watcher - processes new photos automatically
-  # Both containers run as uid 1001 (nextjs user). web reads the photos and
-  # their derivatives and writes only ./.next-images-cache. The watcher reads
-  # the photos, writes the derivative folders and cache/ in the photos folder,
-  # and writes the data root. When nothing else writes the photos, run on host:
-  #   mkdir -p ./portfolio-data ./.next-images-cache
-  #   chown -R 1001:1001 ./public/assets/photos ./portfolio-data ./.next-images-cache
+  # Both containers run as uid 1001 (nextjs user). web writes nothing on the
+  # host. The watcher reads the photos, writes the derivative folders and
+  # cache/ in the photos folder, and writes the data root. When nothing else
+  # writes the photos, run on host:
+  #   mkdir -p ./portfolio-data
+  #   chown -R 1001:1001 ./public/assets/photos ./portfolio-data
   #   chmod 700 ./portfolio-data
   # When another process, such as a file sync tool, writes the photos, hand
   # uid 1001 only the derivative folders and cache/ instead, and keep the

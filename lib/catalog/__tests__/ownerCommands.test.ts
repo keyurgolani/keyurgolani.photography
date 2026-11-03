@@ -6,10 +6,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { curationPaths } from '../../curation/repository';
 import { writeWatcherHeartbeat } from '../../identity/heartbeat';
 import { readRegistry, writeRegistry } from '../../identity/registry';
-import { libraryRoot } from '../../storage/config';
+import { DATA_ROOT_FILE, libraryRoot } from '../../storage/config';
 import { versionFile } from '../../storage/document';
 import { LockLostError, withLock } from '../../storage/lock';
 import { initDrafts, runDraftInit } from '../draft-init';
+import { CUTOVER_KEY } from '../mode';
 import { listPhotos, ownerStatus, runListCommand, runStatusCommand } from '../owner-status';
 import { publish, type PublishOptions } from '../publish';
 import { listActivations } from '../repository';
@@ -65,7 +66,7 @@ describe('photos status', () => {
         expect(result.exitCode).toBe(0);
         const text = withoutRoot(result.output, catalog.root);
         expect(text).toContain('Data root: <root> (ready)');
-        expect(text).toContain('Catalog: legacy mode, nothing published yet, so the site lists the registry\'s photos');
+        expect(text).toContain('Catalog: nothing published yet, so the site answers unavailable (503, not-published) until the first photos publish');
         expect(text).toContain('Last publish: none yet');
         expect(text).toContain('Photos: 4 in the registry (present 4, missing 0, ambiguous 0, archived 0)');
         expect(text).toContain('Working layer: site.json, 1 series record (published 1, draft 0, hidden 0), 4 photo records');
@@ -75,6 +76,21 @@ describe('photos status', () => {
         expect(text).toContain('Inbox: 0 missing sources, 0 failures open');
     });
 
+    it('never says nothing is published on a data root that has published, even with no revision to name', async () => {
+        const catalog = await fixture();
+        // This process remembers a publish there (CUTOVER_KEY), as a web process that served the launch does, so it
+        // answers active-unreadable while no revision can be read, never not-published.
+        const seen = (globalThis as typeof globalThis & { [CUTOVER_KEY]?: Set<string> })[CUTOVER_KEY] ??= new Set<string>();
+        const root = path.resolve(catalog.root);
+        seen.add(root);
+        cleanups.push(async () => void seen.delete(root));
+        const status = await ownerStatus({ dataRoot: catalog.root });
+        expect(status.catalog).toMatchObject({ published: 'published', active: null });
+        const { output } = await runStatusCommand({ dataRoot: catalog.root });
+        expect(output).toContain('Catalog: this data root has published, but no live revision can be read, so the site answers unavailable (503, active-unreadable), or degraded on the revision web last loaded');
+        expect(output).not.toContain('nothing published yet');
+    });
+
     it('prints JSON with the same facts', async () => {
         const catalog = await fixture();
         await run(catalog);
@@ -82,7 +98,7 @@ describe('photos status', () => {
         const status = JSON.parse(result.output) as Awaited<ReturnType<typeof ownerStatus>>;
         expect(Object.keys(status)).toEqual(['identity', 'catalog', 'working', 'inbox']);
         expect(status.inbox).toEqual({ missing: [], failed: [], unreadable: 0 });
-        expect(status.catalog).toMatchObject({ mode: 'catalog', active: { revisionNumber: 1, status: 'committed', kind: 'publish', actor: 'test' }, lastPublish: { outcome: 'PUBLISHED' } });
+        expect(status.catalog).toMatchObject({ published: 'published', active: { revisionNumber: 1, status: 'committed', kind: 'publish', actor: 'test' }, lastPublish: { outcome: 'PUBLISHED' } });
         expect(status.working).toMatchObject({ site: true, photoRecords: 4, unassigned: [catalog.photos[3].id] });
     });
 
@@ -126,6 +142,44 @@ describe('photos status', () => {
         expect(unset).toEqual({ exitCode: 1, output: 'Data root: not set (unset: PHOTOGRAPHY_DATA_DIR is not set)\n' });
     });
 
+    it('says in JSON that it didn\'t check for a publish when the data root is missing or unset, never unpublished', async () => {
+        const missing = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'kg13e-status-')), 'missing');
+        cleanups.push(() => fs.promises.rm(path.dirname(missing), { recursive: true, force: true }));
+        for (const dataRoot of [missing, null]) {
+            const result = await runStatusCommand({ dataRoot }, { json: true });
+            expect(result.exitCode, String(dataRoot)).toBe(1);
+            expect((JSON.parse(result.output) as Awaited<ReturnType<typeof ownerStatus>>).catalog, String(dataRoot)).toEqual({ published: 'unknown', active: null, lastPublish: null });
+        }
+    });
+
+    it('reads the publish and the live revision on a launched data root whose data-root.json is gone, and still exits 1', async () => {
+        const catalog = await fixture();
+        expect((await run(catalog)).outcome).toBe('PUBLISHED');
+        fs.rmSync(path.join(catalog.root, DATA_ROOT_FILE));
+        const status = await ownerStatus({ dataRoot: catalog.root });
+        expect(status.identity.dataRoot.state).toBe('uninitialized');
+        expect(status.catalog).toMatchObject({ published: 'published', active: { revisionNumber: 1, status: 'committed' }, lastPublish: { outcome: 'PUBLISHED' } });
+        const result = await runStatusCommand({ dataRoot: catalog.root });
+        expect(result.exitCode).toBe(1);
+        const text = withoutRoot(result.output, catalog.root);
+        expect(text).toContain('Data root: <root> (uninitialized');
+        expect(text).toContain(`Catalog: revision 1 (${catalog.revisionId}) active since`);
+        expect(text).not.toContain('nothing published yet');
+    });
+
+    it.skipIf(process.getuid?.() === 0)('reads a launched data root it can\'t write, as the read-only web container mounts it', async () => {
+        const catalog = await fixture();
+        expect((await run(catalog)).outcome).toBe('PUBLISHED');
+        fs.chmodSync(catalog.root, 0o555);
+        cleanups.unshift(async () => fs.chmodSync(catalog.root, 0o755));
+        expect(() => fs.writeFileSync(path.join(catalog.root, 'probe'), '')).toThrow();
+        const json = JSON.parse((await runStatusCommand({ dataRoot: catalog.root }, { json: true })).output) as Awaited<ReturnType<typeof ownerStatus>>;
+        expect(json.catalog).toMatchObject({ published: 'published', active: { revisionNumber: 1, status: 'committed' } });
+        const { output } = await runStatusCommand({ dataRoot: catalog.root });
+        expect(output).toContain(`Catalog: revision 1 (${catalog.revisionId}) active since`);
+        expect(output).not.toContain('nothing published yet');
+    });
+
     it('reports the revision the pointer names as live after a first publish crashes past the switch', async () => {
         const catalog = await fixture();
         expect((await run(catalog, crashAfter(11))).outcome).not.toBe('PUBLISHED');
@@ -151,7 +205,7 @@ describe('photos status', () => {
         expect(output).toContain('Activation 2 is pending. The next photos publish settles it.');
         // The next publish settles it, and status says so.
         expect((await run(catalog)).outcome).toBe('NO_CHANGES');
-        expect((await runStatusCommand({ dataRoot: catalog.root })).output).toContain(`Catalog: catalog mode, revision 2 (${pointer?.revisionId}) active since `);
+        expect((await runStatusCommand({ dataRoot: catalog.root })).output).toContain(`Catalog: revision 2 (${pointer?.revisionId}) active since `);
         expect((await listActivations(catalog.root)).map((activation) => activation.status)).toEqual(['committed', 'committed']);
     });
 });
@@ -171,7 +225,7 @@ describe('photos status with a pointer its activation disagrees with', () => {
         const status = await ownerStatus({ dataRoot: catalog.root });
         expect(status.catalog.active).toMatchObject({ revisionId: catalog.revisionId, activationId: pointer?.activationId, status: 'mismatch' });
         const { output } = await runStatusCommand({ dataRoot: catalog.root });
-        expect(output).toContain(`Catalog: catalog mode, ${catalog.revisionId} is live, but the pointer names activation 2, which activated ${second.revisionId}`);
+        expect(output).toContain(`Catalog: ${catalog.revisionId} is live, but the pointer names activation 2, which activated ${second.revisionId}`);
         expect(output).toContain("  The pointer and its activation record disagree. The next photos publish repairs them, unless that revision's rules block it.");
     });
 });

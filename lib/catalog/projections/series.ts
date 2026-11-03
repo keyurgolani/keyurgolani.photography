@@ -428,12 +428,11 @@ export type SeriesActiveCatalog<Reason extends string = string> = ScreenCatalog<
  * `generateMetadata` to call with getActiveCatalog(), which reads one
  * revision per request:
  *
- * | catalog                  | `/work/<slug>`                      |
- * | ------------------------ | ----------------------------------- |
- * | malformed slug           | not-found, the catalog unread       |
- * | legacy                   | not-found: no series before cutover |
- * | catalog, ok or degraded  | the page, a 308, or not-found       |
- * | catalog, unavailable     | unavailable, for a 500, never a 404 |
+ * | catalog                         | `/work/<slug>`                      |
+ * | ------------------------------- | ----------------------------------- |
+ * | malformed slug                  | not-found, the catalog unread       |
+ * | ok or degraded                  | the page, a 308, or not-found       |
+ * | unavailable, not-published too  | unavailable, for a 500, never a 404 |
  *
  * The 308 goes out only while a revision is being served, so nothing
  * permanent is sent from a catalog that can't be read. A degraded catalog
@@ -447,16 +446,15 @@ export async function seriesPageFrom<Reason extends string>(
     const params = seriesParams(slug);
     if (params === null) return NOT_FOUND;
     const catalog = await load();
-    if (catalog.mode === 'legacy') return NOT_FOUND;
     if (catalog.state === 'unavailable') return { kind: 'unavailable', reason: catalog.reason };
     return catalog.reader.getSeriesPage(params.slug, routes);
 }
 
 /**
  * The continuation endpoint's answer for the site as it stands. A malformed
- * slug or cursor is answered before the catalog is read; legacy mode is
- * not-found, as the page is; an unavailable catalog is unavailable, for a
- * 503; anything else is seriesContinuationOf() on the served revision (a
+ * slug or cursor is answered before the catalog is read; an unavailable
+ * catalog, one that has published nothing too, is unavailable, for a 503, as
+ * the page is; anything else is seriesContinuationOf() on the served revision (a
  * degraded catalog's last loaded one).
  */
 export async function seriesContinuationFrom<Reason extends string>(
@@ -469,7 +467,6 @@ export async function seriesContinuationFrom<Reason extends string>(
     if (params === null) return NOT_FOUND;
     if (decodeSeriesCursor(cursor) === null) return BAD_REQUEST;
     const catalog = await load();
-    if (catalog.mode === 'legacy') return NOT_FOUND;
     if (catalog.state === 'unavailable') return { kind: 'unavailable', reason: catalog.reason };
     return catalog.reader.getSeriesContinuation(params.slug, cursor as string, routes);
 }

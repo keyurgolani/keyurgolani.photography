@@ -14,13 +14,12 @@ import { expect, test } from '../support/test';
 // About (R2-P1-2) and the Viewer (R2-P1-1). (Before the five themes, #21
 // pinned one look for both; Dark against v1.2.0 is e2e/themes/dark-parity.spec.ts.)
 // The catalog-mode server serves the published Home fixture, so Work, the
-// series, and the Viewer are real pages. The legacy Gallery is on the harness
-// server.
+// series, and the Viewer are real pages. The legacy Gallery's row went with
+// the page (#13's slice E).
 
 test.skip(({ isMobile }) => isMobile, 'Each test sets the 1440 and 390 viewports itself, on the desktop project.');
 test.use({ baseURL: CATALOG_ORIGIN });
 
-const LEGACY_ORIGIN = `http://127.0.0.1:${process.env.E2E_PORT || '3100'}`;
 const GAH_GROUND: Rgb = [8, 10, 9];
 const PAPER: Rgb = [244, 236, 215];
 const CC_GROUND: Rgb = [17, 21, 19];
@@ -43,8 +42,7 @@ interface Route {
     light: Rgb;
     /**
      * What the bottom row's edges show: the page's own ground, within `tolerance`; the Viewer's reading area, its
-     * `chrome` per theme; or nothing to check, since Home's stage is a photograph to the edge and
-     * the legacy Gallery repaints with the theme.
+     * `chrome` per theme; or nothing to check, since Home's stage is a photograph to the edge.
      */
     bottom: 'ground' | 'chrome' | 'none';
     /** The Viewer's reading area at the foot of the page, per theme: --cc-chrome over the Viewer's ground. */
@@ -64,7 +62,6 @@ const ROUTES: readonly Route[] = [
     // Light's About paper has no ribs, so it holds its ground exactly.
     { name: 'About', path: '/about', nav: true, ground: PAPER, light: LIGHT_PAPER, bottom: 'ground', tolerance: 10 },
     { name: 'the 404', path: '/does-not-exist', nav: true, ground: GAH_GROUND, light: LIGHT_PAPER, bottom: 'ground' },
-    { name: 'the legacy Gallery', path: `${LEGACY_ORIGIN}/gallery`, nav: true, ground: GAH_GROUND, light: LIGHT_PAPER, bottom: 'none' },
 ];
 
 const VIEWPORTS = [

@@ -2,25 +2,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createTempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { createTempLibrary } from '../../../test/helpers/tempLibrary';
-import { GET as photosRoute } from '../../../app/api/photos/route';
+import { legacyList } from '../../catalog/legacy-photos';
 import { processImage } from '../../../utils/imageOptimizer';
 import { resolveAsset } from '../../media/manifest';
 import { assetsRoot } from '../../media/path';
 import type { AssetRef } from '../../media/url';
 import { runReconcilePass } from '../pass';
 import { currentProfileId } from '../profile';
-import { readRegistry } from '../registry';
+import { readRegistry, readStoredRegistry } from '../registry';
 import { createWorker } from '../worker';
 import { sequentialIds } from './reconcileFixtures';
-
-vi.mock('next/server', async (importOriginal) => ({
-    ...await importOriginal<Record<string, unknown>>(),
-    // Outside Next there is no request scope, and the route only needs it to wait.
-    connection: vi.fn(async () => undefined),
-}));
 
 const quiet = { log: () => undefined, warn: () => undefined, error: () => undefined };
 let images: Buffer[];
@@ -101,27 +95,23 @@ describe('a revision a catalog refers to', () => {
     }, 120_000);
 });
 
-describe('/api/photos', () => {
+describe('the legacy list', () => {
+    // The list the removed /api/photos served, which `photos carry-over` and publish's launch count still read.
     it('lists the photos the identity step records, at their legacy URLs, and the next step changes nothing', async () => {
         const s = await identity();
         for (const [index, name] of ['dawn.jpg', 'dusk.jpg', 'night.jpg'].entries()) {
             fs.writeFileSync(s.lib.file(name), images[index]);
             await processImage(name);
         }
-        const read = async () => {
-            const response = await photosRoute(new Request('http://127.0.0.1/api/photos'));
-            return { status: response.status, headers: Object.fromEntries(response.headers), body: (await response.json()) as unknown };
-        };
+        const read = async () => legacyList(await readRegistry(s.data.root), s.lib.root);
         // It lists from the registry the step writes, so there is nothing to list yet.
-        expect(await read()).toMatchObject({ status: 503, body: { reason: 'registry-missing' } });
+        expect(await readStoredRegistry(s.data.root)).toBeNull();
         const library = fs.readdirSync(s.lib.root, { recursive: true, encoding: 'utf8' }).sort();
 
         await s.step();
         expect(Object.keys(assetStore(s.data.root)).filter((file) => file.endsWith('manifest.json'))).toHaveLength(3);
         const listed = await read();
-        expect(listed.status).toBe(200);
-        expect((listed.body as { src: string }[]).map((item) => item.src).sort())
-            .toEqual(['dawn', 'dusk', 'night'].map((name) => `/assets/photos/optimized/${name}.webp`));
+        expect(listed.map((item) => item.src).sort()).toEqual(['dawn', 'dusk', 'night'].map((name) => `/assets/photos/optimized/${name}.webp`));
         await s.step();
         expect(await read()).toEqual(listed);
         // The identity step wrote only to the data root.

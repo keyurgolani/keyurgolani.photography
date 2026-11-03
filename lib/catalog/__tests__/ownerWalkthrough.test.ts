@@ -109,7 +109,7 @@ describe('the owner walkthrough', () => {
         expect(published).not.toContain('checklist');
 
         // 7. status names it, and the revision holds the imported copy.
-        expect(ok(await photos('status'))).toContain(`Catalog: catalog mode, revision 1 (${candidate}) active since `);
+        expect(ok(await photos('status'))).toContain(`Catalog: revision 1 (${candidate}) active since `);
         expect((await readActivePointer(data.root))?.revisionId).toBe(candidate);
         const revision = await readRevisionFile(data.root, candidate ?? '');
         expect(revision?.content.series.map((series) => [series.id, series.photoIds, series.cover?.photoId, series.chapters.map((chapter) => chapter.title)]))

@@ -3,16 +3,19 @@
 # project directory, with the photos in ci/fixtures/library and an empty data
 # root, and checks:
 #
-# 1. web serves the site and /api/health, /api/photos and /api/ready answer
-#    503 with registry-missing until the migration runs, and the watcher
-#    writes every legacy derivative, for the photos it starts with and for one
-#    added while it runs, and stays healthy.
+# 1. web serves the site and /api/health, and with nothing published it
+#    answers the catalog's unavailable state: / is #21's error page, and
+#    /api/ready answers 503 with not-published, before the migration and
+#    after it. /api/photos is a 404 and /gallery a 308 to /work (#13's slice
+#    E). The watcher writes every legacy derivative, for the photos it starts
+#    with and for one added while it runs, and stays healthy, and none of
+#    them serves, directly or through /_next/image.
 # 2. The migration runbook in docs/data-root.md works as uid 1001: with the
 #    watcher stopped, a dry run and an apply in image-watcher initialize the
-#    data root, after which /api/photos lists every photo and /api/ready
-#    reports legacy mode. Once the watcher is back it builds every /media set
-#    and keeps its heartbeat fresh.
-# 3. /media serves none of those sets before the first activation, an
+#    data root. Once the watcher is back it builds every /media set and keeps
+#    its heartbeat fresh.
+# 3. /media serves none of those sets before the first activation, #6's Home
+#    records endpoint answers 503 with not-published for each photo, an
 #    original source 404s, and the photo IDs, /media URLs, and set digests
 #    stay the same once the containers are recreated.
 # 4. With PHOTOGRAPHY_DATA_DIR unset, the watcher says the identity step is
@@ -86,7 +89,7 @@ cleanup() {
   # The containers write the derivative folders and the data root as uid
   # 1001. Remove them with the image under test, so cleanup never pulls anything.
   docker run --rm --pull never --user 0 --entrypoint rm -v "$TMP:/t" "$IMAGE" \
-    -rf /t/public /t/.next-images-cache /t/portfolio-data /t/unset-library /t/secrets
+    -rf /t/public /t/portfolio-data /t/unset-library /t/secrets
   rm -rf "$TMP"
   exit "$status"
 }
@@ -211,12 +214,23 @@ expect_json() {
   jq -e "$@" "$filter" "$TMP/body.json" >/dev/null || fail "GET $endpoint returned $(cat "$TMP/body.json"), which fails $filter."
 }
 
+# Fails unless GET <endpoint> answers <code>. Leaves the headers in
+# $TMP/headers.txt and the body in $TMP/body.txt.
+expect_code() {
+  local endpoint=$1 expected=$2 code
+  code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o "$TMP/body.txt" -w '%{http_code}' "$BASE_URL$endpoint") || fail "GET $endpoint failed."
+  [ "$code" = "$expected" ] || fail "GET $endpoint returned $code, expected $expected."
+}
+
+# /api/ready's answer while nothing is published.
+NOT_PUBLISHED='. == {mode: "catalog", state: "unavailable", revisionId: null, revisionNumber: null, activatedAt: null, reason: "not-published"}'
+
 # 1. A throwaway library and an empty data root. Both containers run as uid
 #    1001, and the override is the smoke test's only change to the Compose file.
-mkdir -p "$PHOTOS" "$TMP/.next-images-cache" "$DATA" "$UNSET" "$SITE_CONFIG/about"
+mkdir -p "$PHOTOS" "$DATA" "$UNSET" "$SITE_CONFIG/about"
 cp ci/fixtures/library/*.jpg "$PHOTOS/"
 cp ci/fixtures/library/*.jpg "$UNSET/"
-chmod -R a+rwX "$PHOTOS" "$TMP/.next-images-cache" "$DATA" "$UNSET"
+chmod -R a+rwX "$PHOTOS" "$DATA" "$UNSET"
 # About's portrait: a generated stand-in carrying EXIF with GPS and a camera
 # serial, and XMP, made with the image's own Sharp, so step 3b's check that
 # none of it is served can fail. The folder is writable by anyone on the host,
@@ -273,19 +287,20 @@ done < <(awk '{ sub(/#.*/, ""); for (i = 1; i <= NF; i++) print $i }' "$SERVICES
 [ "${#services[@]}" -gt 0 ] || fail "$SERVICES_FILE lists no services."
 compose up -d --pull never --wait --wait-timeout 180 "${services[@]}"
 
-# 3. The home page is HTML with a <title>. Its content renders client-side,
-#    so assert nothing more.
+# 3. With nothing published, the home page is #21's error page, a 500 of HTML
+#    with a <title>. It renders client-side, so assert nothing more. There is
+#    no legacy Home to fall back to.
 home=$(curl -sS --max-time 30 -o "$TMP/home.html" -w '%{http_code} %{content_type}' "$BASE_URL/") ||
   fail "GET / failed."
 code=${home%% *}
 content_type=${home#* }
-[ "$code" = 200 ] || fail "GET / returned $code, expected 200."
+[ "$code" = 500 ] || fail "GET / returned $code with nothing published, expected #21's 500."
 case $content_type in
   text/html*) ;;
   *) fail "GET / returned content-type '$content_type', expected text/html." ;;
 esac
 grep -q '<title>' "$TMP/home.html" || fail "GET / has no <title>."
-echo "GET / returned HTML with a <title>."
+echo "GET / returned #21's error page, HTML with a <title>, with nothing published."
 
 # 3b. About's portrait comes from ./site-config, which web mounts read-only,
 #     at a content-hashed /about/portrait URL sent as immutable. Swapping the
@@ -331,11 +346,13 @@ docker run --rm --pull never --entrypoint sh "$IMAGE" -c '[ ! -e /app/site-confi
   fail "The image holds a site config folder, which belongs on the host."
 echo "About served ./site-config's portrait read-only at an immutable hashed URL with none of its EXIF, GPS, or XMP, followed a swap and a removal with no restart, 404ed the swapped-out URL, and the image holds no site config."
 
-# 4. Until the migration writes the registry, there is nothing to list, so
-#    /api/photos and /api/ready answer 503 with registry-missing.
-expect_json /api/photos 503 no-store '. == {reason: "registry-missing"}'
-expect_json /api/ready 503 no-store '.mode == "legacy" and .state == "unavailable" and .reason == "registry-missing"'
-echo "GET /api/photos and /api/ready returned 503 with registry-missing before the migration."
+# 4. Nothing is published, so /api/ready answers 503 with not-published.
+#    /api/photos is gone, and /gallery is Work's (#13's slice E).
+expect_json /api/ready 503 no-store "$NOT_PUBLISHED"
+expect_code /api/photos 404
+expect_code /gallery 308
+tr -d '\r' <"$TMP/headers.txt" | grep -qix 'location: /work' || fail "GET /gallery did not send Location: /work."
+echo "GET /api/ready returned 503 with not-published before the migration, /api/photos 404, and /gallery 308 to /work."
 
 # 5. /api/health answers 200 and reports the empty data root as uninitialized.
 check_health
@@ -431,6 +448,16 @@ echo "web 404s the curator paths, and curator sent /curation to its login, serve
 wait_for_outputs "${fixtures[@]}"
 require_watcher_running
 echo "The watcher wrote all seven derivatives for: ${fixtures[*]}."
+# None of them serves (#13's slice E): each legacy basename derivative 404s
+# with nothing cached, and /_next/image refuses it with its own 400.
+for base in "${fixtures[@]}"; do
+  url=/assets/photos/optimized/$base.webp
+  expect_code "$url" 404
+  tr -d '\r' <"$TMP/headers.txt" | grep -qix 'cache-control: no-store' || fail "The 404 for $url did not send Cache-Control: no-store."
+  expect_code "/_next/image?url=$(jq -rn --arg url "$url" '$url | @uri')&w=400&q=75" 400
+  [ "$(cat "$TMP/body.txt")" = '"url" parameter is not allowed' ] || fail "GET /_next/image for $url answered 400 with '$(cat "$TMP/body.txt")'."
+done
+echo "Every legacy derivative returned 404, and 400 through /_next/image."
 
 # 7. Watch mode picks up a photo added while it runs.
 cp "ci/fixtures/library/${fixtures[0]}.jpg" "$PHOTOS/ci-added.jpg"
@@ -452,14 +479,11 @@ check_health
 [ "$HEALTH" = ready ] || fail "GET /api/health reported dataRoot '$HEALTH' after the migration, expected ready."
 echo "The migration ran as uid 1001, and /api/health reports the data root ready."
 
-# With the registry written, legacy mode lists every photo at its legacy
-# derivative URLs, which the watcher wrote in steps 6 and 7.
-# shellcheck disable=SC2016 # $photos is jq's
-expect_json /api/photos 200 no-cache \
-  'type == "array" and length == $photos and all(.[]; .src | startswith("/assets/photos/optimized/"))' \
-  --argjson photos "$((${#fixtures[@]} + 1))"
-expect_json /api/ready 200 no-store '. == {mode: "legacy", state: "ok", revisionId: null, revisionNumber: null, activatedAt: null}'
-echo "GET /api/photos listed every photo at its legacy URLs, and /api/ready reported legacy mode."
+# With the registry written, there is still nothing published, so no photo
+# list appears, and /api/ready answers as before.
+expect_json /api/ready 503 no-store "$NOT_PUBLISHED"
+expect_code /api/photos 404
+echo "After the migration GET /api/ready still returned 503 with not-published, and /api/photos 404."
 
 # 9. Back up, the watcher builds every set, and its heartbeat stays fresh.
 compose up -d --pull never --wait --wait-timeout 180 image-watcher
@@ -479,18 +503,22 @@ age=$(jq -r '.watcher.ageSeconds // empty' "$TMP/status.json")
 require_watcher_running
 echo "The watcher built every /media set, and its heartbeat is ${age} s old."
 
-# 10. Nothing is active yet, so /media serves none of the sets, and an original 404s.
+# 10. Nothing is active yet, so /media serves none of the sets, #6's Home
+#     records endpoint answers 503 with not-published for each photo, and an
+#     original 404s.
 media_sets "$TMP/sets.txt"
 [ "$(wc -l <"$TMP/sets.txt")" -eq "$((${#fixtures[@]} + 1))" ] || fail "Expected a set per photo, got: $(cat "$TMP/sets.txt")"
+no_revision=rev_$(printf '0%.0s' {1..64})
 while read -r path photo url; do
   code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$BASE_URL$url") || fail "GET $url failed."
   [ "$code" = 404 ] || fail "GET $url, the set of $path, returned $code before the first activation, expected 404."
   tr -d '\r' <"$TMP/headers.txt" | grep -qix 'cache-control: no-store' || fail "The 404 for $url did not send Cache-Control: no-store."
+  expect_json "/api/catalog/home/series/ser_smoke/photos/$photo?revision=$no_revision" 503 no-store '. == {reason: "not-published"}'
 done <"$TMP/sets.txt"
 code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$BASE_URL/assets/photos/${fixtures[0]}.jpg") ||
   fail "GET /assets/photos/${fixtures[0]}.jpg failed."
 [ "$code" = 404 ] || fail "GET /assets/photos/${fixtures[0]}.jpg, an original, returned $code, expected 404."
-echo "/media served none of the sets before the first activation, and the original returned 404."
+echo "/media served none of the sets before the first activation, the #6 Home records endpoint answered 503 with not-published for each photo, and the original returned 404."
 
 # 11. Recreated containers keep every photo ID, /media URL, and set.
 set_digests "$TMP/sets.txt" "$TMP/before.txt"

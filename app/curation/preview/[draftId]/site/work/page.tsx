@@ -21,7 +21,7 @@ export async function generateMetadata(): Promise<Metadata> {
 export default async function PreviewWork({ params }: PreviewPageProps) {
     await requireCurator({ read: true });
     const { routes, catalog } = await openPreview((await params).draftId);
-    const result = workRouteOf('work', catalog, routes);
+    const result = workRouteOf(catalog, routes);
     // An open preview is always a catalog that reads, so Work is the only answer.
     if (result.kind !== 'work') throw new TypeError(`workRouteOf answered ${result.kind} for a draft`);
     return (

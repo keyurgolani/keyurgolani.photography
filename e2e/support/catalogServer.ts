@@ -5,8 +5,8 @@ import path from 'node:path';
 
 /**
  * A second `next start` from the build the harness made, on 127.0.0.1, with
- * its own data root, so a spec can see the site in catalog mode while the
- * harness server stays in legacy mode. It serves #1's empty photo library,
+ * its own data root, so a spec can see a published catalog while the
+ * harness server has none. It serves #1's empty photo library,
  * like the harness's own server.
  */
 

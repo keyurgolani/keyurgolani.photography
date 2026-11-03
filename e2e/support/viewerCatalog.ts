@@ -5,7 +5,7 @@ import { expect, test } from './test';
 
 // The Viewer's published fixture (#7, shared with #9's spec): each project's
 // worker publishes its own catalog and serves it from a second `next start`,
-// so the harness server stays in legacy mode for every other spec.
+// so the harness server stays unpublished for every other spec.
 
 /** Above the catalog, the publish, and a server start, so a slow start fails in startCatalogServer, which stops its child. */
 export const HOOK_TIMEOUT = READY_TIMEOUT + 60_000;

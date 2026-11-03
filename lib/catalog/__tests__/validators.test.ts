@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildId, catalogError, catalogETag, catalogJson, readBuildId } from '../validators';
 
-const PHOTOS_URL = 'http://127.0.0.1/api/photos';
+const PHOTOS_URL = 'http://127.0.0.1/api/catalog/home/photos/ph_x';
 const request = (ifNoneMatch?: string) => new Request(PHOTOS_URL, ifNoneMatch === undefined ? {} : { headers: { 'If-None-Match': ifNoneMatch } });
 const headersOf = (response: Response) => Object.fromEntries(response.headers);
 
@@ -15,10 +15,10 @@ afterEach(() => {
 
 describe('catalogETag', () => {
     it('is weak, 22 base64url characters, and changes with the route, revision, or build', () => {
-        const tag = catalogETag('/api/photos', 'rev_a', 'build-1');
+        const tag = catalogETag('/api/catalog/home/photos/ph_x', 'rev_a', 'build-1');
         expect(tag).toMatch(/^W\/"[A-Za-z0-9_-]{22}"$/);
-        expect(catalogETag('/api/photos', 'rev_a', 'build-1')).toBe(tag);
-        const others = [catalogETag('/api/photos', 'rev_b', 'build-1'), catalogETag('/api/photos', 'rev_a', 'build-2'), catalogETag('/api/catalog/x', 'rev_a', 'build-1')];
+        expect(catalogETag('/api/catalog/home/photos/ph_x', 'rev_a', 'build-1')).toBe(tag);
+        const others = [catalogETag('/api/catalog/home/photos/ph_x', 'rev_b', 'build-1'), catalogETag('/api/catalog/home/photos/ph_x', 'rev_a', 'build-2'), catalogETag('/api/catalog/x', 'rev_a', 'build-1')];
         expect(new Set([tag, ...others]).size).toBe(4);
         // The parts are kept apart, so no split of one string collides with another.
         expect(catalogETag('/a', 'b,c', 'd')).not.toBe(catalogETag('/a', 'b', 'c,d'));
@@ -68,7 +68,7 @@ describe('readBuildId and buildId', () => {
 
 describe('catalogJson', () => {
     const body = [{ id: 0, src: '/media/x' }];
-    const tag = catalogETag('/api/photos', 'rev_a', 'build-1');
+    const tag = catalogETag('/api/catalog/home/photos/ph_x', 'rev_a', 'build-1');
     const options = { buildId: 'build-1', headers: { 'X-Catalog-Mode': 'catalog' } };
 
     it('answers 200 with the body, the weak tag, no-cache, and the revision, and no Last-Modified', async () => {
@@ -92,8 +92,8 @@ describe('catalogJson', () => {
     });
 
     it('answers 200 with the new tag for a stale or malformed one', async () => {
-        const stale = catalogETag('/api/photos', 'rev_old', 'build-1');
-        const oldBuild = catalogETag('/api/photos', 'rev_a', 'build-0');
+        const stale = catalogETag('/api/catalog/home/photos/ph_x', 'rev_old', 'build-1');
+        const oldBuild = catalogETag('/api/catalog/home/photos/ph_x', 'rev_a', 'build-0');
         for (const header of [stale, oldBuild, `${stale}, ${oldBuild}`, tag.slice(3, -1), `${tag} junk`, '']) {
             const response = await catalogJson(request(header), 'rev_a', () => body, options);
             expect(response.status, header).toBe(200);
@@ -113,7 +113,7 @@ describe('catalogJson', () => {
         expect(response.headers.has('etag')).toBe(false);
         expect(response.headers.has('x-catalog-revision')).toBe(false);
         expect(await response.json()).toEqual({ reason: 'internal' });
-        expect(logged.mock.calls.map((call) => String(call[0]))).toEqual([JSON.stringify({ event: 'catalog.response.failed', route: '/api/photos', error: 'EACCES' })]);
+        expect(logged.mock.calls.map((call) => String(call[0]))).toEqual([JSON.stringify({ event: 'catalog.response.failed', route: '/api/catalog/home/photos/ph_x', error: 'EACCES' })]);
     });
 });
 

@@ -426,11 +426,6 @@ test.describe('expectHoverRulesGated', () => {
         await expectHoverRulesGated(page);
     });
 
-    test("ignores YARL's own hover rule", async ({ page }) => {
-        await load(page, '<button type="button" class="yarl__button">Next</button>', '@media (hover:hover){.yarl__button:focus-visible:hover,.yarl__button:focus:hover,.yarl__button:hover{color:#fff}}');
-        await expectHoverRulesGated(page);
-    });
-
     test('fails an ungated hover rule that matches markup', async ({ page }) => {
         await load(page, tile, '.tile:hover { transform: scale(1.1); }');
         await expect(expectHoverRulesGated(page)).rejects.toThrow(/\.tile:hover/);
@@ -493,7 +488,7 @@ test.describe('checkSurface', () => {
     });
 
     test('waits for entries that arrive after hydration before it runs axe', async ({ page }) => {
-        // Like the gallery's tiles, which mount once /api/photos answers. These carry an img with no alt.
+        // Like entries that mount once a fetch answers, as a series' later pages do. These carry an img with no alt.
         const image = '<img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">';
         const late = NAMES.map((name) => `<button type="button" aria-label="${name}">${image}</button>`).join('');
         await load(page, `<div class="entries"></div><script>setTimeout(() => { document.querySelector('.entries').innerHTML = '${late}'; }, 300);</script>`, SURFACE_STYLE);

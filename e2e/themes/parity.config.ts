@@ -9,7 +9,7 @@ import { defineConfig, devices } from '@playwright/test';
  *   PARITY_BASE_DIR=<a checkout of the base, built> npx playwright test -c e2e/themes/parity.config.ts
  *
  * PARITY_PORTS (four comma-separated ports) pins the servers' ports, for a machine that hands out a range; it starts
- * them in two rounds of four. Free ports otherwise.
+ * them in rounds of up to four. Free ports otherwise.
  */
 export default defineConfig({
   testDir: '.',

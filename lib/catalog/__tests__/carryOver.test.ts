@@ -18,7 +18,7 @@ import { runEditRecord } from '../edit-record';
 import { AUTHORED_LEASE_MS, AUTHORED_LOCK } from '../working-layer-writer';
 import { runIdentityOnce } from '../../identity/watcherStep';
 import { CARRY_OVER_REASON, CARRY_OVER_SERIES, OWNER_DIRECTION, planCarryOver, runCarryOver } from '../carry-over';
-import { legacyList } from '../photos-api';
+import { legacyList } from '../legacy-photos';
 import { checkLayer, publish } from '../publish';
 import { createCatalogReader } from '../reader';
 import { readRevisionFile } from '../repository';
