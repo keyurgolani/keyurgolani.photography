@@ -1,6 +1,6 @@
 # Showcase
 
-A tour of the site as it's live at v1.4.0, with the catalog launched. The photographs hang as bodies of work now: ten series, 115 photographs. Each series has its own page with a statement and a sequence, and any photograph in it opens in the story Viewer. Home plays one series, Work lists them all, and About says who took them.
+A tour of the site as it's live at v1.4.0, with the catalog launched. The photographs hang as bodies of work now: ten series, 115 photographs. Each series has its own page with a statement and a sequence, and any photograph in it opens in the story Viewer. Home plays the featured series, starting on one of them at random, Work lists them all, and About says who took them.
 
 ---
 
@@ -32,7 +32,7 @@ The browser keeps the choice, and every page paints in it from the first frame, 
 
 ## Home
 
-Home plays the featured series in its own order and shows the photograph and nothing else. Move the pointer, tab in, or tap, and the chrome comes back: the navigation and the theme control at the top, the series' title and short statement with Enter the series, and Previous, the position, Next and Play at the bottom. It goes away again after four seconds without activity, and stays while a control has keyboard focus. The slideshow moves on every 12 seconds, and holds still under reduced motion.
+Home starts on one of the featured series at random, plays it in its own order from its opening photograph, then goes on into the next, and shows the photograph and nothing else. Move the pointer, tab in, or tap, and the chrome comes back: the navigation and the theme control at the top, the title and short statement of the series on screen with Enter the series, and Previous, the position, Next and Play at the bottom. It goes away again after four seconds without activity, and stays while a control has keyboard focus. The slideshow moves on every 12 seconds, and holds still under reduced motion.
 
 **At rest, Dark**
 
