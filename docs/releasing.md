@@ -471,6 +471,8 @@ Back up `./site-config` with the rest of the host's folders. It isn't in the rep
 
 ## Carrying today's photos over
 
+This section is the runbook for the launch publish, which keyurgolani.photography ran on `v1.3.0`. Since `v1.6.0` no page shows the legacy Gallery any more. Below, "the Gallery" and "the site today" mean the legacy list `photos carry-over` and the launch count still read from the library, the list the legacy Gallery showed before the launch.
+
 Before the launch publish, `photos carry-over` keeps every photo the site shows today. It puts each photo the legacy Gallery lists into one published series, `ser_gallery`, titled "Gallery", in the Gallery's order. That series is Home's featured series and the only entry in Work's order. Without it, the launch publish shows only the series you made, and every other photo leaves the site.
 
 The photos keep the names the Gallery gives them today, "Photograph N of T", and they have no descriptions. Their records say they were carried over, with the owner's direction as the reason, so a publish doesn't wait for their descriptions. Describe any of them any time with `photos describe --import` or `photos edit`. A description then replaces the name, under the usual rules. Photos you add later get the usual rules from the start, in Gallery too. The series has no statement until you write one. Once you write the statement or the short statement, a publish asks for both, as for any series.
