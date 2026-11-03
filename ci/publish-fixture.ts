@@ -5,9 +5,12 @@
  *   npx tsx ci/publish-fixture.ts <empty data root>
  *
  * Prints one JSON line: the revision it activated, the `/media` URL of a set
- * that revision holds, and that of a set whose files exist but which no
- * revision holds, a photo of a draft series, so it must 404. Never touches
- * the real data root: the root has to be empty and outside this repository.
+ * that revision holds, that of a set whose files exist but which no
+ * revision holds, a photo of a draft series, so it must 404, and the IDs of
+ * the featured series and of a photo in it, for #6's Home records endpoint.
+ * Never
+ * touches the real data root: the root has to be empty and outside this
+ * repository.
  */
 import { publish } from '../lib/catalog/publish';
 import { createTestCatalog } from '../lib/catalog/testing';
@@ -27,14 +30,18 @@ async function main(): Promise<number> {
     }
     const active = catalog.content.photos[0];
     const inactive = catalog.photos.find((photo) => !catalog.content.photos.some((published) => published.id === photo.id));
-    if (!active || !inactive) {
-        console.error('The fixture has no published photo, or no unpublished one.');
+    const featuredSeries = catalog.content.site.featuredSeriesIds[0];
+    const featured = catalog.content.series.find((series) => series.id === featuredSeries)?.photoIds[0];
+    if (!active || !inactive || !featured) {
+        console.error('The fixture has no published photo, no unpublished one, or no featured photo.');
         return 1;
     }
     console.log(JSON.stringify({
         revisionId: outcome.revisionId,
         active: mediaUrl({ photoId: active.id, assetRevision: active.assetRevision, profileId: active.profileId }, 'w800', 'webp'),
         inactive: mediaUrl({ photoId: inactive.id, assetRevision: inactive.assetRevision, profileId: catalog.profileId }, 'w800', 'webp'),
+        featuredSeries,
+        featured,
     }));
     return 0;
 }

@@ -151,7 +151,7 @@ describe('the route inventory', () => {
     });
 
     it('sees the public read handlers, so it is reading the tree', () => {
-        expect(inventory.handlers).toEqual(expect.arrayContaining(['app/api/health/route.ts#GET', 'app/api/photos/route.ts#GET']));
+        expect(inventory.handlers).toEqual(expect.arrayContaining(['app/api/health/route.ts#GET', 'app/api/ready/route.ts#GET']));
         expect(inventory.handlers.every((handler) => /#(GET|HEAD)$/.test(handler) || handler.startsWith('app/api/curation/'))).toBe(true);
     });
 

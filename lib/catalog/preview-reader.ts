@@ -59,11 +59,11 @@ export type PreviewUnavailableReason = 'data-root-not-ready' | 'draft-unreadable
 
 export type PreviewCatalog =
     /** The current candidate, read as `draftId` with no revision number. The shape every projection's route function takes. */
-    | { mode: 'catalog'; state: 'ok'; draftId: string; reader: CatalogReader<CandidatePhotoRecord> }
+    | { state: 'ok'; draftId: string; reader: CatalogReader<CandidatePhotoRecord> }
     /** Not the current candidate: unknown, or the working layer changed since. */
-    | { mode: 'catalog'; state: 'not-current' }
+    | { state: 'not-current' }
     /** The data root isn't ready, or a file the compile reads can't be read. Pages throw, so the error page renders. */
-    | { mode: 'catalog'; state: 'unavailable'; reason: PreviewUnavailableReason };
+    | { state: 'unavailable'; reason: PreviewUnavailableReason };
 
 /**
  * How long a subresource (load-more, Home's records, an image) may use a
@@ -157,28 +157,28 @@ export interface LoadPreviewOptions {
  * previewDraftId().
  */
 export async function loadPreviewCatalog(draftId: string, options: LoadPreviewOptions = {}): Promise<PreviewCatalog> {
-    if (previewDraftId(draftId) === null) return { mode: 'catalog', state: 'not-current' };
+    if (previewDraftId(draftId) === null) return { state: 'not-current' };
     const now = options.now ?? Date.now;
     const status = dataRootStatus();
-    if (status.state !== 'ready' || status.root === null) return { mode: 'catalog', state: 'unavailable', reason: 'data-root-not-ready' };
+    if (status.state !== 'ready' || status.root === null) return { state: 'unavailable', reason: 'data-root-not-ready' };
     const key = `${status.root}\0${draftId}`;
     const maxAge = options.maxAgeMs ?? 0;
     const recent = kept.get(key);
-    if (maxAge > 0 && recent && now() - recent.at <= maxAge) return { mode: 'catalog', state: 'ok', draftId, reader: recent.reader };
+    if (maxAge > 0 && recent && now() - recent.at <= maxAge) return { state: 'ok', draftId, reader: recent.reader };
     let compiled: CompileResult;
     try {
         compiled = await compileShared(status.root);
     } catch (error) {
         console.error(JSON.stringify({ event: 'catalog.preview.failed', error: errorName(error) }));
-        return { mode: 'catalog', state: 'unavailable', reason: 'draft-unreadable' };
+        return { state: 'unavailable', reason: 'draft-unreadable' };
     }
     if (compiled.candidateId !== draftId) {
         kept.delete(key);
-        return { mode: 'catalog', state: 'not-current' };
+        return { state: 'not-current' };
     }
     const reader = createCatalogReader(compiled.content, { revisionId: draftId, revisionNumber: null });
     keep(key, reader, now());
-    return { mode: 'catalog', state: 'ok', draftId, reader };
+    return { state: 'ok', draftId, reader };
 }
 
 /**

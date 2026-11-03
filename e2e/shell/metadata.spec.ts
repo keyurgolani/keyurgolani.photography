@@ -93,7 +93,6 @@ test.describe('with SITE_URL set for this server only', () => {
 
     for (const [route, title] of [
         ['/', SITE_NAME],
-        ['/gallery', `Gallery · ${SITE_NAME}`],
         ['/about', `About · ${SITE_NAME}`],
         ['/does-not-exist', `Page not found · ${SITE_NAME}`],
     ] as const) {
@@ -147,7 +146,7 @@ test.describe('with SITE_URL unset', () => {
         expect(server.output()).toContain("SITE_URL isn't set, so share links point at http://localhost:3000.");
         const html = await (await request.get(`${server.origin}/about`)).text();
         expect(meta(html, 'og:image')).toMatch(/^http:\/\/localhost:3000\//);
-        for (const route of ['/', '/gallery', '/does-not-exist']) await request.get(`${server.origin}${route}`);
+        for (const route of ['/', '/work', '/does-not-exist']) await request.get(`${server.origin}${route}`);
         expect(warnings()).toBe(1);
     });
 });

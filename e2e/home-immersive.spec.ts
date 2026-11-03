@@ -1,6 +1,6 @@
-import type { CDPSession, Locator, Page, Route, TestInfo } from '@playwright/test';
-import type { ImageItem } from '../lib/catalog/photos-api';
+import type { CDPSession, Locator, Page, TestInfo } from '@playwright/test';
 import { expectNoA11yViolations } from './support/a11y';
+import { CATALOG_ORIGIN, HOME_OPENING, HOME_ORDER } from './support/catalog-home';
 import { expectContrastOverImage } from './support/contrast';
 import { expectFocusRingVisible } from './support/focus';
 import { expectHomeImmersive, photoPoint } from './support/home';
@@ -14,6 +14,18 @@ import { expect, setPhotoFixtures, test } from './support/test';
 // The pointer, zero-movement, mouse-focus, and hover cases run on desktop,
 // the touch cases on mobile and mobile-webkit, and the rest on desktop and
 // mobile. Cases that time the chrome install the page clock once Home settles.
+// On playwright.config.ts's catalog server, which serves the published Home
+// fixture: since #13's slice E Home renders only a published revision. Its
+// photographs are painted with the photo fixtures (setPhotoFixtures()).
+
+test.use({ baseURL: CATALOG_ORIGIN });
+
+/** The position Home shows `steps` on from the opening photograph, wrapping. */
+function at(steps: number): string {
+    const count = HOME_ORDER.length;
+    const index = (((HOME_ORDER.indexOf(HOME_OPENING) + steps) % count) + count) % count;
+    return `${String(index + 1).padStart(2, '0')} / ${String(count).padStart(2, '0')}`;
+}
 
 /** HOME_CHROME_IDLE_MS and HOME_CHROME_FADE_MS in components/home/homeChromeConfig.ts. */
 const IDLE = 4000;
@@ -44,7 +56,7 @@ const playbackLabel = (page: Page) => playback(page).getByText(/^(Pause|Play)$/)
 const sequenceControls = (page: Page) => previous(page).or(next(page)).or(playback(page));
 /** Every control in the chrome. */
 const chromeControls = (page: Page) => chrome(page).locator('a[href], button');
-const currentPhoto = (page: Page) => page.locator('[aria-hidden="false"] > img[data-layer="optimized"]');
+const currentPhoto = (page: Page) => page.locator('[data-photo-id][aria-hidden="false"] img');
 
 const runsOn = (testInfo: TestInfo, ...projects: string[]) =>
     test.skip(!projects.includes(testInfo.project.name), `Runs on ${projects.join(' and ')}.`);
@@ -95,7 +107,7 @@ async function recordVisibility(page: Page) {
 }
 
 /**
- * Opens Home on three photographs and waits until it rests immersive. With
+ * Opens Home with `photos` painted on and waits until it rests immersive. With
  * `clock`, installs the page clock once it does and pauses it, so the chrome's
  * timers run on it. Timers armed before then, like the slideshow's, keep real
  * time until Pause and Play re-arm them.
@@ -133,16 +145,22 @@ async function recordIntroSeen(page: Page) {
 const introLayersLeft = (page: Page) =>
     page.evaluate((names) => names.filter((name) => document.querySelector(`[class*="${name}"]`) !== null), [...INTRO_LAYERS]);
 
-/** Holds every photograph until the returned function runs, so Home stays loading. */
+/**
+ * Holds every photograph until the returned function runs, so Home stays loading. A held photograph is an image, so
+ * the page's load event waits for it too: navigate with HELD.
+ */
 async function holdPhotos(page: Page) {
     let release: () => void = () => {};
     const released = new Promise<void>((resolve) => (release = resolve));
-    await page.route('**/assets/photos/**', async (route) => {
+    await page.route('**/media/**', async (route) => {
         await released;
         await route.fallback();
     });
     return release;
 }
+
+/** A navigation's wait while holdPhotos() holds the photographs: the document, not the load event they keep back. */
+const HELD = { waitUntil: 'domcontentloaded' } as const;
 
 /**
  * What the focused element is: its name, whether it's in the chrome, what the
@@ -225,21 +243,11 @@ const chromeFadeMs = (page: Page) =>
         return ms(durations[index % durations.length]) + ms(delays[index % delays.length]);
     });
 
-/** The slideshow position `steps` on from `text`, such as 03 / 03 after 02 / 03. */
+/** The slideshow position `steps` on from `text`, such as 04 / 04 after 03 / 04. */
 function positionAfter(text: string | null, steps: number) {
     const [current, count] = (text ?? '').split(' / ').map(Number);
     const value = ((((current - 1 + steps) % count) + count) % count) + 1;
     return `${String(value).padStart(2, '0')} / ${String(count).padStart(2, '0')}`;
-}
-
-/** Two white records with distinct src values. The fixture route serves both files by basename. */
-async function serveTwoWhitePhotos(page: Page) {
-    const record = (src: string, id: number): ImageItem => ({
-        id, src, thumbnail: src, medium: src, optimized: src, width: 1200, height: 800, optimizedWidth: 1200, optimizedHeight: 800,
-        caption: '', date: Date.UTC(2024, 0, 1), lqip: '',
-    });
-    await page.route('**/api/photos', (route) =>
-        route.fulfill({ json: [record('/assets/photos/white.jpg', 0), record('/assets/photos/copy-2/white.jpg', 1)] }));
 }
 
 /** Whether the photograph on screen fills the viewport, within 1 px on every side. */
@@ -451,7 +459,7 @@ test.describe('the pointer', () => {
             await pause(page).click();
             await play(page).click();
             await next(page).click();
-            await expect(position(page)).toHaveText('02 / 03');
+            await expect(position(page)).toHaveText(at(1));
             await expect(next(page)).toBeFocused();
 
             const { x, y } = await photoPoint(page);
@@ -462,9 +470,9 @@ test.describe('the pointer', () => {
             await page.keyboard.press(key);
             await runFor(page, FRAME);
             await expect(main(page)).toHaveAttribute('data-interface-state', 'interactive');
-            await expect(position(page)).toHaveText('02 / 03');
+            await expect(position(page)).toHaveText(at(1));
             await page.keyboard.press(key);
-            await expect(position(page)).toHaveText('03 / 03');
+            await expect(position(page)).toHaveText(at(2));
         });
     }
 });
@@ -500,7 +508,7 @@ test.describe('the keyboard', () => {
         // Paused before the load, so the intro stays up for as long as the test takes.
         await page.clock.install();
         await page.clock.pauseAt(Date.now() + 1000);
-        await page.goto('/');
+        await page.goto('/', HELD);
         await waitForHydration(page);
         await settle(page);
         await expect(main(page)).toHaveAttribute('data-home-intro', 'loading');
@@ -541,7 +549,7 @@ test.describe('the keyboard', () => {
         await settle(page);
         await expect(navLink(page, 'Work')).toBeFocused();
         await page.keyboard.press('Enter');
-        await expect(page).toHaveURL('/gallery');
+        await expect(page).toHaveURL('/work');
     });
 });
 
@@ -572,7 +580,7 @@ test.describe('touch', () => {
         expect(await clicks()).toBe(0);
 
         await tapAt(page, navLink(page, 'Work'));
-        await expect(page).toHaveURL('/gallery');
+        await expect(page).toHaveURL('/work');
     });
 
     test('the first tap on a receded Next only reveals, and the next tap moves the photograph', async ({ page }) => {
@@ -661,7 +669,7 @@ test.describe('assistive technology', () => {
             - button /^Theme:/
           - group "Slideshow":
             - button "Previous photograph"
-            - text: 01 / 03
+            - text: ${at(0)}
             - button "Next photograph"
             - button "Pause slideshow"
         `);
@@ -678,37 +686,34 @@ test.describe('assistive technology', () => {
         await expect(main(page)).toHaveAttribute('data-interface-state', 'interactive');
 
         await navLink(page, 'Work').dispatchEvent('click');
-        await expect(page).toHaveURL('/gallery');
+        await expect(page).toHaveURL('/work');
     });
 });
 
 test.describe('loading', () => {
     test.beforeEach(() => runsOn(test.info(), 'desktop', 'mobile'));
 
-    for (const [name, respond] of [
-        ['an empty library', (route: Route) => route.fulfill({ json: [] })],
-        ['a failed photo list', (route: Route) => route.fulfill({ status: 500, body: 'error' })],
-    ] as const) {
-        test(`${name} ends loading at once, and navigation stays up and works`, async ({ page, isMobile }) => {
-            await page.route('**/api/photos', respond);
-            await page.clock.install();
-            await page.goto('/');
-            await waitForHydration(page);
-            await expect(main(page)).toHaveAttribute('data-home-loading', 'false');
-            await expect(main(page)).toHaveAttribute('data-chrome-holds', 'no-photo');
-            await expect(main(page)).toHaveAttribute('data-interface-state', 'interactive');
-            await runFor(page, LOADING_TIMEOUT + IDLE * 2);
-            await expect(main(page)).toHaveAttribute('data-interface-state', 'interactive');
-            await expect.poll(() => effectiveOpacity(primary(page))).toBe(1);
-            if (isMobile) await navLink(page, 'Work').tap();
-            else await navLink(page, 'Work').click();
-            await expect(page).toHaveURL('/gallery');
-        });
-    }
+    // The legacy Home's empty and failed photo lists went with it (#13's slice E). A catalog Home with nothing featured
+    // holds the chrome the same way, which components/home/__tests__/CatalogHome.test.tsx covers.
+    test('every photograph failing ends loading at once, and navigation stays up and works', async ({ page, isMobile }) => {
+        await page.route('**/media/**', (route) => route.fulfill({ status: 404, body: '' }));
+        await page.clock.install();
+        await page.goto('/');
+        await waitForHydration(page);
+        await expect(main(page)).toHaveAttribute('data-home-loading', 'false');
+        await expect(main(page)).toHaveAttribute('data-chrome-holds', 'no-photo');
+        await expect(main(page)).toHaveAttribute('data-interface-state', 'interactive');
+        await runFor(page, LOADING_TIMEOUT + IDLE * 2);
+        await expect(main(page)).toHaveAttribute('data-interface-state', 'interactive');
+        await expect.poll(() => effectiveOpacity(primary(page))).toBe(1);
+        if (isMobile) await navLink(page, 'Work').tap();
+        else await navLink(page, 'Work').click();
+        await expect(page).toHaveURL('/work');
+    });
 
     test('a failed first photograph ends loading at once with the chrome up', async ({ page }) => {
         setPhotoFixtures(page, ['white', 'gray', 'black']);
-        await page.route('**/assets/photos/**', (route) => route.fulfill({ status: 404, body: '' }));
+        await page.route(`**/media/${HOME_OPENING}/**`, (route) => route.fulfill({ status: 404, body: '' }));
         await page.clock.install();
         await page.goto('/');
         await waitForHydration(page);
@@ -723,7 +728,7 @@ test.describe('loading', () => {
         // Paused before the load, so the intro and the loading deadline run on the page clock from mount.
         await page.clock.install();
         await page.clock.pauseAt(Date.now() + 1000);
-        await page.goto('/');
+        await page.goto('/', HELD);
         await waitForHydration(page);
         await settle(page);
         await runFor(page, INTRO_EXIT_DEADLINE - 1);
@@ -753,7 +758,7 @@ test.describe('loading', () => {
         setPhotoFixtures(page, ['white', 'gray', 'black']);
         const release = await holdPhotos(page);
         const introSeen = await recordIntroSeen(page);
-        await page.goto('/');
+        await page.goto('/', HELD);
         await waitForHydration(page);
         await expect(main(page)).toHaveAttribute('data-home-intro', 'settled');
         await expect(main(page)).toHaveAttribute('data-home-loading', 'true');
@@ -852,7 +857,7 @@ test.describe('a hidden document', () => {
     });
 
     test('the no-photo hold keeps the chrome up across it', async ({ page }) => {
-        await page.route('**/api/photos', (route) => route.fulfill({ json: [] }));
+        await page.route('**/media/**', (route) => route.fulfill({ status: 404, body: '' }));
         await page.goto('/');
         await waitForHydration(page);
         await expect(main(page)).toHaveAttribute('data-chrome-holds', 'no-photo');
@@ -864,7 +869,7 @@ test.describe('a hidden document', () => {
 test.describe('off Home', () => {
     test.beforeEach(() => runsOn(test.info(), 'desktop', 'mobile'));
 
-    for (const path of ['/gallery', '/about']) {
+    for (const path of ['/work', '/about']) {
         test(`on ${path} navigation and the theme toggle stay fully visible after 10 s with no input, and no chrome controller runs`, async ({ page }) => {
             await page.clock.install();
             await page.goto(path);
@@ -882,7 +887,7 @@ test.describe('contrast and reflow', () => {
     test.beforeEach(() => runsOn(test.info(), 'desktop', 'mobile'));
 
     test('over a white photograph, the revealed nav and sequence text keep 4.5:1 and the icons 3:1', async ({ page }) => {
-        await serveTwoWhitePhotos(page);
+        setPhotoFixtures(page, ['white']);
         await page.goto('/');
         await waitForHydration(page);
         await expectHomeImmersive(page);

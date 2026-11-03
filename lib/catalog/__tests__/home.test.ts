@@ -2,7 +2,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../../identity/variants';
 import { mediaUrl } from '../../media/url';
-import { homePhotosFrom, homePhotosOf, homeRouteOf, publishedHomeOf, type HomeActiveCatalog, type HomePhoto, type HomeSeries, type HomeSource, type PublishedHome } from '../projections/home';
+import { homeRouteOf, homeSeriesPhotosFrom, homeSeriesPhotosOf, publishedHomeOf, type HomeActiveCatalog, type HomePhoto, type HomeSeries, type HomeSource, type PublishedHome } from '../projections/home';
 import { publish } from '../publish';
 import { createCatalogReader, createRouteBuilder } from '../reader';
 import { createTestCatalog, type TestCatalog } from '../testing';
@@ -129,14 +129,14 @@ function featured(home: PublishedHome): HomeSeries {
 
 /**
  * Every record Home can show for `from`, in authored order: the server's
- * window, then what homePhotosOf() gives around each later photograph (#6),
+ * window, then what homeSeriesPhotosOf() gives around each later photograph (#6),
  * so the field checks below cover every record whichever way it ships.
  */
 function everyRecord(from: CandidateContent = content(), revisionId = REVISION_A): HomePhoto[] {
     const series = featured(homeOf(from, revisionId));
     const byId = new Map(series.records.map((record) => [record.id, record] as const));
     for (const photoId of series.photoIds) {
-        const result = homePhotosOf(source(from, revisionId), photoId);
+        const result = homeSeriesPhotosOf(source(from, revisionId), series.id, photoId);
         if (result.kind !== 'ok') throw new Error(`Expected a window around ${photoId}, got ${result.kind}`);
         for (const record of result.window.photos) if (!byId.has(record.id)) byId.set(record.id, record);
     }
@@ -472,7 +472,7 @@ describe('catalog revision consistency', () => {
         const readerA = createCatalogReader(a, { revisionId: REVISION_A, revisionNumber: 3 });
         const readerB = createCatalogReader(b, { revisionId: REVISION_B, revisionNumber: 4 });
         const at = (reader: typeof readerA) => {
-            const result = homeRouteOf({ mode: 'catalog', state: 'ok', reader }, routes);
+            const result = homeRouteOf({ state: 'ok', reader }, routes);
             if (result.kind !== 'home') throw new Error(`Expected Home, got ${result.kind}`);
             return result.home;
         };
@@ -486,22 +486,18 @@ describe('catalog revision consistency', () => {
     });
 });
 
-describe('homeRouteOf, the cutover gate', () => {
+describe('homeRouteOf, the gate', () => {
     /** A reader that fails the test if anything reads it. */
-    const trap = (): HomeActiveCatalog & { mode: 'catalog'; state: 'ok' } => {
+    const trap = (): HomeActiveCatalog & { state: 'ok' } => {
         const fail = () => {
             throw new Error('The catalog was read');
         };
-        return { mode: 'catalog', state: 'ok', reader: { revision: fail, site: fail, listSeries: fail, photosOf: fail } };
+        return { state: 'ok', reader: { revision: fail, site: fail, listSeries: fail, photosOf: fail } };
     };
 
-    it('renders today\'s Home only in legacy mode', () => {
-        expect(homeRouteOf({ mode: 'legacy' }, routes)).toEqual({ kind: 'legacy' });
-    });
-
-    it('reports an unavailable catalog for the page to throw, never the legacy Home', () => {
-        for (const reason of ['catalog-unreadable', 'active-unreadable', 'revision-unreadable'] as const) {
-            const catalog: HomeActiveCatalog<typeof reason> = { mode: 'catalog', state: 'unavailable', reason };
+    it('reports an unavailable catalog, nothing published included, for the page to throw', () => {
+        for (const reason of ['not-published', 'catalog-unreadable', 'active-unreadable', 'revision-unreadable'] as const) {
+            const catalog: HomeActiveCatalog<typeof reason> = { state: 'unavailable', reason };
             expect(homeRouteOf(catalog, routes)).toEqual({ kind: 'unavailable', reason });
         }
     });
@@ -509,21 +505,21 @@ describe('homeRouteOf, the cutover gate', () => {
     it('renders the catalog Home from the served revision, ok or degraded', () => {
         const reader = createCatalogReader(content(), { revisionId: REVISION_A, revisionNumber: 3 });
         for (const state of ['ok', 'degraded'] as const) {
-            const result = homeRouteOf({ mode: 'catalog', state, reader }, routes);
+            const result = homeRouteOf({ state, reader }, routes);
             expect(result).toEqual({ kind: 'home', home: homeOf() });
         }
     });
 
-    it('renders the catalog Home\'s empty state, not the legacy one, when nothing is featured', () => {
+    it('renders the catalog Home\'s empty state when nothing is featured', () => {
         const held = content();
         held.site.featuredSeriesIds = [];
         const reader = createCatalogReader(held, { revisionId: REVISION_A, revisionNumber: 3 });
-        expect(homeRouteOf({ mode: 'catalog', state: 'ok', reader }, routes)).toEqual({ kind: 'home', home: { catalogRevision: REVISION_A, featuredSeries: null } });
+        expect(homeRouteOf({ state: 'ok', reader }, routes)).toEqual({ kind: 'home', home: { catalogRevision: REVISION_A, featuredSeries: null } });
     });
 
     it('reads the revision ID from the reader itself', () => {
         const reader = createCatalogReader(content(), { revisionId: REVISION_B, revisionNumber: 9 });
-        const result = homeRouteOf({ mode: 'catalog', state: 'degraded', reader }, routes);
+        const result = homeRouteOf({ state: 'degraded', reader }, routes);
         expect(result.kind === 'home' && result.home.catalogRevision).toBe(REVISION_B);
     });
 
@@ -544,20 +540,19 @@ describe('homeRouteOf, the cutover gate', () => {
                 return this.of.photosOf(seriesId);
             }
         }
-        expect(homeRouteOf({ mode: 'catalog', state: 'ok', reader: new Reader(inner) }, routes)).toEqual({ kind: 'home', home: homeOf() });
+        expect(homeRouteOf({ state: 'ok', reader: new Reader(inner) }, routes)).toEqual({ kind: 'home', home: homeOf() });
     });
 
     it('builds the link with the routes it\'s handed', () => {
         const reader = createCatalogReader(content(), { revisionId: REVISION_A, revisionNumber: 3 });
-        const result = homeRouteOf({ mode: 'catalog', state: 'ok', reader }, createRouteBuilder({ basePath: '/curation/preview' }));
+        const result = homeRouteOf({ state: 'ok', reader }, createRouteBuilder({ basePath: '/curation/preview' }));
         expect(result.kind === 'home' && result.home.featuredSeries?.href).toBe('/curation/preview/work/fixture-a');
     });
 
-    it('reads no reader in legacy mode or while the catalog is unavailable', () => {
+    it('reads no reader while the catalog is unavailable', () => {
         const { reader } = trap();
         expect(() => homeRouteOf(trap(), routes)).toThrow('The catalog was read');
-        expect(homeRouteOf({ mode: 'legacy', reader } as unknown as HomeActiveCatalog, routes)).toEqual({ kind: 'legacy' });
-        const unavailable = { mode: 'catalog', state: 'unavailable', reason: 'revision-unreadable', reader } as unknown as HomeActiveCatalog;
+        const unavailable = { state: 'unavailable', reason: 'revision-unreadable', reader } as unknown as HomeActiveCatalog;
         expect(homeRouteOf(unavailable, routes)).toEqual({ kind: 'unavailable', reason: 'revision-unreadable' });
     });
 });
@@ -573,7 +568,8 @@ describe('Home on published revisions', { timeout: 60_000 }, () => {
         const homeAt = async () => homeRouteOf(await loadActiveCatalog(root), routes);
         const authored = published.series[0].photoIds;
 
-        expect(await homeAt()).toEqual({ kind: 'legacy' });
+        // Nothing published yet: the unavailable state, never a listing of the library (#13's slice E).
+        expect(await homeAt()).toEqual({ kind: 'unavailable', reason: 'not-published' });
 
         const one = await publish({ dataRoot: root, actor: 'test', confirmLaunch: true, logger });
         expect(one.outcome).toBe('PUBLISHED');
@@ -628,9 +624,10 @@ describe('the narrowed Home (#6)', () => {
     });
 });
 
-describe('homePhotosOf, the window Home asks for as it moves', () => {
+// One featured series, so its loop is that series alone. homeLoop.test.ts has the loop across several.
+describe('homeSeriesPhotosOf, the window Home asks for as it moves', () => {
     const window = (photoId: string, from: CandidateContent = content()) => {
-        const result = homePhotosOf(source(from), photoId);
+        const result = homeSeriesPhotosOf(source(from), 'ser_fixture-a', photoId);
         if (result.kind !== 'ok') throw new Error(`Expected a window, got ${result.kind}`);
         return result.window;
     };
@@ -654,38 +651,38 @@ describe('homePhotosOf, the window Home asks for as it moves', () => {
     it('answers not-found for a photo the featured series doesn\'t hold, a malformed ID, or an empty Home', () => {
         // P[5] is in fixture-b, P[7] in the draft series, P[9] in no series.
         for (const photoId of [P[5], P[7], P[9], 'ph_x', '', P[0].toUpperCase(), `${P[0]}/..`]) {
-            expect(homePhotosOf(source(), photoId), photoId).toEqual({ kind: 'not-found' });
+            expect(homeSeriesPhotosOf(source(), 'ser_fixture-a', photoId), photoId).toEqual({ kind: 'not-found' });
         }
         const empty = content();
         empty.site.featuredSeriesIds = [];
-        expect(homePhotosOf(source(empty), P[0])).toEqual({ kind: 'not-found' });
+        expect(homeSeriesPhotosOf(source(empty), 'ser_fixture-a', P[0])).toEqual({ kind: 'not-found' });
     });
 });
 
-describe('homePhotosFrom, the records endpoint\'s answer', () => {
-    const served = (state: 'ok' | 'degraded' = 'ok'): HomeActiveCatalog => ({ mode: 'catalog', state, reader: createCatalogReader(content(), { revisionId: REVISION_A, revisionNumber: 3 }) });
+describe('homeSeriesPhotosFrom, the records endpoint\'s answer', () => {
+    const served = (state: 'ok' | 'degraded' = 'ok'): HomeActiveCatalog => ({ state, reader: createCatalogReader(content(), { revisionId: REVISION_A, revisionNumber: 3 }) });
 
     it('answers a malformed photo ID not-found and a missing or malformed revision as a bad request, before reading the catalog', async () => {
         const load = vi.fn(async () => served());
-        expect(await homePhotosFrom(load, 'ph_x', REVISION_A)).toEqual({ kind: 'not-found' });
+        expect(await homeSeriesPhotosFrom(load, 'ser_fixture-a', 'ph_x', REVISION_A)).toEqual({ kind: 'not-found' });
         for (const revision of [null, '', 'rev_a', REVISION_A.toUpperCase(), `${REVISION_A} `]) {
-            expect(await homePhotosFrom(load, P[0], revision), String(revision)).toEqual({ kind: 'bad-request' });
+            expect(await homeSeriesPhotosFrom(load, 'ser_fixture-a', P[0], revision), String(revision)).toEqual({ kind: 'bad-request' });
         }
         expect(load).not.toHaveBeenCalled();
     });
 
-    it('answers legacy mode not-found and passes an unavailable catalog on', async () => {
-        expect(await homePhotosFrom(async () => ({ mode: 'legacy' }), P[0], REVISION_A)).toEqual({ kind: 'not-found' });
-        expect(await homePhotosFrom(async () => ({ mode: 'catalog', state: 'unavailable', reason: 'active-unreadable' }), P[0], REVISION_A)).toEqual({ kind: 'unavailable', reason: 'active-unreadable' });
+    it('passes an unavailable catalog on, nothing published included', async () => {
+        expect(await homeSeriesPhotosFrom(async () => ({ state: 'unavailable', reason: 'not-published' }), 'ser_fixture-a', P[0], REVISION_A)).toEqual({ kind: 'unavailable', reason: 'not-published' });
+        expect(await homeSeriesPhotosFrom(async () => ({ state: 'unavailable', reason: 'active-unreadable' }), 'ser_fixture-a', P[0], REVISION_A)).toEqual({ kind: 'unavailable', reason: 'active-unreadable' });
     });
 
     it('answers revision-changed for any revision but the served one, whatever the photo', async () => {
-        for (const photoId of [P[0], P[5], P[9]]) expect(await homePhotosFrom(async () => served(), photoId, REVISION_B), photoId).toEqual({ kind: 'revision-changed' });
+        for (const photoId of [P[0], P[5], P[9]]) expect(await homeSeriesPhotosFrom(async () => served(), 'ser_fixture-a', photoId, REVISION_B), photoId).toEqual({ kind: 'revision-changed' });
     });
 
     it('serves the window from the served revision, ok or degraded', async () => {
         for (const state of ['ok', 'degraded'] as const) {
-            expect(await homePhotosFrom(async () => served(state), P[0], REVISION_A), state).toEqual(homePhotosOf(source(), P[0]));
+            expect(await homeSeriesPhotosFrom(async () => served(state), 'ser_fixture-a', P[0], REVISION_A), state).toEqual(homeSeriesPhotosOf(source(), 'ser_fixture-a', P[0]));
         }
     });
 });

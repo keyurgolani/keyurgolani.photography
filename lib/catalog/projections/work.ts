@@ -114,52 +114,29 @@ export function workCatalogOf(source: WorkSource, routes: Pick<RouteBuilder, 'se
     return { catalogRevision: source.revisionId, series };
 }
 
-/** The legacy archive route, until #13 slice E removes it. */
-export const LEGACY_GALLERY_PATH = '/gallery';
-
 /** The parts of #13's ActiveCatalog that workRouteOf() reads. */
 export type WorkActiveCatalog<Reason extends string = string> = ScreenCatalog<Pick<CatalogReader, 'getWorkSummaries'>, Reason>;
 
 export type WorkRouteResult<Reason extends string = string> =
-    /** `/work` in catalog mode: render this. */
+    /** Render this. */
     | { kind: 'work'; work: WorkCatalog }
-    /** `/gallery` before the cutover: today's page, unchanged. */
-    | { kind: 'legacy-gallery' }
-    /** 307 is Next's redirect(), 308 its permanentRedirect(). The location is bare: nothing reads a query, and browsers keep the fragment. */
-    | { kind: 'redirect'; location: string; status: 307 | 308 }
     /** The route throws CatalogUnavailableError, so #21's error page renders. */
     | { kind: 'unavailable'; reason: Reason };
 
 /**
- * What `/work` and `/gallery` answer for the site as it stands, the
- * cutover matrix in one place, for each page to call per request with
- * getActiveCatalog():
+ * What `/work` answers for the site as it stands, for the page to call per
+ * request with getActiveCatalog():
  *
- * | catalog                  | `/work`          | `/gallery`       |
- * | ------------------------ | ---------------- | ---------------- |
- * | legacy                   | 307 to /gallery  | legacy page      |
- * | catalog, ok or degraded  | Work             | 308 to /work     |
- * | catalog, unavailable     | unavailable      | unavailable      |
+ * | catalog                         | `/work`     |
+ * | ------------------------------- | ----------- |
+ * | ok or degraded                  | Work        |
+ * | unavailable, not-published too  | unavailable |
  *
- * The 308 goes out only once a revision is being served. An unavailable
- * catalog may be one whose cutover couldn't be confirmed (#13's
- * `catalog-unreadable`, which catalogMode() doesn't remember), and a
- * browser caches a 308, so a permanent redirect there could pair with a
- * later legacy 307 into a loop. A degraded catalog serves its last revision.
- *
- * `routes` builds Work's links. `/gallery` takes only the public builder
- * (#13's `publicRoutes`, no `basePath`) and throws on any other, in every
- * mode, so a miswired page fails before the cutover rather than sending a
- * cached 308 into a preview path after it.
+ * A degraded catalog serves its last revision. `/gallery`, the legacy
+ * archive #13's slice E removed, is a 308 to `/work` in proxy.ts, in every
+ * state, so it never reads the catalog. `routes` builds Work's links.
  */
-export function workRouteOf<Reason extends string>(route: 'work' | 'gallery', catalog: WorkActiveCatalog<Reason>, routes: RouteBuilder): WorkRouteResult<Reason> {
-    if (route === 'gallery' && routes.basePath !== '') {
-        throw new TypeError(`workRouteOf('gallery') takes the public route builder, got basePath ${JSON.stringify(routes.basePath)}`);
-    }
-    if (catalog.mode === 'legacy') {
-        return route === 'work' ? { kind: 'redirect', location: LEGACY_GALLERY_PATH, status: 307 } : { kind: 'legacy-gallery' };
-    }
+export function workRouteOf<Reason extends string>(catalog: WorkActiveCatalog<Reason>, routes: RouteBuilder): WorkRouteResult<Reason> {
     if (catalog.state === 'unavailable') return { kind: 'unavailable', reason: catalog.reason };
-    if (route === 'gallery') return { kind: 'redirect', location: routes.workHref(), status: 308 };
     return { kind: 'work', work: catalog.reader.getWorkSummaries(routes) };
 }

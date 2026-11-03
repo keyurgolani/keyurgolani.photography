@@ -131,3 +131,28 @@ describe('the image build', () => {
     expect(offenders).toEqual([]);
   });
 });
+
+describe('the legacy photo list', () => {
+  // #13's slice E removed /api/photos, which answers 404 now. The issue's own
+  // check, and the same check for a fetch() that passes options, find nothing
+  // outside the tests: no page, script or doc asks for the list.
+  const TESTS = /(^|\/)(__tests__|e2e|test)\/|\.(test|spec)\.[cm]?[jt]sx?$/;
+
+  /** The `file:line:text` lines `git grep` finds for `patterns`, outside the tests. */
+  async function outsideTests(args) {
+    const { stdout } = await promisify(execFile)('git', ['grep', '-n', ...args], { cwd: REPO_ROOT }).catch((error) => {
+      // git grep exits 1 when it finds nothing.
+      if (error.code === 1) return { stdout: '' };
+      throw error;
+    });
+    return stdout.split('\n').filter(Boolean).filter((line) => !TESTS.test(line.slice(0, line.indexOf(':'))));
+  }
+
+  it("is asked for nowhere outside the tests: git grep -e \"fetch('/api/photos')\" -e \"localhost:3000/api/photos\"", async () => {
+    expect(await outsideTests(['-e', "fetch('/api/photos')", '-e', 'localhost:3000/api/photos'])).toEqual([]);
+  });
+
+  it('is fetched nowhere outside the tests, with or without options', async () => {
+    expect(await outsideTests(['-E', '-e', 'fetch\\([\'"`]/api/photos[\'"`?]'])).toEqual([]);
+  });
+});

@@ -15,7 +15,7 @@ import { expectSingleTapActivates } from './support/touch';
 // payload, the /gallery 308, the #1 surface checks, Enter and a single tap on
 // an entry, and the cover fallback. Each project's worker publishes its own
 // fixture catalog and serves it from a second `next start`, so the harness
-// server stays in legacy mode for every other spec.
+// server stays unpublished for every other spec.
 
 test.describe.configure({ mode: 'serial' });
 

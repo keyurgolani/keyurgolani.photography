@@ -5,30 +5,30 @@
  * it needs that build.
  *
  * It serves the copy on a temp data root, with the library where the image
- * mounts it, at the copy's public/assets/photos. Before the launch it checks
- * that the legacy gallery lists a photo whose derivatives serve, directly and
- * through /_next/image. It then publishes twice and rolls back once from this
- * process, checks that the first publish closes those derivatives with no
- * restart, /_next/image's cached copy included, and checks after each step that
- * /api/ready, /api/photos, and /media follow the active revision with the
- * same server process, and that the /api/photos ETag answers If-None-Match
- * with 304 only while the same revision and build are served. It then scans
- * the public JSON and pages for legacy and original paths, checks the cache
- * headers of /media, checks that a legacy derivative on disk still 404s
- * directly and gets a 400 from /_next/image, and restarts the server, once
- * as it was and once with a new build ID. The copy is what lets it add a
- * legacy file and change the build ID without touching the build.
+ * mounts it, at the copy's public/assets/photos, holding the seven legacy
+ * basename derivatives of a catalog photo. Since #13's slice E there is no
+ * legacy mode: before the launch the site answers the catalog's unavailable
+ * state (/api/ready and #6's Home records endpoint 503 with not-published,
+ * Home and Work #21's 500), /api/photos is a 404, /gallery a 308 to /work,
+ * and no legacy derivative serves, directly or through /_next/image. It then
+ * publishes twice and rolls back once from this process, and checks after
+ * each step, with the same server process, that /api/ready, the Home records
+ * endpoint, and /media follow the active revision, and that the endpoint's
+ * ETag answers If-None-Match with 304 only while the same revision and build
+ * are served. It then scans the public JSON and pages for legacy and
+ * original paths, and restarts the server, once as it was and once with a
+ * new build ID. The copy is what lets it add legacy files and change the
+ * build ID without touching the build.
  *
- * Then, in a second server whose only request so far was /api/photos, it
- * damages and then removes the active pointer, and checks that /api/ready
- * and an active /media URL both still serve the revision that request
- * loaded, as `degraded`, so the routes share the reader's state, and that
- * /api/photos keeps that revision's ETag.
+ * Then, in a second server whose only request so far was one to the Home
+ * records endpoint, it damages and then removes the active pointer, and
+ * checks that /api/ready, the endpoint, and an active /media URL all still
+ * serve the revision that request loaded, as `degraded`, so the routes share
+ * the reader's state.
  *
  * Last, in a third server, it publishes, asks only /api/ready, and then moves
- * `catalog/` out of the data root. The legacy URLs stay closed, directly and
- * through /_next/image, so the proxy shares the cutover memory /api/ready's
- * route has, though the build gives each its own copy of the mode check.
+ * `catalog/` out of the data root: /api/ready reports the revision it loaded
+ * as degraded, never not-published, and the legacy URLs stay closed.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
@@ -52,15 +52,15 @@ import { withLock } from '../../lib/storage/lock';
 
 const STANDALONE = path.resolve(import.meta.dirname, '../../.next/standalone');
 const IMMUTABLE = 'public, max-age=31536000, immutable';
-/** What Next sends for a public file, so a cache that follows the origin keeps none. */
-const PUBLIC_FILE = 'public, max-age=0';
-/** What /_next/image sends for an optimized copy, from images.minimumCacheTTL: a shared cache may keep it a day. */
-const OPTIMIZED_COPY = 'public, max-age=86400, must-revalidate';
 /** /_next/image's body for a url it doesn't allow. */
 const NOT_ALLOWED = '"url" parameter is not allowed';
 const quiet = { log: () => undefined };
 /** The pages a visitor loads, server-rendered per request. */
-const PAGES = ['/', '/gallery', '/about'];
+const PAGES = ['/', '/work', '/about'];
+/** /api/ready while nothing is published. */
+const NOT_PUBLISHED = { mode: 'catalog', state: 'unavailable', revisionId: null, revisionNumber: null, activatedAt: null, reason: 'not-published' };
+/** A well-formed revision ID no catalog holds. */
+const NO_REVISION = `rev_${'0'.repeat(64)}`;
 
 /** A port nothing on 127.0.0.1 listens on right now. */
 async function freePort(): Promise<number> {
@@ -134,8 +134,9 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
     let legacyBase = '';
     /** That photo's legacy URLs: the original, then the derivatives in DERIVATIVE_FOLDERS order. */
     let legacy: string[] = [];
-    /** The /_next/image URL the legacy gallery loaded that photo's thumbnail through, before the launch. */
-    let optimizedThumbnail = '';
+    /** The featured series and a photo of it, for #6's Home records endpoint (v1.5.0's loop route). */
+    let featuredSeries = '';
+    let featured = '';
     /** Set by the first test, for the ones after it. */
     let first: PublishResult | undefined;
     const extra: (() => Promise<void>)[] = [];
@@ -156,10 +157,12 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         served = fs.mkdtempSync(path.join(os.tmpdir(), 'prod-test-standalone-'));
         fs.cpSync(STANDALONE, served, { recursive: true, verbatimSymlinks: true });
         catalog = await createTestCatalog({ withAssets: true, photos: 3, series: [{ photos: 2 }, { photos: 1, visibility: 'draft' }], seed: 47 });
-        // The library where the image mounts it, so the server serves what legacy mode lists.
+        featuredSeries = catalog.content.site.featuredSeriesIds[0];
+        featured = catalog.content.series.find((series) => series.id === featuredSeries)!.photoIds[0];
+        // The library where the image mounts it, at the copy's public/assets/photos.
         library = path.join(served, 'public/assets/photos');
-        // All seven legacy derivatives of a catalog photo's source, so the legacy gallery lists it. Next serves only
-        // the public/ files present when it starts, so they're written first.
+        // All seven legacy derivatives of a catalog photo's source, as the watcher still writes them. Next serves
+        // only the public/ files present when it starts, so they're written first, and must still 404.
         const source = Object.values(catalog.registry.photos)[0].source.path;
         legacyBase = path.posix.basename(source, path.posix.extname(source));
         legacy = legacyUrls(source);
@@ -188,35 +191,53 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         return (await response.json()) as Record<string, unknown>;
     }
 
-    /** GET /api/photos, with If-None-Match when given a tag. */
-    function photos(ifNoneMatch?: string, at = base): Promise<Response> {
-        return fetch(`${at}/api/photos`, ifNoneMatch === undefined ? {} : { headers: { 'If-None-Match': ifNoneMatch } });
+    /** /api/ready's 503 while nothing is published. */
+    async function expectNotPublished(at = base): Promise<void> {
+        const response = await fetch(`${at}/api/ready`);
+        expect(response.status).toBe(503);
+        expect(response.headers.get('cache-control')).toBe('no-store');
+        expect(await response.json()).toEqual(NOT_PUBLISHED);
+    }
+
+    /** #6's Home records endpoint for the featured photo, asked for `revision`, with If-None-Match when given a tag. */
+    function records(revision: string, ifNoneMatch?: string, at = base): Promise<Response> {
+        const url = `${at}/api/catalog/home/series/${featuredSeries}/photos/${featured}?revision=${revision}`;
+        return fetch(url, ifNoneMatch === undefined ? {} : { headers: { 'If-None-Match': ifNoneMatch } });
     }
 
     /** The tag this server must send for `revisionId`: the route, the revision, and the copy's BUILD_ID. */
     function expectedTag(revisionId: string): string {
         const build = readBuildId(served);
         expect(build, 'the copy has a .next/BUILD_ID').not.toBeNull();
-        return catalogETag('/api/photos', revisionId, build!);
+        return catalogETag(`/api/catalog/home/series/${featuredSeries}/photos/${featured}`, revisionId, build!);
     }
 
-    /** The `medium` URL of each listed photo, in list order, after checking the mode and revision headers. */
-    async function listed(mode: 'legacy' | 'catalog', revision: string, at = base): Promise<string[]> {
-        const response = await photos(undefined, at);
+    /** The Home records for `revision`, after checking its revision headers and tag, and that it names that revision. */
+    async function listed(revision: string, at = base): Promise<{ revisionId: string; photos: { id: string }[] }> {
+        const response = await records(revision, undefined, at);
         expect(response.status).toBe(200);
-        expect(response.headers.get('x-catalog-mode')).toBe(mode);
         expect(response.headers.get('x-catalog-revision')).toBe(revision);
         expect(response.headers.get('cache-control')).toBe('no-cache');
         expect(response.headers.has('last-modified')).toBe(false);
-        if (mode === 'legacy') expect(response.headers.has('etag')).toBe(false);
-        else expect(response.headers.get('etag')).toBe(expectedTag(revision));
-        return ((await response.json()) as { medium: string }[]).map((item) => item.medium);
+        expect(response.headers.get('etag')).toBe(expectedTag(revision));
+        const body = (await response.json()) as { revisionId: string; photos: { id: string }[] };
+        expect(body.revisionId).toBe(revision);
+        expect(body.photos.map((photo) => photo.id)).toContain(featured);
+        return body;
+    }
+
+    /** Any revision but `served` gets 409, so Home never mixes two. */
+    async function expectRevisionChanged(revision: string, at = base): Promise<void> {
+        const response = await records(revision, undefined, at);
+        expect(response.status, revision).toBe(409);
+        expect(response.headers.get('cache-control')).toBe('no-store');
+        expect(await response.json()).toEqual({ reason: 'revision-changed' });
     }
 
     /** A request with `tag` gets 304, empty, with the 200's ETag, Cache-Control, and X-Catalog-Revision. */
     async function expectNotModified(tag: string, revisionId: string, at = base): Promise<void> {
         for (const header of [tag, `W/"stale", ${tag.slice(2)}`]) {
-            const response = await photos(header, at);
+            const response = await records(revisionId, header, at);
             expect(response.status, header).toBe(304);
             expect(await response.text()).toBe('');
             expect(response.headers.get('etag')).toBe(tag);
@@ -225,9 +246,9 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         }
     }
 
-    /** A request with a stale `tag` gets 200 and the tag of `revisionId`, which it returns. */
+    /** A request for `revisionId` with a stale `tag` gets 200 and that revision's tag, which it returns. */
     async function expectModified(tag: string, revisionId: string): Promise<string> {
-        const response = await photos(tag);
+        const response = await records(revisionId, tag);
         expect(response.status).toBe(200);
         const fresh = response.headers.get('etag') as string;
         expect(fresh).not.toBe(tag);
@@ -272,40 +293,32 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         return result;
     }
 
-    it('serves the legacy gallery before the launch: its photo, each derivative, and /_next/image', async () => {
-        expect(await ready()).toEqual({ mode: 'legacy', state: 'ok', revisionId: null, revisionNumber: null, activatedAt: null });
-        const response = await photos();
-        expect(response.status).toBe(200);
-        const items = (await response.json()) as Record<string, string>[];
-        expect(items.map((item) => item.thumbnail)).toEqual([legacy[1]]);
-        const [, thumbnail, medium, optimized, thumbnailAvif, mediumAvif, optimizedAvif] = legacy;
-        expect(items[0]).toMatchObject({ src: optimized, thumbnail, medium, optimized, thumbnailAvif, mediumAvif, optimizedAvif });
-
-        const gallery = await fetch(`${base}/gallery`);
-        expect(gallery.status).toBe(200);
-        expect(gallery.headers.get('content-type')).toContain('text/html');
+    it('serves nothing before the launch, and never the library: no photo list, no legacy Gallery or derivative', async () => {
+        await expectNotPublished();
+        // #6's endpoint answers the same 503, so Home and the series never fall back to anything.
+        const before = await records(NO_REVISION);
+        expect(before.status).toBe(503);
+        expect(before.headers.get('cache-control')).toBe('no-store');
+        expect(await before.json()).toEqual({ reason: 'not-published' });
+        // Home and Work are #21's error page.
+        for (const page of ['/', '/work']) {
+            const response = await fetch(`${base}${page}`);
+            expect(response.status, page).toBe(500);
+            expect(response.headers.get('content-type'), page).toContain('text/html');
+            await response.arrayBuffer();
+        }
+        // The legacy photo list and v1.4.0's Home records route are gone, and /gallery is Work's.
+        for (const url of ['/api/photos', `/api/catalog/home/photos/${featured}?revision=${NO_REVISION}`]) {
+            const gone = await fetch(`${base}${url}`);
+            expect(gone.status, url).toBe(404);
+            await gone.arrayBuffer();
+        }
+        const gallery = await fetch(`${base}/gallery`, { redirect: 'manual' });
+        expect(gallery.status).toBe(308);
+        expect(gallery.headers.get('location')).toBe('/work');
         await gallery.arrayBuffer();
-
-        // Each derivative, as the Lightbox and the LQIP read them. A cache that follows the origin keeps none.
-        for (const url of legacy.slice(1)) {
-            const derivative = await fetch(`${base}${url}`);
-            expect(derivative.status, url).toBe(200);
-            expect(derivative.headers.get('cache-control'), url).toBe(PUBLIC_FILE);
-            await derivative.arrayBuffer();
-        }
-        // The original never serves.
-        await expectRefused(legacy[0]);
-
-        // The gallery's tiles load through /_next/image. The second request is a hit in Next's image cache.
-        optimizedThumbnail = `/_next/image?url=${encodeURIComponent(thumbnail)}&w=400&q=75`;
-        for (const expected of ['MISS', 'HIT']) {
-            const tile = await fetch(`${base}${optimizedThumbnail}`);
-            expect(tile.status).toBe(200);
-            expect(tile.headers.get('content-type')).toMatch(/^image\//);
-            expect(tile.headers.get('cache-control')).toBe(OPTIMIZED_COPY);
-            expect(tile.headers.get('x-nextjs-cache')).toBe(expected);
-            await tile.arrayBuffer();
-        }
+        // Every legacy derivative on disk, and the original, are closed, and /_next/image refuses them.
+        for (const url of legacy) await expectContained(url);
     }, 60_000);
 
     it('follows each activation and a rollback without a restart, with a new ETag for each', async () => {
@@ -319,21 +332,16 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         const firstUrls = shown.photoIds.map(urlOf);
         const draftUrl = urlOf(draft.photoIds[0]);
 
-        // Before the first activation: legacy mode, listing the photo with legacy derivatives, with no ETag.
-        expect(optimizedThumbnail, 'the first test loaded the legacy gallery').not.toBe('');
-        expect(await ready()).toEqual({ mode: 'legacy', state: 'ok', revisionId: null, revisionNumber: null, activatedAt: null });
-        expect(await listed('legacy', 'legacy')).toEqual([legacy[2]]);
+        // Before the first activation: nothing published, and no set serves.
+        await expectNotPublished();
         for (const url of [...firstUrls, draftUrl]) await expectRefused(url);
 
-        // The first publish lists and serves the published series only, and its tag gets 304.
+        // The first publish serves the published series only, and its tag gets 304.
         first = await published();
         expect(await ready()).toMatchObject({ mode: 'catalog', state: 'ok', revisionId: first.revisionId, revisionNumber: 1 });
-        // The launch closes every legacy URL in the same process, and /_next/image refuses before its cache answers.
         for (const url of legacy) await expectContained(url);
-        const tile = await fetch(`${base}${optimizedThumbnail}`);
-        expect(tile.status).toBe(400);
-        expect(await tile.text()).toBe(NOT_ALLOWED);
-        expect(await listed('catalog', first.revisionId!)).toEqual(firstUrls);
+        await listed(first.revisionId!);
+        await expectRevisionChanged(NO_REVISION);
         const firstTag = expectedTag(first.revisionId!);
         await expectNotModified(firstTag, first.revisionId!);
         for (const url of firstUrls) await expectServed(url);
@@ -345,9 +353,11 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         await writeAuthoredRecord({ ...structuredClone(record), visibility: 'published' }, { expectedVersion: record.version, root });
         const second = await published();
         expect(await ready()).toMatchObject({ mode: 'catalog', state: 'ok', revisionId: second.revisionId, revisionNumber: 2 });
+        // Home's records for the first revision are gone with it, and the second's carry a new tag.
+        await expectRevisionChanged(first.revisionId!);
         const secondTag = await expectModified(firstTag, second.revisionId!);
         await expectNotModified(secondTag, second.revisionId!);
-        expect(await listed('catalog', second.revisionId!)).toEqual([...firstUrls, draftUrl]);
+        await listed(second.revisionId!);
         await expectServed(draftUrl);
 
         // This process rolling back to the first revision takes it away again, and the second tag gets 200.
@@ -368,9 +378,10 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
             activatedAt: rollback.activation!.committedAt,
         });
         // The first revision on the same build: the same tag as before, so it gets 304 again.
+        await expectRevisionChanged(second.revisionId!);
         expect(await expectModified(secondTag, first.revisionId!)).toBe(firstTag);
         await expectNotModified(firstTag, first.revisionId!);
-        expect(await listed('catalog', first.revisionId!)).toEqual(firstUrls);
+        await listed(first.revisionId!);
         for (const url of firstUrls) await expectServed(url);
         await expectRefused(draftUrl);
 
@@ -386,17 +397,16 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
             forbidden.push(source, path.posix.basename(source, path.posix.extname(source)), ...legacyUrls(source));
         }
         const bodies: [string, string][] = [];
-        for (const url of ['/api/photos', '/api/ready', ...PAGES]) {
+        const [shown] = catalog!.series;
+        for (const url of [`/api/catalog/home/series/${featuredSeries}/photos/${featured}?revision=${first!.revisionId}`, '/api/ready', ...PAGES, `/work/${shown.slug}`]) {
             const response = await fetch(`${base}${url}`);
             expect(response.status, url).toBe(200);
             bodies.push([url, await response.text()]);
         }
-        const items = JSON.parse(bodies[0][1]) as Record<string, unknown>[];
-        expect(items.length).toBeGreaterThan(0);
-        for (const item of items) {
-            for (const field of ['src', 'thumbnail', 'medium', 'optimized', 'thumbnailAvif', 'mediumAvif', 'optimizedAvif']) {
-                expect(String(item[field]), field).toMatch(/^\/media\//);
-            }
+        const window = JSON.parse(bodies[0][1]) as { photos: { image: { variants: Record<string, Record<string, { url: string }>> } | null }[] };
+        expect(window.photos.length).toBeGreaterThan(0);
+        for (const photo of window.photos) {
+            for (const formats of Object.values(photo.image?.variants ?? {})) for (const { url } of Object.values(formats)) expect(url).toMatch(/^\/media\//);
         }
         for (const [url, text] of bodies) {
             for (const needle of forbidden) expect(text.includes(needle), `${url} names ${needle}`).toBe(false);
@@ -405,10 +415,12 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         // A legacy basename derivative on disk 404s with nothing cached, and /_next/image refuses it.
         await expectContained(`/assets/photos/optimized/${encodeURIComponent(legacyBase)}.webp`);
 
-        // /api/image is gone.
-        const image = await fetch(`${base}/api/image?src=${encodeURIComponent(`${legacyBase}.jpg`)}&w=800`);
-        expect(image.status).toBe(404);
-        await image.arrayBuffer();
+        // /api/image, /api/photos and v1.4.0's Home records route are gone.
+        for (const url of [`/api/image?src=${encodeURIComponent(`${legacyBase}.jpg`)}&w=800`, '/api/photos', `/api/catalog/home/photos/${featured}?revision=${first!.revisionId}`]) {
+            const gone = await fetch(`${base}${url}`);
+            expect(gone.status, url).toBe(404);
+            await gone.arrayBuffer();
+        }
     }, 60_000);
 
     it('keeps the ETag across a restart, and changes it with a new build ID', async () => {
@@ -418,9 +430,8 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
 
         await stop();
         await start();
-        expect(await listed('catalog', revisionId)).toHaveLength(2);
+        await listed(revisionId);
         await expectNotModified(tag, revisionId);
-        // A server started after the launch keeps the legacy URLs closed: the committed activation shows the cutover.
         for (const url of legacy) await expectContained(url);
 
         // A deploy: the same revision on a new build.
@@ -432,7 +443,7 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         await expectNotModified(fresh, revisionId);
     }, 180_000);
 
-    it('serves the revision /api/photos loaded from /api/ready and /media once the pointer is damaged, then gone', async () => {
+    it('serves the revision one Home records request loaded from /api/ready, the endpoint and /media once the pointer is damaged, then gone', async () => {
         const damaged = await createTestCatalog({ withAssets: true, photos: 2, series: [{ photos: 2 }], seed: 53 });
         extra.push(() => damaged.cleanup());
         const result = await publish({ dataRoot: damaged.root, actor: 'test', confirmLaunch: true, logger: quiet });
@@ -440,12 +451,22 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         const [series] = damaged.series;
         const photo = damaged.photos.find((entry) => entry.id === series.photoIds[0])!;
         const url = mediaUrl({ photoId: photo.id, assetRevision: photo.assetRevision!, profileId: damaged.profileId }, 'w800', 'webp');
+        const ask = (ifNoneMatch?: string) =>
+            fetch(`${started.base}/api/catalog/home/series/${series.id}/photos/${photo.id}?revision=${result.revisionId}`, ifNoneMatch ? { headers: { 'If-None-Match': ifNoneMatch } } : {});
 
-        // A server started after the publish, whose only catalog read is one /api/photos request.
+        // A server started after the publish, whose only catalog read is one Home records request.
         const started = await startServer(served!, damaged.root, library!);
         extra.push(started.stop);
-        expect(await listed('catalog', result.revisionId!, started.base)).toContain(url);
-        const tag = expectedTag(result.revisionId!);
+        const loaded = await ask();
+        expect(loaded.status).toBe(200);
+        const tag = loaded.headers.get('etag') as string;
+        expect(tag).toBe(catalogETag(`/api/catalog/home/series/${series.id}/photos/${photo.id}`, result.revisionId!, readBuildId(served)!));
+        await loaded.arrayBuffer();
+        const notModified = async () => {
+            const response = await ask(tag);
+            expect(response.status).toBe(304);
+            await response.arrayBuffer();
+        };
 
         // Damage the newest pointer version, the one readActivePointer() reads.
         const pointer = await readActivePointer(damaged.root);
@@ -455,48 +476,40 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         expect(await ready(started.base), started.output()).toMatchObject(degraded);
         await expectServed(url, started.base);
         // Degraded still serves that revision, so its tag still gets 304.
-        await expectNotModified(tag, result.revisionId!, started.base);
+        await notModified();
 
         // With the pointer folder gone, it keeps serving the revision it loaded. The committed activation is still
-        // there, so this shows the last loaded revision is kept, not that the cutover is remembered without it.
-        // The unit tests cover that ("remembers a cutover it saw").
+        // there, so this shows the last loaded revision is kept, not that the publish is remembered without it.
+        // The unit tests cover that ("remembers a publish it saw").
         fs.rmSync(catalogPaths(damaged.root).active, { recursive: true });
         expect(await ready(started.base), started.output()).toMatchObject(degraded);
         await expectServed(url, started.base);
-        expect(await listed('catalog', result.revisionId!, started.base)).toContain(url);
-        await expectNotModified(tag, result.revisionId!, started.base);
+        const still = await ask();
+        expect(still.status).toBe(200);
+        expect(still.headers.get('etag')).toBe(tag);
+        await still.arrayBuffer();
+        await notModified();
         expect(started.output()).not.toContain(damaged.root);
     }, 120_000);
 
-    it('keeps the legacy URLs closed once only /api/ready saw the launch, with catalog/ then moved aside', async () => {
+    it('answers for the launch /api/ready saw once catalog/ is moved aside, and keeps the legacy URLs closed throughout', async () => {
         const launched = await createTestCatalog({ withAssets: true, photos: 2, series: [{ photos: 2 }], seed: 59 });
         extra.push(() => launched.cleanup());
-        const thumbnail = legacy[1];
         const started = await startServer(served!, launched.root, library!);
         extra.push(started.stop);
 
-        // Legacy mode: the thumbnail serves, and its /_next/image copy is in the image cache by the second request.
-        expect(await ready(started.base)).toMatchObject({ mode: 'legacy' });
-        const direct = await fetch(`${started.base}${thumbnail}`);
-        expect(direct.status).toBe(200);
-        await direct.arrayBuffer();
-        for (let request = 0; request < 2; request += 1) {
-            const tile = await fetch(`${started.base}/_next/image?url=${encodeURIComponent(thumbnail)}&w=400&q=75`);
-            expect(tile.status).toBe(200);
-            if (request === 1) expect(tile.headers.get('x-nextjs-cache')).toMatch(/^(HIT|STALE)$/);
-            await tile.arrayBuffer();
-        }
+        // Nothing published: not-published, and the legacy URLs closed.
+        await expectNotPublished(started.base);
+        for (const url of legacy) await expectContained(url, started.base);
 
-        // The launch, seen by /api/ready alone: no legacy URL is asked for until catalog/ is gone.
+        // The launch, seen by /api/ready alone, and then catalog/ goes away.
         const result = await publish({ dataRoot: launched.root, actor: 'test', confirmLaunch: true, logger: quiet });
         expect(result.outcome, result.message).toBe('PUBLISHED');
-        expect(await ready(started.base)).toMatchObject({ mode: 'catalog', revisionId: result.revisionId, revisionNumber: 1 });
+        expect(await ready(started.base)).toMatchObject({ mode: 'catalog', state: 'ok', revisionId: result.revisionId, revisionNumber: 1 });
         const catalogDir = catalogPaths(launched.root).dir;
         fs.renameSync(catalogDir, `${catalogDir}-aside`);
-        // /api/ready's route still remembers the cutover.
-        const after = await fetch(`${started.base}/api/ready`);
-        expect(((await after.json()) as { mode: string }).mode, started.output()).toBe('catalog');
-        await expectContained(thumbnail, started.base);
+        // The process remembers the launch, so it serves the revision it loaded, never "nothing published".
+        expect(await ready(started.base), started.output()).toMatchObject({ mode: 'catalog', state: 'degraded', revisionId: result.revisionId });
         for (const url of legacy) await expectContained(url, started.base);
         expect(started.process.exitCode).toBeNull();
     }, 120_000);

@@ -126,7 +126,6 @@ const layouts = {
 };
 const handlers = {
     pages: (await import('../[draftId]/site/api/catalog/series/[slug]/pages/[cursor]/route')).GET,
-    records: (await import('../[draftId]/site/api/catalog/home/photos/[photoId]/route')).GET,
     seriesRecords: (await import('../[draftId]/site/api/catalog/home/series/[seriesId]/photos/[photoId]/route')).GET,
     peek: (await import('../[draftId]/site/api/catalog/series/[slug]/photos/[photoId]/route')).GET,
     media: (await import('../[draftId]/site/media/[photoId]/[assetRevision]/[profileId]/[variant]/route')).GET,
@@ -187,7 +186,6 @@ function surfaces(id: string): Record<string, () => unknown> {
         'unmatched site path': () => pages.siteMissing.default(),
         'unmatched site path metadata': () => pages.siteMissing.generateMetadata(),
         'load-more': () => handlers.pages(url(`${previewBase(id)}/api/catalog/series/${LONG}/pages/${cursor}`), params({ draftId: id, slug: LONG, cursor })),
-        'home records': () => handlers.records(url(`${previewBase(id)}/api/catalog/home/photos/${photo.id}?revision=${id}`), params({ draftId: id, photoId: photo.id })),
         // v1.5.0's records for Home's loop of featured series, which only a featured series answers.
         'home series records': () =>
             handlers.seriesRecords(url(`${previewBase(id)}/api/catalog/home/series/ser_fixture-long/photos/${photo.id}?revision=${id}`), params({ draftId: id, seriesId: 'ser_fixture-long', photoId: photo.id })),
@@ -225,13 +223,13 @@ describe('without a session', () => {
         const cookie = secrets.cookie();
         as(cookie);
         // Warm the cache through the subresources themselves.
-        for (const name of ['load-more', 'home records', 'home series records', 'peek', 'image']) expect(await outcome(surfaces(draftId)[name]), name).toMatchObject({ kind: 'response', status: 200 });
+        for (const name of ['load-more', 'home series records', 'peek', 'image']) expect(await outcome(surfaces(draftId)[name]), name).toMatchObject({ kind: 'response', status: 200 });
         const state = previewReaderStateForTests();
         expect(state.kept.size).toBeGreaterThan(0);
         deleteSession(sessionFromCookies(cookie, secrets.sessionKey)!);
         const reads = [vi.spyOn(state.kept, 'get'), vi.spyOn(state.kept, 'has'), vi.spyOn(state.compiling, 'get')];
         vi.mocked(loadPreviewCatalog).mockClear();
-        for (const name of ['load-more', 'home records', 'home series records', 'peek', 'image']) expect(await outcome(surfaces(draftId)[name]), name).toEqual({ kind: 'thrown', digest: ENDED_REDIRECT });
+        for (const name of ['load-more', 'home series records', 'peek', 'image']) expect(await outcome(surfaces(draftId)[name]), name).toEqual({ kind: 'thrown', digest: ENDED_REDIRECT });
         for (const spy of reads) expect(spy).not.toHaveBeenCalled();
         expect(loadPreviewCatalog).not.toHaveBeenCalled();
     });
@@ -321,7 +319,7 @@ describe('signed in', () => {
     it('answers a draft that is not the current one with the not-found page, a 409 from the mirrors, and a 404 for its images', async () => {
         const unknown = surfaces(UNKNOWN);
         for (const name of ['frame page', 'home', 'work', 'series', 'viewer']) expect(await outcome(unknown[name]), name).toEqual({ kind: 'thrown', digest: NOT_FOUND });
-        for (const name of ['load-more', 'home records', 'home series records', 'peek']) expect(await outcome(unknown[name]), name).toMatchObject({ kind: 'response', status: 409 });
+        for (const name of ['load-more', 'home series records', 'peek']) expect(await outcome(unknown[name]), name).toMatchObject({ kind: 'response', status: 409 });
         expect(await outcome(unknown.image)).toMatchObject({ kind: 'response', status: 404 });
     });
 
@@ -341,7 +339,7 @@ describe('signed in', () => {
     });
 
     it("serves load-more, the Home records and the Viewer's peek from the draft, no-store with no ETag", async () => {
-        for (const name of ['load-more', 'home records', 'home series records', 'peek']) {
+        for (const name of ['load-more', 'home series records', 'peek']) {
             const answer = await outcome(surfaces(draftId)[name]);
             if (answer.kind !== 'response') throw new Error(`${name}: ${JSON.stringify(answer)}`);
             expect(answer.status, name).toBe(200);
@@ -455,13 +453,14 @@ describe('proxy.ts on the preview paths', () => {
             `/curation/preview/${id}/site/work/${LONG}`,
             `/curation/preview/${id}/site/work/${LONG}/photo/${photo.id}`,
             `/curation/preview/${id}/site/api/catalog/series/${LONG}/pages/x`,
-            `/curation/preview/${id}/site/api/catalog/home/photos/${photo.id}?revision=${id}`,
             `/curation/preview/${id}/site/api/catalog/home/series/ser_fixture-long/photos/${photo.id}?revision=${id}`,
             `/curation/preview/${id}/site/api/catalog/series/${LONG}/photos/${photo.id}?revision=${id}`,
             `/curation/preview/${id}/site/media/${photo.id}/${photo.assetRevision}/${photo.profileId}/w400.avif`,
             `/curation/preview/${id}/anything`,
             `/curation/preview/${id}/site/gallery`,
             `/curation/preview/${id}/site/work/${LONG}/photo/${photo.id}/more`,
+            // v1.4.0's Home records mirror, gone in v1.6.0, so the site's catch-all answers it now.
+            `/curation/preview/${id}/site/api/catalog/home/photos/${photo.id}?revision=${id}`,
         ];
         // A malformed ID that survives URL parsing: `..` is resolved away before any request is sent.
         const others = [UNKNOWN, ...MALFORMED.filter((id) => id !== '..')];

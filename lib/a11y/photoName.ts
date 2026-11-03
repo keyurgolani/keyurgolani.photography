@@ -42,7 +42,8 @@ function description(alt: PhotoAlt | undefined): string | undefined {
 /**
  * The name of the control that opens a photograph. described: "<text>,
  * photograph N of T", without the text's trailing punctuation. decorative,
- * unreviewed, or no alt on a legacy surface: "Photograph N of T".
+ * unreviewed, or no alt, as `photos carry-over` names a photo: "Photograph N
+ * of T".
  */
 export function photoEntryName(input: Input): string {
     const position = counter(input);
@@ -52,7 +53,7 @@ export function photoEntryName(input: Input): string {
 
 /**
  * The image's own alt. described: "<text>". decorative: "". Unreviewed, or no
- * alt, which only legacy surfaces have: "Photograph N of T".
+ * alt, as `photos carry-over` names a photo: "Photograph N of T".
  */
 export function photoImageAlt(input: Input): string {
     const position = counter(input);

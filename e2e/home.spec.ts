@@ -6,8 +6,16 @@ import { expectHoverRulesGated } from './support/hover';
 import { waitForHydration } from './support/hydration';
 import { checkSurface, expectUniqueNames } from './support/surface';
 import { expectMinTargetSize } from './support/targets';
+import { altOf, CATALOG_ORIGIN, HOME_OPENING, HOME_ORDER } from './support/catalog-home';
 import { expect, setPhotoFixtures, test } from './support/test';
-import type { ImageItem } from '../lib/catalog/photos-api';
+
+// #1's checks on Home's slideshow, on playwright.config.ts's catalog server, which serves the published Home
+// fixture: since #13's slice E Home renders only a published revision. The photographs are the fixture's own,
+// painted with the photo fixtures (setPhotoFixtures()) from the opening photograph on.
+test.use({ baseURL: CATALOG_ORIGIN });
+
+/** The photograph `steps` on from the opening one in authored order, wrapping, as Home moves. */
+const fromOpening = (steps: number) => HOME_ORDER[(HOME_ORDER.indexOf(HOME_OPENING) + steps + HOME_ORDER.length * 4) % HOME_ORDER.length];
 
 const primary = (page: Page) => page.getByRole('navigation', { name: 'Primary' });
 const navLinks = (page: Page) => primary(page).getByRole('link');
@@ -18,8 +26,8 @@ const arrows = (page: Page) => previous(page).or(next(page));
 const playback = (page: Page) => page.getByRole('button', { name: /^(Pause|Play) slideshow$/ });
 /** Previous, Next, and the playback button, which sit together in the chrome layer. */
 const sequenceControls = (page: Page) => arrows(page).or(playback(page));
-/** The full-quality layer of the slide on screen. */
-const currentPhoto = (page: Page) => page.locator('[aria-hidden="false"] > img[data-layer="optimized"]');
+/** The image of the slide on screen. */
+const currentPhoto = (page: Page) => page.locator('[data-photo-id][aria-hidden="false"] img');
 
 const effectiveOpacity = (target: Locator) =>
     target.evaluate((el) => {
@@ -42,8 +50,8 @@ async function tabTo(page: Page, target: Locator, limit = 10) {
 }
 
 /**
- * Opens Home on `photos`, which it shuffles, in `theme`, and waits until it
- * rests on the photograph alone. Keyboard focus reveals the chrome and holds
+ * Opens Home with `photos` painted from the opening photograph on, in
+ * `theme`, and waits until it rests on the photograph alone. Keyboard focus reveals the chrome and holds
  * it, and the pointer cases reveal it first, since #18 takes the first click
  * or tap on immersive Home as intent.
  */
@@ -82,7 +90,7 @@ for (const viewport of [undefined, { width: 640, height: 400 }]) {
 
 test('Tab goes through SiteNav, its theme control last, then both arrows and Pause, and Shift+Tab walks back', async ({ page }) => {
     await openHome(page);
-    const stops = ['KG, Keyur Golani', 'Home', 'Work', 'About', 'Theme: System (Dark now)', 'Previous photograph', 'Next photograph', 'Pause slideshow'];
+    const stops = ['KG, Keyur Golani', 'Home', 'Work', 'About', 'Theme: System (Dark now)', 'Enter the series', 'Previous photograph', 'Next photograph', 'Pause slideshow'];
     const forward: (string | undefined)[] = [];
     for (let press = 0; press < stops.length; press++) {
         await page.keyboard.press('Tab');
@@ -111,17 +119,17 @@ test('the slideshow controls drop their focus ring at once on blur', async ({ pa
 
 test('Enter and Space on the arrows change the photo', async ({ page }) => {
     await openHome(page);
-    await expect(currentPhoto(page)).toHaveAttribute('alt', 'Photograph 1 of 3');
+    await expect(currentPhoto(page)).toHaveAttribute('alt', altOf(fromOpening(0)));
     const presses: [(page: Page) => Locator, string, number][] = [
-        [next, 'Enter', 2],
-        [next, 'Space', 3],
-        [previous, 'Enter', 2],
-        [previous, 'Space', 1],
+        [next, 'Enter', 1],
+        [next, 'Space', 2],
+        [previous, 'Enter', 1],
+        [previous, 'Space', 0],
     ];
-    for (const [arrow, key, position] of presses) {
+    for (const [arrow, key, steps] of presses) {
         await arrow(page).focus();
         await page.keyboard.press(key);
-        await expect(currentPhoto(page)).toHaveAttribute('alt', `Photograph ${position} of 3`);
+        await expect(currentPhoto(page)).toHaveAttribute('alt', altOf(fromOpening(steps)));
     }
 });
 
@@ -142,8 +150,7 @@ test('Enter on the theme control opens its menu on the checked choice, an arrow 
     await expect(themeControl(page)).toBeFocused();
 });
 
-// Work links to /work, which before the cutover sends this legacy-mode server on to /gallery.
-for (const [name, href, path] of [['Work', '/work', '/gallery'], ['About', '/about', '/about']] as const) {
+for (const [name, href, path] of [['Work', '/work', '/work'], ['About', '/about', '/about']] as const) {
     test(`Enter on the ${name} link goes to ${path}`, async ({ page }) => {
         await openHome(page);
         await expect(primary(page).getByRole('link', { name, exact: true })).toHaveAttribute('href', href);
@@ -153,30 +160,16 @@ for (const [name, href, path] of [['Work', '/work', '/gallery'], ['About', '/abo
     });
 }
 
-test('each slide names its photo once, on the full-quality layer', async ({ page }) => {
+test('each slide names its photograph once, on its one image', async ({ page }) => {
     await openHome(page);
-    const alts = (layer: string) => page.locator(`img[data-layer="${layer}"]`).evaluateAll((images) => images.map((image) => image.getAttribute('alt')));
-    const thumbnails = await alts('thumbnail');
-    expect(thumbnails.length).toBeGreaterThan(0);
-    expect(thumbnails.every((alt) => alt === '')).toBe(true);
-    const optimized = await alts('optimized');
-    expect(optimized.length).toBeGreaterThan(0);
-    for (const alt of optimized) expect(alt).toMatch(/^Photograph [1-3] of 3$/);
+    const slides = await page.locator('[data-photo-id]').evaluateAll((elements) =>
+        elements.map((slide) => ({ id: slide.getAttribute('data-photo-id') ?? '', alts: Array.from(slide.querySelectorAll('img'), (image) => image.getAttribute('alt')) })));
+    expect(slides.length).toBeGreaterThan(0);
+    for (const { id, alts } of slides) expect(alts, id).toEqual(alts.length === 0 ? [] : [altOf(id)]);
 });
 
-/** Two white records with distinct src values, so Home shows its controls over white. The fixture route serves both files by basename. */
-async function serveTwoWhitePhotos(page: Page) {
-    const record = (src: string, id: number): ImageItem => ({
-        id, src, thumbnail: src, medium: src, optimized: src, width: 1200, height: 800, optimizedWidth: 1200, optimizedHeight: 800,
-        caption: '', date: Date.UTC(2024, 0, 1), lqip: '',
-    });
-    await page.route('**/api/photos', (route) =>
-        route.fulfill({ json: [record('/assets/photos/white.jpg', 0), record('/assets/photos/copy-2/white.jpg', 1)] }));
-}
-
 test('the control icons keep 3:1 over the white photo', async ({ page }) => {
-    await serveTwoWhitePhotos(page);
-    await openHome(page);
+    await openHome(page, { photos: ['white'] });
     await expect(currentPhoto(page)).toHaveCSS('opacity', '1');
     for (const control of [previous(page), next(page), playback(page)]) {
         await control.focus();
@@ -197,7 +190,7 @@ test('a click on Previous or Next changes the photo', async ({ page }, testInfo)
     const { x, y } = await photoPoint(page);
     await page.mouse.move(x, y, { steps: 2 });
     await next(page).click();
-    await expect(currentPhoto(page)).toHaveAttribute('alt', 'Photograph 2 of 3');
+    await expect(currentPhoto(page)).toHaveAttribute('alt', altOf(fromOpening(1)));
 });
 
 test('a tap on Previous or Next changes the photo', async ({ page }, testInfo) => {
@@ -206,7 +199,7 @@ test('a tap on Previous or Next changes the photo', async ({ page }, testInfo) =
     const { x, y } = await photoPoint(page);
     await page.touchscreen.tap(x, y);
     await next(page).tap();
-    await expect(currentPhoto(page)).toHaveAttribute('alt', 'Photograph 2 of 3');
+    await expect(currentPhoto(page)).toHaveAttribute('alt', altOf(fromOpening(1)));
 });
 
 test('a press on the photograph lands on its layer, never on an image', async ({ page }) => {

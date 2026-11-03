@@ -1,6 +1,4 @@
-import fs from 'node:fs';
 import { NextResponse, type NextRequest } from 'next/server';
-import { catalogMode } from './lib/catalog/mode';
 import {
     CURATOR_FRAME_POLICY,
     CURATOR_RESPONSE_HEADERS,
@@ -12,8 +10,7 @@ import {
     redirectScheme,
 } from './lib/curation/auth/policy';
 import { UNAVAILABLE_HEADERS, UNAVAILABLE_HTML } from './lib/curation/auth/unavailable';
-import { dataRoot } from './lib/storage/config';
-import { hasEncodedSeparator, isPublicDerivativePath, isUnderPhotos, resolvedPathname } from './utils/publicDerivatives';
+import { hasEncodedSeparator, isUnderPhotos, resolvedPathname } from './utils/publicDerivatives';
 
 /** The body Next's /_next/image sends for a `url` images.localPatterns doesn't allow. */
 export const IMAGE_URL_NOT_ALLOWED = '"url" parameter is not allowed';
@@ -29,32 +26,26 @@ function imageRefused(): NextResponse {
     return new NextResponse(IMAGE_URL_NOT_ALLOWED, { status: 400, headers: { 'Cache-Control': 'no-store', ...PLAIN_TEXT } });
 }
 
-/** Whether `root` is a folder that's there. Anything that stops the check counts as not there. */
-async function isFolder(root: string): Promise<boolean> {
-    try {
-        return (await fs.promises.stat(/*turbopackIgnore: true*/ root)).isDirectory();
-    } catch {
-        return false;
-    }
-}
+/**
+ * Where the legacy archive went. #13's slice E removed the legacy Gallery,
+ * and /gallery answers a bare 308 to Work in every state, whatever the data
+ * root holds, so a bookmark or a search result still lands on the photographs.
+ */
+export const GALLERY_PATH = '/gallery';
+const GALLERY_TO = '/work';
 
 /**
- * Whether the legacy derivatives still serve: only in legacy mode, before
- * the first catalog revision goes live. It's the check /api/ready reports,
- * made per request, so the launch publish closes them with no restart. That
- * check remembers a cutover for as long as the process runs, in every bundle
- * of it, and answers `catalog` while the data root can't be read, so this
- * fails closed. With no data root configured, or no folder at its path, they
- * don't serve either: the photo list answers 503 there already, so nothing
- * a visitor sees loads them. An existing root that isn't initialized yet,
- * empty included, is legacy mode and serves them.
+ * The 308 for /gallery. Next takes only an absolute Location from a proxy,
+ * so it's built on the request's own origin, and Next sends it on as the
+ * relative `/work`. Nothing from the query goes with it. It's `no-store`, so
+ * neither a browser nor Cloudflare keeps it: a release before #13's slice E
+ * sends /work back to /gallery with a 307 on a data root without the launch,
+ * and a kept 308 would loop against that after a rollback.
  */
-async function servesLegacy(): Promise<boolean> {
-    const root = dataRoot();
-    if (root === null) return false;
-    // The mode first: a launched root swapped for a file or for nothing between the two reads is then
-    // caught either way, by the folder check after a legacy answer, or by the mode latching catalog.
-    return (await catalogMode(root)) === 'legacy' && (await isFolder(root));
+function galleryMoved(request: NextRequest): NextResponse {
+    const response = NextResponse.redirect(new URL(GALLERY_TO, request.nextUrl.origin), 308);
+    response.headers.set('Cache-Control', 'no-store');
+    return response;
 }
 
 /**
@@ -118,9 +109,9 @@ const READ_METHODS = new Set(['GET', 'HEAD']);
  *   a page, or its RSC payload, is sent to `/curation/login`, and a route
  *   handler or a server action gets 401. Only a read of `/curation/login` and
  *   a POST to `/api/curation/login` skip the session.
- * - `/_next/image` is checked only for its `url`: unless the legacy
- *   derivatives serve, it refuses one that reaches /assets/photos with a 400
- *   before its own cache can answer. Otherwise it passes.
+ * - `/_next/image` is checked only for its `url`: it refuses one that
+ *   reaches /assets/photos with a 400 before its own cache can answer.
+ *   Otherwise it passes, for images.localPatterns to decide.
  * - With `CURATION_ENABLED=true`, every other path needs the curator's
  *   `Host` too (421 otherwise). Only `/_next/static`, outside the matcher,
  *   and `/_next/image` answer any `Host`, with the same bytes as on web.
@@ -128,19 +119,19 @@ const READ_METHODS = new Set(['GET', 'HEAD']);
  *   curator prefixes mutates (the route-inventory test), so a POST there,
  *   such as a server action ID posted to `/`, gets a 404 before Next looks
  *   for the action.
- * - Under /assets/photos, original sources get a 404 at any depth. The
- *   legacy derivatives (top-level files in thumbnails, medium, and optimized
- *   as .webp, their -avif twins as .avif, and lqip as .txt) serve in legacy
- *   mode only, on a data root that's there, since the legacy pages load
- *   them. Once a catalog revision is live, photos serve only from the /media
- *   sets it holds, so everything under /assets/photos gets a 404.
+ * - `/gallery` gets a 308 to `/work` (galleryMoved()), behind the two checks
+ *   above, so the curator process answers it only on the curator's `Host`.
+ * - Everything under /assets/photos gets a 404, at any depth: the original
+ *   sources, and the legacy basename derivatives the watcher writes until
+ *   the second PR of #13's slice E stops them. Photos serve only from the
+ *   /media sets the served revision holds. None of this reads the data root.
  */
-export async function proxy(request: NextRequest): Promise<NextResponse> {
+export function proxy(request: NextRequest): NextResponse {
     const { pathname, searchParams } = request.nextUrl;
     // next dev decodes these into separators and resolves `..` before it looks for a file.
     if (hasEncodedSeparator(pathname)) return notFound();
     if (pathname === '/_next/image') {
-        if (searchParams.getAll('url').some(reachesPhotos) && !(await servesLegacy())) return imageRefused();
+        if (searchParams.getAll('url').some(reachesPhotos)) return imageRefused();
         return NextResponse.next();
     }
     const method = request.method.toUpperCase();
@@ -191,9 +182,9 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
         if (denial !== null) return curatorDenial(denial.status);
     }
     if (!READ_METHODS.has(method) && method !== 'OPTIONS') return notFound();
-    if (!isUnderPhotos(pathname)) return NextResponse.next();
-    if (isPublicDerivativePath(pathname) && (await servesLegacy())) return NextResponse.next();
-    return notFound();
+    if (pathname === GALLERY_PATH && READ_METHODS.has(method)) return galleryMoved(request);
+    if (isUnderPhotos(pathname)) return notFound();
+    return NextResponse.next();
 }
 
 export const config = {

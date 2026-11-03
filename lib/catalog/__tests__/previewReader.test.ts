@@ -131,7 +131,7 @@ describe('the preview routes', () => {
 describe('loadPreviewCatalog', { timeout: 60_000 }, () => {
     it('reads nothing for a malformed draft ID', async () => {
         const fsCalls = spyOnFs();
-        for (const value of MALFORMED) expect(await loadPreviewCatalog(value), JSON.stringify(value)).toEqual({ mode: 'catalog', state: 'not-current' });
+        for (const value of MALFORMED) expect(await loadPreviewCatalog(value), JSON.stringify(value)).toEqual({ state: 'not-current' });
         expect(fsCalls()).toBe(0);
         for (const fn of readers()) expect(fn).not.toHaveBeenCalled();
     });
@@ -152,8 +152,8 @@ describe('loadPreviewCatalog', { timeout: 60_000 }, () => {
         await retitleFirstSeries('A retitled fixture series');
         const after = await candidateId();
         expect(after).not.toBe(before);
-        expect(await loadPreviewCatalog(before)).toEqual({ mode: 'catalog', state: 'not-current' });
-        expect(await loadPreviewCatalog(UNKNOWN)).toEqual({ mode: 'catalog', state: 'not-current' });
+        expect(await loadPreviewCatalog(before)).toEqual({ state: 'not-current' });
+        expect(await loadPreviewCatalog(UNKNOWN)).toEqual({ state: 'not-current' });
         const current = await loadPreviewCatalog(after);
         expect(current.state === 'ok' && current.reader.listSeries()[0].title).toBe('A retitled fixture series');
     });
@@ -183,11 +183,11 @@ describe('loadPreviewCatalog', { timeout: 60_000 }, () => {
 
     it('is unavailable when the data root is not ready or the draft cannot be read, and logs no path', async () => {
         vi.stubEnv('PHOTOGRAPHY_DATA_DIR', `${catalog.root}-missing`);
-        expect(await loadPreviewCatalog(UNKNOWN)).toEqual({ mode: 'catalog', state: 'unavailable', reason: 'data-root-not-ready' });
+        expect(await loadPreviewCatalog(UNKNOWN)).toEqual({ state: 'unavailable', reason: 'data-root-not-ready' });
         vi.stubEnv('PHOTOGRAPHY_DATA_DIR', catalog.root);
         const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
         vi.mocked(compileCandidate).mockRejectedValueOnce(Object.assign(new Error(`EACCES: ${catalog.root}/assets`), { code: 'EACCES' }));
-        expect(await loadPreviewCatalog(UNKNOWN)).toEqual({ mode: 'catalog', state: 'unavailable', reason: 'draft-unreadable' });
+        expect(await loadPreviewCatalog(UNKNOWN)).toEqual({ state: 'unavailable', reason: 'draft-unreadable' });
         expect(error).toHaveBeenCalledTimes(1);
         expect(String(error.mock.calls[0][0])).not.toContain(catalog.root);
     });
@@ -200,7 +200,7 @@ describe('loadPreviewCatalog', { timeout: 60_000 }, () => {
         now += SUBRESOURCE_MAX_AGE_MS;
         expect((await loadPreviewCatalog(before, { now: () => now, maxAgeMs: SUBRESOURCE_MAX_AGE_MS })).state).toBe('ok');
         now += 1;
-        expect(await loadPreviewCatalog(before, { now: () => now, maxAgeMs: SUBRESOURCE_MAX_AGE_MS })).toEqual({ mode: 'catalog', state: 'not-current' });
+        expect(await loadPreviewCatalog(before, { now: () => now, maxAgeMs: SUBRESOURCE_MAX_AGE_MS })).toEqual({ state: 'not-current' });
     });
 
     it('keeps one cache for the process, so every route bundle shares its compiles and a page drops a stale draft for all of them', async () => {
@@ -219,8 +219,8 @@ describe('loadPreviewCatalog', { timeout: 60_000 }, () => {
         expect(compileCandidate).toHaveBeenCalledTimes(1);
         // ...and once a page in one bundle finds the draft stale, a subresource in another can't serve it.
         await retitleFirstSeries('A retitled fixture series');
-        expect(await other.loadPreviewCatalog(before)).toEqual({ mode: 'catalog', state: 'not-current' });
-        expect(await loadPreviewCatalog(before, { maxAgeMs: SUBRESOURCE_MAX_AGE_MS })).toEqual({ mode: 'catalog', state: 'not-current' });
+        expect(await other.loadPreviewCatalog(before)).toEqual({ state: 'not-current' });
+        expect(await loadPreviewCatalog(before, { maxAgeMs: SUBRESOURCE_MAX_AGE_MS })).toEqual({ state: 'not-current' });
     });
 
     it('keeps at most two compiled drafts for the process, the newest, however many edits it compiles', async () => {

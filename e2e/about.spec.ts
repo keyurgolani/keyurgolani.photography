@@ -73,8 +73,8 @@ test('Enter on the theme control opens its menu on the checked choice, an arrow 
     await expect(themeControl(page)).toBeFocused();
 });
 
-// Work links to /work, which before the cutover sends this legacy-mode server on to /gallery.
-for (const [name, href, path] of [['Work', '/work', '/gallery'], ['Home', '/', '/']] as const) {
+// Work links to /work, which this server, with nothing published, answers with #21's error page at that URL.
+for (const [name, href, path] of [['Work', '/work', '/work'], ['Home', '/', '/']] as const) {
     test(`Enter on the ${name} link goes to ${path}`, async ({ page }) => {
         await openAbout(page);
         await expect(primary(page).getByRole('link', { name, exact: true })).toHaveAttribute('href', href);

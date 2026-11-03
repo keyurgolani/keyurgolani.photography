@@ -4,10 +4,9 @@ import path from 'node:path';
 import { ifNoneMatchHits } from '../http/conditional';
 
 /**
- * Validators for the public catalog JSON routes in catalog mode: `/api/photos`
- * now, and each `app/api/catalog/**` route as it's added. A route calls
- * catalogJson() once it knows it will answer 200 from a revision, and
- * catalogError() for anything else.
+ * Validators for the public catalog JSON routes, each `app/api/catalog/**`
+ * route. A route calls catalogJson() once it knows it will answer 200 from a
+ * revision, and catalogError() for anything else.
  *
  * The ETag is weak, since Next compresses responses, and covers the route,
  * the revision served, and the build. The body depends on the deployed code
@@ -60,7 +59,7 @@ export function catalogETag(pathname: string, revisionId: string, build: string)
 }
 
 export interface CatalogJsonOptions {
-    /** More headers for every answer, the 304 included, such as `X-Catalog-Mode`. */
+    /** More headers for every answer, the 304 included. */
     headers?: Record<string, string>;
     /** Defaults to buildId(). */
     buildId?: string;

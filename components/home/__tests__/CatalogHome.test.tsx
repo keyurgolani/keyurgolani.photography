@@ -38,8 +38,28 @@ vi.mock('@/components/HeroReveal', async () => {
   };
 });
 
+/**
+ * The useHomeChrome of the module graph CatalogHome is imported into. Each
+ * test resets modules, and a mock factory runs once, so beforeEach sets it
+ * and the stand-in SiteNav reads it at render time, in Home's context.
+ */
+const chromeHook = vi.hoisted(() => ({ use: null as null | (() => { hold: (reason: string) => void; release: (reason: string) => void }) }));
+
+// A stand-in SiteNav with a menu that holds the chrome open, as SiteNav's own menu does through useHomeChrome.
 vi.mock('@/components/site/SiteNav', () => ({
-  default: () => <nav aria-label="Primary" />,
+  default: function SiteNav() {
+    const { hold, release } = chromeHook.use!();
+    return (
+      <nav aria-label="Primary">
+        <button type="button" onClick={() => hold('dialog')}>
+          Open menu
+        </button>
+        <button type="button" onClick={() => release('dialog')}>
+          Close menu
+        </button>
+      </nav>
+    );
+  },
 }));
 
 const router = vi.hoisted(() => ({ refresh: vi.fn() }));
@@ -105,16 +125,18 @@ function looped({ revision = 'a', photos }: { revision?: string; photos?: HomePh
   return { ...home, followingSeries: [SERIES_B] };
 }
 
-async function renderHome(home: PublishedHome = published()) {
+async function renderHome(home: PublishedHome = published(), { outside = false }: { outside?: boolean } = {}) {
   const { default: CatalogHome } = await import('../CatalogHome');
   const view = render(
     <StrictMode>
+      {outside && <button type="button">Outside</button>}
       <CatalogHome home={home} />
     </StrictMode>,
   );
   const rerender = (next: PublishedHome) =>
     view.rerender(
       <StrictMode>
+        {outside && <button type="button">Outside</button>}
         <CatalogHome home={next} />
       </StrictMode>,
     );
@@ -165,8 +187,10 @@ const advance = (ms: number) =>
 const failure = () => screen.getByRole('status').textContent;
 
 describe('CatalogHome', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
+    // After the reset, so it's the module graph each test then imports CatalogHome into.
+    chromeHook.use = (await import('../useHomeChrome')).useHomeChrome;
     vi.useFakeTimers();
   });
 
@@ -438,16 +462,65 @@ describe('CatalogHome', () => {
       expect(playback()).toBe('advancing');
     });
 
-    it('never reads the legacy photo list or /api/photos', async () => {
+    // The controls' own contract, from the legacy Home's HomeView tests, which #13's slice E removed with it.
+    it('names the playback button for what it will do, with no aria-pressed', async () => {
+      await renderHome();
+      load(3);
+      const pause = button('Pause slideshow');
+      expect(pause).toHaveTextContent('Pause');
+      expect(pause).not.toHaveAttribute('aria-pressed');
+      expect(pause).toHaveAttribute('type', 'button');
+
+      click('Pause slideshow');
+      expect(playback()).toBe('paused');
+      const play = button('Play slideshow');
+      expect(play).toBe(pause);
+      expect(play).toHaveTextContent('Play');
+      expect(play).not.toHaveAttribute('aria-pressed');
+      click('Play slideshow');
+      expect(button('Pause slideshow')).toBe(pause);
+      expect(playback()).toBe('advancing');
+    });
+
+    it('makes the arrows plain buttons, so they never submit a form around them', async () => {
+      await renderHome();
+      load(3);
+      for (const name of ['Previous photograph', 'Next photograph']) expect(button(name)).toHaveAttribute('type', 'button');
+    });
+
+    it('leaves focus outside the chrome where it was across an automatic move', async () => {
+      await renderHome(published(), { outside: true });
+      load(3);
+      const outside = button('Outside');
+      act(() => {
+        outside.focus();
+      });
+      advance(HOME_AUTO_ADVANCE_MS);
+      expect(position()).toBe('04 / 04');
+      expect(document.activeElement).toBe(outside);
+    });
+
+    it('a menu holding the chrome open holds the sequence too, and closing it lets both go', async () => {
+      await renderHome();
+      load(3);
+      click('Open menu');
+      expect(holds()).toBe('dialog');
+      expect(playback()).toBe('held');
+      advance(HOME_AUTO_ADVANCE_MS * 2);
+      expect(position()).toBe('03 / 04');
+
+      click('Close menu');
+      expect(holds()).toBe('');
+      expect(playback()).toBe('advancing');
+      advance(HOME_AUTO_ADVANCE_MS);
+      expect(position()).toBe('04 / 04');
+    });
+
+    it('fetches nothing while the opening window plays', async () => {
       const fetch = vi.spyOn(globalThis, 'fetch');
-      const cache = await import('@/utils/homeHeroCache');
-      cache.setCachedHomeHeroImages([{ id: '/legacy.jpg', accessibleName: 'Legacy', sources: { thumbnail: '/legacy-thumb.webp', full: '/legacy.webp' }, width: 1, height: 1 }]);
-      const get = vi.spyOn(cache, 'getCachedHomeHeroImages');
       await renderHome();
       load(3);
       advance(HOME_AUTO_ADVANCE_MS);
-      expect(document.body.innerHTML).not.toContain('legacy');
-      expect(get).not.toHaveBeenCalled();
       expect(fetch).not.toHaveBeenCalled();
     });
   });

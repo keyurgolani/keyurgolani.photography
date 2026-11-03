@@ -1,69 +1,73 @@
-import path from 'node:path';
 import { test as base, expect, type Page, type Route } from '@playwright/test';
-import type { ImageItem } from '../../lib/catalog/photos-api';
-import { DEFAULT_PHOTO_NAMES, fixtureDir, isPhotoFixture, photoFixture } from './fixtures';
+import sharp, { type Sharp } from 'sharp';
+import { HOME_OPENING, HOME_ORDER } from './catalog-home';
+import { photoFixture, type PhotoFixture } from './fixtures';
 
-const photoLists = new WeakMap<Page, readonly string[]>();
+const homePhotos = new WeakMap<Page, readonly string[]>();
 
 /**
- * Sets the photos the intercepted /api/photos lists for this page, by fixture
- * name without `.jpg`. Call it before the navigation that should see them.
+ * Paints the catalog Home's photographs on this page with the photo fixtures, by name, from the opening photograph on
+ * in authored order and round again: `['white', 'gray', 'black']` puts white on the opening photograph, gray on the
+ * next, black on the one after, and white again on the fourth. Call it before the navigation that should see them.
+ * Home is the catalog server's (e2e/support/catalog-home.ts): since #13's slice E there is no legacy photo list to
+ * stand in for, so the photographs are the fixture's own, served from /media, with only their pixels replaced.
  */
 export function setPhotoFixtures(page: Page, names: readonly string[]): void {
+    if (names.length === 0) throw new Error('setPhotoFixtures needs at least one fixture name.');
     names.forEach(photoFixture); // throws on an unknown name
-    photoLists.set(page, [...names]);
+    homePhotos.set(page, [...names]);
 }
 
-const NEWEST = Date.UTC(2024, 0, 1);
-const DAY = 24 * 60 * 60 * 1000;
+const rendered = new Map<string, Promise<Buffer>>();
 
-function photoRecords(names: readonly string[]): ImageItem[] {
-    // Newest first, like the real route
-    return names.map((name, index) => {
-        const { width, height, caption } = photoFixture(name);
-        const url = `/assets/photos/${name}.jpg`;
-        // The fixture itself stands in for every derivative, so the optimized size is its own
-        return {
-            id: index, src: url, thumbnail: url, medium: url, optimized: url, width, height,
-            optimizedWidth: width, optimizedHeight: height, caption, date: NEWEST - index * DAY, lqip: '',
-        };
-    });
-}
-
-async function servePhoto(route: Route, pathname: string): Promise<void> {
-    const file = path.posix.basename(pathname);
-    const name = file.endsWith('.jpg') ? file.slice(0, -'.jpg'.length) : '';
-    if (!isPhotoFixture(name)) {
-        await route.fulfill({ status: 404, contentType: 'text/plain', body: `No photo fixture named ${file}` });
-        return;
-    }
-    await route.fulfill({ path: path.join(fixtureDir(), file), contentType: 'image/jpeg' });
-}
-
-/**
- * Routes `page`'s /api/photos, its photo files, and the image optimizer's photo URLs to the fixtures, so the legacy
- * Gallery only ever sees them. Every page of this suite gets it before its first navigation; the theme parity run
- * (e2e/themes) calls it on its own pages.
- */
-export async function routePhotoFixtures(page: Page): Promise<void> {
-    await page.route('**/api/photos', (route) => route.fulfill({ json: photoRecords(photoLists.get(page) ?? DEFAULT_PHOTO_NAMES) }));
-    await page.route('**/assets/photos/**', (route) => servePhoto(route, new URL(route.request().url()).pathname));
-    // Photo URLs through the image optimizer get the fixture too. Anything else passes through.
-    await page.route('**/_next/image**', (route) => {
-        const request = new URL(route.request().url());
-        const source = new URL(request.searchParams.get('url') ?? '', request);
-        if (source.origin === request.origin && source.pathname.startsWith('/assets/photos/')) {
-            return servePhoto(route, source.pathname);
+/** A fixture as an image file of `format`, at its own size: one colour, or a diagonal gradient between two. */
+function render({ name, width, height, colors }: PhotoFixture, format: 'webp' | 'avif'): Promise<Buffer> {
+    const key = `${name}.${format}`;
+    const cached = rendered.get(key);
+    if (cached) return cached;
+    const [from, to] = colors;
+    let image: Sharp;
+    if (!to) {
+        image = sharp({ create: { width, height, channels: 3, background: { r: from[0], g: from[1], b: from[2] } } });
+    } else {
+        const data = Buffer.alloc(width * height * 3);
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const t = (x / (width - 1) + y / (height - 1)) / 2;
+                for (let channel = 0; channel < 3; channel++) data[(y * width + x) * 3 + channel] = Math.round(from[channel] + (to[channel] - from[channel]) * t);
+            }
         }
-        return route.fallback();
-    });
+        image = sharp(data, { raw: { width, height, channels: 3 } });
+    }
+    const file = image[format]().toBuffer();
+    rendered.set(key, file);
+    return file;
+}
+
+/** The fixture painted on `photoId`, a photograph of Home's featured series, for this page, or null for none. */
+function fixtureFor(page: Page, photoId: string): PhotoFixture | null {
+    const names = homePhotos.get(page);
+    const index = HOME_ORDER.indexOf(photoId as (typeof HOME_ORDER)[number]);
+    if (!names || index === -1) return null;
+    const count = HOME_ORDER.length;
+    const fromOpening = (index - HOME_ORDER.indexOf(HOME_OPENING) + count) % count;
+    return photoFixture(names[fromOpening % names.length]);
+}
+
+async function servePhoto(page: Page, route: Route): Promise<void> {
+    // /media/<photoId>/<assetRevision>/<profileId>/<variant>.<format>
+    const [, media, photoId, , , file = ''] = new URL(route.request().url()).pathname.split('/');
+    const fixture = media === 'media' ? fixtureFor(page, photoId) : null;
+    const format = file.endsWith('.avif') ? 'avif' : file.endsWith('.webp') ? 'webp' : null;
+    if (!fixture || !format) return route.fallback();
+    await route.fulfill({ status: 200, contentType: `image/${format}`, body: await render(fixture, format) });
 }
 
 export const test = base.extend<{ photoRoutes: void }>({
-    // Routes every page before its first navigation, so the app only ever sees fixtures
+    // Every page gets the route before its first navigation, so a setPhotoFixtures() before it takes effect.
     photoRoutes: [
         async ({ page }, use) => {
-            await routePhotoFixtures(page);
+            await page.route('**/media/**', (route) => servePhoto(page, route));
             await use();
         },
         { auto: true },

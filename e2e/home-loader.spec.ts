@@ -15,6 +15,9 @@ import { expect, setPhotoFixtures, test } from './support/test';
 // loading portrait sit under the chrome and take no pointer, and a mouse over
 // either tilts it. While the intro plays, the mouse doesn't wake the chrome. A server without a portrait, from the
 // start or from partway through, is home-loader-portrait.spec.ts, on a server with a site config folder of its own.
+// All of it on playwright.config.ts's catalog server: since #13's slice E Home renders only a published revision.
+
+test.use({ baseURL: CATALOG_ORIGIN });
 
 /** BADGE_LINGER_MS in components/HeroReveal.tsx. */
 const LINGER = 3000;
@@ -29,16 +32,22 @@ const navLink = (page: Page, name: string) => primary(page).getByRole('link', { 
 const runsOn = (testInfo: TestInfo, ...projects: string[]) =>
     test.skip(!projects.includes(testInfo.project.name), `Runs on ${projects.join(' and ')}.`);
 
-/** Holds every photograph until the returned function runs, so Home stays loading. */
+/**
+ * Holds every photograph until the returned function runs, so Home stays loading. A held photograph is an image, so
+ * the page's load event waits for it too: navigate with HELD.
+ */
 async function holdPhotos(page: Page) {
     let release: () => void = () => {};
     const released = new Promise<void>((resolve) => (release = resolve));
-    await page.route('**/assets/photos/**', async (route) => {
+    await page.route('**/media/**', async (route) => {
         await released;
         await route.fallback();
     });
     return release;
 }
+
+/** A navigation's wait while holdPhotos() holds the photographs: the document, not the load event they keep back. */
+const HELD = { waitUntil: 'domcontentloaded' } as const;
 
 /**
  * Opens Home on a first visit with the photographs held, so Home stays
@@ -47,7 +56,7 @@ async function holdPhotos(page: Page) {
 async function openLoading(page: Page, { intro = 'loading' }: { intro?: 'loading' | 'settled' } = {}) {
     setPhotoFixtures(page, ['white', 'gray', 'black']);
     const release = await holdPhotos(page);
-    await page.goto('/');
+    await page.goto('/', HELD);
     await waitForHydration(page);
     await expect(main(page)).toHaveAttribute('data-home-intro', intro);
     await expect(main(page)).toHaveAttribute('data-home-loading', 'true');
@@ -62,15 +71,64 @@ const boxOf = (target: Locator) =>
     });
 
 /**
- * The badge's place on Home before the cutover, which these servers serve:
- * v1.1.0's, centred 280 px above the bottom at 0.85 of the 256 px box, or
- * 320 px from 768 px wide. With no series title, it clears the nav at both
- * projects' sizes. The catalog Home's places are checked at the end.
+ * v1.1.0's place for the badge: centred 280 px above the bottom at 0.85 of
+ * the 256 px box, or 320 px from 768 px wide. The catalog Home keeps it where
+ * it clears the series title and its panel, and the nearest place that does
+ * elsewhere, which the end of this file checks.
  */
 const badgePlace = (page: Page) => {
     const { width, height } = page.viewportSize()!;
     return { x: width / 2, y: height - 280, width: (width >= 768 ? 320 : 256) * 0.85 };
 };
+
+type Edges = { left: number; top: number; right: number; bottom: number };
+/** How far apart two boxes are, negative when they overlap. */
+const gap = (a: Edges, b: Edges) => Math.max(b.left - a.right, a.left - b.right, b.top - a.bottom, a.top - b.bottom);
+
+/** The badge's painted oval with its 4 px ring, and the chrome it keeps clear of: the nav, the series story, its panel. */
+const aroundBadge = (page: Page) =>
+    page.evaluate(() => {
+        const box = (el: Element | null) => {
+            if (!el) return null;
+            const { left, top, right, bottom } = el.getBoundingClientRect();
+            return { left, top, right, bottom };
+        };
+        const face = box(document.querySelector('[data-home-badge] [class*="face"]'));
+        return {
+            oval: face && { left: face.left - 4, top: face.top - 4, right: face.right + 4, bottom: face.bottom + 4 },
+            nav: box(document.querySelector('nav[aria-label="Primary"]')),
+            title: box(document.querySelector('[data-chrome-region="story"] h1')),
+            statement: box(document.querySelector('[data-chrome-region="story"] p')),
+            link: box(document.querySelector('[data-chrome-region="story"] a')),
+            panel: box(document.querySelector('[data-chrome-region="story"] [data-chrome-panel]')),
+        };
+    });
+
+/**
+ * The landed badge's box, checked in its place: v1.1.0's exactly, badgePlace()'s, where the catalog Home keeps that
+ * place; 16 px clear of the nav, the series title, its statement, its link and the title's panel wherever it lands;
+ * and holding still, so a badge still gliding in fails. It returns the box, and `around`, what it was measured against.
+ */
+async function inItsPlace(page: Page) {
+    const box = await boxOf(badge(page));
+    if ((await badge(page).getAttribute('data-badge-place')) === 'v1.1.0') {
+        const exact = badgePlace(page);
+        for (const key of ['x', 'y', 'width'] as const) expect(Math.abs(box[key] - exact[key]), `v1.1.0's ${key}`).toBeLessThanOrEqual(1);
+    }
+    const around = await aroundBadge(page);
+    expect(around.oval).not.toBeNull();
+    for (const name of ['nav', 'title', 'statement', 'link'] as const) {
+        expect(around[name], name).not.toBeNull();
+        expect(gap(around.oval!, around[name]!), `the badge's room from the ${name}`).toBeGreaterThanOrEqual(15.5);
+    }
+    // The title's dark panel, drawn from 640 px wide, its fade included.
+    const panel = around.panel && around.panel.right > around.panel.left ? around.panel : null;
+    if (panel) expect(gap(around.oval!, panel), "the badge's room from the title's panel").toBeGreaterThanOrEqual(15.5);
+    await page.waitForTimeout(250);
+    const later = await boxOf(badge(page));
+    for (const key of ['x', 'y', 'width'] as const) expect(Math.abs(later[key] - box[key]), `the badge's ${key} a moment later`).toBeLessThanOrEqual(1);
+    return { ...box, around: { ...around, panel } };
+}
 
 const opacityOf = (target: Locator) => target.evaluate((el) => Number(getComputedStyle(el).opacity));
 
@@ -134,11 +192,8 @@ test.describe("About's portrait in the intro", () => {
         const release = await openLoading(page);
         release();
         await expect(main(page)).toHaveAttribute('data-home-intro', 'settled', { timeout: 20_000 });
-        const place = badgePlace(page);
-        const landed = await boxOf(badge(page));
-        expect(Math.abs(landed.x - place.x)).toBeLessThanOrEqual(1);
-        expect(Math.abs(landed.y - place.y)).toBeLessThanOrEqual(1);
-        expect(Math.abs(landed.width - place.width)).toBeLessThanOrEqual(1);
+        // Where it lands is badgePlace()'s at the catalog Home's lane, or the place nearest it clear of the series title.
+        const place = await inItsPlace(page);
         await expect(badge(page)).toHaveAttribute('data-lingering', '');
         expect(await opacityOf(badge(page))).toBe(1);
 
@@ -220,9 +275,7 @@ test.describe("About's portrait in the intro", () => {
         await expect(badge(page)).toHaveAttribute('data-lingering', '');
         await expect(main(page)).toHaveAttribute('data-home-intro', 'settled');
         await expect(page.locator('[class*="grainOverlay"]')).toHaveCount(0);
-        const place = badgePlace(page);
-        const box = await boxOf(badge(page));
-        expect(Math.abs(box.y - place.y)).toBeLessThanOrEqual(1);
+        await inItsPlace(page);
         expect(await opacityOf(badge(page))).toBe(1);
         await expect(badge(page)).not.toHaveAttribute('data-lingering', { timeout: LINGER + 2000 });
     });
@@ -238,10 +291,7 @@ test.describe("About's portrait in the intro", () => {
         expect(await opacityOf(badge(page))).toBe(0);
         release();
         await expect(badge(page)).toHaveAttribute('data-landed', '', { timeout: 20_000 });
-        const place = badgePlace(page);
-        const box = await boxOf(badge(page));
-        expect(Math.abs(box.x - place.x)).toBeLessThanOrEqual(1);
-        expect(Math.abs(box.y - place.y)).toBeLessThanOrEqual(1);
+        const box = await inItsPlace(page);
         // The site's reduced-motion rule ends every transition at once, well under 200 ms.
         expect(await badge(page).evaluate((el) => parseFloat(getComputedStyle(el).transitionDuration))).toBeLessThanOrEqual(0.2);
         await expect.poll(() => opacityOf(badge(page))).toBe(1);
@@ -257,13 +307,18 @@ test.describe('the tilt and the chrome', () => {
     test("a mouse over the loading portrait tilts it and leaves the chrome asleep, so nothing dims it, as on v1.1.0, and Tab wakes the chrome at once", async ({ page }, testInfo) => {
         runsOn(testInfo, 'desktop');
         setPhotoFixtures(page, ['white', 'gray', 'black']);
-        await holdPhotos(page);
-        // Paused before the load, so the intro stays at its loading frame for as long as the test takes.
+        // Paused before the load, so the intro stays at its loading frame for as long as the test takes: its exit runs
+        // on timers, so the photographs may arrive. They aren't held, since page.screenshot() never finishes while a
+        // routed request is held, and luminanceOf() takes one.
         await page.clock.install();
         await page.clock.pauseAt(Date.now() + 1000);
         await page.goto('/');
         await waitForHydration(page);
         await expect(main(page)).toHaveAttribute('data-home-intro', 'loading');
+        // The opening photograph has arrived, so Home has stopped loading: what holds the chrome asleep here is the
+        // intro's loading frame alone, which HomeChromeController's mouse gate reads. The next test has the
+        // photographs still loading as well.
+        await expect(main(page)).toHaveAttribute('data-home-loading', 'false');
         const image = loading(page).getByRole('img');
         await expect.poll(() => image.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth > 0)).toBe(true);
         const face = await loading(page).locator('[class*="face"]').boundingBox();
@@ -307,6 +362,28 @@ test.describe('the tilt and the chrome', () => {
         await expect(page).toHaveURL('/about');
     });
 
+    test('with the photographs still loading too, a mouse over the loading portrait only tilts it, and nothing dims it', async ({ page }, testInfo) => {
+        runsOn(testInfo, 'desktop');
+        setPhotoFixtures(page, ['white', 'gray', 'black']);
+        await holdPhotos(page);
+        await page.clock.install();
+        await page.clock.pauseAt(Date.now() + 1000);
+        await page.goto('/', HELD);
+        await waitForHydration(page);
+        await expect(main(page)).toHaveAttribute('data-home-intro', 'loading');
+        await expect(main(page)).toHaveAttribute('data-home-loading', 'true');
+
+        const { x, y } = await boxOf(loading(page));
+        await page.mouse.move(x + 20, y + 20);
+        await page.mouse.move(x + 120, y + 120, { steps: 3 });
+        await expect.poll(() => card(loading(page)).evaluate((el) => el.style.transform)).toMatch(/^perspective\(800px\) translateY\(.+\) rotateX\(.+deg\) rotateY\(.+deg\)$/);
+        await expect(main(page)).toHaveAttribute('data-interface-state', 'immersive');
+        // The scrim's opacity stands in for the luminance reading the test above takes: page.screenshot() never
+        // finishes while the photographs are held.
+        await expect(page.locator('[data-home-vignette]')).toHaveCSS('opacity', '0');
+        await expect(main(page)).toHaveAttribute('data-home-loading', 'true');
+    });
+
     test('a mouse over the landed badge tilts it, and the nav takes its clicks over it', async ({ page }, testInfo) => {
         runsOn(testInfo, 'desktop');
         const release = await openLoading(page);
@@ -318,7 +395,7 @@ test.describe('the tilt and the chrome', () => {
         await expect.poll(() => card(badge(page)).evaluate((el) => el.style.transform)).toMatch(/^perspective\(800px\) /);
         await expect.poll(() => opacityOf(badge(page))).toBe(1);
         await navLink(page, 'Work').click();
-        await expect(page).toHaveURL('/gallery');
+        await expect(page).toHaveURL('/work');
     });
 
     test('Enter on a nav link during the intro follows it', async ({ page }, testInfo) => {
@@ -330,17 +407,11 @@ test.describe('the tilt and the chrome', () => {
         await expect(navLink(page, 'Work')).toBeFocused();
         await expect(main(page)).toHaveAttribute('data-home-intro', 'loading');
         await page.keyboard.press('Enter');
-        await expect(page).toHaveURL('/gallery');
+        await expect(page).toHaveURL('/work');
     });
 });
 
 test.describe("the badge's place on the catalog Home", () => {
-    test.use({ baseURL: CATALOG_ORIGIN });
-
-    type Box = { left: number; top: number; right: number; bottom: number };
-    /** How far apart two boxes are, negative when they overlap. */
-    const gap = (a: Box, b: Box) => Math.max(b.left - a.right, a.left - b.right, b.top - a.bottom, a.top - b.bottom);
-
     // From 85rem the story yields the badge's lane, so the badge keeps v1.1.0's exact place beside a two-line title,
     // and the panel's fade ends 16 px before it. Below, the title keeps its width and the badge lifts above it.
     for (const { width, height, place, titleLines } of [
@@ -361,44 +432,15 @@ test.describe("the badge's place on the catalog Home", () => {
             await expect(main(page)).toHaveAttribute('data-home-intro', 'settled', { timeout: 20_000 });
             await expect(badge(page)).toHaveAttribute('data-landed', '');
             await expect(badge(page)).toHaveAttribute('data-badge-place', place);
-            if (place === 'v1.1.0') {
-                const exact = badgePlace(page);
-                const landed = await boxOf(badge(page));
-                expect(Math.abs(landed.x - exact.x)).toBeLessThanOrEqual(1);
-                expect(Math.abs(landed.y - exact.y)).toBeLessThanOrEqual(1);
-                expect(Math.abs(landed.width - exact.width)).toBeLessThanOrEqual(1);
-            }
-            const boxes = await page.evaluate(() => {
-                const box = (el: Element | null) => {
-                    if (!el) return null;
-                    const { left, top, right, bottom } = el.getBoundingClientRect();
-                    return { left, top, right, bottom };
-                };
-                // The painted oval and its 4 px ring.
-                const face = box(document.querySelector('[data-home-badge] [class*="face"]'));
-                return {
-                    oval: face && { left: face.left - 4, top: face.top - 4, right: face.right + 4, bottom: face.bottom + 4 },
-                    nav: box(document.querySelector('nav[aria-label="Primary"]')),
-                    title: box(document.querySelector('[data-chrome-region="story"] h1')),
-                    statement: box(document.querySelector('[data-chrome-region="story"] p')),
-                    link: box(document.querySelector('[data-chrome-region="story"] a')),
-                    panel: box(document.querySelector('[data-chrome-region="story"] [data-chrome-panel]')),
-                };
-            });
+            // inItsPlace() checks v1.1.0's exact place there, and the room from the nav, the story and the panel.
+            const { around } = await inItsPlace(page);
             const lines = await page.locator('[data-chrome-region="story"] h1').evaluate((el) => Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)));
-            console.log(`badge boxes at ${width}x${height}: ${JSON.stringify(boxes)}, title lines ${lines}`);
+            console.log(`badge boxes at ${width}x${height}: ${JSON.stringify(around)}, title lines ${lines}`);
             if (titleLines !== undefined) expect(lines, "the series title's lines").toBe(titleLines);
-            expect(boxes.oval).not.toBeNull();
-            for (const name of ['nav', 'title', 'statement', 'link'] as const) {
-                expect(boxes[name], name).not.toBeNull();
-                expect(gap(boxes.oval!, boxes[name]!), `the badge's room from the ${name}`).toBeGreaterThanOrEqual(15.5);
-            }
-            // The title's dark panel from 640 px wide, its fade included; a narrower screen has none.
-            const panel = boxes.panel && boxes.panel.right > boxes.panel.left ? boxes.panel : null;
+            const { panel } = around;
             expect(panel === null, 'the panel is drawn from 640 px wide').toBe(width < 640);
-            if (panel) expect(gap(boxes.oval!, panel), "the badge's room from the title's panel").toBeGreaterThanOrEqual(15.5);
             // In v1.1.0's place from 85rem, the lane is exact: the panel ends 16 px before the oval, not further.
-            if (panel && place === 'v1.1.0') expect(boxes.oval!.left - panel.right, 'the panel ends 16 px before the badge').toBeLessThanOrEqual(17);
+            if (panel && place === 'v1.1.0') expect(around.oval!.left - panel.right, 'the panel ends 16 px before the badge').toBeLessThanOrEqual(17);
         });
     }
 });

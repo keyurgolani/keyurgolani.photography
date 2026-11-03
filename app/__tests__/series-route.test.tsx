@@ -188,14 +188,13 @@ const REVISION = `rev_${'5'.repeat(64)}`;
 
 function served(source: CatalogContent = content, servedState: 'ok' | 'degraded' = 'ok'): ActiveCatalog {
     return {
-        mode: 'catalog',
         state: servedState,
         reader: createCatalogReader(source, { revisionId: REVISION, revisionNumber: 4 }),
         active: { revisionId: REVISION, revisionNumber: 4, activationId: 'act_fixture', activatedAt: null },
     } as unknown as ActiveCatalog;
 }
 
-const unavailable = (reason: 'catalog-unreadable' | 'active-unreadable' | 'revision-unreadable'): ActiveCatalog => ({ mode: 'catalog', state: 'unavailable', reason });
+const unavailable = (reason: 'not-published' | 'catalog-unreadable' | 'active-unreadable' | 'revision-unreadable'): ActiveCatalog => ({ state: 'unavailable', reason });
 
 const props = (slug: string) => ({ params: Promise.resolve({ slug }) });
 
@@ -300,8 +299,6 @@ describe('route generation and visibility', () => {
     it('answers every not-found case with the same thrown value and the same metadata, so nothing tells them apart', async () => {
         const answers = [];
         for (const [, slug] of NOT_FOUND_SLUGS) answers.push({ page: await answer(slug), metadata: JSON.stringify(await generateMetadata(props(slug))) });
-        state.catalog = { mode: 'legacy' } satisfies ActiveCatalog;
-        answers.push({ page: await answer('fixture-a'), metadata: JSON.stringify(await generateMetadata(props('fixture-a'))) });
         expect(new Set(answers.map((entry) => JSON.stringify(entry))).size).toBe(1);
     });
 
@@ -311,13 +308,6 @@ describe('route generation and visibility', () => {
             await generateMetadata(props(slug));
         }
         expect(state.loads).toBe(0);
-    });
-
-    it('answers a published slug not-found in legacy mode, since no series exists before the cutover', async () => {
-        state.catalog = { mode: 'legacy' } satisfies ActiveCatalog;
-        expect(await answer('fixture-a')).toEqual({ notFound: true });
-        expect(await answer('old-fixture-a')).toEqual({ notFound: true });
-        expect(await generateMetadata(props('fixture-a'))).toEqual({});
     });
 
     it('answers a series with no member that resolves not-found, as Work leaves it out', async () => {
@@ -345,7 +335,7 @@ describe('redirects', () => {
 });
 
 describe('while the catalog is unavailable', () => {
-    it.each(['catalog-unreadable', 'active-unreadable', 'revision-unreadable'] as const)('(%s) throws CatalogUnavailableError for app/error.tsx, never a not-found', async (reason) => {
+    it.each(['not-published', 'catalog-unreadable', 'active-unreadable', 'revision-unreadable'] as const)('(%s) throws CatalogUnavailableError for app/error.tsx, never a not-found', async (reason) => {
         state.catalog = unavailable(reason);
         for (const slug of ['fixture-a', 'no-such-series', 'sentinel-draft']) {
             const result = await answer(slug);

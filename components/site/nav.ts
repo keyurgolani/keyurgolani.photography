@@ -11,9 +11,8 @@ export interface NavItem {
 /**
  * The Primary links, in order, with hrefs from the site's RouteBuilder: the
  * public one by default, or #16's preview builder, so the links stay inside
- * the preview. Work points at /work in both modes: before the catalog
- * cutover /work answers 307 to the legacy /gallery, and after it /gallery
- * answers 308 to /work (#3).
+ * the preview. Work points at /work, and the legacy /gallery answers 308 to
+ * it (#3, proxy.ts).
  */
 export function navItems(routes: Pick<RouteBuilder, 'homeHref' | 'workHref' | 'aboutHref'> = createRouteBuilder()): readonly NavItem[] {
   return [
@@ -35,7 +34,7 @@ export function currentSection(pathname: string, basePath = ''): NavSection | nu
   const path = stripBasePath(pathname, basePath);
   if (path === null) return null;
   if (path === '/') return 'home';
-  if (path === '/gallery' || path === '/work' || path.startsWith('/work/')) return 'work';
+  if (path === '/work' || path.startsWith('/work/')) return 'work';
   if (path === '/about') return 'about';
   return null;
 }

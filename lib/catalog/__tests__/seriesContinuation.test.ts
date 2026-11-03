@@ -201,7 +201,7 @@ describe('seriesContinuationOf', () => {
 });
 
 describe('seriesContinuationFrom', () => {
-    const served = (state: 'ok' | 'degraded' = 'ok'): SeriesActiveCatalog => ({ mode: 'catalog', state, reader: readerOf() });
+    const served = (state: 'ok' | 'degraded' = 'ok'): SeriesActiveCatalog => ({ state, reader: readerOf() });
 
     it('answers a malformed slug not-found and a malformed cursor as a bad request, before reading the catalog', async () => {
         const load = vi.fn(async () => served());
@@ -211,9 +211,9 @@ describe('seriesContinuationFrom', () => {
         expect(load).not.toHaveBeenCalled();
     });
 
-    it('answers legacy mode not-found, as the page does, and passes an unavailable catalog on', async () => {
-        expect(await seriesContinuationFrom(async () => ({ mode: 'legacy' }), 'fixture-long', cursor(100), routes)).toEqual({ kind: 'not-found' });
-        expect(await seriesContinuationFrom(async () => ({ mode: 'catalog', state: 'unavailable', reason: 'revision-unreadable' }), 'fixture-long', cursor(100), routes)).toEqual({ kind: 'unavailable', reason: 'revision-unreadable' });
+    it('passes an unavailable catalog on, nothing published included, as the page does', async () => {
+        expect(await seriesContinuationFrom(async () => ({ state: 'unavailable', reason: 'not-published' }), 'fixture-long', cursor(100), routes)).toEqual({ kind: 'unavailable', reason: 'not-published' });
+        expect(await seriesContinuationFrom(async () => ({ state: 'unavailable', reason: 'revision-unreadable' }), 'fixture-long', cursor(100), routes)).toEqual({ kind: 'unavailable', reason: 'revision-unreadable' });
     });
 
     it('serves the page from the served revision, ok or degraded', async () => {
