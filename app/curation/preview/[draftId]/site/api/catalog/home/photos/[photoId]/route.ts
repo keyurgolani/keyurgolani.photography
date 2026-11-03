@@ -4,6 +4,10 @@ import { homePhotosFrom } from '@/lib/catalog/projections/home';
 import { previewForSubresource, previewJson } from '../../../../../../../preview';
 
 /**
+ * v1.4.0's preview mirror, kept for one release for previews opened before
+ * v1.5.0, which now ask `.../home/series/<seriesId>/photos/<photoId>`. Remove
+ * it in v1.6.0 with the public route.
+ *
  * #6's Home records endpoint, mirrored inside the draft preview (#16): the
  * named photograph of the draft's featured series and its neighbors, with
  * the public endpoint's statuses, `?revision=` being the draft ID. Every

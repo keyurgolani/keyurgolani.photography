@@ -126,7 +126,8 @@ test('Back after a reload on the Viewer loads the same pages again and fires the
 });
 
 test('Home ships three records and asks the records endpoint for the next window, bound to its revision', async ({ page }) => {
-    const asked = page.waitForRequest((request) => new URL(request.url()).pathname.startsWith('/api/catalog/home/photos/'));
+    // v1.5.0: the loop's route, which names the series the photograph plays in.
+    const asked = page.waitForRequest((request) => /^\/api\/catalog\/home\/series\/ser_[^/]+\/photos\//.test(new URL(request.url()).pathname));
     await page.goto(`${origin()}/`);
     const request = await asked;
     const url = new URL(request.url());

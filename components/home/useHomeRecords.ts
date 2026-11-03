@@ -10,12 +10,12 @@ import { createRouteBuilder, type RouteBuilder } from '@/lib/catalog/routes';
 const PUBLIC_ROUTES = createRouteBuilder();
 
 /**
- * Home's records endpoint for the window around `photoId`, bound to the
- * revision Home rendered: the public one, or a preview's mirror (#16) under
- * the site's `basePath`.
+ * Home's records endpoint for the window around `photoId` in `seriesId`,
+ * bound to the revision Home rendered: the public one, or a preview's mirror
+ * (#16) under the site's `basePath`.
  */
-export function homePhotosHref(photoId: string, revisionId: string, routes: Pick<RouteBuilder, 'catalogApiHref'> = PUBLIC_ROUTES): string {
-  return routes.catalogApiHref(`home/photos/${encodeURIComponent(photoId)}?revision=${encodeURIComponent(revisionId)}`);
+export function homeSeriesPhotosHref(seriesId: string, photoId: string, revisionId: string, routes: Pick<RouteBuilder, 'catalogApiHref'> = PUBLIC_ROUTES): string {
+  return routes.catalogApiHref(`home/series/${encodeURIComponent(seriesId)}/photos/${encodeURIComponent(photoId)}?revision=${encodeURIComponent(revisionId)}`);
 }
 
 export interface HomeRecords {
@@ -29,8 +29,10 @@ export interface HomeRecords {
 
 interface Options {
   revisionId: string;
-  /** The whole authored order. */
+  /** Every photograph in play order: Home's loop of featured series (homeLoop.ts). */
   photoIds: readonly string[];
+  /** The ID of the series each photograph plays in, which names the window the endpoint answers. */
+  seriesOf: ReadonlyMap<string, string>;
   /** The server's window: the opening photograph and its neighbors. */
   initial: readonly HomePhoto[];
   /** The position useHomePlayback is on. */
@@ -41,9 +43,11 @@ const mod = (value: number, count: number) => ((value % count) + count) % count;
 
 /**
  * Home's records beyond the server's window (#6). Home ships every ID but
- * only three records; as it moves, this asks `/api/catalog/home/photos/<id>`
- * for the next window one step ahead in the direction of travel, so the
- * photograph CatalogSequence preloads never waits on its record.
+ * only three records; as it moves, this asks
+ * `/api/catalog/home/series/<seriesId>/photos/<id>` for the next window one
+ * step ahead in the direction of travel, so the photograph CatalogSequence
+ * preloads never waits on its record. A window near the end of a series
+ * reaches into the next one, as Home plays them.
  *
  * - Each request has its own AbortController, and all of them abort on
  *   unmount: leaving Home, or a revision change, since CatalogHome keys the
@@ -55,7 +59,7 @@ const mod = (value: number, count: number) => ((value % count) + count) % count;
  * - Anything else that fails marks the photos it was for as failed, which
  *   Home shows with Retry and Skip. Already loaded photographs stay usable.
  */
-export function useHomeRecords({ revisionId, photoIds, initial, index }: Options): HomeRecords {
+export function useHomeRecords({ revisionId, photoIds, seriesOf, initial, index }: Options): HomeRecords {
   const router = useRouter();
   const routes = useSiteRoutes();
   const [records, setRecords] = useState<ReadonlyMap<string, HomePhoto>>(() => new Map(initial.map((record) => [record.id, record] as const)));
@@ -98,8 +102,15 @@ export function useHomeRecords({ revisionId, photoIds, initial, index }: Options
           return next;
         });
       };
+      const seriesId = seriesOf.get(centerId);
+      // Never asked for: a photograph with no series would have no window to ask for.
+      if (seriesId === undefined) {
+        settle();
+        fail();
+        return;
+      }
       const known = new Set(photoIds);
-      fetch(homePhotosHref(centerId, revisionId, routes), { signal: controller.signal, headers: { Accept: 'application/json' } })
+      fetch(homeSeriesPhotosHref(seriesId, centerId, revisionId, routes), { signal: controller.signal, headers: { Accept: 'application/json' } })
         .then(async (response) => {
           // Aborted (unmounted, or React's development remount): free the IDs so a live request can ask for them.
           if (controller.signal.aborted) return settle();
@@ -141,7 +152,7 @@ export function useHomeRecords({ revisionId, photoIds, initial, index }: Options
           if (!controller.signal.aborted) fail();
         });
     },
-    [photoIds, revisionId, router, routes],
+    [photoIds, seriesOf, revisionId, router, routes],
   );
 
   useEffect(() => {

@@ -31,6 +31,8 @@ interface CatalogSequenceProps {
   onImageReady: (photoId: string) => void;
   /** Called when a photograph's image fails to load. */
   onImageFailed: (photoId: string) => void;
+  /** Called with the photograph on screen whenever that changes, which lags `index` while the next one loads. */
+  onShownChange?: (photoId: string | undefined) => void;
 }
 
 const addTo = (set: ReadonlySet<string>, id: string) => (set.has(id) ? set : new Set(set).add(id));
@@ -48,7 +50,7 @@ const addTo = (set: ReadonlySet<string>, id: string) => (set.has(id) ? set : new
  * (ResponsivePhoto). Like #2's HomeSequence it keeps no timer, renders no
  * control, and never moves focus.
  */
-export default function CatalogSequence({ photoIds, photos, index, openingId, playbackState, attempts, onImageReady, onImageFailed }: CatalogSequenceProps) {
+export default function CatalogSequence({ photoIds, photos, index, openingId, playbackState, attempts, onImageReady, onImageFailed, onShownChange }: CatalogSequenceProps) {
   const [loaded, setLoaded] = useState<ReadonlySet<string>>(new Set());
   const activeId = photoIds[index];
   const nextId = photoIds.length > 1 ? photoIds[(index + 1) % photoIds.length] : undefined;
@@ -71,6 +73,10 @@ export default function CatalogSequence({ photoIds, photos, index, openingId, pl
   useEffect(() => {
     if (activeId !== undefined && loaded.has(activeId)) onImageReady(activeId);
   }, [activeId, loaded, onImageReady]);
+
+  useEffect(() => {
+    onShownChange?.(shownId);
+  }, [shownId, onShownChange]);
 
   // A photo whose record has no showable set fails as soon as it would mount. One with no record yet is still loading (#6).
   useEffect(() => {

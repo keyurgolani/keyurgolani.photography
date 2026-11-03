@@ -3,6 +3,12 @@ import { getActiveCatalog } from '@/lib/catalog/public-reader';
 import { catalogError, catalogJson, errorName } from '@/lib/catalog/validators';
 
 /**
+ * v1.4.0's Home records endpoint, kept for one release for pages opened
+ * before v1.5.0: Home now asks
+ * `/api/catalog/home/series/<seriesId>/photos/<photoId>` (its loop of
+ * featured series). Remove this route, homePhotosFrom() and homePhotosOf()
+ * in v1.6.0.
+ *
  * Home's later records (#6): the named photograph of the featured series and
  * its neighbor on each side, in authored order, wrapping as Home does, from
  * the revision Home rendered. That revision comes as `?revision=`, and the

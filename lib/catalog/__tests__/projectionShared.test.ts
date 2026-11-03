@@ -101,10 +101,12 @@ describe('every screen agrees on which series open', () => {
         const held = content();
         edit(held);
         const source = sourceOf(held);
-        const home = publishedHomeOf(source, routes);
+        const home = publishedHomeOf(source, routes, () => 0);
         const page = seriesPageOf(source, held.series[0].slug, routes);
-        // Home never falls through to B, so a refused A is the empty state.
-        expect(home.featuredSeries).toBeNull();
+        // Home's loop skips a refused A and plays B alone, so it never links A.
+        expect(home.featuredSeries?.id).toBe('ser_shared-b');
+        expect(home).not.toHaveProperty('followingSeries');
+        expect(JSON.stringify(home)).not.toContain('ser_shared-a');
         expect(page.kind).toBe('not-found');
         // A canonical slug in the wrong shape is no param at all, so the Viewer can't be asked. Work doesn't check the slug's
         // shape yet; that gap is deferred, since this change keeps Work's output as it was.
@@ -116,8 +118,9 @@ describe('every screen agrees on which series open', () => {
 
     it('with an untouched revision, every screen opens A', () => {
         const source = sourceOf(content());
-        const home = publishedHomeOf(source, routes);
+        const home = publishedHomeOf(source, routes, () => 0);
         expect(home.featuredSeries?.href).toBe('/work/shared-a');
+        expect(home.followingSeries?.map((series) => series.href)).toEqual(['/work/shared-b']);
         expect(seriesPageOf(source, 'shared-a', routes).kind).toBe('ok');
         expect(workCatalogOf(source, routes).series.map((entry) => entry.href)).toEqual(['/work/shared-a', '/work/shared-b']);
         expect(viewerPhotoOf(source, 'shared-a', A[0]).kind).toBe('ok');
