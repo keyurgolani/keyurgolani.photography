@@ -296,6 +296,25 @@ describe('an identity pass', { timeout: 60_000 }, () => {
         expect(s.lines.filter((line) => line.startsWith('[identity] Could not write status/watcher.json'))).toHaveLength(1);
     });
 
+    it('refuses a pass that finds no source while the registry has present photos: marks nothing, says so, and asks again in a minute', async () => {
+        const s = await setup();
+        await s.step.pass('startup');
+        await s.step.idle();
+        const before = await s.registry();
+        for (const name of fs.readdirSync(s.lib.root)) fs.rmSync(s.lib.file(name));
+
+        expect(await s.step.pass('timer')).toEqual({ status: 'refused', reason: 'library-empty', present: 2 });
+        expect(await s.registry()).toEqual(before);
+        expect(s.lines).toContain(`[identity] The library at ${s.lib.root} has no photos, but the registry has 2 present. It looks unmounted or emptied, so this pass marked nothing missing. Check the mount and PHOTOGRAPHY_LIBRARY_DIR.`);
+        expect(s.requests).toEqual([{ reason: 'library-empty', delayMs: 60_000 }]);
+        expect(s.heartbeat()).toMatchObject({ lastPassResult: 'library-empty', legacyDerivatives: false });
+
+        // Once the photos are back, the next pass commits and nothing went missing.
+        for (let index = 0; index < 2; index++) fs.writeFileSync(s.lib.file(`photo-${index + 1}.jpg`), images[index]);
+        expect((await s.step.pass('library-empty')).status).toBe('committed');
+        expect(Object.values((await s.registry()).photos).map((photo) => photo.sourceHealth)).toEqual(['present', 'present']);
+    });
+
     it('turns itself off, saying why, when the registry comes from a newer build', async () => {
         const s = await setup();
         fs.mkdirSync(s.data.file('identity'), { mode: 0o700 });
@@ -650,6 +669,17 @@ describe('runIdentityOnce', { timeout: 60_000 }, () => {
         expect(await o.run()).toBe(1);
         expect(offLines(o.lines)).toEqual([expect.stringMatching(/^\[identity\] Identity step off: the data root is unavailable \(it does not exist\)\. Nothing is processed until it is ready\.$/)]);
         expect(fs.existsSync(o.data.root)).toBe(false);
+    });
+
+    it('returns 1 on a library with no source while the registry has present photos, marking nothing missing', async () => {
+        const o = await once();
+        expect(await o.run()).toBe(0);
+        const before = await readRegistry(o.data.root);
+        for (const name of fs.readdirSync(o.lib.root)) fs.rmSync(o.lib.file(name));
+
+        expect(await o.run()).toBe(1);
+        expect(await readRegistry(o.data.root)).toEqual(before);
+        expect(o.lines.some((line) => line.startsWith(`[identity] The library at ${o.lib.root} has no photos, but the registry has 2 present.`))).toBe(true);
     });
 
     it('returns 1 before the migration, on an uninitialized data root, and writes only the heartbeat there', async () => {

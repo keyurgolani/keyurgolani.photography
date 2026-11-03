@@ -202,6 +202,31 @@ describe('imageWatcher --once', { timeout: 120_000 }, () => {
         expect(newestRegistryVersion(data.root)).toBe(0);
     });
 
+    it('exits 1 on an emptied library while the registry has present photos, and marks nothing missing', async () => {
+        lib = await createTempLibrary({ fixtures: 'basic' });
+        data = createTempDataRoot();
+        expect((await runOnceWithIdentity(lib.root, data.root)).code).toBe(0);
+        const version = newestRegistryVersion(data.root);
+        for (const name of fs.readdirSync(lib.root)) fs.rmSync(lib.file(name));
+
+        const run = await runOnceWithIdentity(lib.root, data.root);
+
+        expect(run.code, run.output).toBe(1);
+        expect(run.output).toContain('has no photos, but the registry has 3 present. It looks unmounted or emptied, so this pass marked nothing missing.');
+        expect(newestRegistryVersion(data.root)).toBe(version);
+        expect(Object.values(readRegistryFile(data.root).photos).map((photo) => photo.sourceHealth)).toEqual(['present', 'present', 'present']);
+    });
+
+    it.each([['a relative path', 'library'], ['the app\'s public folder', path.join(REPO_ROOT, 'public', 'assets', 'photos')]])('exits 1 on a PHOTOGRAPHY_LIBRARY_DIR that is %s, naming it', async (_, value) => {
+        data = createTempDataRoot();
+        const run = spawnWatcher(['--once'], { PHOTOGRAPHY_LIBRARY_DIR: value, PHOTOGRAPHY_DATA_DIR: data.root });
+        const code = await run.exited;
+
+        expect(code, run.output).toBe(1);
+        expect(run.output).toMatch(/\[ImageWatcher\] PHOTOGRAPHY_LIBRARY_DIR (must be an absolute path|is inside the app's public folder)/);
+        expect(newestRegistryVersion(data.root)).toBe(0);
+    });
+
     it('exits 2 on a mistyped flag and processes nothing', async () => {
         lib = await createTempLibrary({ fixtures: 'basic' });
         const run = await runOnce(lib.root, '--froce');

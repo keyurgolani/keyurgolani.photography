@@ -90,6 +90,17 @@ describe('checkWatcherHealth', () => {
         expect((await checkWatcherHealth({ clock: () => AT, passLimitMs: 60 * 60_000 })).healthy).toBe(true);
     });
 
+    it('is unhealthy while the last pass refused an empty library, with a fresh heartbeat, and healthy again after a pass commits', async () => {
+        const data = dataRoot();
+        await writeWatcherHeartbeat(data.root, { pid: 7, hostname: 'watcher-host', lastPassAt: new Date(AT).toISOString(), lastPassResult: 'library-empty', passStartedAt: null, heartbeatAt: new Date(AT).toISOString(), legacyDerivatives: false });
+        expect(await checkWatcherHealth({ clock: () => AT })).toEqual({
+            healthy: false,
+            message: 'The last pass found no photo in the library while the registry has present ones, so it marked nothing missing. Check the mount and PHOTOGRAPHY_LIBRARY_DIR.',
+        });
+        await writeWatcherHeartbeat(data.root, { pid: 7, hostname: 'watcher-host', lastPassAt: new Date(AT).toISOString(), lastPassResult: 'committed', passStartedAt: null, heartbeatAt: new Date(AT).toISOString(), legacyDerivatives: false });
+        expect((await checkWatcherHealth({ clock: () => AT })).healthy).toBe(true);
+    });
+
     it('reads a heartbeat from before passStartedAt existed as no pass running, and refuses a malformed one', async () => {
         const data = dataRoot();
         const file = writeStatus(data.root, JSON.stringify({ pid: 7, hostname: 'h', lastPassAt: null, lastPassResult: null, heartbeatAt: new Date(AT).toISOString() }));

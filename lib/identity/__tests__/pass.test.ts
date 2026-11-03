@@ -155,6 +155,46 @@ describe('runReconcilePass', () => {
         expect(fs.existsSync(identityPaths(data.root).registry)).toBe(false);
     });
 
+    it.each([
+        ['an empty mount point, as a NAS not mounted yet at boot', (root: string) => {
+            for (const name of fs.readdirSync(root)) fs.rmSync(path.join(root, name), { recursive: true, force: true });
+        }],
+        ['a library left with only folders it skips', (root: string) => {
+            for (const name of fs.readdirSync(root)) fs.rmSync(path.join(root, name), { recursive: true, force: true });
+            fs.mkdirSync(path.join(root, 'optimized'));
+            fs.writeFileSync(path.join(root, 'optimized', 'landscape.webp'), 'legacy');
+            fs.writeFileSync(path.join(root, '.DS_Store'), '');
+        }],
+    ])('refuses to mark anything missing when it finds no source on %s while the registry has present photos', async (_, empty) => {
+        await setup();
+        const { seen, options } = harness();
+        committed(await runReconcilePass(options({ clearDelivered: true })));
+        const before = await readRegistry(data.root);
+        const files = data.files();
+        seen.length = 0;
+
+        empty(lib.root);
+        const outcome = await runReconcilePass(options({ clearDelivered: true }));
+
+        expect(outcome).toEqual({ status: 'skipped', reason: 'library-empty', present: 3 });
+        expect(await readRegistry(data.root)).toEqual(before);
+        expect(Object.values(before.photos).map((photo) => photo.sourceHealth)).toEqual(['present', 'present', 'present']);
+        expect(data.files()).toEqual(files);
+        expect(seen).toEqual([]);
+    });
+
+    it('still marks a photo missing when some sources are left, and commits an empty library with nothing present', async () => {
+        await setup();
+        const { options } = harness();
+        committed(await runReconcilePass(options({ clearDelivered: true })));
+        fs.rmSync(lib.file('landscape.jpg'));
+        const pass = committed(await runReconcilePass(options({ clearDelivered: true })));
+        expect(pass.facts.map((fact) => `${fact.type} ${fact.path}`)).toEqual(['missing landscape.jpg']);
+
+        await setup({ files: [] });
+        committed(await runReconcilePass(options({ clearDelivered: true })));
+    });
+
     it('commits new photos, delivers their facts, and with clearDelivered leaves nothing pending', async () => {
         await setup();
         const { seen, options } = harness();
