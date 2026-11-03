@@ -686,13 +686,64 @@ describe('CatalogHome', () => {
       expect([heading(), position()]).toEqual(['Fixture series B', '01 / 01']);
     });
 
-    it('names a failed photograph by its place in its own series', async () => {
+    it('keeps the chrome on the series of the photograph on screen while the next series\' opening loads, then follows it', async () => {
+      await renderHome(looped());
+      load(3);
+      next(0, 4, 1);
+      click('Next photograph');
+      // 8 is still loading, so A's last photograph stays up, and so do A's title, statement and link.
+      expect(shownSlide()).toHaveAttribute('data-photo-id', id(1));
+      expect([heading(), enter()]).toEqual(['Fixture series A', '/work/fixture-a']);
+      expect(screen.getByText('Fixture short statement A.')).toBeInTheDocument();
+      expect(status().textContent).toBe('');
+      // The position follows Previous and Next, as it always has.
+      expect(position()).toBe('02 / 03');
+      load(8);
+      expect([heading(), enter()]).toEqual(['Fixture series B', '/work/fixture-b']);
+      expect(status()).toHaveTextContent('Now showing Fixture series B');
+    });
+
+    it('names the series a failed photograph is in when it isn\'t the one on screen, and announces nothing for it', async () => {
       await renderHome(looped({ photos: [...ORDER.map((n) => photo(n)), photo(7), photo(8, { image: null }), photo(9)] }));
       load(3);
       next(0, 4, 1);
       click('Next photograph');
-      expect(status()).toHaveTextContent('Photograph 02 of 03 couldn’t load.');
       expect(shownSlide()).toHaveAttribute('data-photo-id', id(1));
+      expect(heading()).toBe('Fixture series A');
+      expect(status().textContent).toBe('Photograph 02 of 03 in Fixture series B couldn’t load.');
+      // Skip moves on to 9, which loads: now B is on screen, so the chrome and the announcement follow.
+      click('Skip');
+      load(9);
+      expect(heading()).toBe('Fixture series B');
+      expect(status().textContent).toBe('Now showing Fixture series B');
+    });
+
+    it('drops the announcement once a failure note shows, so the region reads the note alone', async () => {
+      await renderHome(looped({ photos: [...ORDER.map((n) => photo(n)), photo(7), photo(8), photo(9, { image: null })] }));
+      load(3);
+      next(0, 4, 1, 8);
+      expect(status().textContent).toBe('Now showing Fixture series B');
+      click('Next photograph');
+      expect(shownSlide()).toHaveAttribute('data-photo-id', id(8));
+      expect(status().textContent).toBe('Photograph 03 of 03 couldn’t load.');
+      // And it doesn't come back when the note goes.
+      click('Next photograph');
+      load(7);
+      expect(status().textContent).toBe('');
+    });
+
+    it('starts over on the new pick when the same revision renders again with another series first', async () => {
+      const view = await renderHome(looped());
+      load(3);
+      next(0);
+      const { featuredSeries, ...rest } = looped();
+      const { records, ...seriesA } = featuredSeries!;
+      view.rerender({ ...rest, featuredSeries: { ...SERIES_B, records }, followingSeries: [seriesA] });
+      expect(shownSlide()).toHaveAttribute('data-photo-id', id(8));
+      expect([heading(), position()]).toEqual(['Fixture series B', '02 / 03']);
+      // The new opening photograph is the one the head preloads and the sequence opens on.
+      next(9, 7, 3);
+      expect(heading()).toBe('Fixture series A');
     });
 
     it('asks the loop route for the series each window is in, crossing into the next one', async () => {

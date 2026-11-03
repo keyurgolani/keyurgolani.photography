@@ -43,8 +43,9 @@ export default function CatalogHome({ home, portrait = null }: { home: Published
   const introCompleted = hasCompletedHomeHeroIntro();
   return (
     <HomeChromeController initialLoading={!introCompleted} initialIntro={introCompleted ? 'settled' : 'loading'}>
-      {/* A new revision starts over on its own opening photograph, so no screen mixes two revisions. */}
-      <FeaturedHome key={home.catalogRevision} revisionId={home.catalogRevision} opening={series} following={home.followingSeries} portrait={portrait} />
+      {/* A new revision, or a new pick on the same one, starts over on its own opening photograph, so no screen mixes
+          two revisions and the preload, the timer and the records all start from the photograph the server picked. */}
+      <FeaturedHome key={`${home.catalogRevision} ${series.id}`} revisionId={home.catalogRevision} opening={series} following={home.followingSeries} portrait={portrait} />
     </HomeChromeController>
   );
 }
@@ -107,10 +108,13 @@ function FeaturedHome({ revisionId, opening, following = NONE, portrait }: Featu
   const { records: photos, failed: recordFailed, retry: retryRecord } = useHomeRecords({ revisionId, photoIds, seriesOf: seriesIds, initial: opening.records, index: playback.index });
 
   const currentId = photoIds[playback.index];
-  // The chrome names the series of the photograph Home is on, and counts its place in that series alone.
-  const series = (currentId !== undefined && loop.seriesOf.get(currentId)) || opening;
-  const position = currentId === undefined ? 0 : Math.max(0, series.photoIds.indexOf(currentId));
-  const count = series.photoIds.length;
+  // The series Previous and Next are in, and the photograph's place in it, which the position shows at once.
+  const target = (currentId !== undefined && loop.seriesOf.get(currentId)) || opening;
+  const position = currentId === undefined ? 0 : Math.max(0, target.photoIds.indexOf(currentId));
+  const count = target.photoIds.length;
+  // The title, statement and link name the series of the photograph on screen, which stays up until the next loads.
+  const [shownId, setShownId] = useState<string | undefined>(opening.openingPhotoId);
+  const series = (shownId !== undefined && loop.seriesOf.get(shownId)) || opening;
 
   // Crossing into another series says its name once in the live region. The one Home opens on isn't announced: the
   // page's own heading names it.
@@ -125,6 +129,8 @@ function FeaturedHome({ revisionId, opening, following = NONE, portrait }: Featu
   // A record still on its way isn't a failure: the photograph before it stays on screen meanwhile.
   const currentRecordFailed = currentId !== undefined && recordFailed.has(currentId);
   const currentFailed = currentId !== undefined && (failed.has(currentId) || currentRecordFailed || current?.image === null);
+  // The status region is atomic, so a failure note replaces the announcement rather than being read after it.
+  if (currentFailed && announcement !== null) setAnnouncement(null);
 
   // The first photograph on screen ends loading, marks the intro done for the tab, and releases any no-photo hold.
   const handleImageReady = useCallback(
@@ -175,6 +181,7 @@ function FeaturedHome({ revisionId, opening, following = NONE, portrait }: Featu
           attempts={attempts}
           onImageReady={handleImageReady}
           onImageFailed={handleImageFailed}
+          onShownChange={setShownId}
         />
       </div>
 
@@ -209,7 +216,8 @@ function FeaturedHome({ revisionId, opening, following = NONE, portrait }: Featu
               {announcement !== null && <p className="sr-only">{announcement}</p>}
               {currentFailed && (
                 <p>
-                  Photograph {pad(position + 1)} of {pad(count)} couldn&rsquo;t load.
+                  Photograph {pad(position + 1)} of {pad(count)}
+                  {target.id !== series.id && ` in ${target.title}`} couldn&rsquo;t load.
                 </p>
               )}
             </div>
