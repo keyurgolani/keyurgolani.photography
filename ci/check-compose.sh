@@ -3,8 +3,9 @@
 # tag in PHOTOGRAPHY_IMAGE_TAG, that ci/smoke-image.sh starts every service
 # Compose starts by default, that every published port is on the host's
 # loopback, that the data root, the library, and the site config folder
-# mounts keep their guarantees, that no service mounts the /_next/image cache
-# #13's slice E removed, and that the curator (#14)
+# mounts keep their guarantees (the library only ever read-only at
+# /data/library, and not in web at all, since #13's slice E), that no service
+# mounts the /_next/image cache #13's slice E removed, and that the curator (#14)
 # is the only service with CURATION_ENABLED, starts only by name, publishes
 # on 127.0.0.1:3001 alone unless LAN mode's CURATOR_PUBLISH says otherwise
 # (and only the curator reads it), and is the only service that mounts
@@ -161,10 +162,14 @@ fi
 if ! jq -e '.services.web.environment.PHOTOGRAPHY_DATA_DIR == "/data/portfolio"' <<<"$resolved" >/dev/null; then
   fail "web must set PHOTOGRAPHY_DATA_DIR=/data/portfolio, the read-only mount."
 fi
+# A library mount is one at /data/library, however its target is spelled,
+# one of ./public/assets/photos or a folder inside it wherever it lands, or
+# anything at the library's old target, /app/public/assets/photos.
+LIBRARY_MOUNT='((.target // "") | rtrimstr("/") | . == "/data/library" or . == "/app/public/assets/photos" or startswith("/app/public/assets/photos/")) or ((.source // "") | test("/public/assets/photos(/|$)"))'
 if ! jq -e --argjson never "$never_created" "
-    [.services[] | (.volumes // [])[] | select(($DATA_ROOT_MOUNT) or (((.target // \"\") | rtrimstr(\"/\")) == \"/app/public/assets/photos\"))]
+    [.services[] | (.volumes // [])[] | select(($DATA_ROOT_MOUNT) or ($LIBRARY_MOUNT))]
     | length > 0 and all(.type == \"bind\" and .bind.create_host_path == \$never)" <<<"$resolved" >/dev/null; then
-  fail "Every mount of the data root or /app/public/assets/photos must be a long-syntax bind with bind.create_host_path: false."
+  fail "Every mount of the data root or the library must be a long-syntax bind with bind.create_host_path: false."
 fi
 if ! jq -e '[.services[] | (.volumes // [])[] | select(((.target // "") | startswith("/app/.next/cache")) or ((.source // "") | test("/\\.next-images-cache(/|$)")))] | length == 0' <<<"$resolved" >/dev/null; then
   fail "No service may mount /app/.next/cache or ./.next-images-cache: #13's slice E removed the /_next/image cache bind."
@@ -200,13 +205,34 @@ if ! jq -e '[.services[] | (.volumes // [])[] | select(((.target // "") | starts
 fi
 echo "web and curator mount the site config folder once each, read-only, at /config/site, and no other service mounts it."
 
-# 9. web can't write the library or the data root: it mounts both read-only.
-LIBRARY_MOUNT='((.target // "") | rtrimstr("/")) == "/app/public/assets/photos"'
-if ! jq -e "[.services.web.volumes[]? | select($LIBRARY_MOUNT)]
-    | length == 1 and all(.type == \"bind\" and .read_only == true)" <<<"$resolved" >/dev/null; then
-  fail "web must mount the library once, at /app/public/assets/photos, as a bind with read_only: true."
+# 9. The photo library, the owner's originals (#13's slice E, v1.7.0). Nothing
+#    writes it, so every mount of it is ./public/assets/photos at
+#    /data/library, read-only, and every service that mounts it points
+#    PHOTOGRAPHY_LIBRARY_DIR there, which has no default. image-watcher, whose
+#    run --rm form is also the CLI, and curator each mount it once. web reads
+#    nothing in it, so it mounts none and names none, and nothing is mounted
+#    under /app/public, where Next would serve it.
+if ! jq -e "[.services[] | (.volumes // [])[] | select($LIBRARY_MOUNT)]
+    | length > 0 and all(.type == \"bind\" and .target == \"/data/library\" and .read_only == true and ((.source // \"\") | test(\"/public/assets/photos/?$\")))" <<<"$resolved" >/dev/null; then
+  fail "Every mount of the library must bind ./public/assets/photos at /data/library with read_only: true."
 fi
-echo "web mounts the library and the data root read-only."
+for service in image-watcher curator; do
+  if ! jq -e --arg service "$service" "[.services[\$service].volumes[]? | select($LIBRARY_MOUNT)] | length == 1" <<<"$resolved" >/dev/null; then
+    fail "$service must mount the library once, at /data/library."
+  fi
+done
+if ! jq -e "[.services | to_entries[] | select([.value.volumes[]? | select($LIBRARY_MOUNT)] | length > 0) | .key] | sort
+    == [.services | to_entries[] | select(.value.environment // {} | has(\"PHOTOGRAPHY_LIBRARY_DIR\")) | .key] | sort
+    and all(.services[]; (.environment // {}).PHOTOGRAPHY_LIBRARY_DIR // \"/data/library\" | . == \"/data/library\")" <<<"$resolved" >/dev/null; then
+  fail "Every service that mounts the library, and only those, must set PHOTOGRAPHY_LIBRARY_DIR=/data/library, the read-only mount."
+fi
+if ! jq -e '.services.web | ([.volumes[]? | select(((.source // "") | test("/public/assets/photos(/|$)")) or ((.target // "") | rtrimstr("/")) == "/data/library")] | length == 0) and ((.environment // {}) | has("PHOTOGRAPHY_LIBRARY_DIR") | not)' <<<"$resolved" >/dev/null; then
+  fail "web must not mount the library or set PHOTOGRAPHY_LIBRARY_DIR: it reads nothing there."
+fi
+if ! jq -e '[.services[] | (.volumes // [])[] | select((.target // "") | . == "/app/public" or startswith("/app/public/"))] | length == 0' <<<"$resolved" >/dev/null; then
+  fail "No service may mount anything under /app/public, where Next serves files."
+fi
+echo "Only image-watcher and curator mount the library, each once, read-only, at /data/library with PHOTOGRAPHY_LIBRARY_DIR pointing there, web mounts none, and nothing is mounted under /app/public."
 
 # 10. CURATION_ENABLED and CURATION_BIND_SCOPE are set on curator alone, and
 #     no service but curator sets either, through environment or env_file,
@@ -224,8 +250,8 @@ echo "Only curator sets CURATION_ENABLED and CURATION_BIND_SCOPE."
 
 # 11. curator is off by default, publishes one port on the host's
 #     127.0.0.1:3001 alone, shares no network with another service, runs as
-#     the watcher's uid, mounts the library read-only and the data root
-#     read-write.
+#     the watcher's uid, and mounts the data root read-write. Check 9 holds
+#     its library mount read-only.
 if ! jq -e '.services.curator.profiles == ["curator"]' <<<"$resolved" >/dev/null; then
   fail "curator must sit behind the curator profile, so it starts only by name."
 fi
@@ -241,9 +267,6 @@ if ! jq -e '.services.curator.healthcheck.test | index("Host: localhost:3001") !
 fi
 if ! jq -e '.services.curator.user == "1001:1001"' <<<"$resolved" >/dev/null; then
   fail "curator must run as user 1001:1001, the watcher's uid."
-fi
-if ! jq -e "[.services.curator.volumes[]? | select($LIBRARY_MOUNT)] | length == 1 and all(.type == \"bind\" and .read_only == true)" <<<"$resolved" >/dev/null; then
-  fail "curator must mount the library once, at /app/public/assets/photos, read-only."
 fi
 if ! jq -e "[.services.curator.volumes[]? | select($DATA_ROOT_MOUNT)] | length == 1 and all(.type == \"bind\" and .target == \"/data/portfolio\" and (.read_only // false) == false)" <<<"$resolved" >/dev/null; then
   fail "curator must mount the data root once, at /data/portfolio, read-write."
