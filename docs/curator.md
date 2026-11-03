@@ -178,7 +178,7 @@ docker compose -f docker-compose.prod.yml -f <override> --profile curator up -d 
 docker compose -f docker-compose.prod.yml -f <override> stop curator
 ```
 
-Its restart policy is `no`, so a reboot or a Docker restart leaves it off. It reads the library, mounted read-only at `/data/library` with `PHOTOGRAPHY_LIBRARY_DIR` pointing there, writes the data root, and runs as uid 1001, the watcher's, so the data root setup in [data-root.md](data-root.md) covers it too. Its Inbox, Publish and Restore write `authored/`, `catalog/`, `locks/` and `curation/events/` there, so stop it with the watcher whenever the data root has to hold still: [Backing up](data-root.md#backing-up), [Restoring](data-root.md#restoring) and [Editing a document by hand](data-root.md#editing-a-document-by-hand) say how.
+Its restart policy is `no`, so a reboot or a Docker restart leaves it off. It mounts no library, since it reads no file there, only the registry and the `/media` sets, and sets `PHOTOGRAPHY_LIBRARY_DIR=/data/library` only to keep that path out of its messages. It writes the data root and runs as uid 1001, the watcher's, so the data root setup in [data-root.md](data-root.md) covers it too. Its Inbox, Publish and Restore write `authored/`, `catalog/`, `locks/` and `curation/events/` there, so stop it with the watcher whenever the data root has to hold still: [Backing up](data-root.md#backing-up), [Restoring](data-root.md#restoring) and [Editing a document by hand](data-root.md#editing-a-document-by-hand) say how.
 
 ## What keeps it private
 

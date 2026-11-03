@@ -8,7 +8,7 @@
 #    /api/ready answers 503 with not-published, before the migration and
 #    after it. /api/photos is a 404 and /gallery a 308 to /work (#13's slice
 #    E). The library is mounted read-only at /data/library in image-watcher
-#    and not at all in web (v1.7.0). The library starts with a v1.6 host's
+#    and not at all in web or curator (v1.7.0). The library starts with a v1.6 host's
 #    legacy derivatives in it, none of which serves, directly or through
 #    /_next/image, and the watcher stays healthy and writes nothing there:
 #    every file and folder in the library is the same at the end of the run
@@ -417,6 +417,10 @@ printf '%s\n' "$SMOKE_PASSPHRASE" | in_secrets hash-passphrase --out /secrets/cu
   || fail "curation hash-passphrase failed in the image."
 in_secrets session-secret --out /secrets/curator-session.key </dev/null >/dev/null || fail "curation session-secret failed in the image."
 compose up -d --pull never --wait --wait-timeout 180 curator
+# The curator reads no file in the library, so it mounts none (v1.7.0).
+# shellcheck disable=SC2016 # the curator's shell expands it
+compose exec -T curator sh -c '[ ! -e /data/library ] && [ "$PHOTOGRAPHY_LIBRARY_DIR" = /data/library ]' ||
+  fail "curator has a /data/library, or doesn't set PHOTOGRAPHY_LIBRARY_DIR=/data/library for its messages."
 code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$CURATOR_URL/curation") || fail "GET /curation from curator failed."
 [ "$code" = 307 ] || fail "GET /curation from curator without a session returned $code, expected 307 to the login page."
 grep -qiE '^location: (http://127\.0\.0\.1:3001)?/curation/login$' <<<"$(tr -d '\r' <"$TMP/headers.txt")" || fail "GET /curation without a session did not lead to /curation/login."

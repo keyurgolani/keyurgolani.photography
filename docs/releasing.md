@@ -20,7 +20,7 @@ Every pull request runs `.github/workflows/ci.yml`, whether it targets `main` or
 
 `ci/check-compose.sh` checks that every image line in `docker-compose.prod.yml` is exactly `ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?...}`, that Compose resolves every service to that one tag and refuses the file when the variable is unset, that the file has no `:latest`, that the services Compose starts by default are exactly the ones in `ci/smoke-services`, the list `ci/smoke-image.sh` starts, that every published port is on the host's 127.0.0.1 whatever `PHOTOGRAPHY_PORT` says and no service uses `network_mode: host`, that `web` mounts the data root once, read-only, and points `PHOTOGRAPHY_DATA_DIR` at it, that every bind of the data root or the library has `create_host_path: false`, and that no service mounts `/app/.next/cache` or `./.next-images-cache`, the `/_next/image` cache bind v1.6.0 removed. A PR that adds a service lists it in `ci/smoke-services` and extends the smoke test to check it.
 
-`ci/smoke-image.sh` starts `web` and `image-watcher` from `docker-compose.prod.yml` on the image under test, with the two photos in `ci/fixtures/library/` as the library and an empty data root. It checks that `/` returns #21's error page as HTML, `/api/health` answers, `/api/ready` answers 503 with `not-published`, `/api/photos` 404, and `/gallery` 308 to `/work`, and that the watcher passes its healthcheck and never restarts. The library starts with a v1.6 host's legacy derivatives in it, none of which serves (404 directly, 400 through `/_next/image`). `image-watcher` mounts it read-only at `/data/library` and can't write it, though the host folder lets anyone, `web` has no `/data/library`, and a listing of every file's size, mtime and SHA-256 must come out the same at each step, so nothing in the stack writes the library. Then it runs the migration runbook in [data-root.md](data-root.md) as uid 1001, checks that `/api/ready` still answers `not-published`, waits for the watcher to build every `/media` set and reads each set's `manifest.json`, for the photos it starts with and for one added while it runs, checks that the heartbeat says `legacyDerivatives: false`, checks that `/media` serves none of them before the first activation, that #6's Home records endpoint answers 503 with `not-published` for each photo, and an original 404s, and that recreating the containers keeps every photo ID, `/media` URL, and set. Last, it runs the watcher with `PHOTOGRAPHY_DATA_DIR` unset and checks that it exits 1 and writes nothing, and runs the watcher and `photos.mjs` with `PHOTOGRAPHY_LIBRARY_DIR` unset and the library at its old path, as on v1.6's compose file, and checks that both exit 1, name the variable, and write nothing. Its only change to the Compose file is an override that binds `web` to 127.0.0.1. CI runs it on the image the PR built, and `Publish to GHCR` runs it again on the exact digest it pushed. To run it locally you need Docker with Compose 2.24.4 or later, for the override's `!override` tag, and a free port, 3000 unless you set `SMOKE_IMAGE_PORT`:
+`ci/smoke-image.sh` starts `web` and `image-watcher` from `docker-compose.prod.yml` on the image under test, with the two photos in `ci/fixtures/library/` as the library and an empty data root. It checks that `/` returns #21's error page as HTML, `/api/health` answers, `/api/ready` answers 503 with `not-published`, `/api/photos` 404, and `/gallery` 308 to `/work`, and that the watcher passes its healthcheck and never restarts. The library starts with a v1.6 host's legacy derivatives in it, none of which serves (404 directly, 400 through `/_next/image`). `image-watcher` mounts it read-only at `/data/library` and can't write it, though the host folder lets anyone, `web` and `curator` have no `/data/library`, and a listing of every file's size, mtime, mode, owner, ctime and SHA-256 must come out the same at each step, so nothing in the stack writes the library. Then it runs the migration runbook in [data-root.md](data-root.md) as uid 1001, checks that `/api/ready` still answers `not-published`, waits for the watcher to build every `/media` set and reads each set's `manifest.json`, for the photos it starts with and for one added while it runs, checks that the heartbeat says `legacyDerivatives: false`, checks that `/media` serves none of them before the first activation, that #6's Home records endpoint answers 503 with `not-published` for each photo, and an original 404s, and that recreating the containers keeps every photo ID, `/media` URL, and set. Last, it runs the watcher with `PHOTOGRAPHY_DATA_DIR` unset and checks that it exits 1 and writes nothing, and runs the watcher and `photos.mjs` with `PHOTOGRAPHY_LIBRARY_DIR` unset and the library at its old path, as on v1.6's compose file, and checks that both exit 1, name the variable, and write nothing. Its only change to the Compose file is an override that binds `web` to 127.0.0.1. CI runs it on the image the PR built, and `Publish to GHCR` runs it again on the exact digest it pushed. To run it locally you need Docker with Compose 2.24.4 or later, for the override's `!override` tag, and a free port, 3000 unless you set `SMOKE_IMAGE_PORT`:
 
 ```bash
 docker build -t ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke .
@@ -412,14 +412,17 @@ docker compose -f docker-compose.prod.yml up -d --no-deps web image-watcher
 
 ### v1.7.0: the library at /data/library
 
-`v1.7.0` carries the second PR of slice E of [#13](https://github.com/keyurgolani/keyurgolani.photography/issues/13), which finishes the cutover in the library. Nothing a visitor sees changes: the site serves the active revision and its `/media` sets as before. What changes is who touches the library, the owner's originals: nothing does any more, but to read them.
+`v1.7.0` carries the second PR of slice E of [#13](https://github.com/keyurgolani/keyurgolani.photography/issues/13), which finishes the cutover in the library. Nothing a visitor sees changes: the site serves the active revision and its `/media` sets as before. What changes is who touches the library, the owner's originals: nothing writes it any more, and only the watcher reads it.
 
 - **The watcher stops writing the legacy derivatives**, the seven `<name>.webp`, `.avif` and `.txt` copies of each photo in `thumbnails/`, `medium/`, `optimized/`, `thumbnails-avif/`, `medium-avif/`, `optimized-avif/` and `lqip/`, and `cache/` beside them, at the top of the library. Nothing has served them since the launch. The ones already there stay exactly as they are, and the identity scan keeps skipping those names. Its heartbeat, `status/watcher.json` in the data root, now says `"legacyDerivatives": false`, which #15's GC waits for before it takes legacy files. `--force`, which rebuilt them, exits 2 now.
-- **The library is mounted at `/data/library`, read-only**, in `image-watcher`, and so in every `run --rm --no-deps image-watcher` command, and in `curator`, with `PHOTOGRAPHY_LIBRARY_DIR=/data/library`. `web` no longer mounts it at all, since it reads nothing there. The host folder is the same `./public/assets/photos` as before: nothing moves on the host.
-- **`PHOTOGRAPHY_LIBRARY_DIR` has no default.** Before, an unset variable meant `public/assets/photos` under the working directory. Now the watcher and every command that reads the library exit 1 and name the variable, so a container never reads a folder nobody configured, and an empty one never reads as an empty library.
+- **The library is mounted at `/data/library`, read-only, in `image-watcher` alone**, and so in every `run --rm --no-deps image-watcher` command, with `PHOTOGRAPHY_LIBRARY_DIR=/data/library`. `curator` and `web` no longer mount it, since neither reads a file there. `curator` still sets the variable, only to keep the path out of its messages. The host folder is the same `./public/assets/photos` as before: nothing moves on the host.
+- **`PHOTOGRAPHY_LIBRARY_DIR` has no default, and must be absolute and outside the app's `public/` folder.** Before, an unset variable meant `public/assets/photos` under the working directory. Now the watcher and every command that reads the library exit 1 and name the variable when it's unset, relative, or at or inside `/app/public`, so a container never reads a folder nobody configured, or one Next would serve.
+- **An empty library marks nothing missing.** A pass that finds no photo at all while the registry has photos present, as a network share not mounted yet at boot looks, writes nothing and applies no decision. The watcher logs it as an error, its healthcheck reads unhealthy, and it tries again every minute until the photos are back. `--once` exits 1 then.
 - **The watcher exits 1 when it has nothing to do**: with no data root in production, and with `--once` on a data root the migration hasn't initialized. Before, it still wrote legacy derivatives there.
 
-It changes `docker-compose.prod.yml`, so the host takes four steps, and an optional fifth, later. With an override, add `-f <override>` after each `-f docker-compose.prod.yml` and `-f docker-compose.prod.yml.new`, and add `curator` to the `pull` and `up -d` lines when it runs. A host that skipped `v1.6.0` takes its steps on the way.
+The legacy derivative folders stay in the library, left as they are. They take space and nothing else, and #15's GC reclaims them once it ships. No step of this release, or of any doc here, moves or deletes anything in the library.
+
+It changes `docker-compose.prod.yml`, so the host takes four steps. With an override, add `-f <override>` after each `-f docker-compose.prod.yml` and `-f docker-compose.prod.yml.new`, and add `curator` to the `pull` and `up -d` lines when it runs. A host that skipped `v1.6.0` takes its steps on the way.
 
 1. **Note what the watcher sees now**, to compare after the switch. The photo count and the `missing` count come back the same if the new file mounts the same folder:
 
@@ -427,7 +430,7 @@ It changes `docker-compose.prod.yml`, so the host takes four steps, and an optio
    docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs identity status
    ```
 
-2. **Fetch the new compose file, and check it mounts the same library.** Compose merges an override's `volumes:` with the file's by target path. An override that binds the photos from somewhere else at `/app/public/assets/photos`, the old target, no longer replaces the file's bind: it adds a second mount nothing reads, and the file's own `./public/assets/photos` goes to `/data/library`. On a host where that folder is empty or stale, the watcher would read it, and every photo would turn up as `missing` in the Inbox. Nothing is deleted then, and the items close once the right folder is back, but it's noise. This block stops before anything changes unless the new file, with your override, binds exactly the host folder the old one did, at `/data/library`, read-only, and nothing at `/app/public/assets/photos` any more. It needs `jq` on the host. An override bind for the photos has to move to `target: /data/library` with `read_only: true`, its source unchanged. The diff should show `web`'s library mount and its comment gone, and `image-watcher`'s and `curator`'s bind at `/data/library` with `read_only: true` and `PHOTOGRAPHY_LIBRARY_DIR=/data/library`, under reworded comments. Nothing else should differ but what this host changed, which stays in the override:
+2. **Fetch the new compose file, and check it mounts the same library.** Compose merges an override's `volumes:` with the file's by target path. An override that binds the photos from somewhere else at `/app/public/assets/photos`, the old target, no longer replaces the file's bind: it adds a second mount nothing reads, and the file's own `./public/assets/photos` goes to `/data/library`. On a host where that folder is empty or stale, the watcher would read it. An empty one now marks nothing missing, but a stale one would. This block stops before anything changes unless the new file, with your override, binds exactly the host folder the old one did, at `/data/library`, read-only, in `image-watcher` alone, with `PHOTOGRAPHY_LIBRARY_DIR=/data/library` there and in `curator`, and mounts nothing at `/app/public/assets/photos` any more. It needs `jq` on the host. An override bind for the photos has to move to `target: /data/library` with `read_only: true`, its source unchanged, and an override that sets `PHOTOGRAPHY_LIBRARY_DIR` has to set `/data/library`. The diff should show `web`'s and `curator`'s library mounts and their comments gone, and `image-watcher`'s bind at `/data/library` with `read_only: true`, and `PHOTOGRAPHY_LIBRARY_DIR=/data/library` on `image-watcher` and `curator`, under reworded comments. Nothing else should differ but what this host changed, which stays in the override:
 
    ```bash
    [ -e docker-compose.prod.yml.before-v1.7.0 ] || cp -p docker-compose.prod.yml docker-compose.prod.yml.before-v1.7.0
@@ -438,11 +441,13 @@ It changes `docker-compose.prod.yml`, so the host takes four steps, and an optio
      old=$(docker compose -f docker-compose.prod.yml config --format json |
        jq -er '[.services["image-watcher"].volumes[] | select(.target == "/app/public/assets/photos")] | if length == 1 then .[0].source else error("not one bind") end') ||
        { echo "The running file doesn't bind one library at /app/public/assets/photos. Nothing was changed." >&2; exit 1; }
-     new=$(PHOTOGRAPHY_IMAGE_TAG=v1.7.0 docker compose -f docker-compose.prod.yml.new config --format json |
+     new=$(PHOTOGRAPHY_IMAGE_TAG=v1.7.0 docker compose -f docker-compose.prod.yml.new --profile curator config --format json |
        jq -er '[.services[] | (.volumes // [])[] | select(.target | startswith("/app/public/assets/photos"))] as $stray
+         | [.services | to_entries[] | select(.key != "image-watcher") | .value.volumes[]? | select(.target == "/data/library")] as $others
+         | (.services["image-watcher"].environment.PHOTOGRAPHY_LIBRARY_DIR == "/data/library" and .services.curator.environment.PHOTOGRAPHY_LIBRARY_DIR == "/data/library") as $env
          | [.services["image-watcher"].volumes[] | select(.target == "/data/library" and .read_only == true)]
-         | if length == 1 and ($stray | length) == 0 then .[0].source else error("not one read-only bind") end') ||
-       { echo "The new file doesn't bind one library, read-only, at /data/library, or something still mounts /app/public/assets/photos. Fix the override. Nothing was changed." >&2; exit 1; }
+         | if length == 1 and ($stray | length) == 0 and ($others | length) == 0 and $env then .[0].source else error("not one read-only bind") end') ||
+       { echo "The new file doesn't bind one library, read-only, at /data/library in image-watcher alone with PHOTOGRAPHY_LIBRARY_DIR=/data/library, or something still mounts /app/public/assets/photos. Fix the override. Nothing was changed." >&2; exit 1; }
      [ "$old" = "$new" ] || { echo "The new file binds $new as the library, but the running one binds $old. Fix the override. Nothing was changed." >&2; exit 1; }
      echo "The library stays $new, read-only at /data/library."
    )
@@ -466,47 +471,23 @@ It changes `docker-compose.prod.yml`, so the host takes four steps, and an optio
    docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs identity status
    ```
 
-   If the watcher keeps restarting and its log says `PHOTOGRAPHY_LIBRARY_DIR is not set`, the old compose file is still in place with the new image: install the new file as in step 3. If photos now show as `missing`, the watcher reads another folder: stop it with `stop image-watcher`, and fix the override as step 2 says, or roll back as below. Nothing was deleted either way.
+   If the watcher keeps restarting and its log says `PHOTOGRAPHY_LIBRARY_DIR is not set`, or that it must be absolute or outside the public folder, the old compose file, or an override, still names the old path: install the new file as in step 3, or fix the override as step 2 says. If its log says the library has no photos while the registry has some present, and `ps` shows it unhealthy, it sees an empty folder: it has marked nothing missing, so fix the mount or the override, and it picks up within a minute. If photos now show as `missing`, the watcher reads another folder that has some files: stop it with `stop image-watcher`, and fix the override as step 2 says, or roll back as below. Nothing was deleted either way.
 
-5. **Optional, later: move the legacy derivatives out of the library.** From `v1.7.0` they're dead weight: nothing writes, reads, or serves them. Keep them while a rollback to `v1.6.x` is still on the table: its watcher rebuilds every missing one from the originals, which harms nothing but takes hours on a large library. #15's GC, once it ships, takes them itself after it reads `"legacyDerivatives": false`. To clear them sooner, move them aside rather than delete them. Only the eight folder names a watcher wrote count, directly in the library's top folder, and the block moves nothing else.
-
-   With the watcher and the curator stopped, so nothing reads the library meanwhile, the first command lists any file in those folders that a watcher wouldn't have written there. If it prints anything, a folder of yours shares one of those names: stop, and move only what you're sure of. The `mv -n` never replaces anything, and the folder it moves into sits beside `docker-compose.prod.yml`, on the same filesystem, outside the library and outside anything a container mounts:
-
-   ```bash
-   docker compose -f docker-compose.prod.yml stop image-watcher
-   # only if curator runs:
-   docker compose -f docker-compose.prod.yml stop curator
-   (
-     cd public/assets/photos || exit 1
-     for d in thumbnails medium optimized; do [ -d "$d" ] && find "$d" -type f ! -name '*.webp'; done
-     for d in thumbnails-avif medium-avif optimized-avif; do [ -d "$d" ] && find "$d" -type f ! -name '*.avif'; done
-     [ -d lqip ] && find lqip -type f ! -name '*.txt'
-     [ -d cache ] && find cache -type f ! -path 'cache/dynamic/*' ! -path 'cache/set-sources/*.json' ! -path cache/upright-rebuild.json
-   )
-   (
-     aside=legacy-derivatives-$(date -u +%Y%m%dT%H%M%SZ)
-     mkdir "$aside" || exit 1
-     for d in thumbnails medium optimized thumbnails-avif medium-avif optimized-avif lqip cache; do
-       if [ -d "public/assets/photos/$d" ] && [ ! -L "public/assets/photos/$d" ]; then sudo mv -n "public/assets/photos/$d" "$aside/"; fi
-     done
-     ls -A "$aside"
-   )
-   docker compose -f docker-compose.prod.yml start image-watcher
-   ```
-
-   Start `curator` again only if it was running, with `--profile curator start curator`. The watcher's next pass changes nothing, since it skipped those folders anyway. Once you're sure you won't roll back to `v1.6.x`, delete the dated folder by hand. Its files belong to uid 1001, so it takes `sudo rm -rf legacy-derivatives-<time>`. It holds copies made from your photos and none of the photos.
-
-**Rolling back** goes to `v1.6.x` with its compose file. Both halves go together. `v1.6.x`'s watcher on this file finds the library read-only and can't write its derivatives. This release's watcher on the older file has no `PHOTOGRAPHY_LIBRARY_DIR` and exits 1 at once, rather than read the library at its old path. `web` keeps serving either way. If step 5 moved the legacy derivatives aside, move them back first, so `v1.6.x` doesn't rebuild them all. Then restore the copy step 2 saved, set the older tag, and run the scoped commands, with `-f <override>` and `curator` as above:
+**Rolling back** goes to `v1.6.x` with its compose file. Both halves go together. `v1.6.x`'s watcher on this file finds the library read-only and can't write its derivatives. This release's watcher on the older file has no `PHOTOGRAPHY_LIBRARY_DIR` and exits 1 at once, rather than read the library at its old path. `web` keeps serving either way. An override changed in step 2 goes back first, in the same block, before `up -d`: `v1.6.x`'s file binds `./public/assets/photos` at `/app/public/assets/photos` and its watcher reads that path, so an override still at `/data/library` would add a mount nothing reads and leave the older watcher on the file's own `./public/assets/photos`, which on that host is the wrong folder. Restore the override's copy from before step 2, or set its photos bind back to `target: /app/public/assets/photos`, with the source unchanged and no `read_only`, since `v1.6.x`'s watcher writes its derivatives there. Then restore the compose copy step 2 saved, set the older tag, and run the scoped commands, with `-f <override>` and `curator` as above:
 
 ```bash
-# only if step 5 moved them: sudo mv -n legacy-derivatives-<time>/* public/assets/photos/
+# with an override: put its photos bind back to target /app/public/assets/photos first, from the copy you kept before step 2
+docker compose -f docker-compose.prod.yml.before-v1.7.0 -f <override> config --format json |
+  jq -er '.services["image-watcher"].volumes[] | select(.target == "/app/public/assets/photos") | .source'
 cp -p docker-compose.prod.yml.before-v1.7.0 docker-compose.prod.yml
 # set PHOTOGRAPHY_IMAGE_TAG in .env back to the v1.6.x tag
 docker compose -f docker-compose.prod.yml pull web image-watcher
 docker compose -f docker-compose.prod.yml up -d --no-deps web image-watcher
 ```
 
-The data root needs nothing: `v1.7.0` writes it as `v1.6.x` does, and `v1.6.x`'s heartbeat simply drops `legacyDerivatives`, which #15's GC reads as a watcher that still writes them. An override changed for step 2 goes back to its `/app/public/assets/photos` target with the older file.
+The `jq` line prints the folder the older file binds as the library, with the override: it has to be the one step 2 printed. If it prints nothing, or another folder, the override isn't back yet, so stop before `up -d`. Without an override, leave out the override line and `-f <override>`. `v1.6.x`'s watcher writes its legacy derivatives into the library again, filling in any a photo added under `v1.7.0` lacks.
+
+The data root needs nothing: `v1.7.0` writes it as `v1.6.x` does, and `v1.6.x`'s heartbeat simply drops `legacyDerivatives`, which #15's GC reads as a watcher that still writes them.
 
 ## About's portrait
 
