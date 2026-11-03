@@ -180,7 +180,9 @@ check_unpublished() {
   expect_code GET "$base/gallery" 308
   tr -d '\r' <"$TMP/headers.txt" | grep -qix 'location: /work' || fail "GET /gallery $label did not send Location: /work."
   # The derivatives the watcher wrote, and the originals, 404 with no-store.
+  # Each is on disk, so its 404 proves something: a renamed fixture fails here instead of passing.
   for asset in optimized/portrait.webp thumbnails-avif/square.avif lqip/landscape.txt portrait.png square.webp portrait%2Epng; do
+    [ -s "$LIB/${asset//%2E/.}" ] || fail "The library holds no $asset, so its 404 $label would prove nothing."
     expect_code GET "$base/assets/photos/$asset" 404 yes
   done
   # /_next/image refuses them with its own 400, before its cache can answer.
