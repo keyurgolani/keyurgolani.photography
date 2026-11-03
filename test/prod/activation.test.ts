@@ -134,7 +134,8 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
     let legacyBase = '';
     /** That photo's legacy URLs: the original, then the derivatives in DERIVATIVE_FOLDERS order. */
     let legacy: string[] = [];
-    /** A photo of the featured series, for #6's Home records endpoint. */
+    /** The featured series and a photo of it, for #6's Home records endpoint (v1.5.0's loop route). */
+    let featuredSeries = '';
     let featured = '';
     /** Set by the first test, for the ones after it. */
     let first: PublishResult | undefined;
@@ -156,7 +157,8 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         served = fs.mkdtempSync(path.join(os.tmpdir(), 'prod-test-standalone-'));
         fs.cpSync(STANDALONE, served, { recursive: true, verbatimSymlinks: true });
         catalog = await createTestCatalog({ withAssets: true, photos: 3, series: [{ photos: 2 }, { photos: 1, visibility: 'draft' }], seed: 47 });
-        featured = catalog.content.series.find((series) => series.id === catalog!.content.site.featuredSeriesIds[0])!.photoIds[0];
+        featuredSeries = catalog.content.site.featuredSeriesIds[0];
+        featured = catalog.content.series.find((series) => series.id === featuredSeries)!.photoIds[0];
         // The library where the image mounts it, at the copy's public/assets/photos.
         library = path.join(served, 'public/assets/photos');
         // All seven legacy derivatives of a catalog photo's source, as the watcher still writes them. Next serves
@@ -199,7 +201,7 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
 
     /** #6's Home records endpoint for the featured photo, asked for `revision`, with If-None-Match when given a tag. */
     function records(revision: string, ifNoneMatch?: string, at = base): Promise<Response> {
-        const url = `${at}/api/catalog/home/photos/${featured}?revision=${revision}`;
+        const url = `${at}/api/catalog/home/series/${featuredSeries}/photos/${featured}?revision=${revision}`;
         return fetch(url, ifNoneMatch === undefined ? {} : { headers: { 'If-None-Match': ifNoneMatch } });
     }
 
@@ -207,7 +209,7 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
     function expectedTag(revisionId: string): string {
         const build = readBuildId(served);
         expect(build, 'the copy has a .next/BUILD_ID').not.toBeNull();
-        return catalogETag(`/api/catalog/home/photos/${featured}`, revisionId, build!);
+        return catalogETag(`/api/catalog/home/series/${featuredSeries}/photos/${featured}`, revisionId, build!);
     }
 
     /** The Home records for `revision`, after checking its revision headers and tag, and that it names that revision. */
@@ -305,10 +307,12 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
             expect(response.headers.get('content-type'), page).toContain('text/html');
             await response.arrayBuffer();
         }
-        // The legacy photo list is gone, and /gallery is Work's.
-        const list = await fetch(`${base}/api/photos`);
-        expect(list.status).toBe(404);
-        await list.arrayBuffer();
+        // The legacy photo list and v1.4.0's Home records route are gone, and /gallery is Work's.
+        for (const url of ['/api/photos', `/api/catalog/home/photos/${featured}?revision=${NO_REVISION}`]) {
+            const gone = await fetch(`${base}${url}`);
+            expect(gone.status, url).toBe(404);
+            await gone.arrayBuffer();
+        }
         const gallery = await fetch(`${base}/gallery`, { redirect: 'manual' });
         expect(gallery.status).toBe(308);
         expect(gallery.headers.get('location')).toBe('/work');
@@ -394,7 +398,7 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         }
         const bodies: [string, string][] = [];
         const [shown] = catalog!.series;
-        for (const url of [`/api/catalog/home/photos/${featured}?revision=${first!.revisionId}`, '/api/ready', ...PAGES, `/work/${shown.slug}`]) {
+        for (const url of [`/api/catalog/home/series/${featuredSeries}/photos/${featured}?revision=${first!.revisionId}`, '/api/ready', ...PAGES, `/work/${shown.slug}`]) {
             const response = await fetch(`${base}${url}`);
             expect(response.status, url).toBe(200);
             bodies.push([url, await response.text()]);
@@ -411,8 +415,8 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         // A legacy basename derivative on disk 404s with nothing cached, and /_next/image refuses it.
         await expectContained(`/assets/photos/optimized/${encodeURIComponent(legacyBase)}.webp`);
 
-        // /api/image and /api/photos are gone.
-        for (const url of [`/api/image?src=${encodeURIComponent(`${legacyBase}.jpg`)}&w=800`, '/api/photos']) {
+        // /api/image, /api/photos and v1.4.0's Home records route are gone.
+        for (const url of [`/api/image?src=${encodeURIComponent(`${legacyBase}.jpg`)}&w=800`, '/api/photos', `/api/catalog/home/photos/${featured}?revision=${first!.revisionId}`]) {
             const gone = await fetch(`${base}${url}`);
             expect(gone.status, url).toBe(404);
             await gone.arrayBuffer();
@@ -447,7 +451,8 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         const [series] = damaged.series;
         const photo = damaged.photos.find((entry) => entry.id === series.photoIds[0])!;
         const url = mediaUrl({ photoId: photo.id, assetRevision: photo.assetRevision!, profileId: damaged.profileId }, 'w800', 'webp');
-        const ask = (ifNoneMatch?: string) => fetch(`${started.base}/api/catalog/home/photos/${photo.id}?revision=${result.revisionId}`, ifNoneMatch ? { headers: { 'If-None-Match': ifNoneMatch } } : {});
+        const ask = (ifNoneMatch?: string) =>
+            fetch(`${started.base}/api/catalog/home/series/${series.id}/photos/${photo.id}?revision=${result.revisionId}`, ifNoneMatch ? { headers: { 'If-None-Match': ifNoneMatch } } : {});
 
         // A server started after the publish, whose only catalog read is one Home records request.
         const started = await startServer(served!, damaged.root, library!);
@@ -455,7 +460,7 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         const loaded = await ask();
         expect(loaded.status).toBe(200);
         const tag = loaded.headers.get('etag') as string;
-        expect(tag).toBe(catalogETag(`/api/catalog/home/photos/${photo.id}`, result.revisionId!, readBuildId(served)!));
+        expect(tag).toBe(catalogETag(`/api/catalog/home/series/${series.id}/photos/${photo.id}`, result.revisionId!, readBuildId(served)!));
         await loaded.arrayBuffer();
         const notModified = async () => {
             const response = await ask(tag);

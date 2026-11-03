@@ -174,7 +174,7 @@ check_unpublished() {
   expect_code GET "$base/api/ready" 503 yes
   jq -e '. == {mode: "catalog", state: "unavailable", revisionId: null, revisionNumber: null, activatedAt: null, reason: "not-published"}' "$TMP/body.txt" >/dev/null ||
     fail "GET /api/ready $label returned $(cat "$TMP/body.txt"), expected not-published with no revision."
-  expect_code GET "$base/api/catalog/home/photos/ph_00000000-0000-4000-8000-000000000001?revision=rev_$(printf '0%.0s' {1..64})" 503 yes
+  expect_code GET "$base/api/catalog/home/series/ser_smoke/photos/ph_00000000-0000-4000-8000-000000000001?revision=rev_$(printf '0%.0s' {1..64})" 503 yes
   jq -e '. == {reason: "not-published"}' "$TMP/body.txt" >/dev/null || fail "The #6 Home records endpoint $label returned $(cat "$TMP/body.txt"), expected not-published."
   # /gallery is Work's now, in every state.
   expect_code GET "$base/gallery" 308

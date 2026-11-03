@@ -2,7 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PHOTO_ID_RE } from '../../identity/ids';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../../identity/variants';
-import { homePhotosOf, homeRouteOf, type PublishedHome } from '../../catalog/projections/home';
+import { homeRouteOf, homeSeriesPhotosOf, type PublishedHome } from '../../catalog/projections/home';
 import type { PublishedSeriesPage } from '../../catalog/projections/series';
 import type { PublishedViewerPhoto } from '../../catalog/projections/viewer';
 import type { WorkCatalog } from '../../catalog/projections/work';
@@ -156,8 +156,9 @@ describe('payloads on the 5,000-photo fixture', () => {
 
     it('Home: each window Home asks for as it moves holds three records and stays far inside Home\'s budget', () => {
         const source = { revisionId: fixture.revisionId, site: () => reader.site(), listSeries: () => reader.listSeries(), photosOf: (seriesId: string) => reader.photosOf(seriesId) };
-        for (const photoId of fixture.content.series[0].photoIds) {
-            const result = homePhotosOf(source, photoId);
+        const [series] = fixture.content.series;
+        for (const photoId of series.photoIds) {
+            const result = homeSeriesPhotosOf(source, series.id, photoId);
             if (result.kind !== 'ok') throw new Error(`Expected a window around ${photoId}, got ${result.kind}`);
             expect(result.window.photos, photoId).toHaveLength(3);
             expect(payloadSize(result.window).gzipBytes, photoId).toBeLessThanOrEqual(SCREEN_BUDGETS.home.gzipBytes);

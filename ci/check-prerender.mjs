@@ -15,7 +15,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 // route read the host's site config folder per request. /api/photos and
 // /gallery left the list with the routes (#13's slice E): proxy.ts answers
 // /gallery with its 308 before any page could.
-export const DYNAMIC_PATHS = ['/', '/api/ready', '/work', '/work/[slug]', '/work/[slug]/photo/[photoId]', '/api/catalog/series/[slug]/pages/[cursor]', '/api/catalog/home/photos/[photoId]', '/api/catalog/home/series/[seriesId]/photos/[photoId]', '/api/catalog/series/[slug]/photos/[photoId]', '/about', '/about/portrait/[token]/[variant]', '/curation'];
+export const DYNAMIC_PATHS = ['/', '/api/ready', '/work', '/work/[slug]', '/work/[slug]/photo/[photoId]', '/api/catalog/series/[slug]/pages/[cursor]', '/api/catalog/home/series/[seriesId]/photos/[photoId]', '/api/catalog/series/[slug]/photos/[photoId]', '/about', '/about/portrait/[token]/[variant]', '/curation'];
 
 const isObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 

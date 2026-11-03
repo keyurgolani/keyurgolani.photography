@@ -138,6 +138,8 @@ expect_code() {
 check_closed() {
   local src code
   expect_code /api/photos 404
+  # v1.4.0's Home records route, which v1.6.0 removed.
+  expect_code "/api/catalog/home/photos/ph_00000000-0000-4000-8000-000000000001?revision=$NO_REVISION" 404
   expect_code /gallery 308
   [ "$(header location)" = /work ] || fail "GET /gallery sent Location: $(header location), expected /work."
   for src in "${LEGACY_WEBPS[@]}"; do
@@ -159,7 +161,7 @@ check_closed() {
 check_unpublished() {
   expect_json /api/ready 503 no-store '. == {mode: "catalog", state: "unavailable", revisionId: null, revisionNumber: null, activatedAt: null, reason: "not-published"}'
   cp "$TMP/body.json" "$2"
-  expect_json "/api/catalog/home/photos/$1?revision=$NO_REVISION" 503 no-store '. == {reason: "not-published"}'
+  expect_json "/api/catalog/home/series/ser_smoke/photos/$1?revision=$NO_REVISION" 503 no-store '. == {reason: "not-published"}'
   check_closed
 }
 
@@ -211,16 +213,17 @@ chmod -R a+rX "$PUBLISHED"
 revision=$(jq -r .revisionId "$TMP/fixture.json")
 active=$(jq -r .active "$TMP/fixture.json")
 inactive=$(jq -r .inactive "$TMP/fixture.json")
+featured_series=$(jq -r .featuredSeries "$TMP/fixture.json")
 featured=$(jq -r .featured "$TMP/fixture.json")
-[[ $revision == rev_* && $active == /media/* && $inactive == /media/* && $featured == ph_* ]] || fail "ci/publish-fixture.ts printed $(cat "$TMP/fixture.json")."
+[[ $revision == rev_* && $active == /media/* && $inactive == /media/* && $featured_series == ser_* && $featured == ph_* ]] || fail "ci/publish-fixture.ts printed $(cat "$TMP/fixture.json")."
 start_web "$LIB" "$PUBLISHED"
 # shellcheck disable=SC2016 # $revision and $featured are jq's
 expect_json /api/ready 200 no-store '.mode == "catalog" and .state == "ok" and .revisionId == $revision and .revisionNumber == 1' --arg revision "$revision"
 cp "$TMP/body.json" "$TMP/ready-before.json"
 # shellcheck disable=SC2016
-expect_json "/api/catalog/home/photos/$featured?revision=$revision" 200 no-cache '.revisionId == $revision and any(.photos[]; .id == $featured)' --arg revision "$revision" --arg featured "$featured"
+expect_json "/api/catalog/home/series/$featured_series/photos/$featured?revision=$revision" 200 no-cache '.revisionId == $revision and any(.photos[]; .id == $featured)' --arg revision "$revision" --arg featured "$featured"
 [ "$(header x-catalog-revision)" = "$revision" ] || fail "The #6 Home records endpoint sent X-Catalog-Revision '$(header x-catalog-revision)', expected $revision."
-expect_json "/api/catalog/home/photos/$featured?revision=$NO_REVISION" 409 no-store '. == {reason: "revision-changed"}'
+expect_json "/api/catalog/home/series/$featured_series/photos/$featured?revision=$NO_REVISION" 409 no-store '. == {reason: "revision-changed"}'
 echo "/api/ready and the #6 Home records endpoint name $revision."
 check_closed
 echo "With $revision live, /api/photos returned 404, /gallery 308, and every legacy WebP 404, and 400 through /_next/image."

@@ -4,6 +4,8 @@ import type { ActiveCatalog } from '@/lib/catalog/public-reader';
 import { encodeSeriesCursor } from '@/lib/catalog/cursor';
 import { createCatalogReader, type CatalogContent } from '@/lib/catalog/reader';
 import { buildTestCatalog, type TestCatalogContent } from '@/lib/catalog/testing';
+import { REPO_ROOT } from '../../test/helpers/runTsx';
+import { routeInventory } from '../../test/helpers/routeInventory';
 
 // #6's two continuation endpoints, and 9a's Viewer peek, over HTTP: status,
 // body, and cache headers for every answer, on a reader the tests serve as
@@ -25,7 +27,6 @@ vi.mock('@/lib/catalog/public-reader', async (importOriginal) => {
 });
 
 const seriesRoute = await import('../api/catalog/series/[slug]/pages/[cursor]/route');
-const homeRoute = await import('../api/catalog/home/photos/[photoId]/route');
 const homeSeriesRoute = await import('../api/catalog/home/series/[seriesId]/photos/[photoId]/route');
 const peekRoute = await import('../api/catalog/series/[slug]/photos/[photoId]/route');
 
@@ -87,11 +88,6 @@ function seriesGET(slug: string, text: string, headers: Record<string, string> =
     return seriesRoute.GET(request, { params: Promise.resolve({ slug, cursor: text }) });
 }
 
-function homeGET(photoId: string, query: string, headers: Record<string, string> = {}): Promise<Response> {
-    const request = new Request(`http://127.0.0.1/api/catalog/home/photos/${photoId}${query}`, { headers });
-    return homeRoute.GET(request, { params: Promise.resolve({ photoId }) });
-}
-
 function homeSeriesGET(seriesId: string, photoId: string, query: string, headers: Record<string, string> = {}): Promise<Response> {
     const request = new Request(`http://127.0.0.1/api/catalog/home/series/${seriesId}/photos/${photoId}${query}`, { headers });
     return homeSeriesRoute.GET(request, { params: Promise.resolve({ seriesId, photoId }) });
@@ -118,7 +114,7 @@ async function headersAndBody(response: Response) {
 
 describe('every endpoint', () => {
     it('render per request and set no revalidate', () => {
-        for (const route of [seriesRoute, homeRoute, homeSeriesRoute, peekRoute]) {
+        for (const route of [seriesRoute, homeSeriesRoute, peekRoute]) {
             expect(route.dynamic).toBe('force-dynamic');
             expect('revalidate' in route).toBe(false);
         }
@@ -199,54 +195,15 @@ describe('GET /api/catalog/series/[slug]/pages/[cursor]', () => {
     });
 });
 
-describe('GET /api/catalog/home/photos/[photoId]', () => {
-    const revision = (value = fixture.revisionId) => `?revision=${value}`;
-
-    it('answers the window around the photograph with no-cache, a weak revision ETag, and the revision', async () => {
-        const response = await homeGET(FEATURED[0], revision());
-        expect(response.status).toBe(200);
-        expect(response.headers.get('cache-control')).toBe('no-cache');
-        expect(response.headers.get('etag')).toMatch(/^W\/"[A-Za-z0-9_-]{22}"$/);
-        expect(response.headers.get('x-catalog-revision')).toBe(fixture.revisionId);
-        const body = await response.json();
-        expect(body.revisionId).toBe(fixture.revisionId);
-        expect(body.photos.map((photo: { id: string }) => photo.id)).toEqual([FEATURED[4], FEATURED[0], FEATURED[1]]);
-    });
-
-    it('answers 304 to its own ETag, and each photograph has its own', async () => {
-        const first = (await homeGET(FEATURED[0], revision())).headers.get('etag') as string;
-        expect((await homeGET(FEATURED[2], revision())).headers.get('etag')).not.toBe(first);
-        expect((await homeGET(FEATURED[0], revision(), { 'If-None-Match': first })).status).toBe(304);
-    });
-
-    it('answers 409 when Home\'s revision isn\'t the one served', async () => {
-        await expectError(await homeGET(FEATURED[0], revision(REVISION_B)), 409, { reason: 'revision-changed' });
-    });
-
-    it('answers 400 for no revision, two of them, or a malformed one, without reading the catalog', async () => {
-        for (const query of ['', '?revision=', `?revision=${fixture.revisionId}&revision=${fixture.revisionId}`, '?revision=rev_a', `?rev=${fixture.revisionId}`]) {
-            await expectError(await homeGET(FEATURED[0], query), 400, { reason: 'bad-request' });
-        }
-        expect(state.loads).toBe(0);
-    });
-
-    it('answers one identical 404 for a photograph the featured series doesn\'t hold, and a malformed ID', async () => {
-        const answers = [];
-        for (const photoId of [LONG[0], DRAFT[0], id(999), 'ph_x']) answers.push(await headersAndBody(await homeGET(photoId, revision())));
-        expect(answers[0].status).toBe(404);
-        expect(JSON.parse(answers[0].body)).toEqual({ reason: 'not-found' });
-        for (const answer of answers) expect(answer).toEqual(answers[0]);
-    });
-
-    it('answers 503 while the catalog is unavailable, and 500 with a path-free log line when reading it throws', async () => {
-        state.catalog = { state: 'unavailable', reason: 'revision-unreadable' };
-        await expectError(await homeGET(FEATURED[0], revision()), 503, { reason: 'revision-unreadable' });
-        state.catalog = { state: 'unavailable', reason: 'not-published' };
-        await expectError(await homeGET(FEATURED[0], revision()), 503, { reason: 'not-published' });
-        state.throws = Object.assign(new Error('/private/data is gone'), { code: 'ENOENT' });
-        await expectError(await homeGET(FEATURED[0], revision()), 500, { reason: 'internal' });
-        expect(JSON.parse(String(logged.mock.calls[0][0]))).toEqual({ event: 'catalog.response.failed', route: '/api/catalog/home/photos/[photoId]', error: 'ENOENT' });
-    });
+describe("v1.4.0's Home records route, /api/catalog/home/photos/[photoId]", () => {
+    // v1.5.0 kept it one release for pages opened before its loop, and v1.6.0 removes it, with its preview mirror, so
+    // Next answers its URL 404 on both. e2e/cutover.spec.ts and e2e/curator-preview.spec.ts ask the built servers.
+    it('has no handler on the public site or in the preview, and the loop\'s route and its mirror take its place', () => {
+        const files = routeInventory(REPO_ROOT).handlers.map((handler) => handler.slice(0, handler.indexOf('#')));
+        expect(files.filter((file) => /(^|\/)api\/catalog\/home\/photos\//.test(file))).toEqual([]);
+        expect(files).toContain('app/api/catalog/home/series/[seriesId]/photos/[photoId]/route.ts');
+        expect(files).toContain('app/curation/preview/[draftId]/site/api/catalog/home/series/[seriesId]/photos/[photoId]/route.ts');
+    }, 60_000);
 });
 
 describe('GET /api/catalog/home/series/[seriesId]/photos/[photoId]', () => {
@@ -276,7 +233,7 @@ describe('GET /api/catalog/home/series/[seriesId]/photos/[photoId]', () => {
         expect((await homeSeriesGET('ser_fixture-featured', FEATURED[0], revision(), { 'If-None-Match': first })).status).toBe(304);
     });
 
-    it('answers 409 when Home\'s revision isn\'t the one served, as the old route does', async () => {
+    it('answers 409 when Home\'s revision isn\'t the one served', async () => {
         await expectError(await homeSeriesGET('ser_fixture-featured', FEATURED[0], revision(REVISION_B)), 409, { reason: 'revision-changed' });
         await expectError(await homeSeriesGET('ser_fixture-second', SECOND[0], revision(REVISION_B)), 409, { reason: 'revision-changed' });
     });
@@ -323,18 +280,11 @@ describe('GET /api/catalog/home/series/[seriesId]/photos/[photoId]', () => {
     it('answers 503 while the catalog is unavailable, and 500 with a path-free log line when reading it throws', async () => {
         state.catalog = { state: 'unavailable', reason: 'revision-unreadable' };
         await expectError(await homeSeriesGET('ser_fixture-featured', FEATURED[0], revision()), 503, { reason: 'revision-unreadable' });
+        state.catalog = { state: 'unavailable', reason: 'not-published' };
+        await expectError(await homeSeriesGET('ser_fixture-featured', FEATURED[0], revision()), 503, { reason: 'not-published' });
         state.throws = Object.assign(new Error('/private/data is gone'), { code: 'ENOENT' });
         await expectError(await homeSeriesGET('ser_fixture-featured', FEATURED[0], revision()), 500, { reason: 'internal' });
         expect(JSON.parse(String(logged.mock.calls[0][0]))).toEqual({ event: 'catalog.response.failed', route: '/api/catalog/home/series/[seriesId]/photos/[photoId]', error: 'ENOENT' });
-    });
-
-    it('leaves the old route answering for pages already open, inside the first featured series alone', async () => {
-        // The old route's windows never leave the first featured series, as the Home that asks for them plays it alone.
-        const old = await homeGET(FEATURED[4], revision());
-        expect(old.status).toBe(200);
-        expect(((await old.json()).photos as { id: string }[]).map((photo) => photo.id)).toEqual([FEATURED[3], FEATURED[4], FEATURED[0]]);
-        await expectError(await homeGET(SECOND[0], revision()), 404, { reason: 'not-found' });
-        await expectError(await homeGET(FEATURED[0], revision(REVISION_B)), 409, { reason: 'revision-changed' });
     });
 });
 

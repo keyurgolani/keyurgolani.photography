@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { createHash } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { homePhotosFrom, homeRouteOf, homeSeriesPhotosFrom, type HomeActiveCatalog } from '../projections/home';
+import { homeRouteOf, homeSeriesPhotosFrom, type HomeActiveCatalog } from '../projections/home';
 import { createCatalogReader, createRouteBuilder, type CatalogContent, type CatalogReader, type RouteBuilder } from '../reader';
 import { buildTestCatalog, type TestCatalogContent } from '../testing';
 import type { RevisionContent } from '../types';
@@ -141,12 +141,11 @@ function seriesIdsOf(content: CatalogContent): string[] {
 }
 
 async function screens(routes: RouteBuilder): Promise<Record<string, unknown[]>> {
-    const out: Record<string, unknown[]> = { home: [], homePhotos: [], homeLoop: [], work: [], series: [], continuation: [], viewer: [] };
+    const out: Record<string, unknown[]> = { home: [], homeLoop: [], work: [], series: [], continuation: [], viewer: [] };
     for (const [name, content] of contents()) {
         const reader = createCatalogReader(content, { revisionId: REVISION, revisionNumber: 4 });
         // Home starting on each featured series in turn: a pick past the loop's end opens on its first.
         for (const start of [0, 1]) out.home.push([name, start, homeRouteOf(served(reader), routes, () => start)]);
-        for (const photoId of photoIdsOf(content)) out.homePhotos.push([name, photoId, await homePhotosFrom(async () => served(reader), photoId, REVISION)]);
         for (const seriesId of seriesIdsOf(content)) {
             for (const photoId of photoIdsOf(content)) out.homeLoop.push([name, seriesId, photoId, await homeSeriesPhotosFrom(async () => served(reader), seriesId, photoId, REVISION)]);
         }
@@ -177,8 +176,7 @@ describe('every screen projection serializes byte for byte as pinned', () => {
         expect(Object.fromEntries(Object.entries(out).map(([screen, values]) => [screen, sha256(values)]))).toEqual({
             // v1.5.0: Home plays every featured series as a loop from the one it picks, so a refused first one is skipped.
             home: 'af0f2602377f16fc4db84f3fbf38fd2ae0cde8b6f84e469f37cf0963266099d6',
-            // v1.4.0's records route, unchanged for the pages already open, until v1.6.0 removes it.
-            homePhotos: '8f69315859b0700845222df618546e45c05d7be6c5c7e909af128a184f377a67',
+            // v1.6.0 removed v1.4.0's records route, and its pin, homePhotos, with it.
             homeLoop: '7c5208ce9eaa6bcc6f73772b669d635ee81cc331213504869f435f7930df2edf',
             work: 'e87f9f9531d894505ef0d31df859b27a0bc38e95d7aa86a7d3b711199b637be3',
             series: 'f4d331e31151bd9c2fe789acea02a746c5fcb026309e762287396071c0627123',
@@ -191,7 +189,6 @@ describe('every screen projection serializes byte for byte as pinned', () => {
         const out = await screens(previewRoutes);
         expect(Object.fromEntries(Object.entries(out).map(([screen, values]) => [screen, sha256(values)]))).toEqual({
             home: 'fbe7025fd56a8204208693fd10e1a6e47ba0aa7d6c036538b9f2d00539650c0c',
-            homePhotos: '8f69315859b0700845222df618546e45c05d7be6c5c7e909af128a184f377a67',
             homeLoop: '7c5208ce9eaa6bcc6f73772b669d635ee81cc331213504869f435f7930df2edf',
             work: '97961e986a7d4bea8bc005f8681ac88436337e467112928a0c29e0185c23a569',
             // 16-2: a series page's continuation path comes from the route builder, so a preview's points at its own mirror.
@@ -216,7 +213,6 @@ describe('every screen projection serializes byte for byte as pinned', () => {
         const kinds = (values: unknown[]) => new Set(values.map((entry) => ((entry as unknown[]).at(-1) as { kind: string }).kind));
         expect(kinds(out.home)).toEqual(new Set(['home']));
         expect(out.home.some((entry) => ((entry as unknown[]).at(-1) as { home: { featuredSeries: unknown } }).home.featuredSeries === null)).toBe(true);
-        expect(kinds(out.homePhotos)).toEqual(new Set(['ok', 'not-found']));
         expect(kinds(out.homeLoop)).toEqual(new Set(['ok', 'not-found']));
         expect(kinds(out.series)).toEqual(new Set(['ok', 'redirect', 'not-found']));
         expect(kinds(out.continuation)).toEqual(new Set(['ok']));

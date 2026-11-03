@@ -32,6 +32,8 @@ describe('prerenderedPaths', () => {
     expect(DYNAMIC_PATHS).toContain('/work');
     expect(DYNAMIC_PATHS).not.toContain('/api/photos');
     expect(DYNAMIC_PATHS).not.toContain('/gallery');
+    // v1.4.0's Home records route, which v1.6.0 removed.
+    expect(DYNAMIC_PATHS).not.toContain('/api/catalog/home/photos/[photoId]');
   });
 
   it('finds Work when the build prerendered it as a static page', () => {
@@ -65,7 +67,7 @@ describe('prerenderedPaths', () => {
   });
 
   it('lists the #6 continuation endpoints and the Viewer\'s peek by their patterns, since each answers from the active revision per request', () => {
-    expect(DYNAMIC_PATHS).toEqual(expect.arrayContaining(['/api/catalog/series/[slug]/pages/[cursor]', '/api/catalog/home/photos/[photoId]', '/api/catalog/home/series/[seriesId]/photos/[photoId]', '/api/catalog/series/[slug]/photos/[photoId]']));
+    expect(DYNAMIC_PATHS).toEqual(expect.arrayContaining(['/api/catalog/series/[slug]/pages/[cursor]', '/api/catalog/home/series/[seriesId]/photos/[photoId]', '/api/catalog/series/[slug]/photos/[photoId]']));
   });
 
   it('lists About and its portrait route, which read the host portrait per request, so a build never freezes the one it saw', () => {
@@ -137,7 +139,7 @@ describe('check-prerender.mjs run directly', () => {
   it('exits 0 and names the paths it checked when the build prerendered none of them', () => {
     const result = run(file(manifest()));
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('The build prerendered none of: /, /api/ready, /work, /work/[slug], /work/[slug]/photo/[photoId], /api/catalog/series/[slug]/pages/[cursor], /api/catalog/home/photos/[photoId], /api/catalog/home/series/[seriesId]/photos/[photoId], /api/catalog/series/[slug]/photos/[photoId], /about, /about/portrait/[token]/[variant], /curation.');
+    expect(result.stdout).toContain('The build prerendered none of: /, /api/ready, /work, /work/[slug], /work/[slug]/photo/[photoId], /api/catalog/series/[slug]/pages/[cursor], /api/catalog/home/series/[seriesId]/photos/[photoId], /api/catalog/series/[slug]/photos/[photoId], /about, /about/portrait/[token]/[variant], /curation.');
   });
 
   it('exits 1 with the fix when the build prerendered /api/ready', () => {

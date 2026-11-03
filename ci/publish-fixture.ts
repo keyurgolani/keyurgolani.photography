@@ -6,8 +6,9 @@
  *
  * Prints one JSON line: the revision it activated, the `/media` URL of a set
  * that revision holds, that of a set whose files exist but which no
- * revision holds, a photo of a draft series, so it must 404, and the ID of a
- * photo in the featured series, for #6's Home records endpoint. Never
+ * revision holds, a photo of a draft series, so it must 404, and the IDs of
+ * the featured series and of a photo in it, for #6's Home records endpoint.
+ * Never
  * touches the real data root: the root has to be empty and outside this
  * repository.
  */
@@ -29,7 +30,8 @@ async function main(): Promise<number> {
     }
     const active = catalog.content.photos[0];
     const inactive = catalog.photos.find((photo) => !catalog.content.photos.some((published) => published.id === photo.id));
-    const featured = catalog.content.series.find((series) => series.id === catalog.content.site.featuredSeriesIds[0])?.photoIds[0];
+    const featuredSeries = catalog.content.site.featuredSeriesIds[0];
+    const featured = catalog.content.series.find((series) => series.id === featuredSeries)?.photoIds[0];
     if (!active || !inactive || !featured) {
         console.error('The fixture has no published photo, no unpublished one, or no featured photo.');
         return 1;
@@ -38,6 +40,7 @@ async function main(): Promise<number> {
         revisionId: outcome.revisionId,
         active: mediaUrl({ photoId: active.id, assetRevision: active.assetRevision, profileId: active.profileId }, 'w800', 'webp'),
         inactive: mediaUrl({ photoId: inactive.id, assetRevision: inactive.assetRevision, profileId: catalog.profileId }, 'w800', 'webp'),
+        featuredSeries,
         featured,
     }));
     return 0;

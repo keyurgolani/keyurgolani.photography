@@ -312,7 +312,7 @@ export function viewerPeekOf(viewer: PublishedViewerPhoto): ViewerPeek {
 /**
  * The peek endpoint's answer for the site as it stands, for
  * `/api/catalog/series/<slug>/photos/<photoId>?revision=<revisionId>`. As
- * homePhotosFrom() does: malformed params are not-found and a missing or
+ * homeSeriesPhotosFrom() does: malformed params are not-found and a missing or
  * malformed revision a bad request, both before the catalog is read; an
  * unavailable catalog, one that has published nothing too, is unavailable,
  * for a 503; a revision other than the one served is revision-changed, checked before

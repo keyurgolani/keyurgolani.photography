@@ -513,7 +513,7 @@ while read -r path photo url; do
   code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$BASE_URL$url") || fail "GET $url failed."
   [ "$code" = 404 ] || fail "GET $url, the set of $path, returned $code before the first activation, expected 404."
   tr -d '\r' <"$TMP/headers.txt" | grep -qix 'cache-control: no-store' || fail "The 404 for $url did not send Cache-Control: no-store."
-  expect_json "/api/catalog/home/photos/$photo?revision=$no_revision" 503 no-store '. == {reason: "not-published"}'
+  expect_json "/api/catalog/home/series/ser_smoke/photos/$photo?revision=$no_revision" 503 no-store '. == {reason: "not-published"}'
 done <"$TMP/sets.txt"
 code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$BASE_URL/assets/photos/${fixtures[0]}.jpg") ||
   fail "GET /assets/photos/${fixtures[0]}.jpg failed."

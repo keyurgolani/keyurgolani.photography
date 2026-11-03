@@ -273,36 +273,7 @@ export function homeSeriesPhotosOf(source: HomeSource, seriesId: unknown, photoI
     return { kind: 'ok', window: { revisionId: source.revisionId, photos: windowOf(slots, index).map((slot) => recordOf(slot, false)) } };
 }
 
-/**
- * v1.4.0's featured series for homePhotosOf(): the first `featuredSeriesIds`
- * entry the source holds, or nothing when that one wouldn't open. Goes in
- * v1.6.0 with the old route.
- */
-function firstFeaturedOf(source: HomeSource): LoopEntry | null {
-    const listed = source.listSeries();
-    const series = source.site().featuredSeriesIds.map((seriesId) => listed.find((entry) => entry.id === seriesId)).find((entry) => entry !== undefined);
-    if (!series || !openableSeries(source, series) || seriesParams(series.slug) === null) return null;
-    const members = source.photosOf(series.id);
-    return { series, members, openingIndex: Math.max(0, members.findIndex((photo) => photo.id === series.openingPhotoId)) };
-}
-
-/**
- * v1.4.0's window, for `/api/catalog/home/photos/<photoId>`: `photoId` and
- * its neighbors inside the first featured series alone, wrapping, as the
- * Home that asks for it plays that one series. It stays one release, v1.5.0,
- * for pages opened before it, and goes in v1.6.0 with the route.
- */
-export function homePhotosOf(source: HomeSource, photoId: unknown): HomePhotosResult {
-    if (typeof photoId !== 'string' || !PHOTO_ID_RE.test(photoId)) return { kind: 'not-found' };
-    const featured = firstFeaturedOf(source);
-    if (featured === null) return { kind: 'not-found' };
-    const slots = featured.members.map((photo) => ({ photo, entry: featured }));
-    const index = slots.findIndex((slot) => slot.photo.id === photoId);
-    if (index === -1) return { kind: 'not-found' };
-    return { kind: 'ok', window: { revisionId: source.revisionId, photos: windowOf(slots, index).map((slot) => recordOf(slot, false)) } };
-}
-
-/** The parts of #13's ActiveCatalog that homeRouteOf(), homeSeriesPhotosFrom() and homePhotosFrom() read. */
+/** The parts of #13's ActiveCatalog that homeRouteOf() and homeSeriesPhotosFrom() read. */
 export type HomeActiveCatalog<Reason extends string = string> = ScreenCatalog<Pick<CatalogReader, 'revision' | 'site' | 'listSeries' | 'photosOf'>, Reason>;
 
 export type HomeRouteResult<Reason extends string = string> =
@@ -362,24 +333,4 @@ export async function homeSeriesPhotosFrom<Reason extends string>(
     const { reader } = catalog;
     if (reader.revision().revisionId !== revisionId) return { kind: 'revision-changed' };
     return homeSeriesPhotosOf(homeSourceOf(reader), seriesId, photoId);
-}
-
-/**
- * v1.4.0's records endpoint's answer, for
- * `/api/catalog/home/photos/<photoId>?revision=<revisionId>`, with the same
- * checks in the same order: homePhotosOf() on the served revision. Goes in
- * v1.6.0 with the route.
- */
-export async function homePhotosFrom<Reason extends string>(
-    load: () => Promise<HomeActiveCatalog<Reason>>,
-    photoId: unknown,
-    revisionId: string | null,
-): Promise<HomePhotosResult | { kind: 'unavailable'; reason: Reason }> {
-    if (typeof photoId !== 'string' || !PHOTO_ID_RE.test(photoId)) return { kind: 'not-found' };
-    if (revisionId === null || !REVISION_ID_RE.test(revisionId)) return { kind: 'bad-request' };
-    const catalog = await load();
-    if (catalog.state === 'unavailable') return { kind: 'unavailable', reason: catalog.reason };
-    const { reader } = catalog;
-    if (reader.revision().revisionId !== revisionId) return { kind: 'revision-changed' };
-    return homePhotosOf(homeSourceOf(reader), photoId);
 }

@@ -2,7 +2,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../../identity/variants';
 import { mediaUrl } from '../../media/url';
-import { homePhotosFrom, homePhotosOf, homeRouteOf, publishedHomeOf, type HomeActiveCatalog, type HomePhoto, type HomeSeries, type HomeSource, type PublishedHome } from '../projections/home';
+import { homeRouteOf, homeSeriesPhotosFrom, homeSeriesPhotosOf, publishedHomeOf, type HomeActiveCatalog, type HomePhoto, type HomeSeries, type HomeSource, type PublishedHome } from '../projections/home';
 import { publish } from '../publish';
 import { createCatalogReader, createRouteBuilder } from '../reader';
 import { createTestCatalog, type TestCatalog } from '../testing';
@@ -129,14 +129,14 @@ function featured(home: PublishedHome): HomeSeries {
 
 /**
  * Every record Home can show for `from`, in authored order: the server's
- * window, then what homePhotosOf() gives around each later photograph (#6),
+ * window, then what homeSeriesPhotosOf() gives around each later photograph (#6),
  * so the field checks below cover every record whichever way it ships.
  */
 function everyRecord(from: CandidateContent = content(), revisionId = REVISION_A): HomePhoto[] {
     const series = featured(homeOf(from, revisionId));
     const byId = new Map(series.records.map((record) => [record.id, record] as const));
     for (const photoId of series.photoIds) {
-        const result = homePhotosOf(source(from, revisionId), photoId);
+        const result = homeSeriesPhotosOf(source(from, revisionId), series.id, photoId);
         if (result.kind !== 'ok') throw new Error(`Expected a window around ${photoId}, got ${result.kind}`);
         for (const record of result.window.photos) if (!byId.has(record.id)) byId.set(record.id, record);
     }
@@ -624,9 +624,10 @@ describe('the narrowed Home (#6)', () => {
     });
 });
 
-describe('homePhotosOf, the window Home asks for as it moves', () => {
+// One featured series, so its loop is that series alone. homeLoop.test.ts has the loop across several.
+describe('homeSeriesPhotosOf, the window Home asks for as it moves', () => {
     const window = (photoId: string, from: CandidateContent = content()) => {
-        const result = homePhotosOf(source(from), photoId);
+        const result = homeSeriesPhotosOf(source(from), 'ser_fixture-a', photoId);
         if (result.kind !== 'ok') throw new Error(`Expected a window, got ${result.kind}`);
         return result.window;
     };
@@ -650,38 +651,38 @@ describe('homePhotosOf, the window Home asks for as it moves', () => {
     it('answers not-found for a photo the featured series doesn\'t hold, a malformed ID, or an empty Home', () => {
         // P[5] is in fixture-b, P[7] in the draft series, P[9] in no series.
         for (const photoId of [P[5], P[7], P[9], 'ph_x', '', P[0].toUpperCase(), `${P[0]}/..`]) {
-            expect(homePhotosOf(source(), photoId), photoId).toEqual({ kind: 'not-found' });
+            expect(homeSeriesPhotosOf(source(), 'ser_fixture-a', photoId), photoId).toEqual({ kind: 'not-found' });
         }
         const empty = content();
         empty.site.featuredSeriesIds = [];
-        expect(homePhotosOf(source(empty), P[0])).toEqual({ kind: 'not-found' });
+        expect(homeSeriesPhotosOf(source(empty), 'ser_fixture-a', P[0])).toEqual({ kind: 'not-found' });
     });
 });
 
-describe('homePhotosFrom, the records endpoint\'s answer', () => {
+describe('homeSeriesPhotosFrom, the records endpoint\'s answer', () => {
     const served = (state: 'ok' | 'degraded' = 'ok'): HomeActiveCatalog => ({ state, reader: createCatalogReader(content(), { revisionId: REVISION_A, revisionNumber: 3 }) });
 
     it('answers a malformed photo ID not-found and a missing or malformed revision as a bad request, before reading the catalog', async () => {
         const load = vi.fn(async () => served());
-        expect(await homePhotosFrom(load, 'ph_x', REVISION_A)).toEqual({ kind: 'not-found' });
+        expect(await homeSeriesPhotosFrom(load, 'ser_fixture-a', 'ph_x', REVISION_A)).toEqual({ kind: 'not-found' });
         for (const revision of [null, '', 'rev_a', REVISION_A.toUpperCase(), `${REVISION_A} `]) {
-            expect(await homePhotosFrom(load, P[0], revision), String(revision)).toEqual({ kind: 'bad-request' });
+            expect(await homeSeriesPhotosFrom(load, 'ser_fixture-a', P[0], revision), String(revision)).toEqual({ kind: 'bad-request' });
         }
         expect(load).not.toHaveBeenCalled();
     });
 
     it('passes an unavailable catalog on, nothing published included', async () => {
-        expect(await homePhotosFrom(async () => ({ state: 'unavailable', reason: 'not-published' }), P[0], REVISION_A)).toEqual({ kind: 'unavailable', reason: 'not-published' });
-        expect(await homePhotosFrom(async () => ({ state: 'unavailable', reason: 'active-unreadable' }), P[0], REVISION_A)).toEqual({ kind: 'unavailable', reason: 'active-unreadable' });
+        expect(await homeSeriesPhotosFrom(async () => ({ state: 'unavailable', reason: 'not-published' }), 'ser_fixture-a', P[0], REVISION_A)).toEqual({ kind: 'unavailable', reason: 'not-published' });
+        expect(await homeSeriesPhotosFrom(async () => ({ state: 'unavailable', reason: 'active-unreadable' }), 'ser_fixture-a', P[0], REVISION_A)).toEqual({ kind: 'unavailable', reason: 'active-unreadable' });
     });
 
     it('answers revision-changed for any revision but the served one, whatever the photo', async () => {
-        for (const photoId of [P[0], P[5], P[9]]) expect(await homePhotosFrom(async () => served(), photoId, REVISION_B), photoId).toEqual({ kind: 'revision-changed' });
+        for (const photoId of [P[0], P[5], P[9]]) expect(await homeSeriesPhotosFrom(async () => served(), 'ser_fixture-a', photoId, REVISION_B), photoId).toEqual({ kind: 'revision-changed' });
     });
 
     it('serves the window from the served revision, ok or degraded', async () => {
         for (const state of ['ok', 'degraded'] as const) {
-            expect(await homePhotosFrom(async () => served(state), P[0], REVISION_A), state).toEqual(homePhotosOf(source(), P[0]));
+            expect(await homeSeriesPhotosFrom(async () => served(state), 'ser_fixture-a', P[0], REVISION_A), state).toEqual(homeSeriesPhotosOf(source(), 'ser_fixture-a', P[0]));
         }
     });
 });

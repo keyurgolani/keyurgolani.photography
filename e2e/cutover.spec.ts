@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
-import { CATALOG_ORIGIN } from './support/catalog-home';
+import { CATALOG_ORIGIN, HOME_OPENING, HOME_SERIES } from './support/catalog-home';
 
 // #13's slice E: legacy mode is gone from the visitor side. playwright.config.ts
 // starts two servers from one build: the harness server, with no data root,
@@ -7,6 +7,12 @@ import { CATALOG_ORIGIN } from './support/catalog-home';
 // lists the library, serves a legacy derivative, or renders the legacy
 // Gallery, and the server with nothing published answers the unavailable
 // state, the one #21's error page renders.
+
+/** A revision ID no server serves. */
+const NO_REVISION = `rev_${'0'.repeat(64)}`;
+
+/** v1.4.0's Home records route, which v1.5.0 kept one release and v1.6.0 removed, for the opening photograph. */
+const oldHomeRecords = (revision: string) => `/api/catalog/home/photos/${HOME_OPENING}?revision=${revision}`;
 
 /** A legacy basename derivative the removed legacy pages loaded. */
 const DERIVATIVE = '/assets/photos/optimized/landscape.webp';
@@ -27,6 +33,11 @@ for (const [name, origin] of SERVERS) {
     test.describe(`the server ${name}`, () => {
         test('answers 404 for /api/photos', async ({ request }) => {
             const response = await get(request, at(origin, '/api/photos'));
+            expect(response.status()).toBe(404);
+        });
+
+        test("answers 404 for v1.4.0's Home records route", async ({ request }) => {
+            const response = await get(request, at(origin, oldHomeRecords(NO_REVISION)));
             expect(response.status()).toBe(404);
         });
 
@@ -80,5 +91,15 @@ test.describe('the server with a catalog', () => {
         expect(body).toMatchObject({ mode: 'catalog', state: 'ok', revisionNumber: 1 });
         expect(body.revisionId).toMatch(/^rev_[0-9a-f]{64}$/);
         expect(response.headers()['x-catalog-revision']).toBe(body.revisionId);
+    });
+
+    test("answers 404 for v1.4.0's Home records route at the revision it serves, where the loop's route answers", async ({ request }) => {
+        const { revisionId } = await (await get(request, `${CATALOG_ORIGIN}/api/ready`)).json();
+        const loop = await get(request, `${CATALOG_ORIGIN}/api/catalog/home/series/${HOME_SERIES.id}/photos/${HOME_OPENING}?revision=${revisionId}`);
+        expect(loop.status()).toBe(200);
+        expect((await loop.json()).photos.map((photo: { id: string }) => photo.id)).toContain(HOME_OPENING);
+        const old = await get(request, `${CATALOG_ORIGIN}${oldHomeRecords(revisionId)}`);
+        expect(old.status()).toBe(404);
+        expect(old.headers()['x-catalog-revision']).toBeUndefined();
     });
 });
